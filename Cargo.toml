@@ -1,0 +1,71 @@
+[package]
+name = "cfgd"
+version = "0.1.0"
+edition = "2021"
+description = "Declarative, GitOps-style machine configuration state management"
+license = "MIT"
+repository = "https://github.com/TODO/cfgd"
+
+[[bin]]
+name = "cfgd"
+path = "src/main.rs"
+
+[dependencies]
+# CLI
+clap = { version = "4", features = ["derive", "env"] }
+inquire = "0.7"
+
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+
+# Serialization / Config
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9"
+toml = "0.8"
+
+# Output & Theming
+console = "0.15"
+indicatif = { version = "0.17", features = ["tokio"] }
+syntect = "5"
+
+# Logging / Tracing
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+
+# Error handling
+thiserror = "2"
+anyhow = "1"
+
+# Filesystem watching (daemon)
+notify = "7"
+notify-rust = "4"
+
+# HTTP client (daemon webhooks)
+ureq = "2"
+
+# Database (state store)
+rusqlite = { version = "0.32", features = ["bundled"] }
+
+# Git
+git2 = "0.19"
+
+# Templating
+tera = "1"
+
+# Paths
+directories = "5"
+
+# Diffing
+similar = "2"
+
+# Hashing (plan hashes for state store)
+sha2 = "0.10"
+
+# Hostname detection
+hostname = "0.4"
+
+[dev-dependencies]
+assert_cmd = "2"
+predicates = "3"
+tempfile = "3"
