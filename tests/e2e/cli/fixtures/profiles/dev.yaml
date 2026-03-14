@@ -1,0 +1,13 @@
+apiVersion: cfgd/v1
+kind: Profile
+metadata:
+  name: dev
+spec:
+  inherits:
+    - base
+  variables:
+    EDITOR: nvim
+  files:
+    managed:
+      - source: files/zshrc
+        target: TARGET_DIR/.zshrc

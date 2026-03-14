@@ -1,0 +1,79 @@
+[package]
+name = "cfgd-core"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.94"
+description = "Core library for cfgd — shared types, providers, reconciler, state"
+license = "MIT"
+repository = "https://github.com/tj-smith47/cfgd"
+homepage = "https://github.com/tj-smith47/cfgd"
+keywords = ["config", "management", "gitops", "reconciliation", "declarative"]
+categories = ["config", "command-line-utilities"]
+
+[dependencies]
+# Serialization / Config
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9"
+toml = "0.8"
+
+# Output & Theming
+console = "0.15"
+indicatif = { version = "0.17", features = ["tokio"] }
+syntect = "5"
+
+# Logging / Tracing
+tracing = "0.1"
+
+# Error handling
+thiserror = "2"
+
+# Database (state store)
+rusqlite = { version = "0.32", features = ["bundled"] }
+
+# Filesystem watching (daemon)
+notify = "7"
+notify-rust = "4"
+
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+
+# Hashing
+sha2 = "0.10"
+
+# Diffing
+similar = "2"
+
+# Paths
+directories = "5"
+
+# Hostname detection
+hostname = "0.4"
+
+# Interactive prompts
+inquire = "0.7"
+
+# HTTP client (daemon webhooks)
+ureq = "2"
+
+# Git
+git2 = "0.19"
+
+# Semver (multi-source version pinning)
+semver = "1"
+
+# Glob pattern matching (source security)
+glob = "0.3"
+
+# Temp files (upgrade)
+tempfile = "3"
+
+# Tar/gzip extraction (upgrade)
+flate2 = "1"
+tar = "0.4"
+
+# Unix signals (daemon restart)
+libc = "0.2"
+
+[dev-dependencies]
+tempfile = "3"

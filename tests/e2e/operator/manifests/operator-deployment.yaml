@@ -1,0 +1,66 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cfgd-operator
+  namespace: cfgd-system
+  labels:
+    app: cfgd-operator
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: cfgd-operator
+  template:
+    metadata:
+      labels:
+        app: cfgd-operator
+    spec:
+      serviceAccountName: cfgd-operator
+      containers:
+        - name: cfgd-operator
+          image: cfgd-operator:e2e-test
+          imagePullPolicy: Never
+          env:
+            - name: RUST_LOG
+              value: "info"
+          resources:
+            limits:
+              cpu: 200m
+              memory: 128Mi
+            requests:
+              cpu: 50m
+              memory: 64Mi
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: cfgd-operator
+  namespace: cfgd-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: cfgd-operator
+rules:
+  - apiGroups: ["cfgd.io"]
+    resources: ["machineconfigs", "machineconfigs/status"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["cfgd.io"]
+    resources: ["configpolicies", "configpolicies/status"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["cfgd.io"]
+    resources: ["driftalerts", "driftalerts/status"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: cfgd-operator
+subjects:
+  - kind: ServiceAccount
+    name: cfgd-operator
+    namespace: cfgd-system
+roleRef:
+  kind: ClusterRole
+  name: cfgd-operator
+  apiGroup: rbac.authorization.k8s.io

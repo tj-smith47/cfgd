@@ -1,0 +1,29 @@
+apiVersion: cfgd/v1
+kind: Config
+metadata:
+  name: my-workstation
+spec:
+  profile: personal
+
+  origin:
+    type: git
+    url: git@github.com:you/machine-config.git
+    branch: main
+
+  daemon:
+    enabled: true
+    reconcile:
+      interval: 5m
+      on-change: true
+    sync:
+      auto-pull: true
+      auto-push: false
+      interval: 5m
+    notify:
+      drift: true
+      method: desktop
+
+  secrets:
+    backend: sops
+    sops:
+      age-key: ~/.config/cfgd/age-key.txt

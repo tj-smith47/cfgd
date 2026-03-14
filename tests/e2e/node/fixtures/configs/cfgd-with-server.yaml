@@ -1,0 +1,6 @@
+apiVersion: cfgd/v1
+kind: Config
+metadata:
+  name: e2e-test-node
+spec:
+  profile: k8s-worker-minimal

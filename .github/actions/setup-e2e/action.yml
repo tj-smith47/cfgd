@@ -1,0 +1,78 @@
+name: 'Setup cfgd E2E Environment'
+description: 'Creates a kind cluster and builds/loads all cfgd Docker images for E2E testing'
+
+inputs:
+  kind-cluster-name:
+    description: 'Name of the kind cluster'
+    required: false
+    default: 'cfgd-e2e'
+  kind-config:
+    description: 'Path to kind cluster config file'
+    required: false
+    default: 'tests/e2e/node/kind-config.yaml'
+  images:
+    description: 'Space-separated list of images to build (node server operator)'
+    required: false
+    default: 'node server'
+
+runs:
+  using: composite
+  steps:
+    - name: Install kind
+      shell: bash
+      run: |
+        KIND_VERSION="v0.24.0"
+        curl -sLo /tmp/kind "https://kind.sigs.k8s.io/dl/${KIND_VERSION}/kind-linux-amd64"
+        chmod +x /tmp/kind
+        sudo mv /tmp/kind /usr/local/bin/kind
+
+    - name: Install helm
+      shell: bash
+      run: |
+        curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+
+    - name: Create kind cluster
+      shell: bash
+      run: |
+        kind create cluster \
+          --name "${{ inputs.kind-cluster-name }}" \
+          --config "${{ inputs.kind-config }}" \
+          --wait 120s
+
+    - name: Build and load images
+      shell: bash
+      run: |
+        CLUSTER="${{ inputs.kind-cluster-name }}"
+        for img in ${{ inputs.images }}; do
+          case "$img" in
+            node)
+              echo "Building cfgd..."
+              docker build -f Dockerfile -t cfgd:e2e-test .
+              kind load docker-image cfgd:e2e-test --name "$CLUSTER"
+              ;;
+            server)
+              echo "Building cfgd-server..."
+              docker build -f Dockerfile.server -t cfgd-server:e2e-test .
+              kind load docker-image cfgd-server:e2e-test --name "$CLUSTER"
+              ;;
+            operator)
+              echo "Building cfgd-operator..."
+              docker build -f Dockerfile.operator -t cfgd-operator:e2e-test .
+              kind load docker-image cfgd-operator:e2e-test --name "$CLUSTER"
+              ;;
+          esac
+        done
+
+    - name: Create cfgd-system namespace
+      shell: bash
+      run: kubectl create namespace cfgd-system || true
+
+    - name: Deploy cfgd-server
+      shell: bash
+      run: |
+        if echo "${{ inputs.images }}" | grep -q "server"; then
+          kubectl apply -f tests/e2e/node/manifests/cfgd-server.yaml -n cfgd-system
+          kubectl wait --for=condition=available deployment/cfgd-server \
+            -n cfgd-system --timeout=120s
+          echo "cfgd-server is ready"
+        fi

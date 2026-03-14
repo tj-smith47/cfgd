@@ -1,0 +1,151 @@
+version: "3"
+
+vars:
+  REGISTRY: registry.jarvispro.io
+  VERSION:
+    sh: git describe --tags --abbrev=0 2>/dev/null || echo "v0.0.0"
+  VERSION_NUM:
+    sh: echo "{{.VERSION}}" | sed 's/^v//'
+  OS:
+    sh: uname -s | tr '[:upper:]' '[:lower:]'
+  ARCH:
+    sh: |
+      ARCH=$(uname -m)
+      case "$ARCH" in x86_64|amd64) echo "x86_64" ;; arm64|aarch64) echo "aarch64" ;; *) echo "$ARCH" ;; esac
+
+tasks:
+  default:
+    desc: Show available tasks
+    cmds:
+      - task --list
+
+  # --- Build ---
+
+  build:
+    desc: Build all binaries in release mode
+    cmds:
+      - cargo build --release
+
+  build:dev:
+    desc: Build all binaries in debug mode
+    cmds:
+      - cargo build
+
+  install:
+    desc: Install cfgd binary to cargo bin
+    cmds:
+      - cargo install --path crates/cfgd
+
+  # --- Quality ---
+
+  check:
+    desc: Run all quality checks (fmt, clippy, test, audit)
+    cmds:
+      - task: fmt
+      - task: clippy
+      - task: test
+      - task: audit
+
+  fmt:
+    desc: Check code formatting
+    cmds:
+      - cargo fmt --check
+
+  fmt:fix:
+    desc: Fix code formatting
+    cmds:
+      - cargo fmt
+
+  clippy:
+    desc: Run clippy linter
+    cmds:
+      - cargo clippy -- -D warnings
+
+  test:
+    desc: Run all tests
+    cmds:
+      - cargo test
+
+  test:crate:
+    desc: Run tests for a specific crate
+    cmds:
+      - cargo test -p {{.CLI_ARGS}}
+
+  audit:
+    desc: Run project-specific code quality audit
+    cmds:
+      - bash .claude/scripts/audit.sh
+
+  # --- Clean ---
+
+  clean:
+    desc: Remove build artifacts
+    cmds:
+      - cargo clean
+
+  # --- Docker ---
+
+  docker:
+    desc: Build all Docker images
+    deps: [docker:cli, docker:server, docker:operator]
+
+  docker:cli:
+    desc: Build cfgd CLI Docker image
+    cmds:
+      - docker build -f Dockerfile -t {{.REGISTRY}}/cfgd:latest -t {{.REGISTRY}}/cfgd:{{.VERSION_NUM}} .
+
+  docker:server:
+    desc: Build cfgd-server Docker image
+    cmds:
+      - docker build -f Dockerfile.server -t {{.REGISTRY}}/cfgd-server:latest -t {{.REGISTRY}}/cfgd-server:{{.VERSION_NUM}} .
+
+  docker:operator:
+    desc: Build cfgd-operator Docker image
+    cmds:
+      - docker build -f Dockerfile.operator -t {{.REGISTRY}}/cfgd-operator:latest -t {{.REGISTRY}}/cfgd-operator:{{.VERSION_NUM}} .
+
+  push:
+    desc: Push all Docker images to registry
+    deps: [push:cli, push:server, push:operator]
+
+  push:cli:
+    desc: Push cfgd CLI image to registry
+    cmds:
+      - docker push {{.REGISTRY}}/cfgd:latest
+      - docker push {{.REGISTRY}}/cfgd:{{.VERSION_NUM}}
+
+  push:server:
+    desc: Push cfgd-server image to registry
+    cmds:
+      - docker push {{.REGISTRY}}/cfgd-server:latest
+      - docker push {{.REGISTRY}}/cfgd-server:{{.VERSION_NUM}}
+
+  push:operator:
+    desc: Push cfgd-operator image to registry
+    cmds:
+      - docker push {{.REGISTRY}}/cfgd-operator:latest
+      - docker push {{.REGISTRY}}/cfgd-operator:{{.VERSION_NUM}}
+
+  # --- Release ---
+
+  changelog:
+    desc: Generate changelog from git history
+    cmds:
+      - git-cliff -o CHANGELOG.md
+
+  release:local:
+    desc: Build release archive locally
+    cmds:
+      - cargo build --release --bin cfgd
+      - tar -czf "cfgd-{{.VERSION_NUM}}-{{.OS}}-{{.ARCH}}.tar.gz" -C target/release cfgd
+      - echo "Built{{":"}} cfgd-{{.VERSION_NUM}}-{{.OS}}-{{.ARCH}}.tar.gz"
+
+  # --- Deploy ---
+
+  deploy:server:
+    desc: Build, push, and deploy cfgd-server to k3s
+    cmds:
+      - task: docker:server
+      - task: push:server
+      - kustomize build --enable-alpha-plugins --enable-exec /db/manifests/k3s/namespaces/cfgd-system | kubectl apply -f -
+      - kubectl rollout restart deployment/cfgd-server -n cfgd-system

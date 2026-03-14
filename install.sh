@@ -1,17 +1,17 @@
 #!/bin/sh
 # cfgd installer — detects OS/arch, downloads the correct binary, verifies checksum, installs to PATH
 # Usage:
-#   curl -fsSL https://raw.githubusercontent.com/TODO/cfgd/main/install.sh | sh
+#   curl -fsSL https://raw.githubusercontent.com/tj-smith47/cfgd/main/install.sh | sh
 #   curl -fsSL ... | sh -s -- init --from <url>
 #
 # Environment variables:
 #   CFGD_INSTALL_DIR  — override install directory (default: /usr/local/bin or ~/.local/bin)
 #   CFGD_VERSION      — override version to install (default: latest)
-#   CFGD_REPO         — override GitHub repo (default: TODO/cfgd)
+#   CFGD_REPO         — override GitHub repo (default: tj-smith47/cfgd)
 
 set -eu
 
-REPO="${CFGD_REPO:-TODO/cfgd}"
+REPO="${CFGD_REPO:-tj-smith47/cfgd}"
 VERSION="${CFGD_VERSION:-latest}"
 INSTALL_DIR="${CFGD_INSTALL_DIR:-}"
 

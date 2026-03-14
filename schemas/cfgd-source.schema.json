@@ -1,0 +1,243 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "$id": "https://cfgd.io/schemas/cfgd-source.schema.json",
+  "title": "cfgd ConfigSource",
+  "description": "ConfigSource manifest published by teams for multi-source config management (cfgd-source.yaml)",
+  "type": "object",
+  "required": ["apiVersion", "kind", "metadata", "spec"],
+  "additionalProperties": false,
+  "properties": {
+    "apiVersion": {
+      "type": "string",
+      "description": "API version identifier",
+      "examples": ["cfgd/v1"]
+    },
+    "kind": {
+      "type": "string",
+      "const": "ConfigSource",
+      "description": "Document kind, must be 'ConfigSource'"
+    },
+    "metadata": {
+      "$ref": "#/$defs/ConfigSourceMetadata"
+    },
+    "spec": {
+      "$ref": "#/$defs/ConfigSourceSpec"
+    }
+  },
+  "$defs": {
+    "ConfigSourceMetadata": {
+      "type": "object",
+      "required": ["name"],
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "Name of this config source"
+        },
+        "version": {
+          "type": "string",
+          "description": "Semantic version of this source manifest"
+        },
+        "description": {
+          "type": "string",
+          "description": "Human-readable description"
+        }
+      }
+    },
+    "ConfigSourceSpec": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "provides": {
+          "$ref": "#/$defs/ConfigSourceProvides"
+        },
+        "policy": {
+          "$ref": "#/$defs/ConfigSourcePolicy"
+        }
+      }
+    },
+    "ConfigSourceProvides": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "profiles": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": [],
+          "description": "Profile names provided by this source"
+        }
+      }
+    },
+    "ConfigSourcePolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "required": {
+          "$ref": "#/$defs/PolicyItems",
+          "description": "Items that subscribers must accept"
+        },
+        "recommended": {
+          "$ref": "#/$defs/PolicyItems",
+          "description": "Items accepted when accept-recommended is true"
+        },
+        "optional": {
+          "$ref": "#/$defs/PolicyItems",
+          "description": "Items available via explicit opt-in"
+        },
+        "locked": {
+          "$ref": "#/$defs/PolicyItems",
+          "description": "Items that cannot be overridden by subscribers"
+        },
+        "constraints": {
+          "$ref": "#/$defs/SourceConstraints"
+        }
+      }
+    },
+    "PolicyItems": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "packages": {
+          "$ref": "#/$defs/PackagesSpec"
+        },
+        "files": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/ManagedFileSpec" },
+          "default": [],
+          "description": "Files provided at this policy level"
+        },
+        "variables": {
+          "type": "object",
+          "additionalProperties": true,
+          "default": {},
+          "description": "Variables provided at this policy level"
+        },
+        "system": {
+          "type": "object",
+          "additionalProperties": true,
+          "default": {},
+          "description": "System config provided at this policy level"
+        },
+        "profiles": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": [],
+          "description": "Sub-profiles included at this policy level"
+        }
+      }
+    },
+    "SourceConstraints": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "no-scripts": {
+          "type": "boolean",
+          "default": true,
+          "description": "Prevent this source from running scripts"
+        },
+        "no-secrets-read": {
+          "type": "boolean",
+          "default": true,
+          "description": "Prevent this source from reading secrets"
+        },
+        "allowed-target-paths": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": [],
+          "description": "Glob patterns for allowed file target paths"
+        },
+        "allow-system-changes": {
+          "type": "boolean",
+          "default": false,
+          "description": "Whether this source can make system-level changes"
+        }
+      }
+    },
+    "PackagesSpec": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "brew": {
+          "$ref": "#/$defs/BrewSpec"
+        },
+        "apt": {
+          "$ref": "#/$defs/AptSpec"
+        },
+        "cargo": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": []
+        },
+        "npm": {
+          "$ref": "#/$defs/NpmSpec"
+        },
+        "pipx": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": []
+        },
+        "dnf": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": []
+        }
+      }
+    },
+    "BrewSpec": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "taps": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": []
+        },
+        "formulae": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": []
+        },
+        "casks": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": []
+        }
+      }
+    },
+    "AptSpec": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "packages": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": []
+        }
+      }
+    },
+    "NpmSpec": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "global": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": []
+        }
+      }
+    },
+    "ManagedFileSpec": {
+      "type": "object",
+      "required": ["source", "target"],
+      "additionalProperties": false,
+      "properties": {
+        "source": {
+          "type": "string"
+        },
+        "target": {
+          "type": "string"
+        }
+      }
+    }
+  }
+}

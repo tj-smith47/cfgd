@@ -1,0 +1,14 @@
+apiVersion: cfgd/v1
+kind: Profile
+metadata:
+  name: work-dev
+spec:
+  inherits:
+    - dev
+  variables:
+    EDITOR: nvim
+    WORK_EMAIL: user@corp.example.com
+  files:
+    managed:
+      - source: files/work-gitconfig
+        target: TARGET_DIR/.gitconfig-work

@@ -1,0 +1,42 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cfgd-server
+  namespace: cfgd-system
+  labels:
+    app: cfgd-server
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: cfgd-server
+  template:
+    metadata:
+      labels:
+        app: cfgd-server
+    spec:
+      containers:
+        - name: cfgd-server
+          image: cfgd-server:e2e-test
+          imagePullPolicy: Never
+          ports:
+            - containerPort: 8080
+          args: ["8080", "/tmp/cfgd-e2e.db"]
+          readinessProbe:
+            httpGet:
+              path: /api/v1/devices
+              port: 8080
+            initialDelaySeconds: 2
+            periodSeconds: 5
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: cfgd-server
+  namespace: cfgd-system
+spec:
+  selector:
+    app: cfgd-server
+  ports:
+    - port: 8080
+      targetPort: 8080

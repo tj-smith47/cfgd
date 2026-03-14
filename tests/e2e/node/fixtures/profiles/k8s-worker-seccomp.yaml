@@ -1,0 +1,17 @@
+apiVersion: cfgd/v1
+kind: Profile
+metadata:
+  name: k8s-worker-seccomp
+spec:
+  variables: {}
+  system:
+    seccomp:
+      profiles-dir: /tmp/cfgd-e2e-seccomp
+      profiles:
+        - name: audit
+          file: audit.json
+          content: |
+            {
+              "defaultAction": "SCMP_ACT_LOG",
+              "architectures": ["SCMP_ARCH_X86_64"]
+            }

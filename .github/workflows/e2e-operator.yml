@@ -1,0 +1,49 @@
+name: E2E – cfgd operator
+
+on:
+  push:
+    branches: [main, master]
+    paths:
+      - "crates/cfgd-operator/**"
+      - "crates/cfgd-core/**"
+      - "Dockerfile.operator"
+      - "tests/e2e/operator/**"
+      - "tests/e2e/common/**"
+      - ".github/workflows/e2e-operator.yml"
+      - ".github/actions/setup-e2e/**"
+  pull_request:
+    branches: [main, master]
+    paths:
+      - "crates/cfgd-operator/**"
+      - "crates/cfgd-core/**"
+      - "Dockerfile.operator"
+      - "tests/e2e/operator/**"
+      - "tests/e2e/common/**"
+      - ".github/workflows/e2e-operator.yml"
+      - ".github/actions/setup-e2e/**"
+  workflow_dispatch:
+
+env:
+  KIND_CLUSTER: cfgd-e2e
+  CFGD_NAMESPACE: cfgd-system
+
+jobs:
+  operator-tests:
+    name: "Operator Tests (T01–T10)"
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Setup E2E environment
+        uses: ./.github/actions/setup-e2e
+        with:
+          kind-cluster-name: ${{ env.KIND_CLUSTER }}
+          kind-config: tests/e2e/operator/kind-config.yaml
+          images: "operator"
+
+      - name: Run operator tests
+        run: bash tests/e2e/operator/scripts/run-operator-tests.sh

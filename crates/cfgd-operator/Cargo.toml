@@ -1,0 +1,45 @@
+[package]
+name = "cfgd-operator"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.94"
+description = "cfgd Kubernetes operator — CRD-based node configuration"
+license = "MIT"
+repository = "https://github.com/tj-smith47/cfgd"
+homepage = "https://github.com/tj-smith47/cfgd"
+keywords = ["kubernetes", "operator", "config", "crd"]
+categories = ["config"]
+
+[lib]
+name = "cfgd_operator"
+path = "src/lib.rs"
+
+[[bin]]
+name = "cfgd-operator"
+path = "src/main.rs"
+
+[[bin]]
+name = "cfgd-gen-crds"
+path = "src/gen_crds.rs"
+
+[dependencies]
+serde_yaml = "0.9"
+cfgd-core = { path = "../cfgd-core" }
+kube = { version = "0.98", features = ["runtime", "derive", "client", "admission"] }
+k8s-openapi = { version = "0.24", features = ["latest"] }
+schemars = "0.8"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["full"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+thiserror = "2"
+anyhow = "1"
+futures = "0.3"
+axum = "0.8"
+hyper = "1"
+hyper-util = { version = "0.1", features = ["tokio", "server-auto"] }
+tokio-rustls = "0.26"
+rustls-pemfile = "2"
+semver = "1"
+tower = { version = "0.5", features = ["util"] }

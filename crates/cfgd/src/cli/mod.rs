@@ -1,3 +1,9 @@
+mod explain;
+mod init;
+mod module;
+mod profile;
+
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use clap::{Parser, Subcommand};
@@ -10,15 +16,129 @@ use cfgd_core::config::{self, CfgdConfig, ResolvedProfile};
 use cfgd_core::modules;
 use cfgd_core::output::Printer;
 use cfgd_core::platform::Platform;
-use cfgd_core::providers::{FileAction, PackageAction, ProviderRegistry, SecretAction};
+use cfgd_core::providers::{
+    FileAction, PackageAction, ProviderRegistry, SecretAction, SecretBackend,
+};
 use cfgd_core::reconciler::{self, PhaseName, Reconciler};
 use cfgd_core::sources::SourceManager;
 use cfgd_core::state::StateStore;
 
 const BOOTSTRAP_STATE_FILE: &str = ".cfgd-bootstrap-state";
+const MSG_NO_CONFIG: &str = "No cfgd.yaml found — run 'cfgd init' first";
+const MSG_RUN_APPLY: &str = "Run 'cfgd apply --dry-run' to preview changes, then 'cfgd apply'";
+const EXPLAIN_RESOURCE_NAMES: [&str; 8] = [
+    "module",
+    "profile",
+    "cfgdconfig",
+    "configsource",
+    "machineconfig",
+    "configpolicy",
+    "driftalert",
+    "teamconfig",
+];
 
 fn default_config_file() -> PathBuf {
     cfgd_core::default_config_dir().join("cfgd.yaml")
+}
+
+/// Built-in default aliases. Users can override these in cfgd.yaml spec.aliases.
+fn builtin_aliases() -> HashMap<String, String> {
+    let mut m = HashMap::new();
+    m.insert(
+        "add".to_string(),
+        "profile update --active --add-file".to_string(),
+    );
+    m.insert(
+        "remove".to_string(),
+        "profile update --active --remove-file".to_string(),
+    );
+    m
+}
+
+/// Expand CLI aliases before clap parsing.
+///
+/// Finds the first positional argument (non-flag, non-flag-value), checks if it
+/// matches an alias, and replaces it with the alias's command tokens. Any remaining
+/// arguments after the alias name are appended.
+///
+/// Returns the potentially-expanded args.
+pub fn expand_aliases(args: Vec<String>) -> Vec<String> {
+    if args.len() < 2 {
+        return args;
+    }
+
+    // Collect global flags that appear before the subcommand so we can skip them.
+    // We need to find the first positional arg (the subcommand position).
+    let mut subcommand_idx = None;
+    let mut i = 1; // skip argv[0]
+    while i < args.len() {
+        let arg = &args[i];
+        if arg == "--" {
+            break;
+        }
+        if arg.starts_with('-') {
+            // Skip flags and their values. Known global flags that take a value:
+            if matches!(arg.as_str(), "--config" | "--profile") {
+                i += 1; // skip the value too
+            } else if arg.starts_with("--config=") || arg.starts_with("--profile=") {
+                // value is inline, no skip needed
+            }
+            // Boolean flags (--verbose, -v, --quiet, -q, --no-color) are just skipped
+        } else {
+            subcommand_idx = Some(i);
+            break;
+        }
+        i += 1;
+    }
+
+    let subcommand_idx = match subcommand_idx {
+        Some(idx) => idx,
+        None => return args,
+    };
+
+    let candidate = &args[subcommand_idx];
+
+    // Try to load config to get user aliases; fall back to empty if unavailable.
+    let config_path = extract_config_path(&args);
+    let user_aliases = config_path
+        .and_then(|p| {
+            if p.exists() {
+                cfgd_core::config::load_config(&p).ok()
+            } else {
+                None
+            }
+        })
+        .map(|c| c.spec.aliases)
+        .unwrap_or_default();
+
+    // Merge: user overrides built-in
+    let mut aliases = builtin_aliases();
+    aliases.extend(user_aliases);
+
+    let expansion = match aliases.get(candidate) {
+        Some(cmd) => cmd,
+        None => return args,
+    };
+
+    // Build expanded args: argv[0] + globals + expanded tokens + remaining args
+    let mut result = Vec::with_capacity(args.len() + 4);
+    result.extend_from_slice(&args[..subcommand_idx]);
+    result.extend(expansion.split_whitespace().map(String::from));
+    result.extend_from_slice(&args[subcommand_idx + 1..]);
+    result
+}
+
+/// Extract the --config path from raw args, or use the default.
+fn extract_config_path(args: &[String]) -> Option<PathBuf> {
+    for (i, arg) in args.iter().enumerate() {
+        if arg == "--config" {
+            return args.get(i + 1).map(PathBuf::from);
+        }
+        if let Some(val) = arg.strip_prefix("--config=") {
+            return Some(PathBuf::from(val));
+        }
+    }
+    Some(default_config_file())
 }
 
 #[derive(Parser)]
@@ -52,6 +172,28 @@ pub struct Cli {
     pub command: Command,
 }
 
+#[derive(Parser)]
+pub struct ApplyArgs {
+    /// Preview changes without applying
+    #[arg(long)]
+    pub dry_run: bool,
+    /// Apply only a specific phase
+    #[arg(long)]
+    pub phase: Option<String>,
+    /// Skip confirmation prompt
+    #[arg(long, short, env = "CFGD_YES")]
+    pub yes: bool,
+    /// Skip specific items by dot-notation path (e.g., packages.brew.ripgrep, system.sysctl)
+    #[arg(long)]
+    pub skip: Vec<String>,
+    /// Apply only items matching dot-notation paths (e.g., packages, files)
+    #[arg(long)]
+    pub only: Vec<String>,
+    /// Apply only the specified module and its dependencies
+    #[arg(long)]
+    pub module: Option<String>,
+}
+
 #[derive(Subcommand)]
 pub enum Command {
     /// Initialize a new cfgd configuration
@@ -59,6 +201,14 @@ pub enum Command {
         /// Clone from a remote repository
         #[arg(long)]
         from: Option<String>,
+
+        /// Git branch to clone (default: main)
+        #[arg(long, default_value = "main")]
+        branch: String,
+
+        /// Theme preset (default, minimal, or custom name)
+        #[arg(long)]
+        theme: Option<String>,
 
         /// Reserved for multi-source support
         #[arg(long, hide = true)]
@@ -77,43 +227,8 @@ pub enum Command {
         module: Option<String>,
     },
 
-    /// Show the execution plan
-    Plan {
-        /// Skip specific items by dot-notation path (e.g., packages.brew.ripgrep, system.sysctl)
-        #[arg(long)]
-        skip: Vec<String>,
-
-        /// Apply only items matching dot-notation paths (e.g., packages, files)
-        #[arg(long)]
-        only: Vec<String>,
-
-        /// Plan only the specified module and its dependencies
-        #[arg(long)]
-        module: Option<String>,
-    },
-
-    /// Apply the configuration
-    Apply {
-        /// Apply only a specific phase
-        #[arg(long)]
-        phase: Option<String>,
-
-        /// Skip confirmation prompt
-        #[arg(long, short, env = "CFGD_YES")]
-        yes: bool,
-
-        /// Skip specific items by dot-notation path (e.g., packages.brew.ripgrep, system.sysctl)
-        #[arg(long)]
-        skip: Vec<String>,
-
-        /// Apply only items matching dot-notation paths (e.g., packages, files)
-        #[arg(long)]
-        only: Vec<String>,
-
-        /// Apply only the specified module and its dependencies
-        #[arg(long)]
-        module: Option<String>,
-    },
+    /// Apply the configuration (use --dry-run to preview without applying)
+    Apply(ApplyArgs),
 
     /// Show configuration status and drift
     Status,
@@ -126,26 +241,6 @@ pub enum Command {
         /// Number of entries to show
         #[arg(long, short, default_value = "20")]
         count: u32,
-    },
-
-    /// Add a resource to the configuration
-    Add {
-        /// Path or resource to add
-        target: String,
-
-        /// Add as a package
-        #[arg(long)]
-        package: Option<String>,
-    },
-
-    /// Remove a resource from the configuration
-    Remove {
-        /// Path or resource to remove
-        target: String,
-
-        /// Remove a package
-        #[arg(long)]
-        package: Option<String>,
     },
 
     /// Sync with remote
@@ -223,6 +318,33 @@ pub enum Command {
         all: bool,
     },
 
+    /// Show schema and field documentation for cfgd resource types
+    Explain {
+        /// Resource type or field path (e.g., "module", "profile.spec.packages")
+        #[arg(
+            value_hint = clap::ValueHint::Other,
+            // Provide completions for known resource types
+            value_parser = EXPLAIN_RESOURCE_NAMES,
+        )]
+        resource: Option<String>,
+
+        /// Show all fields expanded recursively
+        #[arg(long)]
+        recursive: bool,
+    },
+
+    /// View or edit the cfgd configuration
+    Config {
+        #[command(subcommand)]
+        command: ConfigCommand,
+    },
+
+    /// Manage GitHub Actions workflows for config repo releases
+    Workflow {
+        #[command(subcommand)]
+        command: WorkflowCommand,
+    },
+
     /// Check in with cfgd-server and report status
     Checkin {
         /// cfgd-server URL
@@ -239,29 +361,43 @@ pub enum Command {
     },
 }
 
+#[derive(Parser)]
+pub struct SourceAddArgs {
+    /// Git URL of the source
+    pub url: String,
+    /// Name for this source (default: inferred from URL)
+    #[arg(long)]
+    pub name: Option<String>,
+    /// Git branch (default: main)
+    #[arg(long)]
+    pub branch: Option<String>,
+    /// Profile to subscribe to
+    #[arg(long)]
+    pub profile: Option<String>,
+    /// Accept recommended items
+    #[arg(long)]
+    pub accept_recommended: bool,
+    /// Priority for conflict resolution (default: 500, local config: 1000)
+    #[arg(long)]
+    pub priority: Option<u32>,
+    /// Opt-in to specific items (repeatable)
+    #[arg(long = "opt-in")]
+    pub opt_in: Vec<String>,
+    /// Sync interval (e.g., "30m", "1h", "6h")
+    #[arg(long)]
+    pub sync_interval: Option<String>,
+    /// Automatically apply changes on sync
+    #[arg(long)]
+    pub auto_apply: bool,
+    /// Pin to a semver version range (e.g., "~1.0", ">=2.0")
+    #[arg(long)]
+    pub pin_version: Option<String>,
+}
+
 #[derive(Subcommand)]
 pub enum SourceCommand {
     /// Subscribe to a config source
-    Add {
-        /// Git URL of the source
-        url: String,
-
-        /// Name for this source (default: inferred from URL)
-        #[arg(long)]
-        name: Option<String>,
-
-        /// Profile to subscribe to
-        #[arg(long)]
-        profile: Option<String>,
-
-        /// Accept recommended items
-        #[arg(long)]
-        accept_recommended: bool,
-
-        /// Priority for conflict resolution (default: 500, local config: 1000)
-        #[arg(long)]
-        priority: Option<u32>,
-    },
+    Add(Box<SourceAddArgs>),
 
     /// List subscribed sources
     List,
@@ -324,6 +460,24 @@ pub enum SourceCommand {
         /// Git URL of the new source
         new_url: String,
     },
+
+    /// Open cfgd-source.yaml in $EDITOR
+    Edit,
+
+    /// Create a new cfgd-source.yaml in the current directory
+    Create {
+        /// Source name
+        #[arg(long)]
+        name: Option<String>,
+
+        /// Description
+        #[arg(long)]
+        description: Option<String>,
+
+        /// Version string
+        #[arg(long)]
+        version: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -348,16 +502,220 @@ pub enum SecretCommand {
 }
 
 #[derive(Subcommand)]
+pub enum ConfigCommand {
+    /// Show the current cfgd configuration
+    Show,
+    /// Open cfgd.yaml in $EDITOR
+    Edit,
+}
+
+#[derive(Subcommand)]
+pub enum WorkflowCommand {
+    /// Generate or regenerate GitHub Actions workflows for releases
+    Generate {
+        /// Overwrite existing workflow files
+        #[arg(long)]
+        force: bool,
+    },
+}
+
+#[derive(Parser)]
+pub struct ProfileCreateArgs {
+    /// Profile name
+    pub name: String,
+    /// Inherit from other profiles (repeatable)
+    #[arg(long = "inherits")]
+    pub inherits: Vec<String>,
+    /// Modules to include (repeatable)
+    #[arg(long = "module")]
+    pub modules: Vec<String>,
+    /// Packages as manager:package (repeatable, e.g. --package brew:curl)
+    #[arg(long = "package")]
+    pub packages: Vec<String>,
+    /// Variables as key=value (repeatable)
+    #[arg(long = "variable")]
+    pub variables: Vec<String>,
+    /// System settings as key=value (repeatable)
+    #[arg(long = "system")]
+    pub system: Vec<String>,
+    /// Files to manage (repeatable). Use <path> to adopt in place, or <source>:<target> for explicit mapping.
+    #[arg(long = "file")]
+    pub files: Vec<String>,
+    /// Mark all --file entries as private (local-only, excluded from git).
+    #[arg(long = "private")]
+    pub private: bool,
+    /// Secrets as source:target (repeatable, e.g. --secret secrets/api-key.enc:~/.config/app/key)
+    #[arg(long = "secret")]
+    pub secrets: Vec<String>,
+    /// Pre-reconcile scripts (repeatable)
+    #[arg(long = "pre-reconcile")]
+    pub pre_reconcile: Vec<PathBuf>,
+    /// Post-reconcile scripts (repeatable)
+    #[arg(long = "post-reconcile")]
+    pub post_reconcile: Vec<PathBuf>,
+}
+
+#[derive(Parser)]
+pub struct ProfileUpdateArgs {
+    /// Profile name (optional when --active is used)
+    pub name: Option<String>,
+    /// Use the active profile from cfgd.yaml
+    #[arg(long)]
+    pub active: bool,
+    /// Add inherited profiles (repeatable)
+    #[arg(long = "add-inherits")]
+    pub add_inherits: Vec<String>,
+    /// Remove inherited profiles (repeatable)
+    #[arg(long = "remove-inherits")]
+    pub remove_inherits: Vec<String>,
+    /// Add modules (repeatable)
+    #[arg(long = "add-module")]
+    pub add_modules: Vec<String>,
+    /// Remove modules (repeatable)
+    #[arg(long = "remove-module")]
+    pub remove_modules: Vec<String>,
+    /// Add packages as manager:package (repeatable)
+    #[arg(long = "add-package")]
+    pub add_packages: Vec<String>,
+    /// Remove packages as manager:package (repeatable)
+    #[arg(long = "remove-package")]
+    pub remove_packages: Vec<String>,
+    /// Add files (repeatable). Use <path> to adopt in place, or <source>:<target> for explicit mapping.
+    #[arg(long = "add-file")]
+    pub add_files: Vec<String>,
+    /// Mark all --add-file entries as private (local-only, excluded from git).
+    #[arg(long = "private")]
+    pub private: bool,
+    /// Remove files by target path (repeatable)
+    #[arg(long = "remove-file")]
+    pub remove_files: Vec<String>,
+    /// Add variables as key=value (repeatable)
+    #[arg(long = "add-variable")]
+    pub add_variables: Vec<String>,
+    /// Remove variables by key (repeatable)
+    #[arg(long = "remove-variable")]
+    pub remove_variables: Vec<String>,
+    /// Add system settings as key=value (repeatable)
+    #[arg(long = "add-system")]
+    pub add_system: Vec<String>,
+    /// Remove system settings by key (repeatable)
+    #[arg(long = "remove-system")]
+    pub remove_system: Vec<String>,
+    /// Add secrets as source:target (repeatable)
+    #[arg(long = "add-secret")]
+    pub add_secrets: Vec<String>,
+    /// Remove secrets by target path (repeatable)
+    #[arg(long = "remove-secret")]
+    pub remove_secrets: Vec<String>,
+    /// Add pre-reconcile scripts (repeatable)
+    #[arg(long = "add-pre-reconcile")]
+    pub add_pre_reconcile: Vec<PathBuf>,
+    /// Remove pre-reconcile scripts (repeatable)
+    #[arg(long = "remove-pre-reconcile")]
+    pub remove_pre_reconcile: Vec<PathBuf>,
+    /// Add post-reconcile scripts (repeatable)
+    #[arg(long = "add-post-reconcile")]
+    pub add_post_reconcile: Vec<PathBuf>,
+    /// Remove post-reconcile scripts (repeatable)
+    #[arg(long = "remove-post-reconcile")]
+    pub remove_post_reconcile: Vec<PathBuf>,
+}
+
+#[derive(Subcommand)]
 pub enum ProfileCommand {
     /// List available profiles
     List,
-    /// Switch to a different profile
+    /// Switch to a different profile (alias: use)
+    #[command(alias = "use")]
     Switch {
         /// Profile name
         name: String,
     },
     /// Show the resolved profile
     Show,
+    /// Create a new profile
+    Create(Box<ProfileCreateArgs>),
+    /// Modify an existing profile
+    Update(Box<ProfileUpdateArgs>),
+    /// Open a profile in $EDITOR
+    Edit {
+        /// Profile name
+        name: String,
+    },
+    /// Delete a profile
+    Delete {
+        /// Profile name
+        name: String,
+        /// Skip confirmation prompt
+        #[arg(short, long)]
+        yes: bool,
+    },
+}
+
+#[derive(Parser)]
+pub struct ModuleCreateArgs {
+    /// Module name
+    pub name: String,
+    /// Module description
+    #[arg(long)]
+    pub description: Option<String>,
+    /// Dependencies on other modules (repeatable)
+    #[arg(long = "depends")]
+    pub depends: Vec<String>,
+    /// Packages to include (repeatable)
+    #[arg(long = "package")]
+    pub packages: Vec<String>,
+    /// Files to import (repeatable). Use <path> to adopt in place, or <source>:<target> for explicit mapping.
+    #[arg(long = "file")]
+    pub files: Vec<String>,
+    /// Mark all --file entries as private (local-only, excluded from git).
+    #[arg(long = "private")]
+    pub private: bool,
+    /// Post-apply scripts (repeatable)
+    #[arg(long = "post-apply")]
+    pub post_apply: Vec<String>,
+    /// Helm-style overrides: package.<name>.<field>=<value>
+    #[arg(long = "set")]
+    pub sets: Vec<String>,
+}
+
+#[derive(Parser)]
+pub struct ModuleUpdateArgs {
+    /// Module name
+    pub name: String,
+    /// Add packages (repeatable)
+    #[arg(long = "add-package")]
+    pub add_packages: Vec<String>,
+    /// Remove packages (repeatable)
+    #[arg(long = "remove-package")]
+    pub remove_packages: Vec<String>,
+    /// Add files (repeatable). Use <path> to adopt in place, or <source>:<target> for explicit mapping.
+    #[arg(long = "add-file")]
+    pub add_files: Vec<String>,
+    /// Mark all --add-file entries as private (local-only, excluded from git).
+    #[arg(long = "private")]
+    pub private: bool,
+    /// Remove files by target path (repeatable)
+    #[arg(long = "remove-file")]
+    pub remove_files: Vec<String>,
+    /// Add dependencies (repeatable)
+    #[arg(long = "add-depends")]
+    pub add_depends: Vec<String>,
+    /// Remove dependencies (repeatable)
+    #[arg(long = "remove-depends")]
+    pub remove_depends: Vec<String>,
+    /// Set description
+    #[arg(long)]
+    pub description: Option<String>,
+    /// Add post-apply scripts (repeatable)
+    #[arg(long = "add-post-apply")]
+    pub add_post_apply: Vec<String>,
+    /// Remove post-apply scripts (repeatable)
+    #[arg(long = "remove-post-apply")]
+    pub remove_post_apply: Vec<String>,
+    /// Helm-style overrides: package.<name>.<field>=<value>
+    #[arg(long = "set")]
+    pub sets: Vec<String>,
 }
 
 #[derive(Subcommand)]
@@ -369,83 +727,154 @@ pub enum ModuleCommand {
         /// Module name
         name: String,
     },
-    /// Add a module to the active profile
+    /// Create a new local module
+    Create(Box<ModuleCreateArgs>),
+    /// Modify an existing local module (add/remove packages, files, deps; --set overrides)
+    Update(Box<ModuleUpdateArgs>),
+    /// Open a module's module.yaml in $EDITOR
+    Edit {
+        /// Module name
+        name: String,
+    },
+    /// Delete a local module
+    Delete {
+        /// Module name
+        name: String,
+        /// Skip confirmation prompt
+        #[arg(short, long)]
+        yes: bool,
+    },
+    /// Create a new local module (alias for 'create')
+    #[command(hide = true)]
+    Add(Box<ModuleCreateArgs>),
+    /// Upgrade a remote module to a new version
+    Upgrade {
+        /// Module name (must be a locked remote module)
+        name: String,
+        /// New ref to pin to (tag or commit SHA)
+        #[arg(long)]
+        ref_: Option<String>,
+        /// Skip confirmation prompt (for non-interactive use)
+        #[arg(short, long)]
+        yes: bool,
+        /// Allow unsigned modules even when require-signatures is enabled
+        #[arg(long)]
+        allow_unsigned: bool,
+    },
+    /// Search module registries for available modules
+    Search {
+        /// Search query
+        query: String,
+    },
+    /// Manage module registries (searchable indexes of reusable modules)
+    Registry {
+        #[command(subcommand)]
+        command: ModuleRegistryCommand,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum ModuleRegistryCommand {
+    /// Add a module registry
     Add {
-        /// Module name
-        name: String,
+        /// Git URL of the registry repo (GitHub only)
+        url: String,
+        /// Custom name/alias (defaults to GitHub org name)
+        #[arg(long)]
+        name: Option<String>,
     },
-    /// Remove a module from the active profile
+    /// Remove a module registry
     Remove {
-        /// Module name
+        /// Registry name
         name: String,
     },
+    /// Rename a module registry (updates config references)
+    Rename {
+        /// Current registry name
+        name: String,
+        /// New name
+        new_name: String,
+    },
+    /// List configured module registries
+    List,
 }
 
 /// Execute the given CLI command. Returns Ok(()) on success.
 pub fn execute(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
     match &cli.command {
-        Command::Plan { skip, only, module } => {
-            cmd_plan(cli, printer, skip, only, module.as_deref())
-        }
-        Command::Apply {
-            phase,
-            yes,
-            skip,
-            only,
-            module,
-        } => cmd_apply(
-            cli,
-            printer,
-            phase.as_deref(),
-            *yes,
-            skip,
-            only,
-            module.as_deref(),
-        ),
+        Command::Apply(args) => cmd_apply(cli, printer, args),
         Command::Status => cmd_status(cli, printer),
         Command::Diff => cmd_diff(cli, printer),
         Command::Log { count } => cmd_log(printer, *count),
         Command::Verify => cmd_verify(cli, printer),
         Command::Profile { command } => match command {
-            ProfileCommand::Show => cmd_profile_show(cli, printer),
-            ProfileCommand::List => cmd_profile_list(cli, printer),
-            ProfileCommand::Switch { name } => cmd_profile_switch(name, printer),
+            ProfileCommand::Show => profile::cmd_profile_show(cli, printer),
+            ProfileCommand::List => profile::cmd_profile_list(cli, printer),
+            ProfileCommand::Switch { name } => profile::cmd_profile_switch(name, printer),
+            ProfileCommand::Create(args) => profile::cmd_profile_create(cli, printer, args),
+            ProfileCommand::Update(args) => {
+                let profile_name = resolve_profile_name(cli, args.name.as_deref(), args.active)?;
+                profile::cmd_profile_update(cli, printer, &profile_name, args)
+            }
+            ProfileCommand::Edit { name } => profile::cmd_profile_edit(cli, printer, name),
+            ProfileCommand::Delete { name, yes } => {
+                profile::cmd_profile_delete(cli, printer, name, *yes)
+            }
         },
         Command::Doctor => cmd_doctor(cli, printer),
-        Command::Add { target, package } => {
-            if let Some(manager) = package {
-                cmd_add_package(cli, printer, manager, target)
-            } else {
-                cmd_add_file(cli, printer, target)
-            }
-        }
-        Command::Remove { target, package } => {
-            if let Some(manager) = package {
-                cmd_remove_package(cli, printer, manager, target)
-            } else {
-                cmd_remove_file(cli, printer, target)
-            }
-        }
         Command::Init {
             from,
+            branch,
+            theme,
             source: _,
             server,
             token,
             module,
         } => {
             if server.is_some() || token.is_some() {
-                cmd_init_server(printer, server.as_deref(), token.as_deref())
+                init::cmd_init_server(printer, server.as_deref(), token.as_deref())
             } else if let (Some(from_url), Some(mod_name)) = (from.as_deref(), module.as_deref()) {
-                cmd_init_module(printer, from_url, mod_name)
+                init::cmd_init_module(printer, from_url, mod_name)
             } else {
-                cmd_init(printer, from.as_deref())
+                init::cmd_init(printer, from.as_deref(), branch, theme.as_deref())
             }
         }
         Command::Module { command } => match command {
-            ModuleCommand::List => cmd_module_list(cli, printer),
-            ModuleCommand::Show { name } => cmd_module_show(cli, printer, name),
-            ModuleCommand::Add { name } => cmd_module_add(cli, printer, name),
-            ModuleCommand::Remove { name } => cmd_module_remove(cli, printer, name),
+            ModuleCommand::List => module::cmd_module_list(cli, printer),
+            ModuleCommand::Show { name } => module::cmd_module_show(cli, printer, name),
+            ModuleCommand::Create(args) => module::cmd_module_create(cli, printer, args),
+            ModuleCommand::Update(args) => module::cmd_module_update_local(cli, printer, args),
+            ModuleCommand::Edit { name } => module::cmd_module_edit(cli, printer, name),
+            ModuleCommand::Delete { name, yes } => {
+                module::cmd_module_delete(cli, printer, name, *yes)
+            }
+            ModuleCommand::Add(args) => module::cmd_module_create(cli, printer, args),
+            ModuleCommand::Upgrade {
+                name,
+                ref_,
+                yes,
+                allow_unsigned,
+            } => module::cmd_module_upgrade(
+                cli,
+                printer,
+                name,
+                ref_.as_deref(),
+                *yes,
+                *allow_unsigned,
+            ),
+            ModuleCommand::Search { query } => module::cmd_module_search(cli, printer, query),
+            ModuleCommand::Registry { command } => match command {
+                ModuleRegistryCommand::Add { url, name } => {
+                    module::cmd_module_registry_add(cli, printer, url, name.as_deref())
+                }
+                ModuleRegistryCommand::Remove { name } => {
+                    module::cmd_module_registry_remove(cli, printer, name)
+                }
+                ModuleRegistryCommand::Rename { name, new_name } => {
+                    module::cmd_module_registry_rename(cli, printer, name, new_name)
+                }
+                ModuleRegistryCommand::List => module::cmd_module_registry_list(cli, printer),
+            },
         },
         Command::Sync => cmd_sync(cli, printer),
         Command::Pull => cmd_pull(cli, printer),
@@ -461,21 +890,7 @@ pub fn execute(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
             SecretCommand::Init => cmd_secret_init(cli, printer),
         },
         Command::Source { command } => match command {
-            SourceCommand::Add {
-                url,
-                name,
-                profile,
-                accept_recommended,
-                priority,
-            } => cmd_source_add(
-                cli,
-                printer,
-                url,
-                name.as_deref(),
-                profile.as_deref(),
-                *accept_recommended,
-                *priority,
-            ),
+            SourceCommand::Add(args) => cmd_source_add(cli, printer, args),
             SourceCommand::Priority { name, value } => {
                 cmd_source_priority(cli, printer, name, *value)
             }
@@ -496,7 +911,23 @@ pub fn execute(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
             SourceCommand::Replace { old_name, new_url } => {
                 cmd_source_replace(cli, printer, old_name, new_url)
             }
+            SourceCommand::Edit => cmd_source_edit(cli, printer),
+            SourceCommand::Create {
+                name,
+                description,
+                version,
+            } => cmd_source_create(
+                cli,
+                printer,
+                name.as_deref(),
+                description.as_deref(),
+                version.as_deref(),
+            ),
         },
+        Command::Explain {
+            resource,
+            recursive,
+        } => explain::cmd_explain(printer, resource.as_deref(), *recursive),
         Command::Upgrade { check } => cmd_upgrade(printer, *check),
         Command::Decide {
             action,
@@ -510,6 +941,13 @@ pub fn execute(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
             source.as_deref(),
             *all,
         ),
+        Command::Config { command } => match command {
+            ConfigCommand::Show => cmd_config_show(cli, printer),
+            ConfigCommand::Edit => cmd_config_edit(cli, printer),
+        },
+        Command::Workflow { command } => match command {
+            WorkflowCommand::Generate { force } => cmd_workflow_generate(cli, printer, *force),
+        },
         Command::Checkin {
             server_url,
             api_key,
@@ -524,1265 +962,6 @@ pub fn execute(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
     }
 }
 
-// --- Bootstrap State (for resumable init) ---
-
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "kebab-case")]
-struct BootstrapState {
-    repo_url: Option<String>,
-    config_dir: String,
-    profile: Option<String>,
-    phase: BootstrapPhase,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "kebab-case")]
-enum BootstrapPhase {
-    Clone,
-    ProfileSelect,
-    SecretsSetup,
-    Plan,
-    Apply,
-    Verify,
-    DaemonInstall,
-    Complete,
-}
-
-impl BootstrapPhase {
-    fn display_name(&self) -> &'static str {
-        match self {
-            Self::Clone => "Clone repository",
-            Self::ProfileSelect => "Select profile",
-            Self::SecretsSetup => "Secrets setup",
-            Self::Plan => "Generate plan",
-            Self::Apply => "Apply configuration",
-            Self::Verify => "Verify resources",
-            Self::DaemonInstall => "Daemon setup",
-            Self::Complete => "Complete",
-        }
-    }
-}
-
-fn save_bootstrap_state(config_dir: &Path, state: &BootstrapState) -> anyhow::Result<()> {
-    let state_path = config_dir.join(BOOTSTRAP_STATE_FILE);
-    let json = serde_json::to_string_pretty(state)?;
-    std::fs::write(&state_path, json)?;
-    Ok(())
-}
-
-fn load_bootstrap_state(config_dir: &Path) -> Option<BootstrapState> {
-    let state_path = config_dir.join(BOOTSTRAP_STATE_FILE);
-    if !state_path.exists() {
-        return None;
-    }
-    let contents = std::fs::read_to_string(&state_path).ok()?;
-    serde_json::from_str(&contents).ok()
-}
-
-fn clear_bootstrap_state(config_dir: &Path) {
-    let state_path = config_dir.join(BOOTSTRAP_STATE_FILE);
-    let _ = std::fs::remove_file(&state_path);
-}
-
-// --- Init Command ---
-
-fn cmd_init(printer: &Printer, from: Option<&str>) -> anyhow::Result<()> {
-    printer.header("Initialize cfgd");
-    printer.newline();
-
-    // Check prerequisites
-    if !check_prerequisites(printer) {
-        return Ok(());
-    }
-
-    let config_dir = if let Some(url) = from {
-        // Clone from remote — check for cfgd-source.yaml
-        let cloned_dir = init_from_remote(printer, url)?;
-        let cloned_dir = match cloned_dir {
-            Some(dir) => dir,
-            None => return Ok(()),
-        };
-
-        // Source detection: if the cloned repo has cfgd-source.yaml, enter source-aware flow
-        match cfgd_core::sources::detect_source_manifest(&cloned_dir) {
-            Ok(Some(manifest)) => {
-                return init_from_source(printer, url, &cloned_dir, manifest);
-            }
-            Ok(None) => {
-                // Plain config repo — continue with normal flow
-            }
-            Err(e) => {
-                printer.warning(&format!(
-                    "Found cfgd-source.yaml but could not parse it: {}",
-                    e
-                ));
-                printer.info("Continuing as a plain config repo");
-            }
-        }
-
-        Some(cloned_dir)
-    } else {
-        // Interactive local init wizard
-        init_local(printer)?
-    };
-
-    let config_dir = match config_dir {
-        Some(dir) => dir,
-        None => return Ok(()),
-    };
-
-    // Check for resumable bootstrap
-    let mut state = load_bootstrap_state(&config_dir).unwrap_or(BootstrapState {
-        repo_url: from.map(|s| s.to_string()),
-        config_dir: config_dir.display().to_string(),
-        profile: None,
-        phase: BootstrapPhase::ProfileSelect,
-    });
-
-    if state.phase != BootstrapPhase::ProfileSelect {
-        printer.info(&format!(
-            "Resuming bootstrap from: {}",
-            state.phase.display_name()
-        ));
-    }
-
-    // Phase: Profile selection
-    if state.phase == BootstrapPhase::ProfileSelect {
-        let profile = bootstrap_profile_select(&config_dir, printer)?;
-        match profile {
-            Some(p) => {
-                state.profile = Some(p);
-                state.phase = BootstrapPhase::SecretsSetup;
-                save_bootstrap_state(&config_dir, &state)?;
-            }
-            None => return Ok(()),
-        }
-    }
-
-    let profile_name = match state.profile {
-        Some(ref p) => p.clone(),
-        None => {
-            printer.error("No profile selected");
-            return Ok(());
-        }
-    };
-
-    // Ensure cfgd.yaml exists with the selected profile
-    let config_path = config_dir.join("cfgd.yaml");
-    ensure_config_file(&config_dir, &config_path, &profile_name, from)?;
-
-    // Phase: Secrets setup
-    if state.phase == BootstrapPhase::SecretsSetup {
-        bootstrap_secrets_setup(&config_dir, printer)?;
-        state.phase = BootstrapPhase::Plan;
-        save_bootstrap_state(&config_dir, &state)?;
-    }
-
-    // Pre-bootstrap diagnostics
-    if state.phase == BootstrapPhase::Plan {
-        printer.newline();
-        run_pre_bootstrap_diagnostics(printer)?;
-    }
-
-    // Phase: Plan
-    if state.phase == BootstrapPhase::Plan {
-        printer.newline();
-        printer.header("Bootstrap Plan");
-        printer.newline();
-
-        let cfg = config::load_config(&config_path)?;
-        let profiles_dir = config_dir.join("profiles");
-        let resolved = config::resolve_profile(&profile_name, &profiles_dir)?;
-        let registry = build_registry_with_config(Some(&cfg));
-        let store = open_state_store()?;
-        let reconciler = Reconciler::new(&registry, &store);
-
-        let all_managers: Vec<&dyn cfgd_core::providers::PackageManager> = registry
-            .package_managers
-            .iter()
-            .map(|m| m.as_ref())
-            .collect();
-        let pkg_actions = packages::plan_packages(&resolved.merged, &all_managers)?;
-
-        let fm = CfgdFileManager::new(&config_dir, &resolved)?;
-        let file_actions = fm.plan(&resolved.merged)?;
-
-        let plan = reconciler.plan(&resolved, file_actions, pkg_actions, Vec::new())?;
-
-        for phase in &plan.phases {
-            let items = reconciler::format_plan_items(phase);
-            printer.plan_phase(phase.name.display_name(), &items);
-        }
-
-        let total = plan.total_actions();
-        printer.newline();
-        if total == 0 {
-            printer.success("Nothing to do — system is already configured");
-            state.phase = BootstrapPhase::Verify;
-            save_bootstrap_state(&config_dir, &state)?;
-        } else {
-            printer.info(&format!("{} action(s) planned", total));
-            printer.newline();
-
-            let confirmed = printer
-                .prompt_confirm("Apply these changes?")
-                .unwrap_or(false);
-            if !confirmed {
-                printer.info("Aborted — run 'cfgd init' again to resume");
-                return Ok(());
-            }
-
-            state.phase = BootstrapPhase::Apply;
-            save_bootstrap_state(&config_dir, &state)?;
-        }
-    }
-
-    // Phase: Apply
-    if state.phase == BootstrapPhase::Apply {
-        printer.newline();
-        printer.header("Applying Configuration");
-        printer.newline();
-
-        let cfg = config::load_config(&config_path)?;
-        let profiles_dir = config_dir.join("profiles");
-        let resolved = config::resolve_profile(&profile_name, &profiles_dir)?;
-        let mut registry = build_registry_with_config(Some(&cfg));
-        let store = open_state_store()?;
-
-        let all_managers: Vec<&dyn cfgd_core::providers::PackageManager> = registry
-            .package_managers
-            .iter()
-            .map(|m| m.as_ref())
-            .collect();
-        let pkg_actions = packages::plan_packages(&resolved.merged, &all_managers)?;
-
-        let mut fm = CfgdFileManager::new(&config_dir, &resolved)?;
-        // Set up secret providers for template rendering during apply
-        let (backend_name, age_key_path) = if let Some(ref secrets_cfg) = cfg.spec.secrets {
-            let name = secrets_cfg.backend.as_str();
-            let key = secrets_cfg.sops.as_ref().and_then(|s| s.age_key.clone());
-            (name.to_string(), key)
-        } else {
-            ("sops".to_string(), None)
-        };
-        fm.set_secret_providers(
-            Some(secrets::build_secret_backend(&backend_name, age_key_path)),
-            secrets::build_secret_providers(),
-        );
-        let file_actions = fm.plan(&resolved.merged)?;
-
-        // Register the file manager so the reconciler delegates through the trait
-        registry.file_manager = Some(Box::new(fm));
-
-        let reconciler = Reconciler::new(&registry, &store);
-        let plan = reconciler.plan(&resolved, file_actions, pkg_actions, Vec::new())?;
-
-        let result = reconciler.apply(&plan, &resolved, &config_dir, printer, None, &[])?;
-
-        printer.newline();
-        let status = print_apply_result(&result, printer);
-        if status == cfgd_core::state::ApplyStatus::Partial {
-            printer.info("Failed actions can be retried with 'cfgd apply'");
-        } else if status == cfgd_core::state::ApplyStatus::Failed {
-            printer.info("Review errors above and run 'cfgd init' to retry");
-            return Ok(());
-        }
-
-        state.phase = BootstrapPhase::Verify;
-        save_bootstrap_state(&config_dir, &state)?;
-    }
-
-    // Phase: Verify
-    if state.phase == BootstrapPhase::Verify {
-        printer.newline();
-        printer.header("Verification");
-        printer.newline();
-
-        let profiles_dir = config_dir.join("profiles");
-        let resolved = config::resolve_profile(&profile_name, &profiles_dir)?;
-        let registry = build_registry_with_profile(&resolved.merged.packages);
-        let store = open_state_store()?;
-
-        let results = reconciler::verify(&resolved, &registry, &store, printer, &[])?;
-
-        if !results.is_empty() {
-            let (pass_count, fail_count) = print_verify_results(&results, printer);
-            printer.newline();
-            if fail_count == 0 {
-                printer.success(&format!("All {} resource(s) verified", pass_count));
-            } else {
-                printer.warning(&format!(
-                    "{} passed, {} failed — run 'cfgd apply' to fix",
-                    pass_count, fail_count
-                ));
-            }
-        }
-
-        state.phase = BootstrapPhase::DaemonInstall;
-        save_bootstrap_state(&config_dir, &state)?;
-    }
-
-    // Phase: Daemon install (optional)
-    if state.phase == BootstrapPhase::DaemonInstall {
-        printer.newline();
-        let install_daemon = printer
-            .prompt_confirm("Install cfgd daemon for automatic drift detection?")
-            .unwrap_or(false);
-
-        if install_daemon {
-            match cfgd_core::daemon::install_service(&config_path, Some(&profile_name)) {
-                Ok(()) => print_daemon_install_success(printer),
-                Err(e) => {
-                    printer.warning(&format!("Could not install daemon: {}", e));
-                    printer.info("You can install it later with: cfgd daemon --install");
-                }
-            }
-        } else {
-            printer.info("Skipped — install later with: cfgd daemon --install");
-        }
-
-        state.phase = BootstrapPhase::Complete;
-        save_bootstrap_state(&config_dir, &state)?;
-    }
-
-    // Done
-    clear_bootstrap_state(&config_dir);
-
-    printer.newline();
-    printer.header("Bootstrap Complete");
-    printer.newline();
-    printer.success(&format!("Profile: {}", profile_name));
-    printer.success(&format!("Config: {}", config_dir.display()));
-    printer.newline();
-    printer.info("Useful commands:");
-    printer.info("  cfgd status         — view current state");
-    printer.info("  cfgd plan           — preview changes");
-    printer.info("  cfgd apply          — apply changes");
-    printer.info("  cfgd daemon         — start drift detection");
-
-    Ok(())
-}
-
-fn check_prerequisites(printer: &Printer) -> bool {
-    let mut ok = true;
-
-    if !which("git") {
-        printer.error("git is not installed — cfgd requires git");
-
-        if cfg!(target_os = "macos") {
-            printer.info("Install with: xcode-select --install");
-        } else {
-            printer.info("Install with: sudo apt install git (or your package manager)");
-        }
-        ok = false;
-    }
-
-    ok
-}
-
-fn init_from_remote(printer: &Printer, url: &str) -> anyhow::Result<Option<PathBuf>> {
-    // Determine target directory from URL
-    let repo_name = url
-        .rsplit('/')
-        .next()
-        .unwrap_or("cfgd-config")
-        .trim_end_matches(".git");
-
-    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-    let target_dir = PathBuf::from(&home).join(format!(".{}", repo_name));
-
-    if target_dir.exists() {
-        // Check if it's already a git repo — resumable bootstrap
-        if target_dir.join(".git").exists() {
-            printer.info(&format!(
-                "Repository already exists at {}",
-                target_dir.display()
-            ));
-            printer.info("Pulling latest changes...");
-
-            match cfgd_core::daemon::git_pull_sync(&target_dir) {
-                Ok(true) => printer.success("Pulled new changes"),
-                Ok(false) => printer.success("Already up to date"),
-                Err(e) => printer.warning(&format!(
-                    "Pull failed: {} — continuing with existing state",
-                    e
-                )),
-            }
-
-            return Ok(Some(target_dir));
-        }
-
-        printer.error(&format!(
-            "Directory already exists: {} — remove it or use a different URL",
-            target_dir.display()
-        ));
-        return Ok(None);
-    }
-
-    // Clone the repository
-    printer.info(&format!("Cloning {} ...", url));
-
-    match cfgd_core::sources::git_clone_with_fallback(url, &target_dir) {
-        Ok(()) => {
-            printer.success(&format!("Cloned to {}", target_dir.display()));
-        }
-        Err(e) => {
-            printer.error(&e);
-            return Ok(None);
-        }
-    }
-
-    Ok(Some(target_dir))
-}
-
-fn init_local(printer: &Printer) -> anyhow::Result<Option<PathBuf>> {
-    let config_dir = std::env::current_dir()?;
-    let config_path = config_dir.join("cfgd.yaml");
-
-    if config_path.exists() {
-        printer.info(&format!(
-            "Found existing cfgd.yaml at {}",
-            config_dir.display()
-        ));
-        return Ok(Some(config_dir));
-    }
-
-    // Interactive wizard
-    printer.subheader("New Configuration");
-
-    let default_name = config_dir
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or("my-config")
-        .to_string();
-
-    let config_name = printer.prompt_text("Config name", &default_name)?;
-
-    let profiles_dir = config_dir.join("profiles");
-    std::fs::create_dir_all(&profiles_dir)?;
-
-    // Profile template selection
-    let templates = vec![
-        "minimal — packages only".to_string(),
-        "standard — packages, files, system".to_string(),
-        "empty — blank profile".to_string(),
-    ];
-    let template_choice = printer.prompt_select("Profile template", &templates)?;
-
-    let profile_content = if template_choice.starts_with("minimal") {
-        format!(
-            r#"apiVersion: cfgd/v1
-kind: Profile
-metadata:
-  name: default
-spec:
-  variables:
-    EDITOR: "{}"
-  packages: {{}}
-"#,
-            std::env::var("EDITOR").unwrap_or_else(|_| "vim".to_string())
-        )
-    } else if template_choice.starts_with("standard") {
-        format!(
-            r#"apiVersion: cfgd/v1
-kind: Profile
-metadata:
-  name: default
-spec:
-  variables:
-    EDITOR: "{}"
-  packages: {{}}
-  files:
-    managed: []
-    permissions: {{}}
-  system: {{}}
-"#,
-            std::env::var("EDITOR").unwrap_or_else(|_| "vim".to_string())
-        )
-    } else {
-        r#"apiVersion: cfgd/v1
-kind: Profile
-metadata:
-  name: default
-spec:
-  variables: {}
-  packages: {}
-"#
-        .to_string()
-    };
-
-    let profile_path = profiles_dir.join("default.yaml");
-    if !profile_path.exists() {
-        std::fs::write(&profile_path, &profile_content)?;
-        printer.success("Created profiles/default.yaml");
-    }
-
-    // Create cfgd.yaml
-    let config_content = format!(
-        r#"apiVersion: cfgd/v1
-kind: Config
-metadata:
-  name: {config_name}
-spec:
-  profile: default
-"#
-    );
-    std::fs::write(&config_path, &config_content)?;
-    printer.success("Created cfgd.yaml");
-
-    // Initialize git if not already a repo
-    if !config_dir.join(".git").exists() {
-        match git2::Repository::init(&config_dir) {
-            Ok(_) => printer.success("Initialized git repository"),
-            Err(e) => printer.warning(&format!("Could not init git repo: {}", e)),
-        }
-    }
-
-    // Offer git remote setup
-    offer_git_remote_setup(printer, &config_dir)?;
-
-    Ok(Some(config_dir))
-}
-
-/// Source-aware init flow for `cfgd init --from` when the cloned repo has cfgd-source.yaml.
-fn init_from_source(
-    printer: &Printer,
-    url: &str,
-    source_dir: &Path,
-    manifest: cfgd_core::config::ConfigSourceDocument,
-) -> anyhow::Result<()> {
-    printer.newline();
-    printer.subheader("Detected Config Source");
-    printer.key_value("Source", &manifest.metadata.name);
-    if let Some(ref version) = manifest.metadata.version {
-        printer.key_value("Version", version);
-    }
-    if let Some(ref desc) = manifest.metadata.description {
-        printer.key_value("Description", desc);
-    }
-
-    let source_name = manifest.metadata.name.clone();
-    let provides = &manifest.spec.provides;
-    let profile_names = config::source_profile_names(provides);
-
-    if profile_names.is_empty() {
-        printer.warning("Source provides no profiles");
-        printer.info("Treating as a plain config repo instead");
-        // Fall through to normal init (caller already returned if we do)
-        return Ok(());
-    }
-
-    // Step 3: Platform auto-detection
-    let platform = config::detect_platform();
-    let platform_display = platform
-        .distro
-        .as_deref()
-        .unwrap_or(&platform.os)
-        .to_string();
-    let platform_profile_path =
-        config::match_platform_profile(&platform, &provides.platform_profiles);
-    if let Some(ref path) = platform_profile_path {
-        printer.info(&format!(
-            "Detected platform: {} -> applying platform profile ({})",
-            platform_display, path
-        ));
-    } else if !provides.platform_profiles.is_empty() {
-        printer.info(&format!(
-            "No platform profile match for '{}' — skipping platform layer",
-            platform_display
-        ));
-    }
-
-    // Step 4: Profile selection
-    printer.newline();
-    let selected_profile = if profile_names.len() == 1 {
-        printer.info(&format!("One profile available: {}", profile_names[0]));
-        profile_names[0].clone()
-    } else {
-        // Show detailed info if available
-        if !provides.profile_details.is_empty() {
-            for detail in &provides.profile_details {
-                let desc = detail.description.as_deref().unwrap_or("(no description)");
-                let inherits = if detail.inherits.is_empty() {
-                    String::new()
-                } else {
-                    format!(" (inherits: {})", detail.inherits.join(", "))
-                };
-                printer.key_value(&detail.name, &format!("{}{}", desc, inherits));
-            }
-            printer.newline();
-        }
-
-        let selection = printer.prompt_select("Select a profile", &profile_names)?;
-        selection.clone()
-    };
-    printer.success(&format!("Selected profile: {}", selected_profile));
-
-    // Step 5: Policy tier review
-    let policy_result = review_policy_tiers(printer, &manifest.spec.policy)?;
-
-    // Step 6: Create local config with source subscription
-    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-    let config_dir = PathBuf::from(&home).join(".config").join("cfgd");
-    std::fs::create_dir_all(&config_dir)?;
-
-    // Move the source into the proper cache directory
-    let cache_dir = cfgd_core::sources::SourceManager::default_cache_dir()?;
-    let cached_source_dir = cache_dir.join(&source_name);
-    if !cached_source_dir.exists() && source_dir != cached_source_dir {
-        std::fs::create_dir_all(&cache_dir)?;
-        // Copy (not move) because the clone location may be user-visible
-        copy_dir_recursive(source_dir, &cached_source_dir)?;
-    }
-
-    let profiles_dir = config_dir.join("profiles");
-    std::fs::create_dir_all(&profiles_dir)?;
-
-    // Create minimal local profile
-    let local_profile = r#"apiVersion: cfgd/v1
-kind: Profile
-metadata:
-  name: default
-spec:
-  variables: {}
-  packages: {}
-"#;
-    let profile_path = profiles_dir.join("default.yaml");
-    if !profile_path.exists() {
-        std::fs::write(&profile_path, local_profile)?;
-    }
-
-    // Build source subscription
-    let opt_in_items = policy_result.opt_in.clone();
-    let reject_value = if policy_result.rejected.is_empty() {
-        String::new()
-    } else {
-        format!(
-            "\n        reject:\n{}",
-            policy_result
-                .rejected
-                .iter()
-                .map(|r| format!("          {}: null", r))
-                .collect::<Vec<_>>()
-                .join("\n")
-        )
-    };
-
-    let opt_in_section = if opt_in_items.is_empty() {
-        String::new()
-    } else {
-        format!(
-            "\n        opt-in:\n{}",
-            opt_in_items
-                .iter()
-                .map(|o| format!("          - {}", o))
-                .collect::<Vec<_>>()
-                .join("\n")
-        )
-    };
-
-    let config_content = format!(
-        r#"apiVersion: cfgd/v1
-kind: Config
-metadata:
-  name: my-machine
-spec:
-  profile: default
-  sources:
-    - name: {source_name}
-      origin:
-        type: git
-        url: {url}
-        branch: main
-      subscription:
-        profile: {selected_profile}
-        priority: 500
-        accept-recommended: {accept_rec}{opt_in_section}{reject_value}
-      sync:
-        interval: 1h
-        auto-apply: false
-"#,
-        accept_rec = policy_result.accept_recommended,
-    );
-
-    let config_path = config_dir.join("cfgd.yaml");
-    std::fs::write(&config_path, &config_content)?;
-    printer.success(&format!("Created config at {}", config_path.display()));
-
-    // Initialize git repo for local config
-    if !config_dir.join(".git").exists() {
-        match git2::Repository::init(&config_dir) {
-            Ok(_) => printer.success("Initialized local git repository"),
-            Err(e) => printer.warning(&format!("Could not init git repo: {}", e)),
-        }
-    }
-
-    // Update state store
-    let state = open_state_store()?;
-    state.upsert_config_source(
-        &source_name,
-        url,
-        "main",
-        None,
-        manifest.metadata.version.as_deref(),
-        None,
-    )?;
-
-    // Step 6b: Pre-bootstrap diagnostics
-    printer.newline();
-    run_pre_bootstrap_diagnostics(printer)?;
-
-    // Step 7: Plan + apply
-    printer.newline();
-    printer.header("Bootstrap Plan");
-    printer.newline();
-
-    let cfg = config::load_config(&config_path)?;
-    let resolved = config::resolve_profile("default", &profiles_dir)?;
-
-    // Compose with the source
-    let cache_dir_path = cfgd_core::sources::SourceManager::default_cache_dir()?;
-    let mut mgr = SourceManager::new(&cache_dir_path);
-    mgr.load_sources(&cfg.spec.sources, printer)?;
-
-    let mut inputs = Vec::new();
-    for source_spec in &cfg.spec.sources {
-        if let Some(cached) = mgr.get(&source_spec.name) {
-            let mut layers = Vec::new();
-            if let Some(ref pn) = source_spec.subscription.profile {
-                let src_profiles_dir = mgr.source_profiles_dir(&source_spec.name)?;
-                if src_profiles_dir.exists() {
-                    match config::resolve_profile(pn, &src_profiles_dir) {
-                        Ok(r) => layers = r.layers,
-                        Err(e) => {
-                            printer.warning(&format!(
-                                "Failed to resolve source profile '{}': {}",
-                                pn, e
-                            ));
-                        }
-                    }
-                }
-            }
-            inputs.push(CompositionInput {
-                source_name: source_spec.name.clone(),
-                priority: source_spec.subscription.priority,
-                policy: cached.manifest.spec.policy.clone(),
-                constraints: cached.manifest.spec.policy.constraints.clone(),
-                layers,
-                subscription: SubscriptionConfig::from_spec(source_spec),
-            });
-        }
-    }
-
-    let composition_result = composition::compose(&resolved, &inputs)?;
-    let mut effective = composition_result.resolved;
-
-    // Resolve manifest files
-    packages::resolve_manifest_packages(&mut effective.merged.packages, &config_dir)?;
-
-    let registry = build_registry_with_config(Some(&cfg));
-    let store = open_state_store()?;
-    let reconciler = Reconciler::new(&registry, &store);
-
-    let all_managers: Vec<&dyn cfgd_core::providers::PackageManager> = registry
-        .package_managers
-        .iter()
-        .map(|m| m.as_ref())
-        .collect();
-    let pkg_actions = packages::plan_packages(&effective.merged, &all_managers)?;
-
-    let fm = CfgdFileManager::new(&config_dir, &effective)?;
-    let file_actions = fm.plan(&effective.merged)?;
-
-    let plan = reconciler.plan(&effective, file_actions, pkg_actions, Vec::new())?;
-
-    for phase in &plan.phases {
-        let items = reconciler::format_plan_items(phase);
-        printer.plan_phase(phase.name.display_name(), &items);
-    }
-
-    let total = plan.total_actions();
-    printer.newline();
-    if total == 0 {
-        printer.success("Nothing to do — system already matches desired state");
-    } else {
-        printer.info(&format!("{} action(s) planned", total));
-        printer.newline();
-
-        let confirmed = printer
-            .prompt_confirm("Apply these changes?")
-            .unwrap_or(false);
-        if !confirmed {
-            printer.info("Skipped apply. Run 'cfgd apply' when ready.");
-            return Ok(());
-        }
-
-        // Apply
-        printer.newline();
-        printer.header("Applying Configuration");
-        printer.newline();
-
-        let cfg2 = config::load_config(&config_path)?;
-        let resolved2 = config::resolve_profile("default", &profiles_dir)?;
-        let comp2 = composition::compose(&resolved2, &inputs)?;
-        let mut eff2 = comp2.resolved;
-        packages::resolve_manifest_packages(&mut eff2.merged.packages, &config_dir)?;
-
-        let mut registry2 = build_registry_with_config(Some(&cfg2));
-        let all_managers2: Vec<&dyn cfgd_core::providers::PackageManager> = registry2
-            .package_managers
-            .iter()
-            .map(|m| m.as_ref())
-            .collect();
-        let pkg_actions2 = packages::plan_packages(&eff2.merged, &all_managers2)?;
-
-        let mut fm2 = CfgdFileManager::new(&config_dir, &eff2)?;
-        let (backend_name, age_key_path) = if let Some(ref sc) = cfg2.spec.secrets {
-            (
-                sc.backend.clone(),
-                sc.sops.as_ref().and_then(|s| s.age_key.clone()),
-            )
-        } else {
-            ("sops".to_string(), None)
-        };
-        fm2.set_secret_providers(
-            Some(secrets::build_secret_backend(&backend_name, age_key_path)),
-            secrets::build_secret_providers(),
-        );
-        let file_actions2 = fm2.plan(&eff2.merged)?;
-        registry2.file_manager = Some(Box::new(fm2));
-
-        let reconciler2 = Reconciler::new(&registry2, &store);
-        let plan2 = reconciler2.plan(&eff2, file_actions2, pkg_actions2, Vec::new())?;
-        let result = reconciler2.apply(&plan2, &eff2, &config_dir, printer, None, &[])?;
-
-        printer.newline();
-        let status = print_apply_result(&result, printer);
-        if status == cfgd_core::state::ApplyStatus::Failed {
-            return Ok(());
-        }
-    }
-
-    // Daemon install offer
-    printer.newline();
-    let install_daemon = printer
-        .prompt_confirm("Install cfgd daemon for continuous sync?")
-        .unwrap_or(false);
-
-    if install_daemon {
-        let config_path_abs = std::fs::canonicalize(&config_path).unwrap_or(config_path.clone());
-        match cfgd_core::daemon::install_service(&config_path_abs, Some("default")) {
-            Ok(()) => print_daemon_install_success(printer),
-            Err(e) => {
-                printer.warning(&format!("Could not install daemon: {}", e));
-                printer.info("Install later with: cfgd daemon --install");
-            }
-        }
-    }
-
-    // Summary
-    printer.newline();
-    printer.header("Bootstrap Complete");
-    printer.newline();
-    printer.success(&format!("Source: {} ({})", source_name, url));
-    printer.success(&format!("Profile: {}", selected_profile));
-    printer.success(&format!("Config: {}", config_dir.display()));
-    printer.newline();
-    printer.info("Useful commands:");
-    printer.info("  cfgd status         — view current state");
-    printer.info("  cfgd plan           — preview changes");
-    printer.info("  cfgd apply          — apply changes");
-    printer.info("  cfgd source show    — view source details");
-
-    Ok(())
-}
-
-/// Review policy tiers interactively during source-aware init.
-struct PolicyReviewResult {
-    accept_recommended: bool,
-    opt_in: Vec<String>,
-    rejected: Vec<String>,
-}
-
-fn review_policy_tiers(
-    printer: &Printer,
-    policy: &config::ConfigSourcePolicy,
-) -> anyhow::Result<PolicyReviewResult> {
-    printer.newline();
-    printer.subheader("Policy Review");
-
-    let required_count = count_policy_items(&policy.required);
-    let locked_count = count_policy_items(&policy.locked);
-    let recommended_count = count_policy_items(&policy.recommended);
-    let optional_profiles = &policy.optional.profiles;
-
-    // Show required + locked (mandatory, no prompt)
-    if locked_count > 0 || required_count > 0 {
-        printer.newline();
-        printer.info("Required (always applied):");
-        if locked_count > 0 {
-            display_policy_items(printer, &policy.locked, "  ");
-        }
-        if required_count > 0 {
-            display_policy_items(printer, &policy.required, "  ");
-        }
-    }
-
-    // Prompt for recommended (default yes)
-    let accept_recommended = if recommended_count > 0 {
-        printer.newline();
-        printer.info("Recommended:");
-        display_policy_items(printer, &policy.recommended, "  ");
-        printer.newline();
-        printer
-            .prompt_confirm_with_default("Accept recommended items?", true)
-            .unwrap_or(true)
-    } else {
-        false
-    };
-
-    // Prompt for optional profiles (default no each)
-    let mut opt_in = Vec::new();
-    if !optional_profiles.is_empty() {
-        printer.newline();
-        printer.info("Optional profiles:");
-        for profile in optional_profiles {
-            printer.info(&format!("  {}", profile));
-        }
-        printer.newline();
-        for profile in optional_profiles {
-            let accepted = printer
-                .prompt_confirm_with_default(&format!("Opt in to '{}'?", profile), false)
-                .unwrap_or(false);
-            if accepted {
-                opt_in.push(profile.clone());
-            }
-        }
-    }
-
-    Ok(PolicyReviewResult {
-        accept_recommended,
-        opt_in,
-        rejected: Vec::new(),
-    })
-}
-
-/// Offer to set up a git remote for the config repo.
-fn offer_git_remote_setup(printer: &Printer, config_dir: &Path) -> anyhow::Result<()> {
-    // Check if remote already exists
-    if let Ok(repo) = git2::Repository::open(config_dir)
-        && repo.find_remote("origin").is_ok()
-    {
-        return Ok(());
-    }
-
-    let setup = printer
-        .prompt_confirm_with_default("Set up a git remote for this config repo?", false)
-        .unwrap_or(false);
-    if !setup {
-        return Ok(());
-    }
-
-    let options = vec![
-        "Enter URL manually".to_string(),
-        "I'll set it up later".to_string(),
-    ];
-
-    // Offer gh repo create as an option if gh is available
-    let has_gh = which("gh");
-    let options = if has_gh {
-        vec![
-            "Create with gh (GitHub CLI)".to_string(),
-            "Enter URL manually".to_string(),
-            "I'll set it up later".to_string(),
-        ]
-    } else {
-        options
-    };
-
-    let choice = printer.prompt_select("How to set up the remote?", &options)?;
-
-    if choice.starts_with("Create with gh") {
-        // Print the command for the user — we can't shell out from cli/ per the architecture rules
-        let repo_name = config_dir
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("cfgd-config");
-        printer.newline();
-        printer.info("Run this command to create and push:");
-        printer.info(&format!(
-            "  gh repo create {} --private --source=. --push",
-            repo_name
-        ));
-    } else if choice.starts_with("Enter URL") {
-        let url = printer.prompt_text("Remote URL (git@... or https://...)", "")?;
-        if !url.is_empty() {
-            match git2::Repository::open(config_dir) {
-                Ok(repo) => match repo.remote("origin", &url) {
-                    Ok(_) => printer.success(&format!("Added remote 'origin' -> {}", url)),
-                    Err(e) => printer.warning(&format!("Could not add remote: {}", e)),
-                },
-                Err(e) => printer.warning(&format!("Could not open repo: {}", e)),
-            }
-        }
-    }
-
-    Ok(())
-}
-
-/// Run quick pre-bootstrap diagnostics before plan/apply.
-fn run_pre_bootstrap_diagnostics(printer: &Printer) -> anyhow::Result<()> {
-    printer.subheader("Pre-Bootstrap Diagnostics");
-
-    let mut all_ok = true;
-
-    // Git
-    if which("git") {
-        printer.success("git: found");
-    } else {
-        printer.error("git: not found — required for cfgd");
-        all_ok = false;
-    }
-
-    // Package manager availability
-    let registry = build_registry();
-    let mut shown = std::collections::HashSet::new();
-    for mgr in &registry.package_managers {
-        let name = mgr.name();
-        if name == "brew-tap" || name == "brew-cask" {
-            continue;
-        }
-        if !shown.insert(name.to_string()) {
-            continue;
-        }
-        if mgr.is_available() {
-            printer.success(&format!("{}: available", name));
-        } else if mgr.can_bootstrap() {
-            printer.info(&format!(
-                "{}: not found — will be auto-bootstrapped if needed",
-                name
-            ));
-        }
-    }
-
-    // State store
-    match StateStore::open_default() {
-        Ok(_) => printer.success("State store: accessible"),
-        Err(e) => {
-            printer.warning(&format!("State store: {}", e));
-            all_ok = false;
-        }
-    }
-
-    if !all_ok {
-        printer.newline();
-        printer.warning("Some checks failed — bootstrap may encounter issues");
-    }
-
-    Ok(())
-}
-
-/// Recursively copy a directory.
-fn copy_dir_recursive(src: &Path, dst: &Path) -> anyhow::Result<()> {
-    cfgd_core::copy_dir_recursive(src, dst)?;
-    Ok(())
-}
-
-fn bootstrap_profile_select(
-    config_dir: &Path,
-    printer: &Printer,
-) -> anyhow::Result<Option<String>> {
-    let profiles_dir = config_dir.join("profiles");
-
-    if !profiles_dir.exists() {
-        printer.warning("No profiles directory found");
-        return Ok(None);
-    }
-
-    let mut profiles = Vec::new();
-    for entry in std::fs::read_dir(&profiles_dir)? {
-        let entry = entry?;
-        let path = entry.path();
-        if path.extension().and_then(|e| e.to_str()) == Some("yaml")
-            && let Some(stem) = path.file_stem().and_then(|s| s.to_str())
-        {
-            profiles.push(stem.to_string());
-        }
-    }
-
-    if profiles.is_empty() {
-        printer.warning("No profile files found in profiles/");
-        return Ok(None);
-    }
-
-    profiles.sort();
-
-    let selected = if profiles.len() == 1 {
-        let name = &profiles[0];
-        printer.info(&format!("Found one profile: {}", name));
-        name.clone()
-    } else {
-        printer.info(&format!("Found {} profiles:", profiles.len()));
-
-        // Show profile summaries
-        for name in &profiles {
-            let path = profiles_dir.join(format!("{}.yaml", name));
-            if let Ok(doc) = config::load_profile(&path) {
-                let pkg_count = count_packages(&doc.spec);
-                let file_count = doc
-                    .spec
-                    .files
-                    .as_ref()
-                    .map(|f| f.managed.len())
-                    .unwrap_or(0);
-                let inherits = if doc.spec.inherits.is_empty() {
-                    String::new()
-                } else {
-                    format!(" (inherits: {})", doc.spec.inherits.join(", "))
-                };
-                printer.key_value(
-                    name,
-                    &format!("{} packages, {} files{}", pkg_count, file_count, inherits),
-                );
-            }
-        }
-
-        printer.newline();
-        match printer.prompt_select("Select a profile", &profiles) {
-            Ok(selected) => selected.clone(),
-            Err(_) => {
-                printer.info("No profile selected — aborted");
-                return Ok(None);
-            }
-        }
-    };
-
-    printer.success(&format!("Selected profile: {}", selected));
-    Ok(Some(selected))
-}
-
-fn count_packages(spec: &config::ProfileSpec) -> usize {
-    let mut count = 0;
-    if let Some(ref pkgs) = spec.packages {
-        if let Some(ref brew) = pkgs.brew {
-            count += brew.formulae.len() + brew.casks.len();
-        }
-        if let Some(ref apt) = pkgs.apt {
-            count += apt.packages.len();
-        }
-        if let Some(ref cargo) = pkgs.cargo {
-            count += cargo.packages.len();
-        }
-        if let Some(ref npm) = pkgs.npm {
-            count += npm.global.len();
-        }
-        count += pkgs.pipx.len();
-        count += pkgs.dnf.len();
-    }
-    count
-}
-
-fn bootstrap_secrets_setup(config_dir: &Path, printer: &Printer) -> anyhow::Result<()> {
-    printer.newline();
-    printer.subheader("Secrets Setup");
-
-    let health = secrets::check_secrets_health(config_dir, None);
-
-    if health.sops_available {
-        let version_str = health.sops_version.as_deref().unwrap_or("unknown version");
-        printer.success(&format!("sops: found ({})", version_str));
-    } else {
-        printer.info("sops: not installed (optional — required for secret management)");
-        printer.info("  Install: https://github.com/getsops/sops#install");
-    }
-
-    if health.age_key_exists {
-        if let Some(ref path) = health.age_key_path {
-            printer.success(&format!("age key: {}", path.display()));
-        }
-    } else if health.sops_available {
-        // Offer to generate age key
-        let generate = printer
-            .prompt_confirm("Generate age encryption key for secrets?")
-            .unwrap_or(false);
-
-        if generate {
-            match secrets::init_age_key(config_dir) {
-                Ok(key_path) => {
-                    printer.success(&format!("Age key generated: {}", key_path.display()));
-                }
-                Err(e) => {
-                    printer.warning(&format!("Could not generate age key: {}", e));
-                    printer.info("Generate later with: cfgd secret init");
-                }
-            }
-        } else {
-            printer.info("Skipped — generate later with: cfgd secret init");
-        }
-    }
-
-    // Check for external secret providers
-    for (name, available) in &health.providers {
-        if *available {
-            printer.success(&format!("provider {}: available", name));
-        }
-    }
-
-    Ok(())
-}
-
-fn ensure_config_file(
-    config_dir: &Path,
-    config_path: &Path,
-    profile_name: &str,
-    from_url: Option<&str>,
-) -> anyhow::Result<()> {
-    if config_path.exists() {
-        // Update profile in existing config
-        let contents = std::fs::read_to_string(config_path)?;
-        let mut cfg = config::parse_config(&contents, config_path)?;
-        if cfg.spec.profile != profile_name {
-            cfg.spec.profile = profile_name.to_string();
-            let yaml = serde_yaml::to_string(&cfg)?;
-            std::fs::write(config_path, &yaml)?;
-        }
-        return Ok(());
-    }
-
-    // Generate new cfgd.yaml
-    let name = config_dir
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or("my-config");
-
-    let origin_section = if let Some(url) = from_url {
-        format!(
-            r#"  origin:
-    type: git
-    url: {}
-    branch: main
-"#,
-            url
-        )
-    } else {
-        String::new()
-    };
-
-    let config_content = format!(
-        r#"apiVersion: cfgd/v1
-kind: Config
-metadata:
-  name: {}
-spec:
-  profile: {}
-{}"#,
-        name, profile_name, origin_section
-    );
-
-    std::fs::write(config_path, &config_content)?;
-    Ok(())
-}
-
 fn load_config_and_profile(
     cli: &Cli,
     printer: &Printer,
@@ -1793,8 +972,105 @@ fn load_config_and_profile(
     printer.key_value("Config", &cli.config.display().to_string());
     printer.key_value("Profile", profile_name);
 
+    // Migrate any old-style profile file layouts before resolving
+    profile::migrate_all_profile_file_layouts(&config_dir(cli), printer)?;
+
     let resolved = config::resolve_profile(profile_name, &profiles_dir(cli))?;
     Ok((cfg, resolved))
+}
+
+/// Parse a `--file` value into (source_path, target_path).
+/// - `<path>` without `:` → adopt in place: source=path, target=path
+/// - `<source>:<target>` → explicit mapping
+fn parse_file_spec(spec: &str) -> anyhow::Result<(PathBuf, PathBuf)> {
+    if let Some((source, target)) = spec.split_once(':') {
+        if source.is_empty() {
+            anyhow::bail!("empty source in file spec: {}", spec);
+        }
+        if target.is_empty() {
+            anyhow::bail!("empty target in file spec: {}", spec);
+        }
+        Ok((
+            cfgd_core::expand_tilde(Path::new(source)),
+            cfgd_core::expand_tilde(Path::new(target)),
+        ))
+    } else {
+        let expanded = cfgd_core::expand_tilde(Path::new(spec));
+        Ok((expanded.clone(), expanded))
+    }
+}
+
+/// Adopt files: copy into `repo_dir`, symlink back from source location.
+/// Returns `(basename, deploy_target)` pairs — basename is the filename in the repo,
+/// deploy_target is where the file should be deployed on the machine.
+fn copy_files_to_dir(
+    file_specs: &[String],
+    repo_dir: &Path,
+) -> anyhow::Result<Vec<(String, PathBuf)>> {
+    let mut results = Vec::new();
+    for spec in file_specs {
+        let (source, target) = parse_file_spec(spec)?;
+        if !source.exists() {
+            anyhow::bail!("File not found: {}", source.display());
+        }
+        std::fs::create_dir_all(repo_dir)?;
+        let file_name = source
+            .file_name()
+            .ok_or_else(|| anyhow::anyhow!("Invalid file path: {}", source.display()))?;
+        let dest = repo_dir.join(file_name);
+        if source.is_dir() {
+            cfgd_core::copy_dir_recursive(&source, &dest)?;
+        } else {
+            std::fs::copy(&source, &dest)?;
+        }
+        // Symlink back from source location to repo copy
+        if source.exists() && !source.is_symlink() {
+            if source.is_dir() {
+                std::fs::remove_dir_all(&source)?;
+            } else {
+                std::fs::remove_file(&source)?;
+            }
+            std::os::unix::fs::symlink(&dest, &source)?;
+        }
+        results.push((file_name.to_string_lossy().to_string(), target));
+    }
+    Ok(results)
+}
+
+/// Add a path to `.gitignore` in `config_dir` if not already present.
+fn add_to_gitignore(config_dir: &Path, path: &str) -> anyhow::Result<()> {
+    let gitignore = config_dir.join(".gitignore");
+    let existing = if gitignore.exists() {
+        std::fs::read_to_string(&gitignore)?
+    } else {
+        String::new()
+    };
+    // Check if already listed (exact line match)
+    if existing.lines().any(|line| line.trim() == path) {
+        return Ok(());
+    }
+    let mut content = existing;
+    if !content.is_empty() && !content.ends_with('\n') {
+        content.push('\n');
+    }
+    content.push_str(path);
+    content.push('\n');
+    std::fs::write(&gitignore, content)?;
+    Ok(())
+}
+
+/// Extract secret backend name and age key path from config.
+/// Returns ("sops", None) as defaults when no secrets config is present.
+fn secret_backend_from_config(cfg: Option<&CfgdConfig>) -> (String, Option<PathBuf>) {
+    if let Some(cfg) = cfg
+        && let Some(ref secrets_cfg) = cfg.spec.secrets
+    {
+        let name = secrets_cfg.backend.as_str().to_string();
+        let key = secrets_cfg.sops.as_ref().and_then(|s| s.age_key.clone());
+        (name, key)
+    } else {
+        ("sops".to_string(), None)
+    }
 }
 
 fn build_registry() -> ProviderRegistry {
@@ -1817,13 +1093,8 @@ impl cfgd_core::daemon::DaemonHooks for WorkstationDaemonHooks {
     ) -> cfgd_core::errors::Result<Vec<FileAction>> {
         let mut fm = CfgdFileManager::new(config_dir, resolved)?;
         let cfg = config::load_config(&config_dir.join("cfgd.yaml"))?;
-        let (backend_name, age_key_path) = if let Some(ref secrets_cfg) = cfg.spec.secrets {
-            let name = secrets_cfg.backend.as_str();
-            let key = secrets_cfg.sops.as_ref().and_then(|s| s.age_key.clone());
-            (name.to_string(), key)
-        } else {
-            ("sops".to_string(), None)
-        };
+        fm.set_global_strategy(cfg.spec.file_strategy);
+        let (backend_name, age_key_path) = secret_backend_from_config(Some(&cfg));
         let backend = secrets::build_secret_backend(&backend_name, age_key_path);
         let providers = secrets::build_secret_providers();
         fm.set_secret_providers(Some(backend), providers);
@@ -1854,14 +1125,17 @@ impl cfgd_core::daemon::DaemonHooks for WorkstationDaemonHooks {
 }
 
 fn build_registry_with_profile(spec: &cfgd_core::config::PackagesSpec) -> ProviderRegistry {
-    let mut registry = build_registry();
-    registry
-        .package_managers
-        .extend(packages::custom_managers(&spec.custom));
-    registry
+    build_registry_with_config_and_packages(None, Some(spec))
 }
 
 fn build_registry_with_config(cfg: Option<&CfgdConfig>) -> ProviderRegistry {
+    build_registry_with_config_and_packages(cfg, None)
+}
+
+fn build_registry_with_config_and_packages(
+    cfg: Option<&CfgdConfig>,
+    packages: Option<&cfgd_core::config::PackagesSpec>,
+) -> ProviderRegistry {
     let mut registry = ProviderRegistry::new();
     registry.package_managers = packages::all_package_managers();
 
@@ -1915,18 +1189,16 @@ fn build_registry_with_config(cfg: Option<&CfgdConfig>) -> ProviderRegistry {
         .push(Box::new(CertificateConfigurator));
 
     // Register secret backend and providers
-    let (backend_name, age_key_path) = if let Some(cfg) = cfg
-        && let Some(ref secrets_cfg) = cfg.spec.secrets
-    {
-        let name = secrets_cfg.backend.as_str();
-        let key = secrets_cfg.sops.as_ref().and_then(|s| s.age_key.clone());
-        (name.to_string(), key)
-    } else {
-        ("sops".to_string(), None)
-    };
-
+    let (backend_name, age_key_path) = secret_backend_from_config(cfg);
     registry.secret_backend = Some(secrets::build_secret_backend(&backend_name, age_key_path));
     registry.secret_providers = secrets::build_secret_providers();
+
+    // Extend with custom package managers from profile packages spec
+    if let Some(spec) = packages {
+        registry
+            .package_managers
+            .extend(packages::custom_managers(&spec.custom));
+    }
 
     registry
 }
@@ -1974,151 +1246,18 @@ fn print_apply_result(
     result.status.clone()
 }
 
-fn cmd_plan(
-    cli: &Cli,
-    printer: &Printer,
-    skip: &[String],
-    only: &[String],
-    module_filter: Option<&str>,
-) -> anyhow::Result<()> {
-    printer.header("Plan");
-
-    let (cfg, resolved) = load_config_and_profile(cli, printer)?;
-    let config_dir = config_dir(cli);
-    let mut registry = build_registry_with_config(Some(&cfg));
-    let state = open_state_store()?;
-
-    // Compose with sources if configured
-    let source_variables = if !cfg.spec.sources.is_empty() {
-        let composition_result = compose_with_sources(cli, &resolved, printer)?;
-        let sv = composition_result.source_variables;
-        (Some(composition_result.resolved), sv)
+fn cmd_apply(cli: &Cli, printer: &Printer, args: &ApplyArgs) -> anyhow::Result<()> {
+    let dry_run = args.dry_run;
+    let phase = args.phase.as_deref();
+    let yes = args.yes;
+    let skip = &args.skip;
+    let only = &args.only;
+    let module_filter = args.module.as_deref();
+    if dry_run {
+        printer.header("Plan");
     } else {
-        (None, std::collections::HashMap::new())
-    };
-    let mut effective_resolved = source_variables.0.unwrap_or(resolved);
-    let source_variables = source_variables.1;
-
-    // Resolve manifest files (Brewfile, package.json, etc.) into package lists
-    packages::resolve_manifest_packages(&mut effective_resolved.merged.packages, &config_dir)?;
-
-    // Extend registry with custom managers from resolved profile
-    registry.package_managers.extend(packages::custom_managers(
-        &effective_resolved.merged.packages.custom,
-    ));
-
-    let reconciler = Reconciler::new(&registry, &state);
-
-    // Resolve modules
-    let module_names = if let Some(mod_name) = module_filter {
-        vec![mod_name.to_string()]
-    } else {
-        effective_resolved.merged.modules.clone()
-    };
-
-    let resolved_modules = if !module_names.is_empty() {
-        let platform = Platform::detect();
-        let mgr_map = managers_map(&registry);
-        let cache_base = modules::default_module_cache_dir()?;
-        modules::resolve_modules(&module_names, &config_dir, &cache_base, &platform, &mgr_map)?
-    } else {
-        Vec::new()
-    };
-
-    // If --module is set, skip profile-level packages/files
-    let module_only = module_filter.is_some();
-    let (pkg_actions, file_actions, fm) = if module_only {
-        (Vec::new(), Vec::new(), None)
-    } else {
-        let all_managers: Vec<&dyn cfgd_core::providers::PackageManager> = registry
-            .package_managers
-            .iter()
-            .map(|m| m.as_ref())
-            .collect();
-        let pkg = packages::plan_packages(&effective_resolved.merged, &all_managers)?;
-        let mut file_mgr = CfgdFileManager::new(&config_dir, &effective_resolved)?;
-        if !source_variables.is_empty() {
-            file_mgr.set_source_variables(&source_variables);
-        }
-        let fa = file_mgr.plan(&effective_resolved.merged)?;
-        (pkg, fa, Some(file_mgr))
-    };
-
-    let mut plan = reconciler.plan(
-        &effective_resolved,
-        file_actions,
-        pkg_actions,
-        resolved_modules,
-    )?;
-
-    // Apply --skip / --only filters
-    filter_plan(&mut plan, skip, only);
-
-    // Show pending decisions (not included in this plan)
-    if let Ok(pending) = state.pending_decisions()
-        && !pending.is_empty()
-    {
-        printer.newline();
-        printer.subheader("Pending Decisions (not included in this plan)");
-        for d in &pending {
-            printer.info(&format!(
-                "  {} {} — {} by {} (run `cfgd decide accept/reject`)",
-                d.tier, d.resource, d.action, d.source,
-            ));
-        }
+        printer.header("Apply");
     }
-
-    printer.newline();
-
-    for phase in &plan.phases {
-        let items = reconciler::format_plan_items(phase);
-        printer.plan_phase(phase.name.display_name(), &items);
-    }
-
-    // Show diffs for file updates
-    if let Some(ref fm) = fm {
-        for phase in &plan.phases {
-            if phase.name != PhaseName::Files {
-                continue;
-            }
-            for action in &phase.actions {
-                if let reconciler::Action::File(FileAction::Update { source, target, .. }) = action
-                    && let Ok(target_content) = std::fs::read_to_string(target)
-                {
-                    let source_content = if crate::files::is_tera_template(source) {
-                        fm.render_template_for_display(source).unwrap_or_default()
-                    } else {
-                        std::fs::read_to_string(source).unwrap_or_default()
-                    };
-                    printer.newline();
-                    printer.subheader(&format!("{}", target.display()));
-                    printer.diff(&target_content, &source_content);
-                }
-            }
-        }
-    }
-
-    printer.newline();
-    let total = plan.total_actions();
-    if total == 0 {
-        printer.success("Nothing to do — all phases empty");
-    } else {
-        printer.info(&format!("{} action(s) planned", total));
-    }
-
-    Ok(())
-}
-
-fn cmd_apply(
-    cli: &Cli,
-    printer: &Printer,
-    phase: Option<&str>,
-    yes: bool,
-    skip: &[String],
-    only: &[String],
-    module_filter: Option<&str>,
-) -> anyhow::Result<()> {
-    printer.header("Apply");
 
     let (cfg, resolved) = load_config_and_profile(cli, printer)?;
     let config_dir = config_dir(cli);
@@ -2178,8 +1317,11 @@ fn cmd_apply(
 
     // If --module is set, skip profile-level packages/files
     let module_only = module_filter.is_some();
-    let (pkg_actions, file_actions) = if module_only {
-        (Vec::new(), Vec::new())
+
+    // In dry-run mode we don't need secret providers wired up — just plan files for display.
+    // In apply mode we wire up the full file manager with secret providers.
+    let (pkg_actions, file_actions, dry_run_fm) = if module_only {
+        (Vec::new(), Vec::new(), None)
     } else {
         let all_managers: Vec<&dyn cfgd_core::providers::PackageManager> = registry
             .package_managers
@@ -2189,25 +1331,29 @@ fn cmd_apply(
         let pkg = packages::plan_packages(&effective_resolved.merged, &all_managers)?;
 
         let mut fm = CfgdFileManager::new(&config_dir, &effective_resolved)?;
+        fm.set_global_strategy(cfg.spec.file_strategy);
         if !source_variables.is_empty() {
             fm.set_source_variables(&source_variables);
         }
-        let (backend_name, age_key_path) = if let Some(ref secrets_cfg) = cfg.spec.secrets {
-            let name = secrets_cfg.backend.as_str();
-            let key = secrets_cfg.sops.as_ref().and_then(|s| s.age_key.clone());
-            (name.to_string(), key)
-        } else {
-            ("sops".to_string(), None)
-        };
-        fm.set_secret_providers(
-            Some(secrets::build_secret_backend(&backend_name, age_key_path)),
-            secrets::build_secret_providers(),
-        );
+
+        if !dry_run {
+            let (backend_name, age_key_path) = secret_backend_from_config(Some(&cfg));
+            fm.set_secret_providers(
+                Some(secrets::build_secret_backend(&backend_name, age_key_path)),
+                secrets::build_secret_providers(),
+            );
+        }
+
         let fa = fm.plan(&effective_resolved.merged)?;
 
-        // Register the file manager so the reconciler delegates through the trait
-        registry.file_manager = Some(Box::new(fm));
-        (pkg, fa)
+        if dry_run {
+            // Keep fm around for diff display but don't register it
+            (pkg, fa, Some(fm))
+        } else {
+            // Register the file manager so the reconciler delegates through the trait
+            registry.file_manager = Some(Box::new(fm));
+            (pkg, fa, None)
+        }
     };
 
     let reconciler = Reconciler::new(&registry, &state);
@@ -2220,6 +1366,70 @@ fn cmd_apply(
 
     // Apply --skip / --only filters
     filter_plan(&mut plan, skip, only);
+
+    if dry_run {
+        // Show pending decisions (not included in this plan)
+        if let Ok(pending) = state.pending_decisions()
+            && !pending.is_empty()
+        {
+            printer.newline();
+            printer.subheader("Pending Decisions (not included in this plan)");
+            for d in &pending {
+                printer.info(&format!(
+                    "  {} {} — {} by {} (run `cfgd decide accept/reject`)",
+                    d.tier, d.resource, d.action, d.source,
+                ));
+            }
+        }
+
+        printer.newline();
+
+        for phase_item in &plan.phases {
+            if let Some(ref pf) = phase_filter
+                && &phase_item.name != pf
+            {
+                continue;
+            }
+            let items = reconciler::format_plan_items(phase_item);
+            printer.plan_phase(phase_item.name.display_name(), &items);
+        }
+
+        // Show diffs for file updates
+        if let Some(ref fm) = dry_run_fm {
+            for phase_item in &plan.phases {
+                if phase_item.name != PhaseName::Files {
+                    continue;
+                }
+                for action in &phase_item.actions {
+                    if let reconciler::Action::File(FileAction::Update { source, target, .. }) =
+                        action
+                        && let Ok(target_content) = std::fs::read_to_string(target)
+                    {
+                        let source_content = if crate::files::is_tera_template(source) {
+                            fm.render_template_for_display(source).unwrap_or_default()
+                        } else {
+                            std::fs::read_to_string(source).unwrap_or_default()
+                        };
+                        printer.newline();
+                        printer.subheader(&format!("{}", target.display()));
+                        printer.diff(&target_content, &source_content);
+                    }
+                }
+            }
+        }
+
+        printer.newline();
+        let total = plan.total_actions();
+        if total == 0 {
+            printer.success("Nothing to do — everything is up to date");
+        } else {
+            printer.info(&format!("{} action(s) planned", total));
+        }
+
+        return Ok(());
+    }
+
+    // --- Apply mode ---
 
     // Check if filtered plan has actions
     let has_actions = if let Some(ref pf) = phase_filter {
@@ -2370,15 +1580,18 @@ fn cmd_status(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
         printer.subheader("Modules");
 
         let config_dir = config_dir(cli);
-        let all_modules = modules::load_modules(&config_dir).unwrap_or_default();
-        let module_states = state.module_states().unwrap_or_default();
-        let state_map: std::collections::HashMap<String, cfgd_core::state::ModuleStateRecord> =
-            module_states
-                .into_iter()
-                .map(|s| (s.module_name.clone(), s))
-                .collect();
+        let cache_base = modules::default_module_cache_dir().unwrap_or_default();
+        let all_modules = match modules::load_all_modules(&config_dir, &cache_base) {
+            Ok(m) => m,
+            Err(e) => {
+                printer.warning(&format!("Failed to load modules: {}", e));
+                std::collections::HashMap::new()
+            }
+        };
+        let state_map = module_state_map(&state);
 
-        for mod_name in &resolved.merged.modules {
+        for mod_ref in &resolved.merged.modules {
+            let mod_name = modules::resolve_profile_module_name(mod_ref);
             let (pkg_count, file_count) = if let Some(m) = all_modules.get(mod_name) {
                 (m.spec.packages.len(), m.spec.files.len())
             } else {
@@ -2388,12 +1601,12 @@ fn cmd_status(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
             let summary = format!("{} pkgs, {} files", pkg_count, file_count);
             if let Some(state_rec) = state_map.get(mod_name) {
                 if state_rec.status == "installed" {
-                    printer.success(&format!("{}: {}, {}", mod_name, summary, state_rec.status));
+                    printer.success(&format!("{}: {}, {}", mod_ref, summary, state_rec.status));
                 } else {
-                    printer.warning(&format!("{}: {}, {}", mod_name, summary, state_rec.status));
+                    printer.warning(&format!("{}: {}, {}", mod_ref, summary, state_rec.status));
                 }
             } else {
-                printer.info(&format!("{}: {}, not yet applied", mod_name, summary));
+                printer.info(&format!("{}: {}, not yet applied", mod_ref, summary));
             }
         }
     }
@@ -2608,391 +1821,585 @@ fn cmd_diff(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn cmd_add_file(cli: &Cli, printer: &Printer, target: &str) -> anyhow::Result<()> {
-    printer.header("Add File");
+// --- Validation helpers ---
 
-    let (cfg, resolved) = load_config_and_profile(cli, printer)?;
-    let config_dir = config_dir(cli);
-    let profile_name = cli.profile.as_deref().unwrap_or(&cfg.spec.profile);
-
-    let file_path = PathBuf::from(target);
-    let fm = CfgdFileManager::new(&config_dir, &resolved)?;
-    let managed_spec = fm.add_file(&file_path, profile_name)?;
-
-    // Update the profile YAML to include the new file
-    let profile_path = config_dir
-        .join("profiles")
-        .join(format!("{}.yaml", profile_name));
-    let mut doc = config::load_profile(&profile_path)?;
-
-    let files = doc
-        .spec
-        .files
-        .get_or_insert_with(config::FilesSpec::default);
-    if !files
-        .managed
-        .iter()
-        .any(|m| m.target == managed_spec.target)
+/// Validate a resource name (module or profile) for filesystem safety.
+/// Allows alphanumeric, hyphen, underscore, and dot (but not leading dot).
+fn validate_resource_name(name: &str, kind: &str) -> anyhow::Result<()> {
+    if name.is_empty() {
+        anyhow::bail!("{kind} name cannot be empty");
+    }
+    if name.len() > 128 {
+        anyhow::bail!("{kind} name too long (max 128 characters)");
+    }
+    if name.starts_with('.') || name.starts_with('-') {
+        anyhow::bail!("{kind} name cannot start with '.' or '-'");
+    }
+    if !name
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.')
     {
-        files.managed.push(managed_spec.clone());
+        anyhow::bail!(
+            "{kind} name '{}' contains invalid characters — use only alphanumeric, hyphen, underscore, or dot",
+            name
+        );
     }
-
-    let yaml = serde_yaml::to_string(&doc)?;
-    std::fs::write(&profile_path, &yaml)?;
-
-    printer.newline();
-    printer.success(&format!("Copied {} to {}", target, managed_spec.source));
-    printer.success(&format!(
-        "Updated profile '{}' — added to files.managed",
-        profile_name
-    ));
-    printer.key_value("source", &managed_spec.source);
-    printer.key_value("target", &managed_spec.target.display().to_string());
-
     Ok(())
 }
 
-fn cmd_add_package(
-    cli: &Cli,
-    printer: &Printer,
-    manager: &str,
-    package: &str,
-) -> anyhow::Result<()> {
-    printer.header("Add Package");
+// --- Scan helpers ---
 
-    let (cfg, _resolved) = load_config_and_profile(cli, printer)?;
-    let config_dir = config_dir(cli);
-    let profile_name = cli.profile.as_deref().unwrap_or(&cfg.spec.profile);
-
-    let profile_path = config_dir
-        .join("profiles")
-        .join(format!("{}.yaml", profile_name));
-    let mut doc = config::load_profile(&profile_path)?;
-
-    let pkgs = doc.spec.packages.get_or_insert_with(Default::default);
-    packages::add_package(manager, package, pkgs)?;
-
-    let yaml = serde_yaml::to_string(&doc)?;
-    std::fs::write(&profile_path, &yaml)?;
-
-    printer.newline();
-    printer.success(&format!(
-        "Added '{}' to {} in profile '{}'",
-        package, manager, profile_name
-    ));
-
-    Ok(())
-}
-
-fn cmd_remove_package(
-    cli: &Cli,
-    printer: &Printer,
-    manager: &str,
-    package: &str,
-) -> anyhow::Result<()> {
-    printer.header("Remove Package");
-
-    let (cfg, _resolved) = load_config_and_profile(cli, printer)?;
-    let config_dir = config_dir(cli);
-    let profile_name = cli.profile.as_deref().unwrap_or(&cfg.spec.profile);
-
-    let profile_path = config_dir
-        .join("profiles")
-        .join(format!("{}.yaml", profile_name));
-    let mut doc = config::load_profile(&profile_path)?;
-
-    let pkgs = doc.spec.packages.get_or_insert_with(Default::default);
-    let removed = packages::remove_package(manager, package, pkgs)?;
-
-    if removed {
-        let yaml = serde_yaml::to_string(&doc)?;
-        std::fs::write(&profile_path, &yaml)?;
-
-        printer.newline();
-        printer.success(&format!(
-            "Removed '{}' from {} in profile '{}'",
-            package, manager, profile_name
-        ));
-    } else {
-        printer.newline();
-        printer.warning(&format!(
-            "'{}' not found in {} for profile '{}'",
-            package, manager, profile_name
-        ));
-    }
-
-    Ok(())
-}
-
-fn cmd_remove_file(cli: &Cli, printer: &Printer, target: &str) -> anyhow::Result<()> {
-    printer.header("Remove File");
-
-    let (cfg, _resolved) = load_config_and_profile(cli, printer)?;
-    let config_dir = config_dir(cli);
-    let profile_name = cli.profile.as_deref().unwrap_or(&cfg.spec.profile);
-
-    let profile_path = config_dir
-        .join("profiles")
-        .join(format!("{}.yaml", profile_name));
-    let mut doc = config::load_profile(&profile_path)?;
-
-    let target_path = crate::files::expand_tilde(&PathBuf::from(target));
-
-    let files = match doc.spec.files.as_mut() {
-        Some(f) => f,
-        None => {
-            printer.warning(&format!("No files managed in profile '{}'", profile_name));
-            return Ok(());
+/// Scan a profiles/ directory and return sorted profile names.
+fn scan_profile_names(profiles_dir: &Path) -> anyhow::Result<Vec<String>> {
+    let mut names = Vec::new();
+    if profiles_dir.exists() {
+        for entry in std::fs::read_dir(profiles_dir)? {
+            let entry = entry?;
+            let path = entry.path();
+            if path.extension().is_some_and(|e| e == "yaml" || e == "yml")
+                && let Ok(doc) = config::load_profile(&path)
+            {
+                names.push(doc.metadata.name);
+            }
         }
-    };
+        names.sort();
+    }
+    Ok(names)
+}
 
-    let original_len = files.managed.len();
-    let mut removed_source = None;
-    files.managed.retain(|m| {
-        let m_target = crate::files::expand_tilde(&m.target);
-        if m_target == target_path {
-            removed_source = Some(m.source.clone());
-            false
-        } else {
-            true
+/// Scan a modules/ directory and return sorted module names.
+fn scan_module_names(modules_dir: &Path) -> anyhow::Result<Vec<String>> {
+    let mut names = Vec::new();
+    if modules_dir.exists() {
+        for entry in std::fs::read_dir(modules_dir)? {
+            let entry = entry?;
+            let path = entry.path();
+            if path.is_dir()
+                && path.join("module.yaml").exists()
+                && let Some(n) = entry.file_name().to_str()
+            {
+                names.push(n.to_string());
+            }
         }
-    });
+        names.sort();
+    }
+    Ok(names)
+}
 
-    if files.managed.len() == original_len {
-        printer.newline();
-        printer.warning(&format!(
-            "'{}' not found in files.managed for profile '{}'",
-            target, profile_name
-        ));
-        return Ok(());
+// --- Config CRUD ---
+
+fn cmd_config_show(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
+    let config_path = &cli.config;
+    if !config_path.exists() {
+        anyhow::bail!("{}", MSG_NO_CONFIG);
     }
 
-    let yaml = serde_yaml::to_string(&doc)?;
-    std::fs::write(&profile_path, &yaml)?;
+    let cfg = config::load_config(config_path)?;
 
-    printer.newline();
-    printer.success(&format!(
-        "Removed '{}' from profile '{}'",
-        target, profile_name
-    ));
+    printer.header("Configuration");
+    printer.key_value("File", &config_path.display().to_string());
+    printer.key_value("Profile", &cfg.spec.profile);
 
-    // Clean up the source copy from the config repo
-    if let Some(ref source) = removed_source {
-        let source_path = config_dir.join(source);
-        if source_path.exists() {
-            std::fs::remove_file(&source_path)?;
-            printer.success(&format!("Deleted source file: {}", source));
+    // Origins
+    if !cfg.spec.origin.is_empty() {
+        printer.newline();
+        printer.subheader("Origins");
+        for (i, origin) in cfg.spec.origin.iter().enumerate() {
+            let label = if i == 0 { "Primary" } else { "Secondary" };
+            printer.key_value(label, &format!("{:?} — {}", origin.origin_type, origin.url));
+            printer.key_value("  Branch", &origin.branch);
         }
     }
 
+    // Sources
+    if !cfg.spec.sources.is_empty() {
+        printer.newline();
+        printer.subheader("Sources");
+        for src in &cfg.spec.sources {
+            printer.key_value(&src.name, &src.origin.url);
+        }
+    }
+
+    // Module registries
+    if let Some(ref mods) = cfg.spec.modules {
+        if !mods.registries.is_empty() {
+            printer.newline();
+            printer.subheader("Module Registries");
+            for ms in &mods.registries {
+                printer.key_value(&ms.name, &ms.url);
+            }
+        }
+
+        // Module security
+        if let Some(ref sec) = mods.security {
+            printer.newline();
+            printer.subheader("Module Security");
+            printer.key_value(
+                "Require signatures",
+                if sec.require_signatures { "yes" } else { "no" },
+            );
+        }
+    }
+
+    // Daemon
+    if let Some(ref daemon) = cfg.spec.daemon {
+        printer.newline();
+        printer.subheader("Daemon");
+        printer.key_value("Enabled", if daemon.enabled { "yes" } else { "no" });
+        if let Some(ref reconcile) = daemon.reconcile {
+            printer.key_value("  Reconcile interval", &reconcile.interval);
+            printer.key_value(
+                "  On change",
+                if reconcile.on_change { "yes" } else { "no" },
+            );
+            printer.key_value(
+                "  Auto apply",
+                if reconcile.auto_apply { "yes" } else { "no" },
+            );
+        }
+        if let Some(ref sync) = daemon.sync {
+            printer.key_value("  Sync interval", &sync.interval);
+        }
+    }
+
+    // Secrets
+    if let Some(ref secrets) = cfg.spec.secrets {
+        printer.newline();
+        printer.subheader("Secrets");
+        printer.key_value("Backend", &secrets.backend);
+    }
+
+    // Theme
+    if let Some(ref theme) = cfg.spec.theme {
+        printer.newline();
+        printer.subheader("Theme");
+        printer.key_value("Preset", &theme.preset);
+    }
+
     Ok(())
 }
 
-fn cmd_profile_show(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
-    printer.header("Resolved Profile");
+fn cmd_config_edit(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
+    let config_path = &cli.config;
+    if !config_path.exists() {
+        anyhow::bail!("{}", MSG_NO_CONFIG);
+    }
 
-    let (_cfg, resolved) = load_config_and_profile(cli, printer)?;
+    open_in_editor(config_path, printer)?;
 
-    printer.newline();
-    printer.subheader("Layers");
-    for layer in &resolved.layers {
-        printer.key_value(
-            &layer.profile_name,
-            &format!("source={} priority={}", layer.source, layer.priority),
+    // Validate after editing — loop until valid or user cancels
+    loop {
+        match config::load_config(config_path) {
+            Ok(_) => {
+                printer.success("Configuration is valid");
+                break;
+            }
+            Err(e) => {
+                printer.error(&format!("Invalid configuration: {}", e));
+                if !printer.prompt_confirm("Re-open in editor to fix?")? {
+                    printer.warning("Saved with validation errors");
+                    break;
+                }
+                open_in_editor(config_path, printer)?;
+            }
+        }
+    }
+
+    Ok(())
+}
+
+// --- Source CRUD ---
+
+fn cmd_source_edit(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
+    let config_dir = config_dir(cli);
+    let source_path = config_dir.join("cfgd-source.yaml");
+    if !source_path.exists() {
+        anyhow::bail!(
+            "No cfgd-source.yaml found in {} — run 'cfgd source create' to scaffold one",
+            config_dir.display()
         );
     }
 
-    printer.newline();
-    printer.subheader("Variables");
-    if resolved.merged.variables.is_empty() {
-        printer.info("(none)");
-    } else {
-        let mut vars: Vec<_> = resolved.merged.variables.iter().collect();
-        vars.sort_by_key(|(k, _)| (*k).clone());
-        for (key, value) in vars {
-            let val_str = match value {
-                serde_yaml::Value::String(s) => s.clone(),
-                other => format!("{:?}", other),
-            };
-            printer.key_value(key, &val_str);
-        }
-    }
+    open_in_editor(&source_path, printer)?;
 
-    printer.newline();
-    printer.subheader("Packages");
-    let pkgs = &resolved.merged.packages;
-    let mut has_packages = false;
-    if let Some(ref brew) = pkgs.brew {
-        if !brew.taps.is_empty() {
-            printer.key_value("brew taps", &brew.taps.join(", "));
-            has_packages = true;
-        }
-        if !brew.formulae.is_empty() {
-            printer.key_value("brew formulae", &brew.formulae.join(", "));
-            has_packages = true;
-        }
-        if !brew.casks.is_empty() {
-            printer.key_value("brew casks", &brew.casks.join(", "));
-            has_packages = true;
-        }
-    }
-    if let Some(ref apt) = pkgs.apt
-        && !apt.packages.is_empty()
-    {
-        printer.key_value("apt", &apt.packages.join(", "));
-        has_packages = true;
-    }
-    if let Some(ref cargo) = pkgs.cargo
-        && !cargo.packages.is_empty()
-    {
-        printer.key_value("cargo", &cargo.packages.join(", "));
-        has_packages = true;
-    }
-    if let Some(ref npm) = pkgs.npm
-        && !npm.global.is_empty()
-    {
-        printer.key_value("npm", &npm.global.join(", "));
-        has_packages = true;
-    }
-    if !pkgs.pipx.is_empty() {
-        printer.key_value("pipx", &pkgs.pipx.join(", "));
-        has_packages = true;
-    }
-    if !pkgs.dnf.is_empty() {
-        printer.key_value("dnf", &pkgs.dnf.join(", "));
-        has_packages = true;
-    }
-    if !has_packages {
-        printer.info("(none)");
-    }
-
-    printer.newline();
-    printer.subheader("Files");
-    if resolved.merged.files.managed.is_empty() {
-        printer.info("(none)");
-    } else {
-        for file in &resolved.merged.files.managed {
-            printer.key_value(&file.source, &file.target.display().to_string());
-        }
-    }
-
-    if !resolved.merged.system.is_empty() {
-        printer.newline();
-        printer.subheader("System");
-        for key in resolved.merged.system.keys() {
-            printer.key_value(key, "(configured)");
-        }
-    }
-
-    if !resolved.merged.secrets.is_empty() {
-        printer.newline();
-        printer.subheader("Secrets");
-        for secret in &resolved.merged.secrets {
-            printer.key_value(&secret.source, &secret.target.display().to_string());
-        }
-    }
-
-    Ok(())
-}
-
-fn cmd_profile_list(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
-    printer.header("Available Profiles");
-
-    let profiles_dir = profiles_dir(cli);
-
-    if !profiles_dir.exists() {
-        printer.warning(&format!(
-            "Profiles directory not found: {}",
-            profiles_dir.display()
-        ));
-        return Ok(());
-    }
-
-    let mut profiles = Vec::new();
-    for entry in std::fs::read_dir(&profiles_dir)? {
-        let entry = entry?;
-        let path = entry.path();
-        if path.extension().and_then(|e| e.to_str()) == Some("yaml")
-            && let Some(stem) = path.file_stem().and_then(|s| s.to_str())
-        {
-            profiles.push(stem.to_string());
-        }
-    }
-
-    profiles.sort();
-
-    let active = cli.profile.clone().unwrap_or_else(|| {
-        config::load_config(&cli.config)
-            .map(|c| c.spec.profile)
-            .unwrap_or_default()
-    });
-
-    for name in &profiles {
-        if *name == active {
-            printer.success(&format!("{} (active)", name));
-        } else {
-            printer.info(name);
-        }
-    }
-
-    if profiles.is_empty() {
-        printer.info("No profiles found");
-    }
-
-    Ok(())
-}
-
-fn cmd_profile_switch(name: &str, printer: &Printer) -> anyhow::Result<()> {
-    printer.header("Switch Profile");
-    printer.newline();
-
-    let config_path = PathBuf::from("cfgd.yaml");
-    if !config_path.exists() {
-        printer.error("No cfgd.yaml found — run 'cfgd init' first");
-        return Ok(());
-    }
-
-    // Verify the target profile exists
-    let profiles_dir = PathBuf::from("profiles");
-    let profile_path = profiles_dir.join(format!("{}.yaml", name));
-    if !profile_path.exists() {
-        printer.error(&format!(
-            "Profile '{}' not found at {}",
-            name,
-            profile_path.display()
-        ));
-
-        // List available profiles
-        if profiles_dir.exists() {
-            let mut available = Vec::new();
-            for entry in std::fs::read_dir(&profiles_dir)? {
-                let entry = entry?;
-                let path = entry.path();
-                if path.extension().and_then(|e| e.to_str()) == Some("yaml")
-                    && let Some(stem) = path.file_stem().and_then(|s| s.to_str())
-                {
-                    available.push(stem.to_string());
+    // Validate after editing — loop until valid or user cancels
+    loop {
+        let contents = std::fs::read_to_string(&source_path)?;
+        match config::parse_config_source(&contents) {
+            Ok(_) => {
+                printer.success("Source manifest is valid");
+                break;
+            }
+            Err(e) => {
+                printer.error(&format!("Invalid source manifest: {}", e));
+                if !printer.prompt_confirm("Re-open in editor to fix?")? {
+                    printer.warning("Saved with validation errors");
+                    break;
                 }
-            }
-            if !available.is_empty() {
-                available.sort();
-                printer.info(&format!("Available profiles: {}", available.join(", ")));
+                open_in_editor(&source_path, printer)?;
             }
         }
+    }
+
+    Ok(())
+}
+
+fn cmd_source_create(
+    cli: &Cli,
+    printer: &Printer,
+    name: Option<&str>,
+    description: Option<&str>,
+    version: Option<&str>,
+) -> anyhow::Result<()> {
+    let config_dir = config_dir(cli);
+    let source_path = config_dir.join("cfgd-source.yaml");
+    if source_path.exists() {
+        anyhow::bail!(
+            "cfgd-source.yaml already exists at {} — use 'cfgd source edit' to modify it",
+            source_path.display()
+        );
+    }
+
+    // Interactive mode if no flags provided
+    let is_interactive = name.is_none() && description.is_none() && version.is_none();
+
+    // Determine name: flag > interactive prompt > directory name
+    let source_name = match name {
+        Some(n) => n.to_string(),
+        None => {
+            let dir_name = config_dir
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("my-config");
+            if is_interactive {
+                printer.prompt_text("Source name", dir_name)?
+            } else {
+                dir_name.to_string()
+            }
+        }
+    };
+
+    let source_description = match description {
+        Some(d) => d.to_string(),
+        None => {
+            if is_interactive {
+                printer.prompt_text("Description", "Team configuration source")?
+            } else {
+                "Team configuration source".to_string()
+            }
+        }
+    };
+
+    let source_version = match version {
+        Some(v) => v.to_string(),
+        None => "0.1.0".to_string(),
+    };
+
+    let profile_names = scan_profile_names(&config_dir.join("profiles"))?;
+    let module_names = scan_module_names(&config_dir.join("modules"))?;
+
+    // Build profiles YAML block
+    let profiles_yaml = if profile_names.is_empty() {
+        "    profiles: []".to_string()
+    } else {
+        let mut lines = vec!["    profiles:".to_string()];
+        for p in &profile_names {
+            lines.push(format!("      - {}", p));
+        }
+        lines.join("\n")
+    };
+
+    // Build modules YAML block
+    let modules_yaml = if module_names.is_empty() {
+        "    modules: []".to_string()
+    } else {
+        let mut lines = vec!["    modules:".to_string()];
+        for m in &module_names {
+            lines.push(format!("      - {}", m));
+        }
+        lines.join("\n")
+    };
+
+    let yaml = format!(
+        "apiVersion: cfgd.io/v1alpha1\n\
+         kind: ConfigSource\n\
+         metadata:\n\
+         \x20 name: {}\n\
+         \x20 version: \"{}\"\n\
+         \x20 description: \"{}\"\n\
+         spec:\n\
+         \x20 provides:\n\
+         {}\n\
+         {}\n\
+         \x20 policy:\n\
+         \x20   required:\n\
+         \x20     packages: {{}}\n\
+         \x20     modules: []\n\
+         \x20   recommended:\n\
+         \x20     packages: {{}}\n\
+         \x20     modules: []\n\
+         \x20   optional:\n\
+         \x20     packages: {{}}\n\
+         \x20     modules: []\n\
+         \x20   constraints:\n\
+         \x20     no-scripts: true\n\
+         \x20     no-secrets-read: true\n",
+        source_name, source_version, source_description, profiles_yaml, modules_yaml,
+    );
+
+    std::fs::write(&source_path, &yaml)?;
+    printer.success(&format!(
+        "Created cfgd-source.yaml at {}",
+        source_path.display()
+    ));
+    if !profile_names.is_empty() {
+        printer.info(&format!(
+            "Included {} profile(s): {}",
+            profile_names.len(),
+            profile_names.join(", ")
+        ));
+    }
+    if !module_names.is_empty() {
+        printer.info(&format!(
+            "Included {} module(s): {}",
+            module_names.len(),
+            module_names.join(", ")
+        ));
+    }
+    printer.info("Edit the file to configure policy tiers and platform-profiles");
+
+    Ok(())
+}
+
+// --- Workflow Generation ---
+
+fn cmd_workflow_generate(cli: &Cli, printer: &Printer, force: bool) -> anyhow::Result<()> {
+    let config_dir = config_dir(cli);
+    let workflow_dir = config_dir.join(".github").join("workflows");
+    let workflow_path = workflow_dir.join("cfgd-release.yml");
+
+    // Scan for profiles and modules
+    let profile_names = scan_profile_names(&config_dir.join("profiles"))?;
+    let module_names = scan_module_names(&config_dir.join("modules"))?;
+
+    if profile_names.is_empty() && module_names.is_empty() {
+        printer.warning("No profiles or modules found — nothing to generate");
         return Ok(());
     }
 
-    // Read current config, update profile field, write back
-    let contents = std::fs::read_to_string(&config_path)?;
-    let mut cfg: config::CfgdConfig = config::parse_config(&contents, &config_path)?;
-    let old_profile = cfg.spec.profile.clone();
-    cfg.spec.profile = name.to_string();
+    // Check for existing file
+    if workflow_path.exists()
+        && !force
+        && !printer
+            .prompt_confirm(&format!(
+                "Workflow already exists at {} — overwrite?",
+                workflow_path.display()
+            ))
+            .unwrap_or(false)
+    {
+        printer.info("Skipped workflow generation");
+        return Ok(());
+    }
 
-    let yaml = serde_yaml::to_string(&cfg)?;
-    std::fs::write(&config_path, &yaml)?;
+    let yaml = generate_release_workflow_yaml(&module_names, &profile_names);
 
-    printer.success(&format!("Switched profile: {} → {}", old_profile, name));
-    printer.info("Run 'cfgd plan' to see what would change, then 'cfgd apply' to apply");
+    std::fs::create_dir_all(&workflow_dir)?;
+    std::fs::write(&workflow_path, &yaml)?;
+
+    printer.success(&format!(
+        "Generated release workflow at {}",
+        workflow_path.display()
+    ));
+    printer.info(&format!(
+        "Covers {} module(s) and {} profile(s)",
+        module_names.len(),
+        profile_names.len()
+    ));
+
+    Ok(())
+}
+
+fn generate_release_workflow_yaml(modules: &[String], profiles: &[String]) -> String {
+    let mut yaml = String::new();
+
+    // Header
+    yaml.push_str(
+        "# Auto-generated by cfgd — manages release tagging for modules and profiles.\n\
+         # Regenerate with: cfgd workflow generate --force\n\
+         name: cfgd Release\n\
+         \n\
+         on:\n\
+         \x20 push:\n\
+         \x20   branches: [main]\n\
+         \x20   paths:\n",
+    );
+
+    // Paths that trigger the workflow
+    for m in modules {
+        yaml.push_str(&format!("      - 'modules/{}/**'\n", m));
+    }
+    for p in profiles {
+        yaml.push_str(&format!("      - 'profiles/{}.yaml'\n", p));
+        yaml.push_str(&format!("      - 'profiles/{}.yml'\n", p));
+    }
+
+    yaml.push_str(
+        "\n\
+         permissions:\n\
+         \x20 contents: write\n\
+         \n\
+         jobs:\n",
+    );
+
+    // Detect changes job
+    yaml.push_str(
+        "\x20 detect-changes:\n\
+         \x20   runs-on: ubuntu-latest\n\
+         \x20   outputs:\n",
+    );
+    for m in modules {
+        let safe = m.replace('-', "_");
+        yaml.push_str(&format!(
+            "      module_{}: ${{{{ steps.changes.outputs.module_{} }}}}\n",
+            safe, safe
+        ));
+    }
+    for p in profiles {
+        let safe = p.replace('-', "_");
+        yaml.push_str(&format!(
+            "      profile_{}: ${{{{ steps.changes.outputs.profile_{} }}}}\n",
+            safe, safe
+        ));
+    }
+
+    yaml.push_str(
+        "\x20   steps:\n\
+         \x20     - uses: actions/checkout@v4\n\
+         \x20       with:\n\
+         \x20         fetch-depth: 0\n\
+         \x20     - id: changes\n\
+         \x20       run: |\n\
+         \x20         if git rev-parse HEAD~1 >/dev/null 2>&1; then\n\
+         \x20           CHANGED=$(git diff --name-only HEAD~1 HEAD)\n\
+         \x20         else\n\
+         \x20           CHANGED=$(git diff-tree --no-commit-id --name-only -r HEAD)\n\
+         \x20         fi\n",
+    );
+
+    for m in modules {
+        let safe = m.replace('-', "_");
+        yaml.push_str(&format!(
+            "          if echo \"$CHANGED\" | grep -q '^modules/{}/'; then\n\
+             \x20           echo \"module_{}=true\" >> $GITHUB_OUTPUT\n\
+             \x20         else\n\
+             \x20           echo \"module_{}=false\" >> $GITHUB_OUTPUT\n\
+             \x20         fi\n",
+            m, safe, safe
+        ));
+    }
+    for p in profiles {
+        let safe = p.replace('-', "_");
+        yaml.push_str(&format!(
+            "          if echo \"$CHANGED\" | grep -q '^profiles/{}\\.'; then\n\
+             \x20           echo \"profile_{}=true\" >> $GITHUB_OUTPUT\n\
+             \x20         else\n\
+             \x20           echo \"profile_{}=false\" >> $GITHUB_OUTPUT\n\
+             \x20         fi\n",
+            p, safe, safe
+        ));
+    }
+
+    // Tag modules job
+    if !modules.is_empty() {
+        yaml.push_str(
+            "\n\
+             \x20 tag-modules:\n\
+             \x20   runs-on: ubuntu-latest\n\
+             \x20   needs: detect-changes\n\
+             \x20   strategy:\n\
+             \x20     matrix:\n\
+             \x20       include:\n",
+        );
+        for m in modules {
+            let safe = m.replace('-', "_");
+            yaml.push_str(&format!(
+                "          - name: {}\n\
+                 \x20           changed: ${{{{ needs.detect-changes.outputs.module_{} }}}}\n",
+                m, safe
+            ));
+        }
+        yaml.push_str(
+            "\x20   if: matrix.changed == 'true'\n\
+             \x20   steps:\n\
+             \x20     - uses: actions/checkout@v4\n\
+             \x20       with:\n\
+             \x20         fetch-depth: 0\n\
+             \x20     - name: Read module version\n\
+             \x20       id: version\n\
+             \x20       run: |\n\
+             \x20         VERSION=$(grep -oP 'version:\\s*\"?\\K[^\"\\s]+' \"modules/${{ matrix.name }}/module.yaml\" || echo \"0.1.0\")\n\
+             \x20         echo \"version=$VERSION\" >> $GITHUB_OUTPUT\n\
+             \x20     - name: Tag module release\n\
+             \x20       run: |\n\
+             \x20         TAG=\"${{ matrix.name }}/v${{ steps.version.outputs.version }}\"\n\
+             \x20         git tag -f \"$TAG\"\n\
+             \x20         git push origin \"$TAG\" --force\n",
+        );
+    }
+
+    // Tag profiles job
+    if !profiles.is_empty() {
+        yaml.push_str(
+            "\n\
+             \x20 tag-profiles:\n\
+             \x20   runs-on: ubuntu-latest\n\
+             \x20   needs: detect-changes\n\
+             \x20   strategy:\n\
+             \x20     matrix:\n\
+             \x20       include:\n",
+        );
+        for p in profiles {
+            let safe = p.replace('-', "_");
+            yaml.push_str(&format!(
+                "          - name: {}\n\
+                 \x20           changed: ${{{{ needs.detect-changes.outputs.profile_{} }}}}\n",
+                p, safe
+            ));
+        }
+        yaml.push_str(
+            "\x20   if: matrix.changed == 'true'\n\
+             \x20   steps:\n\
+             \x20     - uses: actions/checkout@v4\n\
+             \x20       with:\n\
+             \x20         fetch-depth: 0\n\
+             \x20     - name: Tag profile release\n\
+             \x20       run: |\n\
+             \x20         DATE=$(date +%Y%m%d)\n\
+             \x20         TAG=\"profile/${{ matrix.name }}/${DATE}\"\n\
+             \x20         git tag -f \"$TAG\"\n\
+             \x20         git push origin \"$TAG\" --force\n",
+        );
+    }
+
+    yaml
+}
+
+fn maybe_update_workflow(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
+    let config_dir = config_dir(cli);
+    let workflow_path = config_dir
+        .join(".github")
+        .join("workflows")
+        .join("cfgd-release.yml");
+    if !workflow_path.exists() {
+        return Ok(());
+    }
+
+    if printer
+        .prompt_confirm_with_default("Update release workflow to reflect changes?", true)
+        .unwrap_or(false)
+    {
+        cmd_workflow_generate(cli, printer, true)?;
+    }
 
     Ok(())
 }
@@ -3010,315 +2417,39 @@ fn managers_map(
         .collect()
 }
 
-fn cmd_module_list(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
-    printer.header("Modules");
-    printer.newline();
-
-    let config_dir = config_dir(cli);
-    let all_modules = modules::load_modules(&config_dir)?;
-
-    if all_modules.is_empty() {
-        printer.info("No modules found");
-        printer.info(&format!("Add modules to {}/modules/", config_dir.display()));
-        return Ok(());
-    }
-
-    // Load profile to determine which modules are active
-    let active_modules: Vec<String> = if cli.config.exists() {
-        let (_, resolved) = load_config_and_profile(cli, printer)?;
-        printer.newline();
-        resolved.merged.modules
-    } else {
-        Vec::new()
-    };
-
-    // Load module state from DB
-    let state = open_state_store()?;
-    let module_states = state.module_states()?;
-    let state_map: std::collections::HashMap<String, cfgd_core::state::ModuleStateRecord> =
-        module_states
-            .into_iter()
-            .map(|s| (s.module_name.clone(), s))
-            .collect();
-
-    let mut rows: Vec<Vec<String>> = Vec::new();
-    let mut names: Vec<String> = all_modules.keys().cloned().collect();
-    names.sort();
-
-    for name in &names {
-        let module = &all_modules[name];
-        let in_profile = active_modules.contains(name);
-        let pkg_count = module.spec.packages.len();
-        let file_count = module.spec.files.len();
-        let dep_count = module.spec.depends.len();
-
-        let status = if let Some(state_rec) = state_map.get(name) {
-            state_rec.status.clone()
-        } else if in_profile {
-            "pending".to_string()
-        } else {
-            "available".to_string()
-        };
-
-        let profile_indicator = if in_profile { "yes" } else { "-" };
-
-        rows.push(vec![
-            name.clone(),
-            profile_indicator.to_string(),
-            status,
-            format!(
-                "{} pkgs, {} files, {} deps",
-                pkg_count, file_count, dep_count
-            ),
-        ]);
-    }
-
-    printer.table(&["Module", "Active", "Status", "Contents"], &rows);
-
-    Ok(())
+fn module_state_map(
+    state: &cfgd_core::state::StateStore,
+) -> std::collections::HashMap<String, cfgd_core::state::ModuleStateRecord> {
+    state
+        .module_states()
+        .unwrap_or_default()
+        .into_iter()
+        .map(|s| (s.module_name.clone(), s))
+        .collect()
 }
 
-fn cmd_module_show(cli: &Cli, printer: &Printer, name: &str) -> anyhow::Result<()> {
-    printer.header(&format!("Module: {}", name));
-    printer.newline();
+fn open_in_editor(path: &Path, printer: &Printer) -> anyhow::Result<()> {
+    let editor = std::env::var("EDITOR")
+        .or_else(|_| std::env::var("VISUAL"))
+        .unwrap_or_else(|_| "vi".to_string());
 
-    let config_dir = config_dir(cli);
-    let all_modules = modules::load_modules(&config_dir)?;
+    let status = std::process::Command::new(&editor)
+        .arg(path)
+        .stdin(std::process::Stdio::inherit())
+        .stdout(std::process::Stdio::inherit())
+        .stderr(std::process::Stdio::inherit())
+        .status()
+        .map_err(|e| anyhow::anyhow!("Failed to open editor '{}': {}", editor, e))?;
 
-    let module = match all_modules.get(name) {
-        Some(m) => m,
-        None => {
-            printer.error(&format!("Module '{}' not found", name));
-            let available: Vec<&String> = all_modules.keys().collect();
-            if !available.is_empty() {
-                let mut sorted: Vec<&str> = available.iter().map(|s| s.as_str()).collect();
-                sorted.sort();
-                printer.info(&format!("Available modules: {}", sorted.join(", ")));
-            }
-            return Ok(());
-        }
-    };
-
-    // Basic info
-    if !module.spec.depends.is_empty() {
-        printer.key_value("Dependencies", &module.spec.depends.join(", "));
+    if !status.success() {
+        printer.warning(&format!("Editor '{}' exited with non-zero status", editor));
     }
-    printer.key_value("Directory", &module.dir.display().to_string());
-
-    // Module state from DB
-    let state = open_state_store()?;
-    if let Some(state_rec) = state.module_state_by_name(name)? {
-        printer.key_value("Status", &state_rec.status);
-        printer.key_value("Installed at", &state_rec.installed_at);
-        printer.key_value("Packages hash", &state_rec.packages_hash);
-        printer.key_value("Files hash", &state_rec.files_hash);
-    }
-
-    // Packages
-    if !module.spec.packages.is_empty() {
-        printer.newline();
-        printer.subheader("Packages");
-
-        // Try to resolve packages to show which manager would be used
-        let registry = build_registry();
-        let mgr_map = managers_map(&registry);
-        let platform = Platform::detect();
-
-        for entry in &module.spec.packages {
-            let prefer_str = if entry.prefer.is_empty() {
-                String::new()
-            } else {
-                format!(" (prefer: {})", entry.prefer.join(", "))
-            };
-            let version_str = entry
-                .min_version
-                .as_ref()
-                .map(|v| format!(", min: {}", v))
-                .unwrap_or_default();
-            let alias_str = if entry.aliases.is_empty() {
-                String::new()
-            } else {
-                let aliases: Vec<String> = entry
-                    .aliases
-                    .iter()
-                    .map(|(k, v)| format!("{}={}", k, v))
-                    .collect();
-                format!(", aliases: {}", aliases.join(", "))
-            };
-            let platform_str = if entry.platforms.is_empty() {
-                String::new()
-            } else {
-                format!(", platforms: {}", entry.platforms.join("/"))
-            };
-
-            // Try resolution
-            match modules::resolve_package(entry, name, &platform, &mgr_map) {
-                Ok(Some(resolved)) => {
-                    let ver = resolved
-                        .version
-                        .as_ref()
-                        .map(|v| format!(" ({})", v))
-                        .unwrap_or_default();
-                    printer.success(&format!(
-                        "{} -> {} install {}{}",
-                        entry.name, resolved.manager, resolved.resolved_name, ver
-                    ));
-                }
-                Ok(None) => {
-                    printer.info(&format!(
-                        "{}{} — skipped (platform filter)",
-                        entry.name, platform_str
-                    ));
-                }
-                Err(_) => {
-                    printer.warning(&format!(
-                        "{}{}{}{}{} — unresolved",
-                        entry.name, prefer_str, version_str, alias_str, platform_str
-                    ));
-                }
-            }
-        }
-    }
-
-    // Files
-    if !module.spec.files.is_empty() {
-        printer.newline();
-        printer.subheader("Files");
-        for file in &module.spec.files {
-            let git_indicator = if modules::is_git_source(&file.source) {
-                " (git)"
-            } else {
-                ""
-            };
-            printer.key_value(&format!("{}{}", file.source, git_indicator), &file.target);
-        }
-    }
-
-    // Scripts
-    if let Some(ref scripts) = module.spec.scripts
-        && !scripts.post_apply.is_empty()
-    {
-        printer.newline();
-        printer.subheader("Post-apply Scripts");
-        for script in &scripts.post_apply {
-            printer.info(&format!("  {}", script));
-        }
-    }
-
-    Ok(())
-}
-
-fn cmd_module_add(cli: &Cli, printer: &Printer, name: &str) -> anyhow::Result<()> {
-    printer.header("Add Module");
-    printer.newline();
-
-    let config_dir = config_dir(cli);
-
-    // Verify the module exists
-    let all_modules = modules::load_modules(&config_dir)?;
-    if !all_modules.contains_key(name) {
-        printer.error(&format!(
-            "Module '{}' not found in {}/modules/",
-            name,
-            config_dir.display()
-        ));
-        return Ok(());
-    }
-
-    // Load profile
-    if !cli.config.exists() {
-        printer.error("No cfgd.yaml found — run 'cfgd init' first");
-        return Ok(());
-    }
-
-    let cfg = config::load_config(&cli.config)?;
-    let profile_name = cli.profile.as_deref().unwrap_or(&cfg.spec.profile);
-    let profile_path = profiles_dir(cli).join(format!("{}.yaml", profile_name));
-
-    if !profile_path.exists() {
-        printer.error(&format!("Profile '{}' not found", profile_name));
-        return Ok(());
-    }
-
-    let contents = std::fs::read_to_string(&profile_path)?;
-    let mut doc: config::ProfileDocument = serde_yaml::from_str(&contents)?;
-
-    // Check if already present
-    if doc.spec.modules.contains(&name.to_string()) {
-        printer.info(&format!(
-            "Module '{}' is already in profile '{}'",
-            name, profile_name
-        ));
-        return Ok(());
-    }
-
-    // Add and write back
-    doc.spec.modules.push(name.to_string());
-    let yaml = serde_yaml::to_string(&doc)?;
-    std::fs::write(&profile_path, &yaml)?;
-
-    printer.success(&format!(
-        "Added module '{}' to profile '{}'",
-        name, profile_name
-    ));
-    printer.info("Run 'cfgd plan' to preview changes, then 'cfgd apply'");
-
-    Ok(())
-}
-
-fn cmd_module_remove(cli: &Cli, printer: &Printer, name: &str) -> anyhow::Result<()> {
-    printer.header("Remove Module");
-    printer.newline();
-
-    if !cli.config.exists() {
-        printer.error("No cfgd.yaml found — run 'cfgd init' first");
-        return Ok(());
-    }
-
-    let cfg = config::load_config(&cli.config)?;
-    let profile_name = cli.profile.as_deref().unwrap_or(&cfg.spec.profile);
-    let profile_path = profiles_dir(cli).join(format!("{}.yaml", profile_name));
-
-    if !profile_path.exists() {
-        printer.error(&format!("Profile '{}' not found", profile_name));
-        return Ok(());
-    }
-
-    let contents = std::fs::read_to_string(&profile_path)?;
-    let mut doc: config::ProfileDocument = serde_yaml::from_str(&contents)?;
-
-    if !doc.spec.modules.contains(&name.to_string()) {
-        printer.info(&format!(
-            "Module '{}' is not in profile '{}'",
-            name, profile_name
-        ));
-        return Ok(());
-    }
-
-    doc.spec.modules.retain(|m| m != name);
-    let yaml = serde_yaml::to_string(&doc)?;
-    std::fs::write(&profile_path, &yaml)?;
-
-    // Clean up module state
-    let state = open_state_store()?;
-    let _ = state.remove_module_state(name);
-
-    printer.success(&format!(
-        "Removed module '{}' from profile '{}'",
-        name, profile_name
-    ));
-    printer.info("Run 'cfgd apply' to remove any resources installed by this module");
-
     Ok(())
 }
 
 /// Resolve the secret backend from config, check availability, and validate the file exists.
-/// Returns the registry on success, or prints an error and returns None.
-fn resolve_secret_backend(
-    cli: &Cli,
-    printer: &Printer,
-    file: &Path,
-) -> anyhow::Result<Option<ProviderRegistry>> {
+/// Returns a registry whose `secret_backend` is guaranteed `Some`.
+fn resolve_secret_backend(cli: &Cli, file: &Path) -> anyhow::Result<ProviderRegistry> {
     let cfg = if cli.config.exists() {
         Some(config::load_config(&cli.config)?)
     } else {
@@ -3327,37 +2458,33 @@ fn resolve_secret_backend(
 
     let registry = build_registry_with_config(cfg.as_ref());
 
-    if let Some(ref backend) = registry.secret_backend {
-        if !backend.is_available() {
-            printer.error(&format!("{}: not installed", backend.name()));
-            return Ok(None);
+    match registry.secret_backend {
+        Some(ref backend) if !backend.is_available() => {
+            anyhow::bail!("{}: not installed", backend.name());
         }
-    } else {
-        printer.error("No secret backend configured");
-        return Ok(None);
+        None => anyhow::bail!("No secret backend configured"),
+        _ => {}
     }
 
     if !file.exists() {
-        printer.error(&format!("File not found: {}", file.display()));
-        return Ok(None);
+        anyhow::bail!("File not found: {}", file.display());
     }
 
-    Ok(Some(registry))
+    Ok(registry)
+}
+
+/// Shorthand: resolve secret backend and extract it in one call.
+fn get_secret_backend(cli: &Cli, file: &Path) -> anyhow::Result<Box<dyn SecretBackend>> {
+    let registry = resolve_secret_backend(cli, file)?;
+    registry
+        .secret_backend
+        .ok_or_else(|| anyhow::anyhow!("No secret backend configured"))
 }
 
 fn cmd_secret_encrypt(cli: &Cli, printer: &Printer, file: &Path) -> anyhow::Result<()> {
     printer.header("Secret Encrypt");
 
-    let registry = match resolve_secret_backend(cli, printer, file)? {
-        Some(r) => r,
-        None => return Ok(()),
-    };
-    // Backend existence guaranteed by resolve_secret_backend
-    let backend = match registry.secret_backend.as_ref() {
-        Some(b) => b,
-        None => return Ok(()),
-    };
-
+    let backend = get_secret_backend(cli, file)?;
     backend.encrypt_file(file)?;
 
     printer.newline();
@@ -3373,15 +2500,7 @@ fn cmd_secret_encrypt(cli: &Cli, printer: &Printer, file: &Path) -> anyhow::Resu
 fn cmd_secret_decrypt(cli: &Cli, printer: &Printer, file: &Path) -> anyhow::Result<()> {
     printer.header("Secret Decrypt");
 
-    let registry = match resolve_secret_backend(cli, printer, file)? {
-        Some(r) => r,
-        None => return Ok(()),
-    };
-    let backend = match registry.secret_backend.as_ref() {
-        Some(b) => b,
-        None => return Ok(()),
-    };
-
+    let backend = get_secret_backend(cli, file)?;
     let decrypted = backend.decrypt_file(file)?;
     printer.info(&decrypted);
 
@@ -3391,15 +2510,7 @@ fn cmd_secret_decrypt(cli: &Cli, printer: &Printer, file: &Path) -> anyhow::Resu
 fn cmd_secret_edit(cli: &Cli, printer: &Printer, file: &Path) -> anyhow::Result<()> {
     printer.header("Secret Edit");
 
-    let registry = match resolve_secret_backend(cli, printer, file)? {
-        Some(r) => r,
-        None => return Ok(()),
-    };
-    let backend = match registry.secret_backend.as_ref() {
-        Some(b) => b,
-        None => return Ok(()),
-    };
-
+    let backend = get_secret_backend(cli, file)?;
     backend.edit_file(file)?;
 
     printer.newline();
@@ -3433,7 +2544,6 @@ fn cmd_secret_init(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
 
 fn cmd_doctor(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
     printer.header("Doctor");
-    printer.newline();
 
     let mut all_ok = true;
 
@@ -3638,7 +2748,8 @@ fn cmd_doctor(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
         printer.newline();
         printer.subheader("Modules");
 
-        let all_modules = modules::load_modules(&config_dir).unwrap_or_default();
+        let cache_base = modules::default_module_cache_dir().unwrap_or_default();
+        let all_modules = modules::load_all_modules(&config_dir, &cache_base).unwrap_or_default();
         let registry_for_modules = build_registry();
         let mgr_map = managers_map(&registry_for_modules);
         let platform = Platform::detect();
@@ -3771,6 +2882,28 @@ fn profiles_dir(cli: &Cli) -> PathBuf {
     config_dir(cli).join("profiles")
 }
 
+/// Resolve profile name from explicit name or --active flag.
+fn resolve_profile_name(cli: &Cli, name: Option<&str>, active: bool) -> anyhow::Result<String> {
+    match (name, active) {
+        (Some(n), _) => Ok(n.to_string()),
+        (None, true) => {
+            let config_path = &cli.config;
+            if !config_path.exists() {
+                anyhow::bail!("{}", MSG_NO_CONFIG);
+            }
+            let cfg = config::load_config(config_path)?;
+            if let Some(ref profile_override) = cli.profile {
+                Ok(profile_override.clone())
+            } else {
+                Ok(cfg.spec.profile)
+            }
+        }
+        (None, false) => {
+            anyhow::bail!("Profile name required (or use --active for the active profile)")
+        }
+    }
+}
+
 fn cmd_daemon(
     cli: &Cli,
     printer: &Printer,
@@ -3813,7 +2946,6 @@ fn cmd_daemon(
 
 fn cmd_daemon_status(printer: &Printer) -> anyhow::Result<()> {
     printer.header("Daemon Status");
-    printer.newline();
 
     match cfgd_core::daemon::query_daemon_status()? {
         Some(status) => {
@@ -3867,7 +2999,6 @@ fn cmd_daemon_status(printer: &Printer) -> anyhow::Result<()> {
 
 fn cmd_daemon_install(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
     printer.header("Install Daemon Service");
-    printer.newline();
 
     cfgd_core::daemon::install_service(&cli.config, cli.profile.as_deref())?;
 
@@ -3878,7 +3009,6 @@ fn cmd_daemon_install(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
 
 fn cmd_daemon_uninstall(printer: &Printer) -> anyhow::Result<()> {
     printer.header("Uninstall Daemon Service");
-    printer.newline();
 
     if cfg!(target_os = "macos") {
         printer.info("Unloading: launchctl unload ~/Library/LaunchAgents/com.cfgd.daemon.plist");
@@ -3914,7 +3044,6 @@ fn cmd_upgrade(printer: &Printer, check_only: bool) -> anyhow::Result<()> {
     }
 
     printer.header("Upgrade");
-    printer.newline();
 
     printer.info("Checking for updates...");
     let check = upgrade::check_latest(None)?;
@@ -4022,9 +3151,7 @@ fn cmd_sync(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
 
         if changes_detected {
             printer.newline();
-            printer.info(
-                "Sources updated. Run 'cfgd plan' to see changes, then 'cfgd apply' to reconcile.",
-            );
+            printer.info(&format!("Sources updated. {}", MSG_RUN_APPLY));
         }
     }
 
@@ -4054,253 +3181,6 @@ fn default_device_id() -> String {
         .unwrap_or_else(|_| "unknown".to_string())
 }
 
-/// `cfgd init --server <url> --token <bootstrap-token>`
-///
-/// Enrolls this device with cfgd-server:
-/// 1. Validates arguments
-/// 2. Exchanges bootstrap token for permanent device credential
-/// 3. Saves credential locally
-/// 4. Saves any desired config pushed by server
-/// 5. Prints next steps
-fn cmd_init_server(
-    printer: &Printer,
-    server_url: Option<&str>,
-    token: Option<&str>,
-) -> anyhow::Result<()> {
-    printer.header("Server Enrollment");
-    printer.newline();
-
-    let server_url = match server_url {
-        Some(url) => url,
-        None => {
-            printer.error("--server is required for server enrollment");
-            printer.info("Usage: cfgd init --server <url> --token <bootstrap-token>");
-            return Ok(());
-        }
-    };
-
-    let token = match token {
-        Some(t) => t,
-        None => {
-            printer.error("--token is required for server enrollment");
-            printer.info("Get a bootstrap token from your team admin");
-            return Ok(());
-        }
-    };
-
-    let device_id = default_device_id();
-    printer.key_value("Server", server_url);
-    printer.key_value("Device ID", &device_id);
-    printer.newline();
-
-    // Create a client with no auth (enrollment doesn't need pre-auth)
-    let client = cfgd_core::server_client::ServerClient::new(server_url, None, &device_id);
-
-    // Enroll
-    printer.info("Exchanging bootstrap token for device credential...");
-    let resp = client
-        .enroll(token, printer)
-        .map_err(|e| anyhow::anyhow!("{}", e))?;
-
-    printer.newline();
-    printer.success(&format!("Enrolled as user '{}'", resp.username));
-    if let Some(ref team) = resp.team {
-        printer.key_value("Team", team);
-    }
-    printer.key_value("Device", &resp.device_id);
-
-    // Save credential
-    let credential = cfgd_core::server_client::DeviceCredential {
-        server_url: server_url.to_string(),
-        device_id: resp.device_id.clone(),
-        api_key: resp.api_key.clone(),
-        username: resp.username.clone(),
-        team: resp.team.clone(),
-        enrolled_at: cfgd_core::utc_now_iso8601(),
-    };
-
-    match cfgd_core::server_client::save_credential(&credential) {
-        Ok(path) => {
-            printer.success(&format!("Credential saved to {}", path.display()));
-        }
-        Err(e) => {
-            printer.error(&format!("Failed to save credential: {}", e));
-            printer.warning("You will need to manually provide --api-key for future commands");
-        }
-    }
-
-    // Save desired config if server pushed one
-    if let Some(ref desired) = resp.desired_config {
-        match cfgd_core::state::save_pending_server_config(desired) {
-            Ok(path) => {
-                printer.newline();
-                printer.info(&format!(
-                    "Server pushed desired config — saved to {}",
-                    path.display()
-                ));
-                printer.info("Run `cfgd plan` to review, then `cfgd apply` to apply");
-            }
-            Err(e) => {
-                tracing::warn!(error = %e, "Failed to save pending server config");
-            }
-        }
-    }
-
-    printer.newline();
-    printer.header("Next Steps");
-    printer.newline();
-    printer.info("  cfgd checkin --server-url <url>   — report status to server");
-    printer.info("  cfgd plan                         — preview configuration");
-    printer.info("  cfgd apply                        — apply configuration");
-    printer.info("  cfgd daemon --install              — start background sync");
-
-    Ok(())
-}
-
-fn cmd_init_module(printer: &Printer, url: &str, module_name: &str) -> anyhow::Result<()> {
-    printer.header("Module Bootstrap");
-    printer.newline();
-
-    if !check_prerequisites(printer) {
-        return Ok(());
-    }
-
-    // Clone the repo
-    let cloned_dir = init_from_remote(printer, url)?;
-    let config_dir = match cloned_dir {
-        Some(dir) => dir,
-        None => return Ok(()),
-    };
-
-    // Verify the module exists in the cloned repo
-    let all_modules = modules::load_modules(&config_dir)?;
-    if !all_modules.contains_key(module_name) {
-        printer.error(&format!("Module '{}' not found in repository", module_name));
-        if !all_modules.is_empty() {
-            let mut available: Vec<&str> = all_modules.keys().map(|s| s.as_str()).collect();
-            available.sort();
-            printer.info(&format!("Available modules: {}", available.join(", ")));
-        }
-        return Ok(());
-    }
-
-    // Create minimal cfgd.yaml with just this module
-    let config_path = config_dir.join("cfgd.yaml");
-    if !config_path.exists() {
-        let profiles_dir = config_dir.join("profiles");
-        std::fs::create_dir_all(&profiles_dir)?;
-
-        let profile_content = format!(
-            r#"apiVersion: cfgd/v1
-kind: Profile
-metadata:
-  name: default
-spec:
-  modules:
-    - {}
-  variables: {{}}
-  packages: {{}}
-"#,
-            module_name
-        );
-        std::fs::write(profiles_dir.join("default.yaml"), &profile_content)?;
-
-        let config_name = config_dir
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("cfgd-config");
-        let config_content = format!(
-            r#"apiVersion: cfgd/v1
-kind: Config
-metadata:
-  name: {}
-spec:
-  profile: default
-"#,
-            config_name.trim_start_matches('.')
-        );
-        std::fs::write(&config_path, &config_content)?;
-        printer.success("Created minimal cfgd.yaml with module profile");
-    }
-
-    // Resolve module and its dependencies
-    let platform = Platform::detect();
-    printer.key_value(
-        "Platform",
-        &format!("{}/{}/{}", platform.os, platform.distro, platform.arch),
-    );
-
-    let registry = build_registry();
-    let mgr_map = managers_map(&registry);
-    let cache_base = modules::default_module_cache_dir()?;
-
-    let module_names = vec![module_name.to_string()];
-    let resolved_modules =
-        modules::resolve_modules(&module_names, &config_dir, &cache_base, &platform, &mgr_map)?;
-
-    if resolved_modules.is_empty() {
-        printer.warning("No actions resolved for this module");
-        return Ok(());
-    }
-
-    // Show plan
-    printer.newline();
-    printer.subheader("Module Plan");
-    for rm in &resolved_modules {
-        printer.info(&format!(
-            "  {} ({} packages, {} files)",
-            rm.name,
-            rm.packages.len(),
-            rm.files.len()
-        ));
-        for pkg in &rm.packages {
-            let ver = pkg.version.as_deref().unwrap_or("-");
-            printer.info(&format!(
-                "    + {} install {} ({})",
-                pkg.manager, pkg.resolved_name, ver
-            ));
-        }
-        for file in &rm.files {
-            printer.info(&format!("    -> {}", file.target.display()));
-        }
-    }
-
-    // Confirm
-    printer.newline();
-    let confirmed = printer
-        .prompt_confirm("Apply this module?")
-        .unwrap_or(false);
-    if !confirmed {
-        printer.info("Aborted");
-        return Ok(());
-    }
-
-    // Apply via reconciler
-    let resolved = config::resolve_profile("default", &config_dir.join("profiles"))?;
-    let state = open_state_store()?;
-    let reconciler = Reconciler::new(&registry, &state);
-    let plan = reconciler.plan(&resolved, Vec::new(), Vec::new(), resolved_modules.clone())?;
-    let result = reconciler.apply(
-        &plan,
-        &resolved,
-        &config_dir,
-        printer,
-        None,
-        &resolved_modules,
-    )?;
-
-    printer.newline();
-    print_apply_result(&result, printer);
-
-    printer.newline();
-    printer.info("Useful commands:");
-    printer.info("  cfgd module show <name>  — view module details");
-    printer.info("  cfgd plan               — preview all changes");
-    printer.info("  cfgd apply              — apply changes");
-
-    Ok(())
-}
-
 fn which(command: &str) -> bool {
     if let Ok(path_var) = std::env::var("PATH") {
         for dir in std::env::split_paths(&path_var) {
@@ -4319,15 +3199,17 @@ fn source_cache_dir() -> anyhow::Result<std::path::PathBuf> {
     SourceManager::default_cache_dir().map_err(|e| anyhow::anyhow!(e))
 }
 
-fn cmd_source_add(
-    cli: &Cli,
-    printer: &Printer,
-    url: &str,
-    name: Option<&str>,
-    profile: Option<&str>,
-    accept_recommended: bool,
-    priority: Option<u32>,
-) -> anyhow::Result<()> {
+fn cmd_source_add(cli: &Cli, printer: &Printer, args: &SourceAddArgs) -> anyhow::Result<()> {
+    let url = &args.url;
+    let name = args.name.as_deref();
+    let branch = args.branch.as_deref();
+    let profile = args.profile.as_deref();
+    let accept_recommended = args.accept_recommended;
+    let priority = args.priority;
+    let opt_in = &args.opt_in;
+    let sync_interval = args.sync_interval.as_deref();
+    let auto_apply = args.auto_apply;
+    let pin_version = args.pin_version.as_deref();
     printer.header("Add Config Source");
 
     // Infer name from URL if not provided
@@ -4463,6 +3345,7 @@ fn cmd_source_add(
                 profile: selected_profile.clone(),
                 priority: resolved_priority,
                 accept_recommended,
+                opt_in: opt_in.to_vec(),
                 ..Default::default()
             };
 
@@ -4517,8 +3400,23 @@ fn cmd_source_add(
     // Build the source spec with user choices
     let mut source_spec =
         SourceManager::build_source_spec(&source_name, url, selected_profile.as_deref());
+    if let Some(b) = branch {
+        source_spec.origin.branch = b.to_string();
+    }
     source_spec.subscription.accept_recommended = accept_recommended;
     source_spec.subscription.priority = resolved_priority;
+    if !opt_in.is_empty() {
+        source_spec.subscription.opt_in = opt_in.to_vec();
+    }
+    if let Some(interval) = sync_interval {
+        source_spec.sync.interval = interval.to_string();
+    }
+    if auto_apply {
+        source_spec.sync.auto_apply = true;
+    }
+    if let Some(pin) = pin_version {
+        source_spec.sync.pin_version = Some(pin.to_string());
+    }
 
     // Update cfgd.yaml
     add_source_to_config(&config_path, &source_spec)?;
@@ -4538,7 +3436,7 @@ fn cmd_source_add(
     if let Some(ref profile) = selected_profile {
         printer.key_value("Profile", profile);
     }
-    printer.info("Run 'cfgd plan' to see changes from this source");
+    printer.info(MSG_RUN_APPLY);
 
     Ok(())
 }
@@ -4891,11 +3789,18 @@ fn cmd_source_replace(
     cmd_source_add(
         cli,
         printer,
-        new_url,
-        Some(old_name),
-        None,
-        false,
-        Some(500),
+        &SourceAddArgs {
+            url: new_url.to_string(),
+            name: Some(old_name.to_string()),
+            branch: None,
+            profile: None,
+            accept_recommended: false,
+            priority: Some(500),
+            opt_in: vec![],
+            sync_interval: None,
+            auto_apply: false,
+            pin_version: None,
+        },
     )?;
 
     printer.success(&format!("Source '{}' replaced with {}", old_name, new_url));
@@ -4921,25 +3826,19 @@ fn cmd_source_priority(
     match value {
         Some(new_priority) => {
             // Update priority in cfgd.yaml
-            let raw_content = std::fs::read_to_string(&config_path)?;
-            let mut raw: serde_yaml::Value = serde_yaml::from_str(&raw_content)?;
+            with_source_config(&config_path, name, |source_entry| {
+                let subscription = source_entry.get_mut("subscription").ok_or_else(|| {
+                    anyhow::anyhow!("source '{}' has no subscription block", name)
+                })?;
 
-            let source_entry = find_source_in_config(&mut raw, name)
-                .ok_or_else(|| anyhow::anyhow!("source '{}' not found in config file", name))?;
-
-            let subscription = source_entry
-                .get_mut("subscription")
-                .ok_or_else(|| anyhow::anyhow!("source '{}' has no subscription block", name))?;
-
-            if let Some(mapping) = subscription.as_mapping_mut() {
-                mapping.insert(
-                    serde_yaml::Value::String("priority".into()),
-                    serde_yaml::Value::Number(serde_yaml::Number::from(new_priority)),
-                );
-            }
-
-            let output = serde_yaml::to_string(&raw)?;
-            std::fs::write(&config_path, output)?;
+                if let Some(mapping) = subscription.as_mapping_mut() {
+                    mapping.insert(
+                        serde_yaml::Value::String("priority".into()),
+                        serde_yaml::Value::Number(serde_yaml::Number::from(new_priority)),
+                    );
+                }
+                Ok(())
+            })?;
 
             printer.success(&format!(
                 "Source '{}' priority updated: {} -> {}",
@@ -5128,10 +4027,7 @@ fn update_source_rejection(
     source_name: &str,
     path: &str,
 ) -> anyhow::Result<()> {
-    let contents = std::fs::read_to_string(config_path)?;
-    let mut raw: serde_yaml::Value = serde_yaml::from_str(&contents)?;
-
-    if let Some(source) = find_source_in_config(&mut raw, source_name) {
+    with_source_config(config_path, source_name, |source| {
         let subscription = source
             .as_mapping_mut()
             .and_then(|m| {
@@ -5147,14 +4043,9 @@ fn update_source_rejection(
             .entry(serde_yaml::Value::String("reject".into()))
             .or_insert(serde_yaml::Value::Mapping(serde_yaml::Mapping::new()));
 
-        // Parse path like "packages.brew.formulae" and add rejection
         set_nested_yaml_value(reject, path, &serde_yaml::Value::Null)?;
-    }
-
-    let output = serde_yaml::to_string(&raw)?;
-    std::fs::write(config_path, output)?;
-
-    Ok(())
+        Ok(())
+    })
 }
 
 fn update_source_override(
@@ -5163,10 +4054,7 @@ fn update_source_override(
     path: &str,
     value: &str,
 ) -> anyhow::Result<()> {
-    let contents = std::fs::read_to_string(config_path)?;
-    let mut raw: serde_yaml::Value = serde_yaml::from_str(&contents)?;
-
-    if let Some(source) = find_source_in_config(&mut raw, source_name) {
+    with_source_config(config_path, source_name, |source| {
         let subscription = source
             .as_mapping_mut()
             .and_then(|m| {
@@ -5187,12 +4075,8 @@ fn update_source_override(
             path,
             &serde_yaml::Value::String(value.to_string()),
         )?;
-    }
-
-    let output = serde_yaml::to_string(&raw)?;
-    std::fs::write(config_path, output)?;
-
-    Ok(())
+        Ok(())
+    })
 }
 
 fn find_source_in_config<'a>(
@@ -5209,6 +4093,22 @@ fn find_source_in_config<'a>(
                 .map(|n| n == source_name)
                 .unwrap_or(false)
         })
+}
+
+/// Load config YAML, find a named source, apply a mutation, and write back.
+/// The closure receives the mutable source entry; the helper handles I/O.
+fn with_source_config<F>(config_path: &Path, source_name: &str, f: F) -> anyhow::Result<()>
+where
+    F: FnOnce(&mut serde_yaml::Value) -> anyhow::Result<()>,
+{
+    let contents = std::fs::read_to_string(config_path)?;
+    let mut raw: serde_yaml::Value = serde_yaml::from_str(&contents)?;
+    let source = find_source_in_config(&mut raw, source_name)
+        .ok_or_else(|| anyhow::anyhow!("source '{}' not found in config file", source_name))?;
+    f(source)?;
+    let output = serde_yaml::to_string(&raw)?;
+    std::fs::write(config_path, output)?;
+    Ok(())
 }
 
 // --- Plan filtering for --skip and --only ---
@@ -5580,7 +4480,7 @@ fn cmd_checkin(
                     "Server pushed a new desired config — saved to {}",
                     path.display()
                 ));
-                printer.info("Run `cfgd plan` to review or `cfgd apply` to reconcile");
+                printer.info(MSG_RUN_APPLY);
             }
             Err(e) => {
                 tracing::warn!(error = %e, "Failed to save pending server config");
@@ -5716,6 +4616,9 @@ fn cmd_decide(
 mod tests {
     use super::*;
 
+    const TEST_CONFIG_YAML: &str =
+        "apiVersion: cfgd/v1\nkind: Config\nmetadata:\n  name: t\nspec:\n  profile: default\n";
+
     fn create_test_config_dir() -> tempfile::TempDir {
         let dir = tempfile::tempdir().unwrap();
 
@@ -5758,219 +4661,6 @@ spec:
         .unwrap();
 
         dir
-    }
-
-    #[test]
-    fn bootstrap_state_serialization_roundtrip() {
-        let dir = tempfile::tempdir().unwrap();
-
-        let state = BootstrapState {
-            repo_url: Some("https://github.com/test/bootstrap.git".to_string()),
-            config_dir: "/home/user/.config/cfgd".to_string(),
-            profile: Some("work".to_string()),
-            phase: BootstrapPhase::Apply,
-        };
-
-        save_bootstrap_state(dir.path(), &state).unwrap();
-        let loaded = load_bootstrap_state(dir.path()).unwrap();
-
-        assert_eq!(loaded.repo_url, state.repo_url);
-        assert_eq!(loaded.config_dir, state.config_dir);
-        assert_eq!(loaded.profile, state.profile);
-        assert_eq!(loaded.phase, BootstrapPhase::Apply);
-    }
-
-    #[test]
-    fn bootstrap_state_missing_returns_none() {
-        let dir = tempfile::tempdir().unwrap();
-        assert!(load_bootstrap_state(dir.path()).is_none());
-    }
-
-    #[test]
-    fn clear_bootstrap_state_removes_file() {
-        let dir = tempfile::tempdir().unwrap();
-
-        let state = BootstrapState {
-            repo_url: None,
-            config_dir: ".".to_string(),
-            profile: None,
-            phase: BootstrapPhase::Clone,
-        };
-
-        save_bootstrap_state(dir.path(), &state).unwrap();
-        assert!(dir.path().join(BOOTSTRAP_STATE_FILE).exists());
-
-        clear_bootstrap_state(dir.path());
-        assert!(!dir.path().join(BOOTSTRAP_STATE_FILE).exists());
-    }
-
-    #[test]
-    fn ensure_config_file_creates_new() {
-        let dir = tempfile::tempdir().unwrap();
-        let config_path = dir.path().join("cfgd.yaml");
-
-        ensure_config_file(
-            dir.path(),
-            &config_path,
-            "work",
-            Some("https://github.com/test/init-cfg.git"),
-        )
-        .unwrap();
-
-        assert!(config_path.exists());
-        let contents = std::fs::read_to_string(&config_path).unwrap();
-        assert!(contents.contains("profile: work"));
-        assert!(contents.contains("https://github.com/test/init-cfg.git"));
-    }
-
-    #[test]
-    fn ensure_config_file_updates_existing() {
-        let dir = tempfile::tempdir().unwrap();
-        let config_path = dir.path().join("cfgd.yaml");
-
-        std::fs::write(
-            &config_path,
-            r#"apiVersion: cfgd/v1
-kind: Config
-metadata:
-  name: test
-spec:
-  profile: default
-"#,
-        )
-        .unwrap();
-
-        ensure_config_file(dir.path(), &config_path, "work", None).unwrap();
-
-        let cfg = config::load_config(&config_path).unwrap();
-        assert_eq!(cfg.spec.profile, "work");
-    }
-
-    #[test]
-    fn ensure_config_file_no_update_if_same_profile() {
-        let dir = tempfile::tempdir().unwrap();
-        let config_path = dir.path().join("cfgd.yaml");
-
-        let original = r#"apiVersion: cfgd/v1
-kind: Config
-metadata:
-  name: test
-spec:
-  profile: default
-"#;
-        std::fs::write(&config_path, original).unwrap();
-
-        ensure_config_file(dir.path(), &config_path, "default", None).unwrap();
-
-        // Should not be rewritten
-        let contents = std::fs::read_to_string(&config_path).unwrap();
-        assert_eq!(contents, original);
-    }
-
-    #[test]
-    fn count_packages_empty() {
-        let spec = config::ProfileSpec::default();
-        assert_eq!(count_packages(&spec), 0);
-    }
-
-    #[test]
-    fn count_packages_with_various() {
-        let spec = config::ProfileSpec {
-            packages: Some(config::PackagesSpec {
-                brew: Some(config::BrewSpec {
-                    formulae: vec!["rg".into(), "fd".into()],
-                    casks: vec!["firefox".into()],
-                    ..Default::default()
-                }),
-                cargo: Some(config::CargoSpec {
-                    file: None,
-                    packages: vec!["bat".into()],
-                }),
-                ..Default::default()
-            }),
-            ..Default::default()
-        };
-        assert_eq!(count_packages(&spec), 4);
-    }
-
-    #[test]
-    fn init_local_returns_existing_config() {
-        let dir = tempfile::tempdir().unwrap();
-        let original_dir = std::env::current_dir().unwrap();
-
-        // Pre-create cfgd.yaml so init_local takes the fast path (no prompts)
-        let config_path = dir.path().join("cfgd.yaml");
-        std::fs::write(
-            &config_path,
-            "apiVersion: cfgd/v1\nkind: Config\nmetadata:\n  name: test\nspec:\n  profile: default\n",
-        )
-        .unwrap();
-
-        std::env::set_current_dir(dir.path()).unwrap();
-
-        let printer = Printer::new(cfgd_core::output::Verbosity::Quiet);
-        let result = init_local(&printer).unwrap();
-
-        std::env::set_current_dir(&original_dir).unwrap();
-
-        assert!(result.is_some());
-        let config_dir = result.unwrap();
-        assert!(config_dir.join("cfgd.yaml").exists());
-    }
-
-    #[test]
-    fn bootstrap_profile_select_single_profile() {
-        let dir = tempfile::tempdir().unwrap();
-        let profiles_dir = dir.path().join("profiles");
-        std::fs::create_dir_all(&profiles_dir).unwrap();
-
-        std::fs::write(
-            profiles_dir.join("default.yaml"),
-            r#"apiVersion: cfgd/v1
-kind: Profile
-metadata:
-  name: default
-spec:
-  variables: {}
-"#,
-        )
-        .unwrap();
-
-        let printer = Printer::new(cfgd_core::output::Verbosity::Quiet);
-        let result = bootstrap_profile_select(dir.path(), &printer).unwrap();
-        assert_eq!(result, Some("default".to_string()));
-    }
-
-    #[test]
-    fn bootstrap_phase_display_names() {
-        assert_eq!(BootstrapPhase::Clone.display_name(), "Clone repository");
-        assert_eq!(BootstrapPhase::Apply.display_name(), "Apply configuration");
-        assert_eq!(BootstrapPhase::Complete.display_name(), "Complete");
-    }
-
-    #[test]
-    fn profile_switch_via_config_update() {
-        let dir = create_test_config_dir();
-
-        // Create cfgd.yaml
-        let config_path = dir.path().join("cfgd.yaml");
-        std::fs::write(
-            &config_path,
-            r#"apiVersion: cfgd/v1
-kind: Config
-metadata:
-  name: test
-spec:
-  profile: default
-"#,
-        )
-        .unwrap();
-
-        // Simulate what cmd_profile_switch does: update profile in cfgd.yaml
-        ensure_config_file(dir.path(), &config_path, "work", None).unwrap();
-
-        let cfg = config::load_config(&config_path).unwrap();
-        assert_eq!(cfg.spec.profile, "work");
     }
 
     #[test]
@@ -6125,6 +4815,7 @@ spec:
                         source: "/tmp/a".into(),
                         target: "/tmp/b".into(),
                         origin: "local".into(),
+                        strategy: cfgd_core::config::FileStrategy::default(),
                     })],
                 },
             ],
@@ -6218,5 +4909,1121 @@ spec:
             }
             _ => panic!("expected Install action"),
         }
+    }
+
+    // --- Module CRUD tests ---
+
+    fn test_cli(dir: &Path) -> Cli {
+        Cli {
+            config: dir.join("cfgd.yaml"),
+            profile: None,
+            no_color: true,
+            verbose: false,
+            quiet: true,
+            command: Command::Status,
+        }
+    }
+
+    fn test_printer() -> Printer {
+        Printer::new(cfgd_core::output::Verbosity::Quiet)
+    }
+
+    fn test_profile_create_args(name: &str) -> ProfileCreateArgs {
+        ProfileCreateArgs {
+            name: name.to_string(),
+            inherits: vec![],
+            modules: vec![],
+            packages: vec![],
+            variables: vec![],
+            system: vec![],
+            files: vec![],
+            private: false,
+            secrets: vec![],
+            pre_reconcile: vec![],
+            post_reconcile: vec![],
+        }
+    }
+
+    fn empty_profile_update_args() -> ProfileUpdateArgs {
+        ProfileUpdateArgs {
+            name: None,
+            active: false,
+            add_inherits: vec![],
+            remove_inherits: vec![],
+            add_modules: vec![],
+            remove_modules: vec![],
+            add_packages: vec![],
+            remove_packages: vec![],
+            add_files: vec![],
+            remove_files: vec![],
+            add_variables: vec![],
+            remove_variables: vec![],
+            add_system: vec![],
+            remove_system: vec![],
+            add_secrets: vec![],
+            remove_secrets: vec![],
+            add_pre_reconcile: vec![],
+            remove_pre_reconcile: vec![],
+            add_post_reconcile: vec![],
+            remove_post_reconcile: vec![],
+            private: false,
+        }
+    }
+
+    fn create_module_in_dir(dir: &Path, name: &str, content: &str) {
+        let mod_dir = dir.join("modules").join(name);
+        std::fs::create_dir_all(mod_dir.join("files")).unwrap();
+        std::fs::write(mod_dir.join("module.yaml"), content).unwrap();
+    }
+
+    fn empty_module_update_args(name: &str) -> ModuleUpdateArgs {
+        ModuleUpdateArgs {
+            name: name.to_string(),
+            add_packages: vec![],
+            remove_packages: vec![],
+            add_files: vec![],
+            remove_files: vec![],
+            add_depends: vec![],
+            remove_depends: vec![],
+            description: None,
+            add_post_apply: vec![],
+            remove_post_apply: vec![],
+            private: false,
+            sets: vec![],
+        }
+    }
+
+    fn test_module_create_args(name: &str) -> ModuleCreateArgs {
+        ModuleCreateArgs {
+            name: name.to_string(),
+            description: None,
+            depends: vec![],
+            packages: vec![],
+            files: vec![],
+            private: false,
+            post_apply: vec![],
+            sets: vec![],
+        }
+    }
+
+    #[test]
+    fn module_create_with_flags_produces_valid_yaml() {
+        let dir = tempfile::tempdir().unwrap();
+        let module_dir = dir.path().join("modules").join("test-mod");
+        let module_yaml = module_dir.join("module.yaml");
+
+        // Create a test file to import
+        let test_file = dir.path().join("testfile.txt");
+        std::fs::write(&test_file, "content").unwrap();
+
+        let cli = test_cli(dir.path());
+        let printer = test_printer();
+
+        let args = ModuleCreateArgs {
+            description: Some("A test module".to_string()),
+            depends: vec!["base".to_string()],
+            packages: vec!["curl".to_string(), "vim".to_string()],
+            files: vec![test_file.display().to_string()],
+            post_apply: vec!["echo done".to_string()],
+            sets: vec![
+                "package.curl.min-version=7.0".to_string(),
+                "package.curl.prefer=brew,apt".to_string(),
+                "package.vim.alias.snap=nvim".to_string(),
+            ],
+            ..test_module_create_args("test-mod")
+        };
+        module::cmd_module_create(&cli, &printer, &args).unwrap();
+
+        assert!(module_yaml.exists());
+
+        let contents = std::fs::read_to_string(&module_yaml).unwrap();
+        let doc = config::parse_module(&contents).unwrap();
+
+        assert_eq!(doc.metadata.name, "test-mod");
+        assert_eq!(doc.metadata.description, Some("A test module".to_string()));
+        assert_eq!(doc.spec.depends, vec!["base"]);
+        assert_eq!(doc.spec.packages.len(), 2);
+        assert_eq!(doc.spec.packages[0].name, "curl");
+        assert_eq!(doc.spec.packages[0].min_version, Some("7.0".to_string()));
+        assert_eq!(doc.spec.packages[0].prefer, vec!["brew", "apt"]);
+        assert_eq!(doc.spec.packages[1].name, "vim");
+        assert_eq!(
+            doc.spec.packages[1].aliases.get("snap"),
+            Some(&"nvim".to_string())
+        );
+        assert_eq!(doc.spec.files.len(), 1);
+        assert!(doc.spec.files[0].source.contains("testfile.txt"));
+        assert!(
+            doc.spec
+                .scripts
+                .as_ref()
+                .unwrap()
+                .post_apply
+                .contains(&"echo done".to_string())
+        );
+        assert!(module_dir.join("files").join("testfile.txt").exists());
+    }
+
+    #[test]
+    fn module_create_refuses_duplicate() {
+        let dir = tempfile::tempdir().unwrap();
+        create_module_in_dir(
+            dir.path(),
+            "existing",
+            "apiVersion: cfgd/v1\nkind: Module\nmetadata:\n  name: existing\nspec: {}\n",
+        );
+
+        let cli = test_cli(dir.path());
+        let printer = test_printer();
+
+        let args = ModuleCreateArgs {
+            description: Some("dup".to_string()),
+            ..test_module_create_args("existing")
+        };
+        let result = module::cmd_module_create(&cli, &printer, &args);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("already exists"));
+    }
+
+    #[test]
+    fn module_update_add_and_remove_packages() {
+        let dir = tempfile::tempdir().unwrap();
+        create_module_in_dir(
+            dir.path(),
+            "test-mod",
+            "apiVersion: cfgd/v1\nkind: Module\nmetadata:\n  name: test-mod\nspec:\n  packages:\n    - name: curl\n    - name: vim\n",
+        );
+
+        let cli = test_cli(dir.path());
+        let printer = test_printer();
+
+        let args = ModuleUpdateArgs {
+            add_packages: vec!["ripgrep".to_string()],
+            remove_packages: vec!["vim".to_string()],
+            ..empty_module_update_args("test-mod")
+        };
+        module::cmd_module_update_local(&cli, &printer, &args).unwrap();
+
+        let (doc, _) = module::load_module_document(dir.path(), "test-mod").unwrap();
+        let names: Vec<&str> = doc.spec.packages.iter().map(|p| p.name.as_str()).collect();
+        assert!(names.contains(&"curl"));
+        assert!(names.contains(&"ripgrep"));
+        assert!(!names.contains(&"vim"));
+    }
+
+    #[test]
+    fn module_update_set_overrides() {
+        let dir = tempfile::tempdir().unwrap();
+        create_module_in_dir(
+            dir.path(),
+            "test-mod",
+            "apiVersion: cfgd/v1\nkind: Module\nmetadata:\n  name: test-mod\nspec:\n  packages:\n    - name: neovim\n",
+        );
+
+        let cli = test_cli(dir.path());
+        let printer = test_printer();
+
+        let args = ModuleUpdateArgs {
+            sets: vec![
+                "package.neovim.min-version=0.9".to_string(),
+                "package.neovim.prefer=brew,snap,apt".to_string(),
+                "package.neovim.alias.snap=nvim".to_string(),
+            ],
+            ..empty_module_update_args("test-mod")
+        };
+        module::cmd_module_update_local(&cli, &printer, &args).unwrap();
+
+        let (doc, _) = module::load_module_document(dir.path(), "test-mod").unwrap();
+        let pkg = &doc.spec.packages[0];
+        assert_eq!(pkg.min_version, Some("0.9".to_string()));
+        assert_eq!(pkg.prefer, vec!["brew", "snap", "apt"]);
+        assert_eq!(pkg.aliases.get("snap"), Some(&"nvim".to_string()));
+    }
+
+    #[test]
+    fn module_delete_refuses_when_referenced() {
+        let dir = create_test_config_dir();
+        create_module_in_dir(
+            dir.path(),
+            "used-mod",
+            "apiVersion: cfgd/v1\nkind: Module\nmetadata:\n  name: used-mod\nspec: {}\n",
+        );
+
+        // Update profile to reference the module
+        let profile_path = dir.path().join("profiles").join("default.yaml");
+        let mut doc = config::load_profile(&profile_path).unwrap();
+        doc.spec.modules.push("used-mod".to_string());
+        let yaml = serde_yaml::to_string(&doc).unwrap();
+        std::fs::write(&profile_path, &yaml).unwrap();
+
+        let cli = test_cli(dir.path());
+        let printer = test_printer();
+
+        let result = module::cmd_module_delete(&cli, &printer, "used-mod", true);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("referenced by"));
+    }
+
+    #[test]
+    fn module_delete_succeeds_when_unreferenced() {
+        let dir = create_test_config_dir();
+        create_module_in_dir(
+            dir.path(),
+            "orphan-mod",
+            "apiVersion: cfgd/v1\nkind: Module\nmetadata:\n  name: orphan-mod\nspec: {}\n",
+        );
+
+        let cli = test_cli(dir.path());
+        let printer = test_printer();
+
+        module::cmd_module_delete(&cli, &printer, "orphan-mod", true).unwrap();
+        assert!(!dir.path().join("modules").join("orphan-mod").exists());
+    }
+
+    #[test]
+    fn apply_module_sets_rejects_invalid_format() {
+        let mut doc = config::ModuleDocument {
+            api_version: "cfgd/v1".to_string(),
+            kind: "Module".to_string(),
+            metadata: config::ModuleMetadata {
+                name: "test".to_string(),
+                description: None,
+            },
+            spec: config::ModuleSpec::default(),
+        };
+
+        // No = sign
+        assert!(module::apply_module_sets(&["bad-format".to_string()], &mut doc).is_err());
+        // Invalid path prefix
+        assert!(module::apply_module_sets(&["foo.bar=baz".to_string()], &mut doc).is_err());
+        // Package not found
+        assert!(
+            module::apply_module_sets(&["package.missing.min-version=1.0".to_string()], &mut doc)
+                .is_err()
+        );
+        // Empty package name
+        assert!(
+            module::apply_module_sets(&["package..min-version=1.0".to_string()], &mut doc).is_err()
+        );
+        // Empty field name
+        assert!(module::apply_module_sets(&["package.curl.=1.0".to_string()], &mut doc).is_err());
+    }
+
+    #[test]
+    fn module_update_idempotent_add() {
+        let dir = tempfile::tempdir().unwrap();
+        create_module_in_dir(
+            dir.path(),
+            "test-mod",
+            "apiVersion: cfgd/v1\nkind: Module\nmetadata:\n  name: test-mod\nspec:\n  packages:\n    - name: curl\n",
+        );
+
+        let cli = test_cli(dir.path());
+        let printer = test_printer();
+
+        let args = ModuleUpdateArgs {
+            add_packages: vec!["curl".to_string()],
+            ..empty_module_update_args("test-mod")
+        };
+        module::cmd_module_update_local(&cli, &printer, &args).unwrap();
+
+        let (doc, _) = module::load_module_document(dir.path(), "test-mod").unwrap();
+        assert_eq!(doc.spec.packages.len(), 1);
+    }
+
+    // --- Profile CRUD tests ---
+
+    #[test]
+    fn profile_create_with_flags() {
+        let dir = create_test_config_dir();
+        let cli = test_cli(dir.path());
+        let printer = test_printer();
+
+        let args = ProfileCreateArgs {
+            inherits: vec!["default".to_string()],
+            modules: vec!["nvim".to_string()],
+            packages: vec!["brew:curl".to_string(), "cargo:bat".to_string()],
+            variables: vec!["EDITOR=nvim".to_string()],
+            system: vec!["shell=/bin/zsh".to_string()],
+            ..test_profile_create_args("new-profile")
+        };
+        profile::cmd_profile_create(&cli, &printer, &args).unwrap();
+
+        let profile_path = dir.path().join("profiles").join("new-profile.yaml");
+        assert!(profile_path.exists());
+
+        let doc = config::load_profile(&profile_path).unwrap();
+        assert_eq!(doc.metadata.name, "new-profile");
+        assert_eq!(doc.spec.inherits, vec!["default"]);
+        assert_eq!(doc.spec.modules, vec!["nvim"]);
+        assert!(doc.spec.variables.contains_key("EDITOR"));
+        assert!(doc.spec.system.contains_key("shell"));
+    }
+
+    #[test]
+    fn profile_create_refuses_duplicate() {
+        let dir = create_test_config_dir();
+        let cli = test_cli(dir.path());
+        let printer = test_printer();
+
+        let args = test_profile_create_args("default");
+        let result = profile::cmd_profile_create(&cli, &printer, &args);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("already exists"));
+    }
+
+    #[test]
+    fn profile_create_refuses_missing_parent() {
+        let dir = create_test_config_dir();
+        let cli = test_cli(dir.path());
+        let printer = test_printer();
+
+        let args = ProfileCreateArgs {
+            inherits: vec!["nonexistent".to_string()],
+            ..test_profile_create_args("child")
+        };
+        let result = profile::cmd_profile_create(&cli, &printer, &args);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("not found"));
+    }
+
+    #[test]
+    fn profile_update_add_and_remove() {
+        let dir = create_test_config_dir();
+        let cli = test_cli(dir.path());
+        let printer = test_printer();
+
+        let args = ProfileUpdateArgs {
+            add_modules: vec!["nvim".to_string()],
+            add_packages: vec!["brew:jq".to_string()],
+            add_variables: vec!["EDITOR=nvim".to_string()],
+            add_system: vec!["shell=/bin/zsh".to_string()],
+            ..empty_profile_update_args()
+        };
+        profile::cmd_profile_update(&cli, &printer, "default", &args).unwrap();
+
+        let profile_path = dir.path().join("profiles").join("default.yaml");
+        let doc = config::load_profile(&profile_path).unwrap();
+        assert!(doc.spec.modules.contains(&"nvim".to_string()));
+        assert!(doc.spec.variables.contains_key("EDITOR"));
+        assert!(doc.spec.system.contains_key("shell"));
+    }
+
+    #[test]
+    fn profile_delete_refuses_active() {
+        let dir = create_test_config_dir();
+        std::fs::write(
+            dir.path().join("cfgd.yaml"),
+            "apiVersion: cfgd/v1\nkind: Config\nmetadata:\n  name: test\nspec:\n  profile: default\n",
+        )
+        .unwrap();
+
+        let cli = test_cli(dir.path());
+        let printer = test_printer();
+
+        let result = profile::cmd_profile_delete(&cli, &printer, "default", true);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("active profile"));
+    }
+
+    #[test]
+    fn profile_delete_refuses_when_inherited() {
+        let dir = create_test_config_dir();
+        let cli = test_cli(dir.path());
+        let printer = test_printer();
+
+        let result = profile::cmd_profile_delete(&cli, &printer, "default", true);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("inherited by"));
+    }
+
+    #[test]
+    fn profile_delete_succeeds() {
+        let dir = create_test_config_dir();
+        let cli = test_cli(dir.path());
+        let printer = test_printer();
+
+        profile::cmd_profile_delete(&cli, &printer, "work", true).unwrap();
+        assert!(!dir.path().join("profiles").join("work.yaml").exists());
+    }
+
+    #[test]
+    fn profiles_inheriting_finds_children() {
+        let dir = create_test_config_dir();
+        let result = profile::profiles_inheriting(&dir.path().join("profiles"), "default").unwrap();
+        assert_eq!(result, vec!["work"]);
+
+        let result = profile::profiles_inheriting(&dir.path().join("profiles"), "work").unwrap();
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn parse_manager_package_valid() {
+        let (mgr, pkg) = profile::parse_manager_package("brew:curl").unwrap();
+        assert_eq!(mgr, "brew");
+        assert_eq!(pkg, "curl");
+    }
+
+    #[test]
+    fn parse_manager_package_invalid() {
+        assert!(profile::parse_manager_package("no-colon").is_err());
+        assert!(profile::parse_manager_package(":curl").is_err());
+        assert!(profile::parse_manager_package("brew:").is_err());
+        assert!(profile::parse_manager_package(":").is_err());
+    }
+
+    #[test]
+    fn parse_secret_spec_valid() {
+        let spec = profile::parse_secret_spec("secrets/key.enc:~/.config/app/key").unwrap();
+        assert_eq!(spec.source, "secrets/key.enc");
+        assert_eq!(spec.target, PathBuf::from("~/.config/app/key"));
+        assert!(spec.template.is_none());
+        assert!(spec.backend.is_none());
+    }
+
+    #[test]
+    fn parse_secret_spec_provider_url() {
+        // Provider URLs with :// must not be split on the scheme colon
+        let spec = profile::parse_secret_spec("op://vault/item:~/.config/key").unwrap();
+        assert_eq!(spec.source, "op://vault/item");
+        assert_eq!(spec.target, PathBuf::from("~/.config/key"));
+    }
+
+    #[test]
+    fn parse_secret_spec_absolute_target() {
+        let spec = profile::parse_secret_spec("secrets/db.enc:/etc/app/db.conf").unwrap();
+        assert_eq!(spec.source, "secrets/db.enc");
+        assert_eq!(spec.target, PathBuf::from("/etc/app/db.conf"));
+    }
+
+    #[test]
+    fn parse_secret_spec_invalid() {
+        assert!(profile::parse_secret_spec("no-colon").is_err());
+        assert!(profile::parse_secret_spec(":target").is_err());
+        assert!(profile::parse_secret_spec("source:").is_err());
+    }
+
+    #[test]
+    fn profile_update_inherits() {
+        let dir = create_test_config_dir();
+        let cli = test_cli(dir.path());
+        let printer = test_printer();
+
+        // Add inherits
+        let args = ProfileUpdateArgs {
+            add_inherits: vec!["default".to_string()],
+            ..empty_profile_update_args()
+        };
+        profile::cmd_profile_update(&cli, &printer, "work", &args).unwrap();
+
+        let doc = config::load_profile(&dir.path().join("profiles").join("work.yaml")).unwrap();
+        assert!(doc.spec.inherits.contains(&"default".to_string()));
+
+        // Remove inherits
+        let args = ProfileUpdateArgs {
+            remove_inherits: vec!["default".to_string()],
+            ..empty_profile_update_args()
+        };
+        profile::cmd_profile_update(&cli, &printer, "work", &args).unwrap();
+
+        let doc = config::load_profile(&dir.path().join("profiles").join("work.yaml")).unwrap();
+        assert!(!doc.spec.inherits.contains(&"default".to_string()));
+    }
+
+    #[test]
+    fn profile_update_secrets() {
+        let dir = create_test_config_dir();
+        let cli = test_cli(dir.path());
+        let printer = test_printer();
+
+        // Add secret
+        let args = ProfileUpdateArgs {
+            add_secrets: vec!["secrets/key.enc:~/.config/app/key".to_string()],
+            ..empty_profile_update_args()
+        };
+        profile::cmd_profile_update(&cli, &printer, "default", &args).unwrap();
+
+        let doc = config::load_profile(&dir.path().join("profiles").join("default.yaml")).unwrap();
+        assert_eq!(doc.spec.secrets.len(), 1);
+        assert_eq!(doc.spec.secrets[0].source, "secrets/key.enc");
+
+        // Remove secret
+        let args = ProfileUpdateArgs {
+            remove_secrets: vec!["~/.config/app/key".to_string()],
+            ..empty_profile_update_args()
+        };
+        profile::cmd_profile_update(&cli, &printer, "default", &args).unwrap();
+
+        let doc = config::load_profile(&dir.path().join("profiles").join("default.yaml")).unwrap();
+        assert!(doc.spec.secrets.is_empty());
+    }
+
+    #[test]
+    fn profile_update_scripts() {
+        let dir = create_test_config_dir();
+        let cli = test_cli(dir.path());
+        let printer = test_printer();
+
+        // Add pre-reconcile and post-reconcile
+        let args = ProfileUpdateArgs {
+            add_pre_reconcile: vec![PathBuf::from("scripts/pre.sh")],
+            add_post_reconcile: vec![PathBuf::from("scripts/post.sh")],
+            ..empty_profile_update_args()
+        };
+        profile::cmd_profile_update(&cli, &printer, "default", &args).unwrap();
+
+        let doc = config::load_profile(&dir.path().join("profiles").join("default.yaml")).unwrap();
+        let scripts = doc.spec.scripts.as_ref().unwrap();
+        assert_eq!(scripts.pre_reconcile, vec![PathBuf::from("scripts/pre.sh")]);
+        assert_eq!(
+            scripts.post_reconcile,
+            vec![PathBuf::from("scripts/post.sh")]
+        );
+
+        // Remove pre-reconcile
+        let args = ProfileUpdateArgs {
+            remove_pre_reconcile: vec![PathBuf::from("scripts/pre.sh")],
+            remove_post_reconcile: vec![PathBuf::from("scripts/post.sh")],
+            ..empty_profile_update_args()
+        };
+        profile::cmd_profile_update(&cli, &printer, "default", &args).unwrap();
+
+        let doc = config::load_profile(&dir.path().join("profiles").join("default.yaml")).unwrap();
+        let scripts = doc.spec.scripts.as_ref().unwrap();
+        assert!(scripts.pre_reconcile.is_empty());
+        assert!(scripts.post_reconcile.is_empty());
+    }
+
+    #[test]
+    fn profiles_using_module_finds_references() {
+        let dir = create_test_config_dir();
+
+        // Add module ref to default profile
+        let profile_path = dir.path().join("profiles").join("default.yaml");
+        let mut doc = config::load_profile(&profile_path).unwrap();
+        doc.spec.modules.push("my-mod".to_string());
+        std::fs::write(&profile_path, serde_yaml::to_string(&doc).unwrap()).unwrap();
+
+        let result = module::profiles_using_module(&dir.path().join("profiles"), "my-mod").unwrap();
+        assert_eq!(result, vec!["default"]);
+
+        let result =
+            module::profiles_using_module(&dir.path().join("profiles"), "nonexistent").unwrap();
+        assert!(result.is_empty());
+    }
+
+    // --- Config CRUD tests ---
+
+    #[test]
+    fn config_show_displays_config() {
+        let dir = create_test_config_dir();
+        std::fs::write(
+            dir.path().join("cfgd.yaml"),
+            r#"apiVersion: cfgd/v1
+kind: Config
+metadata:
+  name: test-config
+spec:
+  profile: default
+"#,
+        )
+        .unwrap();
+
+        let cli = test_cli(dir.path());
+        let printer = test_printer();
+        let result = cmd_config_show(&cli, &printer);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn config_show_fails_without_config() {
+        let dir = tempfile::tempdir().unwrap();
+        let cli = test_cli(dir.path());
+        let printer = test_printer();
+        let result = cmd_config_show(&cli, &printer);
+        assert!(result.is_err());
+    }
+
+    // --- Source CRUD tests ---
+
+    #[test]
+    fn source_create_scaffolds_manifest() {
+        let dir = create_test_config_dir();
+        std::fs::write(dir.path().join("cfgd.yaml"), TEST_CONFIG_YAML).unwrap();
+
+        let cli = test_cli(dir.path());
+        let printer = test_printer();
+
+        let result = cmd_source_create(
+            &cli,
+            &printer,
+            Some("my-source"),
+            Some("Test"),
+            Some("1.0.0"),
+        );
+        assert!(result.is_ok());
+
+        let source_path = dir.path().join("cfgd-source.yaml");
+        assert!(source_path.exists());
+
+        let contents = std::fs::read_to_string(&source_path).unwrap();
+        assert!(contents.contains("my-source"));
+        assert!(contents.contains("Test"));
+        assert!(contents.contains("1.0.0"));
+        // Should include profiles found in the directory
+        assert!(contents.contains("default"));
+        assert!(contents.contains("work"));
+    }
+
+    #[test]
+    fn source_create_refuses_duplicate() {
+        let dir = create_test_config_dir();
+        std::fs::write(dir.path().join("cfgd.yaml"), TEST_CONFIG_YAML).unwrap();
+        std::fs::write(dir.path().join("cfgd-source.yaml"), "existing").unwrap();
+
+        let cli = test_cli(dir.path());
+        let printer = test_printer();
+        let result = cmd_source_create(&cli, &printer, Some("x"), Some("x"), Some("1.0"));
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("already exists"));
+    }
+
+    #[test]
+    fn source_edit_fails_without_manifest() {
+        let dir = create_test_config_dir();
+        let cli = test_cli(dir.path());
+        let printer = test_printer();
+        let result = cmd_source_edit(&cli, &printer);
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("No cfgd-source.yaml")
+        );
+    }
+
+    // --- Workflow tests ---
+
+    #[test]
+    fn generate_workflow_yaml_contains_all_resources() {
+        let modules = vec!["neovim".to_string(), "zsh".to_string()];
+        let profiles = vec!["default".to_string(), "work".to_string()];
+
+        let yaml = generate_release_workflow_yaml(&modules, &profiles);
+
+        // Header
+        assert!(yaml.contains("name: cfgd Release"));
+        assert!(yaml.contains("on:"));
+
+        // Module paths
+        assert!(yaml.contains("modules/neovim/**"));
+        assert!(yaml.contains("modules/zsh/**"));
+
+        // Profile paths
+        assert!(yaml.contains("profiles/default.yaml"));
+        assert!(yaml.contains("profiles/work.yaml"));
+
+        // Jobs
+        assert!(yaml.contains("detect-changes:"));
+        assert!(yaml.contains("tag-modules:"));
+        assert!(yaml.contains("tag-profiles:"));
+
+        // Module outputs
+        assert!(yaml.contains("module_neovim"));
+        assert!(yaml.contains("module_zsh"));
+
+        // Profile outputs
+        assert!(yaml.contains("profile_default"));
+        assert!(yaml.contains("profile_work"));
+    }
+
+    #[test]
+    fn generate_workflow_yaml_modules_only() {
+        let modules = vec!["vim".to_string()];
+        let profiles: Vec<String> = vec![];
+
+        let yaml = generate_release_workflow_yaml(&modules, &profiles);
+
+        assert!(yaml.contains("tag-modules:"));
+        assert!(!yaml.contains("tag-profiles:"));
+    }
+
+    #[test]
+    fn generate_workflow_yaml_profiles_only() {
+        let modules: Vec<String> = vec![];
+        let profiles = vec!["default".to_string()];
+
+        let yaml = generate_release_workflow_yaml(&modules, &profiles);
+
+        assert!(!yaml.contains("tag-modules:"));
+        assert!(yaml.contains("tag-profiles:"));
+    }
+
+    #[test]
+    fn workflow_generate_creates_file() {
+        let dir = create_test_config_dir();
+        std::fs::write(dir.path().join("cfgd.yaml"), TEST_CONFIG_YAML).unwrap();
+
+        let cli = test_cli(dir.path());
+        let printer = test_printer();
+
+        let result = cmd_workflow_generate(&cli, &printer, false);
+        assert!(result.is_ok());
+
+        let workflow_path = dir
+            .path()
+            .join(".github")
+            .join("workflows")
+            .join("cfgd-release.yml");
+        assert!(workflow_path.exists());
+
+        let contents = std::fs::read_to_string(&workflow_path).unwrap();
+        assert!(contents.contains("cfgd Release"));
+        assert!(contents.contains("default"));
+    }
+
+    #[test]
+    fn workflow_generate_empty_repo() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("cfgd.yaml"), TEST_CONFIG_YAML).unwrap();
+
+        let cli = test_cli(dir.path());
+        let printer = test_printer();
+
+        // No profiles or modules — should warn and return Ok
+        let result = cmd_workflow_generate(&cli, &printer, false);
+        assert!(result.is_ok());
+
+        let workflow_path = dir
+            .path()
+            .join(".github")
+            .join("workflows")
+            .join("cfgd-release.yml");
+        assert!(!workflow_path.exists());
+    }
+
+    #[test]
+    fn generate_workflow_yaml_hyphens_in_names() {
+        let modules = vec!["my-module".to_string()];
+        let profiles = vec!["my-profile".to_string()];
+
+        let yaml = generate_release_workflow_yaml(&modules, &profiles);
+
+        // Hyphens should be converted to underscores in output names
+        assert!(yaml.contains("module_my_module"));
+        assert!(yaml.contains("profile_my_profile"));
+    }
+
+    #[test]
+    fn test_validate_resource_name_valid() {
+        assert!(validate_resource_name("my-module", "Module").is_ok());
+        assert!(validate_resource_name("my_module", "Module").is_ok());
+        assert!(validate_resource_name("Module123", "Module").is_ok());
+        assert!(validate_resource_name("a", "Module").is_ok());
+        assert!(validate_resource_name("foo.bar", "Module").is_ok());
+    }
+
+    #[test]
+    fn test_validate_resource_name_invalid() {
+        assert!(validate_resource_name("", "Module").is_err());
+        assert!(validate_resource_name("../etc", "Module").is_err());
+        assert!(validate_resource_name(".hidden", "Module").is_err());
+        assert!(validate_resource_name("-leading", "Module").is_err());
+        assert!(validate_resource_name("foo/bar", "Module").is_err());
+        assert!(validate_resource_name("foo bar", "Module").is_err());
+        assert!(validate_resource_name("a".repeat(129).as_str(), "Module").is_err());
+    }
+
+    #[test]
+    fn workflow_generate_force_overwrites() {
+        let dir = create_test_config_dir();
+        std::fs::write(dir.path().join("cfgd.yaml"), TEST_CONFIG_YAML).unwrap();
+
+        let cli = test_cli(dir.path());
+        let printer = test_printer();
+
+        // First generate
+        cmd_workflow_generate(&cli, &printer, false).unwrap();
+        let path = dir.path().join(".github/workflows/cfgd-release.yml");
+        assert!(path.exists());
+
+        // Write something different to the file
+        std::fs::write(&path, "old content").unwrap();
+
+        // Force overwrite
+        cmd_workflow_generate(&cli, &printer, true).unwrap();
+        let contents = std::fs::read_to_string(&path).unwrap();
+        assert!(contents.contains("cfgd Release"));
+        assert!(!contents.contains("old content"));
+    }
+
+    #[test]
+    fn source_create_with_modules() {
+        let dir = create_test_config_dir();
+        std::fs::write(dir.path().join("cfgd.yaml"), TEST_CONFIG_YAML).unwrap();
+
+        // Create a module
+        create_module_in_dir(
+            dir.path(),
+            "neovim",
+            "apiVersion: cfgd/v1\nkind: Module\nmetadata:\n  name: neovim\nspec:\n  packages: []\n  files: []\n  depends: []\n",
+        );
+
+        let cli = test_cli(dir.path());
+        let printer = test_printer();
+
+        let result = cmd_source_create(
+            &cli,
+            &printer,
+            Some("test-source"),
+            Some("Test"),
+            Some("1.0.0"),
+        );
+        assert!(result.is_ok());
+
+        let source_path = dir.path().join("cfgd-source.yaml");
+        assert!(source_path.exists());
+
+        let contents = std::fs::read_to_string(&source_path).unwrap();
+        // Should contain both the profile and the module
+        assert!(contents.contains("default"));
+        assert!(contents.contains("neovim"));
+    }
+
+    #[test]
+    fn source_create_output_is_parseable() {
+        let dir = create_test_config_dir();
+        std::fs::write(dir.path().join("cfgd.yaml"), TEST_CONFIG_YAML).unwrap();
+
+        let cli = test_cli(dir.path());
+        let printer = test_printer();
+
+        cmd_source_create(
+            &cli,
+            &printer,
+            Some("my-source"),
+            Some("desc"),
+            Some("0.1.0"),
+        )
+        .unwrap();
+
+        let contents = std::fs::read_to_string(dir.path().join("cfgd-source.yaml")).unwrap();
+        let result = config::parse_config_source(&contents);
+        assert!(
+            result.is_ok(),
+            "Generated source YAML should be parseable: {:?}",
+            result.err()
+        );
+
+        let doc = result.unwrap();
+        assert_eq!(doc.metadata.name, "my-source");
+        assert_eq!(doc.metadata.version, Some("0.1.0".to_string()));
+    }
+
+    #[test]
+    fn config_show_with_all_sections() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("cfgd.yaml"),
+            r#"apiVersion: cfgd/v1
+kind: Config
+metadata:
+  name: test
+spec:
+  profile: default
+  origin:
+    - url: https://github.com/test/config
+      branch: main
+      type: git
+  sources:
+    - name: team-config
+      origin:
+        url: https://github.com/test/team
+        branch: main
+        type: git
+      subscription:
+        priority: 100
+  modules:
+    registries:
+      - name: community
+        url: https://github.com/cfgd/modules
+    security:
+      require-signatures: true
+  daemon:
+    enabled: true
+    reconcile:
+      interval: 5m
+      on-change: true
+      auto-apply: false
+    sync:
+      interval: 30m
+  secrets:
+    backend: sops-age
+  theme:
+    preset: ocean
+"#,
+        )
+        .unwrap();
+
+        let cli = test_cli(dir.path());
+        let printer = test_printer();
+
+        // Should not error even with all sections populated
+        let result = cmd_config_show(&cli, &printer);
+        assert!(result.is_ok());
+    }
+
+    // --- Alias expansion tests ---
+
+    #[test]
+    fn expand_aliases_builtin_add() {
+        let args = vec!["cfgd".into(), "add".into(), "~/.zshrc".into()];
+        let expanded = expand_aliases(args);
+        assert_eq!(
+            expanded,
+            vec![
+                "cfgd",
+                "profile",
+                "update",
+                "--active",
+                "--add-file",
+                "~/.zshrc"
+            ]
+        );
+    }
+
+    #[test]
+    fn expand_aliases_builtin_remove() {
+        let args = vec!["cfgd".into(), "remove".into(), "~/.zshrc".into()];
+        let expanded = expand_aliases(args);
+        assert_eq!(
+            expanded,
+            vec![
+                "cfgd",
+                "profile",
+                "update",
+                "--active",
+                "--remove-file",
+                "~/.zshrc"
+            ]
+        );
+    }
+
+    #[test]
+    fn expand_aliases_no_match_passthrough() {
+        let args = vec!["cfgd".into(), "apply".into(), "--dry-run".into()];
+        let expanded = expand_aliases(args.clone());
+        assert_eq!(expanded, args);
+    }
+
+    #[test]
+    fn expand_aliases_skips_global_flags() {
+        let args = vec![
+            "cfgd".into(),
+            "--verbose".into(),
+            "add".into(),
+            "~/.zshrc".into(),
+        ];
+        let expanded = expand_aliases(args);
+        assert_eq!(
+            expanded,
+            vec![
+                "cfgd",
+                "--verbose",
+                "profile",
+                "update",
+                "--active",
+                "--add-file",
+                "~/.zshrc"
+            ]
+        );
+    }
+
+    #[test]
+    fn expand_aliases_with_config_flag() {
+        let args = vec![
+            "cfgd".into(),
+            "--config".into(),
+            "/tmp/nonexistent.yaml".into(),
+            "add".into(),
+            "~/.zshrc".into(),
+        ];
+        let expanded = expand_aliases(args);
+        // Even with nonexistent config, built-in aliases work
+        assert_eq!(
+            expanded,
+            vec![
+                "cfgd",
+                "--config",
+                "/tmp/nonexistent.yaml",
+                "profile",
+                "update",
+                "--active",
+                "--add-file",
+                "~/.zshrc"
+            ]
+        );
+    }
+
+    #[test]
+    fn expand_aliases_empty_args() {
+        let args = vec!["cfgd".into()];
+        let expanded = expand_aliases(args.clone());
+        assert_eq!(expanded, args);
+    }
+
+    #[test]
+    fn resolve_profile_name_explicit_takes_precedence() {
+        let dir = create_test_config_dir();
+        let cli = test_cli(dir.path());
+        let result = resolve_profile_name(&cli, Some("my-profile"), false);
+        assert_eq!(result.unwrap(), "my-profile");
+    }
+
+    #[test]
+    fn resolve_profile_name_active_reads_config() {
+        let dir = create_test_config_dir();
+        std::fs::write(dir.path().join("cfgd.yaml"), TEST_CONFIG_YAML).unwrap();
+        let cli = test_cli(dir.path());
+        let result = resolve_profile_name(&cli, None, true);
+        assert_eq!(result.unwrap(), "default");
+    }
+
+    #[test]
+    fn resolve_profile_name_neither_errors() {
+        let dir = create_test_config_dir();
+        let cli = test_cli(dir.path());
+        let result = resolve_profile_name(&cli, None, false);
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("Profile name required")
+        );
+    }
+
+    #[test]
+    fn parse_file_spec_plain_path() {
+        let (source, target) = super::parse_file_spec("~/.zshrc").unwrap();
+        assert_eq!(source, target);
+    }
+
+    #[test]
+    fn parse_file_spec_source_target() {
+        let (source, target) = super::parse_file_spec("./my-config:~/.config/app/config").unwrap();
+        assert_eq!(source, std::path::PathBuf::from("./my-config"));
+        assert!(target.to_string_lossy().contains(".config/app/config"));
+    }
+
+    #[test]
+    fn parse_file_spec_empty_source_errors() {
+        assert!(super::parse_file_spec(":~/.zshrc").is_err());
+    }
+
+    #[test]
+    fn parse_file_spec_empty_target_errors() {
+        assert!(super::parse_file_spec("~/.zshrc:").is_err());
     }
 }

@@ -1,0 +1,97 @@
+{{- if .Values.installCRDs }}
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: configpolicies.cfgd.io
+  labels:
+    {{- include "cfgd-operator.labels" . | nindent 4 }}
+spec:
+  group: cfgd.io
+  names:
+    categories: []
+    kind: ConfigPolicy
+    plural: configpolicies
+    shortNames: []
+    singular: configpolicy
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns: []
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: Auto-generated derived type for ConfigPolicySpec via `CustomResource`
+        properties:
+          spec:
+            properties:
+              name:
+                type: string
+              packageVersions:
+                additionalProperties:
+                  type: string
+                default: {}
+                description: 'Version requirements keyed by package name (semver ranges, e.g. {"kubectl": ">=1.28"}).'
+                type: object
+              packages:
+                default: []
+                items:
+                  type: string
+                type: array
+              settings:
+                additionalProperties:
+                  type: string
+                default: {}
+                type: object
+              targetSelector:
+                additionalProperties:
+                  type: string
+                default: {}
+                type: object
+            required:
+            - name
+            type: object
+          status:
+            nullable: true
+            properties:
+              compliantCount:
+                format: uint32
+                minimum: 0.0
+                type: integer
+              conditions:
+                default: []
+                items:
+                  properties:
+                    lastTransitionTime:
+                      type: string
+                    message:
+                      type: string
+                    reason:
+                      type: string
+                    status:
+                      type: string
+                    type:
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+              nonCompliantCount:
+                format: uint32
+                minimum: 0.0
+                type: integer
+            required:
+            - compliantCount
+            - nonCompliantCount
+            type: object
+        required:
+        - spec
+        title: ConfigPolicy
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}
+{{- end }}

@@ -1,0 +1,112 @@
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: {{ include "cfgd.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "cfgd.labels" . | nindent 4 }}
+spec:
+  selector:
+    matchLabels:
+      {{- include "cfgd.selectorLabels" . | nindent 6 }}
+  updateStrategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 1
+  template:
+    metadata:
+      labels:
+        {{- include "cfgd.selectorLabels" . | nindent 8 }}
+    spec:
+      serviceAccountName: {{ include "cfgd.serviceAccountName" . }}
+      {{- with .Values.priorityClassName }}
+      priorityClassName: {{ . }}
+      {{- end }}
+      {{- with .Values.podSecurityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      hostPID: true
+      hostNetwork: true
+      containers:
+        - name: cfgd
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command:
+            - /usr/local/bin/cfgd
+            - daemon
+            - --interval
+            - {{ .Values.reconcileInterval | quote }}
+            {{- if .Values.serverUrl }}
+            - --server-url
+            - {{ .Values.serverUrl | quote }}
+            {{- end }}
+          env:
+            {{- if .Values.apiKey }}
+            - name: CFGD_API_KEY
+              value: {{ .Values.apiKey | quote }}
+            {{- else if .Values.apiKeySecret.name }}
+            - name: CFGD_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.apiKeySecret.name }}
+                  key: {{ .Values.apiKeySecret.key }}
+            {{- end }}
+            - name: CFGD_DEVICE_ID
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+          {{- with .Values.securityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          volumeMounts:
+            - name: host-root
+              mountPath: /host
+              readOnly: false
+            - name: host-proc
+              mountPath: /proc
+              readOnly: true
+            - name: host-sys
+              mountPath: /sys
+              readOnly: false
+            - name: host-etc
+              mountPath: /etc
+              readOnly: false
+            - name: cfgd-config
+              mountPath: /etc/cfgd
+              readOnly: true
+            {{- with .Values.extraVolumeMounts }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+      volumes:
+        - name: host-root
+          hostPath:
+            path: /
+        - name: host-proc
+          hostPath:
+            path: /proc
+        - name: host-sys
+          hostPath:
+            path: /sys
+        - name: host-etc
+          hostPath:
+            path: /etc
+        - name: cfgd-config
+          configMap:
+            name: {{ include "cfgd.fullname" . }}-config
+        {{- with .Values.extraVolumes }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

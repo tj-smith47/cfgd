@@ -1,0 +1,59 @@
+apiVersion: cfgd/v1
+kind: Profile
+metadata:
+  name: k8s-worker
+spec:
+  variables:
+    cluster_name: my-cluster
+    pod_cidr: "10.244.0.0/16"
+
+  system:
+    sysctl:
+      net.ipv4.ip_forward: "1"
+      net.bridge.bridge-nf-call-iptables: "1"
+      net.bridge.bridge-nf-call-ip6tables: "1"
+      vm.max_map_count: "262144"
+      fs.inotify.max_user_watches: "524288"
+
+    kernel-modules:
+      - br_netfilter
+      - overlay
+      - ip_vs
+      - ip_vs_rr
+      - ip_vs_wrr
+      - ip_vs_sh
+      - nf_conntrack
+
+    containerd:
+      config-path: /etc/containerd/config.toml
+      settings:
+        SystemdCgroup: true
+        sandbox_image: "registry.k8s.io/pause:3.9"
+
+    kubelet:
+      config-path: /var/lib/kubelet/config.yaml
+      settings:
+        maxPods: 110
+        cgroupDriver: systemd
+        containerRuntimeEndpoint: "unix:///run/containerd/containerd.sock"
+        serializeImagePulls: false
+
+    seccomp:
+      profiles-dir: /etc/cfgd/seccomp
+      profiles:
+        - name: audit
+          file: audit.json
+          content: |
+            {
+              "defaultAction": "SCMP_ACT_LOG",
+              "architectures": ["SCMP_ARCH_X86_64", "SCMP_ARCH_X86", "SCMP_ARCH_X32"]
+            }
+
+    certificates:
+      ca-cert-dir: /etc/kubernetes/pki
+      certificates:
+        - name: kubelet-client
+          cert-path: /etc/kubernetes/pki/kubelet-client.crt
+          key-path: /etc/kubernetes/pki/kubelet-client.key
+          ca-path: /etc/kubernetes/pki/ca.crt
+          mode: "0600"

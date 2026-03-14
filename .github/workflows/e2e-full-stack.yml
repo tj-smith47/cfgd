@@ -1,0 +1,49 @@
+name: E2E – cfgd full stack
+
+on:
+  push:
+    branches: [main, master]
+    paths:
+      - "crates/**"
+      - "Dockerfile"
+      - "Dockerfile.server"
+      - "Dockerfile.operator"
+      - "tests/e2e/**"
+      - ".github/workflows/e2e-full-stack.yml"
+      - ".github/actions/setup-e2e/**"
+  pull_request:
+    branches: [main, master]
+    paths:
+      - "crates/**"
+      - "Dockerfile"
+      - "Dockerfile.server"
+      - "Dockerfile.operator"
+      - "tests/e2e/**"
+      - ".github/workflows/e2e-full-stack.yml"
+      - ".github/actions/setup-e2e/**"
+  workflow_dispatch:
+
+env:
+  KIND_CLUSTER: cfgd-e2e
+  CFGD_NAMESPACE: cfgd-system
+
+jobs:
+  full-stack-tests:
+    name: "Full-Stack Tests (T01–T10)"
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Setup E2E environment
+        uses: ./.github/actions/setup-e2e
+        with:
+          kind-cluster-name: ${{ env.KIND_CLUSTER }}
+          kind-config: tests/e2e/full-stack/kind-config.yaml
+          images: "node server operator"
+
+      - name: Run full-stack tests
+        run: bash tests/e2e/full-stack/scripts/run-full-stack-tests.sh

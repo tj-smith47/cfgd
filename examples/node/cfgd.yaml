@@ -1,0 +1,6 @@
+apiVersion: cfgd/v1
+kind: Config
+metadata:
+  name: k8s-worker-node
+spec:
+  profile: k8s-worker

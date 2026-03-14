@@ -1,0 +1,14 @@
+apiVersion: cfgd/v1
+kind: Profile
+metadata:
+  name: k8s-worker-certs
+spec:
+  variables: {}
+  system:
+    certificates:
+      ca-cert-dir: /tmp/cfgd-e2e-pki
+      certificates:
+        - name: test-cert
+          cert-path: /tmp/cfgd-e2e-pki/test.crt
+          key-path: /tmp/cfgd-e2e-pki/test.key
+          mode: "0600"

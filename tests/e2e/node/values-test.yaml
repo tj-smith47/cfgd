@@ -1,0 +1,30 @@
+image:
+  repository: cfgd
+  tag: e2e-test
+  pullPolicy: Never
+
+serverUrl: "http://cfgd-server.cfgd-system.svc.cluster.local:8080"
+
+reconcileInterval: "10s"
+
+profile: "k8s-worker-minimal"
+
+resources:
+  limits:
+    cpu: 200m
+    memory: 128Mi
+  requests:
+    cpu: 50m
+    memory: 64Mi
+
+tolerations:
+  - operator: Exists
+    effect: NoSchedule
+  - operator: Exists
+    effect: NoExecute
+
+securityContext:
+  privileged: true
+  readOnlyRootFilesystem: false
+
+priorityClassName: ""

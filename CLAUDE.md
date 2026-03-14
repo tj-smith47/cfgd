@@ -3,12 +3,11 @@
 Declarative, GitOps-style machine configuration state management. Written in Rust.
 
 A suite of products sharing a core reconciliation engine:
-- **cfgd** — machine config management CLI + daemon; Phases 1-7 ship workstation providers [Phases 1-7]
-- **cfgd-server** — fleet control plane, web UI, k8s operator [Phase 8]
-- **cfgd-node** — k8s node-level config agent (DaemonSet) [Phase 10]
+- **cfgd** — unified machine config management CLI + daemon; workstation + k8s node providers
+- **cfgd-server** — fleet control plane, web UI, k8s operator
 
 Each binary operates in two modes:
-- `cfgd <command>` — CLI for direct interaction (apply, add, status, plan)
+- `cfgd <command>` — CLI for direct interaction (apply, add, status, plan, checkin)
 - `cfgd daemon` — long-running process that watches for drift, auto-syncs, reconciles
 
 ## Architecture
@@ -19,34 +18,38 @@ See `.claude/PLAN.md` for the phased implementation plan.
 ## Module Map
 
 ```
-src/
-├── main.rs          # Entry point, clap dispatch
-├── cli/             # Clap command definitions, argument parsing
-│   └── mod.rs       # One submodule per command group
-├── config/          # YAML config loading, profile resolution, layer merging
-│   └── mod.rs
-├── output/          # CENTRALIZED theming, styled output, progress, syntax highlighting
-│   └── mod.rs       # ALL terminal output goes through this module
-├── providers/       # Provider traits (PackageManager, SystemConfigurator, FileManager,
-│   └── mod.rs       # SecretBackend, SecretProvider) + ProviderRegistry
-├── files/           # File management: copy, template, diff, permissions
-│   └── mod.rs
-├── packages/        # PackageManager implementations (trait defined in providers/)
-│   └── mod.rs       # brew, apt, cargo, npm, pipx, dnf
-├── secrets/         # SOPS encryption (primary), age fallback, external providers
-│   └── mod.rs       # SecretBackend + SecretProvider implementations
-├── reconciler/      # Diff engine: actual state vs desired state, plan generation
-│   └── mod.rs
-├── state/           # SQLite state store: history, drift events, apply log
-│   └── mod.rs
-├── daemon/          # File watchers, reconciliation loop, sync, notifications
-│   └── mod.rs
-├── sources/         # Multi-source config management (Phase 9, stubs only until then)
-│   └── mod.rs       # SourceManager, git fetching, caching
-├── composition/     # Multi-source merge engine with policy enforcement (Phase 9)
-│   └── mod.rs       # CompositionEngine, conflict resolution
-└── errors/          # Error types (thiserror), result aliases
-    └── mod.rs
+crates/
+├── cfgd-core/src/          # Core library crate
+│   ├── config/             # YAML config loading, profile resolution, layer merging
+│   ├── output/             # CENTRALIZED theming, styled output, progress, syntax highlighting
+│   ├── errors/             # Error types (thiserror), result aliases
+│   ├── providers/          # Provider traits + ProviderRegistry
+│   ├── reconciler/         # Diff engine: actual state vs desired state, plan generation
+│   ├── state/              # SQLite state store: history, drift events, apply log
+│   ├── daemon/             # File watchers, reconciliation loop, sync, notifications
+│   ├── modules/            # Module loading, dependency resolution, package resolution, git file sources
+│   ├── platform/           # OS/distro/arch detection, native package manager mapping
+│   ├── sources/            # Multi-source config management (Phase 9)
+│   └── composition/        # Multi-source merge engine (Phase 9)
+├── cfgd/src/               # Unified binary crate (workstation + node)
+│   ├── main.rs             # Entry point, clap dispatch
+│   ├── cli/                # Clap command definitions, argument parsing
+│   ├── files/              # File management: copy, template, diff, permissions
+│   ├── packages/           # PackageManager implementations (brew, apt, cargo, npm, pipx, dnf)
+│   ├── secrets/            # SOPS/age backends, 1Password/Bitwarden/Vault providers
+│   └── system/             # All SystemConfigurators — workstation (shell, macos-defaults, systemd, launchd, environment) + node (sysctl, kernel-modules, containerd, kubelet, apparmor, seccomp, certificates)
+├── cfgd-server/src/        # Control plane binary crate
+│   ├── main.rs             # Axum HTTP server entry point
+│   ├── api/                # REST API routes (checkin, devices, drift)
+│   ├── db/                 # SQLite device/drift storage
+│   ├── fleet/              # Fleet status aggregation
+│   ├── web/                # Web UI (dashboard)
+│   └── errors/             # Server-specific error types
+└── cfgd-operator/src/      # k8s operator binary crate
+    ├── main.rs             # Operator entry point
+    ├── crds/               # CRD definitions (MachineConfig, ConfigPolicy, DriftAlert)
+    ├── controllers/        # kube-rs reconciliation controllers
+    └── errors/             # Operator-specific error types
 ```
 
 See `.claude/team-config-controller.md` for the multi-source architecture and Phase 1-7 prep work.
@@ -69,7 +72,7 @@ See `.claude/team-config-controller.md` for the multi-source architecture and Ph
 
 5. **Config structs derive `serde::Deserialize` and `serde::Serialize`**. All config types live in `config/`. No config parsing logic outside that module.
 
-6. **No `std::process::Command` outside of `packages/` and `secrets/`**. If you need to shell out, it must go through a controlled execution layer, not scattered across the codebase. `secrets/` shells out to `sops` and external provider CLIs (`op`, `bw`, `vault`). Script execution (pre/post-apply) is handled by the reconciler.
+6. **No `std::process::Command` outside of `cli/`, `packages/`, `secrets/`, `system/`, `reconciler/`, and `platform/`**. If you need to shell out, it must go through a controlled execution layer, not scattered across the codebase. `cli/` spawns `$EDITOR` for resource editing commands. `secrets/` shells out to `sops` and external provider CLIs (`op`, `bw`, `vault`). `system/` implements `SystemConfigurator` trait (same provider pattern as `packages/`). `reconciler/` handles script execution (pre/post-reconcile hooks). `platform/` shells out for OS detection (`sw_vers`, `freebsd-version`).
 
 ### Style
 
@@ -88,14 +91,42 @@ See `.claude/team-config-controller.md` for the multi-source architecture and Ph
 - **`impl Into<T>`** for function parameters where multiple types make sense.
 - **Structured logging** via `tracing`. Use `tracing::info!`, `tracing::debug!`, etc. Never `log::*`.
 
+### Shared Utilities — `cfgd-core/src/lib.rs`
+
+Cross-cutting functions used by multiple modules live in `cfgd-core/src/lib.rs`. **Before writing any helper function, check lib.rs first** — if a similar function exists, use it. If a new function will be needed by more than one module, add it to lib.rs, not inline.
+
+Current shared functions (keep this list updated when adding new ones):
+- `utc_now_iso8601()` — ISO 8601 timestamp (the only timestamp function; do NOT create wrappers)
+- `unix_secs_to_iso8601(secs)` — Unix epoch to ISO 8601
+- `deep_merge_yaml(base, overlay)` — recursive YAML value merge
+- `union_extend(target, source)` — Vec<String> merge without duplicates
+- `command_available(cmd)` — check if a CLI command exists on PATH
+- `expand_tilde(path)` — expand `~/...` to home directory
+- `git_ssh_credentials(url, username, allowed)` — git2 credential callback (SSH agent/keys + HTTPS credential helper)
+- `parse_loose_version(s)` — parse "1.28" → semver 1.28.0
+- `version_satisfies(version, requirement)` — check version against semver range
+- `parse_loose_version(s)` — parse "1.28" → semver Version(1.28.0); handles 1-part, 2-part, and 3-part versions
+- `version_satisfies(version, requirement)` — check version against semver range (uses `parse_loose_version`)
+- `copy_dir_recursive(src, dst)` — recursively copy a directory tree
+
+### Database Conventions
+
+All SQLite databases (StateStore in cfgd-core, ServerDb in cfgd-server) must:
+- Set `PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;` on open
+- Use versioned migrations (not ad-hoc `CREATE TABLE IF NOT EXISTS`)
+- Use `cfgd_core::utc_now_iso8601()` for timestamps — no local wrappers
+- Hash with `Sha256::digest()` (one-liner) not `Sha256::new()` + `update()` + `finalize()`
+
 ### What NOT To Do
 
 - Don't add features not in the current phase of PLAN.md.
-- Don't create utility modules or helpers for one-off operations.
+- Don't create new utility files. Shared functions go in `cfgd-core/src/lib.rs`.
+- Don't duplicate a function that already exists in lib.rs. Search first.
 - Don't add backwards-compatibility shims. Just change the code.
 - Don't over-abstract. Three similar lines > a premature abstraction.
 - Don't add `#[allow(dead_code)]` — if code is unused, delete it.
 - Don't create new files without checking if the functionality belongs in an existing module.
+- Don't create local timestamp/hash/command-check wrappers — use the shared ones in lib.rs.
 
 ## Output System — Critical Design Constraint
 

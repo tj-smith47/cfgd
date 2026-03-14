@@ -12,7 +12,7 @@ Pronounced "see-eff-gee-dee", like `etcd` but for config. The `d` is for daemon.
 
 ```sh
 # One-liner (macOS / Linux)
-curl -fsSL https://raw.githubusercontent.com/TODO/cfgd/main/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/tj-smith47/cfgd/main/install.sh | sh
 
 # Or build from source
 cargo install --path .
@@ -33,7 +33,7 @@ The bootstrap flow walks you through profile selection, secrets setup, shows a f
 ### Day-to-Day Usage
 
 ```sh
-cfgd plan              # preview what would change
+cfgd apply --dry-run   # preview what would change
 cfgd apply             # apply the plan (with confirmation)
 cfgd apply --yes       # skip confirmation
 cfgd apply --phase packages   # apply only one phase
@@ -108,7 +108,7 @@ my-config/
 │       └── config
 ├── secrets/               # SOPS-encrypted files (keys visible, values encrypted)
 │   └── api-keys.yaml
-└── scripts/               # pre/post-apply scripts
+└── scripts/               # pre/post-reconcile scripts
     ├── pre-setup.sh
     └── post-setup.sh
 ```
@@ -124,7 +124,7 @@ cfgd uses a KRM-inspired YAML format. All config files have `apiVersion`, `kind`
 This is the entry point. It tells cfgd which profile to activate, where the config is stored, and how the daemon should behave.
 
 ```yaml
-api-version: cfgd/v1
+apiVersion: cfgd/v1
 kind: Config
 metadata:
   name: my-workstation        # identifier for this config set
@@ -180,7 +180,7 @@ spec:
 Profiles declare the desired state of a machine. They can inherit from other profiles to share common configuration.
 
 ```yaml
-api-version: cfgd/v1
+apiVersion: cfgd/v1
 kind: Profile
 metadata:
   name: work
@@ -193,7 +193,7 @@ spec:
     EDITOR: "code --wait"
     GIT_AUTHOR_NAME: "Jane Doe"
     GIT_AUTHOR_EMAIL: jane@work.com
-    dotfiles_theme: gruvbox
+    color_theme: gruvbox
 
   packages:
     brew:
@@ -211,7 +211,7 @@ spec:
         - wezterm
         - visual-studio-code
     apt:
-      install:                 # apt packages (Debian/Ubuntu)
+      packages:                # apt packages (Debian/Ubuntu)
         - build-essential
         - curl
     cargo:                     # cargo install (Rust)
@@ -279,9 +279,9 @@ spec:
       backend: age                             # override backend for this file
 
   scripts:
-    pre-apply:                 # run before applying changes
+    pre-reconcile:             # run before reconciliation
       - scripts/pre-setup.sh
-    post-apply:                # run after applying changes
+    post-reconcile:            # run after reconciliation
       - scripts/post-setup.sh
 ```
 
@@ -371,6 +371,22 @@ The `system:` section routes each key to a registered system configurator. Avail
 
 **`systemd-units`** (Linux only) — Manages systemd user unit files. Each entry specifies a unit name, path to the unit file source, and whether the unit should be enabled.
 
+**Node configurators** (Linux, typically in DaemonSet context):
+
+**`sysctl`** — Manages kernel parameters via `/proc/sys`. Persists to `/etc/sysctl.d/99-cfgd.conf`.
+
+**`kernel-modules`** — Loads kernel modules via `modprobe`. Persists to `/etc/modules-load.d/cfgd.conf`.
+
+**`containerd`** — Manages containerd TOML configuration. Restarts containerd after changes.
+
+**`kubelet`** — Manages kubelet YAML configuration. Restarts kubelet after changes.
+
+**`apparmor`** — Installs and loads AppArmor profiles.
+
+**`seccomp`** — Installs seccomp JSON profiles to the configured directory.
+
+**`certificates`** — Manages X.509 certificate files and enforces secure permissions.
+
 Configurators that aren't available on the current OS are silently skipped.
 
 ---
@@ -388,7 +404,7 @@ cfgd manages packages across six package managers. Each is implemented behind a 
 | pipx | Any (with Python) | `pipx` | `pipx install` |
 | dnf | Fedora/RHEL | `dnf` | `dnf install` |
 
-Package managers that aren't installed on the current system are silently skipped. `cfgd plan` shows which managers will be used and which packages will be installed or removed.
+Package managers that aren't installed on the current system are silently skipped. `cfgd apply --dry-run` shows which managers will be used and which packages will be installed or removed.
 
 ---
 
@@ -404,7 +420,7 @@ Apply runs in a fixed phase order:
 2. **Packages** — install/uninstall across all package managers
 3. **Files** — copy, template, set permissions
 4. **Secrets** — decrypt SOPS files, resolve external references
-5. **Scripts** — run pre/post-apply scripts
+5. **Scripts** — run pre/post-reconcile scripts
 
 Each phase can be applied independently with `cfgd apply --phase <name>`.
 
@@ -463,7 +479,7 @@ The bootstrap is **resumable** — if interrupted at any point (network failure,
 The install script handles downloading the binary:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/TODO/cfgd/main/install.sh | sh -s -- init --from git@github.com:you/config.git
+curl -fsSL https://raw.githubusercontent.com/tj-smith47/cfgd/main/install.sh | sh -s -- init --from git@github.com:you/config.git
 ```
 
 This detects your OS and architecture, downloads the right binary from GitHub releases, verifies the SHA256 checksum, puts it in your PATH, and then runs `cfgd init --from ...` for you.
@@ -487,13 +503,13 @@ These flags work with any subcommand:
 ## Building from Source
 
 ```sh
-git clone https://github.com/TODO/cfgd.git
+git clone https://github.com/tj-smith47/cfgd.git
 cd cfgd
 cargo build --release
 # binary is at target/release/cfgd
 ```
 
-Requires Rust 1.70+. Dependencies are vendored via Cargo.
+Requires Rust 1.94+. Dependencies are vendored via Cargo.
 
 ### Running Tests
 
@@ -512,10 +528,9 @@ cargo clippy -- -D warnings
 
 ## Future Plans
 
-cfgd is currently a single-binary CLI + daemon for managing individual machines. Planned additions:
+cfgd is a unified binary that manages both workstation and Kubernetes node configuration. Planned additions:
 
 - **cfgd-server** — Fleet control plane with web UI, device auth, drift dashboards, deployed as a Kubernetes operator
-- **cfgd-node** — Node-level config agent for Kubernetes clusters (sysctl, kernel modules, containerd, kubelet, AppArmor, seccomp)
 - **Team Config Controller** — Multi-source config management where teams publish config baselines with policy tiers and developers subscribe
 
 ## License

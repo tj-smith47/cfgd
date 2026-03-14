@@ -1,21 +1,70 @@
-# Claude Code
-.claude/
+# Ignore everything
+*
 
-# Rust
-/target
+# Allow project structure
+!*/
+!.gitignore
+!.dockerignore
+!.editorconfig
+!.github/
+!.github/**
+
+# Rust source
+!Cargo.toml
+!Cargo.lock
+!crates/
+!crates/**
+
+# Config and schemas
+!schemas/
+!schemas/**
+!examples/
+!examples/**
+
+# Docker and deployment
+!Dockerfile
+!Dockerfile.*
+!charts/
+!charts/**
+!manifests/
+!manifests/**
+
+# Crossplane function
+!function-cfgd/
+!function-cfgd/**
+
+# CI and tasks
+!Taskfile.yml
+!cliff.toml
+
+# Tests
+!tests/
+!tests/**
+
+# Install script
+!install.sh
+
+# Docs
+!README.md
+!CHANGELOG.md
+!CONTRIBUTING.md
+!CODE_OF_CONDUCT.md
+!SECURITY.md
+!LICENSE
+
+# Re-ignore build artifacts inside allowed dirs
+target/
 **/*.rs.bk
 
-# IDE
-.idea/
-.vscode/
+# Re-ignore OS/IDE junk inside allowed dirs
+.DS_Store
+Thumbs.db
 *.swp
 *.swo
 *~
+.idea/
+.vscode/
 
-# OS
-.DS_Store
-Thumbs.db
-
-# Environment
+# Re-ignore env files inside allowed dirs
 .env
 .env.*

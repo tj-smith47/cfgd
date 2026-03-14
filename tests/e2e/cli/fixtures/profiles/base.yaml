@@ -1,0 +1,15 @@
+apiVersion: cfgd/v1
+kind: Profile
+metadata:
+  name: base
+spec:
+  variables:
+    EDITOR: vim
+    SHELL: /bin/bash
+  files:
+    managed:
+      - source: files/gitconfig
+        target: TARGET_DIR/.gitconfig
+  packages:
+    brew:
+      formulae: []

@@ -1,0 +1,15 @@
+apiVersion: apiextensions.crossplane.io/v1
+kind: Composition
+metadata:
+  name: teamconfig-to-machineconfigs
+  labels:
+    cfgd.io/purpose: team-config-fanout
+spec:
+  compositeTypeRef:
+    apiVersion: cfgd.io/v1alpha1
+    kind: TeamConfig
+  mode: Pipeline
+  pipeline:
+  - step: generate-machine-configs
+    functionRef:
+      name: function-cfgd

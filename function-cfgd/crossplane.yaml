@@ -1,0 +1,10 @@
+apiVersion: meta.pkg.crossplane.io/v1beta1
+kind: Function
+metadata:
+  name: function-cfgd
+  annotations:
+    meta.crossplane.io/maintainer: "cfgd maintainers"
+    meta.crossplane.io/source: "https://github.com/tj-smith47/cfgd"
+    meta.crossplane.io/description: |
+      Fans out TeamConfig XR members into per-user MachineConfig CRDs
+      and enforcement ConfigPolicy CRDs for the cfgd operator.

@@ -1,0 +1,64 @@
+image:
+  repository: ghcr.io/tj-smith47/cfgd
+  tag: ""  # defaults to Chart.appVersion
+  pullPolicy: IfNotPresent
+
+# cfgd-server URL for check-in and drift reporting
+serverUrl: ""
+
+# API key for cfgd-server authentication (set via secret reference)
+apiKey: ""
+
+# Existing secret containing the API key
+apiKeySecret:
+  name: ""
+  key: "api-key"
+
+# Reconciliation interval
+reconcileInterval: "5m"
+
+# Node config source (git URL or local path)
+configSource: ""
+
+# Profile to use for node configuration
+profile: ""
+
+# Resource limits
+resources:
+  limits:
+    cpu: 100m
+    memory: 128Mi
+  requests:
+    cpu: 50m
+    memory: 64Mi
+
+# Node selector for targeting specific nodes
+nodeSelector: {}
+
+# Tolerations for scheduling on tainted nodes
+tolerations:
+  - operator: Exists
+    effect: NoSchedule
+  - operator: Exists
+    effect: NoExecute
+
+# Additional volumes and volume mounts
+extraVolumes: []
+extraVolumeMounts: []
+
+# Service account
+serviceAccount:
+  create: true
+  name: ""
+  annotations: {}
+
+# Pod security context
+podSecurityContext: {}
+
+# Container security context — needs privileged for sysctl, modprobe, etc.
+securityContext:
+  privileged: true
+  readOnlyRootFilesystem: false
+
+# Priority class for the DaemonSet
+priorityClassName: system-node-critical

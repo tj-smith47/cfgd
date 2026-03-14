@@ -1,0 +1,234 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "$id": "https://cfgd.io/schemas/cfgd-profile.schema.json",
+  "title": "cfgd Profile",
+  "description": "Profile document for cfgd (profiles/*.yaml)",
+  "type": "object",
+  "required": ["apiVersion", "kind", "metadata", "spec"],
+  "additionalProperties": false,
+  "properties": {
+    "apiVersion": {
+      "type": "string",
+      "description": "API version identifier",
+      "examples": ["cfgd/v1"]
+    },
+    "kind": {
+      "type": "string",
+      "const": "Profile",
+      "description": "Document kind, must be 'Profile'"
+    },
+    "metadata": {
+      "$ref": "#/$defs/ProfileMetadata"
+    },
+    "spec": {
+      "$ref": "#/$defs/ProfileSpec"
+    }
+  },
+  "$defs": {
+    "ProfileMetadata": {
+      "type": "object",
+      "required": ["name"],
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "Name of this profile"
+        }
+      }
+    },
+    "ProfileSpec": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "inherits": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": [],
+          "description": "List of parent profile names to inherit from"
+        },
+        "variables": {
+          "type": "object",
+          "additionalProperties": true,
+          "default": {},
+          "description": "Key-value variables available for template interpolation"
+        },
+        "packages": {
+          "$ref": "#/$defs/PackagesSpec"
+        },
+        "files": {
+          "$ref": "#/$defs/FilesSpec"
+        },
+        "system": {
+          "type": "object",
+          "additionalProperties": true,
+          "default": {},
+          "description": "System configuration keyed by configurator domain (e.g. defaults, environment)"
+        },
+        "secrets": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/SecretSpec" },
+          "default": [],
+          "description": "Secrets to decrypt and place on the system"
+        },
+        "scripts": {
+          "$ref": "#/$defs/ScriptSpec"
+        }
+      }
+    },
+    "PackagesSpec": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "brew": {
+          "$ref": "#/$defs/BrewSpec"
+        },
+        "apt": {
+          "$ref": "#/$defs/AptSpec"
+        },
+        "cargo": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": [],
+          "description": "Cargo packages to install globally"
+        },
+        "npm": {
+          "$ref": "#/$defs/NpmSpec"
+        },
+        "pipx": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": [],
+          "description": "Python packages to install via pipx"
+        },
+        "dnf": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": [],
+          "description": "DNF/Fedora packages to install"
+        }
+      }
+    },
+    "BrewSpec": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "taps": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": [],
+          "description": "Homebrew taps to add"
+        },
+        "formulae": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": [],
+          "description": "Homebrew formulae to install"
+        },
+        "casks": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": [],
+          "description": "Homebrew casks to install"
+        }
+      }
+    },
+    "AptSpec": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "packages": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": [],
+          "description": "APT packages desired on the system"
+        }
+      }
+    },
+    "NpmSpec": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "global": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": [],
+          "description": "NPM packages to install globally"
+        }
+      }
+    },
+    "FilesSpec": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "managed": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/ManagedFileSpec" },
+          "default": [],
+          "description": "Files to manage (copy/template from source to target)"
+        },
+        "permissions": {
+          "type": "object",
+          "additionalProperties": { "type": "string" },
+          "default": {},
+          "description": "File permission overrides (path → mode, e.g. '0600')"
+        }
+      }
+    },
+    "ManagedFileSpec": {
+      "type": "object",
+      "required": ["source", "target"],
+      "additionalProperties": false,
+      "properties": {
+        "source": {
+          "type": "string",
+          "description": "Source file path relative to the config repo"
+        },
+        "target": {
+          "type": "string",
+          "description": "Absolute target path on the system"
+        }
+      }
+    },
+    "SecretSpec": {
+      "type": "object",
+      "required": ["source", "target"],
+      "additionalProperties": false,
+      "properties": {
+        "source": {
+          "type": "string",
+          "description": "Encrypted source file path"
+        },
+        "target": {
+          "type": "string",
+          "description": "Target path for decrypted secret"
+        },
+        "template": {
+          "type": "string",
+          "description": "Template to render with secret values"
+        },
+        "backend": {
+          "type": "string",
+          "description": "Override the default secrets backend for this secret"
+        }
+      }
+    },
+    "ScriptSpec": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "pre-reconcile": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": [],
+          "description": "Scripts to run before reconciliation"
+        },
+        "post-reconcile": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": [],
+          "description": "Scripts to run after reconciliation"
+        }
+      }
+    }
+  }
+}

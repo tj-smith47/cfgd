@@ -1,0 +1,39 @@
+{{- if .Values.serviceAccount.create }}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "cfgd.fullname" . }}
+  labels:
+    {{- include "cfgd.labels" . | nindent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: ["nodes"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["cfgd.io"]
+    resources: ["machineconfigs"]
+    verbs: ["get", "list", "watch", "update", "patch"]
+  - apiGroups: ["cfgd.io"]
+    resources: ["machineconfigs/status"]
+    verbs: ["update", "patch"]
+  - apiGroups: ["cfgd.io"]
+    resources: ["configpolicies"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "cfgd.fullname" . }}
+  labels:
+    {{- include "cfgd.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "cfgd.fullname" . }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "cfgd.serviceAccountName" . }}
+    namespace: {{ .Release.Namespace }}
+{{- end }}

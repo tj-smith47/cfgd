@@ -1,0 +1,15 @@
+apiVersion: v2
+name: cfgd-operator
+description: cfgd Kubernetes operator — CRD-based machine configuration management
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+keywords:
+  - kubernetes
+  - operator
+  - config
+  - gitops
+  - crd
+maintainers:
+  - name: cfgd
+    url: https://github.com/tj-smith47/cfgd

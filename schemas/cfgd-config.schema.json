@@ -1,0 +1,331 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "$id": "https://cfgd.io/schemas/cfgd-config.schema.json",
+  "title": "cfgd Config",
+  "description": "Root configuration file for cfgd (cfgd.yaml)",
+  "type": "object",
+  "required": ["apiVersion", "kind", "metadata", "spec"],
+  "additionalProperties": false,
+  "properties": {
+    "apiVersion": {
+      "type": "string",
+      "description": "API version identifier",
+      "examples": ["cfgd/v1"]
+    },
+    "kind": {
+      "type": "string",
+      "const": "Config",
+      "description": "Document kind, must be 'Config'"
+    },
+    "metadata": {
+      "$ref": "#/$defs/ConfigMetadata"
+    },
+    "spec": {
+      "$ref": "#/$defs/ConfigSpec"
+    }
+  },
+  "$defs": {
+    "ConfigMetadata": {
+      "type": "object",
+      "required": ["name"],
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "Name of this configuration"
+        }
+      }
+    },
+    "ConfigSpec": {
+      "type": "object",
+      "required": ["profile"],
+      "additionalProperties": false,
+      "properties": {
+        "profile": {
+          "type": "string",
+          "description": "Name of the active profile to apply"
+        },
+        "origin": {
+          "description": "Git or server origin(s). Can be a single object or an array.",
+          "oneOf": [
+            { "$ref": "#/$defs/OriginSpec" },
+            {
+              "type": "array",
+              "items": { "$ref": "#/$defs/OriginSpec" }
+            }
+          ]
+        },
+        "daemon": {
+          "$ref": "#/$defs/DaemonConfig"
+        },
+        "secrets": {
+          "$ref": "#/$defs/SecretsConfig"
+        },
+        "sources": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/SourceSpec" },
+          "default": [],
+          "description": "Multi-source config subscriptions"
+        },
+        "theme": {
+          "$ref": "#/$defs/ThemeConfig"
+        }
+      }
+    },
+    "OriginSpec": {
+      "type": "object",
+      "required": ["type", "url"],
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": ["git", "server"],
+          "description": "Origin type"
+        },
+        "url": {
+          "type": "string",
+          "description": "Repository URL or server endpoint"
+        },
+        "branch": {
+          "type": "string",
+          "default": "main",
+          "description": "Branch to track"
+        },
+        "auth": {
+          "type": "string",
+          "description": "Authentication method or credential reference"
+        }
+      }
+    },
+    "DaemonConfig": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "default": false,
+          "description": "Whether the daemon is enabled"
+        },
+        "reconcile": {
+          "$ref": "#/$defs/ReconcileConfig"
+        },
+        "sync": {
+          "$ref": "#/$defs/SyncConfig"
+        },
+        "notify": {
+          "$ref": "#/$defs/NotifyConfig"
+        }
+      }
+    },
+    "ReconcileConfig": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "interval": {
+          "type": "string",
+          "default": "5m",
+          "description": "How often to reconcile (e.g. '5m', '1h')"
+        },
+        "on-change": {
+          "type": "boolean",
+          "default": false,
+          "description": "Whether to reconcile immediately on file change"
+        }
+      }
+    },
+    "SyncConfig": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "auto-push": {
+          "type": "boolean",
+          "default": false,
+          "description": "Automatically push local changes to origin"
+        },
+        "auto-pull": {
+          "type": "boolean",
+          "default": false,
+          "description": "Automatically pull remote changes"
+        },
+        "interval": {
+          "type": "string",
+          "default": "1h",
+          "description": "Sync interval (e.g. '1h', '30m')"
+        }
+      }
+    },
+    "NotifyConfig": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "drift": {
+          "type": "boolean",
+          "default": false,
+          "description": "Send notifications on drift detection"
+        },
+        "method": {
+          "type": "string",
+          "enum": ["desktop", "stdout", "webhook"],
+          "default": "desktop",
+          "description": "Notification delivery method"
+        },
+        "webhook-url": {
+          "type": "string",
+          "description": "Webhook URL (required when method is 'webhook')"
+        }
+      }
+    },
+    "SecretsConfig": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "backend": {
+          "type": "string",
+          "default": "sops",
+          "description": "Primary secrets backend"
+        },
+        "sops": {
+          "$ref": "#/$defs/SopsConfig"
+        },
+        "integrations": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/SecretIntegration" },
+          "default": [],
+          "description": "External secret provider integrations"
+        }
+      }
+    },
+    "SopsConfig": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "age-key": {
+          "type": "string",
+          "description": "Path to age key file for SOPS decryption"
+        }
+      }
+    },
+    "SecretIntegration": {
+      "type": "object",
+      "required": ["name"],
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "Integration name (e.g. '1password', 'bitwarden', 'lastpass', 'vault')"
+        }
+      },
+      "additionalProperties": true
+    },
+    "SourceSpec": {
+      "type": "object",
+      "required": ["name", "origin"],
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "Unique name for this source"
+        },
+        "origin": {
+          "$ref": "#/$defs/OriginSpec"
+        },
+        "subscription": {
+          "$ref": "#/$defs/SubscriptionSpec"
+        },
+        "sync": {
+          "$ref": "#/$defs/SourceSyncSpec"
+        }
+      }
+    },
+    "SubscriptionSpec": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "profile": {
+          "type": "string",
+          "description": "Specific profile to subscribe to from this source"
+        },
+        "priority": {
+          "type": "integer",
+          "default": 500,
+          "minimum": 0,
+          "description": "Merge priority (higher = wins conflicts)"
+        },
+        "accept-recommended": {
+          "type": "boolean",
+          "default": false,
+          "description": "Automatically accept recommended items from source"
+        },
+        "opt-in": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": [],
+          "description": "Optional items to opt into"
+        },
+        "overrides": {
+          "description": "Local overrides for source-provided config"
+        },
+        "reject": {
+          "description": "Items to reject from this source"
+        }
+      }
+    },
+    "SourceSyncSpec": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "interval": {
+          "type": "string",
+          "default": "1h",
+          "description": "How often to sync from this source"
+        },
+        "auto-apply": {
+          "type": "boolean",
+          "default": false,
+          "description": "Automatically apply changes from this source"
+        },
+        "pin-version": {
+          "type": "string",
+          "description": "Pin to a specific version (git tag/commit)"
+        }
+      }
+    },
+    "ThemeConfig": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "preset": {
+          "type": "string",
+          "default": "default",
+          "description": "Theme preset name"
+        },
+        "overrides": {
+          "$ref": "#/$defs/ThemeOverrides"
+        }
+      }
+    },
+    "ThemeOverrides": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "success": { "type": "string", "description": "Color for success messages" },
+        "warning": { "type": "string", "description": "Color for warning messages" },
+        "error": { "type": "string", "description": "Color for error messages" },
+        "info": { "type": "string", "description": "Color for info messages" },
+        "muted": { "type": "string", "description": "Color for muted/secondary text" },
+        "header": { "type": "string", "description": "Color for headers" },
+        "subheader": { "type": "string", "description": "Color for subheaders" },
+        "key": { "type": "string", "description": "Color for key labels" },
+        "value": { "type": "string", "description": "Color for values" },
+        "diff-add": { "type": "string", "description": "Color for diff additions" },
+        "diff-remove": { "type": "string", "description": "Color for diff removals" },
+        "diff-context": { "type": "string", "description": "Color for diff context lines" },
+        "icon-success": { "type": "string", "description": "Icon for success" },
+        "icon-warning": { "type": "string", "description": "Icon for warnings" },
+        "icon-error": { "type": "string", "description": "Icon for errors" },
+        "icon-info": { "type": "string", "description": "Icon for info" },
+        "icon-pending": { "type": "string", "description": "Icon for pending state" },
+        "icon-arrow": { "type": "string", "description": "Icon for arrows/pointers" }
+      }
+    }
+  }
+}
