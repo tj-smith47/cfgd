@@ -483,7 +483,7 @@ pub(super) fn cmd_module_create(
 
     // Build document
     let mut doc = config::ModuleDocument {
-        api_version: "cfgd/v1".to_string(),
+        api_version: cfgd_core::API_VERSION.to_string(),
         kind: "Module".to_string(),
         metadata: config::ModuleMetadata {
             name: name.to_string(),
@@ -1063,7 +1063,10 @@ pub(super) fn cmd_module_add_remote(
     };
     if cli.config.exists() {
         let cfg = config::load_config(&cli.config)?;
-        let profile_name = cli.profile.as_deref().unwrap_or(&cfg.spec.profile);
+        let profile_name = match cli.profile.as_deref() {
+            Some(p) => p,
+            None => cfg.active_profile()?,
+        };
         let profile_path = profiles_dir(cli).join(format!("{}.yaml", profile_name));
 
         if profile_path.exists() {

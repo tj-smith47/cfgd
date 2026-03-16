@@ -30,7 +30,7 @@ Open a [feature request](https://github.com/tj-smith47/cfgd/issues/new?template=
 1. Fork the repository
 2. Create a feature branch: `git checkout -b feat/my-feature`
 3. Make your changes following the coding standards below
-4. Run all checks: `make check`
+4. Run all checks: `task check`
 5. Commit with [conventional commit](https://www.conventionalcommits.org/) messages
 6. Push and open a PR against `main`
 
@@ -69,8 +69,7 @@ bash .claude/scripts/audit.sh     # project-specific audit
 crates/
   cfgd-core/    # shared library: config, providers, reconciler, state, daemon
   cfgd/         # CLI binary: packages, files, secrets, system configurators
-  cfgd-server/  # fleet control plane: REST API, web UI, SQLite
-  cfgd-operator/# k8s operator: CRDs, controllers
+  cfgd-operator/# k8s operator: CRDs, controllers, webhook, device gateway (fleet API, web UI, enrollment)
 ```
 
 ## Coding Standards
@@ -82,7 +81,7 @@ crates/
 3. **All providers implement their traits** — the reconciler depends on `ProviderRegistry`, never concrete implementations
 4. **`thiserror` for library errors, `anyhow` only in `main.rs` and `cli/`**
 5. **Config structs in `config/` only** — with `serde::Deserialize` + `serde::Serialize`
-6. **No `std::process::Command` outside `packages/`, `secrets/`, and `scripts/`**
+6. **No `std::process::Command` outside `cli/`, `packages/`, `secrets/`, `system/`, `reconciler/`, `platform/`, `sources/`, and `gateway/`**
 
 ### Style
 

@@ -1,12 +1,13 @@
 [package]
 name = "cfgd-core"
-version = "0.1.0"
-edition = "2024"
-rust-version = "1.94"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
 description = "Core library for cfgd — shared types, providers, reconciler, state"
-license = "MIT"
-repository = "https://github.com/tj-smith47/cfgd"
-homepage = "https://github.com/tj-smith47/cfgd"
 keywords = ["config", "management", "gitops", "reconciliation", "declarative"]
 categories = ["config", "command-line-utilities"]
 

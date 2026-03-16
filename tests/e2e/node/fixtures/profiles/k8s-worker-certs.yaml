@@ -1,4 +1,4 @@
-apiVersion: cfgd/v1
+apiVersion: cfgd.io/v1alpha1
 kind: Profile
 metadata:
   name: k8s-worker-certs

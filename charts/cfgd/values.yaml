@@ -3,10 +3,10 @@ image:
   tag: ""  # defaults to Chart.appVersion
   pullPolicy: IfNotPresent
 
-# cfgd-server URL for check-in and drift reporting
+# Device gateway URL for check-in and drift reporting
 serverUrl: ""
 
-# API key for cfgd-server authentication (set via secret reference)
+# API key for device gateway authentication (set via secret reference)
 apiKey: ""
 
 # Existing secret containing the API key

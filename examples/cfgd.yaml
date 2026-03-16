@@ -1,4 +1,4 @@
-apiVersion: cfgd/v1
+apiVersion: cfgd.io/v1alpha1
 kind: Config
 metadata:
   name: my-workstation

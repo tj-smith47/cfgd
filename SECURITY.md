@@ -10,7 +10,7 @@
 
 **Do not open a public issue for security vulnerabilities.**
 
-Instead, please report security issues by emailing the maintainers directly. Include:
+Instead, please report security issues by emailing **security@cfgd.io**. Include:
 
 - Description of the vulnerability
 - Steps to reproduce

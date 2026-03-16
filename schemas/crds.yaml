@@ -41,6 +41,20 @@ spec:
                 type: array
               hostname:
                 type: string
+              moduleRefs:
+                default: []
+                items:
+                  description: Reference to a module that should be installed on the machine.
+                  properties:
+                    name:
+                      type: string
+                    required:
+                      default: false
+                      type: boolean
+                  required:
+                  - name
+                  type: object
+                type: array
               packageVersions:
                 additionalProperties:
                   type: string
@@ -139,6 +153,11 @@ spec:
                 description: 'Version requirements keyed by package name (semver ranges, e.g. {"kubectl": ">=1.28"}).'
                 type: object
               packages:
+                default: []
+                items:
+                  type: string
+                type: array
+              requiredModules:
                 default: []
                 items:
                   type: string

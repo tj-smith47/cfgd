@@ -114,6 +114,30 @@ fn brew_available() -> bool {
     cfg!(target_os = "linux") && std::path::Path::new(LINUXBREW_PATH).exists()
 }
 
+/// After brew bootstrap, add brew's bin directories to the current process PATH
+/// so that brew-installed binaries (and post-apply scripts that use them) work
+/// immediately without requiring a new shell session.
+fn update_path_for_brew() {
+    let brew_bin = std::path::Path::new(LINUXBREW_PATH).parent().unwrap_or(std::path::Path::new("."));
+    let brew_prefix = brew_bin.parent().unwrap_or(brew_bin);
+    let sbin = brew_prefix.join("sbin");
+
+    if let Ok(current_path) = std::env::var("PATH") {
+        let brew_bin_str = brew_bin.to_string_lossy();
+        if !current_path.contains(brew_bin_str.as_ref()) {
+            // SAFETY: bootstrap runs single-threaded before any concurrent work.
+            // set_var is unsafe in edition 2024 due to potential data races, but
+            // we're in the reconciler's sequential apply phase here.
+            unsafe {
+                std::env::set_var(
+                    "PATH",
+                    format!("{}:{}:{}", brew_bin_str, sbin.to_string_lossy(), current_path),
+                );
+            }
+        }
+    }
+}
+
 /// Build a Command for brew, handling linuxbrew paths.
 /// On Linux as root with a linuxbrew user, routes through `sudo -u linuxbrew`.
 /// On Linux as non-root, uses LINUXBREW_PATH directly if brew is not in PATH.
@@ -380,9 +404,7 @@ impl PackageManager for BrewManager {
                 .into());
             }
 
-            printer.info(
-                "Add to your shell: eval \"$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)\"",
-            );
+            update_path_for_brew();
         } else {
             printer.info("Installing Homebrew");
             let status = Command::new("bash")
@@ -403,6 +425,8 @@ impl PackageManager for BrewManager {
                 }
                 .into());
             }
+
+            update_path_for_brew();
         }
 
         Ok(())

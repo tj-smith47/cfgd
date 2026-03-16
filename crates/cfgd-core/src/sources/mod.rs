@@ -34,6 +34,8 @@ pub struct CachedSource {
 pub struct SourceManager {
     cache_dir: PathBuf,
     sources: HashMap<String, CachedSource>,
+    /// When true, skip signature verification even if a source requires it.
+    allow_unsigned: bool,
 }
 
 impl SourceManager {
@@ -42,7 +44,13 @@ impl SourceManager {
         Self {
             cache_dir: cache_dir.to_path_buf(),
             sources: HashMap::new(),
+            allow_unsigned: false,
         }
+    }
+
+    /// Set whether to allow unsigned source content (bypasses signature verification).
+    pub fn set_allow_unsigned(&mut self, allow: bool) {
+        self.allow_unsigned = allow;
     }
 
     /// Default cache directory: ~/.local/share/cfgd/sources/
@@ -78,13 +86,8 @@ impl SourceManager {
 
         let manifest = self.parse_manifest(&spec.name, &source_dir)?;
 
-        // Signature verification is not yet available. Log a warning so operators
-        // are aware that source content is trusted without cryptographic verification.
-        tracing::warn!(
-            source = %spec.name,
-            "Source '{}' loaded without signature verification — content is trusted as-is",
-            spec.name
-        );
+        // Signature verification: if the source requires signed commits, verify HEAD
+        self.verify_commit_signature(&spec.name, &source_dir, &manifest.spec.policy.constraints)?;
 
         // Version pinning check
         if let Some(ref pin) = spec.sync.pin_version {
@@ -213,6 +216,31 @@ impl SourceManager {
     /// Parse the ConfigSource manifest from a source directory.
     pub fn parse_manifest(&self, name: &str, source_dir: &Path) -> Result<ConfigSourceDocument> {
         read_manifest(name, source_dir)
+    }
+
+    /// Verify the HEAD commit of a source repo has a valid GPG or SSH signature.
+    /// Checks `allow_unsigned` on this SourceManager and `require_signed_commits`
+    /// on the constraints before delegating to `verify_head_signature`.
+    pub fn verify_commit_signature(
+        &self,
+        name: &str,
+        source_dir: &Path,
+        constraints: &crate::config::SourceConstraints,
+    ) -> Result<()> {
+        if !constraints.require_signed_commits {
+            return Ok(());
+        }
+
+        if self.allow_unsigned {
+            tracing::info!(
+                source = %name,
+                "Signature verification skipped for source '{}' (allow-unsigned is set)",
+                name
+            );
+            return Ok(());
+        }
+
+        verify_head_signature(name, source_dir)
     }
 
     /// Check version pin against source manifest version.
@@ -401,6 +429,92 @@ pub fn detect_source_manifest(dir: &Path) -> Result<Option<ConfigSourceDocument>
     read_manifest(name, dir).map(Some)
 }
 
+/// Verify that the HEAD commit of a git repo has a valid GPG or SSH signature.
+/// Uses `git log --format=%G?` to check signature status. Returns Ok(()) if the
+/// signature is valid (G) or valid with unknown trust (U). Returns an error for
+/// unsigned, bad, expired, revoked, or unverifiable signatures.
+pub fn verify_head_signature(name: &str, repo_dir: &Path) -> Result<()> {
+    if !crate::command_available("git") {
+        return Err(SourceError::SignatureVerificationFailed {
+            name: name.to_string(),
+            message: "git CLI is required for signature verification but is not available on PATH"
+                .into(),
+        }
+        .into());
+    }
+
+    let output = std::process::Command::new("git")
+        .args([
+            "-C",
+            &repo_dir.display().to_string(),
+            "log",
+            "--format=%G?",
+            "-1",
+        ])
+        .output()
+        .map_err(|e| SourceError::SignatureVerificationFailed {
+            name: name.to_string(),
+            message: format!("failed to run git: {}", e),
+        })?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(SourceError::SignatureVerificationFailed {
+            name: name.to_string(),
+            message: format!(
+                "git log failed (exit {}): {}",
+                output.status.code().unwrap_or(-1),
+                stderr.trim()
+            ),
+        }
+        .into());
+    }
+
+    let status = String::from_utf8_lossy(&output.stdout).trim().to_string();
+
+    match status.as_str() {
+        // G = good valid signature, U = good signature with unknown validity (untrusted key)
+        "G" | "U" => {
+            tracing::info!(
+                source = %name,
+                "Source '{}' HEAD commit signature verified (status: {})",
+                name, status
+            );
+            Ok(())
+        }
+        "N" => Err(SourceError::SignatureVerificationFailed {
+            name: name.to_string(),
+            message: "HEAD commit is not signed — source requires signed commits".into(),
+        }
+        .into()),
+        "B" => Err(SourceError::SignatureVerificationFailed {
+            name: name.to_string(),
+            message: "HEAD commit has a bad (invalid) signature".into(),
+        }
+        .into()),
+        "E" => Err(SourceError::SignatureVerificationFailed {
+            name: name.to_string(),
+            message: "signature cannot be checked — ensure the signing key is imported".into(),
+        }
+        .into()),
+        "X" | "Y" => Err(SourceError::SignatureVerificationFailed {
+            name: name.to_string(),
+            message: "HEAD commit signature or signing key has expired".into(),
+        }
+        .into()),
+        "R" => Err(SourceError::SignatureVerificationFailed {
+            name: name.to_string(),
+            message: "HEAD commit was signed with a revoked key".into(),
+        }
+        .into()),
+        other => Err(SourceError::SignatureVerificationFailed {
+            name: name.to_string(),
+            message: format!("unexpected signature status '{}' from git", other),
+        }
+        .into()),
+    }
+}
+
 /// Normalize shorthand semver pins.
 /// `~2` means "any 2.x.x" (maps to `>=2.0.0, <3.0.0`, i.e., caret semantics).
 /// `~2.1` means "any 2.1.x" (maps to `~2.1.0`, tilde semantics).
@@ -538,7 +652,7 @@ mod tests {
         std::fs::write(
             dir.path().join(SOURCE_MANIFEST_FILE),
             r#"
-apiVersion: cfgd/v1
+apiVersion: cfgd.io/v1alpha1
 kind: ConfigSource
 metadata:
   name: test-source
@@ -586,7 +700,7 @@ spec:
         std::fs::write(
             dir.path().join(SOURCE_MANIFEST_FILE),
             r#"
-apiVersion: cfgd/v1
+apiVersion: cfgd.io/v1alpha1
 kind: ConfigSource
 metadata:
   name: test-source
@@ -619,7 +733,7 @@ spec:
         let mgr = SourceManager::new(dir.path());
 
         let manifest = ConfigSourceDocument {
-            api_version: "cfgd/v1".into(),
+            api_version: crate::API_VERSION.into(),
             kind: "ConfigSource".into(),
             metadata: crate::config::ConfigSourceMetadata {
                 name: "test".into(),
@@ -643,7 +757,7 @@ spec:
         let mgr = SourceManager::new(dir.path());
 
         let manifest = ConfigSourceDocument {
-            api_version: "cfgd/v1".into(),
+            api_version: crate::API_VERSION.into(),
             kind: "ConfigSource".into(),
             metadata: crate::config::ConfigSourceMetadata {
                 name: "test".into(),
@@ -658,5 +772,65 @@ spec:
 
         let result = mgr.check_version_pin("test", &manifest, "~2");
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn verify_signature_skipped_when_not_required() {
+        let dir = tempfile::tempdir().unwrap();
+        let mgr = SourceManager::new(dir.path());
+        let constraints = crate::config::SourceConstraints::default();
+        // require_signed_commits defaults to false — should pass without any repo
+        assert!(
+            mgr.verify_commit_signature("test", dir.path(), &constraints)
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn verify_signature_skipped_when_allow_unsigned() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut mgr = SourceManager::new(dir.path());
+        mgr.set_allow_unsigned(true);
+        let mut constraints = crate::config::SourceConstraints::default();
+        constraints.require_signed_commits = true;
+        // Even though require_signed_commits is true, allow_unsigned bypasses it
+        assert!(
+            mgr.verify_commit_signature("test", dir.path(), &constraints)
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn verify_signature_fails_on_unsigned_commit() {
+        // Create a real git repo with an unsigned commit
+        let dir = tempfile::tempdir().unwrap();
+        let repo = git2::Repository::init(dir.path()).unwrap();
+        let sig = git2::Signature::now("Test", "test@example.com").unwrap();
+        let tree_id = repo.index().unwrap().write_tree().unwrap();
+        let tree = repo.find_tree(tree_id).unwrap();
+        repo.commit(Some("HEAD"), &sig, &sig, "unsigned commit", &tree, &[])
+            .unwrap();
+
+        let mgr = SourceManager::new(dir.path());
+        let mut constraints = crate::config::SourceConstraints::default();
+        constraints.require_signed_commits = true;
+
+        let result = mgr.verify_commit_signature("test-source", dir.path(), &constraints);
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("not signed"),
+            "expected 'not signed' in error, got: {}",
+            err_msg
+        );
+    }
+
+    #[test]
+    fn set_allow_unsigned_works() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut mgr = SourceManager::new(dir.path());
+        assert!(!mgr.allow_unsigned);
+        mgr.set_allow_unsigned(true);
+        assert!(mgr.allow_unsigned);
     }
 }

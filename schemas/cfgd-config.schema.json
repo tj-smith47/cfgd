@@ -10,7 +10,7 @@
     "apiVersion": {
       "type": "string",
       "description": "API version identifier",
-      "examples": ["cfgd/v1"]
+      "examples": ["cfgd.io/v1alpha1"]
     },
     "kind": {
       "type": "string",
@@ -69,8 +69,81 @@
         },
         "theme": {
           "$ref": "#/$defs/ThemeConfig"
+        },
+        "modules": {
+          "$ref": "#/$defs/ModulesConfig"
+        },
+        "file-strategy": {
+          "$ref": "#/$defs/FileStrategy"
+        },
+        "security": {
+          "$ref": "#/$defs/SecurityConfig"
+        },
+        "aliases": {
+          "type": "object",
+          "additionalProperties": { "type": "string" },
+          "default": {},
+          "description": "CLI aliases: map of alias name to command string"
         }
       }
+    },
+    "SecurityConfig": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "allow-unsigned": {
+          "type": "boolean",
+          "default": false,
+          "description": "Allow unsigned source content even when sources require signed commits. Intended for development/testing."
+        }
+      }
+    },
+    "ModulesConfig": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "registries": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/ModuleRegistryEntry" },
+          "default": [],
+          "description": "Module registries — git repos containing modules"
+        },
+        "security": {
+          "$ref": "#/$defs/ModuleSecurityConfig"
+        }
+      }
+    },
+    "ModuleRegistryEntry": {
+      "type": "object",
+      "required": ["name", "url"],
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "Short name / alias for this registry"
+        },
+        "url": {
+          "type": "string",
+          "description": "Git URL of the registry repository"
+        }
+      }
+    },
+    "ModuleSecurityConfig": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "require-signatures": {
+          "type": "boolean",
+          "default": false,
+          "description": "Require GPG/SSH signatures on all remote module tags"
+        }
+      }
+    },
+    "FileStrategy": {
+      "type": "string",
+      "enum": ["symlink", "copy", "template", "hardlink"],
+      "default": "symlink",
+      "description": "File deployment strategy"
     },
     "OriginSpec": {
       "type": "object",
@@ -130,8 +203,36 @@
           "type": "boolean",
           "default": false,
           "description": "Whether to reconcile immediately on file change"
+        },
+        "auto-apply": {
+          "type": "boolean",
+          "default": false,
+          "description": "Automatically apply reconciled changes without prompting"
+        },
+        "policy": {
+          "$ref": "#/$defs/AutoApplyPolicyConfig"
         }
       }
+    },
+    "AutoApplyPolicyConfig": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "new-recommended": {
+          "$ref": "#/$defs/PolicyAction"
+        },
+        "new-optional": {
+          "$ref": "#/$defs/PolicyAction"
+        },
+        "locked-conflict": {
+          "$ref": "#/$defs/PolicyAction"
+        }
+      }
+    },
+    "PolicyAction": {
+      "type": "string",
+      "enum": ["notify", "accept", "reject", "ignore"],
+      "description": "Action to take for auto-apply policy decisions"
     },
     "SyncConfig": {
       "type": "object",

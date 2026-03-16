@@ -6,7 +6,7 @@ mod profile;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use clap::{Parser, Subcommand};
+use clap::{CommandFactory, Parser, Subcommand};
 
 use crate::files::CfgdFileManager;
 use crate::packages;
@@ -23,7 +23,6 @@ use cfgd_core::reconciler::{self, PhaseName, Reconciler};
 use cfgd_core::sources::SourceManager;
 use cfgd_core::state::StateStore;
 
-const BOOTSTRAP_STATE_FILE: &str = ".cfgd-bootstrap-state";
 const MSG_NO_CONFIG: &str = "No cfgd.yaml found — run 'cfgd init' first";
 const MSG_RUN_APPLY: &str = "Run 'cfgd apply --dry-run' to preview changes, then 'cfgd apply'";
 const EXPLAIN_RESOURCE_NAMES: [&str; 8] = [
@@ -196,8 +195,12 @@ pub struct ApplyArgs {
 
 #[derive(Subcommand)]
 pub enum Command {
-    /// Initialize a new cfgd configuration
+    /// Initialize a new cfgd configuration repository
     Init {
+        /// Directory to initialize (default: current directory)
+        #[arg(value_hint = clap::ValueHint::DirPath)]
+        path: Option<String>,
+
         /// Clone from a remote repository
         #[arg(long)]
         from: Option<String>,
@@ -206,25 +209,21 @@ pub enum Command {
         #[arg(long, default_value = "main")]
         branch: String,
 
-        /// Theme preset (default, minimal, or custom name)
+        /// Config name in metadata (default: directory name)
         #[arg(long)]
-        theme: Option<String>,
+        name: Option<String>,
 
-        /// Reserved for multi-source support
-        #[arg(long, hide = true)]
-        source: Option<String>,
-
-        /// Enroll with a cfgd-server instance
-        #[arg(long, env = "CFGD_SERVER_URL")]
-        server: Option<String>,
-
-        /// Bootstrap token for server enrollment
-        #[arg(long, env = "CFGD_BOOTSTRAP_TOKEN")]
-        token: Option<String>,
-
-        /// Bootstrap a single module from a repo (skips profile selection)
+        /// Also apply configuration after scaffolding
         #[arg(long)]
-        module: Option<String>,
+        apply: bool,
+
+        /// Skip all confirmation prompts (used with --apply)
+        #[arg(long, short)]
+        yes: bool,
+
+        /// Install daemon service after init
+        #[arg(long)]
+        install_daemon: bool,
     },
 
     /// Apply the configuration (use --dry-run to preview without applying)
@@ -345,9 +344,9 @@ pub enum Command {
         command: WorkflowCommand,
     },
 
-    /// Check in with cfgd-server and report status
+    /// Check in with the device gateway and report status
     Checkin {
-        /// cfgd-server URL
+        /// Device gateway URL
         #[arg(long, env = "CFGD_SERVER_URL")]
         server_url: String,
 
@@ -358,6 +357,36 @@ pub enum Command {
         /// Device identifier (defaults to hostname)
         #[arg(long, env = "CFGD_DEVICE_ID")]
         device_id: Option<String>,
+    },
+
+    /// Enroll with a device gateway (token or key-based)
+    Enroll {
+        /// Device gateway URL
+        #[arg(long, env = "CFGD_SERVER_URL")]
+        server: String,
+
+        /// Bootstrap token for token-based enrollment
+        #[arg(long, env = "CFGD_BOOTSTRAP_TOKEN")]
+        token: Option<String>,
+
+        /// SSH key file for signing (default: auto-detect from agent or ~/.ssh/)
+        #[arg(long, conflicts_with = "gpg_key")]
+        ssh_key: Option<String>,
+
+        /// GPG key ID for signing
+        #[arg(long, conflicts_with = "ssh_key")]
+        gpg_key: Option<String>,
+
+        /// Username to enroll as (default: current system user)
+        #[arg(long, env = "USER")]
+        username: Option<String>,
+    },
+
+    /// Generate shell completions
+    Completions {
+        /// Shell to generate completions for
+        #[arg(value_enum)]
+        shell: clap_complete::Shell,
     },
 }
 
@@ -823,21 +852,26 @@ pub fn execute(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
         },
         Command::Doctor => cmd_doctor(cli, printer),
         Command::Init {
+            path,
             from,
             branch,
-            theme,
-            source: _,
-            server,
-            token,
-            module,
+            name,
+            apply,
+            yes,
+            install_daemon,
         } => {
-            if server.is_some() || token.is_some() {
-                init::cmd_init_server(printer, server.as_deref(), token.as_deref())
-            } else if let (Some(from_url), Some(mod_name)) = (from.as_deref(), module.as_deref()) {
-                init::cmd_init_module(printer, from_url, mod_name)
-            } else {
-                init::cmd_init(printer, from.as_deref(), branch, theme.as_deref())
-            }
+            init::cmd_init(
+                printer,
+                &init::InitArgs {
+                    path: path.as_deref(),
+                    from: from.as_deref(),
+                    branch,
+                    name: name.as_deref(),
+                    apply: *apply,
+                    yes: *yes,
+                    install_daemon: *install_daemon,
+                },
+            )
         }
         Command::Module { command } => match command {
             ModuleCommand::List => module::cmd_module_list(cli, printer),
@@ -959,6 +993,24 @@ pub fn execute(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
             api_key.as_deref(),
             device_id.as_deref(),
         ),
+        Command::Enroll {
+            server,
+            token,
+            ssh_key,
+            gpg_key,
+            username,
+        } => init::cmd_enroll(
+            printer,
+            server,
+            token.as_deref(),
+            ssh_key.as_deref(),
+            gpg_key.as_deref(),
+            username.as_deref(),
+        ),
+        Command::Completions { shell } => {
+            clap_complete::generate(*shell, &mut Cli::command(), "cfgd", &mut std::io::stdout());
+            Ok(())
+        }
     }
 }
 
@@ -967,7 +1019,10 @@ fn load_config_and_profile(
     printer: &Printer,
 ) -> anyhow::Result<(CfgdConfig, ResolvedProfile)> {
     let cfg = config::load_config(&cli.config)?;
-    let profile_name = cli.profile.as_deref().unwrap_or(&cfg.spec.profile);
+    let profile_name = match cli.profile.as_deref() {
+        Some(p) => p,
+        None => cfg.active_profile()?,
+    };
 
     printer.key_value("Config", &cli.config.display().to_string());
     printer.key_value("Profile", profile_name);
@@ -1430,6 +1485,10 @@ fn cmd_apply(cli: &Cli, printer: &Printer, args: &ApplyArgs) -> anyhow::Result<(
     }
 
     // --- Apply mode ---
+
+    // Handle unmanaged file targets: if a target exists as a non-cfgd file, prompt to
+    // adopt (proceed), backup (rename to .cfgd-backup), or skip.
+    handle_unmanaged_file_targets(&mut plan, &config_dir, &state, printer, yes)?;
 
     // Check if filtered plan has actions
     let has_actions = if let Some(ref pf) = phase_filter {
@@ -1898,7 +1957,7 @@ fn cmd_config_show(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
 
     printer.header("Configuration");
     printer.key_value("File", &config_path.display().to_string());
-    printer.key_value("Profile", &cfg.spec.profile);
+    printer.key_value("Profile", cfg.spec.profile.as_deref().unwrap_or("(none)"));
 
     // Origins
     if !cfg.spec.origin.is_empty() {
@@ -2386,21 +2445,7 @@ fn generate_release_workflow_yaml(modules: &[String], profiles: &[String]) -> St
 
 fn maybe_update_workflow(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
     let config_dir = config_dir(cli);
-    let workflow_path = config_dir
-        .join(".github")
-        .join("workflows")
-        .join("cfgd-release.yml");
-    if !workflow_path.exists() {
-        return Ok(());
-    }
-
-    if printer
-        .prompt_confirm_with_default("Update release workflow to reflect changes?", true)
-        .unwrap_or(false)
-    {
-        cmd_workflow_generate(cli, printer, true)?;
-    }
-
+    init::regenerate_workflow(&config_dir, printer)?;
     Ok(())
 }
 
@@ -2553,7 +2598,7 @@ fn cmd_doctor(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
             Ok(cfg) => {
                 printer.success(&format!("Config file: {} (valid)", cli.config.display()));
                 printer.key_value("Name", &cfg.metadata.name);
-                printer.key_value("Profile", &cfg.spec.profile);
+                printer.key_value("Profile", cfg.spec.profile.as_deref().unwrap_or("(none)"));
                 Some(cfg)
             }
             Err(e) => {
@@ -2637,8 +2682,10 @@ fn cmd_doctor(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
     // Resolve profile to get declared managers (including custom) and build registry
     let resolved_packages = if let Some(ref cfg) = loaded_cfg {
         let profiles_dir = profiles_dir(cli);
-        let profile_name = cli.profile.as_deref().unwrap_or(&cfg.spec.profile);
-        if let Ok(mut resolved) = config::resolve_profile(profile_name, &profiles_dir) {
+        let profile_name = cli.profile.as_deref().or(cfg.spec.profile.as_deref());
+        if let Some(pn) = profile_name
+            && let Ok(mut resolved) = config::resolve_profile(pn, &profiles_dir)
+        {
             let _ = packages::resolve_manifest_packages(&mut resolved.merged.packages, &config_dir);
             Some(resolved.merged.packages)
         } else {
@@ -2736,8 +2783,9 @@ fn cmd_doctor(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
     // Modules health
     let module_list: Vec<String> = if let Some(ref cfg) = loaded_cfg {
         let profiles_dir = profiles_dir(cli);
-        let profile_name = cli.profile.as_deref().unwrap_or(&cfg.spec.profile);
-        config::resolve_profile(profile_name, &profiles_dir)
+        let profile_name = cli.profile.as_deref().or(cfg.spec.profile.as_deref());
+        profile_name
+            .and_then(|pn| config::resolve_profile(pn, &profiles_dir).ok())
             .map(|r| r.merged.modules)
             .unwrap_or_default()
     } else {
@@ -2895,7 +2943,7 @@ fn resolve_profile_name(cli: &Cli, name: Option<&str>, active: bool) -> anyhow::
             if let Some(ref profile_override) = cli.profile {
                 Ok(profile_override.clone())
             } else {
-                Ok(cfg.spec.profile)
+                Ok(cfg.active_profile()?.to_string())
             }
         }
         (None, false) => {
@@ -3124,6 +3172,7 @@ fn cmd_sync(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
 
         let cache_dir = source_cache_dir()?;
         let mut mgr = SourceManager::new(&cache_dir);
+        mgr.set_allow_unsigned(cfg.spec.security.as_ref().is_some_and(|s| s.allow_unsigned));
         let mut changes_detected = false;
 
         for source_spec in &cfg.spec.sources {
@@ -3232,6 +3281,17 @@ fn cmd_source_add(cli: &Cli, printer: &Printer, args: &SourceAddArgs) -> anyhow:
     // Clone and parse the source
     let cache_dir = source_cache_dir()?;
     let mut mgr = SourceManager::new(&cache_dir);
+    if config_path.exists()
+        && let Ok(existing_cfg) = config::load_config(&config_path)
+    {
+        mgr.set_allow_unsigned(
+            existing_cfg
+                .spec
+                .security
+                .as_ref()
+                .is_some_and(|s| s.allow_unsigned),
+        );
+    }
     let spec = SourceManager::build_source_spec(&source_name, url, profile);
     mgr.load_source(&spec, printer)?;
 
@@ -3328,9 +3388,11 @@ fn cmd_source_add(cli: &Cli, printer: &Printer, args: &SourceAddArgs) -> anyhow:
             .parent()
             .unwrap_or_else(|| Path::new("."))
             .join("profiles");
-        let profile_name = cli.profile.as_deref().unwrap_or(&cfg.spec.profile);
+        let profile_name = cli.profile.as_deref().or(cfg.spec.profile.as_deref());
 
-        if let Ok(local_resolved) = config::resolve_profile(profile_name, &pdir) {
+        if let Some(pn) = profile_name
+            && let Ok(local_resolved) = config::resolve_profile(pn, &pdir)
+        {
             // Build a CompositionInput for the prospective source
             let mut preview_layers = Vec::new();
             if let Some(ref pn) = selected_profile
@@ -3560,6 +3622,7 @@ fn cmd_source_show(cli: &Cli, printer: &Printer, name: &str) -> anyhow::Result<(
     // Load and show manifest from cache
     let cache_dir = source_cache_dir()?;
     let mut mgr = SourceManager::new(&cache_dir);
+    mgr.set_allow_unsigned(cfg.spec.security.as_ref().is_some_and(|s| s.allow_unsigned));
     // Populate the manager from the cached source on disk
     if let Err(e) = mgr.load_source(source_spec, printer) {
         printer.warning(&format!("Could not load source manifest: {}", e));
@@ -3691,6 +3754,7 @@ fn cmd_source_update(cli: &Cli, printer: &Printer, name: Option<&str>) -> anyhow
 
     let cache_dir = source_cache_dir()?;
     let mut mgr = SourceManager::new(&cache_dir);
+    mgr.set_allow_unsigned(cfg.spec.security.as_ref().is_some_and(|s| s.allow_unsigned));
     let state = open_state_store()?;
 
     let sources_to_update: Vec<&config::SourceSpec> = if let Some(name) = name {
@@ -4192,6 +4256,172 @@ fn pattern_matches(pattern: &str, action_path: &str) -> bool {
     false
 }
 
+/// Check if a file target is an unmanaged file — exists on disk but not tracked by cfgd.
+/// A cfgd-managed symlink (pointing into config_dir) is NOT unmanaged.
+fn is_unmanaged_file(target: &Path, config_dir: &Path, state: &StateStore) -> bool {
+    // Target must exist on disk
+    if !target.exists() && target.symlink_metadata().is_err() {
+        return false;
+    }
+
+    // If it's a symlink pointing into the config dir, it's cfgd-managed
+    if let Ok(link_target) = target.read_link() {
+        if link_target.starts_with(config_dir) {
+            return false;
+        }
+        // Also check ~/.cache/cfgd/modules/ for module symlinks
+        if let Ok(home) = std::env::var("HOME") {
+            let module_cache = PathBuf::from(home).join(".cache/cfgd/modules");
+            if link_target.starts_with(&module_cache) {
+                return false;
+            }
+        }
+    }
+
+    // Check state store — if already tracked, it's managed
+    let target_str = target.display().to_string();
+    if let Ok(managed) = state.is_resource_managed("file", &target_str) {
+        return !managed;
+    }
+
+    true
+}
+
+/// Handle unmanaged file targets in the plan: for each file Create/Update action targeting
+/// an existing file not managed by cfgd, prompt the user to adopt, backup, or skip.
+fn handle_unmanaged_file_targets(
+    plan: &mut reconciler::Plan,
+    config_dir: &Path,
+    state: &StateStore,
+    printer: &Printer,
+    auto_yes: bool,
+) -> anyhow::Result<()> {
+    let options = vec![
+        "Adopt (overwrite with cfgd-managed version)".to_string(),
+        "Backup (save as .cfgd-backup, then overwrite)".to_string(),
+        "Skip (leave file untouched)".to_string(),
+    ];
+
+    for phase in &mut plan.phases {
+        let mut i = 0;
+        while i < phase.actions.len() {
+            // Profile file actions
+            if let reconciler::Action::File(
+                FileAction::Create { target, .. } | FileAction::Update { target, .. },
+            ) = &phase.actions[i]
+            {
+                let target = target.clone();
+                if is_unmanaged_file(&target, config_dir, state) && !auto_yes {
+                    let choice = prompt_backup_choice(&target, None, printer, &options)?;
+                    apply_backup_choice(choice, &target, &mut phase.actions[i], printer)?;
+                }
+            }
+
+            // Module file actions
+            if let reconciler::Action::Module(ref ma) = phase.actions[i]
+                && let reconciler::ModuleActionKind::DeployFiles { files } = &ma.kind
+            {
+                let needs_prompt = !auto_yes
+                    && files.iter().any(|f| {
+                        let t = cfgd_core::expand_tilde(&f.target);
+                        is_unmanaged_file(&t, config_dir, state)
+                    });
+                if needs_prompt {
+                    let module_name = ma.module_name.clone();
+                    if let reconciler::Action::Module(ref mut ma) = phase.actions[i]
+                        && let reconciler::ModuleActionKind::DeployFiles { ref mut files } = ma.kind
+                    {
+                        let mut j = 0;
+                        while j < files.len() {
+                            let file_target = cfgd_core::expand_tilde(&files[j].target);
+                            if is_unmanaged_file(&file_target, config_dir, state) {
+                                let choice = prompt_backup_choice(
+                                    &file_target,
+                                    Some(&module_name),
+                                    printer,
+                                    &options,
+                                )?;
+                                if choice.starts_with("Backup") {
+                                    backup_file(&file_target, printer)?;
+                                } else if choice.starts_with("Skip") {
+                                    files.remove(j);
+                                    continue;
+                                }
+                            }
+                            j += 1;
+                        }
+                    }
+                }
+            }
+
+            i += 1;
+        }
+    }
+
+    Ok(())
+}
+
+/// Prompt the user to choose how to handle an unmanaged file target.
+fn prompt_backup_choice<'a>(
+    target: &Path,
+    module_name: Option<&str>,
+    printer: &Printer,
+    options: &'a [String],
+) -> anyhow::Result<&'a String> {
+    let msg = if let Some(m) = module_name {
+        format!(
+            "Module '{}': target exists as unmanaged file: {}",
+            m,
+            target.display()
+        )
+    } else {
+        format!("Target exists as unmanaged file: {}", target.display())
+    };
+    printer.warning(&msg);
+    Ok(printer
+        .prompt_select("How should cfgd handle this file?", options)
+        .unwrap_or(&options[0]))
+}
+
+/// Rename a file to <path>.cfgd-backup.
+fn backup_file(target: &Path, printer: &Printer) -> anyhow::Result<()> {
+    let backup_path = PathBuf::from(format!("{}.cfgd-backup", target.display()));
+    std::fs::rename(target, &backup_path).map_err(|e| {
+        anyhow::anyhow!(
+            "Failed to backup {} to {}: {}",
+            target.display(),
+            backup_path.display(),
+            e
+        )
+    })?;
+    printer.success(&format!("Backed up to {}", backup_path.display()));
+    Ok(())
+}
+
+/// Apply the user's backup choice to a file action.
+fn apply_backup_choice(
+    choice: &str,
+    target: &Path,
+    action: &mut reconciler::Action,
+    printer: &Printer,
+) -> anyhow::Result<()> {
+    if choice.starts_with("Backup") {
+        backup_file(target, printer)?;
+    } else if choice.starts_with("Skip") {
+        let origin = match action {
+            reconciler::Action::File(FileAction::Create { origin, .. })
+            | reconciler::Action::File(FileAction::Update { origin, .. }) => origin.clone(),
+            _ => "local".to_string(),
+        };
+        *action = reconciler::Action::File(FileAction::Skip {
+            target: target.to_path_buf(),
+            reason: "skipped by user (unmanaged file exists)".to_string(),
+            origin,
+        });
+    }
+    Ok(())
+}
+
 /// Apply --skip and --only filters to a plan, modifying it in place.
 /// For package actions, individual packages can be filtered from install/uninstall lists.
 fn filter_plan(plan: &mut reconciler::Plan, skip: &[String], only: &[String]) {
@@ -4344,6 +4574,7 @@ fn compose_with_sources(
 
     let cache_dir = source_cache_dir()?;
     let mut mgr = SourceManager::new(&cache_dir);
+    mgr.set_allow_unsigned(cfg.spec.security.as_ref().is_some_and(|s| s.allow_unsigned));
     mgr.load_sources(&cfg.spec.sources, printer)?;
 
     let mut inputs = Vec::new();
@@ -4616,8 +4847,7 @@ fn cmd_decide(
 mod tests {
     use super::*;
 
-    const TEST_CONFIG_YAML: &str =
-        "apiVersion: cfgd/v1\nkind: Config\nmetadata:\n  name: t\nspec:\n  profile: default\n";
+    const TEST_CONFIG_YAML: &str = "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec:\n  profile: default\n";
 
     fn create_test_config_dir() -> tempfile::TempDir {
         let dir = tempfile::tempdir().unwrap();
@@ -4628,7 +4858,7 @@ mod tests {
 
         std::fs::write(
             profiles_dir.join("default.yaml"),
-            r#"apiVersion: cfgd/v1
+            r#"apiVersion: cfgd.io/v1alpha1
 kind: Profile
 metadata:
   name: default
@@ -4644,7 +4874,7 @@ spec:
 
         std::fs::write(
             profiles_dir.join("work.yaml"),
-            r#"apiVersion: cfgd/v1
+            r#"apiVersion: cfgd.io/v1alpha1
 kind: Profile
 metadata:
   name: work
@@ -4664,19 +4894,22 @@ spec:
     }
 
     #[test]
-    fn cli_init_has_source_flag() {
-        // Verify the --source flag is accepted (Phase 9 prep)
+    fn cli_init_has_apply_flag() {
         use clap::CommandFactory;
         let cmd = Cli::command();
         let init_cmd = cmd
             .get_subcommands()
             .find(|c| c.get_name() == "init")
             .unwrap();
-        let source_arg = init_cmd.get_arguments().find(|a| a.get_id() == "source");
-        assert!(source_arg.is_some(), "--source flag should be reserved");
         assert!(
-            source_arg.unwrap().is_hide_set(),
-            "--source should be hidden"
+            init_cmd.get_arguments().any(|a| a.get_id() == "apply"),
+            "init should have --apply flag"
+        );
+        assert!(
+            init_cmd
+                .get_arguments()
+                .any(|a| a.get_id() == "install_daemon"),
+            "init should have --install-daemon flag"
         );
     }
 
@@ -4727,7 +4960,7 @@ spec:
         let config_path = dir.path().join("cfgd.yaml");
         std::fs::write(
             &config_path,
-            r#"apiVersion: cfgd/v1
+            r#"apiVersion: cfgd.io/v1alpha1
 kind: Config
 metadata:
   name: test
@@ -5070,7 +5303,7 @@ spec:
         create_module_in_dir(
             dir.path(),
             "existing",
-            "apiVersion: cfgd/v1\nkind: Module\nmetadata:\n  name: existing\nspec: {}\n",
+            "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: existing\nspec: {}\n",
         );
 
         let cli = test_cli(dir.path());
@@ -5091,7 +5324,7 @@ spec:
         create_module_in_dir(
             dir.path(),
             "test-mod",
-            "apiVersion: cfgd/v1\nkind: Module\nmetadata:\n  name: test-mod\nspec:\n  packages:\n    - name: curl\n    - name: vim\n",
+            "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: test-mod\nspec:\n  packages:\n    - name: curl\n    - name: vim\n",
         );
 
         let cli = test_cli(dir.path());
@@ -5117,7 +5350,7 @@ spec:
         create_module_in_dir(
             dir.path(),
             "test-mod",
-            "apiVersion: cfgd/v1\nkind: Module\nmetadata:\n  name: test-mod\nspec:\n  packages:\n    - name: neovim\n",
+            "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: test-mod\nspec:\n  packages:\n    - name: neovim\n",
         );
 
         let cli = test_cli(dir.path());
@@ -5146,7 +5379,7 @@ spec:
         create_module_in_dir(
             dir.path(),
             "used-mod",
-            "apiVersion: cfgd/v1\nkind: Module\nmetadata:\n  name: used-mod\nspec: {}\n",
+            "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: used-mod\nspec: {}\n",
         );
 
         // Update profile to reference the module
@@ -5170,7 +5403,7 @@ spec:
         create_module_in_dir(
             dir.path(),
             "orphan-mod",
-            "apiVersion: cfgd/v1\nkind: Module\nmetadata:\n  name: orphan-mod\nspec: {}\n",
+            "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: orphan-mod\nspec: {}\n",
         );
 
         let cli = test_cli(dir.path());
@@ -5183,7 +5416,7 @@ spec:
     #[test]
     fn apply_module_sets_rejects_invalid_format() {
         let mut doc = config::ModuleDocument {
-            api_version: "cfgd/v1".to_string(),
+            api_version: cfgd_core::API_VERSION.to_string(),
             kind: "Module".to_string(),
             metadata: config::ModuleMetadata {
                 name: "test".to_string(),
@@ -5215,7 +5448,7 @@ spec:
         create_module_in_dir(
             dir.path(),
             "test-mod",
-            "apiVersion: cfgd/v1\nkind: Module\nmetadata:\n  name: test-mod\nspec:\n  packages:\n    - name: curl\n",
+            "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: test-mod\nspec:\n  packages:\n    - name: curl\n",
         );
 
         let cli = test_cli(dir.path());
@@ -5314,7 +5547,7 @@ spec:
         let dir = create_test_config_dir();
         std::fs::write(
             dir.path().join("cfgd.yaml"),
-            "apiVersion: cfgd/v1\nkind: Config\nmetadata:\n  name: test\nspec:\n  profile: default\n",
+            "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: test\nspec:\n  profile: default\n",
         )
         .unwrap();
 
@@ -5519,7 +5752,7 @@ spec:
         let dir = create_test_config_dir();
         std::fs::write(
             dir.path().join("cfgd.yaml"),
-            r#"apiVersion: cfgd/v1
+            r#"apiVersion: cfgd.io/v1alpha1
 kind: Config
 metadata:
   name: test-config
@@ -5767,7 +6000,7 @@ spec:
         create_module_in_dir(
             dir.path(),
             "neovim",
-            "apiVersion: cfgd/v1\nkind: Module\nmetadata:\n  name: neovim\nspec:\n  packages: []\n  files: []\n  depends: []\n",
+            "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: neovim\nspec:\n  packages: []\n  files: []\n  depends: []\n",
         );
 
         let cli = test_cli(dir.path());
@@ -5826,7 +6059,7 @@ spec:
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(
             dir.path().join("cfgd.yaml"),
-            r#"apiVersion: cfgd/v1
+            r#"apiVersion: cfgd.io/v1alpha1
 kind: Config
 metadata:
   name: test
@@ -6025,5 +6258,48 @@ spec:
     #[test]
     fn parse_file_spec_empty_target_errors() {
         assert!(super::parse_file_spec("~/.zshrc:").is_err());
+    }
+
+    #[test]
+    fn is_unmanaged_file_nonexistent() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = StateStore::open_in_memory().unwrap();
+        let target = dir.path().join("does-not-exist");
+        assert!(!is_unmanaged_file(&target, dir.path(), &state));
+    }
+
+    #[test]
+    fn is_unmanaged_file_regular_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = StateStore::open_in_memory().unwrap();
+        let target = dir.path().join("existing-file");
+        std::fs::write(&target, "content").unwrap();
+        assert!(is_unmanaged_file(&target, dir.path(), &state));
+    }
+
+    #[test]
+    fn is_unmanaged_file_cfgd_symlink() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = StateStore::open_in_memory().unwrap();
+        let source = dir.path().join("source-file");
+        std::fs::write(&source, "content").unwrap();
+        let target = dir.path().join("subdir").join("symlink");
+        std::fs::create_dir_all(target.parent().unwrap()).unwrap();
+        std::os::unix::fs::symlink(&source, &target).unwrap();
+        // Symlink points into config_dir, so it's managed
+        assert!(!is_unmanaged_file(&target, dir.path(), &state));
+    }
+
+    #[test]
+    fn is_unmanaged_file_tracked_in_state() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = StateStore::open_in_memory().unwrap();
+        let target = dir.path().join("tracked-file");
+        std::fs::write(&target, "content").unwrap();
+        let target_str = target.display().to_string();
+        state
+            .upsert_managed_resource("file", &target_str, "local", None, None)
+            .unwrap();
+        assert!(!is_unmanaged_file(&target, dir.path(), &state));
     }
 }

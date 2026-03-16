@@ -2,7 +2,7 @@ name: E2E – cfgd CLI
 
 on:
   push:
-    branches: [main, master]
+    branches: [master]
     paths:
       - "crates/cfgd/**"
       - "crates/cfgd-core/**"
@@ -10,7 +10,7 @@ on:
       - "tests/e2e/common/**"
       - ".github/workflows/e2e-cli.yml"
   pull_request:
-    branches: [main, master]
+    branches: [master]
     paths:
       - "crates/cfgd/**"
       - "crates/cfgd-core/**"

@@ -2,7 +2,7 @@ name: E2E – cfgd operator
 
 on:
   push:
-    branches: [main, master]
+    branches: [master]
     paths:
       - "crates/cfgd-operator/**"
       - "crates/cfgd-core/**"
@@ -12,7 +12,7 @@ on:
       - ".github/workflows/e2e-operator.yml"
       - ".github/actions/setup-e2e/**"
   pull_request:
-    branches: [main, master]
+    branches: [master]
     paths:
       - "crates/cfgd-operator/**"
       - "crates/cfgd-core/**"

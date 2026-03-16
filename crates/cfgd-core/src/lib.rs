@@ -16,6 +16,9 @@ pub mod upgrade;
 // Shared utilities — used by multiple modules within cfgd-core and downstream
 // ---------------------------------------------------------------------------
 
+/// The canonical API version string used in all cfgd YAML documents (local and CRD).
+pub const API_VERSION: &str = "cfgd.io/v1alpha1";
+
 /// Returns the current UTC time as an ISO 8601 / RFC 3339 string.
 pub fn utc_now_iso8601() -> String {
     let duration = std::time::SystemTime::now()
@@ -83,8 +86,9 @@ pub fn deep_merge_yaml(base: &mut serde_yaml::Value, overlay: &serde_yaml::Value
 
 /// Extend a `Vec<String>` with items from `source`, skipping duplicates.
 pub fn union_extend(target: &mut Vec<String>, source: &[String]) {
+    let existing: std::collections::HashSet<String> = target.iter().cloned().collect();
     for item in source {
-        if !target.contains(item) {
+        if !existing.contains(item) {
             target.push(item.clone());
         }
     }

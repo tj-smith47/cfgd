@@ -10,6 +10,7 @@ keywords:
   - config
   - gitops
   - crd
+home: https://github.com/tj-smith47/cfgd
 maintainers:
   - name: cfgd
     url: https://github.com/tj-smith47/cfgd

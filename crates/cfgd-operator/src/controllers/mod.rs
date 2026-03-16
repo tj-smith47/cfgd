@@ -304,7 +304,11 @@ async fn cleanup_drift_alerts(client: &Client, namespace: &str, mc_name: &str) {
         Api::namespaced(client.clone(), namespace)
     };
 
-    let list = match alerts.list(&ListParams::default()).await {
+    // Use label selector to filter at API server instead of listing all alerts
+    let lp = ListParams::default()
+        .labels(&format!("cfgd.io/machine-config={mc_name}"));
+
+    let list = match alerts.list(&lp).await {
         Ok(l) => l,
         Err(e) => {
             warn!(error = %e, "Failed to list DriftAlerts for cleanup");
@@ -313,17 +317,15 @@ async fn cleanup_drift_alerts(client: &Client, namespace: &str, mc_name: &str) {
     };
 
     for alert in list {
-        if alert.spec.machine_config_ref == mc_name {
-            let alert_name = alert.name_any();
-            if let Err(e) = alerts.delete(&alert_name, &Default::default()).await {
-                warn!(
-                    name = %alert_name,
-                    error = %e,
-                    "Failed to delete resolved DriftAlert"
-                );
-            } else {
-                info!(name = %alert_name, "Deleted resolved DriftAlert");
-            }
+        let alert_name = alert.name_any();
+        if let Err(e) = alerts.delete(&alert_name, &Default::default()).await {
+            warn!(
+                name = %alert_name,
+                error = %e,
+                "Failed to delete resolved DriftAlert"
+            );
+        } else {
+            info!(name = %alert_name, "Deleted resolved DriftAlert");
         }
     }
 }

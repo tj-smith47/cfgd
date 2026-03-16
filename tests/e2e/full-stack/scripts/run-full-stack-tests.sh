@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# E2E full-stack tests: cfgd CLI → cfgd-server → cfgd-operator → CRDs.
+# E2E full-stack tests: cfgd CLI → device gateway → cfgd-operator → CRDs.
 # Tests the complete loop: device checkin, fleet management, drift propagation,
 # multi-device scenarios, and policy enforcement across the stack.
-# Prereqs: kind cluster running, all images loaded (cfgd, cfgd-server, cfgd-operator).
+# Prereqs: kind cluster running, all images loaded (cfgd, cfgd-operator).
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -35,8 +35,8 @@ for crd in machineconfigs.cfgd.io configpolicies.cfgd.io driftalerts.cfgd.io; do
     kubectl wait --for=condition=established "crd/$crd" --timeout=30s 2>/dev/null || true
 done
 
-# Deploy cfgd-server (idempotent — may already be deployed by setup-e2e action)
-echo "Deploying cfgd-server..."
+# Deploy device gateway (idempotent — may already be deployed by setup-e2e action)
+echo "Deploying device gateway..."
 kubectl apply -f "$SERVER_MANIFEST" -n cfgd-system
 wait_for_deployment cfgd-system cfgd-server 120
 
@@ -49,10 +49,10 @@ wait_for_deployment cfgd-system cfgd-operator 120
 SERVER_IP=$(kubectl get svc cfgd-server -n "$CFGD_NAMESPACE" \
     -o jsonpath='{.spec.clusterIP}' 2>/dev/null || echo "")
 SERVER_URL="http://${SERVER_IP}:8080"
-echo "cfgd-server URL: $SERVER_URL"
+echo "Device gateway URL: $SERVER_URL"
 
-# Wait for server to be reachable from the kind node
-echo "Waiting for cfgd-server reachability..."
+# Wait for device gateway to be reachable from the kind node
+echo "Waiting for device gateway reachability..."
 for i in $(seq 1 30); do
     if exec_on_node curl -sf "${SERVER_URL}/api/v1/devices" > /dev/null 2>&1; then
         break
@@ -67,17 +67,17 @@ echo "All components are running"
 # =================================================================
 begin_test "T01: All components healthy"
 
-SERVER_POD=$(kubectl get pods -n cfgd-system -l app=cfgd-server \
+GATEWAY_POD=$(kubectl get pods -n cfgd-system -l app=cfgd-server \
     -o jsonpath='{.items[0].status.phase}' 2>/dev/null || echo "")
 OPERATOR_POD=$(kubectl get pods -n cfgd-system -l app=cfgd-operator \
     -o jsonpath='{.items[0].status.phase}' 2>/dev/null || echo "")
 CFGD_AVAIL=$(exec_on_node cfgd --version 2>&1 || echo "")
 
-echo "  cfgd binary: ${CFGD_AVAIL:-not found}"
-echo "  Server pod:   $SERVER_POD"
+echo "  cfgd binary:  ${CFGD_AVAIL:-not found}"
+echo "  Gateway pod:  $GATEWAY_POD"
 echo "  Operator pod: $OPERATOR_POD"
 
-if [ "$SERVER_POD" = "Running" ] && [ "$OPERATOR_POD" = "Running" ] && [ -n "$CFGD_AVAIL" ]; then
+if [ "$GATEWAY_POD" = "Running" ] && [ "$OPERATOR_POD" = "Running" ] && [ -n "$CFGD_AVAIL" ]; then
     pass_test "T01"
 else
     fail_test "T01" "Not all components are healthy"
@@ -102,7 +102,7 @@ DEVICES=$(exec_on_node curl -sf "${SERVER_URL}/api/v1/devices" 2>/dev/null || ec
 if assert_contains "$DEVICES" "$DEVICE_1"; then
     pass_test "T02"
 else
-    fail_test "T02" "Device 1 not found in server response"
+    fail_test "T02" "Device 1 not found in device gateway response"
 fi
 
 # =================================================================
@@ -252,7 +252,7 @@ OUTPUT=$(exec_on_node cfgd \
     --no-color 2>&1)
 echo "  Checkin with drift: $OUTPUT" | head -5
 
-# Check server for drift events
+# Check device gateway for drift events
 DRIFT_EVENTS=$(exec_on_node curl -sf \
     "${SERVER_URL}/api/v1/devices/${DEVICE_1}/drift" 2>/dev/null || echo "[]")
 echo "  Drift events: $(echo "$DRIFT_EVENTS" | head -c 200)"
@@ -263,7 +263,7 @@ exec_on_node sysctl -w "vm.max_map_count=$ORIG" > /dev/null 2>&1 || true
 if echo "$OUTPUT" | grep -qiE "drift|ok" || [ "$DRIFT_EVENTS" != "[]" ]; then
     pass_test "T06"
 else
-    fail_test "T06" "Drift not detected or reported to server"
+    fail_test "T06" "Drift not detected or reported to device gateway"
 fi
 
 # =================================================================
@@ -369,7 +369,7 @@ fi
 # =================================================================
 # T10: Server device status reflects latest checkin
 # =================================================================
-begin_test "T10: Server device status after drift cycle"
+begin_test "T10: Device gateway status after drift cycle"
 
 # Clean checkin after drift is resolved
 exec_on_node cfgd \
@@ -387,7 +387,7 @@ echo ""
 if assert_contains "$DEVICE_INFO" "healthy" || assert_contains "$DEVICE_INFO" "$DEVICE_1"; then
     pass_test "T10"
 else
-    fail_test "T10" "Device status not available from server"
+    fail_test "T10" "Device status not available from device gateway"
 fi
 
 # --- Cleanup ---

@@ -3,6 +3,14 @@ resolver = "2"
 members = [
     "crates/cfgd-core",
     "crates/cfgd",
-    "crates/cfgd-server",
     "crates/cfgd-operator",
 ]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.94"
+license = "MIT"
+repository = "https://github.com/tj-smith47/cfgd"
+homepage = "https://github.com/tj-smith47/cfgd"
+authors = ["TJ Smith"]

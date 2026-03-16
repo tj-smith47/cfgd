@@ -16,12 +16,18 @@ spec:
         app: cfgd-server
     spec:
       containers:
-        - name: cfgd-server
-          image: cfgd-server:e2e-test
+        - name: cfgd-operator
+          image: cfgd-operator:e2e-test
           imagePullPolicy: Never
           ports:
             - containerPort: 8080
-          args: ["8080", "/tmp/cfgd-e2e.db"]
+          env:
+            - name: DEVICE_GATEWAY_ENABLED
+              value: "true"
+            - name: DEVICE_GATEWAY_PORT
+              value: "8080"
+            - name: CFGD_SERVER_DB_PATH
+              value: "/tmp/cfgd-e2e.db"
           readinessProbe:
             httpGet:
               path: /api/v1/devices

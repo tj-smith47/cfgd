@@ -1,7 +1,7 @@
 use serde::Serialize;
 
-use crate::db::{DeviceStatus, ServerDb};
-use crate::errors::ServerError;
+use super::db::{DeviceStatus, ServerDb};
+use super::errors::GatewayError;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct FleetStatus {
@@ -11,7 +11,7 @@ pub struct FleetStatus {
     pub offline: usize,
 }
 
-pub fn get_fleet_status(db: &ServerDb) -> Result<FleetStatus, ServerError> {
+pub fn get_fleet_status(db: &ServerDb) -> Result<FleetStatus, GatewayError> {
     let devices = db.list_devices()?;
     let total_devices = devices.len();
     let mut healthy = 0usize;
@@ -36,8 +36,8 @@ pub fn get_fleet_status(db: &ServerDb) -> Result<FleetStatus, ServerError> {
 
 #[cfg(test)]
 mod tests {
+    use super::super::db::ServerDb;
     use super::*;
-    use crate::db::ServerDb;
 
     #[test]
     fn fleet_status_empty() {

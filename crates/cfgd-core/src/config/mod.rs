@@ -21,6 +21,21 @@ pub struct CfgdConfig {
     pub spec: ConfigSpec,
 }
 
+impl CfgdConfig {
+    /// Returns the active profile name, or an error if no profile is configured.
+    pub fn active_profile(&self) -> Result<&str> {
+        self.spec
+            .profile
+            .as_deref()
+            .filter(|p| !p.is_empty())
+            .ok_or_else(|| {
+                crate::errors::CfgdError::Config(crate::errors::ConfigError::Invalid {
+                    message: "no profile configured — run: cfgd profile create <name>".to_string(),
+                })
+            })
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub struct ConfigMetadata {
@@ -30,7 +45,8 @@ pub struct ConfigMetadata {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub struct ConfigSpec {
-    pub profile: String,
+    #[serde(default)]
+    pub profile: Option<String>,
 
     #[serde(default)]
     pub origin: Vec<OriginSpec>,
@@ -55,10 +71,23 @@ pub struct ConfigSpec {
     #[serde(default)]
     pub file_strategy: FileStrategy,
 
+    /// Security settings for source signature verification.
+    #[serde(default)]
+    pub security: Option<SecurityConfig>,
+
     /// CLI aliases: map of alias name → command string.
     /// Built-in defaults (add, remove) can be overridden or extended.
     #[serde(default)]
     pub aliases: HashMap<String, String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub struct SecurityConfig {
+    /// Allow unsigned source content even when the source requires signed commits.
+    /// Intended for development/testing environments.
+    #[serde(default)]
+    pub allow_unsigned: bool,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -445,6 +474,10 @@ pub struct SourceConstraints {
     pub allowed_target_paths: Vec<String>,
     #[serde(default)]
     pub allow_system_changes: bool,
+    /// Require that the HEAD commit in this source's git repo has a valid
+    /// GPG or SSH signature. Subscribers can bypass with `security.allow-unsigned`.
+    #[serde(default)]
+    pub require_signed_commits: bool,
 }
 
 impl Default for SourceConstraints {
@@ -454,6 +487,7 @@ impl Default for SourceConstraints {
             no_secrets_read: true,
             allowed_target_paths: Vec::new(),
             allow_system_changes: false,
+            require_signed_commits: false,
         }
     }
 }
@@ -967,6 +1001,7 @@ pub fn parse_config(contents: &str, path: &Path) -> Result<CfgdConfig> {
             theme: raw.spec.theme,
             modules: raw.spec.modules,
             file_strategy: raw.spec.file_strategy,
+            security: raw.spec.security,
             aliases: raw.spec.aliases,
         },
     })
@@ -986,7 +1021,8 @@ struct RawCfgdConfig {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 struct RawConfigSpec {
-    profile: String,
+    #[serde(default)]
+    profile: Option<String>,
     #[serde(default)]
     origin: Option<RawOrigin>,
     #[serde(default)]
@@ -1001,6 +1037,8 @@ struct RawConfigSpec {
     modules: Option<ModulesConfig>,
     #[serde(default)]
     file_strategy: FileStrategy,
+    #[serde(default)]
+    security: Option<SecurityConfig>,
     #[serde(default)]
     aliases: HashMap<String, String>,
 }
@@ -1425,7 +1463,7 @@ mod tests {
 
     fn sample_config_yaml() -> &'static str {
         r#"
-apiVersion: cfgd/v1
+apiVersion: cfgd.io/v1alpha1
 kind: Config
 metadata:
   name: test-config
@@ -1440,7 +1478,7 @@ spec:
 
     fn sample_config_no_origin() -> &'static str {
         r#"
-apiVersion: cfgd/v1
+apiVersion: cfgd.io/v1alpha1
 kind: Config
 metadata:
   name: test-config
@@ -1451,7 +1489,7 @@ spec:
 
     fn sample_profile_yaml() -> &'static str {
         r#"
-apiVersion: cfgd/v1
+apiVersion: cfgd.io/v1alpha1
 kind: Profile
 metadata:
   name: base
@@ -1473,7 +1511,7 @@ spec:
     fn parse_yaml_config() {
         let config = parse_config(sample_config_yaml(), Path::new("cfgd.yaml")).unwrap();
         assert_eq!(config.metadata.name, "test-config");
-        assert_eq!(config.spec.profile, "default");
+        assert_eq!(config.spec.profile.as_deref(), Some("default"));
         assert_eq!(config.spec.origin.len(), 1);
         assert_eq!(
             config.spec.origin[0].url,
@@ -1699,7 +1737,7 @@ spec:
         std::fs::write(
             dir.path().join("base.yaml"),
             r#"
-apiVersion: cfgd/v1
+apiVersion: cfgd.io/v1alpha1
 kind: Profile
 metadata:
   name: base
@@ -1717,7 +1755,7 @@ spec:
         std::fs::write(
             dir.path().join("work.yaml"),
             r#"
-apiVersion: cfgd/v1
+apiVersion: cfgd.io/v1alpha1
 kind: Profile
 metadata:
   name: work
@@ -1758,7 +1796,7 @@ spec:
         std::fs::write(
             dir.path().join("a.yaml"),
             r#"
-apiVersion: cfgd/v1
+apiVersion: cfgd.io/v1alpha1
 kind: Profile
 metadata:
   name: a
@@ -1772,7 +1810,7 @@ spec:
         std::fs::write(
             dir.path().join("b.yaml"),
             r#"
-apiVersion: cfgd/v1
+apiVersion: cfgd.io/v1alpha1
 kind: Profile
 metadata:
   name: b
@@ -1799,7 +1837,7 @@ spec:
     #[test]
     fn parse_config_source_manifest() {
         let yaml = r#"
-apiVersion: cfgd/v1
+apiVersion: cfgd.io/v1alpha1
 kind: ConfigSource
 metadata:
   name: acme-corp-dev
@@ -1852,7 +1890,7 @@ spec:
     #[test]
     fn parse_config_source_wrong_kind() {
         let yaml = r#"
-apiVersion: cfgd/v1
+apiVersion: cfgd.io/v1alpha1
 kind: Config
 metadata:
   name: not-a-source
@@ -2017,7 +2055,7 @@ cargo:
     #[test]
     fn parse_config_source_with_profile_details() {
         let yaml = r#"
-apiVersion: cfgd/v1
+apiVersion: cfgd.io/v1alpha1
 kind: ConfigSource
 metadata:
   name: acme

@@ -189,6 +189,9 @@ pub enum SourceError {
 
     #[error("git error for source '{name}': {message}")]
     GitError { name: String, message: String },
+
+    #[error("signature verification failed for source '{name}': {message}")]
+    SignatureVerificationFailed { name: String, message: String },
 }
 
 #[derive(Debug, thiserror::Error)]

@@ -2,21 +2,19 @@ name: E2E – cfgd full stack
 
 on:
   push:
-    branches: [main, master]
+    branches: [master]
     paths:
       - "crates/**"
       - "Dockerfile"
-      - "Dockerfile.server"
       - "Dockerfile.operator"
       - "tests/e2e/**"
       - ".github/workflows/e2e-full-stack.yml"
       - ".github/actions/setup-e2e/**"
   pull_request:
-    branches: [main, master]
+    branches: [master]
     paths:
       - "crates/**"
       - "Dockerfile"
-      - "Dockerfile.server"
       - "Dockerfile.operator"
       - "tests/e2e/**"
       - ".github/workflows/e2e-full-stack.yml"
@@ -43,7 +41,7 @@ jobs:
         with:
           kind-cluster-name: ${{ env.KIND_CLUSTER }}
           kind-config: tests/e2e/full-stack/kind-config.yaml
-          images: "node server operator"
+          images: "node operator"
 
       - name: Run full-stack tests
         run: bash tests/e2e/full-stack/scripts/run-full-stack-tests.sh

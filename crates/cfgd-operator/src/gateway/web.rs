@@ -4,9 +4,9 @@ use axum::http::HeaderMap;
 use axum::response::Html;
 use axum::routing::get;
 
-use crate::api::{SharedState, extract_bearer_token};
-use crate::errors::ServerError;
-use crate::fleet;
+use super::api::{SharedState, extract_bearer_token};
+use super::errors::GatewayError;
+use super::fleet;
 
 const COMMON_STYLES: &str = r#"
         * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -40,26 +40,58 @@ const COMMON_STYLES: &str = r#"
         .empty { text-align: center; padding: 3rem; color: #8b949e; }
 "#;
 
-/// Web UI auth: checks Authorization header, ?token= query param, or cookie.
+/// Web UI auth: checks Authorization header, session cookie, or ?token= query param.
 /// When CFGD_API_KEY is not set, all requests are allowed.
+/// If ?token= is used, a session cookie is set and the client is redirected to strip
+/// the token from the URL (prevents token leaking into browser history/logs).
 async fn web_auth_middleware(
     headers: HeaderMap,
     query: Query<std::collections::HashMap<String, String>>,
     request: axum::extract::Request,
     next: axum::middleware::Next,
-) -> Result<axum::response::Response, ServerError> {
+) -> Result<axum::response::Response, GatewayError> {
     if let Ok(expected_key) = std::env::var("CFGD_API_KEY") {
-        // Check Authorization header first, then ?token= query param (for browsers)
-        let from_header = extract_bearer_token(&headers);
-        let from_query = query.get("token").map(|s| s.to_string());
+        // 1. Authorization header
+        if let Some(token) = extract_bearer_token(&headers)
+            && token == expected_key
+        {
+            return Ok(next.run(request).await);
+        }
 
-        let token = from_header.or(from_query);
-        match token {
-            Some(t) if t == expected_key => {}
-            _ => {
-                return Err(ServerError::Unauthorized);
+        // 2. Session cookie (set after initial ?token= auth)
+        if let Some(cookie_header) = headers.get(axum::http::header::COOKIE)
+            && let Ok(cookies) = cookie_header.to_str()
+        {
+            for cookie in cookies.split(';') {
+                if let Some(value) = cookie.trim().strip_prefix("cfgd_session=")
+                    && value == expected_key
+                {
+                    return Ok(next.run(request).await);
+                }
             }
         }
+
+        // 3. ?token= query param — validate, set cookie, redirect to strip token from URL
+        if let Some(token) = query.get("token")
+            && *token == expected_key
+        {
+            let path = request.uri().path().to_string();
+            let response = axum::response::Response::builder()
+                .status(axum::http::StatusCode::SEE_OTHER)
+                .header(axum::http::header::LOCATION, &path)
+                .header(
+                    axum::http::header::SET_COOKIE,
+                    format!(
+                        "cfgd_session={}; Path=/; HttpOnly; SameSite=Strict; Max-Age=86400",
+                        token
+                    ),
+                )
+                .body(axum::body::Body::empty())
+                .unwrap();
+            return Ok(response);
+        }
+
+        return Err(GatewayError::Unauthorized);
     }
     Ok(next.run(request).await)
 }
@@ -72,7 +104,7 @@ pub fn router() -> Router<SharedState> {
         .route_layer(axum::middleware::from_fn(web_auth_middleware))
 }
 
-async fn dashboard(State(state): State<SharedState>) -> Result<Html<String>, ServerError> {
+async fn dashboard(State(state): State<SharedState>) -> Result<Html<String>, GatewayError> {
     let db = state.db.lock().await;
     let status = fleet::get_fleet_status(&db)?;
     let devices = db.list_devices()?;
@@ -80,10 +112,10 @@ async fn dashboard(State(state): State<SharedState>) -> Result<Html<String>, Ser
     let mut device_rows = String::new();
     for d in &devices {
         let status_class = match d.status {
-            crate::db::DeviceStatus::Healthy => "healthy",
-            crate::db::DeviceStatus::Drifted => "drifted",
-            crate::db::DeviceStatus::PendingReconcile => "pending-reconcile",
-            crate::db::DeviceStatus::Offline => "offline",
+            super::db::DeviceStatus::Healthy => "healthy",
+            super::db::DeviceStatus::Drifted => "drifted",
+            super::db::DeviceStatus::PendingReconcile => "pending-reconcile",
+            super::db::DeviceStatus::Offline => "offline",
         };
         device_rows.push_str(&format!(
             r#"<tr class="clickable" onclick="window.location='/devices/{id_raw}'">
@@ -194,7 +226,7 @@ async fn dashboard(State(state): State<SharedState>) -> Result<Html<String>, Ser
 async fn device_detail(
     State(state): State<SharedState>,
     Path(id): Path<String>,
-) -> Result<Html<String>, ServerError> {
+) -> Result<Html<String>, GatewayError> {
     let db = state.db.lock().await;
     let device = db.get_device(&id)?;
     let drift_events = db.list_drift_events(&id)?;
@@ -545,7 +577,7 @@ async fn device_detail(
     Ok(Html(html))
 }
 
-async fn fleet_events(State(state): State<SharedState>) -> Result<Html<String>, ServerError> {
+async fn fleet_events(State(state): State<SharedState>) -> Result<Html<String>, GatewayError> {
     let db = state.db.lock().await;
     let events = db.list_fleet_events(200)?;
 

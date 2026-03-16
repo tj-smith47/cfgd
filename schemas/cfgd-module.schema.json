@@ -1,0 +1,125 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cfgd.io/schemas/cfgd-module.schema.json",
+  "title": "cfgd Module",
+  "description": "Schema for cfgd Module documents (kind: Module)",
+  "type": "object",
+  "required": ["apiVersion", "kind", "metadata", "spec"],
+  "properties": {
+    "apiVersion": {
+      "type": "string",
+      "const": "cfgd.io/v1alpha1"
+    },
+    "kind": {
+      "type": "string",
+      "const": "Module"
+    },
+    "metadata": {
+      "type": "object",
+      "required": ["name"],
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "Module name"
+        },
+        "description": {
+          "type": "string",
+          "description": "Human-readable module description"
+        }
+      }
+    },
+    "spec": {
+      "type": "object",
+      "properties": {
+        "depends": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": [],
+          "description": "Module names this module depends on (installed first)"
+        },
+        "packages": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/packageEntry" },
+          "default": [],
+          "description": "Packages to install, with cross-platform resolution"
+        },
+        "files": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/fileEntry" },
+          "default": [],
+          "description": "Files to deploy (local paths or git URLs)"
+        },
+        "scripts": {
+          "type": "object",
+          "properties": {
+            "post-apply": {
+              "type": "array",
+              "items": { "type": "string" },
+              "default": [],
+              "description": "Commands to run after module packages and files are applied"
+            }
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "packageEntry": {
+      "type": "object",
+      "required": ["name"],
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "Canonical package name"
+        },
+        "min-version": {
+          "type": "string",
+          "description": "Minimum acceptable version (semver)"
+        },
+        "prefer": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Ordered list of managers to try. If omitted, uses platform's native manager."
+        },
+        "aliases": {
+          "type": "object",
+          "additionalProperties": { "type": "string" },
+          "description": "Per-manager name overrides (e.g., {\"apt\": \"fd-find\"} for fd)"
+        },
+        "script": {
+          "type": "string",
+          "description": "Inline shell script or path. Used when prefer includes 'script'."
+        },
+        "platforms": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Platform filter. Skip on non-matching platforms (e.g., [\"linux\", \"ubuntu\", \"x86_64\"])."
+        }
+      }
+    },
+    "fileEntry": {
+      "type": "object",
+      "required": ["source", "target"],
+      "properties": {
+        "source": {
+          "type": "string",
+          "description": "Local path (relative to module dir) or git URL"
+        },
+        "target": {
+          "type": "string",
+          "description": "Absolute target path on the machine"
+        },
+        "strategy": {
+          "type": "string",
+          "enum": ["symlink", "copy", "template", "hardlink"],
+          "description": "File deployment strategy override"
+        },
+        "private": {
+          "type": "boolean",
+          "default": false,
+          "description": "When true, file is local-only (auto-gitignored)"
+        }
+      }
+    }
+  }
+}

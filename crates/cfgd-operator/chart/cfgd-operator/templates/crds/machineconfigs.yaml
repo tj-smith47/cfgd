@@ -44,6 +44,20 @@ spec:
                 type: array
               hostname:
                 type: string
+              moduleRefs:
+                default: []
+                items:
+                  description: Reference to a module that should be installed on the machine.
+                  properties:
+                    name:
+                      type: string
+                    required:
+                      default: false
+                      type: boolean
+                  required:
+                  - name
+                  type: object
+                type: array
               packageVersions:
                 additionalProperties:
                   type: string

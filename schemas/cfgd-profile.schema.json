@@ -10,7 +10,7 @@
     "apiVersion": {
       "type": "string",
       "description": "API version identifier",
-      "examples": ["cfgd/v1"]
+      "examples": ["cfgd.io/v1alpha1"]
     },
     "kind": {
       "type": "string",
@@ -45,6 +45,12 @@
           "items": { "type": "string" },
           "default": [],
           "description": "List of parent profile names to inherit from"
+        },
+        "modules": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": [],
+          "description": "Module names to include in this profile"
         },
         "variables": {
           "type": "object",
@@ -86,10 +92,7 @@
           "$ref": "#/$defs/AptSpec"
         },
         "cargo": {
-          "type": "array",
-          "items": { "type": "string" },
-          "default": [],
-          "description": "Cargo packages to install globally"
+          "$ref": "#/$defs/CargoSpec"
         },
         "npm": {
           "$ref": "#/$defs/NpmSpec"
@@ -105,6 +108,60 @@
           "items": { "type": "string" },
           "default": [],
           "description": "DNF/Fedora packages to install"
+        },
+        "apk": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": [],
+          "description": "Alpine APK packages to install"
+        },
+        "pacman": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": [],
+          "description": "Arch Linux pacman packages to install"
+        },
+        "zypper": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": [],
+          "description": "openSUSE zypper packages to install"
+        },
+        "yum": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": [],
+          "description": "YUM/RHEL packages to install"
+        },
+        "pkg": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": [],
+          "description": "FreeBSD pkg packages to install"
+        },
+        "snap": {
+          "$ref": "#/$defs/SnapSpec"
+        },
+        "flatpak": {
+          "$ref": "#/$defs/FlatpakSpec"
+        },
+        "nix": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": [],
+          "description": "Nix packages to install"
+        },
+        "go": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": [],
+          "description": "Go packages to install via go install"
+        },
+        "custom": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/CustomManagerSpec" },
+          "default": [],
+          "description": "Custom package manager definitions"
         }
       }
     },
@@ -112,6 +169,10 @@
       "type": "object",
       "additionalProperties": false,
       "properties": {
+        "file": {
+          "type": "string",
+          "description": "Path to a Brewfile for batch installation"
+        },
         "taps": {
           "type": "array",
           "items": { "type": "string" },
@@ -136,6 +197,10 @@
       "type": "object",
       "additionalProperties": false,
       "properties": {
+        "file": {
+          "type": "string",
+          "description": "Path to a file listing APT packages (one per line)"
+        },
         "packages": {
           "type": "array",
           "items": { "type": "string" },
@@ -144,15 +209,116 @@
         }
       }
     },
+    "CargoSpec": {
+      "description": "Cargo packages. Can be a list of package names or an object with file/packages keys.",
+      "oneOf": [
+        {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "List of cargo packages to install"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "file": {
+              "type": "string",
+              "description": "Path to a file listing cargo packages"
+            },
+            "packages": {
+              "type": "array",
+              "items": { "type": "string" },
+              "default": [],
+              "description": "Cargo packages to install globally"
+            }
+          }
+        }
+      ]
+    },
     "NpmSpec": {
       "type": "object",
       "additionalProperties": false,
       "properties": {
+        "file": {
+          "type": "string",
+          "description": "Path to a file listing npm packages"
+        },
         "global": {
           "type": "array",
           "items": { "type": "string" },
           "default": [],
           "description": "NPM packages to install globally"
+        }
+      }
+    },
+    "SnapSpec": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "packages": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": [],
+          "description": "Snap packages to install (strict confinement)"
+        },
+        "classic": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": [],
+          "description": "Snap packages to install with classic confinement"
+        }
+      }
+    },
+    "FlatpakSpec": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "packages": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": [],
+          "description": "Flatpak application IDs to install"
+        },
+        "remote": {
+          "type": "string",
+          "description": "Flatpak remote name (defaults to flathub)"
+        }
+      }
+    },
+    "CustomManagerSpec": {
+      "type": "object",
+      "required": ["name", "check", "list-installed", "install", "uninstall"],
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "Name identifier for this custom package manager"
+        },
+        "check": {
+          "type": "string",
+          "description": "Command to check if the package manager is available"
+        },
+        "list-installed": {
+          "type": "string",
+          "description": "Command to list installed packages"
+        },
+        "install": {
+          "type": "string",
+          "description": "Command template to install a package"
+        },
+        "uninstall": {
+          "type": "string",
+          "description": "Command template to uninstall a package"
+        },
+        "update": {
+          "type": "string",
+          "description": "Command template to update a package"
+        },
+        "packages": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": [],
+          "description": "Packages to manage with this custom manager"
         }
       }
     },
@@ -170,7 +336,7 @@
           "type": "object",
           "additionalProperties": { "type": "string" },
           "default": {},
-          "description": "File permission overrides (path → mode, e.g. '0600')"
+          "description": "File permission overrides (path -> mode, e.g. '0600')"
         }
       }
     },
@@ -186,6 +352,16 @@
         "target": {
           "type": "string",
           "description": "Absolute target path on the system"
+        },
+        "strategy": {
+          "type": "string",
+          "enum": ["symlink", "copy", "template", "hardlink"],
+          "description": "Per-file deployment strategy override"
+        },
+        "private": {
+          "type": "boolean",
+          "default": false,
+          "description": "When true, the source file is local-only: auto-added to .gitignore, silently skipped on machines where it doesn't exist"
         }
       }
     },

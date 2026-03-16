@@ -37,7 +37,7 @@ struct ResourceSchema {
 
 static SCHEMA_CONFIG: ResourceSchema = ResourceSchema {
     name: "CfgdConfig",
-    api_version: "cfgd/v1",
+    api_version: cfgd_core::API_VERSION,
     kind: "Config",
     location: "cfgd.yaml",
     description: "Root configuration file for cfgd. Defines the active profile, origin, daemon settings, secrets backend, sources, theme, and module sources.",
@@ -584,7 +584,7 @@ static SCHEMA_CONFIG: ResourceSchema = ResourceSchema {
 
 static SCHEMA_PROFILE: ResourceSchema = ResourceSchema {
     name: "Profile",
-    api_version: "cfgd/v1",
+    api_version: cfgd_core::API_VERSION,
     kind: "Profile",
     location: "profiles/<name>.yaml",
     description: "Defines the desired state for a machine: packages, files, system settings, secrets, and scripts. Supports inheritance for layered configuration.",
@@ -1055,7 +1055,7 @@ static SCHEMA_PROFILE: ResourceSchema = ResourceSchema {
 
 static SCHEMA_MODULE: ResourceSchema = ResourceSchema {
     name: "Module",
-    api_version: "cfgd/v1",
+    api_version: cfgd_core::API_VERSION,
     kind: "Module",
     location: "modules/<name>/module.yaml",
     description: "Self-contained, portable configuration unit. Defines packages, files, and scripts with cross-platform resolution and dependency management.",
@@ -1157,7 +1157,7 @@ static SCHEMA_MODULE: ResourceSchema = ResourceSchema {
 
 static SCHEMA_CONFIG_SOURCE: ResourceSchema = ResourceSchema {
     name: "ConfigSource",
-    api_version: "cfgd/v1",
+    api_version: cfgd_core::API_VERSION,
     kind: "ConfigSource",
     location: "cfgd-source.yaml (in source repo root)",
     description: "Team config source manifest. Published by teams in their config repos to define profiles, modules, and policy tiers available for subscription.",
@@ -1349,7 +1349,7 @@ static POLICY_ITEMS_FIELDS: [SchemaField; 6] = [
 
 static SCHEMA_MACHINECONFIG: ResourceSchema = ResourceSchema {
     name: "MachineConfig",
-    api_version: "cfgd.io/v1alpha1",
+    api_version: cfgd_core::API_VERSION,
     kind: "MachineConfig",
     location: "Kubernetes CRD (cfgd-operator)",
     description: "Kubernetes Custom Resource representing a managed machine's desired and observed configuration state.",
@@ -1452,7 +1452,7 @@ static SCHEMA_MACHINECONFIG: ResourceSchema = ResourceSchema {
 
 static SCHEMA_CONFIGPOLICY: ResourceSchema = ResourceSchema {
     name: "ConfigPolicy",
-    api_version: "cfgd.io/v1alpha1",
+    api_version: cfgd_core::API_VERSION,
     kind: "ConfigPolicy",
     location: "Kubernetes CRD (cfgd-operator)",
     description: "Kubernetes Custom Resource defining fleet-wide configuration baselines. Machines are checked for compliance against policies.",
@@ -1504,7 +1504,7 @@ static SCHEMA_CONFIGPOLICY: ResourceSchema = ResourceSchema {
 
 static SCHEMA_DRIFTALERT: ResourceSchema = ResourceSchema {
     name: "DriftAlert",
-    api_version: "cfgd.io/v1alpha1",
+    api_version: cfgd_core::API_VERSION,
     kind: "DriftAlert",
     location: "Kubernetes CRD (cfgd-operator)",
     description: "Kubernetes Custom Resource created when a machine drifts from its desired state. Tracks drift details and resolution status.",
@@ -1564,7 +1564,7 @@ static SCHEMA_DRIFTALERT: ResourceSchema = ResourceSchema {
 
 static SCHEMA_TEAMCONFIG: ResourceSchema = ResourceSchema {
     name: "TeamConfig",
-    api_version: "cfgd.io/v1alpha1",
+    api_version: cfgd_core::API_VERSION,
     kind: "TeamConfig",
     location: "Crossplane Composite Resource (XR)",
     description: "Crossplane composite resource for team-level configuration. Fans out to per-user MachineConfig CRDs via composition function.",

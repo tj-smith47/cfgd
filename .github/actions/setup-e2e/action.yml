@@ -11,9 +11,9 @@ inputs:
     required: false
     default: 'tests/e2e/node/kind-config.yaml'
   images:
-    description: 'Space-separated list of images to build (node server operator)'
+    description: 'Space-separated list of images to build (node operator)'
     required: false
-    default: 'node server'
+    default: 'node operator'
 
 runs:
   using: composite
@@ -50,11 +50,6 @@ runs:
               docker build -f Dockerfile -t cfgd:e2e-test .
               kind load docker-image cfgd:e2e-test --name "$CLUSTER"
               ;;
-            server)
-              echo "Building cfgd-server..."
-              docker build -f Dockerfile.server -t cfgd-server:e2e-test .
-              kind load docker-image cfgd-server:e2e-test --name "$CLUSTER"
-              ;;
             operator)
               echo "Building cfgd-operator..."
               docker build -f Dockerfile.operator -t cfgd-operator:e2e-test .
@@ -67,12 +62,12 @@ runs:
       shell: bash
       run: kubectl create namespace cfgd-system || true
 
-    - name: Deploy cfgd-server
+    - name: Deploy device gateway (cfgd-operator with gateway enabled)
       shell: bash
       run: |
-        if echo "${{ inputs.images }}" | grep -q "server"; then
+        if echo "${{ inputs.images }}" | grep -q "operator"; then
           kubectl apply -f tests/e2e/node/manifests/cfgd-server.yaml -n cfgd-system
           kubectl wait --for=condition=available deployment/cfgd-server \
             -n cfgd-system --timeout=120s
-          echo "cfgd-server is ready"
+          echo "Device gateway is ready"
         fi

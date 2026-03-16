@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
-# E2E tests for cfgd <-> cfgd-server integration.
-# Prereqs: kind cluster running, cfgd binary on node, cfgd-server deployed.
+# E2E tests for cfgd <-> device gateway integration.
+# Prereqs: kind cluster running, cfgd binary on node, device gateway deployed.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "$SCRIPT_DIR/../../common/helpers.sh"
 FIXTURES="$SCRIPT_DIR/../fixtures"
 
-echo "=== cfgd Server Integration Tests ==="
+echo "=== cfgd Device Gateway Integration Tests ==="
 
 # --- Setup ---
 NODE="$(get_kind_node)"
@@ -22,12 +22,12 @@ for f in "$FIXTURES/profiles/"*.yaml; do
     docker cp "$f" "$NODE:/etc/cfgd/profiles/$(basename "$f")"
 done
 
-# Determine cfgd-server cluster IP
+# Determine device gateway cluster IP
 SERVER_IP=$(kubectl get svc cfgd-server -n "$CFGD_NAMESPACE" \
     -o jsonpath='{.spec.clusterIP}' 2>/dev/null || echo "")
 
 if [ -z "$SERVER_IP" ]; then
-    echo "ERROR: cfgd-server service not found. Is it deployed?"
+    echo "ERROR: device gateway service not found. Is it deployed?"
     echo "Deploying now..."
     kubectl apply -f "$SCRIPT_DIR/../manifests/cfgd-server.yaml" -n "$CFGD_NAMESPACE"
     wait_for_deployment "$CFGD_NAMESPACE" "cfgd-server" 120
@@ -36,15 +36,15 @@ if [ -z "$SERVER_IP" ]; then
 fi
 
 SERVER_URL="http://${SERVER_IP}:8080"
-echo "cfgd-server URL: $SERVER_URL"
+echo "Device gateway URL: $SERVER_URL"
 
-# Verify server is reachable from the kind node
-echo "Verifying cfgd-server reachability from kind node..."
+# Verify device gateway is reachable from the kind node
+echo "Verifying device gateway reachability from kind node..."
 exec_on_node curl -sf "${SERVER_URL}/api/v1/devices" > /dev/null 2>&1 || {
-    echo "WARNING: cfgd-server not reachable from kind node. Waiting..."
+    echo "WARNING: device gateway not reachable from kind node. Waiting..."
     sleep 10
     exec_on_node curl -sf "${SERVER_URL}/api/v1/devices" > /dev/null 2>&1 || {
-        echo "ERROR: cfgd-server not reachable"
+        echo "ERROR: device gateway not reachable"
         exit 1
     }
 }
@@ -75,16 +75,16 @@ fi
 # =================================================================
 # T31: Device registered on server
 # =================================================================
-begin_test "T31: Device registered on server"
+begin_test "T31: Device registered on device gateway"
 DEVICES=$(exec_on_node curl -sf "${SERVER_URL}/api/v1/devices" 2>/dev/null || echo "[]")
-echo "  Server devices response (first 200 chars):"
+echo "  Device gateway response (first 200 chars):"
 echo "$DEVICES" | head -c 200 | sed 's/^/    /'
 echo ""
 
 if assert_contains "$DEVICES" "$DEVICE_ID"; then
     pass_test "T31"
 else
-    fail_test "T31" "Device not found in server response"
+    fail_test "T31" "Device not found in device gateway response"
 fi
 
 # =================================================================
@@ -105,7 +105,7 @@ fi
 # =================================================================
 # T33: Drift reporting
 # =================================================================
-begin_test "T33: Drift reporting to server"
+begin_test "T33: Drift reporting to device gateway"
 # Introduce drift on a sysctl value
 ORIG_MAX=$(exec_on_node cat /proc/sys/vm/max_map_count 2>/dev/null || echo "262144")
 exec_on_node sysctl -w vm.max_map_count=65530 > /dev/null 2>&1 || true
@@ -142,7 +142,7 @@ fi
 # =================================================================
 # T34: Server drift events list
 # =================================================================
-begin_test "T34: Server has drift events"
+begin_test "T34: Device gateway has drift events"
 DRIFT_EVENTS=$(exec_on_node curl -sf "${SERVER_URL}/api/v1/devices/${DEVICE_ID}/drift" 2>/dev/null || echo "[]")
 echo "  Drift events:"
 echo "$DRIFT_EVENTS" | head -c 300 | sed 's/^/    /'
@@ -184,4 +184,4 @@ else
 fi
 
 # --- Summary ---
-print_summary "Server Integration Tests"
+print_summary "Device Gateway Integration Tests"

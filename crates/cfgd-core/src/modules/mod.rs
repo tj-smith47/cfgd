@@ -1451,7 +1451,7 @@ mod tests {
         std::fs::write(
             mod_dir.join("module.yaml"),
             r#"
-apiVersion: cfgd/v1
+apiVersion: cfgd.io/v1alpha1
 kind: Module
 metadata:
   name: nvim
@@ -1496,7 +1496,7 @@ spec:
         std::fs::write(
             mod_dir.join("module.yaml"),
             r#"
-apiVersion: cfgd/v1
+apiVersion: cfgd.io/v1alpha1
 kind: Module
 metadata:
   name: actual-name
@@ -1519,7 +1519,7 @@ spec: {}
         std::fs::write(
             mod_dir.join("module.yaml"),
             r#"
-apiVersion: cfgd/v1
+apiVersion: cfgd.io/v1alpha1
 kind: Profile
 metadata:
   name: bad
@@ -1916,7 +1916,7 @@ spec: {}
         std::fs::write(
             node_dir.join("module.yaml"),
             r#"
-apiVersion: cfgd/v1
+apiVersion: cfgd.io/v1alpha1
 kind: Module
 metadata:
   name: node
@@ -1934,7 +1934,7 @@ spec:
         std::fs::write(
             nvim_dir.join("module.yaml"),
             r#"
-apiVersion: cfgd/v1
+apiVersion: cfgd.io/v1alpha1
 kind: Module
 metadata:
   name: nvim
@@ -1994,7 +1994,7 @@ spec:
     #[test]
     fn parse_module_yaml() {
         let yaml = r#"
-apiVersion: cfgd/v1
+apiVersion: cfgd.io/v1alpha1
 kind: Module
 metadata:
   name: test-mod
@@ -2039,7 +2039,7 @@ spec:
     #[test]
     fn parse_module_minimal() {
         let yaml = r#"
-apiVersion: cfgd/v1
+apiVersion: cfgd.io/v1alpha1
 kind: Module
 metadata:
   name: minimal
@@ -2057,7 +2057,7 @@ spec: {}
     #[test]
     fn profile_with_modules_field() {
         let yaml = r#"
-apiVersion: cfgd/v1
+apiVersion: cfgd.io/v1alpha1
 kind: Profile
 metadata:
   name: test
@@ -2314,7 +2314,7 @@ spec:
     #[test]
     fn parse_module_with_script_and_platforms() {
         let yaml = r#"
-apiVersion: cfgd/v1
+apiVersion: cfgd.io/v1alpha1
 kind: Module
 metadata:
   name: rustup
@@ -2698,7 +2698,7 @@ spec:
         std::fs::write(
             mod_dir.join("module.yaml"),
             r#"
-apiVersion: cfgd/v1
+apiVersion: cfgd.io/v1alpha1
 kind: Module
 metadata:
   name: local-mod

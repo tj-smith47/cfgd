@@ -29,18 +29,52 @@ spec:
             - name: WEBHOOK_PORT
               value: {{ .Values.webhook.port | quote }}
             {{- end }}
-          {{- if .Values.webhook.enabled }}
+            {{- if .Values.deviceGateway.enabled }}
+            - name: DEVICE_GATEWAY_ENABLED
+              value: "true"
+            - name: DEVICE_GATEWAY_PORT
+              value: {{ .Values.deviceGateway.port | quote }}
+            - name: CFGD_SERVER_DB_PATH
+              value: {{ .Values.deviceGateway.dbPath | quote }}
+            - name: CFGD_ENROLLMENT_METHOD
+              value: {{ .Values.deviceGateway.enrollmentMethod | quote }}
+            - name: CFGD_RETENTION_DAYS
+              value: {{ .Values.deviceGateway.retentionDays | quote }}
+            {{- if .Values.deviceGateway.apiKeySecret.name }}
+            - name: CFGD_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.deviceGateway.apiKeySecret.name }}
+                  key: {{ .Values.deviceGateway.apiKeySecret.key }}
+            {{- else if .Values.deviceGateway.apiKey }}
+            - name: CFGD_API_KEY
+              value: {{ .Values.deviceGateway.apiKey | quote }}
+            {{- end }}
+            {{- end }}
           ports:
+            {{- if .Values.webhook.enabled }}
             - name: webhook
               containerPort: {{ .Values.webhook.port }}
               protocol: TCP
+            {{- end }}
+            {{- if .Values.deviceGateway.enabled }}
+            - name: gateway
+              containerPort: {{ .Values.deviceGateway.port }}
+              protocol: TCP
+            {{- end }}
           volumeMounts:
+            {{- if .Values.webhook.enabled }}
             - name: webhook-certs
               mountPath: /tmp/k8s-webhook-server/serving-certs
               readOnly: true
-          {{- end }}
+            {{- end }}
+            {{- if and .Values.deviceGateway.enabled .Values.deviceGateway.persistence.enabled }}
+            - name: gateway-data
+              mountPath: /data
+            {{- end }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
+          {{- if .Values.webhook.enabled }}
           livenessProbe:
             httpGet:
               path: /healthz
@@ -55,12 +89,18 @@ spec:
               scheme: HTTPS
             initialDelaySeconds: 5
             periodSeconds: 10
-      {{- if .Values.webhook.enabled }}
+          {{- end }}
       volumes:
+        {{- if .Values.webhook.enabled }}
         - name: webhook-certs
           secret:
             secretName: {{ include "cfgd-operator.webhookCertSecret" . }}
-      {{- end }}
+        {{- end }}
+        {{- if and .Values.deviceGateway.enabled .Values.deviceGateway.persistence.enabled }}
+        - name: gateway-data
+          persistentVolumeClaim:
+            claimName: {{ include "cfgd-operator.fullname" . }}-gateway-data
+        {{- end }}
       {{- with .Values.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}

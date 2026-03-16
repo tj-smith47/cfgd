@@ -1,0 +1,66 @@
+name: E2E – Exhaustive CLI
+
+on:
+  push:
+    branches: [master, main]
+    paths:
+      - "crates/cfgd/**"
+      - "crates/cfgd-core/**"
+      - "tests/e2e/cli/**"
+      - "tests/e2e/common/**"
+      - ".github/workflows/e2e-exhaustive.yml"
+  pull_request:
+    branches: [master, main]
+    paths:
+      - "crates/cfgd/**"
+      - "crates/cfgd-core/**"
+      - "tests/e2e/cli/**"
+      - "tests/e2e/common/**"
+      - ".github/workflows/e2e-exhaustive.yml"
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # Docker-based run (self-contained, no host deps)
+  exhaustive-docker:
+    name: "Exhaustive CLI (Docker)"
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build test image
+        run: docker build -t cfgd-exhaustive -f tests/e2e/cli/Dockerfile .
+
+      - name: Run exhaustive tests
+        run: docker run --rm cfgd-exhaustive
+
+  # Native run (faster, uses cached build)
+  exhaustive-native:
+    name: "Exhaustive CLI (Native)"
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build cfgd
+        run: cargo build --release --bin cfgd
+
+      - name: Install sops and age
+        run: |
+          curl -fsSL https://github.com/FiloSottile/age/releases/download/v1.2.0/age-v1.2.0-linux-amd64.tar.gz \
+            | sudo tar xz -C /usr/local/bin --strip-components=1 age/age age/age-keygen
+          curl -fsSLo /usr/local/bin/sops \
+            https://github.com/getsops/sops/releases/download/v3.9.4/sops-v3.9.4.linux.amd64
+          sudo chmod +x /usr/local/bin/sops
+
+      - name: Run exhaustive tests
+        env:
+          NO_COLOR: "1"
+          EDITOR: "true"
+        run: bash tests/e2e/cli/scripts/run-exhaustive-tests.sh

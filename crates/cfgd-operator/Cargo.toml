@@ -1,12 +1,13 @@
 [package]
 name = "cfgd-operator"
-version = "0.1.0"
-edition = "2024"
-rust-version = "1.94"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
 description = "cfgd Kubernetes operator — CRD-based node configuration"
-license = "MIT"
-repository = "https://github.com/tj-smith47/cfgd"
-homepage = "https://github.com/tj-smith47/cfgd"
 keywords = ["kubernetes", "operator", "config", "crd"]
 categories = ["config"]
 
@@ -43,3 +44,9 @@ tokio-rustls = "0.26"
 rustls-pemfile = "2"
 semver = "1"
 tower = { version = "0.5", features = ["util"] }
+tower-http = { version = "0.6", features = ["cors", "trace"] }
+rusqlite = { version = "0.32", features = ["bundled"] }
+uuid = { version = "1", features = ["v4"] }
+sha2 = "0.10"
+tokio-stream = { version = "0.1", features = ["sync"] }
+tempfile = "3"

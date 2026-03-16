@@ -41,3 +41,20 @@ webhook:
   failurePolicy: Fail
   # Timeout in seconds for webhook calls
   timeoutSeconds: 10
+
+# Device gateway — HTTP API for device checkin, enrollment, drift reporting, web dashboard
+deviceGateway:
+  enabled: false
+  port: 8080
+  dbPath: /data/cfgd-gateway.db
+  # API key for authentication (set via secret reference in production)
+  apiKey: ""
+  apiKeySecret:
+    name: ""
+    key: "api-key"
+  enrollmentMethod: token
+  retentionDays: 90
+  persistence:
+    enabled: true
+    size: 1Gi
+    storageClass: ""

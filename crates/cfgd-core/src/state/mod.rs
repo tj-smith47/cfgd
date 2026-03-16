@@ -379,6 +379,16 @@ impl StateStore {
         Ok(())
     }
 
+    /// Check if a resource is tracked in managed_resources.
+    pub fn is_resource_managed(&self, resource_type: &str, resource_id: &str) -> Result<bool> {
+        let count: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM managed_resources WHERE resource_type = ?1 AND resource_id = ?2",
+            params![resource_type, resource_id],
+            |row| row.get(0),
+        )?;
+        Ok(count > 0)
+    }
+
     /// Get the most recent apply record.
     pub fn last_apply(&self) -> Result<Option<ApplyRecord>> {
         let result = self.conn.query_row(
@@ -928,7 +938,7 @@ pub fn default_state_dir() -> Result<PathBuf> {
 
 const PENDING_CONFIG_FILENAME: &str = "pending-server-config.json";
 
-/// Save a desired config received from cfgd-server for later reconciliation.
+/// Save a desired config received from the device gateway for later reconciliation.
 pub fn save_pending_server_config(config: &serde_json::Value) -> Result<PathBuf> {
     let dir = default_state_dir()?;
     std::fs::create_dir_all(&dir)
@@ -1089,6 +1099,25 @@ mod tests {
         let resources = store.managed_resources().unwrap();
         assert_eq!(resources.len(), 1);
         assert_eq!(resources[0].last_hash.as_deref(), Some("hash2"));
+    }
+
+    #[test]
+    fn is_resource_managed() {
+        let store = StateStore::open_in_memory().unwrap();
+
+        assert!(!store.is_resource_managed("file", "/home/.zshrc").unwrap());
+
+        store
+            .upsert_managed_resource("file", "/home/.zshrc", "local", Some("hash1"), None)
+            .unwrap();
+
+        assert!(store.is_resource_managed("file", "/home/.zshrc").unwrap());
+        assert!(!store.is_resource_managed("file", "/home/.bashrc").unwrap());
+        assert!(
+            !store
+                .is_resource_managed("package", "/home/.zshrc")
+                .unwrap()
+        );
     }
 
     #[test]

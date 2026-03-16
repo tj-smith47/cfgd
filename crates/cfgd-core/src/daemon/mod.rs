@@ -68,6 +68,10 @@ struct SyncTask {
     auto_apply: bool,
     interval: Duration,
     last_synced: Option<Instant>,
+    /// When true, verify commit signatures after pull (source requires it).
+    require_signed_commits: bool,
+    /// When true, skip signature verification (global allow-unsigned).
+    allow_unsigned: bool,
 }
 
 // --- Per-source status ---
@@ -425,6 +429,8 @@ pub async fn run_daemon(
         .unwrap_or_else(|| Path::new("."))
         .to_path_buf();
 
+    let allow_unsigned = cfg.spec.security.as_ref().is_some_and(|s| s.allow_unsigned);
+
     let mut sync_tasks: Vec<SyncTask> = vec![SyncTask {
         source_name: "local".to_string(),
         repo_path: config_dir.clone(),
@@ -433,6 +439,8 @@ pub async fn run_daemon(
         auto_apply: true,
         interval: sync_interval,
         last_synced: None,
+        require_signed_commits: false,
+        allow_unsigned,
     }];
 
     // Add sync tasks for each configured source
@@ -441,6 +449,13 @@ pub async fn run_daemon(
     for source_spec in &cfg.spec.sources {
         let source_dir = source_cache_dir.join(&source_spec.name);
         if source_dir.exists() {
+            // Read manifest to determine if signed commits are required
+            let require_signed = crate::sources::detect_source_manifest(&source_dir)
+                .ok()
+                .flatten()
+                .map(|m| m.spec.policy.constraints.require_signed_commits)
+                .unwrap_or(false);
+
             sync_tasks.push(SyncTask {
                 source_name: source_spec.name.clone(),
                 repo_path: source_dir,
@@ -449,6 +464,8 @@ pub async fn run_daemon(
                 auto_apply: source_spec.sync.auto_apply,
                 interval: parse_duration_str(&source_spec.sync.interval),
                 last_synced: None,
+                require_signed_commits: require_signed,
+                allow_unsigned,
             });
         }
     }
@@ -523,9 +540,13 @@ pub async fn run_daemon(
                 .unwrap_or_else(|| Path::new("."))
                 .to_path_buf();
             let profiles_dir = config_dir.join("profiles");
-            let profile_name = startup_profile_override
-                .as_deref()
-                .unwrap_or(&startup_cfg.spec.profile);
+            let profile_name = match startup_profile_override.as_deref().or(startup_cfg.spec.profile.as_deref()) {
+                Some(p) => p,
+                None => {
+                    tracing::error!("no profile configured — skipping reconciliation");
+                    return;
+                }
+            };
             match config::resolve_profile(profile_name, &profiles_dir) {
                 Ok(resolved) => {
                     let changed = try_server_checkin(&startup_cfg, &resolved);
@@ -644,8 +665,10 @@ pub async fn run_daemon(
                     let push = task.auto_push;
                     let auto_apply = task.auto_apply;
                     let source_name = task.source_name.clone();
+                    let require_signed = task.require_signed_commits;
+                    let allow_uns = task.allow_unsigned;
                     tokio::task::spawn_blocking(move || {
-                        let changed = handle_sync(&repo, pull, push, &source_name, &st);
+                        let changed = handle_sync(&repo, pull, push, &source_name, &st, require_signed, allow_uns);
                         if changed && !auto_apply {
                             tracing::info!(
                                 source = %source_name,
@@ -757,7 +780,10 @@ fn discover_managed_paths(
         .parent()
         .unwrap_or_else(|| Path::new("."))
         .join("profiles");
-    let profile_name = profile_override.unwrap_or(&cfg.spec.profile);
+    let profile_name = match profile_override.or(cfg.spec.profile.as_deref()) {
+        Some(p) => p,
+        None => return Vec::new(),
+    };
 
     let resolved = match config::resolve_profile(profile_name, &profiles_dir) {
         Ok(r) => r,
@@ -801,7 +827,13 @@ fn handle_reconcile(
         .unwrap_or_else(|| Path::new("."))
         .to_path_buf();
     let profiles_dir = config_dir.join("profiles");
-    let profile_name = profile_override.unwrap_or(&cfg.spec.profile);
+    let profile_name = match profile_override.or(cfg.spec.profile.as_deref()) {
+        Some(p) => p,
+        None => {
+            tracing::error!("no profile configured — skipping reconciliation");
+            return;
+        }
+    };
 
     let resolved = match config::resolve_profile(profile_name, &profiles_dir) {
         Ok(r) => r,
@@ -1276,6 +1308,8 @@ fn handle_sync(
     auto_push: bool,
     source_name: &str,
     state: &Arc<Mutex<DaemonState>>,
+    require_signed_commits: bool,
+    allow_unsigned: bool,
 ) -> bool {
     let timestamp = crate::utc_now_iso8601();
     let mut changes = false;
@@ -1283,6 +1317,19 @@ fn handle_sync(
     if auto_pull {
         match git_pull(repo_path) {
             Ok(true) => {
+                // Verify signature on new HEAD after pull if required
+                if require_signed_commits
+                    && !allow_unsigned
+                    && let Err(e) = crate::sources::verify_head_signature(source_name, repo_path)
+                {
+                    tracing::error!(
+                        "sync: signature verification failed after pull for '{}': {}",
+                        source_name,
+                        e
+                    );
+                    // Don't treat this as "changes" — the content is untrusted
+                    return false;
+                }
                 tracing::info!("sync: pulled new changes from remote");
                 changes = true;
             }
@@ -2056,13 +2103,13 @@ mod tests {
     fn find_server_url_returns_none_for_git_origin() {
         use crate::config::*;
         let config = CfgdConfig {
-            api_version: "cfgd/v1".into(),
+            api_version: crate::API_VERSION.into(),
             kind: "Config".into(),
             metadata: ConfigMetadata {
                 name: "test".into(),
             },
             spec: ConfigSpec {
-                profile: "default".into(),
+                profile: Some("default".into()),
                 origin: vec![OriginSpec {
                     origin_type: OriginType::Git,
                     url: "https://github.com/test/repo.git".into(),
@@ -2074,6 +2121,7 @@ mod tests {
                 sources: vec![],
                 theme: None,
                 modules: None,
+                security: None,
                 aliases: std::collections::HashMap::new(),
                 file_strategy: crate::config::FileStrategy::default(),
             },
@@ -2085,13 +2133,13 @@ mod tests {
     fn find_server_url_returns_url_for_server_origin() {
         use crate::config::*;
         let config = CfgdConfig {
-            api_version: "cfgd/v1".into(),
+            api_version: crate::API_VERSION.into(),
             kind: "Config".into(),
             metadata: ConfigMetadata {
                 name: "test".into(),
             },
             spec: ConfigSpec {
-                profile: "default".into(),
+                profile: Some("default".into()),
                 origin: vec![OriginSpec {
                     origin_type: OriginType::Server,
                     url: "https://cfgd.example.com".into(),
@@ -2103,6 +2151,7 @@ mod tests {
                 sources: vec![],
                 theme: None,
                 modules: None,
+                security: None,
                 aliases: std::collections::HashMap::new(),
                 file_strategy: crate::config::FileStrategy::default(),
             },

@@ -1,7 +1,7 @@
 #!/bin/sh
 # cfgd installer — detects OS/arch, downloads the correct binary, verifies checksum, installs to PATH
 # Usage:
-#   curl -fsSL https://raw.githubusercontent.com/tj-smith47/cfgd/main/install.sh | sh
+#   curl -fsSL https://raw.githubusercontent.com/tj-smith47/cfgd/master/install.sh | sh
 #   curl -fsSL ... | sh -s -- init --from <url>
 #
 # Environment variables:

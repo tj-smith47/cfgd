@@ -2,7 +2,7 @@ name: Auto Tag
 
 on:
   push:
-    branches: [main]
+    branches: [master]
 
 permissions:
   contents: write

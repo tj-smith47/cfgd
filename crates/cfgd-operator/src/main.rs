@@ -1,6 +1,7 @@
 mod controllers;
 mod crds;
 mod errors;
+mod gateway;
 mod webhook;
 
 use std::path::Path;
@@ -10,6 +11,7 @@ use kube::Client;
 use tracing_subscriber::EnvFilter;
 
 use crate::crds::{ConfigPolicy, DriftAlert, MachineConfig};
+use crate::gateway::GatewayConfig;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -45,7 +47,42 @@ async fn main() -> Result<()> {
         );
     }
 
-    controllers::run(client).await?;
+    // Device gateway — optional HTTP server for device checkin, enrollment, drift, web UI
+    let gateway_enabled = std::env::var("DEVICE_GATEWAY_ENABLED")
+        .map(|v| v == "true" || v == "1")
+        .unwrap_or(false);
+
+    if gateway_enabled {
+        let gateway_config = GatewayConfig {
+            port: std::env::var("DEVICE_GATEWAY_PORT")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(8080),
+            db_path: std::env::var("CFGD_SERVER_DB_PATH")
+                .unwrap_or_else(|_| "/data/cfgd-gateway.db".to_string()),
+            kube_client: Some(client.clone()),
+            retention_days: std::env::var("CFGD_RETENTION_DAYS")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(90),
+        };
+
+        tracing::info!("Device gateway enabled");
+        let gateway_handle = tokio::spawn(async move {
+            if let Err(e) = gateway::start_gateway(gateway_config).await {
+                tracing::error!(error = %e, "Device gateway failed");
+            }
+        });
+
+        tokio::select! {
+            result = controllers::run(client) => result?,
+            _ = gateway_handle => {
+                anyhow::bail!("Device gateway exited unexpectedly");
+            }
+        }
+    } else {
+        controllers::run(client).await?;
+    }
 
     Ok(())
 }

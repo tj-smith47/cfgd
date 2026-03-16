@@ -2,27 +2,27 @@ name: E2E – cfgd node
 
 on:
   push:
-    branches: [main, master]
+    branches: [master]
     paths:
       - "crates/cfgd/**"
       - "crates/cfgd-core/**"
-      - "crates/cfgd-server/**"
+      - "crates/cfgd-operator/**"
       - "charts/cfgd/**"
       - "Dockerfile"
-      - "Dockerfile.server"
+      - "Dockerfile.operator"
       - "tests/e2e/node/**"
       - "tests/e2e/common/**"
       - ".github/workflows/e2e-node.yml"
       - ".github/actions/setup-e2e/**"
   pull_request:
-    branches: [main, master]
+    branches: [master]
     paths:
       - "crates/cfgd/**"
       - "crates/cfgd-core/**"
-      - "crates/cfgd-server/**"
+      - "crates/cfgd-operator/**"
       - "charts/cfgd/**"
       - "Dockerfile"
-      - "Dockerfile.server"
+      - "Dockerfile.operator"
       - "tests/e2e/node/**"
       - "tests/e2e/common/**"
       - ".github/workflows/e2e-node.yml"
@@ -89,7 +89,7 @@ jobs:
         with:
           kind-cluster-name: ${{ env.KIND_CLUSTER }}
           kind-config: tests/e2e/node/kind-config.yaml
-          images: "node server"
+          images: "node operator"
 
       - name: Run server integration tests
         run: bash tests/e2e/node/scripts/run-server-tests.sh

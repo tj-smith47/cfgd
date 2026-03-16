@@ -6,7 +6,7 @@ use crate::errors::{CfgdError, Result};
 use crate::output::Printer;
 use crate::providers::SystemDrift;
 
-/// Client for communicating with cfgd-server.
+/// Client for communicating with the device gateway.
 pub struct ServerClient {
     base_url: String,
     api_key: Option<String>,
@@ -67,6 +67,40 @@ pub struct EnrollResponse {
     pub team: Option<String>,
     #[serde(default)]
     pub desired_config: Option<serde_json::Value>,
+}
+
+// --- Key-based enrollment types ---
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "kebab-case")]
+struct ChallengeRequest {
+    username: String,
+    device_id: String,
+    hostname: String,
+    os: String,
+    arch: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub struct ChallengeResponse {
+    pub challenge_id: String,
+    pub nonce: String,
+    pub expires_at: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "kebab-case")]
+struct VerifyRequest {
+    challenge_id: String,
+    signature: String,
+    key_type: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub struct EnrollInfoResponse {
+    pub method: String,
 }
 
 /// Stored device credential — saved locally after enrollment.
@@ -150,7 +184,7 @@ impl ServerClient {
         ))
     }
 
-    /// Check in with cfgd-server, reporting current config hash.
+    /// Check in with the device gateway, reporting current config hash.
     pub fn checkin(&self, config_hash: &str, printer: &Printer) -> Result<CheckinResponse> {
         let hostname = hostname::get()
             .map(|h| h.to_string_lossy().to_string())
@@ -171,14 +205,14 @@ impl ServerClient {
             )))
         })?;
 
-        printer.info("Checking in with cfgd-server");
+        printer.info("Checking in with device gateway");
 
         let response_body = self
             .post_with_retry("/api/v1/checkin", &body_json)
             .map_err(|e| {
                 CfgdError::Io(std::io::Error::new(
                     std::io::ErrorKind::ConnectionRefused,
-                    format!("cfgd-server checkin failed: {}", e),
+                    format!("device gateway checkin failed: {}", e),
                 ))
             })?;
 
@@ -190,7 +224,7 @@ impl ServerClient {
         })
     }
 
-    /// Report drift events to cfgd-server.
+    /// Report drift events to the device gateway.
     pub fn report_drift(&self, drifts: &[SystemDrift], printer: &Printer) -> Result<()> {
         if drifts.is_empty() {
             return Ok(());
@@ -215,21 +249,21 @@ impl ServerClient {
 
         let path = format!("/api/v1/devices/{}/drift", self.device_id);
         printer.info(&format!(
-            "Reporting {} drift events to cfgd-server",
+            "Reporting {} drift events to device gateway",
             drifts.len()
         ));
 
         self.post_with_retry(&path, &body_json).map_err(|e| {
             CfgdError::Io(std::io::Error::new(
                 std::io::ErrorKind::ConnectionRefused,
-                format!("cfgd-server drift report failed: {}", e),
+                format!("device gateway drift report failed: {}", e),
             ))
         })?;
 
         Ok(())
     }
 
-    /// Enroll this device with cfgd-server using a bootstrap token.
+    /// Enroll this device with the device gateway using a bootstrap token.
     /// Returns the enrollment response including the permanent device API key.
     pub fn enroll(&self, bootstrap_token: &str, printer: &Printer) -> Result<EnrollResponse> {
         let hostname = hostname::get()
@@ -251,14 +285,14 @@ impl ServerClient {
             )))
         })?;
 
-        printer.info("Enrolling device with cfgd-server");
+        printer.info("Enrolling device with device gateway");
 
         let response_body = self
             .post_with_retry("/api/v1/enroll", &body_json)
             .map_err(|e| {
                 CfgdError::Io(std::io::Error::new(
                     std::io::ErrorKind::ConnectionRefused,
-                    format!("cfgd-server enrollment failed: {}", e),
+                    format!("device gateway enrollment failed: {}", e),
                 ))
             })?;
 
@@ -266,6 +300,113 @@ impl ServerClient {
             CfgdError::Io(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
                 format!("invalid enrollment response: {}", e),
+            ))
+        })
+    }
+
+    /// Query the server's enrollment method (token or key).
+    pub fn enroll_info(&self) -> Result<EnrollInfoResponse> {
+        let url = format!("{}/api/v1/enroll/info", self.base_url);
+        let resp = ureq::get(&url).call().map_err(|e| {
+            CfgdError::Io(std::io::Error::new(
+                std::io::ErrorKind::ConnectionRefused,
+                format!("failed to query enrollment info: {}", e),
+            ))
+        })?;
+        let body = resp.into_string().map_err(|e| {
+            CfgdError::Io(std::io::Error::other(format!(
+                "failed to read enrollment info response: {}",
+                e
+            )))
+        })?;
+        serde_json::from_str(&body).map_err(|e| {
+            CfgdError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("invalid enrollment info response: {}", e),
+            ))
+        })
+    }
+
+    /// Request an enrollment challenge from the server (key-based enrollment).
+    pub fn request_challenge(
+        &self,
+        username: &str,
+        printer: &Printer,
+    ) -> Result<ChallengeResponse> {
+        let hostname = hostname::get()
+            .map(|h| h.to_string_lossy().to_string())
+            .unwrap_or_else(|_| "unknown".to_string());
+
+        let body = ChallengeRequest {
+            username: username.to_string(),
+            device_id: self.device_id.clone(),
+            hostname,
+            os: std::env::consts::OS.to_string(),
+            arch: std::env::consts::ARCH.to_string(),
+        };
+
+        let body_json = serde_json::to_string(&body).map_err(|e| {
+            CfgdError::Io(std::io::Error::other(format!(
+                "failed to serialize challenge request: {}",
+                e
+            )))
+        })?;
+
+        printer.info("Requesting enrollment challenge");
+
+        let response_body = self
+            .post_with_retry("/api/v1/enroll/challenge", &body_json)
+            .map_err(|e| {
+                CfgdError::Io(std::io::Error::new(
+                    std::io::ErrorKind::ConnectionRefused,
+                    format!("enrollment challenge request failed: {}", e),
+                ))
+            })?;
+
+        serde_json::from_str(&response_body).map_err(|e| {
+            CfgdError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("invalid challenge response: {}", e),
+            ))
+        })
+    }
+
+    /// Submit a signed challenge for verification (key-based enrollment).
+    pub fn submit_verification(
+        &self,
+        challenge_id: &str,
+        signature: &str,
+        key_type: &str,
+        printer: &Printer,
+    ) -> Result<EnrollResponse> {
+        let body = VerifyRequest {
+            challenge_id: challenge_id.to_string(),
+            signature: signature.to_string(),
+            key_type: key_type.to_string(),
+        };
+
+        let body_json = serde_json::to_string(&body).map_err(|e| {
+            CfgdError::Io(std::io::Error::other(format!(
+                "failed to serialize verification request: {}",
+                e
+            )))
+        })?;
+
+        printer.info("Submitting signed challenge for verification");
+
+        let response_body = self
+            .post_with_retry("/api/v1/enroll/verify", &body_json)
+            .map_err(|e| {
+                CfgdError::Io(std::io::Error::new(
+                    std::io::ErrorKind::ConnectionRefused,
+                    format!("enrollment verification failed: {}", e),
+                ))
+            })?;
+
+        serde_json::from_str(&response_body).map_err(|e| {
+            CfgdError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("invalid verification response: {}", e),
             ))
         })
     }
@@ -428,5 +569,48 @@ mod tests {
         let json = serde_json::to_string(&req).unwrap();
         assert!(json.contains("cfgd_bs_abc123"));
         assert!(json.contains("dev-1"));
+    }
+
+    #[test]
+    fn challenge_request_serialization() {
+        let req = ChallengeRequest {
+            username: "jdoe".to_string(),
+            device_id: "dev-1".to_string(),
+            hostname: "macbook".to_string(),
+            os: "macos".to_string(),
+            arch: "aarch64".to_string(),
+        };
+        let json = serde_json::to_string(&req).unwrap();
+        assert!(json.contains("jdoe"));
+        assert!(json.contains("dev-1"));
+    }
+
+    #[test]
+    fn verify_request_serialization() {
+        let req = VerifyRequest {
+            challenge_id: "challenge-123".to_string(),
+            signature: "-----BEGIN SSH SIGNATURE-----\ntest\n-----END SSH SIGNATURE-----"
+                .to_string(),
+            key_type: "ssh".to_string(),
+        };
+        let json = serde_json::to_string(&req).unwrap();
+        assert!(json.contains("challenge-123"));
+        assert!(json.contains("SSH SIGNATURE"));
+    }
+
+    #[test]
+    fn enroll_info_response_deserialization() {
+        let json = r#"{"method":"key"}"#;
+        let resp: EnrollInfoResponse = serde_json::from_str(json).unwrap();
+        assert_eq!(resp.method, "key");
+    }
+
+    #[test]
+    fn challenge_response_deserialization() {
+        let json =
+            r#"{"challenge-id":"abc","nonce":"cfgd_ch_xyz","expires-at":"2026-03-14T12:05:00Z"}"#;
+        let resp: ChallengeResponse = serde_json::from_str(json).unwrap();
+        assert_eq!(resp.challenge_id, "abc");
+        assert_eq!(resp.nonce, "cfgd_ch_xyz");
     }
 }

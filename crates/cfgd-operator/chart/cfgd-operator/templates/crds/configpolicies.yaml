@@ -36,6 +36,11 @@ spec:
                 items:
                   type: string
                 type: array
+              requiredModules:
+                default: []
+                items:
+                  type: string
+                type: array
               settings:
                 additionalProperties:
                   type: string

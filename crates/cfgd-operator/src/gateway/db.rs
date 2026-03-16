@@ -1,7 +1,7 @@
 use rusqlite::{Connection, params};
 use serde::{Deserialize, Serialize};
 
-use crate::errors::ServerError;
+use super::errors::GatewayError;
 
 /// Device status as a proper enum with well-defined states.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -23,7 +23,7 @@ impl DeviceStatus {
         }
     }
 
-    pub fn from_str(s: &str) -> Self {
+    pub fn parse(s: &str) -> Self {
         match s {
             "healthy" => DeviceStatus::Healthy,
             "drifted" => DeviceStatus::Drifted,
@@ -100,78 +100,142 @@ pub struct DeviceCredential {
     pub revoked: bool,
 }
 
+/// A user's public key for key-based enrollment verification.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub struct UserPublicKey {
+    pub id: String,
+    pub username: String,
+    pub key_type: String, // "ssh" or "gpg"
+    pub public_key: String,
+    pub fingerprint: String,
+    pub label: Option<String>,
+    pub created_at: String,
+}
+
+/// A short-lived enrollment challenge for key-based enrollment.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub struct EnrollmentChallenge {
+    pub id: String,
+    pub username: String,
+    pub device_id: String,
+    pub hostname: String,
+    pub os: String,
+    pub arch: String,
+    pub nonce: String,
+    pub created_at: String,
+    pub expires_at: String,
+}
+
+const MIGRATIONS: &[&str] = &[
+    // Migration 0: initial schema
+    "CREATE TABLE IF NOT EXISTS devices (
+        id TEXT PRIMARY KEY,
+        hostname TEXT NOT NULL,
+        os TEXT NOT NULL,
+        arch TEXT NOT NULL,
+        last_checkin TEXT NOT NULL,
+        config_hash TEXT NOT NULL,
+        status TEXT NOT NULL,
+        desired_config TEXT
+    );
+    CREATE TABLE IF NOT EXISTS drift_events (
+        id TEXT PRIMARY KEY,
+        device_id TEXT NOT NULL,
+        timestamp TEXT NOT NULL,
+        details TEXT NOT NULL,
+        FOREIGN KEY (device_id) REFERENCES devices(id)
+    );
+    CREATE TABLE IF NOT EXISTS checkin_events (
+        id TEXT PRIMARY KEY,
+        device_id TEXT NOT NULL,
+        timestamp TEXT NOT NULL,
+        config_hash TEXT NOT NULL,
+        config_changed INTEGER NOT NULL DEFAULT 0,
+        FOREIGN KEY (device_id) REFERENCES devices(id)
+    );
+    CREATE TABLE IF NOT EXISTS bootstrap_tokens (
+        id TEXT PRIMARY KEY,
+        token_hash TEXT NOT NULL UNIQUE,
+        username TEXT NOT NULL,
+        team TEXT,
+        created_at TEXT NOT NULL,
+        expires_at TEXT NOT NULL,
+        used_at TEXT,
+        used_by_device TEXT
+    );
+    CREATE TABLE IF NOT EXISTS device_credentials (
+        device_id TEXT PRIMARY KEY,
+        api_key_hash TEXT NOT NULL UNIQUE,
+        username TEXT NOT NULL,
+        team TEXT,
+        created_at TEXT NOT NULL,
+        last_used TEXT,
+        revoked INTEGER NOT NULL DEFAULT 0
+    );
+    CREATE TABLE IF NOT EXISTS user_public_keys (
+        id TEXT PRIMARY KEY,
+        username TEXT NOT NULL,
+        key_type TEXT NOT NULL,
+        public_key TEXT NOT NULL,
+        fingerprint TEXT NOT NULL,
+        label TEXT,
+        created_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS enrollment_challenges (
+        id TEXT PRIMARY KEY,
+        username TEXT NOT NULL,
+        device_id TEXT NOT NULL,
+        hostname TEXT NOT NULL,
+        os TEXT NOT NULL,
+        arch TEXT NOT NULL,
+        nonce TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        expires_at TEXT NOT NULL,
+        consumed INTEGER NOT NULL DEFAULT 0
+    );
+    CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL);
+    INSERT INTO schema_version (version) VALUES (1);",
+    // Migration 1: add indices for event queries
+    "CREATE INDEX IF NOT EXISTS idx_drift_events_device_id ON drift_events(device_id);
+    CREATE INDEX IF NOT EXISTS idx_drift_events_timestamp ON drift_events(timestamp);
+    CREATE INDEX IF NOT EXISTS idx_checkin_events_device_id ON checkin_events(device_id);
+    CREATE INDEX IF NOT EXISTS idx_checkin_events_timestamp ON checkin_events(timestamp);
+    CREATE INDEX IF NOT EXISTS idx_user_public_keys_username ON user_public_keys(username);
+    UPDATE schema_version SET version = 2;",
+];
+
 pub struct ServerDb {
     conn: Connection,
 }
 
 impl ServerDb {
-    pub fn open(path: &str) -> Result<Self, ServerError> {
+    pub fn open(path: &str) -> Result<Self, GatewayError> {
         let conn = Connection::open(path)?;
         conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;")?;
         let db = Self { conn };
-        db.init_tables()?;
+        db.run_migrations()?;
         Ok(db)
     }
 
-    fn init_tables(&self) -> Result<(), ServerError> {
-        self.conn.execute_batch(
-            "CREATE TABLE IF NOT EXISTS devices (
-                id TEXT PRIMARY KEY,
-                hostname TEXT NOT NULL,
-                os TEXT NOT NULL,
-                arch TEXT NOT NULL,
-                last_checkin TEXT NOT NULL,
-                config_hash TEXT NOT NULL,
-                status TEXT NOT NULL,
-                desired_config TEXT
-            );
-            CREATE TABLE IF NOT EXISTS drift_events (
-                id TEXT PRIMARY KEY,
-                device_id TEXT NOT NULL,
-                timestamp TEXT NOT NULL,
-                details TEXT NOT NULL,
-                FOREIGN KEY (device_id) REFERENCES devices(id)
-            );
-            CREATE TABLE IF NOT EXISTS checkin_events (
-                id TEXT PRIMARY KEY,
-                device_id TEXT NOT NULL,
-                timestamp TEXT NOT NULL,
-                config_hash TEXT NOT NULL,
-                config_changed INTEGER NOT NULL DEFAULT 0,
-                FOREIGN KEY (device_id) REFERENCES devices(id)
-            );
-            CREATE TABLE IF NOT EXISTS bootstrap_tokens (
-                id TEXT PRIMARY KEY,
-                token_hash TEXT NOT NULL UNIQUE,
-                username TEXT NOT NULL,
-                team TEXT,
-                created_at TEXT NOT NULL,
-                expires_at TEXT NOT NULL,
-                used_at TEXT,
-                used_by_device TEXT
-            );
-            CREATE TABLE IF NOT EXISTS device_credentials (
-                device_id TEXT PRIMARY KEY,
-                api_key_hash TEXT NOT NULL UNIQUE,
-                username TEXT NOT NULL,
-                team TEXT,
-                created_at TEXT NOT NULL,
-                last_used TEXT,
-                revoked INTEGER NOT NULL DEFAULT 0
-            );",
-        )?;
-
-        // Migration: add desired_config column if missing (existing databases)
-        let has_col: bool = self
-            .conn
-            .prepare("SELECT desired_config FROM devices LIMIT 0")
-            .is_ok();
-        if !has_col {
-            self.conn
-                .execute_batch("ALTER TABLE devices ADD COLUMN desired_config TEXT")?;
+    fn run_migrations(&self) -> Result<(), GatewayError> {
+        let current_version = self.schema_version();
+        for (i, migration) in MIGRATIONS.iter().enumerate() {
+            if i >= current_version {
+                self.conn.execute_batch(migration)?;
+            }
         }
-
         Ok(())
+    }
+
+    fn schema_version(&self) -> usize {
+        self.conn
+            .query_row("SELECT version FROM schema_version", [], |row| {
+                row.get::<_, i64>(0)
+            })
+            .map(|v| v as usize)
+            .unwrap_or(0)
     }
 
     pub fn register_device(
@@ -181,7 +245,7 @@ impl ServerDb {
         os: &str,
         arch: &str,
         config_hash: &str,
-    ) -> Result<Device, ServerError> {
+    ) -> Result<Device, GatewayError> {
         let now = cfgd_core::utc_now_iso8601();
         self.conn.execute(
             "INSERT INTO devices (id, hostname, os, arch, last_checkin, config_hash, status)
@@ -206,19 +270,19 @@ impl ServerDb {
         self.get_device(id)
     }
 
-    pub fn update_checkin(&self, id: &str, config_hash: &str) -> Result<(), ServerError> {
+    pub fn update_checkin(&self, id: &str, config_hash: &str) -> Result<(), GatewayError> {
         let now = cfgd_core::utc_now_iso8601();
         let rows = self.conn.execute(
             "UPDATE devices SET last_checkin = ?1, config_hash = ?2, status = ?3 WHERE id = ?4",
             params![&now, config_hash, DeviceStatus::Healthy.as_str(), id],
         )?;
         if rows == 0 {
-            return Err(ServerError::NotFound(format!("device not found: {id}")));
+            return Err(GatewayError::NotFound(format!("device not found: {id}")));
         }
         Ok(())
     }
 
-    pub fn get_device(&self, id: &str) -> Result<Device, ServerError> {
+    pub fn get_device(&self, id: &str) -> Result<Device, GatewayError> {
         self.conn
             .query_row(
                 "SELECT id, hostname, os, arch, last_checkin, config_hash, status, desired_config FROM devices WHERE id = ?1",
@@ -235,16 +299,16 @@ impl ServerDb {
                         arch: row.get(3)?,
                         last_checkin: row.get(4)?,
                         config_hash: row.get(5)?,
-                        status: DeviceStatus::from_str(&status_str),
+                        status: DeviceStatus::parse(&status_str),
                         desired_config,
                     })
                 },
             )
             .map_err(|e| match e {
                 rusqlite::Error::QueryReturnedNoRows => {
-                    ServerError::NotFound(format!("device not found: {id}"))
+                    GatewayError::NotFound(format!("device not found: {id}"))
                 }
-                other => ServerError::Database(other),
+                other => GatewayError::Database(other),
             })
     }
 
@@ -252,20 +316,20 @@ impl ServerDb {
         &self,
         id: &str,
         config: &serde_json::Value,
-    ) -> Result<(), ServerError> {
+    ) -> Result<(), GatewayError> {
         let config_str = serde_json::to_string(config)
-            .map_err(|e| ServerError::Internal(format!("failed to serialize config: {e}")))?;
+            .map_err(|e| GatewayError::Internal(format!("failed to serialize config: {e}")))?;
         let rows = self.conn.execute(
             "UPDATE devices SET desired_config = ?1 WHERE id = ?2",
             params![&config_str, id],
         )?;
         if rows == 0 {
-            return Err(ServerError::NotFound(format!("device not found: {id}")));
+            return Err(GatewayError::NotFound(format!("device not found: {id}")));
         }
         Ok(())
     }
 
-    pub fn list_devices(&self) -> Result<Vec<Device>, ServerError> {
+    pub fn list_devices(&self) -> Result<Vec<Device>, GatewayError> {
         self.list_devices_paginated(1000, 0)
     }
 
@@ -273,7 +337,7 @@ impl ServerDb {
         &self,
         limit: u32,
         offset: u32,
-    ) -> Result<Vec<Device>, ServerError> {
+    ) -> Result<Vec<Device>, GatewayError> {
         let mut stmt = self.conn.prepare(
             "SELECT id, hostname, os, arch, last_checkin, config_hash, status, desired_config FROM devices ORDER BY hostname LIMIT ?1 OFFSET ?2",
         )?;
@@ -289,7 +353,7 @@ impl ServerDb {
                     arch: row.get(3)?,
                     last_checkin: row.get(4)?,
                     config_hash: row.get(5)?,
-                    status: DeviceStatus::from_str(&status_str),
+                    status: DeviceStatus::parse(&status_str),
                     desired_config,
                 })
             })?
@@ -301,7 +365,7 @@ impl ServerDb {
         &self,
         device_id: &str,
         details: &str,
-    ) -> Result<DriftEvent, ServerError> {
+    ) -> Result<DriftEvent, GatewayError> {
         self.get_device(device_id)?;
 
         let id = uuid::Uuid::new_v4().to_string();
@@ -324,7 +388,7 @@ impl ServerDb {
         })
     }
 
-    pub fn list_drift_events(&self, device_id: &str) -> Result<Vec<DriftEvent>, ServerError> {
+    pub fn list_drift_events(&self, device_id: &str) -> Result<Vec<DriftEvent>, GatewayError> {
         self.get_device(device_id)?;
 
         let mut stmt = self.conn.prepare(
@@ -348,7 +412,7 @@ impl ServerDb {
         device_id: &str,
         config_hash: &str,
         config_changed: bool,
-    ) -> Result<CheckinEvent, ServerError> {
+    ) -> Result<CheckinEvent, GatewayError> {
         let id = uuid::Uuid::new_v4().to_string();
         let now = cfgd_core::utc_now_iso8601();
         self.conn.execute(
@@ -364,7 +428,7 @@ impl ServerDb {
         })
     }
 
-    pub fn list_checkin_events(&self, device_id: &str) -> Result<Vec<CheckinEvent>, ServerError> {
+    pub fn list_checkin_events(&self, device_id: &str) -> Result<Vec<CheckinEvent>, GatewayError> {
         self.get_device(device_id)?;
 
         let mut stmt = self.conn.prepare(
@@ -385,7 +449,7 @@ impl ServerDb {
         Ok(events)
     }
 
-    pub fn list_fleet_events(&self, limit: u32) -> Result<Vec<FleetEvent>, ServerError> {
+    pub fn list_fleet_events(&self, limit: u32) -> Result<Vec<FleetEvent>, GatewayError> {
         self.list_fleet_events_paginated(limit, 0)
     }
 
@@ -393,7 +457,7 @@ impl ServerDb {
         &self,
         limit: u32,
         offset: u32,
-    ) -> Result<Vec<FleetEvent>, ServerError> {
+    ) -> Result<Vec<FleetEvent>, GatewayError> {
         let mut stmt = self.conn.prepare(
             "SELECT timestamp, device_id, 'drift' as event_type, details as summary FROM drift_events
              UNION ALL
@@ -413,13 +477,13 @@ impl ServerDb {
         Ok(rows)
     }
 
-    pub fn set_force_reconcile(&self, device_id: &str) -> Result<(), ServerError> {
+    pub fn set_force_reconcile(&self, device_id: &str) -> Result<(), GatewayError> {
         let rows = self.conn.execute(
             "UPDATE devices SET status = ?1 WHERE id = ?2",
             params![DeviceStatus::PendingReconcile.as_str(), device_id],
         )?;
         if rows == 0 {
-            return Err(ServerError::NotFound(format!(
+            return Err(GatewayError::NotFound(format!(
                 "device not found: {device_id}"
             )));
         }
@@ -435,7 +499,7 @@ impl ServerDb {
         username: &str,
         team: Option<&str>,
         expires_at: &str,
-    ) -> Result<BootstrapToken, ServerError> {
+    ) -> Result<BootstrapToken, GatewayError> {
         let id = uuid::Uuid::new_v4().to_string();
         let now = cfgd_core::utc_now_iso8601();
         self.conn.execute(
@@ -462,7 +526,7 @@ impl ServerDb {
         &self,
         token_hash: &str,
         device_id: &str,
-    ) -> Result<BootstrapToken, ServerError> {
+    ) -> Result<BootstrapToken, GatewayError> {
         let now = cfgd_core::utc_now_iso8601();
 
         // Atomic: UPDATE only if token is unused + not expired, then SELECT the result.
@@ -483,17 +547,17 @@ impl ServerDb {
                     Ok((used_at, expires_at))
                 },
             ) {
-                Ok((Some(_), _)) => Err(ServerError::InvalidRequest(
+                Ok((Some(_), _)) => Err(GatewayError::InvalidRequest(
                     "bootstrap token has already been used".to_string(),
                 )),
-                Ok((None, expires_at)) if expires_at < now => Err(ServerError::InvalidRequest(
+                Ok((None, expires_at)) if expires_at < now => Err(GatewayError::InvalidRequest(
                     "bootstrap token has expired".to_string(),
                 )),
-                Ok(_) => Err(ServerError::Internal(
+                Ok(_) => Err(GatewayError::Internal(
                     "bootstrap token validation failed unexpectedly".to_string(),
                 )),
-                Err(rusqlite::Error::QueryReturnedNoRows) => Err(ServerError::Unauthorized),
-                Err(e) => Err(ServerError::Database(e)),
+                Err(rusqlite::Error::QueryReturnedNoRows) => Err(GatewayError::Unauthorized),
+                Err(e) => Err(GatewayError::Database(e)),
             };
         }
 
@@ -514,11 +578,11 @@ impl ServerDb {
                     })
                 },
             )
-            .map_err(ServerError::Database)
+            .map_err(GatewayError::Database)
     }
 
     /// List all bootstrap tokens (active and used).
-    pub fn list_bootstrap_tokens(&self) -> Result<Vec<BootstrapToken>, ServerError> {
+    pub fn list_bootstrap_tokens(&self) -> Result<Vec<BootstrapToken>, GatewayError> {
         let mut stmt = self.conn.prepare(
             "SELECT id, username, team, created_at, expires_at, used_at, used_by_device FROM bootstrap_tokens ORDER BY created_at DESC",
         )?;
@@ -539,12 +603,12 @@ impl ServerDb {
     }
 
     /// Delete a bootstrap token by ID.
-    pub fn delete_bootstrap_token(&self, id: &str) -> Result<(), ServerError> {
+    pub fn delete_bootstrap_token(&self, id: &str) -> Result<(), GatewayError> {
         let rows = self
             .conn
             .execute("DELETE FROM bootstrap_tokens WHERE id = ?1", params![id])?;
         if rows == 0 {
-            return Err(ServerError::NotFound(format!(
+            return Err(GatewayError::NotFound(format!(
                 "bootstrap token not found: {id}"
             )));
         }
@@ -560,7 +624,7 @@ impl ServerDb {
         api_key_hash: &str,
         username: &str,
         team: Option<&str>,
-    ) -> Result<DeviceCredential, ServerError> {
+    ) -> Result<DeviceCredential, GatewayError> {
         let now = cfgd_core::utc_now_iso8601();
         self.conn.execute(
             "INSERT INTO device_credentials (device_id, api_key_hash, username, team, created_at) VALUES (?1, ?2, ?3, ?4, ?5)
@@ -581,7 +645,7 @@ impl ServerDb {
     pub fn validate_device_credential(
         &self,
         api_key_hash: &str,
-    ) -> Result<DeviceCredential, ServerError> {
+    ) -> Result<DeviceCredential, GatewayError> {
         let cred = self
             .conn
             .query_row(
@@ -600,40 +664,211 @@ impl ServerDb {
                 },
             )
             .map_err(|e| match e {
-                rusqlite::Error::QueryReturnedNoRows => ServerError::Unauthorized,
-                other => ServerError::Database(other),
+                rusqlite::Error::QueryReturnedNoRows => GatewayError::Unauthorized,
+                other => GatewayError::Database(other),
             })?;
 
         if cred.revoked {
-            return Err(ServerError::Unauthorized);
+            return Err(GatewayError::Unauthorized);
         }
 
         // Update last_used timestamp
         let now = cfgd_core::utc_now_iso8601();
-        let _ = self.conn.execute(
+        if let Err(e) = self.conn.execute(
             "UPDATE device_credentials SET last_used = ?1 WHERE device_id = ?2",
             params![&now, &cred.device_id],
-        );
+        ) {
+            tracing::warn!(device_id = %cred.device_id, error = %e, "failed to update credential last_used");
+        }
 
         Ok(cred)
     }
 
     /// Revoke a device credential.
-    pub fn revoke_device_credential(&self, device_id: &str) -> Result<(), ServerError> {
+    pub fn revoke_device_credential(&self, device_id: &str) -> Result<(), GatewayError> {
         let rows = self.conn.execute(
             "UPDATE device_credentials SET revoked = 1 WHERE device_id = ?1",
             params![device_id],
         )?;
         if rows == 0 {
-            return Err(ServerError::NotFound(format!(
+            return Err(GatewayError::NotFound(format!(
                 "device credential not found: {device_id}"
             )));
         }
         Ok(())
     }
 
+    // --- User Public Keys ---
+
+    /// Add a public key for a user (for key-based enrollment).
+    pub fn add_user_public_key(
+        &self,
+        username: &str,
+        key_type: &str,
+        public_key: &str,
+        fingerprint: &str,
+        label: Option<&str>,
+    ) -> Result<UserPublicKey, GatewayError> {
+        let id = uuid::Uuid::new_v4().to_string();
+        let now = cfgd_core::utc_now_iso8601();
+        self.conn.execute(
+            "INSERT INTO user_public_keys (id, username, key_type, public_key, fingerprint, label, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![&id, username, key_type, public_key, fingerprint, label, &now],
+        )?;
+        Ok(UserPublicKey {
+            id,
+            username: username.to_string(),
+            key_type: key_type.to_string(),
+            public_key: public_key.to_string(),
+            fingerprint: fingerprint.to_string(),
+            label: label.map(String::from),
+            created_at: now,
+        })
+    }
+
+    /// List all public keys for a user.
+    pub fn list_user_public_keys(
+        &self,
+        username: &str,
+    ) -> Result<Vec<UserPublicKey>, GatewayError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, username, key_type, public_key, fingerprint, label, created_at FROM user_public_keys WHERE username = ?1 ORDER BY created_at DESC",
+        )?;
+        let keys = stmt
+            .query_map(params![username], |row| {
+                Ok(UserPublicKey {
+                    id: row.get(0)?,
+                    username: row.get(1)?,
+                    key_type: row.get(2)?,
+                    public_key: row.get(3)?,
+                    fingerprint: row.get(4)?,
+                    label: row.get(5)?,
+                    created_at: row.get(6)?,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(keys)
+    }
+
+    /// Delete a user's public key by ID.
+    pub fn delete_user_public_key(&self, id: &str) -> Result<(), GatewayError> {
+        let rows = self
+            .conn
+            .execute("DELETE FROM user_public_keys WHERE id = ?1", params![id])?;
+        if rows == 0 {
+            return Err(GatewayError::NotFound(format!(
+                "public key not found: {id}"
+            )));
+        }
+        Ok(())
+    }
+
+    // --- Enrollment Challenges ---
+
+    /// Create a short-lived enrollment challenge for key-based enrollment.
+    /// Challenge expires after `ttl_secs` (default: 300 = 5 minutes).
+    pub fn create_enrollment_challenge(
+        &self,
+        username: &str,
+        device_id: &str,
+        hostname: &str,
+        os_arch: (&str, &str),
+        nonce: &str,
+        ttl_secs: u64,
+    ) -> Result<EnrollmentChallenge, GatewayError> {
+        let (os, arch) = os_arch;
+        let id = uuid::Uuid::new_v4().to_string();
+        let now_secs = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        let created_at = cfgd_core::unix_secs_to_iso8601(now_secs);
+        let expires_at = cfgd_core::unix_secs_to_iso8601(now_secs + ttl_secs);
+
+        self.conn.execute(
+            "INSERT INTO enrollment_challenges (id, username, device_id, hostname, os, arch, nonce, created_at, expires_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            params![&id, username, device_id, hostname, os, arch, nonce, &created_at, &expires_at],
+        )?;
+
+        Ok(EnrollmentChallenge {
+            id,
+            username: username.to_string(),
+            device_id: device_id.to_string(),
+            hostname: hostname.to_string(),
+            os: os.to_string(),
+            arch: arch.to_string(),
+            nonce: nonce.to_string(),
+            created_at,
+            expires_at,
+        })
+    }
+
+    /// Atomically consume an enrollment challenge. Returns the challenge if valid
+    /// (exists, not expired, not already consumed). Marks it as consumed.
+    pub fn consume_enrollment_challenge(
+        &self,
+        challenge_id: &str,
+    ) -> Result<EnrollmentChallenge, GatewayError> {
+        let now = cfgd_core::utc_now_iso8601();
+
+        // Single transaction: read challenge data and mark consumed atomically.
+        // This prevents the case where UPDATE succeeds but the subsequent SELECT fails,
+        // leaving the challenge consumed with no data returned.
+        let tx = self.conn.unchecked_transaction().map_err(GatewayError::Database)?;
+
+        let challenge = tx.query_row(
+            "SELECT id, username, device_id, hostname, os, arch, nonce, created_at, expires_at, consumed
+             FROM enrollment_challenges WHERE id = ?1",
+            params![challenge_id],
+            |row| {
+                let consumed: i32 = row.get(9)?;
+                Ok((EnrollmentChallenge {
+                    id: row.get(0)?,
+                    username: row.get(1)?,
+                    device_id: row.get(2)?,
+                    hostname: row.get(3)?,
+                    os: row.get(4)?,
+                    arch: row.get(5)?,
+                    nonce: row.get(6)?,
+                    created_at: row.get(7)?,
+                    expires_at: row.get(8)?,
+                }, consumed))
+            },
+        );
+
+        let (challenge, consumed) = match challenge {
+            Ok(pair) => pair,
+            Err(rusqlite::Error::QueryReturnedNoRows) => {
+                return Err(GatewayError::NotFound(format!(
+                    "enrollment challenge not found: {challenge_id}"
+                )));
+            }
+            Err(e) => return Err(GatewayError::Database(e)),
+        };
+
+        if consumed != 0 {
+            return Err(GatewayError::InvalidRequest(
+                "enrollment challenge has already been used".to_string(),
+            ));
+        }
+        if challenge.expires_at < now {
+            return Err(GatewayError::InvalidRequest(
+                "enrollment challenge has expired".to_string(),
+            ));
+        }
+
+        tx.execute(
+            "UPDATE enrollment_challenges SET consumed = 1 WHERE id = ?1",
+            params![challenge_id],
+        ).map_err(GatewayError::Database)?;
+
+        tx.commit().map_err(GatewayError::Database)?;
+
+        Ok(challenge)
+    }
+
     /// Delete drift and checkin events older than `max_age_days`.
-    pub fn cleanup_old_events(&self, max_age_days: u32) -> Result<usize, ServerError> {
+    pub fn cleanup_old_events(&self, max_age_days: u32) -> Result<usize, GatewayError> {
         let cutoff = {
             let now = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -1025,5 +1260,142 @@ mod tests {
         let db = test_db();
         let result = db.revoke_device_credential("no-such-device");
         assert!(result.is_err());
+    }
+
+    // --- User Public Key Tests ---
+
+    #[test]
+    fn add_and_list_user_public_keys() {
+        let db = test_db();
+
+        let key = db
+            .add_user_public_key(
+                "jdoe",
+                "ssh",
+                "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIG... jdoe@work",
+                "SHA256:abc123def456",
+                Some("work laptop"),
+            )
+            .expect("add key failed");
+        assert_eq!(key.username, "jdoe");
+        assert_eq!(key.key_type, "ssh");
+        assert_eq!(key.label.as_deref(), Some("work laptop"));
+
+        db.add_user_public_key(
+            "jdoe",
+            "gpg",
+            "-----BEGIN PGP PUBLIC KEY BLOCK-----\n...\n-----END PGP PUBLIC KEY BLOCK-----",
+            "ABCD1234EFGH5678",
+            None,
+        )
+        .expect("add gpg key failed");
+
+        let keys = db.list_user_public_keys("jdoe").expect("list failed");
+        assert_eq!(keys.len(), 2);
+    }
+
+    #[test]
+    fn list_user_public_keys_empty() {
+        let db = test_db();
+        let keys = db.list_user_public_keys("nobody").expect("list failed");
+        assert!(keys.is_empty());
+    }
+
+    #[test]
+    fn delete_user_public_key() {
+        let db = test_db();
+
+        let key = db
+            .add_user_public_key("jdoe", "ssh", "ssh-ed25519 AAAA...", "SHA256:xyz", None)
+            .expect("add failed");
+
+        db.delete_user_public_key(&key.id).expect("delete failed");
+
+        let keys = db.list_user_public_keys("jdoe").expect("list failed");
+        assert!(keys.is_empty());
+    }
+
+    #[test]
+    fn delete_nonexistent_public_key_fails() {
+        let db = test_db();
+        let result = db.delete_user_public_key("no-such-id");
+        assert!(result.is_err());
+    }
+
+    // --- Enrollment Challenge Tests ---
+
+    #[test]
+    fn create_and_consume_enrollment_challenge() {
+        let db = test_db();
+
+        let challenge = db
+            .create_enrollment_challenge(
+                "jdoe",
+                "dev-1",
+                "macbook",
+                ("macos", "aarch64"),
+                "random-nonce-abc",
+                300,
+            )
+            .expect("create challenge failed");
+        assert_eq!(challenge.username, "jdoe");
+        assert_eq!(challenge.nonce, "random-nonce-abc");
+
+        let consumed = db
+            .consume_enrollment_challenge(&challenge.id)
+            .expect("consume failed");
+        assert_eq!(consumed.username, "jdoe");
+        assert_eq!(consumed.device_id, "dev-1");
+    }
+
+    #[test]
+    fn consume_challenge_twice_fails() {
+        let db = test_db();
+
+        let challenge = db
+            .create_enrollment_challenge(
+                "jdoe",
+                "dev-1",
+                "macbook",
+                ("macos", "aarch64"),
+                "nonce1",
+                300,
+            )
+            .expect("create failed");
+
+        db.consume_enrollment_challenge(&challenge.id)
+            .expect("first consume ok");
+
+        let result = db.consume_enrollment_challenge(&challenge.id);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn consume_expired_challenge_fails() {
+        let db = test_db();
+
+        // Insert a challenge with an already-past expires_at
+        let id = uuid::Uuid::new_v4().to_string();
+        let past = past_expiry();
+        db.conn.execute(
+            "INSERT INTO enrollment_challenges (id, username, device_id, hostname, os, arch, nonce, created_at, expires_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            params![&id, "jdoe", "dev-1", "macbook", "macos", "aarch64", "nonce2", &past, &past],
+        ).expect("insert failed");
+
+        let result = db.consume_enrollment_challenge(&id);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn consume_nonexistent_challenge_fails() {
+        let db = test_db();
+        let result = db.consume_enrollment_challenge("no-such-id");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn schema_version_is_set() {
+        let db = test_db();
+        assert_eq!(db.schema_version(), 2);
     }
 }

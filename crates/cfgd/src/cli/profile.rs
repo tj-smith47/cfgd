@@ -137,7 +137,7 @@ pub(super) fn cmd_profile_list(cli: &Cli, printer: &Printer) -> anyhow::Result<(
 
     let active = cli.profile.clone().unwrap_or_else(|| {
         config::load_config(&cli.config)
-            .map(|c| c.spec.profile)
+            .map(|c| c.spec.profile.unwrap_or_default())
             .unwrap_or_default()
     });
 
@@ -197,8 +197,8 @@ pub(super) fn cmd_profile_switch(name: &str, printer: &Printer) -> anyhow::Resul
     // Read current config, update profile field, write back
     let contents = std::fs::read_to_string(&config_path)?;
     let mut cfg: config::CfgdConfig = config::parse_config(&contents, &config_path)?;
-    let old_profile = cfg.spec.profile.clone();
-    cfg.spec.profile = name.to_string();
+    let old_profile = cfg.spec.profile.clone().unwrap_or_default();
+    cfg.spec.profile = Some(name.to_string());
 
     let yaml = serde_yaml::to_string(&cfg)?;
     std::fs::write(&config_path, &yaml)?;
@@ -482,7 +482,7 @@ pub(super) fn cmd_profile_create(
     };
 
     let doc = config::ProfileDocument {
-        api_version: "cfgd/v1".to_string(),
+        api_version: cfgd_core::API_VERSION.to_string(),
         kind: "Profile".to_string(),
         metadata: config::ProfileMetadata {
             name: name.to_string(),
@@ -638,6 +638,9 @@ pub(super) fn cmd_profile_update(
         let before = doc.spec.modules.len();
         doc.spec.modules.retain(|x| x != m);
         if doc.spec.modules.len() < before {
+            // Collect module file targets before cleanup for backup restore prompts
+            let module_file_targets = collect_module_file_targets(m, &config_dir);
+
             // Clean up lockfile entry and cache if this was a remote module
             let mut lockfile = modules::load_lockfile(&config_dir)?;
             let removed_entry = lockfile.modules.iter().find(|e| e.name == *m).cloned();
@@ -665,6 +668,9 @@ pub(super) fn cmd_profile_update(
             }
             printer.success(&format!("Removed module: {}", m));
             changes += 1;
+
+            // Check for .cfgd-backup files at module file targets and offer to restore
+            prompt_restore_backups(&module_file_targets, printer)?;
         } else {
             printer.warning(&format!("Module '{}' not found in profile", m));
         }
@@ -919,7 +925,7 @@ pub(super) fn cmd_profile_delete(
     // Safety: refuse if active profile
     if cli.config.exists()
         && let Ok(cfg) = config::load_config(&cli.config)
-        && cfg.spec.profile == name
+        && cfg.spec.profile.as_deref() == Some(name)
     {
         anyhow::bail!(
             "Cannot delete '{}' — it is the active profile. Switch first with: cfgd profile switch <other>",
@@ -1040,6 +1046,67 @@ pub(super) fn migrate_all_profile_file_layouts(
         let profile_path = config_dir.join("profiles").join(format!("{}.yaml", name));
         if profile_path.exists() {
             migrate_profile_file_layout(config_dir, &name, printer)?;
+        }
+    }
+    Ok(())
+}
+
+/// Collect expanded file target paths from a module's definition.
+/// Returns an empty vec if the module can't be loaded (already cleaned up, etc.).
+fn collect_module_file_targets(module_name: &str, config_dir: &Path) -> Vec<PathBuf> {
+    // Try local module first
+    let module_dir = config_dir.join("modules").join(module_name);
+    if let Ok(loaded) = modules::load_module(&module_dir) {
+        return loaded
+            .spec
+            .files
+            .iter()
+            .map(|f| cfgd_core::expand_tilde(&PathBuf::from(&f.target)))
+            .collect();
+    }
+
+    // Try cached remote module
+    if let Ok(cache_base) = modules::default_module_cache_dir() {
+        let lockfile = modules::load_lockfile(config_dir).unwrap_or_default();
+        if let Some(entry) = lockfile.modules.iter().find(|e| e.name == module_name)
+            && let Ok(git_src) = modules::parse_git_source(&entry.url)
+        {
+            let cache_dir = modules::git_cache_dir(&cache_base, &git_src.repo_url);
+            if let Ok(loaded) = modules::load_module(&cache_dir) {
+                return loaded
+                    .spec
+                    .files
+                    .iter()
+                    .map(|f| cfgd_core::expand_tilde(&PathBuf::from(&f.target)))
+                    .collect();
+            }
+        }
+    }
+
+    Vec::new()
+}
+
+/// After removing a module, check if any of its file targets have `.cfgd-backup` files
+/// and prompt the user to restore them.
+fn prompt_restore_backups(targets: &[PathBuf], printer: &Printer) -> anyhow::Result<()> {
+    for target in targets {
+        let backup_path = PathBuf::from(format!("{}.cfgd-backup", target.display()));
+        if backup_path.exists() {
+            let confirmed = printer
+                .prompt_confirm(&format!(
+                    "Restore backup {} to {}?",
+                    backup_path.display(),
+                    target.display()
+                ))
+                .unwrap_or(false);
+            if confirmed {
+                // Remove the cfgd-managed file/symlink if it exists
+                if target.symlink_metadata().is_ok() {
+                    std::fs::remove_file(target)?;
+                }
+                std::fs::rename(&backup_path, target)?;
+                printer.success(&format!("Restored {}", target.display()));
+            }
         }
     }
     Ok(())

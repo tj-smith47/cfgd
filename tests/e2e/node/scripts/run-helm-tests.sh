@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # E2E Helm chart tests for cfgd DaemonSet deployment.
-# Prereqs: kind cluster running, cfgd image loaded, cfgd-server deployed.
+# Prereqs: kind cluster running, cfgd image loaded, device gateway deployed.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"

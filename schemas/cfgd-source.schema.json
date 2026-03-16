@@ -10,7 +10,7 @@
     "apiVersion": {
       "type": "string",
       "description": "API version identifier",
-      "examples": ["cfgd/v1"]
+      "examples": ["cfgd.io/v1alpha1"]
     },
     "kind": {
       "type": "string",
@@ -65,6 +65,49 @@
           "items": { "type": "string" },
           "default": [],
           "description": "Profile names provided by this source"
+        },
+        "profile-details": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/ConfigSourceProfileEntry" },
+          "default": [],
+          "description": "Detailed profile entries with descriptions and metadata"
+        },
+        "platform-profiles": {
+          "type": "object",
+          "additionalProperties": { "type": "string" },
+          "default": {},
+          "description": "Map of platform identifier to default profile name for that platform"
+        },
+        "modules": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": [],
+          "description": "Module names provided by this source"
+        }
+      }
+    },
+    "ConfigSourceProfileEntry": {
+      "type": "object",
+      "required": ["name"],
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "Profile name"
+        },
+        "description": {
+          "type": "string",
+          "description": "Human-readable description of the profile"
+        },
+        "path": {
+          "type": "string",
+          "description": "Path to the profile file within the source"
+        },
+        "inherits": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": [],
+          "description": "Profiles this profile inherits from"
         }
       }
     },
@@ -123,6 +166,12 @@
           "items": { "type": "string" },
           "default": [],
           "description": "Sub-profiles included at this policy level"
+        },
+        "modules": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": [],
+          "description": "Modules included at this policy level"
         }
       }
     },
@@ -150,6 +199,11 @@
           "type": "boolean",
           "default": false,
           "description": "Whether this source can make system-level changes"
+        },
+        "require-signed-commits": {
+          "type": "boolean",
+          "default": false,
+          "description": "Require that the HEAD commit in this source's git repo has a valid GPG or SSH signature"
         }
       }
     },
@@ -164,9 +218,7 @@
           "$ref": "#/$defs/AptSpec"
         },
         "cargo": {
-          "type": "array",
-          "items": { "type": "string" },
-          "default": []
+          "$ref": "#/$defs/CargoSpec"
         },
         "npm": {
           "$ref": "#/$defs/NpmSpec"
@@ -180,6 +232,52 @@
           "type": "array",
           "items": { "type": "string" },
           "default": []
+        },
+        "apk": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": []
+        },
+        "pacman": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": []
+        },
+        "zypper": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": []
+        },
+        "yum": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": []
+        },
+        "pkg": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": []
+        },
+        "snap": {
+          "$ref": "#/$defs/SnapSpec"
+        },
+        "flatpak": {
+          "$ref": "#/$defs/FlatpakSpec"
+        },
+        "nix": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": []
+        },
+        "go": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": []
+        },
+        "custom": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/CustomManagerSpec" },
+          "default": []
         }
       }
     },
@@ -187,6 +285,10 @@
       "type": "object",
       "additionalProperties": false,
       "properties": {
+        "file": {
+          "type": "string",
+          "description": "Path to a Brewfile for batch installation"
+        },
         "taps": {
           "type": "array",
           "items": { "type": "string" },
@@ -208,6 +310,10 @@
       "type": "object",
       "additionalProperties": false,
       "properties": {
+        "file": {
+          "type": "string",
+          "description": "Path to a file listing APT packages"
+        },
         "packages": {
           "type": "array",
           "items": { "type": "string" },
@@ -215,11 +321,98 @@
         }
       }
     },
+    "CargoSpec": {
+      "description": "Cargo packages. Can be a list of package names or an object with file/packages keys.",
+      "oneOf": [
+        {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "file": {
+              "type": "string"
+            },
+            "packages": {
+              "type": "array",
+              "items": { "type": "string" },
+              "default": []
+            }
+          }
+        }
+      ]
+    },
     "NpmSpec": {
       "type": "object",
       "additionalProperties": false,
       "properties": {
+        "file": {
+          "type": "string",
+          "description": "Path to a file listing npm packages"
+        },
         "global": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": []
+        }
+      }
+    },
+    "SnapSpec": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "packages": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": []
+        },
+        "classic": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": []
+        }
+      }
+    },
+    "FlatpakSpec": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "packages": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": []
+        },
+        "remote": {
+          "type": "string"
+        }
+      }
+    },
+    "CustomManagerSpec": {
+      "type": "object",
+      "required": ["name", "check", "list-installed", "install", "uninstall"],
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "check": {
+          "type": "string"
+        },
+        "list-installed": {
+          "type": "string"
+        },
+        "install": {
+          "type": "string"
+        },
+        "uninstall": {
+          "type": "string"
+        },
+        "update": {
+          "type": "string"
+        },
+        "packages": {
           "type": "array",
           "items": { "type": "string" },
           "default": []
@@ -236,6 +429,16 @@
         },
         "target": {
           "type": "string"
+        },
+        "strategy": {
+          "type": "string",
+          "enum": ["symlink", "copy", "template", "hardlink"],
+          "description": "Per-file deployment strategy override"
+        },
+        "private": {
+          "type": "boolean",
+          "default": false,
+          "description": "When true, the source file is local-only"
         }
       }
     }

@@ -119,7 +119,7 @@ fi
 # =================================================================
 begin_test "T44: Seccomp profile write"
 exec_on_node bash -c 'cat > /tmp/e2e-seccomp-cfgd.yaml << "INNEREOF"
-apiVersion: cfgd/v1
+apiVersion: cfgd.io/v1alpha1
 kind: Config
 metadata:
   name: seccomp-test
@@ -148,7 +148,7 @@ begin_test "T45: Seccomp profile drift"
 # Modify the seccomp file
 exec_on_node bash -c 'echo "corrupted" > /tmp/cfgd-e2e-seccomp/audit.json'
 
-PLAN=$(exec_on_node cfgd --config /tmp/e2e-seccomp-cfgd.yaml plan --no-color 2>&1) || true
+PLAN=$(exec_on_node cfgd --config /tmp/e2e-seccomp-cfgd.yaml apply --dry-run --no-color 2>&1) || true
 echo "  Plan after seccomp corruption:"
 echo "$PLAN" | head -10 | sed 's/^/    /'
 
@@ -173,7 +173,7 @@ exec_on_node bash -c 'echo "key" > /tmp/cfgd-e2e-pki/test.key'
 exec_on_node chmod 644 /tmp/cfgd-e2e-pki/test.crt /tmp/cfgd-e2e-pki/test.key
 
 exec_on_node bash -c 'cat > /tmp/e2e-certs-cfgd.yaml << "INNEREOF"
-apiVersion: cfgd/v1
+apiVersion: cfgd.io/v1alpha1
 kind: Config
 metadata:
   name: certs-test
@@ -181,7 +181,7 @@ spec:
   profile: k8s-worker-certs
 INNEREOF'
 
-PLAN=$(exec_on_node cfgd --config /tmp/e2e-certs-cfgd.yaml plan --no-color 2>&1) || true
+PLAN=$(exec_on_node cfgd --config /tmp/e2e-certs-cfgd.yaml apply --dry-run --no-color 2>&1) || true
 echo "  Plan before cert apply:"
 echo "$PLAN" | head -10 | sed 's/^/    /'
 
@@ -194,7 +194,7 @@ echo "  Key permissions after apply: $KEY_MODE"
 if assert_equals "$KEY_MODE" "600"; then
     # Now change permissions back and verify drift detection
     exec_on_node chmod 644 /tmp/cfgd-e2e-pki/test.key
-    PLAN2=$(exec_on_node cfgd --config /tmp/e2e-certs-cfgd.yaml plan --no-color 2>&1) || true
+    PLAN2=$(exec_on_node cfgd --config /tmp/e2e-certs-cfgd.yaml apply --dry-run --no-color 2>&1) || true
     if assert_contains "$PLAN2" "cert" || assert_contains "$PLAN2" "changes"; then
         pass_test "T46"
     else

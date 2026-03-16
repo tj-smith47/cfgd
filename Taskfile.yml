@@ -87,17 +87,12 @@ tasks:
 
   docker:
     desc: Build all Docker images
-    deps: [docker:cli, docker:server, docker:operator]
+    deps: [docker:cli, docker:operator]
 
   docker:cli:
     desc: Build cfgd CLI Docker image
     cmds:
       - docker build -f Dockerfile -t {{.REGISTRY}}/cfgd:latest -t {{.REGISTRY}}/cfgd:{{.VERSION_NUM}} .
-
-  docker:server:
-    desc: Build cfgd-server Docker image
-    cmds:
-      - docker build -f Dockerfile.server -t {{.REGISTRY}}/cfgd-server:latest -t {{.REGISTRY}}/cfgd-server:{{.VERSION_NUM}} .
 
   docker:operator:
     desc: Build cfgd-operator Docker image
@@ -106,19 +101,13 @@ tasks:
 
   push:
     desc: Push all Docker images to registry
-    deps: [push:cli, push:server, push:operator]
+    deps: [push:cli, push:operator]
 
   push:cli:
     desc: Push cfgd CLI image to registry
     cmds:
       - docker push {{.REGISTRY}}/cfgd:latest
       - docker push {{.REGISTRY}}/cfgd:{{.VERSION_NUM}}
-
-  push:server:
-    desc: Push cfgd-server image to registry
-    cmds:
-      - docker push {{.REGISTRY}}/cfgd-server:latest
-      - docker push {{.REGISTRY}}/cfgd-server:{{.VERSION_NUM}}
 
   push:operator:
     desc: Push cfgd-operator image to registry
@@ -142,10 +131,10 @@ tasks:
 
   # --- Deploy ---
 
-  deploy:server:
-    desc: Build, push, and deploy cfgd-server to k3s
+  deploy:operator:
+    desc: Build, push, and deploy cfgd-operator to k3s
     cmds:
-      - task: docker:server
-      - task: push:server
+      - task: docker:operator
+      - task: push:operator
       - kustomize build --enable-alpha-plugins --enable-exec /db/manifests/k3s/namespaces/cfgd-system | kubectl apply -f -
-      - kubectl rollout restart deployment/cfgd-server -n cfgd-system
+      - kubectl rollout restart deployment/cfgd-operator -n cfgd-system

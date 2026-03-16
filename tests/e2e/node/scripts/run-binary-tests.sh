@@ -155,7 +155,7 @@ begin_test "T09: cfgd init"
 # Create a source directory on the node
 exec_on_node mkdir -p /tmp/e2e-source/profiles
 exec_on_node bash -c 'cat > /tmp/e2e-source/cfgd.yaml << "INNEREOF"
-apiVersion: cfgd/v1
+apiVersion: cfgd.io/v1alpha1
 kind: Config
 metadata:
   name: init-test
@@ -181,7 +181,7 @@ fi
 begin_test "T10: Seccomp profile management"
 # Use seccomp-only config
 exec_on_node bash -c 'cat > /tmp/e2e-seccomp-cfgd.yaml << "INNEREOF"
-apiVersion: cfgd/v1
+apiVersion: cfgd.io/v1alpha1
 kind: Config
 metadata:
   name: seccomp-test
@@ -218,7 +218,7 @@ exec_on_node chmod 644 /tmp/cfgd-e2e-pki/test.crt /tmp/cfgd-e2e-pki/test.key
 
 # Use certs-only config
 exec_on_node bash -c 'cat > /tmp/e2e-certs-cfgd.yaml << "INNEREOF"
-apiVersion: cfgd/v1
+apiVersion: cfgd.io/v1alpha1
 kind: Config
 metadata:
   name: certs-test

@@ -1,12 +1,13 @@
 [package]
 name = "cfgd"
-version = "0.1.0"
-edition = "2024"
-rust-version = "1.94"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
 description = "Declarative, GitOps-style machine configuration state management"
-license = "MIT"
-repository = "https://github.com/tj-smith47/cfgd"
-homepage = "https://github.com/tj-smith47/cfgd"
 keywords = ["config", "management", "gitops", "reconciliation", "declarative"]
 categories = ["config", "command-line-utilities"]
 
@@ -17,6 +18,7 @@ path = "src/main.rs"
 [dependencies]
 cfgd-core = { path = "../cfgd-core" }
 clap = { version = "4", features = ["derive", "env"] }
+clap_complete = "4"
 anyhow = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
@@ -31,8 +33,8 @@ similar = "2"
 sha2 = "0.10"
 hostname = "0.4"
 git2 = "0.19"
+tempfile = "3"
 
 [dev-dependencies]
 assert_cmd = "2"
 predicates = "3"
-tempfile = "3"
