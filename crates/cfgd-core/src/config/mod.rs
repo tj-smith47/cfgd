@@ -201,6 +201,23 @@ pub struct ReconcileConfig {
     pub auto_apply: bool,
     #[serde(default)]
     pub policy: Option<AutoApplyPolicyConfig>,
+    /// Policy for daemon auto-reconciliation of detected drift.
+    /// `Auto` = silently apply (must opt-in), `NotifyOnly` = notify but don't
+    /// apply (safe default), `Prompt` = future interactive approval.
+    #[serde(default)]
+    pub drift_policy: DriftPolicy,
+}
+
+/// Daemon drift reconciliation policy. PascalCase values match K8s enum conventions.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum DriftPolicy {
+    /// Apply drift corrections automatically (current behavior, now opt-in).
+    Auto,
+    /// Notify and record drift, but do not apply. User must run `cfgd apply`.
+    #[default]
+    NotifyOnly,
+    /// Future: notify with actionable prompt.
+    Prompt,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -446,6 +463,13 @@ pub struct ConfigSourcePolicy {
     pub constraints: SourceConstraints,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "kebab-case")]
+pub struct EnvVar {
+    pub name: String,
+    pub value: String,
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub struct PolicyItems {
@@ -454,7 +478,7 @@ pub struct PolicyItems {
     #[serde(default)]
     pub files: Vec<ManagedFileSpec>,
     #[serde(default)]
-    pub variables: HashMap<String, serde_yaml::Value>,
+    pub env: Vec<EnvVar>,
     #[serde(default)]
     pub system: HashMap<String, serde_yaml::Value>,
     #[serde(default)]
@@ -533,41 +557,44 @@ pub struct ModuleMetadata {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub struct ModuleSpec {
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub depends: Vec<String>,
 
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub packages: Vec<ModulePackageEntry>,
 
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub files: Vec<ModuleFileEntry>,
 
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub env: Vec<EnvVar>,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scripts: Option<ModuleScriptSpec>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub struct ModulePackageEntry {
+    #[serde(default)]
     pub name: String,
 
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub min_version: Option<String>,
 
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub prefer: Vec<String>,
 
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub aliases: HashMap<String, String>,
 
-    /// Inline shell script or path to a script file that installs this package.
-    /// Used when `prefer` includes `"script"` and it's selected as the manager.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub script: Option<String>,
 
-    /// Platform filter. If non-empty, this package entry is skipped on platforms
-    /// that don't match. Values match against OS, distro, or arch names.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub deny: Vec<String>,
+
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub platforms: Vec<String>,
 }
 
@@ -676,7 +703,7 @@ pub struct ProfileSpec {
     pub modules: Vec<String>,
 
     #[serde(default)]
-    pub variables: HashMap<String, serde_yaml::Value>,
+    pub env: Vec<EnvVar>,
 
     #[serde(default)]
     pub packages: Option<PackagesSpec>,
@@ -948,7 +975,7 @@ pub struct ResolvedProfile {
 #[derive(Debug, Clone, Default)]
 pub struct MergedProfile {
     pub modules: Vec<String>,
-    pub variables: HashMap<String, serde_yaml::Value>,
+    pub env: Vec<EnvVar>,
     pub packages: PackagesSpec,
     pub files: FilesSpec,
     pub system: HashMap<String, serde_yaml::Value>,
@@ -1126,7 +1153,7 @@ fn resolve_inheritance_order(
 /// Merge profile layers according to merge rules:
 /// - packages: union
 /// - files: overlay (later overrides earlier for same target)
-/// - variables: override (later replaces earlier for same key)
+/// - env: override (later replaces earlier for same name)
 /// - secrets: append (deduplicated by target)
 /// - scripts: append in order
 /// - system: deep merge (later overrides at leaf level)
@@ -1139,10 +1166,8 @@ fn merge_layers(layers: &[ProfileLayer]) -> MergedProfile {
         // Modules: union
         union_extend(&mut merged.modules, &spec.modules);
 
-        // Variables: later overrides earlier
-        for (k, v) in &spec.variables {
-            merged.variables.insert(k.clone(), v.clone());
-        }
+        // Env: later layer overrides earlier by name
+        crate::merge_env(&mut merged.env, &spec.env);
 
         // Packages: union
         if let Some(ref pkgs) = spec.packages {
@@ -1283,22 +1308,13 @@ fn merge_layers(layers: &[ProfileLayer]) -> MergedProfile {
     merged
 }
 
-/// Interpolate variables in a string value.
-/// Replaces `${var_name}` with the corresponding variable value.
-pub fn interpolate_variables(
-    input: &str,
-    variables: &HashMap<String, serde_yaml::Value>,
-) -> String {
+/// Interpolate env vars in a string value.
+/// Replaces `${name}` with the corresponding env var value.
+pub fn interpolate_env(input: &str, env: &[EnvVar]) -> String {
     let mut result = input.to_string();
-    for (key, value) in variables {
-        let placeholder = format!("${{{}}}", key);
-        let replacement = match value {
-            serde_yaml::Value::String(s) => s.clone(),
-            serde_yaml::Value::Number(n) => n.to_string(),
-            serde_yaml::Value::Bool(b) => b.to_string(),
-            _ => continue,
-        };
-        result = result.replace(&placeholder, &replacement);
+    for ev in env {
+        let placeholder = format!("${{{}}}", ev.name);
+        result = result.replace(&placeholder, &ev.value);
     }
     result
 }
@@ -1494,9 +1510,11 @@ kind: Profile
 metadata:
   name: base
 spec:
-  variables:
-    editor: vim
-    shell: /bin/zsh
+  env:
+    - name: editor
+      value: vim
+    - name: shell
+      value: /bin/zsh
   packages:
     brew:
       formulae:
@@ -1531,7 +1549,7 @@ spec:
     fn parse_profile_yaml() {
         let doc: ProfileDocument = serde_yaml::from_str(sample_profile_yaml()).unwrap();
         assert_eq!(doc.metadata.name, "base");
-        assert_eq!(doc.spec.variables.len(), 2);
+        assert_eq!(doc.spec.env.len(), 2);
         let pkgs = doc.spec.packages.as_ref().unwrap();
         let brew = pkgs.brew.as_ref().unwrap();
         assert_eq!(brew.formulae, vec!["ripgrep", "fd"]);
@@ -1539,20 +1557,23 @@ spec:
     }
 
     #[test]
-    fn merge_variables_override() {
+    fn merge_env_override() {
         let layer1 = ProfileLayer {
             source: "local".into(),
             profile_name: "base".into(),
             priority: 1000,
             policy: LayerPolicy::Local,
             spec: ProfileSpec {
-                variables: HashMap::from([
-                    ("editor".into(), serde_yaml::Value::String("vim".into())),
-                    (
-                        "shell".into(),
-                        serde_yaml::Value::String("/bin/bash".into()),
-                    ),
-                ]),
+                env: vec![
+                    EnvVar {
+                        name: "editor".into(),
+                        value: "vim".into(),
+                    },
+                    EnvVar {
+                        name: "shell".into(),
+                        value: "/bin/bash".into(),
+                    },
+                ],
                 ..Default::default()
             },
         };
@@ -1562,22 +1583,30 @@ spec:
             priority: 1000,
             policy: LayerPolicy::Local,
             spec: ProfileSpec {
-                variables: HashMap::from([(
-                    "editor".into(),
-                    serde_yaml::Value::String("code".into()),
-                )]),
+                env: vec![EnvVar {
+                    name: "editor".into(),
+                    value: "code".into(),
+                }],
                 ..Default::default()
             },
         };
 
         let merged = merge_layers(&[layer1, layer2]);
         assert_eq!(
-            merged.variables.get("editor"),
-            Some(&serde_yaml::Value::String("code".into()))
+            merged
+                .env
+                .iter()
+                .find(|e| e.name == "editor")
+                .map(|e| &e.value),
+            Some(&"code".to_string())
         );
         assert_eq!(
-            merged.variables.get("shell"),
-            Some(&serde_yaml::Value::String("/bin/bash".into()))
+            merged
+                .env
+                .iter()
+                .find(|e| e.name == "shell")
+                .map(|e| &e.value),
+            Some(&"/bin/bash".to_string())
         );
     }
 
@@ -1712,20 +1741,26 @@ spec:
     }
 
     #[test]
-    fn interpolate_variables_replaces_placeholders() {
-        let vars = HashMap::from([
-            ("name".into(), serde_yaml::Value::String("cfgd".into())),
-            ("version".into(), serde_yaml::Value::Number(42.into())),
-        ]);
+    fn interpolate_env_replaces_placeholders() {
+        let env = vec![
+            EnvVar {
+                name: "name".into(),
+                value: "cfgd".into(),
+            },
+            EnvVar {
+                name: "version".into(),
+                value: "42".into(),
+            },
+        ];
 
-        let result = interpolate_variables("Hello ${name} v${version}!", &vars);
+        let result = interpolate_env("Hello ${name} v${version}!", &env);
         assert_eq!(result, "Hello cfgd v42!");
     }
 
     #[test]
-    fn interpolate_variables_no_match() {
-        let vars = HashMap::new();
-        let result = interpolate_variables("no ${vars} here", &vars);
+    fn interpolate_env_no_match() {
+        let env: Vec<EnvVar> = vec![];
+        let result = interpolate_env("no ${vars} here", &env);
         assert_eq!(result, "no ${vars} here");
     }
 
@@ -1742,8 +1777,9 @@ kind: Profile
 metadata:
   name: base
 spec:
-  variables:
-    editor: vim
+  env:
+    - name: editor
+      value: vim
   packages:
     cargo:
       - bat
@@ -1762,8 +1798,9 @@ metadata:
 spec:
   inherits:
     - base
-  variables:
-    editor: code
+  env:
+    - name: editor
+      value: code
   packages:
     cargo:
       - exa
@@ -1779,8 +1816,13 @@ spec:
 
         // editor should be overridden by work
         assert_eq!(
-            resolved.merged.variables.get("editor"),
-            Some(&serde_yaml::Value::String("code".into()))
+            resolved
+                .merged
+                .env
+                .iter()
+                .find(|e| e.name == "editor")
+                .map(|e| &e.value),
+            Some(&"code".to_string())
         );
         // packages should be unioned
         assert_eq!(
@@ -1860,8 +1902,9 @@ spec:
         brew:
           formulae:
             - k9s
-      variables:
-        EDITOR: "code --wait"
+      env:
+        - name: EDITOR
+          value: "code --wait"
     locked:
       files:
         - source: "security/policy.yaml"

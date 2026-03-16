@@ -9,7 +9,7 @@ use sha2::{Digest, Sha256};
 use similar::TextDiff;
 use tera::{Context, Tera};
 
-use cfgd_core::config::{FileStrategy, ManagedFileSpec, MergedProfile, ResolvedProfile};
+use cfgd_core::config::{EnvVar, FileStrategy, ManagedFileSpec, MergedProfile, ResolvedProfile};
 use cfgd_core::errors::{FileError, Result};
 use cfgd_core::output::Printer;
 use cfgd_core::providers::{FileAction, FileDiff, FileDiffKind, FileEntry, FileLayer, FileTree};
@@ -27,8 +27,8 @@ pub struct CfgdFileManager {
     config_dir: PathBuf,
     secret_backend: Option<Box<dyn cfgd_core::providers::SecretBackend>>,
     secret_providers: Vec<Box<dyn cfgd_core::providers::SecretProvider>>,
-    /// Per-source variable contexts for template sandboxing.
-    /// Source templates can only access their own variables + system facts.
+    /// Per-source env contexts for template sandboxing.
+    /// Source templates can only access their own env vars + system facts.
     source_contexts: HashMap<String, Context>,
     /// Global default file deployment strategy.
     global_strategy: FileStrategy,
@@ -37,17 +37,16 @@ pub struct CfgdFileManager {
 impl CfgdFileManager {
     /// Create a new file manager.
     /// `config_dir` is the directory containing cfgd.yaml (used to resolve relative source paths).
-    /// `resolved` is the fully resolved profile with merged variables.
+    /// `resolved` is the fully resolved profile with merged env vars.
     pub fn new(config_dir: &Path, resolved: &ResolvedProfile) -> Result<Self> {
         let mut tera = Tera::default();
         tera.autoescape_on(vec![]);
 
         let mut context = Context::new();
 
-        // Flat profile variables
-        for (key, value) in &resolved.merged.variables {
-            let val_str = yaml_value_to_json(value);
-            context.insert(key, &val_str);
+        // Flat profile env vars
+        for ev in &resolved.merged.env {
+            context.insert(&ev.name, &ev.value);
         }
 
         // System facts as custom values
@@ -60,7 +59,7 @@ impl CfgdFileManager {
                 .unwrap_or_default(),
         );
 
-        // Empty sources map for templates — populated by set_source_variables() when
+        // Empty sources map for templates — populated by set_source_env() when
         // multi-source composition is active.
         let sources: HashMap<String, HashMap<String, String>> = HashMap::new();
         context.insert("sources", &sources);
@@ -76,18 +75,14 @@ impl CfgdFileManager {
         })
     }
 
-    /// Set per-source variable contexts for template sandboxing.
-    /// Source templates will only have access to their source's variables
-    /// and system facts — not the subscriber's personal variables.
-    pub fn set_source_variables(
-        &mut self,
-        source_variables: &HashMap<String, HashMap<String, serde_yaml::Value>>,
-    ) {
-        for (source_name, vars) in source_variables {
+    /// Set per-source env contexts for template sandboxing.
+    /// Source templates will only have access to their source's env vars
+    /// and system facts — not the subscriber's personal env vars.
+    pub fn set_source_env(&mut self, source_env: &HashMap<String, Vec<EnvVar>>) {
+        for (source_name, env) in source_env {
             let mut ctx = Context::new();
-            for (key, value) in vars {
-                let val_str = yaml_value_to_json(value);
-                ctx.insert(key, &val_str);
+            for ev in env {
+                ctx.insert(&ev.name, &ev.value);
             }
             // System facts are always available
             ctx.insert("__os", &std::env::consts::OS);
@@ -131,7 +126,7 @@ impl CfgdFileManager {
         let mut actions = Vec::new();
 
         for managed in &profile.files.managed {
-            let source_path = self.resolve_source_path(&managed.source);
+            let source_path = self.resolve_source_path(&managed.source)?;
             let target_path = expand_tilde(&managed.target);
 
             if !source_path.exists() {
@@ -178,6 +173,7 @@ impl CfgdFileManager {
                         diff: format!("target will be re-linked ({:?})", strategy),
                         origin,
                         strategy,
+                        source_hash: None,
                     });
                 } else {
                     actions.push(FileAction::Create {
@@ -185,6 +181,7 @@ impl CfgdFileManager {
                         target: target_path.clone(),
                         origin,
                         strategy,
+                        source_hash: None,
                     });
                     if let Some(action) = self.check_permissions(&target_path, managed, profile)? {
                         actions.push(action);
@@ -224,12 +221,15 @@ impl CfgdFileManager {
                         )
                         .to_string();
 
+                    let content_hash =
+                        format!("{:x}", sha2::Sha256::digest(rendered_content.as_bytes()));
                     actions.push(FileAction::Update {
                         source: source_path.clone(),
                         target: target_path.clone(),
                         diff: unified,
                         origin,
                         strategy,
+                        source_hash: Some(content_hash),
                     });
 
                     if let Some(action) = self.check_permissions(&target_path, managed, profile)? {
@@ -237,11 +237,14 @@ impl CfgdFileManager {
                     }
                 }
             } else {
+                let content_hash =
+                    format!("{:x}", sha2::Sha256::digest(rendered_content.as_bytes()));
                 actions.push(FileAction::Create {
                     source: source_path.clone(),
                     target: target_path.clone(),
                     origin,
                     strategy,
+                    source_hash: Some(content_hash),
                 });
 
                 if let Some(action) = self.check_permissions(&target_path, managed, profile)? {
@@ -258,7 +261,7 @@ impl CfgdFileManager {
         let mut has_diffs = false;
 
         for managed in &profile.files.managed {
-            let source_path = self.resolve_source_path(&managed.source);
+            let source_path = self.resolve_source_path(&managed.source)?;
             let target_path = expand_tilde(&managed.target);
 
             if !source_path.exists() {
@@ -310,9 +313,9 @@ impl CfgdFileManager {
         self.render_template(path, None)
     }
 
-    /// Render a .tera template file with profile variables and system facts.
+    /// Render a .tera template file with profile env vars and system facts.
     /// If `source_origin` is Some, uses a restricted context with only that
-    /// source's variables — source templates cannot access local variables.
+    /// source's env vars — source templates cannot access local env vars.
     fn render_template(&self, path: &Path, source_origin: Option<&str>) -> Result<String> {
         let template_content = fs::read_to_string(path).map_err(|e| FileError::Io {
             path: path.to_path_buf(),
@@ -418,12 +421,29 @@ impl CfgdFileManager {
     }
 
     /// Resolve a source path relative to the config directory.
-    fn resolve_source_path(&self, source: &str) -> PathBuf {
+    fn resolve_source_path(&self, source: &str) -> std::result::Result<PathBuf, FileError> {
         let path = PathBuf::from(source);
         if path.is_absolute() {
-            path
+            Ok(path)
         } else {
-            self.config_dir.join(source)
+            let resolved = self.config_dir.join(source);
+            // Validate the resolved path doesn't escape the config directory via ../
+            if cfgd_core::validate_no_traversal(&resolved).is_err() {
+                return Err(FileError::PathTraversal {
+                    path: resolved,
+                    root: self.config_dir.clone(),
+                });
+            }
+            // If the path exists, do a full canonicalization check
+            if resolved.exists() {
+                cfgd_core::validate_path_within(&resolved, &self.config_dir).map_err(|_| {
+                    FileError::PathTraversal {
+                        path: resolved.clone(),
+                        root: self.config_dir.clone(),
+                    }
+                })?;
+            }
+            Ok(resolved)
         }
     }
 }
@@ -598,6 +618,25 @@ impl cfgd_core::providers::FileManager for CfgdFileManager {
                                 })?
                             };
 
+                            // TOCTOU check: verify source hasn't changed since planning
+                            let expected_hash = match action {
+                                FileAction::Create { source_hash, .. }
+                                | FileAction::Update { source_hash, .. } => source_hash.as_deref(),
+                                _ => None,
+                            };
+                            if let Some(plan_hash) = expected_hash {
+                                let current_hash = format!(
+                                    "{:x}",
+                                    sha2::Sha256::digest(content.as_bytes())
+                                );
+                                if current_hash != plan_hash {
+                                    return Err(FileError::SourceChanged {
+                                        path: source.clone(),
+                                    }
+                                    .into());
+                                }
+                            }
+
                             if content.contains("${secret:") {
                                 let provider_refs: Vec<&dyn cfgd_core::providers::SecretProvider> =
                                     self.secret_providers.iter().map(|p| p.as_ref()).collect();
@@ -609,9 +648,11 @@ impl cfgd_core::providers::FileManager for CfgdFileManager {
                                 )?;
                             }
 
-                            fs::write(target, &content).map_err(|e| FileError::Io {
-                                path: target.clone(),
-                                source: e,
+                            cfgd_core::atomic_write(target, content.as_bytes()).map_err(|e| {
+                                FileError::Io {
+                                    path: target.clone(),
+                                    source: e,
+                                }
                             })?;
                         }
                     }
@@ -638,6 +679,7 @@ impl cfgd_core::providers::FileManager for CfgdFileManager {
 }
 
 /// Recursively scan a directory and add file entries to the map.
+/// Skips symlinks in the source tree to prevent symlink attacks and loops.
 fn scan_directory(
     dir: &Path,
     root: &Path,
@@ -657,7 +699,16 @@ fn scan_directory(
 
         let path = entry.path();
 
-        if path.is_dir() {
+        // Skip symlinks in source tree — prevents symlink attacks and infinite loops
+        let file_type = entry.file_type().map_err(|e| FileError::Io {
+            path: path.clone(),
+            source: e,
+        })?;
+        if file_type.is_symlink() {
+            continue;
+        }
+
+        if file_type.is_dir() {
             scan_directory(&path, root, origin, files)?;
             continue;
         }
@@ -763,38 +814,6 @@ fn sha256_hash(content: &str) -> String {
     format!("{:x}", Sha256::digest(content.as_bytes()))
 }
 
-/// Convert a serde_yaml::Value to a string suitable for Tera context.
-fn yaml_value_to_json(value: &serde_yaml::Value) -> serde_json::Value {
-    match value {
-        serde_yaml::Value::Null => serde_json::Value::Null,
-        serde_yaml::Value::Bool(b) => serde_json::Value::Bool(*b),
-        serde_yaml::Value::Number(n) => {
-            if let Some(i) = n.as_i64() {
-                serde_json::Value::Number(i.into())
-            } else if let Some(f) = n.as_f64() {
-                serde_json::json!(f)
-            } else {
-                serde_json::Value::Null
-            }
-        }
-        serde_yaml::Value::String(s) => serde_json::Value::String(s.clone()),
-        serde_yaml::Value::Sequence(seq) => {
-            serde_json::Value::Array(seq.iter().map(yaml_value_to_json).collect())
-        }
-        serde_yaml::Value::Mapping(map) => {
-            let obj: serde_json::Map<String, serde_json::Value> = map
-                .iter()
-                .filter_map(|(k, v)| {
-                    k.as_str()
-                        .map(|key| (key.to_string(), yaml_value_to_json(v)))
-                })
-                .collect();
-            serde_json::Value::Object(obj)
-        }
-        serde_yaml::Value::Tagged(tagged) => yaml_value_to_json(&tagged.value),
-    }
-}
-
 /// Format a Tera error with source location details.
 fn format_tera_error(err: &tera::Error) -> String {
     let mut msg = err.to_string();
@@ -858,15 +877,12 @@ mod tests {
     use super::*;
 
     use cfgd_core::config::{
-        FilesSpec, LayerPolicy, ManagedFileSpec, MergedProfile, ProfileLayer, ProfileSpec,
+        EnvVar, FilesSpec, LayerPolicy, ManagedFileSpec, MergedProfile, ProfileLayer, ProfileSpec,
         ResolvedProfile,
     };
     use cfgd_core::providers::FileManager as _;
 
-    fn make_resolved_profile(
-        variables: HashMap<String, serde_yaml::Value>,
-        files: FilesSpec,
-    ) -> ResolvedProfile {
+    fn make_resolved_profile(env: Vec<EnvVar>, files: FilesSpec) -> ResolvedProfile {
         ResolvedProfile {
             layers: vec![ProfileLayer {
                 source: "local".to_string(),
@@ -876,7 +892,7 @@ mod tests {
                 spec: ProfileSpec::default(),
             }],
             merged: MergedProfile {
-                variables,
+                env,
                 files,
                 ..Default::default()
             },
@@ -906,22 +922,6 @@ mod tests {
     }
 
     #[test]
-    fn yaml_value_to_json_converts_types() {
-        assert_eq!(
-            yaml_value_to_json(&serde_yaml::Value::String("hello".into())),
-            serde_json::Value::String("hello".into())
-        );
-        assert_eq!(
-            yaml_value_to_json(&serde_yaml::Value::Bool(true)),
-            serde_json::Value::Bool(true)
-        );
-        assert_eq!(
-            yaml_value_to_json(&serde_yaml::Value::Null),
-            serde_json::Value::Null
-        );
-    }
-
-    #[test]
     fn detect_language_from_extension() {
         assert_eq!(detect_language(Path::new("test.rs")), "rs");
         assert_eq!(detect_language(Path::new("config.yaml")), "yaml");
@@ -941,7 +941,7 @@ mod tests {
         let target = config_dir.join("target").join("test.txt");
 
         let resolved = make_resolved_profile(
-            HashMap::new(),
+            vec![],
             FilesSpec {
                 managed: vec![ManagedFileSpec {
                     source: "files/test.txt".to_string(),
@@ -978,7 +978,7 @@ mod tests {
         fs::write(&target, "hello world").unwrap();
 
         let resolved = make_resolved_profile(
-            HashMap::new(),
+            vec![],
             FilesSpec {
                 managed: vec![ManagedFileSpec {
                     source: "files/test.txt".to_string(),
@@ -1014,7 +1014,7 @@ mod tests {
         fs::write(&target, "old content").unwrap();
 
         let resolved = make_resolved_profile(
-            HashMap::new(),
+            vec![],
             FilesSpec {
                 managed: vec![ManagedFileSpec {
                     source: "files/test.txt".to_string(),
@@ -1037,7 +1037,7 @@ mod tests {
     }
 
     #[test]
-    fn template_rendering_with_variables() {
+    fn template_rendering_with_env() {
         let dir = tempfile::tempdir().unwrap();
         let config_dir = dir.path();
 
@@ -1052,19 +1052,19 @@ mod tests {
 
         let target = config_dir.join("target").join("config.txt");
 
-        let variables = HashMap::from([
-            (
-                "editor".to_string(),
-                serde_yaml::Value::String("vim".into()),
-            ),
-            (
-                "shell".to_string(),
-                serde_yaml::Value::String("/bin/zsh".into()),
-            ),
-        ]);
+        let env = vec![
+            EnvVar {
+                name: "editor".into(),
+                value: "vim".into(),
+            },
+            EnvVar {
+                name: "shell".into(),
+                value: "/bin/zsh".into(),
+            },
+        ];
 
         let resolved = make_resolved_profile(
-            variables,
+            env,
             FilesSpec {
                 managed: vec![ManagedFileSpec {
                     source: "files/config.txt.tera".to_string(),
@@ -1097,7 +1097,7 @@ mod tests {
         let target = config_dir.join("output").join("test.txt");
 
         let resolved = make_resolved_profile(
-            HashMap::new(),
+            vec![],
             FilesSpec {
                 managed: vec![ManagedFileSpec {
                     source: "files/test.txt".to_string(),
@@ -1133,7 +1133,7 @@ mod tests {
         let target = config_dir.join("output").join("test.txt");
 
         let resolved = make_resolved_profile(
-            HashMap::new(),
+            vec![],
             FilesSpec {
                 managed: vec![ManagedFileSpec {
                     source: "files/test.txt".to_string(),
@@ -1176,7 +1176,7 @@ mod tests {
         let target = config_dir.join("target").join("sys.txt");
 
         let resolved = make_resolved_profile(
-            HashMap::new(),
+            vec![],
             FilesSpec {
                 managed: vec![ManagedFileSpec {
                     source: "files/sys.txt.tera".to_string(),
@@ -1215,7 +1215,7 @@ mod tests {
         permissions.insert(target.display().to_string(), "600".to_string());
 
         let resolved = make_resolved_profile(
-            HashMap::new(),
+            vec![],
             FilesSpec {
                 managed: vec![ManagedFileSpec {
                     source: "files/secret.txt".to_string(),
@@ -1246,7 +1246,7 @@ mod tests {
         let target = config_dir.join("target").join("test.txt");
 
         let resolved = make_resolved_profile(
-            HashMap::new(),
+            vec![],
             FilesSpec {
                 managed: vec![ManagedFileSpec {
                     source: "nonexistent/file.txt".to_string(),
@@ -1278,7 +1278,7 @@ mod tests {
         let target = config_dir.join("target").join("bad.txt");
 
         let resolved = make_resolved_profile(
-            HashMap::new(),
+            vec![],
             FilesSpec {
                 managed: vec![ManagedFileSpec {
                     source: "files/bad.txt.tera".to_string(),
@@ -1306,7 +1306,7 @@ mod tests {
         fs::write(source_dir.join("file1.txt"), "content1").unwrap();
         fs::write(source_dir.join("sub").join("file2.txt"), "content2").unwrap();
 
-        let resolved = make_resolved_profile(HashMap::new(), FilesSpec::default());
+        let resolved = make_resolved_profile(vec![], FilesSpec::default());
         let fm = CfgdFileManager::new(dir.path(), &resolved).unwrap();
 
         use cfgd_core::providers::FileManager as _;
@@ -1321,7 +1321,7 @@ mod tests {
     }
 
     #[test]
-    fn source_template_cannot_access_local_variables() {
+    fn source_template_cannot_access_local_env() {
         let dir = tempfile::tempdir().unwrap();
         let config_dir = dir.path();
 
@@ -1337,13 +1337,13 @@ mod tests {
         let target = config_dir.join("target").join("team.txt");
 
         // Local profile has personal_var but NOT team_name
-        let local_vars = HashMap::from([(
-            "personal_var".to_string(),
-            serde_yaml::Value::String("my-secret".into()),
-        )]);
+        let local_env = vec![EnvVar {
+            name: "personal_var".into(),
+            value: "my-secret".into(),
+        }];
 
         let resolved = make_resolved_profile(
-            local_vars,
+            local_env,
             FilesSpec {
                 managed: vec![ManagedFileSpec {
                     source: "files/team.txt.tera".to_string(),
@@ -1358,22 +1358,23 @@ mod tests {
 
         let mut fm = CfgdFileManager::new(config_dir, &resolved).unwrap();
 
-        // Set source variables — acme-corp only has team_name, NOT personal_var
+        // Set source env — acme-corp only has team_name, NOT personal_var
         let mut source_vars = HashMap::new();
-        let mut acme_vars = HashMap::new();
-        acme_vars.insert(
-            "team_name".to_string(),
-            serde_yaml::Value::String("Platform".into()),
+        source_vars.insert(
+            "acme-corp".to_string(),
+            vec![EnvVar {
+                name: "team_name".into(),
+                value: "Platform".into(),
+            }],
         );
-        source_vars.insert("acme-corp".to_string(), acme_vars);
-        fm.set_source_variables(&source_vars);
+        fm.set_source_env(&source_vars);
 
         // Planning should fail because the template references personal_var
         // which is NOT in the source's sandboxed context
         let result = fm.plan(&resolved.merged);
         assert!(
             result.is_err(),
-            "Source template should not access local variables"
+            "Source template should not access local env vars"
         );
         let err = result.unwrap_err().to_string();
         assert!(
@@ -1383,11 +1384,11 @@ mod tests {
     }
 
     #[test]
-    fn source_template_can_access_own_variables() {
+    fn source_template_can_access_own_env() {
         let dir = tempfile::tempdir().unwrap();
         let config_dir = dir.path();
 
-        // Create a source template using only source-provided variables
+        // Create a source template using only source-provided env vars
         let files_dir = config_dir.join("files");
         fs::create_dir_all(&files_dir).unwrap();
         fs::write(files_dir.join("team.txt.tera"), "team={{ team_name }}").unwrap();
@@ -1395,7 +1396,7 @@ mod tests {
         let target = config_dir.join("target").join("team.txt");
 
         let resolved = make_resolved_profile(
-            HashMap::new(),
+            vec![],
             FilesSpec {
                 managed: vec![ManagedFileSpec {
                     source: "files/team.txt.tera".to_string(),
@@ -1410,17 +1411,18 @@ mod tests {
 
         let mut fm = CfgdFileManager::new(config_dir, &resolved).unwrap();
 
-        // Set source variables
+        // Set source env
         let mut source_vars = HashMap::new();
-        let mut acme_vars = HashMap::new();
-        acme_vars.insert(
-            "team_name".to_string(),
-            serde_yaml::Value::String("Platform".into()),
+        source_vars.insert(
+            "acme-corp".to_string(),
+            vec![EnvVar {
+                name: "team_name".into(),
+                value: "Platform".into(),
+            }],
         );
-        source_vars.insert("acme-corp".to_string(), acme_vars);
-        fm.set_source_variables(&source_vars);
+        fm.set_source_env(&source_vars);
 
-        // Should succeed — template only uses its own variables
+        // Should succeed — template only uses its own env vars
         let actions = fm.plan(&resolved.merged).unwrap();
         assert_eq!(actions.len(), 1);
         assert!(matches!(&actions[0], FileAction::Create { .. }));
@@ -1443,7 +1445,7 @@ mod tests {
         let target = config_dir.join("target").join("info.txt");
 
         let resolved = make_resolved_profile(
-            HashMap::new(),
+            vec![],
             FilesSpec {
                 managed: vec![ManagedFileSpec {
                     source: "files/info.txt.tera".to_string(),
@@ -1458,10 +1460,10 @@ mod tests {
 
         let mut fm = CfgdFileManager::new(config_dir, &resolved).unwrap();
 
-        // Set source variables (empty — but system facts should still be available)
-        let mut source_vars = HashMap::new();
-        source_vars.insert("acme-corp".to_string(), HashMap::new());
-        fm.set_source_variables(&source_vars);
+        // Set source env (empty — but system facts should still be available)
+        let mut source_vars: HashMap<String, Vec<EnvVar>> = HashMap::new();
+        source_vars.insert("acme-corp".to_string(), vec![]);
+        fm.set_source_env(&source_vars);
 
         // Should succeed — system facts are always available
         let actions = fm.plan(&resolved.merged).unwrap();
@@ -1481,7 +1483,7 @@ mod tests {
         let target = config_dir.join("output").join("test.txt");
 
         let resolved = make_resolved_profile(
-            HashMap::new(),
+            vec![],
             FilesSpec {
                 managed: vec![ManagedFileSpec {
                     source: "files/test.txt".to_string(),
@@ -1526,7 +1528,7 @@ mod tests {
         let target = config_dir.join("output").join("test.txt");
 
         let resolved = make_resolved_profile(
-            HashMap::new(),
+            vec![],
             FilesSpec {
                 managed: vec![ManagedFileSpec {
                     source: "files/test.txt".to_string(),
@@ -1569,7 +1571,7 @@ mod tests {
         let target = config_dir.join("output").join("test.txt");
 
         let resolved = make_resolved_profile(
-            HashMap::new(),
+            vec![],
             FilesSpec {
                 managed: vec![ManagedFileSpec {
                     source: "files/test.txt".to_string(),
@@ -1605,11 +1607,13 @@ mod tests {
 
         let target = config_dir.join("output").join("config.txt");
 
-        let variables =
-            HashMap::from([("val".to_string(), serde_yaml::Value::String("hello".into()))]);
+        let env = vec![EnvVar {
+            name: "val".into(),
+            value: "hello".into(),
+        }];
 
         let resolved = make_resolved_profile(
-            variables,
+            env,
             FilesSpec {
                 managed: vec![ManagedFileSpec {
                     source: "files/config.txt.tera".to_string(),
@@ -1655,7 +1659,7 @@ mod tests {
         let target = config_dir.join("output").join("test.txt");
 
         let resolved = make_resolved_profile(
-            HashMap::new(),
+            vec![],
             FilesSpec {
                 managed: vec![ManagedFileSpec {
                     source: "files/test.txt".to_string(),
@@ -1690,7 +1694,7 @@ mod tests {
         let target = config_dir.join("target").join("secret.txt");
 
         let resolved = make_resolved_profile(
-            HashMap::new(),
+            vec![],
             FilesSpec {
                 managed: vec![ManagedFileSpec {
                     source: "files/nonexistent.txt".to_string(),
@@ -1720,7 +1724,7 @@ mod tests {
         let target = config_dir.join("target").join("test.txt");
 
         let resolved = make_resolved_profile(
-            HashMap::new(),
+            vec![],
             FilesSpec {
                 managed: vec![ManagedFileSpec {
                     source: "files/nonexistent.txt".to_string(),

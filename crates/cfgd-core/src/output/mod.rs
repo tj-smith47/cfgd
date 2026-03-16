@@ -14,7 +14,7 @@ use crate::config::ThemeConfig;
 const ICON_SUCCESS: &str = "✓";
 const ICON_WARNING: &str = "⚠";
 const ICON_ERROR: &str = "✗";
-const ICON_INFO: &str = "●";
+const ICON_INFO: &str = "⚙";
 const ICON_PENDING: &str = "○";
 const ICON_ARROW: &str = "→";
 

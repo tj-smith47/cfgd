@@ -324,8 +324,9 @@ kind: Profile
 metadata:
   name: team-base
 spec:
-  variables:
-    TEAM: engineering
+  env:
+    - name: TEAM
+      value: engineering
 EOF
 
 git add -A && git commit -qm "initial"
@@ -414,17 +415,17 @@ else
 fi
 
 # =================================================================
-# T18: Profile create with packages and variables
+# T18: Profile create with packages and env
 # =================================================================
-begin_test "T18: Profile create with packages and variables"
+begin_test "T18: Profile create with packages and env"
 PROF_DIR="$SCRATCH/profile-ops"
 PROF_TARGET="$SCRATCH/profile-ops-target"
 setup_config_dir "$PROF_DIR" "$PROF_TARGET"
 
 OUTPUT=$("$CFGD" --config "$PROF_DIR/cfgd.yaml" profile create test-profile \
-    --variable "MY_VAR=hello" \
-    --variable "MY_OTHER=world" \
-    --inherits base \
+    --env "MY_VAR=hello" \
+    --env "MY_OTHER=world" \
+    --inherit base \
     --no-color 2>&1) || true
 
 if [ -f "$PROF_DIR/profiles/test-profile.yaml" ]; then
@@ -445,26 +446,26 @@ fi
 # =================================================================
 # T19: Profile update — add and remove items
 # =================================================================
-begin_test "T19: Profile update — add/remove variables"
+begin_test "T19: Profile update — add/remove env"
 
-# Add a variable
+# Add an env var
 "$CFGD" --config "$PROF_DIR/cfgd.yaml" profile update test-profile \
-    --add-variable "ADDED_VAR=added" --no-color 2>&1 || true
+    --add-env "ADDED_VAR=added" --no-color 2>&1 || true
 
 CONTENT=$(cat "$PROF_DIR/profiles/test-profile.yaml")
 if assert_contains "$CONTENT" "ADDED_VAR"; then
-    # Remove a variable
+    # Remove an env var
     "$CFGD" --config "$PROF_DIR/cfgd.yaml" profile update test-profile \
-        --remove-variable "ADDED_VAR" --no-color 2>&1 || true
+        --remove-env "ADDED_VAR" --no-color 2>&1 || true
 
     CONTENT=$(cat "$PROF_DIR/profiles/test-profile.yaml")
     if assert_not_contains "$CONTENT" "ADDED_VAR"; then
         pass_test "T19"
     else
-        fail_test "T19" "Variable was not removed"
+        fail_test "T19" "Env var was not removed"
     fi
 else
-    fail_test "T19" "Variable was not added"
+    fail_test "T19" "Env var was not added"
 fi
 
 # =================================================================
@@ -507,7 +508,7 @@ begin_test "T22: Profile update --active"
 "$CFGD" --config "$PROF_DIR/cfgd.yaml" profile switch dev --no-color 2>&1 || true
 
 "$CFGD" --config "$PROF_DIR/cfgd.yaml" profile update --active \
-    --add-variable "ACTIVE_TEST=yes" --no-color 2>&1 || true
+    --add-env "ACTIVE_TEST=yes" --no-color 2>&1 || true
 
 CONTENT=$(cat "$PROF_DIR/profiles/dev.yaml")
 if assert_contains "$CONTENT" "ACTIVE_TEST"; then
@@ -516,9 +517,9 @@ else
     fail_test "T22" "--active flag did not resolve active profile"
 fi
 
-# Clean up the variable we added
+# Clean up the env var we added
 "$CFGD" --config "$PROF_DIR/cfgd.yaml" profile update --active \
-    --remove-variable "ACTIVE_TEST" --no-color 2>&1 || true
+    --remove-env "ACTIVE_TEST" --no-color 2>&1 || true
 
 # =================================================================
 # T23: Module create / list / show / delete lifecycle
@@ -673,8 +674,9 @@ metadata:
 spec:
   inherits:
     - base
-  variables:
-    EDITOR: nvim
+  env:
+    - name: EDITOR
+      value: nvim
   files:
     managed:
       - source: files/zshrc
@@ -691,7 +693,7 @@ if [ -f "$TMPL_TARGET/.config/app/config.toml" ]; then
     if assert_contains "$RENDERED" "nvim" && assert_contains "$RENDERED" "/bin/bash"; then
         pass_test "T27"
     else
-        fail_test "T27" "Template variables not rendered correctly"
+        fail_test "T27" "Template env vars not rendered correctly"
         echo "$RENDERED" | sed 's/^/    /'
     fi
 else
@@ -724,7 +726,7 @@ else
 fi
 
 # =================================================================
-# T29: Private files (--private flag)
+# T29: Private files (--private-files flag)
 # =================================================================
 begin_test "T29: Private files"
 PRIV_DIR="$SCRATCH/private-test"
@@ -735,7 +737,7 @@ echo "private-content" > "$PRIV_DIR/files/private-file"
 
 "$CFGD" --config "$PRIV_DIR/cfgd.yaml" profile update --active \
     --add-file "$PRIV_DIR/files/private-file:$PRIV_TARGET/.private" \
-    --private \
+    --private-files \
     --no-color 2>&1 || true
 
 CONTENT=$(cat "$PRIV_DIR/profiles/dev.yaml")
@@ -824,8 +826,8 @@ echo '#!/bin/sh' > "$SCRIPT_DIR_TEST/pre-hook.sh"
 echo '#!/bin/sh' > "$SCRIPT_DIR_TEST/post-hook.sh"
 
 "$CFGD" --config "$SCRIPT_DIR_TEST/cfgd.yaml" profile create scripted \
-    --pre-reconcile "$SCRIPT_DIR_TEST/pre-hook.sh" \
-    --post-reconcile "$SCRIPT_DIR_TEST/post-hook.sh" \
+    --pre-apply "$SCRIPT_DIR_TEST/pre-hook.sh" \
+    --post-apply "$SCRIPT_DIR_TEST/post-hook.sh" \
     --no-color 2>&1 || true
 
 if [ -f "$SCRIPT_DIR_TEST/profiles/scripted.yaml" ]; then
@@ -850,17 +852,17 @@ setup_config_dir "$INHERIT_DIR" "$INHERIT_TARGET"
 
 # Create a standalone profile
 "$CFGD" --config "$INHERIT_DIR/cfgd.yaml" profile create standalone \
-    --variable "STAND=alone" --no-color 2>&1 || true
+    --env "STAND=alone" --no-color 2>&1 || true
 
 # Add inherits
 "$CFGD" --config "$INHERIT_DIR/cfgd.yaml" profile update standalone \
-    --add-inherits base --no-color 2>&1 || true
+    --add-inherit base --no-color 2>&1 || true
 
 CONTENT=$(cat "$INHERIT_DIR/profiles/standalone.yaml")
 if assert_contains "$CONTENT" "base"; then
     # Remove inherits
     "$CFGD" --config "$INHERIT_DIR/cfgd.yaml" profile update standalone \
-        --remove-inherits base --no-color 2>&1 || true
+        --remove-inherit base --no-color 2>&1 || true
 
     CONTENT=$(cat "$INHERIT_DIR/profiles/standalone.yaml")
     if assert_not_contains "$CONTENT" "base"; then
@@ -979,16 +981,16 @@ else
 fi
 
 # =================================================================
-# T39: Log with --count flag
+# T39: Log with --limit flag
 # =================================================================
 begin_test "T39: Log with --count"
 
-OUTPUT=$("$CFGD" --config "$CONFIG_DIR/cfgd.yaml" log --count 5 --no-color 2>&1) || true
+OUTPUT=$("$CFGD" --config "$CONFIG_DIR/cfgd.yaml" log --limit 5 --no-color 2>&1) || true
 
 if [ -n "$OUTPUT" ]; then
     pass_test "T39"
 else
-    fail_test "T39" "Log --count produced empty output"
+    fail_test "T39" "Log --limit produced empty output"
 fi
 
 # =================================================================
@@ -1007,7 +1009,7 @@ else
 fi
 
 # =================================================================
-# T41: Enroll without --server fails
+# T41: Enroll without --server-url fails
 # =================================================================
 begin_test "T41: Enroll requires --server"
 
@@ -1017,7 +1019,7 @@ RC=$?
 if [ "$RC" -ne 0 ]; then
     pass_test "T41"
 else
-    fail_test "T41" "Enroll without --server should fail"
+    fail_test "T41" "Enroll without --server-url should fail"
 fi
 
 # =================================================================
@@ -1084,12 +1086,12 @@ setup_config_dir "$SCRIPT_DIR2" "$SCRIPT_TARGET2"
 echo '#!/bin/sh' > "$SCRIPT_DIR2/hook.sh"
 
 "$CFGD" --config "$SCRIPT_DIR2/cfgd.yaml" profile update --active \
-    --add-post-reconcile "$SCRIPT_DIR2/hook.sh" --no-color 2>&1 || true
+    --add-post-apply "$SCRIPT_DIR2/hook.sh" --no-color 2>&1 || true
 
 CONTENT=$(cat "$SCRIPT_DIR2/profiles/dev.yaml")
 if assert_contains "$CONTENT" "hook"; then
     "$CFGD" --config "$SCRIPT_DIR2/cfgd.yaml" profile update --active \
-        --remove-post-reconcile "$SCRIPT_DIR2/hook.sh" --no-color 2>&1 || true
+        --remove-post-apply "$SCRIPT_DIR2/hook.sh" --no-color 2>&1 || true
 
     CONTENT=$(cat "$SCRIPT_DIR2/profiles/dev.yaml")
     if assert_not_contains "$CONTENT" "hook"; then

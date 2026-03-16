@@ -17,18 +17,14 @@ pub(super) fn cmd_profile_show(cli: &Cli, printer: &Printer) -> anyhow::Result<(
     }
 
     printer.newline();
-    printer.subheader("Variables");
-    if resolved.merged.variables.is_empty() {
+    printer.subheader("Env");
+    if resolved.merged.env.is_empty() {
         printer.info("(none)");
     } else {
-        let mut vars: Vec<_> = resolved.merged.variables.iter().collect();
-        vars.sort_by_key(|(k, _)| (*k).clone());
-        for (key, value) in vars {
-            let val_str = match value {
-                serde_yaml::Value::String(s) => s.clone(),
-                other => format!("{:?}", other),
-            };
-            printer.key_value(key, &val_str);
+        let mut env: Vec<_> = resolved.merged.env.iter().collect();
+        env.sort_by(|a, b| a.name.cmp(&b.name));
+        for ev in env {
+            printer.key_value(&ev.name, &ev.value);
         }
     }
 
@@ -327,7 +323,7 @@ pub(super) fn cmd_profile_create(
     let inherits = &args.inherits;
     let module_list = &args.modules;
     let pkg_list = &args.packages;
-    let var_list = &args.variables;
+    let var_list = &args.env;
     let sys_list = &args.system;
     let files = &args.files;
     let secret_list = &args.secrets;
@@ -391,10 +387,16 @@ pub(super) fn cmd_profile_create(
 
         (inh, mods, Vec::new(), Vec::new(), Vec::new())
     } else {
+        let known = super::known_manager_names();
+        let known_refs: Vec<&str> = known.iter().map(|s| s.as_str()).collect();
+        let default_mgr = Platform::detect().native_manager().to_string();
         let pkgs = pkg_list
             .iter()
-            .map(|s| parse_manager_package(s))
-            .collect::<anyhow::Result<Vec<_>>>()?;
+            .map(|s| {
+                let (mgr, pkg) = super::parse_package_flag(s, &known_refs);
+                (mgr.unwrap_or_else(|| default_mgr.clone()), pkg)
+            })
+            .collect::<Vec<_>>();
         let vars = var_list.to_vec();
         let sys = sys_list.to_vec();
         (inherits.to_vec(), module_list.to_vec(), pkgs, vars, sys)
@@ -418,16 +420,10 @@ pub(super) fn cmd_profile_create(
     }
     let has_packages = !pkgs_parsed.is_empty();
 
-    // Build variables
-    let mut variables = std::collections::HashMap::new();
+    // Build env
+    let mut env_vars = Vec::new();
     for v in &vars {
-        let (key, value) = v
-            .split_once('=')
-            .ok_or_else(|| anyhow::anyhow!("Invalid variable '{}' — expected key=value", v))?;
-        variables.insert(
-            key.to_string(),
-            serde_yaml::Value::String(value.to_string()),
-        );
+        env_vars.push(cfgd_core::parse_env_var(v).map_err(|e| anyhow::anyhow!(e))?);
     }
 
     // Build system settings
@@ -490,7 +486,7 @@ pub(super) fn cmd_profile_create(
         spec: config::ProfileSpec {
             inherits: inh,
             modules: mods,
-            variables,
+            env: env_vars,
             packages: if has_packages {
                 Some(packages_spec)
             } else {
@@ -546,8 +542,8 @@ pub(super) fn cmd_profile_update(
     let remove_packages = &args.remove_packages;
     let add_files = &args.add_files;
     let remove_files = &args.remove_files;
-    let add_variables = &args.add_variables;
-    let remove_variables = &args.remove_variables;
+    let add_env = &args.add_env;
+    let remove_env = &args.remove_env;
     let add_system = &args.add_system;
     let remove_system = &args.remove_system;
     let add_secrets = &args.add_secrets;
@@ -564,9 +560,6 @@ pub(super) fn cmd_profile_update(
     if !profile_path.exists() {
         anyhow::bail!("Profile '{}' not found", name);
     }
-
-    // Migrate old file layout if needed
-    migrate_profile_file_layout(&config_dir, name, printer)?;
 
     let mut doc = config::load_profile(&profile_path)?;
     let mut changes = 0u32;
@@ -660,11 +653,56 @@ pub(super) fn cmd_profile_update(
                     }
                 }
             }
-            // Clean module state from DB
-            if let Ok(state) = open_state_store()
-                && let Err(e) = state.remove_module_state(m)
-            {
-                printer.warning(&format!("Failed to clean module state: {}", e));
+            // Clean module state and deployed files from DB
+            if let Ok(state) = open_state_store() {
+                // Query file manifest for deployed files
+                if let Ok(manifest) = state.module_deployed_files(m) {
+                    if !manifest.is_empty() {
+                        printer.info(&format!(
+                            "Module '{}' deployed {} file(s):",
+                            m,
+                            manifest.len()
+                        ));
+                        for f in &manifest {
+                            printer.info(&format!("  {}", f.file_path));
+                        }
+
+                        let should_clean = printer
+                            .prompt_confirm(
+                                "Remove deployed files? Backups will be restored where available.",
+                            )
+                            .unwrap_or(false);
+
+                        if should_clean {
+                            for f in &manifest {
+                                let path = std::path::Path::new(&f.file_path);
+                                // Try to restore from backup store
+                                if let Ok(Some(backup)) = state.latest_backup_for_path(&f.file_path)
+                                {
+                                    if backup.was_symlink {
+                                        let _ = std::fs::remove_file(path);
+                                        if let Some(ref link_target) = backup.symlink_target {
+                                            let _ = std::os::unix::fs::symlink(link_target, path);
+                                        }
+                                        printer
+                                            .info(&format!("  Restored symlink: {}", f.file_path));
+                                    } else if !backup.oversized && !backup.content.is_empty() {
+                                        let _ = cfgd_core::atomic_write(path, &backup.content);
+                                        printer.info(&format!("  Restored: {}", f.file_path));
+                                    }
+                                } else if path.exists() || path.symlink_metadata().is_ok() {
+                                    let _ = std::fs::remove_file(path);
+                                    printer.info(&format!("  Removed: {}", f.file_path));
+                                }
+                            }
+                        }
+                    }
+                    let _ = state.delete_module_files(m);
+                }
+
+                if let Err(e) = state.remove_module_state(m) {
+                    printer.warning(&format!("Failed to clean module state: {}", e));
+                }
             }
             printer.success(&format!("Removed module: {}", m));
             changes += 1;
@@ -677,8 +715,12 @@ pub(super) fn cmd_profile_update(
     }
 
     // Add packages
+    let known = super::known_manager_names();
+    let known_refs: Vec<&str> = known.iter().map(|s| s.as_str()).collect();
+    let default_mgr = Platform::detect().native_manager().to_string();
     for pkg_str in add_packages {
-        let (mgr, pkg) = parse_manager_package(pkg_str)?;
+        let (mgr_opt, pkg) = super::parse_package_flag(pkg_str, &known_refs);
+        let mgr = mgr_opt.unwrap_or_else(|| default_mgr.clone());
         let pkgs = doc.spec.packages.get_or_insert_with(Default::default);
         packages::add_package(&mgr, &pkg, pkgs)?;
         printer.success(&format!("Added package: {} ({})", pkg, mgr));
@@ -754,26 +796,23 @@ pub(super) fn cmd_profile_update(
         }
     }
 
-    // Add variables
-    for v in add_variables {
-        let (key, value) = v
-            .split_once('=')
-            .ok_or_else(|| anyhow::anyhow!("Invalid variable '{}' — expected key=value", v))?;
-        doc.spec.variables.insert(
-            key.to_string(),
-            serde_yaml::Value::String(value.to_string()),
-        );
-        printer.success(&format!("Set variable: {}={}", key, value));
+    // Add env vars
+    for v in add_env {
+        let ev = cfgd_core::parse_env_var(v).map_err(|e| anyhow::anyhow!(e))?;
+        cfgd_core::merge_env(&mut doc.spec.env, std::slice::from_ref(&ev));
+        printer.success(&format!("Set env: {}={}", ev.name, ev.value));
         changes += 1;
     }
 
-    // Remove variables
-    for key in remove_variables {
-        if doc.spec.variables.remove(key).is_some() {
-            printer.success(&format!("Removed variable: {}", key));
+    // Remove env vars
+    for key in remove_env {
+        let before = doc.spec.env.len();
+        doc.spec.env.retain(|e| e.name != *key);
+        if doc.spec.env.len() < before {
+            printer.success(&format!("Removed env: {}", key));
             changes += 1;
         } else {
-            printer.warning(&format!("Variable '{}' not found", key));
+            printer.warning(&format!("Env var '{}' not found", key));
         }
     }
 
@@ -845,7 +884,7 @@ pub(super) fn cmd_profile_update(
         &mut doc.spec.scripts,
         add_pre_reconcile,
         remove_pre_reconcile,
-        "pre-reconcile",
+        "pre-apply",
         |s| &mut s.pre_reconcile,
         printer,
     );
@@ -853,7 +892,7 @@ pub(super) fn cmd_profile_update(
         &mut doc.spec.scripts,
         add_post_reconcile,
         remove_post_reconcile,
-        "post-reconcile",
+        "post-apply",
         |s| &mut s.post_reconcile,
         printer,
     );
@@ -955,11 +994,6 @@ pub(super) fn cmd_profile_delete(
     if files_dir.exists() {
         std::fs::remove_dir_all(&files_dir)?;
     }
-    // Also clean up old layout if present
-    let old_files_dir = config_dir.join("files").join(name);
-    if old_files_dir.exists() {
-        std::fs::remove_dir_all(&old_files_dir)?;
-    }
 
     printer.success(&format!("Deleted profile '{}'", name));
 
@@ -968,88 +1002,6 @@ pub(super) fn cmd_profile_delete(
     Ok(())
 }
 
-/// Migrate profile files from old `files/<name>/` layout to `profiles/<name>/files/`.
-/// Returns true if migration was performed.
-pub(super) fn migrate_profile_file_layout(
-    config_dir: &Path,
-    profile_name: &str,
-    printer: &Printer,
-) -> anyhow::Result<bool> {
-    let old_dir = config_dir.join("files").join(profile_name);
-    let new_dir = config_dir.join("profiles").join(profile_name).join("files");
-
-    if !old_dir.exists() || old_dir.read_dir()?.next().is_none() {
-        return Ok(false);
-    }
-
-    // Move files from old to new location
-    std::fs::create_dir_all(&new_dir)?;
-    for entry in std::fs::read_dir(&old_dir)? {
-        let entry = entry?;
-        let dest = new_dir.join(entry.file_name());
-        if entry.file_type()?.is_dir() {
-            cfgd_core::copy_dir_recursive(&entry.path(), &dest)?;
-            std::fs::remove_dir_all(entry.path())?;
-        } else {
-            std::fs::rename(entry.path(), &dest)?;
-        }
-    }
-    std::fs::remove_dir_all(&old_dir)?;
-
-    // Update source paths in profile YAML
-    let profile_path = config_dir
-        .join("profiles")
-        .join(format!("{}.yaml", profile_name));
-    if profile_path.exists() {
-        let mut doc = config::load_profile(&profile_path)?;
-        let old_prefix = format!("files/{}/", profile_name);
-        let new_prefix = format!("profiles/{}/files/", profile_name);
-        let mut updated = false;
-        if let Some(ref mut files) = doc.spec.files {
-            for managed in &mut files.managed {
-                if managed.source.starts_with(&old_prefix) {
-                    managed.source = managed.source.replacen(&old_prefix, &new_prefix, 1);
-                    updated = true;
-                }
-            }
-        }
-        if updated {
-            let yaml = serde_yaml::to_string(&doc)?;
-            std::fs::write(&profile_path, &yaml)?;
-        }
-    }
-
-    printer.info(&format!(
-        "Migrated profile '{}' files to profiles/{}/files/",
-        profile_name, profile_name
-    ));
-    Ok(true)
-}
-
-/// Scan for all profiles with old-style `files/<name>/` directories and migrate them.
-pub(super) fn migrate_all_profile_file_layouts(
-    config_dir: &Path,
-    printer: &Printer,
-) -> anyhow::Result<()> {
-    let old_files_dir = config_dir.join("files");
-    if !old_files_dir.exists() {
-        return Ok(());
-    }
-    let entries: Vec<_> = std::fs::read_dir(&old_files_dir)?
-        .filter_map(|e| e.ok())
-        .filter(|e| e.file_type().map(|t| t.is_dir()).unwrap_or(false))
-        .collect();
-    for entry in entries {
-        let name = entry.file_name();
-        let name = name.to_string_lossy();
-        // Only migrate if a matching profile YAML exists
-        let profile_path = config_dir.join("profiles").join(format!("{}.yaml", name));
-        if profile_path.exists() {
-            migrate_profile_file_layout(config_dir, &name, printer)?;
-        }
-    }
-    Ok(())
-}
 
 /// Collect expanded file target paths from a module's definition.
 /// Returns an empty vec if the module can't be loaded (already cleaned up, etc.).

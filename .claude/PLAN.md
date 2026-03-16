@@ -60,6 +60,19 @@ CSI driver, mutating webhook, and kubectl plugin for injecting modules into pods
 
 ---
 
+## Windows support
+
+Full Windows CLI support: compile gates, file management, package managers (winget, chocolatey, scoop), PowerShell env integration, Windows Service daemon. Design detail in [windows-support.md](windows-support.md).
+
+- [ ] Phase 1: `#[cfg(unix)]` guards — compile on Windows, CI Windows job
+- [ ] Phase 2: Windows file management — symlink fallback to copy, skip Unix permissions
+- [ ] Phase 3: Package managers — winget, chocolatey, scoop trait implementations
+- [ ] Phase 4: PowerShell env/profile integration, `setx` for system env
+- [ ] Phase 5: Windows Service daemon
+- [ ] Phase 6: CI cross-compile, release artifacts (.zip), docs
+
+---
+
 ## Ecosystem integration
 
 - [ ] OPA/Kyverno policy library: published examples for trusted registries, signed modules, security baselines

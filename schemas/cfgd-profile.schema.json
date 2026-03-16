@@ -52,11 +52,18 @@
           "default": [],
           "description": "Module names to include in this profile"
         },
-        "variables": {
-          "type": "object",
-          "additionalProperties": true,
-          "default": {},
-          "description": "Key-value variables available for template interpolation"
+        "env": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "name": { "type": "string" },
+              "value": { "type": "string" }
+            },
+            "required": ["name", "value"]
+          },
+          "default": [],
+          "description": "Environment variables as name/value pairs for template interpolation"
         },
         "packages": {
           "$ref": "#/$defs/PackagesSpec"

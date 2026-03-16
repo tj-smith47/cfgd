@@ -89,6 +89,13 @@ pub enum FileError {
         source_a: String,
         source_b: String,
     },
+
+    #[error("source file changed between plan and apply: {path}")]
+    SourceChanged { path: PathBuf },
+
+    #[error("path {path} escapes root directory {root}")]
+    PathTraversal { path: PathBuf, root: PathBuf },
+
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -146,6 +153,9 @@ pub enum StateError {
 
     #[error("state directory not writable: {path}")]
     DirectoryNotWritable { path: PathBuf },
+
+    #[error("apply lock held by another process: {holder}")]
+    ApplyLockHeld { holder: String },
 }
 
 impl From<rusqlite::Error> for StateError {

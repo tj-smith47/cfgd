@@ -5,8 +5,9 @@ metadata:
 spec:
   inherits:
     - base
-  variables:
-    EDITOR: nvim
+  env:
+    - name: EDITOR
+      value: nvim
   files:
     managed:
       - source: files/zshrc

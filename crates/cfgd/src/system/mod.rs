@@ -358,8 +358,17 @@ impl SystemConfigurator for SystemdUnitConfigurator {
                 let dest = format!("/etc/systemd/system/{}", name);
                 printer.info(&format!("Installing unit file: {} → {}", unit_file, dest));
 
-                if let Err(e) = std::fs::copy(unit_file, &dest) {
-                    printer.warning(&format!("Failed to copy unit file: {}", e));
+                match std::fs::read(unit_file) {
+                    Ok(content) => {
+                        if let Err(e) =
+                            cfgd_core::atomic_write(std::path::Path::new(&dest), &content)
+                        {
+                            printer.warning(&format!("Failed to install unit file: {}", e));
+                        }
+                    }
+                    Err(e) => {
+                        printer.warning(&format!("Failed to read unit file: {}", e));
+                    }
                 }
 
                 // Reload systemd
@@ -467,10 +476,7 @@ impl SystemConfigurator for LaunchAgentConfigurator {
 
             printer.info(&format!("Writing launch agent: {}", plist_path.display()));
 
-            if let Some(parent) = plist_path.parent() {
-                std::fs::create_dir_all(parent)?;
-            }
-            std::fs::write(&plist_path, &plist_content)?;
+            cfgd_core::atomic_write_str(&plist_path, &plist_content)?;
 
             // Load the agent
             let _ = Command::new("launchctl")
@@ -512,10 +518,16 @@ fn generate_launch_agent_plist(
     if !program.is_empty() || !args.is_empty() {
         program_args.push_str("    <key>ProgramArguments</key>\n    <array>\n");
         if !program.is_empty() {
-            program_args.push_str(&format!("        <string>{}</string>\n", program));
+            program_args.push_str(&format!(
+                "        <string>{}</string>\n",
+                cfgd_core::xml_escape(program)
+            ));
         }
         for arg in args {
-            program_args.push_str(&format!("        <string>{}</string>\n", arg));
+            program_args.push_str(&format!(
+                "        <string>{}</string>\n",
+                cfgd_core::xml_escape(arg)
+            ));
         }
         program_args.push_str("    </array>\n");
     }
@@ -534,11 +546,16 @@ fn generate_launch_agent_plist(
 </dict>
 </plist>
 "#,
-        label, program_args, run_at_load_str
+        cfgd_core::xml_escape(label),
+        program_args,
+        run_at_load_str
     )
 }
 
-/// EnvironmentConfigurator — manages environment variables declaratively.
+/// EnvironmentConfigurator — manages system-level environment variables declaratively.
+///
+/// This handles `spec.system.environment` (privileged, system-wide).
+/// For user-level env vars, see `spec.env` which generates `~/.cfgd.env`.
 ///
 /// **Linux**: Writes to `/etc/environment` (PAM) and `/etc/profile.d/cfgd-env.sh` (login shells).
 /// **macOS**: Writes to `~/Library/LaunchAgents/com.cfgd.environment.plist` (GUI apps via
@@ -557,7 +574,8 @@ fn generate_launch_agent_plist(
 /// ```
 pub struct EnvironmentConfigurator;
 
-const CFGD_MANAGED_MARKER: &str = "# Managed by cfgd";
+const CFGD_BLOCK_BEGIN: &str = "# BEGIN cfgd managed block";
+const CFGD_BLOCK_END: &str = "# END cfgd managed block";
 
 // Linux paths
 const LINUX_ETC_ENVIRONMENT: &str = "/etc/environment";
@@ -651,17 +669,18 @@ impl EnvironmentConfigurator {
         let mut in_cfgd_block = false;
 
         for line in existing_content.lines() {
-            if line.contains(CFGD_MANAGED_MARKER) {
+            if line.contains(CFGD_BLOCK_BEGIN) {
                 in_cfgd_block = true;
                 continue;
             }
             if in_cfgd_block {
-                if line.trim().is_empty() {
+                if line.contains(CFGD_BLOCK_END) {
                     in_cfgd_block = false;
                     continue;
                 }
                 continue;
             }
+            // Also filter out individual managed keys that might exist outside the block
             let is_managed_key = line
                 .split_once('=')
                 .map(|(k, _)| managed.contains_key(k.trim()))
@@ -678,10 +697,8 @@ impl EnvironmentConfigurator {
         }
 
         if !managed.is_empty() {
-            output.push_str(&format!(
-                "{} — do not edit this block\n",
-                CFGD_MANAGED_MARKER
-            ));
+            output.push_str(CFGD_BLOCK_BEGIN);
+            output.push('\n');
             for (key, value) in managed {
                 if value.contains(' ') || value.contains('#') || value.contains('$') {
                     output.push_str(&format!("{}=\"{}\"\n", key, value));
@@ -689,10 +706,12 @@ impl EnvironmentConfigurator {
                     output.push_str(&format!("{}={}\n", key, value));
                 }
             }
+            output.push_str(CFGD_BLOCK_END);
             output.push('\n');
         }
 
-        std::fs::write(LINUX_ETC_ENVIRONMENT, &output).map_err(cfgd_core::errors::CfgdError::Io)?;
+        cfgd_core::atomic_write_str(std::path::Path::new(LINUX_ETC_ENVIRONMENT), &output)
+            .map_err(cfgd_core::errors::CfgdError::Io)?;
         Ok(())
     }
 
@@ -709,10 +728,15 @@ impl EnvironmentConfigurator {
 
         let mut content = String::from("#!/bin/sh\n# Managed by cfgd — do not edit manually\n\n");
         for (key, value) in managed {
-            content.push_str(&format!("export {}=\"{}\"\n", key, value));
+            content.push_str(&format!(
+                "export {}={}\n",
+                key,
+                cfgd_core::shell_escape_value(value)
+            ));
         }
 
-        std::fs::write(LINUX_PROFILE_D, &content).map_err(cfgd_core::errors::CfgdError::Io)?;
+        cfgd_core::atomic_write_str(std::path::Path::new(LINUX_PROFILE_D), &content)
+            .map_err(cfgd_core::errors::CfgdError::Io)?;
         Ok(())
     }
 
@@ -751,10 +775,14 @@ impl EnvironmentConfigurator {
             "#!/bin/sh\n# Managed by cfgd — do not edit manually\n# Source this from your shell rc: . ~/.config/cfgd/env.sh\n\n",
         );
         for (key, value) in managed {
-            content.push_str(&format!("export {}=\"{}\"\n", key, value));
+            content.push_str(&format!(
+                "export {}={}\n",
+                key,
+                cfgd_core::shell_escape_value(value)
+            ));
         }
 
-        std::fs::write(&env_sh, &content).map_err(cfgd_core::errors::CfgdError::Io)?;
+        cfgd_core::atomic_write_str(&env_sh, &content).map_err(cfgd_core::errors::CfgdError::Io)?;
         Ok(())
     }
 
@@ -804,7 +832,8 @@ impl EnvironmentConfigurator {
             env_entries
         );
 
-        std::fs::write(&plist_path, &plist).map_err(cfgd_core::errors::CfgdError::Io)?;
+        cfgd_core::atomic_write_str(&plist_path, &plist)
+            .map_err(cfgd_core::errors::CfgdError::Io)?;
         Ok(())
     }
 

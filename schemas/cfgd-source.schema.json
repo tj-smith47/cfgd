@@ -149,11 +149,18 @@
           "default": [],
           "description": "Files provided at this policy level"
         },
-        "variables": {
-          "type": "object",
-          "additionalProperties": true,
-          "default": {},
-          "description": "Variables provided at this policy level"
+        "env": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "name": { "type": "string" },
+              "value": { "type": "string" }
+            },
+            "required": ["name", "value"]
+          },
+          "default": [],
+          "description": "Environment variables provided at this policy level"
         },
         "system": {
           "type": "object",

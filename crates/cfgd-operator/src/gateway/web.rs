@@ -87,7 +87,7 @@ async fn web_auth_middleware(
                     ),
                 )
                 .body(axum::body::Body::empty())
-                .unwrap();
+                .map_err(|_| GatewayError::Internal("failed to build redirect response".into()))?;
             return Ok(response);
         }
 

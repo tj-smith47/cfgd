@@ -262,8 +262,8 @@ if assert_ok; then
     pass_test "A07"
 else fail_test "A07"; fi
 
-begin_test "A08: apply --dry-run --phase variables"
-run $C apply --dry-run --phase variables
+begin_test "A08: apply --dry-run --phase env"
+run $C apply --dry-run --phase env
 if assert_ok; then
     pass_test "A08"
 else fail_test "A08"; fi
@@ -293,7 +293,7 @@ if assert_ok; then
 else fail_test "A12"; fi
 
 begin_test "A13: apply --only multiple"
-run $C apply --dry-run --only files --only variables
+run $C apply --dry-run --only files --only env
 if assert_ok; then
     pass_test "A13"
 else fail_test "A13"; fi
@@ -358,8 +358,8 @@ if assert_ok; then
     pass_test "L01"
 else fail_test "L01"; fi
 
-begin_test "L02: log --count 5"
-run $C log --count 5
+begin_test "L02: log --limit 5"
+run $C log --limit 5
 if assert_ok; then
     pass_test "L02"
 else fail_test "L02"; fi
@@ -410,8 +410,8 @@ if assert_ok; then
     pass_test "P04"
 else fail_test "P04"; fi
 
-begin_test "P05: profile create --inherits"
-run $C profile create test-inherit --inherits base
+begin_test "P05: profile create --inherit"
+run $C profile create test-inherit --inherit base
 if assert_ok; then
     pass_test "P05"
 else fail_test "P05"; fi
@@ -422,8 +422,8 @@ if assert_ok; then
     pass_test "P06"
 else fail_test "P06"; fi
 
-begin_test "P07: profile create --variable"
-run $C profile create test-var --variable EDITOR=nvim
+begin_test "P07: profile create --env"
+run $C profile create test-var --env EDITOR=nvim
 if assert_ok; then
     pass_test "P07"
 else fail_test "P07"; fi
@@ -440,8 +440,8 @@ if assert_ok; then
     pass_test "P09"
 else fail_test "P09"; fi
 
-begin_test "P10: profile create --private"
-run $C profile create test-private --private
+begin_test "P10: profile create --private-files"
+run $C profile create test-private --private-files
 if assert_ok; then
     pass_test "P10"
 else fail_test "P10"; fi
@@ -453,15 +453,15 @@ if assert_ok; then
 else fail_test "P11"; fi
 
 begin_test "P12: profile create with multiple flags"
-run $C profile create test-multi --inherits base --package brew:bat --variable SHELL=/bin/zsh --file "$TGT/.multi"
+run $C profile create test-multi --inherit base --package brew:bat --env SHELL=/bin/zsh --file "$TGT/.multi"
 if assert_ok; then
     pass_test "P12"
 else fail_test "P12"; fi
 
-begin_test "P13: profile create --pre-reconcile --post-reconcile"
+begin_test "P13: profile create --pre-apply --post-apply"
 echo '#!/bin/bash' > "$SCRATCH/pre.sh"
 echo '#!/bin/bash' > "$SCRATCH/post.sh"
-run $C profile create test-hooks --pre-reconcile "$SCRATCH/pre.sh" --post-reconcile "$SCRATCH/post.sh"
+run $C profile create test-hooks --pre-apply "$SCRATCH/pre.sh" --post-apply "$SCRATCH/post.sh"
 if assert_ok; then
     pass_test "P13"
 else fail_test "P13"; fi
@@ -514,14 +514,14 @@ if assert_ok; then
     pass_test "P21"
 else fail_test "P21"; fi
 
-begin_test "P22: profile update --active --add-variable"
-run $C profile update --active --add-variable FOO=bar
+begin_test "P22: profile update --active --add-env"
+run $C profile update --active --add-env FOO=bar
 if assert_ok; then
     pass_test "P22"
 else fail_test "P22"; fi
 
-begin_test "P23: profile update --active --remove-variable"
-run $C profile update --active --remove-variable FOO
+begin_test "P23: profile update --active --remove-env"
+run $C profile update --active --remove-env FOO
 if assert_ok; then
     pass_test "P23"
 else fail_test "P23"; fi
@@ -550,20 +550,20 @@ if assert_ok; then
     pass_test "P27"
 else fail_test "P27"; fi
 
-begin_test "P28: profile update --active --add-inherits"
-run $C profile update test-minimal --add-inherits base
+begin_test "P28: profile update --active --add-inherit"
+run $C profile update test-minimal --add-inherit base
 if assert_ok; then
     pass_test "P28"
 else fail_test "P28"; fi
 
-begin_test "P29: profile update --active --remove-inherits"
-run $C profile update test-minimal --remove-inherits base
+begin_test "P29: profile update --active --remove-inherit"
+run $C profile update test-minimal --remove-inherit base
 if assert_ok; then
     pass_test "P29"
 else fail_test "P29"; fi
 
-begin_test "P30: profile update --private"
-run $C profile update test-minimal --private
+begin_test "P30: profile update --private-files"
+run $C profile update test-minimal --private-files
 if assert_ok; then
     pass_test "P30"
 else fail_test "P30"; fi
@@ -581,25 +581,25 @@ if assert_ok; then
 else fail_test "P32"; fi
 
 begin_test "P33: profile update --active --add-pre-reconcile"
-run $C profile update --active --add-pre-reconcile "$SCRATCH/pre.sh"
+run $C profile update --active --add-pre-apply "$SCRATCH/pre.sh"
 if assert_ok; then
     pass_test "P33"
 else fail_test "P33"; fi
 
 begin_test "P34: profile update --active --remove-pre-reconcile"
-run $C profile update --active --remove-pre-reconcile "$SCRATCH/pre.sh"
+run $C profile update --active --remove-pre-apply "$SCRATCH/pre.sh"
 if assert_ok; then
     pass_test "P34"
 else fail_test "P34"; fi
 
 begin_test "P35: profile update --active --add-post-reconcile"
-run $C profile update --active --add-post-reconcile "$SCRATCH/post.sh"
+run $C profile update --active --add-post-apply "$SCRATCH/post.sh"
 if assert_ok; then
     pass_test "P35"
 else fail_test "P35"; fi
 
 begin_test "P36: profile update --active --remove-post-reconcile"
-run $C profile update --active --remove-post-reconcile "$SCRATCH/post.sh"
+run $C profile update --active --remove-post-apply "$SCRATCH/post.sh"
 if assert_ok; then
     pass_test "P36"
 else fail_test "P36"; fi
@@ -668,8 +668,8 @@ if assert_ok; then
     pass_test "M06"
 else fail_test "M06"; fi
 
-begin_test "M07: module create --private"
-run $C module create secret-mod --private
+begin_test "M07: module create --private-files"
+run $C module create secret-mod --private-files
 if assert_ok; then
     pass_test "M07"
 else fail_test "M07"; fi
@@ -776,8 +776,8 @@ if assert_ok; then
     pass_test "M24"
 else fail_test "M24"; fi
 
-begin_test "M25: module update --private"
-run $C module update nvim --private
+begin_test "M25: module update --private-files"
+run $C module update nvim --private-files
 if assert_ok; then
     pass_test "M25"
 else fail_test "M25"; fi
@@ -1342,25 +1342,25 @@ if assert_ok && assert_contains "$OUTPUT" "server"; then
 else fail_test "EN01"; fi
 
 begin_test "EN02: enroll without server fails"
-run $C enroll --server http://localhost:9999
+run $C enroll --server-url http://localhost:9999
 if assert_fail; then
     pass_test "EN02"
 else fail_test "EN02"; fi
 
 begin_test "EN03: enroll --ssh-key flag accepted"
-run $C enroll --server http://localhost:9999 --ssh-key ~/.ssh/id_ed25519
+run $C enroll --server-url http://localhost:9999 --ssh-key ~/.ssh/id_ed25519
 if assert_fail; then
     pass_test "EN03"
 else fail_test "EN03"; fi
 
 begin_test "EN04: enroll --gpg-key flag accepted"
-run $C enroll --server http://localhost:9999 --gpg-key ABCD1234
+run $C enroll --server-url http://localhost:9999 --gpg-key ABCD1234
 if assert_fail; then
     pass_test "EN04"
 else fail_test "EN04"; fi
 
 begin_test "EN05: enroll --username flag"
-run $C enroll --server http://localhost:9999 --username testuser
+run $C enroll --server-url http://localhost:9999 --username testuser
 if assert_fail; then
     pass_test "EN05"
 else fail_test "EN05"; fi
@@ -1400,7 +1400,7 @@ if [ -f "$TGT/.gitconfig" ] && [ -f "$TGT/.zshrc" ] && [ -f "$TGT/.gitconfig-wor
     pass_test "INH01"
 else fail_test "INH01" "Missing inherited files"; fi
 
-begin_test "INH02: variable override (child overrides parent)"
+begin_test "INH02: env override (child overrides parent)"
 # dev sets EDITOR=nvim over base's EDITOR=vim
 run $C profile show
 if assert_ok && assert_contains "$OUTPUT" "nvim"; then
@@ -1421,7 +1421,7 @@ YAML
 # SECTION 20: template rendering
 # ═════════════════════════════════════════════════════
 
-begin_test "TPL01: tera template renders variables"
+begin_test "TPL01: tera template renders env vars"
 # Add a template file to the profile
 run $C profile update --active --add-file "files/config.toml.tera:$TGT/.config.toml"
 run $C apply --yes
@@ -1429,7 +1429,7 @@ if [ -f "$TGT/.config.toml" ]; then
     CONTENT=$(cat "$TGT/.config.toml")
     if assert_contains "$CONTENT" "nvim"; then
         pass_test "TPL01"
-    else fail_test "TPL01" "Template variable not rendered"; fi
+    else fail_test "TPL01" "Template env var not rendered"; fi
 else
     fail_test "TPL01" "Template file not created"
 fi

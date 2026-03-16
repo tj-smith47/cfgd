@@ -3,9 +3,11 @@ kind: Profile
 metadata:
   name: k8s-worker
 spec:
-  variables:
-    cluster_name: my-cluster
-    pod_cidr: "10.244.0.0/16"
+  env:
+    - name: cluster_name
+      value: my-cluster
+    - name: pod_cidr
+      value: "10.244.0.0/16"
 
   system:
     sysctl:

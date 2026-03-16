@@ -93,6 +93,8 @@ pub enum FileAction {
         target: PathBuf,
         origin: String,
         strategy: crate::config::FileStrategy,
+        /// SHA256 of source content at plan time (for TOCTOU verification).
+        source_hash: Option<String>,
     },
     Update {
         source: PathBuf,
@@ -100,6 +102,8 @@ pub enum FileAction {
         diff: String,
         origin: String,
         strategy: crate::config::FileStrategy,
+        /// SHA256 of source content at plan time (for TOCTOU verification).
+        source_hash: Option<String>,
     },
     Delete {
         target: PathBuf,

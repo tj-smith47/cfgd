@@ -6,7 +6,6 @@ use sha2::{Digest, Sha256};
 use crate::errors::{Result, StateError};
 
 const MIGRATIONS: &[&str] = &[
-    // Migration 0: Initial schema
     "CREATE TABLE IF NOT EXISTS applies (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         timestamp TEXT NOT NULL,
@@ -23,6 +22,7 @@ const MIGRATIONS: &[&str] = &[
         resource_id TEXT NOT NULL,
         expected TEXT,
         actual TEXT,
+        source TEXT NOT NULL DEFAULT 'local',
         resolved_by INTEGER,
         FOREIGN KEY (resolved_by) REFERENCES applies(id)
     );
@@ -38,13 +38,7 @@ const MIGRATIONS: &[&str] = &[
         FOREIGN KEY (last_applied) REFERENCES applies(id)
     );
 
-    CREATE TABLE IF NOT EXISTS schema_version (
-        version INTEGER NOT NULL
-    );
-
-    INSERT INTO schema_version (version) VALUES (1);",
-    // Migration 1: Config sources (Phase 9)
-    "CREATE TABLE IF NOT EXISTS config_sources (
+    CREATE TABLE IF NOT EXISTS config_sources (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         name TEXT NOT NULL UNIQUE,
         origin_url TEXT NOT NULL,
@@ -75,13 +69,7 @@ const MIGRATIONS: &[&str] = &[
         detail TEXT
     );
 
-    UPDATE schema_version SET version = 2;",
-    // Migration 2: Add source column to drift_events
-    "ALTER TABLE drift_events ADD COLUMN source TEXT NOT NULL DEFAULT 'local';
-
-    UPDATE schema_version SET version = 3;",
-    // Migration 3: Auto-apply decisions
-    "CREATE TABLE IF NOT EXISTS pending_decisions (
+    CREATE TABLE IF NOT EXISTS pending_decisions (
         id          INTEGER PRIMARY KEY AUTOINCREMENT,
         source      TEXT NOT NULL,
         resource    TEXT NOT NULL,
@@ -103,9 +91,7 @@ const MIGRATIONS: &[&str] = &[
         merged_at   TEXT NOT NULL
     );
 
-    UPDATE schema_version SET version = 4;",
-    // Migration 4: Module state tracking
-    "CREATE TABLE IF NOT EXISTS module_state (
+    CREATE TABLE IF NOT EXISTS module_state (
         id              INTEGER PRIMARY KEY AUTOINCREMENT,
         module_name     TEXT NOT NULL UNIQUE,
         installed_at    TEXT NOT NULL,
@@ -117,7 +103,61 @@ const MIGRATIONS: &[&str] = &[
         FOREIGN KEY (last_applied) REFERENCES applies(id)
     );
 
-    UPDATE schema_version SET version = 5;",
+    CREATE TABLE IF NOT EXISTS schema_version (
+        version INTEGER NOT NULL
+    );
+
+    INSERT INTO schema_version (version) VALUES (1);",
+    // Migration 2: File safety — backup store, transaction journal, module file manifest
+    "CREATE TABLE IF NOT EXISTS file_backups (
+        id              INTEGER PRIMARY KEY AUTOINCREMENT,
+        apply_id        INTEGER NOT NULL,
+        file_path       TEXT NOT NULL,
+        content_hash    TEXT NOT NULL,
+        content         BLOB NOT NULL,
+        permissions     INTEGER,
+        was_symlink     INTEGER NOT NULL DEFAULT 0,
+        symlink_target  TEXT,
+        oversized       INTEGER NOT NULL DEFAULT 0,
+        backed_up_at    TEXT NOT NULL,
+        FOREIGN KEY (apply_id) REFERENCES applies(id)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_file_backups_apply ON file_backups (apply_id);
+    CREATE INDEX IF NOT EXISTS idx_file_backups_path ON file_backups (file_path);
+
+    CREATE TABLE IF NOT EXISTS apply_journal (
+        id              INTEGER PRIMARY KEY AUTOINCREMENT,
+        apply_id        INTEGER NOT NULL,
+        action_index    INTEGER NOT NULL,
+        phase           TEXT NOT NULL,
+        action_type     TEXT NOT NULL,
+        resource_id     TEXT NOT NULL,
+        pre_state       TEXT,
+        post_state      TEXT,
+        status          TEXT NOT NULL DEFAULT 'pending',
+        error           TEXT,
+        started_at      TEXT NOT NULL,
+        completed_at    TEXT,
+        FOREIGN KEY (apply_id) REFERENCES applies(id)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_apply_journal_apply ON apply_journal (apply_id);
+
+    CREATE TABLE IF NOT EXISTS module_file_manifest (
+        id              INTEGER PRIMARY KEY AUTOINCREMENT,
+        module_name     TEXT NOT NULL,
+        file_path       TEXT NOT NULL,
+        content_hash    TEXT NOT NULL,
+        strategy        TEXT NOT NULL,
+        last_applied    INTEGER,
+        UNIQUE(module_name, file_path),
+        FOREIGN KEY (last_applied) REFERENCES applies(id)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_module_file_manifest_module ON module_file_manifest (module_name);
+
+    UPDATE schema_version SET version = 2;",
 ];
 
 /// Apply status for a reconciliation run.
@@ -239,6 +279,48 @@ pub struct ModuleStateRecord {
     pub files_hash: String,
     pub git_sources: Option<String>,
     pub status: String,
+}
+
+/// A file backup record from the safety store.
+#[derive(Debug, Clone)]
+pub struct FileBackupRecord {
+    pub id: i64,
+    pub apply_id: i64,
+    pub file_path: String,
+    pub content_hash: String,
+    pub content: Vec<u8>,
+    pub permissions: Option<u32>,
+    pub was_symlink: bool,
+    pub symlink_target: Option<String>,
+    pub oversized: bool,
+    pub backed_up_at: String,
+}
+
+/// A journal entry for a single action within an apply.
+#[derive(Debug, Clone)]
+pub struct JournalEntry {
+    pub id: i64,
+    pub apply_id: i64,
+    pub action_index: i64,
+    pub phase: String,
+    pub action_type: String,
+    pub resource_id: String,
+    pub pre_state: Option<String>,
+    pub post_state: Option<String>,
+    pub status: String,
+    pub error: Option<String>,
+    pub started_at: String,
+    pub completed_at: Option<String>,
+}
+
+/// A module file manifest entry — tracks which files a module deployed.
+#[derive(Debug, Clone)]
+pub struct ModuleFileRecord {
+    pub module_name: String,
+    pub file_path: String,
+    pub content_hash: String,
+    pub strategy: String,
+    pub last_applied: Option<i64>,
 }
 
 /// SQLite-backed state store for cfgd.
@@ -922,6 +1004,272 @@ impl StateStore {
         )?;
         Ok(())
     }
+
+    // --- File backup methods ---
+
+    /// Store a file backup before overwriting.
+    pub fn store_file_backup(
+        &self,
+        apply_id: i64,
+        file_path: &str,
+        state: &crate::FileState,
+    ) -> Result<()> {
+        let timestamp = crate::utc_now_iso8601();
+        self.conn.execute(
+            "INSERT INTO file_backups (apply_id, file_path, content_hash, content, permissions, was_symlink, symlink_target, oversized, backed_up_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            params![
+                apply_id,
+                file_path,
+                state.content_hash,
+                state.content,
+                state.permissions.map(|p| p as i64),
+                state.is_symlink as i64,
+                state.symlink_target.as_ref().map(|p| p.display().to_string()),
+                state.oversized as i64,
+                timestamp,
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// Get a file backup by apply_id and path.
+    pub fn get_file_backup(
+        &self,
+        apply_id: i64,
+        file_path: &str,
+    ) -> Result<Option<FileBackupRecord>> {
+        let result = self.conn.query_row(
+            "SELECT id, apply_id, file_path, content_hash, content, permissions, was_symlink, symlink_target, oversized, backed_up_at
+             FROM file_backups WHERE apply_id = ?1 AND file_path = ?2",
+            params![apply_id, file_path],
+            |row| {
+                Ok(FileBackupRecord {
+                    id: row.get(0)?,
+                    apply_id: row.get(1)?,
+                    file_path: row.get(2)?,
+                    content_hash: row.get(3)?,
+                    content: row.get(4)?,
+                    permissions: row.get::<_, Option<i64>>(5)?.map(|p| p as u32),
+                    was_symlink: row.get::<_, i64>(6)? != 0,
+                    symlink_target: row.get(7)?,
+                    oversized: row.get::<_, i64>(8)? != 0,
+                    backed_up_at: row.get(9)?,
+                })
+            },
+        );
+
+        match result {
+            Ok(record) => Ok(Some(record)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(StateError::Database(e.to_string()).into()),
+        }
+    }
+
+    /// Get all file backups for a specific apply (for full rollback).
+    pub fn get_apply_backups(&self, apply_id: i64) -> Result<Vec<FileBackupRecord>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, apply_id, file_path, content_hash, content, permissions, was_symlink, symlink_target, oversized, backed_up_at
+             FROM file_backups WHERE apply_id = ?1 ORDER BY id",
+        )?;
+
+        let records = stmt
+            .query_map(params![apply_id], |row| {
+                Ok(FileBackupRecord {
+                    id: row.get(0)?,
+                    apply_id: row.get(1)?,
+                    file_path: row.get(2)?,
+                    content_hash: row.get(3)?,
+                    content: row.get(4)?,
+                    permissions: row.get::<_, Option<i64>>(5)?.map(|p| p as u32),
+                    was_symlink: row.get::<_, i64>(6)? != 0,
+                    symlink_target: row.get(7)?,
+                    oversized: row.get::<_, i64>(8)? != 0,
+                    backed_up_at: row.get(9)?,
+                })
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+
+        Ok(records)
+    }
+
+    /// Get the most recent backup for a file path (for restore after removal).
+    pub fn latest_backup_for_path(&self, file_path: &str) -> Result<Option<FileBackupRecord>> {
+        let result = self.conn.query_row(
+            "SELECT id, apply_id, file_path, content_hash, content, permissions, was_symlink, symlink_target, oversized, backed_up_at
+             FROM file_backups WHERE file_path = ?1 ORDER BY id DESC LIMIT 1",
+            params![file_path],
+            |row| {
+                Ok(FileBackupRecord {
+                    id: row.get(0)?,
+                    apply_id: row.get(1)?,
+                    file_path: row.get(2)?,
+                    content_hash: row.get(3)?,
+                    content: row.get(4)?,
+                    permissions: row.get::<_, Option<i64>>(5)?.map(|p| p as u32),
+                    was_symlink: row.get::<_, i64>(6)? != 0,
+                    symlink_target: row.get(7)?,
+                    oversized: row.get::<_, i64>(8)? != 0,
+                    backed_up_at: row.get(9)?,
+                })
+            },
+        );
+
+        match result {
+            Ok(record) => Ok(Some(record)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(StateError::Database(e.to_string()).into()),
+        }
+    }
+
+    /// Prune old backups, keeping only the last N applies' worth.
+    pub fn prune_old_backups(&self, keep_last_n: usize) -> Result<usize> {
+        let deleted: usize = self.conn.execute(
+            "DELETE FROM file_backups WHERE apply_id NOT IN (
+                SELECT id FROM applies ORDER BY id DESC LIMIT ?1
+            )",
+            params![keep_last_n as i64],
+        )?;
+        Ok(deleted)
+    }
+
+    // --- Apply journal methods ---
+
+    /// Record the start of a journal action.
+    pub fn journal_begin(
+        &self,
+        apply_id: i64,
+        action_index: usize,
+        phase: &str,
+        action_type: &str,
+        resource_id: &str,
+        pre_state: Option<&str>,
+    ) -> Result<i64> {
+        let timestamp = crate::utc_now_iso8601();
+        self.conn.execute(
+            "INSERT INTO apply_journal (apply_id, action_index, phase, action_type, resource_id, pre_state, status, started_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'pending', ?7)",
+            params![apply_id, action_index as i64, phase, action_type, resource_id, pre_state, timestamp],
+        )?;
+        Ok(self.conn.last_insert_rowid())
+    }
+
+    /// Mark a journal action as completed.
+    pub fn journal_complete(&self, journal_id: i64, post_state: Option<&str>) -> Result<()> {
+        let timestamp = crate::utc_now_iso8601();
+        self.conn.execute(
+            "UPDATE apply_journal SET status = 'completed', post_state = ?1, completed_at = ?2 WHERE id = ?3",
+            params![post_state, timestamp, journal_id],
+        )?;
+        Ok(())
+    }
+
+    /// Mark a journal action as failed.
+    pub fn journal_fail(&self, journal_id: i64, error: &str) -> Result<()> {
+        let timestamp = crate::utc_now_iso8601();
+        self.conn.execute(
+            "UPDATE apply_journal SET status = 'failed', error = ?1, completed_at = ?2 WHERE id = ?3",
+            params![error, timestamp, journal_id],
+        )?;
+        Ok(())
+    }
+
+    /// Get completed actions for an apply (for rollback).
+    pub fn journal_completed_actions(&self, apply_id: i64) -> Result<Vec<JournalEntry>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, apply_id, action_index, phase, action_type, resource_id, pre_state, post_state, status, error, started_at, completed_at
+             FROM apply_journal WHERE apply_id = ?1 AND status = 'completed' ORDER BY action_index",
+        )?;
+
+        let entries = stmt
+            .query_map(params![apply_id], |row| {
+                Ok(JournalEntry {
+                    id: row.get(0)?,
+                    apply_id: row.get(1)?,
+                    action_index: row.get(2)?,
+                    phase: row.get(3)?,
+                    action_type: row.get(4)?,
+                    resource_id: row.get(5)?,
+                    pre_state: row.get(6)?,
+                    post_state: row.get(7)?,
+                    status: row.get(8)?,
+                    error: row.get(9)?,
+                    started_at: row.get(10)?,
+                    completed_at: row.get(11)?,
+                })
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+
+        Ok(entries)
+    }
+
+    // --- Module file manifest methods ---
+
+    /// Record a file deployed by a module.
+    pub fn upsert_module_file(
+        &self,
+        module_name: &str,
+        file_path: &str,
+        content_hash: &str,
+        strategy: &str,
+        apply_id: i64,
+    ) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO module_file_manifest (module_name, file_path, content_hash, strategy, last_applied)
+             VALUES (?1, ?2, ?3, ?4, ?5)
+             ON CONFLICT(module_name, file_path) DO UPDATE SET
+                content_hash = excluded.content_hash,
+                strategy = excluded.strategy,
+                last_applied = excluded.last_applied",
+            params![module_name, file_path, content_hash, strategy, apply_id],
+        )?;
+        Ok(())
+    }
+
+    /// Get all files deployed by a module.
+    pub fn module_deployed_files(&self, module_name: &str) -> Result<Vec<ModuleFileRecord>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT module_name, file_path, content_hash, strategy, last_applied
+             FROM module_file_manifest WHERE module_name = ?1 ORDER BY file_path",
+        )?;
+
+        let records = stmt
+            .query_map(params![module_name], |row| {
+                Ok(ModuleFileRecord {
+                    module_name: row.get(0)?,
+                    file_path: row.get(1)?,
+                    content_hash: row.get(2)?,
+                    strategy: row.get(3)?,
+                    last_applied: row.get(4)?,
+                })
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+
+        Ok(records)
+    }
+
+    /// Delete all manifest entries for a module.
+    pub fn delete_module_files(&self, module_name: &str) -> Result<()> {
+        self.conn.execute(
+            "DELETE FROM module_file_manifest WHERE module_name = ?1",
+            params![module_name],
+        )?;
+        Ok(())
+    }
+
+    /// Update apply status (for changing "in-progress" to final status).
+    pub fn update_apply_status(
+        &self,
+        apply_id: i64,
+        status: ApplyStatus,
+        summary: Option<&str>,
+    ) -> Result<()> {
+        self.conn.execute(
+            "UPDATE applies SET status = ?1, summary = ?2 WHERE id = ?3",
+            params![status.as_str(), summary, apply_id],
+        )?;
+        Ok(())
+    }
 }
 
 /// Compute SHA256 hash of a serializable plan for deduplication.
@@ -1466,5 +1814,246 @@ mod tests {
 
         let hash = store.source_config_hash("acme").unwrap();
         assert!(hash.is_none());
+    }
+
+    #[test]
+    fn file_backup_store_and_retrieve() {
+        let store = StateStore::open_in_memory().unwrap();
+        let apply_id = store
+            .record_apply("test", "hash", ApplyStatus::Success, None)
+            .unwrap();
+
+        let state = crate::FileState {
+            content: b"original content".to_vec(),
+            content_hash: "abc123".to_string(),
+            permissions: Some(0o644),
+            is_symlink: false,
+            symlink_target: None,
+            oversized: false,
+        };
+
+        store
+            .store_file_backup(apply_id, "/home/user/.bashrc", &state)
+            .unwrap();
+
+        let backup = store
+            .get_file_backup(apply_id, "/home/user/.bashrc")
+            .unwrap()
+            .unwrap();
+        assert_eq!(backup.content, b"original content");
+        assert_eq!(backup.content_hash, "abc123");
+        assert_eq!(backup.permissions, Some(0o644));
+        assert!(!backup.was_symlink);
+        assert!(!backup.oversized);
+    }
+
+    #[test]
+    fn file_backup_symlink() {
+        let store = StateStore::open_in_memory().unwrap();
+        let apply_id = store
+            .record_apply("test", "hash", ApplyStatus::Success, None)
+            .unwrap();
+
+        let state = crate::FileState {
+            content: Vec::new(),
+            content_hash: String::new(),
+            permissions: None,
+            is_symlink: true,
+            symlink_target: Some(PathBuf::from("/etc/original")),
+            oversized: false,
+        };
+
+        store
+            .store_file_backup(apply_id, "/home/user/link", &state)
+            .unwrap();
+
+        let backup = store
+            .get_file_backup(apply_id, "/home/user/link")
+            .unwrap()
+            .unwrap();
+        assert!(backup.was_symlink);
+        assert_eq!(backup.symlink_target.unwrap(), "/etc/original");
+    }
+
+    #[test]
+    fn get_apply_backups_returns_all() {
+        let store = StateStore::open_in_memory().unwrap();
+        let apply_id = store
+            .record_apply("test", "hash", ApplyStatus::Success, None)
+            .unwrap();
+
+        for i in 0..3 {
+            let state = crate::FileState {
+                content: format!("content {}", i).into_bytes(),
+                content_hash: format!("hash{}", i),
+                permissions: Some(0o644),
+                is_symlink: false,
+                symlink_target: None,
+                oversized: false,
+            };
+            store
+                .store_file_backup(apply_id, &format!("/file{}", i), &state)
+                .unwrap();
+        }
+
+        let backups = store.get_apply_backups(apply_id).unwrap();
+        assert_eq!(backups.len(), 3);
+    }
+
+    #[test]
+    fn latest_backup_for_path_returns_most_recent() {
+        let store = StateStore::open_in_memory().unwrap();
+
+        for i in 0..3 {
+            let apply_id = store
+                .record_apply("test", &format!("hash{}", i), ApplyStatus::Success, None)
+                .unwrap();
+            let state = crate::FileState {
+                content: format!("content v{}", i).into_bytes(),
+                content_hash: format!("hash{}", i),
+                permissions: Some(0o644),
+                is_symlink: false,
+                symlink_target: None,
+                oversized: false,
+            };
+            store
+                .store_file_backup(apply_id, "/home/user/.bashrc", &state)
+                .unwrap();
+        }
+
+        let backup = store
+            .latest_backup_for_path("/home/user/.bashrc")
+            .unwrap()
+            .unwrap();
+        assert_eq!(backup.content_hash, "hash2");
+    }
+
+    #[test]
+    fn journal_lifecycle() {
+        let store = StateStore::open_in_memory().unwrap();
+        let apply_id = store
+            .record_apply("test", "hash", ApplyStatus::Success, None)
+            .unwrap();
+
+        let j1 = store
+            .journal_begin(apply_id, 0, "files", "create", "/home/user/.bashrc", None)
+            .unwrap();
+        store.journal_complete(j1, Some("hash123")).unwrap();
+
+        let j2 = store
+            .journal_begin(apply_id, 1, "files", "update", "/home/user/.zshrc", None)
+            .unwrap();
+        store.journal_fail(j2, "permission denied").unwrap();
+
+        let completed = store.journal_completed_actions(apply_id).unwrap();
+        assert_eq!(completed.len(), 1);
+        assert_eq!(completed[0].resource_id, "/home/user/.bashrc");
+        assert_eq!(completed[0].status, "completed");
+    }
+
+    #[test]
+    fn module_file_manifest_crud() {
+        let store = StateStore::open_in_memory().unwrap();
+        let apply_id = store
+            .record_apply("test", "hash", ApplyStatus::Success, None)
+            .unwrap();
+
+        store
+            .upsert_module_file(
+                "nvim",
+                "/home/user/.config/nvim/init.lua",
+                "hash1",
+                "copy",
+                apply_id,
+            )
+            .unwrap();
+        store
+            .upsert_module_file(
+                "nvim",
+                "/home/user/.config/nvim/lazy.lua",
+                "hash2",
+                "copy",
+                apply_id,
+            )
+            .unwrap();
+
+        let files = store.module_deployed_files("nvim").unwrap();
+        assert_eq!(files.len(), 2);
+        assert_eq!(files[0].file_path, "/home/user/.config/nvim/init.lua");
+
+        // Upsert updates existing
+        store
+            .upsert_module_file(
+                "nvim",
+                "/home/user/.config/nvim/init.lua",
+                "newhash",
+                "symlink",
+                apply_id,
+            )
+            .unwrap();
+        let files = store.module_deployed_files("nvim").unwrap();
+        assert_eq!(files.len(), 2);
+        assert_eq!(files[0].content_hash, "newhash");
+        assert_eq!(files[0].strategy, "symlink");
+
+        // Delete all
+        store.delete_module_files("nvim").unwrap();
+        let files = store.module_deployed_files("nvim").unwrap();
+        assert!(files.is_empty());
+    }
+
+    #[test]
+    fn prune_old_backups_keeps_recent() {
+        let store = StateStore::open_in_memory().unwrap();
+
+        // Create 5 applies with backups
+        for i in 0..5 {
+            let apply_id = store
+                .record_apply("test", &format!("hash{}", i), ApplyStatus::Success, None)
+                .unwrap();
+            let state = crate::FileState {
+                content: format!("content {}", i).into_bytes(),
+                content_hash: format!("hash{}", i),
+                permissions: Some(0o644),
+                is_symlink: false,
+                symlink_target: None,
+                oversized: false,
+            };
+            store.store_file_backup(apply_id, "/file", &state).unwrap();
+        }
+
+        // Prune keeping last 2
+        let pruned = store.prune_old_backups(2).unwrap();
+        assert_eq!(pruned, 3);
+
+        // Only 2 backups remain
+        let all: i64 = store
+            .conn
+            .query_row("SELECT COUNT(*) FROM file_backups", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(all, 2);
+    }
+
+    #[test]
+    fn update_apply_status_works() {
+        let store = StateStore::open_in_memory().unwrap();
+        let apply_id = store
+            .record_apply("test", "hash", ApplyStatus::Success, None)
+            .unwrap();
+
+        store
+            .update_apply_status(apply_id, ApplyStatus::Partial, Some("{\"failed\":1}"))
+            .unwrap();
+
+        let record = store.last_apply().unwrap().unwrap();
+        assert_eq!(record.status, ApplyStatus::Partial);
+        assert_eq!(record.summary.unwrap(), "{\"failed\":1}");
+    }
+
+    #[test]
+    fn schema_version_is_2_after_migration() {
+        let store = StateStore::open_in_memory().unwrap();
+        let version = store.schema_version();
+        assert_eq!(version, 2);
     }
 }

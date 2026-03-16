@@ -45,6 +45,8 @@
 !install.sh
 
 # Docs
+!docs/
+!docs/**
 !README.md
 !CHANGELOG.md
 !CONTRIBUTING.md

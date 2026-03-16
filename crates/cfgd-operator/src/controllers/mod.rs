@@ -305,8 +305,7 @@ async fn cleanup_drift_alerts(client: &Client, namespace: &str, mc_name: &str) {
     };
 
     // Use label selector to filter at API server instead of listing all alerts
-    let lp = ListParams::default()
-        .labels(&format!("cfgd.io/machine-config={mc_name}"));
+    let lp = ListParams::default().labels(&format!("cfgd.io/machine-config={mc_name}"));
 
     let list = match alerts.list(&lp).await {
         Ok(l) => l,

@@ -993,7 +993,10 @@ async fn checkin(
 
     // Capture desired_config before mutating — avoids a second get_device query
     let desired_config = if config_changed {
-        existing.as_ref().ok().and_then(|d| d.desired_config.clone())
+        existing
+            .as_ref()
+            .ok()
+            .and_then(|d| d.desired_config.clone())
     } else {
         None
     };

@@ -5,9 +5,11 @@ metadata:
 spec:
   inherits:
     - dev
-  variables:
-    EDITOR: nvim
-    WORK_EMAIL: user@corp.example.com
+  env:
+    - name: EDITOR
+      value: nvim
+    - name: WORK_EMAIL
+      value: user@corp.example.com
   files:
     managed:
       - source: files/work-gitconfig

@@ -3,9 +3,11 @@ kind: Profile
 metadata:
   name: base
 spec:
-  variables:
-    EDITOR: vim
-    SHELL: /bin/bash
+  env:
+    - name: EDITOR
+      value: vim
+    - name: SHELL
+      value: /bin/bash
   files:
     managed:
       - source: files/gitconfig

@@ -3,7 +3,7 @@ kind: Profile
 metadata:
   name: k8s-worker-certs
 spec:
-  variables: {}
+  env: []
   system:
     certificates:
       ca-cert-dir: /tmp/cfgd-e2e-pki

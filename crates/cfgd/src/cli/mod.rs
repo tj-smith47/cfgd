@@ -156,11 +156,11 @@ pub struct Cli {
     pub profile: Option<String>,
 
     /// Verbose output
-    #[arg(long, short, global = true, env = "CFGD_VERBOSE")]
+    #[arg(long, short, global = true, env = "CFGD_VERBOSE", conflicts_with = "quiet")]
     pub verbose: bool,
 
     /// Suppress all non-error output
-    #[arg(long, short, global = true, env = "CFGD_QUIET")]
+    #[arg(long, short, global = true, env = "CFGD_QUIET", conflicts_with = "verbose")]
     pub quiet: bool,
 
     /// Disable colored output
@@ -217,13 +217,29 @@ pub enum Command {
         #[arg(long)]
         apply: bool,
 
+        /// Preview changes without applying (used with --apply/--apply-profile/--apply-module)
+        #[arg(long)]
+        dry_run: bool,
+
         /// Skip all confirmation prompts (used with --apply)
-        #[arg(long, short)]
+        #[arg(long, short, env = "CFGD_YES")]
         yes: bool,
 
         /// Install daemon service after init
         #[arg(long)]
         install_daemon: bool,
+
+        /// Theme preset (default, minimal)
+        #[arg(long)]
+        theme: Option<String>,
+
+        /// Activate and apply a specific profile (errors if not found)
+        #[arg(long)]
+        apply_profile: Option<String>,
+
+        /// Apply specific modules (repeatable, errors if not found)
+        #[arg(long = "apply-module")]
+        apply_modules: Vec<String>,
     },
 
     /// Apply the configuration (use --dry-run to preview without applying)
@@ -238,8 +254,8 @@ pub enum Command {
     /// Show apply history
     Log {
         /// Number of entries to show
-        #[arg(long, short, default_value = "20")]
-        count: u32,
+        #[arg(long, short = 'n', default_value = "20")]
+        limit: u32,
     },
 
     /// Sync with remote
@@ -363,7 +379,7 @@ pub enum Command {
     Enroll {
         /// Device gateway URL
         #[arg(long, env = "CFGD_SERVER_URL")]
-        server: String,
+        server_url: String,
 
         /// Bootstrap token for token-based enrollment
         #[arg(long, env = "CFGD_BOOTSTRAP_TOKEN")]
@@ -465,7 +481,7 @@ pub enum SourceCommand {
         /// Action: set or reject
         action: String,
 
-        /// Resource path (e.g., variables.EDITOR, packages.brew.formulae)
+        /// Resource path (e.g., env.EDITOR, packages.brew.formulae)
         path: String,
 
         /// Value (for set action)
@@ -553,17 +569,17 @@ pub struct ProfileCreateArgs {
     /// Profile name
     pub name: String,
     /// Inherit from other profiles (repeatable)
-    #[arg(long = "inherits")]
+    #[arg(long = "inherit")]
     pub inherits: Vec<String>,
     /// Modules to include (repeatable)
     #[arg(long = "module")]
     pub modules: Vec<String>,
-    /// Packages as manager:package (repeatable, e.g. --package brew:curl)
+    /// Packages to include (repeatable, e.g. --package curl or --package brew:curl)
     #[arg(long = "package")]
     pub packages: Vec<String>,
-    /// Variables as key=value (repeatable)
-    #[arg(long = "variable")]
-    pub variables: Vec<String>,
+    /// Environment variables as key=value (repeatable)
+    #[arg(long = "env")]
+    pub env: Vec<String>,
     /// System settings as key=value (repeatable)
     #[arg(long = "system")]
     pub system: Vec<String>,
@@ -571,16 +587,16 @@ pub struct ProfileCreateArgs {
     #[arg(long = "file")]
     pub files: Vec<String>,
     /// Mark all --file entries as private (local-only, excluded from git).
-    #[arg(long = "private")]
+    #[arg(long = "private-files")]
     pub private: bool,
     /// Secrets as source:target (repeatable, e.g. --secret secrets/api-key.enc:~/.config/app/key)
     #[arg(long = "secret")]
     pub secrets: Vec<String>,
-    /// Pre-reconcile scripts (repeatable)
-    #[arg(long = "pre-reconcile")]
+    /// Pre-apply scripts (repeatable)
+    #[arg(long = "pre-apply")]
     pub pre_reconcile: Vec<PathBuf>,
-    /// Post-reconcile scripts (repeatable)
-    #[arg(long = "post-reconcile")]
+    /// Post-apply scripts (repeatable)
+    #[arg(long = "post-apply")]
     pub post_reconcile: Vec<PathBuf>,
 }
 
@@ -592,10 +608,10 @@ pub struct ProfileUpdateArgs {
     #[arg(long)]
     pub active: bool,
     /// Add inherited profiles (repeatable)
-    #[arg(long = "add-inherits")]
+    #[arg(long = "add-inherit")]
     pub add_inherits: Vec<String>,
     /// Remove inherited profiles (repeatable)
-    #[arg(long = "remove-inherits")]
+    #[arg(long = "remove-inherit")]
     pub remove_inherits: Vec<String>,
     /// Add modules (repeatable)
     #[arg(long = "add-module")]
@@ -603,7 +619,7 @@ pub struct ProfileUpdateArgs {
     /// Remove modules (repeatable)
     #[arg(long = "remove-module")]
     pub remove_modules: Vec<String>,
-    /// Add packages as manager:package (repeatable)
+    /// Add packages (repeatable, e.g. --add-package curl or --add-package brew:curl)
     #[arg(long = "add-package")]
     pub add_packages: Vec<String>,
     /// Remove packages as manager:package (repeatable)
@@ -613,17 +629,17 @@ pub struct ProfileUpdateArgs {
     #[arg(long = "add-file")]
     pub add_files: Vec<String>,
     /// Mark all --add-file entries as private (local-only, excluded from git).
-    #[arg(long = "private")]
+    #[arg(long = "private-files")]
     pub private: bool,
     /// Remove files by target path (repeatable)
     #[arg(long = "remove-file")]
     pub remove_files: Vec<String>,
-    /// Add variables as key=value (repeatable)
-    #[arg(long = "add-variable")]
-    pub add_variables: Vec<String>,
-    /// Remove variables by key (repeatable)
-    #[arg(long = "remove-variable")]
-    pub remove_variables: Vec<String>,
+    /// Add env vars as key=value (repeatable)
+    #[arg(long = "add-env")]
+    pub add_env: Vec<String>,
+    /// Remove env vars by key (repeatable)
+    #[arg(long = "remove-env")]
+    pub remove_env: Vec<String>,
     /// Add system settings as key=value (repeatable)
     #[arg(long = "add-system")]
     pub add_system: Vec<String>,
@@ -636,17 +652,17 @@ pub struct ProfileUpdateArgs {
     /// Remove secrets by target path (repeatable)
     #[arg(long = "remove-secret")]
     pub remove_secrets: Vec<String>,
-    /// Add pre-reconcile scripts (repeatable)
-    #[arg(long = "add-pre-reconcile")]
+    /// Add pre-apply scripts (repeatable)
+    #[arg(long = "add-pre-apply")]
     pub add_pre_reconcile: Vec<PathBuf>,
-    /// Remove pre-reconcile scripts (repeatable)
-    #[arg(long = "remove-pre-reconcile")]
+    /// Remove pre-apply scripts (repeatable)
+    #[arg(long = "remove-pre-apply")]
     pub remove_pre_reconcile: Vec<PathBuf>,
-    /// Add post-reconcile scripts (repeatable)
-    #[arg(long = "add-post-reconcile")]
+    /// Add post-apply scripts (repeatable)
+    #[arg(long = "add-post-apply")]
     pub add_post_reconcile: Vec<PathBuf>,
-    /// Remove post-reconcile scripts (repeatable)
-    #[arg(long = "remove-post-reconcile")]
+    /// Remove post-apply scripts (repeatable)
+    #[arg(long = "remove-post-apply")]
     pub remove_post_reconcile: Vec<PathBuf>,
 }
 
@@ -676,7 +692,7 @@ pub enum ProfileCommand {
         /// Profile name
         name: String,
         /// Skip confirmation prompt
-        #[arg(short, long)]
+        #[arg(short, long, env = "CFGD_YES")]
         yes: bool,
     },
 }
@@ -698,14 +714,23 @@ pub struct ModuleCreateArgs {
     #[arg(long = "file")]
     pub files: Vec<String>,
     /// Mark all --file entries as private (local-only, excluded from git).
-    #[arg(long = "private")]
+    #[arg(long = "private-files")]
     pub private: bool,
+    /// Environment variables as KEY=VALUE (repeatable)
+    #[arg(long = "env")]
+    pub env: Vec<String>,
     /// Post-apply scripts (repeatable)
     #[arg(long = "post-apply")]
     pub post_apply: Vec<String>,
     /// Helm-style overrides: package.<name>.<field>=<value>
     #[arg(long = "set")]
     pub sets: Vec<String>,
+    /// Apply the module immediately after creating it
+    #[arg(long)]
+    pub apply: bool,
+    /// Skip confirmation prompts (used with --apply)
+    #[arg(long, short, env = "CFGD_YES")]
+    pub yes: bool,
 }
 
 #[derive(Parser)]
@@ -722,11 +747,17 @@ pub struct ModuleUpdateArgs {
     #[arg(long = "add-file")]
     pub add_files: Vec<String>,
     /// Mark all --add-file entries as private (local-only, excluded from git).
-    #[arg(long = "private")]
+    #[arg(long = "private-files")]
     pub private: bool,
     /// Remove files by target path (repeatable)
     #[arg(long = "remove-file")]
     pub remove_files: Vec<String>,
+    /// Add env vars as KEY=VALUE (repeatable)
+    #[arg(long = "add-env")]
+    pub add_env: Vec<String>,
+    /// Remove env vars by key (repeatable)
+    #[arg(long = "remove-env")]
+    pub remove_env: Vec<String>,
     /// Add dependencies (repeatable)
     #[arg(long = "add-depends")]
     pub add_depends: Vec<String>,
@@ -770,7 +801,7 @@ pub enum ModuleCommand {
         /// Module name
         name: String,
         /// Skip confirmation prompt
-        #[arg(short, long)]
+        #[arg(short, long, env = "CFGD_YES")]
         yes: bool,
     },
     /// Create a new local module (alias for 'create')
@@ -784,7 +815,7 @@ pub enum ModuleCommand {
         #[arg(long)]
         ref_: Option<String>,
         /// Skip confirmation prompt (for non-interactive use)
-        #[arg(short, long)]
+        #[arg(short, long, env = "CFGD_YES")]
         yes: bool,
         /// Allow unsigned modules even when require-signatures is enabled
         #[arg(long)]
@@ -834,7 +865,7 @@ pub fn execute(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
         Command::Apply(args) => cmd_apply(cli, printer, args),
         Command::Status => cmd_status(cli, printer),
         Command::Diff => cmd_diff(cli, printer),
-        Command::Log { count } => cmd_log(printer, *count),
+        Command::Log { limit } => cmd_log(printer, *limit),
         Command::Verify => cmd_verify(cli, printer),
         Command::Profile { command } => match command {
             ProfileCommand::Show => profile::cmd_profile_show(cli, printer),
@@ -857,22 +888,28 @@ pub fn execute(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
             branch,
             name,
             apply,
+            dry_run,
             yes,
             install_daemon,
-        } => {
-            init::cmd_init(
-                printer,
-                &init::InitArgs {
-                    path: path.as_deref(),
-                    from: from.as_deref(),
-                    branch,
-                    name: name.as_deref(),
-                    apply: *apply,
-                    yes: *yes,
-                    install_daemon: *install_daemon,
-                },
-            )
-        }
+            theme,
+            apply_profile,
+            apply_modules,
+        } => init::cmd_init(
+            printer,
+            &init::InitArgs {
+                path: path.as_deref(),
+                from: from.as_deref(),
+                branch,
+                name: name.as_deref(),
+                apply: *apply,
+                dry_run: *dry_run,
+                yes: *yes,
+                install_daemon: *install_daemon,
+                theme: theme.as_deref(),
+                apply_profile: apply_profile.as_deref(),
+                apply_modules,
+            },
+        ),
         Command::Module { command } => match command {
             ModuleCommand::List => module::cmd_module_list(cli, printer),
             ModuleCommand::Show { name } => module::cmd_module_show(cli, printer, name),
@@ -994,14 +1031,14 @@ pub fn execute(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
             device_id.as_deref(),
         ),
         Command::Enroll {
-            server,
+            server_url,
             token,
             ssh_key,
             gpg_key,
             username,
         } => init::cmd_enroll(
             printer,
-            server,
+            server_url,
             token.as_deref(),
             ssh_key.as_deref(),
             gpg_key.as_deref(),
@@ -1027,11 +1064,28 @@ fn load_config_and_profile(
     printer.key_value("Config", &cli.config.display().to_string());
     printer.key_value("Profile", profile_name);
 
-    // Migrate any old-style profile file layouts before resolving
-    profile::migrate_all_profile_file_layouts(&config_dir(cli), printer)?;
-
     let resolved = config::resolve_profile(profile_name, &profiles_dir(cli))?;
     Ok((cfg, resolved))
+}
+
+/// Parse a `--package` flag value. If it contains `:` and the prefix is a known
+/// package manager name, split into (Some(manager), package). Otherwise treat
+/// the entire string as a bare package name.
+pub(super) fn parse_package_flag(s: &str, known_managers: &[&str]) -> (Option<String>, String) {
+    if let Some((prefix, suffix)) = s.split_once(':') {
+        if !prefix.is_empty() && !suffix.is_empty() && known_managers.contains(&prefix) {
+            return (Some(prefix.to_string()), suffix.to_string());
+        }
+    }
+    (None, s.to_string())
+}
+
+/// Collect known package manager names from the registry.
+pub(super) fn known_manager_names() -> Vec<String> {
+    packages::all_package_managers()
+        .iter()
+        .map(|m| m.name().to_string())
+        .collect()
 }
 
 /// Parse a `--file` value into (source_path, target_path).
@@ -1336,15 +1390,15 @@ fn cmd_apply(cli: &Cli, printer: &Printer, args: &ApplyArgs) -> anyhow::Result<(
     };
 
     // Compose with sources if configured
-    let source_variables = if !cfg.spec.sources.is_empty() {
+    let source_env = if !cfg.spec.sources.is_empty() {
         let composition_result = compose_with_sources(cli, &resolved, printer)?;
-        let sv = composition_result.source_variables;
-        (Some(composition_result.resolved), sv)
+        let se = composition_result.source_env;
+        (Some(composition_result.resolved), se)
     } else {
         (None, std::collections::HashMap::new())
     };
-    let mut effective_resolved = source_variables.0.unwrap_or(resolved);
-    let source_variables = source_variables.1;
+    let mut effective_resolved = source_env.0.unwrap_or(resolved);
+    let source_env = source_env.1;
 
     // Resolve manifest files (Brewfile, package.json, etc.) into package lists
     packages::resolve_manifest_packages(&mut effective_resolved.merged.packages, &config_dir)?;
@@ -1387,8 +1441,8 @@ fn cmd_apply(cli: &Cli, printer: &Printer, args: &ApplyArgs) -> anyhow::Result<(
 
         let mut fm = CfgdFileManager::new(&config_dir, &effective_resolved)?;
         fm.set_global_strategy(cfg.spec.file_strategy);
-        if !source_variables.is_empty() {
-            fm.set_source_variables(&source_variables);
+        if !source_env.is_empty() {
+            fm.set_source_env(&source_env);
         }
 
         if !dry_run {
@@ -1532,6 +1586,11 @@ fn cmd_apply(cli: &Cli, printer: &Printer, args: &ApplyArgs) -> anyhow::Result<(
 
     printer.newline();
 
+    // Acquire apply lock to prevent concurrent applies
+    let state_dir = cfgd_core::state::default_state_dir()
+        .map_err(|e| anyhow::anyhow!("cannot determine state directory: {}", e))?;
+    let _apply_lock = cfgd_core::acquire_apply_lock(&state_dir)?;
+
     // Apply
     let result = reconciler.apply(
         &plan,
@@ -1544,6 +1603,11 @@ fn cmd_apply(cli: &Cli, printer: &Printer, args: &ApplyArgs) -> anyhow::Result<(
 
     printer.newline();
     print_apply_result(&result, printer);
+
+    // Prune old backups — keep last 10 applies' worth
+    if let Ok(state) = open_state_store() {
+        let _ = state.prune_old_backups(10);
+    }
 
     Ok(())
 }
@@ -2280,6 +2344,7 @@ fn cmd_workflow_generate(cli: &Cli, printer: &Printer, force: bool) -> anyhow::R
 
 fn generate_release_workflow_yaml(modules: &[String], profiles: &[String]) -> String {
     let mut yaml = String::new();
+    let has_targets = !modules.is_empty() || !profiles.is_empty();
 
     // Header
     yaml.push_str(
@@ -2289,17 +2354,24 @@ fn generate_release_workflow_yaml(modules: &[String], profiles: &[String]) -> St
          \n\
          on:\n\
          \x20 push:\n\
-         \x20   branches: [main]\n\
-         \x20   paths:\n",
+         \x20   branches: [main]\n",
     );
 
-    // Paths that trigger the workflow
-    for m in modules {
-        yaml.push_str(&format!("      - 'modules/{}/**'\n", m));
-    }
-    for p in profiles {
-        yaml.push_str(&format!("      - 'profiles/{}.yaml'\n", p));
-        yaml.push_str(&format!("      - 'profiles/{}.yml'\n", p));
+    if has_targets {
+        yaml.push_str("    paths:\n");
+        for m in modules {
+            yaml.push_str(&format!("      - 'modules/{}/**'\n", m));
+        }
+        for p in profiles {
+            yaml.push_str(&format!("      - 'profiles/{}.yaml'\n", p));
+            yaml.push_str(&format!("      - 'profiles/{}.yml'\n", p));
+        }
+    } else {
+        yaml.push_str(
+            "    # paths: (auto-populated when modules/profiles are created)\n\
+             \x20   #   - 'modules/<name>/**'\n\
+             \x20   #   - 'profiles/<name>.yaml'\n",
+        );
     }
 
     yaml.push_str(
@@ -2309,6 +2381,18 @@ fn generate_release_workflow_yaml(modules: &[String], profiles: &[String]) -> St
          \n\
          jobs:\n",
     );
+
+    if !has_targets {
+        yaml.push_str(
+            "  # Jobs are auto-generated when modules or profiles are created.\n\
+             \x20 # Run `cfgd workflow generate --force` to regenerate manually.\n\
+             \x20 placeholder:\n\
+             \x20   runs-on: ubuntu-latest\n\
+             \x20   steps:\n\
+             \x20     - run: echo \"No modules or profiles to tag yet.\"\n",
+        );
+        return yaml;
+    }
 
     // Detect changes job
     yaml.push_str(
@@ -2388,17 +2472,19 @@ fn generate_release_workflow_yaml(modules: &[String], profiles: &[String]) -> St
             ));
         }
         yaml.push_str(
-            "\x20   if: matrix.changed == 'true'\n\
-             \x20   steps:\n\
+            "\x20   steps:\n\
              \x20     - uses: actions/checkout@v4\n\
+             \x20       if: matrix.changed == 'true'\n\
              \x20       with:\n\
              \x20         fetch-depth: 0\n\
              \x20     - name: Read module version\n\
+             \x20       if: matrix.changed == 'true'\n\
              \x20       id: version\n\
              \x20       run: |\n\
              \x20         VERSION=$(grep -oP 'version:\\s*\"?\\K[^\"\\s]+' \"modules/${{ matrix.name }}/module.yaml\" || echo \"0.1.0\")\n\
              \x20         echo \"version=$VERSION\" >> $GITHUB_OUTPUT\n\
              \x20     - name: Tag module release\n\
+             \x20       if: matrix.changed == 'true'\n\
              \x20       run: |\n\
              \x20         TAG=\"${{ matrix.name }}/v${{ steps.version.outputs.version }}\"\n\
              \x20         git tag -f \"$TAG\"\n\
@@ -2426,12 +2512,13 @@ fn generate_release_workflow_yaml(modules: &[String], profiles: &[String]) -> St
             ));
         }
         yaml.push_str(
-            "\x20   if: matrix.changed == 'true'\n\
-             \x20   steps:\n\
+            "\x20   steps:\n\
              \x20     - uses: actions/checkout@v4\n\
+             \x20       if: matrix.changed == 'true'\n\
              \x20       with:\n\
              \x20         fetch-depth: 0\n\
              \x20     - name: Tag profile release\n\
+             \x20       if: matrix.changed == 'true'\n\
              \x20       run: |\n\
              \x20         DATE=$(date +%Y%m%d)\n\
              \x20         TAG=\"profile/${{ matrix.name }}/${DATE}\"\n\
@@ -3958,7 +4045,7 @@ fn count_policy_items(items: &config::PolicyItems) -> usize {
         }
     }
     count += items.files.len();
-    count += items.variables.len();
+    count += items.env.len();
     count += items.system.len();
     count
 }
@@ -3998,8 +4085,8 @@ fn display_policy_items(printer: &Printer, items: &config::PolicyItems, indent: 
     for f in &items.files {
         printer.info(&format!("{indent}file: {}", f.target.display()));
     }
-    for k in items.variables.keys() {
-        printer.info(&format!("{indent}variable: {k}"));
+    for ev in &items.env {
+        printer.info(&format!("{indent}env: {}", ev.name));
     }
     for k in items.system.keys() {
         printer.info(&format!("{indent}system: {k}"));
@@ -4237,6 +4324,14 @@ fn action_path(phase: &PhaseName, action: &reconciler::Action) -> String {
         reconciler::Action::Module(ma) => {
             format!("{}.{}", prefix, ma.module_name)
         }
+        reconciler::Action::Env(ea) => match ea {
+            reconciler::EnvAction::WriteEnvFile { path, .. } => {
+                format!("{}:{}", prefix, path.display())
+            }
+            reconciler::EnvAction::InjectSourceLine { rc_path, .. } => {
+                format!("{}:{}", prefix, rc_path.display())
+            }
+        },
     }
 }
 
@@ -4568,7 +4663,7 @@ fn compose_with_sources(
         return Ok(composition::CompositionResult {
             resolved: local_resolved.clone(),
             conflicts: Vec::new(),
-            source_variables: std::collections::HashMap::new(),
+            source_env: std::collections::HashMap::new(),
         });
     }
 
@@ -4863,8 +4958,9 @@ kind: Profile
 metadata:
   name: default
 spec:
-  variables:
-    editor: vim
+  env:
+    - name: editor
+      value: vim
   packages:
     cargo:
       - bat
@@ -4881,8 +4977,9 @@ metadata:
 spec:
   inherits:
     - default
-  variables:
-    editor: code
+  env:
+    - name: editor
+      value: code
   packages:
     cargo:
       - exa
@@ -4991,13 +5088,13 @@ spec:
         let mut root = serde_yaml::Value::Mapping(serde_yaml::Mapping::new());
         super::set_nested_yaml_value(
             &mut root,
-            "variables.EDITOR",
+            "env.EDITOR",
             &serde_yaml::Value::String("nvim".into()),
         )
         .unwrap();
 
         let editor = root
-            .get("variables")
+            .get("env")
             .and_then(|v| v.get("EDITOR"))
             .and_then(|v| v.as_str());
         assert_eq!(editor, Some("nvim"));
@@ -5049,6 +5146,7 @@ spec:
                         target: "/tmp/b".into(),
                         origin: "local".into(),
                         strategy: cfgd_core::config::FileStrategy::default(),
+                        source_hash: None,
                     })],
                 },
             ],
@@ -5167,7 +5265,7 @@ spec:
             inherits: vec![],
             modules: vec![],
             packages: vec![],
-            variables: vec![],
+            env: vec![],
             system: vec![],
             files: vec![],
             private: false,
@@ -5189,8 +5287,8 @@ spec:
             remove_packages: vec![],
             add_files: vec![],
             remove_files: vec![],
-            add_variables: vec![],
-            remove_variables: vec![],
+            add_env: vec![],
+            remove_env: vec![],
             add_system: vec![],
             remove_system: vec![],
             add_secrets: vec![],
@@ -5216,6 +5314,8 @@ spec:
             remove_packages: vec![],
             add_files: vec![],
             remove_files: vec![],
+            add_env: vec![],
+            remove_env: vec![],
             add_depends: vec![],
             remove_depends: vec![],
             description: None,
@@ -5233,9 +5333,12 @@ spec:
             depends: vec![],
             packages: vec![],
             files: vec![],
+            env: vec![],
             private: false,
             post_apply: vec![],
             sets: vec![],
+            apply: false,
+            yes: false,
         }
     }
 
@@ -5476,7 +5579,7 @@ spec:
             inherits: vec!["default".to_string()],
             modules: vec!["nvim".to_string()],
             packages: vec!["brew:curl".to_string(), "cargo:bat".to_string()],
-            variables: vec!["EDITOR=nvim".to_string()],
+            env: vec!["EDITOR=nvim".to_string()],
             system: vec!["shell=/bin/zsh".to_string()],
             ..test_profile_create_args("new-profile")
         };
@@ -5489,7 +5592,7 @@ spec:
         assert_eq!(doc.metadata.name, "new-profile");
         assert_eq!(doc.spec.inherits, vec!["default"]);
         assert_eq!(doc.spec.modules, vec!["nvim"]);
-        assert!(doc.spec.variables.contains_key("EDITOR"));
+        assert!(doc.spec.env.iter().any(|e| e.name == "EDITOR"));
         assert!(doc.spec.system.contains_key("shell"));
     }
 
@@ -5529,7 +5632,7 @@ spec:
         let args = ProfileUpdateArgs {
             add_modules: vec!["nvim".to_string()],
             add_packages: vec!["brew:jq".to_string()],
-            add_variables: vec!["EDITOR=nvim".to_string()],
+            add_env: vec!["EDITOR=nvim".to_string()],
             add_system: vec!["shell=/bin/zsh".to_string()],
             ..empty_profile_update_args()
         };
@@ -5538,7 +5641,7 @@ spec:
         let profile_path = dir.path().join("profiles").join("default.yaml");
         let doc = config::load_profile(&profile_path).unwrap();
         assert!(doc.spec.modules.contains(&"nvim".to_string()));
-        assert!(doc.spec.variables.contains_key("EDITOR"));
+        assert!(doc.spec.env.iter().any(|e| e.name == "EDITOR"));
         assert!(doc.spec.system.contains_key("shell"));
     }
 
@@ -5603,6 +5706,45 @@ spec:
         assert!(profile::parse_manager_package(":curl").is_err());
         assert!(profile::parse_manager_package("brew:").is_err());
         assert!(profile::parse_manager_package(":").is_err());
+    }
+
+    #[test]
+    fn parse_package_flag_with_known_manager() {
+        let known = &["brew", "apt", "cargo"];
+        let (mgr, pkg) = parse_package_flag("brew:curl", known);
+        assert_eq!(mgr, Some("brew".to_string()));
+        assert_eq!(pkg, "curl");
+    }
+
+    #[test]
+    fn parse_package_flag_bare_name() {
+        let known = &["brew", "apt", "cargo"];
+        let (mgr, pkg) = parse_package_flag("ripgrep", known);
+        assert_eq!(mgr, None);
+        assert_eq!(pkg, "ripgrep");
+    }
+
+    #[test]
+    fn parse_package_flag_unknown_prefix_treated_as_bare() {
+        let known = &["brew", "apt", "cargo"];
+        // "python3:amd64" — "python3" is not a known manager
+        let (mgr, pkg) = parse_package_flag("python3:amd64", known);
+        assert_eq!(mgr, None);
+        assert_eq!(pkg, "python3:amd64");
+    }
+
+    #[test]
+    fn parse_package_flag_empty_parts() {
+        let known = &["brew"];
+        // ":curl" — empty prefix, not a known manager
+        let (mgr, pkg) = parse_package_flag(":curl", known);
+        assert_eq!(mgr, None);
+        assert_eq!(pkg, ":curl");
+
+        // "brew:" — empty suffix
+        let (mgr, pkg) = parse_package_flag("brew:", known);
+        assert_eq!(mgr, None);
+        assert_eq!(pkg, "brew:");
     }
 
     #[test]

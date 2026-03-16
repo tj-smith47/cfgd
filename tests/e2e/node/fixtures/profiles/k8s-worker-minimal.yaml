@@ -3,7 +3,7 @@ kind: Profile
 metadata:
   name: k8s-worker-minimal
 spec:
-  variables: {}
+  env: []
   system:
     sysctl:
       vm.max_map_count: "262144"

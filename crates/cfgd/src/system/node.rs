@@ -80,7 +80,7 @@ impl SysctlConfigurator {
             content.push_str(&format!("{} = {}\n", k, v));
         }
 
-        fs::write(&conf_path, content)?;
+        cfgd_core::atomic_write_str(&conf_path, &content)?;
         Ok(())
     }
 }
@@ -223,7 +223,7 @@ impl KernelModuleConfigurator {
             content.push('\n');
         }
 
-        fs::write(&conf_path, content)?;
+        cfgd_core::atomic_write_str(&conf_path, &content)?;
         Ok(())
     }
 }
@@ -438,10 +438,33 @@ impl SystemConfigurator for ContainerdConfigurator {
                 e
             )))
         })?;
-        fs::write(&config_path, content)?;
+
+        // Validate serialized TOML can be re-parsed before writing
+        if let Err(e) = content.parse::<toml::Value>() {
+            return Err(CfgdError::Io(std::io::Error::other(format!(
+                "containerd config validation failed — aborting write: {}",
+                e
+            ))));
+        }
+
+        // Backup existing config before overwriting
+        let backup = cfgd_core::capture_file_state(&config_path).map_err(CfgdError::Io)?;
+
+        cfgd_core::atomic_write_str(&config_path, &content)?;
 
         printer.info("Restarting containerd");
-        Self::restart_containerd()?;
+        if let Err(e) = Self::restart_containerd() {
+            // Restart failed — attempt rollback
+            if let Some(ref state) = backup
+                && !state.is_symlink
+                && !state.oversized
+            {
+                printer.warning("containerd restart failed — restoring previous config");
+                let _ = cfgd_core::atomic_write(&config_path, &state.content);
+                let _ = Self::restart_containerd();
+            }
+            return Err(e);
+        }
 
         Ok(())
     }
@@ -590,10 +613,32 @@ impl SystemConfigurator for KubeletConfigurator {
                 e
             )))
         })?;
-        fs::write(&config_path, content)?;
+
+        // Validate serialized YAML can be re-parsed before writing
+        if let Err(e) = serde_yaml::from_str::<serde_yaml::Value>(&content) {
+            return Err(CfgdError::Io(std::io::Error::other(format!(
+                "kubelet config validation failed — aborting write: {}",
+                e
+            ))));
+        }
+
+        // Backup existing config before overwriting
+        let backup = cfgd_core::capture_file_state(&config_path).map_err(CfgdError::Io)?;
+
+        cfgd_core::atomic_write_str(&config_path, &content)?;
 
         printer.info("Restarting kubelet");
-        Self::restart_kubelet()?;
+        if let Err(e) = Self::restart_kubelet() {
+            if let Some(ref state) = backup
+                && !state.is_symlink
+                && !state.oversized
+            {
+                printer.warning("kubelet restart failed — restoring previous config");
+                let _ = cfgd_core::atomic_write(&config_path, &state.content);
+                let _ = Self::restart_kubelet();
+            }
+            return Err(e);
+        }
 
         Ok(())
     }
@@ -752,7 +797,7 @@ impl SystemConfigurator for AppArmorConfigurator {
                     fs::create_dir_all(parent)?;
                 }
                 printer.info(&format!("Writing AppArmor profile: {}", path.display()));
-                fs::write(&path, content)?;
+                cfgd_core::atomic_write_str(&path, content)?;
             }
 
             printer.info(&format!("Loading AppArmor profile: {}", name));
@@ -885,7 +930,7 @@ impl SystemConfigurator for SeccompConfigurator {
                 name,
                 profile_path.display()
             ));
-            fs::write(&profile_path, content)?;
+            cfgd_core::atomic_write_str(&profile_path, content)?;
         }
 
         Ok(())

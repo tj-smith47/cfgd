@@ -3,7 +3,7 @@ kind: Profile
 metadata:
   name: k8s-worker-seccomp
 spec:
-  variables: {}
+  env: []
   system:
     seccomp:
       profiles-dir: /tmp/cfgd-e2e-seccomp

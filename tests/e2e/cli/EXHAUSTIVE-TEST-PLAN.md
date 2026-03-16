@@ -48,7 +48,7 @@ Every cfgd command, subcommand, and flag. All tests are self-contained — no ex
 | A05 | `apply --dry-run --phase files` | Only file phase shown |
 | A06 | `apply --dry-run --phase packages` | Only package phase shown |
 | A07 | `apply --dry-run --phase system` | Only system phase shown |
-| A08 | `apply --dry-run --phase variables` | Only variables phase shown |
+| A08 | `apply --dry-run --phase env` | Only env phase shown |
 | A09 | `apply --dry-run --phase secrets` | Only secrets phase shown |
 | A10 | `apply --dry-run --skip files` | Files phase excluded |
 | A11 | `apply --dry-run --only files` | Only files phase included |
@@ -68,7 +68,7 @@ Every cfgd command, subcommand, and flag. All tests are self-contained — no ex
 | S03 | `status --quiet` | Minimal output |
 | D01 | `diff` | Exit 0 or 1 |
 | L01 | `log` | Exit 0 |
-| L02 | `log --count 5` | Respects limit |
+| L02 | `log --limit 5` | Respects limit |
 | L03 | `log -c 1` | Short flag |
 | V01 | `verify` | Exit 0 after clean apply |
 | DR01 | `doctor` | Exit 0 |
@@ -81,12 +81,12 @@ Every cfgd command, subcommand, and flag. All tests are self-contained — no ex
 | P02 | `profile list` | Shows base, dev, work-dev |
 | P03 | `profile show` | Shows active profile |
 | P04 | `profile create test-minimal` | Exit 0, file exists |
-| P05 | `profile create X --inherits base` | Inherits field set |
+| P05 | `profile create X --inherit base` | Inherits field set |
 | P06 | `profile create X --package brew:rg` | Package added |
 | P07 | `profile create X --variable K=V` | Variable set |
 | P08 | `profile create X --system K=V` | System setting set |
 | P09 | `profile create X --file path` | File entry added |
-| P10 | `profile create X --private` | Private flag set |
+| P10 | `profile create X --private-files` | Private flag set |
 | P11 | `profile create X --module nvim` | Module ref added |
 | P12 | `profile create X` (all flags) | Multiple flags compose |
 | P13 | `profile create X --pre/post-reconcile` | Hook scripts added |
@@ -110,7 +110,7 @@ Every cfgd command, subcommand, and flag. All tests are self-contained — no ex
 | M04 | `module create X --depends Y` | Dependency added |
 | M05 | `module create X --package mgr:pkg` | Package added |
 | M06 | `module create X --file path` | File entry added |
-| M07 | `module create X --private` | Private flag set |
+| M07 | `module create X --private-files` | Private flag set |
 | M08 | `module create X --post-apply "cmd"` | Script added |
 | M09 | `module create X --set pkg.K.F=V` | Override set |
 | M10 | `module create` (all flags) | Multiple flags compose |
@@ -245,8 +245,8 @@ All source tests use a local git repo created inline as the "remote."
 |---|---|---|
 | CI01 | `checkin --help` | Shows --server-url flag |
 | CI02 | `checkin --server-url http://bad` | Connection refused error |
-| EN01 | `enroll --help` | Shows --server flag |
-| EN02 | `enroll --server http://bad` | Connection refused error |
+| EN01 | `enroll --help` | Shows --server-url flag |
+| EN02 | `enroll --server-url http://bad` | Connection refused error |
 | EN03 | `enroll --ssh-key path` | Flag accepted (fails on connect) |
 | EN04 | `enroll --gpg-key ID` | Flag accepted (fails on connect) |
 | EN05 | `enroll --username user` | Flag accepted (fails on connect) |

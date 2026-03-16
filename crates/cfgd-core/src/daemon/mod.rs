@@ -540,7 +540,10 @@ pub async fn run_daemon(
                 .unwrap_or_else(|| Path::new("."))
                 .to_path_buf();
             let profiles_dir = config_dir.join("profiles");
-            let profile_name = match startup_profile_override.as_deref().or(startup_cfg.spec.profile.as_deref()) {
+            let profile_name = match startup_profile_override
+                .as_deref()
+                .or(startup_cfg.spec.profile.as_deref())
+            {
                 Some(p) => p,
                 None => {
                     tracing::error!("no profile configured — skipping reconciliation");
@@ -814,6 +817,29 @@ fn handle_reconcile(
 ) {
     tracing::info!("running reconciliation check");
 
+    // Try to acquire the apply lock (non-blocking). If a CLI apply is in
+    // progress, skip this reconciliation tick.
+    let state_dir = match crate::state::default_state_dir() {
+        Ok(d) => d,
+        Err(e) => {
+            tracing::error!("reconcile: cannot determine state directory: {}", e);
+            return;
+        }
+    };
+    let _lock = match crate::acquire_apply_lock(&state_dir) {
+        Ok(guard) => guard,
+        Err(crate::errors::CfgdError::State(crate::errors::StateError::ApplyLockHeld {
+            ref holder,
+        })) => {
+            tracing::debug!("reconcile: skipping — apply lock held by {}", holder);
+            return;
+        }
+        Err(e) => {
+            tracing::warn!("reconcile: cannot acquire apply lock: {}", e);
+            return;
+        }
+    };
+
     let cfg = match config::load_config(config_path) {
         Ok(c) => c,
         Err(e) => {
@@ -1018,14 +1044,48 @@ fn handle_reconcile(
             }
         });
 
-        if notify_on_drift {
-            notifier.notify(
-                "cfgd: drift detected",
-                &format!(
-                    "{} resource(s) have drifted from desired state",
+        // Check drift policy to decide whether to auto-apply or just notify
+        let drift_policy = cfg
+            .spec
+            .daemon
+            .as_ref()
+            .and_then(|d| d.reconcile.as_ref())
+            .map(|r| r.drift_policy.clone())
+            .unwrap_or_default();
+
+        match drift_policy {
+            config::DriftPolicy::Auto => {
+                tracing::info!(
+                    "drift policy is Auto — applying {} action(s)",
                     effective_total
-                ),
-            );
+                );
+                // Auto-apply is intentionally not implemented here yet.
+                // The reconciler apply requires the full CLI context (Printer,
+                // file manager, secret backend). When implemented, it will call
+                // reconciler.apply() with the plan. For now, drift is recorded
+                // above and the user is notified to run `cfgd apply`.
+                if notify_on_drift {
+                    notifier.notify(
+                        "cfgd: drift detected — auto-apply pending",
+                        &format!(
+                            "{} resource(s) drifted. Run `cfgd apply` to reconcile.",
+                            effective_total
+                        ),
+                    );
+                }
+            }
+            config::DriftPolicy::NotifyOnly | config::DriftPolicy::Prompt => {
+                tracing::info!("drift policy is NotifyOnly — recording drift, not applying");
+                if notify_on_drift {
+                    notifier.notify(
+                        "cfgd: drift detected",
+                        &format!(
+                            "{} resource(s) have drifted from desired state. Run `cfgd apply` to reconcile.",
+                            effective_total
+                        ),
+                    );
+                }
+            }
         }
     }
 
@@ -1097,6 +1157,17 @@ fn action_resource_info(action: &crate::reconciler::Action) -> (String, String) 
             }
         }
         Action::Module(ma) => ("module".to_string(), ma.module_name.clone()),
+        Action::Env(ea) => {
+            use crate::reconciler::EnvAction;
+            match ea {
+                EnvAction::WriteEnvFile { path, .. } => {
+                    ("env".to_string(), path.display().to_string())
+                }
+                EnvAction::InjectSourceLine { rc_path, .. } => {
+                    ("env-rc".to_string(), rc_path.display().to_string())
+                }
+            }
+        }
     }
 }
 
@@ -1142,8 +1213,8 @@ fn extract_source_resources(merged: &MergedProfile) -> HashSet<String> {
         resources.insert(format!("files.{}", file.target.display()));
     }
 
-    for k in merged.variables.keys() {
-        resources.insert(format!("variables.{}", k));
+    for ev in &merged.env {
+        resources.insert(format!("env.{}", ev.name));
     }
 
     for k in merged.system.keys() {
@@ -2225,7 +2296,10 @@ mod tests {
                 }],
                 ..Default::default()
             },
-            variables: HashMap::from_iter([("EDITOR".to_string(), serde_yaml::Value::from("vim"))]),
+            env: vec![crate::config::EnvVar {
+                name: "EDITOR".into(),
+                value: "vim".into(),
+            }],
             ..Default::default()
         };
 
@@ -2235,7 +2309,7 @@ mod tests {
         assert!(resources.contains("packages.brew.firefox"));
         assert!(resources.contains("packages.cargo.bat"));
         assert!(resources.contains("files./home/user/.zshrc"));
-        assert!(resources.contains("variables.EDITOR"));
+        assert!(resources.contains("env.EDITOR"));
         assert_eq!(resources.len(), 6);
     }
 
@@ -2260,7 +2334,7 @@ mod tests {
     #[test]
     fn infer_item_tier_defaults_to_recommended() {
         assert_eq!(infer_item_tier("packages.brew.ripgrep"), "recommended");
-        assert_eq!(infer_item_tier("variables.EDITOR"), "recommended");
+        assert_eq!(infer_item_tier("env.EDITOR"), "recommended");
     }
 
     #[test]

@@ -118,7 +118,9 @@ fn brew_available() -> bool {
 /// so that brew-installed binaries (and post-apply scripts that use them) work
 /// immediately without requiring a new shell session.
 fn update_path_for_brew() {
-    let brew_bin = std::path::Path::new(LINUXBREW_PATH).parent().unwrap_or(std::path::Path::new("."));
+    let brew_bin = std::path::Path::new(LINUXBREW_PATH)
+        .parent()
+        .unwrap_or(std::path::Path::new("."));
     let brew_prefix = brew_bin.parent().unwrap_or(brew_bin);
     let sbin = brew_prefix.join("sbin");
 
@@ -131,7 +133,12 @@ fn update_path_for_brew() {
             unsafe {
                 std::env::set_var(
                     "PATH",
-                    format!("{}:{}:{}", brew_bin_str, sbin.to_string_lossy(), current_path),
+                    format!(
+                        "{}:{}:{}",
+                        brew_bin_str,
+                        sbin.to_string_lossy(),
+                        current_path
+                    ),
                 );
             }
         }
@@ -139,20 +146,42 @@ fn update_path_for_brew() {
 }
 
 /// Build a Command for brew, handling linuxbrew paths.
-/// On Linux as root with a linuxbrew user, routes through `sudo -u linuxbrew`.
+/// On Linux as root, detects the owner of the brew installation and runs via
+/// `sudo -u <owner>` since brew refuses to run as root.
 /// On Linux as non-root, uses LINUXBREW_PATH directly if brew is not in PATH.
 fn brew_cmd() -> Command {
     if cfg!(target_os = "linux") && std::path::Path::new(LINUXBREW_PATH).exists() {
         if is_root() {
-            let mut cmd = Command::new("sudo");
-            cmd.args(["-u", "linuxbrew", LINUXBREW_PATH]);
-            return cmd;
+            if let Some(owner) = brew_owner() {
+                let mut cmd = Command::new("sudo");
+                cmd.args(["-u", &owner, LINUXBREW_PATH]);
+                return cmd;
+            }
+            // No owner detected — try full path directly (brew will error if it
+            // refuses root, but that's a better error than a missing user)
+            return Command::new(LINUXBREW_PATH);
         }
         if !command_available("brew") {
             return Command::new(LINUXBREW_PATH);
         }
     }
     Command::new("brew")
+}
+
+/// Detect the user who owns the brew installation.
+fn brew_owner() -> Option<String> {
+    let output = Command::new("stat")
+        .args(["-c", "%U", LINUXBREW_PATH])
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .output()
+        .ok()?;
+    let owner = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if owner.is_empty() || owner == "root" {
+        None
+    } else {
+        Some(owner)
+    }
 }
 
 /// Strip trailing "-VERSION" from package names where version starts with a digit.

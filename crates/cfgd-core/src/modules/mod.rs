@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 
 use sha2::{Digest, Sha256};
 
-use crate::config::{ModulePackageEntry, ModuleSpec, parse_module};
+use crate::config::{EnvVar, ModulePackageEntry, ModuleSpec, parse_module};
 use crate::errors::{ConfigError, ModuleError, Result};
 use crate::platform::Platform;
 use crate::providers::PackageManager;
@@ -54,6 +54,7 @@ pub struct ResolvedModule {
     pub name: String,
     pub packages: Vec<ResolvedPackage>,
     pub files: Vec<ResolvedFile>,
+    pub env: Vec<EnvVar>,
     pub post_apply_scripts: Vec<String>,
     pub depends: Vec<String>,
 }
@@ -300,6 +301,12 @@ pub fn resolve_package(
     } else {
         entry.prefer.clone()
     };
+
+    // Filter out denied managers
+    let candidates: Vec<String> = candidates
+        .into_iter()
+        .filter(|c| !entry.deny.contains(c))
+        .collect();
 
     for candidate in &candidates {
         // Special "script" manager — always available, uses custom install script
@@ -792,6 +799,7 @@ pub fn resolve_modules(
             name: name.clone(),
             packages,
             files,
+            env: module.spec.env.clone(),
             post_apply_scripts,
             depends: module.spec.depends.clone(),
         });
@@ -1640,6 +1648,7 @@ spec: {}
             prefer: vec![],
             aliases: HashMap::new(),
             script: None,
+            deny: vec![],
             platforms: vec![],
         };
 
@@ -1668,6 +1677,7 @@ spec: {}
                 .into_iter()
                 .collect(),
             script: None,
+            deny: vec![],
             platforms: vec![],
         };
 
@@ -1695,6 +1705,7 @@ spec: {}
                 .into_iter()
                 .collect(),
             script: None,
+            deny: vec![],
             platforms: vec![],
         };
 
@@ -1718,6 +1729,7 @@ spec: {}
             prefer: vec!["apt".into()],
             aliases: HashMap::new(),
             script: None,
+            deny: vec![],
             platforms: vec![],
         };
 
@@ -1745,6 +1757,7 @@ spec: {}
                 .into_iter()
                 .collect(),
             script: None,
+            deny: vec![],
             platforms: vec![],
         };
 
@@ -1767,6 +1780,7 @@ spec: {}
             prefer: vec!["brew".into()],
             aliases: HashMap::new(),
             script: None,
+            deny: vec![],
             platforms: vec![],
         };
 
@@ -2086,6 +2100,7 @@ spec:
             script: Some(
                 "curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y".into(),
             ),
+            deny: vec![],
             platforms: vec![],
         };
 
@@ -2113,6 +2128,7 @@ spec:
             prefer: vec!["brew".into(), "script".into()],
             aliases: HashMap::new(),
             script: Some("scripts/install-neovim.sh".into()),
+            deny: vec![],
             platforms: vec![],
         };
 
@@ -2136,6 +2152,7 @@ spec:
             prefer: vec!["script".into(), "brew".into()],
             aliases: HashMap::new(),
             script: Some("build-from-source.sh".into()),
+            deny: vec![],
             platforms: vec![],
         };
 
@@ -2156,6 +2173,7 @@ spec:
             prefer: vec!["script".into()],
             aliases: HashMap::new(),
             script: None, // script field missing!
+            deny: vec![],
             platforms: vec![],
         };
 
@@ -2183,6 +2201,7 @@ spec:
             prefer: vec![],
             aliases: HashMap::new(),
             script: None,
+            deny: vec![],
             platforms: vec!["linux".into()],
         };
 
@@ -2203,6 +2222,7 @@ spec:
             prefer: vec!["brew".into()],
             aliases: HashMap::new(),
             script: None,
+            deny: vec![],
             platforms: vec!["macos".into()], // macos only
         };
 
@@ -2223,6 +2243,7 @@ spec:
             prefer: vec![],
             aliases: HashMap::new(),
             script: None,
+            deny: vec![],
             platforms: vec!["ubuntu".into()],
         };
 
@@ -2245,6 +2266,7 @@ spec:
             prefer: vec![],
             aliases: HashMap::new(),
             script: None,
+            deny: vec![],
             platforms: vec!["aarch64".into()],
         };
 
@@ -2264,6 +2286,7 @@ spec:
             prefer: vec![],
             aliases: HashMap::new(),
             script: None,
+            deny: vec![],
             platforms: vec![], // empty = all platforms
         };
 
@@ -2287,6 +2310,7 @@ spec:
                         prefer: vec![],
                         aliases: HashMap::new(),
                         script: None,
+                        deny: vec![],
                         platforms: vec![], // all platforms
                     },
                     ModulePackageEntry {
@@ -2295,6 +2319,7 @@ spec:
                         prefer: vec!["apt".into()],
                         aliases: HashMap::new(),
                         script: None,
+                        deny: vec![],
                         platforms: vec!["linux".into()], // linux only
                     },
                 ],
@@ -2512,9 +2537,11 @@ spec:
                     prefer: vec![],
                     aliases: HashMap::new(),
                     script: None,
+                    deny: vec![],
                     platforms: vec![],
                 }],
                 files: vec![],
+                env: vec![],
                 scripts: None,
             },
             dir: PathBuf::from("/fake"),
@@ -2537,6 +2564,7 @@ spec:
                         prefer: vec![],
                         aliases: HashMap::new(),
                         script: None,
+                        deny: vec![],
                         platforms: vec![],
                     },
                     ModulePackageEntry {
@@ -2545,6 +2573,7 @@ spec:
                         prefer: vec![],
                         aliases: HashMap::new(),
                         script: None,
+                        deny: vec![],
                         platforms: vec![],
                     },
                 ],
@@ -2554,6 +2583,7 @@ spec:
                     strategy: None,
                     private: false,
                 }],
+                env: vec![],
                 scripts: None,
             },
             dir: PathBuf::from("/fake"),
@@ -2570,6 +2600,7 @@ spec:
                         prefer: vec![],
                         aliases: HashMap::new(),
                         script: None,
+                        deny: vec![],
                         platforms: vec![],
                     },
                     ModulePackageEntry {
@@ -2578,6 +2609,7 @@ spec:
                         prefer: vec![],
                         aliases: HashMap::new(),
                         script: None,
+                        deny: vec![],
                         platforms: vec![],
                     },
                 ],
@@ -2587,6 +2619,7 @@ spec:
                     strategy: None,
                     private: false,
                 }],
+                env: vec![],
                 scripts: None,
             },
             dir: PathBuf::from("/fake"),
@@ -2828,6 +2861,7 @@ spec:
                 depends: vec![],
                 packages: vec![],
                 files: vec![],
+                env: vec![],
                 scripts: Some(crate::config::ModuleScriptSpec {
                     post_apply: vec!["echo old".into()],
                 }),
@@ -2840,6 +2874,7 @@ spec:
                 depends: vec![],
                 packages: vec![],
                 files: vec![],
+                env: vec![],
                 scripts: Some(crate::config::ModuleScriptSpec {
                     post_apply: vec!["echo new".into()],
                 }),

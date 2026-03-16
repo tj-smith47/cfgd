@@ -5,8 +5,8 @@
 use std::collections::HashMap;
 
 use crate::config::{
-    ConfigSourcePolicy, LayerPolicy, MergedProfile, PackagesSpec, PolicyItems, ProfileLayer,
-    ProfileSpec, ResolvedProfile, SourceConstraints, SourceSpec,
+    ConfigSourcePolicy, EnvVar, LayerPolicy, MergedProfile, PackagesSpec, PolicyItems,
+    ProfileLayer, ProfileSpec, ResolvedProfile, SourceConstraints, SourceSpec,
 };
 use crate::errors::{CompositionError, Result};
 use crate::{deep_merge_yaml, union_extend};
@@ -77,10 +77,10 @@ impl SubscriptionConfig {
 pub struct CompositionResult {
     pub resolved: ResolvedProfile,
     pub conflicts: Vec<ConflictResolution>,
-    /// Per-source variable sets for template sandboxing.
-    /// Source templates must only access their own variables + system facts,
-    /// NOT the subscriber's personal variables.
-    pub source_variables: HashMap<String, HashMap<String, serde_yaml::Value>>,
+    /// Per-source env var sets for template sandboxing.
+    /// Source templates must only access their own env vars + system facts,
+    /// NOT the subscriber's personal env vars.
+    pub source_env: HashMap<String, Vec<EnvVar>>,
 }
 
 /// Compose multiple source configs with a local resolved profile.
@@ -90,7 +90,7 @@ pub struct CompositionResult {
 /// 1. Start with local resolved profile
 /// 2. For each source (sorted by priority ascending):
 ///    - Apply locked items unconditionally
-///    - Apply required items (union for packages, source wins for files/variables)
+///    - Apply required items (union for packages, source wins for files/env)
 ///    - Apply recommended items if accept_recommended && not rejected
 ///    - Apply optional items only if opted in
 /// 3. Apply subscriber overrides on top
@@ -98,7 +98,7 @@ pub struct CompositionResult {
 pub fn compose(local: &ResolvedProfile, sources: &[CompositionInput]) -> Result<CompositionResult> {
     let mut all_layers: Vec<ProfileLayer> = local.layers.clone();
     let mut conflicts: Vec<ConflictResolution> = Vec::new();
-    let mut source_variables: HashMap<String, HashMap<String, serde_yaml::Value>> = HashMap::new();
+    let mut source_env: HashMap<String, Vec<EnvVar>> = HashMap::new();
 
     // Sort sources by priority ascending (lower priority processed first, higher wins)
     let mut sorted_sources: Vec<&CompositionInput> = sources.iter().collect();
@@ -109,14 +109,12 @@ pub fn compose(local: &ResolvedProfile, sources: &[CompositionInput]) -> Result<
     });
 
     for input in &sorted_sources {
-        // Collect source-specific variables for template sandboxing
-        let mut vars: HashMap<String, serde_yaml::Value> = HashMap::new();
+        // Collect source-specific env for template sandboxing
+        let mut env: Vec<EnvVar> = Vec::new();
         for layer in &input.layers {
-            for (k, v) in &layer.spec.variables {
-                vars.insert(k.clone(), v.clone());
-            }
+            crate::merge_env(&mut env, &layer.spec.env);
         }
-        source_variables.insert(input.source_name.clone(), vars);
+        source_env.insert(input.source_name.clone(), env);
 
         let source_layers = build_source_layers(input, &mut conflicts)?;
         all_layers.extend(source_layers);
@@ -149,7 +147,7 @@ pub fn compose(local: &ResolvedProfile, sources: &[CompositionInput]) -> Result<
             merged,
         },
         conflicts,
-        source_variables,
+        source_env,
     })
 }
 
@@ -280,10 +278,8 @@ fn merge_with_policy(
     for layer in layers {
         let spec = &layer.spec;
 
-        // Variables: later overrides earlier (respecting priority ordering)
-        for (k, v) in &spec.variables {
-            merged.variables.insert(k.clone(), v.clone());
-        }
+        // Env: later overrides earlier by name (respecting priority ordering)
+        crate::merge_env(&mut merged.env, &spec.env);
 
         // Packages: union
         if let Some(ref pkgs) = spec.packages {
@@ -502,7 +498,7 @@ pub fn check_locked_violations(
 fn has_content(items: &PolicyItems) -> bool {
     items.packages.is_some()
         || !items.files.is_empty()
-        || !items.variables.is_empty()
+        || !items.env.is_empty()
         || !items.system.is_empty()
         || !items.profiles.is_empty()
         || !items.modules.is_empty()
@@ -519,7 +515,7 @@ fn policy_items_to_spec(items: &PolicyItems) -> ProfileSpec {
                 permissions: HashMap::new(),
             })
         },
-        variables: items.variables.clone(),
+        env: items.env.clone(),
         system: items.system.clone(),
         modules: items.modules.clone(),
         ..Default::default()
@@ -568,13 +564,13 @@ fn filter_rejected(recommended: &PolicyItems, reject: &serde_yaml::Value) -> Pol
             filter_rejected_packages(pkgs, pkg_val);
         }
 
-        // Filter rejected variables
-        if let Some(var_val) = reject_map.get(serde_yaml::Value::String("variables".into()))
-            && let Some(var_map) = var_val.as_mapping()
+        // Filter rejected env
+        if let Some(env_val) = reject_map.get(serde_yaml::Value::String("env".into()))
+            && let Some(env_map) = env_val.as_mapping()
         {
-            for (key, _) in var_map {
+            for (key, _) in env_map {
                 if let Some(key_str) = key.as_str() {
-                    filtered.variables.remove(key_str);
+                    filtered.env.retain(|e| e.name != key_str);
                 }
             }
         }
@@ -694,13 +690,13 @@ fn record_policy_conflicts(
         }
     }
 
-    // Record variable conflicts
-    for key in items.variables.keys() {
+    // Record env conflicts
+    for ev in &items.env {
         conflicts.push(ConflictResolution {
-            resource_id: format!("variable:{}", key),
+            resource_id: format!("env:{}", ev.name),
             resolution_type: resolution_type.clone(),
             winning_source: source_name.to_string(),
-            details: format!("{} {} <- {}", resolution_type.label(), key, source_name),
+            details: format!("{} {} <- {}", resolution_type.label(), ev.name, source_name),
         });
     }
 
@@ -924,7 +920,7 @@ fn count_policy_tier_items(items: &PolicyItems) -> usize {
         }
     }
     count += items.files.len();
-    count += items.variables.len();
+    count += items.env.len();
     count += items.system.len();
     count += items.modules.len();
     count
@@ -943,10 +939,10 @@ mod tests {
                 priority: 1000,
                 policy: LayerPolicy::Local,
                 spec: ProfileSpec {
-                    variables: HashMap::from([(
-                        "editor".into(),
-                        serde_yaml::Value::String("vim".into()),
-                    )]),
+                    env: vec![EnvVar {
+                        name: "editor".into(),
+                        value: "vim".into(),
+                    }],
                     packages: Some(PackagesSpec {
                         cargo: Some(CargoSpec {
                             file: None,
@@ -958,10 +954,10 @@ mod tests {
                 },
             }],
             merged: MergedProfile {
-                variables: HashMap::from([(
-                    "editor".into(),
-                    serde_yaml::Value::String("vim".into()),
-                )]),
+                env: vec![EnvVar {
+                    name: "editor".into(),
+                    value: "vim".into(),
+                }],
                 packages: PackagesSpec {
                     cargo: Some(CargoSpec {
                         file: None,
@@ -997,10 +993,10 @@ mod tests {
                         }),
                         ..Default::default()
                     }),
-                    variables: HashMap::from([(
-                        "EDITOR".into(),
-                        serde_yaml::Value::String("code --wait".into()),
-                    )]),
+                    env: vec![EnvVar {
+                        name: "EDITOR".into(),
+                        value: "code --wait".into(),
+                    }],
                     ..Default::default()
                 },
                 locked: PolicyItems {
@@ -1029,8 +1025,14 @@ mod tests {
         let local = make_local_profile();
         let result = compose(&local, &[]).unwrap();
         assert_eq!(
-            result.resolved.merged.variables.get("editor"),
-            Some(&serde_yaml::Value::String("vim".into()))
+            result
+                .resolved
+                .merged
+                .env
+                .iter()
+                .find(|e| e.name == "editor")
+                .map(|e| &e.value),
+            Some(&"vim".to_string())
         );
         assert!(result.conflicts.is_empty());
     }
@@ -1284,12 +1286,15 @@ mod tests {
     #[test]
     fn filter_rejected_noop_on_null() {
         let recommended = PolicyItems {
-            variables: HashMap::from([("EDITOR".into(), serde_yaml::Value::String("code".into()))]),
+            env: vec![EnvVar {
+                name: "EDITOR".into(),
+                value: "code".into(),
+            }],
             ..Default::default()
         };
 
         let filtered = filter_rejected(&recommended, &serde_yaml::Value::Null);
-        assert_eq!(filtered.variables.len(), 1);
+        assert_eq!(filtered.env.len(), 1);
     }
 
     #[test]
@@ -1300,10 +1305,10 @@ mod tests {
             priority: 300,
             policy: ConfigSourcePolicy {
                 recommended: PolicyItems {
-                    variables: HashMap::from([(
-                        "theme".into(),
-                        serde_yaml::Value::String("dark".into()),
-                    )]),
+                    env: vec![EnvVar {
+                        name: "theme".into(),
+                        value: "dark".into(),
+                    }],
                     ..Default::default()
                 },
                 ..Default::default()
@@ -1320,10 +1325,10 @@ mod tests {
             priority: 700,
             policy: ConfigSourcePolicy {
                 recommended: PolicyItems {
-                    variables: HashMap::from([(
-                        "theme".into(),
-                        serde_yaml::Value::String("light".into()),
-                    )]),
+                    env: vec![EnvVar {
+                        name: "theme".into(),
+                        value: "light".into(),
+                    }],
                     ..Default::default()
                 },
                 ..Default::default()
@@ -1339,16 +1344,28 @@ mod tests {
         let result = compose(&local, &[source_a, source_b]).unwrap();
         // Local (1000) wins over both sources, so "editor" = "vim" still
         assert_eq!(
-            result.resolved.merged.variables.get("editor"),
-            Some(&serde_yaml::Value::String("vim".into()))
+            result
+                .resolved
+                .merged
+                .env
+                .iter()
+                .find(|e| e.name == "editor")
+                .map(|e| &e.value),
+            Some(&"vim".to_string())
         );
         // Between sources, local wins (priority 1000), but for "theme" which is only
         // in sources, higher priority (beta=700) processed after lower priority (alpha=300)
         // Local layers are priority 1000 so processed last, but "theme" isn't in local
         // so beta's value should remain
         assert_eq!(
-            result.resolved.merged.variables.get("theme"),
-            Some(&serde_yaml::Value::String("light".into()))
+            result
+                .resolved
+                .merged
+                .env
+                .iter()
+                .find(|e| e.name == "theme")
+                .map(|e| &e.value),
+            Some(&"light".to_string())
         );
     }
 

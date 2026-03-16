@@ -5,7 +5,14 @@
 <h1 align="center">cfgd</h1>
 
 <p align="center">
-Declarative, GitOps-style machine configuration management. Written in Rust.
+Declarative, GitOps-inspired machine configuration — bootstrap entire machine profiles or self-contained tool modules. Written in Rust.
+</p>
+
+<p align="center">
+
+[![CI](https://github.com/tj-smith47/cfgd/actions/workflows/ci.yml/badge.svg)](https://github.com/tj-smith47/cfgd/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+
 </p>
 
 ---
@@ -120,7 +127,7 @@ cfgd init
 | [Operator](docs/operator.md) | CRD-based machine management, device gateway, DaemonSet node agent |
 | [Team Config](docs/team-config.md) | Crossplane-powered team config distribution |
 | [CLI Reference](docs/cli-reference.md) | Complete command reference with flags and examples |
-| [Bootstrap](docs/bootstrap.md) | `cfgd init` flow, resumability, install script |
+| [Bootstrap](docs/bootstrap.md) | `cfgd init` flow, apply options, install script |
 
 ## Shell Completions
 
@@ -129,6 +136,14 @@ cfgd completions bash > ~/.local/share/bash-completion/completions/cfgd
 cfgd completions zsh > ~/.zfunc/_cfgd
 cfgd completions fish > ~/.config/fish/completions/cfgd.fish
 ```
+
+## Why cfgd exists
+
+I switched jobs and spent a day setting up a new machine, forgetting half my config and gradually rediscovering things I'd lost over the next few weeks. I wanted to clone a repo and have my entire workstation — packages, dotfiles, system settings — just be there.
+
+The other thing was devcontainers. I use neovim, and I wanted my full editor setup available in any ephemeral container without having to modify the devcontainer config in team repositories to accommodate my personal preferences. I needed something that could bootstrap my config into any environment from the outside, regardless of which repo I was working in.
+
+cfgd started as a solution to those two problems and grew from there.
 
 ## Building from Source
 

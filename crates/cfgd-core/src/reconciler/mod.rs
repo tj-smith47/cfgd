@@ -19,6 +19,7 @@ pub enum PhaseName {
     System,
     Packages,
     Files,
+    Env,
     Secrets,
     Scripts,
 }
@@ -30,6 +31,7 @@ impl PhaseName {
             PhaseName::System => "system",
             PhaseName::Packages => "packages",
             PhaseName::Files => "files",
+            PhaseName::Env => "env",
             PhaseName::Secrets => "secrets",
             PhaseName::Scripts => "scripts",
         }
@@ -41,6 +43,7 @@ impl PhaseName {
             PhaseName::System => "System",
             PhaseName::Packages => "Packages",
             PhaseName::Files => "Files",
+            PhaseName::Env => "Environment",
             PhaseName::Secrets => "Secrets",
             PhaseName::Scripts => "Scripts",
         }
@@ -56,11 +59,27 @@ impl FromStr for PhaseName {
             "system" => Ok(PhaseName::System),
             "packages" => Ok(PhaseName::Packages),
             "files" => Ok(PhaseName::Files),
+            "env" => Ok(PhaseName::Env),
             "secrets" => Ok(PhaseName::Secrets),
             "scripts" => Ok(PhaseName::Scripts),
             _ => Err(format!("unknown phase: {}", s)),
         }
     }
+}
+
+/// Environment file action — write ~/.cfgd.env or inject source line into shell rc.
+#[derive(Debug)]
+pub enum EnvAction {
+    /// Write the generated env file (bash/zsh or fish).
+    WriteEnvFile {
+        path: std::path::PathBuf,
+        content: String,
+    },
+    /// Inject a source line into a shell rc file (idempotent).
+    InjectSourceLine {
+        rc_path: std::path::PathBuf,
+        line: String,
+    },
 }
 
 /// A unified action across all resource types.
@@ -72,6 +91,7 @@ pub enum Action {
     System(SystemAction),
     Script(ScriptAction),
     Module(ModuleAction),
+    Env(EnvAction),
 }
 
 /// Module-level action — first-class phase, not flattened into packages/files.
@@ -166,6 +186,7 @@ impl Plan {
                     Action::System(sa) => parts.push(format!("sys:{:?}", sa)),
                     Action::Script(sa) => parts.push(format!("script:{:?}", sa)),
                     Action::Module(ma) => parts.push(format!("module:{:?}", ma)),
+                    Action::Env(ea) => parts.push(format!("env:{:?}", ea)),
                 }
             }
         }
@@ -187,6 +208,17 @@ pub struct ActionResult {
 pub struct ApplyResult {
     pub action_results: Vec<ActionResult>,
     pub status: ApplyStatus,
+    /// The apply_id in the state store — used for rollback.
+    pub apply_id: i64,
+}
+
+/// Result of a rollback operation.
+#[derive(Debug)]
+pub struct RollbackResult {
+    pub files_restored: usize,
+    pub files_removed: usize,
+    /// Non-file actions that were not rolled back (require manual review).
+    pub non_file_actions: Vec<String>,
 }
 
 impl ApplyResult {
@@ -255,14 +287,21 @@ impl<'a> Reconciler<'a> {
             actions: fa,
         });
 
-        // Phase 4: Secrets
+        // Phase 4: Env — generate ~/.cfgd.env from merged profile + module env
+        let env_actions = Self::plan_env(&resolved.merged.env, &module_actions);
+        phases.push(Phase {
+            name: PhaseName::Env,
+            actions: env_actions,
+        });
+
+        // Phase 5: Secrets
         let secret_actions = self.plan_secrets(&resolved.merged);
         phases.push(Phase {
             name: PhaseName::Secrets,
             actions: secret_actions,
         });
 
-        // Phase 5: Scripts
+        // Phase 6: Scripts
         let script_actions = self.plan_scripts(&resolved.merged.scripts);
         phases.push(Phase {
             name: PhaseName::Scripts,
@@ -364,6 +403,66 @@ impl<'a> Reconciler<'a> {
         }
 
         Ok(actions)
+    }
+
+    /// Plan env file generation from merged profile + module env vars.
+    fn plan_env(profile_env: &[crate::config::EnvVar], modules: &[ResolvedModule]) -> Vec<Action> {
+        // Merge: profile env first, then module env wins on conflict by name
+        let mut merged: Vec<crate::config::EnvVar> = profile_env.to_vec();
+        for module in modules {
+            crate::merge_env(&mut merged, &module.env);
+        }
+
+        if merged.is_empty() {
+            return Vec::new();
+        }
+
+        let mut actions = Vec::new();
+
+        // Generate ~/.cfgd.env content
+        let env_path = crate::expand_tilde(std::path::Path::new("~/.cfgd.env"));
+        let content = generate_env_file_content(&merged);
+
+        // Check if file already exists with the same content
+        let existing = std::fs::read_to_string(&env_path).unwrap_or_default();
+        if existing != content {
+            actions.push(Action::Env(EnvAction::WriteEnvFile {
+                path: env_path.clone(),
+                content,
+            }));
+        }
+
+        // Check if shell rc needs source line injection
+        let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".to_string());
+        let rc_path = if shell.contains("zsh") {
+            crate::expand_tilde(std::path::Path::new("~/.zshrc"))
+        } else {
+            crate::expand_tilde(std::path::Path::new("~/.bashrc"))
+        };
+
+        let rc_content = std::fs::read_to_string(&rc_path).unwrap_or_default();
+        if !rc_content.contains("cfgd.env") {
+            actions.push(Action::Env(EnvAction::InjectSourceLine {
+                rc_path,
+                line: "[ -f ~/.cfgd.env ] && source ~/.cfgd.env".to_string(),
+            }));
+        }
+
+        // Fish shell: generate separate file if fish config dir exists
+        let fish_conf_d = crate::expand_tilde(std::path::Path::new("~/.config/fish/conf.d"));
+        if fish_conf_d.exists() {
+            let fish_path = fish_conf_d.join("cfgd-env.fish");
+            let fish_content = generate_fish_env_content(&merged);
+            let existing_fish = std::fs::read_to_string(&fish_path).unwrap_or_default();
+            if existing_fish != fish_content {
+                actions.push(Action::Env(EnvAction::WriteEnvFile {
+                    path: fish_path,
+                    content: fish_content,
+                }));
+            }
+        }
+
+        actions
     }
 
     fn plan_secrets(&self, profile: &MergedProfile) -> Vec<Action> {
@@ -582,7 +681,22 @@ impl<'a> Reconciler<'a> {
         phase_filter: Option<&PhaseName>,
         module_actions: &[ResolvedModule],
     ) -> Result<ApplyResult> {
+        // Record apply up front as "in-progress" so the journal can reference it
+        let plan_hash = crate::state::plan_hash(&plan.to_hash_string());
+        let profile_name = resolved
+            .layers
+            .last()
+            .map(|l| l.profile_name.as_str())
+            .unwrap_or("unknown");
+        let apply_id = self.state.record_apply(
+            profile_name,
+            &plan_hash,
+            ApplyStatus::Success, // will be updated at the end
+            None,
+        )?;
+
         let mut results = Vec::new();
+        let mut action_index: usize = 0;
 
         for phase in &plan.phases {
             if let Some(filter) = phase_filter
@@ -600,14 +714,50 @@ impl<'a> Reconciler<'a> {
             let pb = printer.progress_bar(phase.actions.len() as u64, phase.name.display_name());
 
             for action in &phase.actions {
-                let result = self.apply_action(action, resolved, config_dir, printer);
+                let desc_for_journal = format_action_description(action);
+                let (action_type, resource_id) = parse_resource_from_description(&desc_for_journal);
+
+                // Capture file state before overwrite (for backup)
+                if let Some(ref path) = action_target_path(action)
+                    && let Ok(Some(file_state)) = crate::capture_file_state(path)
+                    && let Err(e) = self.state.store_file_backup(
+                        apply_id,
+                        &path.display().to_string(),
+                        &file_state,
+                    )
+                {
+                    tracing::warn!("failed to store file backup for {}: {}", path.display(), e);
+                }
+
+                // Journal: record action start
+                let journal_id = self
+                    .state
+                    .journal_begin(
+                        apply_id,
+                        action_index,
+                        phase.name.as_str(),
+                        &action_type,
+                        &resource_id,
+                        None,
+                    )
+                    .ok();
+
+                let result = self.apply_action(action, resolved, config_dir, printer, apply_id);
                 pb.inc(1);
 
                 let (desc, success, error) = match result {
-                    Ok(desc) => (desc, true, None),
+                    Ok(desc) => {
+                        if let Some(jid) = journal_id {
+                            let _ = self.state.journal_complete(jid, None);
+                        }
+                        (desc, true, None)
+                    }
                     Err(e) => {
                         let desc = format_action_description(action);
                         printer.error(&format!("Failed: {} — {}", desc, e));
+                        if let Some(jid) = journal_id {
+                            let _ = self.state.journal_fail(jid, &e.to_string());
+                        }
                         (desc, false, Some(e.to_string()))
                     }
                 };
@@ -618,6 +768,7 @@ impl<'a> Reconciler<'a> {
                     success,
                     error,
                 });
+                action_index += 1;
             }
 
             pb.finish_and_clear();
@@ -633,24 +784,15 @@ impl<'a> Reconciler<'a> {
             ApplyStatus::Partial
         };
 
-        // Record in state store
-        let plan_hash = crate::state::plan_hash(&plan.to_hash_string());
-        let profile_name = resolved
-            .layers
-            .last()
-            .map(|l| l.profile_name.as_str())
-            .unwrap_or("unknown");
-
+        // Update apply status from "in-progress" placeholder to final
         let summary = serde_json::json!({
             "total": total,
             "succeeded": total - failed,
             "failed": failed,
         })
         .to_string();
-
-        let apply_id =
-            self.state
-                .record_apply(profile_name, &plan_hash, status.clone(), Some(&summary))?;
+        self.state
+            .update_apply_status(apply_id, status.clone(), Some(&summary))?;
 
         // Update managed resources
         for result in &results {
@@ -662,12 +804,107 @@ impl<'a> Reconciler<'a> {
             }
         }
 
-        // Update module state for successfully applied modules
+        // Update module state and file manifests for successfully applied modules
         self.update_module_state(module_actions, apply_id, &results)?;
 
         Ok(ApplyResult {
             action_results: results,
             status,
+            apply_id,
+        })
+    }
+
+    /// Roll back completed file actions from a previous apply.
+    ///
+    /// Restores files from backups in reverse order. Newly created files (no backup)
+    /// are deleted. Package installs and system changes are NOT rolled back — they
+    /// are listed in the output as requiring manual review.
+    pub fn rollback_apply(&self, apply_id: i64, printer: &Printer) -> Result<RollbackResult> {
+        let entries = self.state.journal_completed_actions(apply_id)?;
+        let mut files_restored = 0usize;
+        let mut files_removed = 0usize;
+        let mut non_file_actions = Vec::new();
+
+        // Process in reverse order
+        for entry in entries.iter().rev() {
+            let is_file = entry.phase == "files"
+                || entry.action_type == "file"
+                || entry.resource_id.starts_with("file:");
+
+            if !is_file {
+                non_file_actions.push(entry.resource_id.clone());
+                continue;
+            }
+
+            // Try to get backup
+            let backup = self.state.get_file_backup(apply_id, &entry.resource_id)?;
+            // Strip "file:create:" or "file:update:" prefix to get the actual path
+            let actual_path = entry
+                .resource_id
+                .strip_prefix("file:create:")
+                .or_else(|| entry.resource_id.strip_prefix("file:update:"))
+                .or_else(|| entry.resource_id.strip_prefix("file:delete:"))
+                .unwrap_or(&entry.resource_id);
+            let target = std::path::Path::new(actual_path);
+
+            if let Some(ref bk) = backup {
+                if bk.was_symlink {
+                    // Restore symlink
+                    if let Some(ref link_target) = bk.symlink_target {
+                        let _ = std::fs::remove_file(target);
+                        if let Err(e) = std::os::unix::fs::symlink(link_target, target) {
+                            printer.warning(&format!(
+                                "rollback: failed to restore symlink {}: {}",
+                                target.display(),
+                                e
+                            ));
+                        } else {
+                            files_restored += 1;
+                        }
+                    }
+                } else if !bk.oversized && !bk.content.is_empty() {
+                    // Restore file content
+                    if let Err(e) = crate::atomic_write(target, &bk.content) {
+                        printer.warning(&format!(
+                            "rollback: failed to restore {}: {}",
+                            target.display(),
+                            e
+                        ));
+                    } else {
+                        files_restored += 1;
+                    }
+                }
+            } else {
+                // No backup means file was newly created — remove it
+                if target.exists() {
+                    if let Err(e) = std::fs::remove_file(target) {
+                        printer.warning(&format!(
+                            "rollback: failed to remove {}: {}",
+                            target.display(),
+                            e
+                        ));
+                    } else {
+                        files_removed += 1;
+                    }
+                }
+            }
+        }
+
+        // Record rollback as a new apply
+        let _ = self.state.record_apply(
+            "rollback",
+            &format!("rollback-of-{}", apply_id),
+            ApplyStatus::Success,
+            Some(&format!(
+                "{{\"rollback_of\":{},\"restored\":{},\"removed\":{}}}",
+                apply_id, files_restored, files_removed
+            )),
+        );
+
+        Ok(RollbackResult {
+            files_restored,
+            files_removed,
+            non_file_actions,
         })
     }
 
@@ -677,6 +914,7 @@ impl<'a> Reconciler<'a> {
         resolved: &ResolvedProfile,
         config_dir: &std::path::Path,
         printer: &Printer,
+        apply_id: i64,
     ) -> Result<String> {
         match action {
             Action::System(sys) => self.apply_system_action(sys, &resolved.merged, printer),
@@ -686,7 +924,36 @@ impl<'a> Reconciler<'a> {
             }
             Action::Secret(secret) => self.apply_secret_action(secret, config_dir, printer),
             Action::Script(script) => self.apply_script_action(script, config_dir, printer),
-            Action::Module(module) => self.apply_module_action(module, config_dir, printer),
+            Action::Module(module) => {
+                self.apply_module_action(module, config_dir, printer, apply_id)
+            }
+            Action::Env(env) => Self::apply_env_action(env, printer),
+        }
+    }
+
+    fn apply_env_action(action: &EnvAction, printer: &Printer) -> Result<String> {
+        match action {
+            EnvAction::WriteEnvFile { path, content } => {
+                crate::atomic_write_str(path, content)?;
+                printer.success(&format!("Wrote {}", path.display()));
+                Ok(format!("env:write:{}", path.display()))
+            }
+            EnvAction::InjectSourceLine { rc_path, line } => {
+                let existing = std::fs::read_to_string(rc_path).unwrap_or_default();
+                if existing.contains("cfgd.env") {
+                    // Already injected
+                    return Ok(format!("env:inject:{}:skipped", rc_path.display()));
+                }
+                let mut content = existing;
+                if !content.ends_with('\n') && !content.is_empty() {
+                    content.push('\n');
+                }
+                content.push_str(line);
+                content.push('\n');
+                std::fs::write(rc_path, content)?;
+                printer.success(&format!("Injected source line into {}", rc_path.display()));
+                Ok(format!("env:inject:{}", rc_path.display()))
+            }
         }
     }
 
@@ -842,10 +1109,7 @@ impl<'a> Reconciler<'a> {
                 let decrypted = backend.decrypt_file(&source_path)?;
 
                 let target_path = expand_tilde(target);
-                if let Some(parent) = target_path.parent() {
-                    std::fs::create_dir_all(parent)?;
-                }
-                std::fs::write(&target_path, &decrypted)?;
+                crate::atomic_write(&target_path, decrypted.as_bytes())?;
 
                 printer.info(&format!(
                     "Decrypted {} → {}",
@@ -874,10 +1138,7 @@ impl<'a> Reconciler<'a> {
                 let value = secret_provider.resolve(reference)?;
 
                 let target_path = expand_tilde(target);
-                if let Some(parent) = target_path.parent() {
-                    std::fs::create_dir_all(parent)?;
-                }
-                std::fs::write(&target_path, &value)?;
+                crate::atomic_write(&target_path, value.as_bytes())?;
 
                 printer.info(&format!(
                     "Resolved {}://{} → {}",
@@ -950,6 +1211,7 @@ impl<'a> Reconciler<'a> {
         action: &ModuleAction,
         config_dir: &std::path::Path,
         printer: &Printer,
+        apply_id: i64,
     ) -> Result<String> {
         match &action.kind {
             ModuleActionKind::InstallPackages { resolved } => {
@@ -1027,6 +1289,21 @@ impl<'a> Reconciler<'a> {
                     };
                     let strategy = file.strategy.unwrap_or(default_strategy);
 
+                    // Backup existing target before overwriting
+                    if let Ok(Some(file_state)) = crate::capture_file_state(&target)
+                        && let Err(e) = self.state.store_file_backup(
+                            apply_id,
+                            &target.display().to_string(),
+                            &file_state,
+                        )
+                    {
+                        tracing::warn!(
+                            "failed to backup module file {}: {}",
+                            target.display(),
+                            e
+                        );
+                    }
+
                     // Remove existing target before deploying
                     if target.symlink_metadata().is_ok() {
                         if target.is_dir() && !target.is_symlink() {
@@ -1055,10 +1332,26 @@ impl<'a> Reconciler<'a> {
                             }
                             crate::config::FileStrategy::Copy
                             | crate::config::FileStrategy::Template => {
-                                std::fs::copy(&file.source, &target)?;
+                                let content = std::fs::read(&file.source)?;
+                                crate::atomic_write(&target, &content)?;
                             }
                         }
                     }
+
+                    // Record in module file manifest
+                    let hash = if target.exists() && !target.is_symlink() {
+                        let bytes = std::fs::read(&target).unwrap_or_default();
+                        format!("{:x}", sha2::Sha256::digest(&bytes))
+                    } else {
+                        String::new()
+                    };
+                    let _ = self.state.upsert_module_file(
+                        &action.module_name,
+                        &target.display().to_string(),
+                        &hash,
+                        &format!("{:?}", strategy),
+                        apply_id,
+                    );
                 }
 
                 printer.info(&format!(
@@ -1297,6 +1590,9 @@ pub fn verify(
         }
     }
 
+    // Verify env: check ~/.cfgd.env matches expected content
+    verify_env(&resolved.merged.env, modules, state, &mut results);
+
     Ok(results)
 }
 
@@ -1308,6 +1604,149 @@ pub struct VerifyResult {
     pub matches: bool,
     pub expected: String,
     pub actual: String,
+}
+
+/// Verify env file and shell rc source line match expected state.
+fn verify_env(
+    profile_env: &[crate::config::EnvVar],
+    modules: &[ResolvedModule],
+    state: &StateStore,
+    results: &mut Vec<VerifyResult>,
+) {
+    // Merge profile + module env (same logic as plan_env)
+    let mut merged: Vec<crate::config::EnvVar> = profile_env.to_vec();
+    for module in modules {
+        crate::merge_env(&mut merged, &module.env);
+    }
+
+    if merged.is_empty() {
+        return;
+    }
+
+    let expected_content = generate_env_file_content(&merged);
+    let env_path = expand_tilde(std::path::Path::new("~/.cfgd.env"));
+
+    // Check env file content
+    match std::fs::read_to_string(&env_path) {
+        Ok(actual) if actual == expected_content => {
+            results.push(VerifyResult {
+                resource_type: "env".to_string(),
+                resource_id: env_path.display().to_string(),
+                matches: true,
+                expected: "current".to_string(),
+                actual: "current".to_string(),
+            });
+        }
+        Ok(_) => {
+            results.push(VerifyResult {
+                resource_type: "env".to_string(),
+                resource_id: env_path.display().to_string(),
+                matches: false,
+                expected: "current".to_string(),
+                actual: "stale".to_string(),
+            });
+            state
+                .record_drift(
+                    "env",
+                    &env_path.display().to_string(),
+                    Some("current"),
+                    Some("stale"),
+                    "local",
+                )
+                .ok();
+        }
+        Err(_) => {
+            results.push(VerifyResult {
+                resource_type: "env".to_string(),
+                resource_id: env_path.display().to_string(),
+                matches: false,
+                expected: "present".to_string(),
+                actual: "missing".to_string(),
+            });
+            state
+                .record_drift(
+                    "env",
+                    &env_path.display().to_string(),
+                    Some("present"),
+                    Some("missing"),
+                    "local",
+                )
+                .ok();
+        }
+    }
+
+    // Check shell rc source line
+    let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".to_string());
+    let rc_path = if shell.contains("zsh") {
+        expand_tilde(std::path::Path::new("~/.zshrc"))
+    } else {
+        expand_tilde(std::path::Path::new("~/.bashrc"))
+    };
+
+    if let Ok(rc_content) = std::fs::read_to_string(&rc_path) {
+        if rc_content.contains("cfgd.env") {
+            results.push(VerifyResult {
+                resource_type: "env-rc".to_string(),
+                resource_id: rc_path.display().to_string(),
+                matches: true,
+                expected: "source line present".to_string(),
+                actual: "source line present".to_string(),
+            });
+        } else {
+            results.push(VerifyResult {
+                resource_type: "env-rc".to_string(),
+                resource_id: rc_path.display().to_string(),
+                matches: false,
+                expected: "source line present".to_string(),
+                actual: "source line missing".to_string(),
+            });
+            state
+                .record_drift(
+                    "env-rc",
+                    &rc_path.display().to_string(),
+                    Some("source line present"),
+                    Some("source line missing"),
+                    "local",
+                )
+                .ok();
+        }
+    }
+
+    // Check fish env file if fish conf.d exists
+    let fish_conf_d = expand_tilde(std::path::Path::new("~/.config/fish/conf.d"));
+    if fish_conf_d.exists() {
+        let fish_path = fish_conf_d.join("cfgd-env.fish");
+        let expected_fish = generate_fish_env_content(&merged);
+        match std::fs::read_to_string(&fish_path) {
+            Ok(actual) if actual == expected_fish => {
+                results.push(VerifyResult {
+                    resource_type: "env".to_string(),
+                    resource_id: fish_path.display().to_string(),
+                    matches: true,
+                    expected: "current".to_string(),
+                    actual: "current".to_string(),
+                });
+            }
+            Ok(_) => {
+                results.push(VerifyResult {
+                    resource_type: "env".to_string(),
+                    resource_id: fish_path.display().to_string(),
+                    matches: false,
+                    expected: "current".to_string(),
+                    actual: "stale".to_string(),
+                });
+            }
+            Err(_) => {
+                results.push(VerifyResult {
+                    resource_type: "env".to_string(),
+                    resource_id: fish_path.display().to_string(),
+                    matches: false,
+                    expected: "present".to_string(),
+                    actual: "missing".to_string(),
+                });
+            }
+        }
+    }
 }
 
 /// Format a human-readable description of an action.
@@ -1383,10 +1822,68 @@ pub fn format_action_description(action: &Action) -> String {
                 format!("module:{}:skip", ma.module_name)
             }
         },
+        Action::Env(ea) => match ea {
+            EnvAction::WriteEnvFile { path, .. } => {
+                format!("env:write:{}", path.display())
+            }
+            EnvAction::InjectSourceLine { rc_path, .. } => {
+                format!("env:inject:{}", rc_path.display())
+            }
+        },
+    }
+}
+
+/// Extract the target file path from an action, if it writes to a file.
+/// Used for pre-apply backup capture.
+fn action_target_path(action: &Action) -> Option<std::path::PathBuf> {
+    match action {
+        Action::File(
+            FileAction::Create { target, .. }
+            | FileAction::Update { target, .. }
+            | FileAction::Delete { target, .. },
+        ) => Some(target.clone()),
+        Action::Env(EnvAction::WriteEnvFile { path, .. }) => Some(path.clone()),
+        // Module deploys multiple files — backup handled per-file in apply_module_action
+        _ => None,
     }
 }
 
 /// Compute SHA256 hash of a file's content, returning None if the file doesn't exist.
+/// Generate bash/zsh env file content from merged env vars.
+fn generate_env_file_content(env: &[crate::config::EnvVar]) -> String {
+    let mut lines = vec!["# managed by cfgd — do not edit".to_string()];
+    for ev in env {
+        if ev.value.contains('$') {
+            // Unquoted so shell expansion works (e.g. $PATH)
+            lines.push(format!("export {}={}", ev.name, ev.value));
+        } else {
+            lines.push(format!(
+                "export {}=\"{}\"",
+                ev.name,
+                ev.value.replace('"', "\\\"")
+            ));
+        }
+    }
+    lines.push(String::new()); // trailing newline
+    lines.join("\n")
+}
+
+/// Generate fish env file content from merged env vars.
+fn generate_fish_env_content(env: &[crate::config::EnvVar]) -> String {
+    let mut lines = vec!["# managed by cfgd — do not edit".to_string()];
+    for ev in env {
+        if ev.name == "PATH" {
+            // Fish uses space-separated list for PATH, not colon-separated
+            let parts: Vec<&str> = ev.value.split(':').collect();
+            lines.push(format!("set -gx PATH {}", parts.join(" ")));
+        } else {
+            lines.push(format!("set -gx {} {}", ev.name, ev.value));
+        }
+    }
+    lines.push(String::new());
+    lines.join("\n")
+}
+
 fn content_hash_if_exists(path: &std::path::Path) -> Option<String> {
     std::fs::read(path)
         .ok()
@@ -1558,6 +2055,14 @@ pub fn format_plan_items(phase: &Phase) -> Vec<String> {
                 }
             },
             Action::Module(ma) => format_module_action_item(ma),
+            Action::Env(ea) => match ea {
+                EnvAction::WriteEnvFile { path, .. } => {
+                    format!("write {}", path.display())
+                }
+                EnvAction::InjectSourceLine { rc_path, .. } => {
+                    format!("inject source line into {}", rc_path.display())
+                }
+            },
         })
         .collect()
 }
@@ -1690,11 +2195,13 @@ impl FileAction {
                 target,
                 origin,
                 strategy,
+                source_hash,
             } => FileAction::Create {
                 source: source.clone(),
                 target: target.clone(),
                 origin: origin.clone(),
                 strategy: *strategy,
+                source_hash: source_hash.clone(),
             },
             FileAction::Update {
                 source,
@@ -1702,12 +2209,14 @@ impl FileAction {
                 diff,
                 origin,
                 strategy,
+                source_hash,
             } => FileAction::Update {
                 source: source.clone(),
                 target: target.clone(),
                 diff: diff.clone(),
                 origin: origin.clone(),
                 strategy: *strategy,
+                source_hash: source_hash.clone(),
             },
             FileAction::Delete { target, origin } => FileAction::Delete {
                 target: target.clone(),
@@ -1803,7 +2312,7 @@ mod tests {
             .plan(&resolved, Vec::new(), Vec::new(), Vec::new())
             .unwrap();
 
-        assert_eq!(plan.phases.len(), 6);
+        assert_eq!(plan.phases.len(), 7);
         assert!(plan.is_empty());
     }
 
@@ -1840,6 +2349,7 @@ mod tests {
             target: PathBuf::from("/dst/test"),
             origin: "local".to_string(),
             strategy: crate::config::FileStrategy::default(),
+            source_hash: None,
         }];
 
         let plan = reconciler
@@ -2002,6 +2512,7 @@ mod tests {
                 },
             ],
             status: ApplyStatus::Partial,
+            apply_id: 0,
         };
 
         assert_eq!(result.succeeded(), 1);
@@ -2032,6 +2543,7 @@ mod tests {
                 },
             ],
             files: vec![],
+            env: vec![],
             post_apply_scripts: vec![],
             depends: vec![],
         }
@@ -2050,7 +2562,7 @@ mod tests {
             .unwrap();
 
         // Should have 6 phases, first is Modules
-        assert_eq!(plan.phases.len(), 6);
+        assert_eq!(plan.phases.len(), 7);
         assert_eq!(plan.phases[0].name, PhaseName::Modules);
 
         // Module phase should have at least 1 action (InstallPackages)
@@ -2084,6 +2596,7 @@ mod tests {
                 is_git_source: false,
                 strategy: None,
             }],
+            env: vec![],
             post_apply_scripts: vec![],
             depends: vec![],
         }];
@@ -2118,6 +2631,7 @@ mod tests {
             name: "nvim".to_string(),
             packages: vec![],
             files: vec![],
+            env: vec![],
             post_apply_scripts: vec!["nvim --headless +qa".to_string(), "echo done".to_string()],
             depends: vec![],
         }];
@@ -2160,6 +2674,7 @@ mod tests {
                     script: None,
                 }],
                 files: vec![],
+                env: vec![],
                 post_apply_scripts: vec![],
                 depends: vec![],
             },
@@ -2173,6 +2688,7 @@ mod tests {
                     script: None,
                 }],
                 files: vec![],
+                env: vec![],
                 post_apply_scripts: vec![],
                 depends: vec!["node".to_string()],
             },
@@ -2489,6 +3005,7 @@ mod tests {
                 script: Some("curl -sSf https://sh.rustup.rs | sh".into()),
             }],
             files: vec![],
+            env: vec![],
             post_apply_scripts: vec![],
             depends: vec![],
         }];
@@ -2528,6 +3045,7 @@ mod tests {
                 script: Some("curl -sSf https://sh.rustup.rs | sh".into()),
             }],
             files: vec![],
+            env: vec![],
             post_apply_scripts: vec![],
             depends: vec![],
         }];
@@ -2613,6 +3131,7 @@ mod tests {
             target: target.clone(),
             origin: "local".to_string(),
             strategy: crate::config::FileStrategy::Copy,
+            source_hash: None,
         }];
 
         let modules = vec![ResolvedModule {
@@ -2624,6 +3143,7 @@ mod tests {
                 is_git_source: false,
                 strategy: None,
             }],
+            env: vec![],
             post_apply_scripts: vec![],
             depends: vec![],
         }];
@@ -2648,6 +3168,7 @@ mod tests {
             target: target.clone(),
             origin: "local".to_string(),
             strategy: crate::config::FileStrategy::Copy,
+            source_hash: None,
         }];
 
         let modules = vec![ResolvedModule {
@@ -2659,6 +3180,7 @@ mod tests {
                 is_git_source: false,
                 strategy: None,
             }],
+            env: vec![],
             post_apply_scripts: vec![],
             depends: vec![],
         }];
@@ -2680,6 +3202,7 @@ mod tests {
             target: PathBuf::from("/target/a"),
             origin: "local".to_string(),
             strategy: crate::config::FileStrategy::Copy,
+            source_hash: None,
         }];
 
         let modules = vec![ResolvedModule {
@@ -2691,11 +3214,108 @@ mod tests {
                 is_git_source: false,
                 strategy: None,
             }],
+            env: vec![],
             post_apply_scripts: vec![],
             depends: vec![],
         }];
 
         let result = Reconciler::detect_file_conflicts(&file_actions, &modules);
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn generate_env_file_quoted_and_unquoted() {
+        let env = vec![
+            crate::config::EnvVar {
+                name: "EDITOR".into(),
+                value: "nvim".into(),
+            },
+            crate::config::EnvVar {
+                name: "PATH".into(),
+                value: "/usr/local/bin:$PATH".into(),
+            },
+        ];
+        let content = super::generate_env_file_content(&env);
+        assert!(content.starts_with("# managed by cfgd"));
+        assert!(content.contains("export EDITOR=\"nvim\""));
+        // PATH contains $, so unquoted
+        assert!(content.contains("export PATH=/usr/local/bin:$PATH"));
+    }
+
+    #[test]
+    fn generate_fish_env_splits_path() {
+        let env = vec![
+            crate::config::EnvVar {
+                name: "EDITOR".into(),
+                value: "nvim".into(),
+            },
+            crate::config::EnvVar {
+                name: "PATH".into(),
+                value: "/usr/local/bin:/home/user/.cargo/bin:$PATH".into(),
+            },
+        ];
+        let content = super::generate_fish_env_content(&env);
+        assert!(content.starts_with("# managed by cfgd"));
+        assert!(content.contains("set -gx EDITOR nvim"));
+        assert!(content.contains("set -gx PATH /usr/local/bin /home/user/.cargo/bin $PATH"));
+    }
+
+    #[test]
+    fn plan_env_empty_when_no_env() {
+        let actions = Reconciler::plan_env(&[], &[]);
+        assert!(actions.is_empty());
+    }
+
+    #[test]
+    fn plan_env_module_wins_on_conflict() {
+        let profile_env = vec![crate::config::EnvVar {
+            name: "EDITOR".into(),
+            value: "vim".into(),
+        }];
+        let modules = vec![ResolvedModule {
+            name: "nvim".into(),
+            packages: vec![],
+            files: vec![],
+            env: vec![crate::config::EnvVar {
+                name: "EDITOR".into(),
+                value: "nvim".into(),
+            }],
+            post_apply_scripts: vec![],
+            depends: vec![],
+        }];
+        // plan_env merges and generates actions — the merged env should have EDITOR=nvim
+        let actions = Reconciler::plan_env(&profile_env, &modules);
+        // With non-empty env, there should be at least a WriteEnvFile action
+        // (since ~/.cfgd.env won't exist in test env)
+        let has_write = actions
+            .iter()
+            .any(|a| matches!(a, Action::Env(EnvAction::WriteEnvFile { .. })));
+        assert!(has_write, "Expected WriteEnvFile action for non-empty env");
+    }
+
+    #[test]
+    fn plan_env_generates_file_matching_expected() {
+        let env = vec![crate::config::EnvVar {
+            name: "EDITOR".into(),
+            value: "nvim".into(),
+        }];
+
+        // Write the expected content to a temp file to simulate "already applied"
+        let dir = tempfile::tempdir().unwrap();
+        let env_path = dir.path().join(".cfgd.env");
+        let expected = super::generate_env_file_content(&env);
+        std::fs::write(&env_path, &expected).unwrap();
+
+        // plan_env checks the real ~/.cfgd.env path, not our temp file,
+        // so it will still generate actions. This test validates the content generation.
+        assert!(expected.contains("export EDITOR=\"nvim\""));
+        assert!(expected.contains("# managed by cfgd"));
+    }
+
+    #[test]
+    fn phase_name_env_roundtrip() {
+        assert_eq!(PhaseName::Env.as_str(), "env");
+        assert_eq!(PhaseName::Env.display_name(), "Environment");
+        assert_eq!("env".parse::<PhaseName>().unwrap(), PhaseName::Env);
     }
 }

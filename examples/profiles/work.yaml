@@ -6,9 +6,11 @@ spec:
   inherits:
     - base
 
-  variables:
-    EDITOR: "code --wait"
-    GIT_AUTHOR_EMAIL: you@company.com
+  env:
+    - name: EDITOR
+      value: "code --wait"
+    - name: GIT_AUTHOR_EMAIL
+      value: you@company.com
 
   packages:
     brew:

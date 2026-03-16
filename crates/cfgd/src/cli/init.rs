@@ -12,8 +12,12 @@ pub(super) struct InitArgs<'a> {
     pub branch: &'a str,
     pub name: Option<&'a str>,
     pub apply: bool,
+    pub dry_run: bool,
     pub yes: bool,
     pub install_daemon: bool,
+    pub theme: Option<&'a str>,
+    pub apply_profile: Option<&'a str>,
+    pub apply_modules: &'a [String],
 }
 
 /// Scaffold a new cfgd configuration repository.
@@ -37,18 +41,19 @@ pub(super) fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result
 
     // 3. Check if already initialized
     if target_dir.join("cfgd.yaml").exists() {
-        printer.info(&format!(
-            "Already initialized at {}",
-            target_dir.display()
-        ));
+        printer.info(&format!("Already initialized at {}", target_dir.display()));
         return Ok(());
     }
 
     // 4. Clone or scaffold
     if let Some(url) = args.from {
         clone_into(&target_dir, url, args.branch, printer)?;
+        // If --theme was specified and the cloned repo has a cfgd.yaml, inject the theme
+        if let Some(theme) = args.theme {
+            inject_theme(&target_dir, theme)?;
+        }
     } else {
-        scaffold(&target_dir, args.name, printer)?;
+        scaffold(&target_dir, args.name, args.theme, printer)?;
     }
 
     // 5. Generate release workflow based on what's present
@@ -65,20 +70,125 @@ pub(super) fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result
     printer.newline();
     printer.success(&format!("Initialized at {}", target_dir.display()));
 
-    // 7. Apply if requested (requires a profile to exist)
-    if args.apply {
+    // 7. Apply if requested
+    let should_apply = args.apply || args.apply_profile.is_some() || !args.apply_modules.is_empty();
+    if should_apply {
         let config_path = target_dir.join("cfgd.yaml");
-        let cfg = config::load_config(&config_path)?;
+        let profiles_dir = target_dir.join("profiles");
 
-        if cfg.spec.profile.is_some() {
+        // Module-only apply: no profile needed
+        let module_only = !args.apply_modules.is_empty() && args.apply_profile.is_none();
+
+        if module_only {
+            // Validate that requested modules exist
+            let cache_base = modules::default_module_cache_dir()?;
+            let all_modules = modules::load_all_modules(&target_dir, &cache_base)?;
+            for m in args.apply_modules {
+                let resolved_name = modules::resolve_profile_module_name(m);
+                if !all_modules.contains_key(resolved_name) {
+                    anyhow::bail!("Module '{}' not found in {}", m, target_dir.display());
+                }
+            }
+
+            printer.newline();
+            printer.header("Applying Modules");
+
+            let cfg = config::load_config(&config_path)?;
+            let registry = super::build_registry_with_config(Some(&cfg));
+            let store = super::open_state_store()?;
+
+            // Build a minimal resolved profile for the reconciler
+            let resolved = config::ResolvedProfile {
+                layers: Vec::new(),
+                merged: config::MergedProfile::default(),
+            };
+
+            let platform = cfgd_core::platform::Platform::detect();
+            let mgr_map = super::managers_map(&registry);
+            let resolved_modules = modules::resolve_modules(
+                args.apply_modules,
+                &target_dir,
+                &cache_base,
+                &platform,
+                &mgr_map,
+            )?;
+
+            let reconciler = cfgd_core::reconciler::Reconciler::new(&registry, &store);
+            let plan = reconciler.plan(&resolved, Vec::new(), Vec::new(), resolved_modules)?;
+
+            apply_plan(
+                &plan,
+                &reconciler,
+                &resolved,
+                &target_dir,
+                args.dry_run,
+                args.yes,
+                printer,
+            )?;
+        } else {
+            // Profile-based apply
+            let profile_name = if let Some(name) = args.apply_profile {
+                // Validate profile exists
+                let profile_path = profiles_dir.join(format!("{}.yaml", name));
+                if !profile_path.exists() {
+                    anyhow::bail!("Profile '{}' not found at {}", name, profile_path.display());
+                }
+                // Set as active profile in cfgd.yaml
+                let mut cfg = config::load_config(&config_path)?;
+                cfg.spec.profile = Some(name.to_string());
+                let yaml = serde_yaml::to_string(&cfg)?;
+                std::fs::write(&config_path, &yaml)?;
+                printer.success(&format!("Set active profile: {}", name));
+                name.to_string()
+            } else {
+                // No --apply-profile: use whatever's in cfgd.yaml, or pick interactively
+                let cfg = config::load_config(&config_path)?;
+                if let Some(ref p) = cfg.spec.profile {
+                    p.clone()
+                } else {
+                    pick_profile(&profiles_dir, printer)?
+                }
+            };
+
             printer.newline();
             printer.header("Applying Configuration");
 
-            let profile_name = cfg.active_profile()?;
-            let profiles_dir = target_dir.join("profiles");
-            let resolved = config::resolve_profile(profile_name, &profiles_dir)?;
+            let cfg = config::load_config(&config_path)?;
+            let resolved = config::resolve_profile(&profile_name, &profiles_dir)?;
             let mut registry = super::build_registry_with_config(Some(&cfg));
             let store = super::open_state_store()?;
+
+            // Resolve modules (profile modules + any --apply-module additions)
+            let mut module_names = resolved.merged.modules.clone();
+            for m in args.apply_modules {
+                if !module_names.contains(m) {
+                    module_names.push(m.clone());
+                }
+            }
+
+            let resolved_modules = if !module_names.is_empty() {
+                let platform = cfgd_core::platform::Platform::detect();
+                let mgr_map = super::managers_map(&registry);
+                let cache_base = modules::default_module_cache_dir()?;
+                // Validate --apply-module names exist
+                for m in args.apply_modules {
+                    let cache_base = modules::default_module_cache_dir()?;
+                    let all_modules = modules::load_all_modules(&target_dir, &cache_base)?;
+                    let resolved_name = modules::resolve_profile_module_name(m);
+                    if !all_modules.contains_key(resolved_name) {
+                        anyhow::bail!("Module '{}' not found in {}", m, target_dir.display());
+                    }
+                }
+                modules::resolve_modules(
+                    &module_names,
+                    &target_dir,
+                    &cache_base,
+                    &platform,
+                    &mgr_map,
+                )?
+            } else {
+                Vec::new()
+            };
 
             let all_managers: Vec<&dyn cfgd_core::providers::PackageManager> = registry
                 .package_managers
@@ -93,33 +203,17 @@ pub(super) fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result
             registry.file_manager = Some(Box::new(fm));
 
             let reconciler = cfgd_core::reconciler::Reconciler::new(&registry, &store);
-            let plan = reconciler.plan(&resolved, file_actions, pkg_actions, Vec::new())?;
+            let plan = reconciler.plan(&resolved, file_actions, pkg_actions, resolved_modules)?;
 
-            let total = plan.total_actions();
-            if total == 0 {
-                printer.success("Nothing to do — system is already configured");
-            } else {
-                if !args.yes {
-                    for phase in &plan.phases {
-                        let items = cfgd_core::reconciler::format_plan_items(phase);
-                        printer.plan_phase(phase.name.display_name(), &items);
-                    }
-                    printer.info(&format!("{} action(s) planned", total));
-                    let confirmed = printer
-                        .prompt_confirm("Apply these changes?")
-                        .unwrap_or(false);
-                    if !confirmed {
-                        printer.info("Skipped — run 'cfgd apply' to apply later");
-                        return Ok(());
-                    }
-                }
-
-                let result = reconciler.apply(&plan, &resolved, &target_dir, printer, None, &[])?;
-                super::print_apply_result(&result, printer);
-            }
-        } else {
-            printer.info("No profile configured — skipping apply");
-            printer.info("Create one with: cfgd profile create <name>");
+            apply_plan(
+                &plan,
+                &reconciler,
+                &resolved,
+                &target_dir,
+                args.dry_run,
+                args.yes,
+                printer,
+            )?;
         }
     }
 
@@ -147,6 +241,108 @@ pub(super) fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result
     }
 
     Ok(())
+}
+
+/// Show plan, prompt for confirmation, and apply.
+fn apply_plan(
+    plan: &cfgd_core::reconciler::Plan,
+    reconciler: &cfgd_core::reconciler::Reconciler<'_>,
+    resolved: &config::ResolvedProfile,
+    config_dir: &Path,
+    dry_run: bool,
+    yes: bool,
+    printer: &Printer,
+) -> anyhow::Result<()> {
+    let total = plan.total_actions();
+    if total == 0 {
+        printer.success("Nothing to do — system is already configured");
+        return Ok(());
+    }
+
+    for phase in &plan.phases {
+        let items = cfgd_core::reconciler::format_plan_items(phase);
+        printer.plan_phase(phase.name.display_name(), &items);
+    }
+    printer.info(&format!("{} action(s) planned", total));
+
+    if dry_run {
+        return Ok(());
+    }
+
+    if !yes {
+        let confirmed = printer
+            .prompt_confirm("Apply these changes?")
+            .unwrap_or(false);
+        if !confirmed {
+            printer.info("Skipped — run 'cfgd apply' to apply later");
+            return Ok(());
+        }
+    }
+
+    let state_dir = cfgd_core::state::default_state_dir()
+        .map_err(|e| anyhow::anyhow!("cannot determine state directory: {}", e))?;
+    let _apply_lock = cfgd_core::acquire_apply_lock(&state_dir)?;
+
+    let result = reconciler.apply(plan, resolved, config_dir, printer, None, &[])?;
+    super::print_apply_result(&result, printer);
+    Ok(())
+}
+
+/// Interactively pick a profile from the profiles directory.
+fn pick_profile(profiles_dir: &Path, printer: &Printer) -> anyhow::Result<String> {
+    if !profiles_dir.is_dir() {
+        anyhow::bail!(
+            "No profiles directory found — create a profile first with: cfgd profile create <name>"
+        );
+    }
+
+    let mut names: Vec<String> = Vec::new();
+    for entry in std::fs::read_dir(profiles_dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) == Some("yaml")
+            && let Some(stem) = path.file_stem().and_then(|s| s.to_str())
+        {
+            names.push(stem.to_string());
+        }
+    }
+    names.sort();
+
+    if names.is_empty() {
+        anyhow::bail!(
+            "No profiles found — create a profile first with: cfgd profile create <name>"
+        );
+    }
+
+    if names.len() == 1 {
+        printer.info(&format!("Using only available profile: {}", names[0]));
+        return Ok(names[0].clone());
+    }
+
+    printer.subheader("Available Profiles");
+    for (i, name) in names.iter().enumerate() {
+        printer.info(&format!("  {}. {}", i + 1, name));
+    }
+
+    let input = printer.prompt_text(&format!("Select profile (1-{}) or name", names.len()), "1")?;
+
+    // Try as number first
+    if let Ok(n) = input.parse::<usize>()
+        && n >= 1
+        && n <= names.len()
+    {
+        return Ok(names[n - 1].clone());
+    }
+
+    // Try as name
+    if names.contains(&input) {
+        return Ok(input);
+    }
+
+    anyhow::bail!(
+        "Invalid selection '{}' — expected a number or profile name",
+        input
+    )
 }
 
 /// Clone a remote repo into the target directory.
@@ -188,7 +384,12 @@ fn clone_into(target_dir: &Path, url: &str, branch: &str, printer: &Printer) -> 
 }
 
 /// Create the cfgd directory structure from scratch.
-fn scaffold(dir: &Path, name: Option<&str>, printer: &Printer) -> anyhow::Result<()> {
+fn scaffold(
+    dir: &Path,
+    name: Option<&str>,
+    theme: Option<&str>,
+    printer: &Printer,
+) -> anyhow::Result<()> {
     let config_name = name
         .or_else(|| dir.file_name().and_then(|n| n.to_str()))
         .unwrap_or("my-config");
@@ -196,23 +397,99 @@ fn scaffold(dir: &Path, name: Option<&str>, printer: &Printer) -> anyhow::Result
     // Create directories
     std::fs::create_dir_all(dir.join("profiles"))?;
     std::fs::create_dir_all(dir.join("modules"))?;
-    std::fs::create_dir_all(dir.join("files"))?;
+    printer.success("Created profiles/ modules/");
 
-    // cfgd.yaml — no profile set; user creates one after init
+    // cfgd.yaml
+    let theme_section = match theme {
+        Some(preset) => format!("\n  theme:\n    preset: {preset}"),
+        None => String::new(),
+    };
     let content = format!(
         r#"apiVersion: cfgd.io/v1alpha1
 kind: Config
 metadata:
   name: {config_name}
-spec: {{}}
+spec:{theme_section}
+  # profile: base
+  # sources: []
+  # modules:
+  #   registries: []
 "#
     );
     std::fs::write(dir.join("cfgd.yaml"), &content)?;
     printer.success("Created cfgd.yaml");
 
-    // .gitignore
-    let gitignore = ".cfgd-state/\n*.age\ntarget/\n";
+    // .gitignore — ignore everything except cfgd-managed content
+    let gitignore = "\
+# Ignore everything by default
+*
+
+# cfgd config
+!cfgd.yaml
+!.gitignore
+!README.md
+
+# Profiles and modules
+!profiles/
+!profiles/**
+!modules/
+!modules/**
+
+# CI
+!.github/
+!.github/**
+";
     std::fs::write(dir.join(".gitignore"), gitignore)?;
+    printer.success("Created .gitignore");
+
+    // README.md
+    let readme = format!(
+        r#"# {config_name}
+
+Machine configuration managed by [cfgd](https://github.com/tj-smith47/cfgd).
+
+## Quick start
+
+```bash
+cfgd init --from <this-repo-url>
+cfgd apply
+```
+
+## Structure
+
+- `profiles/` — machine profiles (which modules, packages, env, system settings to apply)
+- `modules/` — self-contained configuration units (packages, files, env, scripts)
+- `cfgd.yaml` — config root (active profile, sources, theme)
+"#
+    );
+    std::fs::write(dir.join("README.md"), &readme)?;
+    printer.success("Created README.md");
+
+    // Workflow — generate a base workflow even with no modules/profiles yet.
+    // It gets regenerated when modules/profiles are added.
+    let workflow_dir = dir.join(".github").join("workflows");
+    std::fs::create_dir_all(&workflow_dir)?;
+    let workflow = generate_release_workflow_yaml(&[], &[]);
+    std::fs::write(workflow_dir.join("cfgd-release.yml"), &workflow)?;
+    printer.success("Created .github/workflows/cfgd-release.yml");
+
+    Ok(())
+}
+
+/// Inject a theme preset into an existing cfgd.yaml (e.g. after cloning).
+fn inject_theme(dir: &Path, theme: &str) -> anyhow::Result<()> {
+    let config_path = dir.join("cfgd.yaml");
+    if !config_path.exists() {
+        return Ok(());
+    }
+
+    let mut cfg = config::load_config(&config_path)?;
+    cfg.spec.theme = Some(config::ThemeConfig {
+        preset: theme.to_string(),
+        overrides: config::ThemeOverrides::default(),
+    });
+    let yaml = serde_yaml::to_string(&cfg)?;
+    std::fs::write(&config_path, &yaml)?;
 
     Ok(())
 }
@@ -384,13 +661,11 @@ pub(super) fn cmd_enroll(
     printer.key_value("Username", &username);
 
     // Check server enrollment method
-    let info = client
-        .enroll_info()
-        .map_err(|e| anyhow::anyhow!("{}", e))?;
+    let info = client.enroll_info().map_err(|e| anyhow::anyhow!("{}", e))?;
 
     if info.method == "token" {
         printer.warning("This server uses bootstrap token enrollment");
-        printer.info("Run: cfgd enroll --server <url> --token <token>");
+        printer.info("Run: cfgd enroll --server-url <url> --token <token>");
         return Ok(());
     }
 
@@ -634,12 +909,12 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let printer = Printer::new(cfgd_core::output::Verbosity::Quiet);
 
-        scaffold(dir.path(), Some("test-config"), &printer).unwrap();
+        scaffold(dir.path(), Some("test-config"), None, &printer).unwrap();
 
         assert!(dir.path().join("cfgd.yaml").exists());
         assert!(dir.path().join("profiles").is_dir());
         assert!(dir.path().join("modules").is_dir());
-        assert!(dir.path().join("files").is_dir());
+        assert!(!dir.path().join("files").exists());
         assert!(dir.path().join(".gitignore").exists());
 
         let contents = std::fs::read_to_string(dir.path().join("cfgd.yaml")).unwrap();
@@ -647,11 +922,23 @@ mod tests {
     }
 
     #[test]
+    fn scaffold_with_theme() {
+        let dir = tempfile::tempdir().unwrap();
+        let printer = Printer::new(cfgd_core::output::Verbosity::Quiet);
+
+        scaffold(dir.path(), Some("themed"), Some("minimal"), &printer).unwrap();
+
+        let contents = std::fs::read_to_string(dir.path().join("cfgd.yaml")).unwrap();
+        assert!(contents.contains("name: themed"));
+        assert!(contents.contains("preset: minimal"));
+    }
+
+    #[test]
     fn scaffold_uses_dir_name_as_default() {
         let dir = tempfile::tempdir().unwrap();
         let printer = Printer::new(cfgd_core::output::Verbosity::Quiet);
 
-        scaffold(dir.path(), None, &printer).unwrap();
+        scaffold(dir.path(), None, None, &printer).unwrap();
 
         let contents = std::fs::read_to_string(dir.path().join("cfgd.yaml")).unwrap();
         // Should use the tempdir name
@@ -763,7 +1050,7 @@ mod tests {
         std::fs::create_dir_all(&profiles_dir).unwrap();
         std::fs::write(
             profiles_dir.join("work.yaml"),
-            "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: work\nspec:\n  variables: {}\n",
+            "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: work\nspec:\n  env: []\n",
         )
         .unwrap();
 
@@ -790,7 +1077,11 @@ mod tests {
         regenerate_workflow(dir.path(), &printer).unwrap();
 
         // No profiles or modules → no workflow generated
-        assert!(!dir.path().join(".github/workflows/cfgd-release.yml").exists());
+        assert!(
+            !dir.path()
+                .join(".github/workflows/cfgd-release.yml")
+                .exists()
+        );
     }
 
     #[test]
@@ -812,5 +1103,62 @@ mod tests {
         assert!(workflow.exists());
         let contents = std::fs::read_to_string(&workflow).unwrap();
         assert!(contents.contains("base"));
+    }
+
+    #[test]
+    fn inject_theme_into_existing_config() {
+        let dir = tempfile::tempdir().unwrap();
+        let printer = Printer::new(cfgd_core::output::Verbosity::Quiet);
+
+        scaffold(dir.path(), Some("test"), None, &printer).unwrap();
+        inject_theme(dir.path(), "minimal").unwrap();
+
+        let cfg = config::load_config(&dir.path().join("cfgd.yaml")).unwrap();
+        assert_eq!(cfg.spec.theme.unwrap().preset, "minimal");
+    }
+
+    #[test]
+    fn inject_theme_no_config_is_noop() {
+        let dir = tempfile::tempdir().unwrap();
+        // No cfgd.yaml — should not error
+        inject_theme(dir.path(), "minimal").unwrap();
+    }
+
+    #[test]
+    fn pick_profile_single_profile() {
+        let dir = tempfile::tempdir().unwrap();
+        let profiles_dir = dir.path().join("profiles");
+        std::fs::create_dir_all(&profiles_dir).unwrap();
+        std::fs::write(
+            profiles_dir.join("base.yaml"),
+            "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: base\nspec: {}\n",
+        )
+        .unwrap();
+
+        let printer = Printer::new(cfgd_core::output::Verbosity::Quiet);
+        let result = pick_profile(&profiles_dir, &printer).unwrap();
+        assert_eq!(result, "base");
+    }
+
+    #[test]
+    fn pick_profile_no_profiles_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        let profiles_dir = dir.path().join("profiles");
+        std::fs::create_dir_all(&profiles_dir).unwrap();
+
+        let printer = Printer::new(cfgd_core::output::Verbosity::Quiet);
+        let result = pick_profile(&profiles_dir, &printer);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn pick_profile_no_dir_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        let profiles_dir = dir.path().join("profiles");
+        // Don't create the dir
+
+        let printer = Printer::new(cfgd_core::output::Verbosity::Quiet);
+        let result = pick_profile(&profiles_dir, &printer);
+        assert!(result.is_err());
     }
 }

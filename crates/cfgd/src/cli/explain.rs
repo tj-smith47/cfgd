@@ -604,10 +604,10 @@ static SCHEMA_PROFILE: ResourceSchema = ResourceSchema {
             children: &[],
         },
         SchemaField {
-            name: "variables",
-            type_desc: "map[string]any",
+            name: "env",
+            type_desc: "list[{name, value}]",
             required: false,
-            description: "Key-value pairs available in templates",
+            description: "Environment variables (name/value pairs) available in templates and written to ~/.cfgd.env",
             children: &[],
         },
         SchemaField {
@@ -1318,10 +1318,10 @@ static POLICY_ITEMS_FIELDS: [SchemaField; 6] = [
         children: &[],
     },
     SchemaField {
-        name: "variables",
-        type_desc: "map[string]any",
+        name: "env",
+        type_desc: "list[{name, value}]",
         required: false,
-        description: "Variable declarations",
+        description: "Environment variable declarations",
         children: &[],
     },
     SchemaField {

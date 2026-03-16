@@ -128,9 +128,7 @@ pub struct EnrollmentChallenge {
     pub expires_at: String,
 }
 
-const MIGRATIONS: &[&str] = &[
-    // Migration 0: initial schema
-    "CREATE TABLE IF NOT EXISTS devices (
+const MIGRATIONS: &[&str] = &["CREATE TABLE IF NOT EXISTS devices (
         id TEXT PRIMARY KEY,
         hostname TEXT NOT NULL,
         os TEXT NOT NULL,
@@ -195,16 +193,13 @@ const MIGRATIONS: &[&str] = &[
         expires_at TEXT NOT NULL,
         consumed INTEGER NOT NULL DEFAULT 0
     );
-    CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL);
-    INSERT INTO schema_version (version) VALUES (1);",
-    // Migration 1: add indices for event queries
-    "CREATE INDEX IF NOT EXISTS idx_drift_events_device_id ON drift_events(device_id);
+    CREATE INDEX IF NOT EXISTS idx_drift_events_device_id ON drift_events(device_id);
     CREATE INDEX IF NOT EXISTS idx_drift_events_timestamp ON drift_events(timestamp);
     CREATE INDEX IF NOT EXISTS idx_checkin_events_device_id ON checkin_events(device_id);
     CREATE INDEX IF NOT EXISTS idx_checkin_events_timestamp ON checkin_events(timestamp);
     CREATE INDEX IF NOT EXISTS idx_user_public_keys_username ON user_public_keys(username);
-    UPDATE schema_version SET version = 2;",
-];
+    CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL);
+    INSERT INTO schema_version (version) VALUES (1);"];
 
 pub struct ServerDb {
     conn: Connection,
@@ -814,7 +809,10 @@ impl ServerDb {
         // Single transaction: read challenge data and mark consumed atomically.
         // This prevents the case where UPDATE succeeds but the subsequent SELECT fails,
         // leaving the challenge consumed with no data returned.
-        let tx = self.conn.unchecked_transaction().map_err(GatewayError::Database)?;
+        let tx = self
+            .conn
+            .unchecked_transaction()
+            .map_err(GatewayError::Database)?;
 
         let challenge = tx.query_row(
             "SELECT id, username, device_id, hostname, os, arch, nonce, created_at, expires_at, consumed
@@ -860,7 +858,8 @@ impl ServerDb {
         tx.execute(
             "UPDATE enrollment_challenges SET consumed = 1 WHERE id = ?1",
             params![challenge_id],
-        ).map_err(GatewayError::Database)?;
+        )
+        .map_err(GatewayError::Database)?;
 
         tx.commit().map_err(GatewayError::Database)?;
 
@@ -1396,6 +1395,6 @@ mod tests {
     #[test]
     fn schema_version_is_set() {
         let db = test_db();
-        assert_eq!(db.schema_version(), 2);
+        assert_eq!(db.schema_version(), 1);
     }
 }

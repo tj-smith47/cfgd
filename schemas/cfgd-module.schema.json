@@ -37,6 +37,19 @@
           "default": [],
           "description": "Module names this module depends on (installed first)"
         },
+        "env": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "name": { "type": "string" },
+              "value": { "type": "string" }
+            },
+            "required": ["name", "value"]
+          },
+          "default": [],
+          "description": "Environment variables as name/value pairs"
+        },
         "packages": {
           "type": "array",
           "items": { "$ref": "#/$defs/packageEntry" },

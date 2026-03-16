@@ -201,6 +201,15 @@ pub(super) fn cmd_module_show(cli: &Cli, printer: &Printer, name: &str) -> anyho
         }
     }
 
+    // Env
+    if !module.spec.env.is_empty() {
+        printer.newline();
+        printer.subheader("Env");
+        for ev in &module.spec.env {
+            printer.key_value(&ev.name, &ev.value);
+        }
+    }
+
     // Scripts
     if let Some(ref scripts) = module.spec.scripts
         && !scripts.post_apply.is_empty()
@@ -311,6 +320,9 @@ pub(super) fn apply_module_sets(
             "platforms" => {
                 pkg.platforms = value.split(',').map(|s| s.trim().to_string()).collect();
             }
+            "deny" => {
+                pkg.deny = value.split(',').map(|s| s.trim().to_string()).collect();
+            }
             "script" => {
                 pkg.script = Some(value.to_string());
             }
@@ -326,7 +338,7 @@ pub(super) fn apply_module_sets(
             }
             _ => {
                 anyhow::bail!(
-                    "Unknown package field '{}' — valid fields: min-version, prefer, platforms, script, alias",
+                    "Unknown package field '{}' — valid fields: min-version, prefer, deny, platforms, script, alias",
                     field
                 );
             }
@@ -347,6 +359,7 @@ pub(super) fn cmd_module_create(
     let depends = &args.depends;
     let pkg_names = &args.packages;
     let files = &args.files;
+    let env_list = &args.env;
     let post_apply = &args.post_apply;
     let sets = &args.sets;
     validate_resource_name(name, "Module")?;
@@ -369,6 +382,7 @@ pub(super) fn cmd_module_create(
         && depends.is_empty()
         && pkg_names.is_empty()
         && files.is_empty()
+        && env_list.is_empty()
         && post_apply.is_empty()
         && sets.is_empty();
 
@@ -460,17 +474,29 @@ pub(super) fn cmd_module_create(
     }
 
     // Build package entries
+    let known = super::known_manager_names();
+    let known_refs: Vec<&str> = known.iter().map(|s| s.as_str()).collect();
     let package_entries: Vec<config::ModulePackageEntry> = pkg_list
         .iter()
-        .map(|name| config::ModulePackageEntry {
-            name: name.clone(),
-            min_version: None,
-            prefer: Vec::new(),
-            aliases: std::collections::HashMap::new(),
-            script: None,
-            platforms: Vec::new(),
+        .map(|s| {
+            let (mgr, pkg) = super::parse_package_flag(s, &known_refs);
+            config::ModulePackageEntry {
+                name: pkg,
+                min_version: None,
+                prefer: mgr.into_iter().collect(),
+                deny: Vec::new(),
+                aliases: std::collections::HashMap::new(),
+                script: None,
+                platforms: Vec::new(),
+            }
         })
         .collect();
+
+    // Build env
+    let mut env_entries = Vec::new();
+    for e in env_list {
+        env_entries.push(cfgd_core::parse_env_var(e).map_err(|e| anyhow::anyhow!(e))?);
+    }
 
     // Build scripts
     let scripts = if post_apply_list.is_empty() {
@@ -493,6 +519,7 @@ pub(super) fn cmd_module_create(
             depends: dep_list,
             packages: package_entries,
             files: file_entries,
+            env: env_entries,
             scripts,
         },
     };
@@ -533,6 +560,63 @@ pub(super) fn cmd_module_create(
 
     maybe_update_workflow(cli, printer)?;
 
+    // Apply if requested
+    if args.apply {
+        printer.newline();
+        printer.header("Applying Module");
+
+        let config_path = config_dir.join("cfgd.yaml");
+        let cfg = config::load_config(&config_path)?;
+        let registry = super::build_registry_with_config(Some(&cfg));
+        let store = super::open_state_store()?;
+
+        let platform = cfgd_core::platform::Platform::detect();
+        let mgr_map = super::managers_map(&registry);
+        let cache_base = modules::default_module_cache_dir()?;
+        let resolved_modules = modules::resolve_modules(
+            std::slice::from_ref(name),
+            &config_dir,
+            &cache_base,
+            &platform,
+            &mgr_map,
+        )?;
+
+        let resolved = config::ResolvedProfile {
+            layers: Vec::new(),
+            merged: config::MergedProfile::default(),
+        };
+
+        let reconciler = cfgd_core::reconciler::Reconciler::new(&registry, &store);
+        let plan = reconciler.plan(&resolved, Vec::new(), Vec::new(), resolved_modules)?;
+
+        let total = plan.total_actions();
+        if total == 0 {
+            printer.success("Nothing to do");
+        } else {
+            if !args.yes {
+                for phase in &plan.phases {
+                    let items = cfgd_core::reconciler::format_plan_items(phase);
+                    printer.plan_phase(phase.name.display_name(), &items);
+                }
+                printer.info(&format!("{} action(s) planned", total));
+                let confirmed = printer
+                    .prompt_confirm("Apply these changes?")
+                    .unwrap_or(false);
+                if !confirmed {
+                    printer.info("Skipped — run 'cfgd apply' to apply later");
+                    return Ok(());
+                }
+            }
+
+            let state_dir = cfgd_core::state::default_state_dir()
+                .map_err(|e| anyhow::anyhow!("cannot determine state directory: {}", e))?;
+            let _apply_lock = cfgd_core::acquire_apply_lock(&state_dir)?;
+
+            let result = reconciler.apply(&plan, &resolved, &config_dir, printer, None, &[])?;
+            super::print_apply_result(&result, printer);
+        }
+    }
+
     Ok(())
 }
 
@@ -548,6 +632,8 @@ pub(super) fn cmd_module_update_local(
     let remove_packages = &args.remove_packages;
     let add_files = &args.add_files;
     let remove_files = &args.remove_files;
+    let add_env = &args.add_env;
+    let remove_env = &args.remove_env;
     let add_depends = &args.add_depends;
     let remove_depends = &args.remove_depends;
     let description = args.description.as_deref();
@@ -595,15 +681,19 @@ pub(super) fn cmd_module_update_local(
     }
 
     // Add packages
-    for pkg in add_packages {
-        if doc.spec.packages.iter().any(|p| p.name == *pkg) {
+    let known = super::known_manager_names();
+    let known_refs: Vec<&str> = known.iter().map(|s| s.as_str()).collect();
+    for pkg_str in add_packages {
+        let (mgr, pkg) = super::parse_package_flag(pkg_str, &known_refs);
+        if doc.spec.packages.iter().any(|p| p.name == pkg) {
             printer.info(&format!("Package '{}' already in module", pkg));
             continue;
         }
         doc.spec.packages.push(config::ModulePackageEntry {
             name: pkg.clone(),
             min_version: None,
-            prefer: Vec::new(),
+            prefer: mgr.into_iter().collect(),
+            deny: Vec::new(),
             aliases: std::collections::HashMap::new(),
             script: None,
             platforms: Vec::new(),
@@ -696,6 +786,26 @@ pub(super) fn cmd_module_update_local(
             changes += 1;
         } else {
             printer.warning(&format!("File '{}' not found in module", target));
+        }
+    }
+
+    // Add env vars
+    for e in add_env {
+        let ev = cfgd_core::parse_env_var(e).map_err(|e| anyhow::anyhow!(e))?;
+        cfgd_core::merge_env(&mut doc.spec.env, std::slice::from_ref(&ev));
+        printer.success(&format!("Set env: {}={}", ev.name, ev.value));
+        changes += 1;
+    }
+
+    // Remove env vars
+    for key in remove_env {
+        let before = doc.spec.env.len();
+        doc.spec.env.retain(|ev| ev.name != *key);
+        if doc.spec.env.len() < before {
+            printer.success(&format!("Removed env: {}", key));
+            changes += 1;
+        } else {
+            printer.warning(&format!("Env var '{}' not found", key));
         }
     }
 
@@ -813,6 +923,32 @@ pub(super) fn cmd_module_delete(
     if !yes && !printer.prompt_confirm(&format!("Delete module '{}'?", name))? {
         printer.info("Cancelled");
         return Ok(());
+    }
+
+    // Restore symlinked files before deleting the module directory.
+    // When module create adopts files, it moves them into the module dir and
+    // symlinks the original location back. On delete, we reverse that.
+    let module_yaml = module_dir.join("module.yaml");
+    if module_yaml.exists()
+        && let Ok(doc) = config::parse_module(&std::fs::read_to_string(&module_yaml)?)
+    {
+        for file_entry in &doc.spec.files {
+            let target = cfgd_core::expand_tilde(std::path::Path::new(&file_entry.target));
+            let source = module_dir.join(&file_entry.source);
+
+            if let Ok(link_dest) = std::fs::read_link(&target)
+                && link_dest.starts_with(&module_dir)
+                && source.exists()
+            {
+                std::fs::remove_file(&target).ok();
+                if source.is_dir() {
+                    cfgd_core::copy_dir_recursive(&source, &target)?;
+                } else {
+                    std::fs::copy(&source, &target)?;
+                }
+                printer.info(&format!("Restored {}", target.display()));
+            }
+        }
     }
 
     // Delete directory

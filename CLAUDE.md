@@ -111,6 +111,17 @@ Current shared items (keep this list updated when adding new ones):
 - `parse_loose_version(s)` — parse "1.28" → semver Version(1.28.0); handles 1-part, 2-part, and 3-part versions
 - `version_satisfies(version, requirement)` — check version against semver range (uses `parse_loose_version`)
 - `copy_dir_recursive(src, dst)` — recursively copy a directory tree
+- `merge_env(base, updates)` — merge `Vec<EnvVar>` by name (later overrides earlier); used by config merging, composition, reconciler
+- `parse_env_var(input)` — parse `KEY=VALUE` string into `EnvVar`; used by all CLI env flag parsing
+- `atomic_write(target, content)` — atomic file write via temp+rename; returns SHA256 hash; use instead of `fs::write()` in ALL production code
+- `atomic_write_str(target, content)` — string variant of `atomic_write`
+- `capture_file_state(path)` — capture file content/permissions/symlink state for backup; returns `Option<FileState>`
+- `FileState` — struct holding captured file state (content, hash, permissions, symlink info, oversized flag)
+- `validate_path_within(path, root)` — canonicalize and verify path is within root directory
+- `validate_no_traversal(path)` — reject paths containing `..` components
+- `shell_escape_value(value)` — escape a value for shell `export` statements (single-quotes metacharacters)
+- `xml_escape(s)` — escape `&<>"'` for safe XML/plist inclusion
+- `acquire_apply_lock(state_dir)` — exclusive flock-based apply lock; returns `ApplyLockGuard` (RAII release on drop)
 
 ### Database Conventions
 
