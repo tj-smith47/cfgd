@@ -296,7 +296,7 @@ async fn auth_middleware(
     // Check admin key first
     if let Ok(expected_key) = std::env::var("CFGD_API_KEY") {
         if let Some(ref token) = bearer_token
-            && token == &expected_key
+            && hash_token(token) == hash_token(&expected_key)
         {
             request.extensions_mut().insert(AuthContext::Admin);
             return Ok(next.run(request).await);
@@ -335,7 +335,7 @@ async fn admin_auth_middleware(
 ) -> Result<axum::response::Response, GatewayError> {
     if let Ok(expected_key) = std::env::var("CFGD_API_KEY") {
         match extract_bearer_token(&headers) {
-            Some(token) if token == expected_key => {}
+            Some(token) if hash_token(&token) == hash_token(&expected_key) => {}
             _ => return Err(GatewayError::Unauthorized),
         }
     } else {
@@ -391,63 +391,85 @@ async fn enroll(
 
     let db = state.db.lock().await;
 
-    // Atomically validate and consume the bootstrap token (prevents TOCTOU race)
-    let token_hash = hash_token(&req.token);
-    let bootstrap = db.validate_and_consume_bootstrap_token(&token_hash, &req.device_id)?;
+    // Wrap the entire enrollment in a transaction so that token consumption,
+    // device registration, and credential creation are atomic.
+    db.conn
+        .execute_batch("BEGIN IMMEDIATE")
+        .map_err(GatewayError::Database)?;
 
-    // Register the device first (so the credential FK is valid)
-    db.register_device(
-        &req.device_id,
-        &req.hostname,
-        &req.os,
-        &req.arch,
-        "pending-enrollment",
-    )?;
+    let result = (|| -> Result<_, GatewayError> {
+        // Atomically validate and consume the bootstrap token (prevents TOCTOU race)
+        let token_hash = hash_token(&req.token);
+        let bootstrap = db.validate_and_consume_bootstrap_token(&token_hash, &req.device_id)?;
 
-    // Generate a permanent device API key
-    let device_api_key = generate_token("cfgd_dev");
-    let api_key_hash = hash_token(&device_api_key);
+        // Register the device first (so the credential FK is valid)
+        db.register_device(
+            &req.device_id,
+            &req.hostname,
+            &req.os,
+            &req.arch,
+            "pending-enrollment",
+        )?;
 
-    // Create device credential
-    db.create_device_credential(
-        &req.device_id,
-        &api_key_hash,
-        &bootstrap.username,
-        bootstrap.team.as_deref(),
-    )?;
+        // Generate a permanent device API key
+        let device_api_key = generate_token("cfgd_dev");
+        let api_key_hash = hash_token(&device_api_key);
 
-    // Look up desired config for this device (may have been pre-set via MachineConfig CRD)
-    let desired_config = db
-        .get_device(&req.device_id)
-        .ok()
-        .and_then(|d| d.desired_config);
+        // Create device credential
+        db.create_device_credential(
+            &req.device_id,
+            &api_key_hash,
+            &bootstrap.username,
+            bootstrap.team.as_deref(),
+        )?;
 
-    // Broadcast enrollment event
-    let _ = state.event_tx.send(FleetEvent {
-        timestamp: cfgd_core::utc_now_iso8601(),
-        device_id: req.device_id.clone(),
-        event_type: "enrollment".to_string(),
-        summary: format!("user={} hostname={}", bootstrap.username, req.hostname),
-    });
+        // Look up desired config for this device (may have been pre-set via MachineConfig CRD)
+        let desired_config = db
+            .get_device(&req.device_id)
+            .ok()
+            .and_then(|d| d.desired_config);
 
-    tracing::info!(
-        device_id = %req.device_id,
-        hostname = %req.hostname,
-        username = %bootstrap.username,
-        "device enrolled"
-    );
+        Ok((bootstrap, device_api_key, desired_config))
+    })();
 
-    Ok((
-        StatusCode::CREATED,
-        Json(EnrollResponse {
-            status: "enrolled".to_string(),
-            device_id: req.device_id,
-            api_key: device_api_key,
-            username: bootstrap.username,
-            team: bootstrap.team,
-            desired_config,
-        }),
-    ))
+    match result {
+        Ok((bootstrap, device_api_key, desired_config)) => {
+            db.conn
+                .execute_batch("COMMIT")
+                .map_err(GatewayError::Database)?;
+
+            // Continue with the successfully enrolled data
+            let _ = state.event_tx.send(FleetEvent {
+                timestamp: cfgd_core::utc_now_iso8601(),
+                device_id: req.device_id.clone(),
+                event_type: "enrollment".to_string(),
+                summary: format!("user={} hostname={}", bootstrap.username, req.hostname),
+            });
+
+            tracing::info!(
+                device_id = %req.device_id,
+                hostname = %req.hostname,
+                username = %bootstrap.username,
+                "device enrolled"
+            );
+
+            Ok((
+                StatusCode::CREATED,
+                Json(EnrollResponse {
+                    status: "enrolled".to_string(),
+                    device_id: req.device_id,
+                    api_key: device_api_key,
+                    username: bootstrap.username,
+                    team: bootstrap.team,
+                    desired_config,
+                }),
+            ))
+        }
+        Err(e) => {
+            let _ = db.conn.execute_batch("ROLLBACK");
+            Err(e)
+        }
+    }
 }
 
 // --- Admin Token Management ---
@@ -1067,8 +1089,9 @@ async fn list_devices(
         let device = db.get_device(device_id)?;
         return Ok(Json(vec![device]));
     }
+    let limit = pagination.limit.min(1000);
     let db = state.db.lock().await;
-    let devices = db.list_devices_paginated(pagination.limit, pagination.offset)?;
+    let devices = db.list_devices_paginated(limit, pagination.offset)?;
     Ok(Json(devices))
 }
 
@@ -1095,6 +1118,15 @@ async fn set_device_config(
             "only admin can push config to devices".to_string(),
         ));
     }
+    // Enforce a 10MB size limit on config payloads
+    let json_str = serde_json::to_string(&req.config)
+        .map_err(|e| GatewayError::InvalidRequest(e.to_string()))?;
+    if json_str.len() > 10 * 1024 * 1024 {
+        return Err(GatewayError::InvalidRequest(
+            "config exceeds 10MB size limit".to_string(),
+        ));
+    }
+
     let db = state.db.lock().await;
     db.set_device_config(&id, &req.config)?;
 
@@ -1178,8 +1210,9 @@ async fn list_fleet_events(
     State(state): State<SharedState>,
     Query(pagination): Query<PaginationParams>,
 ) -> Result<impl IntoResponse, GatewayError> {
+    let limit = pagination.limit.min(1000);
     let db = state.db.lock().await;
-    let events = db.list_fleet_events_paginated(pagination.limit, pagination.offset)?;
+    let events = db.list_fleet_events_paginated(limit, pagination.offset)?;
     Ok(Json(events))
 }
 

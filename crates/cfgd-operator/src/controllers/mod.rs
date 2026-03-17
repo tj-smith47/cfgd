@@ -183,6 +183,10 @@ fn validate_spec(spec: &MachineConfigSpec) -> Result<(), OperatorError> {
         .map_err(|errors| OperatorError::InvalidSpec(errors.join("; ")))
 }
 
+/// Error policy for MachineConfig reconciliation failures.
+/// Returns a base requeue duration; kube-rs Controller internally applies
+/// exponential backoff (via its scheduler) for repeated failures of the
+/// same object, so we don't need manual retry counting here.
 fn error_policy_mc(
     _obj: Arc<MachineConfig>,
     error: &OperatorError,
@@ -329,6 +333,8 @@ async fn cleanup_drift_alerts(client: &Client, namespace: &str, mc_name: &str) {
     }
 }
 
+/// Error policy for DriftAlert reconciliation failures.
+/// kube-rs Controller applies exponential backoff internally.
 fn error_policy_da(
     _obj: Arc<DriftAlert>,
     error: &OperatorError,
@@ -512,6 +518,8 @@ fn validate_policy_compliance(
     true
 }
 
+/// Error policy for ConfigPolicy reconciliation failures.
+/// kube-rs Controller applies exponential backoff internally.
 fn error_policy_cp(
     _obj: Arc<ConfigPolicy>,
     error: &OperatorError,

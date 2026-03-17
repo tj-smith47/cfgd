@@ -729,7 +729,9 @@ fn setup_file_watcher(
                 match event.kind {
                     EventKind::Modify(_) | EventKind::Create(_) | EventKind::Remove(_) => {
                         for path in event.paths {
-                            let _ = sender.blocking_send(path);
+                            if let Err(e) = sender.blocking_send(path) {
+                                tracing::warn!("file watcher event dropped: {}", e);
+                            }
                         }
                     }
                     _ => {}
@@ -2184,7 +2186,7 @@ mod tests {
                 origin: vec![OriginSpec {
                     origin_type: OriginType::Git,
                     url: "https://github.com/test/repo.git".into(),
-                    branch: "main".into(),
+                    branch: "master".into(),
                     auth: None,
                 }],
                 daemon: None,
@@ -2214,7 +2216,7 @@ mod tests {
                 origin: vec![OriginSpec {
                     origin_type: OriginType::Server,
                     url: "https://cfgd.example.com".into(),
-                    branch: "main".into(),
+                    branch: "master".into(),
                     auth: None,
                 }],
                 daemon: None,

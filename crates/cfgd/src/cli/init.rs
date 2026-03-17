@@ -365,7 +365,7 @@ fn clone_into(target_dir: &Path, url: &str, branch: &str, printer: &Printer) -> 
     printer.success(&format!("Cloned to {}", target_dir.display()));
 
     // Checkout branch if not main
-    if branch != "main" {
+    if branch != "master" {
         let repo = git2::Repository::open(target_dir)
             .map_err(|e| anyhow::anyhow!("Failed to open cloned repo: {}", e))?;
         let remote_branch = format!("origin/{}", branch);
@@ -476,7 +476,6 @@ cfgd apply
 
     Ok(())
 }
-
 
 /// Generate or regenerate the release workflow based on current modules/profiles.
 /// Called by init and also by module create / profile create.
@@ -641,9 +640,9 @@ pub(super) fn cmd_enroll(
     let info = client.enroll_info().map_err(|e| anyhow::anyhow!("{}", e))?;
 
     if info.method == "token" {
-        printer.warning("This server uses bootstrap token enrollment");
-        printer.info("Run: cfgd enroll --server-url <url> --token <token>");
-        return Ok(());
+        anyhow::bail!(
+            "This server uses bootstrap token enrollment. Run: cfgd enroll --server-url <url> --token <token>"
+        );
     }
 
     // Determine signing method
@@ -932,7 +931,7 @@ mod tests {
             &config_path,
             "work",
             Some("https://github.com/test/init-cfg.git"),
-            "main",
+            "master",
             None,
         )
         .unwrap();
@@ -954,7 +953,7 @@ mod tests {
         )
         .unwrap();
 
-        ensure_config_file(dir.path(), &config_path, "work", None, "main", None).unwrap();
+        ensure_config_file(dir.path(), &config_path, "work", None, "master", None).unwrap();
 
         let cfg = config::load_config(&config_path).unwrap();
         assert_eq!(cfg.spec.profile.as_deref(), Some("work"));
@@ -968,7 +967,7 @@ mod tests {
         let original = "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: test\nspec:\n  profile: default\n";
         std::fs::write(&config_path, original).unwrap();
 
-        ensure_config_file(dir.path(), &config_path, "default", None, "main", None).unwrap();
+        ensure_config_file(dir.path(), &config_path, "default", None, "master", None).unwrap();
 
         let contents = std::fs::read_to_string(&config_path).unwrap();
         assert_eq!(contents, original);
@@ -1038,7 +1037,7 @@ mod tests {
         )
         .unwrap();
 
-        ensure_config_file(dir.path(), &config_path, "work", None, "main", None).unwrap();
+        ensure_config_file(dir.path(), &config_path, "work", None, "master", None).unwrap();
 
         let cfg = config::load_config(&config_path).unwrap();
         assert_eq!(cfg.spec.profile.as_deref(), Some("work"));

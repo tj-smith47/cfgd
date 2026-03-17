@@ -70,7 +70,7 @@ spec:
       origin:
         type: git
         url: git@github.com:acme-corp/dev-config.git
-        branch: main
+        branch: master
       subscription:
         profile: acme-backend
         priority: 500

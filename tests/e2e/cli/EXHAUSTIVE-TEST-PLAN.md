@@ -32,7 +32,7 @@ Every cfgd command, subcommand, and flag. All tests are self-contained — no ex
 | ID | Command | Assertion |
 |---|---|---|
 | I01 | `init --from <local-git-repo>` | Creates cfgd.yaml + profiles/ |
-| I02 | `init --from <local> --branch main` | Respects branch flag |
+| I02 | `init --from <local> --branch master` | Respects branch flag |
 | I03 | `init --from <local> --theme minimal` | Theme persisted in config |
 | I04 | `init --from <local> --module nvim` | Module flag accepted |
 | I05 | `init` (no --from, pre-seeded dir) | Detects existing config |
@@ -123,7 +123,7 @@ Every cfgd command, subcommand, and flag. All tests are self-contained — no ex
 | M27 | `module delete X -y` | Short flag |
 | M28 | `module delete nonexistent` | Exit non-zero |
 | M29 | `module upgrade X --yes` (local) | Graceful "no remote" handling |
-| M30 | `module upgrade X --ref main` | Flag accepted |
+| M30 | `module upgrade X --ref master` | Flag accepted |
 | M31 | `module upgrade X --allow-unsigned` | Flag accepted |
 | M32 | `module search query` | Graceful without registry |
 | M33 | `module registry list` | Lists registries (empty ok) |
@@ -139,7 +139,7 @@ All source tests use a local git repo created inline as the "remote."
 | SRC01 | `source --help` | Lists subcommands |
 | SRC02 | `source list` (empty) | Exit 0 |
 | SRC03 | `source add <local-git>` | Source registered |
-| SRC04 | `source add --branch main` | Branch respected |
+| SRC04 | `source add --branch master` | Branch respected |
 | SRC05 | `source add --profile base` | Profile filter set |
 | SRC06 | `source add --accept-recommended` | Flag accepted |
 | SRC07 | `source add --priority 10` | Priority set |

@@ -3,6 +3,7 @@
 // files/, packages/, secrets/, reconciler/, daemon/, providers/.
 
 use std::collections::HashMap;
+use std::path::PathBuf;
 
 use crate::config::{
     ConfigSourcePolicy, EnvVar, LayerPolicy, MergedProfile, PackagesSpec, PolicyItems,
@@ -125,19 +126,24 @@ pub fn compose(local: &ResolvedProfile, sources: &[CompositionInput]) -> Result<
 
     let mut merged = merge_with_policy(&all_layers, &mut conflicts)?;
 
-    // Tag files with their source origin for template sandboxing
+    // Tag files with their source origin for template sandboxing.
+    // Build a HashMap<target, source> respecting layer priority order (higher priority wins).
+    let mut file_origins: HashMap<PathBuf, String> = HashMap::new();
     for layer in &all_layers {
         if layer.source != "local"
             && let Some(ref files) = layer.spec.files
         {
             for managed in &files.managed {
-                // Find the matching file in merged output and tag its origin
-                for merged_file in &mut merged.files.managed {
-                    if merged_file.target == managed.target && merged_file.origin.is_none() {
-                        merged_file.origin = Some(layer.source.clone());
-                    }
-                }
+                // Later (higher-priority) layers overwrite earlier entries
+                file_origins.insert(managed.target.clone(), layer.source.clone());
             }
+        }
+    }
+    for merged_file in &mut merged.files.managed {
+        if merged_file.origin.is_none()
+            && let Some(source) = file_origins.get(&merged_file.target)
+        {
+            merged_file.origin = Some(source.clone());
         }
     }
 
@@ -722,7 +728,12 @@ fn record_policy_conflicts(
             resource_id: format!("alias:{}", alias.name),
             resolution_type: resolution_type.clone(),
             winning_source: source_name.to_string(),
-            details: format!("{} {} <- {}", resolution_type.label(), alias.name, source_name),
+            details: format!(
+                "{} {} <- {}",
+                resolution_type.label(),
+                alias.name,
+                source_name
+            ),
         });
     }
 

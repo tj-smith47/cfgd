@@ -165,8 +165,7 @@ impl<'de> serde::Deserialize<'de> for ThemeConfig {
                     #[serde(default)]
                     overrides: ThemeOverrides,
                 }
-                let inner =
-                    Inner::deserialize(de::value::MapAccessDeserializer::new(map))?;
+                let inner = Inner::deserialize(de::value::MapAccessDeserializer::new(map))?;
                 Ok(ThemeConfig {
                     name: inner.name,
                     overrides: inner.overrides,
@@ -250,7 +249,7 @@ pub enum OriginType {
 }
 
 fn default_branch() -> String {
-    "main".to_string()
+    "master".to_string()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1186,13 +1185,27 @@ pub fn load_profile(path: &Path) -> Result<ProfileDocument> {
     Ok(doc)
 }
 
+/// Find a profile file by name, checking `.yaml` then `.yml` extensions.
+fn find_profile_path(profiles_dir: &Path, name: &str) -> PathBuf {
+    let yaml_path = profiles_dir.join(format!("{}.yaml", name));
+    if yaml_path.exists() {
+        return yaml_path;
+    }
+    let yml_path = profiles_dir.join(format!("{}.yml", name));
+    if yml_path.exists() {
+        return yml_path;
+    }
+    // Fall back to .yaml so load_profile produces the expected error
+    yaml_path
+}
+
 /// Resolve a profile by loading it and its full inheritance chain, then merging.
 pub fn resolve_profile(profile_name: &str, profiles_dir: &Path) -> Result<ResolvedProfile> {
     let resolution_order = resolve_inheritance_order(profile_name, profiles_dir, &mut vec![])?;
 
     let mut layers = Vec::new();
     for name in &resolution_order {
-        let path = profiles_dir.join(format!("{}.yaml", name));
+        let path = find_profile_path(profiles_dir, name);
         let doc = load_profile(&path)?;
         layers.push(ProfileLayer {
             source: "local".to_string(),
@@ -1223,7 +1236,7 @@ fn resolve_inheritance_order(
 
     visited.push(profile_name.to_string());
 
-    let path = profiles_dir.join(format!("{}.yaml", profile_name));
+    let path = find_profile_path(profiles_dir, profile_name);
     let doc = load_profile(&path)?;
 
     let mut order = Vec::new();
@@ -1583,7 +1596,7 @@ spec:
   origin:
     type: git
     url: https://github.com/test/repo.git
-    branch: main
+    branch: master
 "#
     }
 
@@ -1630,7 +1643,7 @@ spec:
             config.spec.origin[0].url,
             "https://github.com/test/repo.git"
         );
-        assert_eq!(config.spec.origin[0].branch, "main");
+        assert_eq!(config.spec.origin[0].branch, "master");
     }
 
     #[test]

@@ -22,7 +22,7 @@ cfgd init --from <url> --apply --yes --install-daemon  # full one-liner bootstra
 |---|---|
 | `[path]` | Target directory (default: current directory) |
 | `--from <url>` | Clone from a remote git repository |
-| `--branch <name>` | Git branch (default: main) |
+| `--branch <name>` | Git branch (default: master) |
 | `--name <name>` | Config name in metadata (default: directory name) |
 | `--apply` | Apply configuration after scaffolding |
 | `--apply-profile <name>` | Activate and apply a specific profile (implies --apply, errors if not found) |

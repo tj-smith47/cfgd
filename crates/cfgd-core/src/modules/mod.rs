@@ -9,6 +9,7 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 
+use serde::Serialize;
 use sha2::{Digest, Sha256};
 
 use crate::config::{EnvVar, ModulePackageEntry, ModuleSpec, ShellAlias, parse_module};
@@ -21,7 +22,7 @@ use crate::providers::PackageManager;
 // ---------------------------------------------------------------------------
 
 /// A package resolved to a concrete manager and name.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct ResolvedPackage {
     /// Canonical name from the module spec.
     pub canonical_name: String,
@@ -36,7 +37,7 @@ pub struct ResolvedPackage {
 }
 
 /// A file resolved to a concrete local path.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct ResolvedFile {
     /// Local source path (after git clone if needed).
     pub source: PathBuf,

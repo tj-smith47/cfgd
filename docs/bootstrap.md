@@ -21,7 +21,7 @@ The flow:
 cfgd init --from git@github.com:you/machine-config.git --branch dev
 ```
 
-If the branch isn't `main`, cfgd checks out the specified branch after cloning.
+If the branch isn't `master`, cfgd checks out the specified branch after cloning.
 
 ## Fresh Start
 

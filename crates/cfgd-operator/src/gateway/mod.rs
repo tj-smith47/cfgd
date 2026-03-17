@@ -31,7 +31,7 @@ pub async fn start_gateway(config: GatewayConfig) -> Result<(), Box<dyn std::err
         tracing::info!("Device gateway: API key authentication enabled");
     } else {
         tracing::warn!(
-            "Device gateway: CFGD_API_KEY is not set — all endpoints are unauthenticated"
+            "CFGD_API_KEY is not set — all API requests will be treated as admin. Set CFGD_API_KEY for production use."
         );
     }
 

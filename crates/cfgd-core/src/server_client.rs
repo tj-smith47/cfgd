@@ -172,9 +172,17 @@ impl ServerClient {
                         "Request failed, retrying"
                     );
                 }
+                Err(ureq::Error::Status(code, _)) if code >= 500 => {
+                    last_err = format!("server error (HTTP {})", code);
+                    tracing::debug!(
+                        attempt = attempt + 1,
+                        max = MAX_RETRIES,
+                        code,
+                        "Server error, retrying"
+                    );
+                }
                 Err(e) => {
-                    // Non-transport errors (4xx, 5xx) are not retryable
-                    return Err(format!("server error: {}", e));
+                    return Err(format!("request error: {}", e));
                 }
             }
         }

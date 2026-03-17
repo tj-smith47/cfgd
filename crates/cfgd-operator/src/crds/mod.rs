@@ -189,11 +189,20 @@ impl MachineConfigSpec {
                     file.path
                 ));
             }
-            if u32::from_str_radix(&file.mode, 8).is_err() {
-                errors.push(format!(
-                    "spec.files[{i}].mode '{}' is not valid octal",
-                    file.mode
-                ));
+            match u32::from_str_radix(&file.mode, 8) {
+                Ok(mode) if mode > 0o7777 => {
+                    errors.push(format!(
+                        "spec.files[{i}].mode '{}' exceeds maximum 7777",
+                        file.mode
+                    ));
+                }
+                Err(_) => {
+                    errors.push(format!(
+                        "spec.files[{i}].mode '{}' is not valid octal",
+                        file.mode
+                    ));
+                }
+                _ => {}
             }
         }
         for (pkg, version) in &self.package_versions {

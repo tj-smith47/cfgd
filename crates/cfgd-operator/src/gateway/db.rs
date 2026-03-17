@@ -202,7 +202,7 @@ const MIGRATIONS: &[&str] = &["CREATE TABLE IF NOT EXISTS devices (
     INSERT INTO schema_version (version) VALUES (0);"];
 
 pub struct ServerDb {
-    conn: Connection,
+    pub(crate) conn: Connection,
 }
 
 impl ServerDb {
@@ -215,27 +215,63 @@ impl ServerDb {
     }
 
     fn run_migrations(&self) -> Result<(), GatewayError> {
-        let current_version = self.schema_version();
+        // Use IMMEDIATE to acquire a write lock upfront, preventing concurrent
+        // processes from both reading version 0 and running all migrations.
+        self.conn.execute_batch("BEGIN IMMEDIATE")?;
+
+        let current_version = match self.schema_version_inner() {
+            Ok(v) => v,
+            Err(e) => {
+                let _ = self.conn.execute_batch("ROLLBACK");
+                return Err(e.into());
+            }
+        };
+
         for (i, migration) in MIGRATIONS.iter().enumerate() {
             if i >= current_version {
-                self.conn.execute_batch(migration)?;
+                if let Err(e) = self.conn.execute_batch(migration) {
+                    let _ = self.conn.execute_batch("ROLLBACK");
+                    return Err(e.into());
+                }
                 let new_version = (i + 1) as i64;
-                self.conn.execute(
+                if let Err(e) = self.conn.execute(
                     "UPDATE schema_version SET version = ?1",
                     params![new_version],
-                )?;
+                ) {
+                    let _ = self.conn.execute_batch("ROLLBACK");
+                    return Err(e.into());
+                }
             }
+        }
+
+        if let Err(e) = self.conn.execute_batch("COMMIT") {
+            let _ = self.conn.execute_batch("ROLLBACK");
+            return Err(e.into());
         }
         Ok(())
     }
 
-    fn schema_version(&self) -> usize {
+    fn schema_version_inner(&self) -> std::result::Result<usize, rusqlite::Error> {
         self.conn
             .query_row("SELECT version FROM schema_version", [], |row| {
                 row.get::<_, i64>(0)
             })
             .map(|v| v as usize)
-            .unwrap_or(0)
+            .or_else(|e| match e {
+                rusqlite::Error::QueryReturnedNoRows => Ok(0),
+                // Table doesn't exist yet (first run) — treat as version 0
+                rusqlite::Error::SqliteFailure(_, Some(ref msg))
+                    if msg.contains("no such table") =>
+                {
+                    Ok(0)
+                }
+                other => Err(other),
+            })
+    }
+
+    #[cfg(test)]
+    fn schema_version(&self) -> usize {
+        self.schema_version_inner().unwrap_or(0)
     }
 
     pub fn register_device(

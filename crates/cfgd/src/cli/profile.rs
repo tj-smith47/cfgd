@@ -1008,7 +1008,6 @@ pub(super) fn cmd_profile_delete(
     Ok(())
 }
 
-
 /// Collect expanded file target paths from a module's definition.
 /// Returns an empty vec if the module can't be loaded (already cleaned up, etc.).
 fn collect_module_file_targets(module_name: &str, config_dir: &Path) -> Vec<PathBuf> {

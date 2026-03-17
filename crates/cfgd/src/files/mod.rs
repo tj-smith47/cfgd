@@ -625,10 +625,8 @@ impl cfgd_core::providers::FileManager for CfgdFileManager {
                                 _ => None,
                             };
                             if let Some(plan_hash) = expected_hash {
-                                let current_hash = format!(
-                                    "{:x}",
-                                    sha2::Sha256::digest(content.as_bytes())
-                                );
+                                let current_hash =
+                                    format!("{:x}", sha2::Sha256::digest(content.as_bytes()));
                                 if current_hash != plan_hash {
                                     return Err(FileError::SourceChanged {
                                         path: source.clone(),

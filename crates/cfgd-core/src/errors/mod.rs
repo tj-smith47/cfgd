@@ -95,7 +95,6 @@ pub enum FileError {
 
     #[error("path {path} escapes root directory {root}")]
     PathTraversal { path: PathBuf, root: PathBuf },
-
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -120,6 +119,9 @@ pub enum PackageError {
 
     #[error("{manager} bootstrap failed: {message}")]
     BootstrapFailed { manager: String, message: String },
+
+    #[error("package manager '{manager}' not found in registry")]
+    ManagerNotFound { manager: String },
 }
 
 #[derive(Debug, thiserror::Error)]

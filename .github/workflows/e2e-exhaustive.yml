@@ -2,7 +2,7 @@ name: E2E – Exhaustive CLI
 
 on:
   push:
-    branches: [master, main]
+    branches: [master]
     paths:
       - "crates/cfgd/**"
       - "crates/cfgd-core/**"
@@ -10,7 +10,7 @@ on:
       - "tests/e2e/common/**"
       - ".github/workflows/e2e-exhaustive.yml"
   pull_request:
-    branches: [master, main]
+    branches: [master]
     paths:
       - "crates/cfgd/**"
       - "crates/cfgd-core/**"

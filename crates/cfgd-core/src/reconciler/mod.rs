@@ -2,6 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::str::FromStr;
 
+use serde::Serialize;
 use sha2::{Digest, Sha256};
 
 use crate::config::{MergedProfile, ResolvedProfile, ScriptSpec};
@@ -68,7 +69,7 @@ impl FromStr for PhaseName {
 }
 
 /// Environment file action — write ~/.cfgd.env or inject source line into shell rc.
-#[derive(Debug)]
+#[derive(Debug, Serialize)]
 pub enum EnvAction {
     /// Write the generated env file (bash/zsh or fish).
     WriteEnvFile {
@@ -83,7 +84,7 @@ pub enum EnvAction {
 }
 
 /// A unified action across all resource types.
-#[derive(Debug)]
+#[derive(Debug, Serialize)]
 pub enum Action {
     File(FileAction),
     Package(PackageAction),
@@ -95,14 +96,14 @@ pub enum Action {
 }
 
 /// Module-level action — first-class phase, not flattened into packages/files.
-#[derive(Debug)]
+#[derive(Debug, Serialize)]
 pub struct ModuleAction {
     pub module_name: String,
     pub kind: ModuleActionKind,
 }
 
 /// What kind of module action to take.
-#[derive(Debug)]
+#[derive(Debug, Serialize)]
 pub enum ModuleActionKind {
     /// Install/update packages resolved from a module.
     InstallPackages {
@@ -119,7 +120,7 @@ pub enum ModuleActionKind {
 }
 
 /// System configuration action.
-#[derive(Debug)]
+#[derive(Debug, Serialize)]
 pub enum SystemAction {
     SetValue {
         configurator: String,
@@ -136,7 +137,7 @@ pub enum SystemAction {
 }
 
 /// Script execution action.
-#[derive(Debug)]
+#[derive(Debug, Serialize)]
 pub enum ScriptAction {
     Run {
         path: PathBuf,
@@ -146,7 +147,7 @@ pub enum ScriptAction {
 }
 
 /// When a script runs relative to reconciliation.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub enum ScriptPhase {
     PreReconcile,
     PostReconcile,
@@ -174,19 +175,15 @@ impl Plan {
         self.phases.iter().all(|p| p.actions.is_empty())
     }
 
-    /// Serialize the plan to a string for hashing.
+    /// Serialize the plan to a stable string for hashing.
+    /// Uses serde_json serialization instead of Debug formatting for stability
+    /// across compiler versions.
     pub fn to_hash_string(&self) -> String {
         let mut parts = Vec::new();
         for phase in &self.phases {
             for action in &phase.actions {
-                match action {
-                    Action::File(fa) => parts.push(format!("file:{:?}", fa)),
-                    Action::Package(pa) => parts.push(format!("pkg:{:?}", pa)),
-                    Action::Secret(sa) => parts.push(format!("secret:{:?}", sa)),
-                    Action::System(sa) => parts.push(format!("sys:{:?}", sa)),
-                    Action::Script(sa) => parts.push(format!("script:{:?}", sa)),
-                    Action::Module(ma) => parts.push(format!("module:{:?}", ma)),
-                    Action::Env(ea) => parts.push(format!("env:{:?}", ea)),
+                if let Ok(json) = serde_json::to_string(action) {
+                    parts.push(json);
                 }
             }
         }
@@ -258,7 +255,11 @@ impl<'a> Reconciler<'a> {
         // Phase 0: Env — write ~/.cfgd.env and inject shell rc source line.
         // Runs first so that env vars (including PATH for bootstrapped managers)
         // are available to all subsequent phases, especially post-apply scripts.
-        let env_actions = Self::plan_env(&resolved.merged.env, &resolved.merged.aliases, &module_actions);
+        let env_actions = Self::plan_env(
+            &resolved.merged.env,
+            &resolved.merged.aliases,
+            &module_actions,
+        );
         phases.push(Phase {
             name: PhaseName::Env,
             actions: env_actions,
@@ -567,10 +568,15 @@ impl<'a> Reconciler<'a> {
             // are installed before packages that might need them.
             let mut manager_order: Vec<&String> = by_manager.keys().collect();
             manager_order.sort_by_key(|mgr| {
-                match self.registry.package_managers.iter().find(|m| m.name() == mgr.as_str()) {
-                    Some(m) if m.is_available() => 0, // available (native) first
+                match self
+                    .registry
+                    .package_managers
+                    .iter()
+                    .find(|m| m.name() == mgr.as_str())
+                {
+                    Some(m) if m.is_available() => 0,  // available (native) first
                     Some(m) if m.can_bootstrap() => 1, // bootstrappable second
-                    _ => 2, // unknown last
+                    _ => 2,                            // unknown last
                 }
             });
 
@@ -905,7 +911,7 @@ impl<'a> Reconciler<'a> {
         }
 
         // Record rollback as a new apply
-        let _ = self.state.record_apply(
+        self.state.record_apply(
             "rollback",
             &format!("rollback-of-{}", apply_id),
             ApplyStatus::Success,
@@ -913,7 +919,7 @@ impl<'a> Reconciler<'a> {
                 "{{\"rollback_of\":{},\"restored\":{},\"removed\":{}}}",
                 apply_id, files_restored, files_removed
             )),
-        );
+        )?;
 
         Ok(RollbackResult {
             files_restored,
@@ -968,7 +974,7 @@ impl<'a> Reconciler<'a> {
                 }
                 content.push_str(line);
                 content.push('\n');
-                std::fs::write(rc_path, content)?;
+                crate::atomic_write_str(rc_path, &content)?;
                 printer.success(&format!("Injected source line into {}", rc_path.display()));
                 Ok(format!("env:inject:{}", rc_path.display()))
             }
@@ -1015,9 +1021,7 @@ impl<'a> Reconciler<'a> {
 
     fn apply_package_action(&self, action: &PackageAction, printer: &Printer) -> Result<String> {
         match action {
-            PackageAction::Bootstrap {
-                manager, ..
-            } => {
+            PackageAction::Bootstrap { manager, .. } => {
                 // Find in ALL managers (not just available — it isn't available yet)
                 for pm in &self.registry.package_managers {
                     if pm.name() == manager {
@@ -1032,7 +1036,10 @@ impl<'a> Reconciler<'a> {
                         return Ok(format!("package:{}:bootstrap", manager));
                     }
                 }
-                Ok(format!("package:{}:bootstrap", manager))
+                Err(crate::errors::PackageError::ManagerNotFound {
+                    manager: manager.clone(),
+                }
+                .into())
             }
             PackageAction::Install {
                 manager, packages, ..
@@ -1047,7 +1054,10 @@ impl<'a> Reconciler<'a> {
                         ));
                     }
                 }
-                Ok(format!("package:{}:install", manager))
+                Err(crate::errors::PackageError::ManagerNotFound {
+                    manager: manager.clone(),
+                }
+                .into())
             }
             PackageAction::Uninstall {
                 manager, packages, ..
@@ -1062,7 +1072,10 @@ impl<'a> Reconciler<'a> {
                         ));
                     }
                 }
-                Ok(format!("package:{}:uninstall", manager))
+                Err(crate::errors::PackageError::ManagerNotFound {
+                    manager: manager.clone(),
+                }
+                .into())
             }
             PackageAction::Skip {
                 manager, reason, ..
@@ -1196,11 +1209,7 @@ impl<'a> Reconciler<'a> {
                     ScriptPhase::PostReconcile => "post-reconcile",
                 };
 
-                let label = format!(
-                    "Running {} script: {}",
-                    phase_name,
-                    path.display()
-                );
+                let label = format!("Running {} script: {}", phase_name, path.display());
 
                 let result = printer
                     .run_with_output(
@@ -1310,7 +1319,7 @@ impl<'a> Reconciler<'a> {
                                             "export PATH=\"{}:$PATH\"\n",
                                             new_dirs.join(":")
                                         ));
-                                        let _ = std::fs::write(&env_path, &content);
+                                        crate::atomic_write_str(&env_path, &content)?;
                                     }
                                 }
                             }
@@ -1340,9 +1349,7 @@ impl<'a> Reconciler<'a> {
 
                     // Use the per-file strategy override if set, otherwise
                     // fall back to the global file-strategy from cfgd.yaml (default: symlink).
-                    let strategy = file
-                        .strategy
-                        .unwrap_or(self.registry.default_file_strategy);
+                    let strategy = file.strategy.unwrap_or(self.registry.default_file_strategy);
 
                     // Backup existing target before overwriting
                     if let Ok(Some(file_state)) = crate::capture_file_state(&target)
@@ -1352,11 +1359,7 @@ impl<'a> Reconciler<'a> {
                             &file_state,
                         )
                     {
-                        tracing::warn!(
-                            "failed to backup module file {}: {}",
-                            target.display(),
-                            e
-                        );
+                        tracing::warn!("failed to backup module file {}: {}", target.display(), e);
                     }
 
                     // Remove existing target before deploying
@@ -1400,13 +1403,13 @@ impl<'a> Reconciler<'a> {
                     } else {
                         String::new()
                     };
-                    let _ = self.state.upsert_module_file(
+                    self.state.upsert_module_file(
                         &action.module_name,
                         &target.display().to_string(),
                         &hash,
                         &format!("{:?}", strategy),
                         apply_id,
-                    );
+                    )?;
                 }
 
                 printer.success(&format!(
@@ -1422,10 +1425,7 @@ impl<'a> Reconciler<'a> {
                 ))
             }
             ModuleActionKind::RunScript { script, .. } => {
-                let label = format!(
-                    "Module {}: running post-apply script",
-                    action.module_name
-                );
+                let label = format!("Module {}: running post-apply script", action.module_name);
 
                 let result = printer
                     .run_with_output(
@@ -1648,7 +1648,13 @@ pub fn verify(
     }
 
     // Verify env: check ~/.cfgd.env matches expected content
-    verify_env(&resolved.merged.env, &resolved.merged.aliases, modules, state, &mut results);
+    verify_env(
+        &resolved.merged.env,
+        &resolved.merged.aliases,
+        modules,
+        state,
+        &mut results,
+    );
 
     Ok(results)
 }
@@ -2639,7 +2645,11 @@ mod tests {
 
         // Should have 6 phases, first is Modules
         assert_eq!(plan.phases.len(), 7);
-        let module_phase = plan.phases.iter().find(|p| p.name == PhaseName::Modules).unwrap();
+        let module_phase = plan
+            .phases
+            .iter()
+            .find(|p| p.name == PhaseName::Modules)
+            .unwrap();
 
         // Module phase should have at least 1 action (InstallPackages)
         let module_phase = module_phase;
@@ -2682,7 +2692,11 @@ mod tests {
             .plan(&resolved, Vec::new(), Vec::new(), modules)
             .unwrap();
 
-        let module_phase = plan.phases.iter().find(|p| p.name == PhaseName::Modules).unwrap();
+        let module_phase = plan
+            .phases
+            .iter()
+            .find(|p| p.name == PhaseName::Modules)
+            .unwrap();
         assert_eq!(module_phase.actions.len(), 1);
 
         match &module_phase.actions[0] {
@@ -2718,7 +2732,11 @@ mod tests {
             .plan(&resolved, Vec::new(), Vec::new(), modules)
             .unwrap();
 
-        let module_phase = plan.phases.iter().find(|p| p.name == PhaseName::Modules).unwrap();
+        let module_phase = plan
+            .phases
+            .iter()
+            .find(|p| p.name == PhaseName::Modules)
+            .unwrap();
         assert_eq!(module_phase.actions.len(), 2);
 
         for action in &module_phase.actions {
@@ -2778,7 +2796,11 @@ mod tests {
             .plan(&resolved, Vec::new(), Vec::new(), modules)
             .unwrap();
 
-        let module_phase = plan.phases.iter().find(|p| p.name == PhaseName::Modules).unwrap();
+        let module_phase = plan
+            .phases
+            .iter()
+            .find(|p| p.name == PhaseName::Modules)
+            .unwrap();
         // node packages + nvim packages = 2 actions
         assert_eq!(module_phase.actions.len(), 2);
 
@@ -3027,7 +3049,9 @@ mod tests {
         };
 
         let hash = plan.to_hash_string();
-        assert!(hash.contains("module:"));
+        assert!(hash.contains("nvim"));
+        assert!(hash.contains("neovim"));
+        assert!(hash.contains("brew"));
     }
 
     #[test]
@@ -3136,7 +3160,11 @@ mod tests {
             .plan(&resolved, Vec::new(), Vec::new(), modules)
             .unwrap();
 
-        let module_phase = plan.phases.iter().find(|p| p.name == PhaseName::Modules).unwrap();
+        let module_phase = plan
+            .phases
+            .iter()
+            .find(|p| p.name == PhaseName::Modules)
+            .unwrap();
         assert_eq!(module_phase.actions.len(), 1);
 
         match &module_phase.actions[0] {

@@ -229,13 +229,12 @@ impl SecretBackend for AgeBackend {
         // Decrypt to temp file, open editor, re-encrypt on save
         let decrypted = self.decrypt_file(path)?;
 
-        let temp_dir = std::env::temp_dir().join(format!("cfgd-edit-{}", std::process::id()));
-        std::fs::create_dir_all(&temp_dir).map_err(|e| SecretError::DecryptionFailed {
+        let temp_dir = tempfile::TempDir::new().map_err(|e| SecretError::DecryptionFailed {
             path: path.to_path_buf(),
             message: format!("failed to create temp dir: {}", e),
         })?;
 
-        let temp_file = temp_dir.join(
+        let temp_file = temp_dir.path().join(
             path.file_name()
                 .unwrap_or_else(|| std::ffi::OsStr::new("secret")),
         );
@@ -280,8 +279,7 @@ impl SecretBackend for AgeBackend {
         // Re-encrypt
         self.encrypt_file(path)?;
 
-        // Clean up temp dir
-        let _ = std::fs::remove_dir_all(&temp_dir);
+        // temp_dir auto-cleans on drop
 
         Ok(())
     }

@@ -1531,7 +1531,7 @@ mod tests {
             .upsert_config_source(
                 "acme",
                 "git@github.com:acme/config.git",
-                "main",
+                "master",
                 Some("abc123"),
                 Some("2.1.0"),
                 Some("~2"),

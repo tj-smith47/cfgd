@@ -483,6 +483,7 @@ dependencies = [
  "console",
  "git2",
  "hostname",
+ "libc",
  "predicates",
  "serde",
  "serde_json",

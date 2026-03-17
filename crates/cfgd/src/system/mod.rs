@@ -806,7 +806,8 @@ impl EnvironmentConfigurator {
         for (key, value) in managed {
             env_entries.push_str(&format!(
                 "            <key>{}</key>\n            <string>{}</string>\n",
-                key, value
+                cfgd_core::xml_escape(key),
+                cfgd_core::xml_escape(value)
             ));
         }
 

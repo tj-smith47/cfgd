@@ -62,7 +62,11 @@ pub fn current_version() -> std::result::Result<Version, UpgradeError> {
 pub fn fetch_latest_release(repo: &str) -> Result<ReleaseInfo> {
     let url = format!("{}/repos/{}/releases/latest", GITHUB_API_BASE, repo);
 
-    let response = ureq::get(&url)
+    let agent = ureq::AgentBuilder::new()
+        .timeout(std::time::Duration::from_secs(300))
+        .build();
+    let response = agent
+        .get(&url)
         .set("Accept", "application/vnd.github+json")
         .set("User-Agent", "cfgd-self-update")
         .call()
@@ -156,7 +160,11 @@ fn find_checksums_asset(release: &ReleaseInfo) -> Option<&ReleaseAsset> {
 
 /// Download a file from a URL to a local path.
 fn download_to_file(url: &str, dest: &Path) -> std::result::Result<(), UpgradeError> {
-    let response = ureq::get(url)
+    let agent = ureq::AgentBuilder::new()
+        .timeout(std::time::Duration::from_secs(300))
+        .build();
+    let response = agent
+        .get(url)
         .set("User-Agent", "cfgd-self-update")
         .call()
         .map_err(|e| UpgradeError::DownloadFailed {
@@ -247,10 +255,10 @@ pub fn download_and_install(release: &ReleaseInfo, asset: &ReleaseAsset) -> Resu
             }
             tracing::debug!("checksum verified for {}", asset.name);
         } else {
-            tracing::warn!(
-                "no checksum entry for {} in checksums file — skipping verification",
-                asset.name
-            );
+            return Err(UpgradeError::ChecksumMismatch {
+                file: asset.name.clone(),
+            }
+            .into());
         }
     } else {
         tracing::warn!("no checksums asset found in release — skipping verification");
@@ -292,28 +300,29 @@ pub fn download_and_install(release: &ReleaseInfo, asset: &ReleaseAsset) -> Resu
 }
 
 /// Atomically replace `target` with `source`.
-/// Tries rename first (atomic on same FS), falls back to copy-then-rename.
+/// Copies source to a NamedTempFile in the target directory, then persists it
+/// over the target (atomic rename on the same filesystem).
 fn atomic_replace(source: &Path, target: &Path) -> std::result::Result<(), UpgradeError> {
     let target_dir = target.parent().ok_or_else(|| UpgradeError::InstallFailed {
         message: "target has no parent directory".into(),
     })?;
 
-    // Write to a temporary file in the target directory, then rename
-    let tmp_target = target_dir.join(".cfgd-upgrade-tmp");
+    // Create a temp file in the target directory so rename is same-FS
+    let tmp =
+        tempfile::NamedTempFile::new_in(target_dir).map_err(|e| UpgradeError::InstallFailed {
+            message: format!("create temp file in {}: {}", target_dir.display(), e),
+        })?;
 
-    // Copy source to tmp location in target directory
-    fs::copy(source, &tmp_target).map_err(|e| UpgradeError::InstallFailed {
+    // Copy source to the temp file
+    fs::copy(source, tmp.path()).map_err(|e| UpgradeError::InstallFailed {
         message: format!("copy to staging: {}", e),
     })?;
 
-    // Rename tmp to target — atomic on the same filesystem
-    fs::rename(&tmp_target, target).map_err(|e| {
-        // Clean up tmp file on failure
-        let _ = fs::remove_file(&tmp_target);
-        UpgradeError::InstallFailed {
+    // Persist (atomic rename) temp file to target
+    tmp.persist(target)
+        .map_err(|e| UpgradeError::InstallFailed {
             message: format!("atomic rename: {}", e),
-        }
-    })?;
+        })?;
 
     Ok(())
 }

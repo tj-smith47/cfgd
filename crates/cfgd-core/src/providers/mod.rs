@@ -3,6 +3,8 @@
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
+use serde::Serialize;
+
 use crate::errors::Result;
 use crate::output::Printer;
 
@@ -92,7 +94,7 @@ pub enum FileDiffKind {
     Unchanged,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Serialize)]
 pub enum FileAction {
     Create {
         source: PathBuf,
@@ -136,7 +138,7 @@ pub trait FileManager: Send + Sync {
 
 // --- PackageAction ---
 
-#[derive(Debug)]
+#[derive(Debug, Serialize)]
 pub enum PackageAction {
     Bootstrap {
         manager: String,
@@ -180,7 +182,7 @@ pub trait SecretProvider: Send + Sync {
 
 // --- SecretAction ---
 
-#[derive(Debug)]
+#[derive(Debug, Serialize)]
 pub enum SecretAction {
     Decrypt {
         source: PathBuf,

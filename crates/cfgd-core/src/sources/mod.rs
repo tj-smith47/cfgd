@@ -62,14 +62,23 @@ impl SourceManager {
     }
 
     /// Load all sources from config, fetching if needed.
+    /// Returns an error if sources were specified but none loaded successfully.
     pub fn load_sources(&mut self, sources: &[SourceSpec], printer: &Printer) -> Result<()> {
+        let mut loaded = 0;
         for spec in sources {
             match self.load_source(spec, printer) {
-                Ok(()) => {}
+                Ok(()) => loaded += 1,
                 Err(e) => {
                     printer.warning(&format!("Failed to load source '{}': {}", spec.name, e));
                 }
             }
+        }
+        if !sources.is_empty() && loaded == 0 {
+            return Err(SourceError::GitError {
+                name: "all".to_string(),
+                message: "all sources failed to load".to_string(),
+            }
+            .into());
         }
         Ok(())
     }
@@ -370,7 +379,7 @@ impl SourceManager {
             origin: OriginSpec {
                 origin_type: OriginType::Git,
                 url: url.to_string(),
-                branch: "main".to_string(),
+                branch: "master".to_string(),
                 auth: None,
             },
             subscription: crate::config::SubscriptionSpec {

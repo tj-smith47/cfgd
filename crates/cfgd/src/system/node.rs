@@ -25,7 +25,25 @@ use super::{diff_yaml_mapping, stderr_string};
 pub struct SysctlConfigurator;
 
 impl SysctlConfigurator {
+    /// Validate that a sysctl key contains only safe characters: [a-z0-9._-]
+    fn validate_sysctl_key(key: &str) -> Result<()> {
+        if key.is_empty()
+            || !key.bytes().all(|b| {
+                b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'.' || b == b'_' || b == b'-'
+            })
+        {
+            return Err(CfgdError::Config(cfgd_core::errors::ConfigError::Invalid {
+                message: format!(
+                    "invalid sysctl key '{}': must contain only [a-z0-9._-]",
+                    key
+                ),
+            }));
+        }
+        Ok(())
+    }
+
     fn read_sysctl(key: &str) -> Result<String> {
+        Self::validate_sysctl_key(key)?;
         let path = PathBuf::from("/proc/sys").join(key.replace('.', "/"));
         match fs::read_to_string(&path) {
             Ok(val) => Ok(val.trim().to_string()),
@@ -34,6 +52,7 @@ impl SysctlConfigurator {
     }
 
     fn write_sysctl(key: &str, value: &str) -> Result<()> {
+        Self::validate_sysctl_key(key)?;
         let output = Command::new("sysctl")
             .arg("-w")
             .arg(format!("{}={}", key, value))
@@ -1003,7 +1022,7 @@ impl SystemConfigurator for CertificateConfigurator {
             }
 
             if let Some(mode_str) = cert.get("mode").and_then(|v| v.as_str())
-                && let Ok(desired_mode) = u32::from_str_radix(mode_str.trim_start_matches('0'), 8)
+                && let Ok(desired_mode) = u32::from_str_radix(mode_str, 8)
             {
                 for path_key in &["cert-path", "key-path"] {
                     if let Some(path) = cert.get(*path_key).and_then(|v| v.as_str())
@@ -1046,8 +1065,7 @@ impl SystemConfigurator for CertificateConfigurator {
             };
 
             let mode_str = cert.get("mode").and_then(|v| v.as_str()).unwrap_or("0644");
-            let desired_mode =
-                u32::from_str_radix(mode_str.trim_start_matches('0'), 8).unwrap_or(0o644);
+            let desired_mode = u32::from_str_radix(mode_str, 8).unwrap_or(0o644);
 
             for path_key in &["cert-path", "key-path", "ca-path"] {
                 if let Some(path_str) = cert.get(*path_key).and_then(|v| v.as_str()) {

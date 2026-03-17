@@ -57,7 +57,7 @@ Updates work the same way. `cfgd module update tmux` shows you a diff of what ch
 
 ### Pinned Refs
 
-Remote modules **must** be pinned to a specific tag or commit. You cannot track a branch like `main` for a remote module. This is a hard rule because branch tracking means an upstream push silently changes what runs on your machine.
+Remote modules **must** be pinned to a specific tag or commit. You cannot track a branch like `master` for a remote module. This is a hard rule because branch tracking means an upstream push silently changes what runs on your machine.
 
 ### Integrity Verification
 

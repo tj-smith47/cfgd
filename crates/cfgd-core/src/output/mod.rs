@@ -434,7 +434,10 @@ impl Printer {
             .syntax_set
             .find_syntax_by_token(language)
             .unwrap_or_else(|| self.syntax_set.find_syntax_plain_text());
-        let theme = &self.theme_set.themes["base16-ocean.dark"];
+        let theme = match self.theme_set.themes.get("base16-ocean.dark") {
+            Some(t) => t,
+            None => return, // no theme available — skip highlighting
+        };
         let mut highlighter = HighlightLines::new(syntax, theme);
 
         for line in code.lines() {
@@ -552,6 +555,9 @@ impl Printer {
         message: &str,
         options: &'a [String],
     ) -> std::result::Result<&'a String, inquire::InquireError> {
+        if options.is_empty() {
+            return Err(inquire::InquireError::Custom("no options available".into()));
+        }
         let idx = inquire::Select::new(message, options.to_vec()).prompt()?;
         Ok(options.iter().find(|o| **o == idx).unwrap_or(&options[0]))
     }
@@ -601,15 +607,16 @@ impl Printer {
     /// Spawn background threads to read stdout/stderr from a child process,
     /// sending lines through the returned channel. The original sender is dropped
     /// so the receiver disconnects once both reader threads finish.
-    fn spawn_output_readers(
-        child: &mut std::process::Child,
-    ) -> mpsc::Receiver<CapturedLine> {
+    fn spawn_output_readers(child: &mut std::process::Child) -> mpsc::Receiver<CapturedLine> {
         let (tx, rx) = mpsc::channel();
 
         if let Some(stdout) = child.stdout.take() {
             let tx = tx.clone();
             std::thread::spawn(move || {
-                for line in std::io::BufReader::new(stdout).lines().map_while(Result::ok) {
+                for line in std::io::BufReader::new(stdout)
+                    .lines()
+                    .map_while(Result::ok)
+                {
                     let _ = tx.send(CapturedLine::Stdout(line));
                 }
             });
@@ -617,7 +624,10 @@ impl Printer {
         if let Some(stderr) = child.stderr.take() {
             let tx = tx.clone();
             std::thread::spawn(move || {
-                for line in std::io::BufReader::new(stderr).lines().map_while(Result::ok) {
+                for line in std::io::BufReader::new(stderr)
+                    .lines()
+                    .map_while(Result::ok)
+                {
                     let _ = tx.send(CapturedLine::Stderr(line));
                 }
             });
@@ -684,11 +694,15 @@ impl Printer {
 
                     let mut msg = label.to_string();
                     for l in &ring {
-                        let display = if l.len() > 120 { &l[..120] } else { l };
-                        msg.push_str(&format!(
-                            "\n  {}",
-                            self.theme.muted.apply_to(display)
-                        ));
+                        let display = if l.len() > 120 {
+                            match l.get(..120) {
+                                Some(s) => s,
+                                None => l, // multi-byte boundary; show full line
+                            }
+                        } else {
+                            l
+                        };
+                        msg.push_str(&format!("\n  {}", self.theme.muted.apply_to(display)));
                     }
                     pb.set_message(msg);
                 }
@@ -706,10 +720,9 @@ impl Printer {
         } else {
             self.error(&format!("{} — failed ({}s)", label, duration.as_secs()));
             for line in &all_stderr {
-                let _ = self.term.write_line(&format!(
-                    "  {}",
-                    self.theme.muted.apply_to(line)
-                ));
+                let _ = self
+                    .term
+                    .write_line(&format!("  {}", self.theme.muted.apply_to(line)));
             }
         }
 

@@ -73,7 +73,7 @@ static SCHEMA_CONFIG: ResourceSchema = ResourceSchema {
                     name: "branch",
                     type_desc: "string",
                     required: false,
-                    description: "Git branch (default: main)",
+                    description: "Git branch (default: master)",
                     children: &[],
                 },
                 SchemaField {
@@ -294,7 +294,7 @@ static SCHEMA_CONFIG: ResourceSchema = ResourceSchema {
                             name: "branch",
                             type_desc: "string",
                             required: false,
-                            description: "Git branch (default: main)",
+                            description: "Git branch (default: master)",
                             children: &[],
                         },
                         SchemaField {
@@ -1621,7 +1621,7 @@ static SCHEMA_TEAMCONFIG: ResourceSchema = ResourceSchema {
                     name: "branch",
                     type_desc: "string",
                     required: false,
-                    description: "Git branch (default: main)",
+                    description: "Git branch (default: master)",
                     children: &[],
                 },
             ],

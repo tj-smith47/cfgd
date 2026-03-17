@@ -32,7 +32,7 @@ Open a [feature request](https://github.com/tj-smith47/cfgd/issues/new?template=
 3. Make your changes following the coding standards below
 4. Run all checks: `task check`
 5. Commit with [conventional commit](https://www.conventionalcommits.org/) messages
-6. Push and open a PR against `main`
+6. Push and open a PR against `master`
 
 ## Development Setup
 

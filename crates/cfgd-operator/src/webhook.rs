@@ -21,6 +21,20 @@ pub async fn run_webhook_server(cert_dir: &str, port: u16) -> Result<(), Operato
     let certs = load_certs(&cert_path)?;
     let key = load_private_key(&key_path)?;
 
+    if certs.is_empty() {
+        return Err(OperatorError::Webhook(format!(
+            "no certificates found in {}",
+            cert_path.display()
+        )));
+    }
+
+    info!(
+        cert_count = certs.len(),
+        cert_path = %cert_path.display(),
+        key_path = %key_path.display(),
+        "TLS certificates loaded and validated"
+    );
+
     let tls_config = tokio_rustls::rustls::ServerConfig::builder()
         .with_no_client_auth()
         .with_single_cert(certs, key)

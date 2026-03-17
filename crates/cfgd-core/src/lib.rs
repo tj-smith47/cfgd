@@ -86,9 +86,9 @@ pub fn deep_merge_yaml(base: &mut serde_yaml::Value, overlay: &serde_yaml::Value
 
 /// Extend a `Vec<String>` with items from `source`, skipping duplicates.
 pub fn union_extend(target: &mut Vec<String>, source: &[String]) {
-    let existing: std::collections::HashSet<String> = target.iter().cloned().collect();
+    let mut existing: std::collections::HashSet<String> = target.iter().cloned().collect();
     for item in source {
-        if !existing.contains(item) {
+        if existing.insert(item.clone()) {
             target.push(item.clone());
         }
     }
@@ -101,13 +101,16 @@ pub fn default_config_dir() -> std::path::PathBuf {
         .unwrap_or_else(|| expand_tilde(std::path::Path::new("~/.config/cfgd")))
 }
 
-/// Expand `~/...` paths to the user's home directory.
+/// Expand `~` and `~/...` paths to the user's home directory.
 pub fn expand_tilde(path: &std::path::Path) -> std::path::PathBuf {
     let path_str = path.display().to_string();
-    if path_str.starts_with("~/")
-        && let Ok(home) = std::env::var("HOME")
-    {
-        return std::path::PathBuf::from(path_str.replacen('~', &home, 1));
+    if let Ok(home) = std::env::var("HOME") {
+        if path_str == "~" {
+            return std::path::PathBuf::from(home);
+        }
+        if path_str.starts_with("~/") {
+            return std::path::PathBuf::from(path_str.replacen('~', &home, 1));
+        }
     }
     path.to_path_buf()
 }
@@ -164,8 +167,10 @@ pub fn git_ssh_credentials(
         let home = std::env::var("HOME").unwrap_or_default();
         for key_name in &["id_ed25519", "id_rsa", "id_ecdsa"] {
             let key_path = std::path::Path::new(&home).join(".ssh").join(key_name);
-            if key_path.exists() {
-                return git2::Cred::ssh_key(username, None, &key_path, None);
+            if key_path.exists()
+                && let Ok(cred) = git2::Cred::ssh_key(username, None, &key_path, None)
+            {
+                return Ok(cred);
             }
         }
     }
@@ -204,14 +209,26 @@ pub fn copy_dir_recursive(
     Ok(())
 }
 
-/// Check if a command is available on the system by running `<cmd> --version`.
+/// Check if a command is available on the system via PATH lookup.
 pub fn command_available(cmd: &str) -> bool {
-    std::process::Command::new(cmd)
-        .arg("--version")
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .map(|s| s.success())
+    std::env::var_os("PATH")
+        .map(|paths| {
+            std::env::split_paths(&paths).any(|dir| {
+                let path = dir.join(cmd);
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    path.is_file()
+                        && std::fs::metadata(&path)
+                            .map(|m| m.permissions().mode() & 0o111 != 0)
+                            .unwrap_or(false)
+                }
+                #[cfg(not(unix))]
+                {
+                    path.is_file()
+                }
+            })
+        })
         .unwrap_or(false)
 }
 
@@ -453,9 +470,7 @@ pub fn xml_escape(s: &str) -> String {
 /// process holds the lock. The lock is released automatically when the guard
 /// is dropped.
 #[cfg(unix)]
-pub fn acquire_apply_lock(
-    state_dir: &std::path::Path,
-) -> errors::Result<ApplyLockGuard> {
+pub fn acquire_apply_lock(state_dir: &std::path::Path) -> errors::Result<ApplyLockGuard> {
     use std::io::Write;
     use std::os::unix::io::AsRawFd;
 
@@ -716,7 +731,10 @@ mod tests {
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(
-            matches!(err, errors::CfgdError::State(errors::StateError::ApplyLockHeld { .. })),
+            matches!(
+                err,
+                errors::CfgdError::State(errors::StateError::ApplyLockHeld { .. })
+            ),
             "expected ApplyLockHeld, got: {}",
             err
         );

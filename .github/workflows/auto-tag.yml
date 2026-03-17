@@ -1,58 +1,38 @@
-name: Auto Tag
+name: AutoTag
+
+# Auto-tags on push to master based on commit message:
+#   #major - bump major version (1.0.0 -> 2.0.0)
+#   #minor - bump minor version (1.0.0 -> 1.1.0)
+#   #patch - bump patch version (default) (1.0.0 -> 1.0.1)
+#   #none  - skip tagging (use when pushing workflow changes)
+#
+# For RC releases, create and push tag manually:
+#   git tag -a v1.0.0-rc.1 -m "Release Candidate 1"
+#   git push origin v1.0.0-rc.1
 
 on:
   push:
-    branches: [master]
+    branches:
+      - master
 
 permissions:
   contents: write
 
 jobs:
-  tag:
+  auto-tag:
     runs-on: ubuntu-latest
+    if: ${{ !contains(github.event.head_commit.message, '#none') }}
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Determine version bump
-        id: bump
-        run: |
-          MSG=$(git log -1 --pretty=%B)
-          if echo "$MSG" | grep -q '#major'; then
-            echo "bump=major" >> "$GITHUB_OUTPUT"
-          elif echo "$MSG" | grep -q '#minor'; then
-            echo "bump=minor" >> "$GITHUB_OUTPUT"
-          elif echo "$MSG" | grep -q '#patch'; then
-            echo "bump=patch" >> "$GITHUB_OUTPUT"
-          elif echo "$MSG" | grep -q '#none'; then
-            echo "bump=none" >> "$GITHUB_OUTPUT"
-          else
-            echo "bump=patch" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Get latest tag
-        id: latest
-        run: |
-          TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "v0.0.0")
-          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
-
-      - name: Calculate next version
-        id: next
-        if: steps.bump.outputs.bump != 'none'
-        run: |
-          CURRENT="${{ steps.latest.outputs.tag }}"
-          CURRENT="${CURRENT#v}"
-          IFS='.' read -r MAJOR MINOR PATCH <<< "$CURRENT"
-          case "${{ steps.bump.outputs.bump }}" in
-            major) MAJOR=$((MAJOR + 1)); MINOR=0; PATCH=0 ;;
-            minor) MINOR=$((MINOR + 1)); PATCH=0 ;;
-            patch) PATCH=$((PATCH + 1)) ;;
-          esac
-          echo "version=v${MAJOR}.${MINOR}.${PATCH}" >> "$GITHUB_OUTPUT"
-
-      - name: Create tag
-        if: steps.bump.outputs.bump != 'none'
-        run: |
-          git tag "${{ steps.next.outputs.version }}"
-          git push origin "${{ steps.next.outputs.version }}"
+      - name: Bump version and push tag
+        uses: anothrNick/github-tag-action@1.71.0
+        env:
+          DEFAULT_BUMP: patch
+          GITHUB_TOKEN: ${{ github.token }}
+          RELEASE_BRANCHES: master
+          TAG_CONTEXT: branch
+          WITH_V: true

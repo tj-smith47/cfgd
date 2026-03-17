@@ -115,13 +115,14 @@ const LINUXBREW_PATH: &str = "/home/linuxbrew/.linuxbrew/bin/brew";
 
 /// Check if running as root (UID 0).
 fn is_root() -> bool {
-    Command::new("id")
-        .arg("-u")
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null())
-        .output()
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim() == "0")
-        .unwrap_or(false)
+    #[cfg(unix)]
+    {
+        unsafe { libc::geteuid() == 0 }
+    }
+    #[cfg(not(unix))]
+    {
+        false
+    }
 }
 
 /// Check if brew is available, including linuxbrew fallback on Linux.
@@ -271,7 +272,13 @@ impl PackageManager for BrewTapManager {
     fn install(&self, taps: &[String], printer: &Printer) -> Result<()> {
         for tap in taps {
             let label = format!("brew tap {}", tap);
-            run_pkg_cmd_live(printer, "brew-tap", brew_cmd().args(["tap", tap]), &label, "install")?;
+            run_pkg_cmd_live(
+                printer,
+                "brew-tap",
+                brew_cmd().args(["tap", tap]),
+                &label,
+                "install",
+            )?;
         }
         Ok(())
     }
@@ -515,7 +522,13 @@ impl PackageManager for BrewManager {
     }
 
     fn update(&self, printer: &Printer) -> Result<()> {
-        run_pkg_cmd_live(printer, "brew", brew_cmd().arg("update"), "brew update", "update")?;
+        run_pkg_cmd_live(
+            printer,
+            "brew",
+            brew_cmd().arg("update"),
+            "brew update",
+            "update",
+        )?;
         Ok(())
     }
 
@@ -557,10 +570,7 @@ impl PackageManager for BrewManager {
                     "/opt/homebrew/sbin".to_string(),
                 ]
             } else {
-                vec![
-                    "/usr/local/bin".to_string(),
-                    "/usr/local/sbin".to_string(),
-                ]
+                vec!["/usr/local/bin".to_string(), "/usr/local/sbin".to_string()]
             }
         } else {
             Vec::new()
@@ -673,7 +683,13 @@ impl PackageManager for SimpleManager {
                     source: e,
                 })?;
         } else {
-            run_pkg_cmd_live(printer, self.mgr_name, Command::new(prog).args(args), &label, "update")?;
+            run_pkg_cmd_live(
+                printer,
+                self.mgr_name,
+                Command::new(prog).args(args),
+                &label,
+                "update",
+            )?;
         }
         Ok(())
     }
@@ -1656,7 +1672,10 @@ impl PackageManager for SnapManager {
         run_pkg_cmd_live(
             printer,
             "snap",
-            Command::new("sudo").arg("snap").arg("remove").args(packages),
+            Command::new("sudo")
+                .arg("snap")
+                .arg("remove")
+                .args(packages),
             &label,
             "uninstall",
         )?;
@@ -2071,10 +2090,7 @@ impl PackageManager for GoInstallManager {
     fn bootstrap(&self, printer: &Printer) -> Result<()> {
         if brew_available() {
             let result = printer
-                .run_with_output(
-                    brew_cmd().args(["install", "go"]),
-                    "Installing Go via brew",
-                )
+                .run_with_output(brew_cmd().args(["install", "go"]), "Installing Go via brew")
                 .map_err(|e| PackageError::BootstrapFailed {
                     manager: "go".into(),
                     message: format!("brew install go failed: {}", e),
@@ -2173,8 +2189,16 @@ impl PackageManager for GoInstallManager {
 
         let bin_dir = std::path::PathBuf::from(&gopath).join("bin");
         for pkg in packages {
-            // The binary name is the last path component of the module path
-            let bin_name = pkg.rsplit('/').next().unwrap_or(pkg);
+            // The binary name is the last path component of the module path.
+            // Validate it contains no path separators to prevent traversal.
+            let raw_name = pkg.rsplit('/').next().unwrap_or(pkg);
+            let bin_name = std::path::Path::new(raw_name)
+                .file_name()
+                .and_then(|n| n.to_str())
+                .ok_or_else(|| PackageError::UninstallFailed {
+                    manager: "go".into(),
+                    message: format!("invalid binary name derived from package: {}", pkg),
+                })?;
             let bin_path = bin_dir.join(bin_name);
             if bin_path.exists() {
                 printer.info(&format!("removing {}", bin_path.display()));
@@ -2252,7 +2276,8 @@ impl ScriptedManager {
         if template.contains("{package}") {
             // One-at-a-time mode
             for pkg in packages {
-                let cmd = template.replace("{package}", pkg);
+                let escaped = cfgd_core::shell_escape_value(pkg);
+                let cmd = template.replace("{package}", &escaped);
                 printer.info(&cmd);
                 run_pkg_cmd_msg(
                     &self.mgr_name,
@@ -2263,7 +2288,11 @@ impl ScriptedManager {
             }
         } else {
             // Batch mode: {packages} or append
-            let joined = packages.join(" ");
+            let escaped_pkgs: Vec<String> = packages
+                .iter()
+                .map(|p| cfgd_core::shell_escape_value(p))
+                .collect();
+            let joined = escaped_pkgs.join(" ");
             let cmd = if template.contains("{packages}") {
                 template.replace("{packages}", &joined)
             } else {

@@ -148,11 +148,23 @@ pub struct Cli {
     pub profile: Option<String>,
 
     /// Verbose output
-    #[arg(long, short, global = true, env = "CFGD_VERBOSE", conflicts_with = "quiet")]
+    #[arg(
+        long,
+        short,
+        global = true,
+        env = "CFGD_VERBOSE",
+        conflicts_with = "quiet"
+    )]
     pub verbose: bool,
 
     /// Suppress all non-error output
-    #[arg(long, short, global = true, env = "CFGD_QUIET", conflicts_with = "verbose")]
+    #[arg(
+        long,
+        short,
+        global = true,
+        env = "CFGD_QUIET",
+        conflicts_with = "verbose"
+    )]
     pub quiet: bool,
 
     /// Disable colored output
@@ -197,8 +209,8 @@ pub enum Command {
         #[arg(long)]
         from: Option<String>,
 
-        /// Git branch to clone (default: main)
-        #[arg(long, default_value = "main")]
+        /// Git branch to clone (default: master)
+        #[arg(long, default_value = "master")]
         branch: String,
 
         /// Config name in metadata (default: directory name)
@@ -405,7 +417,7 @@ pub struct SourceAddArgs {
     /// Name for this source (default: inferred from URL)
     #[arg(long)]
     pub name: Option<String>,
-    /// Git branch (default: main)
+    /// Git branch (default: master)
     #[arg(long)]
     pub branch: Option<String>,
     /// Profile to subscribe to
@@ -1415,11 +1427,10 @@ fn cmd_apply(cli: &Cli, printer: &Printer, args: &ApplyArgs) -> anyhow::Result<(
         match p.parse::<PhaseName>() {
             Ok(pn) => Some(pn),
             Err(_) => {
-                printer.error(&format!(
+                anyhow::bail!(
                     "Unknown phase '{}'. Valid phases: modules, system, packages, files, secrets, scripts",
                     p
-                ));
-                return Ok(());
+                );
             }
         }
     } else {
@@ -2219,15 +2230,15 @@ fn walk_yaml_path_mut<'a>(
     // Walk to the parent of the final segment, creating intermediate maps
     for segment in &segments[..segments.len() - 1] {
         let key = serde_yaml::Value::String((*segment).to_string());
-        if !current
-            .as_mapping()
-            .is_some_and(|m| m.contains_key(&key))
-        {
+        if !current.as_mapping().is_some_and(|m| m.contains_key(&key)) {
             // Create intermediate mapping
             let map = current
                 .as_mapping_mut()
                 .ok_or_else(|| anyhow::anyhow!("cannot traverse into non-mapping"))?;
-            map.insert(key.clone(), serde_yaml::Value::Mapping(serde_yaml::Mapping::new()));
+            map.insert(
+                key.clone(),
+                serde_yaml::Value::Mapping(serde_yaml::Mapping::new()),
+            );
         }
         current = current
             .as_mapping_mut()
@@ -3997,6 +4008,10 @@ fn cmd_source_remove(
     keep_all: bool,
     remove_all: bool,
 ) -> anyhow::Result<()> {
+    if keep_all && remove_all {
+        anyhow::bail!("cannot use --keep-all and --remove-all together");
+    }
+
     printer.header(&format!("Remove Source: {}", name));
 
     let config_path = cli.config.clone();
@@ -5025,7 +5040,8 @@ fn cmd_checkin(
     };
 
     // Compute config hash
-    let config_yaml = serde_yaml::to_string(&resolved.merged.system).unwrap_or_default();
+    let config_yaml = serde_yaml::to_string(&resolved.merged.system)
+        .map_err(|e| anyhow::anyhow!("failed to serialize system config: {}", e))?;
     let config_hash = {
         use sha2::{Digest, Sha256};
         let hash = Sha256::digest(config_yaml.as_bytes());
@@ -5094,11 +5110,7 @@ fn cmd_decide(
         "accept" => "accepted",
         "reject" => "rejected",
         other => {
-            printer.error(&format!(
-                "Unknown action '{}'. Use 'accept' or 'reject'.",
-                other
-            ));
-            return Ok(());
+            anyhow::bail!("Unknown action '{}'. Use 'accept' or 'reject'.", other);
         }
     };
 
@@ -6759,10 +6771,7 @@ spec:
         let spec = raw.get_mut("spec").unwrap();
 
         let (parent, key) = walk_yaml_path_mut(spec, "profile").unwrap();
-        parent.insert(
-            serde_yaml::Value::String(key),
-            parse_yaml_value("personal"),
-        );
+        parent.insert(serde_yaml::Value::String(key), parse_yaml_value("personal"));
 
         let spec = raw.get("spec").unwrap();
         let val = walk_yaml_path(spec, "profile").unwrap();

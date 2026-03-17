@@ -17,7 +17,7 @@ spec:
   origin:
     type: git
     url: git@github.com:me/machine-config.git
-    branch: main
+    branch: master
 
   daemon:
     enabled: true
@@ -47,7 +47,7 @@ spec:
       origin:
         type: git
         url: git@github.com:acme-corp/dev-config.git
-        branch: main
+        branch: master
       subscription:
         profile: acme-backend
         priority: 500
@@ -61,7 +61,7 @@ spec:
 | `spec.profile` | yes | — | Name of the profile YAML file to activate (without `.yaml`) |
 | `spec.origin.type` | no | — | `git` or `server` |
 | `spec.origin.url` | no | — | Repository URL |
-| `spec.origin.branch` | no | `main` | Git branch |
+| `spec.origin.branch` | no | `master` | Git branch |
 | `spec.daemon.reconcile.interval` | no | `5m` | Drift check interval (e.g. `1m`, `5m`, `1h`) |
 | `spec.daemon.reconcile.on-change` | no | `false` | Reconcile immediately on file change |
 | `spec.daemon.sync.auto-pull` | no | `false` | Auto-pull from remote |
