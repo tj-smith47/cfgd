@@ -55,7 +55,7 @@ YAML
         cp "$f" "$SOURCE_REPO/profiles/"
     done
     cp -r "$FIXTURES/files/"* "$SOURCE_REPO/files/" 2>/dev/null || true
-    (cd "$SOURCE_REPO" && git init -q -b main && git add -A && git commit -qm "init source repo")
+    (cd "$SOURCE_REPO" && git init -q -b master && git add -A && git commit -qm "init source repo")
 }
 setup_source_repo
 
@@ -893,7 +893,7 @@ else
 fi
 
 begin_test "SRC04: source add --branch"
-run $C source add "$SOURCE_REPO" --name team-branch --branch main
+run $C source add "$SOURCE_REPO" --name team-branch --branch master
 if assert_ok; then
     pass_test "SRC04"
 else
