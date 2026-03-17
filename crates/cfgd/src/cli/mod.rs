@@ -441,6 +441,9 @@ pub struct SourceAddArgs {
     /// Pin to a semver version range (e.g., "~1.0", ">=2.0")
     #[arg(long)]
     pub pin_version: Option<String>,
+    /// Skip confirmation prompt
+    #[arg(long, short, env = "CFGD_YES")]
+    pub yes: bool,
 }
 
 #[derive(Subcommand)]
@@ -3747,10 +3750,12 @@ fn cmd_source_add(cli: &Cli, printer: &Printer, args: &SourceAddArgs) -> anyhow:
     }
 
     // Confirm subscription
-    printer.newline();
-    if !printer.prompt_confirm("Subscribe to this source?")? {
-        printer.info("Cancelled");
-        return Ok(());
+    if !args.yes {
+        printer.newline();
+        if !printer.prompt_confirm("Subscribe to this source?")? {
+            printer.info("Cancelled");
+            return Ok(());
+        }
     }
 
     // Build the source spec with user choices
@@ -4162,6 +4167,7 @@ fn cmd_source_replace(
             sync_interval: None,
             auto_apply: false,
             pin_version: None,
+            yes: true,
         },
     )?;
 
