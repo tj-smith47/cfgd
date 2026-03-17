@@ -21,6 +21,12 @@ pub trait PackageManager: Send + Sync {
     /// Query the available version of a package without installing it.
     /// Returns None if the package is not found in the manager's index.
     fn available_version(&self, package: &str) -> Result<Option<String>>;
+
+    /// Directories to add to PATH after bootstrap. Empty for managers
+    /// that are already on the system PATH (apt, dnf, etc.).
+    fn path_dirs(&self) -> Vec<String> {
+        Vec::new()
+    }
 }
 
 // --- SystemConfigurator trait ---
@@ -203,6 +209,7 @@ pub struct ProviderRegistry {
     pub file_manager: Option<Box<dyn FileManager>>,
     pub secret_backend: Option<Box<dyn SecretBackend>>,
     pub secret_providers: Vec<Box<dyn SecretProvider>>,
+    pub default_file_strategy: crate::config::FileStrategy,
 }
 
 impl ProviderRegistry {
@@ -213,6 +220,7 @@ impl ProviderRegistry {
             file_manager: None,
             secret_backend: None,
             secret_providers: Vec::new(),
+            default_file_strategy: crate::config::FileStrategy::Symlink,
         }
     }
 

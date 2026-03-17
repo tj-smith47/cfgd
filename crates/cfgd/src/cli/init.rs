@@ -48,9 +48,18 @@ pub(super) fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result
     // 4. Clone or scaffold
     if let Some(url) = args.from {
         clone_into(&target_dir, url, args.branch, printer)?;
-        // If --theme was specified and the cloned repo has a cfgd.yaml, inject the theme
+        // If --theme was specified and the cloned repo has a cfgd.yaml, set the theme
         if let Some(theme) = args.theme {
-            inject_theme(&target_dir, theme)?;
+            let config_path = target_dir.join("cfgd.yaml");
+            if config_path.exists() {
+                let mut cfg = config::load_config(&config_path)?;
+                cfg.spec.theme = Some(config::ThemeConfig {
+                    name: theme.to_string(),
+                    overrides: config::ThemeOverrides::default(),
+                });
+                let yaml = serde_yaml::to_string(&cfg)?;
+                std::fs::write(&config_path, &yaml)?;
+            }
         }
     } else {
         scaffold(&target_dir, args.name, args.theme, printer)?;
@@ -296,17 +305,7 @@ fn pick_profile(profiles_dir: &Path, printer: &Printer) -> anyhow::Result<String
         );
     }
 
-    let mut names: Vec<String> = Vec::new();
-    for entry in std::fs::read_dir(profiles_dir)? {
-        let entry = entry?;
-        let path = entry.path();
-        if path.extension().and_then(|e| e.to_str()) == Some("yaml")
-            && let Some(stem) = path.file_stem().and_then(|s| s.to_str())
-        {
-            names.push(stem.to_string());
-        }
-    }
-    names.sort();
+    let names = super::list_yaml_stems(profiles_dir)?;
 
     if names.is_empty() {
         anyhow::bail!(
@@ -400,20 +399,22 @@ fn scaffold(
     printer.success("Created profiles/ modules/");
 
     // cfgd.yaml
-    let theme_section = match theme {
-        Some(preset) => format!("\n  theme:\n    preset: {preset}"),
-        None => String::new(),
-    };
+    let theme_value = theme.unwrap_or("default");
     let content = format!(
         r#"apiVersion: cfgd.io/v1alpha1
 kind: Config
 metadata:
   name: {config_name}
-spec:{theme_section}
+spec:
+  theme: {theme_value}
+  file-strategy: symlink
+  aliases:
+    add: "profile update --active --add-file"
+    remove: "profile update --active --remove-file"
   # profile: base
-  # sources: []
   # modules:
   #   registries: []
+  # sources: []
 "#
     );
     std::fs::write(dir.join("cfgd.yaml"), &content)?;
@@ -422,7 +423,7 @@ spec:{theme_section}
     // .gitignore — ignore everything except cfgd-managed content
     let gitignore = "\
 # Ignore everything by default
-*
+**
 
 # cfgd config
 !cfgd.yaml
@@ -476,23 +477,6 @@ cfgd apply
     Ok(())
 }
 
-/// Inject a theme preset into an existing cfgd.yaml (e.g. after cloning).
-fn inject_theme(dir: &Path, theme: &str) -> anyhow::Result<()> {
-    let config_path = dir.join("cfgd.yaml");
-    if !config_path.exists() {
-        return Ok(());
-    }
-
-    let mut cfg = config::load_config(&config_path)?;
-    cfg.spec.theme = Some(config::ThemeConfig {
-        preset: theme.to_string(),
-        overrides: config::ThemeOverrides::default(),
-    });
-    let yaml = serde_yaml::to_string(&cfg)?;
-    std::fs::write(&config_path, &yaml)?;
-
-    Ok(())
-}
 
 /// Generate or regenerate the release workflow based on current modules/profiles.
 /// Called by init and also by module create / profile create.
@@ -569,16 +553,7 @@ fn ensure_config_file(
         String::new()
     };
 
-    let theme_section = if let Some(preset) = theme {
-        format!(
-            r#"  theme:
-    preset: {}
-"#,
-            preset
-        )
-    } else {
-        String::new()
-    };
+    let theme_value = theme.unwrap_or("default");
 
     let config_content = format!(
         r#"apiVersion: cfgd.io/v1alpha1
@@ -587,8 +562,10 @@ metadata:
   name: {}
 spec:
   profile: {}
-{}{}"#,
-        name, profile_name, origin_section, theme_section
+  theme: {}
+  file-strategy: symlink
+{}"#,
+        name, profile_name, theme_value, origin_section
     );
 
     std::fs::write(config_path, &config_content)?;
@@ -930,7 +907,7 @@ mod tests {
 
         let contents = std::fs::read_to_string(dir.path().join("cfgd.yaml")).unwrap();
         assert!(contents.contains("name: themed"));
-        assert!(contents.contains("preset: minimal"));
+        assert!(contents.contains("theme: minimal"));
     }
 
     #[test]
@@ -1014,7 +991,7 @@ mod tests {
 
         let contents = std::fs::read_to_string(&config_path).unwrap();
         assert!(contents.contains("branch: develop"));
-        assert!(contents.contains("preset: minimal"));
+        assert!(contents.contains("theme: minimal"));
     }
 
     #[test]
@@ -1106,22 +1083,23 @@ mod tests {
     }
 
     #[test]
-    fn inject_theme_into_existing_config() {
+    fn scaffold_includes_default_theme() {
         let dir = tempfile::tempdir().unwrap();
         let printer = Printer::new(cfgd_core::output::Verbosity::Quiet);
 
         scaffold(dir.path(), Some("test"), None, &printer).unwrap();
-        inject_theme(dir.path(), "minimal").unwrap();
-
         let cfg = config::load_config(&dir.path().join("cfgd.yaml")).unwrap();
-        assert_eq!(cfg.spec.theme.unwrap().preset, "minimal");
+        assert_eq!(cfg.spec.theme.unwrap().name, "default");
     }
 
     #[test]
-    fn inject_theme_no_config_is_noop() {
+    fn scaffold_with_custom_theme() {
         let dir = tempfile::tempdir().unwrap();
-        // No cfgd.yaml — should not error
-        inject_theme(dir.path(), "minimal").unwrap();
+        let printer = Printer::new(cfgd_core::output::Verbosity::Quiet);
+
+        scaffold(dir.path(), Some("test"), Some("minimal"), &printer).unwrap();
+        let cfg = config::load_config(&dir.path().join("cfgd.yaml")).unwrap();
+        assert_eq!(cfg.spec.theme.unwrap().name, "minimal");
     }
 
     #[test]

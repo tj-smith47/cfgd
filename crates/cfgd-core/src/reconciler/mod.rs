@@ -255,43 +255,45 @@ impl<'a> Reconciler<'a> {
 
         let mut phases = Vec::new();
 
-        // Phase 0: Modules — resolved before profile-level packages/files.
-        // Module packages are installed first so that module files and scripts
-        // can depend on the software being present.
+        // Phase 0: Env — write ~/.cfgd.env and inject shell rc source line.
+        // Runs first so that env vars (including PATH for bootstrapped managers)
+        // are available to all subsequent phases, especially post-apply scripts.
+        let env_actions = Self::plan_env(&resolved.merged.env, &resolved.merged.aliases, &module_actions);
+        phases.push(Phase {
+            name: PhaseName::Env,
+            actions: env_actions,
+        });
+
+        // Phase 1: Modules — module packages, files, and post-apply scripts.
+        // Packages are grouped with system/native managers first, then
+        // bootstrappable managers, so build deps are installed before
+        // packages that need them.
         let module_phase_actions = self.plan_modules(&module_actions);
         phases.push(Phase {
             name: PhaseName::Modules,
             actions: module_phase_actions,
         });
 
-        // Phase 1: Packages — installed first because system settings, files,
-        // and scripts may depend on installed software (e.g. shell: /bin/zsh
-        // requires zsh to be installed before chsh can set it).
+        // Phase 2: Packages — profile-level packages, installed after modules
+        // so module deps are available.
         let package_actions = pkg_actions.into_iter().map(Action::Package).collect();
         phases.push(Phase {
             name: PhaseName::Packages,
             actions: package_actions,
         });
 
-        // Phase 2: System — runs after packages so required binaries exist
+        // Phase 3: System — runs after packages so required binaries exist
         let system_actions = self.plan_system(&resolved.merged)?;
         phases.push(Phase {
             name: PhaseName::System,
             actions: system_actions,
         });
 
-        // Phase 3: Files
+        // Phase 4: Files
         let fa = file_actions.into_iter().map(Action::File).collect();
         phases.push(Phase {
             name: PhaseName::Files,
             actions: fa,
-        });
-
-        // Phase 4: Env — generate ~/.cfgd.env from merged profile + module env
-        let env_actions = Self::plan_env(&resolved.merged.env, &module_actions);
-        phases.push(Phase {
-            name: PhaseName::Env,
-            actions: env_actions,
         });
 
         // Phase 5: Secrets
@@ -405,54 +407,51 @@ impl<'a> Reconciler<'a> {
         Ok(actions)
     }
 
-    /// Plan env file generation from merged profile + module env vars.
-    fn plan_env(profile_env: &[crate::config::EnvVar], modules: &[ResolvedModule]) -> Vec<Action> {
+    /// Plan env file generation from merged profile + module env vars and aliases.
+    fn plan_env(
+        profile_env: &[crate::config::EnvVar],
+        profile_aliases: &[crate::config::ShellAlias],
+        modules: &[ResolvedModule],
+    ) -> Vec<Action> {
         // Merge: profile env first, then module env wins on conflict by name
         let mut merged: Vec<crate::config::EnvVar> = profile_env.to_vec();
+        let mut merged_aliases: Vec<crate::config::ShellAlias> = profile_aliases.to_vec();
         for module in modules {
             crate::merge_env(&mut merged, &module.env);
+            crate::merge_aliases(&mut merged_aliases, &module.aliases);
         }
 
-        if merged.is_empty() {
+        if merged.is_empty() && merged_aliases.is_empty() {
             return Vec::new();
         }
 
         let mut actions = Vec::new();
 
-        // Generate ~/.cfgd.env content
+        // Always plan the env file write — apply phase skips if content matches
         let env_path = crate::expand_tilde(std::path::Path::new("~/.cfgd.env"));
-        let content = generate_env_file_content(&merged);
+        let content = generate_env_file_content(&merged, &merged_aliases);
+        actions.push(Action::Env(EnvAction::WriteEnvFile {
+            path: env_path.clone(),
+            content,
+        }));
 
-        // Check if file already exists with the same content
-        let existing = std::fs::read_to_string(&env_path).unwrap_or_default();
-        if existing != content {
-            actions.push(Action::Env(EnvAction::WriteEnvFile {
-                path: env_path.clone(),
-                content,
-            }));
-        }
-
-        // Check if shell rc needs source line injection
+        // Always plan shell rc injection — apply phase skips if already present
         let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".to_string());
         let rc_path = if shell.contains("zsh") {
             crate::expand_tilde(std::path::Path::new("~/.zshrc"))
         } else {
             crate::expand_tilde(std::path::Path::new("~/.bashrc"))
         };
-
-        let rc_content = std::fs::read_to_string(&rc_path).unwrap_or_default();
-        if !rc_content.contains("cfgd.env") {
-            actions.push(Action::Env(EnvAction::InjectSourceLine {
-                rc_path,
-                line: "[ -f ~/.cfgd.env ] && source ~/.cfgd.env".to_string(),
-            }));
-        }
+        actions.push(Action::Env(EnvAction::InjectSourceLine {
+            rc_path,
+            line: "[ -f ~/.cfgd.env ] && source ~/.cfgd.env".to_string(),
+        }));
 
         // Fish shell: generate separate file if fish config dir exists
         let fish_conf_d = crate::expand_tilde(std::path::Path::new("~/.config/fish/conf.d"));
         if fish_conf_d.exists() {
             let fish_path = fish_conf_d.join("cfgd-env.fish");
-            let fish_content = generate_fish_env_content(&merged);
+            let fish_content = generate_fish_env_content(&merged, &merged_aliases);
             let existing_fish = std::fs::read_to_string(&fish_path).unwrap_or_default();
             if existing_fish != fish_content {
                 actions.push(Action::Env(EnvAction::WriteEnvFile {
@@ -563,7 +562,20 @@ impl<'a> Reconciler<'a> {
                     .push(pkg.clone());
             }
 
-            for resolved in by_manager.values() {
+            // Sort managers: system/native managers first (apt, dnf, pacman, etc.),
+            // then bootstrappable managers (brew, snap). This ensures build dependencies
+            // are installed before packages that might need them.
+            let mut manager_order: Vec<&String> = by_manager.keys().collect();
+            manager_order.sort_by_key(|mgr| {
+                match self.registry.package_managers.iter().find(|m| m.name() == mgr.as_str()) {
+                    Some(m) if m.is_available() => 0, // available (native) first
+                    Some(m) if m.can_bootstrap() => 1, // bootstrappable second
+                    _ => 2, // unknown last
+                }
+            });
+
+            for mgr_name in manager_order {
+                let resolved = &by_manager[mgr_name];
                 actions.push(Action::Module(ModuleAction {
                     module_name: module.name.clone(),
                     kind: ModuleActionKind::InstallPackages {
@@ -711,9 +723,8 @@ impl<'a> Reconciler<'a> {
 
             printer.subheader(&format!("Phase: {}", phase.name.display_name()));
 
-            let pb = printer.progress_bar(phase.actions.len() as u64, phase.name.display_name());
-
-            for action in &phase.actions {
+            let total = phase.actions.len();
+            for (action_idx, action) in phase.actions.iter().enumerate() {
                 let desc_for_journal = format_action_description(action);
                 let (action_type, resource_id) = parse_resource_from_description(&desc_for_journal);
 
@@ -743,7 +754,6 @@ impl<'a> Reconciler<'a> {
                     .ok();
 
                 let result = self.apply_action(action, resolved, config_dir, printer, apply_id);
-                pb.inc(1);
 
                 let (desc, success, error) = match result {
                     Ok(desc) => {
@@ -754,7 +764,13 @@ impl<'a> Reconciler<'a> {
                     }
                     Err(e) => {
                         let desc = format_action_description(action);
-                        printer.error(&format!("Failed: {} — {}", desc, e));
+                        printer.error(&format!(
+                            "[{}/{}] Failed: {} — {}",
+                            action_idx + 1,
+                            total,
+                            desc,
+                            e
+                        ));
                         if let Some(jid) = journal_id {
                             let _ = self.state.journal_fail(jid, &e.to_string());
                         }
@@ -770,8 +786,6 @@ impl<'a> Reconciler<'a> {
                 });
                 action_index += 1;
             }
-
-            pb.finish_and_clear();
         }
 
         let total = results.len();
@@ -934,6 +948,10 @@ impl<'a> Reconciler<'a> {
     fn apply_env_action(action: &EnvAction, printer: &Printer) -> Result<String> {
         match action {
             EnvAction::WriteEnvFile { path, content } => {
+                let existing = std::fs::read_to_string(path).unwrap_or_default();
+                if existing == *content {
+                    return Ok(format!("env:write:{}:skipped", path.display()));
+                }
                 crate::atomic_write_str(path, content)?;
                 printer.success(&format!("Wrote {}", path.display()));
                 Ok(format!("env:write:{}", path.display()))
@@ -998,12 +1016,11 @@ impl<'a> Reconciler<'a> {
     fn apply_package_action(&self, action: &PackageAction, printer: &Printer) -> Result<String> {
         match action {
             PackageAction::Bootstrap {
-                manager, method, ..
+                manager, ..
             } => {
                 // Find in ALL managers (not just available — it isn't available yet)
                 for pm in &self.registry.package_managers {
                     if pm.name() == manager {
-                        printer.info(&format!("Bootstrapping {} via {}", manager, method));
                         pm.bootstrap(printer)?;
                         if !pm.is_available() {
                             return Err(crate::errors::PackageError::BootstrapFailed {
@@ -1179,24 +1196,30 @@ impl<'a> Reconciler<'a> {
                     ScriptPhase::PostReconcile => "post-reconcile",
                 };
 
-                printer.info(&format!(
+                let label = format!(
                     "Running {} script: {}",
                     phase_name,
                     path.display()
-                ));
+                );
 
-                let output = std::process::Command::new("sh")
-                    .arg("-c")
-                    .arg(script_path.display().to_string())
-                    .current_dir(config_dir)
-                    .output()
+                let result = printer
+                    .run_with_output(
+                        std::process::Command::new("sh")
+                            .arg("-c")
+                            .arg(script_path.display().to_string())
+                            .current_dir(config_dir),
+                        &label,
+                    )
                     .map_err(crate::errors::CfgdError::Io)?;
 
-                if !output.status.success() {
-                    let stderr = String::from_utf8_lossy(&output.stderr);
+                if !result.status.success() {
                     return Err(crate::errors::CfgdError::Config(
                         crate::errors::ConfigError::Invalid {
-                            message: format!("script {} failed: {}", path.display(), stderr.trim()),
+                            message: format!(
+                                "script {} failed (exit {})",
+                                path.display(),
+                                result.status.code().unwrap_or(-1)
+                            ),
                         },
                     ));
                 }
@@ -1225,26 +1248,28 @@ impl<'a> Reconciler<'a> {
                         // Script-based install: run each package's script
                         for pkg in resolved {
                             if let Some(ref script_content) = pkg.script {
-                                printer.info(&format!(
+                                let label = format!(
                                     "Module {}: running install script for {}",
                                     action.module_name, pkg.canonical_name
-                                ));
-                                let output = std::process::Command::new("sh")
-                                    .arg("-c")
-                                    .arg(script_content)
-                                    .current_dir(config_dir)
-                                    .output()
+                                );
+                                let result = printer
+                                    .run_with_output(
+                                        std::process::Command::new("sh")
+                                            .arg("-c")
+                                            .arg(script_content)
+                                            .current_dir(config_dir),
+                                        &label,
+                                    )
                                     .map_err(crate::errors::CfgdError::Io)?;
 
-                                if !output.status.success() {
-                                    let stderr = String::from_utf8_lossy(&output.stderr);
+                                if !result.status.success() {
                                     return Err(crate::errors::CfgdError::Config(
                                         crate::errors::ConfigError::Invalid {
                                             message: format!(
-                                                "module {} install script for '{}' failed: {}",
+                                                "module {} install script for '{}' failed (exit {})",
                                                 action.module_name,
                                                 pkg.canonical_name,
-                                                stderr.trim()
+                                                result.status.code().unwrap_or(-1)
                                             ),
                                         },
                                     ));
@@ -1252,17 +1277,50 @@ impl<'a> Reconciler<'a> {
                             }
                         }
                     } else {
-                        for pm in self.registry.available_package_managers() {
-                            if pm.name() == first.manager {
-                                printer.info(&format!(
-                                    "Module {}: installing via {}: {}",
-                                    action.module_name,
-                                    first.manager,
-                                    pkg_names.join(", ")
-                                ));
-                                pm.install(&pkg_names, printer)?;
-                                break;
+                        // Find the manager — check all registered, not just available
+                        let pm = self
+                            .registry
+                            .package_managers
+                            .iter()
+                            .find(|m| m.name() == first.manager);
+
+                        if let Some(pm) = pm {
+                            // Bootstrap if needed
+                            if !pm.is_available() && pm.can_bootstrap() {
+                                pm.bootstrap(printer)?;
+
+                                // Persist bootstrapped manager's PATH to ~/.cfgd.env
+                                let path_dirs = pm.path_dirs();
+                                if !path_dirs.is_empty() {
+                                    let env_path =
+                                        expand_tilde(std::path::Path::new("~/.cfgd.env"));
+                                    let existing =
+                                        std::fs::read_to_string(&env_path).unwrap_or_default();
+                                    let new_dirs: Vec<&str> = path_dirs
+                                        .iter()
+                                        .filter(|d| !existing.contains(d.as_str()))
+                                        .map(|d| d.as_str())
+                                        .collect();
+                                    if !new_dirs.is_empty() {
+                                        let mut content = existing;
+                                        if !content.ends_with('\n') && !content.is_empty() {
+                                            content.push('\n');
+                                        }
+                                        content.push_str(&format!(
+                                            "export PATH=\"{}:$PATH\"\n",
+                                            new_dirs.join(":")
+                                        ));
+                                        let _ = std::fs::write(&env_path, &content);
+                                    }
+                                }
                             }
+
+                            // Update package index before installing
+                            if pm.is_available() {
+                                pm.update(printer)?;
+                            }
+
+                            pm.install(&pkg_names, printer)?;
                         }
                     }
                 }
@@ -1280,14 +1338,11 @@ impl<'a> Reconciler<'a> {
                         std::fs::create_dir_all(parent)?;
                     }
 
-                    // External module files default to symlink; per-file override
-                    // takes precedence.
-                    let default_strategy = if file.is_git_source {
-                        crate::config::FileStrategy::Symlink
-                    } else {
-                        crate::config::FileStrategy::Copy
-                    };
-                    let strategy = file.strategy.unwrap_or(default_strategy);
+                    // Use the per-file strategy override if set, otherwise
+                    // fall back to the global file-strategy from cfgd.yaml (default: symlink).
+                    let strategy = file
+                        .strategy
+                        .unwrap_or(self.registry.default_file_strategy);
 
                     // Backup existing target before overwriting
                     if let Ok(Some(file_state)) = crate::capture_file_state(&target)
@@ -1354,7 +1409,7 @@ impl<'a> Reconciler<'a> {
                     );
                 }
 
-                printer.info(&format!(
+                printer.success(&format!(
                     "Module {}: deployed {} file(s)",
                     action.module_name,
                     files.len()
@@ -1367,26 +1422,28 @@ impl<'a> Reconciler<'a> {
                 ))
             }
             ModuleActionKind::RunScript { script, .. } => {
-                printer.info(&format!(
+                let label = format!(
                     "Module {}: running post-apply script",
                     action.module_name
-                ));
+                );
 
-                let output = std::process::Command::new("sh")
-                    .arg("-c")
-                    .arg(script)
-                    .current_dir(config_dir)
-                    .output()
+                let result = printer
+                    .run_with_output(
+                        std::process::Command::new("sh")
+                            .arg("-c")
+                            .arg(script)
+                            .current_dir(config_dir),
+                        &label,
+                    )
                     .map_err(crate::errors::CfgdError::Io)?;
 
-                if !output.status.success() {
-                    let stderr = String::from_utf8_lossy(&output.stderr);
+                if !result.status.success() {
                     return Err(crate::errors::CfgdError::Config(
                         crate::errors::ConfigError::Invalid {
                             message: format!(
-                                "module {} post-apply script failed: {}",
+                                "module {} post-apply script failed (exit {})",
                                 action.module_name,
-                                stderr.trim()
+                                result.status.code().unwrap_or(-1)
                             ),
                         },
                     ));
@@ -1591,7 +1648,7 @@ pub fn verify(
     }
 
     // Verify env: check ~/.cfgd.env matches expected content
-    verify_env(&resolved.merged.env, modules, state, &mut results);
+    verify_env(&resolved.merged.env, &resolved.merged.aliases, modules, state, &mut results);
 
     Ok(results)
 }
@@ -1609,21 +1666,24 @@ pub struct VerifyResult {
 /// Verify env file and shell rc source line match expected state.
 fn verify_env(
     profile_env: &[crate::config::EnvVar],
+    profile_aliases: &[crate::config::ShellAlias],
     modules: &[ResolvedModule],
     state: &StateStore,
     results: &mut Vec<VerifyResult>,
 ) {
-    // Merge profile + module env (same logic as plan_env)
+    // Merge profile + module env and aliases (same logic as plan_env)
     let mut merged: Vec<crate::config::EnvVar> = profile_env.to_vec();
+    let mut merged_aliases: Vec<crate::config::ShellAlias> = profile_aliases.to_vec();
     for module in modules {
         crate::merge_env(&mut merged, &module.env);
+        crate::merge_aliases(&mut merged_aliases, &module.aliases);
     }
 
-    if merged.is_empty() {
+    if merged.is_empty() && merged_aliases.is_empty() {
         return;
     }
 
-    let expected_content = generate_env_file_content(&merged);
+    let expected_content = generate_env_file_content(&merged, &merged_aliases);
     let env_path = expand_tilde(std::path::Path::new("~/.cfgd.env"));
 
     // Check env file content
@@ -1716,7 +1776,7 @@ fn verify_env(
     let fish_conf_d = expand_tilde(std::path::Path::new("~/.config/fish/conf.d"));
     if fish_conf_d.exists() {
         let fish_path = fish_conf_d.join("cfgd-env.fish");
-        let expected_fish = generate_fish_env_content(&merged);
+        let expected_fish = generate_fish_env_content(&merged, &merged_aliases);
         match std::fs::read_to_string(&fish_path) {
             Ok(actual) if actual == expected_fish => {
                 results.push(VerifyResult {
@@ -1848,9 +1908,11 @@ fn action_target_path(action: &Action) -> Option<std::path::PathBuf> {
     }
 }
 
-/// Compute SHA256 hash of a file's content, returning None if the file doesn't exist.
-/// Generate bash/zsh env file content from merged env vars.
-fn generate_env_file_content(env: &[crate::config::EnvVar]) -> String {
+/// Generate bash/zsh env file content from merged env vars and aliases.
+fn generate_env_file_content(
+    env: &[crate::config::EnvVar],
+    aliases: &[crate::config::ShellAlias],
+) -> String {
     let mut lines = vec!["# managed by cfgd — do not edit".to_string()];
     for ev in env {
         if ev.value.contains('$') {
@@ -1864,12 +1926,22 @@ fn generate_env_file_content(env: &[crate::config::EnvVar]) -> String {
             ));
         }
     }
+    for alias in aliases {
+        lines.push(format!(
+            "alias {}=\"{}\"",
+            alias.name,
+            alias.command.replace('"', "\\\"")
+        ));
+    }
     lines.push(String::new()); // trailing newline
     lines.join("\n")
 }
 
-/// Generate fish env file content from merged env vars.
-fn generate_fish_env_content(env: &[crate::config::EnvVar]) -> String {
+/// Generate fish env file content from merged env vars and aliases.
+fn generate_fish_env_content(
+    env: &[crate::config::EnvVar],
+    aliases: &[crate::config::ShellAlias],
+) -> String {
     let mut lines = vec!["# managed by cfgd — do not edit".to_string()];
     for ev in env {
         if ev.name == "PATH" {
@@ -1879,6 +1951,9 @@ fn generate_fish_env_content(env: &[crate::config::EnvVar]) -> String {
         } else {
             lines.push(format!("set -gx {} {}", ev.name, ev.value));
         }
+    }
+    for alias in aliases {
+        lines.push(format!("abbr -a {} {}", alias.name, alias.command));
     }
     lines.push(String::new());
     lines.join("\n")
@@ -2544,6 +2619,7 @@ mod tests {
             ],
             files: vec![],
             env: vec![],
+            aliases: vec![],
             post_apply_scripts: vec![],
             depends: vec![],
         }
@@ -2563,10 +2639,10 @@ mod tests {
 
         // Should have 6 phases, first is Modules
         assert_eq!(plan.phases.len(), 7);
-        assert_eq!(plan.phases[0].name, PhaseName::Modules);
+        let module_phase = plan.phases.iter().find(|p| p.name == PhaseName::Modules).unwrap();
 
         // Module phase should have at least 1 action (InstallPackages)
-        let module_phase = &plan.phases[0];
+        let module_phase = module_phase;
         assert!(!module_phase.actions.is_empty());
 
         // Check that actions are ModuleAction
@@ -2597,6 +2673,7 @@ mod tests {
                 strategy: None,
             }],
             env: vec![],
+            aliases: vec![],
             post_apply_scripts: vec![],
             depends: vec![],
         }];
@@ -2605,7 +2682,7 @@ mod tests {
             .plan(&resolved, Vec::new(), Vec::new(), modules)
             .unwrap();
 
-        let module_phase = &plan.phases[0];
+        let module_phase = plan.phases.iter().find(|p| p.name == PhaseName::Modules).unwrap();
         assert_eq!(module_phase.actions.len(), 1);
 
         match &module_phase.actions[0] {
@@ -2632,6 +2709,7 @@ mod tests {
             packages: vec![],
             files: vec![],
             env: vec![],
+            aliases: vec![],
             post_apply_scripts: vec!["nvim --headless +qa".to_string(), "echo done".to_string()],
             depends: vec![],
         }];
@@ -2640,7 +2718,7 @@ mod tests {
             .plan(&resolved, Vec::new(), Vec::new(), modules)
             .unwrap();
 
-        let module_phase = &plan.phases[0];
+        let module_phase = plan.phases.iter().find(|p| p.name == PhaseName::Modules).unwrap();
         assert_eq!(module_phase.actions.len(), 2);
 
         for action in &module_phase.actions {
@@ -2675,6 +2753,7 @@ mod tests {
                 }],
                 files: vec![],
                 env: vec![],
+                aliases: vec![],
                 post_apply_scripts: vec![],
                 depends: vec![],
             },
@@ -2689,6 +2768,7 @@ mod tests {
                 }],
                 files: vec![],
                 env: vec![],
+                aliases: vec![],
                 post_apply_scripts: vec![],
                 depends: vec!["node".to_string()],
             },
@@ -2698,7 +2778,7 @@ mod tests {
             .plan(&resolved, Vec::new(), Vec::new(), modules)
             .unwrap();
 
-        let module_phase = &plan.phases[0];
+        let module_phase = plan.phases.iter().find(|p| p.name == PhaseName::Modules).unwrap();
         // node packages + nvim packages = 2 actions
         assert_eq!(module_phase.actions.len(), 2);
 
@@ -3006,6 +3086,7 @@ mod tests {
             }],
             files: vec![],
             env: vec![],
+            aliases: vec![],
             post_apply_scripts: vec![],
             depends: vec![],
         }];
@@ -3046,6 +3127,7 @@ mod tests {
             }],
             files: vec![],
             env: vec![],
+            aliases: vec![],
             post_apply_scripts: vec![],
             depends: vec![],
         }];
@@ -3054,7 +3136,7 @@ mod tests {
             .plan(&resolved, Vec::new(), Vec::new(), modules)
             .unwrap();
 
-        let module_phase = &plan.phases[0];
+        let module_phase = plan.phases.iter().find(|p| p.name == PhaseName::Modules).unwrap();
         assert_eq!(module_phase.actions.len(), 1);
 
         match &module_phase.actions[0] {
@@ -3144,6 +3226,7 @@ mod tests {
                 strategy: None,
             }],
             env: vec![],
+            aliases: vec![],
             post_apply_scripts: vec![],
             depends: vec![],
         }];
@@ -3181,6 +3264,7 @@ mod tests {
                 strategy: None,
             }],
             env: vec![],
+            aliases: vec![],
             post_apply_scripts: vec![],
             depends: vec![],
         }];
@@ -3215,6 +3299,7 @@ mod tests {
                 strategy: None,
             }],
             env: vec![],
+            aliases: vec![],
             post_apply_scripts: vec![],
             depends: vec![],
         }];
@@ -3235,7 +3320,7 @@ mod tests {
                 value: "/usr/local/bin:$PATH".into(),
             },
         ];
-        let content = super::generate_env_file_content(&env);
+        let content = super::generate_env_file_content(&env, &[]);
         assert!(content.starts_with("# managed by cfgd"));
         assert!(content.contains("export EDITOR=\"nvim\""));
         // PATH contains $, so unquoted
@@ -3254,7 +3339,7 @@ mod tests {
                 value: "/usr/local/bin:/home/user/.cargo/bin:$PATH".into(),
             },
         ];
-        let content = super::generate_fish_env_content(&env);
+        let content = super::generate_fish_env_content(&env, &[]);
         assert!(content.starts_with("# managed by cfgd"));
         assert!(content.contains("set -gx EDITOR nvim"));
         assert!(content.contains("set -gx PATH /usr/local/bin /home/user/.cargo/bin $PATH"));
@@ -3262,7 +3347,7 @@ mod tests {
 
     #[test]
     fn plan_env_empty_when_no_env() {
-        let actions = Reconciler::plan_env(&[], &[]);
+        let actions = Reconciler::plan_env(&[], &[], &[]);
         assert!(actions.is_empty());
     }
 
@@ -3280,11 +3365,12 @@ mod tests {
                 name: "EDITOR".into(),
                 value: "nvim".into(),
             }],
+            aliases: vec![],
             post_apply_scripts: vec![],
             depends: vec![],
         }];
         // plan_env merges and generates actions — the merged env should have EDITOR=nvim
-        let actions = Reconciler::plan_env(&profile_env, &modules);
+        let actions = Reconciler::plan_env(&profile_env, &[], &modules);
         // With non-empty env, there should be at least a WriteEnvFile action
         // (since ~/.cfgd.env won't exist in test env)
         let has_write = actions
@@ -3303,7 +3389,7 @@ mod tests {
         // Write the expected content to a temp file to simulate "already applied"
         let dir = tempfile::tempdir().unwrap();
         let env_path = dir.path().join(".cfgd.env");
-        let expected = super::generate_env_file_content(&env);
+        let expected = super::generate_env_file_content(&env, &[]);
         std::fs::write(&env_path, &expected).unwrap();
 
         // plan_env checks the real ~/.cfgd.env path, not our temp file,
@@ -3317,5 +3403,101 @@ mod tests {
         assert_eq!(PhaseName::Env.as_str(), "env");
         assert_eq!(PhaseName::Env.display_name(), "Environment");
         assert_eq!("env".parse::<PhaseName>().unwrap(), PhaseName::Env);
+    }
+
+    #[test]
+    fn generate_env_file_with_aliases() {
+        let env = vec![crate::config::EnvVar {
+            name: "EDITOR".into(),
+            value: "nvim".into(),
+        }];
+        let aliases = vec![
+            crate::config::ShellAlias {
+                name: "vim".into(),
+                command: "nvim".into(),
+            },
+            crate::config::ShellAlias {
+                name: "ll".into(),
+                command: "ls -la".into(),
+            },
+        ];
+        let content = super::generate_env_file_content(&env, &aliases);
+        assert!(content.contains("export EDITOR=\"nvim\""));
+        assert!(content.contains("alias vim=\"nvim\""));
+        assert!(content.contains("alias ll=\"ls -la\""));
+    }
+
+    #[test]
+    fn generate_fish_env_with_aliases() {
+        let env = vec![crate::config::EnvVar {
+            name: "EDITOR".into(),
+            value: "nvim".into(),
+        }];
+        let aliases = vec![crate::config::ShellAlias {
+            name: "vim".into(),
+            command: "nvim".into(),
+        }];
+        let content = super::generate_fish_env_content(&env, &aliases);
+        assert!(content.contains("set -gx EDITOR nvim"));
+        assert!(content.contains("abbr -a vim nvim"));
+    }
+
+    #[test]
+    fn plan_env_aliases_only() {
+        let aliases = vec![crate::config::ShellAlias {
+            name: "vim".into(),
+            command: "nvim".into(),
+        }];
+        let actions = Reconciler::plan_env(&[], &aliases, &[]);
+        let has_write = actions
+            .iter()
+            .any(|a| matches!(a, Action::Env(EnvAction::WriteEnvFile { .. })));
+        assert!(has_write, "Expected WriteEnvFile action for aliases-only");
+    }
+
+    #[test]
+    fn plan_env_module_alias_wins_on_conflict() {
+        let profile_aliases = vec![crate::config::ShellAlias {
+            name: "vim".into(),
+            command: "vi".into(),
+        }];
+        let modules = vec![ResolvedModule {
+            name: "nvim".into(),
+            packages: vec![],
+            files: vec![],
+            env: vec![],
+            aliases: vec![crate::config::ShellAlias {
+                name: "vim".into(),
+                command: "nvim".into(),
+            }],
+            post_apply_scripts: vec![],
+            depends: vec![],
+        }];
+        let actions = Reconciler::plan_env(&[], &profile_aliases, &modules);
+        // Find the WriteEnvFile action and check it has "nvim" not "vi"
+        for action in &actions {
+            if let Action::Env(EnvAction::WriteEnvFile { content, .. }) = action {
+                assert!(
+                    content.contains("alias vim=\"nvim\""),
+                    "Module alias should override profile alias"
+                );
+                assert!(
+                    !content.contains("alias vim=\"vi\""),
+                    "Profile alias should be overridden"
+                );
+                return;
+            }
+        }
+        panic!("Expected WriteEnvFile action");
+    }
+
+    #[test]
+    fn generate_env_file_alias_escapes_quotes() {
+        let aliases = vec![crate::config::ShellAlias {
+            name: "greet".into(),
+            command: "echo \"hello world\"".into(),
+        }];
+        let content = super::generate_env_file_content(&[], &aliases);
+        assert!(content.contains("alias greet=\"echo \\\"hello world\\\"\""));
     }
 }

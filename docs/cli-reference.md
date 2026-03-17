@@ -29,7 +29,7 @@ cfgd init --from <url> --apply --yes --install-daemon  # full one-liner bootstra
 | `--apply-module <name>` | Apply a specific module (repeatable, implies --apply, errors if not found) |
 | `--yes`, `-y` | Skip confirmation prompts (used with --apply) |
 | `--install-daemon` | Install daemon service after init |
-| `--theme <preset>` | Theme preset (default, minimal) |
+| `--theme <name>` | Theme name (default, dracula, solarized-dark, solarized-light, minimal) |
 
 See [bootstrap.md](bootstrap.md) for the full init flow.
 
@@ -135,6 +135,7 @@ cfgd profile create work-linux \
   --module nvim --module tmux \
   --package apt:build-essential \
   --env EDITOR=vim \
+  --alias vim=nvim \
   --file ~/.config/starship.toml \
   --secret secrets/api-key.enc:~/.config/app/key \
   --pre-apply scripts/setup.sh
@@ -146,6 +147,7 @@ cfgd profile create work-linux \
 | `--module <name>` | Include module (repeatable) |
 | `--package <mgr:pkg>` | Add package (repeatable) |
 | `--env <key=value>` | Set env var (repeatable) |
+| `--alias <name=command>` | Set shell alias (repeatable) |
 | `--system <key=value>` | Set system setting (repeatable) |
 | `--file <path>` | Manage file (repeatable) |
 | `--private-files` | Mark files as private (gitignored) |
@@ -162,7 +164,7 @@ cfgd profile update --active --add-package brew:jq
 cfgd profile update work --remove-module old-tool --add-module new-tool
 ```
 
-All flags use `--add-*` / `--remove-*` pairs: `--add-inherit`/`--remove-inherit`, `--add-module`/`--remove-module`, `--add-package`/`--remove-package`, `--add-file`/`--remove-file`, `--add-env`/`--remove-env`, `--add-system`/`--remove-system`, `--add-secret`/`--remove-secret`, `--add-pre-apply`/`--remove-pre-apply`, `--add-post-apply`/`--remove-post-apply`.
+All flags use `--add-*` / `--remove-*` pairs: `--add-inherit`/`--remove-inherit`, `--add-module`/`--remove-module`, `--add-package`/`--remove-package`, `--add-file`/`--remove-file`, `--add-env`/`--remove-env`, `--add-alias`/`--remove-alias`, `--add-system`/`--remove-system`, `--add-secret`/`--remove-secret`, `--add-pre-apply`/`--remove-pre-apply`, `--add-post-apply`/`--remove-post-apply`.
 
 ### `cfgd profile edit <name>`
 
@@ -207,6 +209,8 @@ cfgd module create --name my-tool \
 | `--package <name>` | Add package (repeatable) |
 | `--file <path>` | Import file (repeatable) |
 | `--private-files` | Mark files as private |
+| `--env <key=value>` | Set env var (repeatable) |
+| `--alias <name=command>` | Set shell alias (repeatable) |
 | `--post-apply <cmd>` | Post-apply script (repeatable) |
 | `--set <key=value>` | Helm-style override (repeatable) |
 
@@ -358,6 +362,44 @@ Show the current cfgd.yaml configuration.
 ### `cfgd config edit`
 
 Open cfgd.yaml in `$EDITOR`.
+
+### `cfgd config get <key>`
+
+Get a config value by dotted key path. Outputs raw value to stdout (suitable for scripting).
+
+```sh
+cfgd config get profile                      # → work
+cfgd config get theme                        # → dracula
+cfgd config get theme.name                   # → dracula
+cfgd config get daemon.reconcile.interval    # → 5m
+cfgd config get file-strategy                # → symlink
+cfgd config get aliases.add                  # → profile update --active --add-file
+cfgd config get daemon                       # prints full daemon YAML block
+```
+
+### `cfgd config set <key> <value>`
+
+Set a config value by dotted key path. Creates intermediate sections as needed.
+
+```sh
+cfgd config set profile personal
+cfgd config set theme dracula
+cfgd config set theme.name minimal
+cfgd config set daemon.reconcile.interval 10m
+cfgd config set daemon.enabled true
+cfgd config set file-strategy copy
+cfgd config set aliases.deploy "apply --yes"
+```
+
+### `cfgd config unset <key>`
+
+Remove a config value (resets to default).
+
+```sh
+cfgd config unset theme                          # remove entire theme section
+cfgd config unset daemon.reconcile.auto-apply    # reset single field
+cfgd config unset aliases.deploy                 # remove an alias
+```
 
 ### `cfgd workflow generate`
 

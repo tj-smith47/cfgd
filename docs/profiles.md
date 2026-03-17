@@ -26,6 +26,14 @@ spec:
     - name: color_theme
       value: gruvbox
 
+  aliases:
+    - name: vim
+      command: nvim
+    - name: ll
+      command: ls -la
+    - name: k
+      command: kubectl
+
   packages:
     brew:
       taps:
@@ -124,6 +132,7 @@ core → base → macos → work
 | Resource | Merge Strategy |
 |---|---|
 | `env` | Override — later profile replaces earlier for same name |
+| `aliases` | Override — later profile replaces earlier for same name |
 | `packages` | Union — all packages from all layers combined, deduplicated |
 | `files.managed` | Overlay — later profile's file wins for same target path |
 | `files.permissions` | Override — later profile replaces earlier for same path |
@@ -135,6 +144,21 @@ core → base → macos → work
 ## Env Vars
 
 Env vars are name/value pairs available in [Tera templates](templates.md) and exported to the shell environment. They're set in the profile's `env` section and resolved through the inheritance chain (later overrides earlier for the same name).
+
+## Shell Aliases
+
+Shell aliases are name/command pairs written to `~/.cfgd.env` alongside env exports. They follow the same merge rules as env vars: later profile overrides earlier for the same name, and module aliases win over profile aliases on conflict.
+
+```yaml
+spec:
+  aliases:
+    - name: vim
+      command: nvim
+    - name: ll
+      command: ls -la
+```
+
+For bash/zsh, aliases are written as `alias name="command"`. For fish, they're written as `abbr -a name command` to `~/.config/fish/conf.d/cfgd-env.fish`.
 
 ## CLI Commands
 
@@ -156,6 +180,7 @@ cfgd profile create work-linux \
   --module nvim --module tmux \
   --package apt:build-essential \
   --env EDITOR=vim \
+  --alias vim=nvim \
   --file ~/.config/starship.toml
 ```
 
@@ -168,6 +193,7 @@ cfgd profile update work \
   --add-package brew:jq \
   --remove-package brew:unused \
   --add-env GIT_AUTHOR_NAME="Jane Doe" \
+  --add-alias k=kubectl \
   --add-file ~/.bashrc \
   --add-file --private-files ~/.config/secret.conf
 ```

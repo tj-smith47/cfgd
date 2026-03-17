@@ -389,15 +389,15 @@ static SCHEMA_CONFIG: ResourceSchema = ResourceSchema {
         },
         SchemaField {
             name: "theme",
-            type_desc: "object",
+            type_desc: "string | object",
             required: false,
-            description: "Theme configuration",
+            description: "Theme name (string) or theme config (object with name + overrides)",
             children: &[
                 SchemaField {
-                    name: "preset",
+                    name: "name",
                     type_desc: "string",
                     required: false,
-                    description: "Theme preset: default | dracula | solarized-dark | solarized-light | minimal",
+                    description: "Theme name: default | dracula | solarized-dark | solarized-light | minimal",
                     children: &[],
                 },
                 SchemaField {
@@ -608,6 +608,13 @@ static SCHEMA_PROFILE: ResourceSchema = ResourceSchema {
             type_desc: "list[{name, value}]",
             required: false,
             description: "Environment variables (name/value pairs) available in templates and written to ~/.cfgd.env",
+            children: &[],
+        },
+        SchemaField {
+            name: "aliases",
+            type_desc: "list[{name, command}]",
+            required: false,
+            description: "Shell aliases written to ~/.cfgd.env as `alias name=\"command\"` (fish: `abbr -a name command`)",
             children: &[],
         },
         SchemaField {
@@ -1138,6 +1145,20 @@ static SCHEMA_MODULE: ResourceSchema = ResourceSchema {
                     children: &[],
                 },
             ],
+        },
+        SchemaField {
+            name: "env",
+            type_desc: "list[{name, value}]",
+            required: false,
+            description: "Environment variables merged with profile env (module wins on conflict by name)",
+            children: &[],
+        },
+        SchemaField {
+            name: "aliases",
+            type_desc: "list[{name, command}]",
+            required: false,
+            description: "Shell aliases merged with profile aliases (module wins on conflict by name)",
+            children: &[],
         },
         SchemaField {
             name: "scripts",

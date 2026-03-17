@@ -49,6 +49,14 @@ spec:
     - source: https://github.com/user/nvim-config.git@v2.1.0
       target: ~/.config/nvim/
 
+  env:
+    - name: EDITOR
+      value: nvim
+
+  aliases:
+    - name: vim
+      command: nvim
+
   scripts:
     post-apply:
       - nvim --headless "+Lazy! sync" +qa
@@ -84,6 +92,19 @@ spec:
       value: my-nvim
     - name: EDITOR
       value: nvim
+```
+
+### Aliases
+
+Modules can declare shell aliases. These are merged with profile aliases using the same conflict rules as env vars — module wins on conflict by name.
+
+```yaml
+spec:
+  aliases:
+    - name: vim
+      command: nvim
+    - name: vimdiff
+      command: nvim -d
 ```
 
 ## Cross-Platform Package Resolution

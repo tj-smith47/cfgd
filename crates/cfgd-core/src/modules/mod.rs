@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 
 use sha2::{Digest, Sha256};
 
-use crate::config::{EnvVar, ModulePackageEntry, ModuleSpec, parse_module};
+use crate::config::{EnvVar, ModulePackageEntry, ModuleSpec, ShellAlias, parse_module};
 use crate::errors::{ConfigError, ModuleError, Result};
 use crate::platform::Platform;
 use crate::providers::PackageManager;
@@ -55,6 +55,7 @@ pub struct ResolvedModule {
     pub packages: Vec<ResolvedPackage>,
     pub files: Vec<ResolvedFile>,
     pub env: Vec<EnvVar>,
+    pub aliases: Vec<ShellAlias>,
     pub post_apply_scripts: Vec<String>,
     pub depends: Vec<String>,
 }
@@ -331,15 +332,32 @@ pub fn resolve_package(
         }
 
         let mgr = match managers.get(candidate.as_str()) {
-            Some(m) if m.is_available() => *m,
-            _ => continue,
+            Some(m) => *m,
+            None => continue,
         };
+
+        let bootstrappable = !mgr.is_available() && mgr.can_bootstrap();
+        if !mgr.is_available() && !bootstrappable {
+            continue;
+        }
 
         let resolved_name = entry
             .aliases
             .get(candidate)
             .cloned()
             .unwrap_or_else(|| entry.name.clone());
+
+        // If the manager isn't installed yet but can be bootstrapped, resolve
+        // optimistically — we can't query versions until it's installed.
+        if bootstrappable {
+            return Ok(Some(ResolvedPackage {
+                canonical_name: entry.name.clone(),
+                resolved_name,
+                manager: candidate.clone(),
+                version: None,
+                script: None,
+            }));
+        }
 
         if let Some(ref min_ver) = entry.min_version {
             match mgr.available_version(&resolved_name) {
@@ -800,6 +818,7 @@ pub fn resolve_modules(
             packages,
             files,
             env: module.spec.env.clone(),
+            aliases: module.spec.aliases.clone(),
             post_apply_scripts,
             depends: module.spec.depends.clone(),
         });
@@ -2542,6 +2561,7 @@ spec:
                 }],
                 files: vec![],
                 env: vec![],
+                aliases: vec![],
                 scripts: None,
             },
             dir: PathBuf::from("/fake"),
@@ -2584,6 +2604,7 @@ spec:
                     private: false,
                 }],
                 env: vec![],
+                aliases: vec![],
                 scripts: None,
             },
             dir: PathBuf::from("/fake"),
@@ -2620,6 +2641,7 @@ spec:
                     private: false,
                 }],
                 env: vec![],
+                aliases: vec![],
                 scripts: None,
             },
             dir: PathBuf::from("/fake"),
@@ -2862,6 +2884,7 @@ spec:
                 packages: vec![],
                 files: vec![],
                 env: vec![],
+                aliases: vec![],
                 scripts: Some(crate::config::ModuleScriptSpec {
                     post_apply: vec!["echo old".into()],
                 }),
@@ -2875,6 +2898,7 @@ spec:
                 packages: vec![],
                 files: vec![],
                 env: vec![],
+                aliases: vec![],
                 scripts: Some(crate::config::ModuleScriptSpec {
                     post_apply: vec!["echo new".into()],
                 }),

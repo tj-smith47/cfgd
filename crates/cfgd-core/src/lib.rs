@@ -238,6 +238,29 @@ pub fn parse_env_var(input: &str) -> std::result::Result<config::EnvVar, String>
     })
 }
 
+/// Merge shell aliases by name: later entries override earlier ones with the same name.
+/// Same semantics as `merge_env`.
+pub fn merge_aliases(base: &mut Vec<config::ShellAlias>, updates: &[config::ShellAlias]) {
+    for alias in updates {
+        if let Some(pos) = base.iter().position(|a| a.name == alias.name) {
+            base[pos] = alias.clone();
+        } else {
+            base.push(alias.clone());
+        }
+    }
+}
+
+/// Parse a `name=command` string into a `ShellAlias`.
+pub fn parse_alias(input: &str) -> std::result::Result<config::ShellAlias, String> {
+    let (name, command) = input
+        .split_once('=')
+        .ok_or_else(|| format!("invalid alias '{}' — expected name=command", input))?;
+    Ok(config::ShellAlias {
+        name: name.to_string(),
+        command: command.to_string(),
+    })
+}
+
 // ---------------------------------------------------------------------------
 // File safety primitives — atomic writes, state capture, path validation
 // ---------------------------------------------------------------------------
@@ -697,5 +720,60 @@ mod tests {
             "expected ApplyLockHeld, got: {}",
             err
         );
+    }
+
+    #[test]
+    fn merge_aliases_override_by_name() {
+        let mut base = vec![
+            config::ShellAlias {
+                name: "vim".into(),
+                command: "vi".into(),
+            },
+            config::ShellAlias {
+                name: "ll".into(),
+                command: "ls -l".into(),
+            },
+        ];
+        let updates = vec![config::ShellAlias {
+            name: "vim".into(),
+            command: "nvim".into(),
+        }];
+        merge_aliases(&mut base, &updates);
+        assert_eq!(base.len(), 2);
+        assert_eq!(base[0].command, "nvim");
+        assert_eq!(base[1].command, "ls -l");
+    }
+
+    #[test]
+    fn merge_aliases_appends_new() {
+        let mut base = vec![config::ShellAlias {
+            name: "vim".into(),
+            command: "nvim".into(),
+        }];
+        let updates = vec![config::ShellAlias {
+            name: "ll".into(),
+            command: "ls -la".into(),
+        }];
+        merge_aliases(&mut base, &updates);
+        assert_eq!(base.len(), 2);
+    }
+
+    #[test]
+    fn parse_alias_valid() {
+        let alias = parse_alias("vim=nvim").unwrap();
+        assert_eq!(alias.name, "vim");
+        assert_eq!(alias.command, "nvim");
+    }
+
+    #[test]
+    fn parse_alias_with_args() {
+        let alias = parse_alias("ll=ls -la --color").unwrap();
+        assert_eq!(alias.name, "ll");
+        assert_eq!(alias.command, "ls -la --color");
+    }
+
+    #[test]
+    fn parse_alias_invalid() {
+        assert!(parse_alias("no-equals-sign").is_err());
     }
 }

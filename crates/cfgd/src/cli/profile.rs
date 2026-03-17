@@ -118,18 +118,7 @@ pub(super) fn cmd_profile_list(cli: &Cli, printer: &Printer) -> anyhow::Result<(
         return Ok(());
     }
 
-    let mut profiles = Vec::new();
-    for entry in std::fs::read_dir(&profiles_dir)? {
-        let entry = entry?;
-        let path = entry.path();
-        if path.extension().and_then(|e| e.to_str()) == Some("yaml")
-            && let Some(stem) = path.file_stem().and_then(|s| s.to_str())
-        {
-            profiles.push(stem.to_string());
-        }
-    }
-
-    profiles.sort();
+    let profiles = super::list_yaml_stems(&profiles_dir)?;
 
     let active = cli.profile.clone().unwrap_or_else(|| {
         config::load_config(&cli.config)
@@ -166,21 +155,9 @@ pub(super) fn cmd_profile_switch(name: &str, printer: &Printer) -> anyhow::Resul
     if !profile_path.exists() {
         // List available profiles for the error message
         let mut hint = String::new();
-        if profiles_dir.exists() {
-            let mut available = Vec::new();
-            for entry in std::fs::read_dir(&profiles_dir)? {
-                let entry = entry?;
-                let path = entry.path();
-                if path.extension().and_then(|e| e.to_str()) == Some("yaml")
-                    && let Some(stem) = path.file_stem().and_then(|s| s.to_str())
-                {
-                    available.push(stem.to_string());
-                }
-            }
-            if !available.is_empty() {
-                available.sort();
-                hint = format!("\nAvailable profiles: {}", available.join(", "));
-            }
+        let available = super::list_yaml_stems(&profiles_dir).unwrap_or_default();
+        if !available.is_empty() {
+            hint = format!("\nAvailable profiles: {}", available.join(", "));
         }
         anyhow::bail!(
             "Profile '{}' not found at {}{}",
@@ -324,6 +301,7 @@ pub(super) fn cmd_profile_create(
     let module_list = &args.modules;
     let pkg_list = &args.packages;
     let var_list = &args.env;
+    let alias_list = &args.aliases;
     let sys_list = &args.system;
     let files = &args.files;
     let secret_list = &args.secrets;
@@ -358,6 +336,7 @@ pub(super) fn cmd_profile_create(
         && module_list.is_empty()
         && pkg_list.is_empty()
         && var_list.is_empty()
+        && alias_list.is_empty()
         && sys_list.is_empty()
         && files.is_empty()
         && secret_list.is_empty()
@@ -426,6 +405,12 @@ pub(super) fn cmd_profile_create(
         env_vars.push(cfgd_core::parse_env_var(v).map_err(|e| anyhow::anyhow!(e))?);
     }
 
+    // Build aliases
+    let mut shell_aliases = Vec::new();
+    for a in alias_list {
+        shell_aliases.push(cfgd_core::parse_alias(a).map_err(|e| anyhow::anyhow!(e))?);
+    }
+
     // Build system settings
     let mut system = std::collections::HashMap::new();
     for s in &sys {
@@ -487,6 +472,7 @@ pub(super) fn cmd_profile_create(
             inherits: inh,
             modules: mods,
             env: env_vars,
+            aliases: shell_aliases,
             packages: if has_packages {
                 Some(packages_spec)
             } else {
@@ -813,6 +799,26 @@ pub(super) fn cmd_profile_update(
             changes += 1;
         } else {
             printer.warning(&format!("Env var '{}' not found", key));
+        }
+    }
+
+    // Add aliases
+    for a in &args.add_aliases {
+        let alias = cfgd_core::parse_alias(a).map_err(|e| anyhow::anyhow!(e))?;
+        cfgd_core::merge_aliases(&mut doc.spec.aliases, std::slice::from_ref(&alias));
+        printer.success(&format!("Set alias: {}={}", alias.name, alias.command));
+        changes += 1;
+    }
+
+    // Remove aliases
+    for name in &args.remove_aliases {
+        let before = doc.spec.aliases.len();
+        doc.spec.aliases.retain(|a| a.name != *name);
+        if doc.spec.aliases.len() < before {
+            printer.success(&format!("Removed alias: {}", name));
+            changes += 1;
+        } else {
+            printer.warning(&format!("Alias '{}' not found", name));
         }
     }
 

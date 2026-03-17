@@ -24,6 +24,7 @@ Initial release.
 - Git file sources with tag/branch pinning and subdirectory support
 - Module registries for discovering and sharing modules
 - Lockfile (`modules.lock`) for reproducible remote module installations
+- Shell aliases in profiles and modules — `alias name="command"` in bash/zsh, `abbr -a` in fish
 
 ### Package Managers
 - 15 built-in managers: brew (formulae/casks/taps), apt, dnf, yum, pacman, apk, zypper, pkg, cargo, npm, pipx, snap, flatpak, nix, go
@@ -68,4 +69,5 @@ Initial release.
 - Secret management: init, encrypt, decrypt, edit
 - Shell completions for bash, zsh, fish
 - Custom command aliases
+- `--alias`/`--add-alias`/`--remove-alias` flags on profile and module create/update
 - `cfgd explain` with dot-notation field drilling for all resource types

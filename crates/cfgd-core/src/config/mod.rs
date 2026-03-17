@@ -111,17 +111,70 @@ pub struct ModuleSecurityConfig {
     pub require_signatures: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub struct ThemeConfig {
-    #[serde(default = "default_theme_preset")]
-    pub preset: String,
-    #[serde(default)]
+    #[serde(default = "default_theme_name")]
+    pub name: String,
+    #[serde(default, skip_serializing_if = "ThemeOverrides::is_empty")]
     pub overrides: ThemeOverrides,
 }
 
-fn default_theme_preset() -> String {
+fn default_theme_name() -> String {
     "default".to_string()
+}
+
+impl Default for ThemeConfig {
+    fn default() -> Self {
+        Self {
+            name: default_theme_name(),
+            overrides: ThemeOverrides::default(),
+        }
+    }
+}
+
+// Accept both `theme: "dracula"` (string) and `theme: { name: dracula, overrides: ... }` (struct)
+impl<'de> serde::Deserialize<'de> for ThemeConfig {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        use serde::de;
+
+        struct ThemeVisitor;
+        impl<'de> de::Visitor<'de> for ThemeVisitor {
+            type Value = ThemeConfig;
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                f.write_str("a theme name string or a theme config mapping")
+            }
+            fn visit_str<E: de::Error>(self, v: &str) -> std::result::Result<ThemeConfig, E> {
+                Ok(ThemeConfig {
+                    name: v.to_string(),
+                    overrides: ThemeOverrides::default(),
+                })
+            }
+            fn visit_map<M: de::MapAccess<'de>>(
+                self,
+                map: M,
+            ) -> std::result::Result<ThemeConfig, M::Error> {
+                #[derive(Deserialize)]
+                #[serde(rename_all = "kebab-case")]
+                struct Inner {
+                    #[serde(default = "default_theme_name")]
+                    name: String,
+                    #[serde(default)]
+                    overrides: ThemeOverrides,
+                }
+                let inner =
+                    Inner::deserialize(de::value::MapAccessDeserializer::new(map))?;
+                Ok(ThemeConfig {
+                    name: inner.name,
+                    overrides: inner.overrides,
+                })
+            }
+        }
+        deserializer.deserialize_any(ThemeVisitor)
+    }
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -145,6 +198,29 @@ pub struct ThemeOverrides {
     pub icon_info: Option<String>,
     pub icon_pending: Option<String>,
     pub icon_arrow: Option<String>,
+}
+
+impl ThemeOverrides {
+    pub fn is_empty(&self) -> bool {
+        self.success.is_none()
+            && self.warning.is_none()
+            && self.error.is_none()
+            && self.info.is_none()
+            && self.muted.is_none()
+            && self.header.is_none()
+            && self.subheader.is_none()
+            && self.key.is_none()
+            && self.value.is_none()
+            && self.diff_add.is_none()
+            && self.diff_remove.is_none()
+            && self.diff_context.is_none()
+            && self.icon_success.is_none()
+            && self.icon_warning.is_none()
+            && self.icon_error.is_none()
+            && self.icon_info.is_none()
+            && self.icon_pending.is_none()
+            && self.icon_arrow.is_none()
+    }
 }
 
 // Custom deserialization: origin can be a single object or an array
@@ -470,6 +546,13 @@ pub struct EnvVar {
     pub value: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "kebab-case")]
+pub struct ShellAlias {
+    pub name: String,
+    pub command: String,
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub struct PolicyItems {
@@ -479,6 +562,8 @@ pub struct PolicyItems {
     pub files: Vec<ManagedFileSpec>,
     #[serde(default)]
     pub env: Vec<EnvVar>,
+    #[serde(default)]
+    pub aliases: Vec<ShellAlias>,
     #[serde(default)]
     pub system: HashMap<String, serde_yaml::Value>,
     #[serde(default)]
@@ -568,6 +653,9 @@ pub struct ModuleSpec {
 
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub env: Vec<EnvVar>,
+
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub aliases: Vec<ShellAlias>,
 
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scripts: Option<ModuleScriptSpec>,
@@ -704,6 +792,9 @@ pub struct ProfileSpec {
 
     #[serde(default)]
     pub env: Vec<EnvVar>,
+
+    #[serde(default)]
+    pub aliases: Vec<ShellAlias>,
 
     #[serde(default)]
     pub packages: Option<PackagesSpec>,
@@ -976,6 +1067,7 @@ pub struct ResolvedProfile {
 pub struct MergedProfile {
     pub modules: Vec<String>,
     pub env: Vec<EnvVar>,
+    pub aliases: Vec<ShellAlias>,
     pub packages: PackagesSpec,
     pub files: FilesSpec,
     pub system: HashMap<String, serde_yaml::Value>,
@@ -1168,6 +1260,9 @@ fn merge_layers(layers: &[ProfileLayer]) -> MergedProfile {
 
         // Env: later layer overrides earlier by name
         crate::merge_env(&mut merged.env, &spec.env);
+
+        // Aliases: later layer overrides earlier by name
+        crate::merge_aliases(&mut merged.aliases, &spec.aliases);
 
         // Packages: union
         if let Some(ref pkgs) = spec.packages {

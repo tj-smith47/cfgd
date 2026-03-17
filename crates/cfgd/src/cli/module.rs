@@ -210,6 +210,15 @@ pub(super) fn cmd_module_show(cli: &Cli, printer: &Printer, name: &str) -> anyho
         }
     }
 
+    // Aliases
+    if !module.spec.aliases.is_empty() {
+        printer.newline();
+        printer.subheader("Aliases");
+        for alias in &module.spec.aliases {
+            printer.key_value(&alias.name, &alias.command);
+        }
+    }
+
     // Scripts
     if let Some(ref scripts) = module.spec.scripts
         && !scripts.post_apply.is_empty()
@@ -383,6 +392,7 @@ pub(super) fn cmd_module_create(
         && pkg_names.is_empty()
         && files.is_empty()
         && env_list.is_empty()
+        && args.aliases.is_empty()
         && post_apply.is_empty()
         && sets.is_empty();
 
@@ -498,12 +508,21 @@ pub(super) fn cmd_module_create(
         env_entries.push(cfgd_core::parse_env_var(e).map_err(|e| anyhow::anyhow!(e))?);
     }
 
-    // Build scripts
+    // Build aliases
+    let mut alias_entries = Vec::new();
+    for a in &args.aliases {
+        alias_entries.push(cfgd_core::parse_alias(a).map_err(|e| anyhow::anyhow!(e))?);
+    }
+
+    // Build scripts — normalize shell escape artifacts (bash escapes ! to \! in double quotes)
     let scripts = if post_apply_list.is_empty() {
         None
     } else {
         Some(config::ModuleScriptSpec {
-            post_apply: post_apply_list,
+            post_apply: post_apply_list
+                .iter()
+                .map(|s| s.replace("\\!", "!"))
+                .collect(),
         })
     };
 
@@ -520,6 +539,7 @@ pub(super) fn cmd_module_create(
             packages: package_entries,
             files: file_entries,
             env: env_entries,
+            aliases: alias_entries,
             scripts,
         },
     };
@@ -806,6 +826,26 @@ pub(super) fn cmd_module_update_local(
             changes += 1;
         } else {
             printer.warning(&format!("Env var '{}' not found", key));
+        }
+    }
+
+    // Add aliases
+    for a in &args.add_aliases {
+        let alias = cfgd_core::parse_alias(a).map_err(|e| anyhow::anyhow!(e))?;
+        cfgd_core::merge_aliases(&mut doc.spec.aliases, std::slice::from_ref(&alias));
+        printer.success(&format!("Set alias: {}={}", alias.name, alias.command));
+        changes += 1;
+    }
+
+    // Remove aliases
+    for name in &args.remove_aliases {
+        let before = doc.spec.aliases.len();
+        doc.spec.aliases.retain(|a| a.name != *name);
+        if doc.spec.aliases.len() < before {
+            printer.success(&format!("Removed alias: {}", name));
+            changes += 1;
+        } else {
+            printer.warning(&format!("Alias '{}' not found", name));
         }
     }
 

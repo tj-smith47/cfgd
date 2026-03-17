@@ -107,7 +107,7 @@ const MIGRATIONS: &[&str] = &[
         version INTEGER NOT NULL
     );
 
-    INSERT INTO schema_version (version) VALUES (1);",
+    INSERT INTO schema_version (version) VALUES (0);",
     // Migration 2: File safety — backup store, transaction journal, module file manifest
     "CREATE TABLE IF NOT EXISTS file_backups (
         id              INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -155,9 +155,7 @@ const MIGRATIONS: &[&str] = &[
         FOREIGN KEY (last_applied) REFERENCES applies(id)
     );
 
-    CREATE INDEX IF NOT EXISTS idx_module_file_manifest_module ON module_file_manifest (module_name);
-
-    UPDATE schema_version SET version = 2;",
+    CREATE INDEX IF NOT EXISTS idx_module_file_manifest_module ON module_file_manifest (module_name);",
 ];
 
 /// Apply status for a reconciliation run.
@@ -369,6 +367,16 @@ impl StateStore {
                     .execute_batch(migration)
                     .map_err(|e| StateError::MigrationFailed {
                         message: format!("migration {}: {}", i, e),
+                    })?;
+                // Set version automatically — no hardcoded UPDATE in migration SQL
+                let new_version = (i + 1) as i64;
+                self.conn
+                    .execute(
+                        "UPDATE schema_version SET version = ?1",
+                        rusqlite::params![new_version],
+                    )
+                    .map_err(|e| StateError::MigrationFailed {
+                        message: format!("migration {}: failed to update version: {}", i, e),
                     })?;
             }
         }

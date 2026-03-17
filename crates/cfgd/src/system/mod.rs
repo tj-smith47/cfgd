@@ -17,7 +17,7 @@ use cfgd_core::providers::{SystemConfigurator, SystemDrift};
 
 /// Extract trimmed stderr from a process output as an owned String.
 pub(crate) fn stderr_string(output: &std::process::Output) -> String {
-    String::from_utf8_lossy(&output.stderr).trim().to_string()
+    crate::packages::stderr_lossy(output).trim_end().to_string()
 }
 
 /// Diff a YAML mapping against actual values.

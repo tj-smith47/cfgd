@@ -60,6 +60,15 @@ CSI driver, mutating webhook, and kubectl plugin for injecting modules into pods
 
 ---
 
+## CLI UX improvements
+
+- [ ] Buffered script output: post-apply and lifecycle scripts should render output in a bounded terminal region (like Docker build layers) that scrolls in place during execution and collapses to a summary line on completion. Currently uses inherited stdio which mixes script output with cfgd output.
+- [ ] `module show` — display apply status (applied/unapplied, last applied timestamp) from state store
+- [ ] `module show` — mask env values by default, `--show-values` flag to reveal
+- [ ] `cfgd status` / `cfgd verify` — work without a profile when modules are applied directly
+
+---
+
 ## Windows support
 
 Full Windows CLI support: compile gates, file management, package managers (winget, chocolatey, scoop), PowerShell env integration, Windows Service daemon. Design detail in [windows-support.md](windows-support.md).

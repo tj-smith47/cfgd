@@ -5,11 +5,11 @@ use std::process::{Command, Output};
 use cfgd_core::command_available;
 use cfgd_core::config::{MergedProfile, PackagesSpec};
 use cfgd_core::errors::{PackageError, Result};
-use cfgd_core::output::Printer;
+use cfgd_core::output::{CommandOutput, Printer};
 use cfgd_core::providers::{PackageAction, PackageManager};
 
 /// Extract stderr from command output as a lossy UTF-8 string.
-fn stderr_lossy(output: &Output) -> String {
+pub(crate) fn stderr_lossy(output: &Output) -> String {
     String::from_utf8_lossy(&output.stderr).to_string()
 }
 
@@ -17,59 +17,40 @@ fn stderr_lossy(output: &Output) -> String {
 /// exit to the appropriate PackageError variant based on `error_kind`.
 /// `error_kind` should be one of: "install", "uninstall", "list", "update".
 /// For "list", returns ListFailed. For "update", returns InstallFailed (matching
-/// existing convention). Returns the Output on success.
+/// existing convention). An optional `msg_prefix` is prepended to the error message.
 fn run_pkg_cmd(
     manager: &str,
     cmd: &mut Command,
     error_kind: &str,
 ) -> std::result::Result<Output, PackageError> {
-    let output = cmd.output().map_err(|e| PackageError::CommandFailed {
-        manager: manager.into(),
-        source: e,
-    })?;
-    if !output.status.success() {
-        let stderr = stderr_lossy(&output);
-        return Err(match error_kind {
-            "install" => PackageError::InstallFailed {
-                manager: manager.into(),
-                message: stderr,
-            },
-            "uninstall" => PackageError::UninstallFailed {
-                manager: manager.into(),
-                message: stderr,
-            },
-            "list" => PackageError::ListFailed {
-                manager: manager.into(),
-                message: stderr,
-            },
-            // "update" and anything else — use InstallFailed to match existing convention
-            _ => PackageError::InstallFailed {
-                manager: manager.into(),
-                message: stderr,
-            },
-        });
-    }
-    Ok(output)
+    run_pkg_cmd_prefixed(manager, cmd, error_kind, None)
 }
 
-/// Run a command, mapping IO errors to PackageError::CommandFailed and non-zero
-/// exit to an error with a custom message prefix.
+/// Like `run_pkg_cmd` but prepends a custom prefix to the error message.
 fn run_pkg_cmd_msg(
     manager: &str,
     cmd: &mut Command,
     error_kind: &str,
     msg_prefix: &str,
 ) -> std::result::Result<Output, PackageError> {
+    run_pkg_cmd_prefixed(manager, cmd, error_kind, Some(msg_prefix))
+}
+
+fn run_pkg_cmd_prefixed(
+    manager: &str,
+    cmd: &mut Command,
+    error_kind: &str,
+    msg_prefix: Option<&str>,
+) -> std::result::Result<Output, PackageError> {
     let output = cmd.output().map_err(|e| PackageError::CommandFailed {
         manager: manager.into(),
         source: e,
     })?;
     if !output.status.success() {
         let stderr = stderr_lossy(&output);
-        let message = if msg_prefix.is_empty() {
-            stderr
-        } else {
-            format!("{}: {}", msg_prefix, stderr)
+        let message = match msg_prefix {
+            Some(prefix) if !prefix.is_empty() => format!("{}: {}", prefix, stderr),
+            _ => stderr,
         };
         return Err(match error_kind {
             "install" => PackageError::InstallFailed {
@@ -87,6 +68,43 @@ fn run_pkg_cmd_msg(
             _ => PackageError::InstallFailed {
                 manager: manager.into(),
                 message,
+            },
+        });
+    }
+    Ok(output)
+}
+
+/// Run a package manager command with live progress display via Printer.
+/// Use for long-running operations (install, uninstall, update, bootstrap).
+/// Maps spawn errors to PackageError::CommandFailed and non-zero exit to
+/// the appropriate variant based on `error_kind`.
+fn run_pkg_cmd_live(
+    printer: &Printer,
+    manager: &str,
+    cmd: &mut Command,
+    label: &str,
+    error_kind: &str,
+) -> std::result::Result<CommandOutput, PackageError> {
+    let output = printer
+        .run_with_output(cmd, label)
+        .map_err(|e| PackageError::CommandFailed {
+            manager: manager.into(),
+            source: e,
+        })?;
+    if !output.status.success() {
+        let code = output.status.code().unwrap_or(-1);
+        return Err(match error_kind {
+            "install" => PackageError::InstallFailed {
+                manager: manager.into(),
+                message: format!("exit code {}", code),
+            },
+            "uninstall" => PackageError::UninstallFailed {
+                manager: manager.into(),
+                message: format!("exit code {}", code),
+            },
+            _ => PackageError::InstallFailed {
+                manager: manager.into(),
+                message: format!("exit code {}", code),
             },
         });
     }
@@ -117,30 +135,22 @@ fn brew_available() -> bool {
 /// After brew bootstrap, add brew's bin directories to the current process PATH
 /// so that brew-installed binaries (and post-apply scripts that use them) work
 /// immediately without requiring a new shell session.
+/// Add brew's directories to the current process PATH so subsequent commands
+/// (including post-apply scripts) can find brew-installed binaries.
 fn update_path_for_brew() {
-    let brew_bin = std::path::Path::new(LINUXBREW_PATH)
-        .parent()
-        .unwrap_or(std::path::Path::new("."));
-    let brew_prefix = brew_bin.parent().unwrap_or(brew_bin);
-    let sbin = brew_prefix.join("sbin");
+    let brew = BrewManager;
+    let dirs = brew.path_dirs();
+    if dirs.is_empty() {
+        return;
+    }
 
-    if let Ok(current_path) = std::env::var("PATH") {
-        let brew_bin_str = brew_bin.to_string_lossy();
-        if !current_path.contains(brew_bin_str.as_ref()) {
-            // SAFETY: bootstrap runs single-threaded before any concurrent work.
-            // set_var is unsafe in edition 2024 due to potential data races, but
-            // we're in the reconciler's sequential apply phase here.
-            unsafe {
-                std::env::set_var(
-                    "PATH",
-                    format!(
-                        "{}:{}:{}",
-                        brew_bin_str,
-                        sbin.to_string_lossy(),
-                        current_path
-                    ),
-                );
-            }
+    if let Ok(current_path) = std::env::var("PATH")
+        && !current_path.contains(&dirs[0])
+    {
+        let prefix = dirs.join(":");
+        // SAFETY: bootstrap runs single-threaded before any concurrent work.
+        unsafe {
+            std::env::set_var("PATH", format!("{}:{}", prefix, current_path));
         }
     }
 }
@@ -155,11 +165,13 @@ fn brew_cmd() -> Command {
             if let Some(owner) = brew_owner() {
                 let mut cmd = Command::new("sudo");
                 cmd.args(["-u", &owner, LINUXBREW_PATH]);
+                // cwd must be readable by the brew user — /root is 700
+                cmd.current_dir("/tmp");
                 return cmd;
             }
-            // No owner detected — try full path directly (brew will error if it
-            // refuses root, but that's a better error than a missing user)
-            return Command::new(LINUXBREW_PATH);
+            let mut cmd = Command::new(LINUXBREW_PATH);
+            cmd.current_dir("/tmp");
+            return cmd;
         }
         if !command_available("brew") {
             return Command::new(LINUXBREW_PATH);
@@ -258,25 +270,21 @@ impl PackageManager for BrewTapManager {
 
     fn install(&self, taps: &[String], printer: &Printer) -> Result<()> {
         for tap in taps {
-            printer.info(&format!("brew tap {}", tap));
-            run_pkg_cmd_msg(
-                "brew-tap",
-                brew_cmd().args(["tap", tap]),
-                "install",
-                &format!("tap {} failed", tap),
-            )?;
+            let label = format!("brew tap {}", tap);
+            run_pkg_cmd_live(printer, "brew-tap", brew_cmd().args(["tap", tap]), &label, "install")?;
         }
         Ok(())
     }
 
     fn uninstall(&self, taps: &[String], printer: &Printer) -> Result<()> {
         for tap in taps {
-            printer.info(&format!("brew untap {}", tap));
-            run_pkg_cmd_msg(
+            let label = format!("brew untap {}", tap);
+            run_pkg_cmd_live(
+                printer,
                 "brew-tap",
                 brew_cmd().args(["untap", tap]),
+                &label,
                 "uninstall",
-                &format!("untap {} failed", tap),
             )?;
         }
         Ok(())
@@ -321,10 +329,12 @@ impl PackageManager for BrewCaskManager {
         if casks.is_empty() {
             return Ok(());
         }
-        printer.info(&format!("brew install --cask {}", casks.join(" ")));
-        run_pkg_cmd(
+        let label = format!("brew install --cask {}", casks.join(" "));
+        run_pkg_cmd_live(
+            printer,
             "brew-cask",
             brew_cmd().arg("install").arg("--cask").args(casks),
+            &label,
             "install",
         )?;
         Ok(())
@@ -334,10 +344,12 @@ impl PackageManager for BrewCaskManager {
         if casks.is_empty() {
             return Ok(());
         }
-        printer.info(&format!("brew uninstall --cask {}", casks.join(" ")));
-        run_pkg_cmd(
+        let label = format!("brew uninstall --cask {}", casks.join(" "));
+        run_pkg_cmd_live(
+            printer,
             "brew-cask",
             brew_cmd().arg("uninstall").arg("--cask").args(casks),
+            &label,
             "uninstall",
         )?;
         Ok(())
@@ -413,19 +425,21 @@ impl PackageManager for BrewManager {
                 .into());
             }
 
-            printer.info("Installing Homebrew as linuxbrew user");
-            let status = Command::new("sudo")
-                .args(["-u", "linuxbrew", "bash", "-c"])
-                .arg(format!(
-                    "NONINTERACTIVE=1 /bin/bash -c \"$(curl -fsSL {})\"",
-                    install_url
-                ))
-                .status()
+            let result = printer
+                .run_with_output(
+                    Command::new("sudo")
+                        .args(["-u", "linuxbrew", "bash", "-c"])
+                        .arg(format!(
+                            "NONINTERACTIVE=1 /bin/bash -c \"$(curl -fsSL {})\"",
+                            install_url
+                        )),
+                    "Installing Homebrew as linuxbrew user",
+                )
                 .map_err(|e| PackageError::BootstrapFailed {
                     manager: "brew".into(),
                     message: format!("homebrew install failed: {}", e),
                 })?;
-            if !status.success() {
+            if !result.status.success() {
                 return Err(PackageError::BootstrapFailed {
                     manager: "brew".into(),
                     message: "homebrew install script failed".into(),
@@ -435,19 +449,19 @@ impl PackageManager for BrewManager {
 
             update_path_for_brew();
         } else {
-            printer.info("Installing Homebrew");
-            let status = Command::new("bash")
-                .arg("-c")
-                .arg(format!(
-                    "NONINTERACTIVE=1 /bin/bash -c \"$(curl -fsSL {})\"",
-                    install_url
-                ))
-                .status()
+            let result = printer
+                .run_with_output(
+                    Command::new("bash").arg("-c").arg(format!(
+                        "NONINTERACTIVE=1 /bin/bash -c \"$(curl -fsSL {})\"",
+                        install_url
+                    )),
+                    "Installing Homebrew",
+                )
                 .map_err(|e| PackageError::BootstrapFailed {
                     manager: "brew".into(),
                     message: format!("homebrew install failed: {}", e),
                 })?;
-            if !status.success() {
+            if !result.status.success() {
                 return Err(PackageError::BootstrapFailed {
                     manager: "brew".into(),
                     message: "homebrew install script failed".into(),
@@ -474,8 +488,14 @@ impl PackageManager for BrewManager {
         if packages.is_empty() {
             return Ok(());
         }
-        printer.info(&format!("brew install {}", packages.join(" ")));
-        run_pkg_cmd("brew", brew_cmd().arg("install").args(packages), "install")?;
+        let label = format!("brew install {}", packages.join(" "));
+        run_pkg_cmd_live(
+            printer,
+            "brew",
+            brew_cmd().arg("install").args(packages),
+            &label,
+            "install",
+        )?;
         Ok(())
     }
 
@@ -483,18 +503,19 @@ impl PackageManager for BrewManager {
         if packages.is_empty() {
             return Ok(());
         }
-        printer.info(&format!("brew uninstall {}", packages.join(" ")));
-        run_pkg_cmd(
+        let label = format!("brew uninstall {}", packages.join(" "));
+        run_pkg_cmd_live(
+            printer,
             "brew",
             brew_cmd().arg("uninstall").args(packages),
+            &label,
             "uninstall",
         )?;
         Ok(())
     }
 
     fn update(&self, printer: &Printer) -> Result<()> {
-        printer.info("brew update");
-        run_pkg_cmd_msg("brew", brew_cmd().arg("update"), "update", "update failed")?;
+        run_pkg_cmd_live(printer, "brew", brew_cmd().arg("update"), "brew update", "update")?;
         Ok(())
     }
 
@@ -520,6 +541,30 @@ impl PackageManager for BrewManager {
             .pointer("/formulae/0/versions/stable")
             .and_then(|v| v.as_str())
             .map(|s| s.to_string()))
+    }
+
+    fn path_dirs(&self) -> Vec<String> {
+        if cfg!(target_os = "linux") {
+            vec![
+                "/home/linuxbrew/.linuxbrew/bin".to_string(),
+                "/home/linuxbrew/.linuxbrew/sbin".to_string(),
+            ]
+        } else if cfg!(target_os = "macos") {
+            // Apple Silicon vs Intel
+            if std::path::Path::new("/opt/homebrew/bin").exists() {
+                vec![
+                    "/opt/homebrew/bin".to_string(),
+                    "/opt/homebrew/sbin".to_string(),
+                ]
+            } else {
+                vec![
+                    "/usr/local/bin".to_string(),
+                    "/usr/local/sbin".to_string(),
+                ]
+            }
+        } else {
+            Vec::new()
+        }
     }
 }
 
@@ -585,11 +630,13 @@ impl PackageManager for SimpleManager {
         if packages.is_empty() {
             return Ok(());
         }
-        printer.info(&self.display_cmd(self.install_cmd, packages));
+        let label = self.display_cmd(self.install_cmd, packages);
         let (prog, args) = self.install_cmd.split_first().unwrap_or((&"true", &[]));
-        run_pkg_cmd(
+        run_pkg_cmd_live(
+            printer,
             self.mgr_name,
             Command::new(prog).args(args).args(packages),
+            &label,
             "install",
         )?;
         Ok(())
@@ -599,11 +646,13 @@ impl PackageManager for SimpleManager {
         if packages.is_empty() {
             return Ok(());
         }
-        printer.info(&self.display_cmd(self.uninstall_cmd, packages));
+        let label = self.display_cmd(self.uninstall_cmd, packages);
         let (prog, args) = self.uninstall_cmd.split_first().unwrap_or((&"true", &[]));
-        run_pkg_cmd(
+        run_pkg_cmd_live(
+            printer,
             self.mgr_name,
             Command::new(prog).args(args).args(packages),
+            &label,
             "uninstall",
         )?;
         Ok(())
@@ -613,22 +662,18 @@ impl PackageManager for SimpleManager {
         let Some(update_parts) = self.update_cmd else {
             return Ok(());
         };
-        printer.info(&self.display_cmd(update_parts, &[]));
+        let label = self.display_cmd(update_parts, &[]);
         let (prog, args) = update_parts.split_first().unwrap_or((&"true", &[]));
         if self.ignore_update_exit {
-            let _ = Command::new(prog).args(args).output().map_err(|e| {
-                PackageError::CommandFailed {
+            // dnf/yum check-update returns 100 when updates are available
+            let _ = printer
+                .run_with_output(Command::new(prog).args(args), &label)
+                .map_err(|e| PackageError::CommandFailed {
                     manager: self.mgr_name.into(),
                     source: e,
-                }
-            })?;
+                })?;
         } else {
-            run_pkg_cmd_msg(
-                self.mgr_name,
-                Command::new(prog).args(args),
-                "update",
-                "update failed",
-            )?;
+            run_pkg_cmd_live(printer, self.mgr_name, Command::new(prog).args(args), &label, "update")?;
         }
         Ok(())
     }
@@ -973,16 +1018,18 @@ impl PackageManager for CargoManager {
     }
 
     fn bootstrap(&self, printer: &Printer) -> Result<()> {
-        printer.info("Installing Rust via rustup");
-        let status = Command::new("bash")
-            .arg("-c")
-            .arg("curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y")
-            .status()
+        let result = printer
+            .run_with_output(
+                Command::new("bash")
+                    .arg("-c")
+                    .arg("curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y"),
+                "Installing Rust via rustup",
+            )
             .map_err(|e| PackageError::BootstrapFailed {
                 manager: "cargo".into(),
                 message: format!("rustup install failed: {}", e),
             })?;
-        if !status.success() {
+        if !result.status.success() {
             return Err(PackageError::BootstrapFailed {
                 manager: "cargo".into(),
                 message: "rustup install script failed".into(),
@@ -1007,20 +1054,27 @@ impl PackageManager for CargoManager {
 
     fn install(&self, packages: &[String], printer: &Printer) -> Result<()> {
         for pkg in packages {
-            printer.info(&format!("cargo install {}", pkg));
-            run_pkg_cmd_msg("cargo", cargo_cmd().args(["install", pkg]), "install", pkg)?;
+            let label = format!("cargo install {}", pkg);
+            run_pkg_cmd_live(
+                printer,
+                "cargo",
+                cargo_cmd().args(["install", pkg]),
+                &label,
+                "install",
+            )?;
         }
         Ok(())
     }
 
     fn uninstall(&self, packages: &[String], printer: &Printer) -> Result<()> {
         for pkg in packages {
-            printer.info(&format!("cargo uninstall {}", pkg));
-            run_pkg_cmd_msg(
+            let label = format!("cargo uninstall {}", pkg);
+            run_pkg_cmd_live(
+                printer,
                 "cargo",
                 cargo_cmd().args(["uninstall", pkg]),
+                &label,
                 "uninstall",
-                pkg,
             )?;
         }
         Ok(())
@@ -1110,62 +1164,68 @@ impl PackageManager for NpmManager {
     fn bootstrap(&self, printer: &Printer) -> Result<()> {
         // Try system package managers first, fall back to nvm
         if brew_available() {
-            printer.info("Installing node via brew");
-            let output = brew_cmd().args(["install", "node"]).output().map_err(|e| {
-                PackageError::BootstrapFailed {
+            let result = printer
+                .run_with_output(
+                    brew_cmd().args(["install", "node"]),
+                    "Installing node via brew",
+                )
+                .map_err(|e| PackageError::BootstrapFailed {
                     manager: "npm".into(),
                     message: format!("brew install node failed: {}", e),
-                }
-            })?;
-            if output.status.success() {
+                })?;
+            if result.status.success() {
                 return Ok(());
             }
         }
 
         if command_available("apt") {
-            printer.info("Installing nodejs via apt");
-            let status = Command::new("sudo")
-                .args(["apt", "install", "-y", "nodejs", "npm"])
-                .status()
+            let result = printer
+                .run_with_output(
+                    Command::new("sudo").args(["apt", "install", "-y", "nodejs", "npm"]),
+                    "Installing nodejs via apt",
+                )
                 .map_err(|e| PackageError::BootstrapFailed {
                     manager: "npm".into(),
                     message: format!("apt install failed: {}", e),
                 })?;
-            if status.success() {
+            if result.status.success() {
                 return Ok(());
             }
         }
 
         if command_available("dnf") {
-            printer.info("Installing nodejs via dnf");
-            let status = Command::new("sudo")
-                .args(["dnf", "install", "-y", "nodejs", "npm"])
-                .status()
+            let result = printer
+                .run_with_output(
+                    Command::new("sudo").args(["dnf", "install", "-y", "nodejs", "npm"]),
+                    "Installing nodejs via dnf",
+                )
                 .map_err(|e| PackageError::BootstrapFailed {
                     manager: "npm".into(),
                     message: format!("dnf install failed: {}", e),
                 })?;
-            if status.success() {
+            if result.status.success() {
                 return Ok(());
             }
         }
 
         // Fall back to nvm
         if command_available("curl") {
-            printer.info("Installing Node.js via nvm");
-            let status = Command::new("bash")
-                .arg("-c")
-                .arg(concat!(
-                    "curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.1/install.sh | bash && ",
-                    "export NVM_DIR=\"$HOME/.nvm\" && [ -s \"$NVM_DIR/nvm.sh\" ] && . \"$NVM_DIR/nvm.sh\" && ",
-                    "nvm install --lts"
-                ))
-                .status()
+            let result = printer
+                .run_with_output(
+                    Command::new("bash")
+                        .arg("-c")
+                        .arg(concat!(
+                            "curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.1/install.sh | bash && ",
+                            "export NVM_DIR=\"$HOME/.nvm\" && [ -s \"$NVM_DIR/nvm.sh\" ] && . \"$NVM_DIR/nvm.sh\" && ",
+                            "nvm install --lts"
+                        )),
+                    "Installing Node.js via nvm",
+                )
                 .map_err(|e| PackageError::BootstrapFailed {
                     manager: "npm".into(),
                     message: format!("nvm install failed: {}", e),
                 })?;
-            if status.success() {
+            if result.status.success() {
                 return Ok(());
             }
         }
@@ -1208,10 +1268,12 @@ impl PackageManager for NpmManager {
         if packages.is_empty() {
             return Ok(());
         }
-        printer.info(&format!("npm install -g {}", packages.join(" ")));
-        run_pkg_cmd(
+        let label = format!("npm install -g {}", packages.join(" "));
+        run_pkg_cmd_live(
+            printer,
             "npm",
             npm_cmd().arg("install").arg("-g").args(packages),
+            &label,
             "install",
         )?;
         Ok(())
@@ -1221,22 +1283,24 @@ impl PackageManager for NpmManager {
         if packages.is_empty() {
             return Ok(());
         }
-        printer.info(&format!("npm uninstall -g {}", packages.join(" ")));
-        run_pkg_cmd(
+        let label = format!("npm uninstall -g {}", packages.join(" "));
+        run_pkg_cmd_live(
+            printer,
             "npm",
             npm_cmd().arg("uninstall").arg("-g").args(packages),
+            &label,
             "uninstall",
         )?;
         Ok(())
     }
 
     fn update(&self, printer: &Printer) -> Result<()> {
-        printer.info("npm update -g");
-        run_pkg_cmd_msg(
+        run_pkg_cmd_live(
+            printer,
             "npm",
             npm_cmd().args(["update", "-g"]),
+            "npm update -g",
             "update",
-            "update failed",
         )?;
         Ok(())
     }
@@ -1309,42 +1373,46 @@ impl PackageManager for PipxManager {
     fn bootstrap(&self, printer: &Printer) -> Result<()> {
         // Try system package managers first, fall back to pip
         if brew_available() {
-            printer.info("Installing pipx via brew");
-            let output = brew_cmd().args(["install", "pipx"]).output().map_err(|e| {
-                PackageError::BootstrapFailed {
+            let result = printer
+                .run_with_output(
+                    brew_cmd().args(["install", "pipx"]),
+                    "Installing pipx via brew",
+                )
+                .map_err(|e| PackageError::BootstrapFailed {
                     manager: "pipx".into(),
                     message: format!("brew install pipx failed: {}", e),
-                }
-            })?;
-            if output.status.success() {
+                })?;
+            if result.status.success() {
                 return Ok(());
             }
         }
 
         if command_available("apt") {
-            printer.info("Installing pipx via apt");
-            let status = Command::new("sudo")
-                .args(["apt", "install", "-y", "pipx"])
-                .status()
+            let result = printer
+                .run_with_output(
+                    Command::new("sudo").args(["apt", "install", "-y", "pipx"]),
+                    "Installing pipx via apt",
+                )
                 .map_err(|e| PackageError::BootstrapFailed {
                     manager: "pipx".into(),
                     message: format!("apt install failed: {}", e),
                 })?;
-            if status.success() {
+            if result.status.success() {
                 return Ok(());
             }
         }
 
         if command_available("dnf") {
-            printer.info("Installing pipx via dnf");
-            let status = Command::new("sudo")
-                .args(["dnf", "install", "-y", "pipx"])
-                .status()
+            let result = printer
+                .run_with_output(
+                    Command::new("sudo").args(["dnf", "install", "-y", "pipx"]),
+                    "Installing pipx via dnf",
+                )
                 .map_err(|e| PackageError::BootstrapFailed {
                     manager: "pipx".into(),
                     message: format!("dnf install failed: {}", e),
                 })?;
-            if status.success() {
+            if result.status.success() {
                 return Ok(());
             }
         }
@@ -1362,15 +1430,17 @@ impl PackageManager for PipxManager {
             .into());
         };
 
-        printer.info(&format!("Installing pipx via {}", pip_cmd));
-        let status = Command::new(pip_cmd)
-            .args(["install", "--user", "pipx"])
-            .status()
+        let label = format!("Installing pipx via {}", pip_cmd);
+        let result = printer
+            .run_with_output(
+                Command::new(pip_cmd).args(["install", "--user", "pipx"]),
+                &label,
+            )
             .map_err(|e| PackageError::BootstrapFailed {
                 manager: "pipx".into(),
                 message: format!("{} install failed: {}", pip_cmd, e),
             })?;
-        if !status.success() {
+        if !result.status.success() {
             return Err(PackageError::BootstrapFailed {
                 manager: "pipx".into(),
                 message: format!("{} install --user pipx failed", pip_cmd),
@@ -1402,32 +1472,39 @@ impl PackageManager for PipxManager {
 
     fn install(&self, packages: &[String], printer: &Printer) -> Result<()> {
         for pkg in packages {
-            printer.info(&format!("pipx install {}", pkg));
-            run_pkg_cmd_msg("pipx", pipx_cmd().args(["install", pkg]), "install", pkg)?;
+            let label = format!("pipx install {}", pkg);
+            run_pkg_cmd_live(
+                printer,
+                "pipx",
+                pipx_cmd().args(["install", pkg]),
+                &label,
+                "install",
+            )?;
         }
         Ok(())
     }
 
     fn uninstall(&self, packages: &[String], printer: &Printer) -> Result<()> {
         for pkg in packages {
-            printer.info(&format!("pipx uninstall {}", pkg));
-            run_pkg_cmd_msg(
+            let label = format!("pipx uninstall {}", pkg);
+            run_pkg_cmd_live(
+                printer,
                 "pipx",
                 pipx_cmd().args(["uninstall", pkg]),
+                &label,
                 "uninstall",
-                pkg,
             )?;
         }
         Ok(())
     }
 
     fn update(&self, printer: &Printer) -> Result<()> {
-        printer.info("pipx upgrade-all");
-        run_pkg_cmd_msg(
+        run_pkg_cmd_live(
+            printer,
             "pipx",
             pipx_cmd().args(["upgrade-all"]),
+            "pipx upgrade-all",
             "update",
-            "upgrade-all failed",
         )?;
         Ok(())
     }
@@ -1478,43 +1555,46 @@ impl PackageManager for SnapManager {
 
     fn bootstrap(&self, printer: &Printer) -> Result<()> {
         if command_available("apt") {
-            printer.info("Installing snapd via apt");
-            let status = Command::new("sudo")
-                .args(["apt", "install", "-y", "snapd"])
-                .status()
+            let result = printer
+                .run_with_output(
+                    Command::new("sudo").args(["apt", "install", "-y", "snapd"]),
+                    "Installing snapd via apt",
+                )
                 .map_err(|e| PackageError::BootstrapFailed {
                     manager: "snap".into(),
                     message: format!("apt install failed: {}", e),
                 })?;
-            if status.success() {
+            if result.status.success() {
                 return Ok(());
             }
         }
 
         if command_available("dnf") {
-            printer.info("Installing snapd via dnf");
-            let status = Command::new("sudo")
-                .args(["dnf", "install", "-y", "snapd"])
-                .status()
+            let result = printer
+                .run_with_output(
+                    Command::new("sudo").args(["dnf", "install", "-y", "snapd"]),
+                    "Installing snapd via dnf",
+                )
                 .map_err(|e| PackageError::BootstrapFailed {
                     manager: "snap".into(),
                     message: format!("dnf install failed: {}", e),
                 })?;
-            if status.success() {
+            if result.status.success() {
                 return Ok(());
             }
         }
 
         if command_available("zypper") {
-            printer.info("Installing snapd via zypper");
-            let status = Command::new("sudo")
-                .args(["zypper", "install", "-y", "snapd"])
-                .status()
+            let result = printer
+                .run_with_output(
+                    Command::new("sudo").args(["zypper", "install", "-y", "snapd"]),
+                    "Installing snapd via zypper",
+                )
                 .map_err(|e| PackageError::BootstrapFailed {
                     manager: "snap".into(),
                     message: format!("zypper install failed: {}", e),
                 })?;
-            if status.success() {
+            if result.status.success() {
                 return Ok(());
             }
         }
@@ -1541,22 +1621,24 @@ impl PackageManager for SnapManager {
     fn install(&self, packages: &[String], printer: &Printer) -> Result<()> {
         // Snap requires individual install commands for --classic flag per package
         for pkg in packages {
-            printer.info(&format!("snap install {}", pkg));
-            let result = run_pkg_cmd_msg(
+            let label = format!("snap install {}", pkg);
+            let result = run_pkg_cmd_live(
+                printer,
                 "snap",
                 Command::new("sudo").arg("snap").arg("install").arg(pkg),
+                &label,
                 "install",
-                pkg,
             );
             if let Err(ref e) = result {
                 // If install fails and stderr mentions classic confinement, retry with --classic
                 if e.to_string().contains("classic") {
-                    printer.info(&format!("snap install --classic {}", pkg));
-                    run_pkg_cmd_msg(
+                    let label = format!("snap install --classic {}", pkg);
+                    run_pkg_cmd_live(
+                        printer,
                         "snap",
                         Command::new("sudo").args(["snap", "install", "--classic", pkg]),
+                        &label,
                         "install",
-                        pkg,
                     )?;
                 } else {
                     result?;
@@ -1570,25 +1652,24 @@ impl PackageManager for SnapManager {
         if packages.is_empty() {
             return Ok(());
         }
-        printer.info(&format!("snap remove {}", packages.join(" ")));
-        run_pkg_cmd(
+        let label = format!("snap remove {}", packages.join(" "));
+        run_pkg_cmd_live(
+            printer,
             "snap",
-            Command::new("sudo")
-                .arg("snap")
-                .arg("remove")
-                .args(packages),
+            Command::new("sudo").arg("snap").arg("remove").args(packages),
+            &label,
             "uninstall",
         )?;
         Ok(())
     }
 
     fn update(&self, printer: &Printer) -> Result<()> {
-        printer.info("snap refresh");
-        run_pkg_cmd_msg(
+        run_pkg_cmd_live(
+            printer,
             "snap",
             Command::new("sudo").args(["snap", "refresh"]),
+            "snap refresh",
             "update",
-            "refresh failed",
         )?;
         Ok(())
     }
@@ -1643,43 +1724,46 @@ impl PackageManager for FlatpakManager {
 
     fn bootstrap(&self, printer: &Printer) -> Result<()> {
         if command_available("apt") {
-            printer.info("Installing flatpak via apt");
-            let status = Command::new("sudo")
-                .args(["apt", "install", "-y", "flatpak"])
-                .status()
+            let result = printer
+                .run_with_output(
+                    Command::new("sudo").args(["apt", "install", "-y", "flatpak"]),
+                    "Installing flatpak via apt",
+                )
                 .map_err(|e| PackageError::BootstrapFailed {
                     manager: "flatpak".into(),
                     message: format!("apt install failed: {}", e),
                 })?;
-            if status.success() {
+            if result.status.success() {
                 return Ok(());
             }
         }
 
         if command_available("dnf") {
-            printer.info("Installing flatpak via dnf");
-            let status = Command::new("sudo")
-                .args(["dnf", "install", "-y", "flatpak"])
-                .status()
+            let result = printer
+                .run_with_output(
+                    Command::new("sudo").args(["dnf", "install", "-y", "flatpak"]),
+                    "Installing flatpak via dnf",
+                )
                 .map_err(|e| PackageError::BootstrapFailed {
                     manager: "flatpak".into(),
                     message: format!("dnf install failed: {}", e),
                 })?;
-            if status.success() {
+            if result.status.success() {
                 return Ok(());
             }
         }
 
         if command_available("zypper") {
-            printer.info("Installing flatpak via zypper");
-            let status = Command::new("sudo")
-                .args(["zypper", "install", "-y", "flatpak"])
-                .status()
+            let result = printer
+                .run_with_output(
+                    Command::new("sudo").args(["zypper", "install", "-y", "flatpak"]),
+                    "Installing flatpak via zypper",
+                )
                 .map_err(|e| PackageError::BootstrapFailed {
                     manager: "flatpak".into(),
                     message: format!("zypper install failed: {}", e),
                 })?;
-            if status.success() {
+            if result.status.success() {
                 return Ok(());
             }
         }
@@ -1707,12 +1791,13 @@ impl PackageManager for FlatpakManager {
 
     fn install(&self, packages: &[String], printer: &Printer) -> Result<()> {
         for pkg in packages {
-            printer.info(&format!("flatpak install -y {}", pkg));
-            run_pkg_cmd_msg(
+            let label = format!("flatpak install -y {}", pkg);
+            run_pkg_cmd_live(
+                printer,
                 "flatpak",
                 Command::new("flatpak").args(["install", "-y", pkg]),
+                &label,
                 "install",
-                pkg,
             )?;
         }
         Ok(())
@@ -1720,24 +1805,25 @@ impl PackageManager for FlatpakManager {
 
     fn uninstall(&self, packages: &[String], printer: &Printer) -> Result<()> {
         for pkg in packages {
-            printer.info(&format!("flatpak uninstall -y {}", pkg));
-            run_pkg_cmd_msg(
+            let label = format!("flatpak uninstall -y {}", pkg);
+            run_pkg_cmd_live(
+                printer,
                 "flatpak",
                 Command::new("flatpak").args(["uninstall", "-y", pkg]),
+                &label,
                 "uninstall",
-                pkg,
             )?;
         }
         Ok(())
     }
 
     fn update(&self, printer: &Printer) -> Result<()> {
-        printer.info("flatpak update -y");
-        run_pkg_cmd_msg(
+        run_pkg_cmd_live(
+            printer,
             "flatpak",
             Command::new("flatpak").args(["update", "-y"]),
+            "flatpak update -y",
             "update",
-            "update failed",
         )?;
         Ok(())
     }
@@ -1783,16 +1869,18 @@ impl PackageManager for NixManager {
     }
 
     fn bootstrap(&self, printer: &Printer) -> Result<()> {
-        printer.info("Installing Nix");
-        let status = Command::new("bash")
-            .arg("-c")
-            .arg("curl -L https://nixos.org/nix/install | sh -s -- --daemon")
-            .status()
+        let result = printer
+            .run_with_output(
+                Command::new("bash")
+                    .arg("-c")
+                    .arg("curl -L https://nixos.org/nix/install | sh -s -- --daemon"),
+                "Installing Nix",
+            )
             .map_err(|e| PackageError::BootstrapFailed {
                 manager: "nix".into(),
                 message: format!("nix install failed: {}", e),
             })?;
-        if !status.success() {
+        if !result.status.success() {
             return Err(PackageError::BootstrapFailed {
                 manager: "nix".into(),
                 message: "nix install script failed".into(),
@@ -1853,22 +1941,23 @@ impl PackageManager for NixManager {
 
     fn install(&self, packages: &[String], printer: &Printer) -> Result<()> {
         for pkg in packages {
-            // Prefer nix profile install (new-style) over nix-env -i
             if command_available("nix") {
-                printer.info(&format!("nix profile install nixpkgs#{}", pkg));
-                run_pkg_cmd_msg(
+                let label = format!("nix profile install nixpkgs#{}", pkg);
+                run_pkg_cmd_live(
+                    printer,
                     "nix",
                     Command::new("nix").args(["profile", "install", &format!("nixpkgs#{}", pkg)]),
+                    &label,
                     "install",
-                    pkg,
                 )?;
             } else {
-                printer.info(&format!("nix-env -iA nixpkgs.{}", pkg));
-                run_pkg_cmd_msg(
+                let label = format!("nix-env -iA nixpkgs.{}", pkg);
+                run_pkg_cmd_live(
+                    printer,
                     "nix",
                     Command::new("nix-env").args(["-iA", &format!("nixpkgs.{}", pkg)]),
+                    &label,
                     "install",
-                    pkg,
                 )?;
             }
         }
@@ -1878,20 +1967,22 @@ impl PackageManager for NixManager {
     fn uninstall(&self, packages: &[String], printer: &Printer) -> Result<()> {
         for pkg in packages {
             if command_available("nix") {
-                printer.info(&format!("nix profile remove nixpkgs#{}", pkg));
-                run_pkg_cmd_msg(
+                let label = format!("nix profile remove nixpkgs#{}", pkg);
+                run_pkg_cmd_live(
+                    printer,
                     "nix",
                     Command::new("nix").args(["profile", "remove", &format!("nixpkgs#{}", pkg)]),
+                    &label,
                     "uninstall",
-                    pkg,
                 )?;
             } else {
-                printer.info(&format!("nix-env -e {}", pkg));
-                run_pkg_cmd_msg(
+                let label = format!("nix-env -e {}", pkg);
+                run_pkg_cmd_live(
+                    printer,
                     "nix",
                     Command::new("nix-env").args(["-e", pkg]),
+                    &label,
                     "uninstall",
-                    pkg,
                 )?;
             }
         }
@@ -1979,42 +2070,46 @@ impl PackageManager for GoInstallManager {
 
     fn bootstrap(&self, printer: &Printer) -> Result<()> {
         if brew_available() {
-            printer.info("Installing Go via brew");
-            let output = brew_cmd().args(["install", "go"]).output().map_err(|e| {
-                PackageError::BootstrapFailed {
+            let result = printer
+                .run_with_output(
+                    brew_cmd().args(["install", "go"]),
+                    "Installing Go via brew",
+                )
+                .map_err(|e| PackageError::BootstrapFailed {
                     manager: "go".into(),
                     message: format!("brew install go failed: {}", e),
-                }
-            })?;
-            if output.status.success() {
+                })?;
+            if result.status.success() {
                 return Ok(());
             }
         }
 
         if command_available("apt") {
-            printer.info("Installing Go via apt");
-            let status = Command::new("sudo")
-                .args(["apt", "install", "-y", "golang"])
-                .status()
+            let result = printer
+                .run_with_output(
+                    Command::new("sudo").args(["apt", "install", "-y", "golang"]),
+                    "Installing Go via apt",
+                )
                 .map_err(|e| PackageError::BootstrapFailed {
                     manager: "go".into(),
                     message: format!("apt install failed: {}", e),
                 })?;
-            if status.success() {
+            if result.status.success() {
                 return Ok(());
             }
         }
 
         if command_available("dnf") {
-            printer.info("Installing Go via dnf");
-            let status = Command::new("sudo")
-                .args(["dnf", "install", "-y", "golang"])
-                .status()
+            let result = printer
+                .run_with_output(
+                    Command::new("sudo").args(["dnf", "install", "-y", "golang"]),
+                    "Installing Go via dnf",
+                )
                 .map_err(|e| PackageError::BootstrapFailed {
                     manager: "go".into(),
                     message: format!("dnf install failed: {}", e),
                 })?;
-            if status.success() {
+            if result.status.success() {
                 return Ok(());
             }
         }
@@ -2056,12 +2151,13 @@ impl PackageManager for GoInstallManager {
             } else {
                 format!("{}@latest", pkg)
             };
-            printer.info(&format!("go install {}", install_path));
-            run_pkg_cmd_msg(
+            let label = format!("go install {}", install_path);
+            run_pkg_cmd_live(
+                printer,
                 "go",
                 go_cmd().args(["install", &install_path]),
+                &label,
                 "install",
-                pkg,
             )?;
         }
         Ok(())

@@ -199,7 +199,7 @@ const MIGRATIONS: &[&str] = &["CREATE TABLE IF NOT EXISTS devices (
     CREATE INDEX IF NOT EXISTS idx_checkin_events_timestamp ON checkin_events(timestamp);
     CREATE INDEX IF NOT EXISTS idx_user_public_keys_username ON user_public_keys(username);
     CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL);
-    INSERT INTO schema_version (version) VALUES (1);"];
+    INSERT INTO schema_version (version) VALUES (0);"];
 
 pub struct ServerDb {
     conn: Connection,
@@ -219,6 +219,11 @@ impl ServerDb {
         for (i, migration) in MIGRATIONS.iter().enumerate() {
             if i >= current_version {
                 self.conn.execute_batch(migration)?;
+                let new_version = (i + 1) as i64;
+                self.conn.execute(
+                    "UPDATE schema_version SET version = ?1",
+                    params![new_version],
+                )?;
             }
         }
         Ok(())

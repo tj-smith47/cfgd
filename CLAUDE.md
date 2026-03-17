@@ -76,7 +76,7 @@ See `.claude/team-config-controller.md` for the multi-source architecture and Ph
 
 5. **Config structs derive `serde::Deserialize` and `serde::Serialize`**. All config types live in `config/`. No config parsing logic outside that module.
 
-6. **No `std::process::Command` outside of `cli/`, `packages/`, `secrets/`, `system/`, `reconciler/`, `platform/`, `sources/`, and `gateway/`**. If you need to shell out, it must go through a controlled execution layer, not scattered across the codebase. `cli/` spawns `$EDITOR` for resource editing commands. `secrets/` shells out to `sops` and external provider CLIs (`op`, `bw`, `vault`). `system/` implements `SystemConfigurator` trait (same provider pattern as `packages/`). `reconciler/` handles script execution (pre/post-reconcile hooks). `platform/` shells out for OS detection (`sw_vers`, `freebsd-version`). `sources/` shells out to `git` for signature verification and clone fallback. `gateway/` shells out to `ssh-keygen` and `gpg` for enrollment signature verification.
+6. **No `std::process::Command` outside of `cli/`, `packages/`, `secrets/`, `system/`, `reconciler/`, `platform/`, `sources/`, `gateway/`, and `output/`**. If you need to shell out, it must go through a controlled execution layer, not scattered across the codebase. `cli/` spawns `$EDITOR` for resource editing commands. `secrets/` shells out to `sops` and external provider CLIs (`op`, `bw`, `vault`). `system/` implements `SystemConfigurator` trait (same provider pattern as `packages/`). `reconciler/` handles script execution (pre/post-reconcile hooks). `platform/` shells out for OS detection (`sw_vers`, `freebsd-version`). `sources/` shells out to `git` for signature verification and clone fallback. `gateway/` shells out to `ssh-keygen` and `gpg` for enrollment signature verification. `output/` runs commands via `Printer::run_with_output` (the controlled execution layer for buffered progress display).
 
 ### Style
 
@@ -112,7 +112,9 @@ Current shared items (keep this list updated when adding new ones):
 - `version_satisfies(version, requirement)` — check version against semver range (uses `parse_loose_version`)
 - `copy_dir_recursive(src, dst)` — recursively copy a directory tree
 - `merge_env(base, updates)` — merge `Vec<EnvVar>` by name (later overrides earlier); used by config merging, composition, reconciler
+- `merge_aliases(base, updates)` — merge `Vec<ShellAlias>` by name (later overrides earlier); same semantics as `merge_env`
 - `parse_env_var(input)` — parse `KEY=VALUE` string into `EnvVar`; used by all CLI env flag parsing
+- `parse_alias(input)` — parse `name=command` string into `ShellAlias`; used by all CLI alias flag parsing
 - `atomic_write(target, content)` — atomic file write via temp+rename; returns SHA256 hash; use instead of `fs::write()` in ALL production code
 - `atomic_write_str(target, content)` — string variant of `atomic_write`
 - `capture_file_state(path)` — capture file content/permissions/symlink state for backup; returns `Option<FileState>`

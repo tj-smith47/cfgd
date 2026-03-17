@@ -281,6 +281,9 @@ fn merge_with_policy(
         // Env: later overrides earlier by name (respecting priority ordering)
         crate::merge_env(&mut merged.env, &spec.env);
 
+        // Aliases: later overrides earlier by name
+        crate::merge_aliases(&mut merged.aliases, &spec.aliases);
+
         // Packages: union
         if let Some(ref pkgs) = spec.packages {
             merge_packages(&mut merged.packages, pkgs);
@@ -499,6 +502,7 @@ fn has_content(items: &PolicyItems) -> bool {
     items.packages.is_some()
         || !items.files.is_empty()
         || !items.env.is_empty()
+        || !items.aliases.is_empty()
         || !items.system.is_empty()
         || !items.profiles.is_empty()
         || !items.modules.is_empty()
@@ -516,6 +520,7 @@ fn policy_items_to_spec(items: &PolicyItems) -> ProfileSpec {
             })
         },
         env: items.env.clone(),
+        aliases: items.aliases.clone(),
         system: items.system.clone(),
         modules: items.modules.clone(),
         ..Default::default()
@@ -571,6 +576,17 @@ fn filter_rejected(recommended: &PolicyItems, reject: &serde_yaml::Value) -> Pol
             for (key, _) in env_map {
                 if let Some(key_str) = key.as_str() {
                     filtered.env.retain(|e| e.name != key_str);
+                }
+            }
+        }
+
+        // Filter rejected aliases
+        if let Some(alias_val) = reject_map.get(serde_yaml::Value::String("aliases".into()))
+            && let Some(alias_map) = alias_val.as_mapping()
+        {
+            for (key, _) in alias_map {
+                if let Some(key_str) = key.as_str() {
+                    filtered.aliases.retain(|a| a.name != key_str);
                 }
             }
         }
@@ -697,6 +713,16 @@ fn record_policy_conflicts(
             resolution_type: resolution_type.clone(),
             winning_source: source_name.to_string(),
             details: format!("{} {} <- {}", resolution_type.label(), ev.name, source_name),
+        });
+    }
+
+    // Record alias conflicts
+    for alias in &items.aliases {
+        conflicts.push(ConflictResolution {
+            resource_id: format!("alias:{}", alias.name),
+            resolution_type: resolution_type.clone(),
+            winning_source: source_name.to_string(),
+            details: format!("{} {} <- {}", resolution_type.label(), alias.name, source_name),
         });
     }
 
@@ -921,6 +947,7 @@ fn count_policy_tier_items(items: &PolicyItems) -> usize {
     }
     count += items.files.len();
     count += items.env.len();
+    count += items.aliases.len();
     count += items.system.len();
     count += items.modules.len();
     count

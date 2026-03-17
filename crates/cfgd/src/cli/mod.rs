@@ -40,18 +40,10 @@ fn default_config_file() -> PathBuf {
     cfgd_core::default_config_dir().join("cfgd.yaml")
 }
 
-/// Built-in default aliases. Users can override these in cfgd.yaml spec.aliases.
+/// No built-in aliases — all aliases come from cfgd.yaml spec.aliases.
+/// Default aliases are scaffolded by `cfgd init`.
 fn builtin_aliases() -> HashMap<String, String> {
-    let mut m = HashMap::new();
-    m.insert(
-        "add".to_string(),
-        "profile update --active --add-file".to_string(),
-    );
-    m.insert(
-        "remove".to_string(),
-        "profile update --active --remove-file".to_string(),
-    );
-    m
+    HashMap::new()
 }
 
 /// Expand CLI aliases before clap parsing.
@@ -229,7 +221,7 @@ pub enum Command {
         #[arg(long)]
         install_daemon: bool,
 
-        /// Theme preset (default, minimal)
+        /// Theme name (default, dracula, solarized-dark, solarized-light, minimal)
         #[arg(long)]
         theme: Option<String>,
 
@@ -552,6 +544,23 @@ pub enum ConfigCommand {
     Show,
     /// Open cfgd.yaml in $EDITOR
     Edit,
+    /// Get a config value by dotted key path (e.g., theme, daemon.reconcile.interval)
+    Get {
+        /// Dotted key path using YAML field names
+        key: String,
+    },
+    /// Set a config value by dotted key path
+    Set {
+        /// Dotted key path using YAML field names
+        key: String,
+        /// Value to set
+        value: String,
+    },
+    /// Remove a config value (resets to default)
+    Unset {
+        /// Dotted key path to remove
+        key: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -580,6 +589,9 @@ pub struct ProfileCreateArgs {
     /// Environment variables as key=value (repeatable)
     #[arg(long = "env")]
     pub env: Vec<String>,
+    /// Shell aliases as name=command (repeatable)
+    #[arg(long = "alias")]
+    pub aliases: Vec<String>,
     /// System settings as key=value (repeatable)
     #[arg(long = "system")]
     pub system: Vec<String>,
@@ -640,6 +652,12 @@ pub struct ProfileUpdateArgs {
     /// Remove env vars by key (repeatable)
     #[arg(long = "remove-env")]
     pub remove_env: Vec<String>,
+    /// Add shell aliases as name=command (repeatable)
+    #[arg(long = "add-alias")]
+    pub add_aliases: Vec<String>,
+    /// Remove shell aliases by name (repeatable)
+    #[arg(long = "remove-alias")]
+    pub remove_aliases: Vec<String>,
     /// Add system settings as key=value (repeatable)
     #[arg(long = "add-system")]
     pub add_system: Vec<String>,
@@ -719,6 +737,9 @@ pub struct ModuleCreateArgs {
     /// Environment variables as KEY=VALUE (repeatable)
     #[arg(long = "env")]
     pub env: Vec<String>,
+    /// Shell aliases as name=command (repeatable)
+    #[arg(long = "alias")]
+    pub aliases: Vec<String>,
     /// Post-apply scripts (repeatable)
     #[arg(long = "post-apply")]
     pub post_apply: Vec<String>,
@@ -758,6 +779,12 @@ pub struct ModuleUpdateArgs {
     /// Remove env vars by key (repeatable)
     #[arg(long = "remove-env")]
     pub remove_env: Vec<String>,
+    /// Add shell aliases as name=command (repeatable)
+    #[arg(long = "add-alias")]
+    pub add_aliases: Vec<String>,
+    /// Remove shell aliases by name (repeatable)
+    #[arg(long = "remove-alias")]
+    pub remove_aliases: Vec<String>,
     /// Add dependencies (repeatable)
     #[arg(long = "add-depends")]
     pub add_depends: Vec<String>,
@@ -1015,6 +1042,9 @@ pub fn execute(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
         Command::Config { command } => match command {
             ConfigCommand::Show => cmd_config_show(cli, printer),
             ConfigCommand::Edit => cmd_config_edit(cli, printer),
+            ConfigCommand::Get { key } => cmd_config_get(cli, printer, key),
+            ConfigCommand::Set { key, value } => cmd_config_set(cli, printer, key, value),
+            ConfigCommand::Unset { key } => cmd_config_unset(cli, printer, key),
         },
         Command::Workflow { command } => match command {
             WorkflowCommand::Generate { force } => cmd_workflow_generate(cli, printer, *force),
@@ -1072,10 +1102,12 @@ fn load_config_and_profile(
 /// package manager name, split into (Some(manager), package). Otherwise treat
 /// the entire string as a bare package name.
 pub(super) fn parse_package_flag(s: &str, known_managers: &[&str]) -> (Option<String>, String) {
-    if let Some((prefix, suffix)) = s.split_once(':') {
-        if !prefix.is_empty() && !suffix.is_empty() && known_managers.contains(&prefix) {
-            return (Some(prefix.to_string()), suffix.to_string());
-        }
+    if let Some((prefix, suffix)) = s.split_once(':')
+        && !prefix.is_empty()
+        && !suffix.is_empty()
+        && known_managers.contains(&prefix)
+    {
+        return (Some(prefix.to_string()), suffix.to_string());
     }
     (None, s.to_string())
 }
@@ -1301,6 +1333,11 @@ fn build_registry_with_config_and_packages(
     let (backend_name, age_key_path) = secret_backend_from_config(cfg);
     registry.secret_backend = Some(secrets::build_secret_backend(&backend_name, age_key_path));
     registry.secret_providers = secrets::build_secret_providers();
+
+    // Set global file strategy from config
+    if let Some(cfg) = cfg {
+        registry.default_file_strategy = cfg.spec.file_strategy;
+    }
 
     // Extend with custom package managers from profile packages spec
     if let Some(spec) = packages {
@@ -2096,7 +2133,7 @@ fn cmd_config_show(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
     if let Some(ref theme) = cfg.spec.theme {
         printer.newline();
         printer.subheader("Theme");
-        printer.key_value("Preset", &theme.preset);
+        printer.key_value("Theme", &theme.name);
     }
 
     Ok(())
@@ -2128,6 +2165,191 @@ fn cmd_config_edit(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
         }
     }
 
+    Ok(())
+}
+
+// --- Config get/set/unset ---
+
+/// Walk a dotted key path through a YAML value, returning the leaf.
+/// Use "." to return the root value itself.
+fn walk_yaml_path<'a>(
+    value: &'a serde_yaml::Value,
+    path: &str,
+) -> anyhow::Result<&'a serde_yaml::Value> {
+    if path == "." {
+        return Ok(value);
+    }
+    let segments: Vec<&str> = path.split('.').collect();
+    if segments.iter().any(|s| s.is_empty()) {
+        anyhow::bail!("invalid key path '{}': contains empty segment", path);
+    }
+    let mut current = value;
+
+    for (i, segment) in segments.iter().enumerate() {
+        match current {
+            serde_yaml::Value::Mapping(map) => {
+                let key = serde_yaml::Value::String((*segment).to_string());
+                current = map.get(&key).ok_or_else(|| {
+                    let partial = segments[..=i].join(".");
+                    anyhow::anyhow!("key '{}' not found in config", partial)
+                })?;
+            }
+            _ => {
+                let partial = segments[..i].join(".");
+                anyhow::bail!("'{}' is not a mapping", partial);
+            }
+        }
+    }
+
+    Ok(current)
+}
+
+/// Walk a dotted key path, creating intermediate mappings as needed.
+/// Returns a mutable reference to the *parent* mapping and the leaf key name.
+fn walk_yaml_path_mut<'a>(
+    value: &'a mut serde_yaml::Value,
+    path: &str,
+) -> anyhow::Result<(&'a mut serde_yaml::Mapping, String)> {
+    let segments: Vec<&str> = path.split('.').collect();
+    if segments.is_empty() || segments.iter().any(|s| s.is_empty()) {
+        anyhow::bail!("invalid key path '{}': contains empty segment", path);
+    }
+
+    let mut current = value;
+    // Walk to the parent of the final segment, creating intermediate maps
+    for segment in &segments[..segments.len() - 1] {
+        let key = serde_yaml::Value::String((*segment).to_string());
+        if !current
+            .as_mapping()
+            .is_some_and(|m| m.contains_key(&key))
+        {
+            // Create intermediate mapping
+            let map = current
+                .as_mapping_mut()
+                .ok_or_else(|| anyhow::anyhow!("cannot traverse into non-mapping"))?;
+            map.insert(key.clone(), serde_yaml::Value::Mapping(serde_yaml::Mapping::new()));
+        }
+        current = current
+            .as_mapping_mut()
+            .ok_or_else(|| anyhow::anyhow!("cannot traverse into non-mapping"))?
+            .get_mut(&key)
+            .ok_or_else(|| anyhow::anyhow!("failed to create intermediate mapping"))?;
+    }
+
+    let parent = current
+        .as_mapping_mut()
+        .ok_or_else(|| anyhow::anyhow!("parent is not a mapping"))?;
+    let leaf = segments
+        .last()
+        .ok_or_else(|| anyhow::anyhow!("empty key path"))?
+        .to_string();
+    Ok((parent, leaf))
+}
+
+/// Parse a string value into the most appropriate YAML type.
+fn parse_yaml_value(s: &str) -> serde_yaml::Value {
+    match s {
+        "true" => serde_yaml::Value::Bool(true),
+        "false" => serde_yaml::Value::Bool(false),
+        "null" | "~" => serde_yaml::Value::Null,
+        _ => {
+            // Try integer, then float, then string
+            if let Ok(n) = s.parse::<i64>() {
+                serde_yaml::Value::Number(n.into())
+            } else if let Ok(f) = s.parse::<f64>() {
+                serde_yaml::Value::Number(serde_yaml::Number::from(f))
+            } else {
+                serde_yaml::Value::String(s.to_string())
+            }
+        }
+    }
+}
+
+fn cmd_config_get(cli: &Cli, printer: &Printer, key: &str) -> anyhow::Result<()> {
+    let config_path = &cli.config;
+    if !config_path.exists() {
+        anyhow::bail!("{}", MSG_NO_CONFIG);
+    }
+
+    let contents = std::fs::read_to_string(config_path)?;
+    let raw: serde_yaml::Value = serde_yaml::from_str(&contents)?;
+
+    let spec = raw
+        .get("spec")
+        .ok_or_else(|| anyhow::anyhow!("config has no 'spec' section"))?;
+
+    let value = walk_yaml_path(spec, key)?;
+
+    match value {
+        serde_yaml::Value::Null => {} // key exists but null — print nothing
+        serde_yaml::Value::String(s) => printer.stdout_line(s),
+        serde_yaml::Value::Bool(b) => printer.stdout_line(&b.to_string()),
+        serde_yaml::Value::Number(n) => printer.stdout_line(&n.to_string()),
+        other => {
+            let yaml = serde_yaml::to_string(other)?;
+            let trimmed = yaml.strip_prefix("---\n").unwrap_or(&yaml);
+            printer.stdout_line(trimmed.trim_end());
+        }
+    }
+
+    Ok(())
+}
+
+fn cmd_config_set(cli: &Cli, printer: &Printer, key: &str, value: &str) -> anyhow::Result<()> {
+    let config_path = &cli.config;
+    if !config_path.exists() {
+        anyhow::bail!("{}", MSG_NO_CONFIG);
+    }
+
+    let contents = std::fs::read_to_string(config_path)?;
+    let mut raw: serde_yaml::Value = serde_yaml::from_str(&contents)?;
+
+    let spec = raw
+        .get_mut("spec")
+        .ok_or_else(|| anyhow::anyhow!("config has no 'spec' section"))?;
+
+    let (parent, leaf_key) = walk_yaml_path_mut(spec, key)?;
+    let yaml_key = serde_yaml::Value::String(leaf_key);
+    parent.insert(yaml_key, parse_yaml_value(value));
+
+    // Validate by round-tripping through the typed config parser
+    let output = serde_yaml::to_string(&raw)?;
+    if let Err(e) = config::parse_config(&output, config_path) {
+        anyhow::bail!("invalid value for '{}': {}", key, e);
+    }
+
+    cfgd_core::atomic_write_str(config_path, &output)?;
+    printer.success(&format!("Set {} = {}", key, value));
+    Ok(())
+}
+
+fn cmd_config_unset(cli: &Cli, printer: &Printer, key: &str) -> anyhow::Result<()> {
+    let config_path = &cli.config;
+    if !config_path.exists() {
+        anyhow::bail!("{}", MSG_NO_CONFIG);
+    }
+
+    let contents = std::fs::read_to_string(config_path)?;
+    let mut raw: serde_yaml::Value = serde_yaml::from_str(&contents)?;
+
+    let spec = raw
+        .get_mut("spec")
+        .ok_or_else(|| anyhow::anyhow!("config has no 'spec' section"))?;
+
+    let (parent, leaf_key) = walk_yaml_path_mut(spec, key)?;
+    let yaml_key = serde_yaml::Value::String(leaf_key.clone());
+    if parent.remove(&yaml_key).is_none() {
+        anyhow::bail!("key '{}' not found in config", key);
+    }
+
+    // Validate the result is still parseable
+    let output = serde_yaml::to_string(&raw)?;
+    if let Err(e) = config::parse_config(&output, config_path) {
+        anyhow::bail!("cannot unset '{}': result would be invalid: {}", key, e);
+    }
+
+    cfgd_core::atomic_write_str(config_path, &output)?;
+    printer.success(&format!("Unset {}", key));
     Ok(())
 }
 
@@ -3015,6 +3237,25 @@ fn config_dir(cli: &Cli) -> PathBuf {
 
 fn profiles_dir(cli: &Cli) -> PathBuf {
     config_dir(cli).join("profiles")
+}
+
+/// List sorted YAML file stems in a directory (e.g. "base" from "base.yaml").
+/// Returns an empty vec if the directory doesn't exist.
+pub(super) fn list_yaml_stems(dir: &Path) -> anyhow::Result<Vec<String>> {
+    let mut names = Vec::new();
+    if dir.exists() {
+        for entry in std::fs::read_dir(dir)? {
+            let entry = entry?;
+            let path = entry.path();
+            if path.extension().is_some_and(|e| e == "yaml" || e == "yml")
+                && let Some(stem) = path.file_stem().and_then(|s| s.to_str())
+            {
+                names.push(stem.to_string());
+            }
+        }
+        names.sort();
+    }
+    Ok(names)
 }
 
 /// Resolve profile name from explicit name or --active flag.
@@ -5266,6 +5507,7 @@ spec:
             modules: vec![],
             packages: vec![],
             env: vec![],
+            aliases: vec![],
             system: vec![],
             files: vec![],
             private: false,
@@ -5289,6 +5531,8 @@ spec:
             remove_files: vec![],
             add_env: vec![],
             remove_env: vec![],
+            add_aliases: vec![],
+            remove_aliases: vec![],
             add_system: vec![],
             remove_system: vec![],
             add_secrets: vec![],
@@ -5316,6 +5560,8 @@ spec:
             remove_files: vec![],
             add_env: vec![],
             remove_env: vec![],
+            add_aliases: vec![],
+            remove_aliases: vec![],
             add_depends: vec![],
             remove_depends: vec![],
             description: None,
@@ -5334,6 +5580,7 @@ spec:
             packages: vec![],
             files: vec![],
             env: vec![],
+            aliases: vec![],
             private: false,
             post_apply: vec![],
             sets: vec![],
@@ -6236,7 +6483,7 @@ spec:
   secrets:
     backend: sops-age
   theme:
-    preset: ocean
+    name: ocean
 "#,
         )
         .unwrap();
@@ -6252,37 +6499,16 @@ spec:
     // --- Alias expansion tests ---
 
     #[test]
-    fn expand_aliases_builtin_add() {
+    fn expand_aliases_no_builtins() {
+        // Aliases come from cfgd.yaml only — no hardcoded builtins.
+        // Without a config, "add" and "remove" pass through unchanged.
         let args = vec!["cfgd".into(), "add".into(), "~/.zshrc".into()];
-        let expanded = expand_aliases(args);
-        assert_eq!(
-            expanded,
-            vec![
-                "cfgd",
-                "profile",
-                "update",
-                "--active",
-                "--add-file",
-                "~/.zshrc"
-            ]
-        );
-    }
+        let expanded = expand_aliases(args.clone());
+        assert_eq!(expanded, args);
 
-    #[test]
-    fn expand_aliases_builtin_remove() {
         let args = vec!["cfgd".into(), "remove".into(), "~/.zshrc".into()];
-        let expanded = expand_aliases(args);
-        assert_eq!(
-            expanded,
-            vec![
-                "cfgd",
-                "profile",
-                "update",
-                "--active",
-                "--remove-file",
-                "~/.zshrc"
-            ]
-        );
+        let expanded = expand_aliases(args.clone());
+        assert_eq!(expanded, args);
     }
 
     #[test]
@@ -6294,29 +6520,20 @@ spec:
 
     #[test]
     fn expand_aliases_skips_global_flags() {
+        // Without config-defined aliases, "add" passes through even with global flags
         let args = vec![
             "cfgd".into(),
             "--verbose".into(),
             "add".into(),
             "~/.zshrc".into(),
         ];
-        let expanded = expand_aliases(args);
-        assert_eq!(
-            expanded,
-            vec![
-                "cfgd",
-                "--verbose",
-                "profile",
-                "update",
-                "--active",
-                "--add-file",
-                "~/.zshrc"
-            ]
-        );
+        let expanded = expand_aliases(args.clone());
+        assert_eq!(expanded, args);
     }
 
     #[test]
     fn expand_aliases_with_config_flag() {
+        // With nonexistent config, no aliases are loaded — passthrough
         let args = vec![
             "cfgd".into(),
             "--config".into(),
@@ -6324,21 +6541,8 @@ spec:
             "add".into(),
             "~/.zshrc".into(),
         ];
-        let expanded = expand_aliases(args);
-        // Even with nonexistent config, built-in aliases work
-        assert_eq!(
-            expanded,
-            vec![
-                "cfgd",
-                "--config",
-                "/tmp/nonexistent.yaml",
-                "profile",
-                "update",
-                "--active",
-                "--add-file",
-                "~/.zshrc"
-            ]
-        );
+        let expanded = expand_aliases(args.clone());
+        assert_eq!(expanded, args);
     }
 
     #[test]
@@ -6443,5 +6647,240 @@ spec:
             .upsert_managed_resource("file", &target_str, "local", None, None)
             .unwrap();
         assert!(!is_unmanaged_file(&target, dir.path(), &state));
+    }
+
+    // --- config get/set/unset helpers ---
+
+    fn make_test_config(dir: &std::path::Path) -> std::path::PathBuf {
+        let path = dir.join("cfgd.yaml");
+        std::fs::write(
+            &path,
+            "apiVersion: cfgd.io/v1alpha1\n\
+             kind: Config\n\
+             metadata:\n\
+             \x20 name: test\n\
+             spec:\n\
+             \x20 profile: work\n\
+             \x20 file-strategy: symlink\n\
+             \x20 theme:\n\
+             \x20\x20\x20 name: dracula\n\
+             \x20 daemon:\n\
+             \x20\x20\x20 enabled: true\n\
+             \x20\x20\x20 reconcile:\n\
+             \x20\x20\x20\x20\x20 interval: 5m\n\
+             \x20\x20\x20\x20\x20 on-change: false\n\
+             \x20 aliases:\n\
+             \x20\x20\x20 add: 'profile update --active --add-file'\n\
+             \x20\x20\x20 deploy: 'apply --yes'\n",
+        )
+        .unwrap();
+        path
+    }
+
+    #[test]
+    fn config_get_scalar() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = make_test_config(dir.path());
+        let contents = std::fs::read_to_string(&path).unwrap();
+        let raw: serde_yaml::Value = serde_yaml::from_str(&contents).unwrap();
+        let spec = raw.get("spec").unwrap();
+
+        let val = walk_yaml_path(spec, "profile").unwrap();
+        assert_eq!(val.as_str().unwrap(), "work");
+    }
+
+    #[test]
+    fn config_get_nested() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = make_test_config(dir.path());
+        let contents = std::fs::read_to_string(&path).unwrap();
+        let raw: serde_yaml::Value = serde_yaml::from_str(&contents).unwrap();
+        let spec = raw.get("spec").unwrap();
+
+        let val = walk_yaml_path(spec, "daemon.reconcile.interval").unwrap();
+        assert_eq!(val.as_str().unwrap(), "5m");
+    }
+
+    #[test]
+    fn config_get_boolean() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = make_test_config(dir.path());
+        let contents = std::fs::read_to_string(&path).unwrap();
+        let raw: serde_yaml::Value = serde_yaml::from_str(&contents).unwrap();
+        let spec = raw.get("spec").unwrap();
+
+        let val = walk_yaml_path(spec, "daemon.enabled").unwrap();
+        assert_eq!(val.as_bool().unwrap(), true);
+    }
+
+    #[test]
+    fn config_get_complex_returns_mapping() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = make_test_config(dir.path());
+        let contents = std::fs::read_to_string(&path).unwrap();
+        let raw: serde_yaml::Value = serde_yaml::from_str(&contents).unwrap();
+        let spec = raw.get("spec").unwrap();
+
+        let val = walk_yaml_path(spec, "daemon").unwrap();
+        assert!(val.is_mapping());
+    }
+
+    #[test]
+    fn config_get_missing_key_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = make_test_config(dir.path());
+        let contents = std::fs::read_to_string(&path).unwrap();
+        let raw: serde_yaml::Value = serde_yaml::from_str(&contents).unwrap();
+        let spec = raw.get("spec").unwrap();
+
+        let result = walk_yaml_path(spec, "nonexistent");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("not found"));
+    }
+
+    #[test]
+    fn config_get_alias() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = make_test_config(dir.path());
+        let contents = std::fs::read_to_string(&path).unwrap();
+        let raw: serde_yaml::Value = serde_yaml::from_str(&contents).unwrap();
+        let spec = raw.get("spec").unwrap();
+
+        let val = walk_yaml_path(spec, "aliases.deploy").unwrap();
+        assert_eq!(val.as_str().unwrap(), "apply --yes");
+    }
+
+    #[test]
+    fn config_set_scalar() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = make_test_config(dir.path());
+        let contents = std::fs::read_to_string(&path).unwrap();
+        let mut raw: serde_yaml::Value = serde_yaml::from_str(&contents).unwrap();
+        let spec = raw.get_mut("spec").unwrap();
+
+        let (parent, key) = walk_yaml_path_mut(spec, "profile").unwrap();
+        parent.insert(
+            serde_yaml::Value::String(key),
+            parse_yaml_value("personal"),
+        );
+
+        let spec = raw.get("spec").unwrap();
+        let val = walk_yaml_path(spec, "profile").unwrap();
+        assert_eq!(val.as_str().unwrap(), "personal");
+    }
+
+    #[test]
+    fn config_set_creates_intermediates() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("cfgd.yaml");
+        std::fs::write(
+            &path,
+            r#"apiVersion: cfgd.io/v1alpha1
+kind: Config
+metadata:
+  name: test
+spec:
+  profile: base
+"#,
+        )
+        .unwrap();
+        let contents = std::fs::read_to_string(&path).unwrap();
+        let mut raw: serde_yaml::Value = serde_yaml::from_str(&contents).unwrap();
+        let spec = raw.get_mut("spec").unwrap();
+
+        let (parent, key) = walk_yaml_path_mut(spec, "daemon.reconcile.interval").unwrap();
+        parent.insert(serde_yaml::Value::String(key), parse_yaml_value("10m"));
+
+        let spec = raw.get("spec").unwrap();
+        let val = walk_yaml_path(spec, "daemon.reconcile.interval").unwrap();
+        assert_eq!(val.as_str().unwrap(), "10m");
+    }
+
+    #[test]
+    fn config_set_boolean_value() {
+        let val = parse_yaml_value("true");
+        assert_eq!(val, serde_yaml::Value::Bool(true));
+        let val = parse_yaml_value("false");
+        assert_eq!(val, serde_yaml::Value::Bool(false));
+    }
+
+    #[test]
+    fn config_set_number_value() {
+        let val = parse_yaml_value("42");
+        assert!(val.is_number());
+        assert_eq!(val.as_i64().unwrap(), 42);
+    }
+
+    #[test]
+    fn config_set_string_value() {
+        let val = parse_yaml_value("hello world");
+        assert_eq!(val.as_str().unwrap(), "hello world");
+    }
+
+    #[test]
+    fn config_unset_removes_key() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = make_test_config(dir.path());
+        let contents = std::fs::read_to_string(&path).unwrap();
+        let mut raw: serde_yaml::Value = serde_yaml::from_str(&contents).unwrap();
+        let spec = raw.get_mut("spec").unwrap();
+
+        let (parent, key) = walk_yaml_path_mut(spec, "theme").unwrap();
+        let yaml_key = serde_yaml::Value::String(key);
+        assert!(parent.remove(&yaml_key).is_some());
+
+        let spec = raw.get("spec").unwrap();
+        assert!(walk_yaml_path(spec, "theme").is_err());
+    }
+
+    #[test]
+    fn config_unset_nested_alias() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = make_test_config(dir.path());
+        let contents = std::fs::read_to_string(&path).unwrap();
+        let mut raw: serde_yaml::Value = serde_yaml::from_str(&contents).unwrap();
+        let spec = raw.get_mut("spec").unwrap();
+
+        let (parent, key) = walk_yaml_path_mut(spec, "aliases.deploy").unwrap();
+        let yaml_key = serde_yaml::Value::String(key);
+        assert!(parent.remove(&yaml_key).is_some());
+
+        // "add" alias should still exist
+        let spec = raw.get("spec").unwrap();
+        assert!(walk_yaml_path(spec, "aliases.add").is_ok());
+        assert!(walk_yaml_path(spec, "aliases.deploy").is_err());
+    }
+
+    #[test]
+    fn theme_string_shorthand_deserializes() {
+        let yaml = r#"
+apiVersion: cfgd.io/v1alpha1
+kind: Config
+metadata:
+  name: test
+spec:
+  theme: dracula
+"#;
+        let cfg = config::parse_config(yaml, std::path::Path::new("cfgd.yaml")).unwrap();
+        let theme = cfg.spec.theme.unwrap();
+        assert_eq!(theme.name, "dracula");
+        assert!(theme.overrides.is_empty());
+    }
+
+    #[test]
+    fn theme_struct_form_deserializes() {
+        let yaml = "apiVersion: cfgd.io/v1alpha1\n\
+                     kind: Config\n\
+                     metadata:\n\
+                     \x20 name: test\n\
+                     spec:\n\
+                     \x20 theme:\n\
+                     \x20\x20\x20 name: dracula\n\
+                     \x20\x20\x20 overrides:\n\
+                     \x20\x20\x20\x20\x20 success: '#50fa7b'\n";
+        let cfg = config::parse_config(yaml, std::path::Path::new("cfgd.yaml")).unwrap();
+        let theme = cfg.spec.theme.unwrap();
+        assert_eq!(theme.name, "dracula");
+        assert_eq!(theme.overrides.success.as_deref(), Some("#50fa7b"));
     }
 }
