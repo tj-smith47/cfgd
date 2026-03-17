@@ -62,6 +62,14 @@ runs:
       shell: bash
       run: kubectl create namespace cfgd-system || true
 
+    - name: Install CRDs
+      shell: bash
+      run: |
+        if echo "${{ inputs.images }}" | grep -q "operator"; then
+          echo "Generating and installing CRDs..."
+          cargo run --release --bin gen_crds | kubectl apply -f -
+        fi
+
     - name: Deploy device gateway (cfgd-operator with gateway enabled)
       shell: bash
       run: |

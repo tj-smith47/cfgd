@@ -42,6 +42,8 @@ kind: ConfigSource
 metadata:
   name: test-source
 spec:
+  provides:
+    profiles: [base, dev, work-dev]
   policy:
     recommended:
       packages:
@@ -53,7 +55,7 @@ YAML
         cp "$f" "$SOURCE_REPO/profiles/"
     done
     cp -r "$FIXTURES/files/"* "$SOURCE_REPO/files/" 2>/dev/null || true
-    (cd "$SOURCE_REPO" && git init -q && git add -A && git commit -qm "init source repo")
+    (cd "$SOURCE_REPO" && git init -q -b main && git add -A && git commit -qm "init source repo")
 }
 setup_source_repo
 
@@ -214,8 +216,8 @@ if [ -f "$SCRATCH/init-theme/cfgd.yaml" ]; then
     pass_test "I03"
 else fail_test "I03"; fi
 
-begin_test "I04: init --from with --module"
-run init "$SCRATCH/init-mod" --from "$ISRC" --module nvim --no-color
+begin_test "I04: init --from with --apply-module"
+run init "$SCRATCH/init-mod" --from "$ISRC" --apply-module nvim --no-color
 # Module may not exist in source, but init should still succeed
 if [ -f "$SCRATCH/init-mod/cfgd.yaml" ]; then
     pass_test "I04"
@@ -750,13 +752,14 @@ if assert_ok; then
 else fail_test "M16"; fi
 
 begin_test "M17: module update --file (add)"
-run $C module update nvim --file "~/.config/nvim/after/plugin/test.lua"
+mkdir -p "$TGT/.config/nvim/after/plugin" && touch "$TGT/.config/nvim/after/plugin/test.lua"
+run $C module update nvim --file "$TGT/.config/nvim/after/plugin/test.lua"
 if assert_ok; then
     pass_test "M17"
 else fail_test "M17"; fi
 
 begin_test "M18: module update --file (remove)"
-run $C module update nvim --file "-~/.config/nvim/after/plugin/test.lua"
+run $C module update nvim --file "-$TGT/.config/nvim/after/plugin/test.lua"
 if assert_ok; then
     pass_test "M18"
 else fail_test "M18"; fi
@@ -792,7 +795,7 @@ if assert_ok; then
 else fail_test "M23"; fi
 
 begin_test "M24: module update --set"
-run $C module update editor --set "package.neovim.apt=nvim-qt"
+run $C module update editor --set "package.neovim.min-version=0.9"
 if assert_ok; then
     pass_test "M24"
 else fail_test "M24"; fi
