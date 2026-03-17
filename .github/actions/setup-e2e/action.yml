@@ -67,7 +67,7 @@ runs:
       run: |
         if echo "${{ inputs.images }}" | grep -q "operator"; then
           echo "Generating and installing CRDs..."
-          cargo run --release --bin gen_crds | kubectl apply -f -
+          cargo run --release --bin cfgd-gen-crds | kubectl apply -f -
         fi
 
     - name: Deploy device gateway (cfgd-operator with gateway enabled)

@@ -52,7 +52,7 @@ spec:
     constraints: {}
 YAML
     for f in "$FIXTURES/profiles/"*.yaml; do
-        cp "$f" "$SOURCE_REPO/profiles/"
+        sed "s|TARGET_DIR|/tmp/source-target|g" "$f" > "$SOURCE_REPO/profiles/$(basename "$f")"
     done
     cp -r "$FIXTURES/files/"* "$SOURCE_REPO/files/" 2>/dev/null || true
     (cd "$SOURCE_REPO" && git init -q -b master && git add -A && git commit -qm "init source repo")
