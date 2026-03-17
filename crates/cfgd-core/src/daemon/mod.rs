@@ -472,20 +472,16 @@ pub async fn run_daemon(
 
     // Initialize per-source status entries
     {
-        let rt_handle = tokio::runtime::Handle::current();
-        let st = Arc::clone(&state);
-        rt_handle.block_on(async {
-            let mut state = st.lock().await;
-            for source in &cfg.spec.sources {
-                state.sources.push(SourceStatus {
-                    name: source.name.clone(),
-                    last_sync: None,
-                    last_reconcile: None,
-                    drift_count: 0,
-                    status: "active".to_string(),
-                });
-            }
-        });
+        let mut st = state.lock().await;
+        for source in &cfg.spec.sources {
+            st.sources.push(SourceStatus {
+                name: source.name.clone(),
+                last_sync: None,
+                last_reconcile: None,
+                drift_count: 0,
+                status: "active".to_string(),
+            });
+        }
     }
 
     // Discover managed file paths for watching

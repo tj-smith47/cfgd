@@ -154,7 +154,7 @@ if [ "$RC" -eq 0 ] || [ "$RC" -eq 1 ]; then
 else fail_test "G06" "exit $RC"; fi
 
 begin_test "G07: --no-color flag"
-run $C --no-color status
+run --config "$CONF" --no-color status
 if [ "$RC" -eq 0 ] || [ "$RC" -eq 1 ]; then
     pass_test "G07"
 else fail_test "G07"; fi
@@ -657,7 +657,7 @@ if assert_ok && assert_contains "$OUTPUT" "create" && assert_contains "$OUTPUT" 
 else fail_test "M01"; fi
 
 begin_test "M02: module create (minimal)"
-run $C module create nvim
+run $C module create nvim --description "Neovim config"
 if assert_ok; then
     pass_test "M02"
 else fail_test "M02"; fi
@@ -681,13 +681,15 @@ if assert_ok; then
 else fail_test "M05"; fi
 
 begin_test "M06: module create --file"
-run $C module create dotfiles --file "~/.config/nvim/init.lua"
+mkdir -p "$TGT/.config/nvim" && touch "$TGT/.config/nvim/init.lua"
+run $C module create dotfiles --file "$TGT/.config/nvim/init.lua"
 if assert_ok; then
     pass_test "M06"
 else fail_test "M06"; fi
 
 begin_test "M07: module create --private-files"
-run $C module create secret-mod --private-files
+touch "$TGT/.secret-conf"
+run $C module create secret-mod --private-files --file "$TGT/.secret-conf"
 if assert_ok; then
     pass_test "M07"
 else fail_test "M07"; fi
@@ -699,13 +701,14 @@ if assert_ok; then
 else fail_test "M08"; fi
 
 begin_test "M09: module create --set"
-run $C module create overridden --package brew:neovim --set "package.neovim.apt=nvim"
+run $C module create overridden --package brew:neovim --set "package.neovim.min-version=0.9"
 if assert_ok; then
     pass_test "M09"
 else fail_test "M09"; fi
 
 begin_test "M10: module create with all flags"
-run $C module create full-mod --description "full" --depends nvim --package brew:bat --file "~/.tmux.conf" --post-apply "echo test"
+touch "$TGT/.tmux.conf"
+run $C module create full-mod --description "full" --depends nvim --package brew:bat --file "$TGT/.tmux.conf" --post-apply "echo test"
 if assert_ok; then
     pass_test "M10"
 else fail_test "M10"; fi

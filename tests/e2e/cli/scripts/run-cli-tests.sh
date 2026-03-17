@@ -367,17 +367,18 @@ else
 fi
 
 # =================================================================
-# T16: Apply idempotency — re-apply shows nothing to do
+# T16: Apply idempotency — re-apply succeeds
 # =================================================================
 begin_test "T16: Apply idempotency"
 "$CFGD" --config "$CONFIG_DIR/cfgd.yaml" apply --yes --no-color > /dev/null 2>&1 || true
 
-OUTPUT=$("$CFGD" --config "$CONFIG_DIR/cfgd.yaml" apply --yes --no-color 2>&1) || true
+RC=0
+OUTPUT=$("$CFGD" --config "$CONFIG_DIR/cfgd.yaml" apply --yes --no-color 2>&1) || RC=$?
 
-if echo "$OUTPUT" | grep -qiE "nothing|sync|0 action|no changes|success"; then
+if [ "$RC" -eq 0 ] && echo "$OUTPUT" | grep -qiE "nothing|complete|success"; then
     pass_test "T16"
 else
-    fail_test "T16" "Re-apply did not report idempotent result"
+    fail_test "T16" "Re-apply did not succeed"
     echo "$OUTPUT" | head -10 | sed 's/^/    /'
 fi
 

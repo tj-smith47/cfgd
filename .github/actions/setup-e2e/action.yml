@@ -21,7 +21,7 @@ runs:
     - name: Install kind
       shell: bash
       run: |
-        KIND_VERSION="v0.24.0"
+        KIND_VERSION="v0.31.0"
         curl -sLo /tmp/kind "https://kind.sigs.k8s.io/dl/${KIND_VERSION}/kind-linux-amd64"
         chmod +x /tmp/kind
         sudo mv /tmp/kind /usr/local/bin/kind
