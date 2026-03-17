@@ -168,7 +168,7 @@ pub struct Cli {
     pub quiet: bool,
 
     /// Disable colored output
-    #[arg(long, global = true, env = "NO_COLOR")]
+    #[arg(long, global = true)]
     pub no_color: bool,
 
     #[command(subcommand)]
@@ -632,34 +632,34 @@ pub struct ProfileUpdateArgs {
     #[arg(long)]
     pub active: bool,
     /// Inherited profiles (repeatable, prefix with - to remove)
-    #[arg(long = "inherit")]
+    #[arg(long = "inherit", allow_hyphen_values = true)]
     pub inherits: Vec<String>,
     /// Modules (repeatable, prefix with - to remove)
-    #[arg(long = "module")]
+    #[arg(long = "module", allow_hyphen_values = true)]
     pub modules: Vec<String>,
     /// Packages (repeatable, prefix with - to remove, e.g. --package brew:jq --package -brew:old)
-    #[arg(long = "package")]
+    #[arg(long = "package", allow_hyphen_values = true)]
     pub packages: Vec<String>,
     /// Files (repeatable, prefix with - to remove by target path)
-    #[arg(long = "file")]
+    #[arg(long = "file", allow_hyphen_values = true)]
     pub files: Vec<String>,
     /// Env vars as KEY=VALUE (repeatable, prefix with - to remove by key)
-    #[arg(long = "env")]
+    #[arg(long = "env", allow_hyphen_values = true)]
     pub env: Vec<String>,
     /// Shell aliases as name=command (repeatable, prefix with - to remove by name)
-    #[arg(long = "alias")]
+    #[arg(long = "alias", allow_hyphen_values = true)]
     pub aliases: Vec<String>,
     /// System settings as key=value (repeatable, prefix with - to remove by key)
-    #[arg(long = "system")]
+    #[arg(long = "system", allow_hyphen_values = true)]
     pub system: Vec<String>,
     /// Secrets as source:target (repeatable, prefix with - to remove by target)
-    #[arg(long = "secret")]
+    #[arg(long = "secret", allow_hyphen_values = true)]
     pub secrets: Vec<String>,
     /// Pre-apply scripts (repeatable, prefix with - to remove)
-    #[arg(long = "pre-apply")]
+    #[arg(long = "pre-apply", allow_hyphen_values = true)]
     pub pre_reconcile: Vec<PathBuf>,
     /// Post-apply scripts (repeatable, prefix with - to remove)
-    #[arg(long = "post-apply")]
+    #[arg(long = "post-apply", allow_hyphen_values = true)]
     pub post_reconcile: Vec<PathBuf>,
     /// Mark all --file entries as private (local-only, excluded from git).
     #[arg(long = "private-files")]
@@ -741,22 +741,22 @@ pub struct ModuleUpdateArgs {
     /// Module name
     pub name: String,
     /// Packages (repeatable, prefix with - to remove)
-    #[arg(long = "package")]
+    #[arg(long = "package", allow_hyphen_values = true)]
     pub packages: Vec<String>,
     /// Files (repeatable, prefix with - to remove by target path)
-    #[arg(long = "file")]
+    #[arg(long = "file", allow_hyphen_values = true)]
     pub files: Vec<String>,
     /// Env vars as KEY=VALUE (repeatable, prefix with - to remove by key)
-    #[arg(long = "env")]
+    #[arg(long = "env", allow_hyphen_values = true)]
     pub env: Vec<String>,
     /// Shell aliases as name=command (repeatable, prefix with - to remove by name)
-    #[arg(long = "alias")]
+    #[arg(long = "alias", allow_hyphen_values = true)]
     pub aliases: Vec<String>,
     /// Dependencies (repeatable, prefix with - to remove)
-    #[arg(long = "depends")]
+    #[arg(long = "depends", allow_hyphen_values = true)]
     pub depends: Vec<String>,
     /// Post-apply scripts (repeatable, prefix with - to remove)
-    #[arg(long = "post-apply")]
+    #[arg(long = "post-apply", allow_hyphen_values = true)]
     pub post_apply: Vec<String>,
     /// Mark all --file entries as private (local-only, excluded from git).
     #[arg(long = "private-files")]

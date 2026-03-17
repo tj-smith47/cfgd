@@ -48,6 +48,10 @@ metadata:
   name: cli-e2e-test
 spec:
   profile: dev
+  aliases:
+    add: "profile update --active --file"
+    remove: "profile update --active --file"
+    deploy: "apply --yes"
 EOF
 }
 
@@ -96,7 +100,7 @@ EOF
 # Make the source a git repo (required by init --from)
 (cd "$INIT_SOURCE" && git init -q && git config user.email "e2e@test" && git config user.name "E2E" && git add -A && git commit -qm "init")
 
-OUTPUT=$("$CFGD" --config "$INIT_TARGET/cfgd.yaml" init --from "$INIT_SOURCE" --no-color 2>&1) || true
+OUTPUT=$("$CFGD" init "$INIT_TARGET" --from "$INIT_SOURCE" --no-color 2>&1) || true
 
 if [ -f "$INIT_TARGET/cfgd.yaml" ] && \
    [ -d "$INIT_TARGET/profiles" ]; then
@@ -250,7 +254,7 @@ fi
 begin_test "T11: cfgd doctor"
 OUTPUT=$("$CFGD" --config "$CONFIG_DIR/cfgd.yaml" doctor --no-color 2>&1) || true
 
-if assert_contains "$OUTPUT" "doctor"; then
+if assert_contains "$OUTPUT" "Doctor"; then
     pass_test "T11"
 else
     fail_test "T11" "Doctor output missing expected content"
@@ -759,7 +763,7 @@ fi
 begin_test "T30: cfgd config show"
 OUTPUT=$("$CFGD" --config "$CONFIG_DIR/cfgd.yaml" config show --no-color 2>&1) || true
 
-if [ -n "$OUTPUT" ] && (assert_contains "$OUTPUT" "apiVersion" || assert_contains "$OUTPUT" "profile"); then
+if [ -n "$OUTPUT" ] && (assert_contains "$OUTPUT" "apiVersion" || assert_contains "$OUTPUT" "Profile"); then
     pass_test "T30"
 else
     fail_test "T30" "Config show produced unexpected output"
@@ -1013,8 +1017,8 @@ fi
 # =================================================================
 begin_test "T41: Enroll requires --server"
 
-OUTPUT=$("$CFGD" enroll --no-color 2>&1) || true
-RC=$?
+RC=0
+OUTPUT=$("$CFGD" enroll --no-color 2>&1) || RC=$?
 
 if [ "$RC" -ne 0 ]; then
     pass_test "T41"
@@ -1197,8 +1201,8 @@ begin_test "T50: Missing config error"
 NOCONFIG_DIR="$SCRATCH/noconfig"
 mkdir -p "$NOCONFIG_DIR"
 
-OUTPUT=$("$CFGD" --config "$NOCONFIG_DIR/nonexistent.yaml" status --no-color 2>&1) || true
-RC=$?
+RC=0
+OUTPUT=$("$CFGD" --config "$NOCONFIG_DIR/nonexistent.yaml" status --no-color 2>&1) || RC=$?
 
 if [ "$RC" -ne 0 ] && echo "$OUTPUT" | grep -qiE "not found|init|no.*config"; then
     pass_test "T50"

@@ -527,14 +527,36 @@ pub(super) fn cmd_profile_update(
     let (add_aliases, remove_aliases) = cfgd_core::split_add_remove(&args.aliases);
     let (add_system, remove_system) = cfgd_core::split_add_remove(&args.system);
     let (add_secrets, remove_secrets) = cfgd_core::split_add_remove(&args.secrets);
-    let pre_strs: Vec<String> = args.pre_reconcile.iter().map(|p| p.to_string_lossy().to_string()).collect();
-    let (add_pre_reconcile_strs, remove_pre_reconcile_strs) = cfgd_core::split_add_remove(&pre_strs);
-    let add_pre_reconcile: Vec<PathBuf> = add_pre_reconcile_strs.into_iter().map(PathBuf::from).collect();
-    let remove_pre_reconcile: Vec<PathBuf> = remove_pre_reconcile_strs.into_iter().map(PathBuf::from).collect();
-    let post_strs: Vec<String> = args.post_reconcile.iter().map(|p| p.to_string_lossy().to_string()).collect();
-    let (add_post_reconcile_strs, remove_post_reconcile_strs) = cfgd_core::split_add_remove(&post_strs);
-    let add_post_reconcile: Vec<PathBuf> = add_post_reconcile_strs.into_iter().map(PathBuf::from).collect();
-    let remove_post_reconcile: Vec<PathBuf> = remove_post_reconcile_strs.into_iter().map(PathBuf::from).collect();
+    let pre_strs: Vec<String> = args
+        .pre_reconcile
+        .iter()
+        .map(|p| p.to_string_lossy().to_string())
+        .collect();
+    let (add_pre_reconcile_strs, remove_pre_reconcile_strs) =
+        cfgd_core::split_add_remove(&pre_strs);
+    let add_pre_reconcile: Vec<PathBuf> = add_pre_reconcile_strs
+        .into_iter()
+        .map(PathBuf::from)
+        .collect();
+    let remove_pre_reconcile: Vec<PathBuf> = remove_pre_reconcile_strs
+        .into_iter()
+        .map(PathBuf::from)
+        .collect();
+    let post_strs: Vec<String> = args
+        .post_reconcile
+        .iter()
+        .map(|p| p.to_string_lossy().to_string())
+        .collect();
+    let (add_post_reconcile_strs, remove_post_reconcile_strs) =
+        cfgd_core::split_add_remove(&post_strs);
+    let add_post_reconcile: Vec<PathBuf> = add_post_reconcile_strs
+        .into_iter()
+        .map(PathBuf::from)
+        .collect();
+    let remove_post_reconcile: Vec<PathBuf> = remove_post_reconcile_strs
+        .into_iter()
+        .map(PathBuf::from)
+        .collect();
     validate_resource_name(name, "Profile")?;
     printer.header(&format!("Update Profile: {}", name));
 

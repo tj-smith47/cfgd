@@ -10,7 +10,15 @@ FIXTURES="$SCRIPT_DIR/../fixtures"
 
 echo "=== cfgd Exhaustive CLI Tests ==="
 
-CFGD="${CFGD:-$(command -v cfgd)}"
+if [ -z "${CFGD:-}" ]; then
+    if [ -f "$REPO_ROOT/target/release/cfgd" ]; then
+        CFGD="$REPO_ROOT/target/release/cfgd"
+    elif [ -f "$REPO_ROOT/target/debug/cfgd" ]; then
+        CFGD="$REPO_ROOT/target/debug/cfgd"
+    else
+        CFGD="$(command -v cfgd)"
+    fi
+fi
 echo "Binary: $CFGD"
 "$CFGD" --version 2>&1 || true
 
@@ -1445,6 +1453,7 @@ fi
 # ═════════════════════════════════════════════════════
 
 begin_test "ERR01: apply with nonexistent profile fails"
+mkdir -p "$SCRATCH/bad-cfg"
 cat > "$SCRATCH/bad-cfg/cfgd.yaml" << YAML
 apiVersion: cfgd.io/v1alpha1
 kind: Config
