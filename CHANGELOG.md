@@ -69,5 +69,5 @@ Initial release.
 - Secret management: init, encrypt, decrypt, edit
 - Shell completions for bash, zsh, fish
 - Custom command aliases
-- `--alias`/`--add-alias`/`--remove-alias` flags on profile and module create/update
+- `--alias` flag on profile and module create/update (prefix value with `-` to remove)
 - `cfgd explain` with dot-notation field drilling for all resource types

@@ -167,7 +167,7 @@ cfgd profile list                  # list available profiles
 cfgd profile show                  # show resolved profile (all layers merged)
 cfgd profile switch work           # switch active profile
 cfgd profile create dev            # create a new profile (interactive or with flags)
-cfgd profile update dev --add-package brew:ripgrep  # modify a profile
+cfgd profile update dev --package brew:ripgrep  # modify a profile
 cfgd profile edit dev              # open in $EDITOR with validation
 cfgd profile delete dev            # delete (refuses if active or inherited)
 ```
@@ -188,17 +188,19 @@ cfgd profile create work-linux \
 
 ```sh
 cfgd profile update work \
-  --add-module git \
-  --remove-module old-tool \
-  --add-package brew:jq \
-  --remove-package brew:unused \
-  --add-env GIT_AUTHOR_NAME="Jane Doe" \
-  --add-alias k=kubectl \
-  --add-file ~/.bashrc \
-  --add-file --private-files ~/.config/secret.conf
+  --module git \
+  --module -old-tool \
+  --package brew:jq \
+  --package -brew:unused \
+  --env GIT_AUTHOR_NAME="Jane Doe" \
+  --alias k=kubectl \
+  --file ~/.bashrc \
+  --file --private-files ~/.config/secret.conf
 ```
 
-The `--active` flag uses the currently active profile from cfgd.yaml, so `cfgd profile update --active --add-file ~/.zshrc` is equivalent to `cfgd add ~/.zshrc`.
+Prefix a value with `-` to remove it (e.g. `--module -old-tool` removes `old-tool`).
+
+The `--active` flag uses the currently active profile from cfgd.yaml, so `cfgd profile update --active --file ~/.zshrc` is equivalent to `cfgd add ~/.zshrc`.
 
 ## The `modules` Field
 

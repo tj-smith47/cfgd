@@ -267,6 +267,24 @@ pub fn merge_aliases(base: &mut Vec<config::ShellAlias>, updates: &[config::Shel
     }
 }
 
+/// Split a list of values into adds and removes.
+///
+/// Values starting with `-` are treated as removals (the leading `-` is stripped).
+/// All other values are adds. This powers the unified `--thing` CLI flags where
+/// `--thing foo` adds and `--thing -foo` removes.
+pub fn split_add_remove(values: &[String]) -> (Vec<String>, Vec<String>) {
+    let mut adds = Vec::new();
+    let mut removes = Vec::new();
+    for v in values {
+        if let Some(stripped) = v.strip_prefix('-') {
+            removes.push(stripped.to_string());
+        } else {
+            adds.push(v.clone());
+        }
+    }
+    (adds, removes)
+}
+
 /// Parse a `name=command` string into a `ShellAlias`.
 pub fn parse_alias(input: &str) -> std::result::Result<config::ShellAlias, String> {
     let (name, command) = input
@@ -774,6 +792,37 @@ mod tests {
         }];
         merge_aliases(&mut base, &updates);
         assert_eq!(base.len(), 2);
+    }
+
+    #[test]
+    fn split_add_remove_basic() {
+        let vals: Vec<String> = vec!["foo".into(), "-bar".into(), "baz".into(), "-qux".into()];
+        let (adds, removes) = split_add_remove(&vals);
+        assert_eq!(adds, vec!["foo", "baz"]);
+        assert_eq!(removes, vec!["bar", "qux"]);
+    }
+
+    #[test]
+    fn split_add_remove_empty() {
+        let (adds, removes) = split_add_remove(&[]);
+        assert!(adds.is_empty());
+        assert!(removes.is_empty());
+    }
+
+    #[test]
+    fn split_add_remove_all_adds() {
+        let vals: Vec<String> = vec!["a".into(), "b".into()];
+        let (adds, removes) = split_add_remove(&vals);
+        assert_eq!(adds, vec!["a", "b"]);
+        assert!(removes.is_empty());
+    }
+
+    #[test]
+    fn split_add_remove_all_removes() {
+        let vals: Vec<String> = vec!["-x".into(), "-y".into()];
+        let (adds, removes) = split_add_remove(&vals);
+        assert!(adds.is_empty());
+        assert_eq!(removes, vec!["x", "y"]);
     }
 
     #[test]

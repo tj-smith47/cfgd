@@ -94,7 +94,7 @@ Every cfgd command, subcommand, and flag. All tests are self-contained — no ex
 | P15 | `profile create` (duplicate) | Exit non-zero |
 | P16 | `profile switch base` | Active profile changes |
 | P17 | `profile switch dev` | Switches back |
-| P18–P36 | `profile update --active --add/remove-*` | Each add/remove flag pair for: package, file, variable, system, module, inherits, secret, pre-reconcile, post-reconcile, private |
+| P18–P36 | `profile update --active --<thing> [value/-value]` | Each unified flag pair (add/remove via `-` prefix) for: package, file, env, system, module, inherit, secret, pre-apply, post-apply, private |
 | P37 | `profile update <name>` (named) | Updates non-active profile |
 | P38 | `profile delete X --yes` | Removed |
 | P39 | `profile delete X -y` | Short flag |
@@ -118,7 +118,7 @@ Every cfgd command, subcommand, and flag. All tests are self-contained — no ex
 | M12 | `module list` | Shows created modules |
 | M13 | `module show nvim` | Shows module details |
 | M14 | `module show nonexistent` | Exit non-zero |
-| M15–M25 | `module update X --add/remove-*` | Each flag pair for: package, file, depends, post-apply, set, description, private |
+| M15–M25 | `module update X --<thing> [value/-value]` | Each unified flag pair (add/remove via `-` prefix) for: package, file, depends, post-apply, set, description, private |
 | M26 | `module delete X --yes` | Removed |
 | M27 | `module delete X -y` | Short flag |
 | M28 | `module delete nonexistent` | Exit non-zero |
@@ -255,8 +255,8 @@ All source tests use a local git repo created inline as the "remote."
 
 | ID | Command | Assertion |
 |---|---|---|
-| AL01 | `add <path>` (alias for profile update --add-file) | File added to profile |
-| AL02 | `remove <path>` | File removed from profile |
+| AL01 | `add <path>` (alias for profile update --file) | File added to profile |
+| AL02 | `remove -<path>` (alias for profile update --file, user prefixes with -) | File removed from profile |
 
 ### Behavioral Tests
 

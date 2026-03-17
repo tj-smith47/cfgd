@@ -450,13 +450,13 @@ begin_test "T19: Profile update — add/remove env"
 
 # Add an env var
 "$CFGD" --config "$PROF_DIR/cfgd.yaml" profile update test-profile \
-    --add-env "ADDED_VAR=added" --no-color 2>&1 || true
+    --env "ADDED_VAR=added" --no-color 2>&1 || true
 
 CONTENT=$(cat "$PROF_DIR/profiles/test-profile.yaml")
 if assert_contains "$CONTENT" "ADDED_VAR"; then
     # Remove an env var
     "$CFGD" --config "$PROF_DIR/cfgd.yaml" profile update test-profile \
-        --remove-env "ADDED_VAR" --no-color 2>&1 || true
+        --env "-ADDED_VAR" --no-color 2>&1 || true
 
     CONTENT=$(cat "$PROF_DIR/profiles/test-profile.yaml")
     if assert_not_contains "$CONTENT" "ADDED_VAR"; then
@@ -508,7 +508,7 @@ begin_test "T22: Profile update --active"
 "$CFGD" --config "$PROF_DIR/cfgd.yaml" profile switch dev --no-color 2>&1 || true
 
 "$CFGD" --config "$PROF_DIR/cfgd.yaml" profile update --active \
-    --add-env "ACTIVE_TEST=yes" --no-color 2>&1 || true
+    --env "ACTIVE_TEST=yes" --no-color 2>&1 || true
 
 CONTENT=$(cat "$PROF_DIR/profiles/dev.yaml")
 if assert_contains "$CONTENT" "ACTIVE_TEST"; then
@@ -519,7 +519,7 @@ fi
 
 # Clean up the env var we added
 "$CFGD" --config "$PROF_DIR/cfgd.yaml" profile update --active \
-    --remove-env "ACTIVE_TEST" --no-color 2>&1 || true
+    --env "-ACTIVE_TEST" --no-color 2>&1 || true
 
 # =================================================================
 # T23: Module create / list / show / delete lifecycle
@@ -599,13 +599,13 @@ begin_test "T25: Module update"
     --description "Test updates" --no-color 2>&1 || true
 
 "$CFGD" --config "$MOD_DIR/cfgd.yaml" module update updatable-mod \
-    --add-package "brew:ripgrep" --no-color 2>&1 || true
+    --package "brew:ripgrep" --no-color 2>&1 || true
 
 CONTENT=$(cat "$MOD_DIR/modules/updatable-mod/module.yaml")
 if assert_contains "$CONTENT" "ripgrep"; then
     # Remove the package
     "$CFGD" --config "$MOD_DIR/cfgd.yaml" module update updatable-mod \
-        --remove-package "brew:ripgrep" --no-color 2>&1 || true
+        --package "-brew:ripgrep" --no-color 2>&1 || true
 
     CONTENT=$(cat "$MOD_DIR/modules/updatable-mod/module.yaml")
     if assert_not_contains "$CONTENT" "ripgrep"; then
@@ -630,13 +630,13 @@ setup_config_dir "$ALIAS_DIR" "$ALIAS_TARGET"
 # Create a file to add via alias
 echo "alias-test-content" > "$ALIAS_DIR/files/alias-test-file"
 
-# The 'add' alias expands to: profile update --active --add-file
+# The 'add' alias expands to: profile update --active --file
 OUTPUT=$("$CFGD" --config "$ALIAS_DIR/cfgd.yaml" add "$ALIAS_DIR/files/alias-test-file:$ALIAS_TARGET/.alias-test" --no-color 2>&1) || true
 
 CONTENT=$(cat "$ALIAS_DIR/profiles/dev.yaml")
 if assert_contains "$CONTENT" "alias-test"; then
-    # The 'remove' alias expands to: profile update --active --remove-file
-    "$CFGD" --config "$ALIAS_DIR/cfgd.yaml" remove "$ALIAS_TARGET/.alias-test" --no-color 2>&1 || true
+    # The 'remove' alias expands to: profile update --active --file (user prefixes value with -)
+    "$CFGD" --config "$ALIAS_DIR/cfgd.yaml" remove "-$ALIAS_TARGET/.alias-test" --no-color 2>&1 || true
 
     CONTENT=$(cat "$ALIAS_DIR/profiles/dev.yaml")
     if assert_not_contains "$CONTENT" "alias-test"; then
@@ -736,7 +736,7 @@ setup_config_dir "$PRIV_DIR" "$PRIV_TARGET"
 echo "private-content" > "$PRIV_DIR/files/private-file"
 
 "$CFGD" --config "$PRIV_DIR/cfgd.yaml" profile update --active \
-    --add-file "$PRIV_DIR/files/private-file:$PRIV_TARGET/.private" \
+    --file "$PRIV_DIR/files/private-file:$PRIV_TARGET/.private" \
     --private-files \
     --no-color 2>&1 || true
 
@@ -856,13 +856,13 @@ setup_config_dir "$INHERIT_DIR" "$INHERIT_TARGET"
 
 # Add inherits
 "$CFGD" --config "$INHERIT_DIR/cfgd.yaml" profile update standalone \
-    --add-inherit base --no-color 2>&1 || true
+    --inherit base --no-color 2>&1 || true
 
 CONTENT=$(cat "$INHERIT_DIR/profiles/standalone.yaml")
 if assert_contains "$CONTENT" "base"; then
     # Remove inherits
     "$CFGD" --config "$INHERIT_DIR/cfgd.yaml" profile update standalone \
-        --remove-inherit base --no-color 2>&1 || true
+        --inherit -base --no-color 2>&1 || true
 
     CONTENT=$(cat "$INHERIT_DIR/profiles/standalone.yaml")
     if assert_not_contains "$CONTENT" "base"; then
@@ -880,12 +880,12 @@ fi
 begin_test "T36: Profile update — add/remove secrets"
 
 "$CFGD" --config "$INHERIT_DIR/cfgd.yaml" profile update standalone \
-    --add-secret "secrets/api-key.enc:$INHERIT_TARGET/.api-key" --no-color 2>&1 || true
+    --secret "secrets/api-key.enc:$INHERIT_TARGET/.api-key" --no-color 2>&1 || true
 
 CONTENT=$(cat "$INHERIT_DIR/profiles/standalone.yaml")
 if assert_contains "$CONTENT" "api-key"; then
     "$CFGD" --config "$INHERIT_DIR/cfgd.yaml" profile update standalone \
-        --remove-secret "$INHERIT_TARGET/.api-key" --no-color 2>&1 || true
+        --secret "-$INHERIT_TARGET/.api-key" --no-color 2>&1 || true
 
     CONTENT=$(cat "$INHERIT_DIR/profiles/standalone.yaml")
     if assert_not_contains "$CONTENT" "api-key"; then
@@ -1086,12 +1086,12 @@ setup_config_dir "$SCRIPT_DIR2" "$SCRIPT_TARGET2"
 echo '#!/bin/sh' > "$SCRIPT_DIR2/hook.sh"
 
 "$CFGD" --config "$SCRIPT_DIR2/cfgd.yaml" profile update --active \
-    --add-post-apply "$SCRIPT_DIR2/hook.sh" --no-color 2>&1 || true
+    --post-apply "$SCRIPT_DIR2/hook.sh" --no-color 2>&1 || true
 
 CONTENT=$(cat "$SCRIPT_DIR2/profiles/dev.yaml")
 if assert_contains "$CONTENT" "hook"; then
     "$CFGD" --config "$SCRIPT_DIR2/cfgd.yaml" profile update --active \
-        --remove-post-apply "$SCRIPT_DIR2/hook.sh" --no-color 2>&1 || true
+        --post-apply "-$SCRIPT_DIR2/hook.sh" --no-color 2>&1 || true
 
     CONTENT=$(cat "$SCRIPT_DIR2/profiles/dev.yaml")
     if assert_not_contains "$CONTENT" "hook"; then
@@ -1114,12 +1114,12 @@ setup_config_dir "$FILE_UPD_DIR" "$FILE_UPD_TARGET"
 echo "new-file-content" > "$FILE_UPD_DIR/files/new-file"
 
 "$CFGD" --config "$FILE_UPD_DIR/cfgd.yaml" profile update --active \
-    --add-file "$FILE_UPD_DIR/files/new-file:$FILE_UPD_TARGET/.new-managed" --no-color 2>&1 || true
+    --file "$FILE_UPD_DIR/files/new-file:$FILE_UPD_TARGET/.new-managed" --no-color 2>&1 || true
 
 CONTENT=$(cat "$FILE_UPD_DIR/profiles/dev.yaml")
 if assert_contains "$CONTENT" ".new-managed"; then
     "$CFGD" --config "$FILE_UPD_DIR/cfgd.yaml" profile update --active \
-        --remove-file "$FILE_UPD_TARGET/.new-managed" --no-color 2>&1 || true
+        --file "-$FILE_UPD_TARGET/.new-managed" --no-color 2>&1 || true
 
     CONTENT=$(cat "$FILE_UPD_DIR/profiles/dev.yaml")
     if assert_not_contains "$CONTENT" ".new-managed"; then

@@ -113,6 +113,7 @@ Current shared items (keep this list updated when adding new ones):
 - `copy_dir_recursive(src, dst)` — recursively copy a directory tree
 - `merge_env(base, updates)` — merge `Vec<EnvVar>` by name (later overrides earlier); used by config merging, composition, reconciler
 - `merge_aliases(base, updates)` — merge `Vec<ShellAlias>` by name (later overrides earlier); same semantics as `merge_env`
+- `split_add_remove(values)` — split `&[String]` into (adds, removes); values starting with `-` are removals (strip prefix); powers unified `--thing` CLI flags
 - `parse_env_var(input)` — parse `KEY=VALUE` string into `EnvVar`; used by all CLI env flag parsing
 - `parse_alias(input)` — parse `name=command` string into `ShellAlias`; used by all CLI alias flag parsing
 - `atomic_write(target, content)` — atomic file write via temp+rename; returns SHA256 hash; use instead of `fs::write()` in ALL production code
@@ -172,7 +173,6 @@ All parsing in `config/` module. See `docs/configuration.md` for schema referenc
 ## Quality Scripts
 
 - `.claude/scripts/audit.sh` — Run to check for DRY violations, banned patterns, module boundary violations.
-- `.claude/scripts/check-style.sh` — Verify formatting, clippy, and naming conventions.
 
 Run these periodically during implementation sessions.
 

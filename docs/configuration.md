@@ -70,7 +70,7 @@ spec:
 | `spec.secrets.backend` | no | `sops` | `sops` or `age` (see [secrets.md](secrets.md) for when to use which) |
 | `spec.theme` | no | `default` | Theme name (string) or object with `name` + `overrides` |
 | `spec.file-strategy` | no | `symlink` | `symlink`, `copy`, `template`, or `hardlink` |
-| `spec.aliases.<name>` | no | — | CLI command aliases (e.g. `add: "profile update --active --add-file"`) |
+| `spec.aliases.<name>` | no | — | CLI command aliases (e.g. `add: "profile update --active --file"`) |
 
 All fields can be read and written programmatically via `cfgd config get <key>` and `cfgd config set <key> <value>`. See the [CLI reference](cli-reference.md) for details.
 
@@ -136,16 +136,16 @@ Define command aliases in `cfgd.yaml`. `cfgd init` scaffolds default aliases —
 ```yaml
 spec:
   aliases:
-    add: "profile update --active --add-file"
-    remove: "profile update --active --remove-file"
+    add: "profile update --active --file"
+    remove: "profile update --active --file"
     up: "apply --yes"
     s: "status"
-    pkg: "profile update --active --add-package"
+    pkg: "profile update --active --package"
 ```
 
 Default aliases (scaffolded by `cfgd init`):
-- `add <path>` → `profile update --active --add-file <path>`
-- `remove <path>` → `profile update --active --remove-file <path>`
+- `add <path>` → `profile update --active --file <path>`
+- `remove -<path>` → `profile update --active --file -<path>` (prefix with `-` to remove)
 
 These are not hardcoded — they live in your cfgd.yaml and can be changed or removed.
 

@@ -37,6 +37,12 @@
 !Taskfile.yml
 !cliff.toml
 
+# Claude project config (plans, scripts)
+!.claude/
+!.claude/*.md
+!.claude/scripts/
+!.claude/scripts/**
+
 # Tests
 !tests/
 !tests/**

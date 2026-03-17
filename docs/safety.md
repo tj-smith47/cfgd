@@ -82,7 +82,7 @@ spec:
 
 ## Module Removal Cleanup
 
-When a module is removed from a profile via `cfgd profile update --remove-module`, cfgd:
+When a module is removed from a profile via `cfgd profile update --module -<name>`, cfgd:
 
 1. Queries the file manifest to find all files the module deployed
 2. Lists the files and prompts for confirmation

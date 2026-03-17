@@ -11,6 +11,10 @@
 !Dockerfile
 !Dockerfile.*
 
+# Allow tests
+!tests/
+!tests/**
+
 # Allow README for labels
 !README.md
 

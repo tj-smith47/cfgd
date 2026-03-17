@@ -631,69 +631,39 @@ pub struct ProfileUpdateArgs {
     /// Use the active profile from cfgd.yaml
     #[arg(long)]
     pub active: bool,
-    /// Add inherited profiles (repeatable)
-    #[arg(long = "add-inherit")]
-    pub add_inherits: Vec<String>,
-    /// Remove inherited profiles (repeatable)
-    #[arg(long = "remove-inherit")]
-    pub remove_inherits: Vec<String>,
-    /// Add modules (repeatable)
-    #[arg(long = "add-module")]
-    pub add_modules: Vec<String>,
-    /// Remove modules (repeatable)
-    #[arg(long = "remove-module")]
-    pub remove_modules: Vec<String>,
-    /// Add packages (repeatable, e.g. --add-package curl or --add-package brew:curl)
-    #[arg(long = "add-package")]
-    pub add_packages: Vec<String>,
-    /// Remove packages as manager:package (repeatable)
-    #[arg(long = "remove-package")]
-    pub remove_packages: Vec<String>,
-    /// Add files (repeatable). Use <path> to adopt in place, or <source>:<target> for explicit mapping.
-    #[arg(long = "add-file")]
-    pub add_files: Vec<String>,
-    /// Mark all --add-file entries as private (local-only, excluded from git).
+    /// Inherited profiles (repeatable, prefix with - to remove)
+    #[arg(long = "inherit")]
+    pub inherits: Vec<String>,
+    /// Modules (repeatable, prefix with - to remove)
+    #[arg(long = "module")]
+    pub modules: Vec<String>,
+    /// Packages (repeatable, prefix with - to remove, e.g. --package brew:jq --package -brew:old)
+    #[arg(long = "package")]
+    pub packages: Vec<String>,
+    /// Files (repeatable, prefix with - to remove by target path)
+    #[arg(long = "file")]
+    pub files: Vec<String>,
+    /// Env vars as KEY=VALUE (repeatable, prefix with - to remove by key)
+    #[arg(long = "env")]
+    pub env: Vec<String>,
+    /// Shell aliases as name=command (repeatable, prefix with - to remove by name)
+    #[arg(long = "alias")]
+    pub aliases: Vec<String>,
+    /// System settings as key=value (repeatable, prefix with - to remove by key)
+    #[arg(long = "system")]
+    pub system: Vec<String>,
+    /// Secrets as source:target (repeatable, prefix with - to remove by target)
+    #[arg(long = "secret")]
+    pub secrets: Vec<String>,
+    /// Pre-apply scripts (repeatable, prefix with - to remove)
+    #[arg(long = "pre-apply")]
+    pub pre_reconcile: Vec<PathBuf>,
+    /// Post-apply scripts (repeatable, prefix with - to remove)
+    #[arg(long = "post-apply")]
+    pub post_reconcile: Vec<PathBuf>,
+    /// Mark all --file entries as private (local-only, excluded from git).
     #[arg(long = "private-files")]
     pub private: bool,
-    /// Remove files by target path (repeatable)
-    #[arg(long = "remove-file")]
-    pub remove_files: Vec<String>,
-    /// Add env vars as key=value (repeatable)
-    #[arg(long = "add-env")]
-    pub add_env: Vec<String>,
-    /// Remove env vars by key (repeatable)
-    #[arg(long = "remove-env")]
-    pub remove_env: Vec<String>,
-    /// Add shell aliases as name=command (repeatable)
-    #[arg(long = "add-alias")]
-    pub add_aliases: Vec<String>,
-    /// Remove shell aliases by name (repeatable)
-    #[arg(long = "remove-alias")]
-    pub remove_aliases: Vec<String>,
-    /// Add system settings as key=value (repeatable)
-    #[arg(long = "add-system")]
-    pub add_system: Vec<String>,
-    /// Remove system settings by key (repeatable)
-    #[arg(long = "remove-system")]
-    pub remove_system: Vec<String>,
-    /// Add secrets as source:target (repeatable)
-    #[arg(long = "add-secret")]
-    pub add_secrets: Vec<String>,
-    /// Remove secrets by target path (repeatable)
-    #[arg(long = "remove-secret")]
-    pub remove_secrets: Vec<String>,
-    /// Add pre-apply scripts (repeatable)
-    #[arg(long = "add-pre-apply")]
-    pub add_pre_reconcile: Vec<PathBuf>,
-    /// Remove pre-apply scripts (repeatable)
-    #[arg(long = "remove-pre-apply")]
-    pub remove_pre_reconcile: Vec<PathBuf>,
-    /// Add post-apply scripts (repeatable)
-    #[arg(long = "add-post-apply")]
-    pub add_post_reconcile: Vec<PathBuf>,
-    /// Remove post-apply scripts (repeatable)
-    #[arg(long = "remove-post-apply")]
-    pub remove_post_reconcile: Vec<PathBuf>,
 }
 
 #[derive(Subcommand)]
@@ -770,48 +740,30 @@ pub struct ModuleCreateArgs {
 pub struct ModuleUpdateArgs {
     /// Module name
     pub name: String,
-    /// Add packages (repeatable)
-    #[arg(long = "add-package")]
-    pub add_packages: Vec<String>,
-    /// Remove packages (repeatable)
-    #[arg(long = "remove-package")]
-    pub remove_packages: Vec<String>,
-    /// Add files (repeatable). Use <path> to adopt in place, or <source>:<target> for explicit mapping.
-    #[arg(long = "add-file")]
-    pub add_files: Vec<String>,
-    /// Mark all --add-file entries as private (local-only, excluded from git).
+    /// Packages (repeatable, prefix with - to remove)
+    #[arg(long = "package")]
+    pub packages: Vec<String>,
+    /// Files (repeatable, prefix with - to remove by target path)
+    #[arg(long = "file")]
+    pub files: Vec<String>,
+    /// Env vars as KEY=VALUE (repeatable, prefix with - to remove by key)
+    #[arg(long = "env")]
+    pub env: Vec<String>,
+    /// Shell aliases as name=command (repeatable, prefix with - to remove by name)
+    #[arg(long = "alias")]
+    pub aliases: Vec<String>,
+    /// Dependencies (repeatable, prefix with - to remove)
+    #[arg(long = "depends")]
+    pub depends: Vec<String>,
+    /// Post-apply scripts (repeatable, prefix with - to remove)
+    #[arg(long = "post-apply")]
+    pub post_apply: Vec<String>,
+    /// Mark all --file entries as private (local-only, excluded from git).
     #[arg(long = "private-files")]
     pub private: bool,
-    /// Remove files by target path (repeatable)
-    #[arg(long = "remove-file")]
-    pub remove_files: Vec<String>,
-    /// Add env vars as KEY=VALUE (repeatable)
-    #[arg(long = "add-env")]
-    pub add_env: Vec<String>,
-    /// Remove env vars by key (repeatable)
-    #[arg(long = "remove-env")]
-    pub remove_env: Vec<String>,
-    /// Add shell aliases as name=command (repeatable)
-    #[arg(long = "add-alias")]
-    pub add_aliases: Vec<String>,
-    /// Remove shell aliases by name (repeatable)
-    #[arg(long = "remove-alias")]
-    pub remove_aliases: Vec<String>,
-    /// Add dependencies (repeatable)
-    #[arg(long = "add-depends")]
-    pub add_depends: Vec<String>,
-    /// Remove dependencies (repeatable)
-    #[arg(long = "remove-depends")]
-    pub remove_depends: Vec<String>,
     /// Set description
     #[arg(long)]
     pub description: Option<String>,
-    /// Add post-apply scripts (repeatable)
-    #[arg(long = "add-post-apply")]
-    pub add_post_apply: Vec<String>,
-    /// Remove post-apply scripts (repeatable)
-    #[arg(long = "remove-post-apply")]
-    pub remove_post_apply: Vec<String>,
     /// Helm-style overrides: package.<name>.<field>=<value>
     #[arg(long = "set")]
     pub sets: Vec<String>,
@@ -909,7 +861,7 @@ pub fn execute(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
         Command::Profile { command } => match command {
             ProfileCommand::Show => profile::cmd_profile_show(cli, printer),
             ProfileCommand::List => profile::cmd_profile_list(cli, printer),
-            ProfileCommand::Switch { name } => profile::cmd_profile_switch(name, printer),
+            ProfileCommand::Switch { name } => profile::cmd_profile_switch(cli, name, printer),
             ProfileCommand::Create(args) => profile::cmd_profile_create(cli, printer, args),
             ProfileCommand::Update(args) => {
                 let profile_name = resolve_profile_name(cli, args.name.as_deref(), args.active)?;
@@ -5533,26 +5485,16 @@ spec:
         ProfileUpdateArgs {
             name: None,
             active: false,
-            add_inherits: vec![],
-            remove_inherits: vec![],
-            add_modules: vec![],
-            remove_modules: vec![],
-            add_packages: vec![],
-            remove_packages: vec![],
-            add_files: vec![],
-            remove_files: vec![],
-            add_env: vec![],
-            remove_env: vec![],
-            add_aliases: vec![],
-            remove_aliases: vec![],
-            add_system: vec![],
-            remove_system: vec![],
-            add_secrets: vec![],
-            remove_secrets: vec![],
-            add_pre_reconcile: vec![],
-            remove_pre_reconcile: vec![],
-            add_post_reconcile: vec![],
-            remove_post_reconcile: vec![],
+            inherits: vec![],
+            modules: vec![],
+            packages: vec![],
+            files: vec![],
+            env: vec![],
+            aliases: vec![],
+            system: vec![],
+            secrets: vec![],
+            pre_reconcile: vec![],
+            post_reconcile: vec![],
             private: false,
         }
     }
@@ -5566,20 +5508,14 @@ spec:
     fn empty_module_update_args(name: &str) -> ModuleUpdateArgs {
         ModuleUpdateArgs {
             name: name.to_string(),
-            add_packages: vec![],
-            remove_packages: vec![],
-            add_files: vec![],
-            remove_files: vec![],
-            add_env: vec![],
-            remove_env: vec![],
-            add_aliases: vec![],
-            remove_aliases: vec![],
-            add_depends: vec![],
-            remove_depends: vec![],
-            description: None,
-            add_post_apply: vec![],
-            remove_post_apply: vec![],
+            packages: vec![],
+            files: vec![],
+            env: vec![],
+            aliases: vec![],
+            depends: vec![],
+            post_apply: vec![],
             private: false,
+            description: None,
             sets: vec![],
         }
     }
@@ -5693,8 +5629,7 @@ spec:
         let printer = test_printer();
 
         let args = ModuleUpdateArgs {
-            add_packages: vec!["ripgrep".to_string()],
-            remove_packages: vec!["vim".to_string()],
+            packages: vec!["ripgrep".to_string(), "-vim".to_string()],
             ..empty_module_update_args("test-mod")
         };
         module::cmd_module_update_local(&cli, &printer, &args).unwrap();
@@ -5817,7 +5752,7 @@ spec:
         let printer = test_printer();
 
         let args = ModuleUpdateArgs {
-            add_packages: vec!["curl".to_string()],
+            packages: vec!["curl".to_string()],
             ..empty_module_update_args("test-mod")
         };
         module::cmd_module_update_local(&cli, &printer, &args).unwrap();
@@ -5889,10 +5824,10 @@ spec:
         let printer = test_printer();
 
         let args = ProfileUpdateArgs {
-            add_modules: vec!["nvim".to_string()],
-            add_packages: vec!["brew:jq".to_string()],
-            add_env: vec!["EDITOR=nvim".to_string()],
-            add_system: vec!["shell=/bin/zsh".to_string()],
+            modules: vec!["nvim".to_string()],
+            packages: vec!["brew:jq".to_string()],
+            env: vec!["EDITOR=nvim".to_string()],
+            system: vec!["shell=/bin/zsh".to_string()],
             ..empty_profile_update_args()
         };
         profile::cmd_profile_update(&cli, &printer, "default", &args).unwrap();
@@ -6045,7 +5980,7 @@ spec:
 
         // Add inherits
         let args = ProfileUpdateArgs {
-            add_inherits: vec!["default".to_string()],
+            inherits: vec!["default".to_string()],
             ..empty_profile_update_args()
         };
         profile::cmd_profile_update(&cli, &printer, "work", &args).unwrap();
@@ -6055,7 +5990,7 @@ spec:
 
         // Remove inherits
         let args = ProfileUpdateArgs {
-            remove_inherits: vec!["default".to_string()],
+            inherits: vec!["-default".to_string()],
             ..empty_profile_update_args()
         };
         profile::cmd_profile_update(&cli, &printer, "work", &args).unwrap();
@@ -6072,7 +6007,7 @@ spec:
 
         // Add secret
         let args = ProfileUpdateArgs {
-            add_secrets: vec!["secrets/key.enc:~/.config/app/key".to_string()],
+            secrets: vec!["secrets/key.enc:~/.config/app/key".to_string()],
             ..empty_profile_update_args()
         };
         profile::cmd_profile_update(&cli, &printer, "default", &args).unwrap();
@@ -6083,7 +6018,7 @@ spec:
 
         // Remove secret
         let args = ProfileUpdateArgs {
-            remove_secrets: vec!["~/.config/app/key".to_string()],
+            secrets: vec!["-~/.config/app/key".to_string()],
             ..empty_profile_update_args()
         };
         profile::cmd_profile_update(&cli, &printer, "default", &args).unwrap();
@@ -6100,8 +6035,8 @@ spec:
 
         // Add pre-reconcile and post-reconcile
         let args = ProfileUpdateArgs {
-            add_pre_reconcile: vec![PathBuf::from("scripts/pre.sh")],
-            add_post_reconcile: vec![PathBuf::from("scripts/post.sh")],
+            pre_reconcile: vec![PathBuf::from("scripts/pre.sh")],
+            post_reconcile: vec![PathBuf::from("scripts/post.sh")],
             ..empty_profile_update_args()
         };
         profile::cmd_profile_update(&cli, &printer, "default", &args).unwrap();
@@ -6116,8 +6051,8 @@ spec:
 
         // Remove pre-reconcile
         let args = ProfileUpdateArgs {
-            remove_pre_reconcile: vec![PathBuf::from("scripts/pre.sh")],
-            remove_post_reconcile: vec![PathBuf::from("scripts/post.sh")],
+            pre_reconcile: vec![PathBuf::from("-scripts/pre.sh")],
+            post_reconcile: vec![PathBuf::from("-scripts/post.sh")],
             ..empty_profile_update_args()
         };
         profile::cmd_profile_update(&cli, &printer, "default", &args).unwrap();
@@ -6682,7 +6617,7 @@ spec:
              \x20\x20\x20\x20\x20 interval: 5m\n\
              \x20\x20\x20\x20\x20 on-change: false\n\
              \x20 aliases:\n\
-             \x20\x20\x20 add: 'profile update --active --add-file'\n\
+             \x20\x20\x20 add: 'profile update --active --file'\n\
              \x20\x20\x20 deploy: 'apply --yes'\n",
         )
         .unwrap();

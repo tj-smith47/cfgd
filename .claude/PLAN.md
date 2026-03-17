@@ -4,30 +4,6 @@ Single source of truth for all incomplete work. Completed work is in `INITIAL-PL
 
 ---
 
-## Simplify update flags: `--thing` with leading-minus removal
-
-Currently `profile update` and `module update` use verbose `--add-thing`/`--remove-thing` pairs (e.g. `--add-package brew:jq` / `--remove-package brew:jq`). Most tools in the industry use a single `--thing` flag where a leading `-` means removal:
-
-```sh
-# Current (verbose)
-cfgd profile update work --add-package brew:jq --remove-package brew:unused --add-alias vim=nvim --remove-alias old
-
-# Proposed (concise)
-cfgd profile update work --package brew:jq --package -brew:unused --alias vim=nvim --alias -old
-```
-
-Same flag used for both add and remove. A value starting with `-` is a removal by key/name. Applies to all `--add-*`/`--remove-*` pairs on both `profile update` and `module update`: `--inherit`, `--module`, `--package`, `--file`, `--env`, `--alias`, `--system`, `--secret`, `--depends`, `--pre-apply`, `--post-apply`.
-
-Keep the old `--add-*`/`--remove-*` flags as hidden aliases for backwards compatibility.
-
-- [ ] Parse leading `-` as removal intent in a shared helper
-- [ ] Unify all `--add-*`/`--remove-*` pairs into single `--thing` flags on `profile update` and `module update`
-- [ ] Hide old `--add-*`/`--remove-*` flags (clap `hide = true`) so they still work but don't clutter `--help`
-- [ ] Update docs and CLI reference
-- [ ] Update `cfgd explain` schema descriptions
-
----
-
 ## Kubernetes API conventions
 
 Full condition lifecycle, finalizers, owner references, server-side apply. Prerequisite for pod module injection. Design detail in [kubernetes-first-class.md § 1](kubernetes-first-class.md#1-kubernetes-api-conventions).

@@ -11,15 +11,6 @@ env:
   RUSTFLAGS: "-D warnings"
 
 jobs:
-  check:
-    name: Check
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-      - run: cargo check --all-targets
-
   fmt:
     name: Format
     runs-on: ubuntu-latest

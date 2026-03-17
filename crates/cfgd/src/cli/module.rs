@@ -386,6 +386,8 @@ pub(super) fn cmd_module_create(
         );
     }
 
+    std::fs::create_dir_all(&module_dir)?;
+
     // Interactive mode if no content flags provided
     let is_interactive = description.is_none()
         && depends.is_empty()
@@ -575,7 +577,7 @@ pub(super) fn cmd_module_create(
         printer.key_value("Dependencies", &doc.spec.depends.join(", "));
     }
     printer.newline();
-    printer.info("Add to a profile with: cfgd profile update <profile> --add-module <name>");
+    printer.info("Add to a profile with: cfgd profile update <profile> --module <name>");
     printer.info("Fine-tune with: cfgd module edit <name>");
 
     maybe_update_workflow(cli, printer)?;
@@ -648,17 +650,13 @@ pub(super) fn cmd_module_update_local(
     args: &ModuleUpdateArgs,
 ) -> anyhow::Result<()> {
     let name = &args.name;
-    let add_packages = &args.add_packages;
-    let remove_packages = &args.remove_packages;
-    let add_files = &args.add_files;
-    let remove_files = &args.remove_files;
-    let add_env = &args.add_env;
-    let remove_env = &args.remove_env;
-    let add_depends = &args.add_depends;
-    let remove_depends = &args.remove_depends;
+    let (add_packages, remove_packages) = cfgd_core::split_add_remove(&args.packages);
+    let (add_files, remove_files) = cfgd_core::split_add_remove(&args.files);
+    let (add_env, remove_env) = cfgd_core::split_add_remove(&args.env);
+    let (add_aliases, remove_aliases) = cfgd_core::split_add_remove(&args.aliases);
+    let (add_depends, remove_depends) = cfgd_core::split_add_remove(&args.depends);
+    let (add_post_apply, remove_post_apply) = cfgd_core::split_add_remove(&args.post_apply);
     let description = args.description.as_deref();
-    let add_post_apply = &args.add_post_apply;
-    let remove_post_apply = &args.remove_post_apply;
     let sets = &args.sets;
     validate_resource_name(name, "Module")?;
     printer.header(&format!("Update Module: {}", name));
@@ -680,7 +678,7 @@ pub(super) fn cmd_module_update_local(
     }
 
     // Add dependencies
-    for dep in add_depends {
+    for dep in &add_depends {
         if !doc.spec.depends.contains(dep) {
             doc.spec.depends.push(dep.clone());
             printer.success(&format!("Added dependency: {}", dep));
@@ -689,7 +687,7 @@ pub(super) fn cmd_module_update_local(
     }
 
     // Remove dependencies
-    for dep in remove_depends {
+    for dep in &remove_depends {
         let before = doc.spec.depends.len();
         doc.spec.depends.retain(|d| d != dep);
         if doc.spec.depends.len() < before {
@@ -703,7 +701,7 @@ pub(super) fn cmd_module_update_local(
     // Add packages
     let known = super::known_manager_names();
     let known_refs: Vec<&str> = known.iter().map(|s| s.as_str()).collect();
-    for pkg_str in add_packages {
+    for pkg_str in &add_packages {
         let (mgr, pkg) = super::parse_package_flag(pkg_str, &known_refs);
         if doc.spec.packages.iter().any(|p| p.name == pkg) {
             printer.info(&format!("Package '{}' already in module", pkg));
@@ -723,7 +721,7 @@ pub(super) fn cmd_module_update_local(
     }
 
     // Remove packages
-    for pkg in remove_packages {
+    for pkg in &remove_packages {
         let before = doc.spec.packages.len();
         doc.spec.packages.retain(|p| p.name != *pkg);
         if doc.spec.packages.len() < before {
@@ -738,7 +736,7 @@ pub(super) fn cmd_module_update_local(
     let mut files_to_copy: Vec<String> = Vec::new();
     {
         let mut added_basenames = std::collections::HashSet::new();
-        for spec in add_files {
+        for spec in &add_files {
             let (source, _) = parse_file_spec(spec)?;
             let basename = source
                 .file_name()
@@ -776,7 +774,7 @@ pub(super) fn cmd_module_update_local(
     }
 
     // Remove files
-    for target in remove_files {
+    for target in &remove_files {
         let expanded = cfgd_core::expand_tilde(&PathBuf::from(target));
         let target_str = expanded.display().to_string();
         let before = doc.spec.files.len();
@@ -810,7 +808,7 @@ pub(super) fn cmd_module_update_local(
     }
 
     // Add env vars
-    for e in add_env {
+    for e in &add_env {
         let ev = cfgd_core::parse_env_var(e).map_err(|e| anyhow::anyhow!(e))?;
         cfgd_core::merge_env(&mut doc.spec.env, std::slice::from_ref(&ev));
         printer.success(&format!("Set env: {}={}", ev.name, ev.value));
@@ -818,7 +816,7 @@ pub(super) fn cmd_module_update_local(
     }
 
     // Remove env vars
-    for key in remove_env {
+    for key in &remove_env {
         let before = doc.spec.env.len();
         doc.spec.env.retain(|ev| ev.name != *key);
         if doc.spec.env.len() < before {
@@ -830,7 +828,7 @@ pub(super) fn cmd_module_update_local(
     }
 
     // Add aliases
-    for a in &args.add_aliases {
+    for a in &add_aliases {
         let alias = cfgd_core::parse_alias(a).map_err(|e| anyhow::anyhow!(e))?;
         cfgd_core::merge_aliases(&mut doc.spec.aliases, std::slice::from_ref(&alias));
         printer.success(&format!("Set alias: {}={}", alias.name, alias.command));
@@ -838,7 +836,7 @@ pub(super) fn cmd_module_update_local(
     }
 
     // Remove aliases
-    for name in &args.remove_aliases {
+    for name in &remove_aliases {
         let before = doc.spec.aliases.len();
         doc.spec.aliases.retain(|a| a.name != *name);
         if doc.spec.aliases.len() < before {
@@ -850,7 +848,7 @@ pub(super) fn cmd_module_update_local(
     }
 
     // Add post-apply scripts
-    for script in add_post_apply {
+    for script in &add_post_apply {
         let scripts = doc
             .spec
             .scripts
@@ -863,7 +861,7 @@ pub(super) fn cmd_module_update_local(
     }
 
     // Remove post-apply scripts
-    for script in remove_post_apply {
+    for script in &remove_post_apply {
         if let Some(ref mut scripts) = doc.spec.scripts {
             let before = scripts.post_apply.len();
             scripts.post_apply.retain(|s| s != script);

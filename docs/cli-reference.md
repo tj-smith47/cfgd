@@ -157,14 +157,26 @@ cfgd profile create work-linux \
 
 ### `cfgd profile update [name]`
 
-Modify an existing profile. Use `--active` to target the current profile.
+Modify an existing profile. Use `--active` to target the current profile. Prefix a value with `-` to remove it.
 
 ```sh
-cfgd profile update --active --add-package brew:jq
-cfgd profile update work --remove-module old-tool --add-module new-tool
+cfgd profile update --active --package brew:jq
+cfgd profile update work --module new-tool --module -old-tool
+cfgd profile update work --package brew:jq --package -brew:unused --alias vim=nvim --alias -old
 ```
 
-All flags use `--add-*` / `--remove-*` pairs: `--add-inherit`/`--remove-inherit`, `--add-module`/`--remove-module`, `--add-package`/`--remove-package`, `--add-file`/`--remove-file`, `--add-env`/`--remove-env`, `--add-alias`/`--remove-alias`, `--add-system`/`--remove-system`, `--add-secret`/`--remove-secret`, `--add-pre-apply`/`--remove-pre-apply`, `--add-post-apply`/`--remove-post-apply`.
+| Flag | Description |
+|---|---|
+| `--inherit <name>` | Add/remove inherited profile (prefix with `-` to remove) |
+| `--module <name>` | Add/remove module (prefix with `-` to remove) |
+| `--package <mgr:pkg>` | Add/remove package (prefix with `-` to remove) |
+| `--file <path>` | Add/remove file (prefix with `-` to remove by target) |
+| `--env <KEY=VALUE>` | Add/remove env var (prefix with `-` to remove by key) |
+| `--alias <name=cmd>` | Add/remove alias (prefix with `-` to remove by name) |
+| `--system <key=val>` | Add/remove system setting (prefix with `-` to remove by key) |
+| `--secret <src:tgt>` | Add/remove secret (prefix with `-` to remove by target) |
+| `--pre-apply <path>` | Add/remove pre-apply script (prefix with `-` to remove) |
+| `--post-apply <path>` | Add/remove post-apply script (prefix with `-` to remove) |
 
 ### `cfgd profile edit <name>`
 
@@ -216,11 +228,23 @@ cfgd module create --name my-tool \
 
 ### `cfgd module update <name>`
 
-Modify a local module.
+Modify a local module. Prefix a value with `-` to remove it.
 
 ```sh
-cfgd module update nvim --add-package fd --remove-package unused
+cfgd module update nvim --package fd --package -unused
+cfgd module update nvim --depends node --env EDITOR=nvim --alias vim=nvim
 ```
+
+| Flag | Description |
+|---|---|
+| `--package <name>` | Add/remove package (prefix with `-` to remove) |
+| `--file <path>` | Add/remove file (prefix with `-` to remove by target) |
+| `--env <KEY=VALUE>` | Add/remove env var (prefix with `-` to remove by key) |
+| `--alias <name=cmd>` | Add/remove alias (prefix with `-` to remove by name) |
+| `--depends <name>` | Add/remove dependency (prefix with `-` to remove) |
+| `--post-apply <cmd>` | Add/remove post-apply script (prefix with `-` to remove) |
+| `--set <key=value>` | Helm-style override (repeatable) |
+| `--description <text>` | Set description |
 
 ### `cfgd module edit <name>`
 
@@ -373,7 +397,7 @@ cfgd config get theme                        # → dracula
 cfgd config get theme.name                   # → dracula
 cfgd config get daemon.reconcile.interval    # → 5m
 cfgd config get file-strategy                # → symlink
-cfgd config get aliases.add                  # → profile update --active --add-file
+cfgd config get aliases.add                  # → profile update --active --file
 cfgd config get daemon                       # prints full daemon YAML block
 ```
 

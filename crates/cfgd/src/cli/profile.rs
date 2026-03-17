@@ -1,5 +1,3 @@
-use std::path::{Path, PathBuf};
-
 use super::*;
 
 pub(super) fn cmd_profile_show(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
@@ -141,16 +139,17 @@ pub(super) fn cmd_profile_list(cli: &Cli, printer: &Printer) -> anyhow::Result<(
     Ok(())
 }
 
-pub(super) fn cmd_profile_switch(name: &str, printer: &Printer) -> anyhow::Result<()> {
+pub(super) fn cmd_profile_switch(cli: &Cli, name: &str, printer: &Printer) -> anyhow::Result<()> {
     printer.header("Switch Profile");
 
-    let config_path = PathBuf::from("cfgd.yaml");
+    let config_dir = super::config_dir(cli);
+    let config_path = config_dir.join("cfgd.yaml");
     if !config_path.exists() {
         anyhow::bail!("{}", MSG_NO_CONFIG);
     }
 
     // Verify the target profile exists
-    let profiles_dir = PathBuf::from("profiles");
+    let profiles_dir = config_dir.join("profiles");
     let profile_path = profiles_dir.join(format!("{}.yaml", name));
     if !profile_path.exists() {
         // List available profiles for the error message
@@ -520,24 +519,22 @@ pub(super) fn cmd_profile_update(
     name: &str,
     args: &ProfileUpdateArgs,
 ) -> anyhow::Result<()> {
-    let add_inherits = &args.add_inherits;
-    let remove_inherits = &args.remove_inherits;
-    let add_modules = &args.add_modules;
-    let remove_modules = &args.remove_modules;
-    let add_packages = &args.add_packages;
-    let remove_packages = &args.remove_packages;
-    let add_files = &args.add_files;
-    let remove_files = &args.remove_files;
-    let add_env = &args.add_env;
-    let remove_env = &args.remove_env;
-    let add_system = &args.add_system;
-    let remove_system = &args.remove_system;
-    let add_secrets = &args.add_secrets;
-    let remove_secrets = &args.remove_secrets;
-    let add_pre_reconcile = &args.add_pre_reconcile;
-    let remove_pre_reconcile = &args.remove_pre_reconcile;
-    let add_post_reconcile = &args.add_post_reconcile;
-    let remove_post_reconcile = &args.remove_post_reconcile;
+    let (add_inherits, remove_inherits) = cfgd_core::split_add_remove(&args.inherits);
+    let (add_modules, remove_modules) = cfgd_core::split_add_remove(&args.modules);
+    let (add_packages, remove_packages) = cfgd_core::split_add_remove(&args.packages);
+    let (add_files, remove_files) = cfgd_core::split_add_remove(&args.files);
+    let (add_env, remove_env) = cfgd_core::split_add_remove(&args.env);
+    let (add_aliases, remove_aliases) = cfgd_core::split_add_remove(&args.aliases);
+    let (add_system, remove_system) = cfgd_core::split_add_remove(&args.system);
+    let (add_secrets, remove_secrets) = cfgd_core::split_add_remove(&args.secrets);
+    let pre_strs: Vec<String> = args.pre_reconcile.iter().map(|p| p.to_string_lossy().to_string()).collect();
+    let (add_pre_reconcile_strs, remove_pre_reconcile_strs) = cfgd_core::split_add_remove(&pre_strs);
+    let add_pre_reconcile: Vec<PathBuf> = add_pre_reconcile_strs.into_iter().map(PathBuf::from).collect();
+    let remove_pre_reconcile: Vec<PathBuf> = remove_pre_reconcile_strs.into_iter().map(PathBuf::from).collect();
+    let post_strs: Vec<String> = args.post_reconcile.iter().map(|p| p.to_string_lossy().to_string()).collect();
+    let (add_post_reconcile_strs, remove_post_reconcile_strs) = cfgd_core::split_add_remove(&post_strs);
+    let add_post_reconcile: Vec<PathBuf> = add_post_reconcile_strs.into_iter().map(PathBuf::from).collect();
+    let remove_post_reconcile: Vec<PathBuf> = remove_post_reconcile_strs.into_iter().map(PathBuf::from).collect();
     validate_resource_name(name, "Profile")?;
     printer.header(&format!("Update Profile: {}", name));
 
@@ -552,7 +549,7 @@ pub(super) fn cmd_profile_update(
 
     // Add inherits
     let profiles_dir = config_dir.join("profiles");
-    for parent in add_inherits {
+    for parent in &add_inherits {
         if doc.spec.inherits.contains(parent) {
             printer.warning(&format!("Profile already inherits '{}'", parent));
             continue;
@@ -567,7 +564,7 @@ pub(super) fn cmd_profile_update(
     }
 
     // Remove inherits
-    for parent in remove_inherits {
+    for parent in &remove_inherits {
         let before = doc.spec.inherits.len();
         doc.spec.inherits.retain(|x| x != parent);
         if doc.spec.inherits.len() < before {
@@ -580,7 +577,7 @@ pub(super) fn cmd_profile_update(
 
     // Add modules — detect remote references and handle accordingly
     let modules_dir = config_dir.join("modules");
-    for m in add_modules {
+    for m in &add_modules {
         if doc.spec.modules.contains(m) {
             continue;
         }
@@ -613,7 +610,7 @@ pub(super) fn cmd_profile_update(
     }
 
     // Remove modules
-    for m in remove_modules {
+    for m in &remove_modules {
         let before = doc.spec.modules.len();
         doc.spec.modules.retain(|x| x != m);
         if doc.spec.modules.len() < before {
@@ -704,7 +701,7 @@ pub(super) fn cmd_profile_update(
     let known = super::known_manager_names();
     let known_refs: Vec<&str> = known.iter().map(|s| s.as_str()).collect();
     let default_mgr = Platform::detect().native_manager().to_string();
-    for pkg_str in add_packages {
+    for pkg_str in &add_packages {
         let (mgr_opt, pkg) = super::parse_package_flag(pkg_str, &known_refs);
         let mgr = mgr_opt.unwrap_or_else(|| default_mgr.clone());
         let pkgs = doc.spec.packages.get_or_insert_with(Default::default);
@@ -714,7 +711,7 @@ pub(super) fn cmd_profile_update(
     }
 
     // Remove packages
-    for pkg_str in remove_packages {
+    for pkg_str in &remove_packages {
         let (mgr, pkg) = parse_manager_package(pkg_str)?;
         let pkgs = doc.spec.packages.get_or_insert_with(Default::default);
         if packages::remove_package(&mgr, &pkg, pkgs)? {
@@ -728,7 +725,7 @@ pub(super) fn cmd_profile_update(
     // Add files
     {
         let files_dir = config_dir.join("profiles").join(name).join("files");
-        let copied = copy_files_to_dir(add_files, &files_dir)?;
+        let copied = copy_files_to_dir(&add_files, &files_dir)?;
         for (basename, deploy_target) in copied {
             let files = doc
                 .spec
@@ -753,7 +750,7 @@ pub(super) fn cmd_profile_update(
     }
 
     // Remove files
-    for target in remove_files {
+    for target in &remove_files {
         let expanded = cfgd_core::expand_tilde(&PathBuf::from(target));
         if let Some(ref mut files) = doc.spec.files {
             let before = files.managed.len();
@@ -783,7 +780,7 @@ pub(super) fn cmd_profile_update(
     }
 
     // Add env vars
-    for v in add_env {
+    for v in &add_env {
         let ev = cfgd_core::parse_env_var(v).map_err(|e| anyhow::anyhow!(e))?;
         cfgd_core::merge_env(&mut doc.spec.env, std::slice::from_ref(&ev));
         printer.success(&format!("Set env: {}={}", ev.name, ev.value));
@@ -791,7 +788,7 @@ pub(super) fn cmd_profile_update(
     }
 
     // Remove env vars
-    for key in remove_env {
+    for key in &remove_env {
         let before = doc.spec.env.len();
         doc.spec.env.retain(|e| e.name != *key);
         if doc.spec.env.len() < before {
@@ -803,7 +800,7 @@ pub(super) fn cmd_profile_update(
     }
 
     // Add aliases
-    for a in &args.add_aliases {
+    for a in &add_aliases {
         let alias = cfgd_core::parse_alias(a).map_err(|e| anyhow::anyhow!(e))?;
         cfgd_core::merge_aliases(&mut doc.spec.aliases, std::slice::from_ref(&alias));
         printer.success(&format!("Set alias: {}={}", alias.name, alias.command));
@@ -811,7 +808,7 @@ pub(super) fn cmd_profile_update(
     }
 
     // Remove aliases
-    for name in &args.remove_aliases {
+    for name in &remove_aliases {
         let before = doc.spec.aliases.len();
         doc.spec.aliases.retain(|a| a.name != *name);
         if doc.spec.aliases.len() < before {
@@ -823,7 +820,7 @@ pub(super) fn cmd_profile_update(
     }
 
     // Add system settings
-    for s in add_system {
+    for s in &add_system {
         let (key, value) = s.split_once('=').ok_or_else(|| {
             anyhow::anyhow!("Invalid system setting '{}' — expected key=value", s)
         })?;
@@ -836,8 +833,8 @@ pub(super) fn cmd_profile_update(
     }
 
     // Remove system settings
-    for key in remove_system {
-        if doc.spec.system.remove(key).is_some() {
+    for key in &remove_system {
+        if doc.spec.system.remove(key.as_str()).is_some() {
             printer.success(&format!("Removed system setting: {}", key));
             changes += 1;
         } else {
@@ -846,7 +843,7 @@ pub(super) fn cmd_profile_update(
     }
 
     // Add secrets
-    for secret_str in add_secrets {
+    for secret_str in &add_secrets {
         let secret = parse_secret_spec(secret_str)?;
         let target = cfgd_core::expand_tilde(&secret.target);
         if doc
@@ -871,7 +868,7 @@ pub(super) fn cmd_profile_update(
     }
 
     // Remove secrets
-    for target_str in remove_secrets {
+    for target_str in &remove_secrets {
         let target = cfgd_core::expand_tilde(&PathBuf::from(target_str));
         let before = doc.spec.secrets.len();
         doc.spec
@@ -888,16 +885,16 @@ pub(super) fn cmd_profile_update(
     // Add/remove reconcile scripts
     changes += update_script_list(
         &mut doc.spec.scripts,
-        add_pre_reconcile,
-        remove_pre_reconcile,
+        &add_pre_reconcile,
+        &remove_pre_reconcile,
         "pre-apply",
         |s| &mut s.pre_reconcile,
         printer,
     );
     changes += update_script_list(
         &mut doc.spec.scripts,
-        add_post_reconcile,
-        remove_post_reconcile,
+        &add_post_reconcile,
+        &remove_post_reconcile,
         "post-apply",
         |s| &mut s.post_reconcile,
         printer,

@@ -18,6 +18,12 @@ SCRATCH=$(mktemp -d)
 trap 'rm -rf "$SCRATCH"' EXIT
 echo "Scratch: $SCRATCH"
 
+# Ensure git identity is configured (needed for git init/commit in tests)
+if ! git config user.name >/dev/null 2>&1; then
+    git config --global user.name "cfgd-test"
+    git config --global user.email "test@cfgd.io"
+fi
+
 # Local git repo used as a "remote" source for source/sync/pull tests
 SOURCE_REPO="$SCRATCH/source-repo"
 setup_source_repo() {
@@ -490,74 +496,74 @@ if assert_ok; then
     pass_test "P17"
 else fail_test "P17"; fi
 
-begin_test "P18: profile update --active --add-package"
-run $C profile update --active --add-package brew:htop
+begin_test "P18: profile update --active --package (add)"
+run $C profile update --active --package brew:htop
 if assert_ok; then
     pass_test "P18"
 else fail_test "P18"; fi
 
-begin_test "P19: profile update --active --remove-package"
-run $C profile update --active --remove-package brew:htop
+begin_test "P19: profile update --active --package (remove)"
+run $C profile update --active --package -brew:htop
 if assert_ok; then
     pass_test "P19"
 else fail_test "P19"; fi
 
-begin_test "P20: profile update --active --add-file"
-run $C profile update --active --add-file "$TGT/.bashrc"
+begin_test "P20: profile update --active --file (add)"
+run $C profile update --active --file "$TGT/.bashrc"
 if assert_ok; then
     pass_test "P20"
 else fail_test "P20"; fi
 
-begin_test "P21: profile update --active --remove-file"
-run $C profile update --active --remove-file "$TGT/.bashrc"
+begin_test "P21: profile update --active --file (remove)"
+run $C profile update --active --file "-$TGT/.bashrc"
 if assert_ok; then
     pass_test "P21"
 else fail_test "P21"; fi
 
-begin_test "P22: profile update --active --add-env"
-run $C profile update --active --add-env FOO=bar
+begin_test "P22: profile update --active --env (add)"
+run $C profile update --active --env FOO=bar
 if assert_ok; then
     pass_test "P22"
 else fail_test "P22"; fi
 
-begin_test "P23: profile update --active --remove-env"
-run $C profile update --active --remove-env FOO
+begin_test "P23: profile update --active --env (remove)"
+run $C profile update --active --env -FOO
 if assert_ok; then
     pass_test "P23"
 else fail_test "P23"; fi
 
-begin_test "P24: profile update --active --add-system"
-run $C profile update --active --add-system shell=/bin/zsh
+begin_test "P24: profile update --active --system (add)"
+run $C profile update --active --system shell=/bin/zsh
 if assert_ok; then
     pass_test "P24"
 else fail_test "P24"; fi
 
-begin_test "P25: profile update --active --remove-system"
-run $C profile update --active --remove-system shell
+begin_test "P25: profile update --active --system (remove)"
+run $C profile update --active --system -shell
 if assert_ok; then
     pass_test "P25"
 else fail_test "P25"; fi
 
-begin_test "P26: profile update --active --add-module"
-run $C profile update --active --add-module nvim
+begin_test "P26: profile update --active --module (add)"
+run $C profile update --active --module nvim
 if assert_ok; then
     pass_test "P26"
 else fail_test "P26"; fi
 
-begin_test "P27: profile update --active --remove-module"
-run $C profile update --active --remove-module nvim
+begin_test "P27: profile update --active --module (remove)"
+run $C profile update --active --module -nvim
 if assert_ok; then
     pass_test "P27"
 else fail_test "P27"; fi
 
-begin_test "P28: profile update --active --add-inherit"
-run $C profile update test-minimal --add-inherit base
+begin_test "P28: profile update --inherit (add)"
+run $C profile update test-minimal --inherit base
 if assert_ok; then
     pass_test "P28"
 else fail_test "P28"; fi
 
-begin_test "P29: profile update --active --remove-inherit"
-run $C profile update test-minimal --remove-inherit base
+begin_test "P29: profile update --inherit (remove)"
+run $C profile update test-minimal --inherit -base
 if assert_ok; then
     pass_test "P29"
 else fail_test "P29"; fi
@@ -568,44 +574,44 @@ if assert_ok; then
     pass_test "P30"
 else fail_test "P30"; fi
 
-begin_test "P31: profile update --active --add-secret"
-run $C profile update --active --add-secret "op://vault/key:$TGT/.ssh/key"
+begin_test "P31: profile update --active --secret (add)"
+run $C profile update --active --secret "op://vault/key:$TGT/.ssh/key"
 if assert_ok; then
     pass_test "P31"
 else fail_test "P31"; fi
 
-begin_test "P32: profile update --active --remove-secret"
-run $C profile update --active --remove-secret "$TGT/.ssh/key"
+begin_test "P32: profile update --active --secret (remove)"
+run $C profile update --active --secret "-$TGT/.ssh/key"
 if assert_ok; then
     pass_test "P32"
 else fail_test "P32"; fi
 
-begin_test "P33: profile update --active --add-pre-reconcile"
-run $C profile update --active --add-pre-apply "$SCRATCH/pre.sh"
+begin_test "P33: profile update --active --pre-apply (add)"
+run $C profile update --active --pre-apply "$SCRATCH/pre.sh"
 if assert_ok; then
     pass_test "P33"
 else fail_test "P33"; fi
 
-begin_test "P34: profile update --active --remove-pre-reconcile"
-run $C profile update --active --remove-pre-apply "$SCRATCH/pre.sh"
+begin_test "P34: profile update --active --pre-apply (remove)"
+run $C profile update --active --pre-apply "-$SCRATCH/pre.sh"
 if assert_ok; then
     pass_test "P34"
 else fail_test "P34"; fi
 
-begin_test "P35: profile update --active --add-post-reconcile"
-run $C profile update --active --add-post-apply "$SCRATCH/post.sh"
+begin_test "P35: profile update --active --post-apply (add)"
+run $C profile update --active --post-apply "$SCRATCH/post.sh"
 if assert_ok; then
     pass_test "P35"
 else fail_test "P35"; fi
 
-begin_test "P36: profile update --active --remove-post-reconcile"
-run $C profile update --active --remove-post-apply "$SCRATCH/post.sh"
+begin_test "P36: profile update --active --post-apply (remove)"
+run $C profile update --active --post-apply "-$SCRATCH/post.sh"
 if assert_ok; then
     pass_test "P36"
 else fail_test "P36"; fi
 
 begin_test "P37: profile update named profile"
-run $C profile update test-var --add-package brew:jq
+run $C profile update test-var --package brew:jq
 if assert_ok; then
     pass_test "P37"
 else fail_test "P37"; fi
@@ -716,38 +722,38 @@ if assert_fail; then
     pass_test "M14"
 else fail_test "M14"; fi
 
-begin_test "M15: module update --add-package"
-run $C module update nvim --add-package brew:ripgrep
+begin_test "M15: module update --package (add)"
+run $C module update nvim --package brew:ripgrep
 if assert_ok; then
     pass_test "M15"
 else fail_test "M15"; fi
 
-begin_test "M16: module update --remove-package"
-run $C module update nvim --remove-package brew:ripgrep
+begin_test "M16: module update --package (remove)"
+run $C module update nvim --package -brew:ripgrep
 if assert_ok; then
     pass_test "M16"
 else fail_test "M16"; fi
 
-begin_test "M17: module update --add-file"
-run $C module update nvim --add-file "~/.config/nvim/after/plugin/test.lua"
+begin_test "M17: module update --file (add)"
+run $C module update nvim --file "~/.config/nvim/after/plugin/test.lua"
 if assert_ok; then
     pass_test "M17"
 else fail_test "M17"; fi
 
-begin_test "M18: module update --remove-file"
-run $C module update nvim --remove-file "~/.config/nvim/after/plugin/test.lua"
+begin_test "M18: module update --file (remove)"
+run $C module update nvim --file "-~/.config/nvim/after/plugin/test.lua"
 if assert_ok; then
     pass_test "M18"
 else fail_test "M18"; fi
 
-begin_test "M19: module update --add-depends"
-run $C module update nvim --add-depends tmux
+begin_test "M19: module update --depends (add)"
+run $C module update nvim --depends tmux
 if assert_ok; then
     pass_test "M19"
 else fail_test "M19"; fi
 
-begin_test "M20: module update --remove-depends"
-run $C module update nvim --remove-depends tmux
+begin_test "M20: module update --depends (remove)"
+run $C module update nvim --depends -tmux
 if assert_ok; then
     pass_test "M20"
 else fail_test "M20"; fi
@@ -758,14 +764,14 @@ if assert_ok; then
     pass_test "M21"
 else fail_test "M21"; fi
 
-begin_test "M22: module update --add-post-apply"
-run $C module update nvim --add-post-apply "echo updated"
+begin_test "M22: module update --post-apply (add)"
+run $C module update nvim --post-apply "echo updated"
 if assert_ok; then
     pass_test "M22"
 else fail_test "M22"; fi
 
-begin_test "M23: module update --remove-post-apply"
-run $C module update nvim --remove-post-apply "echo updated"
+begin_test "M23: module update --post-apply (remove)"
+run $C module update nvim --post-apply "-echo updated"
 if assert_ok; then
     pass_test "M23"
 else fail_test "M23"; fi
@@ -1369,14 +1375,14 @@ else fail_test "EN05"; fi
 # SECTION 18: aliases
 # ═════════════════════════════════════════════════════
 
-begin_test "AL01: add alias (profile update --active --add-file)"
+begin_test "AL01: add alias (profile update --active --file)"
 run $C add "$TGT/.aliasrc"
 if assert_ok; then
     pass_test "AL01"
 else fail_test "AL01"; fi
 
-begin_test "AL02: remove alias (profile update --active --remove-file)"
-run $C remove "$TGT/.aliasrc"
+begin_test "AL02: remove alias (profile update --active --file -path)"
+run $C remove "-$TGT/.aliasrc"
 if assert_ok; then
     pass_test "AL02"
 else fail_test "AL02"; fi
@@ -1423,7 +1429,7 @@ YAML
 
 begin_test "TPL01: tera template renders env vars"
 # Add a template file to the profile
-run $C profile update --active --add-file "files/config.toml.tera:$TGT/.config.toml"
+run $C profile update --active --file "files/config.toml.tera:$TGT/.config.toml"
 run $C apply --yes
 if [ -f "$TGT/.config.toml" ]; then
     CONTENT=$(cat "$TGT/.config.toml")
