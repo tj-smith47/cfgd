@@ -70,3 +70,4 @@ Thumbs.db
 # Re-ignore env files inside allowed dirs
 .env
 .env.*
+function-cfgd/function-cfgd
