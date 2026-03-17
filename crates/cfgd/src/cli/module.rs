@@ -720,15 +720,18 @@ pub(super) fn cmd_module_update_local(
         changes += 1;
     }
 
-    // Remove packages
+    // Remove packages (strip manager prefix if present, e.g. "brew:ripgrep" → "ripgrep")
+    let known = super::known_manager_names();
+    let known_refs: Vec<&str> = known.iter().map(|s| s.as_str()).collect();
     for pkg in &remove_packages {
+        let (_, canonical) = super::parse_package_flag(pkg, &known_refs);
         let before = doc.spec.packages.len();
-        doc.spec.packages.retain(|p| p.name != *pkg);
+        doc.spec.packages.retain(|p| p.name != canonical);
         if doc.spec.packages.len() < before {
-            printer.success(&format!("Removed package: {}", pkg));
+            printer.success(&format!("Removed package: {}", canonical));
             changes += 1;
         } else {
-            printer.warning(&format!("Package '{}' not found in module", pkg));
+            printer.warning(&format!("Package '{}' not found in module", canonical));
         }
     }
 
@@ -937,6 +940,7 @@ pub(super) fn cmd_module_delete(
     printer: &Printer,
     name: &str,
     yes: bool,
+    purge: bool,
 ) -> anyhow::Result<()> {
     validate_resource_name(name, "Module")?;
     printer.header(&format!("Delete Module: {}", name));
@@ -963,28 +967,45 @@ pub(super) fn cmd_module_delete(
         return Ok(());
     }
 
-    // Restore symlinked files before deleting the module directory.
-    // When module create adopts files, it moves them into the module dir and
-    // symlinks the original location back. On delete, we reverse that.
     let module_yaml = module_dir.join("module.yaml");
     if module_yaml.exists()
         && let Ok(doc) = config::parse_module(&std::fs::read_to_string(&module_yaml)?)
     {
-        for file_entry in &doc.spec.files {
-            let target = cfgd_core::expand_tilde(std::path::Path::new(&file_entry.target));
-            let source = module_dir.join(&file_entry.source);
-
-            if let Ok(link_dest) = std::fs::read_link(&target)
-                && link_dest.starts_with(&module_dir)
-                && source.exists()
-            {
-                std::fs::remove_file(&target).ok();
-                if source.is_dir() {
-                    cfgd_core::copy_dir_recursive(&source, &target)?;
-                } else {
-                    std::fs::copy(&source, &target)?;
+        if purge {
+            // Purge mode: remove all files deployed by this module to target locations.
+            // This replaces symlink restoration — there's nothing to restore if we're
+            // removing everything.
+            for file_entry in &doc.spec.files {
+                let target = cfgd_core::expand_tilde(std::path::Path::new(&file_entry.target));
+                if target.is_symlink() || target.exists() {
+                    if target.is_dir() && !target.is_symlink() {
+                        std::fs::remove_dir_all(&target)?;
+                    } else {
+                        std::fs::remove_file(&target)?;
+                    }
+                    printer.info(&format!("Purged {}", target.display()));
                 }
-                printer.info(&format!("Restored {}", target.display()));
+            }
+        } else {
+            // Default: restore symlinked files before deleting the module directory.
+            // When module create adopts files, it moves them into the module dir and
+            // symlinks the original location back. On delete, we reverse that.
+            for file_entry in &doc.spec.files {
+                let target = cfgd_core::expand_tilde(std::path::Path::new(&file_entry.target));
+                let source = module_dir.join(&file_entry.source);
+
+                if let Ok(link_dest) = std::fs::read_link(&target)
+                    && link_dest.starts_with(&module_dir)
+                    && source.exists()
+                {
+                    std::fs::remove_file(&target).ok();
+                    if source.is_dir() {
+                        cfgd_core::copy_dir_recursive(&source, &target)?;
+                    } else {
+                        std::fs::copy(&source, &target)?;
+                    }
+                    printer.info(&format!("Restored {}", target.display()));
+                }
             }
         }
     }

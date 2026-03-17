@@ -197,25 +197,25 @@ spec:
   profile: base
 YAML
 (cd "$ISRC" && git init -q && git add -A && git commit -qm "init")
-run --config "$IDST/cfgd.yaml" init --from "$ISRC" --no-color
+run init "$IDST" --from "$ISRC" --no-color
 if assert_ok && [ -f "$IDST/cfgd.yaml" ] && [ -d "$IDST/profiles" ]; then
     pass_test "I01"
 else fail_test "I01" "Config not created"; fi
 
 begin_test "I02: init --from with --branch"
-run --config "$SCRATCH/init-branch/cfgd.yaml" init --from "$ISRC" --branch main --no-color
+run init "$SCRATCH/init-branch" --from "$ISRC" --branch main --no-color
 if [ -f "$SCRATCH/init-branch/cfgd.yaml" ]; then
     pass_test "I02"
 else fail_test "I02"; fi
 
 begin_test "I03: init --from with --theme"
-run --config "$SCRATCH/init-theme/cfgd.yaml" init --from "$ISRC" --theme minimal --no-color
+run init "$SCRATCH/init-theme" --from "$ISRC" --theme minimal --no-color
 if [ -f "$SCRATCH/init-theme/cfgd.yaml" ]; then
     pass_test "I03"
 else fail_test "I03"; fi
 
 begin_test "I04: init --from with --module"
-run --config "$SCRATCH/init-mod/cfgd.yaml" init --from "$ISRC" --module nvim --no-color
+run init "$SCRATCH/init-mod" --from "$ISRC" --module nvim --no-color
 # Module may not exist in source, but init should still succeed
 if [ -f "$SCRATCH/init-mod/cfgd.yaml" ]; then
     pass_test "I04"
@@ -378,8 +378,8 @@ if assert_ok; then
     pass_test "L02"
 else fail_test "L02"; fi
 
-begin_test "L03: log -c 1"
-run $C log -c 1
+begin_test "L03: log -n 1"
+run $C log -n 1
 if assert_ok; then
     pass_test "L03"
 else fail_test "L03"; fi
@@ -419,7 +419,7 @@ if assert_ok; then
 else fail_test "P03"; fi
 
 begin_test "P04: profile create (minimal)"
-run $C profile create test-minimal
+run $C profile create test-minimal --env MINIMAL=true
 if assert_ok; then
     pass_test "P04"
 else fail_test "P04"; fi
@@ -449,13 +449,15 @@ if assert_ok; then
 else fail_test "P08"; fi
 
 begin_test "P09: profile create --file"
+touch "$TGT/.testrc"
 run $C profile create test-file --file "$TGT/.testrc"
 if assert_ok; then
     pass_test "P09"
 else fail_test "P09"; fi
 
 begin_test "P10: profile create --private-files"
-run $C profile create test-private --private-files
+touch "$TGT/.private-test"
+run $C profile create test-private --private-files --file "$TGT/.private-test"
 if assert_ok; then
     pass_test "P10"
 else fail_test "P10"; fi
@@ -467,6 +469,7 @@ if assert_ok; then
 else fail_test "P11"; fi
 
 begin_test "P12: profile create with multiple flags"
+touch "$TGT/.multi"
 run $C profile create test-multi --inherit base --package brew:bat --env SHELL=/bin/zsh --file "$TGT/.multi"
 if assert_ok; then
     pass_test "P12"
@@ -517,6 +520,7 @@ if assert_ok; then
 else fail_test "P19"; fi
 
 begin_test "P20: profile update --active --file (add)"
+touch "$TGT/.bashrc"
 run $C profile update --active --file "$TGT/.bashrc"
 if assert_ok; then
     pass_test "P20"

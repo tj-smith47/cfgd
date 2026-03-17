@@ -255,9 +255,15 @@ Open module.yaml in `$EDITOR`.
 Delete a local module. Any files that were adopted (moved into the module and symlinked back) are automatically restored to their original locations before the module directory is removed.
 
 ```sh
-cfgd module delete nvim        # restores symlinked files, then deletes modules/nvim/
-cfgd module delete nvim -y     # skip confirmation
+cfgd module delete nvim            # restores symlinked files, then deletes modules/nvim/
+cfgd module delete nvim -y         # skip confirmation
+cfgd module delete nvim --purge    # remove deployed target files instead of restoring them
 ```
+
+| Flag | Description |
+|---|---|
+| `--yes`, `-y` | Skip confirmation prompt |
+| `--purge` | Remove files deployed by this module to target locations instead of restoring symlinks |
 
 ### `cfgd module upgrade <name>`
 

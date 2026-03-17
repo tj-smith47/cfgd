@@ -794,6 +794,9 @@ pub enum ModuleCommand {
         /// Skip confirmation prompt
         #[arg(short, long, env = "CFGD_YES")]
         yes: bool,
+        /// Also remove files deployed by this module to target locations
+        #[arg(long)]
+        purge: bool,
     },
     /// Create a new local module (alias for 'create')
     #[command(hide = true)]
@@ -907,8 +910,8 @@ pub fn execute(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
             ModuleCommand::Create(args) => module::cmd_module_create(cli, printer, args),
             ModuleCommand::Update(args) => module::cmd_module_update_local(cli, printer, args),
             ModuleCommand::Edit { name } => module::cmd_module_edit(cli, printer, name),
-            ModuleCommand::Delete { name, yes } => {
-                module::cmd_module_delete(cli, printer, name, *yes)
+            ModuleCommand::Delete { name, yes, purge } => {
+                module::cmd_module_delete(cli, printer, name, *yes, *purge)
             }
             ModuleCommand::Add(args) => module::cmd_module_create(cli, printer, args),
             ModuleCommand::Upgrade {
@@ -5689,7 +5692,7 @@ spec:
         let cli = test_cli(dir.path());
         let printer = test_printer();
 
-        let result = module::cmd_module_delete(&cli, &printer, "used-mod", true);
+        let result = module::cmd_module_delete(&cli, &printer, "used-mod", true, false);
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("referenced by"));
     }
@@ -5706,8 +5709,71 @@ spec:
         let cli = test_cli(dir.path());
         let printer = test_printer();
 
-        module::cmd_module_delete(&cli, &printer, "orphan-mod", true).unwrap();
+        module::cmd_module_delete(&cli, &printer, "orphan-mod", true, false).unwrap();
         assert!(!dir.path().join("modules").join("orphan-mod").exists());
+    }
+
+    #[test]
+    fn module_delete_purge_removes_target_files() {
+        let dir = create_test_config_dir();
+
+        // Create a target file outside the module directory
+        let target_dir = dir.path().join("targets");
+        std::fs::create_dir_all(&target_dir).unwrap();
+        let target_file = target_dir.join("deployed.conf");
+        std::fs::write(&target_file, "deployed content").unwrap();
+        assert!(target_file.exists());
+
+        // Create a module with a file entry pointing at the target
+        let module_yaml = format!(
+            "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: purge-mod\nspec:\n  files:\n    - source: files/deployed.conf\n      target: {}\n",
+            target_file.display()
+        );
+        create_module_in_dir(dir.path(), "purge-mod", &module_yaml);
+        // Write a source file in the module
+        std::fs::write(
+            dir.path()
+                .join("modules")
+                .join("purge-mod")
+                .join("files")
+                .join("deployed.conf"),
+            "source content",
+        )
+        .unwrap();
+
+        let cli = test_cli(dir.path());
+        let printer = test_printer();
+
+        module::cmd_module_delete(&cli, &printer, "purge-mod", true, true).unwrap();
+        assert!(!dir.path().join("modules").join("purge-mod").exists());
+        assert!(!target_file.exists(), "purge should remove target file");
+    }
+
+    #[test]
+    fn module_delete_no_purge_preserves_target_files() {
+        let dir = create_test_config_dir();
+
+        // Create a target file (not a symlink into the module)
+        let target_dir = dir.path().join("targets");
+        std::fs::create_dir_all(&target_dir).unwrap();
+        let target_file = target_dir.join("regular.conf");
+        std::fs::write(&target_file, "user content").unwrap();
+
+        let module_yaml = format!(
+            "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: keep-mod\nspec:\n  files:\n    - source: files/regular.conf\n      target: {}\n",
+            target_file.display()
+        );
+        create_module_in_dir(dir.path(), "keep-mod", &module_yaml);
+
+        let cli = test_cli(dir.path());
+        let printer = test_printer();
+
+        module::cmd_module_delete(&cli, &printer, "keep-mod", true, false).unwrap();
+        assert!(!dir.path().join("modules").join("keep-mod").exists());
+        assert!(
+            target_file.exists(),
+            "without purge, non-symlinked target files are preserved"
+        );
     }
 
     #[test]

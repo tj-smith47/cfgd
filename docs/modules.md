@@ -417,13 +417,14 @@ cfgd module create --name my-tool   # create a new local module
 cfgd module update nvim --package ripgrep  # modify a module
 cfgd module edit nvim               # open in $EDITOR
 cfgd module delete nvim             # restore adopted files, delete module
+cfgd module delete nvim --purge    # remove deployed target files, delete module
 ```
 
 ### File Adoption
 
 When you create a module with `--file`, cfgd **adopts** the file: it copies it into the module directory (`modules/<name>/files/`) and replaces the original with a symlink pointing back to the repo copy. This means the file is now version-controlled in your cfgd repo while still accessible at its original location.
 
-`cfgd module delete` reverses this — any target that is still a symlink pointing into the module directory is restored to a regular file before the module is removed.
+`cfgd module delete` reverses this — any target that is still a symlink pointing into the module directory is restored to a regular file before the module is removed. Use `--purge` to instead remove all deployed target files entirely (skipping restoration).
 
 ### Adding Modules
 
