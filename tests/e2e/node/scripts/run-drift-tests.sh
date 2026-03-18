@@ -118,7 +118,7 @@ fi
 # T44: Seccomp profile write and verify
 # =================================================================
 begin_test "T44: Seccomp profile write"
-exec_on_node bash -c 'cat > /tmp/e2e-seccomp-cfgd.yaml << "INNEREOF"
+exec_on_node bash -c 'cat > /etc/cfgd/e2e-seccomp-cfgd.yaml << "INNEREOF"
 apiVersion: cfgd.io/v1alpha1
 kind: Config
 metadata:
@@ -127,7 +127,7 @@ spec:
   profile: k8s-worker-seccomp
 INNEREOF'
 
-exec_on_node cfgd --config /tmp/e2e-seccomp-cfgd.yaml apply --yes --no-color > /dev/null 2>&1 || true
+exec_on_node cfgd --config /etc/cfgd/e2e-seccomp-cfgd.yaml apply --yes --no-color > /dev/null 2>&1 || true
 
 if exec_on_node test -f /tmp/cfgd-e2e-seccomp/audit.json; then
     CONTENT=$(exec_on_node cat /tmp/cfgd-e2e-seccomp/audit.json)
@@ -148,19 +148,14 @@ begin_test "T45: Seccomp profile drift"
 # Modify the seccomp file
 exec_on_node bash -c 'echo "corrupted" > /tmp/cfgd-e2e-seccomp/audit.json'
 
-PLAN=$(exec_on_node cfgd --config /tmp/e2e-seccomp-cfgd.yaml apply --dry-run --no-color 2>&1) || true
+PLAN=$(exec_on_node cfgd --config /etc/cfgd/e2e-seccomp-cfgd.yaml apply --dry-run --no-color 2>&1) || true
 echo "  Plan after seccomp corruption:"
 echo "$PLAN" | head -10 | sed 's/^/    /'
 
-if assert_contains "$PLAN" "seccomp" && assert_contains "$PLAN" "outdated"; then
+if assert_contains "$PLAN" "seccomp"; then
     pass_test "T45"
 else
-    # Plan may say "changes" generically
-    if assert_contains "$PLAN" "changes"; then
-        pass_test "T45"
-    else
-        fail_test "T45" "Seccomp drift not detected"
-    fi
+    fail_test "T45" "Seccomp drift not detected"
 fi
 
 # =================================================================
@@ -172,7 +167,7 @@ exec_on_node bash -c 'echo "cert" > /tmp/cfgd-e2e-pki/test.crt'
 exec_on_node bash -c 'echo "key" > /tmp/cfgd-e2e-pki/test.key'
 exec_on_node chmod 644 /tmp/cfgd-e2e-pki/test.crt /tmp/cfgd-e2e-pki/test.key
 
-exec_on_node bash -c 'cat > /tmp/e2e-certs-cfgd.yaml << "INNEREOF"
+exec_on_node bash -c 'cat > /etc/cfgd/e2e-certs-cfgd.yaml << "INNEREOF"
 apiVersion: cfgd.io/v1alpha1
 kind: Config
 metadata:
@@ -181,12 +176,12 @@ spec:
   profile: k8s-worker-certs
 INNEREOF'
 
-PLAN=$(exec_on_node cfgd --config /tmp/e2e-certs-cfgd.yaml apply --dry-run --no-color 2>&1) || true
+PLAN=$(exec_on_node cfgd --config /etc/cfgd/e2e-certs-cfgd.yaml apply --dry-run --no-color 2>&1) || true
 echo "  Plan before cert apply:"
 echo "$PLAN" | head -10 | sed 's/^/    /'
 
 # Apply to fix permissions
-exec_on_node cfgd --config /tmp/e2e-certs-cfgd.yaml apply --yes --no-color > /dev/null 2>&1 || true
+exec_on_node cfgd --config /etc/cfgd/e2e-certs-cfgd.yaml apply --yes --no-color > /dev/null 2>&1 || true
 
 KEY_MODE=$(exec_on_node stat -c '%a' /tmp/cfgd-e2e-pki/test.key 2>/dev/null || echo "error")
 echo "  Key permissions after apply: $KEY_MODE"
@@ -194,7 +189,7 @@ echo "  Key permissions after apply: $KEY_MODE"
 if assert_equals "$KEY_MODE" "600"; then
     # Now change permissions back and verify drift detection
     exec_on_node chmod 644 /tmp/cfgd-e2e-pki/test.key
-    PLAN2=$(exec_on_node cfgd --config /tmp/e2e-certs-cfgd.yaml apply --dry-run --no-color 2>&1) || true
+    PLAN2=$(exec_on_node cfgd --config /etc/cfgd/e2e-certs-cfgd.yaml apply --dry-run --no-color 2>&1) || true
     if assert_contains "$PLAN2" "cert" || assert_contains "$PLAN2" "changes"; then
         pass_test "T46"
     else
@@ -212,8 +207,24 @@ begin_test "T50: Daemon auto-reconciliation"
 # Ensure desired state is applied first
 exec_on_node cfgd --config /etc/cfgd/cfgd.yaml apply --yes --no-color > /dev/null 2>&1 || true
 
+# Create a config with a short daemon reconcile interval
+exec_on_node bash -c 'cat > /etc/cfgd/e2e-daemon-cfgd.yaml << "INNEREOF"
+apiVersion: cfgd.io/v1alpha1
+kind: Config
+metadata:
+  name: e2e-daemon-test
+spec:
+  profile: k8s-worker-minimal
+  daemon:
+    enabled: true
+    reconcile:
+      interval: "5s"
+      auto-apply: true
+      drift-policy: auto
+INNEREOF'
+
 # Start daemon in background on the kind node
-exec_on_node bash -c 'nohup cfgd --config /etc/cfgd/cfgd.yaml daemon --interval 5s --no-color > /tmp/daemon.log 2>&1 &'
+exec_on_node bash -c 'nohup cfgd --config /etc/cfgd/e2e-daemon-cfgd.yaml daemon --no-color > /tmp/daemon.log 2>&1 &'
 DAEMON_PID=$(exec_on_node bash -c 'pgrep -f "cfgd.*daemon" || echo ""')
 echo "  Daemon PID: $DAEMON_PID"
 

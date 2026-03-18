@@ -34,13 +34,9 @@ spec:
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           command:
             - /usr/local/bin/cfgd
+            - --config
+            - /etc/cfgd/cfgd.yaml
             - daemon
-            - --interval
-            - {{ .Values.reconcileInterval | quote }}
-            {{- if .Values.serverUrl }}
-            - --server-url
-            - {{ .Values.serverUrl | quote }}
-            {{- end }}
           env:
             {{- if .Values.apiKey }}
             - name: CFGD_API_KEY
@@ -78,7 +74,8 @@ spec:
               mountPath: /etc
               readOnly: false
             - name: cfgd-config
-              mountPath: /etc/cfgd
+              mountPath: /etc/cfgd/cfgd.yaml
+              subPath: cfgd.yaml
               readOnly: true
             {{- with .Values.extraVolumeMounts }}
             {{- toYaml . | nindent 12 }}

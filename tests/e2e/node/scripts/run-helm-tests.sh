@@ -116,15 +116,16 @@ fi
 # =================================================================
 begin_test "T25: Helm uninstall"
 helm uninstall cfgd -n "$CFGD_NAMESPACE" 2>&1 || true
-sleep 3
+sleep 5
 
-DS_COUNT=$(kubectl get ds -n "$CFGD_NAMESPACE" -l "app.kubernetes.io/name=cfgd" \
-    -o jsonpath='{.items}' 2>/dev/null | grep -c "cfgd" || echo "0")
+# Check that no cfgd DaemonSet remains
+DS_NAMES=$(kubectl get ds -n "$CFGD_NAMESPACE" -l "app.kubernetes.io/name=cfgd" \
+    -o jsonpath='{.items[*].metadata.name}' 2>/dev/null || echo "")
 
-if [ "$DS_COUNT" = "0" ]; then
+if [ -z "$DS_NAMES" ]; then
     pass_test "T25"
 else
-    fail_test "T25" "DaemonSet still present after uninstall"
+    fail_test "T25" "DaemonSet still present after uninstall: $DS_NAMES"
 fi
 
 # --- Summary ---

@@ -13,9 +13,21 @@ data:
       name: {{ include "cfgd.fullname" . }}
     spec:
       profile: {{ .Values.profile | default "default" }}
-      {{- if .Values.configSource }}
+      {{- if or .Values.configSource .Values.serverUrl }}
       origin:
-        type: git
-        url: {{ .Values.configSource }}
-        branch: main
+        {{- if .Values.configSource }}
+        - type: git
+          url: {{ .Values.configSource }}
+          branch: main
+        {{- end }}
+        {{- if .Values.serverUrl }}
+        - type: server
+          url: {{ .Values.serverUrl }}
+        {{- end }}
       {{- end }}
+      daemon:
+        enabled: true
+        reconcile:
+          interval: {{ .Values.reconcileInterval | default "5m" | quote }}
+          auto-apply: true
+          drift-policy: auto
