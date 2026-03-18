@@ -1212,6 +1212,7 @@ SOPSEOF
 
     begin_test "SEC03: secret encrypt"
     mkdir -p "$CFG/secrets"
+    cp "$CFG/.sops.yaml" "$CFG/secrets/.sops.yaml"
     echo "secret_key: secret-value" > "$CFG/secrets/plaintext.yaml"
     run $C secret encrypt "$CFG/secrets/plaintext.yaml"
     if assert_ok; then

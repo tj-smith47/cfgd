@@ -4,15 +4,40 @@ Single source of truth for all incomplete work. Completed work is in `INITIAL-PL
 
 ---
 
+## Structured output: `--output json` and `--jsonpath`
+
+Add `--output json` (alias `-o json`) global flag and `--jsonpath <expr>` for machine-readable output. Applies to all commands that display structured data.
+
+Commands to support:
+- `status` — drift state, last apply info, managed resources
+- `profile show` — resolved profile as JSON
+- `module list` / `module show` — module metadata, packages, deps
+- `source list` / `source show` — source subscriptions, manifest info
+- `log` — apply history entries
+- `doctor` — tool availability checks as structured report
+- `verify` — compliance state, drift items
+- `explain` — schema definitions
+- `config get` — already outputs raw values; JSON mode returns typed values
+- `config show` — full config as JSON
+
+- [ ] Add `--output` global flag (`table` default, `json`, `yaml`) and `--jsonpath` to Cli struct
+- [ ] Implement `OutputFormat` enum and `Printer::write_structured()` method
+- [ ] Add `Serialize` to all display structs (ApplyResult, DriftEvent, ModuleInfo, etc.)
+- [ ] Wire through each command listed above
+- [ ] Update docs and CLI reference
+
+---
+
 ## Kubernetes API conventions
 
-Full condition lifecycle, finalizers, owner references, server-side apply. Prerequisite for pod module injection. Design detail in [kubernetes-first-class.md § 1](kubernetes-first-class.md#1-kubernetes-api-conventions).
+Full condition lifecycle, finalizers, owner references, server-side apply, and idiomatic naming alignment. Prerequisite for pod module injection. Design detail in [kubernetes-first-class.md § 1](kubernetes-first-class.md#1-kubernetes-api-conventions).
 
 - [ ] Full condition lifecycle on all CRDs: `MachineConfig` (Reconciled, DriftDetected, ModulesResolved, Compliant), `ConfigPolicy` (Enforced, Violated), `DriftAlert` (Acknowledged, Resolved, Escalated) — each with `lastTransitionTime`, `reason`, `message`, set via `/status` subresource
 - [ ] Finalizers on MachineConfig: signal device daemon to un-manage resources, optional rollback, remove finalizer after cleanup
 - [ ] Owner references: TeamConfig (XR) → MachineConfig → DriftAlert cascade
 - [ ] Server-side apply: field manager annotations, structured merge diff on CRD OpenAPI schema
 - [ ] ClusterConfigPolicy CRD (cluster-scoped): org-wide mandates, operator merges with namespace-scoped ConfigPolicy
+- [ ] Idiomatic Kubernetes naming audit: cross-references use `moduleRef`/`configRef` style, enum values use TitleCase (`IfNotPresent`, `Always`, `Symlink`), CLI flags and config fields align with k8s conventions (`--dry-run=server`, `imagePullPolicy`-style patterns), all CRD field names use camelCase per k8s API conventions
 
 ---
 
