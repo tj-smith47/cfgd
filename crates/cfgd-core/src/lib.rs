@@ -843,4 +843,172 @@ mod tests {
     fn parse_alias_invalid() {
         assert!(parse_alias("no-equals-sign").is_err());
     }
+
+    #[test]
+    fn deep_merge_yaml_maps() {
+        let mut base = serde_yaml::from_str::<serde_yaml::Value>("a: 1\nb: 2").unwrap();
+        let overlay = serde_yaml::from_str::<serde_yaml::Value>("b: 3\nc: 4").unwrap();
+        deep_merge_yaml(&mut base, &overlay);
+        assert_eq!(base["a"], serde_yaml::Value::from(1));
+        assert_eq!(base["b"], serde_yaml::Value::from(3));
+        assert_eq!(base["c"], serde_yaml::Value::from(4));
+    }
+
+    #[test]
+    fn deep_merge_yaml_nested() {
+        let mut base = serde_yaml::from_str::<serde_yaml::Value>("top:\n  a: 1\n  b: 2").unwrap();
+        let overlay = serde_yaml::from_str::<serde_yaml::Value>("top:\n  b: 9\n  c: 3").unwrap();
+        deep_merge_yaml(&mut base, &overlay);
+        assert_eq!(base["top"]["a"], serde_yaml::Value::from(1));
+        assert_eq!(base["top"]["b"], serde_yaml::Value::from(9));
+        assert_eq!(base["top"]["c"], serde_yaml::Value::from(3));
+    }
+
+    #[test]
+    fn deep_merge_yaml_overlay_replaces_scalar() {
+        let mut base = serde_yaml::from_str::<serde_yaml::Value>("x: old").unwrap();
+        let overlay = serde_yaml::from_str::<serde_yaml::Value>("x: new").unwrap();
+        deep_merge_yaml(&mut base, &overlay);
+        assert_eq!(base["x"], serde_yaml::Value::from("new"));
+    }
+
+    #[test]
+    fn union_extend_deduplicates() {
+        let mut target = vec!["a".to_string(), "b".to_string()];
+        union_extend(&mut target, &["b".to_string(), "c".to_string()]);
+        assert_eq!(target, vec!["a", "b", "c"]);
+    }
+
+    #[test]
+    fn union_extend_empty_source() {
+        let mut target = vec!["a".to_string()];
+        union_extend(&mut target, &[]);
+        assert_eq!(target, vec!["a"]);
+    }
+
+    #[test]
+    fn merge_env_overrides_by_name() {
+        let mut base = vec![
+            config::EnvVar {
+                name: "FOO".into(),
+                value: "old".into(),
+            },
+            config::EnvVar {
+                name: "BAR".into(),
+                value: "keep".into(),
+            },
+        ];
+        let updates = vec![config::EnvVar {
+            name: "FOO".into(),
+            value: "new".into(),
+        }];
+        merge_env(&mut base, &updates);
+        assert_eq!(base.len(), 2);
+        assert_eq!(base.iter().find(|e| e.name == "FOO").unwrap().value, "new");
+        assert_eq!(base.iter().find(|e| e.name == "BAR").unwrap().value, "keep");
+    }
+
+    #[test]
+    fn merge_env_adds_new() {
+        let mut base = vec![];
+        let updates = vec![config::EnvVar {
+            name: "NEW".into(),
+            value: "val".into(),
+        }];
+        merge_env(&mut base, &updates);
+        assert_eq!(base.len(), 1);
+        assert_eq!(base[0].name, "NEW");
+    }
+
+    #[test]
+    fn merge_aliases_overrides_by_name() {
+        let mut base = vec![config::ShellAlias {
+            name: "ll".into(),
+            command: "ls -l".into(),
+        }];
+        let updates = vec![config::ShellAlias {
+            name: "ll".into(),
+            command: "ls -la".into(),
+        }];
+        merge_aliases(&mut base, &updates);
+        assert_eq!(base.len(), 1);
+        assert_eq!(base[0].command, "ls -la");
+    }
+
+    #[test]
+    fn shell_escape_value_safe_string() {
+        assert_eq!(shell_escape_value("hello"), "\"hello\"");
+    }
+
+    #[test]
+    fn shell_escape_value_metacharacters() {
+        let escaped = shell_escape_value("it's a $test");
+        // Should single-quote when metacharacters present
+        assert!(escaped.starts_with('\''));
+    }
+
+    #[test]
+    fn xml_escape_all_entities() {
+        assert_eq!(
+            xml_escape("a&b<c>d\"e'f"),
+            "a&amp;b&lt;c&gt;d&quot;e&apos;f"
+        );
+    }
+
+    #[test]
+    fn xml_escape_no_special_chars() {
+        assert_eq!(xml_escape("hello world"), "hello world");
+    }
+
+    #[test]
+    fn unix_secs_to_iso8601_epoch() {
+        let result = unix_secs_to_iso8601(0);
+        assert_eq!(result, "1970-01-01T00:00:00Z");
+    }
+
+    #[test]
+    fn unix_secs_to_iso8601_known_date() {
+        let result = unix_secs_to_iso8601(1700000000);
+        assert!(result.starts_with("2023-11-14"));
+    }
+
+    #[test]
+    fn copy_dir_recursive_copies_tree() {
+        let src = tempfile::tempdir().unwrap();
+        let dst = tempfile::tempdir().unwrap();
+        let dst_path = dst.path().join("copy");
+        std::fs::create_dir_all(src.path().join("sub")).unwrap();
+        std::fs::write(src.path().join("a.txt"), "hello").unwrap();
+        std::fs::write(src.path().join("sub/b.txt"), "world").unwrap();
+        copy_dir_recursive(src.path(), &dst_path).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(dst_path.join("a.txt")).unwrap(),
+            "hello"
+        );
+        assert_eq!(
+            std::fs::read_to_string(dst_path.join("sub/b.txt")).unwrap(),
+            "world"
+        );
+    }
+
+    #[test]
+    fn expand_tilde_with_home() {
+        let result = expand_tilde(std::path::Path::new("~/test"));
+        assert!(!result.to_string_lossy().contains('~'));
+        assert!(result.to_string_lossy().ends_with("/test"));
+    }
+
+    #[test]
+    fn expand_tilde_absolute_unchanged() {
+        let result = expand_tilde(std::path::Path::new("/absolute/path"));
+        assert_eq!(result, std::path::PathBuf::from("/absolute/path"));
+    }
+
+    #[test]
+    fn acquire_apply_lock_and_release() {
+        let dir = tempfile::tempdir().unwrap();
+        let guard = acquire_apply_lock(dir.path()).unwrap();
+        assert!(dir.path().join("apply.lock").exists());
+        drop(guard);
+    }
 }
