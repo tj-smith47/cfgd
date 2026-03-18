@@ -4138,11 +4138,7 @@ fn cmd_source_replace(
     // Capture old source's profile and priority before removing
     let config_path = cli.config.clone();
     let old_cfg = config::load_config(&config_path)?;
-    let old_source = old_cfg
-        .spec
-        .sources
-        .iter()
-        .find(|s| s.name == old_name);
+    let old_source = old_cfg.spec.sources.iter().find(|s| s.name == old_name);
     let old_profile = old_source.and_then(|s| s.subscription.profile.clone());
     let old_priority = old_source.map(|s| s.subscription.priority).unwrap_or(500);
 
