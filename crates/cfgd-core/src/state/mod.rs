@@ -1288,6 +1288,9 @@ pub fn plan_hash(data: &str) -> String {
 }
 
 pub fn default_state_dir() -> Result<PathBuf> {
+    if let Ok(dir) = std::env::var("CFGD_STATE_DIR") {
+        return Ok(PathBuf::from(dir));
+    }
     let base = directories::BaseDirs::new().ok_or_else(|| StateError::DirectoryNotWritable {
         path: PathBuf::from("~/.local/share/cfgd"),
     })?;

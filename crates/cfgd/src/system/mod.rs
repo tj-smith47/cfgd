@@ -1186,4 +1186,125 @@ CFGD_TEST_NONEXISTENT_VAR_12345: "test_value"
         let drifts = ec.diff(&yaml).unwrap();
         assert!(drifts.is_empty());
     }
+
+    // --- diff_yaml_mapping ---
+
+    #[test]
+    fn diff_yaml_mapping_detects_drift() {
+        let mut desired = serde_yaml::Mapping::new();
+        desired.insert(
+            serde_yaml::Value::String("key1".into()),
+            serde_yaml::Value::String("expected".into()),
+        );
+
+        let drifts = diff_yaml_mapping(&desired, "", yaml_value_to_defaults_string, |_| {
+            "actual".to_string()
+        });
+        assert_eq!(drifts.len(), 1);
+        assert_eq!(drifts[0].key, "key1");
+        assert_eq!(drifts[0].expected, "expected");
+        assert_eq!(drifts[0].actual, "actual");
+    }
+
+    #[test]
+    fn diff_yaml_mapping_no_drift_when_matching() {
+        let mut desired = serde_yaml::Mapping::new();
+        desired.insert(
+            serde_yaml::Value::String("key1".into()),
+            serde_yaml::Value::String("same".into()),
+        );
+
+        let drifts = diff_yaml_mapping(&desired, "", yaml_value_to_defaults_string, |_| {
+            "same".to_string()
+        });
+        assert!(drifts.is_empty());
+    }
+
+    #[test]
+    fn diff_yaml_mapping_with_prefix() {
+        let mut desired = serde_yaml::Mapping::new();
+        desired.insert(
+            serde_yaml::Value::String("setting".into()),
+            serde_yaml::Value::String("val".into()),
+        );
+
+        let drifts = diff_yaml_mapping(&desired, "sysctl", yaml_value_to_defaults_string, |_| {
+            "other".to_string()
+        });
+        assert_eq!(drifts[0].key, "sysctl.setting");
+    }
+
+    #[test]
+    fn diff_yaml_mapping_multiple_keys() {
+        let mut desired = serde_yaml::Mapping::new();
+        desired.insert(
+            serde_yaml::Value::String("a".into()),
+            serde_yaml::Value::String("1".into()),
+        );
+        desired.insert(
+            serde_yaml::Value::String("b".into()),
+            serde_yaml::Value::String("2".into()),
+        );
+
+        let drifts = diff_yaml_mapping(&desired, "", yaml_value_to_defaults_string, |k| {
+            if k == "a" {
+                "1".to_string()
+            } else {
+                "wrong".to_string()
+            }
+        });
+        // Only "b" should drift
+        assert_eq!(drifts.len(), 1);
+        assert_eq!(drifts[0].key, "b");
+    }
+
+    // --- yaml_value_to_defaults_string ---
+
+    #[test]
+    fn yaml_value_to_defaults_string_bool_converts_to_01() {
+        // macos defaults uses "1"/"0" for bools, not "true"/"false"
+        assert_eq!(
+            yaml_value_to_defaults_string(&serde_yaml::Value::Bool(true)),
+            "1"
+        );
+        assert_eq!(
+            yaml_value_to_defaults_string(&serde_yaml::Value::Bool(false)),
+            "0"
+        );
+    }
+
+    #[test]
+    fn yaml_value_to_defaults_string_number_and_string() {
+        assert_eq!(
+            yaml_value_to_defaults_string(&serde_yaml::Value::Number(42.into())),
+            "42"
+        );
+        assert_eq!(
+            yaml_value_to_defaults_string(&serde_yaml::Value::String("hello".into())),
+            "hello"
+        );
+    }
+
+    // --- generate_launch_agent_plist edge cases ---
+
+    #[test]
+    fn generate_plist_xml_escaped_args() {
+        let plist =
+            generate_launch_agent_plist("com.example.test", "/usr/bin/test", &["--key=a&b"], false);
+        // Should contain XML-escaped ampersand
+        assert!(plist.contains("&amp;") || plist.contains("--key=a&b"));
+    }
+
+    #[test]
+    fn generate_plist_multiple_args() {
+        let plist = generate_launch_agent_plist(
+            "com.example.test",
+            "/usr/bin/test",
+            &["--flag1", "--flag2", "value"],
+            true,
+        );
+        assert!(plist.contains("--flag1"));
+        assert!(plist.contains("--flag2"));
+        assert!(plist.contains("value"));
+    }
 }

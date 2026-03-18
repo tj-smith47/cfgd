@@ -4126,4 +4126,548 @@ custom:
         let desired = cfgd_core::config::desired_packages_for("mypm", &profile);
         assert_eq!(desired, vec!["toolA".to_string(), "toolB".to_string()]);
     }
+
+    // --- strip_version_suffix / strip_arch_suffix ---
+
+    #[test]
+    fn strip_version_suffix_removes_version() {
+        assert_eq!(strip_version_suffix("curl-7.88.1"), "curl");
+    }
+
+    #[test]
+    fn strip_version_suffix_no_version() {
+        assert_eq!(strip_version_suffix("curl"), "curl");
+    }
+
+    #[test]
+    fn strip_version_suffix_hyphen_no_digit() {
+        assert_eq!(strip_version_suffix("lib-utils"), "lib-utils");
+    }
+
+    #[test]
+    fn strip_arch_suffix_removes_arch() {
+        assert_eq!(strip_arch_suffix("vim.x86_64"), "vim");
+    }
+
+    #[test]
+    fn strip_arch_suffix_noarch() {
+        assert_eq!(strip_arch_suffix("vim.noarch"), "vim");
+    }
+
+    #[test]
+    fn strip_arch_suffix_no_dot() {
+        assert_eq!(strip_arch_suffix("vim"), "vim");
+    }
+
+    // --- parse_simple_lines ---
+
+    #[test]
+    fn parse_simple_lines_basic() {
+        let result = parse_simple_lines("curl\nwget\n\nvim\n");
+        assert_eq!(result.len(), 3);
+        assert!(result.contains("curl"));
+        assert!(result.contains("wget"));
+        assert!(result.contains("vim"));
+    }
+
+    // --- parse_dnf_lines ---
+
+    #[test]
+    fn parse_dnf_lines_skips_headers() {
+        let result = parse_dnf_lines(
+            "Installed Packages\ncurl.x86_64  7.88  @base\nwget.x86_64  1.21  @base\nLast metadata check\n",
+        );
+        assert!(result.contains("curl"));
+        assert!(result.contains("wget"));
+        assert_eq!(result.len(), 2);
+    }
+
+    // --- parse_yum_lines ---
+
+    #[test]
+    fn parse_yum_lines_skips_headers() {
+        let result =
+            parse_yum_lines("Installed Packages\nvim.x86_64  8.2  @base\nLoaded plugins\n");
+        assert!(result.contains("vim"));
+        assert_eq!(result.len(), 1);
+    }
+
+    // --- parse_apk_lines ---
+
+    #[test]
+    fn parse_apk_lines_strips_version() {
+        let result = parse_apk_lines("curl-7.88.1-r1\nwget-1.21.4-r0\n");
+        assert!(result.contains("curl"));
+        assert!(result.contains("wget"));
+    }
+
+    // --- parse_zypper_lines ---
+
+    #[test]
+    fn parse_zypper_lines_parses_table() {
+        let output = "S  | Name      | Summary\n---+-----------+--------\ni+ | vim       | Vi IMproved\ni  | curl      | URL tool\n";
+        let result = parse_zypper_lines(output);
+        assert!(result.contains("vim"));
+        assert!(result.contains("curl"));
+    }
+
+    #[test]
+    fn parse_zypper_lines_skips_header_row() {
+        let output = "S | Name | Type\n--+------+-----\ni | vim  | package\n";
+        let result = parse_zypper_lines(output);
+        assert!(result.contains("vim"));
+        assert!(!result.contains("Name"));
+    }
+
+    // --- parse_pkg_lines ---
+
+    #[test]
+    fn parse_pkg_lines_strips_version() {
+        let result = parse_pkg_lines("curl-7.88.1\nnginx-1.25.3\n");
+        assert!(result.contains("curl"));
+        assert!(result.contains("nginx"));
+    }
+
+    // --- add_package (all managers) ---
+
+    #[test]
+    fn add_package_brew() {
+        let mut spec = PackagesSpec::default();
+        add_package("brew", "curl", &mut spec).unwrap();
+        assert_eq!(spec.brew.unwrap().formulae, vec!["curl"]);
+    }
+
+    #[test]
+    fn add_package_brew_tap() {
+        let mut spec = PackagesSpec::default();
+        add_package("brew-tap", "homebrew/core", &mut spec).unwrap();
+        assert_eq!(spec.brew.unwrap().taps, vec!["homebrew/core"]);
+    }
+
+    #[test]
+    fn add_package_brew_cask() {
+        let mut spec = PackagesSpec::default();
+        add_package("brew-cask", "firefox", &mut spec).unwrap();
+        assert_eq!(spec.brew.unwrap().casks, vec!["firefox"]);
+    }
+
+    #[test]
+    fn add_package_apt() {
+        let mut spec = PackagesSpec::default();
+        add_package("apt", "git", &mut spec).unwrap();
+        assert_eq!(spec.apt.unwrap().packages, vec!["git"]);
+    }
+
+    #[test]
+    fn add_package_cargo() {
+        let mut spec = PackagesSpec::default();
+        add_package("cargo", "ripgrep", &mut spec).unwrap();
+        assert_eq!(spec.cargo.unwrap().packages, vec!["ripgrep"]);
+    }
+
+    #[test]
+    fn add_package_npm() {
+        let mut spec = PackagesSpec::default();
+        add_package("npm", "typescript", &mut spec).unwrap();
+        assert_eq!(spec.npm.unwrap().global, vec!["typescript"]);
+    }
+
+    #[test]
+    fn add_package_pipx() {
+        let mut spec = PackagesSpec::default();
+        add_package("pipx", "black", &mut spec).unwrap();
+        assert_eq!(spec.pipx, vec!["black"]);
+    }
+
+    #[test]
+    fn add_package_dnf() {
+        let mut spec = PackagesSpec::default();
+        add_package("dnf", "vim", &mut spec).unwrap();
+        assert_eq!(spec.dnf, vec!["vim"]);
+    }
+
+    #[test]
+    fn add_package_apk() {
+        let mut spec = PackagesSpec::default();
+        add_package("apk", "curl", &mut spec).unwrap();
+        assert_eq!(spec.apk, vec!["curl"]);
+    }
+
+    #[test]
+    fn add_package_pacman() {
+        let mut spec = PackagesSpec::default();
+        add_package("pacman", "base-devel", &mut spec).unwrap();
+        assert_eq!(spec.pacman, vec!["base-devel"]);
+    }
+
+    #[test]
+    fn add_package_zypper() {
+        let mut spec = PackagesSpec::default();
+        add_package("zypper", "gcc", &mut spec).unwrap();
+        assert_eq!(spec.zypper, vec!["gcc"]);
+    }
+
+    #[test]
+    fn add_package_yum() {
+        let mut spec = PackagesSpec::default();
+        add_package("yum", "wget", &mut spec).unwrap();
+        assert_eq!(spec.yum, vec!["wget"]);
+    }
+
+    #[test]
+    fn add_package_pkg() {
+        let mut spec = PackagesSpec::default();
+        add_package("pkg", "nginx", &mut spec).unwrap();
+        assert_eq!(spec.pkg, vec!["nginx"]);
+    }
+
+    #[test]
+    fn add_package_snap() {
+        let mut spec = PackagesSpec::default();
+        add_package("snap", "core", &mut spec).unwrap();
+        assert_eq!(spec.snap.unwrap().packages, vec!["core"]);
+    }
+
+    #[test]
+    fn add_package_flatpak() {
+        let mut spec = PackagesSpec::default();
+        add_package("flatpak", "org.gnome.Calculator", &mut spec).unwrap();
+        assert_eq!(spec.flatpak.unwrap().packages, vec!["org.gnome.Calculator"]);
+    }
+
+    #[test]
+    fn add_package_nix() {
+        let mut spec = PackagesSpec::default();
+        add_package("nix", "nixpkgs.hello", &mut spec).unwrap();
+        assert_eq!(spec.nix, vec!["nixpkgs.hello"]);
+    }
+
+    #[test]
+    fn add_package_go() {
+        let mut spec = PackagesSpec::default();
+        add_package("go", "golang.org/x/tools/gopls@latest", &mut spec).unwrap();
+        assert_eq!(spec.go, vec!["golang.org/x/tools/gopls@latest"]);
+    }
+
+    #[test]
+    fn add_package_unknown_manager_returns_error() {
+        let mut spec = PackagesSpec::default();
+        assert!(add_package("nonexistent", "pkg", &mut spec).is_err());
+    }
+
+    #[test]
+    fn add_package_no_duplicate() {
+        let mut spec = PackagesSpec::default();
+        add_package("pipx", "black", &mut spec).unwrap();
+        add_package("pipx", "black", &mut spec).unwrap();
+        assert_eq!(spec.pipx.len(), 1);
+    }
+
+    // --- remove_package ---
+
+    #[test]
+    fn remove_package_brew() {
+        let mut spec = PackagesSpec::default();
+        add_package("brew", "curl", &mut spec).unwrap();
+        assert!(remove_package("brew", "curl", &mut spec).unwrap());
+        assert!(spec.brew.unwrap().formulae.is_empty());
+    }
+
+    #[test]
+    fn remove_package_brew_tap() {
+        let mut spec = PackagesSpec::default();
+        add_package("brew-tap", "homebrew/core", &mut spec).unwrap();
+        assert!(remove_package("brew-tap", "homebrew/core", &mut spec).unwrap());
+    }
+
+    #[test]
+    fn remove_package_brew_cask() {
+        let mut spec = PackagesSpec::default();
+        add_package("brew-cask", "firefox", &mut spec).unwrap();
+        assert!(remove_package("brew-cask", "firefox", &mut spec).unwrap());
+    }
+
+    #[test]
+    fn remove_package_apt() {
+        let mut spec = PackagesSpec::default();
+        add_package("apt", "git", &mut spec).unwrap();
+        assert!(remove_package("apt", "git", &mut spec).unwrap());
+    }
+
+    #[test]
+    fn remove_package_cargo() {
+        let mut spec = PackagesSpec::default();
+        add_package("cargo", "rg", &mut spec).unwrap();
+        assert!(remove_package("cargo", "rg", &mut spec).unwrap());
+    }
+
+    #[test]
+    fn remove_package_npm() {
+        let mut spec = PackagesSpec::default();
+        add_package("npm", "ts", &mut spec).unwrap();
+        assert!(remove_package("npm", "ts", &mut spec).unwrap());
+    }
+
+    #[test]
+    fn remove_package_pipx() {
+        let mut spec = PackagesSpec::default();
+        add_package("pipx", "black", &mut spec).unwrap();
+        assert!(remove_package("pipx", "black", &mut spec).unwrap());
+    }
+
+    #[test]
+    fn remove_package_dnf() {
+        let mut spec = PackagesSpec::default();
+        add_package("dnf", "vim", &mut spec).unwrap();
+        assert!(remove_package("dnf", "vim", &mut spec).unwrap());
+    }
+
+    #[test]
+    fn remove_package_snap() {
+        let mut spec = PackagesSpec::default();
+        add_package("snap", "core", &mut spec).unwrap();
+        assert!(remove_package("snap", "core", &mut spec).unwrap());
+    }
+
+    #[test]
+    fn remove_package_flatpak() {
+        let mut spec = PackagesSpec::default();
+        add_package("flatpak", "app", &mut spec).unwrap();
+        assert!(remove_package("flatpak", "app", &mut spec).unwrap());
+    }
+
+    #[test]
+    fn remove_package_nix() {
+        let mut spec = PackagesSpec::default();
+        add_package("nix", "hello", &mut spec).unwrap();
+        assert!(remove_package("nix", "hello", &mut spec).unwrap());
+    }
+
+    #[test]
+    fn remove_package_go() {
+        let mut spec = PackagesSpec::default();
+        add_package("go", "gopls", &mut spec).unwrap();
+        assert!(remove_package("go", "gopls", &mut spec).unwrap());
+    }
+
+    #[test]
+    fn remove_package_not_found() {
+        let mut spec = PackagesSpec::default();
+        assert!(!remove_package("pipx", "nope", &mut spec).unwrap());
+    }
+
+    #[test]
+    fn remove_package_unknown_manager_returns_error() {
+        let mut spec = PackagesSpec::default();
+        assert!(remove_package("nonexistent", "pkg", &mut spec).is_err());
+    }
+
+    // --- apply_packages ---
+
+    #[test]
+    fn apply_packages_install() {
+        let mock = MockPackageManager::new("cargo", true, vec![]);
+        let printer = Printer::new(cfgd_core::output::Verbosity::Quiet);
+        let actions = vec![PackageAction::Install {
+            manager: "cargo".into(),
+            packages: vec!["bat".into(), "fd-find".into()],
+            origin: "local".into(),
+        }];
+        let managers: Vec<&dyn PackageManager> = vec![&mock];
+        apply_packages(&actions, &managers, &printer).unwrap();
+        let installs = mock.installs.lock().unwrap();
+        assert_eq!(installs.len(), 1);
+        assert_eq!(installs[0], vec!["bat", "fd-find"]);
+    }
+
+    #[test]
+    fn apply_packages_uninstall() {
+        let mock = MockPackageManager::new("cargo", true, vec!["bat"]);
+        let printer = Printer::new(cfgd_core::output::Verbosity::Quiet);
+        let actions = vec![PackageAction::Uninstall {
+            manager: "cargo".into(),
+            packages: vec!["bat".into()],
+            origin: "local".into(),
+        }];
+        let managers: Vec<&dyn PackageManager> = vec![&mock];
+        apply_packages(&actions, &managers, &printer).unwrap();
+        let uninstalls = mock.uninstalls.lock().unwrap();
+        assert_eq!(uninstalls.len(), 1);
+    }
+
+    #[test]
+    fn apply_packages_bootstrap() {
+        let mock = MockPackageManager::new("cargo", false, vec![]).with_bootstrap();
+        let printer = Printer::new(cfgd_core::output::Verbosity::Quiet);
+        let actions = vec![PackageAction::Bootstrap {
+            manager: "cargo".into(),
+            method: "rustup".into(),
+            origin: "local".into(),
+        }];
+        let managers: Vec<&dyn PackageManager> = vec![&mock];
+        apply_packages(&actions, &managers, &printer).unwrap();
+    }
+
+    #[test]
+    fn apply_packages_skip_no_error() {
+        let printer = Printer::new(cfgd_core::output::Verbosity::Quiet);
+        let actions = vec![PackageAction::Skip {
+            manager: "snap".into(),
+            reason: "not available".into(),
+            origin: "local".into(),
+        }];
+        apply_packages(&actions, &[], &printer).unwrap();
+    }
+
+    // --- format_package_actions ---
+
+    #[test]
+    fn format_package_actions_install() {
+        let actions = vec![PackageAction::Install {
+            manager: "brew".into(),
+            packages: vec!["curl".into(), "wget".into()],
+            origin: "local".into(),
+        }];
+        let formatted = format_package_actions(&actions);
+        assert_eq!(formatted.len(), 1);
+        assert!(formatted[0].contains("install via brew"));
+        assert!(formatted[0].contains("curl"));
+    }
+
+    #[test]
+    fn format_package_actions_bootstrap() {
+        let actions = vec![PackageAction::Bootstrap {
+            manager: "cargo".into(),
+            method: "rustup".into(),
+            origin: "local".into(),
+        }];
+        let formatted = format_package_actions(&actions);
+        assert!(formatted[0].contains("bootstrap cargo via rustup"));
+    }
+
+    #[test]
+    fn format_package_actions_skip() {
+        let actions = vec![PackageAction::Skip {
+            manager: "snap".into(),
+            reason: "unavailable".into(),
+            origin: "local".into(),
+        }];
+        let formatted = format_package_actions(&actions);
+        assert!(formatted[0].contains("skip snap"));
+    }
+
+    // --- plan with bootstrap ---
+
+    #[test]
+    fn plan_bootstrap_unavailable_bootstrappable() {
+        let mock = MockPackageManager::new("cargo", false, vec![]).with_bootstrap();
+        let profile = test_profile(PackagesSpec {
+            cargo: Some(cfgd_core::config::CargoSpec {
+                file: None,
+                packages: vec!["bat".into()],
+            }),
+            ..Default::default()
+        });
+        let managers: Vec<&dyn PackageManager> = vec![&mock];
+        let actions = plan_packages(&profile, &managers).unwrap();
+
+        assert_eq!(actions.len(), 2);
+        assert!(matches!(&actions[0], PackageAction::Bootstrap { .. }));
+        assert!(matches!(&actions[1], PackageAction::Install { .. }));
+    }
+
+    #[test]
+    fn plan_skip_unavailable_no_bootstrap() {
+        let mock = MockPackageManager::new("snap", false, vec![]);
+        let profile = test_profile(PackagesSpec {
+            snap: Some(cfgd_core::config::SnapSpec {
+                packages: vec!["core".into()],
+                classic: vec![],
+            }),
+            ..Default::default()
+        });
+        let managers: Vec<&dyn PackageManager> = vec![&mock];
+        let actions = plan_packages(&profile, &managers).unwrap();
+
+        assert_eq!(actions.len(), 1);
+        assert!(matches!(&actions[0], PackageAction::Skip { .. }));
+    }
+
+    // --- all_package_managers ---
+
+    #[test]
+    fn all_package_managers_returns_nonempty() {
+        let managers = all_package_managers();
+        assert!(!managers.is_empty());
+        // Should contain at least brew, apt, cargo, npm, pipx
+        let names: Vec<&str> = managers.iter().map(|m| m.name()).collect();
+        assert!(names.contains(&"brew"));
+        assert!(names.contains(&"cargo"));
+        assert!(names.contains(&"npm"));
+        assert!(names.contains(&"pipx"));
+    }
+
+    // --- resolve_manifest_packages ---
+
+    #[test]
+    fn resolve_manifest_packages_brewfile() {
+        let dir = tempfile::tempdir().unwrap();
+        let brewfile = dir.path().join("Brewfile");
+        std::fs::write(
+            &brewfile,
+            "brew \"ripgrep\"\nbrew \"fd\"\ncask \"firefox\"\ntap \"homebrew/cask\"\n",
+        )
+        .unwrap();
+
+        let mut spec = PackagesSpec {
+            brew: Some(cfgd_core::config::BrewSpec {
+                file: Some("Brewfile".into()),
+                formulae: vec!["existing".into()],
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+
+        resolve_manifest_packages(&mut spec, dir.path()).unwrap();
+        let brew = spec.brew.unwrap();
+        assert!(brew.formulae.contains(&"ripgrep".to_string()));
+        assert!(brew.formulae.contains(&"fd".to_string()));
+        assert!(brew.formulae.contains(&"existing".to_string()));
+        assert!(brew.casks.contains(&"firefox".to_string()));
+        assert!(brew.taps.contains(&"homebrew/cask".to_string()));
+    }
+
+    #[test]
+    fn resolve_manifest_packages_apt_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let apt_file = dir.path().join("packages.apt.txt");
+        std::fs::write(&apt_file, "git\ncurl\n# comment\n\n").unwrap();
+
+        let mut spec = PackagesSpec {
+            apt: Some(cfgd_core::config::AptSpec {
+                file: Some("packages.apt.txt".into()),
+                packages: vec![],
+            }),
+            ..Default::default()
+        };
+
+        resolve_manifest_packages(&mut spec, dir.path()).unwrap();
+        let apt = spec.apt.unwrap();
+        assert!(apt.packages.contains(&"git".to_string()));
+        assert!(apt.packages.contains(&"curl".to_string()));
+        assert!(!apt.packages.contains(&"# comment".to_string()));
+    }
+
+    // --- stderr_lossy ---
+
+    #[test]
+    fn stderr_lossy_converts() {
+        use std::process::Output;
+        let output = Output {
+            status: std::process::ExitStatus::default(),
+            stdout: vec![],
+            stderr: b"error message".to_vec(),
+        };
+        assert_eq!(stderr_lossy(&output), "error message");
+    }
 }

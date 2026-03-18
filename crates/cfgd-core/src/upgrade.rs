@@ -628,4 +628,58 @@ mod tests {
     fn version_check_interval_is_24h() {
         assert_eq!(version_check_interval(), Duration::from_secs(86400));
     }
+
+    #[test]
+    fn atomic_replace_overwrites_target() {
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("source");
+        let tgt = dir.path().join("target");
+        std::fs::write(&src, "new content").unwrap();
+        std::fs::write(&tgt, "old content").unwrap();
+
+        atomic_replace(&src, &tgt).unwrap();
+        assert_eq!(std::fs::read_to_string(&tgt).unwrap(), "new content");
+    }
+
+    #[test]
+    fn atomic_replace_creates_target() {
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("source");
+        let tgt = dir.path().join("target");
+        std::fs::write(&src, "data").unwrap();
+
+        atomic_replace(&src, &tgt).unwrap();
+        assert_eq!(std::fs::read_to_string(&tgt).unwrap(), "data");
+    }
+
+    #[test]
+    fn extract_tarball_valid() {
+        use flate2::Compression;
+        use flate2::write::GzEncoder;
+
+        let dir = tempfile::tempdir().unwrap();
+        let archive_path = dir.path().join("test.tar.gz");
+        let dest = dir.path().join("out");
+        std::fs::create_dir_all(&dest).unwrap();
+
+        // Create a .tar.gz with one file
+        {
+            let file = std::fs::File::create(&archive_path).unwrap();
+            let enc = GzEncoder::new(file, Compression::default());
+            let mut tar_builder = tar::Builder::new(enc);
+            let content = b"hello from tarball";
+            let mut header = tar::Header::new_gnu();
+            header.set_size(content.len() as u64);
+            header.set_mode(0o644);
+            header.set_cksum();
+            tar_builder
+                .append_data(&mut header, "test.txt", &content[..])
+                .unwrap();
+            tar_builder.finish().unwrap();
+        }
+
+        extract_tarball(&archive_path, &dest).unwrap();
+        let extracted = std::fs::read_to_string(dest.join("test.txt")).unwrap();
+        assert_eq!(extracted, "hello from tarball");
+    }
 }

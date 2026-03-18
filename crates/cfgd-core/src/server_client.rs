@@ -621,4 +621,74 @@ mod tests {
         assert_eq!(resp.challenge_id, "abc");
         assert_eq!(resp.nonce, "cfgd_ch_xyz");
     }
+
+    #[test]
+    fn drift_report_empty_details() {
+        let report = DriftReport { details: vec![] };
+        let json = serde_json::to_string(&report).unwrap();
+        assert!(json.contains("\"details\":[]"));
+    }
+
+    #[test]
+    fn drift_report_multiple_details() {
+        let report = DriftReport {
+            details: vec![
+                DriftDetail {
+                    field: "a".into(),
+                    expected: "1".into(),
+                    actual: "2".into(),
+                },
+                DriftDetail {
+                    field: "b".into(),
+                    expected: "3".into(),
+                    actual: "4".into(),
+                },
+            ],
+        };
+        let json = serde_json::to_string(&report).unwrap();
+        assert!(json.contains("\"field\":\"a\""));
+        assert!(json.contains("\"field\":\"b\""));
+        assert_eq!(report.details.len(), 2);
+    }
+
+    #[test]
+    fn credential_with_team_none() {
+        let cred = DeviceCredential {
+            server_url: "https://example.com".into(),
+            device_id: "d1".into(),
+            api_key: "key".into(),
+            username: "user".into(),
+            team: None,
+            enrolled_at: "2026-01-01T00:00:00Z".into(),
+        };
+        let json = serde_json::to_string(&cred).unwrap();
+        let deser: DeviceCredential = serde_json::from_str(&json).unwrap();
+        assert!(deser.team.is_none());
+    }
+
+    #[test]
+    fn credential_file_permissions() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("cred.json");
+
+        let cred = DeviceCredential {
+            server_url: "https://example.com".into(),
+            device_id: "d1".into(),
+            api_key: "key".into(),
+            username: "user".into(),
+            team: Some("acme".into()),
+            enrolled_at: "2026-01-01T00:00:00Z".into(),
+        };
+
+        let json = serde_json::to_string_pretty(&cred).unwrap();
+        std::fs::write(&path, &json).unwrap();
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+            let meta = std::fs::metadata(&path).unwrap();
+            assert_eq!(meta.permissions().mode() & 0o777, 0o600);
+        }
+    }
 }

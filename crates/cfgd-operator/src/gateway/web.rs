@@ -825,3 +825,62 @@ fn html_escape(s: &str) -> String {
         .replace('>', "&gt;")
         .replace('"', "&quot;")
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // --- html_escape ---
+
+    #[test]
+    fn html_escape_ampersand() {
+        assert_eq!(html_escape("a&b"), "a&amp;b");
+    }
+
+    #[test]
+    fn html_escape_lt_gt() {
+        assert_eq!(html_escape("<script>"), "&lt;script&gt;");
+    }
+
+    #[test]
+    fn html_escape_quotes() {
+        assert_eq!(html_escape(r#"say "hello""#), "say &quot;hello&quot;");
+    }
+
+    #[test]
+    fn html_escape_no_op() {
+        assert_eq!(html_escape("plain text"), "plain text");
+    }
+
+    #[test]
+    fn html_escape_all_special() {
+        assert_eq!(html_escape(r#"&<>""#), "&amp;&lt;&gt;&quot;");
+    }
+
+    // --- status_to_class ---
+
+    #[test]
+    fn status_to_class_healthy() {
+        assert_eq!(status_to_class("healthy"), "healthy");
+    }
+
+    #[test]
+    fn status_to_class_drifted() {
+        assert_eq!(status_to_class("drifted"), "drifted");
+    }
+
+    #[test]
+    fn status_to_class_pending_reconcile() {
+        assert_eq!(status_to_class("pending-reconcile"), "pending-reconcile");
+    }
+
+    #[test]
+    fn status_to_class_offline() {
+        assert_eq!(status_to_class("offline"), "offline");
+    }
+
+    #[test]
+    fn status_to_class_unknown_defaults_to_offline() {
+        assert_eq!(status_to_class("something-else"), "offline");
+    }
+}

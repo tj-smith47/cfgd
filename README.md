@@ -10,8 +10,16 @@ Declarative, GitOps-inspired machine configuration — bootstrap entire machine 
 
 <p align="center">
 
+[![AutoTag](https://github.com/tj-smith47/cfgd/actions/workflows/auto-tag.yml/badge.svg)](https://github.com/tj-smith47/cfgd/actions/workflows/auto-tag.yml)
 [![CI](https://github.com/tj-smith47/cfgd/actions/workflows/ci.yml/badge.svg)](https://github.com/tj-smith47/cfgd/actions/workflows/ci.yml)
+[![E2E – CLI](https://github.com/tj-smith47/cfgd/actions/workflows/e2e-cli.yml/badge.svg)](https://github.com/tj-smith47/cfgd/actions/workflows/e2e-cli.yml)
+
+[![E2E – Full Stack](https://github.com/tj-smith47/cfgd/actions/workflows/e2e-full-stack.yml/badge.svg)](https://github.com/tj-smith47/cfgd/actions/workflows/e2e-full-stack.yml)
+[![E2E – Node](https://github.com/tj-smith47/cfgd/actions/workflows/e2e-node.yml/badge.svg)](https://github.com/tj-smith47/cfgd/actions/workflows/e2e-node.yml)
+[![E2E – Operator](https://github.com/tj-smith47/cfgd/actions/workflows/e2e-operator.yml/badge.svg)](https://github.com/tj-smith47/cfgd/actions/workflows/e2e-operator.yml)
+
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![Release](https://github.com/tj-smith47/cfgd/actions/workflows/release.yml/badge.svg)](https://github.com/tj-smith47/cfgd/actions/workflows/release.yml)
 
 </p>
 

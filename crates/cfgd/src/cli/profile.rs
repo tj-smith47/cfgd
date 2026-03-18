@@ -1090,3 +1090,253 @@ fn prompt_restore_backups(targets: &[PathBuf], printer: &Printer) -> anyhow::Res
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // --- parse_manager_package ---
+
+    #[test]
+    fn parse_manager_package_valid_brew() {
+        let (mgr, pkg) = parse_manager_package("brew:curl").unwrap();
+        assert_eq!(mgr, "brew");
+        assert_eq!(pkg, "curl");
+    }
+
+    #[test]
+    fn parse_manager_package_valid_cargo() {
+        let (mgr, pkg) = parse_manager_package("cargo:bat").unwrap();
+        assert_eq!(mgr, "cargo");
+        assert_eq!(pkg, "bat");
+    }
+
+    #[test]
+    fn parse_manager_package_missing_colon() {
+        assert!(parse_manager_package("brewcurl").is_err());
+    }
+
+    #[test]
+    fn parse_manager_package_empty_manager() {
+        assert!(parse_manager_package(":curl").is_err());
+    }
+
+    #[test]
+    fn parse_manager_package_empty_package() {
+        assert!(parse_manager_package("brew:").is_err());
+    }
+
+    // --- parse_secret_spec ---
+
+    #[test]
+    fn parse_secret_spec_valid_simple() {
+        let spec = parse_secret_spec("secrets/api-key.enc:~/.config/app/key").unwrap();
+        assert_eq!(spec.source, "secrets/api-key.enc");
+        assert_eq!(spec.target, PathBuf::from("~/.config/app/key"));
+        assert!(spec.template.is_none());
+        assert!(spec.backend.is_none());
+    }
+
+    #[test]
+    fn parse_secret_spec_op_url() {
+        // rsplit_once should split on the LAST colon, so op://vault/item stays together
+        let spec = parse_secret_spec("op://vault/item:~/target").unwrap();
+        assert_eq!(spec.source, "op://vault/item");
+        assert_eq!(spec.target, PathBuf::from("~/target"));
+    }
+
+    #[test]
+    fn parse_secret_spec_missing_colon() {
+        assert!(parse_secret_spec("noseparator").is_err());
+    }
+
+    #[test]
+    fn parse_secret_spec_empty_source() {
+        assert!(parse_secret_spec(":target").is_err());
+    }
+
+    #[test]
+    fn parse_secret_spec_empty_target() {
+        assert!(parse_secret_spec("source:").is_err());
+    }
+
+    // --- update_script_list ---
+
+    fn make_printer() -> Printer {
+        Printer::new(cfgd_core::output::Verbosity::Quiet)
+    }
+
+    #[test]
+    fn update_script_list_add_to_empty() {
+        let printer = make_printer();
+        let mut scripts: Option<config::ScriptSpec> = None;
+        let add = vec![PathBuf::from("setup.sh")];
+        let changes = update_script_list(
+            &mut scripts,
+            &add,
+            &[],
+            "pre-apply",
+            |s| &mut s.pre_reconcile,
+            &printer,
+        );
+        assert_eq!(changes, 1);
+        assert!(scripts.is_some());
+        assert_eq!(
+            scripts.unwrap().pre_reconcile,
+            vec![PathBuf::from("setup.sh")]
+        );
+    }
+
+    #[test]
+    fn update_script_list_add_to_existing() {
+        let printer = make_printer();
+        let mut scripts = Some(config::ScriptSpec {
+            pre_reconcile: vec![PathBuf::from("a.sh")],
+            post_reconcile: vec![],
+        });
+        let add = vec![PathBuf::from("b.sh")];
+        let changes = update_script_list(
+            &mut scripts,
+            &add,
+            &[],
+            "pre-apply",
+            |s| &mut s.pre_reconcile,
+            &printer,
+        );
+        assert_eq!(changes, 1);
+        assert_eq!(
+            scripts.unwrap().pre_reconcile,
+            vec![PathBuf::from("a.sh"), PathBuf::from("b.sh")]
+        );
+    }
+
+    #[test]
+    fn update_script_list_add_duplicate() {
+        let printer = make_printer();
+        let mut scripts = Some(config::ScriptSpec {
+            pre_reconcile: vec![PathBuf::from("a.sh")],
+            post_reconcile: vec![],
+        });
+        let add = vec![PathBuf::from("a.sh")];
+        let changes = update_script_list(
+            &mut scripts,
+            &add,
+            &[],
+            "pre-apply",
+            |s| &mut s.pre_reconcile,
+            &printer,
+        );
+        assert_eq!(changes, 0);
+        assert_eq!(scripts.unwrap().pre_reconcile.len(), 1);
+    }
+
+    #[test]
+    fn update_script_list_remove_existing() {
+        let printer = make_printer();
+        let mut scripts = Some(config::ScriptSpec {
+            pre_reconcile: vec![PathBuf::from("a.sh"), PathBuf::from("b.sh")],
+            post_reconcile: vec![],
+        });
+        let remove = vec![PathBuf::from("a.sh")];
+        let changes = update_script_list(
+            &mut scripts,
+            &[],
+            &remove,
+            "pre-apply",
+            |s| &mut s.pre_reconcile,
+            &printer,
+        );
+        assert_eq!(changes, 1);
+        assert_eq!(scripts.unwrap().pre_reconcile, vec![PathBuf::from("b.sh")]);
+    }
+
+    #[test]
+    fn update_script_list_remove_nonexistent() {
+        let printer = make_printer();
+        let mut scripts = Some(config::ScriptSpec {
+            pre_reconcile: vec![PathBuf::from("a.sh")],
+            post_reconcile: vec![],
+        });
+        let remove = vec![PathBuf::from("nope.sh")];
+        let changes = update_script_list(
+            &mut scripts,
+            &[],
+            &remove,
+            "pre-apply",
+            |s| &mut s.pre_reconcile,
+            &printer,
+        );
+        assert_eq!(changes, 0);
+    }
+
+    #[test]
+    fn update_script_list_remove_from_none() {
+        let printer = make_printer();
+        let mut scripts: Option<config::ScriptSpec> = None;
+        let remove = vec![PathBuf::from("nope.sh")];
+        let changes = update_script_list(
+            &mut scripts,
+            &[],
+            &remove,
+            "pre-apply",
+            |s| &mut s.pre_reconcile,
+            &printer,
+        );
+        assert_eq!(changes, 0);
+        assert!(scripts.is_none());
+    }
+
+    // --- profiles_inheriting ---
+
+    #[test]
+    fn profiles_inheriting_no_dir() {
+        let result = profiles_inheriting(Path::new("/nonexistent-dir-12345"), "base").unwrap();
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn profiles_inheriting_no_match() {
+        let dir = tempfile::tempdir().unwrap();
+        let profile = format!(
+            "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: child\nspec:\n  inherits:\n    - other\n  modules: []\n"
+        );
+        std::fs::write(dir.path().join("child.yaml"), &profile).unwrap();
+
+        let result = profiles_inheriting(dir.path(), "base").unwrap();
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn profiles_inheriting_match_found() {
+        let dir = tempfile::tempdir().unwrap();
+        let profile = format!(
+            "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: child\nspec:\n  inherits:\n    - base\n  modules: []\n"
+        );
+        std::fs::write(dir.path().join("child.yaml"), &profile).unwrap();
+
+        let result = profiles_inheriting(dir.path(), "base").unwrap();
+        assert_eq!(result, vec!["child"]);
+    }
+
+    // --- collect_module_file_targets ---
+
+    #[test]
+    fn collect_module_file_targets_nonexistent_returns_empty() {
+        let dir = tempfile::tempdir().unwrap();
+        let result = collect_module_file_targets("nope", dir.path());
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn collect_module_file_targets_local_module() {
+        let dir = tempfile::tempdir().unwrap();
+        let module_dir = dir.path().join("modules").join("test-mod");
+        std::fs::create_dir_all(&module_dir).unwrap();
+        let module_yaml = "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: test-mod\nspec:\n  packages: []\n  files:\n    - source: foo.conf\n      target: /tmp/foo.conf\n";
+        std::fs::write(module_dir.join("module.yaml"), module_yaml).unwrap();
+
+        let result = collect_module_file_targets("test-mod", dir.path());
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0], PathBuf::from("/tmp/foo.conf"));
+    }
+}

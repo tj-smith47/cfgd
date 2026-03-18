@@ -1739,4 +1739,335 @@ mod tests {
         let result = fm.plan(&resolved.merged);
         assert!(result.is_err());
     }
+
+    // --- is_tera_template ---
+
+    #[test]
+    fn is_tera_template_true() {
+        assert!(is_tera_template(Path::new("config.txt.tera")));
+    }
+
+    #[test]
+    fn is_tera_template_false() {
+        assert!(!is_tera_template(Path::new("config.txt")));
+        assert!(!is_tera_template(Path::new("noext")));
+    }
+
+    // --- diff ---
+
+    #[test]
+    fn diff_no_changes_prints_success() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_dir = dir.path();
+
+        let files_dir = config_dir.join("files");
+        fs::create_dir_all(&files_dir).unwrap();
+        fs::write(files_dir.join("test.txt"), "same content").unwrap();
+
+        let target_dir = config_dir.join("target");
+        fs::create_dir_all(&target_dir).unwrap();
+        let target = target_dir.join("test.txt");
+        fs::write(&target, "same content").unwrap();
+
+        let resolved = make_resolved_profile(
+            vec![],
+            FilesSpec {
+                managed: vec![ManagedFileSpec {
+                    source: "files/test.txt".to_string(),
+                    target,
+                    strategy: Some(FileStrategy::Copy),
+                    private: false,
+                    origin: None,
+                }],
+                permissions: HashMap::new(),
+            },
+        );
+
+        let printer = cfgd_core::output::Printer::new(cfgd_core::output::Verbosity::Quiet);
+        let fm = CfgdFileManager::new(config_dir, &resolved).unwrap();
+        assert!(fm.diff(&resolved.merged, &printer).is_ok());
+    }
+
+    #[test]
+    fn diff_detects_content_difference() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_dir = dir.path();
+
+        let files_dir = config_dir.join("files");
+        fs::create_dir_all(&files_dir).unwrap();
+        fs::write(files_dir.join("test.txt"), "new").unwrap();
+
+        let target_dir = config_dir.join("target");
+        fs::create_dir_all(&target_dir).unwrap();
+        let target = target_dir.join("test.txt");
+        fs::write(&target, "old").unwrap();
+
+        let resolved = make_resolved_profile(
+            vec![],
+            FilesSpec {
+                managed: vec![ManagedFileSpec {
+                    source: "files/test.txt".to_string(),
+                    target,
+                    strategy: Some(FileStrategy::Copy),
+                    private: false,
+                    origin: None,
+                }],
+                permissions: HashMap::new(),
+            },
+        );
+
+        let printer = cfgd_core::output::Printer::new(cfgd_core::output::Verbosity::Quiet);
+        let fm = CfgdFileManager::new(config_dir, &resolved).unwrap();
+        // Should succeed (diff is displayed, not an error)
+        assert!(fm.diff(&resolved.merged, &printer).is_ok());
+    }
+
+    #[test]
+    fn diff_new_file_shown() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_dir = dir.path();
+
+        let files_dir = config_dir.join("files");
+        fs::create_dir_all(&files_dir).unwrap();
+        fs::write(files_dir.join("new.txt"), "brand new").unwrap();
+
+        let target = config_dir.join("nonexistent").join("new.txt");
+
+        let resolved = make_resolved_profile(
+            vec![],
+            FilesSpec {
+                managed: vec![ManagedFileSpec {
+                    source: "files/new.txt".to_string(),
+                    target,
+                    strategy: Some(FileStrategy::Copy),
+                    private: false,
+                    origin: None,
+                }],
+                permissions: HashMap::new(),
+            },
+        );
+
+        let printer = cfgd_core::output::Printer::new(cfgd_core::output::Verbosity::Quiet);
+        let fm = CfgdFileManager::new(config_dir, &resolved).unwrap();
+        assert!(fm.diff(&resolved.merged, &printer).is_ok());
+    }
+
+    // --- render_template_for_display ---
+
+    #[test]
+    fn render_template_for_display_basic() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_dir = dir.path();
+
+        let files_dir = config_dir.join("files");
+        fs::create_dir_all(&files_dir).unwrap();
+        let tpl = files_dir.join("greeting.txt.tera");
+        fs::write(&tpl, "Hello {{ name }}!").unwrap();
+
+        let env = vec![EnvVar {
+            name: "name".into(),
+            value: "world".into(),
+        }];
+
+        let resolved = make_resolved_profile(env, FilesSpec::default());
+        let fm = CfgdFileManager::new(config_dir, &resolved).unwrap();
+
+        let rendered = fm.render_template_for_display(&tpl).unwrap();
+        assert_eq!(rendered, "Hello world!");
+    }
+
+    // --- check_permissions ---
+
+    #[test]
+    fn check_permissions_drift_detected() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_dir = dir.path();
+
+        let target = config_dir.join("secret.txt");
+        fs::write(&target, "data").unwrap();
+        // Set permissive permissions
+        fs::set_permissions(&target, fs::Permissions::from_mode(0o644)).unwrap();
+
+        let mut permissions = HashMap::new();
+        permissions.insert(target.display().to_string(), "600".to_string());
+
+        let managed = ManagedFileSpec {
+            source: "files/secret.txt".to_string(),
+            target: target.clone(),
+            strategy: Some(FileStrategy::Copy),
+            private: false,
+            origin: None,
+        };
+
+        let resolved = make_resolved_profile(
+            vec![],
+            FilesSpec {
+                managed: vec![managed.clone()],
+                permissions,
+            },
+        );
+
+        let fm = CfgdFileManager::new(config_dir, &resolved).unwrap();
+        let action = fm
+            .check_permissions(&target, &managed, &resolved.merged)
+            .unwrap();
+        assert!(action.is_some());
+        assert!(matches!(
+            action.unwrap(),
+            FileAction::SetPermissions { mode: 0o600, .. }
+        ));
+    }
+
+    #[test]
+    fn check_permissions_no_drift() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_dir = dir.path();
+
+        let target = config_dir.join("secret.txt");
+        fs::write(&target, "data").unwrap();
+        fs::set_permissions(&target, fs::Permissions::from_mode(0o600)).unwrap();
+
+        let mut permissions = HashMap::new();
+        permissions.insert(target.display().to_string(), "600".to_string());
+
+        let managed = ManagedFileSpec {
+            source: "files/secret.txt".to_string(),
+            target: target.clone(),
+            strategy: Some(FileStrategy::Copy),
+            private: false,
+            origin: None,
+        };
+
+        let resolved = make_resolved_profile(
+            vec![],
+            FilesSpec {
+                managed: vec![managed.clone()],
+                permissions,
+            },
+        );
+
+        let fm = CfgdFileManager::new(config_dir, &resolved).unwrap();
+        let action = fm
+            .check_permissions(&target, &managed, &resolved.merged)
+            .unwrap();
+        assert!(action.is_none());
+    }
+
+    // --- set_permissions ---
+
+    #[test]
+    fn set_permissions_changes_mode() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("test.txt");
+        fs::write(&file, "data").unwrap();
+        fs::set_permissions(&file, fs::Permissions::from_mode(0o644)).unwrap();
+
+        set_permissions(&file, 0o600).unwrap();
+
+        let metadata = fs::metadata(&file).unwrap();
+        assert_eq!(metadata.permissions().mode() & 0o777, 0o600);
+    }
+
+    // --- ensure_target_writable ---
+
+    #[test]
+    fn ensure_target_writable_creates_parent() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("sub").join("deep").join("file.txt");
+        ensure_target_writable(&target).unwrap();
+        assert!(target.parent().unwrap().exists());
+    }
+
+    // --- format_tera_error ---
+
+    #[test]
+    fn format_tera_error_basic() {
+        // Create a tera error by trying to render invalid template
+        let mut tera = Tera::default();
+        let err = tera.add_raw_template("bad", "{{ invalid %}").unwrap_err();
+        let formatted = format_tera_error(&err);
+        assert!(!formatted.is_empty());
+    }
+
+    // --- multiple files in plan ---
+
+    #[test]
+    fn plan_multiple_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_dir = dir.path();
+
+        let files_dir = config_dir.join("files");
+        fs::create_dir_all(&files_dir).unwrap();
+        fs::write(files_dir.join("a.txt"), "aaa").unwrap();
+        fs::write(files_dir.join("b.txt"), "bbb").unwrap();
+
+        let target_a = config_dir.join("out").join("a.txt");
+        let target_b = config_dir.join("out").join("b.txt");
+
+        let resolved = make_resolved_profile(
+            vec![],
+            FilesSpec {
+                managed: vec![
+                    ManagedFileSpec {
+                        source: "files/a.txt".to_string(),
+                        target: target_a,
+                        strategy: Some(FileStrategy::Copy),
+                        private: false,
+                        origin: None,
+                    },
+                    ManagedFileSpec {
+                        source: "files/b.txt".to_string(),
+                        target: target_b,
+                        strategy: Some(FileStrategy::Copy),
+                        private: false,
+                        origin: None,
+                    },
+                ],
+                permissions: HashMap::new(),
+            },
+        );
+
+        let fm = CfgdFileManager::new(config_dir, &resolved).unwrap();
+        let actions = fm.plan(&resolved.merged).unwrap();
+        assert_eq!(actions.len(), 2);
+    }
+
+    // --- apply update overwrites ---
+
+    #[test]
+    fn apply_update_overwrites_target() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_dir = dir.path();
+
+        let files_dir = config_dir.join("files");
+        fs::create_dir_all(&files_dir).unwrap();
+        fs::write(files_dir.join("test.txt"), "updated content").unwrap();
+
+        let target_dir = config_dir.join("output");
+        fs::create_dir_all(&target_dir).unwrap();
+        let target = target_dir.join("test.txt");
+        fs::write(&target, "old content").unwrap();
+
+        let resolved = make_resolved_profile(
+            vec![],
+            FilesSpec {
+                managed: vec![ManagedFileSpec {
+                    source: "files/test.txt".to_string(),
+                    target: target.clone(),
+                    strategy: Some(FileStrategy::Copy),
+                    private: false,
+                    origin: None,
+                }],
+                permissions: HashMap::new(),
+            },
+        );
+
+        let printer = cfgd_core::output::Printer::new(cfgd_core::output::Verbosity::Quiet);
+        let fm = CfgdFileManager::new(config_dir, &resolved).unwrap();
+        let actions = fm.plan(&resolved.merged).unwrap();
+        assert_eq!(actions.len(), 1);
+        fm.apply(&actions, &printer).unwrap();
+
+        assert_eq!(fs::read_to_string(&target).unwrap(), "updated content");
+    }
 }

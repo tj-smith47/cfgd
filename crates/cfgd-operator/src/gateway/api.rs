@@ -1427,4 +1427,748 @@ mod tests {
         assert!(json.contains("abc-123"));
         assert!(json.contains("cfgd_ch_random"));
     }
+
+    // --- extract_bearer_token ---
+
+    #[test]
+    fn extract_bearer_token_valid() {
+        let mut headers = HeaderMap::new();
+        headers.insert("authorization", "Bearer my-secret".parse().unwrap());
+        assert_eq!(
+            extract_bearer_token(&headers),
+            Some("my-secret".to_string())
+        );
+    }
+
+    #[test]
+    fn extract_bearer_token_missing_header() {
+        let headers = HeaderMap::new();
+        assert_eq!(extract_bearer_token(&headers), None);
+    }
+
+    #[test]
+    fn extract_bearer_token_wrong_scheme() {
+        let mut headers = HeaderMap::new();
+        headers.insert("authorization", "Basic dXNlcjpwYXNz".parse().unwrap());
+        assert_eq!(extract_bearer_token(&headers), None);
+    }
+
+    #[test]
+    fn extract_bearer_token_empty_value() {
+        let mut headers = HeaderMap::new();
+        headers.insert("authorization", "Bearer ".parse().unwrap());
+        assert_eq!(extract_bearer_token(&headers), Some(String::new()));
+    }
+
+    #[test]
+    fn extract_bearer_token_no_space_after_bearer() {
+        let mut headers = HeaderMap::new();
+        headers.insert("authorization", "BearerNoSpace".parse().unwrap());
+        assert_eq!(extract_bearer_token(&headers), None);
+    }
+
+    // --- hash_token extended ---
+
+    #[test]
+    fn hash_token_is_lowercase_hex() {
+        let h = hash_token("test-token");
+        assert!(
+            h.chars()
+                .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase())
+        );
+    }
+
+    #[test]
+    fn hash_token_sha256_length() {
+        // SHA256 produces 64 hex characters
+        let h = hash_token("anything");
+        assert_eq!(h.len(), 64);
+    }
+
+    #[test]
+    fn hash_token_empty_input() {
+        let h = hash_token("");
+        // SHA256 of empty string is a known constant
+        assert_eq!(
+            h,
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        );
+    }
+
+    // --- generate_token extended ---
+
+    #[test]
+    fn generate_token_different_prefixes() {
+        let bs = generate_token("cfgd_bs");
+        let dev = generate_token("cfgd_dev");
+        let ch = generate_token("cfgd_ch");
+        assert!(bs.starts_with("cfgd_bs_"));
+        assert!(dev.starts_with("cfgd_dev_"));
+        assert!(ch.starts_with("cfgd_ch_"));
+    }
+
+    #[test]
+    fn generate_token_no_dashes_in_random_part() {
+        let token = generate_token("prefix");
+        let random_part = token.strip_prefix("prefix_").unwrap();
+        assert!(
+            !random_part.contains('-'),
+            "random part should have dashes stripped"
+        );
+        // Two UUID v4s without dashes = 64 hex chars
+        assert_eq!(random_part.len(), 64);
+    }
+
+    // --- enforce_device_access extended ---
+
+    #[test]
+    fn enforce_device_access_error_contains_both_ids() {
+        let auth = AuthContext::Device {
+            device_id: "attacker-device".to_string(),
+            username: "attacker".to_string(),
+        };
+        let err = enforce_device_access(&auth, "victim-device").unwrap_err();
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("attacker-device"),
+            "error should mention the requesting device"
+        );
+        assert!(
+            msg.contains("victim-device"),
+            "error should mention the target device"
+        );
+    }
+
+    // --- default functions ---
+
+    #[test]
+    fn default_limit_is_100() {
+        assert_eq!(default_limit(), 100);
+    }
+
+    #[test]
+    fn default_token_lifetime_is_24_hours() {
+        assert_eq!(default_token_lifetime(), 86400);
+    }
+
+    // --- CheckinRequest deserialization ---
+
+    #[test]
+    fn checkin_request_deserialization() {
+        let json = r#"{
+            "device-id": "dev-1",
+            "hostname": "workstation-1",
+            "os": "linux",
+            "arch": "x86_64",
+            "config-hash": "abc123"
+        }"#;
+        let req: CheckinRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(req.device_id, "dev-1");
+        assert_eq!(req.hostname, "workstation-1");
+        assert_eq!(req.os, "linux");
+        assert_eq!(req.arch, "x86_64");
+        assert_eq!(req.config_hash, "abc123");
+    }
+
+    // --- CheckinResponse serialization ---
+
+    #[test]
+    fn checkin_response_no_config_omits_field() {
+        let resp = CheckinResponse {
+            status: "ok".to_string(),
+            config_changed: false,
+            desired_config: None,
+        };
+        let json = serde_json::to_string(&resp).unwrap();
+        assert!(
+            !json.contains("desired-config"),
+            "None desired_config should be omitted"
+        );
+        assert!(json.contains("\"config-changed\":false"));
+    }
+
+    #[test]
+    fn checkin_response_with_config_includes_field() {
+        let resp = CheckinResponse {
+            status: "ok".to_string(),
+            config_changed: true,
+            desired_config: Some(serde_json::json!({"packages": ["vim"]})),
+        };
+        let json = serde_json::to_string(&resp).unwrap();
+        assert!(json.contains("desired-config"));
+        assert!(json.contains("\"config-changed\":true"));
+    }
+
+    // --- EnrollRequest deserialization ---
+
+    #[test]
+    fn enroll_request_deserialization() {
+        let json = r#"{
+            "token": "cfgd_bs_abc123",
+            "device-id": "dev-42",
+            "hostname": "laptop",
+            "os": "darwin",
+            "arch": "aarch64"
+        }"#;
+        let req: EnrollRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(req.token, "cfgd_bs_abc123");
+        assert_eq!(req.device_id, "dev-42");
+        assert_eq!(req.os, "darwin");
+        assert_eq!(req.arch, "aarch64");
+    }
+
+    // --- EnrollResponse serialization ---
+
+    #[test]
+    fn enroll_response_omits_none_fields() {
+        let resp = EnrollResponse {
+            status: "enrolled".to_string(),
+            device_id: "dev-1".to_string(),
+            api_key: "cfgd_dev_key".to_string(),
+            username: "jdoe".to_string(),
+            team: None,
+            desired_config: None,
+        };
+        let json = serde_json::to_string(&resp).unwrap();
+        assert!(!json.contains("team"));
+        assert!(!json.contains("desired-config"));
+        assert!(json.contains("\"status\":\"enrolled\""));
+    }
+
+    #[test]
+    fn enroll_response_includes_optional_fields_when_present() {
+        let resp = EnrollResponse {
+            status: "enrolled".to_string(),
+            device_id: "dev-1".to_string(),
+            api_key: "cfgd_dev_key".to_string(),
+            username: "jdoe".to_string(),
+            team: Some("platform".to_string()),
+            desired_config: Some(serde_json::json!({"key": "val"})),
+        };
+        let json = serde_json::to_string(&resp).unwrap();
+        assert!(json.contains("\"team\":\"platform\""));
+        assert!(json.contains("desired-config"));
+    }
+
+    // --- CreateTokenRequest deserialization with defaults ---
+
+    #[test]
+    fn create_token_request_defaults() {
+        let json = r#"{"username": "admin"}"#;
+        let req: CreateTokenRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(req.username, "admin");
+        assert_eq!(req.team, None);
+        assert_eq!(req.expires_in, 86400); // default 24h
+    }
+
+    #[test]
+    fn create_token_request_with_all_fields() {
+        let json = r#"{
+            "username": "jdoe",
+            "team": "infra",
+            "expires-in": 3600
+        }"#;
+        let req: CreateTokenRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(req.username, "jdoe");
+        assert_eq!(req.team, Some("infra".to_string()));
+        assert_eq!(req.expires_in, 3600);
+    }
+
+    // --- CreateTokenResponse serialization ---
+
+    #[test]
+    fn create_token_response_omits_none_team() {
+        let resp = CreateTokenResponse {
+            id: "tok-1".to_string(),
+            token: "cfgd_bs_secret".to_string(),
+            username: "admin".to_string(),
+            team: None,
+            expires_at: "2026-03-19T00:00:00Z".to_string(),
+        };
+        let json = serde_json::to_string(&resp).unwrap();
+        assert!(!json.contains("team"));
+        assert!(json.contains("\"token\":\"cfgd_bs_secret\""));
+    }
+
+    // --- PaginationParams defaults ---
+
+    #[test]
+    fn pagination_params_defaults() {
+        let json = r#"{}"#;
+        let params: PaginationParams = serde_json::from_str(json).unwrap();
+        assert_eq!(params.limit, 100);
+        assert_eq!(params.offset, 0);
+    }
+
+    #[test]
+    fn pagination_params_custom() {
+        let json = r#"{"limit": 50, "offset": 10}"#;
+        let params: PaginationParams = serde_json::from_str(json).unwrap();
+        assert_eq!(params.limit, 50);
+        assert_eq!(params.offset, 10);
+    }
+
+    // --- DriftRequest / DriftDetailInput serde ---
+
+    #[test]
+    fn drift_detail_input_roundtrip() {
+        let detail = DriftDetailInput {
+            field: "package/vim".to_string(),
+            expected: "installed".to_string(),
+            actual: "missing".to_string(),
+        };
+        let json = serde_json::to_string(&detail).unwrap();
+        let parsed: DriftDetailInput = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.field, "package/vim");
+        assert_eq!(parsed.expected, "installed");
+        assert_eq!(parsed.actual, "missing");
+    }
+
+    #[test]
+    fn drift_request_deserialization() {
+        let json = r#"{
+            "details": [
+                {"field": "pkg/vim", "expected": "9.0", "actual": "8.2"},
+                {"field": "file/bashrc", "expected": "hash-a", "actual": "hash-b"}
+            ]
+        }"#;
+        let req: DriftRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(req.details.len(), 2);
+        assert_eq!(req.details[0].field, "pkg/vim");
+        assert_eq!(req.details[1].field, "file/bashrc");
+    }
+
+    // --- SetConfigRequest deserialization ---
+
+    #[test]
+    fn set_config_request_deserialization() {
+        let json = r#"{"config": {"packages": ["vim", "git"], "shell": "zsh"}}"#;
+        let req: SetConfigRequest = serde_json::from_str(json).unwrap();
+        assert!(req.config.is_object());
+        assert_eq!(req.config["packages"][0], "vim");
+    }
+
+    // --- AddKeyRequest deserialization ---
+
+    #[test]
+    fn add_key_request_deserialization() {
+        let json = r#"{
+            "key-type": "ssh",
+            "public-key": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIG...",
+            "fingerprint": "SHA256:abcdef",
+            "label": "laptop key"
+        }"#;
+        let req: AddKeyRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(req.key_type, "ssh");
+        assert!(req.public_key.starts_with("ssh-ed25519"));
+        assert_eq!(req.fingerprint, "SHA256:abcdef");
+        assert_eq!(req.label, Some("laptop key".to_string()));
+    }
+
+    #[test]
+    fn add_key_request_label_optional() {
+        let json = r#"{
+            "key-type": "gpg",
+            "public-key": "-----BEGIN PGP PUBLIC KEY BLOCK-----",
+            "fingerprint": "DEADBEEF"
+        }"#;
+        let req: AddKeyRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(req.key_type, "gpg");
+        assert_eq!(req.label, None);
+    }
+
+    // --- ChallengeRequest deserialization ---
+
+    #[test]
+    fn challenge_request_deserialization() {
+        let json = r#"{
+            "username": "jdoe",
+            "device-id": "dev-99",
+            "hostname": "workstation",
+            "os": "linux",
+            "arch": "x86_64"
+        }"#;
+        let req: ChallengeRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(req.username, "jdoe");
+        assert_eq!(req.device_id, "dev-99");
+        assert_eq!(req.hostname, "workstation");
+    }
+
+    // --- VerifyRequest deserialization ---
+
+    #[test]
+    fn verify_request_deserialization() {
+        let json = r#"{
+            "challenge-id": "ch-123",
+            "signature": "base64data==",
+            "key-type": "ssh"
+        }"#;
+        let req: VerifyRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(req.challenge_id, "ch-123");
+        assert_eq!(req.signature, "base64data==");
+        assert_eq!(req.key_type, "ssh");
+    }
+
+    // --- EnrollmentMethod serialization ---
+
+    #[test]
+    fn enrollment_method_token_serialization() {
+        let resp = EnrollInfoResponse {
+            method: EnrollmentMethod::Token,
+        };
+        let json = serde_json::to_string(&resp).unwrap();
+        assert!(json.contains("\"method\":\"token\""));
+    }
+
+    // --- FleetEvent serialization ---
+
+    #[test]
+    fn fleet_event_serialization() {
+        let event = super::super::db::FleetEvent {
+            timestamp: "2026-03-18T10:00:00Z".to_string(),
+            device_id: "dev-1".to_string(),
+            event_type: "checkin".to_string(),
+            summary: "hash123".to_string(),
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed["device-id"], "dev-1");
+        assert_eq!(parsed["event-type"], "checkin");
+        assert_eq!(parsed["summary"], "hash123");
+    }
+
+    // --- Database-backed handler logic tests ---
+
+    fn test_db() -> ServerDb {
+        ServerDb::open(":memory:").expect("failed to open in-memory db")
+    }
+
+    #[test]
+    fn bootstrap_token_creation_and_validation() {
+        let db = test_db();
+        let token = generate_token("cfgd_bs");
+        let token_hash = hash_token(&token);
+        let expires_at = "2099-12-31T23:59:59Z";
+
+        let record = db
+            .create_bootstrap_token(&token_hash, "jdoe", Some("platform"), expires_at)
+            .expect("create failed");
+        assert_eq!(record.username, "jdoe");
+        assert_eq!(record.team, Some("platform".to_string()));
+        assert!(record.used_at.is_none());
+    }
+
+    #[test]
+    fn bootstrap_token_consume_marks_used() {
+        let db = test_db();
+        let token = generate_token("cfgd_bs");
+        let token_hash = hash_token(&token);
+        let expires_at = "2099-12-31T23:59:59Z";
+
+        db.create_bootstrap_token(&token_hash, "jdoe", None, expires_at)
+            .expect("create failed");
+
+        let consumed = db
+            .validate_and_consume_bootstrap_token(&token_hash, "dev-1")
+            .expect("consume failed");
+        assert_eq!(consumed.username, "jdoe");
+        assert!(consumed.used_at.is_some());
+        assert_eq!(consumed.used_by_device, Some("dev-1".to_string()));
+    }
+
+    #[test]
+    fn bootstrap_token_double_consume_fails() {
+        let db = test_db();
+        let token = generate_token("cfgd_bs");
+        let token_hash = hash_token(&token);
+        let expires_at = "2099-12-31T23:59:59Z";
+
+        db.create_bootstrap_token(&token_hash, "jdoe", None, expires_at)
+            .expect("create failed");
+        db.validate_and_consume_bootstrap_token(&token_hash, "dev-1")
+            .expect("first consume ok");
+
+        let result = db.validate_and_consume_bootstrap_token(&token_hash, "dev-2");
+        assert!(result.is_err(), "double consumption should fail");
+    }
+
+    #[test]
+    fn bootstrap_token_invalid_hash_fails() {
+        let db = test_db();
+        let result = db.validate_and_consume_bootstrap_token("nonexistent-hash", "dev-1");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn device_credential_create_and_validate() {
+        let db = test_db();
+        // Register device first (FK constraint)
+        db.register_device("dev-1", "ws-1", "linux", "x86_64", "hash1")
+            .expect("register failed");
+
+        let api_key = generate_token("cfgd_dev");
+        let api_key_hash = hash_token(&api_key);
+
+        let cred = db
+            .create_device_credential("dev-1", &api_key_hash, "jdoe", Some("team-a"))
+            .expect("create cred failed");
+        assert_eq!(cred.device_id, "dev-1");
+        assert_eq!(cred.username, "jdoe");
+        assert!(!cred.revoked);
+
+        let validated = db
+            .validate_device_credential(&api_key_hash)
+            .expect("validate failed");
+        assert_eq!(validated.device_id, "dev-1");
+        assert_eq!(validated.username, "jdoe");
+    }
+
+    #[test]
+    fn device_credential_revoke_blocks_validation() {
+        let db = test_db();
+        db.register_device("dev-1", "ws-1", "linux", "x86_64", "hash1")
+            .expect("register failed");
+
+        let api_key = generate_token("cfgd_dev");
+        let api_key_hash = hash_token(&api_key);
+        db.create_device_credential("dev-1", &api_key_hash, "jdoe", None)
+            .expect("create cred failed");
+
+        db.revoke_device_credential("dev-1").expect("revoke failed");
+
+        let result = db.validate_device_credential(&api_key_hash);
+        assert!(result.is_err(), "revoked credential should fail validation");
+    }
+
+    #[test]
+    fn checkin_config_changed_detection() {
+        let db = test_db();
+        db.register_device("dev-1", "ws-1", "linux", "x86_64", "hash-old")
+            .expect("register failed");
+
+        // Set a desired config so config_changed is meaningful
+        db.set_device_config("dev-1", &serde_json::json!({"packages": ["vim"]}))
+            .expect("set config failed");
+
+        let device = db.get_device("dev-1").expect("get failed");
+        // Simulate checkin with different hash
+        let config_changed = device.config_hash != "hash-new";
+        assert!(config_changed, "different config_hash should detect change");
+
+        // Same hash should not detect change
+        let config_same = device.config_hash != "hash-old";
+        assert!(!config_same, "same config_hash should not detect change");
+    }
+
+    #[test]
+    fn fleet_status_aggregation_via_db() {
+        let db = test_db();
+        db.register_device("d1", "host1", "linux", "x86_64", "h1")
+            .expect("register");
+        db.register_device("d2", "host2", "linux", "x86_64", "h2")
+            .expect("register");
+        db.register_device("d3", "host3", "darwin", "aarch64", "h3")
+            .expect("register");
+
+        // Make d2 drifted
+        db.record_drift_event("d2", "pkg drifted").expect("drift");
+
+        // Make d3 pending-reconcile
+        db.set_force_reconcile("d3").expect("set reconcile");
+
+        let status = super::super::fleet::get_fleet_status(&db).expect("fleet status");
+        assert_eq!(status.total_devices, 3);
+        assert_eq!(status.healthy, 1);
+        assert_eq!(status.drifted, 1);
+        assert_eq!(status.offline, 1); // pending-reconcile counts as offline
+    }
+
+    #[test]
+    fn list_and_delete_bootstrap_tokens() {
+        let db = test_db();
+        let t1_hash = hash_token("token1");
+        let t2_hash = hash_token("token2");
+
+        let rec1 = db
+            .create_bootstrap_token(&t1_hash, "user1", None, "2099-12-31T23:59:59Z")
+            .expect("create 1");
+        db.create_bootstrap_token(&t2_hash, "user2", Some("team"), "2099-12-31T23:59:59Z")
+            .expect("create 2");
+
+        let tokens = db.list_bootstrap_tokens().expect("list");
+        assert_eq!(tokens.len(), 2);
+
+        db.delete_bootstrap_token(&rec1.id).expect("delete");
+        let tokens = db.list_bootstrap_tokens().expect("list after delete");
+        assert_eq!(tokens.len(), 1);
+        assert_eq!(tokens[0].username, "user2");
+    }
+
+    #[test]
+    fn user_public_key_crud() {
+        let db = test_db();
+        let key = db
+            .add_user_public_key(
+                "jdoe",
+                "ssh",
+                "ssh-ed25519 AAAAC3...",
+                "SHA256:abc",
+                Some("work laptop"),
+            )
+            .expect("add key");
+        assert_eq!(key.username, "jdoe");
+        assert_eq!(key.key_type, "ssh");
+        assert_eq!(key.label, Some("work laptop".to_string()));
+
+        let keys = db.list_user_public_keys("jdoe").expect("list keys");
+        assert_eq!(keys.len(), 1);
+
+        db.delete_user_public_key(&key.id).expect("delete key");
+        let keys = db.list_user_public_keys("jdoe").expect("list after delete");
+        assert!(keys.is_empty());
+    }
+
+    #[test]
+    fn enrollment_challenge_create_and_consume() {
+        let db = test_db();
+        // Need a user key for the challenge flow to make sense
+        db.add_user_public_key("jdoe", "ssh", "ssh-ed25519 AAAA...", "SHA256:xyz", None)
+            .expect("add key");
+
+        let challenge = db
+            .create_enrollment_challenge(
+                "jdoe",
+                "dev-99",
+                "laptop",
+                ("darwin", "aarch64"),
+                "nonce-value",
+                300,
+            )
+            .expect("create challenge");
+        assert_eq!(challenge.username, "jdoe");
+        assert_eq!(challenge.device_id, "dev-99");
+        assert_eq!(challenge.nonce, "nonce-value");
+
+        let consumed = db
+            .consume_enrollment_challenge(&challenge.id)
+            .expect("consume");
+        assert_eq!(consumed.username, "jdoe");
+        assert_eq!(consumed.device_id, "dev-99");
+    }
+
+    #[test]
+    fn enrollment_challenge_double_consume_fails() {
+        let db = test_db();
+        let challenge = db
+            .create_enrollment_challenge(
+                "jdoe",
+                "dev-99",
+                "laptop",
+                ("darwin", "aarch64"),
+                "nonce",
+                300,
+            )
+            .expect("create");
+
+        db.consume_enrollment_challenge(&challenge.id)
+            .expect("first consume");
+        let result = db.consume_enrollment_challenge(&challenge.id);
+        assert!(result.is_err(), "double consume should fail");
+    }
+
+    #[test]
+    fn drift_event_records_and_lists() {
+        let db = test_db();
+        db.register_device("dev-1", "ws-1", "linux", "x86_64", "h1")
+            .expect("register");
+
+        let details = serde_json::to_string(&vec![DriftDetailInput {
+            field: "pkg/vim".to_string(),
+            expected: "9.0".to_string(),
+            actual: "8.2".to_string(),
+        }])
+        .unwrap();
+
+        let event = db
+            .record_drift_event("dev-1", &details)
+            .expect("record drift");
+        assert_eq!(event.device_id, "dev-1");
+        assert!(event.details.contains("pkg/vim"));
+
+        // Device should now be drifted
+        let device = db.get_device("dev-1").expect("get");
+        assert_eq!(device.status, super::super::db::DeviceStatus::Drifted);
+
+        let events = db.list_drift_events("dev-1").expect("list");
+        assert_eq!(events.len(), 1);
+    }
+
+    #[test]
+    fn checkin_event_records_history() {
+        let db = test_db();
+        db.register_device("dev-1", "ws-1", "linux", "x86_64", "h1")
+            .expect("register");
+
+        db.record_checkin("dev-1", "hash-a", false)
+            .expect("checkin 1");
+        db.record_checkin("dev-1", "hash-b", true)
+            .expect("checkin 2");
+
+        let events = db.list_checkin_events("dev-1").expect("list");
+        assert_eq!(events.len(), 2);
+
+        let changed_count = events.iter().filter(|e| e.config_changed).count();
+        let unchanged_count = events.iter().filter(|e| !e.config_changed).count();
+        assert_eq!(changed_count, 1);
+        assert_eq!(unchanged_count, 1);
+    }
+
+    #[test]
+    fn fleet_events_include_checkins_and_drift() {
+        let db = test_db();
+        db.register_device("dev-1", "ws-1", "linux", "x86_64", "h1")
+            .expect("register");
+
+        db.record_checkin("dev-1", "hash-a", false)
+            .expect("checkin");
+        db.record_drift_event("dev-1", "something drifted")
+            .expect("drift");
+
+        let events = db.list_fleet_events(100).expect("fleet events");
+        assert_eq!(events.len(), 2);
+
+        let event_types: Vec<&str> = events.iter().map(|e| e.event_type.as_str()).collect();
+        assert!(event_types.contains(&"checkin"));
+        assert!(event_types.contains(&"drift"));
+    }
+
+    #[test]
+    fn device_config_set_and_retrieve() {
+        let db = test_db();
+        db.register_device("dev-1", "ws-1", "linux", "x86_64", "h1")
+            .expect("register");
+
+        let config = serde_json::json!({
+            "packages": ["vim", "tmux"],
+            "shell": "zsh"
+        });
+        db.set_device_config("dev-1", &config).expect("set config");
+
+        let device = db.get_device("dev-1").expect("get");
+        let dc = device.desired_config.expect("should have desired_config");
+        assert_eq!(dc["packages"][0], "vim");
+        assert_eq!(dc["shell"], "zsh");
+    }
+
+    #[test]
+    fn set_config_nonexistent_device_fails() {
+        let db = test_db();
+        let result = db.set_device_config("nonexistent", &serde_json::json!({}));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn challenge_ttl_constant() {
+        assert_eq!(CHALLENGE_TTL_SECS, 300, "challenge TTL should be 5 minutes");
+    }
 }

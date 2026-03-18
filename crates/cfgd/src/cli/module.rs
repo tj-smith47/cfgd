@@ -1898,3 +1898,172 @@ pub(super) fn cmd_module_registry_list(cli: &Cli, printer: &Printer) -> anyhow::
 
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_module_doc(packages: Vec<config::ModulePackageEntry>) -> config::ModuleDocument {
+        config::ModuleDocument {
+            api_version: cfgd_core::API_VERSION.to_string(),
+            kind: "Module".to_string(),
+            metadata: config::ModuleMetadata {
+                name: "test".to_string(),
+                description: None,
+            },
+            spec: config::ModuleSpec {
+                packages,
+                ..Default::default()
+            },
+        }
+    }
+
+    fn make_pkg(name: &str) -> config::ModulePackageEntry {
+        config::ModulePackageEntry {
+            name: name.to_string(),
+            ..Default::default()
+        }
+    }
+
+    // --- apply_module_sets ---
+
+    #[test]
+    fn apply_set_min_version() {
+        let mut doc = make_module_doc(vec![make_pkg("curl")]);
+        apply_module_sets(&["package.curl.min-version=7.0".into()], &mut doc).unwrap();
+        assert_eq!(doc.spec.packages[0].min_version.as_deref(), Some("7.0"));
+    }
+
+    #[test]
+    fn apply_set_prefer() {
+        let mut doc = make_module_doc(vec![make_pkg("curl")]);
+        apply_module_sets(&["package.curl.prefer=brew,cargo".into()], &mut doc).unwrap();
+        assert_eq!(doc.spec.packages[0].prefer, vec!["brew", "cargo"]);
+    }
+
+    #[test]
+    fn apply_set_platforms() {
+        let mut doc = make_module_doc(vec![make_pkg("curl")]);
+        apply_module_sets(&["package.curl.platforms=linux,macos".into()], &mut doc).unwrap();
+        assert_eq!(doc.spec.packages[0].platforms, vec!["linux", "macos"]);
+    }
+
+    #[test]
+    fn apply_set_deny() {
+        let mut doc = make_module_doc(vec![make_pkg("curl")]);
+        apply_module_sets(&["package.curl.deny=snap".into()], &mut doc).unwrap();
+        assert_eq!(doc.spec.packages[0].deny, vec!["snap"]);
+    }
+
+    #[test]
+    fn apply_set_script() {
+        let mut doc = make_module_doc(vec![make_pkg("curl")]);
+        apply_module_sets(&["package.curl.script=install.sh".into()], &mut doc).unwrap();
+        assert_eq!(doc.spec.packages[0].script.as_deref(), Some("install.sh"));
+    }
+
+    #[test]
+    fn apply_set_alias() {
+        let mut doc = make_module_doc(vec![make_pkg("vim")]);
+        apply_module_sets(&["package.vim.alias.brew=neovim".into()], &mut doc).unwrap();
+        assert_eq!(doc.spec.packages[0].aliases.get("brew").unwrap(), "neovim");
+    }
+
+    #[test]
+    fn apply_set_invalid_no_equals() {
+        let mut doc = make_module_doc(vec![make_pkg("curl")]);
+        assert!(apply_module_sets(&["noequals".into()], &mut doc).is_err());
+    }
+
+    #[test]
+    fn apply_set_invalid_path_too_short() {
+        let mut doc = make_module_doc(vec![make_pkg("curl")]);
+        assert!(apply_module_sets(&["foo=bar".into()], &mut doc).is_err());
+    }
+
+    #[test]
+    fn apply_set_unknown_field() {
+        let mut doc = make_module_doc(vec![make_pkg("curl")]);
+        assert!(apply_module_sets(&["package.curl.unknown=val".into()], &mut doc).is_err());
+    }
+
+    #[test]
+    fn apply_set_package_not_found() {
+        let mut doc = make_module_doc(vec![make_pkg("curl")]);
+        assert!(apply_module_sets(&["package.vim.min-version=9.0".into()], &mut doc).is_err());
+    }
+
+    // --- load_module_document ---
+
+    #[test]
+    fn load_module_document_valid() {
+        let dir = tempfile::tempdir().unwrap();
+        let module_dir = dir.path().join("modules").join("test-mod");
+        std::fs::create_dir_all(&module_dir).unwrap();
+        let yaml = "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: test-mod\nspec:\n  packages:\n    - name: curl\n";
+        std::fs::write(module_dir.join("module.yaml"), yaml).unwrap();
+
+        let (doc, path) = load_module_document(dir.path(), "test-mod").unwrap();
+        assert_eq!(doc.metadata.name, "test-mod");
+        assert_eq!(doc.spec.packages.len(), 1);
+        assert!(path.ends_with("module.yaml"));
+    }
+
+    #[test]
+    fn load_module_document_missing_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(load_module_document(dir.path(), "nope").is_err());
+    }
+
+    #[test]
+    fn load_module_document_missing_yaml() {
+        let dir = tempfile::tempdir().unwrap();
+        let module_dir = dir.path().join("modules").join("empty-mod");
+        std::fs::create_dir_all(&module_dir).unwrap();
+        assert!(load_module_document(dir.path(), "empty-mod").is_err());
+    }
+
+    // --- save_module_document ---
+
+    #[test]
+    fn save_and_reload_module() {
+        let dir = tempfile::tempdir().unwrap();
+        let module_dir = dir.path().join("modules").join("roundtrip");
+        std::fs::create_dir_all(&module_dir).unwrap();
+        let path = module_dir.join("module.yaml");
+
+        let doc = make_module_doc(vec![make_pkg("ripgrep")]);
+        save_module_document(&doc, &path).unwrap();
+
+        let (loaded, _) = load_module_document(dir.path(), "roundtrip").unwrap();
+        assert_eq!(loaded.spec.packages[0].name, "ripgrep");
+    }
+
+    // --- profiles_using_module ---
+
+    #[test]
+    fn profiles_using_module_no_dir() {
+        let result = profiles_using_module(Path::new("/nonexistent-12345"), "test").unwrap();
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn profiles_using_module_no_match() {
+        let dir = tempfile::tempdir().unwrap();
+        let yaml = "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: work\nspec:\n  inherits: []\n  modules:\n    - other-mod\n";
+        std::fs::write(dir.path().join("work.yaml"), yaml).unwrap();
+
+        let result = profiles_using_module(dir.path(), "test-mod").unwrap();
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn profiles_using_module_match_found() {
+        let dir = tempfile::tempdir().unwrap();
+        let yaml = "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: work\nspec:\n  inherits: []\n  modules:\n    - test-mod\n";
+        std::fs::write(dir.path().join("work.yaml"), yaml).unwrap();
+
+        let result = profiles_using_module(dir.path(), "test-mod").unwrap();
+        assert_eq!(result, vec!["work"]);
+    }
+}

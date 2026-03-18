@@ -896,4 +896,70 @@ mod tests {
         .unwrap();
         assert_eq!(result, "token=s3cr3t");
     }
+
+    #[test]
+    fn resolve_secret_refs_text_without_markers() {
+        let result = resolve_secret_refs("plain text no markers", &[], None, Path::new("."));
+        assert_eq!(result.unwrap(), "plain text no markers");
+    }
+
+    #[test]
+    fn resolve_secret_refs_preserves_surrounding_text() {
+        let dir = tempfile::tempdir().unwrap();
+        let secret_file = dir.path().join("key.enc");
+        std::fs::write(&secret_file, "enc").unwrap();
+
+        let backend = MockBackend;
+        let result = resolve_secret_refs(
+            "before ${secret:key.enc} after",
+            &[],
+            Some(&backend),
+            dir.path(),
+        )
+        .unwrap();
+        assert_eq!(result, "before decrypted-value after");
+    }
+
+    #[test]
+    fn build_sops_backend_with_age_key() {
+        let backend = build_secret_backend("sops", Some(PathBuf::from("/tmp/key.txt")), None);
+        assert_eq!(backend.name(), "sops");
+    }
+
+    #[test]
+    fn build_unknown_backend_falls_back_to_sops() {
+        let backend = build_secret_backend("unknown", None, None);
+        assert_eq!(backend.name(), "sops");
+    }
+
+    #[test]
+    fn init_age_key_creates_key_file() {
+        let dir = tempfile::tempdir().unwrap();
+        if !cfgd_core::command_available("age-keygen") {
+            // age not installed in CI — skip
+            return;
+        }
+        let path = init_age_key(dir.path()).unwrap();
+        assert!(path.exists());
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert!(content.contains("AGE-SECRET-KEY"));
+    }
+
+    #[test]
+    fn provider_names_are_unique() {
+        let providers = build_secret_providers();
+        let mut names: Vec<&str> = providers.iter().map(|p| p.name()).collect();
+        let before = names.len();
+        names.sort();
+        names.dedup();
+        assert_eq!(names.len(), before);
+    }
+
+    #[test]
+    fn health_check_age_key_path_defaults() {
+        let dir = tempfile::tempdir().unwrap();
+        let health = check_secrets_health(dir.path(), None);
+        // Default age key path should be set even if file doesn't exist
+        assert!(health.age_key_path.is_some());
+    }
 }

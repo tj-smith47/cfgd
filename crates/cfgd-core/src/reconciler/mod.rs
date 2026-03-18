@@ -3529,4 +3529,654 @@ mod tests {
         let content = super::generate_env_file_content(&[], &aliases);
         assert!(content.contains("alias greet=\"echo \\\"hello world\\\"\""));
     }
+
+    // --- Apply execution path tests ---
+
+    /// A mock package manager that tracks which packages were installed/uninstalled.
+    struct TrackingPackageManager {
+        name: String,
+        installed: std::sync::Mutex<HashSet<String>>,
+        install_calls: std::sync::Mutex<Vec<Vec<String>>>,
+        uninstall_calls: std::sync::Mutex<Vec<Vec<String>>>,
+    }
+
+    impl TrackingPackageManager {
+        fn new(name: &str) -> Self {
+            Self {
+                name: name.to_string(),
+                installed: std::sync::Mutex::new(HashSet::new()),
+                install_calls: std::sync::Mutex::new(Vec::new()),
+                uninstall_calls: std::sync::Mutex::new(Vec::new()),
+            }
+        }
+
+        fn with_installed(name: &str, pkgs: &[&str]) -> Self {
+            let mut set = HashSet::new();
+            for p in pkgs {
+                set.insert(p.to_string());
+            }
+            Self {
+                name: name.to_string(),
+                installed: std::sync::Mutex::new(set),
+                install_calls: std::sync::Mutex::new(Vec::new()),
+                uninstall_calls: std::sync::Mutex::new(Vec::new()),
+            }
+        }
+    }
+
+    impl PackageManager for TrackingPackageManager {
+        fn name(&self) -> &str {
+            &self.name
+        }
+        fn is_available(&self) -> bool {
+            true
+        }
+        fn can_bootstrap(&self) -> bool {
+            false
+        }
+        fn bootstrap(&self, _printer: &Printer) -> Result<()> {
+            Ok(())
+        }
+        fn installed_packages(&self) -> Result<HashSet<String>> {
+            Ok(self.installed.lock().unwrap().clone())
+        }
+        fn install(&self, packages: &[String], _printer: &Printer) -> Result<()> {
+            self.install_calls.lock().unwrap().push(packages.to_vec());
+            let mut installed = self.installed.lock().unwrap();
+            for p in packages {
+                installed.insert(p.clone());
+            }
+            Ok(())
+        }
+        fn uninstall(&self, packages: &[String], _printer: &Printer) -> Result<()> {
+            self.uninstall_calls.lock().unwrap().push(packages.to_vec());
+            let mut installed = self.installed.lock().unwrap();
+            for p in packages {
+                installed.remove(p);
+            }
+            Ok(())
+        }
+        fn update(&self, _printer: &Printer) -> Result<()> {
+            Ok(())
+        }
+        fn available_version(&self, _package: &str) -> Result<Option<String>> {
+            Ok(None)
+        }
+    }
+
+    #[test]
+    fn apply_package_install_calls_mock_and_records_state() {
+        let state = StateStore::open_in_memory().unwrap();
+        let mut registry = ProviderRegistry::new();
+        registry
+            .package_managers
+            .push(Box::new(TrackingPackageManager::new("brew")));
+
+        let reconciler = Reconciler::new(&registry, &state);
+        let resolved = make_empty_resolved();
+
+        let pkg_actions = vec![PackageAction::Install {
+            manager: "brew".to_string(),
+            packages: vec!["ripgrep".to_string(), "fd".to_string()],
+            origin: "local".to_string(),
+        }];
+
+        let plan = reconciler
+            .plan(&resolved, Vec::new(), pkg_actions, Vec::new())
+            .unwrap();
+
+        let printer = Printer::new(crate::output::Verbosity::Quiet);
+        let result = reconciler
+            .apply(&plan, &resolved, Path::new("."), &printer, None, &[])
+            .unwrap();
+
+        assert_eq!(result.status, ApplyStatus::Success);
+        assert_eq!(result.action_results.len(), 1);
+        assert!(result.action_results[0].success);
+        assert!(result.action_results[0].error.is_none());
+        assert!(result.action_results[0].description.contains("ripgrep"));
+
+        // Verify install was actually called on the tracking mock
+        let pm = registry.package_managers[0].as_ref();
+        let installed = pm.installed_packages().unwrap();
+        assert!(installed.contains("ripgrep"));
+        assert!(installed.contains("fd"));
+    }
+
+    #[test]
+    fn apply_package_uninstall_calls_mock() {
+        let state = StateStore::open_in_memory().unwrap();
+        let mut registry = ProviderRegistry::new();
+        registry
+            .package_managers
+            .push(Box::new(TrackingPackageManager::with_installed(
+                "brew",
+                &["ripgrep", "fd"],
+            )));
+
+        let reconciler = Reconciler::new(&registry, &state);
+        let resolved = make_empty_resolved();
+
+        let pkg_actions = vec![PackageAction::Uninstall {
+            manager: "brew".to_string(),
+            packages: vec!["ripgrep".to_string()],
+            origin: "local".to_string(),
+        }];
+
+        let plan = reconciler
+            .plan(&resolved, Vec::new(), pkg_actions, Vec::new())
+            .unwrap();
+
+        let printer = Printer::new(crate::output::Verbosity::Quiet);
+        let result = reconciler
+            .apply(&plan, &resolved, Path::new("."), &printer, None, &[])
+            .unwrap();
+
+        assert_eq!(result.status, ApplyStatus::Success);
+        assert_eq!(result.action_results.len(), 1);
+        assert!(result.action_results[0].success);
+
+        let pm = registry.package_managers[0].as_ref();
+        let installed = pm.installed_packages().unwrap();
+        assert!(!installed.contains("ripgrep"));
+        assert!(installed.contains("fd"));
+    }
+
+    #[test]
+    fn apply_empty_plan_records_success_in_state_store() {
+        let state = StateStore::open_in_memory().unwrap();
+        let registry = ProviderRegistry::new();
+        let reconciler = Reconciler::new(&registry, &state);
+        let resolved = make_empty_resolved();
+
+        let plan = reconciler
+            .plan(&resolved, Vec::new(), Vec::new(), Vec::new())
+            .unwrap();
+
+        let printer = Printer::new(crate::output::Verbosity::Quiet);
+        let result = reconciler
+            .apply(&plan, &resolved, Path::new("."), &printer, None, &[])
+            .unwrap();
+
+        assert_eq!(result.status, ApplyStatus::Success);
+        assert_eq!(result.action_results.len(), 0);
+
+        // Verify the state store has a record
+        let last = state.last_apply().unwrap();
+        assert!(last.is_some());
+        let record = last.unwrap();
+        assert_eq!(record.status, ApplyStatus::Success);
+        assert_eq!(record.profile, "test");
+        assert_eq!(record.id, result.apply_id);
+    }
+
+    #[test]
+    fn apply_records_correct_apply_id() {
+        let state = StateStore::open_in_memory().unwrap();
+        let registry = ProviderRegistry::new();
+        let reconciler = Reconciler::new(&registry, &state);
+        let resolved = make_empty_resolved();
+
+        let plan = reconciler
+            .plan(&resolved, Vec::new(), Vec::new(), Vec::new())
+            .unwrap();
+        let printer = Printer::new(crate::output::Verbosity::Quiet);
+
+        // First apply
+        let result1 = reconciler
+            .apply(&plan, &resolved, Path::new("."), &printer, None, &[])
+            .unwrap();
+
+        // Second apply
+        let result2 = reconciler
+            .apply(&plan, &resolved, Path::new("."), &printer, None, &[])
+            .unwrap();
+
+        // Each apply should get a unique, incrementing ID
+        assert!(result2.apply_id > result1.apply_id);
+
+        // Verify via state store
+        let last = state.last_apply().unwrap().unwrap();
+        assert_eq!(last.id, result2.apply_id);
+    }
+
+    #[test]
+    fn apply_env_write_env_file_to_tempdir() {
+        let dir = tempfile::tempdir().unwrap();
+        let env_path = dir.path().join(".cfgd.env");
+
+        let env = vec![
+            crate::config::EnvVar {
+                name: "EDITOR".into(),
+                value: "nvim".into(),
+            },
+            crate::config::EnvVar {
+                name: "CARGO_HOME".into(),
+                value: "/home/user/.cargo".into(),
+            },
+        ];
+        let content = super::generate_env_file_content(&env, &[]);
+
+        let action = EnvAction::WriteEnvFile {
+            path: env_path.clone(),
+            content: content.clone(),
+        };
+
+        let printer = Printer::new(crate::output::Verbosity::Quiet);
+        let desc = Reconciler::apply_env_action(&action, &printer).unwrap();
+
+        // Verify file was written
+        let written = std::fs::read_to_string(&env_path).unwrap();
+        assert_eq!(written, content);
+        assert!(written.contains("export EDITOR=\"nvim\""));
+        assert!(written.contains("export CARGO_HOME=\"/home/user/.cargo\""));
+        assert!(desc.starts_with("env:write:"));
+    }
+
+    #[test]
+    fn apply_env_write_skips_when_content_matches() {
+        let dir = tempfile::tempdir().unwrap();
+        let env_path = dir.path().join(".cfgd.env");
+
+        let env = vec![crate::config::EnvVar {
+            name: "EDITOR".into(),
+            value: "nvim".into(),
+        }];
+        let content = super::generate_env_file_content(&env, &[]);
+
+        // Pre-write identical content
+        std::fs::write(&env_path, &content).unwrap();
+
+        let action = EnvAction::WriteEnvFile {
+            path: env_path.clone(),
+            content,
+        };
+
+        let printer = Printer::new(crate::output::Verbosity::Quiet);
+        let desc = Reconciler::apply_env_action(&action, &printer).unwrap();
+
+        // Should report skipped
+        assert!(desc.contains("skipped"), "Expected skip: {}", desc);
+    }
+
+    #[test]
+    fn apply_env_inject_source_line_creates_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let rc_path = dir.path().join(".bashrc");
+
+        let action = EnvAction::InjectSourceLine {
+            rc_path: rc_path.clone(),
+            line: "[ -f ~/.cfgd.env ] && source ~/.cfgd.env".to_string(),
+        };
+
+        let printer = Printer::new(crate::output::Verbosity::Quiet);
+        let desc = Reconciler::apply_env_action(&action, &printer).unwrap();
+
+        let written = std::fs::read_to_string(&rc_path).unwrap();
+        assert!(written.contains("source ~/.cfgd.env"));
+        assert!(desc.starts_with("env:inject:"));
+    }
+
+    #[test]
+    fn apply_env_inject_skips_when_already_present() {
+        let dir = tempfile::tempdir().unwrap();
+        let rc_path = dir.path().join(".bashrc");
+
+        // Pre-write content that already mentions cfgd.env
+        std::fs::write(
+            &rc_path,
+            "# existing config\n[ -f ~/.cfgd.env ] && source ~/.cfgd.env\n",
+        )
+        .unwrap();
+
+        let action = EnvAction::InjectSourceLine {
+            rc_path: rc_path.clone(),
+            line: "[ -f ~/.cfgd.env ] && source ~/.cfgd.env".to_string(),
+        };
+
+        let printer = Printer::new(crate::output::Verbosity::Quiet);
+        let desc = Reconciler::apply_env_action(&action, &printer).unwrap();
+
+        assert!(desc.contains("skipped"), "Expected skip: {}", desc);
+    }
+
+    #[test]
+    fn apply_env_inject_appends_to_existing_content() {
+        let dir = tempfile::tempdir().unwrap();
+        let rc_path = dir.path().join(".bashrc");
+
+        std::fs::write(&rc_path, "# my config\nexport FOO=bar").unwrap();
+
+        let action = EnvAction::InjectSourceLine {
+            rc_path: rc_path.clone(),
+            line: "[ -f ~/.cfgd.env ] && source ~/.cfgd.env".to_string(),
+        };
+
+        let printer = Printer::new(crate::output::Verbosity::Quiet);
+        Reconciler::apply_env_action(&action, &printer).unwrap();
+
+        let written = std::fs::read_to_string(&rc_path).unwrap();
+        assert!(written.starts_with("# my config\n"));
+        assert!(written.contains("export FOO=bar"));
+        assert!(written.contains("source ~/.cfgd.env"));
+    }
+
+    #[test]
+    fn apply_full_flow_plan_apply_verify_consistent() {
+        let state = StateStore::open_in_memory().unwrap();
+        let mut registry = ProviderRegistry::new();
+        registry
+            .package_managers
+            .push(Box::new(TrackingPackageManager::with_installed(
+                "brew",
+                &["git"],
+            )));
+
+        let reconciler = Reconciler::new(&registry, &state);
+        let resolved = make_empty_resolved();
+
+        // Plan: install ripgrep and fd via brew
+        let pkg_actions = vec![PackageAction::Install {
+            manager: "brew".to_string(),
+            packages: vec!["ripgrep".to_string(), "fd".to_string()],
+            origin: "local".to_string(),
+        }];
+
+        let plan = reconciler
+            .plan(&resolved, Vec::new(), pkg_actions, Vec::new())
+            .unwrap();
+        assert!(!plan.is_empty());
+
+        // Apply
+        let printer = Printer::new(crate::output::Verbosity::Quiet);
+        let result = reconciler
+            .apply(&plan, &resolved, Path::new("."), &printer, None, &[])
+            .unwrap();
+
+        assert_eq!(result.status, ApplyStatus::Success);
+        assert_eq!(result.succeeded(), 1);
+        assert_eq!(result.failed(), 0);
+
+        // State store should show the apply
+        let last = state.last_apply().unwrap().unwrap();
+        assert_eq!(last.id, result.apply_id);
+        assert_eq!(last.status, ApplyStatus::Success);
+        assert!(last.summary.is_some());
+
+        // Managed resources should be recorded
+        let resources = state.managed_resources().unwrap();
+        assert!(
+            !resources.is_empty(),
+            "Expected managed resources after apply"
+        );
+    }
+
+    #[test]
+    fn apply_records_summary_json() {
+        let state = StateStore::open_in_memory().unwrap();
+        let mut registry = ProviderRegistry::new();
+        registry
+            .package_managers
+            .push(Box::new(TrackingPackageManager::new("brew")));
+
+        let reconciler = Reconciler::new(&registry, &state);
+        let resolved = make_empty_resolved();
+
+        let pkg_actions = vec![PackageAction::Install {
+            manager: "brew".to_string(),
+            packages: vec!["jq".to_string()],
+            origin: "local".to_string(),
+        }];
+
+        let plan = reconciler
+            .plan(&resolved, Vec::new(), pkg_actions, Vec::new())
+            .unwrap();
+        let printer = Printer::new(crate::output::Verbosity::Quiet);
+        let result = reconciler
+            .apply(&plan, &resolved, Path::new("."), &printer, None, &[])
+            .unwrap();
+
+        // Verify the summary JSON in the state store
+        let last = state.last_apply().unwrap().unwrap();
+        let summary = last.summary.unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&summary).unwrap();
+        assert_eq!(parsed["total"], 1);
+        assert_eq!(parsed["succeeded"], 1);
+        assert_eq!(parsed["failed"], 0);
+        assert_eq!(result.apply_id, last.id);
+    }
+
+    #[test]
+    fn apply_with_phase_filter_only_runs_matching_phase() {
+        let state = StateStore::open_in_memory().unwrap();
+        let mut registry = ProviderRegistry::new();
+        registry
+            .package_managers
+            .push(Box::new(TrackingPackageManager::new("brew")));
+
+        let reconciler = Reconciler::new(&registry, &state);
+        let resolved = make_empty_resolved();
+
+        // Create a plan with package actions
+        let pkg_actions = vec![PackageAction::Install {
+            manager: "brew".to_string(),
+            packages: vec!["ripgrep".to_string()],
+            origin: "local".to_string(),
+        }];
+
+        let plan = reconciler
+            .plan(&resolved, Vec::new(), pkg_actions, Vec::new())
+            .unwrap();
+
+        let printer = Printer::new(crate::output::Verbosity::Quiet);
+
+        // Apply with filter set to Env phase — should skip Packages
+        let result = reconciler
+            .apply(
+                &plan,
+                &resolved,
+                Path::new("."),
+                &printer,
+                Some(&PhaseName::Env),
+                &[],
+            )
+            .unwrap();
+
+        assert_eq!(result.status, ApplyStatus::Success);
+        // No actions executed because Env phase is empty and Packages phase was filtered out
+        assert_eq!(result.action_results.len(), 0);
+    }
+
+    #[test]
+    fn apply_with_phase_filter_runs_only_packages() {
+        let state = StateStore::open_in_memory().unwrap();
+        let mut registry = ProviderRegistry::new();
+        registry
+            .package_managers
+            .push(Box::new(TrackingPackageManager::new("brew")));
+
+        let reconciler = Reconciler::new(&registry, &state);
+        let resolved = make_empty_resolved();
+
+        let pkg_actions = vec![PackageAction::Install {
+            manager: "brew".to_string(),
+            packages: vec!["ripgrep".to_string()],
+            origin: "local".to_string(),
+        }];
+
+        let plan = reconciler
+            .plan(&resolved, Vec::new(), pkg_actions, Vec::new())
+            .unwrap();
+
+        let printer = Printer::new(crate::output::Verbosity::Quiet);
+
+        // Apply with filter set to Packages phase — should run the install
+        let result = reconciler
+            .apply(
+                &plan,
+                &resolved,
+                Path::new("."),
+                &printer,
+                Some(&PhaseName::Packages),
+                &[],
+            )
+            .unwrap();
+
+        assert_eq!(result.status, ApplyStatus::Success);
+        assert_eq!(result.action_results.len(), 1);
+        assert!(result.action_results[0].success);
+    }
+
+    #[test]
+    fn apply_file_create_action_writes_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("source.txt");
+        let target = dir.path().join("subdir/target.txt");
+        std::fs::write(&source, "hello world").unwrap();
+
+        let state = StateStore::open_in_memory().unwrap();
+        let mut registry = ProviderRegistry::new();
+        registry.default_file_strategy = crate::config::FileStrategy::Copy;
+
+        let reconciler = Reconciler::new(&registry, &state);
+        let resolved = make_empty_resolved();
+
+        let file_actions = vec![FileAction::Create {
+            source: source.clone(),
+            target: target.clone(),
+            origin: "local".to_string(),
+            strategy: crate::config::FileStrategy::Copy,
+            source_hash: None,
+        }];
+
+        let plan = reconciler
+            .plan(&resolved, file_actions, Vec::new(), Vec::new())
+            .unwrap();
+
+        let printer = Printer::new(crate::output::Verbosity::Quiet);
+        let result = reconciler
+            .apply(
+                &plan,
+                &resolved,
+                dir.path(),
+                &printer,
+                Some(&PhaseName::Files),
+                &[],
+            )
+            .unwrap();
+
+        assert_eq!(result.status, ApplyStatus::Success);
+        assert_eq!(result.action_results.len(), 1);
+        assert!(result.action_results[0].success);
+
+        // Verify file was created
+        assert!(target.exists());
+        let content = std::fs::read_to_string(&target).unwrap();
+        assert_eq!(content, "hello world");
+    }
+
+    #[test]
+    fn apply_multiple_package_actions_all_succeed() {
+        let state = StateStore::open_in_memory().unwrap();
+        let mut registry = ProviderRegistry::new();
+        registry
+            .package_managers
+            .push(Box::new(TrackingPackageManager::new("brew")));
+        registry
+            .package_managers
+            .push(Box::new(TrackingPackageManager::new("cargo")));
+
+        let reconciler = Reconciler::new(&registry, &state);
+        let resolved = make_empty_resolved();
+
+        let pkg_actions = vec![
+            PackageAction::Install {
+                manager: "brew".to_string(),
+                packages: vec!["jq".to_string()],
+                origin: "local".to_string(),
+            },
+            PackageAction::Install {
+                manager: "cargo".to_string(),
+                packages: vec!["bat".to_string()],
+                origin: "local".to_string(),
+            },
+        ];
+
+        let plan = reconciler
+            .plan(&resolved, Vec::new(), pkg_actions, Vec::new())
+            .unwrap();
+
+        let printer = Printer::new(crate::output::Verbosity::Quiet);
+        let result = reconciler
+            .apply(&plan, &resolved, Path::new("."), &printer, None, &[])
+            .unwrap();
+
+        assert_eq!(result.status, ApplyStatus::Success);
+        assert_eq!(result.action_results.len(), 2);
+        assert_eq!(result.succeeded(), 2);
+        assert_eq!(result.failed(), 0);
+
+        // Verify both managers had their install called
+        let brew = registry.package_managers[0].as_ref();
+        assert!(brew.installed_packages().unwrap().contains("jq"));
+        let cargo = registry.package_managers[1].as_ref();
+        assert!(cargo.installed_packages().unwrap().contains("bat"));
+    }
+
+    #[test]
+    fn apply_package_skip_action_succeeds() {
+        let state = StateStore::open_in_memory().unwrap();
+        let registry = ProviderRegistry::new();
+        let reconciler = Reconciler::new(&registry, &state);
+        let resolved = make_empty_resolved();
+
+        let pkg_actions = vec![PackageAction::Skip {
+            manager: "apt".to_string(),
+            reason: "not available on macOS".to_string(),
+            origin: "local".to_string(),
+        }];
+
+        let plan = reconciler
+            .plan(&resolved, Vec::new(), pkg_actions, Vec::new())
+            .unwrap();
+
+        let printer = Printer::new(crate::output::Verbosity::Quiet);
+        let result = reconciler
+            .apply(&plan, &resolved, Path::new("."), &printer, None, &[])
+            .unwrap();
+
+        assert_eq!(result.status, ApplyStatus::Success);
+        assert_eq!(result.action_results.len(), 1);
+        assert!(result.action_results[0].success);
+        assert!(result.action_results[0].description.contains("skip"));
+    }
+
+    #[test]
+    fn apply_env_write_with_aliases_produces_correct_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let env_path = dir.path().join(".cfgd.env");
+
+        let env = vec![crate::config::EnvVar {
+            name: "EDITOR".into(),
+            value: "nvim".into(),
+        }];
+        let aliases = vec![crate::config::ShellAlias {
+            name: "ll".into(),
+            command: "ls -la".into(),
+        }];
+        let content = super::generate_env_file_content(&env, &aliases);
+
+        let action = EnvAction::WriteEnvFile {
+            path: env_path.clone(),
+            content: content.clone(),
+        };
+
+        let printer = Printer::new(crate::output::Verbosity::Quiet);
+        Reconciler::apply_env_action(&action, &printer).unwrap();
+
+        let written = std::fs::read_to_string(&env_path).unwrap();
+        assert!(written.contains("export EDITOR=\"nvim\""));
+        assert!(written.contains("alias ll=\"ls -la\""));
+        assert!(written.starts_with("# managed by cfgd"));
+    }
 }
