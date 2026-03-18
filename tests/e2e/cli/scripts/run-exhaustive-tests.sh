@@ -952,7 +952,7 @@ else
 fi
 
 begin_test "SRC11: source add --pin-version"
-run $C source add "$SOURCE_REPO" --yes --name team-pin --pin-version ">=1.0" --priority 500
+run $C source add "$SOURCE_REPO" --yes --name team-pin --pin-version ">=1.0" --profile base --priority 500
 if assert_ok; then
     pass_test "SRC11"
 else
@@ -1204,11 +1204,12 @@ if command -v age-keygen > /dev/null 2>&1 && command -v sops > /dev/null 2>&1; t
     AGE_KEY_FILE="$SCRATCH/age-key.txt"
     age-keygen -o "$AGE_KEY_FILE" 2>/dev/null
     AGE_PUB=$(grep "public key:" "$AGE_KEY_FILE" | awk '{print $NF}')
-    cat > "$SCRATCH/.sops.yaml" << SOPSEOF
+    cat > "$CFG/.sops.yaml" << SOPSEOF
 creation_rules:
   - age: >-
       $AGE_PUB
 SOPSEOF
+    cp "$CFG/.sops.yaml" "$SCRATCH/.sops.yaml"
     export SOPS_AGE_KEY_FILE="$AGE_KEY_FILE"
 
     begin_test "SEC03: secret encrypt"
@@ -1414,6 +1415,7 @@ else fail_test "EN05"; fi
 # ═════════════════════════════════════════════════════
 
 begin_test "AL01: add alias (profile update --active --file)"
+touch "$TGT/.aliasrc"
 run $C add "$TGT/.aliasrc"
 if assert_ok; then
     pass_test "AL01"
