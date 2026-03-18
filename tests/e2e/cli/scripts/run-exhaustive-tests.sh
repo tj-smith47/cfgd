@@ -78,6 +78,9 @@ metadata:
   name: exhaustive-e2e
 spec:
   profile: dev
+  aliases:
+    add: "profile update --active --file"
+    remove: "profile update --active --file"
 YAML
 }
 
@@ -901,7 +904,7 @@ else
 fi
 
 begin_test "SRC05: source add --profile"
-run $C source add "$SOURCE_REPO" --yes --name team-profile --profile base
+run $C source add "$SOURCE_REPO" --yes --name team-profile --profile base --priority 500
 if assert_ok; then
     pass_test "SRC05"
 else
@@ -949,7 +952,7 @@ else
 fi
 
 begin_test "SRC11: source add --pin-version"
-run $C source add "$SOURCE_REPO" --yes --name team-pin --pin-version ">=1.0"
+run $C source add "$SOURCE_REPO" --yes --name team-pin --pin-version ">=1.0" --priority 500
 if assert_ok; then
     pass_test "SRC11"
 else
@@ -1112,8 +1115,8 @@ if assert_ok; then
     pass_test "E10"
 else fail_test "E10"; fi
 
-begin_test "E11: explain profile spec.packages"
-run $C explain profile spec.packages
+begin_test "E11: explain profile.spec.packages"
+run $C explain profile.spec.packages
 if assert_ok; then
     pass_test "E11"
 else fail_test "E11"; fi
@@ -1197,21 +1200,38 @@ if assert_ok; then
     pass_test "SEC02"
 else fail_test "SEC02"; fi
 
-begin_test "SEC03: secret encrypt"
-echo "secret-value" > "$SCRATCH/plaintext.yaml"
-run $C secret encrypt "$SCRATCH/plaintext.yaml"
-if assert_ok; then
-    pass_test "SEC03"
-else fail_test "SEC03"; fi
+if command -v age-keygen > /dev/null 2>&1 && command -v sops > /dev/null 2>&1; then
+    AGE_KEY_FILE="$SCRATCH/age-key.txt"
+    age-keygen -o "$AGE_KEY_FILE" 2>/dev/null
+    AGE_PUB=$(grep "public key:" "$AGE_KEY_FILE" | awk '{print $NF}')
+    cat > "$SCRATCH/.sops.yaml" << SOPSEOF
+creation_rules:
+  - age: >-
+      $AGE_PUB
+SOPSEOF
+    export SOPS_AGE_KEY_FILE="$AGE_KEY_FILE"
 
-begin_test "SEC04: secret decrypt"
-if [ -f "$SCRATCH/plaintext.yaml" ]; then
-    run $C secret decrypt "$SCRATCH/plaintext.yaml"
+    begin_test "SEC03: secret encrypt"
+    echo "secret_key: secret-value" > "$SCRATCH/plaintext.yaml"
+    run $C secret encrypt "$SCRATCH/plaintext.yaml"
     if assert_ok; then
-        pass_test "SEC04"
-    else fail_test "SEC04"; fi
+        pass_test "SEC03"
+    else fail_test "SEC03"; fi
+
+    begin_test "SEC04: secret decrypt"
+    if [ -f "$SCRATCH/plaintext.yaml" ]; then
+        run $C secret decrypt "$SCRATCH/plaintext.yaml"
+        if assert_ok; then
+            pass_test "SEC04"
+        else fail_test "SEC04"; fi
+    else
+        skip_test "SEC04" "No encrypted file from SEC03"
+    fi
+
+    unset SOPS_AGE_KEY_FILE
 else
-    skip_test "SEC04" "No encrypted file from SEC03"
+    skip_test "SEC03" "age-keygen or sops not available"
+    skip_test "SEC04" "age-keygen or sops not available"
 fi
 
 begin_test "SEC05: secret edit (EDITOR=true)"

@@ -30,4 +30,4 @@ data:
         reconcile:
           interval: {{ .Values.reconcileInterval | default "5m" | quote }}
           auto-apply: true
-          drift-policy: auto
+          drift-policy: Auto

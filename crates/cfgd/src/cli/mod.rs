@@ -25,16 +25,6 @@ use cfgd_core::state::StateStore;
 
 const MSG_NO_CONFIG: &str = "No cfgd.yaml found — run 'cfgd init' first";
 const MSG_RUN_APPLY: &str = "Run 'cfgd apply --dry-run' to preview changes, then 'cfgd apply'";
-const EXPLAIN_RESOURCE_NAMES: [&str; 8] = [
-    "module",
-    "profile",
-    "cfgdconfig",
-    "configsource",
-    "machineconfig",
-    "configpolicy",
-    "driftalert",
-    "teamconfig",
-];
 
 fn default_config_file() -> PathBuf {
     cfgd_core::default_config_dir().join("cfgd.yaml")
@@ -340,11 +330,7 @@ pub enum Command {
     /// Show schema and field documentation for cfgd resource types
     Explain {
         /// Resource type or field path (e.g., "module", "profile.spec.packages")
-        #[arg(
-            value_hint = clap::ValueHint::Other,
-            // Provide completions for known resource types
-            value_parser = EXPLAIN_RESOURCE_NAMES,
-        )]
+        #[arg(value_hint = clap::ValueHint::Other)]
         resource: Option<String>,
 
         /// Show all fields expanded recursively
@@ -4405,11 +4391,16 @@ fn update_source_rejection(
             })
             .ok_or_else(|| anyhow::anyhow!("cannot access subscription"))?;
 
-        let reject = subscription
+        let sub_map = subscription
             .as_mapping_mut()
-            .ok_or_else(|| anyhow::anyhow!("subscription is not a mapping"))?
+            .ok_or_else(|| anyhow::anyhow!("subscription is not a mapping"))?;
+        let reject = sub_map
             .entry(serde_yaml::Value::String("reject".into()))
             .or_insert(serde_yaml::Value::Mapping(serde_yaml::Mapping::new()));
+        // Replace null with empty mapping (serde serializes default Value::Null)
+        if reject.is_null() {
+            *reject = serde_yaml::Value::Mapping(serde_yaml::Mapping::new());
+        }
 
         set_nested_yaml_value(reject, path, &serde_yaml::Value::Null)?;
         Ok(())
@@ -4432,11 +4423,16 @@ fn update_source_override(
             })
             .ok_or_else(|| anyhow::anyhow!("cannot access subscription"))?;
 
-        let overrides = subscription
+        let sub_map = subscription
             .as_mapping_mut()
-            .ok_or_else(|| anyhow::anyhow!("subscription is not a mapping"))?
+            .ok_or_else(|| anyhow::anyhow!("subscription is not a mapping"))?;
+        let overrides = sub_map
             .entry(serde_yaml::Value::String("overrides".into()))
             .or_insert(serde_yaml::Value::Mapping(serde_yaml::Mapping::new()));
+        // Replace null with empty mapping (serde serializes default Value::Null)
+        if overrides.is_null() {
+            *overrides = serde_yaml::Value::Mapping(serde_yaml::Mapping::new());
+        }
 
         set_nested_yaml_value(
             overrides,
