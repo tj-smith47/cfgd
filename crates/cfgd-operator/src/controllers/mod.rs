@@ -101,25 +101,22 @@ async fn reconcile_machine_config(
         "Reconciling MachineConfig"
     );
 
-    let current_drift = obj
-        .status
-        .as_ref()
-        .map(|s| s.drift_detected)
-        .unwrap_or(false);
-
     let current_generation = obj.meta().generation;
     let observed_generation = obj.status.as_ref().and_then(|s| s.observed_generation);
+
+    // Check if any DriftAlerts exist for this MachineConfig
+    let has_drift = has_active_drift_alerts(&ctx.client, &namespace, &name).await;
 
     // Skip if we've already observed this generation and there's no drift
     let generation_unchanged =
         current_generation.is_some() && current_generation == observed_generation;
-    if generation_unchanged && !current_drift {
+    if generation_unchanged && !has_drift {
         info!(name = %name, "Already reconciled this generation, skipping");
         return Ok(Action::requeue(std::time::Duration::from_secs(60)));
     }
 
     // If not drifted, clean up any stale DriftAlerts for this MachineConfig
-    if !current_drift {
+    if !has_drift {
         cleanup_drift_alerts(&ctx.client, &namespace, &name).await;
     }
 
@@ -131,7 +128,7 @@ async fn reconcile_machine_config(
 
     let now = cfgd_core::utc_now_iso8601();
 
-    let (ready_status, ready_reason, ready_message) = if current_drift {
+    let (ready_status, ready_reason, ready_message) = if has_drift {
         (
             "False".to_string(),
             "DriftDetected".to_string(),
@@ -148,7 +145,7 @@ async fn reconcile_machine_config(
     let status = serde_json::json!({
         "status": MachineConfigStatus {
             last_reconciled: Some(now.clone()),
-            drift_detected: current_drift,
+            drift_detected: has_drift,
             observed_generation: current_generation,
             conditions: vec![
                 Condition {
@@ -301,6 +298,20 @@ async fn reconcile_drift_alert(
 }
 
 /// Clean up resolved DriftAlerts for a MachineConfig that is no longer drifted.
+async fn has_active_drift_alerts(client: &Client, namespace: &str, mc_name: &str) -> bool {
+    let alerts: Api<DriftAlert> = if namespace.is_empty() {
+        Api::all(client.clone())
+    } else {
+        Api::namespaced(client.clone(), namespace)
+    };
+
+    let lp = ListParams::default().labels(&format!("cfgd.io/machine-config={mc_name}"));
+    match alerts.list(&lp).await {
+        Ok(list) => !list.items.is_empty(),
+        Err(_) => false,
+    }
+}
+
 async fn cleanup_drift_alerts(client: &Client, namespace: &str, mc_name: &str) {
     let alerts: Api<DriftAlert> = if namespace.is_empty() {
         Api::all(client.clone())
