@@ -162,8 +162,8 @@ spec:
 INNEREOF'
 exec_on_node cp /etc/cfgd/profiles/k8s-worker-minimal.yaml /tmp/e2e-source/profiles/
 
-OUTPUT=$(exec_on_node cfgd init --from /tmp/e2e-source --config-dir /tmp/e2e-init-test --no-color 2>&1)
-RC=$?
+RC=0
+OUTPUT=$(exec_on_node cfgd init /tmp/e2e-init-test --from /tmp/e2e-source --no-color 2>&1) || RC=$?
 
 if [ "$RC" -eq 0 ] && \
    exec_on_node test -f /tmp/e2e-init-test/cfgd.yaml && \

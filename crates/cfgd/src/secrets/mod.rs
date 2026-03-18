@@ -24,17 +24,32 @@ fn stdout_string(output: &std::process::Output) -> String {
 /// keeping keys visible for meaningful diffs. Wraps the `sops` CLI binary.
 pub struct SopsBackend {
     age_key_path: Option<PathBuf>,
+    sops_config: Option<PathBuf>,
 }
 
 impl SopsBackend {
     pub fn new(age_key_path: Option<PathBuf>) -> Self {
-        Self { age_key_path }
+        Self {
+            age_key_path,
+            sops_config: None,
+        }
+    }
+
+    pub fn with_config_dir(mut self, config_dir: &Path) -> Self {
+        let sops_yaml = config_dir.join(".sops.yaml");
+        if sops_yaml.exists() {
+            self.sops_config = Some(sops_yaml);
+        }
+        self
     }
 
     fn sops_command(&self) -> std::process::Command {
         let mut cmd = std::process::Command::new("sops");
         if let Some(ref key_path) = self.age_key_path {
             cmd.env("SOPS_AGE_KEY_FILE", key_path);
+        }
+        if let Some(ref config_path) = self.sops_config {
+            cmd.arg("--config").arg(config_path);
         }
         cmd
     }
@@ -671,12 +686,19 @@ pub fn check_secrets_health(
 pub fn build_secret_backend(
     backend_name: &str,
     age_key_path: Option<PathBuf>,
+    config_dir: Option<&Path>,
 ) -> Box<dyn SecretBackend> {
     let key_path = age_key_path.unwrap_or_else(|| default_config_dir().join("age-key.txt"));
 
     match backend_name {
         "age" => Box::new(AgeBackend::new(key_path)),
-        _ => Box::new(SopsBackend::new(Some(key_path))),
+        _ => {
+            let backend = SopsBackend::new(Some(key_path));
+            match config_dir {
+                Some(dir) => Box::new(backend.with_config_dir(dir)),
+                None => Box::new(backend),
+            }
+        }
     }
 }
 
@@ -751,13 +773,13 @@ mod tests {
 
     #[test]
     fn build_sops_backend_default() {
-        let backend = build_secret_backend("sops", None);
+        let backend = build_secret_backend("sops", None, None);
         assert_eq!(backend.name(), "sops");
     }
 
     #[test]
     fn build_age_backend() {
-        let backend = build_secret_backend("age", Some(PathBuf::from("/tmp/key.txt")));
+        let backend = build_secret_backend("age", Some(PathBuf::from("/tmp/key.txt")), None);
         assert_eq!(backend.name(), "age");
     }
 

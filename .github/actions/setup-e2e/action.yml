@@ -75,7 +75,13 @@ runs:
       run: |
         if echo "${{ inputs.images }}" | grep -q "operator"; then
           kubectl apply -f tests/e2e/node/manifests/cfgd-server.yaml -n cfgd-system
-          kubectl wait --for=condition=available deployment/cfgd-server \
-            -n cfgd-system --timeout=120s
+          if ! kubectl wait --for=condition=available deployment/cfgd-server \
+            -n cfgd-system --timeout=120s; then
+            echo "::warning::cfgd-server deployment not ready — dumping diagnostics"
+            kubectl get pods -n cfgd-system -o wide
+            kubectl describe pods -n cfgd-system -l app=cfgd-server
+            kubectl logs -n cfgd-system -l app=cfgd-server --tail=50 || true
+            exit 1
+          fi
           echo "Device gateway is ready"
         fi
