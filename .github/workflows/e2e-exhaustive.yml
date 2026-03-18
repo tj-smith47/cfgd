@@ -1,4 +1,4 @@
-name: E2E – Exhaustive CLI
+name: E2E – CLI
 
 on:
   push:

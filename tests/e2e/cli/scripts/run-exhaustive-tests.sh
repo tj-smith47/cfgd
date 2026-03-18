@@ -1564,6 +1564,42 @@ if assert_ok; then
 else fail_test "DRIFT03"; fi
 
 # ═════════════════════════════════════════════════════
+# SECTION 23: conflict detection
+# ═════════════════════════════════════════════════════
+
+begin_test "CONF01: duplicate file targets detected"
+CONF_DIR="$SCRATCH/conflict-test"
+CONF_TGT="$SCRATCH/conflict-target"
+mkdir -p "$CONF_DIR/profiles" "$CONF_DIR/files" "$CONF_TGT"
+echo "content-a" > "$CONF_DIR/files/file-a"
+echo "content-b" > "$CONF_DIR/files/file-b"
+cat > "$CONF_DIR/profiles/conflicting.yaml" << YAML
+apiVersion: cfgd.io/v1alpha1
+kind: Profile
+metadata:
+  name: conflicting
+spec:
+  files:
+    managed:
+      - source: files/file-a
+        target: $CONF_TGT/.same-target
+      - source: files/file-b
+        target: $CONF_TGT/.same-target
+YAML
+cat > "$CONF_DIR/cfgd.yaml" << YAML
+apiVersion: cfgd.io/v1alpha1
+kind: Config
+metadata:
+  name: conflict-test
+spec:
+  profile: conflicting
+YAML
+run --config "$CONF_DIR/cfgd.yaml" apply --dry-run --no-color
+if [ "$RC" -ne 0 ] || echo "$OUTPUT" | grep -qiE "conflict|duplicate|same target"; then
+    pass_test "CONF01"
+else fail_test "CONF01" "Duplicate targets not detected"; fi
+
+# ═════════════════════════════════════════════════════
 # SUMMARY
 # ═════════════════════════════════════════════════════
 
