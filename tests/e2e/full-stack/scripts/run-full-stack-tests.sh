@@ -338,7 +338,7 @@ kubectl delete driftalert "drift-${DEVICE_1}" -n cfgd-system 2>/dev/null || true
 
 # Patch MC to trigger re-reconcile (changes generation)
 kubectl patch machineconfig "mc-${DEVICE_1}" -n cfgd-system --type=merge \
-    -p '{"spec":{"packages":["vim","git","curl"]}}' 2>/dev/null
+    -p '{"spec":{"packages":["vim","git","curl","wget"]}}' 2>/dev/null
 
 # Wait for MC to clear drift
 echo "  Waiting for drift to clear..."

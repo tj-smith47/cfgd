@@ -124,6 +124,9 @@ fi
 begin_test "T04: MachineConfig update triggers re-reconcile"
 BEFORE_TS="$MC_STATUS"
 
+# Wait to ensure timestamp differs from initial reconcile
+sleep 2
+
 # Update the spec
 kubectl patch machineconfig e2e-workstation-1 -n cfgd-system --type=merge \
     -p '{"spec":{"packages":["vim","git","curl","ripgrep"]}}' 2>/dev/null
