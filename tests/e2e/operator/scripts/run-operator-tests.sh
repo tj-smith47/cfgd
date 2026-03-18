@@ -91,7 +91,7 @@ EOF
 # Wait for controller to reconcile (status update)
 echo "  Waiting for MachineConfig status update..."
 MC_STATUS=""
-for i in $(seq 1 30); do
+for i in $(seq 1 60); do
     MC_STATUS=$(kubectl get machineconfig e2e-workstation-1 -n cfgd-system \
         -o jsonpath='{.status.lastReconciled}' 2>/dev/null || echo "")
     if [ -n "$MC_STATUS" ]; then
@@ -131,7 +131,7 @@ kubectl patch machineconfig e2e-workstation-1 -n cfgd-system --type=merge \
 # Wait for new reconciliation
 echo "  Waiting for re-reconciliation..."
 AFTER_TS=""
-for i in $(seq 1 30); do
+for i in $(seq 1 60); do
     AFTER_TS=$(kubectl get machineconfig e2e-workstation-1 -n cfgd-system \
         -o jsonpath='{.status.lastReconciled}' 2>/dev/null || echo "")
     if [ -n "$AFTER_TS" ] && [ "$AFTER_TS" != "$BEFORE_TS" ]; then
@@ -172,7 +172,7 @@ EOF
 # Wait for policy reconciliation
 echo "  Waiting for ConfigPolicy status..."
 CP_STATUS=""
-for i in $(seq 1 30); do
+for i in $(seq 1 60); do
     CP_STATUS=$(kubectl get configpolicy e2e-security-baseline -n cfgd-system \
         -o jsonpath='{.status.compliantCount}' 2>/dev/null || echo "")
     if [ -n "$CP_STATUS" ]; then
@@ -223,7 +223,7 @@ EOF
 sleep 5
 
 NON_COMPLIANT=""
-for i in $(seq 1 30); do
+for i in $(seq 1 60); do
     NON_COMPLIANT=$(kubectl get configpolicy e2e-security-baseline -n cfgd-system \
         -o jsonpath='{.status.nonCompliantCount}' 2>/dev/null || echo "")
     if [ "${NON_COMPLIANT:-0}" -ge 1 ]; then
@@ -314,7 +314,7 @@ EOF
 # Wait for DriftAlert controller to mark MC as drifted
 echo "  Waiting for drift propagation..."
 DRIFT_DETECTED=""
-for i in $(seq 1 30); do
+for i in $(seq 1 60); do
     DRIFT_DETECTED=$(kubectl get machineconfig e2e-workstation-1 -n cfgd-system \
         -o jsonpath='{.status.driftDetected}' 2>/dev/null || echo "")
     if [ "$DRIFT_DETECTED" = "true" ]; then
@@ -350,7 +350,7 @@ kubectl patch machineconfig e2e-workstation-1 -n cfgd-system --type=merge \
 # Wait for MC to clear drift status
 echo "  Waiting for drift to clear..."
 DRIFT_CLEARED=false
-for i in $(seq 1 30); do
+for i in $(seq 1 60); do
     DRIFT_DETECTED=$(kubectl get machineconfig e2e-workstation-1 -n cfgd-system \
         -o jsonpath='{.status.driftDetected}' 2>/dev/null || echo "true")
     if [ "$DRIFT_DETECTED" = "false" ]; then

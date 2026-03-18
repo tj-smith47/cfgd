@@ -13,7 +13,7 @@ echo "=== cfgd Binary Tests ==="
 # --- Setup ---
 echo "Installing cfgd binary on kind node..."
 install_binary_on_node "cfgd:e2e-test" "/usr/local/bin/cfgd"
-install_packages_on_node procps kmod
+install_packages_on_node procps kmod git
 
 echo "Copying test fixtures to kind node..."
 NODE="$(get_kind_node)"
@@ -161,6 +161,9 @@ spec:
   profile: k8s-worker-minimal
 INNEREOF'
 exec_on_node cp /etc/cfgd/profiles/k8s-worker-minimal.yaml /tmp/e2e-source/profiles/
+if ! exec_on_node which git > /dev/null 2>&1; then
+    skip_test "T09" "git not available on kind node"
+else
 exec_on_node bash -c 'cd /tmp/e2e-source && git init -q && git config user.email "e2e@test" && git config user.name "E2E" && git add -A && git commit -qm "init"'
 
 RC=0
@@ -173,6 +176,7 @@ if [ "$RC" -eq 0 ] && \
 else
     fail_test "T09" "Init failed or files missing (exit code: $RC)"
 fi
+fi  # end git availability check
 
 # =================================================================
 # T10: Seccomp profile write

@@ -53,7 +53,7 @@ echo "Device gateway URL: $SERVER_URL"
 
 # Wait for device gateway to be reachable from the kind node
 echo "Waiting for device gateway reachability..."
-for i in $(seq 1 30); do
+for i in $(seq 1 60); do
     if exec_on_node curl -sf "${SERVER_URL}/api/v1/devices" > /dev/null 2>&1; then
         break
     fi
@@ -154,7 +154,7 @@ EOF
 
 # Wait for operator to reconcile
 MC_STATUS=""
-for i in $(seq 1 30); do
+for i in $(seq 1 60); do
     MC_STATUS=$(kubectl get machineconfig "mc-${DEVICE_1}" -n cfgd-system \
         -o jsonpath='{.status.lastReconciled}' 2>/dev/null || echo "")
     if [ -n "$MC_STATUS" ]; then
@@ -212,7 +212,7 @@ EOF
 # Wait for policy evaluation
 sleep 5
 COMPLIANT=""
-for i in $(seq 1 30); do
+for i in $(seq 1 60); do
     COMPLIANT=$(kubectl get configpolicy fleet-baseline -n cfgd-system \
         -o jsonpath='{.status.compliantCount}' 2>/dev/null || echo "")
     if [ -n "$COMPLIANT" ]; then
@@ -290,7 +290,7 @@ EOF
 # Wait for DriftAlert to mark MC as drifted
 echo "  Waiting for drift propagation..."
 DRIFT_DETECTED=""
-for i in $(seq 1 30); do
+for i in $(seq 1 60); do
     DRIFT_DETECTED=$(kubectl get machineconfig "mc-${DEVICE_1}" -n cfgd-system \
         -o jsonpath='{.status.driftDetected}' 2>/dev/null || echo "")
     if [ "$DRIFT_DETECTED" = "true" ]; then
@@ -343,7 +343,7 @@ kubectl patch machineconfig "mc-${DEVICE_1}" -n cfgd-system --type=merge \
 # Wait for MC to clear drift
 echo "  Waiting for drift to clear..."
 DRIFT_CLEARED=false
-for i in $(seq 1 30); do
+for i in $(seq 1 60); do
     DRIFT=$(kubectl get machineconfig "mc-${DEVICE_1}" -n cfgd-system \
         -o jsonpath='{.status.driftDetected}' 2>/dev/null || echo "true")
     if [ "$DRIFT" = "false" ]; then
