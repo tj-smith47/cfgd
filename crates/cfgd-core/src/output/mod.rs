@@ -383,12 +383,17 @@ fn walk_jsonpath<'a>(value: &'a serde_json::Value, path: &str) -> Vec<&'a serde_
                 .collect()
         } else if let Some(colon_pos) = bracket_expr.find(':') {
             // Slice: [start:end]
-            let start = bracket_expr[..colon_pos].parse::<usize>().unwrap_or(0);
+            let start = bracket_expr[..colon_pos]
+                .parse::<usize>()
+                .unwrap_or(0)
+                .min(arr.len());
             let end = bracket_expr[colon_pos + 1..]
                 .parse::<usize>()
-                .unwrap_or(arr.len());
-            let end = end.min(arr.len());
-            if rest.is_empty() {
+                .unwrap_or(arr.len())
+                .min(arr.len());
+            if start >= end {
+                vec![]
+            } else if rest.is_empty() {
                 arr[start..end].iter().collect()
             } else {
                 arr[start..end]
@@ -761,9 +766,16 @@ impl Printer {
                 true
             }
             OutputFormat::Yaml => {
-                let yaml = serde_yaml::to_string(value).unwrap_or_default();
-                let trimmed = yaml.strip_prefix("---\n").unwrap_or(&yaml);
-                self.stdout_line(trimmed.trim_end());
+                if let Some(ref expr) = self.jsonpath {
+                    // jsonpath operates on JSON, then output as YAML
+                    let json_value = serde_json::to_value(value).unwrap_or(serde_json::Value::Null);
+                    let extracted = apply_jsonpath(&json_value, expr);
+                    self.stdout_line(&extracted);
+                } else {
+                    let yaml = serde_yaml::to_string(value).unwrap_or_default();
+                    let trimmed = yaml.strip_prefix("---\n").unwrap_or(&yaml);
+                    self.stdout_line(trimmed.trim_end());
+                }
                 true
             }
         }
@@ -1231,6 +1243,15 @@ mod tests {
     fn jsonpath_out_of_bounds_returns_empty() {
         let val = serde_json::json!({"items": [1, 2]});
         assert_eq!(apply_jsonpath(&val, "{.items[5]}"), "");
+    }
+
+    #[test]
+    fn jsonpath_slice_out_of_bounds_no_panic() {
+        let val = serde_json::json!({"items": [1, 2, 3]});
+        // start > len: should return empty, not panic
+        assert_eq!(apply_jsonpath(&val, "{.items[10:20]}"), "");
+        // start > end after clamping: should return empty
+        assert_eq!(apply_jsonpath(&val, "{.items[5:2]}"), "");
     }
 
     #[test]

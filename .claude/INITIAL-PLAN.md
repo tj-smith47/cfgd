@@ -640,3 +640,27 @@ Replaced verbose `--add-thing`/`--remove-thing` flag pairs on `profile update` a
 - [x] Updated docs (cli-reference, profiles, modules, configuration, safety, changelog)
 - [x] Updated E2E tests and exhaustive test suite
 - [x] Updated default CLI aliases in `cfgd init` scaffold
+
+---
+
+## Structured output: `--output json` and `--jsonpath`
+
+Add `--output json` (alias `-o json`) global flag and `--jsonpath <expr>` for machine-readable output. Applies to all commands that display structured data.
+
+Commands supported:
+- `status` — drift state, last apply info, managed resources
+- `profile show` — resolved profile as JSON
+- `module list` / `module show` — module metadata, packages, deps
+- `source list` / `source show` — source subscriptions, manifest info
+- `log` — apply history entries
+- `doctor` — tool availability checks as structured report
+- `verify` — compliance state, drift items
+- `explain` — schema definitions
+- `config get` — already outputs raw values; JSON mode returns typed values
+- `config show` — full config as JSON
+
+- [x] Add `--output` global flag (`table` default, `json`, `yaml`) and `--jsonpath` to Cli struct
+- [x] Implement `OutputFormat` enum and `Printer::write_structured()` method
+- [x] Add `Serialize` to all display structs (ApplyResult, DriftEvent, ModuleInfo, etc.)
+- [x] Wire through each command listed above
+- [x] Update docs and CLI reference

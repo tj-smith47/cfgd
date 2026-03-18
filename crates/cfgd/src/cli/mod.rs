@@ -1790,14 +1790,15 @@ fn cmd_status(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
         })
         .collect();
 
-    if printer.write_structured(&StatusOutput {
-        last_apply: last_apply.clone(),
-        drift: drift_events.clone(),
-        sources: source_records.clone(),
-        pending_decisions: pending.clone(),
-        modules: module_entries,
-        managed_resources: resources.clone(),
-    }) {
+    if printer.is_structured() {
+        printer.write_structured(&StatusOutput {
+            last_apply,
+            drift: drift_events,
+            sources: source_records,
+            pending_decisions: pending,
+            modules: module_entries,
+            managed_resources: resources,
+        });
         return Ok(());
     }
 
@@ -1805,7 +1806,7 @@ fn cmd_status(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
     printer.newline();
 
     // Last apply
-    if let Some(last) = last_apply {
+    if let Some(last) = &last_apply {
         printer.subheader("Last Apply");
         printer.key_value("Time", &last.timestamp);
         printer.key_value("Profile", &last.profile);
@@ -1929,9 +1930,8 @@ fn cmd_log(printer: &Printer, count: u32) -> anyhow::Result<()> {
     let state = open_state_store()?;
     let history = state.history(count)?;
 
-    if printer.write_structured(&LogOutput {
-        entries: history.clone(),
-    }) {
+    if printer.is_structured() {
+        printer.write_structured(&LogOutput { entries: history });
         return Ok(());
     }
 
@@ -2004,11 +2004,12 @@ fn cmd_verify(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
     let pass_count = results.iter().filter(|r| r.matches).count();
     let fail_count = results.iter().filter(|r| !r.matches).count();
 
-    if printer.write_structured(&VerifyOutput {
-        results: results.clone(),
-        pass_count,
-        fail_count,
-    }) {
+    if printer.is_structured() {
+        printer.write_structured(&VerifyOutput {
+            results,
+            pass_count,
+            fail_count,
+        });
         return Ok(());
     }
 
