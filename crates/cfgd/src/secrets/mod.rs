@@ -48,6 +48,11 @@ impl SopsBackend {
         if let Some(ref key_path) = self.age_key_path {
             cmd.env("SOPS_AGE_KEY_FILE", key_path);
         }
+        cmd
+    }
+
+    fn sops_encrypt_command(&self) -> std::process::Command {
+        let mut cmd = self.sops_command();
         if let Some(ref config_path) = self.sops_config {
             cmd.arg("--config").arg(config_path);
         }
@@ -66,7 +71,7 @@ impl SecretBackend for SopsBackend {
 
     fn encrypt_file(&self, path: &Path) -> Result<()> {
         let output = self
-            .sops_command()
+            .sops_encrypt_command()
             .arg("--encrypt")
             .arg("--in-place")
             .arg(path)
