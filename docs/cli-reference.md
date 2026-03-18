@@ -60,6 +60,12 @@ cfgd apply --skip system.sysctl     # skip specific items
 
 Show configuration status, drift, and pending decisions.
 
+```sh
+cfgd status                                 # human-readable table
+cfgd status -o json                         # full status as JSON
+cfgd status -o json --jsonpath '{.drift}'   # extract drift events
+```
+
 ### `cfgd diff`
 
 Show detailed file diffs with syntax highlighting.
@@ -68,9 +74,17 @@ Show detailed file diffs with syntax highlighting.
 
 Check that all managed resources match desired state.
 
+```sh
+cfgd verify -o json   # structured pass/fail results
+```
+
 ### `cfgd doctor`
 
 Check system health: available package managers, configurators, module status, dependency versions.
+
+```sh
+cfgd doctor -o json   # structured health report
+```
 
 ### `cfgd log`
 
@@ -79,6 +93,7 @@ Show apply history from the state store.
 ```sh
 cfgd log              # last 20 entries
 cfgd log --limit 50   # last 50 entries
+cfgd log -o json      # JSON apply history
 ```
 
 ### `cfgd sync`

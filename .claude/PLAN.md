@@ -20,11 +20,11 @@ Commands to support:
 - `config get` — already outputs raw values; JSON mode returns typed values
 - `config show` — full config as JSON
 
-- [ ] Add `--output` global flag (`table` default, `json`, `yaml`) and `--jsonpath` to Cli struct
-- [ ] Implement `OutputFormat` enum and `Printer::write_structured()` method
-- [ ] Add `Serialize` to all display structs (ApplyResult, DriftEvent, ModuleInfo, etc.)
-- [ ] Wire through each command listed above
-- [ ] Update docs and CLI reference
+- [x] Add `--output` global flag (`table` default, `json`, `yaml`) and `--jsonpath` to Cli struct
+- [x] Implement `OutputFormat` enum and `Printer::write_structured()` method
+- [x] Add `Serialize` to all display structs (ApplyResult, DriftEvent, ModuleInfo, etc.)
+- [x] Wire through each command listed above
+- [x] Update docs and CLI reference
 
 ---
 

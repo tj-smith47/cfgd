@@ -1,10 +1,13 @@
 use super::*;
 
 pub(super) fn cmd_profile_show(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
-    printer.header("Resolved Profile");
-
     let (_cfg, resolved) = load_config_and_profile(cli, printer)?;
 
+    if printer.write_structured(&resolved) {
+        return Ok(());
+    }
+
+    printer.header("Resolved Profile");
     printer.newline();
     printer.subheader("Layers");
     for layer in &resolved.layers {

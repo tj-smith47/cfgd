@@ -50,7 +50,7 @@ pub struct ResolvedFile {
 }
 
 /// A fully resolved module — ready for the reconciler.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct ResolvedModule {
     pub name: String,
     pub packages: Vec<ResolvedPackage>,
@@ -66,7 +66,7 @@ pub struct ResolvedModule {
 // ---------------------------------------------------------------------------
 
 /// A module loaded from disk.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct LoadedModule {
     pub name: String,
     pub spec: ModuleSpec,

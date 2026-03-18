@@ -14,7 +14,8 @@ use crate::providers::{FileAction, PackageAction, ProviderRegistry, SecretAction
 use crate::state::{ApplyStatus, StateStore};
 
 /// Ordered reconciliation phases.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
 pub enum PhaseName {
     Modules,
     System,
@@ -154,14 +155,14 @@ pub enum ScriptPhase {
 }
 
 /// A phase in the reconciliation plan.
-#[derive(Debug)]
+#[derive(Debug, Serialize)]
 pub struct Phase {
     pub name: PhaseName,
     pub actions: Vec<Action>,
 }
 
 /// A complete reconciliation plan.
-#[derive(Debug)]
+#[derive(Debug, Serialize)]
 pub struct Plan {
     pub phases: Vec<Phase>,
 }
@@ -192,7 +193,7 @@ impl Plan {
 }
 
 /// Result of applying a single action.
-#[derive(Debug)]
+#[derive(Debug, Serialize)]
 pub struct ActionResult {
     pub phase: String,
     pub description: String,
@@ -201,7 +202,7 @@ pub struct ActionResult {
 }
 
 /// Result of an entire apply operation.
-#[derive(Debug)]
+#[derive(Debug, Serialize)]
 pub struct ApplyResult {
     pub action_results: Vec<ActionResult>,
     pub status: ApplyStatus,
@@ -210,7 +211,7 @@ pub struct ApplyResult {
 }
 
 /// Result of a rollback operation.
-#[derive(Debug)]
+#[derive(Debug, Serialize)]
 pub struct RollbackResult {
     pub files_restored: usize,
     pub files_removed: usize,
@@ -1660,7 +1661,7 @@ pub fn verify(
 }
 
 /// Result of verifying a single resource.
-#[derive(Debug)]
+#[derive(Debug, Clone, Serialize)]
 pub struct VerifyResult {
     pub resource_type: String,
     pub resource_id: String,

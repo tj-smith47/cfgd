@@ -2,6 +2,7 @@
 
 use console::{Color, Style, Term};
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
+use serde::Serialize;
 use similar::{ChangeTag, TextDiff};
 use syntect::easy::HighlightLines;
 use syntect::highlighting::ThemeSet;
@@ -14,6 +15,13 @@ use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 use crate::config::ThemeConfig;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OutputFormat {
+    Table,
+    Json,
+    Yaml,
+}
 
 // Default icons shared across all non-minimal presets
 const ICON_SUCCESS: &str = "✓";
@@ -305,6 +313,137 @@ fn apply_color(style: &mut Style, hex: &str) {
     }
 }
 
+/// Apply a kubectl-compatible jsonpath expression to a JSON value.
+///
+/// Supports:
+/// - `{.field.nested}` — dot-path into objects
+/// - `{.items[0]}` — array index
+/// - `{.items[*].name}` — wildcard collect
+/// - `{.items[0:3]}` — array slice
+///
+/// Scalars return as raw text, objects/arrays as JSON.
+fn apply_jsonpath(value: &serde_json::Value, expr: &str) -> String {
+    // Strip optional { } wrapper
+    let expr = expr.trim();
+    let expr = expr.strip_prefix('{').unwrap_or(expr);
+    let expr = expr.strip_suffix('}').unwrap_or(expr);
+    let expr = expr.strip_prefix('.').unwrap_or(expr);
+
+    if expr.is_empty() {
+        return format_jsonpath_result(value);
+    }
+
+    let results = walk_jsonpath(value, expr);
+    match results.len() {
+        0 => String::new(),
+        1 => format_jsonpath_result(results[0]),
+        _ => {
+            // Multiple results: output each on its own line (kubectl behavior)
+            results
+                .iter()
+                .map(|v| format_jsonpath_result(v))
+                .collect::<Vec<_>>()
+                .join("\n")
+        }
+    }
+}
+
+fn walk_jsonpath<'a>(value: &'a serde_json::Value, path: &str) -> Vec<&'a serde_json::Value> {
+    if path.is_empty() {
+        return vec![value];
+    }
+
+    // Parse the next segment: either `key`, `key[index]`, `key[*]`, or `key[start:end]`
+    let (segment, rest) = split_jsonpath_segment(path);
+
+    // Check for array access on the segment
+    if let Some(bracket_pos) = segment.find('[') {
+        let key = &segment[..bracket_pos];
+        let bracket_expr = &segment[bracket_pos + 1..segment.len() - 1]; // strip [ ]
+
+        // Navigate to the key first (if non-empty)
+        let target = if key.is_empty() {
+            value
+        } else {
+            match value.get(key) {
+                Some(v) => v,
+                None => return vec![],
+            }
+        };
+
+        let arr = match target.as_array() {
+            Some(a) => a,
+            None => return vec![],
+        };
+
+        if bracket_expr == "*" {
+            // Wildcard: collect from all elements
+            arr.iter()
+                .flat_map(|elem| walk_jsonpath(elem, rest))
+                .collect()
+        } else if let Some(colon_pos) = bracket_expr.find(':') {
+            // Slice: [start:end]
+            let start = bracket_expr[..colon_pos].parse::<usize>().unwrap_or(0);
+            let end = bracket_expr[colon_pos + 1..]
+                .parse::<usize>()
+                .unwrap_or(arr.len());
+            let end = end.min(arr.len());
+            if rest.is_empty() {
+                arr[start..end].iter().collect()
+            } else {
+                arr[start..end]
+                    .iter()
+                    .flat_map(|elem| walk_jsonpath(elem, rest))
+                    .collect()
+            }
+        } else {
+            // Numeric index
+            let idx: usize = match bracket_expr.parse() {
+                Ok(i) => i,
+                Err(_) => return vec![],
+            };
+            match arr.get(idx) {
+                Some(elem) => walk_jsonpath(elem, rest),
+                None => vec![],
+            }
+        }
+    } else {
+        // Plain key access
+        match value.get(segment) {
+            Some(v) => walk_jsonpath(v, rest),
+            None => vec![],
+        }
+    }
+}
+
+/// Split a jsonpath into the first segment and the rest.
+/// Handles bracket notation: `items[0].name` → (`items[0]`, `name`)
+fn split_jsonpath_segment(path: &str) -> (&str, &str) {
+    let mut in_bracket = false;
+    for (i, c) in path.char_indices() {
+        match c {
+            '[' => in_bracket = true,
+            ']' => in_bracket = false,
+            '.' if !in_bracket => {
+                return (&path[..i], &path[i + 1..]);
+            }
+            _ => {}
+        }
+    }
+    (path, "")
+}
+
+/// Format a jsonpath result value: scalars as raw text, objects/arrays as JSON.
+fn format_jsonpath_result(value: &serde_json::Value) -> String {
+    match value {
+        serde_json::Value::Null => String::new(),
+        serde_json::Value::String(s) => s.clone(),
+        serde_json::Value::Bool(b) => b.to_string(),
+        serde_json::Value::Number(n) => n.to_string(),
+        _ => serde_json::to_string_pretty(value).unwrap_or_default(),
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Verbosity {
     Quiet,
@@ -333,6 +472,8 @@ pub struct Printer {
     syntax_set: SyntaxSet,
     theme_set: ThemeSet,
     verbosity: Verbosity,
+    output_format: OutputFormat,
+    jsonpath: Option<String>,
 }
 
 impl Printer {
@@ -341,6 +482,21 @@ impl Printer {
     }
 
     pub fn with_theme(verbosity: Verbosity, theme_config: Option<&ThemeConfig>) -> Self {
+        Self::with_format(verbosity, theme_config, OutputFormat::Table, None)
+    }
+
+    pub fn with_format(
+        verbosity: Verbosity,
+        theme_config: Option<&ThemeConfig>,
+        output_format: OutputFormat,
+        jsonpath: Option<String>,
+    ) -> Self {
+        // Auto-quiet when structured output is active
+        let verbosity = if output_format != OutputFormat::Table {
+            Verbosity::Quiet
+        } else {
+            verbosity
+        };
         Self {
             theme: Theme::from_config(theme_config),
             term: Term::stderr(),
@@ -348,6 +504,8 @@ impl Printer {
             syntax_set: SyntaxSet::load_defaults_newlines(),
             theme_set: ThemeSet::load_defaults(),
             verbosity,
+            output_format,
+            jsonpath,
         }
     }
 
@@ -579,6 +737,36 @@ impl Printer {
     pub fn stdout_line(&self, text: &str) {
         let stdout = Term::stdout();
         let _ = stdout.write_line(text);
+    }
+
+    /// Whether structured output mode is active (json or yaml).
+    pub fn is_structured(&self) -> bool {
+        self.output_format != OutputFormat::Table
+    }
+
+    /// Write a serializable value as structured output (JSON/YAML) to stdout.
+    /// Returns `true` if output was emitted (caller should skip human formatting).
+    /// Returns `false` if output format is Table (caller should do human formatting).
+    pub fn write_structured<T: Serialize>(&self, value: &T) -> bool {
+        match self.output_format {
+            OutputFormat::Table => false,
+            OutputFormat::Json => {
+                let json_value = serde_json::to_value(value).unwrap_or(serde_json::Value::Null);
+                let text = if let Some(ref expr) = self.jsonpath {
+                    apply_jsonpath(&json_value, expr)
+                } else {
+                    serde_json::to_string_pretty(&json_value).unwrap_or_default()
+                };
+                self.stdout_line(&text);
+                true
+            }
+            OutputFormat::Yaml => {
+                let yaml = serde_yaml::to_string(value).unwrap_or_default();
+                let trimmed = yaml.strip_prefix("---\n").unwrap_or(&yaml);
+                self.stdout_line(trimmed.trim_end());
+                true
+            }
+        }
     }
 
     /// Run a command with live output display.
@@ -942,5 +1130,130 @@ mod tests {
             "test spawn error",
         );
         assert!(result.is_err());
+    }
+
+    // --- OutputFormat and write_structured tests ---
+
+    #[test]
+    fn output_format_table_returns_false() {
+        let printer = Printer::new(Verbosity::Normal);
+        assert!(!printer.is_structured());
+        let val = serde_json::json!({"key": "value"});
+        assert!(!printer.write_structured(&val));
+    }
+
+    #[test]
+    fn output_format_json_returns_true() {
+        let printer = Printer::with_format(Verbosity::Normal, None, OutputFormat::Json, None);
+        assert!(printer.is_structured());
+        let val = serde_json::json!({"key": "value"});
+        assert!(printer.write_structured(&val));
+    }
+
+    #[test]
+    fn output_format_yaml_returns_true() {
+        let printer = Printer::with_format(Verbosity::Normal, None, OutputFormat::Yaml, None);
+        assert!(printer.is_structured());
+        assert!(printer.write_structured(&"hello"));
+    }
+
+    #[test]
+    fn structured_mode_sets_quiet_verbosity() {
+        let printer = Printer::with_format(Verbosity::Normal, None, OutputFormat::Json, None);
+        assert_eq!(printer.verbosity(), Verbosity::Quiet);
+    }
+
+    // --- jsonpath tests ---
+
+    #[test]
+    fn jsonpath_simple_key() {
+        let val = serde_json::json!({"name": "cfgd", "version": "1.0"});
+        assert_eq!(apply_jsonpath(&val, "{.name}"), "cfgd");
+        assert_eq!(apply_jsonpath(&val, "{.version}"), "1.0");
+    }
+
+    #[test]
+    fn jsonpath_nested_key() {
+        let val = serde_json::json!({"status": {"phase": "running", "ready": true}});
+        assert_eq!(apply_jsonpath(&val, "{.status.phase}"), "running");
+        assert_eq!(apply_jsonpath(&val, "{.status.ready}"), "true");
+    }
+
+    #[test]
+    fn jsonpath_array_index() {
+        let val = serde_json::json!({"items": ["a", "b", "c"]});
+        assert_eq!(apply_jsonpath(&val, "{.items[0]}"), "a");
+        assert_eq!(apply_jsonpath(&val, "{.items[2]}"), "c");
+    }
+
+    #[test]
+    fn jsonpath_array_wildcard() {
+        let val = serde_json::json!({"items": [{"name": "a"}, {"name": "b"}]});
+        assert_eq!(apply_jsonpath(&val, "{.items[*].name}"), "a\nb");
+    }
+
+    #[test]
+    fn jsonpath_array_slice() {
+        let val = serde_json::json!({"items": [1, 2, 3, 4, 5]});
+        let result = apply_jsonpath(&val, "{.items[1:3]}");
+        assert_eq!(result, "2\n3");
+    }
+
+    #[test]
+    fn jsonpath_missing_key_returns_empty() {
+        let val = serde_json::json!({"name": "cfgd"});
+        assert_eq!(apply_jsonpath(&val, "{.missing}"), "");
+    }
+
+    #[test]
+    fn jsonpath_no_braces() {
+        let val = serde_json::json!({"name": "cfgd"});
+        assert_eq!(apply_jsonpath(&val, ".name"), "cfgd");
+    }
+
+    #[test]
+    fn jsonpath_object_result() {
+        let val = serde_json::json!({"status": {"phase": "running"}});
+        let result = apply_jsonpath(&val, "{.status}");
+        let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
+        assert_eq!(parsed["phase"], "running");
+    }
+
+    #[test]
+    fn jsonpath_empty_expr_returns_full_value() {
+        let val = serde_json::json!({"a": 1});
+        let result = apply_jsonpath(&val, "{}");
+        let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
+        assert_eq!(parsed["a"], 1);
+    }
+
+    #[test]
+    fn jsonpath_out_of_bounds_returns_empty() {
+        let val = serde_json::json!({"items": [1, 2]});
+        assert_eq!(apply_jsonpath(&val, "{.items[5]}"), "");
+    }
+
+    #[test]
+    fn jsonpath_null_value() {
+        let val = serde_json::json!({"key": null});
+        assert_eq!(apply_jsonpath(&val, "{.key}"), "");
+    }
+
+    #[test]
+    fn split_jsonpath_segment_simple() {
+        assert_eq!(split_jsonpath_segment("foo.bar"), ("foo", "bar"));
+        assert_eq!(split_jsonpath_segment("foo"), ("foo", ""));
+    }
+
+    #[test]
+    fn split_jsonpath_segment_with_bracket() {
+        assert_eq!(
+            split_jsonpath_segment("items[0].name"),
+            ("items[0]", "name")
+        );
+        assert_eq!(
+            split_jsonpath_segment("items[*].name"),
+            ("items[*]", "name")
+        );
     }
 }

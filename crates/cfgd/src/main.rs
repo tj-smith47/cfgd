@@ -13,6 +13,24 @@ fn main() -> anyhow::Result<()> {
     let expanded = cli::expand_aliases(raw_args);
     let cli = cli::Cli::parse_from(expanded);
 
+    // Parse output format
+    let output_format = match cli.output.as_str() {
+        "json" => cfgd_core::output::OutputFormat::Json,
+        "yaml" => cfgd_core::output::OutputFormat::Yaml,
+        "table" => {
+            // --jsonpath implies json output
+            if cli.jsonpath.is_some() {
+                cfgd_core::output::OutputFormat::Json
+            } else {
+                cfgd_core::output::OutputFormat::Table
+            }
+        }
+        other => {
+            eprintln!("Unknown output format '{}'. Use: table, json, yaml", other);
+            std::process::exit(1);
+        }
+    };
+
     // Determine verbosity
     let verbosity = if cli.quiet {
         cfgd_core::output::Verbosity::Quiet
@@ -48,7 +66,12 @@ fn main() -> anyhow::Result<()> {
         .then(|| cfgd_core::config::load_config(std::path::Path::new(&cli.config)).ok())
         .flatten()
         .and_then(|c| c.spec.theme);
-    let printer = cfgd_core::output::Printer::with_theme(verbosity, theme_config.as_ref());
+    let printer = cfgd_core::output::Printer::with_format(
+        verbosity,
+        theme_config.as_ref(),
+        output_format,
+        cli.jsonpath.clone(),
+    );
 
     if let Err(e) = cli::execute(&cli, &printer) {
         printer.error(&format!("{:#}", e));

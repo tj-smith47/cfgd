@@ -1,16 +1,42 @@
 use std::path::{Path, PathBuf};
 
+use serde::Serialize;
+
 use super::*;
 
-pub(super) fn cmd_module_list(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
-    printer.header("Modules");
+#[derive(Serialize)]
+struct ModuleListEntry {
+    name: String,
+    active: bool,
+    source: String,
+    status: String,
+    packages: usize,
+    files: usize,
+    depends: usize,
+}
 
+#[derive(Serialize)]
+struct ModuleShowOutput {
+    name: String,
+    directory: String,
+    source: String,
+    depends: Vec<String>,
+    state: Option<cfgd_core::state::ModuleStateRecord>,
+    spec: cfgd_core::config::ModuleSpec,
+}
+
+pub(super) fn cmd_module_list(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
     let config_dir = config_dir(cli);
     let cache_base = modules::default_module_cache_dir()?;
     let all_modules = modules::load_all_modules(&config_dir, &cache_base)?;
     let lockfile = modules::load_lockfile(&config_dir)?;
 
     if all_modules.is_empty() {
+        if printer.is_structured() {
+            printer.write_structured(&Vec::<ModuleListEntry>::new());
+            return Ok(());
+        }
+        printer.header("Modules");
         printer.info("No modules found");
         printer.info(&format!("Add modules to {}/modules/", config_dir.display()));
         return Ok(());
@@ -19,7 +45,9 @@ pub(super) fn cmd_module_list(cli: &Cli, printer: &Printer) -> anyhow::Result<()
     // Load profile to determine which modules are active
     let active_modules: Vec<String> = if cli.config.exists() {
         let (_, resolved) = load_config_and_profile(cli, printer)?;
-        printer.newline();
+        if !printer.is_structured() {
+            printer.newline();
+        }
         resolved.merged.modules
     } else {
         Vec::new()
@@ -29,45 +57,58 @@ pub(super) fn cmd_module_list(cli: &Cli, printer: &Printer) -> anyhow::Result<()
     let state = open_state_store()?;
     let state_map = module_state_map(&state);
 
-    let mut rows: Vec<Vec<String>> = Vec::new();
     let mut names: Vec<String> = all_modules.keys().cloned().collect();
     names.sort();
 
-    for name in &names {
-        let module = &all_modules[name];
-        let in_profile = active_modules
-            .iter()
-            .any(|r| modules::resolve_profile_module_name(r) == name);
-        let pkg_count = module.spec.packages.len();
-        let file_count = module.spec.files.len();
-        let dep_count = module.spec.depends.len();
+    let entries: Vec<ModuleListEntry> = names
+        .iter()
+        .map(|name| {
+            let module = &all_modules[name];
+            let in_profile = active_modules
+                .iter()
+                .any(|r| modules::resolve_profile_module_name(r) == name);
+            let status = if let Some(state_rec) = state_map.get(name) {
+                state_rec.status.clone()
+            } else if in_profile {
+                "pending".to_string()
+            } else {
+                "available".to_string()
+            };
+            let source_type = if lockfile.modules.iter().any(|e| e.name == *name) {
+                "remote"
+            } else {
+                "local"
+            };
+            ModuleListEntry {
+                name: name.clone(),
+                active: in_profile,
+                source: source_type.to_string(),
+                status,
+                packages: module.spec.packages.len(),
+                files: module.spec.files.len(),
+                depends: module.spec.depends.len(),
+            }
+        })
+        .collect();
 
-        let status = if let Some(state_rec) = state_map.get(name) {
-            state_rec.status.clone()
-        } else if in_profile {
-            "pending".to_string()
-        } else {
-            "available".to_string()
-        };
-
-        let profile_indicator = if in_profile { "yes" } else { "-" };
-        let source_indicator = if lockfile.modules.iter().any(|e| e.name == *name) {
-            "remote"
-        } else {
-            "local"
-        };
-
-        rows.push(vec![
-            name.clone(),
-            profile_indicator.to_string(),
-            source_indicator.to_string(),
-            status,
-            format!(
-                "{} pkgs, {} files, {} deps",
-                pkg_count, file_count, dep_count
-            ),
-        ]);
+    if printer.write_structured(&entries) {
+        return Ok(());
     }
+
+    printer.header("Modules");
+
+    let rows: Vec<Vec<String>> = entries
+        .iter()
+        .map(|e| {
+            vec![
+                e.name.clone(),
+                if e.active { "yes" } else { "-" }.to_string(),
+                e.source.clone(),
+                e.status.clone(),
+                format!("{} pkgs, {} files, {} deps", e.packages, e.files, e.depends),
+            ]
+        })
+        .collect();
 
     printer.table(&["Module", "Active", "Source", "Status", "Contents"], &rows);
 
@@ -75,8 +116,6 @@ pub(super) fn cmd_module_list(cli: &Cli, printer: &Printer) -> anyhow::Result<()
 }
 
 pub(super) fn cmd_module_show(cli: &Cli, printer: &Printer, name: &str) -> anyhow::Result<()> {
-    printer.header(&format!("Module: {}", name));
-
     let config_dir = config_dir(cli);
     let cache_base = modules::default_module_cache_dir()?;
     let all_modules = modules::load_all_modules(&config_dir, &cache_base)?;
@@ -93,6 +132,29 @@ pub(super) fn cmd_module_show(cli: &Cli, printer: &Printer, name: &str) -> anyho
             anyhow::bail!("Module '{}' not found", name);
         }
     };
+
+    if printer.is_structured() {
+        let lockfile = modules::load_lockfile(&config_dir)?;
+        let source_type = if lockfile.modules.iter().any(|e| e.name == name) {
+            "remote"
+        } else {
+            "local"
+        };
+        let state = open_state_store()?;
+        let state_rec = state.module_state_by_name(name)?;
+        let output = ModuleShowOutput {
+            name: name.to_string(),
+            directory: module.dir.display().to_string(),
+            source: source_type.to_string(),
+            depends: module.spec.depends.clone(),
+            state: state_rec,
+            spec: module.spec.clone(),
+        };
+        printer.write_structured(&output);
+        return Ok(());
+    }
+
+    printer.header(&format!("Module: {}", name));
 
     // Basic info
     if !module.spec.depends.is_empty() {

@@ -1039,7 +1039,8 @@ pub struct ScriptSpec {
 
 // --- Profile Resolution ---
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
 pub enum LayerPolicy {
     Local,
     Required,
@@ -1047,7 +1048,7 @@ pub enum LayerPolicy {
     Optional,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct ProfileLayer {
     pub source: String,
     pub profile_name: String,
@@ -1056,13 +1057,13 @@ pub struct ProfileLayer {
     pub spec: ProfileSpec,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct ResolvedProfile {
     pub layers: Vec<ProfileLayer>,
     pub merged: MergedProfile,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize)]
 pub struct MergedProfile {
     pub modules: Vec<String>,
     pub env: Vec<EnvVar>,

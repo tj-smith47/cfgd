@@ -7,6 +7,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use clap::{CommandFactory, Parser, Subcommand};
+use serde::Serialize;
 
 use crate::files::CfgdFileManager;
 use crate::packages;
@@ -25,6 +26,133 @@ use cfgd_core::state::StateStore;
 
 const MSG_NO_CONFIG: &str = "No cfgd.yaml found — run 'cfgd init' first";
 const MSG_RUN_APPLY: &str = "Run 'cfgd apply --dry-run' to preview changes, then 'cfgd apply'";
+
+// --- Structured output types ---
+
+#[derive(Serialize)]
+struct StatusOutput {
+    last_apply: Option<cfgd_core::state::ApplyRecord>,
+    drift: Vec<cfgd_core::state::DriftEvent>,
+    sources: Vec<cfgd_core::state::ConfigSourceRecord>,
+    pending_decisions: Vec<cfgd_core::state::PendingDecision>,
+    modules: Vec<ModuleStatusEntry>,
+    managed_resources: Vec<cfgd_core::state::ManagedResource>,
+}
+
+#[derive(Serialize)]
+struct ModuleStatusEntry {
+    name: String,
+    packages: usize,
+    files: usize,
+    status: String,
+}
+
+#[derive(Serialize)]
+struct LogOutput {
+    entries: Vec<cfgd_core::state::ApplyRecord>,
+}
+
+#[derive(Serialize)]
+struct VerifyOutput {
+    results: Vec<cfgd_core::reconciler::VerifyResult>,
+    pass_count: usize,
+    fail_count: usize,
+}
+
+#[derive(Serialize)]
+struct DoctorOutput {
+    config: DoctorConfigCheck,
+    git: bool,
+    secrets: DoctorSecretsCheck,
+    package_managers: Vec<DoctorManagerCheck>,
+    modules: Vec<DoctorModuleCheck>,
+    system_configurators: Vec<DoctorConfiguratorCheck>,
+}
+
+#[derive(Clone, Serialize)]
+struct DoctorConfigCheck {
+    valid: bool,
+    path: String,
+    name: Option<String>,
+    profile: Option<String>,
+    error: Option<String>,
+}
+
+#[derive(Serialize)]
+struct DoctorSecretsCheck {
+    sops_available: bool,
+    sops_version: Option<String>,
+    age_key_exists: bool,
+    age_key_path: Option<String>,
+    sops_config_exists: bool,
+    providers: Vec<DoctorProviderCheck>,
+}
+
+#[derive(Serialize)]
+struct DoctorProviderCheck {
+    name: String,
+    available: bool,
+}
+
+#[derive(Serialize)]
+struct DoctorManagerCheck {
+    name: String,
+    available: bool,
+    declared: bool,
+    can_bootstrap: bool,
+}
+
+#[derive(Serialize)]
+struct DoctorModuleCheck {
+    name: String,
+    valid: bool,
+    error: Option<String>,
+}
+
+#[derive(Serialize)]
+struct DoctorConfiguratorCheck {
+    name: String,
+    available: bool,
+}
+
+#[derive(Serialize)]
+struct SourceListEntry {
+    name: String,
+    url: String,
+    priority: u32,
+    version: Option<String>,
+    status: String,
+    last_fetched: Option<String>,
+}
+
+#[derive(Serialize)]
+struct SourceShowOutput {
+    name: String,
+    url: String,
+    branch: String,
+    priority: u32,
+    accept_recommended: bool,
+    profile: Option<String>,
+    sync_interval: String,
+    auto_apply: bool,
+    version_pin: Option<String>,
+    state: Option<SourceStateInfo>,
+    managed_resources: Vec<SourceResourceEntry>,
+}
+
+#[derive(Serialize)]
+struct SourceStateInfo {
+    status: String,
+    last_fetched: Option<String>,
+    last_commit: Option<String>,
+    version: Option<String>,
+}
+
+#[derive(Serialize)]
+struct SourceResourceEntry {
+    resource_type: String,
+    resource_id: String,
+}
 
 fn default_config_file() -> PathBuf {
     cfgd_core::default_config_dir().join("cfgd.yaml")
@@ -160,6 +288,14 @@ pub struct Cli {
     /// Disable colored output
     #[arg(long, global = true)]
     pub no_color: bool,
+
+    /// Output format: table (default), json, yaml
+    #[arg(long, short = 'o', global = true, default_value = "table")]
+    pub output: String,
+
+    /// JSONPath expression to extract from structured output
+    #[arg(long, global = true)]
+    pub jsonpath: Option<String>,
 
     #[command(subcommand)]
     pub command: Command,
@@ -1613,15 +1749,63 @@ fn cmd_apply(cli: &Cli, printer: &Printer, args: &ApplyArgs) -> anyhow::Result<(
 }
 
 fn cmd_status(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
-    printer.header("Status");
-
     let (cfg, resolved) = load_config_and_profile(cli, printer)?;
     let state = open_state_store()?;
 
+    let last_apply = state.last_apply()?;
+    let drift_events = state.unresolved_drift()?;
+    let source_records = if !cfg.spec.sources.is_empty() {
+        state.config_sources()?
+    } else {
+        vec![]
+    };
+    let pending = state.pending_decisions()?;
+    let resources = state.managed_resources()?;
+
+    // Build module status entries
+    let config_dir = config_dir(cli);
+    let cache_base = modules::default_module_cache_dir().unwrap_or_default();
+    let all_modules = modules::load_all_modules(&config_dir, &cache_base).unwrap_or_default();
+    let state_map = module_state_map(&state);
+    let module_entries: Vec<ModuleStatusEntry> = resolved
+        .merged
+        .modules
+        .iter()
+        .map(|mod_ref| {
+            let mod_name = modules::resolve_profile_module_name(mod_ref);
+            let (pkg_count, file_count) = all_modules
+                .get(mod_name)
+                .map(|m| (m.spec.packages.len(), m.spec.files.len()))
+                .unwrap_or((0, 0));
+            let status = state_map
+                .get(mod_name)
+                .map(|s| s.status.clone())
+                .unwrap_or_else(|| "not applied".into());
+            ModuleStatusEntry {
+                name: mod_ref.clone(),
+                packages: pkg_count,
+                files: file_count,
+                status,
+            }
+        })
+        .collect();
+
+    if printer.write_structured(&StatusOutput {
+        last_apply: last_apply.clone(),
+        drift: drift_events.clone(),
+        sources: source_records.clone(),
+        pending_decisions: pending.clone(),
+        modules: module_entries,
+        managed_resources: resources.clone(),
+    }) {
+        return Ok(());
+    }
+
+    printer.header("Status");
     printer.newline();
 
     // Last apply
-    if let Some(last) = state.last_apply()? {
+    if let Some(last) = last_apply {
         printer.subheader("Last Apply");
         printer.key_value("Time", &last.timestamp);
         printer.key_value("Profile", &last.profile);
@@ -1641,7 +1825,6 @@ fn cmd_status(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
     }
 
     // Drift summary
-    let drift_events = state.unresolved_drift()?;
     printer.newline();
     printer.subheader("Drift");
     if drift_events.is_empty() {
@@ -1668,7 +1851,6 @@ fn cmd_status(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
     if !cfg.spec.sources.is_empty() {
         printer.newline();
         printer.subheader("Config Sources");
-        let source_records = state.config_sources()?;
         if source_records.is_empty() {
             for source in &cfg.spec.sources {
                 printer.key_value(&source.name, "not yet fetched");
@@ -1690,7 +1872,6 @@ fn cmd_status(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
     }
 
     // Pending decisions
-    let pending = state.pending_decisions()?;
     if !pending.is_empty() {
         printer.newline();
         printer.subheader("Pending Decisions");
@@ -1702,24 +1883,12 @@ fn cmd_status(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
         printer.newline();
         printer.subheader("Modules");
 
-        let config_dir = config_dir(cli);
-        let cache_base = modules::default_module_cache_dir().unwrap_or_default();
-        let all_modules = match modules::load_all_modules(&config_dir, &cache_base) {
-            Ok(m) => m,
-            Err(e) => {
-                printer.warning(&format!("Failed to load modules: {}", e));
-                std::collections::HashMap::new()
-            }
-        };
-        let state_map = module_state_map(&state);
-
         for mod_ref in &resolved.merged.modules {
             let mod_name = modules::resolve_profile_module_name(mod_ref);
-            let (pkg_count, file_count) = if let Some(m) = all_modules.get(mod_name) {
-                (m.spec.packages.len(), m.spec.files.len())
-            } else {
-                (0, 0)
-            };
+            let (pkg_count, file_count) = all_modules
+                .get(mod_name)
+                .map(|m| (m.spec.packages.len(), m.spec.files.len()))
+                .unwrap_or((0, 0));
 
             let summary = format!("{} pkgs, {} files", pkg_count, file_count);
             if let Some(state_rec) = state_map.get(mod_name) {
@@ -1735,7 +1904,6 @@ fn cmd_status(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
     }
 
     // Managed resources
-    let resources = state.managed_resources()?;
     if !resources.is_empty() {
         printer.newline();
         printer.subheader("Managed Resources");
@@ -1758,10 +1926,16 @@ fn cmd_status(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
 }
 
 fn cmd_log(printer: &Printer, count: u32) -> anyhow::Result<()> {
-    printer.header("Apply History");
-
     let state = open_state_store()?;
     let history = state.history(count)?;
+
+    if printer.write_structured(&LogOutput {
+        entries: history.clone(),
+    }) {
+        return Ok(());
+    }
+
+    printer.header("Apply History");
 
     if history.is_empty() {
         printer.newline();
@@ -1817,8 +1991,6 @@ fn print_verify_results(results: &[reconciler::VerifyResult], printer: &Printer)
 }
 
 fn cmd_verify(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
-    printer.header("Verify");
-
     let (_cfg, mut resolved) = load_config_and_profile(cli, printer)?;
     let config_dir = config_dir(cli);
 
@@ -1827,9 +1999,21 @@ fn cmd_verify(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
     let registry = build_registry_with_profile(&resolved.merged.packages);
     let state = open_state_store()?;
 
-    printer.newline();
-
     let results = reconciler::verify(&resolved, &registry, &state, printer, &[])?;
+
+    let pass_count = results.iter().filter(|r| r.matches).count();
+    let fail_count = results.iter().filter(|r| !r.matches).count();
+
+    if printer.write_structured(&VerifyOutput {
+        results: results.clone(),
+        pass_count,
+        fail_count,
+    }) {
+        return Ok(());
+    }
+
+    printer.header("Verify");
+    printer.newline();
 
     if results.is_empty() {
         printer.info("No managed resources to verify");
@@ -2018,6 +2202,10 @@ fn cmd_config_show(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
     }
 
     let cfg = config::load_config(config_path)?;
+
+    if printer.write_structured(&cfg) {
+        return Ok(());
+    }
 
     printer.header("Configuration");
     printer.key_value("File", &config_path.display().to_string());
@@ -2242,6 +2430,14 @@ fn cmd_config_get(cli: &Cli, printer: &Printer, key: &str) -> anyhow::Result<()>
         .ok_or_else(|| anyhow::anyhow!("config has no 'spec' section"))?;
 
     let value = walk_yaml_path(spec, key)?;
+
+    if printer.is_structured() {
+        // Convert serde_yaml::Value to serde_json::Value for structured output
+        let json_value: serde_json::Value =
+            serde_json::to_value(value).unwrap_or(serde_json::Value::Null);
+        printer.write_structured(&json_value);
+        return Ok(());
+    }
 
     match value {
         serde_yaml::Value::Null => {} // key exists but null — print nothing
@@ -2869,45 +3065,44 @@ fn cmd_secret_init(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
 }
 
 fn cmd_doctor(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
-    printer.header("Doctor");
-
-    let mut all_ok = true;
-
-    // Check config file
-    let loaded_cfg = if cli.config.exists() {
+    // Gather data for both structured and human output
+    let (config_check, loaded_cfg) = if cli.config.exists() {
         match config::load_config(&cli.config) {
-            Ok(cfg) => {
-                printer.success(&format!("Config file: {} (valid)", cli.config.display()));
-                printer.key_value("Name", &cfg.metadata.name);
-                printer.key_value("Profile", cfg.spec.profile.as_deref().unwrap_or("(none)"));
-                Some(cfg)
-            }
-            Err(e) => {
-                printer.error(&format!("Config file: {} — {}", cli.config.display(), e));
-                all_ok = false;
-                None
-            }
+            Ok(cfg) => (
+                DoctorConfigCheck {
+                    valid: true,
+                    path: cli.config.display().to_string(),
+                    name: Some(cfg.metadata.name.clone()),
+                    profile: cfg.spec.profile.clone(),
+                    error: None,
+                },
+                Some(cfg),
+            ),
+            Err(e) => (
+                DoctorConfigCheck {
+                    valid: false,
+                    path: cli.config.display().to_string(),
+                    name: None,
+                    profile: None,
+                    error: Some(format!("{}", e)),
+                },
+                None,
+            ),
         }
     } else {
-        printer.warning(&format!(
-            "Config file not found: {} — run 'cfgd init' to create one",
-            cli.config.display()
-        ));
-        all_ok = false;
-        None
+        (
+            DoctorConfigCheck {
+                valid: false,
+                path: cli.config.display().to_string(),
+                name: None,
+                profile: None,
+                error: Some("not found".into()),
+            },
+            None,
+        )
     };
 
-    // Check git
-    if which("git") {
-        printer.success("git: found");
-    } else {
-        printer.error("git: not found — install git to use cfgd");
-        all_ok = false;
-    }
-
-    // Secrets health check
-    printer.newline();
-    printer.subheader("Secrets");
+    let git_available = which("git");
 
     let config_dir = config_dir(cli);
     let age_key_override = loaded_cfg
@@ -2918,48 +3113,7 @@ fn cmd_doctor(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
 
     let health = secrets::check_secrets_health(&config_dir, age_key_override.map(|p| p.as_path()));
 
-    if health.sops_available {
-        let version_str = health.sops_version.as_deref().unwrap_or("unknown version");
-        printer.success(&format!("sops: found ({})", version_str));
-    } else {
-        printer.warning(
-            "sops: not found — required for secrets (https://github.com/getsops/sops#install)",
-        );
-    }
-
-    if health.age_key_exists {
-        if let Some(ref path) = health.age_key_path {
-            printer.success(&format!("age key: {}", path.display()));
-        }
-    } else {
-        if let Some(ref path) = health.age_key_path {
-            printer.warning(&format!(
-                "age key: not found at {} — run 'cfgd init' to generate",
-                path.display()
-            ));
-        }
-    }
-
-    if health.sops_config_exists {
-        if let Some(ref path) = health.sops_config_path {
-            printer.success(&format!(".sops.yaml: {}", path.display()));
-        }
-    } else {
-        printer.warning(".sops.yaml: not found — will be generated on 'cfgd init'");
-    }
-
-    for (name, available) in &health.providers {
-        if *available {
-            printer.success(&format!("provider {}: available", name));
-        } else {
-            printer.info(&format!("provider {}: not installed (optional)", name));
-        }
-    }
-
-    // Package managers
-    printer.newline();
-    printer.subheader("Package Managers");
-
+    // Build structured doctor output for --output json/yaml
     // Resolve profile to get declared managers (including custom) and build registry
     let resolved_packages = if let Some(ref cfg) = loaded_cfg {
         let profiles_dir = profiles_dir(cli);
@@ -3022,42 +3176,24 @@ fn cmd_doctor(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
         Vec::new()
     };
 
-    // Deduplicate manager names for display (brew, brew-tap, brew-cask → brew)
-    let mut shown_managers = std::collections::HashSet::new();
-    for mgr in all_managers.iter() {
-        let name = mgr.name();
-        // Group brew-tap and brew-cask under "brew"
-        let display_name = if name == "brew-tap" || name == "brew-cask" {
-            continue; // Skip sub-managers — brew covers them
-        } else {
-            name
-        };
-
-        if !shown_managers.insert(display_name.to_string()) {
-            continue;
-        }
-
-        let is_declared = declared_managers.iter().any(|d| d == display_name);
-        let available = mgr.is_available();
-
-        if is_declared {
-            if available {
-                printer.success(&format!("{}: available (declared in config)", display_name));
-            } else if mgr.can_bootstrap() {
-                let method = packages::bootstrap_method(mgr.as_ref());
-                printer.warning(&format!(
-                    "{}: not found — can auto-bootstrap via {}",
-                    display_name, method
-                ));
-            } else {
-                printer.error(&format!(
-                    "{}: not found — declared in config but not available",
-                    display_name
-                ));
-                all_ok = false;
+    // Build manager check data (deduplicate brew-tap/brew-cask under brew)
+    let mut manager_checks: Vec<DoctorManagerCheck> = Vec::new();
+    {
+        let mut seen = std::collections::HashSet::new();
+        for mgr in all_managers.iter() {
+            let name = mgr.name();
+            if name == "brew-tap" || name == "brew-cask" {
+                continue;
             }
-        } else if available {
-            printer.info(&format!("{}: available (not used in config)", display_name));
+            if !seen.insert(name.to_string()) {
+                continue;
+            }
+            manager_checks.push(DoctorManagerCheck {
+                name: name.to_string(),
+                available: mgr.is_available(),
+                declared: declared_managers.iter().any(|d| d == name),
+                can_bootstrap: mgr.can_bootstrap(),
+            });
         }
     }
 
@@ -3073,12 +3209,181 @@ fn cmd_doctor(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
         Vec::new()
     };
 
+    let cache_base = modules::default_module_cache_dir().unwrap_or_default();
+    let all_modules = modules::load_all_modules(&config_dir, &cache_base).unwrap_or_default();
+    let module_checks: Vec<DoctorModuleCheck> = module_list
+        .iter()
+        .map(|mod_name| {
+            if all_modules.contains_key(mod_name) {
+                DoctorModuleCheck {
+                    name: mod_name.clone(),
+                    valid: true,
+                    error: None,
+                }
+            } else {
+                DoctorModuleCheck {
+                    name: mod_name.clone(),
+                    valid: false,
+                    error: Some("module not found".into()),
+                }
+            }
+        })
+        .collect();
+
+    // System configurators
+    let configurator_checks: Vec<DoctorConfiguratorCheck> = registry
+        .available_system_configurators()
+        .iter()
+        .map(|c| DoctorConfiguratorCheck {
+            name: c.name().to_string(),
+            available: true,
+        })
+        .collect();
+
+    // Structured output
+    if printer.write_structured(&DoctorOutput {
+        config: config_check.clone(),
+        git: git_available,
+        secrets: DoctorSecretsCheck {
+            sops_available: health.sops_available,
+            sops_version: health.sops_version.clone(),
+            age_key_exists: health.age_key_exists,
+            age_key_path: health
+                .age_key_path
+                .as_ref()
+                .map(|p| p.display().to_string()),
+            sops_config_exists: health.sops_config_exists,
+            providers: health
+                .providers
+                .iter()
+                .map(|(n, a)| DoctorProviderCheck {
+                    name: n.clone(),
+                    available: *a,
+                })
+                .collect(),
+        },
+        package_managers: manager_checks,
+        modules: module_checks,
+        system_configurators: configurator_checks,
+    }) {
+        return Ok(());
+    }
+
+    // Human display
+    printer.header("Doctor");
+
+    let mut all_ok = config_check.valid && git_available;
+
+    if config_check.valid {
+        printer.success(&format!("Config file: {} (valid)", config_check.path));
+        if let Some(name) = loaded_cfg.as_ref().map(|c| &c.metadata.name) {
+            printer.key_value("Name", name);
+        }
+        printer.key_value(
+            "Profile",
+            loaded_cfg
+                .as_ref()
+                .and_then(|c| c.spec.profile.as_deref())
+                .unwrap_or("(none)"),
+        );
+    } else if let Some(ref err) = config_check.error {
+        if err == "not found" {
+            printer.warning(&format!(
+                "Config file not found: {} — run 'cfgd init' to create one",
+                config_check.path
+            ));
+        } else {
+            printer.error(&format!("Config file: {} — {}", config_check.path, err));
+        }
+    }
+
+    if git_available {
+        printer.success("git: found");
+    } else {
+        printer.error("git: not found — install git to use cfgd");
+    }
+
+    // Secrets
+    printer.newline();
+    printer.subheader("Secrets");
+
+    if health.sops_available {
+        let version_str = health.sops_version.as_deref().unwrap_or("unknown version");
+        printer.success(&format!("sops: found ({})", version_str));
+    } else {
+        printer.warning(
+            "sops: not found — required for secrets (https://github.com/getsops/sops#install)",
+        );
+    }
+
+    if health.age_key_exists {
+        if let Some(ref path) = health.age_key_path {
+            printer.success(&format!("age key: {}", path.display()));
+        }
+    } else if let Some(ref path) = health.age_key_path {
+        printer.warning(&format!(
+            "age key: not found at {} — run 'cfgd init' to generate",
+            path.display()
+        ));
+    }
+
+    if health.sops_config_exists {
+        if let Some(ref path) = health.sops_config_path {
+            printer.success(&format!(".sops.yaml: {}", path.display()));
+        }
+    } else {
+        printer.warning(".sops.yaml: not found — will be generated on 'cfgd init'");
+    }
+
+    for (name, available) in &health.providers {
+        if *available {
+            printer.success(&format!("provider {}: available", name));
+        } else {
+            printer.info(&format!("provider {}: not installed (optional)", name));
+        }
+    }
+
+    // Package managers
+    printer.newline();
+    printer.subheader("Package Managers");
+
+    let mut shown_managers = std::collections::HashSet::new();
+    for mgr in all_managers.iter() {
+        let name = mgr.name();
+        if name == "brew-tap" || name == "brew-cask" {
+            continue;
+        }
+        if !shown_managers.insert(name.to_string()) {
+            continue;
+        }
+        let is_declared = declared_managers.iter().any(|d| d == name);
+        let available = mgr.is_available();
+
+        if is_declared {
+            if available {
+                printer.success(&format!("{}: available (declared in config)", name));
+            } else if mgr.can_bootstrap() {
+                let method = packages::bootstrap_method(mgr.as_ref());
+                printer.warning(&format!(
+                    "{}: not found — can auto-bootstrap via {}",
+                    name, method
+                ));
+            } else {
+                printer.error(&format!(
+                    "{}: not found — declared in config but not available",
+                    name
+                ));
+                all_ok = false;
+            }
+        } else if available {
+            printer.info(&format!("{}: available (not used in config)", name));
+        }
+    }
+
     if !module_list.is_empty() {
         printer.newline();
         printer.subheader("Modules");
 
-        let cache_base = modules::default_module_cache_dir().unwrap_or_default();
-        let all_modules = modules::load_all_modules(&config_dir, &cache_base).unwrap_or_default();
         let registry_for_modules = build_registry();
         let mgr_map = managers_map(&registry_for_modules);
         let platform = Platform::detect();
@@ -3089,7 +3394,6 @@ fn cmd_doctor(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
                 for entry in &module.spec.packages {
                     match modules::resolve_package(entry, mod_name, &platform, &mgr_map) {
                         Ok(Some(resolved)) => {
-                            // Check if installed
                             let installed = mgr_map
                                 .get(&resolved.manager)
                                 .and_then(|m| m.installed_packages().ok())
@@ -3806,10 +4110,13 @@ fn cmd_source_add(cli: &Cli, printer: &Printer, args: &SourceAddArgs) -> anyhow:
 }
 
 fn cmd_source_list(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
-    printer.header("Config Sources");
-
     let config_path = cli.config.clone();
     if !config_path.exists() {
+        if printer.is_structured() {
+            printer.write_structured(&Vec::<SourceListEntry>::new());
+            return Ok(());
+        }
+        printer.header("Config Sources");
         printer.info("No config file found");
         return Ok(());
     }
@@ -3817,38 +4124,56 @@ fn cmd_source_list(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
     let cfg = config::load_config(&config_path)?;
 
     if cfg.spec.sources.is_empty() {
+        if printer.is_structured() {
+            printer.write_structured(&Vec::<SourceListEntry>::new());
+            return Ok(());
+        }
+        printer.header("Config Sources");
         printer.info("No sources configured");
         return Ok(());
     }
 
     let state = open_state_store()?;
 
-    let mut rows = Vec::new();
-    for source in &cfg.spec.sources {
-        let state_info = state.config_source_by_name(&source.name)?;
-        let status = state_info
-            .as_ref()
-            .map(|s| s.status.clone())
-            .unwrap_or_else(|| "unknown".into());
-        let last_fetched = state_info
-            .as_ref()
-            .and_then(|s| s.last_fetched.clone())
-            .unwrap_or_else(|| "never".into());
-        let version = state_info
-            .as_ref()
-            .and_then(|s| s.source_version.clone())
-            .unwrap_or_else(|| "-".into());
+    let entries: Vec<SourceListEntry> = cfg
+        .spec
+        .sources
+        .iter()
+        .map(|source| {
+            let state_info = state.config_source_by_name(&source.name).ok().flatten();
+            SourceListEntry {
+                name: source.name.clone(),
+                url: source.origin.url.clone(),
+                priority: source.subscription.priority,
+                version: state_info.as_ref().and_then(|s| s.source_version.clone()),
+                status: state_info
+                    .as_ref()
+                    .map(|s| s.status.clone())
+                    .unwrap_or_else(|| "unknown".into()),
+                last_fetched: state_info.as_ref().and_then(|s| s.last_fetched.clone()),
+            }
+        })
+        .collect();
 
-        rows.push(vec![
-            source.name.clone(),
-            source.origin.url.clone(),
-            source.subscription.priority.to_string(),
-            version,
-            status,
-            last_fetched,
-        ]);
+    if printer.write_structured(&entries) {
+        return Ok(());
     }
 
+    printer.header("Config Sources");
+
+    let rows: Vec<Vec<String>> = entries
+        .iter()
+        .map(|e| {
+            vec![
+                e.name.clone(),
+                e.url.clone(),
+                e.priority.to_string(),
+                e.version.clone().unwrap_or_else(|| "-".into()),
+                e.status.clone(),
+                e.last_fetched.clone().unwrap_or_else(|| "never".into()),
+            ]
+        })
+        .collect();
     printer.table(
         &[
             "Name",
@@ -3874,6 +4199,38 @@ fn cmd_source_show(cli: &Cli, printer: &Printer, name: &str) -> anyhow::Result<(
         .iter()
         .find(|s| s.name == name)
         .ok_or_else(|| anyhow::anyhow!("Source '{}' not found", name))?;
+
+    if printer.is_structured() {
+        let state = open_state_store()?;
+        let state_info = state.config_source_by_name(name)?;
+        let resources = state.managed_resources_by_source(name)?;
+        let output = SourceShowOutput {
+            name: name.to_string(),
+            url: source_spec.origin.url.clone(),
+            branch: source_spec.origin.branch.clone(),
+            priority: source_spec.subscription.priority,
+            accept_recommended: source_spec.subscription.accept_recommended,
+            profile: source_spec.subscription.profile.clone(),
+            sync_interval: source_spec.sync.interval.clone(),
+            auto_apply: source_spec.sync.auto_apply,
+            version_pin: source_spec.sync.pin_version.clone(),
+            state: state_info.map(|s| SourceStateInfo {
+                status: s.status,
+                last_fetched: s.last_fetched,
+                last_commit: s.last_commit,
+                version: s.source_version,
+            }),
+            managed_resources: resources
+                .iter()
+                .map(|r| SourceResourceEntry {
+                    resource_type: r.resource_type.clone(),
+                    resource_id: r.resource_id.clone(),
+                })
+                .collect(),
+        };
+        printer.write_structured(&output);
+        return Ok(());
+    }
 
     printer.header(&format!("Source: {}", name));
     printer.key_value("URL", &source_spec.origin.url);
@@ -5225,6 +5582,41 @@ spec:
     }
 
     #[test]
+    fn cli_has_output_flag() {
+        use clap::CommandFactory;
+        let cmd = Cli::command();
+        assert!(
+            cmd.get_arguments().any(|a| a.get_id() == "output"),
+            "should have global --output flag"
+        );
+    }
+
+    #[test]
+    fn cli_has_jsonpath_flag() {
+        use clap::CommandFactory;
+        let cmd = Cli::command();
+        assert!(
+            cmd.get_arguments().any(|a| a.get_id() == "jsonpath"),
+            "should have global --jsonpath flag"
+        );
+    }
+
+    #[test]
+    fn cli_output_flag_has_short_alias() {
+        use clap::CommandFactory;
+        let cmd = Cli::command();
+        let output_arg = cmd
+            .get_arguments()
+            .find(|a| a.get_id() == "output")
+            .unwrap();
+        assert_eq!(
+            output_arg.get_short(),
+            Some('o'),
+            "--output should have -o short alias"
+        );
+    }
+
+    #[test]
     fn cli_init_has_apply_flag() {
         use clap::CommandFactory;
         let cmd = Cli::command();
@@ -5485,6 +5877,8 @@ spec:
             no_color: true,
             verbose: false,
             quiet: true,
+            output: "table".to_string(),
+            jsonpath: None,
             command: Command::Status,
         }
     }

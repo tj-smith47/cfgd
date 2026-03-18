@@ -1,6 +1,7 @@
 use std::path::{Path, PathBuf};
 
 use rusqlite::{Connection, params};
+use serde::Serialize;
 use sha2::{Digest, Sha256};
 
 use crate::errors::{Result, StateError};
@@ -159,7 +160,8 @@ const MIGRATIONS: &[&str] = &[
 ];
 
 /// Apply status for a reconciliation run.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
 pub enum ApplyStatus {
     Success,
     Partial,
@@ -186,7 +188,7 @@ impl ApplyStatus {
 }
 
 /// A recorded apply operation.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct ApplyRecord {
     pub id: i64,
     pub timestamp: String,
@@ -197,7 +199,7 @@ pub struct ApplyRecord {
 }
 
 /// A recorded drift event.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct DriftEvent {
     pub id: i64,
     pub timestamp: String,
@@ -210,7 +212,7 @@ pub struct DriftEvent {
 }
 
 /// A managed resource tracked in the state store.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct ManagedResource {
     pub resource_type: String,
     pub resource_id: String,
@@ -220,7 +222,7 @@ pub struct ManagedResource {
 }
 
 /// A tracked config source.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct ConfigSourceRecord {
     pub id: i64,
     pub name: String,
@@ -246,7 +248,7 @@ pub struct SourceConflictRecord {
 }
 
 /// A pending decision for a source item needing user review.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct PendingDecision {
     pub id: i64,
     pub source: String,
@@ -268,7 +270,7 @@ pub struct SourceConfigHash {
 }
 
 /// A module's state in the state store.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct ModuleStateRecord {
     pub module_name: String,
     pub installed_at: String,

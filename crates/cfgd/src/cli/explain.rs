@@ -1,3 +1,5 @@
+use serde::Serialize;
+
 use super::*;
 
 // cfgd explain — schema documentation for all resource types
@@ -1816,6 +1818,37 @@ fn print_field(printer: &Printer, field: &SchemaField, indent: usize, recursive:
     }
 }
 
+#[derive(Serialize)]
+struct ExplainOutput {
+    name: &'static str,
+    api_version: &'static str,
+    kind: &'static str,
+    location: &'static str,
+    description: &'static str,
+    fields: Vec<ExplainField>,
+}
+
+#[derive(Serialize)]
+struct ExplainField {
+    name: &'static str,
+    #[serde(rename = "type")]
+    type_desc: &'static str,
+    required: bool,
+    description: &'static str,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    children: Vec<ExplainField>,
+}
+
+fn schema_field_to_explain(field: &SchemaField) -> ExplainField {
+    ExplainField {
+        name: field.name,
+        type_desc: field.type_desc,
+        required: field.required,
+        description: field.description,
+        children: field.children.iter().map(schema_field_to_explain).collect(),
+    }
+}
+
 pub(super) fn cmd_explain(
     printer: &Printer,
     resource: Option<&str>,
@@ -1824,6 +1857,21 @@ pub(super) fn cmd_explain(
     let resource = match resource {
         Some(r) => r,
         None => {
+            if printer.is_structured() {
+                let schemas: Vec<ExplainOutput> = ALL_SCHEMAS
+                    .iter()
+                    .map(|s| ExplainOutput {
+                        name: s.name,
+                        api_version: s.api_version,
+                        kind: s.kind,
+                        location: s.location,
+                        description: s.description,
+                        fields: s.fields.iter().map(schema_field_to_explain).collect(),
+                    })
+                    .collect();
+                printer.write_structured(&schemas);
+                return Ok(());
+            }
             // List all available resource types
             printer.header("Available resource types");
             let rows: Vec<Vec<String>> = ALL_SCHEMAS
@@ -1859,6 +1907,19 @@ pub(super) fn cmd_explain(
             );
         }
     };
+
+    if printer.is_structured() {
+        let output = ExplainOutput {
+            name: schema.name,
+            api_version: schema.api_version,
+            kind: schema.kind,
+            location: schema.location,
+            description: schema.description,
+            fields: schema.fields.iter().map(schema_field_to_explain).collect(),
+        };
+        printer.write_structured(&output);
+        return Ok(());
+    }
 
     // If there's a field path starting with "spec", skip it since we show spec fields directly
     let field_path = if !field_path.is_empty() && field_path[0] == "spec" {
