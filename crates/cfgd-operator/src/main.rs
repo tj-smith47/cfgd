@@ -73,10 +73,16 @@ async fn main() -> Result<()> {
 
         tracing::info!("Device gateway enabled");
 
-        // Spawn controllers as a non-fatal task — if they fail, gateway keeps serving
+        // Spawn controllers with retry — if they fail, retry after delay
         tokio::spawn(async move {
-            if let Err(e) = controllers::run(client).await {
-                tracing::error!(error = %e, "Controllers failed — gateway continues serving");
+            loop {
+                match controllers::run(client.clone()).await {
+                    Ok(()) => break,
+                    Err(e) => {
+                        tracing::error!(error = %e, "Controllers failed — retrying in 5s");
+                        tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                    }
+                }
             }
         });
 
