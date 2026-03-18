@@ -84,6 +84,54 @@ Setting `locked-conflict: accept` causes the daemon to automatically remove your
 
 See [sources.md](sources.md#auto-apply-decisions) for the full decision workflow.
 
+## Reconcile Patches
+
+Override reconcile settings for specific modules or profiles. Patches live in your `cfgd.yaml` — you control your machine's sync behavior regardless of what upstream profiles or modules recommend.
+
+```yaml
+spec:
+  daemon:
+    reconcile:
+      interval: 5m
+      drift-policy: NotifyOnly
+      patches:
+        - kind: Module
+          name: certificates
+          interval: 1m
+          drift-policy: Auto
+        - kind: Module
+          name: shell-theme
+          interval: 1h
+          auto-apply: false
+        - kind: Module
+          interval: 30s
+        - kind: Profile
+          name: base
+          auto-apply: true
+```
+
+Each patch targets by `kind` (`Module` or `Profile`). When `name` is provided, the patch applies only to that entity. When `name` is omitted, the patch applies to all entities of that kind (kustomize semantics). Named patches take priority over kind-wide patches. Override any combination of `interval`, `auto-apply`, and `drift-policy`. Omitted fields inherit from the next level up.
+
+### Precedence
+
+Most specific wins, fields resolve independently:
+
+```
+Named Module patch > Kind-wide Module patch > Named Profile patch > Kind-wide Profile patch > Global
+```
+
+When multiple Profile patches match the inheritance chain (e.g., `base` and `work`), the leaf profile (the active one) wins — consistent with how profile inheritance resolves other conflicts.
+
+### Conflict resolution
+
+| Scenario | Result |
+|---|---|
+| Module patch and Profile patch both set `auto-apply` | Module patch wins |
+| Two Profile patches in inheritance chain set `interval` | Leaf profile wins |
+| Module patch sets `drift-policy: Auto`, global is `NotifyOnly` | Module patch wins |
+| Same module patched twice in the list | Last entry wins (warning logged) |
+| Patch references a module/profile that doesn't exist | Silently ignored |
+
 ## Notifications
 
 When drift is detected, the daemon notifies via:

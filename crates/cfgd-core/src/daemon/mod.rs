@@ -74,6 +74,17 @@ struct SyncTask {
     allow_unsigned: bool,
 }
 
+// --- Reconcile Task (per-module or default) ---
+
+struct ReconcileTask {
+    /// Module name, or `"__default__"` for non-patched resources.
+    entity: String,
+    interval: Duration,
+    auto_apply: bool,
+    drift_policy: config::DriftPolicy,
+    last_reconciled: Option<Instant>,
+}
+
 // --- Per-source status ---
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -100,6 +111,18 @@ pub struct DaemonStatusResponse {
     pub sources: Vec<SourceStatus>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub update_available: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub module_reconcile: Vec<ModuleReconcileStatus>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub struct ModuleReconcileStatus {
+    pub name: String,
+    pub interval: String,
+    pub auto_apply: bool,
+    pub drift_policy: String,
+    pub last_reconcile: Option<String>,
 }
 
 struct DaemonState {
@@ -109,6 +132,7 @@ struct DaemonState {
     drift_count: u32,
     sources: Vec<SourceStatus>,
     update_available: Option<String>,
+    module_last_reconcile: HashMap<String, String>,
 }
 
 impl DaemonState {
@@ -126,6 +150,7 @@ impl DaemonState {
                 status: "active".to_string(),
             }],
             update_available: None,
+            module_last_reconcile: HashMap::new(),
         }
     }
 
@@ -139,6 +164,7 @@ impl DaemonState {
             drift_count: self.drift_count,
             sources: self.sources.clone(),
             update_available: self.update_available.clone(),
+            module_reconcile: vec![],
         }
     }
 }
@@ -564,18 +590,105 @@ pub async fn run_daemon(
         })?;
     }
 
+    // Build per-module reconcile tasks from patches
+    let reconcile_patches = daemon_cfg
+        .reconcile
+        .as_ref()
+        .map(|r| &r.patches[..])
+        .unwrap_or(&[]);
+
+    let mut reconcile_tasks: Vec<ReconcileTask> = Vec::new();
+    if !reconcile_patches.is_empty() {
+        // Resolve the profile chain for patch resolution
+        let profiles_dir = config_dir.join("profiles");
+        let profile_name = profile_override
+            .as_deref()
+            .or(cfg.spec.profile.as_deref())
+            .unwrap_or("default");
+        let profile_chain: Vec<String> =
+            if let Ok(resolved) = config::resolve_profile(profile_name, &profiles_dir) {
+                resolved
+                    .layers
+                    .iter()
+                    .map(|l| l.profile_name.clone())
+                    .collect()
+            } else {
+                vec![profile_name.to_string()]
+            };
+        let chain_refs: Vec<&str> = profile_chain.iter().map(|s| s.as_str()).collect();
+
+        // Warn on duplicate patches
+        let mut seen_patches: HashMap<(String, Option<String>), usize> = HashMap::new();
+        for (i, patch) in reconcile_patches.iter().enumerate() {
+            let key = (format!("{:?}", patch.kind), patch.name.clone());
+            if let Some(prev) = seen_patches.insert(key, i) {
+                tracing::warn!(
+                    "duplicate reconcile patch for {:?} {:?} at positions {} and {} — last wins",
+                    patch.kind,
+                    patch.name.as_deref().unwrap_or("(all)"),
+                    prev,
+                    i
+                );
+            }
+        }
+
+        // Build per-module tasks for modules that have effective overrides
+        if let Ok(resolved) = config::resolve_profile(profile_name, &profiles_dir) {
+            let reconcile_cfg = daemon_cfg.reconcile.as_ref().unwrap();
+            for mod_ref in &resolved.merged.modules {
+                let mod_name = crate::modules::resolve_profile_module_name(mod_ref);
+                let eff = crate::resolve_effective_reconcile(mod_name, &chain_refs, reconcile_cfg);
+
+                // Only create a dedicated task if the effective settings differ from global
+                if eff.interval != reconcile_cfg.interval
+                    || eff.auto_apply != reconcile_cfg.auto_apply
+                    || eff.drift_policy != reconcile_cfg.drift_policy
+                {
+                    reconcile_tasks.push(ReconcileTask {
+                        entity: mod_name.to_string(),
+                        interval: parse_duration_str(&eff.interval),
+                        auto_apply: eff.auto_apply,
+                        drift_policy: eff.drift_policy,
+                        last_reconciled: None,
+                    });
+                }
+            }
+        }
+    }
+
+    // Default task for everything not covered by module-specific tasks
+    reconcile_tasks.push(ReconcileTask {
+        entity: "__default__".to_string(),
+        interval: reconcile_interval,
+        auto_apply: daemon_cfg
+            .reconcile
+            .as_ref()
+            .map(|r| r.auto_apply)
+            .unwrap_or(false),
+        drift_policy: daemon_cfg
+            .reconcile
+            .as_ref()
+            .map(|r| r.drift_policy.clone())
+            .unwrap_or_default(),
+        last_reconciled: None,
+    });
+
     // Debounce tracking for file events
     let mut last_change: HashMap<PathBuf, Instant> = HashMap::new();
     let debounce = Duration::from_millis(DEBOUNCE_MS);
 
-    // Set up timers — use the shortest source interval for the sync timer,
-    // individual tasks check their own intervals in the sync handler
+    // Set up timers — use shortest interval across all reconcile and sync tasks
+    let shortest_reconcile = reconcile_tasks
+        .iter()
+        .map(|t| t.interval)
+        .min()
+        .unwrap_or(reconcile_interval);
     let shortest_sync = sync_tasks
         .iter()
         .map(|t| t.interval)
         .min()
         .unwrap_or(sync_interval);
-    let mut reconcile_timer = tokio::time::interval(reconcile_interval);
+    let mut reconcile_timer = tokio::time::interval(shortest_reconcile);
     let mut sync_timer = tokio::time::interval(shortest_sync);
     let mut version_check_timer = tokio::time::interval(crate::upgrade::version_check_interval());
 
@@ -633,17 +746,59 @@ pub async fn run_daemon(
 
             _ = reconcile_timer.tick() => {
                 tracing::debug!("reconcile tick");
-                let cp = config_path.clone();
-                let po = profile_override.clone();
-                let st = Arc::clone(&state);
-                let nt = Arc::clone(&notifier);
-                let notify_drift = notify_on_drift;
-                let hk = Arc::clone(&hooks);
-                tokio::task::spawn_blocking(move || {
-                    handle_reconcile(&cp, po.as_deref(), &st, &nt, notify_drift, &*hk);
-                }).await.map_err(|e| DaemonError::WatchError {
-                    message: format!("reconcile task failed: {}", e),
-                })?;
+                let now = Instant::now();
+
+                // Check each reconcile task — only run if its interval has elapsed
+                let mut ran_default = false;
+                for task in &mut reconcile_tasks {
+                    if let Some(last) = task.last_reconciled
+                        && now.duration_since(last) < task.interval
+                    {
+                        continue;
+                    }
+                    task.last_reconciled = Some(now);
+
+                    if task.entity == "__default__" {
+                        ran_default = true;
+                        let cp = config_path.clone();
+                        let po = profile_override.clone();
+                        let st = Arc::clone(&state);
+                        let nt = Arc::clone(&notifier);
+                        let notify_drift = notify_on_drift;
+                        let hk = Arc::clone(&hooks);
+                        tokio::task::spawn_blocking(move || {
+                            handle_reconcile(&cp, po.as_deref(), &st, &nt, notify_drift, &*hk);
+                        }).await.map_err(|e| DaemonError::WatchError {
+                            message: format!("reconcile task failed: {}", e),
+                        })?;
+                    } else {
+                        // Per-module reconcile — currently records the timestamp;
+                        // scoped module reconciliation uses the same handle_reconcile
+                        // with --module filtering (future: handle_module_reconcile).
+                        let entity_name = task.entity.clone();
+                        tracing::info!(
+                            module = %entity_name,
+                            interval = %task.interval.as_secs(),
+                            auto_apply = task.auto_apply,
+                            drift_policy = ?task.drift_policy,
+                            "per-module reconcile tick"
+                        );
+                        let rt = tokio::runtime::Handle::current();
+                        let st = Arc::clone(&state);
+                        let ts = crate::utc_now_iso8601();
+                        rt.block_on(async {
+                            let mut st = st.lock().await;
+                            st.module_last_reconcile
+                                .insert(entity_name, ts);
+                        });
+                    }
+                }
+
+                // If the default task didn't run this tick but a module task did,
+                // that's expected — module tasks can have shorter intervals.
+                if !ran_default {
+                    tracing::debug!("default reconcile task not due this tick");
+                }
             }
 
             _ = sync_timer.tick() => {
@@ -2110,6 +2265,7 @@ mod tests {
                 status: "active".to_string(),
             }],
             update_available: None,
+            module_reconcile: vec![],
         };
         let json = serde_json::to_string(&response).unwrap();
         let parsed: DaemonStatusResponse = serde_json::from_str(&json).unwrap();

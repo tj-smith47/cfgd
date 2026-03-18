@@ -545,6 +545,90 @@ impl Drop for ApplyLockGuard {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Reconcile patch resolution
+// ---------------------------------------------------------------------------
+
+/// Fully resolved reconcile settings for a single entity (no Options).
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct EffectiveReconcile {
+    pub interval: String,
+    pub auto_apply: bool,
+    pub drift_policy: config::DriftPolicy,
+}
+
+/// Resolve effective reconcile settings for a module given the profile
+/// inheritance chain and any patches in the global reconcile config.
+///
+/// Precedence (most specific wins):
+///   Named Module patch > Kind-wide Module patch > Named Profile patch >
+///   Kind-wide Profile patch > Global reconcile settings
+///
+/// `profile_chain` is ancestors-first, leaf-last (e.g., `["base", "work"]`).
+/// Within each level, patches apply in list order (last wins for duplicates).
+pub fn resolve_effective_reconcile(
+    module_name: &str,
+    profile_chain: &[&str],
+    reconcile: &config::ReconcileConfig,
+) -> EffectiveReconcile {
+    let mut effective = EffectiveReconcile {
+        interval: reconcile.interval.clone(),
+        auto_apply: reconcile.auto_apply,
+        drift_policy: reconcile.drift_policy.clone(),
+    };
+
+    // 1. Kind-wide Profile patch (no name = applies to all profiles)
+    if let Some(patch) = reconcile
+        .patches
+        .iter()
+        .rev()
+        .find(|p| p.kind == config::ReconcilePatchKind::Profile && p.name.is_none())
+    {
+        overlay_reconcile_patch(&mut effective, patch);
+    }
+
+    // 2. Named Profile patches in inheritance order (leaf last = leaf wins)
+    for profile_name in profile_chain {
+        if let Some(patch) = reconcile.patches.iter().rev().find(|p| {
+            p.kind == config::ReconcilePatchKind::Profile && p.name.as_deref() == Some(profile_name)
+        }) {
+            overlay_reconcile_patch(&mut effective, patch);
+        }
+    }
+
+    // 3. Kind-wide Module patch (no name = applies to all modules)
+    if let Some(patch) = reconcile
+        .patches
+        .iter()
+        .rev()
+        .find(|p| p.kind == config::ReconcilePatchKind::Module && p.name.is_none())
+    {
+        overlay_reconcile_patch(&mut effective, patch);
+    }
+
+    // 4. Named Module patch (highest priority) — last matching entry wins
+    if let Some(patch) = reconcile.patches.iter().rev().find(|p| {
+        p.kind == config::ReconcilePatchKind::Module && p.name.as_deref() == Some(module_name)
+    }) {
+        overlay_reconcile_patch(&mut effective, patch);
+    }
+
+    effective
+}
+
+/// Overlay a patch's `Some` fields onto an effective reconcile struct.
+fn overlay_reconcile_patch(base: &mut EffectiveReconcile, patch: &config::ReconcilePatch) {
+    if let Some(ref interval) = patch.interval {
+        base.interval = interval.clone();
+    }
+    if let Some(auto_apply) = patch.auto_apply {
+        base.auto_apply = auto_apply;
+    }
+    if let Some(ref dp) = patch.drift_policy {
+        base.drift_policy = dp.clone();
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1010,5 +1094,200 @@ mod tests {
         let guard = acquire_apply_lock(dir.path()).unwrap();
         assert!(dir.path().join("apply.lock").exists());
         drop(guard);
+    }
+
+    // --- Reconcile patch resolution tests ---
+
+    fn test_reconcile_config(patches: Vec<config::ReconcilePatch>) -> config::ReconcileConfig {
+        config::ReconcileConfig {
+            interval: "5m".into(),
+            on_change: false,
+            auto_apply: false,
+            policy: None,
+            drift_policy: config::DriftPolicy::NotifyOnly,
+            patches,
+        }
+    }
+
+    #[test]
+    fn resolve_reconcile_global_only() {
+        let cfg = test_reconcile_config(vec![]);
+        let eff = resolve_effective_reconcile("some-module", &["default"], &cfg);
+        assert_eq!(eff.interval, "5m");
+        assert!(!eff.auto_apply);
+        assert_eq!(eff.drift_policy, config::DriftPolicy::NotifyOnly);
+    }
+
+    #[test]
+    fn resolve_reconcile_module_patch() {
+        let cfg = test_reconcile_config(vec![config::ReconcilePatch {
+            kind: config::ReconcilePatchKind::Module,
+            name: Some("certs".into()),
+            interval: Some("1m".into()),
+            auto_apply: None,
+            drift_policy: Some(config::DriftPolicy::Auto),
+        }]);
+        let eff = resolve_effective_reconcile("certs", &["default"], &cfg);
+        assert_eq!(eff.interval, "1m");
+        assert!(!eff.auto_apply); // inherited from global
+        assert_eq!(eff.drift_policy, config::DriftPolicy::Auto);
+    }
+
+    #[test]
+    fn resolve_reconcile_profile_patch() {
+        let cfg = test_reconcile_config(vec![config::ReconcilePatch {
+            kind: config::ReconcilePatchKind::Profile,
+            name: Some("work".into()),
+            interval: None,
+            auto_apply: Some(true),
+            drift_policy: None,
+        }]);
+        let eff = resolve_effective_reconcile("any-mod", &["base", "work"], &cfg);
+        assert_eq!(eff.interval, "5m"); // global
+        assert!(eff.auto_apply); // from profile patch
+    }
+
+    #[test]
+    fn resolve_reconcile_module_beats_profile() {
+        let cfg = test_reconcile_config(vec![
+            config::ReconcilePatch {
+                kind: config::ReconcilePatchKind::Profile,
+                name: Some("work".into()),
+                interval: None,
+                auto_apply: Some(false),
+                drift_policy: None,
+            },
+            config::ReconcilePatch {
+                kind: config::ReconcilePatchKind::Module,
+                name: Some("certs".into()),
+                interval: None,
+                auto_apply: Some(true),
+                drift_policy: None,
+            },
+        ]);
+        let eff = resolve_effective_reconcile("certs", &["work"], &cfg);
+        assert!(eff.auto_apply); // module wins over profile
+    }
+
+    #[test]
+    fn resolve_reconcile_leaf_profile_wins() {
+        let cfg = test_reconcile_config(vec![
+            config::ReconcilePatch {
+                kind: config::ReconcilePatchKind::Profile,
+                name: Some("base".into()),
+                interval: Some("10m".into()),
+                auto_apply: None,
+                drift_policy: None,
+            },
+            config::ReconcilePatch {
+                kind: config::ReconcilePatchKind::Profile,
+                name: Some("work".into()),
+                interval: Some("2m".into()),
+                auto_apply: None,
+                drift_policy: None,
+            },
+        ]);
+        // work is the leaf (last in chain) → wins
+        let eff = resolve_effective_reconcile("any", &["base", "work"], &cfg);
+        assert_eq!(eff.interval, "2m");
+    }
+
+    #[test]
+    fn resolve_reconcile_fields_merge_independently() {
+        let cfg = test_reconcile_config(vec![
+            config::ReconcilePatch {
+                kind: config::ReconcilePatchKind::Profile,
+                name: Some("work".into()),
+                interval: Some("10m".into()),
+                auto_apply: None,
+                drift_policy: None,
+            },
+            config::ReconcilePatch {
+                kind: config::ReconcilePatchKind::Module,
+                name: Some("certs".into()),
+                interval: None,
+                auto_apply: None,
+                drift_policy: Some(config::DriftPolicy::Auto),
+            },
+        ]);
+        let eff = resolve_effective_reconcile("certs", &["work"], &cfg);
+        assert_eq!(eff.interval, "10m"); // from profile patch
+        assert_eq!(eff.drift_policy, config::DriftPolicy::Auto); // from module patch
+        assert!(!eff.auto_apply); // from global
+    }
+
+    #[test]
+    fn resolve_reconcile_missing_module_ignored() {
+        let cfg = test_reconcile_config(vec![config::ReconcilePatch {
+            kind: config::ReconcilePatchKind::Module,
+            name: Some("nonexistent".into()),
+            interval: Some("1s".into()),
+            auto_apply: None,
+            drift_policy: None,
+        }]);
+        // Asking for a different module — patch doesn't apply
+        let eff = resolve_effective_reconcile("other", &["default"], &cfg);
+        assert_eq!(eff.interval, "5m");
+    }
+
+    #[test]
+    fn resolve_reconcile_duplicate_module_last_wins() {
+        let cfg = test_reconcile_config(vec![
+            config::ReconcilePatch {
+                kind: config::ReconcilePatchKind::Module,
+                name: Some("certs".into()),
+                interval: Some("10m".into()),
+                auto_apply: None,
+                drift_policy: None,
+            },
+            config::ReconcilePatch {
+                kind: config::ReconcilePatchKind::Module,
+                name: Some("certs".into()),
+                interval: Some("1m".into()),
+                auto_apply: None,
+                drift_policy: None,
+            },
+        ]);
+        let eff = resolve_effective_reconcile("certs", &["default"], &cfg);
+        assert_eq!(eff.interval, "1m"); // last entry wins
+    }
+
+    #[test]
+    fn resolve_reconcile_kind_wide_module_patch() {
+        let cfg = test_reconcile_config(vec![config::ReconcilePatch {
+            kind: config::ReconcilePatchKind::Module,
+            name: None, // applies to all modules
+            interval: Some("30s".into()),
+            auto_apply: None,
+            drift_policy: None,
+        }]);
+        let eff = resolve_effective_reconcile("any-module", &["default"], &cfg);
+        assert_eq!(eff.interval, "30s");
+    }
+
+    #[test]
+    fn resolve_reconcile_named_beats_kind_wide() {
+        let cfg = test_reconcile_config(vec![
+            config::ReconcilePatch {
+                kind: config::ReconcilePatchKind::Module,
+                name: None, // all modules
+                interval: Some("30s".into()),
+                auto_apply: None,
+                drift_policy: None,
+            },
+            config::ReconcilePatch {
+                kind: config::ReconcilePatchKind::Module,
+                name: Some("certs".into()), // specific
+                interval: Some("5s".into()),
+                auto_apply: None,
+                drift_policy: None,
+            },
+        ]);
+        // Named patch wins over kind-wide
+        let eff = resolve_effective_reconcile("certs", &["default"], &cfg);
+        assert_eq!(eff.interval, "5s");
+        // Other modules get kind-wide
+        let eff2 = resolve_effective_reconcile("other", &["default"], &cfg);
+        assert_eq!(eff2.interval, "30s");
     }
 }

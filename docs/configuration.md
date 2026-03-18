@@ -64,6 +64,7 @@ spec:
 | `spec.origin.branch` | no | `master` | Git branch |
 | `spec.daemon.reconcile.interval` | no | `5m` | Drift check interval (e.g. `1m`, `5m`, `1h`) |
 | `spec.daemon.reconcile.on-change` | no | `false` | Reconcile immediately on file change |
+| `spec.daemon.reconcile.patches` | no | `[]` | Per-module/profile reconcile overrides (see [daemon.md](daemon.md#reconcile-patches)) |
 | `spec.daemon.sync.auto-pull` | no | `false` | Auto-pull from remote |
 | `spec.daemon.sync.auto-push` | no | `false` | Auto-commit and push local changes |
 | `spec.daemon.notify.method` | no | `desktop` | `desktop`, `stdout`, or `webhook` |

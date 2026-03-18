@@ -281,6 +281,33 @@ pub struct ReconcileConfig {
     /// apply (safe default), `Prompt` = future interactive approval.
     #[serde(default)]
     pub drift_policy: DriftPolicy,
+    /// Per-module or per-profile reconcile overrides (kustomize-style patches).
+    /// Each patch targets a specific Module or Profile by name and overrides
+    /// individual reconcile fields. Precedence: Module patch > Profile patch > global.
+    #[serde(default)]
+    pub patches: Vec<ReconcilePatch>,
+}
+
+/// A kustomize-style reconcile patch targeting a specific module or profile.
+/// When `name` is omitted, the patch applies to all entities of the given kind.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub struct ReconcilePatch {
+    pub kind: ReconcilePatchKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub interval: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auto_apply: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub drift_policy: Option<DriftPolicy>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ReconcilePatchKind {
+    Module,
+    Profile,
 }
 
 /// Daemon drift reconciliation policy. PascalCase values match K8s enum conventions.
@@ -2400,5 +2427,245 @@ policy:
         assert!(config.on_change);
         let policy = config.policy.unwrap();
         assert_eq!(policy.new_recommended, PolicyAction::Accept);
+    }
+
+    #[test]
+    fn reconcile_patches_deserialize() {
+        let yaml = r#"
+interval: 5m
+patches:
+  - kind: Module
+    name: certificates
+    interval: 1m
+    drift-policy: Auto
+  - kind: Profile
+    name: work
+    auto-apply: true
+  - kind: Module
+    interval: 30s
+"#;
+        let config: ReconcileConfig = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(config.patches.len(), 3);
+        assert_eq!(config.patches[0].kind, ReconcilePatchKind::Module);
+        assert_eq!(config.patches[0].name.as_deref(), Some("certificates"));
+        assert_eq!(config.patches[0].interval.as_deref(), Some("1m"));
+        assert_eq!(config.patches[0].drift_policy, Some(DriftPolicy::Auto));
+        assert!(config.patches[0].auto_apply.is_none());
+        assert_eq!(config.patches[1].kind, ReconcilePatchKind::Profile);
+        assert_eq!(config.patches[1].name.as_deref(), Some("work"));
+        assert_eq!(config.patches[1].auto_apply, Some(true));
+        assert!(config.patches[1].interval.is_none());
+        // Kind-wide patch (no name)
+        assert_eq!(config.patches[2].kind, ReconcilePatchKind::Module);
+        assert!(config.patches[2].name.is_none());
+        assert_eq!(config.patches[2].interval.as_deref(), Some("30s"));
+    }
+
+    #[test]
+    fn reconcile_config_without_patches_has_empty_vec() {
+        let yaml = "interval: 10m\n";
+        let config: ReconcileConfig = serde_yaml::from_str(yaml).unwrap();
+        assert!(config.patches.is_empty());
+    }
+
+    // --- desired_packages_for_spec ---
+
+    #[test]
+    fn desired_packages_brew_formulae() {
+        let spec = PackagesSpec {
+            brew: Some(BrewSpec {
+                formulae: vec!["curl".into(), "wget".into()],
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        assert_eq!(
+            desired_packages_for_spec("brew", &spec),
+            vec!["curl", "wget"]
+        );
+    }
+
+    #[test]
+    fn desired_packages_brew_taps() {
+        let spec = PackagesSpec {
+            brew: Some(BrewSpec {
+                taps: vec!["homebrew/core".into()],
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        assert_eq!(
+            desired_packages_for_spec("brew-tap", &spec),
+            vec!["homebrew/core"]
+        );
+    }
+
+    #[test]
+    fn desired_packages_brew_casks() {
+        let spec = PackagesSpec {
+            brew: Some(BrewSpec {
+                casks: vec!["firefox".into()],
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        assert_eq!(
+            desired_packages_for_spec("brew-cask", &spec),
+            vec!["firefox"]
+        );
+    }
+
+    #[test]
+    fn desired_packages_apt() {
+        let spec = PackagesSpec {
+            apt: Some(AptSpec {
+                packages: vec!["git".into()],
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        assert_eq!(desired_packages_for_spec("apt", &spec), vec!["git"]);
+    }
+
+    #[test]
+    fn desired_packages_cargo() {
+        let spec = PackagesSpec {
+            cargo: Some(CargoSpec {
+                packages: vec!["ripgrep".into()],
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        assert_eq!(desired_packages_for_spec("cargo", &spec), vec!["ripgrep"]);
+    }
+
+    #[test]
+    fn desired_packages_npm() {
+        let spec = PackagesSpec {
+            npm: Some(NpmSpec {
+                global: vec!["typescript".into()],
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        assert_eq!(desired_packages_for_spec("npm", &spec), vec!["typescript"]);
+    }
+
+    #[test]
+    fn desired_packages_pipx() {
+        let spec = PackagesSpec {
+            pipx: vec!["black".into()],
+            ..Default::default()
+        };
+        assert_eq!(desired_packages_for_spec("pipx", &spec), vec!["black"]);
+    }
+
+    #[test]
+    fn desired_packages_snap_merges_classic() {
+        let spec = PackagesSpec {
+            snap: Some(SnapSpec {
+                packages: vec!["core".into()],
+                classic: vec!["code".into()],
+            }),
+            ..Default::default()
+        };
+        let result = desired_packages_for_spec("snap", &spec);
+        assert_eq!(result, vec!["core", "code"]);
+    }
+
+    #[test]
+    fn desired_packages_snap_classic_dedup() {
+        let spec = PackagesSpec {
+            snap: Some(SnapSpec {
+                packages: vec!["code".into()],
+                classic: vec!["code".into()],
+            }),
+            ..Default::default()
+        };
+        let result = desired_packages_for_spec("snap", &spec);
+        assert_eq!(result, vec!["code"]);
+    }
+
+    #[test]
+    fn desired_packages_custom_manager() {
+        let spec = PackagesSpec {
+            custom: vec![CustomManagerSpec {
+                name: "my-mgr".into(),
+                check: "which my-mgr".into(),
+                list_installed: "my-mgr list".into(),
+                install: "my-mgr install".into(),
+                uninstall: "my-mgr remove".into(),
+                update: None,
+                packages: vec!["tool-a".into()],
+            }],
+            ..Default::default()
+        };
+        assert_eq!(desired_packages_for_spec("my-mgr", &spec), vec!["tool-a"]);
+    }
+
+    #[test]
+    fn desired_packages_unknown_manager() {
+        let spec = PackagesSpec::default();
+        assert!(desired_packages_for_spec("nonexistent", &spec).is_empty());
+    }
+
+    // --- load_config filesystem ---
+
+    #[test]
+    fn load_config_valid_yaml() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("cfgd.yaml");
+        let yaml = format!(
+            "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: test\nspec:\n  profile: default\n"
+        );
+        std::fs::write(&path, &yaml).unwrap();
+        let cfg = load_config(&path).unwrap();
+        assert_eq!(cfg.metadata.name, "test");
+    }
+
+    #[test]
+    fn load_config_valid_toml() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("cfgd.toml");
+        let toml = "apiVersion = \"cfgd.io/v1alpha1\"\nkind = \"Config\"\n\n[metadata]\nname = \"test\"\n\n[spec]\nprofile = \"default\"\n";
+        std::fs::write(&path, toml).unwrap();
+        let cfg = load_config(&path).unwrap();
+        assert_eq!(cfg.metadata.name, "test");
+    }
+
+    #[test]
+    fn load_config_missing_file() {
+        let result = load_config(std::path::Path::new("/nonexistent-12345/cfgd.yaml"));
+        assert!(result.is_err());
+    }
+
+    // --- resolve_profile deeper inheritance ---
+
+    #[test]
+    fn three_level_inheritance() {
+        let dir = tempfile::tempdir().unwrap();
+        let profiles = dir.path().join("profiles");
+        std::fs::create_dir_all(&profiles).unwrap();
+
+        let grandparent = "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: grandparent\nspec:\n  inherits: []\n  modules: []\n  env:\n    - name: A\n      value: '1'\n";
+        let parent = "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: parent\nspec:\n  inherits:\n    - grandparent\n  modules: []\n  env:\n    - name: B\n      value: '2'\n";
+        let child = "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: child\nspec:\n  inherits:\n    - parent\n  modules: []\n  env:\n    - name: C\n      value: '3'\n";
+
+        std::fs::write(profiles.join("grandparent.yaml"), grandparent).unwrap();
+        std::fs::write(profiles.join("parent.yaml"), parent).unwrap();
+        std::fs::write(profiles.join("child.yaml"), child).unwrap();
+
+        let resolved = resolve_profile("child", &profiles).unwrap();
+
+        // Should have all three env vars merged
+        let names: Vec<&str> = resolved
+            .merged
+            .env
+            .iter()
+            .map(|e| e.name.as_str())
+            .collect();
+        assert!(names.contains(&"A"));
+        assert!(names.contains(&"B"));
+        assert!(names.contains(&"C"));
     }
 }
