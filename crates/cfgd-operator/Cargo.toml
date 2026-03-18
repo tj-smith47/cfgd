@@ -40,6 +40,7 @@ futures = "0.3"
 axum = "0.8"
 hyper = "1"
 hyper-util = { version = "0.1", features = ["tokio", "server-auto"] }
+rustls = { version = "0.23", features = ["ring"] }
 tokio-rustls = "0.26"
 rustls-pemfile = "2"
 semver = "1"

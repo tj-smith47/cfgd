@@ -23,6 +23,10 @@ on:
       - ".github/actions/setup-e2e/**"
   workflow_dispatch:
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 env:
   KIND_CLUSTER: cfgd-e2e
   CFGD_NAMESPACE: cfgd-system

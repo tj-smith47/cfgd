@@ -543,6 +543,7 @@ dependencies = [
  "k8s-openapi",
  "kube",
  "rusqlite",
+ "rustls",
  "rustls-pemfile",
  "schemars",
  "semver",
