@@ -68,18 +68,18 @@ async fn main() -> Result<()> {
         };
 
         tracing::info!("Device gateway enabled");
-        let gateway_handle = tokio::spawn(async move {
-            if let Err(e) = gateway::start_gateway(gateway_config).await {
-                tracing::error!(error = %e, "Device gateway failed");
+
+        // Spawn controllers as a non-fatal task — if they fail, gateway keeps serving
+        tokio::spawn(async move {
+            if let Err(e) = controllers::run(client).await {
+                tracing::error!(error = %e, "Controllers failed — gateway continues serving");
             }
         });
 
-        tokio::select! {
-            result = controllers::run(client) => result?,
-            _ = gateway_handle => {
-                anyhow::bail!("Device gateway exited unexpectedly");
-            }
-        }
+        // Gateway is the primary process — if it exits, we exit
+        gateway::start_gateway(gateway_config)
+            .await
+            .map_err(|e| anyhow::anyhow!("{}", e))?;
     } else {
         controllers::run(client).await?;
     }
