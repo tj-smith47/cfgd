@@ -888,7 +888,7 @@ if assert_ok; then
 else fail_test "SRC02"; fi
 
 begin_test "SRC03: source add (remote)"
-run $C source add "$SOURCE_REPO" --yes --name team-config --profile base --priority 500
+run $C source add "file://$SOURCE_REPO" --yes --name team-config --profile base --priority 500
 if assert_ok; then
     pass_test "SRC03"
 else
@@ -896,7 +896,7 @@ else
 fi
 
 begin_test "SRC04: source add --branch"
-run $C source add "$SOURCE_REPO" --yes --name team-branch --branch master --profile base --priority 500
+run $C source add "file://$SOURCE_REPO" --yes --name team-branch --branch master --profile base --priority 500
 if assert_ok; then
     pass_test "SRC04"
 else
@@ -904,7 +904,7 @@ else
 fi
 
 begin_test "SRC05: source add --profile"
-run $C source add "$SOURCE_REPO" --yes --name team-profile --profile base --priority 500
+run $C source add "file://$SOURCE_REPO" --yes --name team-profile --profile base --priority 500
 if assert_ok; then
     pass_test "SRC05"
 else
@@ -912,7 +912,7 @@ else
 fi
 
 begin_test "SRC06: source add --accept-recommended"
-run $C source add "$SOURCE_REPO" --yes --name team-rec --accept-recommended --profile base --priority 500
+run $C source add "file://$SOURCE_REPO" --yes --name team-rec --accept-recommended --profile base --priority 500
 if assert_ok; then
     pass_test "SRC06"
 else
@@ -920,7 +920,7 @@ else
 fi
 
 begin_test "SRC07: source add --priority"
-run $C source add "$SOURCE_REPO" --yes --name team-pri --priority 10 --profile base
+run $C source add "file://$SOURCE_REPO" --yes --name team-pri --priority 10 --profile base
 if assert_ok; then
     pass_test "SRC07"
 else
@@ -928,7 +928,7 @@ else
 fi
 
 begin_test "SRC08: source add --opt-in"
-run $C source add "$SOURCE_REPO" --yes --name team-opt --opt-in packages --profile base --priority 500
+run $C source add "file://$SOURCE_REPO" --yes --name team-opt --opt-in packages --profile base --priority 500
 if assert_ok; then
     pass_test "SRC08"
 else
@@ -936,7 +936,7 @@ else
 fi
 
 begin_test "SRC09: source add --sync-interval"
-run $C source add "$SOURCE_REPO" --yes --name team-sync --sync-interval 1h --profile base --priority 500
+run $C source add "file://$SOURCE_REPO" --yes --name team-sync --sync-interval 1h --profile base --priority 500
 if assert_ok; then
     pass_test "SRC09"
 else
@@ -944,7 +944,7 @@ else
 fi
 
 begin_test "SRC10: source add --auto-apply"
-run $C source add "$SOURCE_REPO" --yes --name team-auto --auto-apply --profile base --priority 500
+run $C source add "file://$SOURCE_REPO" --yes --name team-auto --auto-apply --profile base --priority 500
 if assert_ok; then
     pass_test "SRC10"
 else
@@ -952,7 +952,7 @@ else
 fi
 
 begin_test "SRC11: source add --pin-version"
-run $C source add "$SOURCE_REPO" --yes --name team-pin --pin-version ">=1.0" --profile base --priority 500
+run $C source add "file://$SOURCE_REPO" --yes --name team-pin --pin-version ">=1.0" --profile base --priority 500
 if assert_ok; then
     pass_test "SRC11"
 else
@@ -1022,7 +1022,7 @@ else
 fi
 
 begin_test "SRC20: source replace"
-run $C source replace team-config "$SOURCE_REPO"
+run $C source replace team-config "file://$SOURCE_REPO"
 if assert_ok; then
     pass_test "SRC20"
 else
@@ -1242,8 +1242,8 @@ else
 fi
 
 begin_test "SEC05: secret edit (EDITOR=true)"
-if [ -f "$SCRATCH/plaintext.yaml" ]; then
-    EDITOR=true run $C secret edit "$SCRATCH/plaintext.yaml"
+if [ -f "$CFG/secrets/plaintext.yaml" ]; then
+    EDITOR=true run $C secret edit "$CFG/secrets/plaintext.yaml"
     if [ "$RC" -eq 0 ] || [ "$RC" -eq 1 ]; then
         pass_test "SEC05"
     else fail_test "SEC05" "exit $RC"; fi

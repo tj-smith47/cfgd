@@ -161,6 +161,7 @@ spec:
   profile: k8s-worker-minimal
 INNEREOF'
 exec_on_node cp /etc/cfgd/profiles/k8s-worker-minimal.yaml /tmp/e2e-source/profiles/
+exec_on_node bash -c 'cd /tmp/e2e-source && git init -q && git config user.email "e2e@test" && git config user.name "E2E" && git add -A && git commit -qm "init"'
 
 RC=0
 OUTPUT=$(exec_on_node cfgd init /tmp/e2e-init-test --from /tmp/e2e-source --no-color 2>&1) || RC=$?
