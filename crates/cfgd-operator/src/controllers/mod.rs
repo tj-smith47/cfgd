@@ -115,7 +115,7 @@ async fn reconcile_machine_config(
         current_generation.is_some() && current_generation == observed_generation;
     if generation_unchanged && !current_drift {
         info!(name = %name, "Already reconciled this generation, skipping");
-        return Ok(Action::requeue(std::time::Duration::from_secs(300)));
+        return Ok(Action::requeue(std::time::Duration::from_secs(60)));
     }
 
     // If not drifted, clean up any stale DriftAlerts for this MachineConfig
@@ -175,7 +175,7 @@ async fn reconcile_machine_config(
 
     info!(name = %name, "Status updated with last_reconciled timestamp");
 
-    Ok(Action::requeue(std::time::Duration::from_secs(300)))
+    Ok(Action::requeue(std::time::Duration::from_secs(60)))
 }
 
 fn validate_spec(spec: &MachineConfigSpec) -> Result<(), OperatorError> {
@@ -241,7 +241,7 @@ async fn reconcile_drift_alert(
                 if let Err(e) = alerts.delete(&name, &Default::default()).await {
                     warn!(name = %name, error = %e, "Failed to delete resolved DriftAlert");
                 }
-                return Ok(Action::requeue(std::time::Duration::from_secs(3600)));
+                return Ok(Action::requeue(std::time::Duration::from_secs(60)));
             }
 
             if !is_drifted {
@@ -297,7 +297,7 @@ async fn reconcile_drift_alert(
         }
     }
 
-    Ok(Action::requeue(std::time::Duration::from_secs(3600)))
+    Ok(Action::requeue(std::time::Duration::from_secs(60)))
 }
 
 /// Clean up resolved DriftAlerts for a MachineConfig that is no longer drifted.
@@ -450,7 +450,7 @@ async fn reconcile_config_policy(
         "ConfigPolicy status updated"
     );
 
-    Ok(Action::requeue(std::time::Duration::from_secs(300)))
+    Ok(Action::requeue(std::time::Duration::from_secs(60)))
 }
 
 fn matches_selector(
