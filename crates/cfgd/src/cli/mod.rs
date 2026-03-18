@@ -1287,7 +1287,11 @@ fn build_registry_with_config_and_packages(
 
     // Register secret backend and providers
     let (backend_name, age_key_path) = secret_backend_from_config(cfg);
-    registry.secret_backend = Some(secrets::build_secret_backend(&backend_name, age_key_path, None));
+    registry.secret_backend = Some(secrets::build_secret_backend(
+        &backend_name,
+        age_key_path,
+        None,
+    ));
     registry.secret_providers = secrets::build_secret_providers();
 
     // Set global file strategy from config
@@ -1440,7 +1444,11 @@ fn cmd_apply(cli: &Cli, printer: &Printer, args: &ApplyArgs) -> anyhow::Result<(
         if !dry_run {
             let (backend_name, age_key_path) = secret_backend_from_config(Some(&cfg));
             fm.set_secret_providers(
-                Some(secrets::build_secret_backend(&backend_name, age_key_path, Some(&config_dir))),
+                Some(secrets::build_secret_backend(
+                    &backend_name,
+                    age_key_path,
+                    Some(&config_dir),
+                )),
                 secrets::build_secret_providers(),
             );
         }
