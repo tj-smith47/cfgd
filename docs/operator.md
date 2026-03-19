@@ -142,7 +142,7 @@ Two methods for registering new devices:
 Modeled after [kubelet TLS bootstrapping](https://kubernetes.io/docs/reference/access-authn-authz/kubelet-tls-bootstrapping/). An admin generates a short-lived token, gives it to the user, and the user's device exchanges it for a permanent API key.
 
 1. Admin generates token via `POST /api/v1/admin/tokens`
-2. User runs `cfgd init --server <url> --token <token>`
+2. User runs `cfgd enroll --server-url <url> --token <token>`
 3. Device authenticates, registers, receives permanent API key
 
 **SSH/GPG Key Verification** (`CFGD_ENROLLMENT_METHOD=key`):
@@ -153,7 +153,7 @@ Challenge-response enrollment using pre-registered public keys. The device signs
 3. Server issues nonce, client signs it, server verifies against stored keys
 
 ```sh
-cfgd init --server https://cfgd.acme.com --token <bootstrap-token>
+cfgd enroll --server-url https://cfgd.acme.com --token <bootstrap-token>
 cfgd enroll --server-url https://cfgd.acme.com
 cfgd enroll --server-url https://cfgd.acme.com --ssh-key ~/.ssh/id_ed25519
 cfgd enroll --server-url https://cfgd.acme.com --gpg-key ABCD1234
