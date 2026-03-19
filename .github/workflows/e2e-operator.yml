@@ -1,4 +1,4 @@
-name: E2E – cfgd operator
+name: E2E – Operator
 
 on:
   push:

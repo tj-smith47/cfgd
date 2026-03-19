@@ -144,7 +144,7 @@ spec:
                       readOnlyRootFilesystem: true
                       capabilities:
                         drop: [ALL]
-      permissions:
+      clusterPermissions:
         - serviceAccountName: cfgd-operator
           rules:
             - apiGroups: ["cfgd.io"]

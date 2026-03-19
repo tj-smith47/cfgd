@@ -41,18 +41,6 @@ spec:
     - name: plan
       description: The cfgd plan output (JSON when output-format is json)
   steps:
-    - name: install-cfgd
-      image: curlimages/curl:latest
-      script: |
-        #!/bin/sh
-        set -eu
-        VERSION="$(params.version)"
-        if [ "$VERSION" = "latest" ]; then
-          curl -fsSL https://raw.githubusercontent.com/tj-smith47/cfgd/master/install.sh | sh
-        else
-          curl -fsSL https://raw.githubusercontent.com/tj-smith47/cfgd/master/install.sh | sh -s -- --version "$VERSION"
-        fi
-
     - name: cfgd-apply
       image: ubuntu:22.04
       workingDir: $(workspaces.source.path)/$(params.config-dir)
@@ -60,6 +48,16 @@ spec:
         #!/bin/bash
         set -eu
 
+        # Install cfgd
+        apt-get update && apt-get install -y --no-install-recommends curl ca-certificates
+        VERSION="$(params.version)"
+        if [ "$VERSION" = "latest" ]; then
+          curl -fsSL https://raw.githubusercontent.com/tj-smith47/cfgd/master/install.sh | bash
+        else
+          curl -fsSL https://raw.githubusercontent.com/tj-smith47/cfgd/master/install.sh | bash -s -- --version "$VERSION"
+        fi
+
+        # Run cfgd
         DRY_RUN=""
         if [ "$(params.dry-run)" = "true" ]; then
           DRY_RUN="--dry-run"

@@ -1,4 +1,4 @@
-name: E2E – cfgd full stack
+name: E2E – Full Stack
 
 on:
   push:

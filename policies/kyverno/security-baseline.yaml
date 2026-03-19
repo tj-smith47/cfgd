@@ -26,9 +26,6 @@ spec:
             operator: GreaterThan
             value: 0
       validate:
-        message: >-
-          MachineConfig {{ request.object.metadata.name }} contains a
-          file with world-writable mode. Use restrictive permissions.
         foreach:
           - list: "request.object.spec.files"
             deny:
@@ -36,4 +33,7 @@ spec:
                 any:
                   - key: "{{ element.mode }}"
                     operator: AnyIn
-                    value: ["0777", "0776", "0766", "0667", "0666"]
+                    value: ["0777", "0776", "0773", "0772", "0767", "0766", "0763", "0762", "0667", "0666", "0663", "0662"]
+              message: >-
+                File '{{ element.path }}' has world-writable mode '{{ element.mode }}'.
+                Use restrictive permissions.

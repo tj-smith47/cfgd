@@ -2002,7 +2002,9 @@ fn export_devcontainer(
     }
 
     let install_path = feature_dir.join("install.sh");
-    cfgd_core::atomic_write_str(&install_path, &install_lines.join("\n"))?;
+    let mut install_content = install_lines.join("\n");
+    install_content.push('\n');
+    cfgd_core::atomic_write_str(&install_path, &install_content)?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -2022,14 +2024,28 @@ fn export_devcontainer(
         );
     }
 
+    // Try to get description from module.yaml metadata
+    let description = load_module_document(&config_dir, name)
+        .ok()
+        .and_then(|(doc, _)| doc.metadata.description)
+        .unwrap_or_else(|| {
+            format!(
+                "cfgd module: {}",
+                module
+                    .spec
+                    .packages
+                    .iter()
+                    .map(|p| p.name.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )
+        });
+
     let feature = serde_json::json!({
         "id": name,
         "version": "1.0.0",
         "name": name,
-        "description": module.spec.packages.iter()
-            .map(|p| p.name.as_str())
-            .collect::<Vec<_>>()
-            .join(", "),
+        "description": description,
         "options": options,
         "installsAfter": module.spec.depends.iter()
             .map(|d| format!("ghcr.io/cfgd-org/features/{}", d))

@@ -1,4 +1,4 @@
-name: E2E – cfgd node
+name: E2E – Node
 
 on:
   push:
