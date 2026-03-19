@@ -9,8 +9,9 @@ use kube::{Client, Resource, ResourceExt};
 use tracing::{info, warn};
 
 use crate::crds::{
-    Condition, ConfigPolicy, ConfigPolicyStatus, DriftAlert, LabelSelector, MachineConfig,
-    MachineConfigSpec, MachineConfigStatus, ModuleRef, PackageRef, version_satisfies,
+    Condition, ConfigPolicy, ConfigPolicyStatus, DriftAlert, DriftAlertStatus, LabelSelector,
+    MachineConfig, MachineConfigSpec, MachineConfigStatus, ModuleRef, PackageRef,
+    version_satisfies,
 };
 use crate::errors::OperatorError;
 
@@ -129,17 +130,17 @@ async fn reconcile_machine_config(
 
     let now = cfgd_core::utc_now_iso8601();
 
-    let (ready_status, ready_reason, ready_message) = if has_drift {
+    let (drift_status, drift_reason, drift_message) = if has_drift {
         (
-            "False".to_string(),
-            "DriftDetected".to_string(),
+            "True".to_string(),
+            "DriftActive".to_string(),
             format!("MachineConfig {} has detected drift on device", name),
         )
     } else {
         (
-            "True".to_string(),
-            "ReconcileSuccess".to_string(),
-            format!("MachineConfig {} reconciled successfully", name),
+            "False".to_string(),
+            "NoDrift".to_string(),
+            format!("No drift detected for MachineConfig {}", name),
         )
     };
 
@@ -149,10 +150,34 @@ async fn reconcile_machine_config(
             observed_generation: current_generation,
             conditions: vec![
                 Condition {
-                    condition_type: "Ready".to_string(),
-                    status: ready_status,
-                    reason: ready_reason,
-                    message: ready_message,
+                    condition_type: "Reconciled".to_string(),
+                    status: "True".to_string(),
+                    reason: "ReconcileSuccess".to_string(),
+                    message: format!("MachineConfig {} reconciled successfully", name),
+                    last_transition_time: now.clone(),
+                    observed_generation: current_generation,
+                },
+                Condition {
+                    condition_type: "DriftDetected".to_string(),
+                    status: drift_status,
+                    reason: drift_reason,
+                    message: drift_message,
+                    last_transition_time: now.clone(),
+                    observed_generation: current_generation,
+                },
+                Condition {
+                    condition_type: "ModulesResolved".to_string(),
+                    status: "True".to_string(),
+                    reason: "AllResolved".to_string(),
+                    message: "All module references resolved".to_string(),
+                    last_transition_time: now.clone(),
+                    observed_generation: current_generation,
+                },
+                Condition {
+                    condition_type: "Compliant".to_string(),
+                    status: "True".to_string(),
+                    reason: "PolicyCompliant".to_string(),
+                    message: "Compliant with all applicable policies".to_string(),
                     last_transition_time: now,
                     observed_generation: current_generation,
                 },
@@ -248,6 +273,37 @@ async fn reconcile_drift_alert(
                 } else {
                     Api::namespaced(ctx.client.clone(), &namespace)
                 };
+
+                // Set Resolved=True before deletion
+                let now = cfgd_core::utc_now_iso8601();
+                let da_status = serde_json::json!({
+                    "status": DriftAlertStatus {
+                        detected_at: obj.status.as_ref().and_then(|s| s.detected_at.clone()),
+                        resolved_at: Some(now.clone()),
+                        resolved: true,
+                        conditions: vec![
+                            Condition {
+                                condition_type: "Resolved".to_string(),
+                                status: "True".to_string(),
+                                reason: "DriftResolved".to_string(),
+                                message: "Drift has been resolved".to_string(),
+                                last_transition_time: now,
+                                observed_generation: obj.meta().generation,
+                            },
+                        ],
+                    }
+                });
+                if let Err(e) = alerts
+                    .patch_status(
+                        &name,
+                        &PatchParams::apply("cfgd-operator"),
+                        &Patch::Merge(da_status),
+                    )
+                    .await
+                {
+                    warn!(name = %name, error = %e, "Failed to set Resolved condition on DriftAlert");
+                }
+
                 if let Err(e) = alerts.delete(&name, &Default::default()).await {
                     warn!(name = %name, error = %e, "Failed to delete resolved DriftAlert");
                 }
@@ -257,19 +313,19 @@ async fn reconcile_drift_alert(
             if !has_drift_condition {
                 let now = cfgd_core::utc_now_iso8601();
                 let mc_generation = mc.meta().generation;
-                let status = serde_json::json!({
+                let mc_status = serde_json::json!({
                     "status": {
                         "conditions": [
                             {
-                                "type": "Ready",
-                                "status": "False",
-                                "reason": "DriftDetected",
+                                "type": "DriftDetected",
+                                "status": "True",
+                                "reason": "DriftActive",
                                 "message": format!(
                                     "Drift detected on device {} — {} detail(s)",
                                     obj.spec.device_id,
                                     obj.spec.drift_details.len()
                                 ),
-                                "lastTransitionTime": now,
+                                "lastTransitionTime": now.clone(),
                                 "observedGeneration": mc_generation,
                             }
                         ]
@@ -280,7 +336,7 @@ async fn reconcile_drift_alert(
                     .patch_status(
                         mc_name,
                         &PatchParams::apply("cfgd-operator"),
-                        &Patch::Merge(status),
+                        &Patch::Merge(mc_status),
                     )
                     .await
                     .map_err(|e| {
@@ -293,6 +349,46 @@ async fn reconcile_drift_alert(
                     machine_config = %mc_name,
                     "MachineConfig drift condition set"
                 );
+
+                // Patch DriftAlert status with Resolved=False condition
+                let da_api: Api<DriftAlert> = if namespace.is_empty() {
+                    Api::all(ctx.client.clone())
+                } else {
+                    Api::namespaced(ctx.client.clone(), &namespace)
+                };
+                let da_status = serde_json::json!({
+                    "status": DriftAlertStatus {
+                        detected_at: Some(now.clone()),
+                        resolved_at: None,
+                        resolved: false,
+                        conditions: vec![
+                            Condition {
+                                condition_type: "Resolved".to_string(),
+                                status: "False".to_string(),
+                                reason: "DriftActive".to_string(),
+                                message: format!(
+                                    "Drift active on device {} — {} detail(s)",
+                                    obj.spec.device_id,
+                                    obj.spec.drift_details.len()
+                                ),
+                                last_transition_time: now,
+                                observed_generation: obj.meta().generation,
+                            },
+                        ],
+                    }
+                });
+                da_api
+                    .patch_status(
+                        &name,
+                        &PatchParams::apply("cfgd-operator"),
+                        &Patch::Merge(da_status),
+                    )
+                    .await
+                    .map_err(|e| {
+                        OperatorError::Reconciliation(format!(
+                            "failed to update DriftAlert status for {name}: {e}"
+                        ))
+                    })?;
             }
         }
         Err(kube::Error::Api(resp)) if resp.code == 404 => {

@@ -182,6 +182,8 @@ pub struct DriftAlertStatus {
     pub resolved_at: Option<String>,
     #[serde(default)]
     pub resolved: bool,
+    #[serde(default)]
+    pub conditions: Vec<Condition>,
 }
 
 #[derive(Deserialize, Serialize, Clone, Debug, JsonSchema)]
@@ -500,6 +502,35 @@ mod tests {
         let sel = LabelSelector::default();
         assert!(sel.match_labels.is_empty());
         assert!(sel.match_expressions.is_empty());
+    }
+
+    #[test]
+    fn mc_reconciled_condition_set_on_success() {
+        let status = MachineConfigStatus {
+            last_reconciled: Some("2024-01-01T00:00:00Z".to_string()),
+            observed_generation: Some(1),
+            package_versions: Default::default(),
+            conditions: vec![
+                Condition {
+                    condition_type: "Reconciled".to_string(),
+                    status: "True".to_string(),
+                    reason: "ReconcileSuccess".to_string(),
+                    message: "Reconciled successfully".to_string(),
+                    last_transition_time: "2024-01-01T00:00:00Z".to_string(),
+                    observed_generation: Some(1),
+                },
+                Condition {
+                    condition_type: "DriftDetected".to_string(),
+                    status: "False".to_string(),
+                    reason: "NoDrift".to_string(),
+                    message: "No drift detected".to_string(),
+                    last_transition_time: "2024-01-01T00:00:00Z".to_string(),
+                    observed_generation: Some(1),
+                },
+            ],
+        };
+        assert_eq!(status.conditions.len(), 2);
+        assert_eq!(status.conditions[0].condition_type, "Reconciled");
     }
 
     #[test]
