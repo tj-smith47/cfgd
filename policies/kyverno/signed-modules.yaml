@@ -1,0 +1,30 @@
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: cfgd-signed-modules
+  annotations:
+    policies.kyverno.io/title: Signed Module Requirement
+    policies.kyverno.io/category: cfgd
+    policies.kyverno.io/severity: high
+    policies.kyverno.io/description: >-
+      Requires all cfgd Module CRDs to have a cosign signature configured.
+      Unsigned modules are rejected to ensure supply chain integrity.
+spec:
+  validationFailureAction: Enforce
+  background: true
+  rules:
+    - name: require-cosign-signature
+      match:
+        any:
+          - resources:
+              kinds:
+                - Module
+      validate:
+        message: >-
+          Module {{ request.object.metadata.name }} must have a cosign
+          signature. Set spec.signature.cosign.publicKey.
+        pattern:
+          spec:
+            signature:
+              cosign:
+                publicKey: "?*"

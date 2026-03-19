@@ -1,0 +1,30 @@
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: cfgd-trusted-registries
+  annotations:
+    policies.kyverno.io/title: Trusted Module Registries
+    policies.kyverno.io/category: cfgd
+    policies.kyverno.io/severity: high
+    policies.kyverno.io/description: >-
+      Ensures that cfgd Module CRDs only reference OCI artifacts from
+      trusted registries. Prevents supply chain attacks via untrusted
+      module sources.
+spec:
+  validationFailureAction: Enforce
+  background: true
+  rules:
+    - name: check-trusted-registry
+      match:
+        any:
+          - resources:
+              kinds:
+                - Module
+      validate:
+        message: >-
+          Module {{ request.object.metadata.name }} references untrusted
+          registry '{{ request.object.spec.ociArtifact }}'. Only
+          ghcr.io/cfgd-org/ and registry.cfgd.io/ are allowed.
+        pattern:
+          spec:
+            ociArtifact: "ghcr.io/cfgd-org/* | registry.cfgd.io/*"

@@ -1,0 +1,179 @@
+apiVersion: operators.coreos.com/v1alpha1
+kind: ClusterServiceVersion
+metadata:
+  name: cfgd-operator.v0.1.0
+  namespace: placeholder
+  annotations:
+    alm-examples: |-
+      [
+        {
+          "apiVersion": "cfgd.io/v1alpha1",
+          "kind": "MachineConfig",
+          "metadata": { "name": "example", "namespace": "default" },
+          "spec": {
+            "hostname": "workstation-1",
+            "profile": "default",
+            "moduleRefs": [{ "name": "nvim", "required": true }],
+            "packages": ["curl", "git"]
+          }
+        },
+        {
+          "apiVersion": "cfgd.io/v1alpha1",
+          "kind": "ConfigPolicy",
+          "metadata": { "name": "baseline", "namespace": "default" },
+          "spec": {
+            "name": "security-baseline",
+            "requiredModules": ["security-tools"],
+            "packages": ["fail2ban"]
+          }
+        }
+      ]
+    categories: Developer Tools, Application Runtime
+    capabilities: Full Lifecycle
+    description: >-
+      Declarative, GitOps-style machine configuration management.
+      Reconciles packages, files, environment, and system settings
+      across workstations and Kubernetes nodes.
+    repository: https://github.com/tj-smith47/cfgd
+    containerImage: ghcr.io/tj-smith47/cfgd-operator:v0.1.0
+spec:
+  displayName: cfgd Operator
+  description: |
+    ## cfgd Operator
+
+    The cfgd operator manages machine configuration state declaratively using
+    Kubernetes-native CRDs. It reconciles MachineConfig resources to ensure
+    packages, files, environment variables, and system settings match desired
+    state.
+
+    ### Features
+
+    - **MachineConfig CRD** — declare desired machine state (packages, files, env, modules)
+    - **ConfigPolicy CRD** — enforce organization-wide configuration baselines
+    - **DriftAlert CRD** — track and alert on configuration drift
+    - **Device Gateway** — optional enrollment and fleet management endpoint
+    - **Module system** — reusable configuration bundles with dependency resolution
+
+    ### Getting Started
+
+    1. Install the operator via OLM or Helm
+    2. Create a MachineConfig resource for your workstation
+    3. The operator reconciles drift and reports status via conditions
+  maturity: alpha
+  version: 0.1.0
+  replaces: ""
+  minKubeVersion: "1.26.0"
+
+  keywords:
+    - configuration
+    - dotfiles
+    - gitops
+    - machine-config
+    - workstation
+
+  maintainers:
+    - name: cfgd maintainers
+      email: cfgd@example.com
+
+  provider:
+    name: cfgd
+
+  links:
+    - name: Documentation
+      url: https://github.com/tj-smith47/cfgd/tree/master/docs
+    - name: Source
+      url: https://github.com/tj-smith47/cfgd
+
+  icon:
+    - base64data: ""
+      mediatype: image/png
+
+  installModes:
+    - type: OwnNamespace
+      supported: true
+    - type: SingleNamespace
+      supported: true
+    - type: MultiNamespace
+      supported: false
+    - type: AllNamespaces
+      supported: true
+
+  install:
+    strategy: deployment
+    spec:
+      deployments:
+        - name: cfgd-operator
+          spec:
+            replicas: 1
+            selector:
+              matchLabels:
+                app.kubernetes.io/name: cfgd-operator
+            template:
+              metadata:
+                labels:
+                  app.kubernetes.io/name: cfgd-operator
+              spec:
+                serviceAccountName: cfgd-operator
+                containers:
+                  - name: operator
+                    image: ghcr.io/tj-smith47/cfgd-operator:v0.1.0
+                    ports:
+                      - containerPort: 8443
+                        name: webhook
+                      - containerPort: 8081
+                        name: health
+                    readinessProbe:
+                      httpGet:
+                        path: /readyz
+                        port: health
+                      initialDelaySeconds: 5
+                    livenessProbe:
+                      httpGet:
+                        path: /healthz
+                        port: health
+                      initialDelaySeconds: 10
+                    resources:
+                      limits:
+                        cpu: 500m
+                        memory: 256Mi
+                      requests:
+                        cpu: 100m
+                        memory: 128Mi
+                    securityContext:
+                      runAsNonRoot: true
+                      readOnlyRootFilesystem: true
+                      capabilities:
+                        drop: [ALL]
+      permissions:
+        - serviceAccountName: cfgd-operator
+          rules:
+            - apiGroups: ["cfgd.io"]
+              resources: ["machineconfigs", "configpolicies", "driftalerts", "modules"]
+              verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+            - apiGroups: ["cfgd.io"]
+              resources: ["machineconfigs/status", "configpolicies/status", "driftalerts/status", "modules/status"]
+              verbs: ["get", "update", "patch"]
+            - apiGroups: [""]
+              resources: ["events"]
+              verbs: ["create", "patch"]
+            - apiGroups: ["coordination.k8s.io"]
+              resources: ["leases"]
+              verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+
+  customresourcedefinitions:
+    owned:
+      - name: machineconfigs.cfgd.io
+        version: v1alpha1
+        kind: MachineConfig
+        displayName: Machine Config
+        description: Declares desired machine configuration state
+      - name: configpolicies.cfgd.io
+        version: v1alpha1
+        kind: ConfigPolicy
+        displayName: Config Policy
+        description: Enforces configuration baselines across machines
+      - name: driftalerts.cfgd.io
+        version: v1alpha1
+        kind: DriftAlert
+        displayName: Drift Alert
+        description: Tracks configuration drift events

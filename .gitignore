@@ -33,6 +33,12 @@
 !function-cfgd/
 !function-cfgd/**
 
+# Ecosystem integration
+!policies/
+!policies/**
+!ecosystem/
+!ecosystem/**
+
 # CI and tasks
 !Taskfile.yml
 !cliff.toml

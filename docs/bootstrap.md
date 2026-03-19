@@ -214,6 +214,12 @@ curl -fsSL https://raw.githubusercontent.com/tj-smith47/cfgd/master/install.sh |
 
 The script detects your OS and architecture, downloads the right binary from GitHub releases, verifies the SHA256 checksum, and places it in your PATH.
 
+### Homebrew
+
+```sh
+brew install tj-smith47/tap/cfgd
+```
+
 ## Server Enrollment
 
 Enrollment is a separate command from init. For managed devices, use `cfgd enroll` after init:

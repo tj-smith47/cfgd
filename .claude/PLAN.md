@@ -183,14 +183,13 @@ Full design in [windows-support.md](windows-support.md). 26 unguarded `std::os::
 - [ ] Phase 5 — Windows Service daemon: `windows-service` crate behind `#[cfg(windows)]`, `cfgd daemon install` → SCM registration, `cfgd daemon start/stop` → SCM control, Event Log integration instead of syslog
 - [ ] Phase 6 — CI and release: cross-compile job (`x86_64-pc-windows-msvc`), `.zip` release artifact alongside `.tar.gz`, Windows-specific docs section
 
-### Ecosystem integration
+### Ecosystem integration — post-k8s updates
 
-- [ ] OPA/Kyverno policy library at `policies/` in repo root — Rego/YAML examples for: trusted registry enforcement on Module CRDs, signed module requirement, security baseline checks (e.g., require `capabilities.drop: [ALL]`). Publish to artifact hub
-- [ ] OLM bundle for OpenShift — package cfgd-operator as OperatorHub-installable operator, define update channel strategy (stable/candidate)
-- [ ] GitHub Actions action: `cfgd-org/actions/apply@v1` — runs `cfgd apply --dry-run --output json` in PRs, posts plan diff as PR comment. Docker-based action wrapping cfgd binary
-- [ ] GitLab CI template: `.gitlab-ci.yml` include template with `cfgd apply` stage
-- [ ] Tekton task: Task definition for `cfgd apply` in Tekton pipelines
-- [ ] DevContainer Feature adapter: `cfgd module export --format=devcontainer` converts a `module.yaml` into a DevContainer Feature (install.sh + devcontainer-feature.json) publishable to GHCR
+Once CRD enhancements (Tier 1) and Module CRD (Tier 2) land, update ecosystem files:
+
+- [ ] Update `policies/` for new CRD fields: ClusterConfigPolicy CRD, Module CRD `spec.signature.cosign.publicKey`, `spec.security.trustedRegistries`, MachineConfig conditions split (Reconciled, DriftDetected, ModulesResolved, Compliant), `observedGeneration` on Condition struct, DriftAlert conditions (Acknowledged, Resolved, Escalated)
+- [ ] Update `ecosystem/olm/` CSV to include ClusterConfigPolicy and Module CRDs, new webhook endpoints (`/validate-module`, `/validate-clusterconfigpolicy`, `/validate-driftalert`, `/mutate-pods`), printer columns, short names
+- [ ] Update idiomatic naming in ecosystem files after naming audit: `moduleRef`/`configRef` style cross-references, TitleCase enums, camelCase CRD field names
 
 ### Upstream KEPs (blocked on v1 CRD graduation + production adoption)
 

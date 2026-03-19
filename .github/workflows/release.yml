@@ -92,6 +92,12 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y gcc-aarch64-linux-gnu libsqlite3-dev
 
+      - name: Install OpenSSL (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          brew install openssl@3
+          echo "OPENSSL_DIR=$(brew --prefix openssl@3)" >> "$GITHUB_ENV"
+
       - name: Build
         run: cargo build --release --target ${{ matrix.target }} --bin cfgd
 
@@ -264,3 +270,72 @@ jobs:
           ./crossplane --verbose xpkg push \
             --package-files $(echo *.xpkg | tr ' ' ,) \
             ${{ env.REGISTRY }}/${{ github.repository_owner }}/function-cfgd:v${VERSION}
+
+  homebrew:
+    needs: [prepare, release]
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: cfgd-*
+          merge-multiple: true
+
+      - name: Update Homebrew tap
+        env:
+          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
+          VERSION="${{ needs.prepare.outputs.version }}"
+          TAG="${{ needs.prepare.outputs.tag }}"
+
+          DARWIN_X86_SHA=$(sha256sum "cfgd-${VERSION}-darwin-x86_64.tar.gz" | awk '{print $1}')
+          DARWIN_ARM_SHA=$(sha256sum "cfgd-${VERSION}-darwin-aarch64.tar.gz" | awk '{print $1}')
+          LINUX_X86_SHA=$(sha256sum "cfgd-${VERSION}-linux-x86_64.tar.gz" | awk '{print $1}')
+          LINUX_ARM_SHA=$(sha256sum "cfgd-${VERSION}-linux-aarch64.tar.gz" | awk '{print $1}')
+
+          git clone "https://${HOMEBREW_TAP_TOKEN}@github.com/tj-smith47/homebrew-tap.git"
+          cd homebrew-tap
+
+          cat > Formula/cfgd.rb << FORMULA
+          class Cfgd < Formula
+            desc "Declarative, GitOps-style machine configuration management"
+            homepage "https://github.com/tj-smith47/cfgd"
+            license "Apache-2.0"
+            version "${VERSION}"
+
+            if OS.mac?
+              if Hardware::CPU.intel?
+                url "https://github.com/tj-smith47/cfgd/releases/download/${TAG}/cfgd-${VERSION}-darwin-x86_64.tar.gz"
+                sha256 "${DARWIN_X86_SHA}"
+              elsif Hardware::CPU.arm?
+                url "https://github.com/tj-smith47/cfgd/releases/download/${TAG}/cfgd-${VERSION}-darwin-aarch64.tar.gz"
+                sha256 "${DARWIN_ARM_SHA}"
+              end
+            elsif OS.linux?
+              if Hardware::CPU.intel?
+                url "https://github.com/tj-smith47/cfgd/releases/download/${TAG}/cfgd-${VERSION}-linux-x86_64.tar.gz"
+                sha256 "${LINUX_X86_SHA}"
+              elsif Hardware::CPU.arm?
+                url "https://github.com/tj-smith47/cfgd/releases/download/${TAG}/cfgd-${VERSION}-linux-aarch64.tar.gz"
+                sha256 "${LINUX_ARM_SHA}"
+              end
+            end
+
+            def install
+              bin.install "cfgd"
+            end
+
+            test do
+              system "#{bin}/cfgd", "--version"
+            end
+          end
+          FORMULA
+
+          # Fix heredoc indentation
+          sed -i 's/^          //' Formula/cfgd.rb
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add Formula/cfgd.rb
+          git commit -m "Update cfgd to ${VERSION}" || true
+          git push

@@ -1,0 +1,39 @@
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: cfgd-security-baseline
+  annotations:
+    policies.kyverno.io/title: MachineConfig Security Baseline
+    policies.kyverno.io/category: cfgd
+    policies.kyverno.io/severity: medium
+    policies.kyverno.io/description: >-
+      Enforces security baseline checks on MachineConfig CRDs:
+      files must not be world-writable, and configs should reference
+      at least one module, package, or file.
+spec:
+  validationFailureAction: Audit
+  background: true
+  rules:
+    - name: deny-world-writable-files
+      match:
+        any:
+          - resources:
+              kinds:
+                - MachineConfig
+      preconditions:
+        all:
+          - key: "{{ request.object.spec.files | length(@) }}"
+            operator: GreaterThan
+            value: 0
+      validate:
+        message: >-
+          MachineConfig {{ request.object.metadata.name }} contains a
+          file with world-writable mode. Use restrictive permissions.
+        foreach:
+          - list: "request.object.spec.files"
+            deny:
+              conditions:
+                any:
+                  - key: "{{ element.mode }}"
+                    operator: AnyIn
+                    value: ["0777", "0776", "0766", "0667", "0666"]

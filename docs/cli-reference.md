@@ -260,6 +260,17 @@ cfgd module show my-tool                # env values masked
 cfgd module show my-tool --show-values  # reveal full env values
 ```
 
+### `cfgd module export <name>`
+
+Export a module to another format.
+
+```sh
+cfgd module export my-tool --format devcontainer              # current directory
+cfgd module export my-tool --format devcontainer --output out/ # custom output dir
+```
+
+Generates `install.sh` and `devcontainer-feature.json` suitable for publishing as a [DevContainer Feature](https://containers.dev/implementors/features/) to GHCR or another OCI registry.
+
 ### `cfgd module create <name>`
 
 Create a new local module.

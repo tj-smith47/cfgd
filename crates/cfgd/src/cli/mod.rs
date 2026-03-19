@@ -972,6 +972,23 @@ pub enum ModuleCommand {
         #[command(subcommand)]
         command: ModuleRegistryCommand,
     },
+    /// Export a module to another format
+    Export {
+        /// Module name
+        name: String,
+        /// Export format
+        #[arg(long, value_enum)]
+        format: ExportFormat,
+        /// Output directory (default: current directory)
+        #[arg(long, short)]
+        output: Option<String>,
+    },
+}
+
+#[derive(Clone, clap::ValueEnum)]
+pub enum ExportFormat {
+    /// DevContainer Feature (install.sh + devcontainer-feature.json)
+    Devcontainer,
 }
 
 #[derive(Subcommand)]
@@ -1089,6 +1106,11 @@ pub fn execute(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
                 }
                 ModuleRegistryCommand::List => module::cmd_module_registry_list(cli, printer),
             },
+            ModuleCommand::Export {
+                name,
+                format,
+                output,
+            } => module::cmd_module_export(cli, printer, name, format, output.as_deref()),
         },
         Command::Sync => cmd_sync(cli, printer),
         Command::Pull => cmd_pull(cli, printer),

@@ -37,7 +37,10 @@ cfgd started as a solution to those two problems and grew from there.
 ## Quick Start
 
 ```sh
-# Install
+# Install via Homebrew
+brew install tj-smith47/tap/cfgd
+
+# Or via install script
 curl -fsSL https://raw.githubusercontent.com/tj-smith47/cfgd/master/install.sh | sh
 
 # Or via cargo

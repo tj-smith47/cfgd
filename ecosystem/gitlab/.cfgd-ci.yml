@@ -1,0 +1,51 @@
+# cfgd GitLab CI template
+#
+# Include in your .gitlab-ci.yml:
+#
+#   include:
+#     - remote: https://raw.githubusercontent.com/tj-smith47/cfgd/master/ecosystem/gitlab/.cfgd-ci.yml
+#
+#   cfgd:apply:
+#     extends: .cfgd-apply
+#     variables:
+#       CFGD_CONFIG_DIR: "."
+#
+# Or for dry-run only in merge requests:
+#
+#   cfgd:plan:
+#     extends: .cfgd-plan
+#     only:
+#       - merge_requests
+
+.cfgd-install: &cfgd_install
+  - |
+    if ! command -v cfgd &>/dev/null; then
+      curl -fsSL https://raw.githubusercontent.com/tj-smith47/cfgd/master/install.sh | bash
+    fi
+    cfgd --version
+
+.cfgd-plan:
+  stage: test
+  variables:
+    CFGD_CONFIG_DIR: "."
+    CFGD_ARGS: ""
+  before_script:
+    - *cfgd_install
+  script:
+    - cd "$CFGD_CONFIG_DIR"
+    - cfgd apply --dry-run --yes --output json $CFGD_ARGS
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+
+.cfgd-apply:
+  stage: deploy
+  variables:
+    CFGD_CONFIG_DIR: "."
+    CFGD_ARGS: ""
+  before_script:
+    - *cfgd_install
+  script:
+    - cd "$CFGD_CONFIG_DIR"
+    - cfgd apply --yes $CFGD_ARGS
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH

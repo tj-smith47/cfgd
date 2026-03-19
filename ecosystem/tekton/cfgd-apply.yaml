@@ -1,0 +1,76 @@
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: cfgd-apply
+  labels:
+    app.kubernetes.io/version: "0.1"
+  annotations:
+    tekton.dev/pipelines.minVersion: "0.50.0"
+    tekton.dev/categories: Configuration Management
+    tekton.dev/tags: cfgd, configuration, dotfiles
+    tekton.dev/displayName: cfgd Apply
+spec:
+  description: >-
+    Run cfgd apply to reconcile machine configuration. Supports dry-run
+    mode for plan preview and full apply for reconciliation.
+  params:
+    - name: config-dir
+      type: string
+      description: Path to cfgd configuration directory within the workspace
+      default: "."
+    - name: dry-run
+      type: string
+      description: Run in dry-run mode (true/false)
+      default: "false"
+    - name: args
+      type: string
+      description: Additional arguments to pass to cfgd apply
+      default: ""
+    - name: version
+      type: string
+      description: cfgd version to install
+      default: "latest"
+    - name: output-format
+      type: string
+      description: Output format (table, json, yaml)
+      default: "table"
+  workspaces:
+    - name: source
+      description: Workspace containing the cfgd configuration repository
+  results:
+    - name: plan
+      description: The cfgd plan output (JSON when output-format is json)
+  steps:
+    - name: install-cfgd
+      image: curlimages/curl:latest
+      script: |
+        #!/bin/sh
+        set -eu
+        VERSION="$(params.version)"
+        if [ "$VERSION" = "latest" ]; then
+          curl -fsSL https://raw.githubusercontent.com/tj-smith47/cfgd/master/install.sh | sh
+        else
+          curl -fsSL https://raw.githubusercontent.com/tj-smith47/cfgd/master/install.sh | sh -s -- --version "$VERSION"
+        fi
+
+    - name: cfgd-apply
+      image: ubuntu:22.04
+      workingDir: $(workspaces.source.path)/$(params.config-dir)
+      script: |
+        #!/bin/bash
+        set -eu
+
+        DRY_RUN=""
+        if [ "$(params.dry-run)" = "true" ]; then
+          DRY_RUN="--dry-run"
+        fi
+
+        OUTPUT_FLAG=""
+        if [ "$(params.output-format)" != "table" ]; then
+          OUTPUT_FLAG="--output $(params.output-format)"
+        fi
+
+        cfgd apply --yes $DRY_RUN $OUTPUT_FLAG $(params.args) | tee /tmp/cfgd-output.txt
+
+        # Write result for downstream tasks
+        cat /tmp/cfgd-output.txt > $(results.plan.path)

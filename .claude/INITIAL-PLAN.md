@@ -686,3 +686,12 @@ Module state is stored by module name, not by profile — so status/verify/apply
 - [x] `cfgd apply --module <name>` without a profile — falls back to empty `ResolvedProfile` when profile loading fails, skips profile-level env/aliases/system/files
 - [x] `cfgd status --module <name>` — reads module definition + `ModuleStateRecord` directly, shows package/file state and deployed file manifest
 - [x] `cfgd verify --module <name>` — resolves only the named module + deps, verifies packages installed and files present via `reconciler::verify()`
+
+## Ecosystem integration (completed)
+
+- [x] OPA/Kyverno policy library at `policies/` — Rego policies (trusted registries, signed modules, security baseline) and Kyverno ClusterPolicies. Will need updates when CRD enhancements and Module CRD land (tracked in PLAN.md)
+- [x] OLM bundle for OpenShift at `ecosystem/olm/` — CSV, annotations, RBAC. Will need updates for new CRDs
+- [x] GitHub Actions action at `ecosystem/github-action/` — composite action: installs cfgd, runs dry-run, posts plan as PR comment
+- [x] GitLab CI template at `ecosystem/gitlab/` — `.cfgd-ci.yml` include template with `.cfgd-plan` and `.cfgd-apply` jobs
+- [x] Tekton task at `ecosystem/tekton/` — `cfgd-apply` Task with dry-run, output-format, and workspace support
+- [x] DevContainer Feature adapter — `cfgd module export --format=devcontainer` generates `install.sh` + `devcontainer-feature.json` from a module
