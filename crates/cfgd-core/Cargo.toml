@@ -59,6 +59,7 @@ ureq = "2"
 
 # Git
 git2 = "0.19"
+openssl = { version = "0.10", features = ["vendored"] }
 
 # Semver (multi-source version pinning)
 semver = "1"
