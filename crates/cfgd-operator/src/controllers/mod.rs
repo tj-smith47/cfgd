@@ -154,6 +154,7 @@ async fn reconcile_machine_config(
                     reason: ready_reason,
                     message: ready_message,
                     last_transition_time: now,
+                    observed_generation: current_generation,
                 },
             ],
         }
@@ -243,6 +244,7 @@ async fn reconcile_drift_alert(
 
             if !is_drifted {
                 let now = cfgd_core::utc_now_iso8601();
+                let mc_generation = mc.meta().generation;
                 let status = serde_json::json!({
                     "status": {
                         "driftDetected": true,
@@ -257,6 +259,7 @@ async fn reconcile_drift_alert(
                                     obj.spec.drift_details.len()
                                 ),
                                 "lastTransitionTime": now,
+                                "observedGeneration": mc_generation,
                             }
                         ]
                     }
@@ -436,6 +439,7 @@ async fn reconcile_config_policy(
                         compliant_count, non_compliant_count
                     ),
                     last_transition_time: now,
+                    observed_generation: obj.meta().generation,
                 },
             ],
         }

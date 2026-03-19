@@ -78,6 +78,8 @@ pub struct Condition {
     pub reason: String,
     pub message: String,
     pub last_transition_time: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub observed_generation: Option<i64>,
 }
 
 // ---------------------------------------------------------------------------
@@ -407,6 +409,19 @@ mod tests {
         assert!(!version_satisfies("1.27.0", ">=1.28"));
         assert!(version_satisfies("2.40.1", "~2.40"));
         assert!(!version_satisfies("2.39.0", "~2.40"));
+    }
+
+    #[test]
+    fn condition_has_observed_generation() {
+        let c = Condition {
+            condition_type: "Ready".to_string(),
+            status: "True".to_string(),
+            reason: "Test".to_string(),
+            message: "test".to_string(),
+            last_transition_time: "2024-01-01T00:00:00Z".to_string(),
+            observed_generation: Some(1),
+        };
+        assert_eq!(c.observed_generation, Some(1));
     }
 
     #[test]
