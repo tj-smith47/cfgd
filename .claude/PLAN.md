@@ -21,10 +21,21 @@ Single source of truth for all incomplete work. Completed work is in [COMPLETED.
 - [ ] Short names: `mc`, `cpol`, `da`. Categories: `cfgd` for all
 - [ ] MachineConfig conditions split: `Ready` → `Reconciled`, `DriftDetected`, `ModulesResolved`, `Compliant`
 - [ ] DriftAlert: add `status.conditions` array with `Acknowledged`, `Resolved`, `Escalated`
-- [ ] Add `observedGeneration` field to Condition struct
+- [ ] Add `observedGeneration` field to Condition struct (per-condition, per KEP-1623)
 - [ ] CEL validation rules on MachineConfig (non-empty hostname, files have content or source)
 - [ ] MachineConfig finalizer: `cfgd.io/machine-config-cleanup` — signal device, optional rollback, remove after cleanup
 - [ ] Owner references: TeamConfig (XR) → MachineConfig → DriftAlert cascade
+
+### CRD API design fixes (from K8s convention audit)
+
+- [ ] Denormalized packages: replace `packages: Vec<String>` + `packageVersions: BTreeMap` with typed `packages: Vec<PackageRef>` where `PackageRef { name, version }` — applies to both MachineConfig and ConfigPolicy
+- [ ] Move `packageVersions` (observed installed versions) from MachineConfigSpec to MachineConfigStatus — spec is desired state only
+- [ ] Remove `ConfigPolicySpec.name` — duplicates `metadata.name`; no K8s CRD has `spec.name`
+- [ ] Replace `targetSelector: BTreeMap<String, String>` with typed `LabelSelector { matchLabels, matchExpressions }` to support set-based selectors
+- [ ] Replace `machineConfigRef: String` with typed `MachineConfigReference { name, namespace }` in DriftAlertSpec
+- [ ] Replace `requiredModules: Vec<String>` with `Vec<ModuleRef>` in ConfigPolicySpec for extensibility
+- [ ] Remove `driftDetected: bool` from MachineConfigStatus — express as condition `type: DriftDetected` instead
+- [ ] Replace `systemSettings: BTreeMap<String, String>` and `settings: BTreeMap<String, String>` with typed sub-objects or at minimum `BTreeMap<String, Value>` with CEL validation
 
 ### ClusterConfigPolicy CRD
 

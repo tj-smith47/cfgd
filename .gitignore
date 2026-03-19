@@ -43,13 +43,17 @@
 !Taskfile.yml
 !cliff.toml
 
-# Claude project config (plans, scripts)
+# Claude project config (plans, scripts, skills, hooks)
 !.claude/
 !.claude/*.md
 !.claude/specs/
 !.claude/specs/**
 !.claude/scripts/
 !.claude/scripts/**
+!.claude/skills/
+!.claude/skills/**
+!.claude/hooks/
+!.claude/hooks/**
 
 # Tests
 !tests/
