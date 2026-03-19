@@ -79,7 +79,7 @@ cfgd apply                          # apply with confirmation
 cfgd apply --dry-run                # preview without applying
 cfgd apply --yes                    # skip confirmation
 cfgd apply --phase packages         # single phase
-cfgd apply --module nvim            # single module + deps
+cfgd apply --module nvim            # single module + deps (no profile required)
 cfgd apply --only packages.brew     # dot-notation filter
 cfgd apply --skip system.sysctl     # skip specific items
 ```
@@ -101,6 +101,7 @@ Show configuration status, drift, and pending decisions.
 cfgd status                                 # human-readable table
 cfgd status -o json                         # full status as JSON
 cfgd status -o json --jsonpath '{.drift}'   # extract drift events
+cfgd status --module nvim                   # status for a single module (no profile required)
 ```
 
 ### `cfgd diff`
@@ -112,7 +113,8 @@ Show detailed file diffs with syntax highlighting.
 Check that all managed resources match desired state.
 
 ```sh
-cfgd verify -o json   # structured pass/fail results
+cfgd verify -o json          # structured pass/fail results
+cfgd verify --module nvim    # verify only a single module's resources (no profile required)
 ```
 
 ### `cfgd doctor`

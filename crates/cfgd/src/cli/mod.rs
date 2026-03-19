@@ -14,7 +14,7 @@ use crate::files::CfgdFileManager;
 use crate::packages;
 use crate::secrets;
 use cfgd_core::composition::{self, CompositionInput, SubscriptionConfig};
-use cfgd_core::config::{self, CfgdConfig, ResolvedProfile};
+use cfgd_core::config::{self, CfgdConfig, MergedProfile, ResolvedProfile};
 use cfgd_core::modules;
 use cfgd_core::output::Printer;
 use cfgd_core::platform::Platform;
@@ -377,7 +377,11 @@ pub enum Command {
     Apply(ApplyArgs),
 
     /// Show configuration status and drift
-    Status,
+    Status {
+        /// Show status for a specific module (no profile required)
+        #[arg(long)]
+        module: Option<String>,
+    },
 
     /// Show detailed diffs
     Diff,
@@ -426,7 +430,11 @@ pub enum Command {
     },
 
     /// Verify all managed resources match desired state
-    Verify,
+    Verify {
+        /// Verify only a specific module (no profile required)
+        #[arg(long)]
+        module: Option<String>,
+    },
 
     /// Check system health and dependencies
     Doctor,
@@ -996,10 +1004,10 @@ pub enum ModuleRegistryCommand {
 pub fn execute(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
     match &cli.command {
         Command::Apply(args) => cmd_apply(cli, printer, args),
-        Command::Status => cmd_status(cli, printer),
+        Command::Status { module } => cmd_status(cli, printer, module.as_deref()),
         Command::Diff => cmd_diff(cli, printer),
         Command::Log { limit, show_output } => cmd_log(printer, *limit, *show_output),
-        Command::Verify => cmd_verify(cli, printer),
+        Command::Verify { module } => cmd_verify(cli, printer, module.as_deref()),
         Command::Profile { command } => match command {
             ProfileCommand::Show => profile::cmd_profile_show(cli, printer),
             ProfileCommand::List => profile::cmd_profile_list(cli, printer),
@@ -1220,6 +1228,18 @@ pub(super) fn parse_package_flag(s: &str, known_managers: &[&str]) -> (Option<St
         return (Some(prefix.to_string()), suffix.to_string());
     }
     (None, s.to_string())
+}
+
+/// Build an empty ResolvedProfile for module-only operations that don't need
+/// a real profile (status --module, verify --module, apply --module without profile).
+fn empty_resolved_profile(module_name: &str) -> ResolvedProfile {
+    ResolvedProfile {
+        layers: Vec::new(),
+        merged: MergedProfile {
+            modules: vec![module_name.to_string()],
+            ..Default::default()
+        },
+    }
 }
 
 /// Collect known package manager names from the registry.
@@ -1519,10 +1539,28 @@ fn cmd_apply(cli: &Cli, printer: &Printer, args: &ApplyArgs) -> anyhow::Result<(
         printer.header("Apply");
     }
 
-    let (cfg, resolved) = load_config_and_profile(cli, printer)?;
     let config_dir = config_dir(cli);
-    let mut registry = build_registry_with_config(Some(&cfg));
     let state = open_state_store()?;
+
+    // When --module is set, try loading profile but fall back to empty if none configured
+    let (cfg, resolved) = if let Some(mod_name) = module_filter {
+        match load_config_and_profile(cli, printer) {
+            Ok(pair) => pair,
+            Err(e) => {
+                tracing::debug!("profile load failed, using module-only mode: {}", e);
+                let cfg =
+                    config::load_config(&cli.config).unwrap_or_else(|_| config::minimal_config());
+                let resolved = empty_resolved_profile(mod_name);
+                printer.key_value("Config", &cli.config.display().to_string());
+                printer.key_value("Profile", "(module-only)");
+                (cfg, resolved)
+            }
+        }
+    } else {
+        load_config_and_profile(cli, printer)?
+    };
+
+    let mut registry = build_registry_with_config(Some(&cfg));
 
     // Validate phase name if provided
     let phase_filter = if let Some(p) = phase {
@@ -1774,7 +1812,11 @@ fn cmd_apply(cli: &Cli, printer: &Printer, args: &ApplyArgs) -> anyhow::Result<(
     Ok(())
 }
 
-fn cmd_status(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
+fn cmd_status(cli: &Cli, printer: &Printer, module_filter: Option<&str>) -> anyhow::Result<()> {
+    if let Some(mod_name) = module_filter {
+        return cmd_status_module(cli, printer, mod_name);
+    }
+
     let (cfg, resolved) = load_config_and_profile(cli, printer)?;
     let state = open_state_store()?;
 
@@ -1952,6 +1994,81 @@ fn cmd_status(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
     Ok(())
 }
 
+fn cmd_status_module(cli: &Cli, printer: &Printer, mod_name: &str) -> anyhow::Result<()> {
+    let config_dir = config_dir(cli);
+    let cache_base = modules::default_module_cache_dir()?;
+    let all_modules = modules::load_all_modules(&config_dir, &cache_base)?;
+
+    let module = all_modules
+        .get(mod_name)
+        .ok_or_else(|| anyhow::anyhow!("Module '{}' not found", mod_name))?;
+
+    let state = open_state_store()?;
+    let state_rec = state.module_state_by_name(mod_name)?;
+
+    if printer.is_structured() {
+        #[derive(serde::Serialize)]
+        struct ModuleStatus {
+            name: String,
+            packages: usize,
+            files: usize,
+            depends: Vec<String>,
+            status: String,
+            last_applied: Option<String>,
+        }
+        let status = state_rec
+            .as_ref()
+            .map(|s| s.status.clone())
+            .unwrap_or_else(|| "not applied".into());
+        let last_applied = state_rec.as_ref().map(|s| s.installed_at.clone());
+        printer.write_structured(&ModuleStatus {
+            name: mod_name.to_string(),
+            packages: module.spec.packages.len(),
+            files: module.spec.files.len(),
+            depends: module.spec.depends.clone(),
+            status,
+            last_applied,
+        });
+        return Ok(());
+    }
+
+    printer.header(&format!("Status: {}", mod_name));
+
+    // Module info
+    printer.key_value("Packages", &module.spec.packages.len().to_string());
+    printer.key_value("Files", &module.spec.files.len().to_string());
+    if !module.spec.depends.is_empty() {
+        printer.key_value("Dependencies", &module.spec.depends.join(", "));
+    }
+
+    // State from DB
+    if let Some(rec) = &state_rec {
+        printer.key_value("Status", &rec.status);
+        printer.key_value("Last applied", &rec.installed_at);
+        printer.key_value("Packages hash", &rec.packages_hash);
+        printer.key_value("Files hash", &rec.files_hash);
+    } else {
+        printer.key_value("Status", "not applied");
+    }
+
+    // Show deployed files from manifest
+    let deployed_files = state.module_deployed_files(mod_name)?;
+    if !deployed_files.is_empty() {
+        printer.newline();
+        printer.subheader("Deployed Files");
+        for f in &deployed_files {
+            let exists = std::path::Path::new(&f.file_path).exists();
+            if exists {
+                printer.success(&f.file_path);
+            } else {
+                printer.error(&format!("{} (missing)", f.file_path));
+            }
+        }
+    }
+
+    Ok(())
+}
+
 fn cmd_log(printer: &Printer, count: u32, show_output: Option<i64>) -> anyhow::Result<()> {
     let state = open_state_store()?;
 
@@ -2058,16 +2175,32 @@ fn print_verify_results(results: &[reconciler::VerifyResult], printer: &Printer)
     (pass_count, fail_count)
 }
 
-fn cmd_verify(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
-    let (_cfg, mut resolved) = load_config_and_profile(cli, printer)?;
+fn cmd_verify(cli: &Cli, printer: &Printer, module_filter: Option<&str>) -> anyhow::Result<()> {
     let config_dir = config_dir(cli);
-
-    packages::resolve_manifest_packages(&mut resolved.merged.packages, &config_dir)?;
-
-    let registry = build_registry_with_profile(&resolved.merged.packages);
     let state = open_state_store()?;
 
-    let results = reconciler::verify(&resolved, &registry, &state, printer, &[])?;
+    let (resolved, resolved_modules, registry) = if let Some(mod_name) = module_filter {
+        let resolved = empty_resolved_profile(mod_name);
+        let registry = build_registry();
+        let platform = Platform::detect();
+        let mgr_map = managers_map(&registry);
+        let cache_base = modules::default_module_cache_dir()?;
+        let mods = modules::resolve_modules(
+            &[mod_name.to_string()],
+            &config_dir,
+            &cache_base,
+            &platform,
+            &mgr_map,
+        )?;
+        (resolved, mods, registry)
+    } else {
+        let (_cfg, mut resolved) = load_config_and_profile(cli, printer)?;
+        packages::resolve_manifest_packages(&mut resolved.merged.packages, &config_dir)?;
+        let registry = build_registry_with_profile(&resolved.merged.packages);
+        (resolved, Vec::new(), registry)
+    };
+
+    let results = reconciler::verify(&resolved, &registry, &state, printer, &resolved_modules)?;
 
     let pass_count = results.iter().filter(|r| r.matches).count();
     let fail_count = results.iter().filter(|r| !r.matches).count();
@@ -5952,7 +6085,7 @@ spec:
             quiet: true,
             output: "table".to_string(),
             jsonpath: None,
-            command: Command::Status,
+            command: Command::Status { module: None },
         }
     }
 
@@ -7980,7 +8113,62 @@ spec:
         let cli = test_cli(config_dir.path());
         let printer = test_printer();
 
-        let result = super::cmd_status(&cli, &printer);
+        let result = super::cmd_status(&cli, &printer, None);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn cmd_status_module_not_found() {
+        let _lock = STATE_DIR_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let (config_dir, _state_dir) = setup_test_env();
+
+        let cli = test_cli(config_dir.path());
+        let printer = test_printer();
+
+        let result = super::cmd_status(&cli, &printer, Some("nonexistent"));
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("not found"));
+    }
+
+    #[test]
+    fn cmd_status_module_found() {
+        let _lock = STATE_DIR_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let (config_dir, _state_dir) = setup_test_env();
+
+        // Create a module
+        let mod_dir = config_dir.path().join("modules").join("test-mod");
+        std::fs::create_dir_all(&mod_dir).unwrap();
+        std::fs::write(
+            mod_dir.join("module.yaml"),
+            "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: test-mod\nspec:\n  packages: []\n",
+        )
+        .unwrap();
+
+        let cli = test_cli(config_dir.path());
+        let printer = test_printer();
+
+        let result = super::cmd_status(&cli, &printer, Some("test-mod"));
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn cmd_verify_module() {
+        let _lock = STATE_DIR_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let (config_dir, _state_dir) = setup_test_env();
+
+        // Create a module with no packages (so verify succeeds trivially)
+        let mod_dir = config_dir.path().join("modules").join("test-mod");
+        std::fs::create_dir_all(&mod_dir).unwrap();
+        std::fs::write(
+            mod_dir.join("module.yaml"),
+            "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: test-mod\nspec:\n  packages: []\n",
+        )
+        .unwrap();
+
+        let cli = test_cli(config_dir.path());
+        let printer = test_printer();
+
+        let result = super::cmd_verify(&cli, &printer, Some("test-mod"));
         assert!(result.is_ok());
     }
 
@@ -8157,7 +8345,7 @@ spec:
         super::cmd_apply(&cli, &printer, &args).unwrap();
 
         // Status should show last apply
-        let result = super::cmd_status(&cli, &printer);
+        let result = super::cmd_status(&cli, &printer, None);
         assert!(result.is_ok());
     }
 
@@ -8202,7 +8390,7 @@ spec:
         let cli = test_cli(config_dir.path());
         let printer = test_printer();
 
-        let result = super::cmd_verify(&cli, &printer);
+        let result = super::cmd_verify(&cli, &printer, None);
         assert!(result.is_ok());
     }
 
@@ -8388,7 +8576,7 @@ spec:
         };
         let printer = Printer::new(cfgd_core::output::Verbosity::Quiet);
 
-        let result = super::cmd_status(&cli, &printer);
+        let result = super::cmd_status(&cli, &printer, None);
         assert!(result.is_ok());
     }
 
@@ -8409,7 +8597,7 @@ spec:
         let (config_dir, _state_dir) = setup_test_env();
 
         let cli = Cli {
-            command: Command::Status,
+            command: Command::Status { module: None },
             ..test_cli(config_dir.path())
         };
         let printer = test_printer();
@@ -8451,7 +8639,7 @@ spec:
         let (config_dir, _state_dir) = setup_test_env();
 
         let cli = Cli {
-            command: Command::Verify,
+            command: Command::Verify { module: None },
             ..test_cli(config_dir.path())
         };
         let printer = test_printer();
@@ -8782,7 +8970,7 @@ spec:
         let cli = test_cli(config_dir.path());
         let printer = test_printer();
 
-        assert!(super::cmd_status(&cli, &printer).is_ok());
+        assert!(super::cmd_status(&cli, &printer, None).is_ok());
     }
 
     #[test]
@@ -8827,7 +9015,7 @@ spec:
             .unwrap();
 
         // Status should show the drift
-        assert!(super::cmd_status(&cli, &printer).is_ok());
+        assert!(super::cmd_status(&cli, &printer, None).is_ok());
     }
 
     // --- Source command tests ---
@@ -9058,6 +9246,6 @@ spec:
         super::cmd_apply(&cli, &printer, &args).unwrap();
 
         // Verify
-        assert!(super::cmd_verify(&cli, &printer).is_ok());
+        assert!(super::cmd_verify(&cli, &printer, None).is_ok());
     }
 }

@@ -678,3 +678,11 @@ Commands supported:
 
 - [x] Mask env values by default — show `***` with last 3 chars, `--show-values` flag on `ModuleCommand::Show` reveals full values
 - [x] Display "Last applied" timestamp prominently — label changed from "Installed at" to "Last applied"
+
+## Profile-less `status` and `verify` (completed)
+
+Module state is stored by module name, not by profile — so status/verify/apply can work without a profile when targeting a single module.
+
+- [x] `cfgd apply --module <name>` without a profile — falls back to empty `ResolvedProfile` when profile loading fails, skips profile-level env/aliases/system/files
+- [x] `cfgd status --module <name>` — reads module definition + `ModuleStateRecord` directly, shows package/file state and deployed file manifest
+- [x] `cfgd verify --module <name>` — resolves only the named module + deps, verifies packages installed and files present via `reconciler::verify()`

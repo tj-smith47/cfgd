@@ -42,7 +42,7 @@ pub struct ConfigMetadata {
     pub name: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub struct ConfigSpec {
     #[serde(default)]
@@ -83,6 +83,18 @@ pub struct ConfigSpec {
     /// AI assistant configuration: provider, model, and API key env var.
     #[serde(default)]
     pub ai: Option<AiConfig>,
+}
+
+/// Build a minimal CfgdConfig for module-only operations that don't have cfgd.yaml.
+pub fn minimal_config() -> CfgdConfig {
+    CfgdConfig {
+        api_version: crate::API_VERSION.to_string(),
+        kind: "Config".to_string(),
+        metadata: ConfigMetadata {
+            name: "default".to_string(),
+        },
+        spec: ConfigSpec::default(),
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

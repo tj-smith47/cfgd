@@ -172,14 +172,6 @@ Single source of truth for all incomplete work. Completed work is in `INITIAL-PL
 
 ## Independent work (no tier dependencies)
 
-### Profile-less `status` and `verify`
-
-`cmd_status` and `cmd_verify` in `cli/mod.rs` both call `load_config_and_profile()` which hard-fails without a profile set. Module state is already stored by module name, not by profile — so the data supports profile-less queries.
-
-- [ ] `cfgd apply --module <name>` without a profile — build ad-hoc `ResolvedProfile` containing only the named module + its transitive dependencies, skip profile-level env/aliases/system/files
-- [ ] `cfgd status --module <name>` — read `ModuleStateRecord` directly, show package/file state for that module without requiring a full profile resolution
-- [ ] `cfgd verify --module <name>` — verify only the named module's declared resources (packages installed, files present) without requiring a profile
-
 ### Windows support
 
 Full design in [windows-support.md](windows-support.md). 26 unguarded `std::os::unix` uses across 13 files.
