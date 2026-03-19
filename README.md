@@ -36,7 +36,7 @@ Think of it as a personal Terraform for your workstation, but purpose-built for 
 | | cfgd | [chezmoi](https://chezmoi.io) | [Nix Home Manager](https://nix-community.github.io/home-manager/) | [Ansible](https://docs.ansible.com/) |
 |---|---|---|---|---|
 | **Focus** | Full machine state | Dotfiles | Dotfiles + packages (Nix) | General automation |
-| **Packages** | 15 native managers | None | Nix only | Any (via tasks) |
+| **Packages** | 15 managers | None | Nix only | Any (via tasks) |
 | **Drift detection** | Continuous (daemon) | Manual | On rebuild | Manual |
 | **Cross-platform resolution** | Per-package manager mapping | N/A | Nix-only | Per-task conditionals |
 | **Shareable modules** | First-class | Templates only | Flakes | Roles (Galaxy) |
@@ -50,11 +50,11 @@ cfgd is a good fit when you want: continuous reconciliation (not just one-shot a
 Self-contained, portable configuration packages. Install someone's complete dev environment — or share your own — in one command.
 
 ```sh
-# Install a complete neovim setup — binary, plugins, config, env vars, post-install
-cfgd module add --url https://github.com/jane/nvim-module
+# Create your own reusable module
+cfgd module create my-dev-env
 
-# Or create your own reusable module
-cfgd module create --name my-dev-env
+# Or reference a remote module in your profile
+cfgd profile update --active --module community/nvim
 ```
 
 A module captures everything: packages (cross-platform), config files, and lifecycle scripts.
@@ -108,7 +108,7 @@ cfgd init
 
 ## Features
 
-- [15 package managers](docs/packages.md) — brew, apt, cargo, npm, pipx, dnf, pacman, snap, flatpak, nix, apk, zypper, yum, pkg, go (plus custom script-based managers)
+- [15 package managers](docs/packages.md) — brew, apt, dnf, yum, pacman, apk, zypper, pkg, cargo, npm, pipx, snap, flatpak, nix, go (plus custom script-based managers)
 - [Tera templates](docs/templates.md) — render dotfiles with variables, OS detection, custom functions
 - [Secrets](docs/secrets.md) — SOPS/age encryption + 1Password, Bitwarden, HashiCorp Vault
 - [System configurators](docs/system-configurators.md) — shell, macOS defaults, systemd, launchd, sysctl, kubelet, containerd, apparmor, seccomp, certificates
@@ -136,6 +136,7 @@ cfgd init
 | [Team Config](docs/team-config.md) | Crossplane-powered team config distribution |
 | [CLI Reference](docs/cli-reference.md) | Complete command reference with flags and examples |
 | [Bootstrap](docs/bootstrap.md) | `cfgd init` flow, apply options, install script |
+| [Safety](docs/safety.md) | Atomic writes, backups, rollback, apply locking, path safety |
 
 ## Shell Completions
 
