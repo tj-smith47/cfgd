@@ -1999,8 +1999,14 @@ fn detect_rc_env_conflicts(
     let mut warnings = Vec::new();
 
     // Build lookup maps for cfgd-managed values
-    let env_map: HashMap<&str, &str> = env.iter().map(|e| (e.name.as_str(), e.value.as_str())).collect();
-    let alias_map: HashMap<&str, &str> = aliases.iter().map(|a| (a.name.as_str(), a.command.as_str())).collect();
+    let env_map: HashMap<&str, &str> = env
+        .iter()
+        .map(|e| (e.name.as_str(), e.value.as_str()))
+        .collect();
+    let alias_map: HashMap<&str, &str> = aliases
+        .iter()
+        .map(|a| (a.name.as_str(), a.command.as_str()))
+        .collect();
 
     for line in &before_lines {
         let trimmed = line.trim();

@@ -633,8 +633,9 @@ pub async fn run_daemon(
         }
 
         // Build per-module tasks for modules that have effective overrides
-        if let Ok(resolved) = config::resolve_profile(profile_name, &profiles_dir) {
-            let reconcile_cfg = daemon_cfg.reconcile.as_ref().unwrap();
+        if let Ok(resolved) = config::resolve_profile(profile_name, &profiles_dir)
+            && let Some(reconcile_cfg) = daemon_cfg.reconcile.as_ref()
+        {
             for mod_ref in &resolved.merged.modules {
                 let mod_name = crate::modules::resolve_profile_module_name(mod_ref);
                 let eff = crate::resolve_effective_reconcile(mod_name, &chain_refs, reconcile_cfg);
