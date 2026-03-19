@@ -562,7 +562,8 @@ The server's enrollment method is configured by the administrator. cfgd auto-det
 Generate shell completions.
 
 ```sh
-cfgd completions bash > ~/.local/share/bash-completion/completions/cfgd
-source <(cfgd completions zsh)  # add to .zshrc
-cfgd completions fish > ~/.config/fish/completions/cfgd.fish
+# Add to your shell's rc file
+source <(cfgd completions bash)  # .bashrc
+source <(cfgd completions zsh)   # .zshrc
+cfgd completions fish | source   # config.fish
 ```

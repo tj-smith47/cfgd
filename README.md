@@ -56,10 +56,10 @@ cfgd init
 export ANTHROPIC_API_KEY=sk-...
 cfgd generate
 
-# Set up shell completions (bash/zsh/fish)
-cfgd completions bash > ~/.local/share/bash-completion/completions/cfgd
-source <(cfgd completions zsh)  # add to .zshrc
-cfgd completions fish > ~/.config/fish/completions/cfgd.fish
+# Set up shell completions (add to your shell's rc file)
+source <(cfgd completions bash)  # .bashrc
+source <(cfgd completions zsh)   # .zshrc
+cfgd completions fish | source   # config.fish
 ```
 
 ## How It Works
