@@ -27,7 +27,7 @@ cfgd generate profile <name>       # Generate a profile
 
 The AI scans your installed packages, dotfiles, shell config, and system settings, then proposes a cfgd module and profile structure. Each generated file is shown to you for review before it is written. You can accept, reject, or give feedback. The session ends when all modules and profiles have been written or you exit.
 
-Requires `ANTHROPIC_API_KEY` set in your environment, or `spec.ai.api-key` in `cfgd.yaml`.
+Requires `ANTHROPIC_API_KEY` set in your environment, or `spec.ai.api-key-env` in `cfgd.yaml` to name the environment variable holding the key.
 
 See [ai-generate.md](ai-generate.md) for the full walkthrough, MCP server setup, and troubleshooting.
 

@@ -190,11 +190,11 @@ Requires `ANTHROPIC_API_KEY` in your environment, or `spec.ai.api-key` set in `c
 
 ## Adding Modules
 
-Modules can be added after init with `cfgd module add` for remote modules or `cfgd module create` for local ones:
+Modules can be added after init with `cfgd module create` for local ones, or referenced in profile YAML for remote modules:
 
 ```sh
 cfgd init --from git@github.com:you/machine-config.git
-cfgd module add --url https://github.com/jane/nvim-module
+cfgd module create my-tool
 cfgd apply
 ```
 

@@ -12,7 +12,6 @@ use crate::packages;
 
 #[derive(Debug, Deserialize)]
 pub struct JsonRpcRequest {
-    #[allow(dead_code)]
     pub jsonrpc: String,
     pub id: Option<Value>,
     pub method: String,
@@ -132,6 +131,16 @@ impl McpServer {
     }
 
     pub fn handle_request(&mut self, request: &JsonRpcRequest) -> JsonRpcResponse {
+        if request.jsonrpc != "2.0" {
+            return JsonRpcResponse::error(
+                request.id.clone(),
+                -32600,
+                format!(
+                    "Invalid Request: jsonrpc must be \"2.0\", got \"{}\"",
+                    request.jsonrpc
+                ),
+            );
+        }
         match request.method.as_str() {
             "initialize" => self.handle_initialize(request),
             "ping" => JsonRpcResponse::success(request.id.clone(), serde_json::json!({})),
@@ -182,6 +191,35 @@ impl McpServer {
         match name {
             Some(tool_name) => {
                 let dispatch_name = tools::strip_prefix(tool_name).unwrap_or(tool_name);
+
+                // present_yaml is handled here in MCP mode: return the YAML content
+                // formatted for the client to display. The MCP client handles presentation.
+                if dispatch_name == "present_yaml" {
+                    let content = arguments
+                        .get("content")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("");
+                    let kind = arguments
+                        .get("kind")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("Unknown");
+                    let description = arguments
+                        .get("description")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("");
+                    let text = format!(
+                        "## {} — {}\n\n```yaml\n{}\n```\n\nPlease review and respond with your choice: accept, reject, feedback (with message), or step-through.",
+                        kind, description, content
+                    );
+                    return JsonRpcResponse::success(
+                        request.id.clone(),
+                        serde_json::json!({
+                            "content": [{"type": "text", "text": text}],
+                            "isError": false
+                        }),
+                    );
+                }
+
                 let result = crate::ai::tools::dispatch_tool_call(
                     dispatch_name,
                     &arguments,
@@ -213,9 +251,10 @@ impl McpServer {
     fn handle_resources_read(&self, request: &JsonRpcRequest) -> JsonRpcResponse {
         let uri = request.params.get("uri").and_then(|v| v.as_str());
         match uri {
-            Some(resource_uri) => {
-                JsonRpcResponse::success(request.id.clone(), resources::read(resource_uri))
-            }
+            Some(resource_uri) => match resources::read(resource_uri) {
+                Ok(result) => JsonRpcResponse::success(request.id.clone(), result),
+                Err(msg) => JsonRpcResponse::error(request.id.clone(), -32002, msg),
+            },
             None => JsonRpcResponse::error(
                 request.id.clone(),
                 -32602,
@@ -469,6 +508,21 @@ mod tests {
         let resp = server.handle_request(&req);
         assert!(resp.error.is_some());
         assert_eq!(resp.error.unwrap().code, -32602);
+    }
+
+    #[test]
+    fn test_handle_resources_read_unknown_uri_returns_error() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let mut server = McpServer::new(tmp.path().to_path_buf(), tmp.path().to_path_buf());
+        let req = JsonRpcRequest {
+            jsonrpc: "2.0".into(),
+            id: Some(serde_json::json!(77)),
+            method: "resources/read".into(),
+            params: serde_json::json!({"uri": "cfgd://unknown/resource"}),
+        };
+        let resp = server.handle_request(&req);
+        assert!(resp.error.is_some());
+        assert_eq!(resp.error.unwrap().code, -32002);
     }
 
     #[test]
@@ -728,5 +782,77 @@ mod tests {
         let list_resp = server.handle_request(&list_req);
         assert!(list_resp.error.is_none());
         assert!(list_resp.result.unwrap()["tools"].is_array());
+    }
+
+    #[test]
+    fn test_invalid_jsonrpc_version_returns_error() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let mut server = McpServer::new(tmp.path().to_path_buf(), tmp.path().to_path_buf());
+        let req = JsonRpcRequest {
+            jsonrpc: "1.0".into(),
+            id: Some(serde_json::json!(1)),
+            method: "ping".into(),
+            params: serde_json::json!({}),
+        };
+        let resp = server.handle_request(&req);
+        assert!(resp.error.is_some());
+        assert_eq!(resp.error.unwrap().code, -32600);
+    }
+
+    #[test]
+    fn test_present_yaml_mcp_returns_formatted_content() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let mut server = McpServer::new(tmp.path().to_path_buf(), tmp.path().to_path_buf());
+        let yaml =
+            "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: nvim\nspec: {}\n";
+        let req = JsonRpcRequest {
+            jsonrpc: "2.0".into(),
+            id: Some(serde_json::json!(100)),
+            method: "tools/call".into(),
+            params: serde_json::json!({
+                "name": "cfgd_present_yaml",
+                "arguments": {
+                    "content": yaml,
+                    "kind": "Module",
+                    "description": "Neovim configuration module"
+                }
+            }),
+        };
+        let resp = server.handle_request(&req);
+        assert!(resp.error.is_none());
+        let result = resp.result.unwrap();
+        assert!(!result["isError"].as_bool().unwrap());
+        let text = result["content"][0]["text"].as_str().unwrap();
+        assert!(text.contains("Module"));
+        assert!(text.contains("Neovim configuration module"));
+        assert!(text.contains("```yaml"));
+        assert!(text.contains("nvim"));
+        assert!(text.contains("accept, reject, feedback"));
+    }
+
+    #[test]
+    fn test_present_yaml_without_cfgd_prefix_also_works() {
+        // When strip_prefix returns "present_yaml" (no prefix in name)
+        let tmp = tempfile::TempDir::new().unwrap();
+        let mut server = McpServer::new(tmp.path().to_path_buf(), tmp.path().to_path_buf());
+        let req = JsonRpcRequest {
+            jsonrpc: "2.0".into(),
+            id: Some(serde_json::json!(101)),
+            method: "tools/call".into(),
+            params: serde_json::json!({
+                "name": "present_yaml",
+                "arguments": {
+                    "content": "key: value\n",
+                    "kind": "Config",
+                    "description": "test"
+                }
+            }),
+        };
+        let resp = server.handle_request(&req);
+        assert!(resp.error.is_none());
+        let result = resp.result.unwrap();
+        assert!(!result["isError"].as_bool().unwrap());
+        let text = result["content"][0]["text"].as_str().unwrap();
+        assert!(text.contains("Config"));
     }
 }

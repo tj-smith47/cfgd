@@ -33,7 +33,8 @@ pub fn list() -> Value {
 }
 
 /// Read an MCP resource by URI, returning a resources/read response.
-pub fn read(uri: &str) -> Value {
+/// Returns `Err` for unknown URIs so the server can emit a JSON-RPC error.
+pub fn read(uri: &str) -> Result<Value, String> {
     let contents: Vec<Value> = match uri {
         "cfgd://skill/generate" => vec![json!({
             "uri": uri,
@@ -55,9 +56,9 @@ pub fn read(uri: &str) -> Value {
             "mimeType": "text/yaml",
             "text": cfgd_core::generate::schema::get_schema(cfgd_core::generate::SchemaKind::Config)
         })],
-        _ => vec![],
+        _ => return Err(format!("Resource not found: {}", uri)),
     };
-    json!({ "contents": contents })
+    Ok(json!({ "contents": contents }))
 }
 
 #[cfg(test)]
@@ -73,7 +74,7 @@ mod tests {
 
     #[test]
     fn test_read_skill_resource() {
-        let result = read("cfgd://skill/generate");
+        let result = read("cfgd://skill/generate").unwrap();
         let contents = result["contents"].as_array().unwrap();
         assert_eq!(contents.len(), 1);
         let text = contents[0]["text"].as_str().unwrap();
@@ -83,7 +84,7 @@ mod tests {
 
     #[test]
     fn test_read_module_schema() {
-        let result = read("cfgd://schema/module");
+        let result = read("cfgd://schema/module").unwrap();
         let contents = result["contents"].as_array().unwrap();
         assert_eq!(contents.len(), 1);
         let text = contents[0]["text"].as_str().unwrap();
@@ -93,7 +94,7 @@ mod tests {
 
     #[test]
     fn test_read_profile_schema() {
-        let result = read("cfgd://schema/profile");
+        let result = read("cfgd://schema/profile").unwrap();
         let contents = result["contents"].as_array().unwrap();
         assert_eq!(contents.len(), 1);
         let text = contents[0]["text"].as_str().unwrap();
@@ -102,7 +103,7 @@ mod tests {
 
     #[test]
     fn test_read_config_schema() {
-        let result = read("cfgd://schema/config");
+        let result = read("cfgd://schema/config").unwrap();
         let contents = result["contents"].as_array().unwrap();
         assert_eq!(contents.len(), 1);
         let text = contents[0]["text"].as_str().unwrap();
@@ -110,9 +111,9 @@ mod tests {
     }
 
     #[test]
-    fn test_read_unknown_resource() {
+    fn test_read_unknown_resource_returns_error() {
         let result = read("cfgd://unknown/resource");
-        let contents = result["contents"].as_array().unwrap();
-        assert!(contents.is_empty());
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("Resource not found"));
     }
 }
