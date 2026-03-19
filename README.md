@@ -58,7 +58,7 @@ cfgd generate
 
 # Set up shell completions (bash/zsh/fish)
 cfgd completions bash > ~/.local/share/bash-completion/completions/cfgd
-cfgd completions zsh > ~/.zfunc/_cfgd
+source <(cfgd completions zsh)  # add to .zshrc
 cfgd completions fish > ~/.config/fish/completions/cfgd.fish
 ```
 
