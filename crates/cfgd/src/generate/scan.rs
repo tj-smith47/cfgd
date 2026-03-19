@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use cfgd_core::errors::CfgdError;
+use cfgd_core::providers::PackageManager;
 
 // ---------------------------------------------------------------------------
 // Types
@@ -286,9 +287,7 @@ fn shell_config_files(shell: &str, home: &Path) -> Vec<PathBuf> {
             home.join(".bash_login"),
             home.join(".profile"),
         ],
-        "fish" => vec![
-            home.join(".config").join("fish").join("config.fish"),
-        ],
+        "fish" => vec![home.join(".config").join("fish").join("config.fish")],
         "sh" | "dash" => vec![home.join(".profile")],
         _ => vec![],
     }
@@ -299,7 +298,8 @@ fn detect_plugin_manager(line: &str) -> Option<&'static str> {
     let l = line.trim();
     if l.contains("oh-my-zsh") || l.contains("$ZSH/oh-my-zsh.sh") || l.contains("ohmyzsh/ohmyzsh") {
         Some("oh-my-zsh")
-    } else if l.contains("zinit") || l.contains("zdharma-continuum/zinit") || l.contains("zplugin") {
+    } else if l.contains("zinit") || l.contains("zdharma-continuum/zinit") || l.contains("zplugin")
+    {
         Some("zinit")
     } else if l.contains("zplug") {
         Some("zplug")
@@ -361,7 +361,10 @@ fn parse_shell_file(
                 let name = rest[..eq_pos].trim().to_string();
                 let value = strip_quotes(rest[eq_pos + 1..].trim()).to_string();
                 if !name.is_empty() && !value.is_empty() {
-                    aliases.push(ScannedAlias { name, command: value });
+                    aliases.push(ScannedAlias {
+                        name,
+                        command: value,
+                    });
                 }
             }
             continue;
@@ -407,7 +410,9 @@ fn parse_shell_file(
 
         if let Some(src) = sourced_path {
             // Check for plugin manager before consuming the line
-            if plugin_manager.is_none() && let Some(pm) = detect_plugin_manager(line) {
+            if plugin_manager.is_none()
+                && let Some(pm) = detect_plugin_manager(line)
+            {
                 *plugin_manager = Some(pm.to_string());
             }
             let src = strip_quotes(src);
@@ -418,7 +423,9 @@ fn parse_shell_file(
         }
 
         // --- plugin manager detection (non-source lines) ---
-        if plugin_manager.is_none() && let Some(pm) = detect_plugin_manager(line) {
+        if plugin_manager.is_none()
+            && let Some(pm) = detect_plugin_manager(line)
+        {
             *plugin_manager = Some(pm.to_string());
         }
     }
@@ -449,10 +456,7 @@ fn strip_inline_comment(line: &str) -> &str {
 /// Scan all rc files for the given shell and return a consolidated result.
 pub fn scan_shell_config(shell: &str, home: &Path) -> Result<ShellConfigResult, CfgdError> {
     let candidate_files = shell_config_files(shell, home);
-    let config_files: Vec<PathBuf> = candidate_files
-        .into_iter()
-        .filter(|p| p.exists())
-        .collect();
+    let config_files: Vec<PathBuf> = candidate_files.into_iter().filter(|p| p.exists()).collect();
 
     let mut aliases: Vec<ScannedAlias> = Vec::new();
     let mut exports: Vec<ScannedExport> = Vec::new();
@@ -483,6 +487,126 @@ pub fn scan_shell_config(shell: &str, home: &Path) -> Result<ShellConfigResult, 
         sourced_files,
         plugin_manager,
     })
+}
+
+// ---------------------------------------------------------------------------
+// scan_installed_packages
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InstalledPackageEntry {
+    pub name: String,
+    pub version: String,
+    pub manager: String,
+}
+
+/// Scan installed packages across all available package managers.
+pub fn scan_installed_packages(
+    managers: &[&dyn PackageManager],
+    filter_manager: Option<&str>,
+) -> Result<Vec<InstalledPackageEntry>, CfgdError> {
+    let mut entries = vec![];
+    for manager in managers {
+        if let Some(filter) = filter_manager
+            && manager.name() != filter
+        {
+            continue;
+        }
+        if !manager.is_available() {
+            continue;
+        }
+        match manager.installed_packages_with_versions() {
+            Ok(pkgs) => {
+                for pkg in pkgs {
+                    entries.push(InstalledPackageEntry {
+                        name: pkg.name,
+                        version: pkg.version,
+                        manager: manager.name().to_string(),
+                    });
+                }
+            }
+            Err(e) => {
+                // Log but don't fail — some managers may not be usable
+                tracing::warn!("Failed to list packages from {}: {}", manager.name(), e);
+            }
+        }
+    }
+    entries.sort_by(|a, b| a.name.cmp(&b.name).then(a.manager.cmp(&b.manager)));
+    Ok(entries)
+}
+
+// ---------------------------------------------------------------------------
+// scan_system_settings
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SystemSettingsResult {
+    pub macos_defaults: Option<serde_yaml::Value>,
+    pub systemd_units: Vec<String>,
+    pub launch_agents: Vec<String>,
+}
+
+/// Scan platform-specific system settings.
+pub fn scan_system_settings() -> Result<SystemSettingsResult, CfgdError> {
+    let mut result = SystemSettingsResult {
+        macos_defaults: None,
+        systemd_units: vec![],
+        launch_agents: vec![],
+    };
+
+    // macOS: run `defaults domains` and parse comma-separated list — don't export all, just list them
+    if cfgd_core::command_available("defaults")
+        && let Ok(output) = std::process::Command::new("defaults")
+            .arg("domains")
+            .output()
+        && output.status.success()
+    {
+        let domains_str = String::from_utf8_lossy(&output.stdout);
+        let domains: Vec<String> = domains_str
+            .trim()
+            .split(", ")
+            .map(|s| s.to_string())
+            .collect();
+        result.macos_defaults = Some(serde_yaml::to_value(domains).unwrap_or_default());
+    }
+
+    // Linux: list user systemd units
+    if cfgd_core::command_available("systemctl")
+        && let Ok(output) = std::process::Command::new("systemctl")
+            .args(["--user", "list-unit-files", "--no-pager", "--plain"])
+            .output()
+        && output.status.success()
+    {
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        for line in stdout.lines().skip(1) {
+            // Format: "unit-name.service  enabled"
+            if let Some(unit) = line.split_whitespace().next()
+                && (unit.ends_with(".service") || unit.ends_with(".timer"))
+            {
+                result.systemd_units.push(unit.to_string());
+            }
+        }
+    }
+
+    // macOS: list launch agents
+    if let Ok(home) = std::env::var("HOME") {
+        let agents_dir = std::path::PathBuf::from(&home).join("Library/LaunchAgents");
+        if agents_dir.exists()
+            && let Ok(dir_entries) = std::fs::read_dir(&agents_dir)
+        {
+            for entry in dir_entries.flatten() {
+                if let Some(name) = entry.file_name().to_str()
+                    && name.ends_with(".plist")
+                {
+                    result.launch_agents.push(name.to_string());
+                }
+            }
+        }
+    }
+
+    result.systemd_units.sort();
+    result.launch_agents.sort();
+    Ok(result)
 }
 
 // ---------------------------------------------------------------------------
@@ -545,9 +669,9 @@ mod tests {
         let entries = scan_dotfiles(home).unwrap();
 
         let find = |name: &str| -> Option<&DotfileEntry> {
-            entries.iter().find(|e| {
-                e.path.file_name().and_then(|n| n.to_str()) == Some(name)
-            })
+            entries
+                .iter()
+                .find(|e| e.path.file_name().and_then(|n| n.to_str()) == Some(name))
         };
 
         let vimrc = find(".vimrc").expect(".vimrc should be in entries");
@@ -583,10 +707,22 @@ mod tests {
         let entries = scan_dotfiles(home).unwrap();
         let paths: Vec<_> = entries.iter().map(|e| e.path.clone()).collect();
 
-        assert!(!paths.contains(&home.join(".git")), ".git should be skipped");
-        assert!(!paths.contains(&home.join(".cache")), ".cache should be skipped");
-        assert!(!paths.contains(&home.join(".local")), ".local should be skipped");
-        assert!(paths.contains(&home.join(".zshrc")), ".zshrc should be found");
+        assert!(
+            !paths.contains(&home.join(".git")),
+            ".git should be skipped"
+        );
+        assert!(
+            !paths.contains(&home.join(".cache")),
+            ".cache should be skipped"
+        );
+        assert!(
+            !paths.contains(&home.join(".local")),
+            ".local should be skipped"
+        );
+        assert!(
+            paths.contains(&home.join(".zshrc")),
+            ".zshrc should be found"
+        );
     }
 
     #[test]
@@ -599,10 +735,16 @@ mod tests {
 
         let entries = scan_dotfiles(home).unwrap();
 
-        let file_entry = entries.iter().find(|e| e.path == home.join(".vimrc")).unwrap();
+        let file_entry = entries
+            .iter()
+            .find(|e| e.path == home.join(".vimrc"))
+            .unwrap();
         assert_eq!(file_entry.entry_type, "file");
 
-        let dir_entry = entries.iter().find(|e| e.path == home.join(".ssh")).unwrap();
+        let dir_entry = entries
+            .iter()
+            .find(|e| e.path == home.join(".ssh"))
+            .unwrap();
         assert_eq!(dir_entry.entry_type, "directory");
     }
 
@@ -613,7 +755,11 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let home = tmp.path();
 
-        fs::write(home.join(".zshrc"), "alias ll='ls -la'\nalias gs='git status'\n").unwrap();
+        fs::write(
+            home.join(".zshrc"),
+            "alias ll='ls -la'\nalias gs='git status'\n",
+        )
+        .unwrap();
 
         let result = scan_shell_config("zsh", home).unwrap();
 
@@ -830,5 +976,220 @@ mod tests {
         let result = scan_shell_config("tcsh", tmp.path()).unwrap();
         assert!(result.config_files.is_empty());
         assert!(result.aliases.is_empty());
+    }
+
+    // ---- scan_installed_packages tests ----
+
+    use std::collections::HashSet;
+
+    use cfgd_core::output::Printer;
+    use cfgd_core::providers::PackageInfo;
+
+    struct TestPackageManager {
+        manager_name: &'static str,
+        available: bool,
+        packages: Vec<PackageInfo>,
+    }
+
+    impl PackageManager for TestPackageManager {
+        fn name(&self) -> &str {
+            self.manager_name
+        }
+        fn is_available(&self) -> bool {
+            self.available
+        }
+        fn can_bootstrap(&self) -> bool {
+            false
+        }
+        fn bootstrap(&self, _printer: &Printer) -> cfgd_core::errors::Result<()> {
+            Ok(())
+        }
+        fn installed_packages(&self) -> cfgd_core::errors::Result<HashSet<String>> {
+            Ok(self.packages.iter().map(|p| p.name.clone()).collect())
+        }
+        fn install(
+            &self,
+            _packages: &[String],
+            _printer: &Printer,
+        ) -> cfgd_core::errors::Result<()> {
+            Ok(())
+        }
+        fn uninstall(
+            &self,
+            _packages: &[String],
+            _printer: &Printer,
+        ) -> cfgd_core::errors::Result<()> {
+            Ok(())
+        }
+        fn update(&self, _printer: &Printer) -> cfgd_core::errors::Result<()> {
+            Ok(())
+        }
+        fn available_version(
+            &self,
+            _package: &str,
+        ) -> cfgd_core::errors::Result<Option<String>> {
+            Ok(None)
+        }
+        fn installed_packages_with_versions(
+            &self,
+        ) -> cfgd_core::errors::Result<Vec<PackageInfo>> {
+            Ok(self.packages.clone())
+        }
+    }
+
+    fn pkg(name: &str, version: &str) -> PackageInfo {
+        PackageInfo {
+            name: name.to_string(),
+            version: version.to_string(),
+        }
+    }
+
+    #[test]
+    fn test_scan_installed_packages_collects_from_multiple_managers() {
+        let brew = TestPackageManager {
+            manager_name: "brew",
+            available: true,
+            packages: vec![pkg("ripgrep", "14.0.0"), pkg("bat", "0.24.0")],
+        };
+        let apt = TestPackageManager {
+            manager_name: "apt",
+            available: true,
+            packages: vec![pkg("curl", "7.88.1")],
+        };
+
+        let managers: Vec<&dyn PackageManager> = vec![&brew, &apt];
+        let entries = scan_installed_packages(&managers, None).unwrap();
+
+        assert_eq!(entries.len(), 3);
+
+        // Sorted by name
+        assert_eq!(entries[0].name, "bat");
+        assert_eq!(entries[0].manager, "brew");
+        assert_eq!(entries[0].version, "0.24.0");
+
+        assert_eq!(entries[1].name, "curl");
+        assert_eq!(entries[1].manager, "apt");
+
+        assert_eq!(entries[2].name, "ripgrep");
+        assert_eq!(entries[2].manager, "brew");
+    }
+
+    #[test]
+    fn test_scan_installed_packages_filter_by_manager() {
+        let brew = TestPackageManager {
+            manager_name: "brew",
+            available: true,
+            packages: vec![pkg("ripgrep", "14.0.0")],
+        };
+        let apt = TestPackageManager {
+            manager_name: "apt",
+            available: true,
+            packages: vec![pkg("curl", "7.88.1")],
+        };
+
+        let managers: Vec<&dyn PackageManager> = vec![&brew, &apt];
+        let entries = scan_installed_packages(&managers, Some("brew")).unwrap();
+
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].name, "ripgrep");
+        assert_eq!(entries[0].manager, "brew");
+    }
+
+    #[test]
+    fn test_scan_installed_packages_skips_unavailable() {
+        let unavailable = TestPackageManager {
+            manager_name: "brew",
+            available: false,
+            packages: vec![pkg("ripgrep", "14.0.0")],
+        };
+        let available = TestPackageManager {
+            manager_name: "apt",
+            available: true,
+            packages: vec![pkg("curl", "7.88.1")],
+        };
+
+        let managers: Vec<&dyn PackageManager> = vec![&unavailable, &available];
+        let entries = scan_installed_packages(&managers, None).unwrap();
+
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].name, "curl");
+        assert_eq!(entries[0].manager, "apt");
+    }
+
+    #[test]
+    fn test_scan_installed_packages_empty_managers() {
+        let managers: Vec<&dyn PackageManager> = vec![];
+        let entries = scan_installed_packages(&managers, None).unwrap();
+        assert!(entries.is_empty());
+    }
+
+    #[test]
+    fn test_scan_installed_packages_sorted_by_name_then_manager() {
+        let mgr_a = TestPackageManager {
+            manager_name: "apt",
+            available: true,
+            packages: vec![pkg("zsh", "5.9")],
+        };
+        let mgr_b = TestPackageManager {
+            manager_name: "brew",
+            available: true,
+            packages: vec![pkg("zsh", "5.9"), pkg("awk", "1.0")],
+        };
+
+        let managers: Vec<&dyn PackageManager> = vec![&mgr_a, &mgr_b];
+        let entries = scan_installed_packages(&managers, None).unwrap();
+
+        // awk comes first alphabetically
+        assert_eq!(entries[0].name, "awk");
+        // zsh appears twice: apt before brew
+        assert_eq!(entries[1].name, "zsh");
+        assert_eq!(entries[1].manager, "apt");
+        assert_eq!(entries[2].name, "zsh");
+        assert_eq!(entries[2].manager, "brew");
+    }
+
+    // ---- scan_system_settings tests ----
+
+    #[test]
+    fn test_scan_system_settings_returns_valid_result() {
+        // Just verify it returns a valid SystemSettingsResult without crashing.
+        // Values are platform-dependent so we only check structural validity.
+        let result = scan_system_settings().unwrap();
+        // systemd_units and launch_agents are always sorted
+        let mut sorted_units = result.systemd_units.clone();
+        sorted_units.sort();
+        assert_eq!(result.systemd_units, sorted_units, "systemd_units should be sorted");
+
+        let mut sorted_agents = result.launch_agents.clone();
+        sorted_agents.sort();
+        assert_eq!(
+            result.launch_agents, sorted_agents,
+            "launch_agents should be sorted"
+        );
+    }
+
+    #[test]
+    fn test_scan_system_settings_launch_agents_only_plist() {
+        // Verify that only .plist files are included in launch_agents by
+        // examining the filtering logic through its output on this system.
+        let result = scan_system_settings().unwrap();
+        for agent in &result.launch_agents {
+            assert!(
+                agent.ends_with(".plist"),
+                "launch agent '{agent}' should end with .plist"
+            );
+        }
+    }
+
+    #[test]
+    fn test_scan_system_settings_systemd_units_only_service_or_timer() {
+        // Verify unit filtering: only .service and .timer entries are collected.
+        let result = scan_system_settings().unwrap();
+        for unit in &result.systemd_units {
+            assert!(
+                unit.ends_with(".service") || unit.ends_with(".timer"),
+                "unit '{unit}' should end with .service or .timer"
+            );
+        }
     }
 }
