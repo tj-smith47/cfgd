@@ -6,6 +6,7 @@ use k8s_openapi::apimachinery::pkg::apis::meta::v1::OwnerReference;
 use kube::api::{Api, ListParams, Patch, PatchParams};
 use kube::runtime::Controller;
 use kube::runtime::controller::Action;
+use kube::runtime::events::{Event, EventType, Recorder, Reporter};
 use kube::{Client, Resource, ResourceExt};
 use tracing::{info, warn};
 
@@ -23,11 +24,19 @@ const MACHINE_CONFIG_FINALIZER: &str = "cfgd.io/machine-config-cleanup";
 
 pub struct ControllerContext {
     pub client: Client,
+    pub recorder: Recorder,
 }
 
 pub async fn run(client: Client) -> Result<(), OperatorError> {
+    let reporter = Reporter {
+        controller: "cfgd-operator".into(),
+        instance: std::env::var("POD_NAME").ok(),
+    };
+    let recorder = Recorder::new(client.clone(), reporter);
+
     let ctx = Arc::new(ControllerContext {
         client: client.clone(),
+        recorder,
     });
 
     let machines: Api<MachineConfig> = Api::all(client.clone());
@@ -278,6 +287,39 @@ async fn reconcile_machine_config(
 
     info!(name = %name, "Status updated with last_reconciled timestamp");
 
+    ctx.recorder
+        .publish(
+            &Event {
+                type_: EventType::Normal,
+                reason: "Reconciled".into(),
+                note: Some(format!("MachineConfig {} reconciled successfully", name)),
+                action: "Reconcile".into(),
+                secondary: None,
+            },
+            &obj.object_ref(&()),
+        )
+        .await
+        .ok();
+
+    if has_drift {
+        ctx.recorder
+            .publish(
+                &Event {
+                    type_: EventType::Warning,
+                    reason: "DriftDetected".into(),
+                    note: Some(format!(
+                        "Drift detected on device for MachineConfig {}",
+                        name
+                    )),
+                    action: "DriftCheck".into(),
+                    secondary: None,
+                },
+                &obj.object_ref(&()),
+            )
+            .await
+            .ok();
+    }
+
     Ok(Action::requeue(std::time::Duration::from_secs(60)))
 }
 
@@ -426,6 +468,20 @@ async fn reconcile_drift_alert(
                     warn!(name = %name, error = %e, "Failed to set Resolved condition on DriftAlert");
                 }
 
+                ctx.recorder
+                    .publish(
+                        &Event {
+                            type_: EventType::Normal,
+                            reason: "DriftResolved".into(),
+                            note: Some(format!("DriftAlert {} resolved", name)),
+                            action: "DriftCheck".into(),
+                            secondary: None,
+                        },
+                        &obj.object_ref(&()),
+                    )
+                    .await
+                    .ok();
+
                 if let Err(e) = alerts.delete(&name, &Default::default()).await {
                     warn!(name = %name, error = %e, "Failed to delete resolved DriftAlert");
                 }
@@ -471,6 +527,24 @@ async fn reconcile_drift_alert(
                     machine_config = %mc_name,
                     "MachineConfig drift condition set"
                 );
+
+                ctx.recorder
+                    .publish(
+                        &Event {
+                            type_: EventType::Warning,
+                            reason: "DriftDetected".into(),
+                            note: Some(format!(
+                                "Drift detected from device {} — {} details",
+                                obj.spec.device_id,
+                                obj.spec.drift_details.len()
+                            )),
+                            action: "DriftCheck".into(),
+                            secondary: None,
+                        },
+                        &mc.object_ref(&()),
+                    )
+                    .await
+                    .ok();
 
                 // Patch DriftAlert status with Resolved=False condition
                 let da_api: Api<DriftAlert> = if namespace.is_empty() {
@@ -625,17 +699,35 @@ async fn reconcile_config_policy(
             continue;
         }
 
-        if validate_policy_compliance(
+        let compliant = validate_policy_compliance(
             &mc.spec,
             mc.status.as_ref(),
             &obj.spec.required_modules,
             &obj.spec.packages,
             &obj.spec.package_versions,
             &obj.spec.settings,
-        ) {
+        );
+        if compliant {
             compliant_count += 1;
         } else {
             non_compliant_count += 1;
+            let mc_name = mc.name_any();
+            ctx.recorder
+                .publish(
+                    &Event {
+                        type_: EventType::Warning,
+                        reason: "PolicyViolation".into(),
+                        note: Some(format!(
+                            "MachineConfig {} violates policy {}",
+                            mc_name, name
+                        )),
+                        action: "PolicyEvaluate".into(),
+                        secondary: None,
+                    },
+                    &mc.object_ref(&()),
+                )
+                .await
+                .ok();
         }
     }
 
@@ -695,6 +787,42 @@ async fn reconcile_config_policy(
         non_compliant = non_compliant_count,
         "ConfigPolicy status updated"
     );
+
+    ctx.recorder
+        .publish(
+            &Event {
+                type_: EventType::Normal,
+                reason: "Evaluated".into(),
+                note: Some(format!(
+                    "{} compliant, {} non-compliant",
+                    compliant_count, non_compliant_count
+                )),
+                action: "Evaluate".into(),
+                secondary: None,
+            },
+            &obj.object_ref(&()),
+        )
+        .await
+        .ok();
+
+    if non_compliant_count > 0 {
+        ctx.recorder
+            .publish(
+                &Event {
+                    type_: EventType::Warning,
+                    reason: "NonCompliantTargets".into(),
+                    note: Some(format!(
+                        "{} non-compliant MachineConfigs",
+                        non_compliant_count
+                    )),
+                    action: "Evaluate".into(),
+                    secondary: None,
+                },
+                &obj.object_ref(&()),
+            )
+            .await
+            .ok();
+    }
 
     Ok(Action::requeue(std::time::Duration::from_secs(60)))
 }
@@ -880,17 +1008,35 @@ async fn reconcile_cluster_config_policy(
         let merged = merge_policy_requirements(&obj.spec, ns_policy_spec);
 
         for mc in &mc_list {
-            if validate_policy_compliance(
+            let compliant = validate_policy_compliance(
                 &mc.spec,
                 mc.status.as_ref(),
                 &merged.modules,
                 &merged.packages,
                 &merged.versions,
                 &merged.settings,
-            ) {
+            );
+            if compliant {
                 compliant_count += 1;
             } else {
                 non_compliant_count += 1;
+                let mc_name = mc.name_any();
+                ctx.recorder
+                    .publish(
+                        &Event {
+                            type_: EventType::Warning,
+                            reason: "PolicyViolation".into(),
+                            note: Some(format!(
+                                "MachineConfig {} violates policy {}",
+                                mc_name, name
+                            )),
+                            action: "PolicyEvaluate".into(),
+                            secondary: None,
+                        },
+                        &mc.object_ref(&()),
+                    )
+                    .await
+                    .ok();
             }
         }
     }
@@ -947,6 +1093,42 @@ async fn reconcile_cluster_config_policy(
         non_compliant = non_compliant_count,
         "ClusterConfigPolicy status updated"
     );
+
+    ctx.recorder
+        .publish(
+            &Event {
+                type_: EventType::Normal,
+                reason: "Evaluated".into(),
+                note: Some(format!(
+                    "{} compliant, {} non-compliant",
+                    compliant_count, non_compliant_count
+                )),
+                action: "Evaluate".into(),
+                secondary: None,
+            },
+            &obj.object_ref(&()),
+        )
+        .await
+        .ok();
+
+    if non_compliant_count > 0 {
+        ctx.recorder
+            .publish(
+                &Event {
+                    type_: EventType::Warning,
+                    reason: "NonCompliantTargets".into(),
+                    note: Some(format!(
+                        "{} non-compliant MachineConfigs",
+                        non_compliant_count
+                    )),
+                    action: "Evaluate".into(),
+                    secondary: None,
+                },
+                &obj.object_ref(&()),
+            )
+            .await
+            .ok();
+    }
 
     Ok(Action::requeue(std::time::Duration::from_secs(60)))
 }
