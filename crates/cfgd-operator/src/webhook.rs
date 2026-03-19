@@ -11,7 +11,7 @@ use tokio_rustls::TlsAcceptor;
 use tower::ServiceExt;
 use tracing::{info, warn};
 
-use crate::crds::{ConfigPolicySpec, MachineConfigSpec};
+use crate::crds::{ClusterConfigPolicySpec, ConfigPolicySpec, MachineConfigSpec};
 use crate::errors::OperatorError;
 
 pub async fn run_webhook_server(cert_dir: &str, port: u16) -> Result<(), OperatorError> {
@@ -50,6 +50,10 @@ pub async fn run_webhook_server(cert_dir: &str, port: u16) -> Result<(), Operato
         .route(
             "/validate-configpolicy",
             post(handle_validate_config_policy),
+        )
+        .route(
+            "/validate-clusterconfigpolicy",
+            post(handle_validate_cluster_config_policy),
         )
         .route("/healthz", axum::routing::get(|| async { "ok" }));
 
@@ -150,6 +154,27 @@ async fn handle_validate_config_policy(
     Json(resp.into_review())
 }
 
+async fn handle_validate_cluster_config_policy(
+    Json(review): Json<AdmissionReview<DynamicObject>>,
+) -> Json<AdmissionReview<DynamicObject>> {
+    let req: AdmissionRequest<DynamicObject> =
+        match AdmissionReview::<DynamicObject>::try_into(review) {
+            Ok(r) => r,
+            Err(e) => {
+                return Json(
+                    AdmissionResponse::invalid(format!("bad admission request: {e}")).into_review(),
+                );
+            }
+        };
+
+    let resp = match validate_object_spec::<ClusterConfigPolicySpec>(&req) {
+        Ok(()) => AdmissionResponse::from(&req),
+        Err(reason) => AdmissionResponse::from(&req).deny(reason),
+    };
+
+    Json(resp.into_review())
+}
+
 /// Trait for CRD specs that have a validate method.
 trait Validatable: serde::de::DeserializeOwned {
     fn validate(&self) -> Result<(), Vec<String>>;
@@ -164,6 +189,12 @@ impl Validatable for MachineConfigSpec {
 impl Validatable for ConfigPolicySpec {
     fn validate(&self) -> Result<(), Vec<String>> {
         ConfigPolicySpec::validate(self)
+    }
+}
+
+impl Validatable for ClusterConfigPolicySpec {
+    fn validate(&self) -> Result<(), Vec<String>> {
+        ClusterConfigPolicySpec::validate(self)
     }
 }
 

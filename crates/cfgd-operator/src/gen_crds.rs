@@ -1,6 +1,6 @@
 use kube::CustomResourceExt;
 
-use cfgd_operator::crds::{ConfigPolicy, DriftAlert, MachineConfig};
+use cfgd_operator::crds::{ClusterConfigPolicy, ConfigPolicy, DriftAlert, MachineConfig};
 
 fn main() {
     let mut mc_crd =
@@ -10,7 +10,9 @@ fn main() {
 
     let cp = serde_yaml::to_string(&ConfigPolicy::crd()).expect("serialize ConfigPolicy CRD");
     let da = serde_yaml::to_string(&DriftAlert::crd()).expect("serialize DriftAlert CRD");
-    print!("{mc}---\n{cp}---\n{da}");
+    let ccp = serde_yaml::to_string(&ClusterConfigPolicy::crd())
+        .expect("serialize ClusterConfigPolicy CRD");
+    print!("{mc}---\n{cp}---\n{da}---\n{ccp}");
 }
 
 fn inject_cel_rules(crd: &mut serde_json::Value) {

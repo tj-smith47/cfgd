@@ -120,7 +120,7 @@ pub struct LabelSelectorRequirement {
     pub values: Vec<String>,
 }
 
-#[derive(CustomResource, Deserialize, Serialize, Clone, Debug, JsonSchema)]
+#[derive(CustomResource, Deserialize, Serialize, Clone, Debug, Default, JsonSchema)]
 #[kube(
     group = "cfgd.io",
     version = "v1alpha1",
@@ -222,6 +222,57 @@ pub enum DriftSeverity {
 }
 
 // ---------------------------------------------------------------------------
+// ClusterConfigPolicy
+// ---------------------------------------------------------------------------
+
+#[derive(CustomResource, Deserialize, Serialize, Clone, Debug, Default, JsonSchema)]
+#[kube(
+    group = "cfgd.io",
+    version = "v1alpha1",
+    kind = "ClusterConfigPolicy",
+    status = "ClusterConfigPolicyStatus",
+    shortname = "ccpol",
+    category = "cfgd",
+    printcolumn = r#"{"name": "Compliant", "type": "integer", "jsonPath": ".status.compliantCount"}"#,
+    printcolumn = r#"{"name": "NonCompliant", "type": "integer", "jsonPath": ".status.nonCompliantCount"}"#,
+    printcolumn = r#"{"name": "Age", "type": "date", "jsonPath": ".metadata.creationTimestamp"}"#
+)]
+#[serde(rename_all = "camelCase")]
+pub struct ClusterConfigPolicySpec {
+    /// Select which namespaces this cluster policy applies to.
+    #[serde(default)]
+    pub namespace_selector: LabelSelector,
+    #[serde(default)]
+    pub required_modules: Vec<ModuleRef>,
+    #[serde(default)]
+    pub packages: Vec<PackageRef>,
+    #[serde(default)]
+    pub package_versions: BTreeMap<String, String>,
+    #[serde(default)]
+    pub settings: BTreeMap<String, String>,
+    #[serde(default)]
+    pub security: SecurityPolicy,
+}
+
+#[derive(Deserialize, Serialize, Clone, Debug, Default, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct SecurityPolicy {
+    #[serde(default)]
+    pub trusted_registries: Vec<String>,
+    #[serde(default)]
+    pub allow_unsigned: bool,
+}
+
+#[derive(Deserialize, Serialize, Clone, Debug, Default, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ClusterConfigPolicyStatus {
+    pub compliant_count: u32,
+    pub non_compliant_count: u32,
+    #[serde(default)]
+    pub conditions: Vec<Condition>,
+}
+
+// ---------------------------------------------------------------------------
 // Shared validation
 // ---------------------------------------------------------------------------
 
@@ -309,6 +360,28 @@ impl ConfigPolicySpec {
             }
         }
 
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(errors)
+        }
+    }
+}
+
+impl ClusterConfigPolicySpec {
+    /// Validate the spec, returning all validation errors found.
+    pub fn validate(&self) -> Result<(), Vec<String>> {
+        let mut errors = Vec::new();
+        for (pkg, req_str) in &self.package_versions {
+            if pkg.is_empty() {
+                errors.push("spec.packageVersions key must not be empty".to_string());
+            }
+            if VersionReq::parse(req_str).is_err() {
+                errors.push(format!(
+                    "spec.packageVersions['{pkg}'] = '{req_str}' is not a valid semver requirement"
+                ));
+            }
+        }
         if errors.is_empty() {
             Ok(())
         } else {
@@ -514,6 +587,49 @@ mod tests {
         let json = serde_json::to_value(&pr).unwrap();
         assert_eq!(json["name"], "vim");
         assert!(json.get("version").is_none());
+    }
+
+    #[test]
+    fn cluster_config_policy_is_cluster_scoped() {
+        use kube::CustomResourceExt;
+        let crd = ClusterConfigPolicy::crd();
+        assert_eq!(crd.spec.scope, "Cluster");
+    }
+
+    #[test]
+    fn cluster_config_policy_has_short_name() {
+        use kube::CustomResourceExt;
+        let crd = ClusterConfigPolicy::crd();
+        let short_names = crd.spec.names.short_names.as_ref().unwrap();
+        assert!(short_names.contains(&"ccpol".to_string()));
+    }
+
+    #[test]
+    fn ccp_validate_accepts_minimal() {
+        let spec = ClusterConfigPolicySpec {
+            namespace_selector: Default::default(),
+            required_modules: vec![],
+            packages: vec![],
+            package_versions: Default::default(),
+            settings: Default::default(),
+            security: Default::default(),
+        };
+        assert!(spec.validate().is_ok());
+    }
+
+    #[test]
+    fn ccp_validate_rejects_invalid_version() {
+        let mut versions = BTreeMap::new();
+        versions.insert("kubectl".to_string(), "not valid".to_string());
+        let spec = ClusterConfigPolicySpec {
+            namespace_selector: Default::default(),
+            required_modules: vec![],
+            packages: vec![],
+            package_versions: versions,
+            settings: Default::default(),
+            security: Default::default(),
+        };
+        assert!(spec.validate().is_err());
     }
 
     #[test]

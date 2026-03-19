@@ -9,9 +9,12 @@ use kube::runtime::controller::Action;
 use kube::{Client, Resource, ResourceExt};
 use tracing::{info, warn};
 
+use k8s_openapi::api::core::v1::Namespace;
+
 use crate::crds::{
-    Condition, ConfigPolicy, ConfigPolicyStatus, DriftAlert, DriftAlertStatus, LabelSelector,
-    MachineConfig, MachineConfigSpec, MachineConfigStatus, ModuleRef, PackageRef,
+    ClusterConfigPolicy, ClusterConfigPolicySpec, ClusterConfigPolicyStatus, Condition,
+    ConfigPolicy, ConfigPolicySpec, ConfigPolicyStatus, DriftAlert, DriftAlertStatus,
+    LabelSelector, MachineConfig, MachineConfigSpec, MachineConfigStatus, ModuleRef, PackageRef,
     version_satisfies,
 };
 use crate::errors::OperatorError;
@@ -30,14 +33,17 @@ pub async fn run(client: Client) -> Result<(), OperatorError> {
     let machines: Api<MachineConfig> = Api::all(client.clone());
     let alerts: Api<DriftAlert> = Api::all(client.clone());
     let policies: Api<ConfigPolicy> = Api::all(client.clone());
+    let cluster_policies: Api<ClusterConfigPolicy> = Api::all(client.clone());
 
     let mc_ctx = Arc::clone(&ctx);
     let da_ctx = Arc::clone(&ctx);
     let cp_ctx = Arc::clone(&ctx);
+    let ccp_ctx = Arc::clone(&ctx);
 
     info!("Starting MachineConfig controller");
     info!("Starting DriftAlert controller");
     info!("Starting ConfigPolicy controller");
+    info!("Starting ClusterConfigPolicy controller");
 
     let mc_controller = Controller::new(machines, Default::default())
         .run(reconcile_machine_config, error_policy_mc, mc_ctx)
@@ -78,7 +84,24 @@ pub async fn run(client: Client) -> Result<(), OperatorError> {
             }
         });
 
-    tokio::join!(mc_controller, da_controller, cp_controller);
+    let ccp_controller = Controller::new(cluster_policies, Default::default())
+        .run(
+            reconcile_cluster_config_policy,
+            error_policy_ccp,
+            ccp_ctx,
+        )
+        .for_each(|result| async move {
+            match result {
+                Ok((obj_ref, _action)) => {
+                    info!(name = %obj_ref.name, "ClusterConfigPolicy reconciled");
+                }
+                Err(err) => {
+                    warn!(error = %err, "ClusterConfigPolicy reconciliation error");
+                }
+            }
+        });
+
+    tokio::join!(mc_controller, da_controller, cp_controller, ccp_controller);
 
     Ok(())
 }
@@ -748,6 +771,196 @@ fn error_policy_cp(
 }
 
 // ---------------------------------------------------------------------------
+// ClusterConfigPolicy controller — cluster-wide policy enforcement
+// ---------------------------------------------------------------------------
+
+struct MergedPolicyRequirements {
+    packages: Vec<PackageRef>,
+    modules: Vec<ModuleRef>,
+    settings: BTreeMap<String, String>,
+    versions: BTreeMap<String, String>,
+}
+
+fn merge_policy_requirements(
+    cluster: &ClusterConfigPolicySpec,
+    namespace: Option<&ConfigPolicySpec>,
+) -> MergedPolicyRequirements {
+    let mut packages = cluster.packages.clone();
+    let mut modules = cluster.required_modules.clone();
+    let mut settings = BTreeMap::new();
+    let mut versions = BTreeMap::new();
+
+    // Start with namespace-scoped values as base
+    if let Some(ns) = namespace {
+        for pkg in &ns.packages {
+            if !packages.iter().any(|p| p.name == pkg.name) {
+                packages.push(pkg.clone());
+            }
+        }
+        for module in &ns.required_modules {
+            if !modules.iter().any(|m| m.name == module.name) {
+                modules.push(module.clone());
+            }
+        }
+        // Namespace settings as base
+        settings.extend(ns.settings.clone());
+        // Namespace versions as base
+        versions.extend(ns.package_versions.clone());
+    }
+
+    // Cluster overrides (cluster wins for settings and versions)
+    settings.extend(cluster.settings.clone());
+    versions.extend(cluster.package_versions.clone());
+
+    MergedPolicyRequirements {
+        packages,
+        modules,
+        settings,
+        versions,
+    }
+}
+
+async fn reconcile_cluster_config_policy(
+    obj: Arc<ClusterConfigPolicy>,
+    ctx: Arc<ControllerContext>,
+) -> Result<Action, OperatorError> {
+    let name = obj.name_any();
+
+    info!(
+        name = %name,
+        required_modules = obj.spec.required_modules.len(),
+        packages = obj.spec.packages.len(),
+        settings = obj.spec.settings.len(),
+        "Reconciling ClusterConfigPolicy"
+    );
+
+    // List all namespaces, filtering by namespace_selector if non-empty
+    let ns_api: Api<Namespace> = Api::all(ctx.client.clone());
+    let ns_list = ns_api.list(&ListParams::default()).await.map_err(|e| {
+        OperatorError::Reconciliation(format!("failed to list namespaces: {e}"))
+    })?;
+
+    let matching_namespaces: Vec<String> = ns_list
+        .items
+        .iter()
+        .filter(|ns| {
+            let ns_labels = ns.metadata.labels.as_ref();
+            matches_selector(ns_labels, &obj.spec.namespace_selector)
+        })
+        .filter_map(|ns| ns.metadata.name.clone())
+        .collect();
+
+    let mut compliant_count: u32 = 0;
+    let mut non_compliant_count: u32 = 0;
+
+    for ns_name in &matching_namespaces {
+        let machines: Api<MachineConfig> =
+            Api::namespaced(ctx.client.clone(), ns_name);
+        let mc_list = machines.list(&ListParams::default()).await.map_err(|e| {
+            OperatorError::Reconciliation(format!(
+                "failed to list MachineConfigs in namespace {ns_name}: {e}"
+            ))
+        })?;
+
+        // List namespace-scoped ConfigPolicies for merging
+        let ns_policies: Api<ConfigPolicy> =
+            Api::namespaced(ctx.client.clone(), ns_name);
+        let cp_list = ns_policies
+            .list(&ListParams::default())
+            .await
+            .map_err(|e| {
+                OperatorError::Reconciliation(format!(
+                    "failed to list ConfigPolicies in namespace {ns_name}: {e}"
+                ))
+            })?;
+
+        // Use the first matching namespace policy for merge (if any)
+        let ns_policy_spec = cp_list.items.first().map(|cp| &cp.spec);
+
+        let merged = merge_policy_requirements(&obj.spec, ns_policy_spec);
+
+        for mc in &mc_list {
+            if validate_policy_compliance(
+                &mc.spec,
+                mc.status.as_ref(),
+                &merged.modules,
+                &merged.packages,
+                &merged.versions,
+                &merged.settings,
+            ) {
+                compliant_count += 1;
+            } else {
+                non_compliant_count += 1;
+            }
+        }
+    }
+
+    let now = cfgd_core::utc_now_iso8601();
+    let overall_status = if non_compliant_count == 0 {
+        "True"
+    } else {
+        "False"
+    };
+
+    let ccp_api: Api<ClusterConfigPolicy> = Api::all(ctx.client.clone());
+
+    let status = serde_json::json!({
+        "status": ClusterConfigPolicyStatus {
+            compliant_count,
+            non_compliant_count,
+            conditions: vec![
+                Condition {
+                    condition_type: "Enforced".to_string(),
+                    status: overall_status.to_string(),
+                    reason: if non_compliant_count == 0 {
+                        "AllCompliant".to_string()
+                    } else {
+                        "NonCompliantTargets".to_string()
+                    },
+                    message: format!(
+                        "{} compliant, {} non-compliant",
+                        compliant_count, non_compliant_count
+                    ),
+                    last_transition_time: now,
+                    observed_generation: obj.meta().generation,
+                },
+            ],
+        }
+    });
+
+    ccp_api
+        .patch_status(
+            &name,
+            &PatchParams::apply("cfgd-operator"),
+            &Patch::Merge(status),
+        )
+        .await
+        .map_err(|e| {
+            OperatorError::Reconciliation(format!(
+                "failed to update ClusterConfigPolicy status for {name}: {e}"
+            ))
+        })?;
+
+    info!(
+        name = %name,
+        compliant = compliant_count,
+        non_compliant = non_compliant_count,
+        "ClusterConfigPolicy status updated"
+    );
+
+    Ok(Action::requeue(std::time::Duration::from_secs(60)))
+}
+
+fn error_policy_ccp(
+    _obj: Arc<ClusterConfigPolicy>,
+    error: &OperatorError,
+    _ctx: Arc<ControllerContext>,
+) -> Action {
+    warn!(error = %error, "ClusterConfigPolicy reconciliation error, requeuing");
+    Action::requeue(std::time::Duration::from_secs(30))
+}
+
+// ---------------------------------------------------------------------------
 // Utilities
 // ---------------------------------------------------------------------------
 
@@ -1013,5 +1226,116 @@ mod tests {
     #[test]
     fn finalizer_name_constant() {
         assert_eq!(MACHINE_CONFIG_FINALIZER, "cfgd.io/machine-config-cleanup");
+    }
+
+    #[test]
+    fn merge_policy_union_packages() {
+        let cluster = ClusterConfigPolicySpec {
+            packages: vec![PackageRef {
+                name: "vim".to_string(),
+                version: None,
+            }],
+            ..Default::default()
+        };
+        let ns = ConfigPolicySpec {
+            packages: vec![PackageRef {
+                name: "git".to_string(),
+                version: None,
+            }],
+            ..Default::default()
+        };
+        let merged = merge_policy_requirements(&cluster, Some(&ns));
+        assert_eq!(merged.packages.len(), 2);
+    }
+
+    #[test]
+    fn merge_policy_cluster_wins_settings() {
+        let mut cluster_settings = BTreeMap::new();
+        cluster_settings.insert("key".to_string(), "cluster-value".to_string());
+        let cluster = ClusterConfigPolicySpec {
+            settings: cluster_settings,
+            ..Default::default()
+        };
+        let mut ns_settings = BTreeMap::new();
+        ns_settings.insert("key".to_string(), "ns-value".to_string());
+        let ns = ConfigPolicySpec {
+            settings: ns_settings,
+            ..Default::default()
+        };
+        let merged = merge_policy_requirements(&cluster, Some(&ns));
+        assert_eq!(merged.settings["key"], "cluster-value");
+    }
+
+    #[test]
+    fn merge_policy_cluster_wins_versions() {
+        let mut cluster_versions = BTreeMap::new();
+        cluster_versions.insert("kubectl".to_string(), ">=1.29".to_string());
+        let cluster = ClusterConfigPolicySpec {
+            package_versions: cluster_versions,
+            ..Default::default()
+        };
+        let mut ns_versions = BTreeMap::new();
+        ns_versions.insert("kubectl".to_string(), ">=1.28".to_string());
+        let ns = ConfigPolicySpec {
+            package_versions: ns_versions,
+            ..Default::default()
+        };
+        let merged = merge_policy_requirements(&cluster, Some(&ns));
+        assert_eq!(merged.versions["kubectl"], ">=1.29");
+    }
+
+    #[test]
+    fn merge_policy_no_namespace_policy() {
+        let cluster = ClusterConfigPolicySpec {
+            packages: vec![PackageRef {
+                name: "vim".to_string(),
+                version: None,
+            }],
+            ..Default::default()
+        };
+        let merged = merge_policy_requirements(&cluster, None);
+        assert_eq!(merged.packages.len(), 1);
+        assert_eq!(merged.packages[0].name, "vim");
+    }
+
+    #[test]
+    fn merge_policy_union_modules() {
+        let cluster = ClusterConfigPolicySpec {
+            required_modules: vec![ModuleRef {
+                name: "corp-vpn".to_string(),
+                required: true,
+            }],
+            ..Default::default()
+        };
+        let ns = ConfigPolicySpec {
+            required_modules: vec![ModuleRef {
+                name: "corp-certs".to_string(),
+                required: true,
+            }],
+            ..Default::default()
+        };
+        let merged = merge_policy_requirements(&cluster, Some(&ns));
+        assert_eq!(merged.modules.len(), 2);
+    }
+
+    #[test]
+    fn merge_policy_dedup_packages() {
+        let cluster = ClusterConfigPolicySpec {
+            packages: vec![PackageRef {
+                name: "vim".to_string(),
+                version: None,
+            }],
+            ..Default::default()
+        };
+        let ns = ConfigPolicySpec {
+            packages: vec![PackageRef {
+                name: "vim".to_string(),
+                version: Some("1.0".to_string()),
+            }],
+            ..Default::default()
+        };
+        let merged = merge_policy_requirements(&cluster, Some(&ns));
+        // Should not duplicate — cluster already has vim
+        assert_eq!(merged.packages.len(), 1);
     }
 }
