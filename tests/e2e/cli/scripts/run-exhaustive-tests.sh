@@ -706,7 +706,7 @@ if assert_ok; then
 else fail_test "M08"; fi
 
 begin_test "M09: module create --set"
-run $C module create overridden --package brew:neovim --set "package.neovim.min-version=0.9"
+run $C module create overridden --package brew:neovim --set "package.neovim.minVersion=0.9"
 if assert_ok; then
     pass_test "M09"
 else fail_test "M09"; fi
@@ -798,7 +798,7 @@ if assert_ok; then
 else fail_test "M23"; fi
 
 begin_test "M24: module update --set"
-run $C module update editor --set "package.neovim.min-version=0.9"
+run $C module update editor --set "package.neovim.minVersion=0.9"
 if assert_ok; then
     pass_test "M24"
 else fail_test "M24"; fi
