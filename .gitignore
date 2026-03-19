@@ -40,6 +40,8 @@
 # Claude project config (plans, scripts)
 !.claude/
 !.claude/*.md
+!.claude/specs/
+!.claude/specs/**
 !.claude/scripts/
 !.claude/scripts/**
 
