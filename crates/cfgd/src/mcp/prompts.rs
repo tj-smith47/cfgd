@@ -36,7 +36,10 @@ pub fn get(name: &str, arguments: &Value) -> Value {
 
     let mode_context = match name {
         "cfgd_generate" => {
-            let mode = arguments.get("mode").and_then(|v| v.as_str()).unwrap_or("full");
+            let mode = arguments
+                .get("mode")
+                .and_then(|v| v.as_str())
+                .unwrap_or("full");
             let target_name = arguments.get("name").and_then(|v| v.as_str()).unwrap_or("");
             match mode {
                 "module" => format!("Mode: module — generate module for '{}'.", target_name),
@@ -45,11 +48,17 @@ pub fn get(name: &str, arguments: &Value) -> Value {
             }
         }
         "cfgd_generate_module" => {
-            let n = arguments.get("name").and_then(|v| v.as_str()).unwrap_or("unknown");
+            let n = arguments
+                .get("name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown");
             format!("Mode: module — generate module for '{}'.", n)
         }
         "cfgd_generate_profile" => {
-            let n = arguments.get("name").and_then(|v| v.as_str()).unwrap_or("unknown");
+            let n = arguments
+                .get("name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown");
             format!("Mode: profile — generate profile '{}'.", n)
         }
         _ => {

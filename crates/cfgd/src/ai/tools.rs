@@ -1318,10 +1318,7 @@ mod tests {
         // Step 4: Verify file was written
         let module_path = tmp.path().join("modules/git/module.yaml");
         assert!(module_path.exists());
-        assert_eq!(
-            std::fs::read_to_string(&module_path).unwrap(),
-            module_yaml
-        );
+        assert_eq!(std::fs::read_to_string(&module_path).unwrap(), module_yaml);
 
         // Step 5: AI calls list_generated to see what it wrote
         let result = dispatch_tool_call(
