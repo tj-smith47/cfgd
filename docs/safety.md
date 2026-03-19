@@ -67,13 +67,13 @@ cfgd validates all file paths to prevent directory traversal and symlink attacks
 
 ## Daemon Drift Policy
 
-The daemon's reconciliation behavior is controlled by `drift_policy` in the reconcile config:
+The daemon's reconciliation behavior is controlled by `drift-policy` in the reconcile config:
 
 ```yaml
 spec:
   daemon:
     reconcile:
-      drift_policy: NotifyOnly  # Auto | NotifyOnly | Prompt
+      drift-policy: NotifyOnly  # Auto | NotifyOnly | Prompt
 ```
 
 - **NotifyOnly** (default): detects drift, sends notification, records events, but does NOT auto-apply. User must run `cfgd apply` manually.
