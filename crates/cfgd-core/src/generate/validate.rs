@@ -14,8 +14,8 @@ pub fn validate_yaml(content: &str, kind: SchemaKind) -> ValidationResult {
     };
 
     // Step 2: Check kind field matches expected
-    if let Some(doc_kind) = value.get("kind").and_then(|v| v.as_str()) {
-        if doc_kind != kind.as_str() {
+    if let Some(doc_kind) = value.get("kind").and_then(|v| v.as_str())
+        && doc_kind != kind.as_str() {
             return ValidationResult {
                 valid: false,
                 errors: vec![format!(
@@ -25,7 +25,6 @@ pub fn validate_yaml(content: &str, kind: SchemaKind) -> ValidationResult {
                 )],
             };
         }
-    }
 
     // Step 3: Attempt deserialization into concrete type
     let deser_result = match kind {

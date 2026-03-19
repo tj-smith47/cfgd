@@ -92,11 +92,10 @@ impl GenerateSession {
         let mut names = vec![];
         for entry in std::fs::read_dir(&modules_dir)? {
             let entry = entry?;
-            if entry.path().is_dir() && entry.path().join("module.yaml").exists() {
-                if let Some(name) = entry.file_name().to_str() {
+            if entry.path().is_dir() && entry.path().join("module.yaml").exists()
+                && let Some(name) = entry.file_name().to_str() {
                     names.push(name.to_string());
                 }
-            }
         }
         names.sort();
         Ok(names)
@@ -111,11 +110,10 @@ impl GenerateSession {
         for entry in std::fs::read_dir(&profiles_dir)? {
             let entry = entry?;
             let path = entry.path();
-            if path.extension().and_then(|e| e.to_str()) == Some("yaml") {
-                if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
+            if path.extension().and_then(|e| e.to_str()) == Some("yaml")
+                && let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
                     names.push(stem.to_string());
                 }
-            }
         }
         names.sort();
         Ok(names)
@@ -177,5 +175,46 @@ mod tests {
         let session = GenerateSession::new(tmp.path().to_path_buf());
         let profiles = session.get_existing_profiles().unwrap();
         assert_eq!(profiles, vec!["base", "work"]);
+    }
+
+    #[test]
+    fn test_write_module_yaml_valid() {
+        let tmp = TempDir::new().unwrap();
+        let mut session = GenerateSession::new(tmp.path().to_path_buf());
+        let yaml = "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: nvim\nspec:\n  packages:\n    - name: neovim\n";
+        let path = session.write_module_yaml("nvim", yaml).unwrap();
+        assert_eq!(path, tmp.path().join("modules/nvim/module.yaml"));
+        assert!(path.exists());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), yaml);
+        assert_eq!(session.list_generated().len(), 1);
+    }
+
+    #[test]
+    fn test_write_module_yaml_invalid_rejected() {
+        let tmp = TempDir::new().unwrap();
+        let mut session = GenerateSession::new(tmp.path().to_path_buf());
+        let result = session.write_module_yaml("bad", "not valid yaml {{");
+        assert!(result.is_err());
+        assert!(session.list_generated().is_empty());
+    }
+
+    #[test]
+    fn test_write_profile_yaml_valid() {
+        let tmp = TempDir::new().unwrap();
+        let mut session = GenerateSession::new(tmp.path().to_path_buf());
+        let yaml = "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: base\nspec:\n  modules:\n    - nvim\n";
+        let path = session.write_profile_yaml("base", yaml).unwrap();
+        assert_eq!(path, tmp.path().join("profiles/base.yaml"));
+        assert!(path.exists());
+        assert_eq!(session.list_generated().len(), 1);
+    }
+
+    #[test]
+    fn test_write_profile_yaml_wrong_kind_rejected() {
+        let tmp = TempDir::new().unwrap();
+        let mut session = GenerateSession::new(tmp.path().to_path_buf());
+        let yaml = "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: nvim\nspec: {}\n";
+        let result = session.write_profile_yaml("nvim", yaml);
+        assert!(result.is_err());
     }
 }
