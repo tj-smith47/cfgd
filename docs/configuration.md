@@ -150,6 +150,20 @@ Default aliases (scaffolded by `cfgd init`):
 
 These are not hardcoded — they live in your cfgd.yaml and can be changed or removed.
 
+## AI Configuration
+
+Configure the AI provider for `cfgd generate`:
+
+```yaml
+spec:
+  ai:
+    provider: claude              # AI provider (default: claude)
+    model: claude-sonnet-4-6      # Model ID (default: claude-sonnet-4-6)
+    api-key-env: ANTHROPIC_API_KEY # Env var containing API key (default: ANTHROPIC_API_KEY)
+```
+
+API keys are never stored in config files. The `api-key-env` field names the environment variable to read. CLI flags `--model` and `--provider` override config values.
+
 ## Global Flags
 
 These flags work with any subcommand:

@@ -30,6 +30,7 @@ crates/
 │   ├── platform/           # OS/distro/arch detection, native package manager mapping
 │   ├── sources/            # Multi-source config management (Phase 9)
 │   ├── composition/        # Multi-source merge engine (Phase 9)
+│   ├── generate/           # AI-guided generation: schema export, YAML validation, session state
 │   ├── server_client.rs    # Device gateway HTTP client (checkin, enrollment, device flow)
 │   └── upgrade.rs          # Self-upgrade: GitHub release detection, download, checksum verify
 ├── cfgd/src/               # Unified binary crate (workstation + node)
