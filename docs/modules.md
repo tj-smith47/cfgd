@@ -428,16 +428,23 @@ When you create a module with `--file`, cfgd **adopts** the file: it copies it i
 
 ### Adding Modules
 
-Add a module from a registry, a git URL, or the local modules directory:
+Add a local module to your profile, or reference remote modules in your profile YAML:
 
 ```sh
-cfgd module add nvim                          # local module (from modules/ dir)
-cfgd module add community/tmux@v1.0.0         # registry module at specific tag
-cfgd module add community/tmux                # registry module, latest tag
-cfgd module add https://github.com/user/modules.git//tmux@v1.0.0  # direct git URL
+cfgd module create nvim                       # create a new local module
+cfgd profile update --active --module nvim    # add local module to active profile
 ```
 
-When adding from a registry, cfgd clones or fetches the registry repo, checks out the appropriate tag, copies the module, and creates a lockfile entry.
+For registry or git-hosted modules, reference them in your profile YAML:
+
+```yaml
+spec:
+  modules:
+    - nvim                                    # local module (from modules/ dir)
+    - community/tmux                          # from "community" registry
+```
+
+When cfgd encounters a registry reference during apply, it clones or fetches the registry repo, checks out the appropriate tag, copies the module, and creates a lockfile entry.
 
 ### Upgrading Modules
 
@@ -488,7 +495,7 @@ Remote modules can be signed with GPG or SSH keys. cfgd verifies signatures when
   ```
 - **Skip verification.** Use `--allow-unsigned` on the CLI to bypass signature checks for a single operation. This is intended for development and testing, not production use.
   ```sh
-  cfgd module add community/experimental-tool --allow-unsigned
+  cfgd module upgrade community/experimental-tool --allow-unsigned
   ```
 
 ### Lockfile Integrity
