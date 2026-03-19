@@ -2350,6 +2350,7 @@ mod tests {
                 security: None,
                 aliases: std::collections::HashMap::new(),
                 file_strategy: crate::config::FileStrategy::default(),
+                ai: None,
             },
         };
         assert!(find_server_url(&config).is_none());
@@ -2380,6 +2381,7 @@ mod tests {
                 security: None,
                 aliases: std::collections::HashMap::new(),
                 file_strategy: crate::config::FileStrategy::default(),
+                ai: None,
             },
         };
         assert_eq!(

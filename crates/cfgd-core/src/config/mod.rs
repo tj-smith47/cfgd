@@ -79,6 +79,41 @@ pub struct ConfigSpec {
     /// Built-in defaults (add, remove) can be overridden or extended.
     #[serde(default)]
     pub aliases: HashMap<String, String>,
+
+    /// AI assistant configuration: provider, model, and API key env var.
+    #[serde(default)]
+    pub ai: Option<AiConfig>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub struct AiConfig {
+    #[serde(default = "default_ai_provider")]
+    pub provider: String,
+    #[serde(default = "default_ai_model")]
+    pub model: String,
+    #[serde(default = "default_api_key_env")]
+    pub api_key_env: String,
+}
+
+impl Default for AiConfig {
+    fn default() -> Self {
+        Self {
+            provider: default_ai_provider(),
+            model: default_ai_model(),
+            api_key_env: default_api_key_env(),
+        }
+    }
+}
+
+fn default_ai_provider() -> String {
+    "claude".into()
+}
+fn default_ai_model() -> String {
+    "claude-sonnet-4-6".into()
+}
+fn default_api_key_env() -> String {
+    "ANTHROPIC_API_KEY".into()
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -1149,6 +1184,7 @@ pub fn parse_config(contents: &str, path: &Path) -> Result<CfgdConfig> {
             file_strategy: raw.spec.file_strategy,
             security: raw.spec.security,
             aliases: raw.spec.aliases,
+            ai: raw.spec.ai,
         },
     })
 }
@@ -1187,6 +1223,8 @@ struct RawConfigSpec {
     security: Option<SecurityConfig>,
     #[serde(default)]
     aliases: HashMap<String, String>,
+    #[serde(default)]
+    ai: Option<AiConfig>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -2640,6 +2678,56 @@ patches:
     }
 
     // --- resolve_profile deeper inheritance ---
+
+    #[test]
+    fn test_ai_config_defaults() {
+        let yaml = r#"
+apiVersion: cfgd.io/v1alpha1
+kind: Config
+metadata:
+  name: test
+spec: {}
+"#;
+        let config: CfgdConfig = serde_yaml::from_str(yaml).unwrap();
+        let ai = config.spec.ai.unwrap_or_default();
+        assert_eq!(ai.provider, "claude");
+        assert_eq!(ai.model, "claude-sonnet-4-6");
+        assert_eq!(ai.api_key_env, "ANTHROPIC_API_KEY");
+    }
+
+    #[test]
+    fn test_ai_config_custom() {
+        let yaml = r#"
+apiVersion: cfgd.io/v1alpha1
+kind: Config
+metadata:
+  name: test
+spec:
+  ai:
+    provider: claude
+    model: claude-opus-4-6
+    api-key-env: MY_CLAUDE_KEY
+"#;
+        let config: CfgdConfig = serde_yaml::from_str(yaml).unwrap();
+        let ai = config.spec.ai.unwrap_or_default();
+        assert_eq!(ai.model, "claude-opus-4-6");
+        assert_eq!(ai.api_key_env, "MY_CLAUDE_KEY");
+    }
+
+    #[test]
+    fn test_existing_config_without_ai_still_parses() {
+        let yaml = r#"
+apiVersion: cfgd.io/v1alpha1
+kind: Config
+metadata:
+  name: my-workstation
+spec:
+  profile: work
+  theme: default
+"#;
+        let config: CfgdConfig = serde_yaml::from_str(yaml).unwrap();
+        assert!(config.spec.ai.is_none());
+    }
 
     #[test]
     fn three_level_inheritance() {
