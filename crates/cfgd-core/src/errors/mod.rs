@@ -36,6 +36,9 @@ pub enum CfgdError {
     #[error("module error: {0}")]
     Module(#[from] ModuleError),
 
+    #[error("generate error: {0}")]
+    Generate(#[from] GenerateError),
+
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
 }
@@ -317,6 +320,30 @@ pub enum ModuleError {
 }
 
 #[derive(Debug, thiserror::Error)]
+pub enum GenerateError {
+    #[error("validation failed: {message}")]
+    ValidationFailed { message: String },
+
+    #[error("schema error: {message}")]
+    SchemaError { message: String },
+
+    #[error("file access denied: {path} — {reason}")]
+    FileAccessDenied { path: PathBuf, reason: String },
+
+    #[error("file too large: {path} ({size_bytes} bytes, max {max_bytes})")]
+    FileTooLarge { path: PathBuf, size_bytes: u64, max_bytes: u64 },
+
+    #[error("session error: {message}")]
+    SessionError { message: String },
+
+    #[error("AI provider error: {message}")]
+    ProviderError { message: String },
+
+    #[error("API key not found in environment variable '{env_var}'")]
+    ApiKeyNotFound { env_var: String },
+}
+
+#[derive(Debug, thiserror::Error)]
 pub enum DaemonError {
     #[error("daemon already running (pid {pid})")]
     AlreadyRunning { pid: u32 },
@@ -435,5 +462,15 @@ mod tests {
         let io_err = std::io::Error::new(std::io::ErrorKind::NotFound, "file missing");
         let cfgd_err: CfgdError = io_err.into();
         assert!(matches!(cfgd_err, CfgdError::Io(_)));
+    }
+
+    #[test]
+    fn generate_error_converts_to_cfgd_error() {
+        let err = GenerateError::ValidationFailed {
+            message: "missing apiVersion".into(),
+        };
+        let cfgd_err: CfgdError = err.into();
+        assert!(matches!(cfgd_err, CfgdError::Generate(_)));
+        assert!(cfgd_err.to_string().contains("missing apiVersion"));
     }
 }
