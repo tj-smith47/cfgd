@@ -129,3 +129,5 @@ Installs [seccomp](https://kubernetes.io/docs/tutorials/security/seccomp/) JSON 
 ### `certificates`
 
 Manages [X.509](https://en.wikipedia.org/wiki/X.509) certificate files (TLS/SSL certs) and enforces secure file permissions.
+
+See the [CLI reference](cli-reference.md) for `cfgd profile update --system` and `cfgd profile create --system` commands.

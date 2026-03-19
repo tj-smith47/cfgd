@@ -75,3 +75,5 @@ Module files work the same way. Templates in module file sources are rendered wi
 ## Env Var Sandboxing with Sources
 
 When using [multi-source config](sources.md), templates from a config source can only access that source's provided env vars and system facts — not your personal env vars. This prevents data exfiltration through templates.
+
+See the [CLI reference](cli-reference.md) for `cfgd profile update --file` and `cfgd module update --file` commands.

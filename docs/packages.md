@@ -94,3 +94,5 @@ Packages:
   = apt: 5 packages up to date
   ⊘ snap: not installed (skipping)
 ```
+
+See the [CLI reference](cli-reference.md) for `cfgd profile update --package` and `cfgd module update --package` commands.
