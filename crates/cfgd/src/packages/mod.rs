@@ -576,9 +576,47 @@ impl PackageManager for BrewManager {
             Vec::new()
         }
     }
+
+    fn installed_packages_with_versions(&self) -> Result<Vec<cfgd_core::providers::PackageInfo>> {
+        let output = run_pkg_cmd("brew", brew_cmd().args(["list", "--versions"]), "list")?;
+        Ok(parse_brew_versions(&String::from_utf8_lossy(
+            &output.stdout,
+        )))
+    }
+}
+
+/// Parse `brew list --versions` output (format: `package 1.2.3`) into PackageInfo.
+/// Each line has package name followed by one or more version tokens separated by spaces.
+/// We take the last version token as the installed version.
+pub(crate) fn parse_brew_versions(stdout: &str) -> Vec<cfgd_core::providers::PackageInfo> {
+    stdout
+        .lines()
+        .filter_map(|line| {
+            let line = line.trim();
+            if line.is_empty() {
+                return None;
+            }
+            let mut parts = line.splitn(2, ' ');
+            let name = parts.next()?.trim();
+            let version = parts
+                .next()
+                .and_then(|v| v.split_whitespace().last())
+                .unwrap_or("unknown");
+            if name.is_empty() {
+                return None;
+            }
+            Some(cfgd_core::providers::PackageInfo {
+                name: name.to_string(),
+                version: version.to_string(),
+            })
+        })
+        .collect()
 }
 
 // --- SimpleManager (data-driven package manager) ---
+
+/// Function pointer type for `installed_packages_with_versions` overrides.
+type ListWithVersionsFn = fn(&str) -> Result<Vec<cfgd_core::providers::PackageInfo>>;
 
 /// A data-driven package manager for system package managers that follow a
 /// uniform pattern: list installed, install, uninstall, update.
@@ -596,6 +634,11 @@ pub struct SimpleManager {
     query_version: fn(&str, &str) -> Result<Option<String>>,
     /// Custom availability check. When None, uses `command_available(mgr_name)`.
     is_available_fn: Option<fn() -> bool>,
+    /// Override for installed_packages_with_versions. When None, falls back to
+    /// the default trait implementation (wraps installed_packages with "unknown").
+    list_with_versions: Option<ListWithVersionsFn>,
+    /// Override for package_aliases. When None, returns empty vec (default).
+    aliases_fn: Option<fn(&str) -> Vec<String>>,
 }
 
 impl SimpleManager {
@@ -696,6 +739,30 @@ impl PackageManager for SimpleManager {
 
     fn available_version(&self, package: &str) -> Result<Option<String>> {
         (self.query_version)(self.mgr_name, package)
+    }
+
+    fn installed_packages_with_versions(&self) -> Result<Vec<cfgd_core::providers::PackageInfo>> {
+        if let Some(f) = self.list_with_versions {
+            f(self.mgr_name)
+        } else {
+            // Default: wrap installed_packages with "unknown"
+            Ok(self
+                .installed_packages()?
+                .into_iter()
+                .map(|name| cfgd_core::providers::PackageInfo {
+                    name,
+                    version: "unknown".into(),
+                })
+                .collect())
+        }
+    }
+
+    fn package_aliases(&self, canonical_name: &str) -> Result<Vec<String>> {
+        if let Some(f) = self.aliases_fn {
+            Ok(f(canonical_name))
+        } else {
+            Ok(vec![])
+        }
     }
 }
 
@@ -883,6 +950,92 @@ fn query_version_pkg(manager: &str, package: &str) -> Result<Option<String>> {
     Ok(None)
 }
 
+// --- installed_packages_with_versions helpers ---
+
+/// Parse `dpkg-query -W -f='${Package}\t${Version}\n'` output into PackageInfo.
+pub(crate) fn parse_apt_versions(stdout: &str) -> Vec<cfgd_core::providers::PackageInfo> {
+    stdout
+        .lines()
+        .filter_map(|line| {
+            let mut parts = line.splitn(2, '\t');
+            let name = parts.next()?.trim();
+            let version = parts.next().unwrap_or("unknown").trim();
+            if name.is_empty() {
+                return None;
+            }
+            Some(cfgd_core::providers::PackageInfo {
+                name: name.to_string(),
+                version: if version.is_empty() {
+                    "unknown".to_string()
+                } else {
+                    version.to_string()
+                },
+            })
+        })
+        .collect()
+}
+
+/// Parse `rpm -qa --queryformat '%{NAME}\t%{VERSION}\n'` output into PackageInfo.
+pub(crate) fn parse_rpm_versions(stdout: &str) -> Vec<cfgd_core::providers::PackageInfo> {
+    stdout
+        .lines()
+        .filter_map(|line| {
+            let mut parts = line.splitn(2, '\t');
+            let name = parts.next()?.trim();
+            let version = parts.next().unwrap_or("unknown").trim();
+            if name.is_empty() {
+                return None;
+            }
+            Some(cfgd_core::providers::PackageInfo {
+                name: name.to_string(),
+                version: if version.is_empty() {
+                    "unknown".to_string()
+                } else {
+                    version.to_string()
+                },
+            })
+        })
+        .collect()
+}
+
+fn list_apt_with_versions(manager: &str) -> Result<Vec<cfgd_core::providers::PackageInfo>> {
+    let output = run_pkg_cmd(
+        manager,
+        Command::new("dpkg-query").args(["-W", "-f=${Package}\t${Version}\n"]),
+        "list",
+    )?;
+    Ok(parse_apt_versions(&String::from_utf8_lossy(&output.stdout)))
+}
+
+fn list_dnf_with_versions(manager: &str) -> Result<Vec<cfgd_core::providers::PackageInfo>> {
+    let output = run_pkg_cmd(
+        manager,
+        Command::new("rpm").args(["--query", "--all", "--queryformat", "%{NAME}\t%{VERSION}\n"]),
+        "list",
+    )?;
+    Ok(parse_rpm_versions(&String::from_utf8_lossy(&output.stdout)))
+}
+
+// --- package_aliases helpers ---
+
+fn apt_aliases(canonical_name: &str) -> Vec<String> {
+    match canonical_name {
+        "fd" => vec!["fd-find".to_string()],
+        "rg" => vec!["ripgrep".to_string()],
+        "bat" => vec!["batcat".to_string()],
+        "nvim" => vec!["neovim".to_string()],
+        _ => vec![],
+    }
+}
+
+fn dnf_aliases(canonical_name: &str) -> Vec<String> {
+    match canonical_name {
+        "fd" => vec!["fd-find".to_string()],
+        "nvim" => vec!["neovim".to_string()],
+        _ => vec![],
+    }
+}
+
 // --- SimpleManager constructors ---
 
 fn apt_manager() -> SimpleManager {
@@ -896,6 +1049,8 @@ fn apt_manager() -> SimpleManager {
         parse_list: parse_simple_lines,
         query_version: query_version_apt,
         is_available_fn: None,
+        list_with_versions: Some(list_apt_with_versions),
+        aliases_fn: Some(apt_aliases),
     }
 }
 
@@ -910,6 +1065,8 @@ fn dnf_manager() -> SimpleManager {
         parse_list: parse_dnf_lines,
         query_version: query_version_info,
         is_available_fn: None,
+        list_with_versions: Some(list_dnf_with_versions),
+        aliases_fn: Some(dnf_aliases),
     }
 }
 
@@ -924,6 +1081,8 @@ fn yum_manager() -> SimpleManager {
         parse_list: parse_yum_lines,
         query_version: query_version_info,
         is_available_fn: Some(|| !command_available("dnf") && command_available("yum")),
+        list_with_versions: Some(list_dnf_with_versions),
+        aliases_fn: Some(dnf_aliases),
     }
 }
 
@@ -938,6 +1097,8 @@ fn apk_manager() -> SimpleManager {
         parse_list: parse_apk_lines,
         query_version: query_version_apk,
         is_available_fn: None,
+        list_with_versions: None,
+        aliases_fn: None,
     }
 }
 
@@ -952,6 +1113,8 @@ fn pacman_manager() -> SimpleManager {
         parse_list: parse_simple_lines,
         query_version: query_version_info,
         is_available_fn: None,
+        list_with_versions: None,
+        aliases_fn: None,
     }
 }
 
@@ -973,6 +1136,8 @@ fn zypper_manager() -> SimpleManager {
         parse_list: parse_zypper_lines,
         query_version: query_version_info,
         is_available_fn: None,
+        list_with_versions: None,
+        aliases_fn: None,
     }
 }
 
@@ -987,6 +1152,8 @@ fn pkg_manager() -> SimpleManager {
         parse_list: parse_pkg_lines,
         query_version: query_version_pkg,
         is_available_fn: None,
+        list_with_versions: None,
+        aliases_fn: None,
     }
 }
 
@@ -1127,6 +1294,40 @@ impl PackageManager for CargoManager {
         }
         Ok(None)
     }
+
+    fn installed_packages_with_versions(&self) -> Result<Vec<cfgd_core::providers::PackageInfo>> {
+        let output = run_pkg_cmd("cargo", cargo_cmd().args(["install", "--list"]), "list")?;
+        Ok(parse_cargo_install_list(&String::from_utf8_lossy(
+            &output.stdout,
+        )))
+    }
+}
+
+/// Parse `cargo install --list` output into PackageInfo.
+/// Format: non-indented lines are `package_name v1.2.3:`, indented lines are binaries.
+pub(crate) fn parse_cargo_install_list(stdout: &str) -> Vec<cfgd_core::providers::PackageInfo> {
+    stdout
+        .lines()
+        .filter(|l| !l.starts_with(' ') && !l.is_empty())
+        .filter_map(|line| {
+            // Format: "package_name v1.2.3:"
+            let mut parts = line.splitn(2, ' ');
+            let name = parts.next()?.trim();
+            let version_raw = parts.next().unwrap_or("").trim().trim_end_matches(':');
+            let version = version_raw.strip_prefix('v').unwrap_or(version_raw);
+            if name.is_empty() {
+                return None;
+            }
+            Some(cfgd_core::providers::PackageInfo {
+                name: name.to_string(),
+                version: if version.is_empty() {
+                    "unknown".to_string()
+                } else {
+                    version.to_string()
+                },
+            })
+        })
+        .collect()
 }
 
 // --- Npm ---
@@ -1340,6 +1541,46 @@ impl PackageManager for NpmManager {
             Ok(Some(version))
         }
     }
+
+    fn installed_packages_with_versions(&self) -> Result<Vec<cfgd_core::providers::PackageInfo>> {
+        let output = npm_cmd()
+            .args(["list", "-g", "--depth=0", "--json"])
+            .output()
+            .map_err(|e| PackageError::CommandFailed {
+                manager: "npm".into(),
+                source: e,
+            })?;
+        // npm list exits non-zero on peer dep issues but still produces valid JSON
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let parsed: serde_json::Value =
+            serde_json::from_str(&stdout).map_err(|e| PackageError::ListFailed {
+                manager: "npm".into(),
+                message: format!("failed to parse npm list output: {}", e),
+            })?;
+        Ok(parse_npm_list_versions(&parsed))
+    }
+}
+
+/// Parse `npm list -g --depth=0 --json` dependencies object into PackageInfo.
+/// JSON format: `{"dependencies": {"pkg": {"version": "1.2.3"}, ...}}`
+pub(crate) fn parse_npm_list_versions(
+    parsed: &serde_json::Value,
+) -> Vec<cfgd_core::providers::PackageInfo> {
+    let mut packages = Vec::new();
+    if let Some(deps) = parsed.get("dependencies").and_then(|d| d.as_object()) {
+        for (name, info) in deps {
+            let version = info
+                .get("version")
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown")
+                .to_string();
+            packages.push(cfgd_core::providers::PackageInfo {
+                name: name.clone(),
+                version,
+            });
+        }
+    }
+    packages
 }
 
 // --- Pipx ---
@@ -1549,6 +1790,39 @@ impl PackageManager for PipxManager {
             .and_then(|v| v.as_str())
             .map(|s| s.to_string()))
     }
+
+    fn installed_packages_with_versions(&self) -> Result<Vec<cfgd_core::providers::PackageInfo>> {
+        let output = run_pkg_cmd("pipx", pipx_cmd().args(["list", "--json"]), "list")?;
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let parsed: serde_json::Value =
+            serde_json::from_str(&stdout).map_err(|e| PackageError::ListFailed {
+                manager: "pipx".into(),
+                message: format!("failed to parse pipx list output: {}", e),
+            })?;
+        Ok(parse_pipx_list_versions(&parsed))
+    }
+}
+
+/// Parse `pipx list --json` venvs object into PackageInfo.
+/// JSON format: `{"venvs": {"pkg": {"metadata": {"main_package": {"package_version": "1.2.3"}}}}}`
+pub(crate) fn parse_pipx_list_versions(
+    parsed: &serde_json::Value,
+) -> Vec<cfgd_core::providers::PackageInfo> {
+    let mut packages = Vec::new();
+    if let Some(venvs) = parsed.get("venvs").and_then(|v| v.as_object()) {
+        for (name, info) in venvs {
+            let version = info
+                .pointer("/metadata/main_package/package_version")
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown")
+                .to_string();
+            packages.push(cfgd_core::providers::PackageInfo {
+                name: name.clone(),
+                version,
+            });
+        }
+    }
+    packages
 }
 
 // --- Snap ---
@@ -4669,5 +4943,319 @@ custom:
             stderr: b"error message".to_vec(),
         };
         assert_eq!(stderr_lossy(&output), "error message");
+    }
+
+    // --- installed_packages_with_versions parse tests ---
+
+    #[test]
+    fn test_parse_brew_versions_basic() {
+        let output = "git 2.43.0\nneovim 0.9.5\nripgrep 14.1.0\n";
+        let pkgs = parse_brew_versions(output);
+        assert_eq!(pkgs.len(), 3);
+        assert!(
+            pkgs.iter()
+                .any(|p| p.name == "git" && p.version == "2.43.0")
+        );
+        assert!(
+            pkgs.iter()
+                .any(|p| p.name == "neovim" && p.version == "0.9.5")
+        );
+        assert!(
+            pkgs.iter()
+                .any(|p| p.name == "ripgrep" && p.version == "14.1.0")
+        );
+    }
+
+    #[test]
+    fn test_parse_brew_versions_multi_version() {
+        // brew list --versions can show multiple versions for some packages
+        let output = "python@3.11 3.11.0 3.11.1\nfd 9.0.0\n";
+        let pkgs = parse_brew_versions(output);
+        assert_eq!(pkgs.len(), 2);
+        // Multi-version: take the last token
+        assert!(
+            pkgs.iter()
+                .any(|p| p.name == "python@3.11" && p.version == "3.11.1")
+        );
+        assert!(pkgs.iter().any(|p| p.name == "fd" && p.version == "9.0.0"));
+    }
+
+    #[test]
+    fn test_parse_brew_versions_empty() {
+        let pkgs = parse_brew_versions("");
+        assert!(pkgs.is_empty());
+    }
+
+    #[test]
+    fn test_parse_brew_versions_blank_lines() {
+        let output = "\ngit 2.43.0\n\n";
+        let pkgs = parse_brew_versions(output);
+        assert_eq!(pkgs.len(), 1);
+        assert_eq!(pkgs[0].name, "git");
+    }
+
+    #[test]
+    fn test_parse_apt_versions_basic() {
+        let output = "curl\t7.88.1\nwget\t1.21.3\ngit\t2.39.0\n";
+        let pkgs = parse_apt_versions(output);
+        assert_eq!(pkgs.len(), 3);
+        assert!(
+            pkgs.iter()
+                .any(|p| p.name == "curl" && p.version == "7.88.1")
+        );
+        assert!(
+            pkgs.iter()
+                .any(|p| p.name == "wget" && p.version == "1.21.3")
+        );
+        assert!(
+            pkgs.iter()
+                .any(|p| p.name == "git" && p.version == "2.39.0")
+        );
+    }
+
+    #[test]
+    fn test_parse_apt_versions_missing_version() {
+        let output = "curl\t7.88.1\nbadpkg\t\n";
+        let pkgs = parse_apt_versions(output);
+        assert_eq!(pkgs.len(), 2);
+        let bad = pkgs.iter().find(|p| p.name == "badpkg").unwrap();
+        assert_eq!(bad.version, "unknown");
+    }
+
+    #[test]
+    fn test_parse_apt_versions_empty() {
+        let pkgs = parse_apt_versions("");
+        assert!(pkgs.is_empty());
+    }
+
+    #[test]
+    fn test_parse_rpm_versions_basic() {
+        let output = "bash\t5.1.16\ncoreutils\t8.32\nglibc\t2.35\n";
+        let pkgs = parse_rpm_versions(output);
+        assert_eq!(pkgs.len(), 3);
+        assert!(
+            pkgs.iter()
+                .any(|p| p.name == "bash" && p.version == "5.1.16")
+        );
+        assert!(
+            pkgs.iter()
+                .any(|p| p.name == "coreutils" && p.version == "8.32")
+        );
+    }
+
+    #[test]
+    fn test_parse_rpm_versions_empty() {
+        let pkgs = parse_rpm_versions("");
+        assert!(pkgs.is_empty());
+    }
+
+    #[test]
+    fn test_parse_cargo_install_list_basic() {
+        let output = "bat v0.24.0:\n    bat\nripgrep v14.1.0:\n    rg\nfd-find v9.0.0:\n    fd\n";
+        let pkgs = parse_cargo_install_list(output);
+        assert_eq!(pkgs.len(), 3);
+        assert!(
+            pkgs.iter()
+                .any(|p| p.name == "bat" && p.version == "0.24.0")
+        );
+        assert!(
+            pkgs.iter()
+                .any(|p| p.name == "ripgrep" && p.version == "14.1.0")
+        );
+        assert!(
+            pkgs.iter()
+                .any(|p| p.name == "fd-find" && p.version == "9.0.0")
+        );
+    }
+
+    #[test]
+    fn test_parse_cargo_install_list_strips_v_prefix() {
+        let output = "cargo-edit v0.12.2:\n    cargo-add\n    cargo-rm\n";
+        let pkgs = parse_cargo_install_list(output);
+        assert_eq!(pkgs.len(), 1);
+        assert_eq!(pkgs[0].name, "cargo-edit");
+        assert_eq!(pkgs[0].version, "0.12.2");
+    }
+
+    #[test]
+    fn test_parse_cargo_install_list_empty() {
+        let pkgs = parse_cargo_install_list("");
+        assert!(pkgs.is_empty());
+    }
+
+    #[test]
+    fn test_parse_npm_list_versions_basic() {
+        let json = serde_json::json!({
+            "dependencies": {
+                "typescript": {"version": "5.3.3"},
+                "eslint": {"version": "8.56.0"},
+                "prettier": {"version": "3.2.0"}
+            }
+        });
+        let pkgs = parse_npm_list_versions(&json);
+        assert_eq!(pkgs.len(), 3);
+        assert!(
+            pkgs.iter()
+                .any(|p| p.name == "typescript" && p.version == "5.3.3")
+        );
+        assert!(
+            pkgs.iter()
+                .any(|p| p.name == "eslint" && p.version == "8.56.0")
+        );
+    }
+
+    #[test]
+    fn test_parse_npm_list_versions_no_deps() {
+        let json = serde_json::json!({"name": "root"});
+        let pkgs = parse_npm_list_versions(&json);
+        assert!(pkgs.is_empty());
+    }
+
+    #[test]
+    fn test_parse_npm_list_versions_missing_version() {
+        let json = serde_json::json!({
+            "dependencies": {
+                "some-pkg": {}
+            }
+        });
+        let pkgs = parse_npm_list_versions(&json);
+        assert_eq!(pkgs.len(), 1);
+        assert_eq!(pkgs[0].version, "unknown");
+    }
+
+    #[test]
+    fn test_parse_pipx_list_versions_basic() {
+        let json = serde_json::json!({
+            "venvs": {
+                "black": {
+                    "metadata": {
+                        "main_package": {
+                            "package_version": "24.1.1"
+                        }
+                    }
+                },
+                "httpie": {
+                    "metadata": {
+                        "main_package": {
+                            "package_version": "3.2.2"
+                        }
+                    }
+                }
+            }
+        });
+        let pkgs = parse_pipx_list_versions(&json);
+        assert_eq!(pkgs.len(), 2);
+        assert!(
+            pkgs.iter()
+                .any(|p| p.name == "black" && p.version == "24.1.1")
+        );
+        assert!(
+            pkgs.iter()
+                .any(|p| p.name == "httpie" && p.version == "3.2.2")
+        );
+    }
+
+    #[test]
+    fn test_parse_pipx_list_versions_no_venvs() {
+        let json = serde_json::json!({"venvs": {}});
+        let pkgs = parse_pipx_list_versions(&json);
+        assert!(pkgs.is_empty());
+    }
+
+    #[test]
+    fn test_parse_pipx_list_versions_missing_version_field() {
+        let json = serde_json::json!({
+            "venvs": {
+                "awscli": {
+                    "metadata": {
+                        "main_package": {}
+                    }
+                }
+            }
+        });
+        let pkgs = parse_pipx_list_versions(&json);
+        assert_eq!(pkgs.len(), 1);
+        assert_eq!(pkgs[0].version, "unknown");
+    }
+
+    // --- package_aliases tests ---
+
+    #[test]
+    fn test_apt_aliases_fd() {
+        let aliases = apt_aliases("fd");
+        assert_eq!(aliases, vec!["fd-find"]);
+    }
+
+    #[test]
+    fn test_apt_aliases_bat() {
+        let aliases = apt_aliases("bat");
+        assert_eq!(aliases, vec!["batcat"]);
+    }
+
+    #[test]
+    fn test_apt_aliases_nvim() {
+        let aliases = apt_aliases("nvim");
+        assert_eq!(aliases, vec!["neovim"]);
+    }
+
+    #[test]
+    fn test_apt_aliases_rg() {
+        let aliases = apt_aliases("rg");
+        assert_eq!(aliases, vec!["ripgrep"]);
+    }
+
+    #[test]
+    fn test_apt_aliases_unknown() {
+        let aliases = apt_aliases("git");
+        assert!(aliases.is_empty());
+    }
+
+    #[test]
+    fn test_dnf_aliases_fd() {
+        let aliases = dnf_aliases("fd");
+        assert_eq!(aliases, vec!["fd-find"]);
+    }
+
+    #[test]
+    fn test_dnf_aliases_nvim() {
+        let aliases = dnf_aliases("nvim");
+        assert_eq!(aliases, vec!["neovim"]);
+    }
+
+    #[test]
+    fn test_dnf_aliases_unknown() {
+        let aliases = dnf_aliases("curl");
+        assert!(aliases.is_empty());
+    }
+
+    #[test]
+    fn test_simple_manager_package_aliases_via_trait() {
+        // Verify the trait dispatch works correctly for apt
+        let apt = apt_manager();
+        let aliases = apt.package_aliases("fd").unwrap();
+        assert_eq!(aliases, vec!["fd-find"]);
+
+        let aliases = apt.package_aliases("bat").unwrap();
+        assert_eq!(aliases, vec!["batcat"]);
+
+        let aliases = apt.package_aliases("git").unwrap();
+        assert!(aliases.is_empty());
+    }
+
+    #[test]
+    fn test_simple_manager_package_aliases_dnf_via_trait() {
+        let dnf = dnf_manager();
+        let aliases = dnf.package_aliases("nvim").unwrap();
+        assert_eq!(aliases, vec!["neovim"]);
+
+        let aliases = dnf.package_aliases("curl").unwrap();
+        assert!(aliases.is_empty());
+    }
+
+    #[test]
+    fn test_simple_manager_no_aliases_for_pacman() {
+        let pacman = pacman_manager();
+        let aliases = pacman.package_aliases("fd").unwrap();
+        assert!(aliases.is_empty());
     }
 }
