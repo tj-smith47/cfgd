@@ -3,12 +3,18 @@
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::errors::Result;
 use crate::output::Printer;
 
 // --- PackageManager trait ---
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PackageInfo {
+    pub name: String,
+    pub version: String,
+}
 
 pub trait PackageManager: Send + Sync {
     fn name(&self) -> &str;
@@ -28,6 +34,25 @@ pub trait PackageManager: Send + Sync {
     /// that are already on the system PATH (apt, dnf, etc.).
     fn path_dirs(&self) -> Vec<String> {
         Vec::new()
+    }
+
+    /// List all installed packages with their installed versions.
+    /// Default implementation wraps `installed_packages()` with version "unknown".
+    fn installed_packages_with_versions(&self) -> Result<Vec<PackageInfo>> {
+        Ok(self
+            .installed_packages()?
+            .into_iter()
+            .map(|name| PackageInfo {
+                name,
+                version: "unknown".into(),
+            })
+            .collect())
+    }
+
+    /// Return alternative names / aliases for a canonical package name.
+    /// Used for cross-manager package resolution. Default returns empty.
+    fn package_aliases(&self, _canonical_name: &str) -> Result<Vec<String>> {
+        Ok(vec![])
     }
 }
 
@@ -331,5 +356,19 @@ mod tests {
         assert!(registry.available_system_configurators().is_empty());
         assert!(registry.file_manager.is_none());
         assert!(registry.secret_backend.is_none());
+    }
+
+    #[test]
+    fn test_default_installed_packages_with_versions_empty() {
+        let mock = MockPackageManager { available: true };
+        let pkgs = mock.installed_packages_with_versions().unwrap();
+        assert!(pkgs.is_empty());
+    }
+
+    #[test]
+    fn test_default_package_aliases_empty() {
+        let mock = MockPackageManager { available: true };
+        let aliases = mock.package_aliases("fd").unwrap();
+        assert!(aliases.is_empty());
     }
 }
