@@ -1,7 +1,7 @@
 FROM rust:1.94-slim-bookworm AS builder
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    pkg-config libssl-dev libsqlite3-dev git \
+    pkg-config perl make git \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /build
@@ -15,7 +15,7 @@ RUN cargo build --release --bin cfgd
 FROM debian:bookworm-slim
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    ca-certificates libsqlite3-0 git openssh-client \
+    ca-certificates git openssh-client \
     kmod apparmor-utils procps \
     && rm -rf /var/lib/apt/lists/*
 
