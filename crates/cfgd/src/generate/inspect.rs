@@ -35,15 +35,15 @@ pub struct PackageQueryResult {
 /// Returns None if the tool is not installed or does not respond.
 fn probe_version(name: &str) -> Option<String> {
     for flag in &["--version", "-V", "-version"] {
-        if let Ok(output) = Command::new(name).arg(flag).output() {
-            if output.status.success() || !output.stdout.is_empty() {
-                let stdout = String::from_utf8_lossy(&output.stdout);
-                let first_line = stdout.lines().next().unwrap_or("").trim();
-                if !first_line.is_empty() {
-                    return Some(first_line.to_string());
-                }
+        if let Ok(output) = Command::new(name).arg(flag).output()
+            && output.status.success()
+        {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let first_line = stdout.lines().next().unwrap_or("").trim();
+            if !first_line.is_empty() {
+                return Some(first_line.to_string());
             }
-            // Some tools (e.g. vim) write version to stderr
+            // Some tools (e.g. vim) write version to stderr even on success
             if !output.stderr.is_empty() {
                 let stderr = String::from_utf8_lossy(&output.stderr);
                 let first_line = stderr.lines().next().unwrap_or("").trim();
@@ -75,10 +75,7 @@ fn collect_config_paths(name: &str, home: &Path) -> Vec<PathBuf> {
         home.join(format!(".{}.yaml", name)),
     ];
 
-    candidates
-        .into_iter()
-        .filter(|p| p.exists())
-        .collect()
+    candidates.into_iter().filter(|p| p.exists()).collect()
 }
 
 /// Detect a plugin system by scanning the content of config files.
@@ -131,7 +128,9 @@ fn read_config_dir_content(path: &Path) -> String {
         if let Ok(iter) = std::fs::read_dir(path) {
             for entry in iter.flatten() {
                 let p = entry.path();
-                if p.is_file() && let Ok(text) = std::fs::read_to_string(&p) {
+                if p.is_file()
+                    && let Ok(text) = std::fs::read_to_string(&p)
+                {
                     combined.push_str(&text);
                     combined.push('\n');
                 }
@@ -256,7 +255,10 @@ mod tests {
         let result = inspect_tool("nvim", home).unwrap();
         assert_eq!(result.name, "nvim");
         assert!(
-            result.config_paths.iter().any(|p| p.ends_with(".config/nvim")),
+            result
+                .config_paths
+                .iter()
+                .any(|p| p.ends_with(".config/nvim")),
             "expected .config/nvim in config_paths, got: {:?}",
             result.config_paths
         );

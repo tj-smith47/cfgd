@@ -1,8 +1,11 @@
 use clap::Parser;
 use tracing_subscriber::EnvFilter;
 
+#[allow(unused)]
+mod ai;
 mod cli;
 mod files;
+#[allow(unused)]
 mod generate;
 mod packages;
 mod secrets;

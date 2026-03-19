@@ -311,8 +311,10 @@ fn detect_plugin_manager(line: &str) -> Option<&'static str> {
         Some("sheldon")
     } else if l.contains("fisher") && l.contains("fish") {
         Some("fisher")
-    } else if l.contains("prezto") || l.contains("zim") {
+    } else if l.contains("prezto") {
         Some("prezto")
+    } else if l.contains("zim") {
+        Some("zim")
     } else {
         None
     }
@@ -567,7 +569,10 @@ pub fn scan_system_settings() -> Result<SystemSettingsResult, CfgdError> {
             .split(", ")
             .map(|s| s.to_string())
             .collect();
-        result.macos_defaults = Some(serde_yaml::to_value(domains).unwrap_or_default());
+        result.macos_defaults = serde_yaml::to_value(domains).map(Some).unwrap_or_else(|e| {
+            tracing::warn!("Failed to serialize macOS domains list: {e}");
+            None
+        });
     }
 
     // Linux: list user systemd units
@@ -1024,15 +1029,10 @@ mod tests {
         fn update(&self, _printer: &Printer) -> cfgd_core::errors::Result<()> {
             Ok(())
         }
-        fn available_version(
-            &self,
-            _package: &str,
-        ) -> cfgd_core::errors::Result<Option<String>> {
+        fn available_version(&self, _package: &str) -> cfgd_core::errors::Result<Option<String>> {
             Ok(None)
         }
-        fn installed_packages_with_versions(
-            &self,
-        ) -> cfgd_core::errors::Result<Vec<PackageInfo>> {
+        fn installed_packages_with_versions(&self) -> cfgd_core::errors::Result<Vec<PackageInfo>> {
             Ok(self.packages.clone())
         }
     }
@@ -1158,7 +1158,10 @@ mod tests {
         // systemd_units and launch_agents are always sorted
         let mut sorted_units = result.systemd_units.clone();
         sorted_units.sort();
-        assert_eq!(result.systemd_units, sorted_units, "systemd_units should be sorted");
+        assert_eq!(
+            result.systemd_units, sorted_units,
+            "systemd_units should be sorted"
+        );
 
         let mut sorted_agents = result.launch_agents.clone();
         sorted_agents.sort();

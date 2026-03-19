@@ -15,16 +15,17 @@ pub fn validate_yaml(content: &str, kind: SchemaKind) -> ValidationResult {
 
     // Step 2: Check kind field matches expected
     if let Some(doc_kind) = value.get("kind").and_then(|v| v.as_str())
-        && doc_kind != kind.as_str() {
-            return ValidationResult {
-                valid: false,
-                errors: vec![format!(
-                    "Expected kind '{}', found '{}'",
-                    kind.as_str(),
-                    doc_kind
-                )],
-            };
-        }
+        && doc_kind != kind.as_str()
+    {
+        return ValidationResult {
+            valid: false,
+            errors: vec![format!(
+                "Expected kind '{}', found '{}'",
+                kind.as_str(),
+                doc_kind
+            )],
+        };
+    }
 
     // Step 3: Attempt deserialization into concrete type
     let deser_result = match kind {
@@ -61,7 +62,11 @@ spec:
     - name: neovim
 "#;
         let result = validate_yaml(yaml, SchemaKind::Module);
-        assert!(result.valid, "Expected valid, got errors: {:?}", result.errors);
+        assert!(
+            result.valid,
+            "Expected valid, got errors: {:?}",
+            result.errors
+        );
     }
 
     #[test]
@@ -75,7 +80,11 @@ spec:
   modules: [nvim, tmux]
 "#;
         let result = validate_yaml(yaml, SchemaKind::Profile);
-        assert!(result.valid, "Expected valid, got errors: {:?}", result.errors);
+        assert!(
+            result.valid,
+            "Expected valid, got errors: {:?}",
+            result.errors
+        );
     }
 
     #[test]

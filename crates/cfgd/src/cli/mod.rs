@@ -3012,32 +3012,6 @@ fn cmd_generate(
         return Ok(());
     }
 
-    // Build file context for AI generation (expanded in Task 18).
-    let repo_root = std::env::current_dir().unwrap_or_else(|_| home_path.clone());
-    let _home_entries =
-        generate::files::list_directory(&home_path, &home_path, &repo_root).unwrap_or_default();
-    // read_file and adopt_files are called by the tool dispatch layer in Task 16/18.
-    // Reference them here so the compiler sees they are live; these closures are
-    // never actually invoked in this stub path.
-    let _read = |p: &std::path::Path| generate::files::read_file(p, &home_path, &repo_root);
-    let _adopt = |pairs: &[(PathBuf, PathBuf)], target: &std::path::Path| {
-        generate::files::adopt_files(pairs, target)
-    };
-    // inspect_tool and query_package_manager are called by the tool dispatch
-    // layer in Task 16/18. Reference them here so the compiler sees they are
-    // live; these closures are never actually invoked in this stub path.
-    let _inspect = |name: &str| generate::inspect::inspect_tool(name, &home_path);
-    let _query = |mgr: &dyn cfgd_core::providers::PackageManager, pkg: &str| {
-        generate::inspect::query_package_manager(mgr, pkg)
-    };
-    // scan_installed_packages and scan_system_settings are called by the tool
-    // dispatch layer in Task 16/18. Reference them here so the compiler sees
-    // they are live; these closures are never actually invoked in this stub path.
-    let _scan_pkgs = |mgrs: &[&dyn cfgd_core::providers::PackageManager]| {
-        generate::scan::scan_installed_packages(mgrs, None)
-    };
-    let _scan_sys = || generate::scan::scan_system_settings();
-
     // Full AI-assisted generation is implemented in Task 18.
     printer.warning("AI-assisted generation is not yet available (coming soon)");
     printer.info("Use --scan-only to preview what would be scanned");

@@ -3,8 +3,8 @@ use std::path::{Path, PathBuf};
 
 use crate::atomic_write_str;
 use crate::errors::{CfgdError, GenerateError};
-use crate::generate::validate::validate_yaml;
 use crate::generate::SchemaKind;
+use crate::generate::validate::validate_yaml;
 
 /// Tracks state for a generate session.
 #[derive(Debug)]
@@ -92,10 +92,12 @@ impl GenerateSession {
         let mut names = vec![];
         for entry in std::fs::read_dir(&modules_dir)? {
             let entry = entry?;
-            if entry.path().is_dir() && entry.path().join("module.yaml").exists()
-                && let Some(name) = entry.file_name().to_str() {
-                    names.push(name.to_string());
-                }
+            if entry.path().is_dir()
+                && entry.path().join("module.yaml").exists()
+                && let Some(name) = entry.file_name().to_str()
+            {
+                names.push(name.to_string());
+            }
         }
         names.sort();
         Ok(names)
@@ -111,9 +113,10 @@ impl GenerateSession {
             let entry = entry?;
             let path = entry.path();
             if path.extension().and_then(|e| e.to_str()) == Some("yaml")
-                && let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
-                    names.push(stem.to_string());
-                }
+                && let Some(stem) = path.file_stem().and_then(|s| s.to_str())
+            {
+                names.push(stem.to_string());
+            }
         }
         names.sort();
         Ok(names)
@@ -213,7 +216,8 @@ mod tests {
     fn test_write_profile_yaml_wrong_kind_rejected() {
         let tmp = TempDir::new().unwrap();
         let mut session = GenerateSession::new(tmp.path().to_path_buf());
-        let yaml = "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: nvim\nspec: {}\n";
+        let yaml =
+            "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: nvim\nspec: {}\n";
         let result = session.write_profile_yaml("nvim", yaml);
         assert!(result.is_err());
     }

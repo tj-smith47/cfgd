@@ -330,9 +330,6 @@ pub enum GenerateError {
     #[error("file access denied: {path} — {reason}")]
     FileAccessDenied { path: PathBuf, reason: String },
 
-    #[error("file too large: {path} ({size_bytes} bytes, max {max_bytes})")]
-    FileTooLarge { path: PathBuf, size_bytes: u64, max_bytes: u64 },
-
     #[error("session error: {message}")]
     SessionError { message: String },
 

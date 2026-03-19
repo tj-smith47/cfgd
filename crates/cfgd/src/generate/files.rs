@@ -169,7 +169,7 @@ pub fn list_directory(
 
         // Use symlink_metadata so we classify symlinks as "symlink" rather than
         // following them and reporting the target type.
-        let meta = item.metadata().map_err(|e| {
+        let meta = std::fs::symlink_metadata(item.path()).map_err(|e| {
             CfgdError::Generate(GenerateError::FileAccessDenied {
                 path: item.path(),
                 reason: e.to_string(),
@@ -215,6 +215,9 @@ pub fn list_directory(
 /// `source_paths` is a slice of `(source_path, relative_dest)` pairs. Each
 /// source is copied to `target_dir/relative_dest`. Parent directories are
 /// created as needed. Returns the list of written absolute destination paths.
+///
+/// Callers must validate source paths via `is_path_allowed` before passing
+/// them here. This function does not perform security checks on source paths.
 pub fn adopt_files(
     source_paths: &[(PathBuf, PathBuf)],
     target_dir: &Path,
