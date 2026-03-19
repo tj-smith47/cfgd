@@ -557,6 +557,147 @@ mod tests {
     }
 
     #[test]
+    fn test_mcp_full_initialize_handshake() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let mut server = McpServer::new(tmp.path().to_path_buf(), tmp.path().to_path_buf());
+
+        let req = JsonRpcRequest {
+            jsonrpc: "2.0".into(),
+            id: Some(serde_json::json!(1)),
+            method: "initialize".into(),
+            params: serde_json::json!({"protocolVersion": "2024-11-05", "capabilities": {}}),
+        };
+        let resp = server.handle_request(&req);
+        let result = resp.result.unwrap();
+        assert_eq!(result["protocolVersion"], "2024-11-05");
+        assert!(result["capabilities"]["tools"].is_object());
+        assert!(result["capabilities"]["resources"].is_object());
+        assert!(result["capabilities"]["prompts"].is_object());
+    }
+
+    #[test]
+    fn test_mcp_tools_list_returns_all_tools() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let mut server = McpServer::new(tmp.path().to_path_buf(), tmp.path().to_path_buf());
+
+        let req = JsonRpcRequest {
+            jsonrpc: "2.0".into(),
+            id: Some(serde_json::json!(2)),
+            method: "tools/list".into(),
+            params: serde_json::json!({}),
+        };
+        let resp = server.handle_request(&req);
+        let result = resp.result.unwrap();
+        let tools = result["tools"].as_array().unwrap();
+        assert!(tools.len() >= 18);
+        for tool in tools {
+            assert!(
+                tool["name"].as_str().unwrap().starts_with("cfgd_"),
+                "tool '{}' does not have cfgd_ prefix",
+                tool["name"]
+            );
+        }
+    }
+
+    #[test]
+    fn test_mcp_tools_call_detect_platform() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let mut server = McpServer::new(tmp.path().to_path_buf(), tmp.path().to_path_buf());
+
+        let req = JsonRpcRequest {
+            jsonrpc: "2.0".into(),
+            id: Some(serde_json::json!(3)),
+            method: "tools/call".into(),
+            params: serde_json::json!({"name": "cfgd_detect_platform", "arguments": {}}),
+        };
+        let resp = server.handle_request(&req);
+        let result = resp.result.unwrap();
+        assert!(result["content"][0]["text"].as_str().is_some());
+    }
+
+    #[test]
+    fn test_mcp_tools_call_get_schema() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let mut server = McpServer::new(tmp.path().to_path_buf(), tmp.path().to_path_buf());
+
+        let req = JsonRpcRequest {
+            jsonrpc: "2.0".into(),
+            id: Some(serde_json::json!(4)),
+            method: "tools/call".into(),
+            params: serde_json::json!({"name": "cfgd_get_schema", "arguments": {"kind": "Module"}}),
+        };
+        let resp = server.handle_request(&req);
+        let result = resp.result.unwrap();
+        let text = result["content"][0]["text"].as_str().unwrap();
+        assert!(text.contains("apiVersion"));
+    }
+
+    #[test]
+    fn test_mcp_resources_read_skill() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let mut server = McpServer::new(tmp.path().to_path_buf(), tmp.path().to_path_buf());
+
+        let req = JsonRpcRequest {
+            jsonrpc: "2.0".into(),
+            id: Some(serde_json::json!(5)),
+            method: "resources/read".into(),
+            params: serde_json::json!({"uri": "cfgd://skill/generate"}),
+        };
+        let resp = server.handle_request(&req);
+        let result = resp.result.unwrap();
+        let text = result["contents"][0]["text"].as_str().unwrap();
+        assert!(text.contains("configuration generator"));
+    }
+
+    #[test]
+    fn test_mcp_prompts_get_generate() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let mut server = McpServer::new(tmp.path().to_path_buf(), tmp.path().to_path_buf());
+
+        let req = JsonRpcRequest {
+            jsonrpc: "2.0".into(),
+            id: Some(serde_json::json!(6)),
+            method: "prompts/get".into(),
+            params: serde_json::json!({"name": "cfgd_generate", "arguments": {"mode": "module", "name": "nvim"}}),
+        };
+        let resp = server.handle_request(&req);
+        let result = resp.result.unwrap();
+        let messages = result["messages"].as_array().unwrap();
+        assert!(!messages.is_empty());
+    }
+
+    #[test]
+    fn test_mcp_full_pipeline_write_module() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let mut server = McpServer::new(tmp.path().to_path_buf(), tmp.path().to_path_buf());
+
+        let module_yaml = "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: test\nspec:\n  packages:\n    - name: git\n";
+
+        // Validate
+        let req = JsonRpcRequest {
+            jsonrpc: "2.0".into(),
+            id: Some(serde_json::json!(7)),
+            method: "tools/call".into(),
+            params: serde_json::json!({"name": "cfgd_validate_yaml", "arguments": {"content": module_yaml, "kind": "Module"}}),
+        };
+        let resp = server.handle_request(&req);
+        assert!(resp.error.is_none());
+
+        // Write
+        let req = JsonRpcRequest {
+            jsonrpc: "2.0".into(),
+            id: Some(serde_json::json!(8)),
+            method: "tools/call".into(),
+            params: serde_json::json!({"name": "cfgd_write_module_yaml", "arguments": {"name": "test", "content": module_yaml}}),
+        };
+        let resp = server.handle_request(&req);
+        assert!(resp.error.is_none());
+
+        // Verify file exists
+        assert!(tmp.path().join("modules/test/module.yaml").exists());
+    }
+
+    #[test]
     fn test_full_roundtrip_initialize_and_tools_list() {
         let tmp = tempfile::TempDir::new().unwrap();
         let mut server = McpServer::new(tmp.path().to_path_buf(), tmp.path().to_path_buf());
