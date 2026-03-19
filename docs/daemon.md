@@ -44,43 +44,43 @@ spec:
     enabled: true
     reconcile:
       interval: 5m          # drift check interval
-      on-change: true        # reconcile immediately on file change
+      onChange: true        # reconcile immediately on file change
     sync:
-      auto-pull: true        # pull from remote on interval
-      auto-push: false       # auto-commit and push local changes
+      autoPull: true        # pull from remote on interval
+      autoPush: false       # auto-commit and push local changes
       interval: 5m           # sync interval
     notify:
       drift: true
-      method: desktop        # desktop | stdout | webhook
-      webhook-url: https://hooks.example.com/cfgd
+      method: Desktop        # Desktop | Stdout | Webhook
+      webhookUrl: https://hooks.example.com/cfgd
 ```
 
 ## Auto-Apply Policies
 
-When the daemon is running with `auto-apply: true` and a source pushes an update, new items need decisions. The `policy` block controls this behavior:
+When the daemon is running with `autoApply: true` and a source pushes an update, new items need decisions. The `policy` block controls this behavior:
 
 ```yaml
 spec:
   daemon:
     reconcile:
-      auto-apply: true
+      autoApply: true
       policy:
-        new-recommended: notify    # notify | accept | reject
-        new-optional: ignore       # notify | ignore
-        locked-conflict: notify    # notify | accept
+        newRecommended: Notify    # Notify | Accept | Reject
+        newOptional: Ignore       # Notify | Ignore
+        lockedConflict: Notify    # Notify | Accept
 ```
 
 When `policy` is omitted entirely, the defaults are:
 
 | Setting | Default | Meaning |
 |---|---|---|
-| `new-recommended` | `notify` | New recommended items create a pending decision and send a notification |
-| `new-optional` | `ignore` | New optional items are silently skipped |
-| `locked-conflict` | `notify` | Conflicts with locked items create a pending decision |
+| `newRecommended` | `Notify` | New recommended items create a pending decision and send a notification |
+| `newOptional` | `Ignore` | New optional items are silently skipped |
+| `lockedConflict` | `Notify` | Conflicts with locked items create a pending decision |
 
-When `auto-apply: false`, policies have no effect. In manual mode, `cfgd plan` shows all items and you decide interactively.
+When `autoApply: false`, policies have no effect. In manual mode, `cfgd plan` shows all items and you decide interactively.
 
-Setting `locked-conflict: accept` causes the daemon to automatically remove your local overrides when they conflict with a locked item from a source. This is destructive — your local value is replaced without confirmation. The `notify` default is safer: cfgd flags the conflict and waits for you to resolve it with `cfgd decide`.
+Setting `lockedConflict: Accept` causes the daemon to automatically remove your local overrides when they conflict with a locked item from a source. This is destructive — your local value is replaced without confirmation. The `Notify` default is safer: cfgd flags the conflict and waits for you to resolve it with `cfgd decide`.
 
 See [sources.md](sources.md#auto-apply-decisions) for the full decision workflow.
 
@@ -93,24 +93,24 @@ spec:
   daemon:
     reconcile:
       interval: 5m
-      drift-policy: NotifyOnly
+      driftPolicy: NotifyOnly
       patches:
         - kind: Module
           name: certificates
           interval: 1m
-          drift-policy: Auto
+          driftPolicy: Auto
         - kind: Module
           name: shell-theme
           interval: 1h
-          auto-apply: false
+          autoApply: false
         - kind: Module
           interval: 30s
         - kind: Profile
           name: base
-          auto-apply: true
+          autoApply: true
 ```
 
-Each patch targets by `kind` (`Module` or `Profile`). When `name` is provided, the patch applies only to that entity. When `name` is omitted, the patch applies to all entities of that kind (kustomize semantics). Named patches take priority over kind-wide patches. Override any combination of `interval`, `auto-apply`, and `drift-policy`. Omitted fields inherit from the next level up.
+Each patch targets by `kind` (`Module` or `Profile`). When `name` is provided, the patch applies only to that entity. When `name` is omitted, the patch applies to all entities of that kind (kustomize semantics). Named patches take priority over kind-wide patches. Override any combination of `interval`, `autoApply`, and `driftPolicy`. Omitted fields inherit from the next level up.
 
 ### Precedence
 
@@ -126,9 +126,9 @@ When multiple Profile patches match the inheritance chain (e.g., `base` and `wor
 
 | Scenario | Result |
 |---|---|
-| Module patch and Profile patch both set `auto-apply` | Module patch wins |
+| Module patch and Profile patch both set `autoApply` | Module patch wins |
 | Two Profile patches in inheritance chain set `interval` | Leaf profile wins |
-| Module patch sets `drift-policy: Auto`, global is `NotifyOnly` | Module patch wins |
+| Module patch sets `driftPolicy: Auto`, global is `NotifyOnly` | Module patch wins |
 | Same module patched twice in the list | Last entry wins (warning logged) |
 | Patch references a module/profile that doesn't exist | Silently ignored |
 

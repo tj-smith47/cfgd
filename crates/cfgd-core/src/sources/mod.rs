@@ -725,7 +725,7 @@ spec:
           formulae:
             - git-secrets
     constraints:
-      no-scripts: true
+      noScripts: true
 "#,
         )
         .unwrap();

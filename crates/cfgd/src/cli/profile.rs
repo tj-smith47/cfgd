@@ -912,7 +912,7 @@ pub(super) fn cmd_profile_update(
         &mut doc.spec.scripts,
         &add_pre_reconcile,
         &remove_pre_reconcile,
-        "pre-apply",
+        "preApply",
         |s| &mut s.pre_reconcile,
         printer,
     );
@@ -920,7 +920,7 @@ pub(super) fn cmd_profile_update(
         &mut doc.spec.scripts,
         &add_post_reconcile,
         &remove_post_reconcile,
-        "post-apply",
+        "postApply",
         |s| &mut s.post_reconcile,
         printer,
     );

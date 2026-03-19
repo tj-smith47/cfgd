@@ -24,7 +24,7 @@ spec:
 
   packages:
     - name: neovim
-      min-version: "0.9"
+      minVersion: "0.9"
       prefer: [brew, snap, apt]
       aliases:
         snap: nvim
@@ -58,7 +58,7 @@ spec:
       command: nvim
 
   scripts:
-    post-apply:
+    postApply:
       - nvim --headless "+Lazy! sync" +qa
       - nvim --headless -c "MasonInstallAll" -c "qa"
 ```
@@ -68,7 +68,7 @@ spec:
 | Field | Required | Type | Description |
 |---|---|---|---|
 | `name` | yes | string | Canonical package name |
-| `min-version` | no | string | Minimum acceptable version (semver) |
+| `minVersion` | no | string | Minimum acceptable version (semver) |
 | `prefer` | no | list | Ordered list of managers to try. `"script"` uses the `script` field as a custom installer. If omitted, uses platform's native manager. |
 | `aliases` | no | map | Per-manager name overrides when the package name differs |
 | `script` | no | string | Inline shell script or path. Used when `prefer` includes `"script"` |
@@ -116,7 +116,7 @@ For each package entry, cfgd picks the right manager for the current machine:
 │ Package entry        │
 │ name: neovim         │
 │ prefer: [brew, snap] │
-│ min-version: 0.9     │
+│ minVersion: 0.9      │
 └─────────┬───────────┘
           │
           ▼
@@ -143,11 +143,11 @@ The full resolution logic for each package entry:
    - If the candidate is `"script"` — the `script` field must be present (error if missing). Scripts are always considered "available," and version checks are skipped (the script manages its own versioning). See [Script Execution](#script-execution) below.
    - Otherwise, check that the manager is installed and available on this machine. If not, skip to the next candidate.
    - Resolve the package name: use `aliases[manager]` if present, otherwise fall back to `name`.
-   - If `min-version` is specified, query the manager for the available version. If the package is not found or the version is below the minimum, skip this manager.
+   - If `minVersion` is specified, query the manager for the available version. If the package is not found or the version is below the minimum, skip this manager.
    - If all checks pass, the manager is selected.
 4. **If no candidate satisfies:** cfgd collects all available managers and their versions, then presents an interactive prompt:
    ```
-   Package 'neovim' (min-version: 0.9) could not be resolved automatically.
+   Package 'neovim' (minVersion: 0.9) could not be resolved automatically.
    Available options:
      [ ] apt — neovim 0.6.1 (below minimum)
      [ ] snap — nvim 0.10.2
@@ -155,7 +155,7 @@ The full resolution logic for each package entry:
    Select managers to use, or skip:
    ```
    You can select one or more, or skip the package (it will be recorded as skipped in the plan).
-5. **When `prefer` has multiple entries and no `min-version`:** the first available manager wins. No version check is needed.
+5. **When `prefer` has multiple entries and no `minVersion`:** the first available manager wins. No version check is needed.
 
 ### Version Comparison
 
@@ -206,13 +206,13 @@ Processing order: leaf dependencies first (node, python), then dependents (nvim)
 
 ## Post-Apply Scripts
 
-Scripts listed under `scripts.post-apply` run after all of the module's packages are installed and files are deployed. They execute sequentially in the order listed. If a script fails, subsequent scripts in that module are skipped and the failure is reported in the plan output.
+Scripts listed under `scripts.postApply` run after all of the module's packages are installed and files are deployed. They execute sequentially in the order listed. If a script fails, subsequent scripts in that module are skipped and the failure is reported in the plan output.
 
 Use post-apply scripts for tasks that depend on the packages and files being in place — plugin installations, cache rebuilds, index updates:
 
 ```yaml
 scripts:
-  post-apply:
+  postApply:
     - nvim --headless "+Lazy! sync" +qa
     - nvim --headless -c "MasonInstallAll" -c "qa"
 ```
@@ -371,14 +371,14 @@ Modules:
   nvim (depends: node, python)
     ✓ node — resolved: apt install nodejs (18.19.0)
     ✓ python — resolved: apt install python3 (3.10.12), pipx install pynvim
-    + neovim — snap install nvim (0.10.2, prefer: [brew, snap, apt], min: 0.9)
+    + neovim — snap install nvim (0.10.2, prefer: [brew, snap, apt], minVersion: 0.9)
     + ripgrep — apt install ripgrep (14.1.0)
     + fd — apt install fd-find (8.7.0, alias: fd→fd-find)
     + neovim — npm install -g neovim (companion)
     + pynvim — pipx install pynvim (companion)
     → deploy: ~/.config/nvim/ (from module files, 12 files)
-    → post-apply: nvim --headless "+Lazy! sync" +qa
-    → post-apply: nvim --headless -c "MasonInstallAll" -c "qa"
+    → postApply: nvim --headless "+Lazy! sync" +qa
+    → postApply: nvim --headless -c "MasonInstallAll" -c "qa"
 
 Packages: (profile-level)
   = apt: 3 packages up to date
@@ -388,7 +388,7 @@ Files: (profile-level)
   = 5 files up to date
 ```
 
-Module actions appear before profile-level packages and files. Dependencies are shown with `✓` (already satisfied) or `+` (will be installed). The `→` prefix marks file deployments and post-apply scripts.
+Module actions appear before profile-level packages and files. Dependencies are shown with `✓` (already satisfied) or `+` (will be installed). The `→` prefix marks file deployments and postApply scripts.
 
 ## Lockfile
 
@@ -398,7 +398,7 @@ Remote modules (from registries or direct git URLs) are tracked in `modules.lock
 modules:
   - name: tmux
     url: "https://github.com/cfgd-community/modules.git@tmux/v1.0.0"
-    pinned-ref: "tmux/v1.0.0"
+    pinnedRef: "tmux/v1.0.0"
     commit: "abc123def456"
     integrity: "sha256:..."
     subdir: modules/tmux
@@ -492,7 +492,7 @@ Remote modules can be signed with GPG or SSH keys. cfgd verifies signatures when
     module-sources:
       - name: community
         url: https://github.com/cfgd-community/modules.git
-        require-signatures: true
+        requireSignatures: true
   ```
 - **Skip verification.** Use `--allow-unsigned` on the CLI to bypass signature checks for a single operation. This is intended for development and testing, not production use.
   ```sh

@@ -15,13 +15,13 @@ system:
   shell: /bin/zsh
 ```
 
-### `macos-defaults` (macOS only)
+### `macosDefaults` (macOS only)
 
 Reads and writes macOS [`defaults`](https://macos-defaults.com/) domains. Each key is a domain name, values are key-value pairs to set.
 
 ```yaml
 system:
-  macos-defaults:
+  macosDefaults:
     NSGlobalDomain:
       AppleShowAllExtensions: true
       NSAutomaticSpellingCorrectionEnabled: false
@@ -33,28 +33,28 @@ system:
       askForPasswordDelay: 0
 ```
 
-### `launch-agents` (macOS only)
+### `launchAgents` (macOS only)
 
 Manages [LaunchAgent](https://developer.apple.com/library/archive/documentation/MacOSX/Conceptual/BPSystemStartup/Chapters/CreatingLaunchdJobs.html) plist files in `~/Library/LaunchAgents` — macOS's way of running background services for your user session.
 
 ```yaml
 system:
-  launch-agents:
+  launchAgents:
     - name: com.example.myservice
       program: /usr/local/bin/myservice
       args: ["--config", "/etc/myservice.conf"]
-      run-at-load: true
+      runAtLoad: true
 ```
 
-### `systemd-units` (Linux only)
+### `systemdUnits` (Linux only)
 
 Manages [systemd](https://www.freedesktop.org/software/systemd/man/latest/systemd.unit.html) user unit files — Linux's service manager. Handles unit file placement, enabling, and starting.
 
 ```yaml
 system:
-  systemd-units:
+  systemdUnits:
     - name: myservice.service
-      unit-file: systemd/myservice.service
+      unitFile: systemd/myservice.service
       enabled: true
 ```
 
@@ -85,13 +85,13 @@ system:
     net.bridge.bridge-nf-call-iptables: 1
 ```
 
-### `kernel-modules`
+### `kernelModules`
 
 Loads [kernel modules](https://wiki.archlinux.org/title/Kernel_module) — pluggable pieces of the Linux kernel that add support for networking features, filesystems, or hardware. Persists to `/etc/modules-load.d/cfgd.conf`.
 
 ```yaml
 system:
-  kernel-modules: [br_netfilter, overlay, ip_vs]
+  kernelModules: [br_netfilter, overlay, ip_vs]
 ```
 
 ### `containerd`
@@ -101,7 +101,7 @@ Manages [containerd](https://containerd.io/) configuration — the container run
 ```yaml
 system:
   containerd:
-    config-path: /etc/containerd/config.toml
+    configPath: /etc/containerd/config.toml
     settings:
       SystemdCgroup: true
 ```
@@ -113,7 +113,7 @@ Manages [kubelet](https://kubernetes.io/docs/reference/command-line-tools-refere
 ```yaml
 system:
   kubelet:
-    config-path: /var/lib/kubelet/config.yaml
+    configPath: /var/lib/kubelet/config.yaml
     settings:
       maxPods: 110
 ```

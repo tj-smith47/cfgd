@@ -59,7 +59,7 @@ In [modules](modules.md), packages use cross-platform resolution instead of mana
 ```yaml
 packages:
   - name: neovim
-    min-version: "0.9"
+    minVersion: "0.9"
     prefer: [brew, snap, apt]
     aliases:
       snap: nvim

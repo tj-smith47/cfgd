@@ -1,6 +1,6 @@
 # cfgd — Remaining Work
 
-Single source of truth for all incomplete work. Completed work is in `INITIAL-PLAN.md`. Design detail in [kubernetes-first-class.md](kubernetes-first-class.md).
+Single source of truth for all incomplete work. Completed work is in [COMPLETED.md](COMPLETED.md). Design detail in [kubernetes-first-class.md](kubernetes-first-class.md).
 
 ---
 
@@ -70,13 +70,6 @@ Single source of truth for all incomplete work. Completed work is in `INITIAL-PL
 
 - [ ] Field manager annotations: Crossplane sets `spec`, operator sets `status`, policy controller adds annotations
 - [ ] Structured merge diff annotations on CRD OpenAPI schema
-
-### Idiomatic naming audit
-
-- [ ] Cross-references use `moduleRef`/`configRef` style
-- [ ] Enum values use TitleCase (`IfNotPresent`, `Always`, `Symlink`)
-- [ ] CLI flags and config fields align with k8s conventions
-- [ ] All CRD field names use camelCase
 
 ---
 

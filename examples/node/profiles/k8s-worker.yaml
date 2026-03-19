@@ -17,7 +17,7 @@ spec:
       vm.max_map_count: "262144"
       fs.inotify.max_user_watches: "524288"
 
-    kernel-modules:
+    kernelModules:
       - br_netfilter
       - overlay
       - ip_vs
@@ -27,13 +27,13 @@ spec:
       - nf_conntrack
 
     containerd:
-      config-path: /etc/containerd/config.toml
+      configPath: /etc/containerd/config.toml
       settings:
         SystemdCgroup: true
         sandbox_image: "registry.k8s.io/pause:3.9"
 
     kubelet:
-      config-path: /var/lib/kubelet/config.yaml
+      configPath: /var/lib/kubelet/config.yaml
       settings:
         maxPods: 110
         cgroupDriver: systemd
@@ -41,7 +41,7 @@ spec:
         serializeImagePulls: false
 
     seccomp:
-      profiles-dir: /etc/cfgd/seccomp
+      profilesDir: /etc/cfgd/seccomp
       profiles:
         - name: audit
           file: audit.json
@@ -52,10 +52,10 @@ spec:
             }
 
     certificates:
-      ca-cert-dir: /etc/kubernetes/pki
+      caCertDir: /etc/kubernetes/pki
       certificates:
         - name: kubelet-client
-          cert-path: /etc/kubernetes/pki/kubelet-client.crt
-          key-path: /etc/kubernetes/pki/kubelet-client.key
-          ca-path: /etc/kubernetes/pki/ca.crt
+          certPath: /etc/kubernetes/pki/kubelet-client.crt
+          keyPath: /etc/kubernetes/pki/kubelet-client.key
+          caPath: /etc/kubernetes/pki/ca.crt
           mode: "0600"

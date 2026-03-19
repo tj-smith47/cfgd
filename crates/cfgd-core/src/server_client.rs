@@ -14,7 +14,7 @@ pub struct ServerClient {
 }
 
 #[derive(Debug, Serialize)]
-#[serde(rename_all = "kebab-case")]
+#[serde(rename_all = "camelCase")]
 struct CheckinRequest {
     device_id: String,
     hostname: String,
@@ -24,7 +24,7 @@ struct CheckinRequest {
 }
 
 #[derive(Debug, Deserialize)]
-#[serde(rename_all = "kebab-case")]
+#[serde(rename_all = "camelCase")]
 pub struct CheckinResponse {
     pub status: String,
     pub config_changed: bool,
@@ -33,13 +33,13 @@ pub struct CheckinResponse {
 }
 
 #[derive(Debug, Serialize)]
-#[serde(rename_all = "kebab-case")]
+#[serde(rename_all = "camelCase")]
 struct DriftReport {
     details: Vec<DriftDetail>,
 }
 
 #[derive(Debug, Serialize)]
-#[serde(rename_all = "kebab-case")]
+#[serde(rename_all = "camelCase")]
 struct DriftDetail {
     field: String,
     expected: String,
@@ -47,7 +47,7 @@ struct DriftDetail {
 }
 
 #[derive(Debug, Serialize)]
-#[serde(rename_all = "kebab-case")]
+#[serde(rename_all = "camelCase")]
 struct EnrollRequest {
     token: String,
     device_id: String,
@@ -57,7 +57,7 @@ struct EnrollRequest {
 }
 
 #[derive(Debug, Deserialize)]
-#[serde(rename_all = "kebab-case")]
+#[serde(rename_all = "camelCase")]
 pub struct EnrollResponse {
     pub status: String,
     pub device_id: String,
@@ -72,7 +72,7 @@ pub struct EnrollResponse {
 // --- Key-based enrollment types ---
 
 #[derive(Debug, Serialize)]
-#[serde(rename_all = "kebab-case")]
+#[serde(rename_all = "camelCase")]
 struct ChallengeRequest {
     username: String,
     device_id: String,
@@ -82,7 +82,7 @@ struct ChallengeRequest {
 }
 
 #[derive(Debug, Deserialize)]
-#[serde(rename_all = "kebab-case")]
+#[serde(rename_all = "camelCase")]
 pub struct ChallengeResponse {
     pub challenge_id: String,
     pub nonce: String,
@@ -90,7 +90,7 @@ pub struct ChallengeResponse {
 }
 
 #[derive(Debug, Serialize)]
-#[serde(rename_all = "kebab-case")]
+#[serde(rename_all = "camelCase")]
 struct VerifyRequest {
     challenge_id: String,
     signature: String,
@@ -98,14 +98,14 @@ struct VerifyRequest {
 }
 
 #[derive(Debug, Deserialize)]
-#[serde(rename_all = "kebab-case")]
+#[serde(rename_all = "camelCase")]
 pub struct EnrollInfoResponse {
     pub method: String,
 }
 
 /// Stored device credential — saved locally after enrollment.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
+#[serde(rename_all = "camelCase")]
 pub struct DeviceCredential {
     pub server_url: String,
     pub device_id: String,
@@ -616,7 +616,7 @@ mod tests {
     #[test]
     fn challenge_response_deserialization() {
         let json =
-            r#"{"challenge-id":"abc","nonce":"cfgd_ch_xyz","expires-at":"2026-03-14T12:05:00Z"}"#;
+            r#"{"challengeId":"abc","nonce":"cfgd_ch_xyz","expiresAt":"2026-03-14T12:05:00Z"}"#;
         let resp: ChallengeResponse = serde_json::from_str(json).unwrap();
         assert_eq!(resp.challenge_id, "abc");
         assert_eq!(resp.nonce, "cfgd_ch_xyz");

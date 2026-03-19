@@ -6,7 +6,7 @@ spec:
   profile: personal
 
   origin:
-    type: git
+    type: Git
     url: git@github.com:you/machine-config.git
     branch: main
 
@@ -14,16 +14,16 @@ spec:
     enabled: true
     reconcile:
       interval: 5m
-      on-change: true
+      onChange: true
     sync:
-      auto-pull: true
-      auto-push: false
+      autoPull: true
+      autoPush: false
       interval: 5m
     notify:
       drift: true
-      method: desktop
+      method: Desktop
 
   secrets:
     backend: sops
     sops:
-      age-key: ~/.config/cfgd/age-key.txt
+      ageKey: ~/.config/cfgd/age-key.txt

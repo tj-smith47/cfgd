@@ -353,7 +353,7 @@ pub(super) fn profiles_using_module(
 
 /// Parse helm-style `--set` overrides and apply them to a ModuleDocument.
 /// Supported paths:
-///   package.<name>.min-version=<value>
+///   package.<name>.minVersion=<value>
 ///   package.<name>.prefer=<a>,<b>,<c>
 ///   package.<name>.alias.<manager>=<alias>
 ///   package.<name>.platforms=<a>,<b>
@@ -391,7 +391,7 @@ pub(super) fn apply_module_sets(
             })?;
 
         match field {
-            "min-version" => {
+            "minVersion" => {
                 pkg.min_version = Some(value.to_string());
             }
             "prefer" => {
@@ -418,7 +418,7 @@ pub(super) fn apply_module_sets(
             }
             _ => {
                 anyhow::bail!(
-                    "Unknown package field '{}' — valid fields: min-version, prefer, deny, platforms, script, alias",
+                    "Unknown package field '{}' — valid fields: minVersion, prefer, deny, platforms, script, alias",
                     field
                 );
             }
@@ -2115,7 +2115,7 @@ mod tests {
     #[test]
     fn apply_set_min_version() {
         let mut doc = make_module_doc(vec![make_pkg("curl")]);
-        apply_module_sets(&["package.curl.min-version=7.0".into()], &mut doc).unwrap();
+        apply_module_sets(&["package.curl.minVersion=7.0".into()], &mut doc).unwrap();
         assert_eq!(doc.spec.packages[0].min_version.as_deref(), Some("7.0"));
     }
 
@@ -2175,7 +2175,7 @@ mod tests {
     #[test]
     fn apply_set_package_not_found() {
         let mut doc = make_module_doc(vec![make_pkg("curl")]);
-        assert!(apply_module_sets(&["package.vim.min-version=9.0".into()], &mut doc).is_err());
+        assert!(apply_module_sets(&["package.vim.minVersion=9.0".into()], &mut doc).is_err());
     }
 
     // --- load_module_document ---

@@ -32,7 +32,7 @@ spec:
   # optional, default: []
   packages:
     - name: neovim             # required, string — canonical package name
-      min-version: "0.9"       # optional, string — minimum semver version (e.g. "0.9", "18.0.0")
+      minVersion: "0.9"         # optional, string — minimum semver version (e.g. "0.9", "18.0.0")
       # optional, list of strings — ordered list of package managers to try.
       # Values: brew, apt, dnf, yum, pacman, apk, zypper, pkg, snap, flatpak, nix, go, cargo, npm, pipx, script.
       # If "script" is in the list, the script field must be present.
@@ -64,9 +64,9 @@ spec:
   files:
     - source: config/           # required, string — local path relative to module dir
       target: ~/.config/nvim/   # required, string — absolute target path (~ is expanded)
-      # optional, string — deployment strategy override: symlink, copy, template, hardlink.
-      # If omitted, uses the global file-strategy from Config (default: symlink).
-      strategy: symlink
+      # optional, string — deployment strategy override: Symlink, Copy, Template, Hardlink.
+      # If omitted, uses the global fileStrategy from Config (default: Symlink).
+      strategy: Symlink
       # optional, bool, default: false — when true, file is local-only (added to .gitignore,
       # silently skipped on machines where it doesn't exist).
       private: false
@@ -96,7 +96,7 @@ spec:
     # List of shell commands to run after apply. Each runs with /bin/sh -e
     # in the module directory. If one fails, subsequent scripts are skipped.
     # optional, default: []
-    post-apply:
+    postApply:
       - nvim --headless "+Lazy! sync" +qa
       - nvim --headless -c "MasonInstallAll" -c "qa"
 "#;
@@ -251,7 +251,7 @@ spec:
     custom:
       - name: my-manager        # required, string — manager name
         check: which my-mgr     # required, string — command to check if manager exists
-        list-installed: my-mgr list  # required, string — command to list installed packages
+        listInstalled: my-mgr list   # required, string — command to list installed packages
         install: my-mgr install      # required, string — install command template
         uninstall: my-mgr remove     # required, string — uninstall command template
         update: my-mgr upgrade       # optional, string — update command template
@@ -266,7 +266,7 @@ spec:
     managed:
       - source: shell/.zshrc       # required, string — path relative to config repo files/ dir
         target: ~/.zshrc            # required, string — absolute target path (~ expanded)
-        strategy: symlink           # optional: symlink (default), copy, template, hardlink
+        strategy: Symlink           # optional: Symlink (default), Copy, Template, Hardlink
         private: false              # optional, bool, default: false — local-only file
       - source: git/.gitconfig.tera # .tera extension auto-selects template strategy
         target: ~/.gitconfig
@@ -285,7 +285,7 @@ spec:
     shell: /bin/zsh               # string — path to shell binary
 
     # macOS defaults domains (macOS only)
-    macos-defaults:
+    macosDefaults:
       NSGlobalDomain:
         AppleShowAllExtensions: true
       com.apple.dock:
@@ -293,18 +293,18 @@ spec:
         tilesize: 48
 
     # LaunchAgent plist management (macOS only)
-    launch-agents:
+    launchAgents:
       - name: com.example.myservice    # required, string — service label
         program: /usr/local/bin/myservice  # required, string — executable path
         args:                              # optional, list of strings
           - "--config"
           - "/etc/myservice.conf"
-        run-at-load: true                  # optional, bool
+        runAtLoad: true                    # optional, bool
 
     # systemd user unit management (Linux only)
-    systemd-units:
+    systemdUnits:
       - name: myservice.service    # required, string — unit name
-        unit-file: systemd/myservice.service  # required, string — path to unit file
+        unitFile: systemd/myservice.service  # required, string — path to unit file
         enabled: true              # optional, bool
 
     # Shell environment file management (all platforms)
@@ -318,17 +318,17 @@ spec:
       vm.max_map_count: 262144
 
     # Kernel modules to load (Linux, typically node/k8s context)
-    kernel-modules:
+    kernelModules:
       - br_netfilter
       - overlay
 
     # containerd configuration (Linux, node/k8s context)
     containerd:
-      config-path: /etc/containerd/config.toml
+      configPath: /etc/containerd/config.toml
 
     # kubelet configuration (Linux, node/k8s context)
     kubelet:
-      config-path: /var/lib/kubelet/config.yaml
+      configPath: /var/lib/kubelet/config.yaml
 
     # AppArmor profiles (Linux, node/k8s context)
     apparmor:
@@ -337,11 +337,11 @@ spec:
 
     # Seccomp profiles (Linux, node/k8s context)
     seccomp:
-      profiles-dir: /var/lib/kubelet/seccomp
+      profilesDir: /var/lib/kubelet/seccomp
 
     # Certificate management (Linux, node/k8s context)
     certificates:
-      ca-certs:
+      caCerts:
         - /usr/local/share/ca-certificates/my-ca.crt
 
   # Secret file declarations — SOPS-encrypted files or external secret provider references.
@@ -359,11 +359,11 @@ spec:
   scripts:
     # Scripts run before reconcile. Paths relative to config repo.
     # optional, default: []
-    pre-reconcile:
+    preReconcile:
       - scripts/pre-setup.sh
     # Scripts run after reconcile. Paths relative to config repo.
     # optional, default: []
-    post-reconcile:
+    postReconcile:
       - scripts/post-setup.sh
 "#;
 
@@ -385,7 +385,7 @@ spec:
   # Git origin(s) for the config repository. Can be a single object or a list.
   # optional, default: []
   origin:
-    type: git                  # required: "git" or "server"
+    type: Git                  # required: "Git" or "Server"
     url: git@github.com:me/machine-config.git  # required, string — repository URL
     branch: master             # optional, string, default: "master"
     auth: ssh                  # optional, string — auth method hint
@@ -402,20 +402,20 @@ spec:
       interval: 5m
       # Reconcile immediately when config files change (via file watcher).
       # optional, bool, default: false
-      on-change: true
+      onChange: true
       # Auto-apply detected changes without prompting.
       # optional, bool, default: false
-      auto-apply: false
+      autoApply: false
       # Drift reconciliation policy for daemon auto-reconciliation.
       # Values: Auto (silently apply), NotifyOnly (notify but don't apply, default), Prompt (future).
       # optional, default: NotifyOnly
-      drift-policy: NotifyOnly
+      driftPolicy: NotifyOnly
       # Auto-apply policy — controls behavior for different change categories.
       # optional
       policy:
-        new-recommended: notify    # optional: notify (default), accept, reject, ignore
-        new-optional: ignore       # optional: notify, accept, reject, ignore (default)
-        locked-conflict: notify    # optional: notify (default), accept, reject, ignore
+        newRecommended: Notify     # optional: Notify (default), Accept, Reject, Ignore
+        newOptional: Ignore        # optional: Notify, Accept, Reject, Ignore (default)
+        lockedConflict: Notify     # optional: Notify (default), Accept, Reject, Ignore
       # Per-module or per-profile reconcile overrides (kustomize-style patches).
       # Each patch targets a specific Module or Profile by name and overrides
       # individual reconcile fields. Precedence: Module patch > Profile patch > global.
@@ -424,27 +424,27 @@ spec:
         - kind: Module             # required: "Module" or "Profile"
           name: nvim               # optional, string — target name (omit to apply to all of this kind)
           interval: 1m             # optional, string — override interval
-          auto-apply: true         # optional, bool — override auto-apply
-          drift-policy: Auto       # optional: Auto, NotifyOnly, Prompt
+          autoApply: true          # optional, bool — override auto-apply
+          driftPolicy: Auto        # optional: Auto, NotifyOnly, Prompt
 
     # Git sync settings
     sync:
-      auto-pull: true          # optional, bool, default: false — auto-pull from remote
-      auto-push: false         # optional, bool, default: false — auto-commit and push local changes
+      autoPull: true           # optional, bool, default: false — auto-pull from remote
+      autoPush: false          # optional, bool, default: false — auto-commit and push local changes
       interval: 5m             # optional, string, default: "1h" — sync interval
 
     # Notification settings
     notify:
       drift: true              # optional, bool, default: false — notify on drift detection
-      method: desktop          # optional: desktop (default), stdout, webhook
-      webhook-url: https://hooks.example.com/cfgd  # optional, string — webhook URL (when method=webhook)
+      method: Desktop          # optional: Desktop (default), Stdout, Webhook
+      webhookUrl: https://hooks.example.com/cfgd   # optional, string — webhook URL (when method=webhook)
 
   # Secrets backend configuration.
   # optional
   secrets:
     backend: sops              # optional, string, default: "sops" — primary backend
     sops:
-      age-key: ~/.config/cfgd/age-key.txt  # optional, string — path to age key file
+      ageKey: ~/.config/cfgd/age-key.txt   # optional, string — path to age key file
     # External secret provider integrations.
     # optional, default: []
     integrations:
@@ -457,21 +457,21 @@ spec:
   sources:
     - name: acme-corp          # required, string — source name
       origin:
-        type: git              # required: "git" or "server"
+        type: Git              # required: "Git" or "Server"
         url: git@github.com:acme-corp/dev-config.git  # required, string
         branch: master         # optional, string, default: "master"
       subscription:
         profile: acme-backend  # optional, string — specific profile from source to subscribe to
         priority: 500          # optional, u32, default: 500 — merge priority (higher wins)
-        accept-recommended: true  # optional, bool, default: false — auto-accept recommended items
-        opt-in:                # optional, list of strings — explicitly opt into optional items
+        acceptRecommended: true   # optional, bool, default: false — auto-accept recommended items
+        optIn:                 # optional, list of strings — explicitly opt into optional items
           - extra-tools
         overrides: {}          # optional, YAML value — local overrides applied on top of source
         reject: {}             # optional, YAML value — items to reject from source
       sync:
         interval: 1h           # optional, string, default: "1h"
-        auto-apply: false      # optional, bool, default: false
-        pin-version: v1.2.3    # optional, string — pin to a specific source version
+        autoApply: false       # optional, bool, default: false
+        pinVersion: v1.2.3     # optional, string — pin to a specific source version
 
   # Theme configuration — controls terminal output styling.
   # Can be a string (theme name) or an object with name and overrides.
@@ -490,15 +490,15 @@ spec:
       subheader: white         # optional, string
       key: cyan                # optional, string
       value: white             # optional, string
-      diff-add: green          # optional, string
-      diff-remove: red         # optional, string
-      diff-context: gray       # optional, string
-      icon-success: "✓"        # optional, string — icon character
-      icon-warning: "⚠"        # optional, string
-      icon-error: "✗"          # optional, string
-      icon-info: "ℹ"           # optional, string
-      icon-pending: "○"        # optional, string
-      icon-arrow: "→"          # optional, string
+      diffAdd: green           # optional, string
+      diffRemove: red          # optional, string
+      diffContext: gray        # optional, string
+      iconSuccess: "✓"         # optional, string — icon character
+      iconWarning: "⚠"         # optional, string
+      iconError: "✗"           # optional, string
+      iconInfo: "ℹ"            # optional, string
+      iconPending: "○"         # optional, string
+      iconArrow: "→"           # optional, string
 
   # Module registries and security settings.
   # optional
@@ -514,12 +514,12 @@ spec:
       # Require GPG/SSH signatures on all remote module tags.
       # When true, unsigned modules are rejected unless --allow-unsigned is passed.
       # optional, bool, default: false
-      require-signatures: false
+      requireSignatures: false
 
   # Global default file deployment strategy. Per-file overrides take precedence.
-  # optional, default: symlink
-  # Values: symlink, copy, template, hardlink
-  file-strategy: symlink
+  # optional, default: Symlink
+  # Values: Symlink, Copy, Template, Hardlink
+  fileStrategy: Symlink
 
   # Security settings for source signature verification.
   # optional
@@ -527,7 +527,7 @@ spec:
     # Allow unsigned source content even when the source requires signed commits.
     # Intended for development/testing environments.
     # optional, bool, default: false
-    allow-unsigned: false
+    allowUnsigned: false
 
   # CLI command aliases — map of alias name to command string.
   # Built-in defaults (add, remove) can be overridden or extended.
@@ -550,7 +550,7 @@ spec:
     model: claude-sonnet-4-6
     # Environment variable name containing the API key.
     # optional, string, default: "ANTHROPIC_API_KEY"
-    api-key-env: ANTHROPIC_API_KEY
+    apiKeyEnv: ANTHROPIC_API_KEY
 "#;
 
 #[cfg(test)]
@@ -623,7 +623,7 @@ mod tests {
         assert!(schema.contains("aliases"));
         assert!(schema.contains("scripts"));
         // ModulePackageEntry fields
-        assert!(schema.contains("min-version"));
+        assert!(schema.contains("minVersion"));
         assert!(schema.contains("prefer"));
         assert!(schema.contains("script"));
         assert!(schema.contains("deny"));
@@ -634,7 +634,7 @@ mod tests {
         assert!(schema.contains("strategy"));
         assert!(schema.contains("private"));
         // ModuleScriptSpec
-        assert!(schema.contains("post-apply"));
+        assert!(schema.contains("postApply"));
     }
 
     #[test]
@@ -671,8 +671,8 @@ mod tests {
         assert!(schema.contains("managed"));
         assert!(schema.contains("permissions"));
         // ScriptSpec
-        assert!(schema.contains("pre-reconcile"));
-        assert!(schema.contains("post-reconcile"));
+        assert!(schema.contains("preReconcile"));
+        assert!(schema.contains("postReconcile"));
     }
 
     #[test]
@@ -686,7 +686,7 @@ mod tests {
         assert!(schema.contains("sources"));
         assert!(schema.contains("theme"));
         assert!(schema.contains("modules"));
-        assert!(schema.contains("file-strategy"));
+        assert!(schema.contains("fileStrategy"));
         assert!(schema.contains("security"));
         assert!(schema.contains("aliases"));
         assert!(schema.contains("ai"));
@@ -696,13 +696,13 @@ mod tests {
         assert!(schema.contains("notify"));
         // ReconcileConfig
         assert!(schema.contains("interval"));
-        assert!(schema.contains("on-change"));
-        assert!(schema.contains("auto-apply"));
-        assert!(schema.contains("drift-policy"));
+        assert!(schema.contains("onChange"));
+        assert!(schema.contains("autoApply"));
+        assert!(schema.contains("driftPolicy"));
         assert!(schema.contains("patches"));
         // AiConfig
         assert!(schema.contains("provider"));
         assert!(schema.contains("model"));
-        assert!(schema.contains("api-key-env"));
+        assert!(schema.contains("apiKeyEnv"));
     }
 }

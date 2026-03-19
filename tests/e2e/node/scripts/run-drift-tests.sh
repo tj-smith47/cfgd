@@ -219,8 +219,8 @@ spec:
     enabled: true
     reconcile:
       interval: "5s"
-      auto-apply: true
-      drift-policy: Auto
+      autoApply: true
+      driftPolicy: Auto
 INNEREOF'
 
 # Start daemon in background on the kind node

@@ -34,7 +34,7 @@ pub struct ReleaseAsset {
 
 /// Cached version check result, persisted to disk.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "kebab-case")]
+#[serde(rename_all = "camelCase")]
 struct VersionCache {
     checked_at_secs: u64,
     latest_tag: String,

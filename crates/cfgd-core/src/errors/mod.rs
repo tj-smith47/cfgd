@@ -283,7 +283,7 @@ pub enum ModuleError {
     MissingDependency { module: String, dependency: String },
 
     #[error(
-        "package '{package}' in module '{module}' cannot be resolved: no available manager satisfies the requirements (min-version: {min_version})"
+        "package '{package}' in module '{module}' cannot be resolved: no available manager satisfies the requirements (minVersion: {min_version})"
     )]
     UnresolvablePackage {
         module: String,

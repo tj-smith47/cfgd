@@ -39,7 +39,7 @@ crates/
 │   ├── files/              # File management: copy, template, diff, permissions
 │   ├── packages/           # PackageManager implementations (brew, apt, cargo, npm, pipx, dnf)
 │   ├── secrets/            # SOPS/age backends, 1Password/Bitwarden/Vault providers
-│   ├── system/             # All SystemConfigurators — workstation (shell, macos-defaults, systemd, launchd, environment) + node (sysctl, kernel-modules, containerd, kubelet, apparmor, seccomp, certificates)
+│   ├── system/             # All SystemConfigurators — workstation (shell, macosDefaults, systemd, launchd, environment) + node (sysctl, kernelModules, containerd, kubelet, apparmor, seccomp, certificates)
 │   ├── generate/           # AI generate tools: system scanning, tool inspection, file access
 │   ├── ai/                 # Anthropic API client, tool dispatch, conversation management
 │   └── mcp/                # MCP server: JSON-RPC transport, tool/resource/prompt definitions
@@ -91,7 +91,7 @@ See `.claude/kubernetes-first-class.md` for the Kubernetes ecosystem design (CRD
 - **Linting**: `cargo clippy -- -D warnings`. All clippy warnings are errors.
 - **Naming**: Rust conventions. snake_case for functions/variables, PascalCase for types/traits, SCREAMING_SNAKE for constants.
 - **Imports**: Group by std, external crates, internal modules. Separated by blank lines.
-- **Config serde**: `#[serde(rename_all = "kebab-case")]` on config structs to map YAML kebab-case to Rust snake_case.
+- **Config serde**: `#[serde(rename_all = "camelCase")]` on config structs to match Kubernetes ecosystem conventions (maps Rust snake_case to YAML camelCase). Enums have no rename_all — they serialize as PascalCase by default.
 - **Tests**: Co-located unit tests in `#[cfg(test)] mod tests {}` within each module. Integration tests in `tests/`.
 - **Comments**: Only where the "why" isn't obvious. No doc comments on private functions unless the logic is genuinely complex.
 

@@ -45,10 +45,10 @@ spec:
                 type: string
               severity:
                 enum:
-                - low
-                - medium
-                - high
-                - critical
+                - Low
+                - Medium
+                - High
+                - Critical
                 type: string
             required:
             - deviceId

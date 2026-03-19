@@ -262,6 +262,78 @@ else
     log_ok "No duplicated function definitions across files"
 fi
 
+log_section "Naming Convention — No kebab-case in serde or user-visible strings"
+# Detect any remaining kebab-case serde attributes (should all be camelCase now)
+serde_kebab=$(grep -rn 'rename_all = "kebab-case"\|rename_all = "lowercase"' "${SRC_ROOTS[@]}" --include='*.rs' 2>/dev/null || true)
+if [[ -n "$serde_kebab" ]]; then
+    log_error "Found kebab-case/lowercase serde attributes (should be camelCase or removed):"
+    echo "$serde_kebab"
+else
+    log_ok "No kebab-case/lowercase serde attributes"
+fi
+
+# Detect explicit serde rename attributes that use kebab-case (should be camelCase)
+bad_renames=$(grep -rn '#\[serde(rename = "' "${SRC_ROOTS[@]}" --include='*.rs' 2>/dev/null \
+    | grep -E 'rename = "[a-z]+-[a-z]+"' \
+    || true)
+if [[ -n "$bad_renames" ]]; then
+    log_error "Found kebab-case explicit serde rename attributes (should be camelCase):"
+    echo "$bad_renames" | head -10
+else
+    log_ok "No kebab-case explicit serde rename attributes"
+fi
+
+# Detect kebab-case config field names in user-visible strings (not comments, not CLI flags, not file paths)
+# Dynamically generate field name patterns from config struct definitions in config/mod.rs.
+# This auto-updates as new fields are added — no manual list to maintain.
+config_fields=$(grep -E '^\s+pub [a-z_]+:' crates/cfgd-core/src/config/mod.rs \
+    | sed 's/.*pub \([a-z_]*\):.*/\1/' \
+    | grep '_' \
+    | sed 's/_/-/g' \
+    | sort -u \
+    | sed 's/^/"/' | sed 's/$/"/' \
+    | paste -sd '|' - \
+    || true)
+if [[ -n "$config_fields" ]]; then
+    kebab_fields=$(grep -rn "$config_fields" "${SRC_ROOTS[@]}" --include='*.rs' 2>/dev/null \
+        | grep -v '#\[arg(long' \
+        | grep -v '#\[serde(' \
+        | grep -v '\.txt\|\.key\|keygen\|\.json' \
+        || true)
+    if [[ -n "$kebab_fields" ]]; then
+        log_error "Found kebab-case config field names in string literals (should be camelCase):"
+        echo "$kebab_fields" | head -10
+    else
+        log_ok "No kebab-case config field names in string literals"
+    fi
+else
+    log_warn "Could not extract config field names from config/mod.rs — skipping kebab-case field check"
+fi
+
+log_section "Config Parsing Boundary"
+# CLAUDE.md rule #5: all config parsing must live in config/.
+# Check cfgd-core for serde_yaml::from_* calls outside config/, generate/, and lib.rs.
+# generate/ legitimately validates YAML (not loading application config) so it is excluded.
+# Test blocks are stripped before checking.
+config_parse_violations=""
+while IFS= read -r -d '' rsfile; do
+    case "$rsfile" in
+        */config/*|*/generate/*|*/lib.rs) continue ;;
+    esac
+    violations=$(strip_test_blocks_from_file "$rsfile" \
+        | grep -E 'serde_yaml::from_(str|reader|value)' \
+        || true)
+    if [[ -n "$violations" ]]; then
+        config_parse_violations="${config_parse_violations}${violations}"$'\n'
+    fi
+done < <(find crates/cfgd-core/src -name '*.rs' -print0 2>/dev/null)
+if [[ -n "$config_parse_violations" ]]; then
+    log_warn "serde_yaml::from_* found in cfgd-core outside config/ or generate/ (CLAUDE.md rule #5):"
+    printf "%s" "$config_parse_violations" | head -10
+else
+    log_ok "Config parsing confined to config/ and generate/ in cfgd-core"
+fi
+
 log_section "DRY — Timestamp/Hash/Command Wrappers"
 # Detect local wrappers around shared lib.rs functions.
 check_pattern warn \

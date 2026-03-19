@@ -7,12 +7,12 @@ cfgd follows the same pattern as Kubernetes controllers: declare desired state, 
 Apply runs in a fixed phase order:
 
 1. **Modules** — resolve module dependencies, install module packages, deploy module files
-2. **System** — shell, macOS defaults, launch agents, systemd units, environment, sysctl, kernel-modules, containerd, kubelet, apparmor, seccomp, certificates
+2. **System** — shell, macOS defaults, launch agents, systemd units, environment, sysctl, kernelModules, containerd, kubelet, apparmor, seccomp, certificates
 3. **Packages** — install/uninstall across all package managers (profile-level packages)
 4. **Files** — copy, template, set permissions (profile-level files)
 5. **Env** — write env vars and shell aliases to `~/.cfgd.env`, inject shell rc source lines
 6. **Secrets** — decrypt SOPS files, resolve external provider references
-7. **Scripts** — run pre/post-reconcile scripts
+7. **Scripts** — run pre/post reconcile scripts
 
 Each phase can be applied independently with `cfgd apply --phase <name>`.
 
@@ -26,7 +26,7 @@ Modules:
     + neovim — snap install nvim (0.10.2, min: 0.9)
     + ripgrep — apt install ripgrep
     → deploy: ~/.config/nvim/ (12 files)
-    → post-apply: nvim --headless "+Lazy! sync" +qa
+    → postApply: nvim --headless "+Lazy! sync" +qa
 
 Packages:
   + brew install extra-tool
@@ -37,7 +37,7 @@ Files:
   = 4 files up to date
 
 System:
-  ~ macos-defaults: com.apple.dock.autohide: false → true
+  ~ macosDefaults: com.apple.dock.autohide: false → true
 ```
 
 ## Filtering

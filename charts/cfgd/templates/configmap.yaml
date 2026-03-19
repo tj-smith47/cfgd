@@ -16,12 +16,12 @@ data:
       {{- if or .Values.configSource .Values.serverUrl }}
       origin:
         {{- if .Values.configSource }}
-        - type: git
+        - type: Git
           url: {{ .Values.configSource }}
           branch: main
         {{- end }}
         {{- if .Values.serverUrl }}
-        - type: server
+        - type: Server
           url: {{ .Values.serverUrl }}
         {{- end }}
       {{- end }}
@@ -29,5 +29,5 @@ data:
         enabled: true
         reconcile:
           interval: {{ .Values.reconcileInterval | default "5m" | quote }}
-          auto-apply: true
-          drift-policy: Auto
+          autoApply: true
+          driftPolicy: Auto

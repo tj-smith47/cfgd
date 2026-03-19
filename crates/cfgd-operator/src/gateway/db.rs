@@ -5,7 +5,7 @@ use super::errors::GatewayError;
 
 /// Device status as a proper enum with well-defined states.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
+#[serde(rename_all = "camelCase")]
 pub enum DeviceStatus {
     Healthy,
     Drifted,
@@ -35,7 +35,7 @@ impl DeviceStatus {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
+#[serde(rename_all = "camelCase")]
 pub struct Device {
     pub id: String,
     pub hostname: String,
@@ -48,7 +48,7 @@ pub struct Device {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
+#[serde(rename_all = "camelCase")]
 pub struct DriftEvent {
     pub id: String,
     pub device_id: String,
@@ -57,7 +57,7 @@ pub struct DriftEvent {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
+#[serde(rename_all = "camelCase")]
 pub struct CheckinEvent {
     pub id: String,
     pub device_id: String,
@@ -67,7 +67,7 @@ pub struct CheckinEvent {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
+#[serde(rename_all = "camelCase")]
 pub struct FleetEvent {
     pub timestamp: String,
     pub device_id: String,
@@ -77,7 +77,7 @@ pub struct FleetEvent {
 
 /// A bootstrap token record — admin-created, one-time use for device enrollment.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
+#[serde(rename_all = "camelCase")]
 pub struct BootstrapToken {
     pub id: String,
     pub username: String,
@@ -90,7 +90,7 @@ pub struct BootstrapToken {
 
 /// A device credential record — permanent API key for an enrolled device.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
+#[serde(rename_all = "camelCase")]
 pub struct DeviceCredential {
     pub device_id: String,
     pub username: String,
@@ -102,7 +102,7 @@ pub struct DeviceCredential {
 
 /// A user's public key for key-based enrollment verification.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
+#[serde(rename_all = "camelCase")]
 pub struct UserPublicKey {
     pub id: String,
     pub username: String,
@@ -115,7 +115,7 @@ pub struct UserPublicKey {
 
 /// A short-lived enrollment challenge for key-based enrollment.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
+#[serde(rename_all = "camelCase")]
 pub struct EnrollmentChallenge {
     pub id: String,
     pub username: String,

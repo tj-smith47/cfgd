@@ -88,7 +88,7 @@ struct ReconcileTask {
 // --- Per-source status ---
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
+#[serde(rename_all = "camelCase")]
 pub struct SourceStatus {
     pub name: String,
     pub last_sync: Option<String>,
@@ -100,7 +100,7 @@ pub struct SourceStatus {
 // --- Shared Daemon State ---
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
+#[serde(rename_all = "camelCase")]
 pub struct DaemonStatusResponse {
     pub running: bool,
     pub pid: u32,
@@ -116,7 +116,7 @@ pub struct DaemonStatusResponse {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
+#[serde(rename_all = "camelCase")]
 pub struct ModuleReconcileStatus {
     pub name: String,
     pub interval: String,
@@ -545,8 +545,8 @@ pub async fn run_daemon(
     ));
     if auto_pull || auto_push {
         printer.success(&format!("Sync interval: {}s", sync_interval.as_secs()));
-        printer.key_value("auto-pull", &auto_pull.to_string());
-        printer.key_value("auto-push", &auto_push.to_string());
+        printer.key_value("autoPull", &auto_pull.to_string());
+        printer.key_value("autoPush", &auto_push.to_string());
     }
     printer.info("Daemon running — press Ctrl+C to stop");
     printer.newline();
@@ -2246,7 +2246,7 @@ mod tests {
         };
         let json = serde_json::to_string(&status).unwrap();
         assert!(json.contains("local"));
-        assert!(json.contains("drift-count"));
+        assert!(json.contains("driftCount"));
     }
 
     #[test]

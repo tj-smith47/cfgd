@@ -156,7 +156,6 @@ pub struct DriftDetail {
 }
 
 #[derive(Deserialize, Serialize, Clone, Debug, JsonSchema)]
-#[serde(rename_all = "lowercase")]
 pub enum DriftSeverity {
     Low,
     Medium,

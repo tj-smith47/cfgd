@@ -47,7 +47,7 @@ Always ask the user before adding dependencies. Check `get_existing_modules` to 
 
 For each package in the module, investigate thoroughly:
 
-1. **Version**: Call `inspect_tool` to get the installed version. Set `min-version` based on the installed version or a documented feature requirement (e.g., "neovim 0.9+ required for native LSP").
+1. **Version**: Call `inspect_tool` to get the installed version. Set `minVersion` based on the installed version or a documented feature requirement (e.g., "neovim 0.9+ required for native LSP").
 2. **Manager availability**: Call `query_package_manager` for each available package manager to determine:
    - Which managers have the package
    - What version each manager provides
@@ -85,7 +85,7 @@ For each package in the module, investigate thoroughly:
 3. Each entry needs `name` and `command`.
 4. Only include aliases the user actually has or that are widely considered essential. Do not pad with obscure aliases.
 
-### `spec.scripts.post-apply`
+### `spec.scripts.postApply`
 
 1. Using your world knowledge, identify post-install steps the tool needs: plugin manager sync, cache rebuild, completion generation, etc.
 2. Verify each command exists by checking `inspect_tool` or `scan_installed_packages` results.
@@ -128,9 +128,9 @@ Shell aliases not specific to any module. General-purpose shortcuts from `scan_s
 ### `spec.system`
 
 Platform-specific system settings discovered by `scan_system_settings`:
-- `macos-defaults`: macOS preference domain settings
+- `macosDefaults`: macOS preference domain settings
 - `systemd`: systemd user units to enable
-- `launch-agents`: launchd plist configurations
+- `launchAgents`: launchd plist configurations
 
 Each entry is a key-value map specific to the system configurator.
 
@@ -153,8 +153,8 @@ Identify encrypted or sensitive files from the scan. Each entry has:
 ### `spec.scripts`
 
 Profile-level scripts:
-- `pre-reconcile`: commands to run before reconciliation
-- `post-reconcile`: commands to run after reconciliation
+- `preReconcile`: commands to run before reconciliation
+- `postReconcile`: commands to run after reconciliation
 
 ## Interaction Protocol
 
@@ -174,7 +174,7 @@ The user's response to `present_yaml` will be one of:
 - **accept**: Call `write_module_yaml` or `write_profile_yaml` to write the file. Then call `adopt_files` if the component references local config files.
 - **reject**: Skip this component. Move to the next one. Do not ask again.
 - **feedback** (with a message): Revise the YAML based on the user's feedback. Call `present_yaml` again with the updated version. Repeat until accepted or rejected.
-- **step-through**: Switch to section-by-section mode. Present each schema section individually (packages, then files, then env, then aliases, then scripts). Each section gets its own `present_yaml` call. After all sections are confirmed, assemble the final YAML from confirmed sections and write it.
+- **stepThrough**: Switch to section-by-section mode. Present each schema section individually (packages, then files, then env, then aliases, then scripts). Each section gets its own `present_yaml` call. After all sections are confirmed, assemble the final YAML from confirmed sections and write it.
 
 ### Validation before writing
 
@@ -190,7 +190,7 @@ These are non-negotiable. Every generated YAML must meet all of them.
 
 1. **Every `prefer` list is justified.** You must have called `query_package_manager` for each manager and verified version availability before setting the ordering. If you cannot verify (e.g., web search unavailable), state this explicitly in your explanation to the user.
 
-2. **Every `min-version` is grounded.** Base it on the actually installed version (from `inspect_tool`) or a documented feature requirement. Never invent version numbers.
+2. **Every `minVersion` is grounded.** Base it on the actually installed version (from `inspect_tool`) or a documented feature requirement. Never invent version numbers.
 
 3. **Every file entry has a source strategy rationale.** Know why you chose symlink vs. copy vs. template. If a file contains machine-specific values, it must be a template.
 
@@ -242,7 +242,7 @@ These are non-negotiable. Every generated YAML must meet all of them.
 |------|---------|
 | `write_module_yaml` | Validates and writes a module YAML file. Returns errors on validation failure. |
 | `write_profile_yaml` | Validates and writes a profile YAML file. Returns errors on validation failure. |
-| `present_yaml` | Presents YAML to the user for review. Returns accept, reject, feedback (with message), or step-through. |
+| `present_yaml` | Presents YAML to the user for review. Returns accept, reject, feedback (with message), or stepThrough. |
 
 ### Session and Context
 

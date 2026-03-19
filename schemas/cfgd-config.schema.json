@@ -73,7 +73,7 @@
         "modules": {
           "$ref": "#/$defs/ModulesConfig"
         },
-        "file-strategy": {
+        "fileStrategy": {
           "$ref": "#/$defs/FileStrategy"
         },
         "security": {
@@ -84,6 +84,16 @@
           "additionalProperties": { "type": "string" },
           "default": {},
           "description": "CLI aliases: map of alias name to command string"
+        },
+        "ai": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "provider": { "type": "string", "default": "claude", "description": "AI provider name" },
+            "model": { "type": "string", "default": "claude-sonnet-4-6", "description": "Model identifier" },
+            "apiKeyEnv": { "type": "string", "default": "ANTHROPIC_API_KEY", "description": "Environment variable name for the API key" }
+          },
+          "description": "AI assistant configuration for cfgd generate"
         }
       }
     },
@@ -91,7 +101,7 @@
       "type": "object",
       "additionalProperties": false,
       "properties": {
-        "allow-unsigned": {
+        "allowUnsigned": {
           "type": "boolean",
           "default": false,
           "description": "Allow unsigned source content even when sources require signed commits. Intended for development/testing."
@@ -132,7 +142,7 @@
       "type": "object",
       "additionalProperties": false,
       "properties": {
-        "require-signatures": {
+        "requireSignatures": {
           "type": "boolean",
           "default": false,
           "description": "Require GPG/SSH signatures on all remote module tags"
@@ -141,8 +151,8 @@
     },
     "FileStrategy": {
       "type": "string",
-      "enum": ["symlink", "copy", "template", "hardlink"],
-      "default": "symlink",
+      "enum": ["Symlink", "Copy", "Template", "Hardlink"],
+      "default": "Symlink",
       "description": "File deployment strategy"
     },
     "OriginSpec": {
@@ -152,7 +162,7 @@
       "properties": {
         "type": {
           "type": "string",
-          "enum": ["git", "server"],
+          "enum": ["Git", "Server"],
           "description": "Origin type"
         },
         "url": {
@@ -199,18 +209,39 @@
           "default": "5m",
           "description": "How often to reconcile (e.g. '5m', '1h')"
         },
-        "on-change": {
+        "onChange": {
           "type": "boolean",
           "default": false,
           "description": "Whether to reconcile immediately on file change"
         },
-        "auto-apply": {
+        "autoApply": {
           "type": "boolean",
           "default": false,
           "description": "Automatically apply reconciled changes without prompting"
         },
         "policy": {
           "$ref": "#/$defs/AutoApplyPolicyConfig"
+        },
+        "driftPolicy": {
+          "type": "string",
+          "enum": ["Auto", "NotifyOnly", "Prompt"],
+          "default": "NotifyOnly",
+          "description": "Policy for daemon drift reconciliation: Auto (apply), NotifyOnly (default), Prompt"
+        },
+        "patches": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "kind": { "type": "string", "enum": ["Module", "Profile"] },
+              "name": { "type": "string" },
+              "interval": { "type": "string" },
+              "autoApply": { "type": "boolean" },
+              "driftPolicy": { "type": "string", "enum": ["Auto", "NotifyOnly", "Prompt"] }
+            },
+            "required": ["kind"]
+          },
+          "description": "Per-module or per-profile reconcile overrides"
         }
       }
     },
@@ -218,32 +249,32 @@
       "type": "object",
       "additionalProperties": false,
       "properties": {
-        "new-recommended": {
+        "newRecommended": {
           "$ref": "#/$defs/PolicyAction"
         },
-        "new-optional": {
+        "newOptional": {
           "$ref": "#/$defs/PolicyAction"
         },
-        "locked-conflict": {
+        "lockedConflict": {
           "$ref": "#/$defs/PolicyAction"
         }
       }
     },
     "PolicyAction": {
       "type": "string",
-      "enum": ["notify", "accept", "reject", "ignore"],
+      "enum": ["Notify", "Accept", "Reject", "Ignore"],
       "description": "Action to take for auto-apply policy decisions"
     },
     "SyncConfig": {
       "type": "object",
       "additionalProperties": false,
       "properties": {
-        "auto-push": {
+        "autoPush": {
           "type": "boolean",
           "default": false,
           "description": "Automatically push local changes to origin"
         },
-        "auto-pull": {
+        "autoPull": {
           "type": "boolean",
           "default": false,
           "description": "Automatically pull remote changes"
@@ -266,13 +297,13 @@
         },
         "method": {
           "type": "string",
-          "enum": ["desktop", "stdout", "webhook"],
-          "default": "desktop",
+          "enum": ["Desktop", "Stdout", "Webhook"],
+          "default": "Desktop",
           "description": "Notification delivery method"
         },
-        "webhook-url": {
+        "webhookUrl": {
           "type": "string",
-          "description": "Webhook URL (required when method is 'webhook')"
+          "description": "Webhook URL (required when method is 'Webhook')"
         }
       }
     },
@@ -300,7 +331,7 @@
       "type": "object",
       "additionalProperties": false,
       "properties": {
-        "age-key": {
+        "ageKey": {
           "type": "string",
           "description": "Path to age key file for SOPS decryption"
         }
@@ -351,12 +382,12 @@
           "minimum": 0,
           "description": "Merge priority (higher = wins conflicts)"
         },
-        "accept-recommended": {
+        "acceptRecommended": {
           "type": "boolean",
           "default": false,
           "description": "Automatically accept recommended items from source"
         },
-        "opt-in": {
+        "optIn": {
           "type": "array",
           "items": { "type": "string" },
           "default": [],
@@ -379,12 +410,12 @@
           "default": "1h",
           "description": "How often to sync from this source"
         },
-        "auto-apply": {
+        "autoApply": {
           "type": "boolean",
           "default": false,
           "description": "Automatically apply changes from this source"
         },
-        "pin-version": {
+        "pinVersion": {
           "type": "string",
           "description": "Pin to a specific version (git tag/commit)"
         }
@@ -394,10 +425,10 @@
       "type": "object",
       "additionalProperties": false,
       "properties": {
-        "preset": {
+        "name": {
           "type": "string",
           "default": "default",
-          "description": "Theme preset name"
+          "description": "Theme name"
         },
         "overrides": {
           "$ref": "#/$defs/ThemeOverrides"
@@ -417,15 +448,15 @@
         "subheader": { "type": "string", "description": "Color for subheaders" },
         "key": { "type": "string", "description": "Color for key labels" },
         "value": { "type": "string", "description": "Color for values" },
-        "diff-add": { "type": "string", "description": "Color for diff additions" },
-        "diff-remove": { "type": "string", "description": "Color for diff removals" },
-        "diff-context": { "type": "string", "description": "Color for diff context lines" },
-        "icon-success": { "type": "string", "description": "Icon for success" },
-        "icon-warning": { "type": "string", "description": "Icon for warnings" },
-        "icon-error": { "type": "string", "description": "Icon for errors" },
-        "icon-info": { "type": "string", "description": "Icon for info" },
-        "icon-pending": { "type": "string", "description": "Icon for pending state" },
-        "icon-arrow": { "type": "string", "description": "Icon for arrows/pointers" }
+        "diffAdd": { "type": "string", "description": "Color for diff additions" },
+        "diffRemove": { "type": "string", "description": "Color for diff removals" },
+        "diffContext": { "type": "string", "description": "Color for diff context lines" },
+        "iconSuccess": { "type": "string", "description": "Icon for success" },
+        "iconWarning": { "type": "string", "description": "Icon for warnings" },
+        "iconError": { "type": "string", "description": "Icon for errors" },
+        "iconInfo": { "type": "string", "description": "Icon for info" },
+        "iconPending": { "type": "string", "description": "Icon for pending state" },
+        "iconArrow": { "type": "string", "description": "Icon for arrows/pointers" }
       }
     }
   }

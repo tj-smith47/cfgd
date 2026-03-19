@@ -82,20 +82,20 @@ spec:
 
   system:
     shell: /bin/zsh
-    macos-defaults:
+    macosDefaults:
       NSGlobalDomain:
         AppleShowAllExtensions: true
       com.apple.dock:
         autohide: true
         tilesize: 48
-    launch-agents:
+    launchAgents:
       - name: com.example.myservice
         program: /usr/local/bin/myservice
         args: ["--config", "/etc/myservice.conf"]
-        run-at-load: true
-    systemd-units:
+        runAtLoad: true
+    systemdUnits:
       - name: myservice.service
-        unit-file: systemd/myservice.service
+        unitFile: systemd/myservice.service
         enabled: true
 
   secrets:
@@ -106,9 +106,9 @@ spec:
       template: "token: ${secret:value}"
 
   scripts:
-    pre-reconcile:
+    preReconcile:
       - scripts/pre-setup.sh
-    post-reconcile:
+    postReconcile:
       - scripts/post-setup.sh
 ```
 

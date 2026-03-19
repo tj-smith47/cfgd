@@ -15,7 +15,6 @@ use crate::state::{ApplyStatus, StateStore};
 
 /// Ordered reconciliation phases.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "lowercase")]
 pub enum PhaseName {
     Modules,
     System,
@@ -1219,8 +1218,8 @@ impl<'a> Reconciler<'a> {
                 };
 
                 let phase_name = match phase {
-                    ScriptPhase::PreReconcile => "pre-reconcile",
-                    ScriptPhase::PostReconcile => "post-reconcile",
+                    ScriptPhase::PreReconcile => "preReconcile",
+                    ScriptPhase::PostReconcile => "postReconcile",
                 };
 
                 let label = format!("Running {} script: {}", phase_name, path.display());
@@ -1906,8 +1905,8 @@ pub fn format_action_description(action: &Action) -> String {
         Action::Script(sa) => match sa {
             ScriptAction::Run { path, phase, .. } => {
                 let p = match phase {
-                    ScriptPhase::PreReconcile => "pre-reconcile",
-                    ScriptPhase::PostReconcile => "post-reconcile",
+                    ScriptPhase::PreReconcile => "preReconcile",
+                    ScriptPhase::PostReconcile => "postReconcile",
                 };
                 format!("script:{}:{}", p, path.display())
             }
@@ -2247,8 +2246,8 @@ pub fn format_plan_items(phase: &Phase) -> Vec<String> {
                     ..
                 } => {
                     let p = match phase {
-                        ScriptPhase::PreReconcile => "pre-reconcile",
-                        ScriptPhase::PostReconcile => "post-reconcile",
+                        ScriptPhase::PreReconcile => "preReconcile",
+                        ScriptPhase::PostReconcile => "postReconcile",
                     };
                     format!(
                         "run {} script: {}{}",

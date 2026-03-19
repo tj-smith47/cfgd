@@ -127,7 +127,7 @@ pub struct MacosDefaultsConfigurator;
 
 impl SystemConfigurator for MacosDefaultsConfigurator {
     fn name(&self) -> &str {
-        "macos-defaults"
+        "macosDefaults"
     }
 
     fn is_available(&self) -> bool {
@@ -269,7 +269,7 @@ pub struct SystemdUnitConfigurator;
 
 impl SystemConfigurator for SystemdUnitConfigurator {
     fn name(&self) -> &str {
-        "systemd-units"
+        "systemdUnits"
     }
 
     fn is_available(&self) -> bool {
@@ -321,7 +321,7 @@ impl SystemConfigurator for SystemdUnitConfigurator {
             }
 
             // Check if unit file exists at specified path
-            if let Some(unit_file) = unit.get("unit-file").and_then(|v| v.as_str()) {
+            if let Some(unit_file) = unit.get("unitFile").and_then(|v| v.as_str()) {
                 let unit_path = std::path::Path::new(unit_file);
                 if !unit_path.exists() {
                     drifts.push(SystemDrift {
@@ -354,7 +354,7 @@ impl SystemConfigurator for SystemdUnitConfigurator {
                 .unwrap_or(true);
 
             // Copy unit file if specified
-            if let Some(unit_file) = unit.get("unit-file").and_then(|v| v.as_str()) {
+            if let Some(unit_file) = unit.get("unitFile").and_then(|v| v.as_str()) {
                 let dest = format!("/etc/systemd/system/{}", name);
                 printer.info(&format!("Installing unit file: {} → {}", unit_file, dest));
 
@@ -403,7 +403,7 @@ pub struct LaunchAgentConfigurator;
 
 impl SystemConfigurator for LaunchAgentConfigurator {
     fn name(&self) -> &str {
-        "launch-agents"
+        "launchAgents"
     }
 
     fn is_available(&self) -> bool {
@@ -462,7 +462,7 @@ impl SystemConfigurator for LaunchAgentConfigurator {
 
             let program = agent.get("program").and_then(|v| v.as_str()).unwrap_or("");
             let run_at_load = agent
-                .get("run-at-load")
+                .get("runAtLoad")
                 .and_then(|v| v.as_bool())
                 .unwrap_or(false);
             let args: Vec<&str> = agent
@@ -1032,19 +1032,19 @@ mod tests {
     #[test]
     fn macos_defaults_name() {
         let md = MacosDefaultsConfigurator;
-        assert_eq!(md.name(), "macos-defaults");
+        assert_eq!(md.name(), "macosDefaults");
     }
 
     #[test]
     fn systemd_units_name() {
         let su = SystemdUnitConfigurator;
-        assert_eq!(su.name(), "systemd-units");
+        assert_eq!(su.name(), "systemdUnits");
     }
 
     #[test]
     fn launch_agents_name() {
         let la = LaunchAgentConfigurator;
-        assert_eq!(la.name(), "launch-agents");
+        assert_eq!(la.name(), "launchAgents");
     }
 
     #[test]

@@ -1,6 +1,19 @@
-# cfgd Initial Implementation Plan (Historical)
+# cfgd — Completed Work
 
-Phases 1-8 are complete. This file is kept as a reference for the original design rationale and acceptance criteria of shipped features. All remaining work is tracked in `PLAN.md`.
+Reference for the original design rationale and acceptance criteria of shipped features. All remaining work is tracked in `PLAN.md`.
+
+---
+
+## Idiomatic Naming Audit (from Tier 1)
+
+- [x] Cross-references use `moduleRef`/`configRef` style
+- [x] Enum values use PascalCase (`IfNotPresent`, `Always`, `Symlink`)
+- [x] CLI flags and config fields align with k8s conventions (camelCase serde, PascalCase enums)
+- [x] All CRD field names use camelCase
+
+---
+
+## Phases 1-8 (Original Implementation)
 
 ## Phase Overview
 

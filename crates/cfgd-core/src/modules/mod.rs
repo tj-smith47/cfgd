@@ -1307,7 +1307,7 @@ pub fn diff_module_specs(old: &LoadedModule, new: &LoadedModule) -> Vec<String> 
             && old_pkg.min_version != new_pkg.min_version
         {
             changes.push(format!(
-                "~ package '{}': min-version {} -> {}",
+                "~ package '{}': minVersion {} -> {}",
                 new_pkg.name,
                 old_pkg.min_version.as_deref().unwrap_or("(none)"),
                 new_pkg.min_version.as_deref().unwrap_or("(none)")
@@ -1341,10 +1341,10 @@ pub fn diff_module_specs(old: &LoadedModule, new: &LoadedModule) -> Vec<String> 
     let old_script_set: HashSet<&str> = old_scripts.into_iter().collect();
     let new_script_set: HashSet<&str> = new_scripts.into_iter().collect();
     for script in new_script_set.difference(&old_script_set) {
-        changes.push(format!("+ post-apply script: {script}"));
+        changes.push(format!("+ postApply script: {script}"));
     }
     for script in old_script_set.difference(&new_script_set) {
-        changes.push(format!("- post-apply script: {script}"));
+        changes.push(format!("- postApply script: {script}"));
     }
 
     if changes.is_empty() {
@@ -1487,7 +1487,7 @@ spec:
   depends: [node]
   packages:
     - name: neovim
-      min-version: "0.9"
+      minVersion: "0.9"
       prefer: [brew, snap, apt]
       aliases:
         snap: nvim
@@ -1978,7 +1978,7 @@ spec:
     - name: neovim
     - name: ripgrep
   scripts:
-    post-apply:
+    postApply:
       - nvim --headless "+Lazy! sync" +qa
 "#,
         )
@@ -2036,7 +2036,7 @@ spec:
   depends: [a, b]
   packages:
     - name: foo
-      min-version: "1.0"
+      minVersion: "1.0"
       prefer: [brew, apt]
       aliases:
         apt: foo-tools
@@ -2047,7 +2047,7 @@ spec:
     - source: https://github.com/user/repo.git@v1.0
       target: ~/.config/bar/
   scripts:
-    post-apply:
+    postApply:
       - echo done
 "#;
         let doc = parse_module(yaml).unwrap();
@@ -2656,7 +2656,7 @@ spec:
         assert!(
             changes
                 .iter()
-                .any(|c| c.contains("~ package 'pkg1': min-version"))
+                .any(|c| c.contains("~ package 'pkg1': minVersion"))
         );
         assert!(changes.iter().any(|c| c.contains("+ file target")));
         assert!(changes.iter().any(|c| c.contains("- file target")));
@@ -2907,7 +2907,7 @@ spec:
             dir: PathBuf::from("/tmp"),
         };
         let changes = diff_module_specs(&old, &new);
-        assert!(changes.iter().any(|c| c.contains("+ post-apply script")));
-        assert!(changes.iter().any(|c| c.contains("- post-apply script")));
+        assert!(changes.iter().any(|c| c.contains("+ postApply script")));
+        assert!(changes.iter().any(|c| c.contains("- postApply script")));
     }
 }

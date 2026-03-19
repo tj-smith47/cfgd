@@ -6,7 +6,7 @@ spec:
   env: []
   system:
     seccomp:
-      profiles-dir: /tmp/cfgd-e2e-seccomp
+      profilesDir: /tmp/cfgd-e2e-seccomp
       profiles:
         - name: audit
           file: audit.json

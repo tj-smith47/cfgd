@@ -208,7 +208,7 @@ impl McpServer {
                         .and_then(|v| v.as_str())
                         .unwrap_or("");
                     let text = format!(
-                        "## {} — {}\n\n```yaml\n{}\n```\n\nPlease review and respond with your choice: accept, reject, feedback (with message), or step-through.",
+                        "## {} — {}\n\n```yaml\n{}\n```\n\nPlease review and respond with your choice: accept, reject, feedback (with message), or stepThrough.",
                         kind, description, content
                     );
                     return JsonRpcResponse::success(

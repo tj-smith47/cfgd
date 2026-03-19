@@ -163,7 +163,6 @@ const MIGRATIONS: &[&str] = &[
 
 /// Apply status for a reconciliation run.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "lowercase")]
 pub enum ApplyStatus {
     Success,
     Partial,
@@ -2026,7 +2025,7 @@ mod tests {
                 "nvim",
                 "/home/user/.config/nvim/init.lua",
                 "hash1",
-                "copy",
+                "Copy",
                 apply_id,
             )
             .unwrap();
@@ -2035,7 +2034,7 @@ mod tests {
                 "nvim",
                 "/home/user/.config/nvim/lazy.lua",
                 "hash2",
-                "copy",
+                "Copy",
                 apply_id,
             )
             .unwrap();
@@ -2050,14 +2049,14 @@ mod tests {
                 "nvim",
                 "/home/user/.config/nvim/init.lua",
                 "newhash",
-                "symlink",
+                "Symlink",
                 apply_id,
             )
             .unwrap();
         let files = store.module_deployed_files("nvim").unwrap();
         assert_eq!(files.len(), 2);
         assert_eq!(files[0].content_hash, "newhash");
-        assert_eq!(files[0].strategy, "symlink");
+        assert_eq!(files[0].strategy, "Symlink");
 
         // Delete all
         store.delete_module_files("nvim").unwrap();

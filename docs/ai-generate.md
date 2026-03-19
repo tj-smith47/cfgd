@@ -51,13 +51,13 @@ spec:
   depends: [node]
   packages:
     - name: neovim
-      min-version: "0.9"
+      minVersion: "0.9"
       prefer: [brew, snap, apt]
   files:
     - source: config/
       target: ~/.config/nvim/
   scripts:
-    post-apply:
+    postApply:
       - nvim --headless "+Lazy! sync" +qa
 ─────────────────────────────────────────────────────────────
 What would you like to do?
@@ -129,7 +129,7 @@ spec:
   ai:
     provider: claude
     model: claude-sonnet-4-6
-    api-key-env: ANTHROPIC_API_KEY
+    apiKeyEnv: ANTHROPIC_API_KEY
 ```
 
 All three fields have defaults — you only need this section if you want to override something.
@@ -138,7 +138,7 @@ All three fields have defaults — you only need this section if you want to ove
 |---|---|---|
 | `provider` | `claude` | AI provider name |
 | `model` | `claude-sonnet-4-6` | Model ID |
-| `api-key-env` | `ANTHROPIC_API_KEY` | Environment variable holding the API key |
+| `apiKeyEnv` | `ANTHROPIC_API_KEY` | Environment variable holding the API key |
 
 ### Provider and Model Overrides
 
@@ -163,7 +163,7 @@ To use a different variable name:
 ```yaml
 spec:
   ai:
-    api-key-env: MY_ANTHROPIC_KEY
+    apiKeyEnv: MY_ANTHROPIC_KEY
 ```
 
 ```sh
@@ -335,7 +335,7 @@ export ANTHROPIC_API_KEY=sk-ant-...
 cfgd generate
 ```
 
-If you're using a different variable name, set `spec.ai.api-key-env` in `cfgd.yaml`.
+If you're using a different variable name, set `spec.ai.apiKeyEnv` in `cfgd.yaml`.
 
 ### Model Not Available
 

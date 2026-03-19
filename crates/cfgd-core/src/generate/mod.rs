@@ -52,7 +52,7 @@ pub enum PresentYamlResponse {
     Reject,
     #[serde(rename = "feedback")]
     Feedback { message: String },
-    #[serde(rename = "step-through")]
+    #[serde(rename = "stepThrough")]
     StepThrough,
 }
 

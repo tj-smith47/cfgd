@@ -249,7 +249,7 @@ impl KernelModuleConfigurator {
 
 impl SystemConfigurator for KernelModuleConfigurator {
     fn name(&self) -> &str {
-        "kernel-modules"
+        "kernelModules"
     }
 
     fn is_available(&self) -> bool {
@@ -332,7 +332,7 @@ impl SystemConfigurator for KernelModuleConfigurator {
 /// Config format:
 /// ```yaml
 /// containerd:
-///   config-path: /etc/containerd/config.toml
+///   configPath: /etc/containerd/config.toml
 ///   settings:
 ///     SystemdCgroup: true
 ///     sandbox_image: "registry.k8s.io/pause:3.9"
@@ -344,7 +344,7 @@ impl ContainerdConfigurator {
 
     fn config_path(desired: &serde_yaml::Value) -> PathBuf {
         desired
-            .get("config-path")
+            .get("configPath")
             .and_then(|v| v.as_str())
             .map(PathBuf::from)
             .unwrap_or_else(|| PathBuf::from(Self::DEFAULT_CONFIG_PATH))
@@ -498,7 +498,7 @@ impl SystemConfigurator for ContainerdConfigurator {
 /// Config format:
 /// ```yaml
 /// kubelet:
-///   config-path: /var/lib/kubelet/config.yaml
+///   configPath: /var/lib/kubelet/config.yaml
 ///   settings:
 ///     maxPods: 110
 ///     cgroupDriver: systemd
@@ -510,7 +510,7 @@ impl KubeletConfigurator {
 
     fn config_path(desired: &serde_yaml::Value) -> PathBuf {
         desired
-            .get("config-path")
+            .get("configPath")
             .and_then(|v| v.as_str())
             .map(PathBuf::from)
             .unwrap_or_else(|| PathBuf::from(Self::DEFAULT_CONFIG_PATH))
@@ -836,7 +836,7 @@ impl SystemConfigurator for AppArmorConfigurator {
 /// Config format:
 /// ```yaml
 /// seccomp:
-///   profiles-dir: /etc/cfgd/seccomp
+///   profilesDir: /etc/cfgd/seccomp
 ///   profiles:
 ///     - name: default-audit
 ///       file: default-audit.json
@@ -866,7 +866,7 @@ impl SystemConfigurator for SeccompConfigurator {
         let mut drifts = Vec::new();
 
         let profiles_dir = desired
-            .get("profiles-dir")
+            .get("profilesDir")
             .and_then(|v| v.as_str())
             .unwrap_or(Self::DEFAULT_PROFILES_DIR);
         let profiles_dir = Path::new(profiles_dir);
@@ -915,7 +915,7 @@ impl SystemConfigurator for SeccompConfigurator {
 
     fn apply(&self, desired: &serde_yaml::Value, printer: &Printer) -> Result<()> {
         let profiles_dir = desired
-            .get("profiles-dir")
+            .get("profilesDir")
             .and_then(|v| v.as_str())
             .unwrap_or(Self::DEFAULT_PROFILES_DIR);
         let profiles_dir = Path::new(profiles_dir);
@@ -965,11 +965,11 @@ impl SystemConfigurator for SeccompConfigurator {
 /// Config format:
 /// ```yaml
 /// certificates:
-///   ca-cert-dir: /etc/kubernetes/pki
+///   caCertDir: /etc/kubernetes/pki
 ///   certificates:
 ///     - name: kubelet-client
-///       cert-path: /etc/kubernetes/pki/kubelet-client.crt
-///       key-path: /etc/kubernetes/pki/kubelet-client.key
+///       certPath: /etc/kubernetes/pki/kubelet-client.crt
+///       keyPath: /etc/kubernetes/pki/kubelet-client.key
 ///       mode: "0600"
 /// ```
 pub struct CertificateConfigurator;
@@ -1001,7 +1001,7 @@ impl SystemConfigurator for CertificateConfigurator {
                 None => continue,
             };
 
-            if let Some(cert_path) = cert.get("cert-path").and_then(|v| v.as_str())
+            if let Some(cert_path) = cert.get("certPath").and_then(|v| v.as_str())
                 && !Path::new(cert_path).exists()
             {
                 drifts.push(SystemDrift {
@@ -1011,7 +1011,7 @@ impl SystemConfigurator for CertificateConfigurator {
                 });
             }
 
-            if let Some(key_path) = cert.get("key-path").and_then(|v| v.as_str())
+            if let Some(key_path) = cert.get("keyPath").and_then(|v| v.as_str())
                 && !Path::new(key_path).exists()
             {
                 drifts.push(SystemDrift {
@@ -1024,7 +1024,7 @@ impl SystemConfigurator for CertificateConfigurator {
             if let Some(mode_str) = cert.get("mode").and_then(|v| v.as_str())
                 && let Ok(desired_mode) = u32::from_str_radix(mode_str, 8)
             {
-                for path_key in &["cert-path", "key-path"] {
+                for path_key in &["certPath", "keyPath"] {
                     if let Some(path) = cert.get(*path_key).and_then(|v| v.as_str())
                         && let Ok(meta) = fs::metadata(path)
                     {
@@ -1047,7 +1047,7 @@ impl SystemConfigurator for CertificateConfigurator {
 
     fn apply(&self, desired: &serde_yaml::Value, printer: &Printer) -> Result<()> {
         let ca_cert_dir = desired
-            .get("ca-cert-dir")
+            .get("caCertDir")
             .and_then(|v| v.as_str())
             .unwrap_or("/etc/kubernetes/pki");
 
@@ -1067,7 +1067,7 @@ impl SystemConfigurator for CertificateConfigurator {
             let mode_str = cert.get("mode").and_then(|v| v.as_str()).unwrap_or("0644");
             let desired_mode = u32::from_str_radix(mode_str, 8).unwrap_or(0o644);
 
-            for path_key in &["cert-path", "key-path", "ca-path"] {
+            for path_key in &["certPath", "keyPath", "caPath"] {
                 if let Some(path_str) = cert.get(*path_key).and_then(|v| v.as_str()) {
                     let path = Path::new(path_str);
                     if path.exists() {
@@ -1198,7 +1198,7 @@ mod tests {
     #[test]
     fn kernel_module_configurator_name() {
         let km = KernelModuleConfigurator;
-        assert_eq!(km.name(), "kernel-modules");
+        assert_eq!(km.name(), "kernelModules");
     }
 
     #[test]
@@ -1385,11 +1385,11 @@ mod tests {
             serde_yaml::Value::String("test-cert".into()),
         );
         cert.insert(
-            serde_yaml::Value::String("cert-path".into()),
+            serde_yaml::Value::String("certPath".into()),
             serde_yaml::Value::String("/nonexistent/cert.pem".into()),
         );
         cert.insert(
-            serde_yaml::Value::String("key-path".into()),
+            serde_yaml::Value::String("keyPath".into()),
             serde_yaml::Value::String("/nonexistent/key.pem".into()),
         );
 

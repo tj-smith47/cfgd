@@ -45,7 +45,7 @@ spec:
   secrets:
     backend: sops
     sops:
-      age-key: ~/.config/cfgd/age-key.txt
+      ageKey: ~/.config/cfgd/age-key.txt
     integrations:
       - name: 1password
       - name: bitwarden

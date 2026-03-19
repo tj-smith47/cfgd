@@ -12,9 +12,8 @@ use crate::union_extend;
 // --- Root Config (cfgd.yaml) ---
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
+#[serde(rename_all = "camelCase")]
 pub struct CfgdConfig {
-    #[serde(rename = "apiVersion")]
     pub api_version: String,
     pub kind: String,
     pub metadata: ConfigMetadata,
@@ -37,13 +36,13 @@ impl CfgdConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
+#[serde(rename_all = "camelCase")]
 pub struct ConfigMetadata {
     pub name: String,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
+#[serde(rename_all = "camelCase")]
 pub struct ConfigSpec {
     #[serde(default)]
     pub profile: Option<String>,
@@ -98,7 +97,7 @@ pub fn minimal_config() -> CfgdConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
+#[serde(rename_all = "camelCase")]
 pub struct AiConfig {
     #[serde(default = "default_ai_provider")]
     pub provider: String,
@@ -129,7 +128,7 @@ fn default_api_key_env() -> String {
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
+#[serde(rename_all = "camelCase")]
 pub struct SecurityConfig {
     /// Allow unsigned source content even when the source requires signed commits.
     /// Intended for development/testing environments.
@@ -138,7 +137,7 @@ pub struct SecurityConfig {
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
+#[serde(rename_all = "camelCase")]
 pub struct ModulesConfig {
     /// Module registries — git repos containing modules in a prescribed directory structure.
     #[serde(default)]
@@ -150,7 +149,7 @@ pub struct ModulesConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
+#[serde(rename_all = "camelCase")]
 pub struct ModuleSecurityConfig {
     /// Require GPG/SSH signatures on all remote module tags.
     /// When true, unsigned modules are rejected unless `--allow-unsigned` is passed.
@@ -159,7 +158,7 @@ pub struct ModuleSecurityConfig {
 }
 
 #[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "kebab-case")]
+#[serde(rename_all = "camelCase")]
 pub struct ThemeConfig {
     #[serde(default = "default_theme_name")]
     pub name: String,
@@ -205,7 +204,7 @@ impl<'de> serde::Deserialize<'de> for ThemeConfig {
                 map: M,
             ) -> std::result::Result<ThemeConfig, M::Error> {
                 #[derive(Deserialize)]
-                #[serde(rename_all = "kebab-case")]
+                #[serde(rename_all = "camelCase")]
                 struct Inner {
                     #[serde(default = "default_theme_name")]
                     name: String,
@@ -224,7 +223,7 @@ impl<'de> serde::Deserialize<'de> for ThemeConfig {
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
+#[serde(rename_all = "camelCase")]
 pub struct ThemeOverrides {
     pub success: Option<String>,
     pub warning: Option<String>,
@@ -278,7 +277,7 @@ impl ConfigSpec {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
+#[serde(rename_all = "camelCase")]
 pub struct OriginSpec {
     #[serde(rename = "type")]
     pub origin_type: OriginType,
@@ -289,7 +288,6 @@ pub struct OriginSpec {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
 pub enum OriginType {
     Git,
     Server,
@@ -300,7 +298,7 @@ fn default_branch() -> String {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
+#[serde(rename_all = "camelCase")]
 pub struct DaemonConfig {
     #[serde(default)]
     pub enabled: bool,
@@ -313,7 +311,7 @@ pub struct DaemonConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
+#[serde(rename_all = "camelCase")]
 pub struct ReconcileConfig {
     #[serde(default = "default_reconcile_interval")]
     pub interval: String,
@@ -338,7 +336,7 @@ pub struct ReconcileConfig {
 /// A kustomize-style reconcile patch targeting a specific module or profile.
 /// When `name` is omitted, the patch applies to all entities of the given kind.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
+#[serde(rename_all = "camelCase")]
 pub struct ReconcilePatch {
     pub kind: ReconcilePatchKind,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -370,7 +368,7 @@ pub enum DriftPolicy {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
+#[serde(rename_all = "camelCase")]
 pub struct AutoApplyPolicyConfig {
     #[serde(default = "default_policy_notify")]
     pub new_recommended: PolicyAction,
@@ -391,7 +389,6 @@ impl Default for AutoApplyPolicyConfig {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
 pub enum PolicyAction {
     Notify,
     Accept,
@@ -412,7 +409,7 @@ fn default_reconcile_interval() -> String {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
+#[serde(rename_all = "camelCase")]
 pub struct SyncConfig {
     #[serde(default)]
     pub auto_push: bool,
@@ -423,7 +420,7 @@ pub struct SyncConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
+#[serde(rename_all = "camelCase")]
 pub struct NotifyConfig {
     #[serde(default)]
     pub drift: bool,
@@ -433,7 +430,6 @@ pub struct NotifyConfig {
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
 pub enum NotifyMethod {
     #[default]
     Desktop,
@@ -442,7 +438,7 @@ pub enum NotifyMethod {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
+#[serde(rename_all = "camelCase")]
 pub struct SecretsConfig {
     #[serde(default = "default_secrets_backend")]
     pub backend: String,
@@ -456,13 +452,13 @@ fn default_secrets_backend() -> String {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
+#[serde(rename_all = "camelCase")]
 pub struct SopsConfig {
     pub age_key: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
+#[serde(rename_all = "camelCase")]
 pub struct SecretIntegration {
     pub name: String,
     #[serde(flatten)]
@@ -472,7 +468,7 @@ pub struct SecretIntegration {
 // --- Multi-source config management ---
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
+#[serde(rename_all = "camelCase")]
 pub struct SourceSpec {
     pub name: String,
     pub origin: OriginSpec,
@@ -483,7 +479,7 @@ pub struct SourceSpec {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
+#[serde(rename_all = "camelCase")]
 pub struct SubscriptionSpec {
     pub profile: Option<String>,
     #[serde(default = "default_source_priority")]
@@ -516,7 +512,7 @@ fn default_source_priority() -> u32 {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
+#[serde(rename_all = "camelCase")]
 pub struct SourceSyncSpec {
     #[serde(default = "default_sync_interval")]
     pub interval: String,
@@ -542,9 +538,8 @@ fn default_sync_interval() -> String {
 // --- ConfigSource manifest (published by team, lives in source repo as cfgd-source.yaml) ---
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
+#[serde(rename_all = "camelCase")]
 pub struct ConfigSourceDocument {
-    #[serde(rename = "apiVersion")]
     pub api_version: String,
     pub kind: String,
     pub metadata: ConfigSourceMetadata,
@@ -552,7 +547,7 @@ pub struct ConfigSourceDocument {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
+#[serde(rename_all = "camelCase")]
 pub struct ConfigSourceMetadata {
     pub name: String,
     #[serde(default)]
@@ -562,7 +557,7 @@ pub struct ConfigSourceMetadata {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
+#[serde(rename_all = "camelCase")]
 pub struct ConfigSourceSpec {
     #[serde(default)]
     pub provides: ConfigSourceProvides,
@@ -571,7 +566,7 @@ pub struct ConfigSourceSpec {
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
+#[serde(rename_all = "camelCase")]
 pub struct ConfigSourceProvides {
     #[serde(default)]
     pub profiles: Vec<String>,
@@ -586,7 +581,7 @@ pub struct ConfigSourceProvides {
 /// Detailed profile entry in a ConfigSource manifest.
 /// When present, provides richer info than the flat `profiles` list.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
+#[serde(rename_all = "camelCase")]
 pub struct ConfigSourceProfileEntry {
     pub name: String,
     #[serde(default)]
@@ -598,7 +593,7 @@ pub struct ConfigSourceProfileEntry {
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
+#[serde(rename_all = "camelCase")]
 pub struct ConfigSourcePolicy {
     #[serde(default)]
     pub required: PolicyItems,
@@ -613,21 +608,21 @@ pub struct ConfigSourcePolicy {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "kebab-case")]
+#[serde(rename_all = "camelCase")]
 pub struct EnvVar {
     pub name: String,
     pub value: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "kebab-case")]
+#[serde(rename_all = "camelCase")]
 pub struct ShellAlias {
     pub name: String,
     pub command: String,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
+#[serde(rename_all = "camelCase")]
 pub struct PolicyItems {
     #[serde(default)]
     pub packages: Option<PackagesSpec>,
@@ -646,7 +641,7 @@ pub struct PolicyItems {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
+#[serde(rename_all = "camelCase")]
 pub struct SourceConstraints {
     #[serde(default = "default_true")]
     pub no_scripts: bool,
@@ -695,9 +690,8 @@ pub fn parse_config_source(contents: &str) -> Result<ConfigSourceDocument> {
 // --- Module ---
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
+#[serde(rename_all = "camelCase")]
 pub struct ModuleDocument {
-    #[serde(rename = "apiVersion")]
     pub api_version: String,
     pub kind: String,
     pub metadata: ModuleMetadata,
@@ -705,7 +699,7 @@ pub struct ModuleDocument {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
+#[serde(rename_all = "camelCase")]
 pub struct ModuleMetadata {
     pub name: String,
     #[serde(default)]
@@ -713,7 +707,7 @@ pub struct ModuleMetadata {
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
+#[serde(rename_all = "camelCase")]
 pub struct ModuleSpec {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub depends: Vec<String>,
@@ -735,7 +729,7 @@ pub struct ModuleSpec {
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
+#[serde(rename_all = "camelCase")]
 pub struct ModulePackageEntry {
     #[serde(default)]
     pub name: String,
@@ -760,7 +754,7 @@ pub struct ModulePackageEntry {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
+#[serde(rename_all = "camelCase")]
 pub struct ModuleFileEntry {
     pub source: String,
     pub target: String,
@@ -774,7 +768,7 @@ pub struct ModuleFileEntry {
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
+#[serde(rename_all = "camelCase")]
 pub struct ModuleScriptSpec {
     #[serde(default)]
     pub post_apply: Vec<String>,
@@ -785,7 +779,7 @@ pub struct ModuleScriptSpec {
 /// Lockfile recording pinned remote modules with integrity hashes.
 /// Stored at `<config_dir>/modules.lock`.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
+#[serde(rename_all = "camelCase")]
 pub struct ModuleLockfile {
     #[serde(default)]
     pub modules: Vec<ModuleLockEntry>,
@@ -793,7 +787,7 @@ pub struct ModuleLockfile {
 
 /// A single locked remote module.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
+#[serde(rename_all = "camelCase")]
 pub struct ModuleLockEntry {
     /// Module name (matches metadata.name in the module spec).
     pub name: String,
@@ -814,7 +808,7 @@ pub struct ModuleLockEntry {
 
 /// A module registry — a git repo containing modules in `modules/<name>/module.yaml` structure.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
+#[serde(rename_all = "camelCase")]
 pub struct ModuleRegistryEntry {
     /// Short name / alias for this source (defaults to GitHub org name).
     pub name: String,
@@ -839,9 +833,8 @@ pub fn parse_module(contents: &str) -> Result<ModuleDocument> {
 // --- Profile ---
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
+#[serde(rename_all = "camelCase")]
 pub struct ProfileDocument {
-    #[serde(rename = "apiVersion")]
     pub api_version: String,
     pub kind: String,
     pub metadata: ProfileMetadata,
@@ -849,13 +842,13 @@ pub struct ProfileDocument {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
+#[serde(rename_all = "camelCase")]
 pub struct ProfileMetadata {
     pub name: String,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
+#[serde(rename_all = "camelCase")]
 pub struct ProfileSpec {
     #[serde(default)]
     pub inherits: Vec<String>,
@@ -886,7 +879,7 @@ pub struct ProfileSpec {
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
+#[serde(rename_all = "camelCase")]
 pub struct PackagesSpec {
     #[serde(default)]
     pub brew: Option<BrewSpec>,
@@ -923,7 +916,7 @@ pub struct PackagesSpec {
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
+#[serde(rename_all = "camelCase")]
 pub struct BrewSpec {
     #[serde(default)]
     pub file: Option<String>,
@@ -936,7 +929,7 @@ pub struct BrewSpec {
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
+#[serde(rename_all = "camelCase")]
 pub struct AptSpec {
     #[serde(default)]
     pub file: Option<String>,
@@ -945,7 +938,7 @@ pub struct AptSpec {
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
+#[serde(rename_all = "camelCase")]
 pub struct NpmSpec {
     #[serde(default)]
     pub file: Option<String>,
@@ -971,7 +964,7 @@ impl<'de> Deserialize<'de> for CargoSpec {
         use serde::de;
 
         #[derive(Deserialize)]
-        #[serde(rename_all = "kebab-case")]
+        #[serde(rename_all = "camelCase")]
         struct CargoSpecFull {
             #[serde(default)]
             file: Option<String>,
@@ -1020,7 +1013,7 @@ impl<'de> Deserialize<'de> for CargoSpec {
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
+#[serde(rename_all = "camelCase")]
 pub struct SnapSpec {
     #[serde(default)]
     pub packages: Vec<String>,
@@ -1029,7 +1022,7 @@ pub struct SnapSpec {
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
+#[serde(rename_all = "camelCase")]
 pub struct FlatpakSpec {
     #[serde(default)]
     pub packages: Vec<String>,
@@ -1038,7 +1031,7 @@ pub struct FlatpakSpec {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
+#[serde(rename_all = "camelCase")]
 pub struct CustomManagerSpec {
     pub name: String,
     pub check: String,
@@ -1052,7 +1045,7 @@ pub struct CustomManagerSpec {
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
+#[serde(rename_all = "camelCase")]
 pub struct FilesSpec {
     #[serde(default)]
     pub managed: Vec<ManagedFileSpec>,
@@ -1062,7 +1055,6 @@ pub struct FilesSpec {
 
 /// File deployment strategy.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
 pub enum FileStrategy {
     /// Create a symbolic link from target to source (default).
     #[default]
@@ -1076,7 +1068,7 @@ pub enum FileStrategy {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
+#[serde(rename_all = "camelCase")]
 pub struct ManagedFileSpec {
     pub source: String,
     pub target: PathBuf,
@@ -1094,7 +1086,7 @@ pub struct ManagedFileSpec {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
+#[serde(rename_all = "camelCase")]
 pub struct SecretSpec {
     pub source: String,
     pub target: PathBuf,
@@ -1103,7 +1095,7 @@ pub struct SecretSpec {
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
+#[serde(rename_all = "camelCase")]
 pub struct ScriptSpec {
     #[serde(default)]
     pub pre_reconcile: Vec<PathBuf>,
@@ -1114,7 +1106,6 @@ pub struct ScriptSpec {
 // --- Profile Resolution ---
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "lowercase")]
 pub enum LayerPolicy {
     Local,
     Required,
@@ -1203,9 +1194,8 @@ pub fn parse_config(contents: &str, path: &Path) -> Result<CfgdConfig> {
 
 // Internal raw types for flexible origin deserialization
 #[derive(Debug, Deserialize)]
-#[serde(rename_all = "kebab-case")]
+#[serde(rename_all = "camelCase")]
 struct RawCfgdConfig {
-    #[serde(rename = "apiVersion")]
     api_version: String,
     kind: String,
     metadata: ConfigMetadata,
@@ -1213,7 +1203,7 @@ struct RawCfgdConfig {
 }
 
 #[derive(Debug, Deserialize)]
-#[serde(rename_all = "kebab-case")]
+#[serde(rename_all = "camelCase")]
 struct RawConfigSpec {
     #[serde(default)]
     profile: Option<String>,
@@ -1672,7 +1662,7 @@ metadata:
 spec:
   profile: default
   origin:
-    type: git
+    type: Git
     url: https://github.com/test/repo.git
     branch: master
 "#
@@ -2096,9 +2086,9 @@ spec:
         - source: "security/policy.yaml"
           target: "~/.config/company/security-policy.yaml"
     constraints:
-      no-scripts: true
-      no-secrets-read: true
-      allowed-target-paths:
+      noScripts: true
+      noSecretsRead: true
+      allowedTargetPaths:
         - "~/.config/acme/"
         - "~/.eslintrc*"
 "#;
@@ -2147,7 +2137,7 @@ spec:
         let yaml = r#"
 name: test-source
 origin:
-  type: git
+  type: Git
   url: https://example.com/config.git
 "#;
         let spec: SourceSpec = serde_yaml::from_str(yaml).unwrap();
@@ -2293,7 +2283,7 @@ spec:
     profiles:
       - acme-base
       - acme-backend
-    profile-details:
+    profileDetails:
       - name: acme-base
         description: "Core tools and security"
         path: profiles/base.yaml
@@ -2302,7 +2292,7 @@ spec:
         path: profiles/backend.yaml
         inherits:
           - acme-base
-    platform-profiles:
+    platformProfiles:
       macos: profiles/platform/macos.yaml
       debian: profiles/platform/debian.yaml
   policy: {}
@@ -2451,9 +2441,9 @@ VERSION_ID="22.04"
     #[test]
     fn auto_apply_policy_deserializes() {
         let yaml = r#"
-new-recommended: accept
-new-optional: notify
-locked-conflict: reject
+newRecommended: Accept
+newOptional: Notify
+lockedConflict: Reject
 "#;
         let policy: AutoApplyPolicyConfig = serde_yaml::from_str(yaml).unwrap();
         assert_eq!(policy.new_recommended, PolicyAction::Accept);
@@ -2465,12 +2455,12 @@ locked-conflict: reject
     fn reconcile_config_with_policy_deserializes() {
         let yaml = r#"
 interval: 5m
-on-change: true
-auto-apply: true
+onChange: true
+autoApply: true
 policy:
-  new-recommended: accept
-  new-optional: ignore
-  locked-conflict: notify
+  newRecommended: Accept
+  newOptional: Ignore
+  lockedConflict: Notify
 "#;
         let config: ReconcileConfig = serde_yaml::from_str(yaml).unwrap();
         assert!(config.auto_apply);
@@ -2487,10 +2477,10 @@ patches:
   - kind: Module
     name: certificates
     interval: 1m
-    drift-policy: Auto
+    driftPolicy: Auto
   - kind: Profile
     name: work
-    auto-apply: true
+    autoApply: true
   - kind: Module
     interval: 30s
 "#;
@@ -2718,7 +2708,7 @@ spec:
   ai:
     provider: claude
     model: claude-opus-4-6
-    api-key-env: MY_CLAUDE_KEY
+    apiKeyEnv: MY_CLAUDE_KEY
 "#;
         let config: CfgdConfig = serde_yaml::from_str(yaml).unwrap();
         let ai = config.spec.ai.unwrap_or_default();

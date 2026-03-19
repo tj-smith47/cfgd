@@ -7,7 +7,7 @@ use super::*;
 
 /// A field in a resource schema.
 struct SchemaField {
-    /// YAML field name (kebab-case for cfgd types, camelCase for CRDs)
+    /// YAML field name (camelCase)
     name: &'static str,
     /// Field type description
     type_desc: &'static str,
@@ -61,7 +61,7 @@ static SCHEMA_CONFIG: ResourceSchema = ResourceSchema {
                     name: "type",
                     type_desc: "string",
                     required: true,
-                    description: "Origin type: git | server",
+                    description: "Origin type: Git | Server",
                     children: &[],
                 },
                 SchemaField {
@@ -114,14 +114,14 @@ static SCHEMA_CONFIG: ResourceSchema = ResourceSchema {
                             children: &[],
                         },
                         SchemaField {
-                            name: "on-change",
+                            name: "onChange",
                             type_desc: "bool",
                             required: false,
                             description: "Reconcile on file changes (default: false)",
                             children: &[],
                         },
                         SchemaField {
-                            name: "auto-apply",
+                            name: "autoApply",
                             type_desc: "bool",
                             required: false,
                             description: "Auto-apply on reconcile (default: false)",
@@ -134,24 +134,24 @@ static SCHEMA_CONFIG: ResourceSchema = ResourceSchema {
                             description: "Auto-apply policy for source updates",
                             children: &[
                                 SchemaField {
-                                    name: "new-recommended",
+                                    name: "newRecommended",
                                     type_desc: "string",
                                     required: false,
-                                    description: "Action for new recommended items: notify | accept | reject | ignore (default: notify)",
+                                    description: "Action for new recommended items: Notify | Accept | Reject | Ignore (default: Notify)",
                                     children: &[],
                                 },
                                 SchemaField {
-                                    name: "new-optional",
+                                    name: "newOptional",
                                     type_desc: "string",
                                     required: false,
                                     description: "Action for new optional items (default: ignore)",
                                     children: &[],
                                 },
                                 SchemaField {
-                                    name: "locked-conflict",
+                                    name: "lockedConflict",
                                     type_desc: "string",
                                     required: false,
-                                    description: "Action for locked conflicts (default: notify)",
+                                    description: "Action for locked conflicts (default: Notify)",
                                     children: &[],
                                 },
                             ],
@@ -165,14 +165,14 @@ static SCHEMA_CONFIG: ResourceSchema = ResourceSchema {
                     description: "Sync settings for git origin",
                     children: &[
                         SchemaField {
-                            name: "auto-push",
+                            name: "autoPush",
                             type_desc: "bool",
                             required: false,
                             description: "Auto-push local changes to remote",
                             children: &[],
                         },
                         SchemaField {
-                            name: "auto-pull",
+                            name: "autoPull",
                             type_desc: "bool",
                             required: false,
                             description: "Auto-pull remote changes",
@@ -204,11 +204,11 @@ static SCHEMA_CONFIG: ResourceSchema = ResourceSchema {
                             name: "method",
                             type_desc: "string",
                             required: false,
-                            description: "Notification method: desktop | stdout | webhook (default: desktop)",
+                            description: "Notification method: Desktop | Stdout | Webhook (default: Desktop)",
                             children: &[],
                         },
                         SchemaField {
-                            name: "webhook-url",
+                            name: "webhookUrl",
                             type_desc: "string",
                             required: false,
                             description: "Webhook URL for webhook notifications",
@@ -237,7 +237,7 @@ static SCHEMA_CONFIG: ResourceSchema = ResourceSchema {
                     required: false,
                     description: "SOPS-specific configuration",
                     children: &[SchemaField {
-                        name: "age-key",
+                        name: "ageKey",
                         type_desc: "string",
                         required: false,
                         description: "Path to age key file",
@@ -282,7 +282,7 @@ static SCHEMA_CONFIG: ResourceSchema = ResourceSchema {
                             name: "type",
                             type_desc: "string",
                             required: true,
-                            description: "Origin type: git | server",
+                            description: "Origin type: Git | Server",
                             children: &[],
                         },
                         SchemaField {
@@ -329,14 +329,14 @@ static SCHEMA_CONFIG: ResourceSchema = ResourceSchema {
                             children: &[],
                         },
                         SchemaField {
-                            name: "accept-recommended",
+                            name: "acceptRecommended",
                             type_desc: "bool",
                             required: false,
                             description: "Auto-accept recommended items",
                             children: &[],
                         },
                         SchemaField {
-                            name: "opt-in",
+                            name: "optIn",
                             type_desc: "[]string",
                             required: false,
                             description: "Optional items to opt into",
@@ -372,14 +372,14 @@ static SCHEMA_CONFIG: ResourceSchema = ResourceSchema {
                             children: &[],
                         },
                         SchemaField {
-                            name: "auto-apply",
+                            name: "autoApply",
                             type_desc: "bool",
                             required: false,
                             description: "Auto-apply source updates",
                             children: &[],
                         },
                         SchemaField {
-                            name: "pin-version",
+                            name: "pinVersion",
                             type_desc: "string",
                             required: false,
                             description: "Pin source to a semver range",
@@ -472,63 +472,63 @@ static SCHEMA_CONFIG: ResourceSchema = ResourceSchema {
                             children: &[],
                         },
                         SchemaField {
-                            name: "diff-add",
+                            name: "diffAdd",
                             type_desc: "string",
                             required: false,
                             description: "Hex color for diff additions",
                             children: &[],
                         },
                         SchemaField {
-                            name: "diff-remove",
+                            name: "diffRemove",
                             type_desc: "string",
                             required: false,
                             description: "Hex color for diff removals",
                             children: &[],
                         },
                         SchemaField {
-                            name: "diff-context",
+                            name: "diffContext",
                             type_desc: "string",
                             required: false,
                             description: "Hex color for diff context lines",
                             children: &[],
                         },
                         SchemaField {
-                            name: "icon-success",
+                            name: "iconSuccess",
                             type_desc: "string",
                             required: false,
                             description: "Custom success icon (default: ✓)",
                             children: &[],
                         },
                         SchemaField {
-                            name: "icon-warning",
+                            name: "iconWarning",
                             type_desc: "string",
                             required: false,
                             description: "Custom warning icon (default: ⚠)",
                             children: &[],
                         },
                         SchemaField {
-                            name: "icon-error",
+                            name: "iconError",
                             type_desc: "string",
                             required: false,
                             description: "Custom error icon (default: ✗)",
                             children: &[],
                         },
                         SchemaField {
-                            name: "icon-info",
+                            name: "iconInfo",
                             type_desc: "string",
                             required: false,
                             description: "Custom info icon (default: ●)",
                             children: &[],
                         },
                         SchemaField {
-                            name: "icon-pending",
+                            name: "iconPending",
                             type_desc: "string",
                             required: false,
                             description: "Custom pending icon (default: ○)",
                             children: &[],
                         },
                         SchemaField {
-                            name: "icon-arrow",
+                            name: "iconArrow",
                             type_desc: "string",
                             required: false,
                             description: "Custom arrow icon (default: →)",
@@ -572,7 +572,7 @@ static SCHEMA_CONFIG: ResourceSchema = ResourceSchema {
                     required: false,
                     description: "Module security settings",
                     children: &[SchemaField {
-                        name: "require-signatures",
+                        name: "requireSignatures",
                         type_desc: "bool",
                         required: false,
                         description: "Require GPG/SSH signatures on remote module tags (default: false)",
@@ -855,7 +855,7 @@ static SCHEMA_PROFILE: ResourceSchema = ResourceSchema {
                             children: &[],
                         },
                         SchemaField {
-                            name: "list-installed",
+                            name: "listInstalled",
                             type_desc: "string",
                             required: true,
                             description: "Shell command to list installed packages (one per line)",
@@ -944,21 +944,21 @@ static SCHEMA_PROFILE: ResourceSchema = ResourceSchema {
                     children: &[],
                 },
                 SchemaField {
-                    name: "macos-defaults",
+                    name: "macosDefaults",
                     type_desc: "map[string]map",
                     required: false,
                     description: "macOS defaults by domain and key",
                     children: &[],
                 },
                 SchemaField {
-                    name: "launch-agents",
+                    name: "launchAgents",
                     type_desc: "[]object",
                     required: false,
                     description: "macOS LaunchAgent definitions",
                     children: &[],
                 },
                 SchemaField {
-                    name: "systemd-units",
+                    name: "systemdUnits",
                     type_desc: "[]object",
                     required: false,
                     description: "systemd unit file management",
@@ -979,7 +979,7 @@ static SCHEMA_PROFILE: ResourceSchema = ResourceSchema {
                     children: &[],
                 },
                 SchemaField {
-                    name: "kernel-modules",
+                    name: "kernelModules",
                     type_desc: "[]string",
                     required: false,
                     description: "Kernel modules to load (Linux nodes)",
@@ -1044,14 +1044,14 @@ static SCHEMA_PROFILE: ResourceSchema = ResourceSchema {
             description: "Lifecycle scripts",
             children: &[
                 SchemaField {
-                    name: "pre-reconcile",
+                    name: "preReconcile",
                     type_desc: "[]string",
                     required: false,
                     description: "Scripts to run before reconciliation",
                     children: &[],
                 },
                 SchemaField {
-                    name: "post-reconcile",
+                    name: "postReconcile",
                     type_desc: "[]string",
                     required: false,
                     description: "Scripts to run after reconciliation",
@@ -1090,7 +1090,7 @@ static SCHEMA_MODULE: ResourceSchema = ResourceSchema {
                     children: &[],
                 },
                 SchemaField {
-                    name: "min-version",
+                    name: "minVersion",
                     type_desc: "string",
                     required: false,
                     description: "Minimum required version (semver)",
@@ -1168,7 +1168,7 @@ static SCHEMA_MODULE: ResourceSchema = ResourceSchema {
             required: false,
             description: "Lifecycle scripts",
             children: &[SchemaField {
-                name: "post-apply",
+                name: "postApply",
                 type_desc: "[]string",
                 required: false,
                 description: "Scripts to run after module is applied",
@@ -1199,7 +1199,7 @@ static SCHEMA_CONFIG_SOURCE: ResourceSchema = ResourceSchema {
                     children: &[],
                 },
                 SchemaField {
-                    name: "profile-details",
+                    name: "profileDetails",
                     type_desc: "[]object",
                     required: false,
                     description: "Detailed profile entries with descriptions",
@@ -1235,7 +1235,7 @@ static SCHEMA_CONFIG_SOURCE: ResourceSchema = ResourceSchema {
                     ],
                 },
                 SchemaField {
-                    name: "platform-profiles",
+                    name: "platformProfiles",
                     type_desc: "map[string]string",
                     required: false,
                     description: "OS/distro to profile mapping for auto-detection",
@@ -1291,28 +1291,28 @@ static SCHEMA_CONFIG_SOURCE: ResourceSchema = ResourceSchema {
                     description: "Security constraints on source capabilities",
                     children: &[
                         SchemaField {
-                            name: "no-scripts",
+                            name: "noScripts",
                             type_desc: "bool",
                             required: false,
                             description: "Disallow scripts from this source (default: true)",
                             children: &[],
                         },
                         SchemaField {
-                            name: "no-secrets-read",
+                            name: "noSecretsRead",
                             type_desc: "bool",
                             required: false,
                             description: "Disallow secret reading (default: true)",
                             children: &[],
                         },
                         SchemaField {
-                            name: "allowed-target-paths",
+                            name: "allowedTargetPaths",
                             type_desc: "[]string",
                             required: false,
                             description: "Restrict file targets to these path prefixes",
                             children: &[],
                         },
                         SchemaField {
-                            name: "allow-system-changes",
+                            name: "allowSystemChanges",
                             type_desc: "bool",
                             required: false,
                             description: "Allow system configurator changes (default: false)",
@@ -2028,7 +2028,7 @@ mod tests {
         let fields = resolve_field_path(SCHEMA_MODULE.fields, &["packages"]);
         assert!(fields.is_some());
         let children = fields.unwrap();
-        // Module packages entries have name, min-version, prefer, aliases, script, platforms
+        // Module packages entries have name, minVersion, prefer, aliases, script, platforms
         assert!(children.len() >= 4);
     }
 

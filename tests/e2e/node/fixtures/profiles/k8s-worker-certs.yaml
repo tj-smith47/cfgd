@@ -6,9 +6,9 @@ spec:
   env: []
   system:
     certificates:
-      ca-cert-dir: /tmp/cfgd-e2e-pki
+      caCertDir: /tmp/cfgd-e2e-pki
       certificates:
         - name: test-cert
-          cert-path: /tmp/cfgd-e2e-pki/test.crt
-          key-path: /tmp/cfgd-e2e-pki/test.key
+          certPath: /tmp/cfgd-e2e-pki/test.crt
+          keyPath: /tmp/cfgd-e2e-pki/test.key
           mode: "0600"

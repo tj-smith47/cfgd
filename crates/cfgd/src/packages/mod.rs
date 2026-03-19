@@ -4367,7 +4367,7 @@ version = "0.1.0"
 custom:
   - name: mise
     check: "command -v mise"
-    list-installed: "mise list --installed --json | jq -r 'keys[]'"
+    listInstalled: "mise list --installed --json | jq -r 'keys[]'"
     install: "mise install {package}"
     uninstall: "mise uninstall {package}"
     packages:

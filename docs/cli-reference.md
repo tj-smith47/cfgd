@@ -27,7 +27,7 @@ cfgd generate profile <name>       # Generate a profile
 
 The AI scans your installed packages, dotfiles, shell config, and system settings, then proposes a cfgd module and profile structure. Each generated file is shown to you for review before it is written. You can accept, reject, or give feedback. The session ends when all modules and profiles have been written or you exit.
 
-Requires `ANTHROPIC_API_KEY` set in your environment, or `spec.ai.api-key-env` in `cfgd.yaml` to name the environment variable holding the key.
+Requires `ANTHROPIC_API_KEY` set in your environment, or `spec.ai.apiKeyEnv` in `cfgd.yaml` to name the environment variable holding the key.
 
 See [ai-generate.md](ai-generate.md) for the full walkthrough, MCP server setup, and troubleshooting.
 
@@ -281,7 +281,7 @@ cfgd module create my-tool \
   --package neovim \
   --file ~/.config/tool/config.toml \
   --post-apply "tool --setup" \
-  --set package.neovim.min-version=0.9 \
+  --set package.neovim.minVersion=0.9 \
   --set package.neovim.prefer=brew,snap,apt
 ```
 
@@ -473,7 +473,7 @@ cfgd config get profile                      # → work
 cfgd config get theme                        # → dracula
 cfgd config get theme.name                   # → dracula
 cfgd config get daemon.reconcile.interval    # → 5m
-cfgd config get file-strategy                # → symlink
+cfgd config get fileStrategy                 # → Symlink
 cfgd config get aliases.add                  # → profile update --active --file
 cfgd config get daemon                       # prints full daemon YAML block
 ```
@@ -488,7 +488,7 @@ cfgd config set theme dracula
 cfgd config set theme.name minimal
 cfgd config set daemon.reconcile.interval 10m
 cfgd config set daemon.enabled true
-cfgd config set file-strategy copy
+cfgd config set fileStrategy Copy
 cfgd config set aliases.deploy "apply --yes"
 ```
 
@@ -498,7 +498,7 @@ Remove a config value (resets to default).
 
 ```sh
 cfgd config unset theme                          # remove entire theme section
-cfgd config unset daemon.reconcile.auto-apply    # reset single field
+cfgd config unset daemon.reconcile.autoApply    # reset single field
 cfgd config unset aliases.deploy                 # remove an alias
 ```
 

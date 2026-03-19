@@ -407,7 +407,7 @@ metadata:
   name: {config_name}
 spec:
   theme: {theme_value}
-  file-strategy: symlink
+  fileStrategy: Symlink
   aliases:
     add: "profile update --active --file"
     remove: "profile update --active --file"
@@ -542,7 +542,7 @@ fn ensure_config_file(
     let origin_section = if let Some(url) = from_url {
         format!(
             r#"  origin:
-    type: git
+    type: Git
     url: {}
     branch: {}
 "#,
@@ -562,7 +562,7 @@ metadata:
 spec:
   profile: {}
   theme: {}
-  file-strategy: symlink
+  fileStrategy: Symlink
 {}"#,
         name, profile_name, theme_value, origin_section
     );

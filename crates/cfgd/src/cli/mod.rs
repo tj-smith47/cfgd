@@ -2870,8 +2870,8 @@ fn cmd_source_create(
          \x20     packages: {{}}\n\
          \x20     modules: []\n\
          \x20   constraints:\n\
-         \x20     no-scripts: true\n\
-         \x20     no-secrets-read: true\n",
+         \x20     noScripts: true\n\
+         \x20     noSecretsRead: true\n",
         source_name, source_version, source_description, profiles_yaml, modules_yaml,
     );
 
@@ -6208,7 +6208,7 @@ spec:
             files: vec![test_file.display().to_string()],
             post_apply: vec!["echo done".to_string()],
             sets: vec![
-                "package.curl.min-version=7.0".to_string(),
+                "package.curl.minVersion=7.0".to_string(),
                 "package.curl.prefer=brew,apt".to_string(),
                 "package.vim.alias.snap=nvim".to_string(),
             ],
@@ -6306,7 +6306,7 @@ spec:
 
         let args = ModuleUpdateArgs {
             sets: vec![
-                "package.neovim.min-version=0.9".to_string(),
+                "package.neovim.minVersion=0.9".to_string(),
                 "package.neovim.prefer=brew,snap,apt".to_string(),
                 "package.neovim.alias.snap=nvim".to_string(),
             ],
@@ -6442,12 +6442,12 @@ spec:
         assert!(module::apply_module_sets(&["foo.bar=baz".to_string()], &mut doc).is_err());
         // Package not found
         assert!(
-            module::apply_module_sets(&["package.missing.min-version=1.0".to_string()], &mut doc)
+            module::apply_module_sets(&["package.missing.minVersion=1.0".to_string()], &mut doc)
                 .is_err()
         );
         // Empty package name
         assert!(
-            module::apply_module_sets(&["package..min-version=1.0".to_string()], &mut doc).is_err()
+            module::apply_module_sets(&["package..minVersion=1.0".to_string()], &mut doc).is_err()
         );
         // Empty field name
         assert!(module::apply_module_sets(&["package.curl.=1.0".to_string()], &mut doc).is_err());
@@ -7118,13 +7118,13 @@ spec:
   origin:
     - url: https://github.com/test/config
       branch: main
-      type: git
+      type: Git
   sources:
     - name: team-config
       origin:
         url: https://github.com/test/team
         branch: main
-        type: git
+        type: Git
       subscription:
         priority: 100
   modules:
@@ -7132,13 +7132,13 @@ spec:
       - name: community
         url: https://github.com/cfgd/modules
     security:
-      require-signatures: true
+      requireSignatures: true
   daemon:
     enabled: true
     reconcile:
       interval: 5m
-      on-change: true
-      auto-apply: false
+      onChange: true
+      autoApply: false
     sync:
       interval: 30m
   secrets:
@@ -7322,14 +7322,14 @@ spec:
              \x20 name: test\n\
              spec:\n\
              \x20 profile: work\n\
-             \x20 file-strategy: symlink\n\
+             \x20 fileStrategy: Symlink\n\
              \x20 theme:\n\
              \x20\x20\x20 name: dracula\n\
              \x20 daemon:\n\
              \x20\x20\x20 enabled: true\n\
              \x20\x20\x20 reconcile:\n\
              \x20\x20\x20\x20\x20 interval: 5m\n\
-             \x20\x20\x20\x20\x20 on-change: false\n\
+             \x20\x20\x20\x20\x20 onChange: false\n\
              \x20 aliases:\n\
              \x20\x20\x20 add: 'profile update --active --file'\n\
              \x20\x20\x20 deploy: 'apply --yes'\n",
@@ -8482,7 +8482,7 @@ spec:
         let target = config_dir.path().join("output").join("test.txt");
 
         let profile = format!(
-            "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: withfile\nspec:\n  inherits: []\n  modules: []\n  files:\n    managed:\n      - source: files/test.txt\n        target: {}\n        strategy: copy\n",
+            "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: withfile\nspec:\n  inherits: []\n  modules: []\n  files:\n    managed:\n      - source: files/test.txt\n        target: {}\n        strategy: Copy\n",
             target.display()
         );
         std::fs::write(
@@ -8523,7 +8523,7 @@ spec:
         let target = config_dir.path().join("output").join("test.txt");
 
         let profile = format!(
-            "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: withfile\nspec:\n  inherits: []\n  modules: []\n  files:\n    managed:\n      - source: files/test.txt\n        target: {}\n        strategy: copy\n",
+            "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: withfile\nspec:\n  inherits: []\n  modules: []\n  files:\n    managed:\n      - source: files/test.txt\n        target: {}\n        strategy: Copy\n",
             target.display()
         );
         std::fs::write(
@@ -8569,7 +8569,7 @@ spec:
         std::fs::write(&target, "current content").unwrap();
 
         let profile = format!(
-            "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: withfile\nspec:\n  inherits: []\n  modules: []\n  files:\n    managed:\n      - source: files/test.txt\n        target: {}\n        strategy: copy\n",
+            "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: withfile\nspec:\n  inherits: []\n  modules: []\n  files:\n    managed:\n      - source: files/test.txt\n        target: {}\n        strategy: Copy\n",
             target.display()
         );
         std::fs::write(

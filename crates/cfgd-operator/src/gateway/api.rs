@@ -18,7 +18,7 @@ use super::errors::GatewayError;
 
 /// Server-level enrollment method.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "kebab-case")]
+#[serde(rename_all = "camelCase")]
 pub enum EnrollmentMethod {
     /// Bootstrap token enrollment (default).
     Token,
@@ -60,7 +60,7 @@ pub enum AuthContext {
 }
 
 #[derive(Debug, Deserialize)]
-#[serde(rename_all = "kebab-case")]
+#[serde(rename_all = "camelCase")]
 pub struct CheckinRequest {
     pub device_id: String,
     pub hostname: String,
@@ -70,7 +70,7 @@ pub struct CheckinRequest {
 }
 
 #[derive(Debug, Serialize)]
-#[serde(rename_all = "kebab-case")]
+#[serde(rename_all = "camelCase")]
 pub struct CheckinResponse {
     pub status: String,
     pub config_changed: bool,
@@ -79,13 +79,13 @@ pub struct CheckinResponse {
 }
 
 #[derive(Debug, Deserialize)]
-#[serde(rename_all = "kebab-case")]
+#[serde(rename_all = "camelCase")]
 pub struct DriftRequest {
     pub details: Vec<DriftDetailInput>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
-#[serde(rename_all = "kebab-case")]
+#[serde(rename_all = "camelCase")]
 pub struct DriftDetailInput {
     pub field: String,
     pub expected: String,
@@ -93,7 +93,7 @@ pub struct DriftDetailInput {
 }
 
 #[derive(Debug, Deserialize)]
-#[serde(rename_all = "kebab-case")]
+#[serde(rename_all = "camelCase")]
 pub struct SetConfigRequest {
     pub config: serde_json::Value,
 }
@@ -113,7 +113,7 @@ fn default_limit() -> u32 {
 // --- Enrollment request/response types ---
 
 #[derive(Debug, Deserialize)]
-#[serde(rename_all = "kebab-case")]
+#[serde(rename_all = "camelCase")]
 pub struct EnrollRequest {
     pub token: String,
     pub device_id: String,
@@ -123,7 +123,7 @@ pub struct EnrollRequest {
 }
 
 #[derive(Debug, Serialize)]
-#[serde(rename_all = "kebab-case")]
+#[serde(rename_all = "camelCase")]
 pub struct EnrollResponse {
     pub status: String,
     pub device_id: String,
@@ -138,7 +138,7 @@ pub struct EnrollResponse {
 // --- Admin token management types ---
 
 #[derive(Debug, Deserialize)]
-#[serde(rename_all = "kebab-case")]
+#[serde(rename_all = "camelCase")]
 pub struct CreateTokenRequest {
     pub username: String,
     #[serde(default)]
@@ -153,7 +153,7 @@ fn default_token_lifetime() -> u64 {
 }
 
 #[derive(Debug, Serialize)]
-#[serde(rename_all = "kebab-case")]
+#[serde(rename_all = "camelCase")]
 pub struct CreateTokenResponse {
     pub id: String,
     /// The plaintext token — shown only once. Store or share securely.
@@ -167,7 +167,7 @@ pub struct CreateTokenResponse {
 // --- Key-based enrollment types ---
 
 #[derive(Debug, Deserialize)]
-#[serde(rename_all = "kebab-case")]
+#[serde(rename_all = "camelCase")]
 pub struct AddKeyRequest {
     pub key_type: String,
     pub public_key: String,
@@ -177,13 +177,13 @@ pub struct AddKeyRequest {
 }
 
 #[derive(Debug, Serialize)]
-#[serde(rename_all = "kebab-case")]
+#[serde(rename_all = "camelCase")]
 pub struct EnrollInfoResponse {
     pub method: EnrollmentMethod,
 }
 
 #[derive(Debug, Deserialize)]
-#[serde(rename_all = "kebab-case")]
+#[serde(rename_all = "camelCase")]
 pub struct ChallengeRequest {
     pub username: String,
     pub device_id: String,
@@ -193,7 +193,7 @@ pub struct ChallengeRequest {
 }
 
 #[derive(Debug, Serialize)]
-#[serde(rename_all = "kebab-case")]
+#[serde(rename_all = "camelCase")]
 pub struct ChallengeResponse {
     pub challenge_id: String,
     pub nonce: String,
@@ -201,7 +201,7 @@ pub struct ChallengeResponse {
 }
 
 #[derive(Debug, Deserialize)]
-#[serde(rename_all = "kebab-case")]
+#[serde(rename_all = "camelCase")]
 pub struct VerifyRequest {
     pub challenge_id: String,
     pub signature: String,
@@ -1556,11 +1556,11 @@ mod tests {
     #[test]
     fn checkin_request_deserialization() {
         let json = r#"{
-            "device-id": "dev-1",
+            "deviceId": "dev-1",
             "hostname": "workstation-1",
             "os": "linux",
             "arch": "x86_64",
-            "config-hash": "abc123"
+            "configHash": "abc123"
         }"#;
         let req: CheckinRequest = serde_json::from_str(json).unwrap();
         assert_eq!(req.device_id, "dev-1");
@@ -1581,10 +1581,10 @@ mod tests {
         };
         let json = serde_json::to_string(&resp).unwrap();
         assert!(
-            !json.contains("desired-config"),
+            !json.contains("desiredConfig"),
             "None desired_config should be omitted"
         );
-        assert!(json.contains("\"config-changed\":false"));
+        assert!(json.contains("\"configChanged\":false"));
     }
 
     #[test]
@@ -1595,8 +1595,8 @@ mod tests {
             desired_config: Some(serde_json::json!({"packages": ["vim"]})),
         };
         let json = serde_json::to_string(&resp).unwrap();
-        assert!(json.contains("desired-config"));
-        assert!(json.contains("\"config-changed\":true"));
+        assert!(json.contains("desiredConfig"));
+        assert!(json.contains("\"configChanged\":true"));
     }
 
     // --- EnrollRequest deserialization ---
@@ -1605,7 +1605,7 @@ mod tests {
     fn enroll_request_deserialization() {
         let json = r#"{
             "token": "cfgd_bs_abc123",
-            "device-id": "dev-42",
+            "deviceId": "dev-42",
             "hostname": "laptop",
             "os": "darwin",
             "arch": "aarch64"
@@ -1631,7 +1631,7 @@ mod tests {
         };
         let json = serde_json::to_string(&resp).unwrap();
         assert!(!json.contains("team"));
-        assert!(!json.contains("desired-config"));
+        assert!(!json.contains("desiredConfig"));
         assert!(json.contains("\"status\":\"enrolled\""));
     }
 
@@ -1647,7 +1647,7 @@ mod tests {
         };
         let json = serde_json::to_string(&resp).unwrap();
         assert!(json.contains("\"team\":\"platform\""));
-        assert!(json.contains("desired-config"));
+        assert!(json.contains("desiredConfig"));
     }
 
     // --- CreateTokenRequest deserialization with defaults ---
@@ -1666,7 +1666,7 @@ mod tests {
         let json = r#"{
             "username": "jdoe",
             "team": "infra",
-            "expires-in": 3600
+            "expiresIn": 3600
         }"#;
         let req: CreateTokenRequest = serde_json::from_str(json).unwrap();
         assert_eq!(req.username, "jdoe");
@@ -1753,8 +1753,8 @@ mod tests {
     #[test]
     fn add_key_request_deserialization() {
         let json = r#"{
-            "key-type": "ssh",
-            "public-key": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIG...",
+            "keyType": "ssh",
+            "publicKey": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIG...",
             "fingerprint": "SHA256:abcdef",
             "label": "laptop key"
         }"#;
@@ -1768,8 +1768,8 @@ mod tests {
     #[test]
     fn add_key_request_label_optional() {
         let json = r#"{
-            "key-type": "gpg",
-            "public-key": "-----BEGIN PGP PUBLIC KEY BLOCK-----",
+            "keyType": "gpg",
+            "publicKey": "-----BEGIN PGP PUBLIC KEY BLOCK-----",
             "fingerprint": "DEADBEEF"
         }"#;
         let req: AddKeyRequest = serde_json::from_str(json).unwrap();
@@ -1783,7 +1783,7 @@ mod tests {
     fn challenge_request_deserialization() {
         let json = r#"{
             "username": "jdoe",
-            "device-id": "dev-99",
+            "deviceId": "dev-99",
             "hostname": "workstation",
             "os": "linux",
             "arch": "x86_64"
@@ -1799,9 +1799,9 @@ mod tests {
     #[test]
     fn verify_request_deserialization() {
         let json = r#"{
-            "challenge-id": "ch-123",
+            "challengeId": "ch-123",
             "signature": "base64data==",
-            "key-type": "ssh"
+            "keyType": "ssh"
         }"#;
         let req: VerifyRequest = serde_json::from_str(json).unwrap();
         assert_eq!(req.challenge_id, "ch-123");
@@ -1832,8 +1832,8 @@ mod tests {
         };
         let json = serde_json::to_string(&event).unwrap();
         let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
-        assert_eq!(parsed["device-id"], "dev-1");
-        assert_eq!(parsed["event-type"], "checkin");
+        assert_eq!(parsed["deviceId"], "dev-1");
+        assert_eq!(parsed["eventType"], "checkin");
         assert_eq!(parsed["summary"], "hash123");
     }
 

@@ -52,9 +52,9 @@ spec:
         - target: "~/.config/company/security-policy.yaml"
 
     constraints:
-      no-scripts: true
-      no-secrets-read: true
-      allowed-target-paths:
+      noScripts: true
+      noSecretsRead: true
+      allowedTargetPaths:
         - "~/.config/acme/"
         - "~/.config/company/"
 ```
@@ -68,13 +68,13 @@ spec:
   sources:
     - name: acme-corp
       origin:
-        type: git
+        type: Git
         url: git@github.com:acme-corp/dev-config.git
         branch: master
       subscription:
         profile: acme-backend
         priority: 500
-        accept-recommended: true
+        acceptRecommended: true
         overrides:
           env:
             - name: EDITOR
@@ -85,8 +85,8 @@ spec:
               formulae: [kubectx]
       sync:
         interval: "1h"
-        auto-apply: false
-        pin-version: "~2"
+        autoApply: false
+        pinVersion: "~2"
 ```
 
 ## Policy Tiers
@@ -177,16 +177,16 @@ When the daemon detects new items from a source update, behavior depends on the 
 ```yaml
 daemon:
   reconcile:
-    auto-apply: true
+    autoApply: true
     policy:
-      new-recommended: notify    # notify | accept | reject
-      new-optional: ignore       # notify | ignore
-      locked-conflict: notify    # notify | accept
+      newRecommended: Notify    # Notify | Accept | Reject
+      newOptional: Ignore       # Notify | Ignore
+      lockedConflict: Notify    # Notify | Accept
 ```
 
-- `notify`: record a pending decision, send notification, don't apply
-- `accept`: auto-apply without prompting
-- `reject`/`ignore`: skip silently
+- `Notify`: record a pending decision, send notification, don't apply
+- `Accept`: auto-apply without prompting
+- `Reject`/`Ignore`: skip silently
 
 Resolve pending decisions with `cfgd decide`:
 
@@ -215,20 +215,20 @@ Notifications fire once per new pending decision, not on every reconcile cycle. 
 
 - **Source removed while decisions pending** — pending decisions for that source are automatically rejected (source gone = items gone).
 - **User manually installs a pending package** — on the next reconcile, cfgd detects the package is already present and auto-accepts the decision (desired state already matches actual state).
-- **Policies only apply in auto-apply mode** — when `auto-apply: false`, `cfgd plan` shows everything and you decide interactively. Policies are for unattended daemon reconciles.
+- **Policies only apply in auto-apply mode** — when `autoApply: false`, `cfgd plan` shows everything and you decide interactively. Policies are for unattended daemon reconciles.
 - **Rejection doesn't persist across source versions** — if you reject an item and the source later updates it (new version, changed description), a fresh pending decision is created. This prevents stale rejections from silently blocking items the team considers important.
 
 ## Source Constraints
 
 Sources declare `constraints` in their manifest to limit what they can do on your machine. cfgd enforces these at composition time — before anything is applied.
 
-### `allowed-target-paths`
+### `allowedTargetPaths`
 
 Restricts where a source can write files. Any file target outside the declared paths is rejected during composition with an error:
 
 ```yaml
 constraints:
-  allowed-target-paths:
+  allowedTargetPaths:
     - "~/.config/acme/"
     - "~/.config/company/"
     - "~/.eslintrc*"
@@ -236,15 +236,15 @@ constraints:
 
 If the source tries to deploy a file to `~/.bashrc` (not in the allowed list), cfgd rejects that file and reports the violation in `cfgd plan`. The rest of the source's items still apply normally.
 
-### `no-scripts`
+### `noScripts`
 
-When `true` (the default), the source cannot include pre-reconcile or post-reconcile scripts. If a source manifest declares scripts while `no-scripts: true`, cfgd rejects those scripts at composition time. Subscribers can relax this by setting `allow-scripts: true` in their subscription — the scripts are then shown in `cfgd plan` before execution.
+When `true` (the default), the source cannot include pre-reconcile or post-reconcile scripts. If a source manifest declares scripts while `noScripts: true`, cfgd rejects those scripts at composition time. Subscribers can relax this by setting `allowScripts: true` in their subscription — the scripts are then shown in `cfgd plan` before execution.
 
-### `allow-system-changes`
+### `allowSystemChanges`
 
-By default, sources cannot install launch agents, systemd units, or modify shell configuration. A source that attempts to set `shell:` config or deploy a LaunchAgent without `allow-system-changes: true` in its constraints is rejected. The subscriber must explicitly opt in.
+By default, sources cannot install launch agents, systemd units, or modify shell configuration. A source that attempts to set `shell:` config or deploy a LaunchAgent without `allowSystemChanges: true` in its constraints is rejected. The subscriber must explicitly opt in.
 
-### `no-secrets-read`
+### `noSecretsRead`
 
 When `true`, the source cannot reference or access the subscriber's SOPS/age keys, encrypted files, or secret provider credentials.
 
@@ -305,7 +305,7 @@ But if acme-backend had EDITOR as "locked":
 
 ## Version Pinning
 
-The `pin-version` field in your subscription restricts which source versions cfgd will accept. It uses semver range syntax:
+The `pinVersion` field in your subscription restricts which source versions cfgd will accept. It uses semver range syntax:
 
 | Syntax | Meaning | Accepts | Rejects |
 |---|---|---|---|
@@ -314,7 +314,7 @@ The `pin-version` field in your subscription restricts which source versions cfg
 | `>=1.0.0` | At least 1.0.0 | 1.0.0, 2.0.0, 99.0.0 | 0.9.0 |
 | `~2.1` | Compatible with 2.1.x | 2.1.0, 2.1.5 | 2.2.0 |
 
-When a source update pushes a version outside your pinned range, cfgd rejects the update with an error and keeps the previous version. The rejection appears in `cfgd status` and daemon notifications. To accept the new version, update your `pin-version` range.
+When a source update pushes a version outside your pinned range, cfgd rejects the update with an error and keeps the previous version. The rejection appears in `cfgd status` and daemon notifications. To accept the new version, update your `pinVersion` range.
 
 ## Source Removal
 
@@ -360,8 +360,8 @@ spec:
         brew:
           formulae: [k9s, stern]
     constraints:
-      no-scripts: true
-      allowed-target-paths:
+      noScripts: true
+      allowedTargetPaths:
         - "~/.config/my-team/"
 ```
 
@@ -394,19 +394,19 @@ cfgd plan    # verify the composed result
 cfgd source add git@github.com:my-team/dev-config.git
 ```
 
-Bump `metadata.version` in `cfgd-source.yaml` when making changes. Subscribers with `pin-version` ranges will only receive updates within their pinned range.
+Bump `metadata.version` in `cfgd-source.yaml` when making changes. Subscribers with `pinVersion` ranges will only receive updates within their pinned range.
 
 ## Security Model
 
 | Threat | Mitigation |
 |---|---|
-| Arbitrary code execution | `no-scripts: true` by default; scripts require explicit opt-in and are shown in plan |
+| Arbitrary code execution | `noScripts: true` by default; scripts require explicit opt-in and are shown in plan |
 | Secret exfiltration | Sources cannot access your SOPS/age keys or encrypted files |
-| Arbitrary path writes | Sources must declare `allowed-target-paths`; enforced at composition level |
+| Arbitrary path writes | Sources must declare `allowedTargetPaths`; enforced at composition level |
 | Template data leak | Source templates can only access source-provided env vars, not your personal env vars |
 | MITM | Git SSH/HTTPS transport security; optional signature verification |
-| Version pinning bypass | `pin-version` enforced — source v3.0.0 rejected if pinned to `~2` |
-| Privilege escalation | Sources cannot set `shell:` or install launch-agents/systemd-units without `allow-system-changes: true` |
+| Version pinning bypass | `pinVersion` enforced — source v3.0.0 rejected if pinned to `~2` |
+| Privilege escalation | Sources cannot set `shell:` or install launchAgents/systemdUnits without `allowSystemChanges: true` |
 | Recursive trust | A ConfigSource cannot itself subscribe to other ConfigSources |
 
 Every new capability requested by a source update requires interactive confirmation. The daemon never auto-applies permission-expanding changes.

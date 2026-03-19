@@ -90,7 +90,7 @@ spec:
   depends: [node, python]
   packages:
     - name: neovim
-      min-version: "0.9"
+      minVersion: "0.9"
       prefer: [brew, snap, apt]
     - name: ripgrep
     - name: fd

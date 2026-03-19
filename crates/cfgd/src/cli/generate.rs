@@ -298,7 +298,7 @@ fn handle_present_yaml(
                 let feedback = inquire::Text::new("Your feedback:").prompt()?;
                 serde_json::json!({"action": "feedback", "message": feedback})
             }
-            "Step through" => serde_json::json!({"action": "step-through"}),
+            "Step through" => serde_json::json!({"action": "stepThrough"}),
             _ => serde_json::json!({"action": "reject"}),
         }
     };

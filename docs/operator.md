@@ -172,7 +172,7 @@ Real-time event feed at `/api/v1/events/stream` for monitoring integrations.
 The same `cfgd daemon` binary can be deployed as a Kubernetes [DaemonSet](https://kubernetes.io/docs/concepts/workloads/controllers/daemonset/) (a pod that runs on every node in the cluster). Config is mounted via ConfigMap. Profiles target node-level [system configurators](system-configurators.md):
 
 - `sysctl` — kernel parameters
-- `kernel-modules` — br_netfilter, overlay, ip_vs
+- `kernelModules` — br_netfilter, overlay, ip_vs
 - `containerd` — container runtime config
 - `kubelet` — kubelet configuration
 - `apparmor` — security profiles

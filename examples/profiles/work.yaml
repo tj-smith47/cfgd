@@ -39,5 +39,5 @@ spec:
       target: ~/.config/gh/token
 
   scripts:
-    post-reconcile:
+    postReconcile:
       - scripts/setup-work-env.sh
