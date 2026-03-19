@@ -2,6 +2,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use futures::StreamExt;
+use k8s_openapi::apimachinery::pkg::apis::meta::v1::OwnerReference;
 use kube::api::{Api, ListParams, Patch, PatchParams};
 use kube::runtime::Controller;
 use kube::runtime::controller::Action;
@@ -14,6 +15,8 @@ use crate::crds::{
     version_satisfies,
 };
 use crate::errors::OperatorError;
+
+const MACHINE_CONFIG_FINALIZER: &str = "cfgd.io/machine-config-cleanup";
 
 pub struct ControllerContext {
     pub client: Client,
@@ -91,6 +94,65 @@ async fn reconcile_machine_config(
     let name = obj.name_any();
     let namespace = obj.namespace().unwrap_or_default();
 
+    let machines_api: Api<MachineConfig> = if namespace.is_empty() {
+        Api::all(ctx.client.clone())
+    } else {
+        Api::namespaced(ctx.client.clone(), &namespace)
+    };
+
+    let finalizers = obj.metadata.finalizers.as_deref().unwrap_or(&[]);
+    let has_finalizer = finalizers.iter().any(|f| f == MACHINE_CONFIG_FINALIZER);
+
+    if obj.metadata.deletion_timestamp.is_some() && has_finalizer {
+        info!(name = %name, "MachineConfig being deleted, running cleanup");
+        let updated: Vec<&str> = finalizers
+            .iter()
+            .filter(|f| f.as_str() != MACHINE_CONFIG_FINALIZER)
+            .map(|f| f.as_str())
+            .collect();
+        let patch = serde_json::json!({
+            "metadata": {
+                "finalizers": updated
+            }
+        });
+        machines_api
+            .patch(
+                &name,
+                &PatchParams::default(),
+                &Patch::Merge(patch),
+            )
+            .await
+            .map_err(|e| {
+                OperatorError::Reconciliation(format!(
+                    "failed to remove finalizer from {name}: {e}"
+                ))
+            })?;
+        return Ok(Action::await_change());
+    }
+
+    if obj.metadata.deletion_timestamp.is_none() && !has_finalizer {
+        let mut updated: Vec<String> = finalizers.to_vec();
+        updated.push(MACHINE_CONFIG_FINALIZER.to_string());
+        let patch = serde_json::json!({
+            "metadata": {
+                "finalizers": updated
+            }
+        });
+        machines_api
+            .patch(
+                &name,
+                &PatchParams::default(),
+                &Patch::Merge(patch),
+            )
+            .await
+            .map_err(|e| {
+                OperatorError::Reconciliation(format!(
+                    "failed to add finalizer to {name}: {e}"
+                ))
+            })?;
+        info!(name = %name, "Added finalizer to MachineConfig");
+    }
+
     validate_spec(&obj.spec)?;
 
     info!(
@@ -121,12 +183,6 @@ async fn reconcile_machine_config(
     if !has_drift {
         cleanup_drift_alerts(&ctx.client, &namespace, &name).await;
     }
-
-    let machines: Api<MachineConfig> = if namespace.is_empty() {
-        Api::all(ctx.client.clone())
-    } else {
-        Api::namespaced(ctx.client.clone(), &namespace)
-    };
 
     let now = cfgd_core::utc_now_iso8601();
 
@@ -186,7 +242,7 @@ async fn reconcile_machine_config(
         }
     });
 
-    machines
+    machines_api
         .patch_status(
             &name,
             &PatchParams::apply("cfgd-operator"),
@@ -255,6 +311,49 @@ async fn reconcile_drift_alert(
 
     match machines.get(mc_name).await {
         Ok(mc) => {
+            // Set owner reference on DriftAlert pointing to the MachineConfig
+            let owner_ref = OwnerReference {
+                api_version: cfgd_core::API_VERSION.to_string(),
+                kind: "MachineConfig".to_string(),
+                name: mc.name_any(),
+                uid: mc.metadata.uid.clone().unwrap_or_default(),
+                controller: Some(true),
+                block_owner_deletion: Some(true),
+            };
+
+            let existing_owners = obj.metadata.owner_references.as_deref().unwrap_or(&[]);
+            let has_owner_ref = existing_owners.iter().any(|r| {
+                r.kind == "MachineConfig" && r.name == owner_ref.name && r.uid == owner_ref.uid
+            });
+
+            if !has_owner_ref {
+                let mut updated_owners: Vec<OwnerReference> = existing_owners.to_vec();
+                updated_owners.push(owner_ref);
+                let patch = serde_json::json!({
+                    "metadata": {
+                        "ownerReferences": updated_owners
+                    }
+                });
+                let da_api: Api<DriftAlert> = if namespace.is_empty() {
+                    Api::all(ctx.client.clone())
+                } else {
+                    Api::namespaced(ctx.client.clone(), &namespace)
+                };
+                da_api
+                    .patch(
+                        &name,
+                        &PatchParams::default(),
+                        &Patch::Merge(patch),
+                    )
+                    .await
+                    .map_err(|e| {
+                        OperatorError::Reconciliation(format!(
+                            "failed to set owner reference on DriftAlert {name}: {e}"
+                        ))
+                    })?;
+                info!(name = %name, machine_config = %mc.name_any(), "Set owner reference on DriftAlert");
+            }
+
             // Check if a DriftDetected condition already exists
             let has_drift_condition = mc
                 .status
@@ -909,5 +1008,10 @@ mod tests {
             &Default::default(),
             &Default::default()
         ));
+    }
+
+    #[test]
+    fn finalizer_name_constant() {
+        assert_eq!(MACHINE_CONFIG_FINALIZER, "cfgd.io/machine-config-cleanup");
     }
 }
