@@ -257,7 +257,7 @@ Show module details: packages, files, dependencies, resolved managers.
 Create a new local module.
 
 ```sh
-cfgd module create --name my-tool \
+cfgd module create my-tool \
   --depends node \
   --package neovim \
   --file ~/.config/tool/config.toml \
