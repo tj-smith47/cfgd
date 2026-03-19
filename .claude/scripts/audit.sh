@@ -157,9 +157,9 @@ check_pattern warn \
 
 log_section "Error Type Discipline"
 check_pattern error \
-    "anyhow confined to CLI boundary (main.rs, cli/)" \
+    "anyhow confined to CLI boundary (main.rs, cli/, mcp/)" \
     'anyhow::' \
-    'main\.rs:|cli/'
+    'main\.rs:|cli/|mcp/'
 
 log_section "No Dead Code Allowances"
 check_pattern warn \

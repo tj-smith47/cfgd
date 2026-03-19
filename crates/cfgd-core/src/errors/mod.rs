@@ -324,14 +324,8 @@ pub enum GenerateError {
     #[error("validation failed: {message}")]
     ValidationFailed { message: String },
 
-    #[error("schema error: {message}")]
-    SchemaError { message: String },
-
     #[error("file access denied: {path} — {reason}")]
     FileAccessDenied { path: PathBuf, reason: String },
-
-    #[error("session error: {message}")]
-    SessionError { message: String },
 
     #[error("AI provider error: {message}")]
     ProviderError { message: String },
