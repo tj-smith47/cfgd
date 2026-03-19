@@ -413,6 +413,7 @@ Use `cfgd module upgrade` to move to a newer version.
 ```sh
 cfgd module list                    # list modules and their status
 cfgd module show nvim               # show details: packages, files, deps, resolved managers
+cfgd module show nvim --show-values # reveal full env variable values (masked by default)
 cfgd module create my-tool          # create a new local module
 cfgd module update nvim --package ripgrep  # modify a module
 cfgd module edit nvim               # open in $EDITOR

@@ -128,9 +128,10 @@ cfgd doctor -o json   # structured health report
 Show apply history from the state store.
 
 ```sh
-cfgd log              # last 20 entries
-cfgd log --limit 50   # last 50 entries
-cfgd log -o json      # JSON apply history
+cfgd log                    # last 20 entries
+cfgd log --limit 50         # last 50 entries
+cfgd log -o json            # JSON apply history
+cfgd log --show-output 42   # show captured script output for apply #42
 ```
 
 ### `cfgd sync`
@@ -250,7 +251,12 @@ List all available modules with status (installed, pending, outdated, error).
 
 ### `cfgd module show <name>`
 
-Show module details: packages, files, dependencies, resolved managers.
+Show module details: packages, files, dependencies, resolved managers. Env variable values are masked by default (shows `***` with last 3 chars).
+
+```sh
+cfgd module show my-tool                # env values masked
+cfgd module show my-tool --show-values  # reveal full env values
+```
 
 ### `cfgd module create <name>`
 

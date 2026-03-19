@@ -770,9 +770,11 @@ impl<'a> Reconciler<'a> {
                 let result = self.apply_action(action, resolved, config_dir, printer, apply_id);
 
                 let (desc, success, error) = match result {
-                    Ok(desc) => {
+                    Ok((desc, script_output)) => {
                         if let Some(jid) = journal_id {
-                            let _ = self.state.journal_complete(jid, None);
+                            let _ =
+                                self.state
+                                    .journal_complete(jid, None, script_output.as_deref());
                         }
                         (desc, true, None)
                     }
@@ -943,19 +945,23 @@ impl<'a> Reconciler<'a> {
         config_dir: &std::path::Path,
         printer: &Printer,
         apply_id: i64,
-    ) -> Result<String> {
+    ) -> Result<(String, Option<String>)> {
         match action {
-            Action::System(sys) => self.apply_system_action(sys, &resolved.merged, printer),
-            Action::Package(pkg) => self.apply_package_action(pkg, printer),
-            Action::File(file) => {
-                self.apply_file_action(file, &resolved.merged, config_dir, printer)
-            }
-            Action::Secret(secret) => self.apply_secret_action(secret, config_dir, printer),
+            Action::System(sys) => self
+                .apply_system_action(sys, &resolved.merged, printer)
+                .map(|d| (d, None)),
+            Action::Package(pkg) => self.apply_package_action(pkg, printer).map(|d| (d, None)),
+            Action::File(file) => self
+                .apply_file_action(file, &resolved.merged, config_dir, printer)
+                .map(|d| (d, None)),
+            Action::Secret(secret) => self
+                .apply_secret_action(secret, config_dir, printer)
+                .map(|d| (d, None)),
             Action::Script(script) => self.apply_script_action(script, config_dir, printer),
-            Action::Module(module) => {
-                self.apply_module_action(module, config_dir, printer, apply_id)
-            }
-            Action::Env(env) => Self::apply_env_action(env, printer),
+            Action::Module(module) => self
+                .apply_module_action(module, config_dir, printer, apply_id)
+                .map(|d| (d, None)),
+            Action::Env(env) => Self::apply_env_action(env, printer).map(|d| (d, None)),
         }
     }
 
@@ -1203,7 +1209,7 @@ impl<'a> Reconciler<'a> {
         action: &ScriptAction,
         config_dir: &std::path::Path,
         printer: &Printer,
-    ) -> Result<String> {
+    ) -> Result<(String, Option<String>)> {
         match action {
             ScriptAction::Run { path, phase, .. } => {
                 let script_path = if path.is_absolute() {
@@ -1241,7 +1247,11 @@ impl<'a> Reconciler<'a> {
                     ));
                 }
 
-                Ok(format!("script:{}:{}", phase_name, path.display()))
+                let captured = combine_script_output(&result.stdout, &result.stderr);
+                Ok((
+                    format!("script:{}:{}", phase_name, path.display()),
+                    captured,
+                ))
             }
         }
     }
@@ -1821,6 +1831,27 @@ fn verify_env(
             }
         }
     }
+}
+
+/// Combine stdout and stderr into a single captured output string.
+/// Returns `None` if both are empty.
+fn combine_script_output(stdout: &str, stderr: &str) -> Option<String> {
+    let stdout = stdout.trim();
+    let stderr = stderr.trim();
+    if stdout.is_empty() && stderr.is_empty() {
+        return None;
+    }
+    let mut out = String::new();
+    if !stdout.is_empty() {
+        out.push_str(stdout);
+    }
+    if !stderr.is_empty() {
+        if !out.is_empty() {
+            out.push_str("\n--- stderr ---\n");
+        }
+        out.push_str(stderr);
+    }
+    Some(out)
 }
 
 /// Format a human-readable description of an action.
@@ -4383,5 +4414,32 @@ mod tests {
         assert!(written.contains("export EDITOR=\"nvim\""));
         assert!(written.contains("alias ll=\"ls -la\""));
         assert!(written.starts_with("# managed by cfgd"));
+    }
+
+    #[test]
+    fn combine_script_output_both() {
+        let result = super::combine_script_output("hello\nworld", "warn: something");
+        assert_eq!(
+            result,
+            Some("hello\nworld\n--- stderr ---\nwarn: something".to_string())
+        );
+    }
+
+    #[test]
+    fn combine_script_output_stdout_only() {
+        let result = super::combine_script_output("output line", "");
+        assert_eq!(result, Some("output line".to_string()));
+    }
+
+    #[test]
+    fn combine_script_output_stderr_only() {
+        let result = super::combine_script_output("", "error msg");
+        assert_eq!(result, Some("error msg".to_string()));
+    }
+
+    #[test]
+    fn combine_script_output_empty() {
+        assert!(super::combine_script_output("", "").is_none());
+        assert!(super::combine_script_output("  ", " \n ").is_none());
     }
 }

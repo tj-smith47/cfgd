@@ -1,24 +1,22 @@
-<p align="center">
+<div align="center">
+
 <img src=".github/gear.svg" width="96" alt="cfgd gear icon">
-</p>
 
-<h1 align="center">cfgd</h1>
+# cfgd
 
-<p align="center">
 Declarative, GitOps-inspired machine configuration — from a single laptop to a fleet of Kubernetes nodes. Written in Rust.
-</p>
 
-<p align="center">
 [![E2E – CLI](https://github.com/tj-smith47/cfgd/actions/workflows/e2e-cli.yml/badge.svg)](https://github.com/tj-smith47/cfgd/actions/workflows/e2e-cli.yml)
 [![E2E – Full Stack](https://github.com/tj-smith47/cfgd/actions/workflows/e2e-full-stack.yml/badge.svg)](https://github.com/tj-smith47/cfgd/actions/workflows/e2e-full-stack.yml)
 [![E2E – Node](https://github.com/tj-smith47/cfgd/actions/workflows/e2e-node.yml/badge.svg)](https://github.com/tj-smith47/cfgd/actions/workflows/e2e-node.yml)
 [![E2E – Operator](https://github.com/tj-smith47/cfgd/actions/workflows/e2e-operator.yml/badge.svg)](https://github.com/tj-smith47/cfgd/actions/workflows/e2e-operator.yml)
-<br>
+
 [![AutoTag](https://github.com/tj-smith47/cfgd/actions/workflows/auto-tag.yml/badge.svg)](https://github.com/tj-smith47/cfgd/actions/workflows/auto-tag.yml)
 [![CI](https://github.com/tj-smith47/cfgd/actions/workflows/ci.yml/badge.svg)](https://github.com/tj-smith47/cfgd/actions/workflows/ci.yml)
 [![Release](https://github.com/tj-smith47/cfgd/actions/workflows/release.yml/badge.svg)](https://github.com/tj-smith47/cfgd/actions/workflows/release.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-</p>
+
+</div>
 
 > **Status:** Alpha — APIs may change. Battle-tested on macOS and Linux workstations; Kubernetes operator in active development.
 

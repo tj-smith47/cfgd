@@ -664,3 +664,17 @@ Commands supported:
 - [x] Add `Serialize` to all display structs (ApplyResult, DriftEvent, ModuleInfo, etc.)
 - [x] Wire through each command listed above
 - [x] Update docs and CLI reference
+
+---
+
+## Buffered script output (completed)
+
+`Printer::run_with_output()` implements Docker-style bounded scrolling (5 visible lines, spinner, collapse to summary).
+
+- [x] Capture script stdout/stderr to state store — added `script_output` TEXT column to `apply_journal` (migration 3), pass combined stdout/stderr from `apply_script_action` to `state.journal_complete()`
+- [x] `cfgd log --show-output <apply-id>` — display captured script output from journal for a specific apply run
+
+## `module show` enhancements (completed)
+
+- [x] Mask env values by default — show `***` with last 3 chars, `--show-values` flag on `ModuleCommand::Show` reveals full values
+- [x] Display "Last applied" timestamp prominently — label changed from "Installed at" to "Last applied"

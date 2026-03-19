@@ -387,6 +387,9 @@ pub enum Command {
         /// Number of entries to show
         #[arg(long, short = 'n', default_value = "20")]
         limit: u32,
+        /// Show captured script output for a specific apply ID
+        #[arg(long)]
+        show_output: Option<i64>,
     },
 
     /// Sync with remote
@@ -910,6 +913,9 @@ pub enum ModuleCommand {
     Show {
         /// Module name
         name: String,
+        /// Show full env variable values (default: masked)
+        #[arg(long)]
+        show_values: bool,
     },
     /// Create a new local module
     Create(Box<ModuleCreateArgs>),
@@ -992,7 +998,7 @@ pub fn execute(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
         Command::Apply(args) => cmd_apply(cli, printer, args),
         Command::Status => cmd_status(cli, printer),
         Command::Diff => cmd_diff(cli, printer),
-        Command::Log { limit } => cmd_log(printer, *limit),
+        Command::Log { limit, show_output } => cmd_log(printer, *limit, *show_output),
         Command::Verify => cmd_verify(cli, printer),
         Command::Profile { command } => match command {
             ProfileCommand::Show => profile::cmd_profile_show(cli, printer),
@@ -1039,7 +1045,9 @@ pub fn execute(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
         ),
         Command::Module { command } => match command {
             ModuleCommand::List => module::cmd_module_list(cli, printer),
-            ModuleCommand::Show { name } => module::cmd_module_show(cli, printer, name),
+            ModuleCommand::Show { name, show_values } => {
+                module::cmd_module_show(cli, printer, name, *show_values)
+            }
             ModuleCommand::Create(args) => module::cmd_module_create(cli, printer, args),
             ModuleCommand::Update(args) => module::cmd_module_update_local(cli, printer, args),
             ModuleCommand::Edit { name } => module::cmd_module_edit(cli, printer, name),
@@ -1944,8 +1952,13 @@ fn cmd_status(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn cmd_log(printer: &Printer, count: u32) -> anyhow::Result<()> {
+fn cmd_log(printer: &Printer, count: u32, show_output: Option<i64>) -> anyhow::Result<()> {
     let state = open_state_store()?;
+
+    if let Some(apply_id) = show_output {
+        return cmd_log_show_output(printer, &state, apply_id);
+    }
+
     let history = state.history(count)?;
 
     if printer.is_structured() {
@@ -1981,6 +1994,43 @@ fn cmd_log(printer: &Printer, count: u32) -> anyhow::Result<()> {
             })
             .collect::<Vec<_>>(),
     );
+
+    Ok(())
+}
+
+fn cmd_log_show_output(
+    printer: &Printer,
+    state: &cfgd_core::state::StateStore,
+    apply_id: i64,
+) -> anyhow::Result<()> {
+    let entries = state.journal_entries(apply_id)?;
+
+    if entries.is_empty() {
+        printer.info(&format!("No journal entries for apply #{}", apply_id));
+        return Ok(());
+    }
+
+    printer.header(&format!("Apply #{} — Script Output", apply_id));
+
+    let mut found_output = false;
+    for entry in &entries {
+        if let Some(ref output) = entry.script_output {
+            found_output = true;
+            printer.newline();
+            printer.subheader(&format!(
+                "[{}] {} ({})",
+                entry.phase, entry.resource_id, entry.action_type
+            ));
+            for line in output.lines() {
+                printer.info(line);
+            }
+        }
+    }
+
+    if !found_output {
+        printer.newline();
+        printer.info("No script output captured for this apply");
+    }
 
     Ok(())
 }
@@ -7942,7 +7992,7 @@ spec:
         let _cli = test_cli(config_dir.path());
         let printer = test_printer();
 
-        let result = super::cmd_log(&printer, 10);
+        let result = super::cmd_log(&printer, 10, None);
         assert!(result.is_ok());
     }
 
@@ -8140,7 +8190,7 @@ spec:
         super::cmd_apply(&cli, &printer, &args).unwrap();
 
         // Log should show one entry
-        let result = super::cmd_log(&printer, 10);
+        let result = super::cmd_log(&printer, 10, None);
         assert!(result.is_ok());
     }
 
@@ -8349,7 +8399,7 @@ spec:
 
         let printer = Printer::new(cfgd_core::output::Verbosity::Quiet);
 
-        let result = super::cmd_log(&printer, 5);
+        let result = super::cmd_log(&printer, 5, None);
         assert!(result.is_ok());
     }
 
@@ -8383,7 +8433,10 @@ spec:
         .unwrap();
 
         let cli = Cli {
-            command: Command::Log { limit: 10 },
+            command: Command::Log {
+                limit: 10,
+                show_output: None,
+            },
             ..test_cli(dir.path())
         };
         let printer = test_printer();

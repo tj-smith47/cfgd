@@ -115,7 +115,12 @@ pub(super) fn cmd_module_list(cli: &Cli, printer: &Printer) -> anyhow::Result<()
     Ok(())
 }
 
-pub(super) fn cmd_module_show(cli: &Cli, printer: &Printer, name: &str) -> anyhow::Result<()> {
+pub(super) fn cmd_module_show(
+    cli: &Cli,
+    printer: &Printer,
+    name: &str,
+    show_values: bool,
+) -> anyhow::Result<()> {
     let config_dir = config_dir(cli);
     let cache_base = modules::default_module_cache_dir()?;
     let all_modules = modules::load_all_modules(&config_dir, &cache_base)?;
@@ -178,7 +183,7 @@ pub(super) fn cmd_module_show(cli: &Cli, printer: &Printer, name: &str) -> anyho
     let state = open_state_store()?;
     if let Some(state_rec) = state.module_state_by_name(name)? {
         printer.key_value("Status", &state_rec.status);
-        printer.key_value("Installed at", &state_rec.installed_at);
+        printer.key_value("Last applied", &state_rec.installed_at);
         printer.key_value("Packages hash", &state_rec.packages_hash);
         printer.key_value("Files hash", &state_rec.files_hash);
     }
@@ -268,7 +273,11 @@ pub(super) fn cmd_module_show(cli: &Cli, printer: &Printer, name: &str) -> anyho
         printer.newline();
         printer.subheader("Env");
         for ev in &module.spec.env {
-            printer.key_value(&ev.name, &ev.value);
+            if show_values {
+                printer.key_value(&ev.name, &ev.value);
+            } else {
+                printer.key_value(&ev.name, &mask_value(&ev.value));
+            }
         }
     }
 
@@ -1899,6 +1908,18 @@ pub(super) fn cmd_module_registry_list(cli: &Cli, printer: &Printer) -> anyhow::
     Ok(())
 }
 
+/// Mask a value for display: show `***` with last 3 chars visible.
+/// Short values (3 chars or fewer) are fully masked.
+fn mask_value(value: &str) -> String {
+    let chars: Vec<char> = value.chars().collect();
+    if chars.len() <= 3 {
+        "***".to_string()
+    } else {
+        let suffix: String = chars[chars.len() - 3..].iter().collect();
+        format!("***{}", suffix)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2065,5 +2086,24 @@ mod tests {
 
         let result = profiles_using_module(dir.path(), "test-mod").unwrap();
         assert_eq!(result, vec!["work"]);
+    }
+
+    // --- mask_value ---
+
+    #[test]
+    fn mask_value_long_string() {
+        assert_eq!(mask_value("my-secret-token"), "***ken");
+    }
+
+    #[test]
+    fn mask_value_short_string() {
+        assert_eq!(mask_value("abc"), "***");
+        assert_eq!(mask_value("ab"), "***");
+        assert_eq!(mask_value(""), "***");
+    }
+
+    #[test]
+    fn mask_value_four_chars() {
+        assert_eq!(mask_value("abcd"), "***bcd");
     }
 }

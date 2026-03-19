@@ -157,6 +157,8 @@ const MIGRATIONS: &[&str] = &[
     );
 
     CREATE INDEX IF NOT EXISTS idx_module_file_manifest_module ON module_file_manifest (module_name);",
+    // Migration 3: Script output capture — store stdout/stderr from script actions
+    "ALTER TABLE apply_journal ADD COLUMN script_output TEXT;",
 ];
 
 /// Apply status for a reconciliation run.
@@ -311,6 +313,7 @@ pub struct JournalEntry {
     pub error: Option<String>,
     pub started_at: String,
     pub completed_at: Option<String>,
+    pub script_output: Option<String>,
 }
 
 /// A module file manifest entry — tracks which files a module deployed.
@@ -1164,12 +1167,17 @@ impl StateStore {
         Ok(self.conn.last_insert_rowid())
     }
 
-    /// Mark a journal action as completed.
-    pub fn journal_complete(&self, journal_id: i64, post_state: Option<&str>) -> Result<()> {
+    /// Mark a journal action as completed, optionally storing script output.
+    pub fn journal_complete(
+        &self,
+        journal_id: i64,
+        post_state: Option<&str>,
+        script_output: Option<&str>,
+    ) -> Result<()> {
         let timestamp = crate::utc_now_iso8601();
         self.conn.execute(
-            "UPDATE apply_journal SET status = 'completed', post_state = ?1, completed_at = ?2 WHERE id = ?3",
-            params![post_state, timestamp, journal_id],
+            "UPDATE apply_journal SET status = 'completed', post_state = ?1, completed_at = ?2, script_output = ?3 WHERE id = ?4",
+            params![post_state, timestamp, script_output, journal_id],
         )?;
         Ok(())
     }
@@ -1186,10 +1194,32 @@ impl StateStore {
 
     /// Get completed actions for an apply (for rollback).
     pub fn journal_completed_actions(&self, apply_id: i64) -> Result<Vec<JournalEntry>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT id, apply_id, action_index, phase, action_type, resource_id, pre_state, post_state, status, error, started_at, completed_at
-             FROM apply_journal WHERE apply_id = ?1 AND status = 'completed' ORDER BY action_index",
-        )?;
+        self.query_journal(apply_id, Some("completed"))
+    }
+
+    /// Get all journal entries for an apply (all statuses).
+    pub fn journal_entries(&self, apply_id: i64) -> Result<Vec<JournalEntry>> {
+        self.query_journal(apply_id, None)
+    }
+
+    fn query_journal(
+        &self,
+        apply_id: i64,
+        status_filter: Option<&str>,
+    ) -> Result<Vec<JournalEntry>> {
+        let sql = if let Some(status) = status_filter {
+            format!(
+                "SELECT id, apply_id, action_index, phase, action_type, resource_id, pre_state, post_state, status, error, started_at, completed_at, script_output
+                 FROM apply_journal WHERE apply_id = ?1 AND status = '{}' ORDER BY action_index",
+                status
+            )
+        } else {
+            "SELECT id, apply_id, action_index, phase, action_type, resource_id, pre_state, post_state, status, error, started_at, completed_at, script_output
+             FROM apply_journal WHERE apply_id = ?1 ORDER BY action_index"
+                .to_string()
+        };
+
+        let mut stmt = self.conn.prepare(&sql)?;
 
         let entries = stmt
             .query_map(params![apply_id], |row| {
@@ -1206,6 +1236,7 @@ impl StateStore {
                     error: row.get(9)?,
                     started_at: row.get(10)?,
                     completed_at: row.get(11)?,
+                    script_output: row.get(12)?,
                 })
             })?
             .collect::<std::result::Result<Vec<_>, _>>()?;
@@ -1951,17 +1982,36 @@ mod tests {
         let j1 = store
             .journal_begin(apply_id, 0, "files", "create", "/home/user/.bashrc", None)
             .unwrap();
-        store.journal_complete(j1, Some("hash123")).unwrap();
+        store.journal_complete(j1, Some("hash123"), None).unwrap();
 
         let j2 = store
             .journal_begin(apply_id, 1, "files", "update", "/home/user/.zshrc", None)
             .unwrap();
         store.journal_fail(j2, "permission denied").unwrap();
 
+        // Script action with captured output
+        let j3 = store
+            .journal_begin(apply_id, 2, "scripts", "run", "setup.sh", None)
+            .unwrap();
+        store
+            .journal_complete(j3, None, Some("installed deps\nall good"))
+            .unwrap();
+
         let completed = store.journal_completed_actions(apply_id).unwrap();
-        assert_eq!(completed.len(), 1);
+        assert_eq!(completed.len(), 2);
         assert_eq!(completed[0].resource_id, "/home/user/.bashrc");
         assert_eq!(completed[0].status, "completed");
+        assert!(completed[0].script_output.is_none());
+        assert_eq!(completed[1].resource_id, "setup.sh");
+        assert_eq!(
+            completed[1].script_output.as_deref(),
+            Some("installed deps\nall good")
+        );
+
+        // journal_entries returns all entries including failed ones
+        let all = store.journal_entries(apply_id).unwrap();
+        assert_eq!(all.len(), 3);
+        assert_eq!(all[1].status, "failed");
     }
 
     #[test]
@@ -2064,9 +2114,9 @@ mod tests {
     }
 
     #[test]
-    fn schema_version_is_2_after_migration() {
+    fn schema_version_is_3_after_migration() {
         let store = StateStore::open_in_memory().unwrap();
         let version = store.schema_version();
-        assert_eq!(version, 2);
+        assert_eq!(version, 3);
     }
 }

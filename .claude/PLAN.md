@@ -172,20 +172,6 @@ Single source of truth for all incomplete work. Completed work is in `INITIAL-PL
 
 ## Independent work (no tier dependencies)
 
-### Buffered script output
-
-`Printer::run_with_output()` in `output/mod.rs:792-805` already implements Docker-style bounded scrolling (5 visible lines, spinner, collapse to summary). Two gaps remain:
-
-- [ ] Capture script stdout/stderr to state store — add `script_output` TEXT column to `apply_journal`, pass `CommandOutput` from `apply_script_action` to `state.journal_complete()`
-- [ ] `cfgd log --show-output <apply-id>` — display captured script output from journal for a specific apply run
-
-### `module show` enhancements
-
-`cmd_module_show()` in `cli/module.rs:118-296` already displays module state from the `ModuleStateRecord` table (status, installed_at, hashes). Two additions:
-
-- [ ] Mask env values by default — show `***` with last 3 chars, add `--show-values` flag to `ModuleCommand::Show` to reveal full values. Currently `module.rs:270-272` prints plaintext
-- [ ] Display "Last applied" timestamp prominently — data exists in `ModuleStateRecord.installed_at`, surface it in the output header alongside status
-
 ### Profile-less `status` and `verify`
 
 `cmd_status` and `cmd_verify` in `cli/mod.rs` both call `load_config_and_profile()` which hard-fails without a profile set. Module state is already stored by module name, not by profile — so the data supports profile-less queries.

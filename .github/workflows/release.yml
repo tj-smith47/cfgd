@@ -1,6 +1,15 @@
 name: Release
 
 on:
+  # Triggered by AutoTag workflow completion
+  workflow_run:
+    workflows:
+      - "AutoTag"
+    branches:
+      - master
+    types:
+      - completed
+  # Also triggered by manual tag push (for RC releases)
   push:
     tags: ["v*"]
 
@@ -16,7 +25,42 @@ env:
   REGISTRY: ghcr.io
 
 jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    if: ${{ github.event_name == 'push' || github.event.workflow_run.conclusion == 'success' }}
+    outputs:
+      tag: ${{ steps.get-tag.outputs.tag }}
+      version: ${{ steps.get-tag.outputs.version }}
+      should_run: ${{ steps.get-tag.outputs.should_run }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Get tag
+        id: get-tag
+        run: |
+          should_run=true
+          if [ "${{ github.event_name }}" = "push" ]; then
+            TAG="${{ github.ref_name }}"
+          else
+            # For workflow_run events, check if a tag exists at HEAD
+            # (AutoTag skips if commit has #none)
+            if ! git tag --points-at HEAD | grep -q .; then
+              echo "No tag at HEAD - AutoTag likely skipped (commit has #none)"
+              should_run=false
+              TAG=""
+            else
+              TAG=$(git describe --tags --abbrev=0)
+            fi
+          fi
+          echo "tag=${TAG}" >> $GITHUB_OUTPUT
+          echo "version=${TAG#v}" >> $GITHUB_OUTPUT
+          echo "should_run=${should_run}" >> $GITHUB_OUTPUT
+
   build:
+    needs: prepare
+    if: ${{ needs.prepare.outputs.should_run == 'true' }}
     strategy:
       matrix:
         include:
@@ -53,8 +97,8 @@ jobs:
 
       - name: Package
         run: |
-          VERSION="${GITHUB_REF_NAME}"
-          ARCHIVE="cfgd-${VERSION#v}-${{ matrix.name }}.tar.gz"
+          VERSION="${{ needs.prepare.outputs.version }}"
+          ARCHIVE="cfgd-${VERSION}-${{ matrix.name }}.tar.gz"
           tar -czf "$ARCHIVE" -C target/${{ matrix.target }}/release cfgd
           echo "ARCHIVE=$ARCHIVE" >> "$GITHUB_ENV"
 
@@ -64,7 +108,7 @@ jobs:
           path: ${{ env.ARCHIVE }}
 
   checksums:
-    needs: build
+    needs: [prepare, build]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4
@@ -73,8 +117,8 @@ jobs:
 
       - name: Generate checksums
         run: |
-          VERSION="${GITHUB_REF_NAME}"
-          sha256sum cfgd-*.tar.gz > "cfgd-${VERSION#v}-checksums.txt"
+          VERSION="${{ needs.prepare.outputs.version }}"
+          sha256sum cfgd-*.tar.gz > "cfgd-${VERSION}-checksums.txt"
 
       - uses: actions/upload-artifact@v4
         with:
@@ -82,6 +126,8 @@ jobs:
           path: "*.txt"
 
   changelog:
+    needs: prepare
+    if: ${{ needs.prepare.outputs.should_run == 'true' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -103,7 +149,7 @@ jobs:
           path: RELEASE_NOTES.md
 
   release:
-    needs: [build, checksums, changelog]
+    needs: [prepare, build, checksums, changelog]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4
@@ -113,6 +159,7 @@ jobs:
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ needs.prepare.outputs.tag }}
           body_path: RELEASE_NOTES.md
           files: |
             cfgd-*.tar.gz
@@ -120,7 +167,7 @@ jobs:
           generate_release_notes: false
 
   docker:
-    needs: release
+    needs: [prepare, release]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -139,8 +186,8 @@ jobs:
         with:
           images: ${{ env.REGISTRY }}/${{ github.repository_owner }}/cfgd-operator
           tags: |
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
+            type=raw,value=${{ needs.prepare.outputs.version }}
+            type=raw,value=${{ needs.prepare.outputs.tag }}
             type=sha
 
       - uses: docker/build-push-action@v6
@@ -155,7 +202,7 @@ jobs:
           cache-to: type=gha,mode=max
 
   crossplane-function:
-    needs: release
+    needs: [prepare, release]
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -194,7 +241,7 @@ jobs:
           path: "*.xpkg"
 
   crossplane-push:
-    needs: crossplane-function
+    needs: [prepare, crossplane-function]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4
@@ -213,7 +260,7 @@ jobs:
 
       - name: Push xpkg
         run: |
-          VERSION="${GITHUB_REF_NAME#v}"
+          VERSION="${{ needs.prepare.outputs.version }}"
           ./crossplane --verbose xpkg push \
             --package-files $(echo *.xpkg | tr ' ' ,) \
             ${{ env.REGISTRY }}/${{ github.repository_owner }}/function-cfgd:v${VERSION}
