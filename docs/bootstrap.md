@@ -155,6 +155,39 @@ cfgd source add git@github.com:acme/security-hardening.git
 
 cfgd fetches the manifest, shows the policy breakdown, lets you set a priority, and confirms before subscribing. See [sources.md](sources.md) for details.
 
+## AI-Guided Generation
+
+If you're starting from scratch and want cfgd to generate your initial configuration by scanning your system, use `cfgd generate` instead of (or after) `cfgd init`:
+
+```sh
+cfgd init                  # scaffold an empty repo
+cfgd generate              # scan system, generate modules and profiles
+cfgd profile switch base   # activate the generated profile
+cfgd apply                 # apply to the machine
+```
+
+The `generate` flow:
+
+1. **Scan** — detects installed packages, dotfiles, shell config (aliases, exports, PATH), and system settings across all available package managers.
+2. **Propose** — the AI proposes a module and profile structure based on what it found. Each tool typically becomes one module (`nvim`, `tmux`, `zsh`, etc.).
+3. **Review** — each generated YAML file is shown to you before it is written. You can accept, request changes, or skip individual files.
+4. **Write** — accepted files are written to `modules/<name>/module.yaml` and `profiles/<name>.yaml` in the current config repo.
+
+You can also target a single tool or profile:
+
+```sh
+cfgd generate module nvim    # generate just the nvim module
+cfgd generate profile work   # generate a work profile interactively
+```
+
+Use `--scan-only` to preview what cfgd finds without starting the AI conversation:
+
+```sh
+cfgd generate --scan-only
+```
+
+Requires `ANTHROPIC_API_KEY` in your environment, or `spec.ai.api-key` set in `cfgd.yaml`. See [cli-reference.md](cli-reference.md#cfgd-generate) for all flags.
+
 ## Adding Modules
 
 Modules can be added after init with `cfgd module add` for remote modules or `cfgd module create` for local ones:

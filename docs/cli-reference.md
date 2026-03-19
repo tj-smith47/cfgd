@@ -4,6 +4,31 @@ Complete command reference for `cfgd`. All commands respect [global flags](confi
 
 ## Core Commands
 
+### `cfgd generate`
+
+AI-guided configuration generation. Interactively scans your system and generates organized cfgd profiles and modules.
+
+#### Usage
+
+```sh
+cfgd generate                      # Full flow: scan, propose structure, generate all
+cfgd generate module <name>        # Generate a module for a specific tool
+cfgd generate profile <name>       # Generate a profile
+```
+
+#### Flags
+
+| Flag | Description |
+|---|---|
+| `--model <model-id>` | Override AI model (default: from config or `claude-sonnet-4-6`) |
+| `--provider <name>` | Override AI provider (default: claude) |
+| `--yes`, `-y` | Skip confirmation prompts |
+| `--scan-only` | Only scan system, don't start AI conversation |
+
+The AI scans your installed packages, dotfiles, shell config, and system settings, then proposes a cfgd module and profile structure. Each generated file is shown to you for review before it is written. You can accept, reject, or give feedback. The session ends when all modules and profiles have been written or you exit.
+
+Requires `ANTHROPIC_API_KEY` set in your environment, or `spec.ai.api-key` in `cfgd.yaml`.
+
 ### `cfgd init`
 
 Initialize a new cfgd configuration repository.
