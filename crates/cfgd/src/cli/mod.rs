@@ -10,6 +10,7 @@ use clap::{CommandFactory, Parser, Subcommand};
 use serde::Serialize;
 
 use crate::files::CfgdFileManager;
+use crate::generate;
 use crate::packages;
 use crate::secrets;
 use cfgd_core::composition::{self, CompositionInput, SubscriptionConfig};
@@ -529,6 +530,21 @@ pub enum Command {
         /// Shell to generate completions for
         #[arg(value_enum)]
         shell: clap_complete::Shell,
+    },
+
+    /// Generate a cfgd config from your existing dotfiles (interactive AI-assisted)
+    Generate {
+        /// Shell to scan for aliases and exports (default: auto-detect from $SHELL)
+        #[arg(long)]
+        shell: Option<String>,
+
+        /// Home directory to scan (default: $HOME)
+        #[arg(long, value_hint = clap::ValueHint::DirPath)]
+        home: Option<String>,
+
+        /// Only scan dotfiles and shell config; print findings without AI generation
+        #[arg(long)]
+        scan_only: bool,
     },
 }
 
@@ -1169,6 +1185,9 @@ pub fn execute(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
         Command::Completions { shell } => {
             clap_complete::generate(*shell, &mut Cli::command(), "cfgd", &mut std::io::stdout());
             Ok(())
+        }
+        Command::Generate { shell, home, scan_only } => {
+            cmd_generate(printer, shell.as_deref(), home.as_deref(), *scan_only)
         }
     }
 }
@@ -2924,6 +2943,84 @@ fn maybe_update_workflow(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
     let config_dir = config_dir(cli);
     init::regenerate_workflow(&config_dir, printer)?;
     Ok(())
+}
+
+// --- Generate Command ---
+
+fn cmd_generate(
+    printer: &Printer,
+    shell: Option<&str>,
+    home: Option<&str>,
+    scan_only: bool,
+) -> anyhow::Result<()> {
+    let home_path = if let Some(h) = home {
+        PathBuf::from(h)
+    } else {
+        dirs_from_env()
+    };
+
+    let detected_shell = shell
+        .map(|s| s.to_string())
+        .or_else(|| {
+            std::env::var("SHELL")
+                .ok()
+                .and_then(|s| s.rsplit('/').next().map(|n| n.to_string()))
+        })
+        .unwrap_or_else(|| "zsh".to_string());
+
+    printer.header("Scanning dotfiles");
+
+    let dotfiles = generate::scan::scan_dotfiles(&home_path)?;
+    let tool_set: std::collections::HashSet<String> = dotfiles
+        .iter()
+        .filter_map(|e| e.tool_guess.clone())
+        .collect();
+
+    if dotfiles.is_empty() {
+        printer.info("No dotfiles found");
+    } else {
+        printer.info(&format!("Found {} dotfile entries", dotfiles.len()));
+        if !tool_set.is_empty() {
+            let mut tools: Vec<String> = tool_set.into_iter().collect();
+            tools.sort();
+            printer.info(&format!("Detected tools: {}", tools.join(", ")));
+        }
+    }
+
+    printer.header(&format!("Scanning {} config", detected_shell));
+    let shell_result = generate::scan::scan_shell_config(&detected_shell, &home_path)?;
+    if !shell_result.aliases.is_empty() {
+        printer.info(&format!("Found {} aliases", shell_result.aliases.len()));
+    }
+    if !shell_result.exports.is_empty() {
+        printer.info(&format!("Found {} exports", shell_result.exports.len()));
+    }
+    if !shell_result.path_additions.is_empty() {
+        printer.info(&format!(
+            "Found {} PATH additions",
+            shell_result.path_additions.len()
+        ));
+    }
+    if let Some(pm) = &shell_result.plugin_manager {
+        printer.info(&format!("Plugin manager: {}", pm));
+    }
+
+    if scan_only {
+        printer.success("Scan complete — use without --scan-only to generate config");
+        return Ok(());
+    }
+
+    // Full AI-assisted generation is implemented in Task 18.
+    printer.warning("AI-assisted generation is not yet available (coming soon)");
+    printer.info("Use --scan-only to preview what would be scanned");
+
+    Ok(())
+}
+
+fn dirs_from_env() -> PathBuf {
+    std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("/tmp"))
 }
 
 // --- Module Commands ---
