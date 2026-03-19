@@ -105,12 +105,15 @@ jobs:
           VERSION="${{ needs.prepare.outputs.version }}"
           ARCHIVE="cfgd-${VERSION}-${{ matrix.name }}.tar.gz"
           tar -czf "$ARCHIVE" -C target/${{ matrix.target }}/release cfgd
+          sha256sum "$ARCHIVE" > "${ARCHIVE}.sha256"
           echo "ARCHIVE=$ARCHIVE" >> "$GITHUB_ENV"
 
       - uses: actions/upload-artifact@v4
         with:
           name: cfgd-${{ matrix.name }}
-          path: ${{ env.ARCHIVE }}
+          path: |
+            ${{ env.ARCHIVE }}
+            ${{ env.ARCHIVE }}.sha256
 
   checksums:
     needs: [prepare, build]
@@ -118,12 +121,13 @@ jobs:
     steps:
       - uses: actions/download-artifact@v4
         with:
+          pattern: cfgd-*
           merge-multiple: true
 
-      - name: Generate checksums
+      - name: Generate combined checksums
         run: |
           VERSION="${{ needs.prepare.outputs.version }}"
-          sha256sum cfgd-*.tar.gz > "cfgd-${VERSION}-checksums.txt"
+          cat *.sha256 > "cfgd-${VERSION}-checksums.txt"
 
       - uses: actions/upload-artifact@v4
         with:
@@ -270,15 +274,49 @@ jobs:
             --package-files $(echo *.xpkg | tr ' ' ,) \
             ${{ env.REGISTRY }}/${{ github.repository_owner }}/function-cfgd:v${VERSION}
 
+  cargo-publish:
+    needs: [prepare, release]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Publish cfgd-core to crates.io
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: cargo publish -p cfgd-core --allow-dirty || echo "cfgd-core publish failed or already published"
+
+      - name: Publish cfgd to crates.io
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: |
+          sleep 30  # Wait for crates.io to index cfgd-core
+          cargo publish -p cfgd --allow-dirty || echo "cfgd publish failed or already published"
+
   homebrew:
     needs: [prepare, release]
     runs-on: ubuntu-latest
-    continue-on-error: true
     steps:
       - uses: actions/download-artifact@v4
         with:
-          pattern: cfgd-*
-          merge-multiple: true
+          name: cfgd-darwin-x86_64
+          path: artifacts/darwin-x86_64/
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: cfgd-darwin-aarch64
+          path: artifacts/darwin-aarch64/
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: cfgd-linux-x86_64
+          path: artifacts/linux-x86_64/
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: cfgd-linux-aarch64
+          path: artifacts/linux-aarch64/
 
       - name: Update Homebrew tap
         env:
@@ -287,15 +325,16 @@ jobs:
           VERSION="${{ needs.prepare.outputs.version }}"
           TAG="${{ needs.prepare.outputs.tag }}"
 
-          DARWIN_X86_SHA=$(sha256sum "cfgd-${VERSION}-darwin-x86_64.tar.gz" | awk '{print $1}')
-          DARWIN_ARM_SHA=$(sha256sum "cfgd-${VERSION}-darwin-aarch64.tar.gz" | awk '{print $1}')
-          LINUX_X86_SHA=$(sha256sum "cfgd-${VERSION}-linux-x86_64.tar.gz" | awk '{print $1}')
-          LINUX_ARM_SHA=$(sha256sum "cfgd-${VERSION}-linux-aarch64.tar.gz" | awk '{print $1}')
+          DARWIN_X86_SHA=$(cat artifacts/darwin-x86_64/*.sha256 | awk '{print $1}')
+          DARWIN_ARM_SHA=$(cat artifacts/darwin-aarch64/*.sha256 | awk '{print $1}')
+          LINUX_X86_SHA=$(cat artifacts/linux-x86_64/*.sha256 | awk '{print $1}')
+          LINUX_ARM_SHA=$(cat artifacts/linux-aarch64/*.sha256 | awk '{print $1}')
 
           git clone "https://${HOMEBREW_TAP_TOKEN}@github.com/tj-smith47/homebrew-tap.git"
           cd homebrew-tap
 
-          cat > Formula/cfgd.rb << FORMULA
+          mkdir -p Formula
+          cat > Formula/cfgd.rb << EOF
           class Cfgd < Formula
             desc "Declarative, GitOps-style machine configuration management"
             homepage "https://github.com/tj-smith47/cfgd"
@@ -328,13 +367,12 @@ jobs:
               system "#{bin}/cfgd", "--version"
             end
           end
-          FORMULA
+          EOF
 
-          # Fix heredoc indentation
           sed -i 's/^          //' Formula/cfgd.rb
 
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add Formula/cfgd.rb
-          git commit -m "Update cfgd to ${VERSION}" || true
+          git config user.name "GitHub Actions"
+          git config user.email "actions@github.com"
+          git add -A Formula/
+          git commit -m "Update cfgd to ${VERSION}" || echo "No changes to commit"
           git push
