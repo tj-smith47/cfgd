@@ -1241,7 +1241,9 @@ async fn create_drift_alert_crd(
     details: &[DriftDetailInput],
     timestamp: &str,
 ) -> Result<(), GatewayError> {
-    use crate::crds::{DriftAlert, DriftAlertSpec, DriftDetail, DriftSeverity};
+    use crate::crds::{
+        DriftAlert, DriftAlertSpec, DriftDetail, DriftSeverity, MachineConfigReference,
+    };
     use kube::ResourceExt;
     use kube::api::{Api, PostParams};
 
@@ -1268,7 +1270,10 @@ async fn create_drift_alert_crd(
         &alert_name,
         DriftAlertSpec {
             device_id: device_id.to_string(),
-            machine_config_ref: mc_ref.clone(),
+            machine_config_ref: MachineConfigReference {
+                name: mc_ref.clone(),
+                namespace: None,
+            },
             drift_details,
             severity: DriftSeverity::Medium,
         },

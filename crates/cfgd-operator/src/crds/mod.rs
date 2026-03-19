@@ -24,14 +24,20 @@ pub struct MachineConfigSpec {
     #[serde(default)]
     pub module_refs: Vec<ModuleRef>,
     #[serde(default)]
-    pub packages: Vec<String>,
-    /// Reported installed versions keyed by package name (e.g. {"kubectl": "1.28.3"}).
-    #[serde(default)]
-    pub package_versions: BTreeMap<String, String>,
+    pub packages: Vec<PackageRef>,
     #[serde(default)]
     pub files: Vec<FileSpec>,
     #[serde(default)]
-    pub system_settings: BTreeMap<String, String>,
+    pub system_settings: BTreeMap<String, serde_json::Value>,
+}
+
+/// Reference to a package with optional version pin.
+#[derive(Deserialize, Serialize, Clone, Debug, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct PackageRef {
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
 }
 
 /// Reference to a module that should be installed on the machine.
@@ -62,11 +68,12 @@ fn default_mode() -> String {
 pub struct MachineConfigStatus {
     pub last_reconciled: Option<String>,
     #[serde(default)]
-    pub drift_detected: bool,
-    #[serde(default)]
     pub observed_generation: Option<i64>,
     #[serde(default)]
     pub conditions: Vec<Condition>,
+    /// Reported installed versions keyed by package name (e.g. {"kubectl": "1.28.3"}).
+    #[serde(default)]
+    pub package_versions: BTreeMap<String, String>,
 }
 
 #[derive(Deserialize, Serialize, Clone, Debug, JsonSchema)]
@@ -86,6 +93,26 @@ pub struct Condition {
 // ConfigPolicy
 // ---------------------------------------------------------------------------
 
+/// Kubernetes-style label selector with match_labels and match_expressions.
+#[derive(Deserialize, Serialize, Clone, Debug, Default, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct LabelSelector {
+    #[serde(default)]
+    pub match_labels: BTreeMap<String, String>,
+    #[serde(default)]
+    pub match_expressions: Vec<LabelSelectorRequirement>,
+}
+
+/// A single requirement for label selector expressions.
+#[derive(Deserialize, Serialize, Clone, Debug, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct LabelSelectorRequirement {
+    pub key: String,
+    pub operator: String,
+    #[serde(default)]
+    pub values: Vec<String>,
+}
+
 #[derive(CustomResource, Deserialize, Serialize, Clone, Debug, JsonSchema)]
 #[kube(
     group = "cfgd.io",
@@ -96,18 +123,17 @@ pub struct Condition {
 )]
 #[serde(rename_all = "camelCase")]
 pub struct ConfigPolicySpec {
-    pub name: String,
     #[serde(default)]
-    pub required_modules: Vec<String>,
+    pub required_modules: Vec<ModuleRef>,
     #[serde(default)]
-    pub packages: Vec<String>,
+    pub packages: Vec<PackageRef>,
     /// Version requirements keyed by package name (semver ranges, e.g. {"kubectl": ">=1.28"}).
     #[serde(default)]
     pub package_versions: BTreeMap<String, String>,
     #[serde(default)]
     pub settings: BTreeMap<String, String>,
     #[serde(default)]
-    pub target_selector: BTreeMap<String, String>,
+    pub target_selector: LabelSelector,
 }
 
 #[derive(Deserialize, Serialize, Clone, Debug, Default, JsonSchema)]
@@ -123,6 +149,15 @@ pub struct ConfigPolicyStatus {
 // DriftAlert
 // ---------------------------------------------------------------------------
 
+/// Typed reference to a MachineConfig resource.
+#[derive(Deserialize, Serialize, Clone, Debug, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct MachineConfigReference {
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub namespace: Option<String>,
+}
+
 #[derive(CustomResource, Deserialize, Serialize, Clone, Debug, JsonSchema)]
 #[kube(
     group = "cfgd.io",
@@ -134,7 +169,7 @@ pub struct ConfigPolicyStatus {
 #[serde(rename_all = "camelCase")]
 pub struct DriftAlertSpec {
     pub device_id: String,
-    pub machine_config_ref: String,
+    pub machine_config_ref: MachineConfigReference,
     #[serde(default)]
     pub drift_details: Vec<DriftDetail>,
     pub severity: DriftSeverity,
@@ -180,6 +215,11 @@ impl MachineConfigSpec {
         if self.profile.is_empty() {
             errors.push("spec.profile must not be empty".to_string());
         }
+        for (i, pkg) in self.packages.iter().enumerate() {
+            if pkg.name.is_empty() {
+                errors.push(format!("spec.packages[{i}].name must not be empty"));
+            }
+        }
         for (i, file) in self.files.iter().enumerate() {
             if file.path.is_empty() {
                 errors.push(format!("spec.files[{i}].path must not be empty"));
@@ -206,16 +246,6 @@ impl MachineConfigSpec {
                 _ => {}
             }
         }
-        for (pkg, version) in &self.package_versions {
-            if pkg.is_empty() {
-                errors.push("spec.packageVersions key must not be empty".to_string());
-            }
-            if parse_loose_version(version).is_none() {
-                errors.push(format!(
-                    "spec.packageVersions['{pkg}'] = '{version}' is not a valid version"
-                ));
-            }
-        }
 
         if errors.is_empty() {
             Ok(())
@@ -230,12 +260,16 @@ impl ConfigPolicySpec {
     pub fn validate(&self) -> Result<(), Vec<String>> {
         let mut errors = Vec::new();
 
-        if self.name.is_empty() {
-            errors.push("spec.name must not be empty".to_string());
-        }
         for (i, pkg) in self.packages.iter().enumerate() {
-            if pkg.is_empty() {
-                errors.push(format!("spec.packages[{i}] must not be empty"));
+            if pkg.name.is_empty() {
+                errors.push(format!("spec.packages[{i}].name must not be empty"));
+            }
+        }
+        for (i, mr) in self.required_modules.iter().enumerate() {
+            if mr.name.is_empty() {
+                errors.push(format!(
+                    "spec.requiredModules[{i}].name must not be empty"
+                ));
             }
         }
         for (pkg, req_str) in &self.package_versions {
@@ -263,7 +297,7 @@ impl ConfigPolicySpec {
 }
 
 // Re-export shared version utilities from cfgd-core
-pub use cfgd_core::{parse_loose_version, version_satisfies};
+pub use cfgd_core::version_satisfies;
 
 #[cfg(test)]
 mod tests {
@@ -275,7 +309,6 @@ mod tests {
             profile: profile.to_string(),
             module_refs: vec![],
             packages: vec![],
-            package_versions: Default::default(),
             files: vec![],
             system_settings: Default::default(),
         }
@@ -321,26 +354,37 @@ mod tests {
     }
 
     #[test]
-    fn mc_validate_rejects_invalid_version() {
+    fn mc_validate_rejects_empty_package_name() {
         let mut spec = minimal_mc_spec("host1", "default");
-        spec.package_versions
-            .insert("kubectl".to_string(), "not-a-version".to_string());
+        spec.packages.push(PackageRef {
+            name: String::new(),
+            version: None,
+        });
         assert!(spec.validate().is_err());
     }
 
     #[test]
-    fn mc_validate_accepts_loose_versions() {
-        let mut spec = minimal_mc_spec("host1", "default");
-        spec.package_versions
-            .insert("kubectl".to_string(), "1.28".to_string());
-        assert!(spec.validate().is_ok());
+    fn cp_validate_rejects_empty_package_name() {
+        let spec = ConfigPolicySpec {
+            required_modules: vec![],
+            packages: vec![PackageRef {
+                name: String::new(),
+                version: None,
+            }],
+            package_versions: Default::default(),
+            settings: Default::default(),
+            target_selector: Default::default(),
+        };
+        assert!(spec.validate().is_err());
     }
 
     #[test]
-    fn cp_validate_rejects_empty_name() {
+    fn cp_validate_rejects_empty_module_name() {
         let spec = ConfigPolicySpec {
-            name: String::new(),
-            required_modules: vec![],
+            required_modules: vec![ModuleRef {
+                name: String::new(),
+                required: true,
+            }],
             packages: vec![],
             package_versions: Default::default(),
             settings: Default::default(),
@@ -354,7 +398,6 @@ mod tests {
         let mut versions = BTreeMap::new();
         versions.insert("kubectl".to_string(), "not valid".to_string());
         let spec = ConfigPolicySpec {
-            name: "policy1".to_string(),
             required_modules: vec![],
             packages: vec![],
             package_versions: versions,
@@ -370,7 +413,6 @@ mod tests {
         versions.insert("kubectl".to_string(), ">=1.28".to_string());
         versions.insert("git".to_string(), "~2.40".to_string());
         let spec = ConfigPolicySpec {
-            name: "policy1".to_string(),
             required_modules: vec![],
             packages: vec![],
             package_versions: versions,
@@ -382,25 +424,25 @@ mod tests {
 
     #[test]
     fn parse_loose_version_full_semver() {
-        assert!(parse_loose_version("1.28.3").is_some());
-        assert!(parse_loose_version("0.1.0").is_some());
+        assert!(cfgd_core::parse_loose_version("1.28.3").is_some());
+        assert!(cfgd_core::parse_loose_version("0.1.0").is_some());
     }
 
     #[test]
     fn parse_loose_version_two_part() {
-        assert!(parse_loose_version("1.28").is_some());
+        assert!(cfgd_core::parse_loose_version("1.28").is_some());
     }
 
     #[test]
     fn parse_loose_version_single_part() {
-        assert!(parse_loose_version("1").is_some());
+        assert!(cfgd_core::parse_loose_version("1").is_some());
     }
 
     #[test]
     fn parse_loose_version_rejects_garbage() {
-        assert!(parse_loose_version("abc").is_none());
-        assert!(parse_loose_version("").is_none());
-        assert!(parse_loose_version("1.2.3.4").is_none());
+        assert!(cfgd_core::parse_loose_version("abc").is_none());
+        assert!(cfgd_core::parse_loose_version("").is_none());
+        assert!(cfgd_core::parse_loose_version("1.2.3.4").is_none());
     }
 
     #[test]
@@ -429,5 +471,56 @@ mod tests {
         assert!(version_satisfies("1.28", ">=1.28"));
         assert!(version_satisfies("2", ">=1.28"));
         assert!(!version_satisfies("1", ">=1.28"));
+    }
+
+    #[test]
+    fn package_ref_serialization() {
+        let pr = PackageRef {
+            name: "vim".to_string(),
+            version: Some("1.0.0".to_string()),
+        };
+        let json = serde_json::to_value(&pr).unwrap();
+        assert_eq!(json["name"], "vim");
+        assert_eq!(json["version"], "1.0.0");
+    }
+
+    #[test]
+    fn package_ref_omits_none_version() {
+        let pr = PackageRef {
+            name: "vim".to_string(),
+            version: None,
+        };
+        let json = serde_json::to_value(&pr).unwrap();
+        assert_eq!(json["name"], "vim");
+        assert!(json.get("version").is_none());
+    }
+
+    #[test]
+    fn label_selector_empty_matches_all() {
+        let sel = LabelSelector::default();
+        assert!(sel.match_labels.is_empty());
+        assert!(sel.match_expressions.is_empty());
+    }
+
+    #[test]
+    fn machine_config_reference_serialization() {
+        let r = MachineConfigReference {
+            name: "mc-1".to_string(),
+            namespace: Some("team-a".to_string()),
+        };
+        let json = serde_json::to_value(&r).unwrap();
+        assert_eq!(json["name"], "mc-1");
+        assert_eq!(json["namespace"], "team-a");
+    }
+
+    #[test]
+    fn machine_config_reference_omits_none_namespace() {
+        let r = MachineConfigReference {
+            name: "mc-1".to_string(),
+            namespace: None,
+        };
+        let json = serde_json::to_value(&r).unwrap();
+        assert_eq!(json["name"], "mc-1");
+        assert!(json.get("namespace").is_none());
     }
 }

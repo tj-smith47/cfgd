@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use futures::StreamExt;
@@ -8,8 +9,8 @@ use kube::{Client, Resource, ResourceExt};
 use tracing::{info, warn};
 
 use crate::crds::{
-    Condition, ConfigPolicy, ConfigPolicyStatus, DriftAlert, MachineConfig, MachineConfigSpec,
-    MachineConfigStatus, version_satisfies,
+    Condition, ConfigPolicy, ConfigPolicyStatus, DriftAlert, LabelSelector, MachineConfig,
+    MachineConfigSpec, MachineConfigStatus, ModuleRef, PackageRef, version_satisfies,
 };
 use crate::errors::OperatorError;
 
@@ -145,7 +146,6 @@ async fn reconcile_machine_config(
     let status = serde_json::json!({
         "status": MachineConfigStatus {
             last_reconciled: Some(now.clone()),
-            drift_detected: has_drift,
             observed_generation: current_generation,
             conditions: vec![
                 Condition {
@@ -157,6 +157,7 @@ async fn reconcile_machine_config(
                     observed_generation: current_generation,
                 },
             ],
+            package_versions: Default::default(),
         }
     });
 
@@ -204,33 +205,44 @@ async fn reconcile_drift_alert(
 ) -> Result<Action, OperatorError> {
     let name = obj.name_any();
     let namespace = obj.namespace().unwrap_or_default();
-    let mc_ref = &obj.spec.machine_config_ref;
+    let mc_name = &obj.spec.machine_config_ref.name;
+    let mc_namespace = obj
+        .spec
+        .machine_config_ref
+        .namespace
+        .as_deref()
+        .unwrap_or(&namespace);
 
     info!(
         name = %name,
-        machine_config = %mc_ref,
+        machine_config = %mc_name,
         device_id = %obj.spec.device_id,
         severity = ?obj.spec.severity,
         details_count = obj.spec.drift_details.len(),
         "Reconciling DriftAlert"
     );
 
-    let machines: Api<MachineConfig> = if namespace.is_empty() {
+    let machines: Api<MachineConfig> = if mc_namespace.is_empty() {
         Api::all(ctx.client.clone())
     } else {
-        Api::namespaced(ctx.client.clone(), &namespace)
+        Api::namespaced(ctx.client.clone(), mc_namespace)
     };
 
-    match machines.get(mc_ref).await {
+    match machines.get(mc_name).await {
         Ok(mc) => {
-            let is_drifted = mc
+            // Check if a DriftDetected condition already exists
+            let has_drift_condition = mc
                 .status
                 .as_ref()
-                .map(|s| s.drift_detected)
+                .map(|s| {
+                    s.conditions
+                        .iter()
+                        .any(|c| c.condition_type == "DriftDetected" && c.status == "True")
+                })
                 .unwrap_or(false);
 
-            // If MC is no longer drifted, this alert is resolved — delete it
-            if !is_drifted && obj.spec.drift_details.is_empty() {
+            // If MC has no drift condition and no drift details, this alert is resolved — delete it
+            if !has_drift_condition && obj.spec.drift_details.is_empty() {
                 let alerts: Api<DriftAlert> = if namespace.is_empty() {
                     Api::all(ctx.client.clone())
                 } else {
@@ -242,12 +254,11 @@ async fn reconcile_drift_alert(
                 return Ok(Action::requeue(std::time::Duration::from_secs(60)));
             }
 
-            if !is_drifted {
+            if !has_drift_condition {
                 let now = cfgd_core::utc_now_iso8601();
                 let mc_generation = mc.meta().generation;
                 let status = serde_json::json!({
                     "status": {
-                        "driftDetected": true,
                         "conditions": [
                             {
                                 "type": "Ready",
@@ -267,32 +278,32 @@ async fn reconcile_drift_alert(
 
                 machines
                     .patch_status(
-                        mc_ref,
+                        mc_name,
                         &PatchParams::apply("cfgd-operator"),
                         &Patch::Merge(status),
                     )
                     .await
                     .map_err(|e| {
                         OperatorError::Reconciliation(format!(
-                            "failed to update drift status for MachineConfig {mc_ref}: {e}"
+                            "failed to update drift status for MachineConfig {mc_name}: {e}"
                         ))
                     })?;
 
                 info!(
-                    machine_config = %mc_ref,
-                    "MachineConfig drift_detected set to true"
+                    machine_config = %mc_name,
+                    "MachineConfig drift condition set"
                 );
             }
         }
         Err(kube::Error::Api(resp)) if resp.code == 404 => {
             warn!(
-                machine_config = %mc_ref,
+                machine_config = %mc_name,
                 "DriftAlert references non-existent MachineConfig"
             );
         }
         Err(e) => {
             return Err(OperatorError::Reconciliation(format!(
-                "failed to get MachineConfig {mc_ref}: {e}"
+                "failed to get MachineConfig {mc_name}: {e}"
             )));
         }
     }
@@ -391,12 +402,14 @@ async fn reconcile_config_policy(
     let mut non_compliant_count: u32 = 0;
 
     for mc in &mc_list {
-        if !matches_selector(&mc.spec, &obj.spec.target_selector) {
+        let mc_labels = mc.metadata.labels.as_ref();
+        if !matches_selector(mc_labels, &obj.spec.target_selector) {
             continue;
         }
 
         if validate_policy_compliance(
             &mc.spec,
+            mc.status.as_ref(),
             &obj.spec.required_modules,
             &obj.spec.packages,
             &obj.spec.package_versions,
@@ -469,25 +482,18 @@ async fn reconcile_config_policy(
 }
 
 fn matches_selector(
-    spec: &MachineConfigSpec,
-    selector: &std::collections::BTreeMap<String, String>,
+    labels: Option<&BTreeMap<String, String>>,
+    selector: &LabelSelector,
 ) -> bool {
-    if selector.is_empty() {
+    if selector.match_labels.is_empty() && selector.match_expressions.is_empty() {
         return true;
     }
-    for (key, value) in selector {
-        match key.as_str() {
-            "hostname" => {
-                if spec.hostname != *value {
-                    return false;
-                }
-            }
-            "profile" => {
-                if spec.profile != *value {
-                    return false;
-                }
-            }
-            _ => {}
+    let empty = BTreeMap::new();
+    let labels = labels.unwrap_or(&empty);
+    for (key, value) in &selector.match_labels {
+        match labels.get(key) {
+            Some(v) if v == value => {}
+            _ => return false,
         }
     }
     true
@@ -495,27 +501,29 @@ fn matches_selector(
 
 fn validate_policy_compliance(
     spec: &MachineConfigSpec,
-    required_modules: &[String],
-    packages: &[String],
-    package_versions: &std::collections::BTreeMap<String, String>,
-    settings: &std::collections::BTreeMap<String, String>,
+    status: Option<&MachineConfigStatus>,
+    required_modules: &[ModuleRef],
+    packages: &[PackageRef],
+    package_versions: &BTreeMap<String, String>,
+    settings: &BTreeMap<String, String>,
 ) -> bool {
     // Check required modules are present in moduleRefs
     for module in required_modules {
-        if !spec.module_refs.iter().any(|mr| mr.name == *module) {
+        if !spec.module_refs.iter().any(|mr| mr.name == module.name) {
             return false;
         }
     }
     for pkg in packages {
-        if !spec.packages.contains(pkg) {
+        if !spec.packages.iter().any(|p| p.name == pkg.name) {
             return false;
         }
     }
     for (pkg, req_str) in package_versions {
-        if !spec.packages.contains(pkg) {
+        if !spec.packages.iter().any(|p| p.name == *pkg) {
             return false;
         }
-        match spec.package_versions.get(pkg) {
+        let installed_versions = status.map(|s| &s.package_versions);
+        match installed_versions.and_then(|pv| pv.get(pkg)) {
             Some(reported) => {
                 if !version_satisfies(reported, req_str) {
                     return false;
@@ -526,7 +534,7 @@ fn validate_policy_compliance(
     }
     for (key, value) in settings {
         match spec.system_settings.get(key) {
-            Some(v) if v == value => {}
+            Some(v) if *v == serde_json::Value::String(value.clone()) => {}
             _ => return false,
         }
     }
@@ -558,7 +566,6 @@ mod tests {
             profile: profile.to_string(),
             module_refs: vec![],
             packages: vec![],
-            package_versions: Default::default(),
             files: vec![],
             system_settings: Default::default(),
         }
@@ -581,29 +588,49 @@ mod tests {
     #[test]
     fn matches_selector_empty_matches_all() {
         assert!(matches_selector(
-            &mc_spec("any", "any"),
-            &Default::default()
+            None,
+            &LabelSelector::default(),
         ));
     }
 
     #[test]
-    fn matches_selector_hostname() {
-        let spec = mc_spec("host1", "default");
-        let mut sel = std::collections::BTreeMap::new();
-        sel.insert("hostname".to_string(), "host1".to_string());
-        assert!(matches_selector(&spec, &sel));
+    fn matches_selector_match_labels() {
+        let mut match_labels = BTreeMap::new();
+        match_labels.insert("team".to_string(), "platform".to_string());
+        let selector = LabelSelector {
+            match_labels,
+            match_expressions: vec![],
+        };
 
-        sel.insert("hostname".to_string(), "other".to_string());
-        assert!(!matches_selector(&spec, &sel));
+        let mut labels = BTreeMap::new();
+        labels.insert("team".to_string(), "platform".to_string());
+        labels.insert("env".to_string(), "prod".to_string());
+        assert!(matches_selector(Some(&labels), &selector));
+
+        let mut wrong_labels = BTreeMap::new();
+        wrong_labels.insert("team".to_string(), "other".to_string());
+        assert!(!matches_selector(Some(&wrong_labels), &selector));
+
+        // Missing label entirely
+        assert!(!matches_selector(Some(&BTreeMap::new()), &selector));
+        assert!(!matches_selector(None, &selector));
     }
 
     #[test]
     fn policy_compliance_all_packages_present() {
         let mut spec = mc_spec("h", "p");
-        spec.packages = vec!["vim".to_string(), "git".to_string(), "curl".to_string()];
-        let required = vec!["vim".to_string(), "git".to_string()];
+        spec.packages = vec![
+            PackageRef { name: "vim".to_string(), version: None },
+            PackageRef { name: "git".to_string(), version: None },
+            PackageRef { name: "curl".to_string(), version: None },
+        ];
+        let required = vec![
+            PackageRef { name: "vim".to_string(), version: None },
+            PackageRef { name: "git".to_string(), version: None },
+        ];
         assert!(validate_policy_compliance(
             &spec,
+            None,
             &[],
             &required,
             &Default::default(),
@@ -614,10 +641,14 @@ mod tests {
     #[test]
     fn policy_compliance_missing_package() {
         let mut spec = mc_spec("h", "p");
-        spec.packages = vec!["vim".to_string()];
-        let required = vec!["vim".to_string(), "git".to_string()];
+        spec.packages = vec![PackageRef { name: "vim".to_string(), version: None }];
+        let required = vec![
+            PackageRef { name: "vim".to_string(), version: None },
+            PackageRef { name: "git".to_string(), version: None },
+        ];
         assert!(!validate_policy_compliance(
             &spec,
+            None,
             &[],
             &required,
             &Default::default(),
@@ -627,23 +658,26 @@ mod tests {
 
     #[test]
     fn policy_compliance_settings() {
-        let mut settings = std::collections::BTreeMap::new();
-        settings.insert("key".to_string(), "value".to_string());
+        let mut policy_settings = BTreeMap::new();
+        policy_settings.insert("key".to_string(), "value".to_string());
 
         let mut spec = mc_spec("h", "p");
-        spec.system_settings = settings.clone();
+        spec.system_settings
+            .insert("key".to_string(), serde_json::Value::String("value".to_string()));
         assert!(validate_policy_compliance(
             &spec,
+            None,
             &[],
             &[],
             &Default::default(),
-            &settings
+            &policy_settings
         ));
 
-        let mut wrong = std::collections::BTreeMap::new();
+        let mut wrong = BTreeMap::new();
         wrong.insert("key".to_string(), "wrong".to_string());
         assert!(!validate_policy_compliance(
             &spec,
+            None,
             &[],
             &[],
             &Default::default(),
@@ -654,13 +688,16 @@ mod tests {
     #[test]
     fn policy_version_enforcement_satisfied() {
         let mut spec = mc_spec("h", "p");
-        spec.packages = vec!["kubectl".to_string()];
-        spec.package_versions
+        spec.packages = vec![PackageRef { name: "kubectl".to_string(), version: None }];
+        let mut status = MachineConfigStatus::default();
+        status
+            .package_versions
             .insert("kubectl".to_string(), "1.28.3".to_string());
-        let mut reqs = std::collections::BTreeMap::new();
+        let mut reqs = BTreeMap::new();
         reqs.insert("kubectl".to_string(), ">=1.28".to_string());
         assert!(validate_policy_compliance(
             &spec,
+            Some(&status),
             &[],
             &[],
             &reqs,
@@ -671,13 +708,16 @@ mod tests {
     #[test]
     fn policy_version_enforcement_not_satisfied() {
         let mut spec = mc_spec("h", "p");
-        spec.packages = vec!["kubectl".to_string()];
-        spec.package_versions
+        spec.packages = vec![PackageRef { name: "kubectl".to_string(), version: None }];
+        let mut status = MachineConfigStatus::default();
+        status
+            .package_versions
             .insert("kubectl".to_string(), "1.27.0".to_string());
-        let mut reqs = std::collections::BTreeMap::new();
+        let mut reqs = BTreeMap::new();
         reqs.insert("kubectl".to_string(), ">=1.28".to_string());
         assert!(!validate_policy_compliance(
             &spec,
+            Some(&status),
             &[],
             &[],
             &reqs,
@@ -688,11 +728,12 @@ mod tests {
     #[test]
     fn policy_version_enforcement_missing_version_report() {
         let mut spec = mc_spec("h", "p");
-        spec.packages = vec!["kubectl".to_string()];
-        let mut reqs = std::collections::BTreeMap::new();
+        spec.packages = vec![PackageRef { name: "kubectl".to_string(), version: None }];
+        let mut reqs = BTreeMap::new();
         reqs.insert("kubectl".to_string(), ">=1.28".to_string());
         assert!(!validate_policy_compliance(
             &spec,
+            None,
             &[],
             &[],
             &reqs,
@@ -702,10 +743,11 @@ mod tests {
 
     #[test]
     fn policy_version_enforcement_missing_package() {
-        let mut reqs = std::collections::BTreeMap::new();
+        let mut reqs = BTreeMap::new();
         reqs.insert("kubectl".to_string(), ">=1.28".to_string());
         assert!(!validate_policy_compliance(
             &mc_spec("h", "p"),
+            None,
             &[],
             &[],
             &reqs,
@@ -726,9 +768,13 @@ mod tests {
                 required: true,
             },
         ];
-        let required_modules = vec!["corp-vpn".to_string(), "corp-certs".to_string()];
+        let required_modules = vec![
+            ModuleRef { name: "corp-vpn".to_string(), required: false },
+            ModuleRef { name: "corp-certs".to_string(), required: false },
+        ];
         assert!(validate_policy_compliance(
             &spec,
+            None,
             &required_modules,
             &[],
             &Default::default(),
@@ -743,9 +789,13 @@ mod tests {
             name: "corp-vpn".to_string(),
             required: true,
         }];
-        let required_modules = vec!["corp-vpn".to_string(), "corp-certs".to_string()];
+        let required_modules = vec![
+            ModuleRef { name: "corp-vpn".to_string(), required: false },
+            ModuleRef { name: "corp-certs".to_string(), required: false },
+        ];
         assert!(!validate_policy_compliance(
             &spec,
+            None,
             &required_modules,
             &[],
             &Default::default(),
@@ -757,6 +807,7 @@ mod tests {
     fn module_compliance_no_requirements() {
         assert!(validate_policy_compliance(
             &mc_spec("h", "p"),
+            None,
             &[],
             &[],
             &Default::default(),
