@@ -160,7 +160,7 @@ fi
 # =================================================================
 begin_test "T35: Checkin updates timestamp"
 BEFORE=$(exec_on_node curl -sf "${SERVER_URL}/api/v1/devices/${DEVICE_ID}" 2>/dev/null \
-    | grep -o '"last-checkin":"[^"]*"' || echo "")
+    | grep -o '"lastCheckin":"[^"]*"' || echo "")
 
 sleep 2
 
@@ -172,7 +172,7 @@ exec_on_node cfgd \
     --no-color > /dev/null 2>&1
 
 AFTER=$(exec_on_node curl -sf "${SERVER_URL}/api/v1/devices/${DEVICE_ID}" 2>/dev/null \
-    | grep -o '"last-checkin":"[^"]*"' || echo "")
+    | grep -o '"lastCheckin":"[^"]*"' || echo "")
 
 echo "  Before: $BEFORE"
 echo "  After:  $AFTER"

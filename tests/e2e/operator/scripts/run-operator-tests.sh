@@ -307,7 +307,7 @@ metadata:
 spec:
   deviceId: e2e-host-1
   machineConfigRef: e2e-workstation-1
-  severity: medium
+  severity: Medium
   driftDetails:
     - field: packages.ripgrep
       expected: installed

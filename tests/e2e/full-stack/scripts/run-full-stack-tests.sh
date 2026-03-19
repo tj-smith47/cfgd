@@ -280,7 +280,7 @@ metadata:
 spec:
   deviceId: ${DEVICE_1}
   machineConfigRef: mc-${DEVICE_1}
-  severity: high
+  severity: High
   driftDetails:
     - field: system.vm.max_map_count
       expected: "262144"
