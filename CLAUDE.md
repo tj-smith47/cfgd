@@ -51,16 +51,19 @@ crates/
     ├── webhook.rs          # Admission webhook server (TLS)
     ├── gen_crds.rs         # CRD JSON schema generation utility
     ├── errors.rs           # Operator-specific error types
-    └── gateway/            # Device gateway (optional, enabled via DEVICE_GATEWAY_ENABLED)
+    ├── gateway/            # Device gateway (optional, enabled via DEVICE_GATEWAY_ENABLED)
         ├── mod.rs          # Gateway setup, Axum router assembly
         ├── api.rs          # REST API: checkin, enrollment, devices, drift, admin, SSE
         ├── db.rs           # SQLite: devices, credentials, tokens, challenges, events
         ├── fleet.rs        # Fleet status aggregation
         ├── web.rs          # Web dashboard (HTML/CSS/JS)
         └── errors.rs       # GatewayError with IntoResponse
+    └── chart/cfgd-operator/ # Operator Helm chart
+charts/
+└── cfgd/                   # DaemonSet agent Helm chart
 ```
 
-See `.claude/team-config-controller.md` for the multi-source architecture and Phase 1-7 prep work.
+See `.claude/kubernetes-first-class.md` for the Kubernetes ecosystem design (CRDs, controllers, webhooks, CSI, OCI, observability, multi-tenancy, Crossplane).
 
 ## Quality Mandate
 
