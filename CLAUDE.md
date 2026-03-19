@@ -39,7 +39,10 @@ crates/
 │   ├── files/              # File management: copy, template, diff, permissions
 │   ├── packages/           # PackageManager implementations (brew, apt, cargo, npm, pipx, dnf)
 │   ├── secrets/            # SOPS/age backends, 1Password/Bitwarden/Vault providers
-│   └── system/             # All SystemConfigurators — workstation (shell, macos-defaults, systemd, launchd, environment) + node (sysctl, kernel-modules, containerd, kubelet, apparmor, seccomp, certificates)
+│   ├── system/             # All SystemConfigurators — workstation (shell, macos-defaults, systemd, launchd, environment) + node (sysctl, kernel-modules, containerd, kubelet, apparmor, seccomp, certificates)
+│   ├── generate/           # AI generate tools: system scanning, tool inspection, file access
+│   ├── ai/                 # Anthropic API client, tool dispatch, conversation management
+│   └── mcp/                # MCP server: JSON-RPC transport, tool/resource/prompt definitions
 └── cfgd-operator/src/      # k8s operator binary crate
     ├── main.rs             # Operator entry point (controllers + optional gateway)
     ├── lib.rs              # Crate root, module declarations
@@ -77,7 +80,7 @@ See `.claude/team-config-controller.md` for the multi-source architecture and Ph
 
 5. **Config structs derive `serde::Deserialize` and `serde::Serialize`**. All config types live in `config/`. No config parsing logic outside that module.
 
-6. **No `std::process::Command` outside of `cli/`, `packages/`, `secrets/`, `system/`, `reconciler/`, `platform/`, `sources/`, `gateway/`, and `output/`**. If you need to shell out, it must go through a controlled execution layer, not scattered across the codebase. `cli/` spawns `$EDITOR` for resource editing commands. `secrets/` shells out to `sops` and external provider CLIs (`op`, `bw`, `vault`). `system/` implements `SystemConfigurator` trait (same provider pattern as `packages/`). `reconciler/` handles script execution (pre/post-reconcile hooks). `platform/` shells out for OS detection (`sw_vers`, `freebsd-version`). `sources/` shells out to `git` for signature verification and clone fallback. `gateway/` shells out to `ssh-keygen` and `gpg` for enrollment signature verification. `output/` runs commands via `Printer::run_with_output` (the controlled execution layer for buffered progress display).
+6. **No `std::process::Command` outside of `cli/`, `packages/`, `secrets/`, `system/`, `reconciler/`, `platform/`, `sources/`, `gateway/`, `output/`, and `generate/`**. If you need to shell out, it must go through a controlled execution layer, not scattered across the codebase. `cli/` spawns `$EDITOR` for resource editing commands. `secrets/` shells out to `sops` and external provider CLIs (`op`, `bw`, `vault`). `system/` implements `SystemConfigurator` trait (same provider pattern as `packages/`). `reconciler/` handles script execution (pre/post-reconcile hooks). `platform/` shells out for OS detection (`sw_vers`, `freebsd-version`). `sources/` shells out to `git` for signature verification and clone fallback. `gateway/` shells out to `ssh-keygen` and `gpg` for enrollment signature verification. `output/` runs commands via `Printer::run_with_output` (the controlled execution layer for buffered progress display). `generate/` shells out for tool inspection (`--version` checks) and system settings scanning.
 
 ### Style
 
