@@ -15,7 +15,14 @@ use serde::{Deserialize, Serialize};
     version = "v1alpha1",
     kind = "MachineConfig",
     namespaced,
-    status = "MachineConfigStatus"
+    status = "MachineConfigStatus",
+    shortname = "mc",
+    category = "cfgd",
+    printcolumn = r#"{"name": "Hostname", "type": "string", "jsonPath": ".spec.hostname"}"#,
+    printcolumn = r#"{"name": "Profile", "type": "string", "jsonPath": ".spec.profile"}"#,
+    printcolumn = r#"{"name": "Reconciled", "type": "string", "jsonPath": ".status.conditions[?(@.type==\"Reconciled\")].status"}"#,
+    printcolumn = r#"{"name": "Drift", "type": "string", "jsonPath": ".status.conditions[?(@.type==\"DriftDetected\")].status"}"#,
+    printcolumn = r#"{"name": "Age", "type": "date", "jsonPath": ".metadata.creationTimestamp"}"#
 )]
 #[serde(rename_all = "camelCase")]
 pub struct MachineConfigSpec {
@@ -119,7 +126,13 @@ pub struct LabelSelectorRequirement {
     version = "v1alpha1",
     kind = "ConfigPolicy",
     namespaced,
-    status = "ConfigPolicyStatus"
+    status = "ConfigPolicyStatus",
+    shortname = "cpol",
+    category = "cfgd",
+    printcolumn = r#"{"name": "Compliant", "type": "integer", "jsonPath": ".status.compliantCount"}"#,
+    printcolumn = r#"{"name": "NonCompliant", "type": "integer", "jsonPath": ".status.nonCompliantCount"}"#,
+    printcolumn = r#"{"name": "Enforced", "type": "string", "jsonPath": ".status.conditions[?(@.type==\"Enforced\")].status"}"#,
+    printcolumn = r#"{"name": "Age", "type": "date", "jsonPath": ".metadata.creationTimestamp"}"#
 )]
 #[serde(rename_all = "camelCase")]
 pub struct ConfigPolicySpec {
@@ -164,7 +177,13 @@ pub struct MachineConfigReference {
     version = "v1alpha1",
     kind = "DriftAlert",
     namespaced,
-    status = "DriftAlertStatus"
+    status = "DriftAlertStatus",
+    shortname = "da",
+    category = "cfgd",
+    printcolumn = r#"{"name": "Device", "type": "string", "jsonPath": ".spec.deviceId"}"#,
+    printcolumn = r#"{"name": "Severity", "type": "string", "jsonPath": ".spec.severity"}"#,
+    printcolumn = r#"{"name": "Resolved", "type": "string", "jsonPath": ".status.conditions[?(@.type==\"Resolved\")].status"}"#,
+    printcolumn = r#"{"name": "Age", "type": "date", "jsonPath": ".metadata.creationTimestamp"}"#
 )]
 #[serde(rename_all = "camelCase")]
 pub struct DriftAlertSpec {
@@ -553,5 +572,41 @@ mod tests {
         let json = serde_json::to_value(&r).unwrap();
         assert_eq!(json["name"], "mc-1");
         assert!(json.get("namespace").is_none());
+    }
+
+    #[test]
+    fn machineconfig_crd_has_printer_columns() {
+        use kube::CustomResourceExt;
+        let crd = MachineConfig::crd();
+        let version = &crd.spec.versions[0];
+        let columns = version.additional_printer_columns.as_ref().unwrap();
+        let col_names: Vec<&str> = columns.iter().map(|c| c.name.as_str()).collect();
+        assert!(col_names.contains(&"Hostname"));
+        assert!(col_names.contains(&"Profile"));
+        assert!(col_names.contains(&"Age"));
+    }
+
+    #[test]
+    fn machineconfig_crd_has_short_names() {
+        use kube::CustomResourceExt;
+        let crd = MachineConfig::crd();
+        let short_names = crd.spec.names.short_names.as_ref().unwrap();
+        assert!(short_names.contains(&"mc".to_string()));
+    }
+
+    #[test]
+    fn configpolicy_crd_has_short_names() {
+        use kube::CustomResourceExt;
+        let crd = ConfigPolicy::crd();
+        let short_names = crd.spec.names.short_names.as_ref().unwrap();
+        assert!(short_names.contains(&"cpol".to_string()));
+    }
+
+    #[test]
+    fn driftalert_crd_has_short_names() {
+        use kube::CustomResourceExt;
+        let crd = DriftAlert::crd();
+        let short_names = crd.spec.names.short_names.as_ref().unwrap();
+        assert!(short_names.contains(&"da".to_string()));
     }
 }
