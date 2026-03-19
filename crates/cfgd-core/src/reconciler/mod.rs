@@ -165,6 +165,9 @@ pub struct Phase {
 #[derive(Debug, Serialize)]
 pub struct Plan {
     pub phases: Vec<Phase>,
+    /// Warnings about shell rc conflicts (env/alias defined before cfgd source line).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
 }
 
 impl Plan {
@@ -256,7 +259,7 @@ impl<'a> Reconciler<'a> {
         // Phase 0: Env — write ~/.cfgd.env and inject shell rc source line.
         // Runs first so that env vars (including PATH for bootstrapped managers)
         // are available to all subsequent phases, especially post-apply scripts.
-        let env_actions = Self::plan_env(
+        let (env_actions, warnings) = Self::plan_env(
             &resolved.merged.env,
             &resolved.merged.aliases,
             &module_actions,
@@ -312,7 +315,7 @@ impl<'a> Reconciler<'a> {
             actions: script_actions,
         });
 
-        Ok(Plan { phases })
+        Ok(Plan { phases, warnings })
     }
 
     /// Check for file target conflicts across profile files and module files.
@@ -410,11 +413,12 @@ impl<'a> Reconciler<'a> {
     }
 
     /// Plan env file generation from merged profile + module env vars and aliases.
+    /// Returns (actions, warnings) — warnings for shell rc conflicts.
     fn plan_env(
         profile_env: &[crate::config::EnvVar],
         profile_aliases: &[crate::config::ShellAlias],
         modules: &[ResolvedModule],
-    ) -> Vec<Action> {
+    ) -> (Vec<Action>, Vec<String>) {
         // Merge: profile env first, then module env wins on conflict by name
         let mut merged: Vec<crate::config::EnvVar> = profile_env.to_vec();
         let mut merged_aliases: Vec<crate::config::ShellAlias> = profile_aliases.to_vec();
@@ -424,7 +428,7 @@ impl<'a> Reconciler<'a> {
         }
 
         if merged.is_empty() && merged_aliases.is_empty() {
-            return Vec::new();
+            return (Vec::new(), Vec::new());
         }
 
         let mut actions = Vec::new();
@@ -445,7 +449,7 @@ impl<'a> Reconciler<'a> {
             crate::expand_tilde(std::path::Path::new("~/.bashrc"))
         };
         actions.push(Action::Env(EnvAction::InjectSourceLine {
-            rc_path,
+            rc_path: rc_path.clone(),
             line: "[ -f ~/.cfgd.env ] && source ~/.cfgd.env".to_string(),
         }));
 
@@ -463,7 +467,10 @@ impl<'a> Reconciler<'a> {
             }
         }
 
-        actions
+        // Check for conflicts with existing definitions in the shell rc file
+        let warnings = detect_rc_env_conflicts(&rc_path, &merged, &merged_aliases);
+
+        (actions, warnings)
     }
 
     fn plan_secrets(&self, profile: &MergedProfile) -> Vec<Action> {
@@ -1966,6 +1973,84 @@ fn generate_fish_env_content(
     lines.join("\n")
 }
 
+/// Scan a shell rc file for `export` and `alias` definitions that appear before
+/// the cfgd source line. If any match a cfgd-managed name with a different value,
+/// return warnings advising the user to move the definition after the source line.
+fn detect_rc_env_conflicts(
+    rc_path: &std::path::Path,
+    env: &[crate::config::EnvVar],
+    aliases: &[crate::config::ShellAlias],
+) -> Vec<String> {
+    let rc_content = match std::fs::read_to_string(rc_path) {
+        Ok(c) => c,
+        Err(_) => return Vec::new(),
+    };
+
+    // Only look at lines before the cfgd source line
+    let mut before_lines = Vec::new();
+    for line in rc_content.lines() {
+        if line.contains("cfgd.env") {
+            break;
+        }
+        before_lines.push(line);
+    }
+
+    let rc_display = rc_path.display();
+    let mut warnings = Vec::new();
+
+    // Build lookup maps for cfgd-managed values
+    let env_map: HashMap<&str, &str> = env.iter().map(|e| (e.name.as_str(), e.value.as_str())).collect();
+    let alias_map: HashMap<&str, &str> = aliases.iter().map(|a| (a.name.as_str(), a.command.as_str())).collect();
+
+    for line in &before_lines {
+        let trimmed = line.trim();
+
+        // Match: export NAME=VALUE
+        if let Some(rest) = trimmed.strip_prefix("export ")
+            && let Some((name, raw_value)) = rest.split_once('=')
+        {
+            let name = name.trim();
+            let value = strip_shell_quotes(raw_value);
+            if let Some(&cfgd_value) = env_map.get(name)
+                && value != cfgd_value
+            {
+                warnings.push(format!(
+                    "{} sets export {}={} before cfgd source line — cfgd will override to \"{}\"; move it after the source line to keep your value",
+                    rc_display, name, raw_value, cfgd_value,
+                ));
+            }
+        }
+
+        // Match: alias NAME=VALUE or alias NAME="VALUE"
+        if let Some(rest) = trimmed.strip_prefix("alias ")
+            && let Some((name, raw_value)) = rest.split_once('=')
+        {
+            let name = name.trim();
+            let value = strip_shell_quotes(raw_value);
+            if let Some(&cfgd_value) = alias_map.get(name)
+                && value != cfgd_value
+            {
+                warnings.push(format!(
+                    "{} sets alias {}={} before cfgd source line — cfgd will override to \"{}\"; move it after the source line to keep your value",
+                    rc_display, name, raw_value, cfgd_value,
+                ));
+            }
+        }
+    }
+
+    warnings
+}
+
+/// Strip surrounding single or double quotes from a shell value.
+fn strip_shell_quotes(s: &str) -> &str {
+    let s = s.trim();
+    if (s.starts_with('"') && s.ends_with('"')) || (s.starts_with('\'') && s.ends_with('\'')) {
+        &s[1..s.len() - 1]
+    } else {
+        s
+    }
+}
+
 fn content_hash_if_exists(path: &std::path::Path) -> Option<String> {
     std::fs::read(path)
         .ok()
@@ -2571,6 +2656,7 @@ mod tests {
                     origin: "local".to_string(),
                 })],
             }],
+            warnings: vec![],
         };
         let hash = plan.to_hash_string();
         assert!(!hash.is_empty());
@@ -3047,6 +3133,7 @@ mod tests {
                     },
                 })],
             }],
+            warnings: vec![],
         };
 
         let hash = plan.to_hash_string();
@@ -3376,7 +3463,7 @@ mod tests {
 
     #[test]
     fn plan_env_empty_when_no_env() {
-        let actions = Reconciler::plan_env(&[], &[], &[]);
+        let (actions, _warnings) = Reconciler::plan_env(&[], &[], &[]);
         assert!(actions.is_empty());
     }
 
@@ -3399,7 +3486,7 @@ mod tests {
             depends: vec![],
         }];
         // plan_env merges and generates actions — the merged env should have EDITOR=nvim
-        let actions = Reconciler::plan_env(&profile_env, &[], &modules);
+        let (actions, _warnings) = Reconciler::plan_env(&profile_env, &[], &modules);
         // With non-empty env, there should be at least a WriteEnvFile action
         // (since ~/.cfgd.env won't exist in test env)
         let has_write = actions
@@ -3477,7 +3564,7 @@ mod tests {
             name: "vim".into(),
             command: "nvim".into(),
         }];
-        let actions = Reconciler::plan_env(&[], &aliases, &[]);
+        let (actions, _warnings) = Reconciler::plan_env(&[], &aliases, &[]);
         let has_write = actions
             .iter()
             .any(|a| matches!(a, Action::Env(EnvAction::WriteEnvFile { .. })));
@@ -3502,7 +3589,7 @@ mod tests {
             post_apply_scripts: vec![],
             depends: vec![],
         }];
-        let actions = Reconciler::plan_env(&[], &profile_aliases, &modules);
+        let (actions, _warnings) = Reconciler::plan_env(&[], &profile_aliases, &modules);
         // Find the WriteEnvFile action and check it has "nvim" not "vi"
         for action in &actions {
             if let Action::Env(EnvAction::WriteEnvFile { content, .. }) = action {
@@ -3528,6 +3615,118 @@ mod tests {
         }];
         let content = super::generate_env_file_content(&[], &aliases);
         assert!(content.contains("alias greet=\"echo \\\"hello world\\\"\""));
+    }
+
+    // --- Shell rc conflict detection tests ---
+
+    #[test]
+    fn rc_conflict_env_different_value_warns() {
+        let dir = tempfile::tempdir().unwrap();
+        let rc = dir.path().join(".bashrc");
+        std::fs::write(
+            &rc,
+            "export EDITOR=\"vim\"\n[ -f ~/.cfgd.env ] && source ~/.cfgd.env\n",
+        )
+        .unwrap();
+        let env = vec![crate::config::EnvVar {
+            name: "EDITOR".into(),
+            value: "nvim".into(),
+        }];
+        let warnings = super::detect_rc_env_conflicts(&rc, &env, &[]);
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].contains("EDITOR"));
+        assert!(warnings[0].contains("move it after the source line"));
+    }
+
+    #[test]
+    fn rc_conflict_env_same_value_no_warning() {
+        let dir = tempfile::tempdir().unwrap();
+        let rc = dir.path().join(".bashrc");
+        std::fs::write(
+            &rc,
+            "export EDITOR=\"nvim\"\n[ -f ~/.cfgd.env ] && source ~/.cfgd.env\n",
+        )
+        .unwrap();
+        let env = vec![crate::config::EnvVar {
+            name: "EDITOR".into(),
+            value: "nvim".into(),
+        }];
+        let warnings = super::detect_rc_env_conflicts(&rc, &env, &[]);
+        assert!(warnings.is_empty());
+    }
+
+    #[test]
+    fn rc_conflict_alias_different_value_warns() {
+        let dir = tempfile::tempdir().unwrap();
+        let rc = dir.path().join(".bashrc");
+        std::fs::write(
+            &rc,
+            "alias vim=\"vi\"\n[ -f ~/.cfgd.env ] && source ~/.cfgd.env\n",
+        )
+        .unwrap();
+        let aliases = vec![crate::config::ShellAlias {
+            name: "vim".into(),
+            command: "nvim".into(),
+        }];
+        let warnings = super::detect_rc_env_conflicts(&rc, &[], &aliases);
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].contains("alias vim"));
+        assert!(warnings[0].contains("move it after the source line"));
+    }
+
+    #[test]
+    fn rc_conflict_after_source_line_no_warning() {
+        let dir = tempfile::tempdir().unwrap();
+        let rc = dir.path().join(".bashrc");
+        std::fs::write(
+            &rc,
+            "[ -f ~/.cfgd.env ] && source ~/.cfgd.env\nexport EDITOR=\"vim\"\n",
+        )
+        .unwrap();
+        let env = vec![crate::config::EnvVar {
+            name: "EDITOR".into(),
+            value: "nvim".into(),
+        }];
+        let warnings = super::detect_rc_env_conflicts(&rc, &env, &[]);
+        assert!(warnings.is_empty());
+    }
+
+    #[test]
+    fn rc_conflict_no_source_line_all_before() {
+        let dir = tempfile::tempdir().unwrap();
+        let rc = dir.path().join(".bashrc");
+        std::fs::write(&rc, "export EDITOR=\"vim\"\nalias vim=\"vi\"\n").unwrap();
+        let env = vec![crate::config::EnvVar {
+            name: "EDITOR".into(),
+            value: "nvim".into(),
+        }];
+        let aliases = vec![crate::config::ShellAlias {
+            name: "vim".into(),
+            command: "nvim".into(),
+        }];
+        let warnings = super::detect_rc_env_conflicts(&rc, &env, &aliases);
+        assert_eq!(warnings.len(), 2);
+    }
+
+    #[test]
+    fn rc_conflict_nonexistent_file_no_warnings() {
+        let warnings = super::detect_rc_env_conflicts(
+            std::path::Path::new("/nonexistent/.bashrc"),
+            &[crate::config::EnvVar {
+                name: "FOO".into(),
+                value: "bar".into(),
+            }],
+            &[],
+        );
+        assert!(warnings.is_empty());
+    }
+
+    #[test]
+    fn strip_shell_quotes_works() {
+        assert_eq!(super::strip_shell_quotes("\"hello\""), "hello");
+        assert_eq!(super::strip_shell_quotes("'hello'"), "hello");
+        assert_eq!(super::strip_shell_quotes("hello"), "hello");
+        assert_eq!(super::strip_shell_quotes("\"\""), "");
     }
 
     // --- Apply execution path tests ---

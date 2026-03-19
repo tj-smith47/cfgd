@@ -1663,6 +1663,10 @@ fn cmd_apply(cli: &Cli, printer: &Printer, args: &ApplyArgs) -> anyhow::Result<(
             }
         }
 
+        for w in &plan.warnings {
+            printer.warning(w);
+        }
+
         printer.newline();
         let total = plan.total_actions();
         if total == 0 {
@@ -1706,6 +1710,10 @@ fn cmd_apply(cli: &Cli, printer: &Printer, args: &ApplyArgs) -> anyhow::Result<(
         if !items.is_empty() {
             printer.plan_phase(phase_item.name.display_name(), &items);
         }
+    }
+
+    for w in &plan.warnings {
+        printer.warning(w);
     }
 
     // Confirm
@@ -5777,6 +5785,7 @@ spec:
                     })],
                 },
             ],
+            warnings: vec![],
         };
 
         super::filter_plan(&mut plan, &["packages".into()], &[]);
@@ -5797,6 +5806,7 @@ spec:
                     origin: "local".into(),
                 })],
             }],
+            warnings: vec![],
         };
 
         super::filter_plan(&mut plan, &["packages.brew.fd".into()], &[]);
@@ -5830,6 +5840,7 @@ spec:
                     }),
                 ],
             }],
+            warnings: vec![],
         };
 
         super::filter_plan(&mut plan, &[], &["packages.brew".into()]);
@@ -5857,6 +5868,7 @@ spec:
                     origin: "local".into(),
                 })],
             }],
+            warnings: vec![],
         };
 
         super::filter_plan(&mut plan, &[], &["packages.brew.ripgrep".into()]);
@@ -8844,7 +8856,6 @@ spec:
 
     // --- Profile commands via execute ---
 
-    #[test]
     // profile create/delete tested via existing module_create tests above
     #[test]
     fn execute_profile_switch() {
