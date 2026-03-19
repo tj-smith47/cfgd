@@ -511,7 +511,7 @@ cfgd enroll --server-url https://cfgd.acme.com --gpg-key ABCD1234
 
 | Flag | Description |
 |---|---|
-| `--server <url>` | Device gateway URL |
+| `--server-url <url>` | Device gateway URL |
 | `--token <token>` | Bootstrap token for token-based enrollment |
 | `--ssh-key <path>` | SSH key for key-based enrollment |
 | `--gpg-key <id>` | GPG key ID for key-based enrollment |
