@@ -3023,6 +3023,13 @@ fn cmd_generate(
     let _adopt = |pairs: &[(PathBuf, PathBuf)], target: &std::path::Path| {
         generate::files::adopt_files(pairs, target)
     };
+    // inspect_tool and query_package_manager are called by the tool dispatch
+    // layer in Task 16/18. Reference them here so the compiler sees they are
+    // live; these closures are never actually invoked in this stub path.
+    let _inspect = |name: &str| generate::inspect::inspect_tool(name, &home_path);
+    let _query = |mgr: &dyn cfgd_core::providers::PackageManager, pkg: &str| {
+        generate::inspect::query_package_manager(mgr, pkg)
+    };
 
     // Full AI-assisted generation is implemented in Task 18.
     printer.warning("AI-assisted generation is not yet available (coming soon)");
