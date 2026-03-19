@@ -29,6 +29,18 @@ The AI scans your installed packages, dotfiles, shell config, and system setting
 
 Requires `ANTHROPIC_API_KEY` set in your environment, or `spec.ai.api-key` in `cfgd.yaml`.
 
+See [ai-generate.md](ai-generate.md) for the full walkthrough, MCP server setup, and troubleshooting.
+
+### `cfgd mcp-server`
+
+Start the MCP server for AI editor integration. Exposes cfgd's scan, inspect, and write tools over the Model Context Protocol (JSON-RPC stdin/stdout).
+
+```sh
+cfgd mcp-server
+```
+
+The server runs until stdin is closed. Configure your AI client to launch it automatically rather than running it directly. See [ai-generate.md](ai-generate.md#mcp-server-setup) for Claude Code and Cursor setup.
+
 ### `cfgd init`
 
 Initialize a new cfgd configuration repository.
