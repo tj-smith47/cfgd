@@ -1598,6 +1598,8 @@ async fn reconcile_module(
             resolved_artifact,
             available_platforms: vec![],
             verified,
+            signature_digest: None,
+            attestations: vec![],
             conditions,
         }
     });
@@ -1765,7 +1767,9 @@ async fn evaluate_module_availability<'a>(
             .signature
             .as_ref()
             .and_then(|s| s.cosign.as_ref())
-            .is_some_and(|c| !c.public_key.is_empty());
+            .is_some_and(|c| {
+                c.keyless || c.public_key.as_ref().is_some_and(|pk| !pk.is_empty())
+            });
 
         if !has_cosign_key {
             return (
@@ -1824,8 +1828,22 @@ fn evaluate_module_verification<'a>(
                 ),
             ),
             Some(cosign) => {
-                if is_valid_pem_public_key(&cosign.public_key) {
-                    (
+                // Keyless mode — no public key needed
+                if cosign.keyless {
+                    return (
+                        "True",
+                        "SignatureConfigured",
+                        "Keyless cosign verification configured (Fulcio/Rekor)",
+                        (
+                            EventType::Normal,
+                            "Verified",
+                            "Module has keyless cosign verification configured".to_string(),
+                        ),
+                    );
+                }
+                // Static key mode — validate PEM
+                match &cosign.public_key {
+                    Some(pk) if is_valid_pem_public_key(pk) => (
                         "True",
                         "SignatureConfigured",
                         "Cosign public key is configured and valid",
@@ -1834,9 +1852,8 @@ fn evaluate_module_verification<'a>(
                             "Verified",
                             "Module has valid cosign signature configuration".to_string(),
                         ),
-                    )
-                } else {
-                    (
+                    ),
+                    Some(_) => (
                         "False",
                         "SignatureInvalid",
                         "Cosign public key is not valid PEM",
@@ -1845,7 +1862,17 @@ fn evaluate_module_verification<'a>(
                             "SignatureInvalid",
                             "Module cosign public key is not valid PEM".to_string(),
                         ),
-                    )
+                    ),
+                    None => (
+                        "False",
+                        "SignatureInvalid",
+                        "Cosign signature configured but no public key or keyless mode",
+                        (
+                            EventType::Warning,
+                            "SignatureInvalid",
+                            "No public key and keyless not enabled".to_string(),
+                        ),
+                    ),
                 }
             }
         },
@@ -2589,7 +2616,8 @@ mod tests {
     fn module_verification_valid_pem() {
         let sig = ModuleSignature {
             cosign: Some(crate::crds::CosignSignature {
-                public_key: "-----BEGIN PUBLIC KEY-----\nMFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE\n-----END PUBLIC KEY-----".to_string(),
+                public_key: Some("-----BEGIN PUBLIC KEY-----\nMFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE\n-----END PUBLIC KEY-----".to_string()),
+                ..Default::default()
             }),
         };
         let (status, reason, _message, _event) = evaluate_module_verification(&Some(sig));
@@ -2601,7 +2629,8 @@ mod tests {
     fn module_verification_invalid_pem() {
         let sig = ModuleSignature {
             cosign: Some(crate::crds::CosignSignature {
-                public_key: "not-a-pem-key".to_string(),
+                public_key: Some("not-a-pem-key".to_string()),
+                ..Default::default()
             }),
         };
         let (status, reason, _message, _event) = evaluate_module_verification(&Some(sig));

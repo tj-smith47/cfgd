@@ -321,11 +321,22 @@ pub struct ModuleEnvVar {
     pub append: bool,
 }
 
-/// Cosign public key for OCI artifact signature verification.
+/// Cosign configuration for OCI artifact signature verification.
 #[derive(Deserialize, Serialize, Clone, Debug, Default, PartialEq, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct CosignSignature {
-    pub public_key: String,
+    /// PEM-encoded public key for static key verification.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub public_key: Option<String>,
+    /// Enable keyless verification via Fulcio/Rekor (OIDC identity-based).
+    #[serde(default)]
+    pub keyless: bool,
+    /// Certificate identity pattern for keyless verification (regex).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub certificate_identity: Option<String>,
+    /// Certificate OIDC issuer pattern for keyless verification (regex).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub certificate_oidc_issuer: Option<String>,
 }
 
 /// Signature configuration for a Module's OCI artifact.
@@ -376,6 +387,12 @@ pub struct ModuleStatus {
     pub available_platforms: Vec<String>,
     #[serde(default)]
     pub verified: bool,
+    /// Digest of the cosign signature (if verified).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signature_digest: Option<String>,
+    /// Attestation types found on the artifact (e.g. "slsaprovenance").
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub attestations: Vec<String>,
     #[serde(default)]
     pub conditions: Vec<Condition>,
 }
@@ -551,7 +568,8 @@ impl ModuleSpec {
         }
         if let Some(ref sig) = self.signature
             && let Some(ref cosign) = sig.cosign
-            && !is_valid_pem_public_key(&cosign.public_key)
+            && let Some(ref pk) = cosign.public_key
+            && !is_valid_pem_public_key(pk)
         {
             errors.push(
                 "spec.signature.cosign.publicKey is not a valid PEM-encoded public key".to_string(),
@@ -565,35 +583,9 @@ impl ModuleSpec {
     }
 }
 
-/// Validate an OCI artifact reference (e.g. "registry.example.com/repo:tag" or "repo@sha256:...").
+/// Validate an OCI artifact reference using cfgd-core's full OCI reference parser.
 pub(crate) fn is_valid_oci_reference(reference: &str) -> bool {
-    if reference.is_empty() {
-        return false;
-    }
-    // Must have at least a name component; allow host/repo:tag or host/repo@digest
-    // Reject obviously invalid: whitespace, control chars
-    if reference
-        .chars()
-        .any(|c| c.is_whitespace() || c.is_control())
-    {
-        return false;
-    }
-    // Must contain at least one path separator or be a simple name
-    // OCI references: [host[:port]/]repo[:tag][@digest]
-    // At minimum, must have a non-empty name part
-    let name_part = if let Some((name, _digest)) = reference.split_once('@') {
-        name
-    } else if let Some((name, _tag)) = reference.rsplit_once(':') {
-        // Check it's not just a port (host:port/repo)
-        if name.contains('/') || !name.contains('.') {
-            name
-        } else {
-            reference
-        }
-    } else {
-        reference
-    };
-    !name_part.is_empty()
+    cfgd_core::oci::OciReference::parse(reference).is_ok()
 }
 
 /// Check if a string looks like a PEM-encoded public key.
@@ -1109,7 +1101,8 @@ mod tests {
             oci_artifact: Some("registry.example.com/modules/vim:v1".to_string()),
             signature: Some(ModuleSignature {
                 cosign: Some(CosignSignature {
-                    public_key: "-----BEGIN PUBLIC KEY-----\nMFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE\n-----END PUBLIC KEY-----".to_string(),
+                    public_key: Some("-----BEGIN PUBLIC KEY-----\nMFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE\n-----END PUBLIC KEY-----".to_string()),
+                    ..Default::default()
                 }),
             }),
         };
@@ -1151,7 +1144,8 @@ mod tests {
         let spec = ModuleSpec {
             signature: Some(ModuleSignature {
                 cosign: Some(CosignSignature {
-                    public_key: "not-a-pem-key".to_string(),
+                    public_key: Some("not-a-pem-key".to_string()),
+                    ..Default::default()
                 }),
             }),
             ..Default::default()

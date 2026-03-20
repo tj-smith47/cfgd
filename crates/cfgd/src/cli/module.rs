@@ -2074,13 +2074,27 @@ fn export_devcontainer(
 
 // --- OCI Push / Pull ---
 
+pub(super) struct PushOptions<'a> {
+    pub platform: Option<&'a str>,
+    pub apply: bool,
+    pub sign: bool,
+    pub key: Option<&'a str>,
+    pub attest: bool,
+}
+
 pub(super) fn cmd_module_push(
     printer: &Printer,
     dir: &str,
     artifact: &str,
-    platform: Option<&str>,
-    apply: bool,
+    opts: PushOptions<'_>,
 ) -> anyhow::Result<()> {
+    let PushOptions {
+        platform,
+        apply,
+        sign,
+        key,
+        attest,
+    } = opts;
     let dir_path = Path::new(dir);
     if !dir_path.join("module.yaml").exists() {
         anyhow::bail!(
@@ -2102,6 +2116,31 @@ pub(super) fn cmd_module_push(
     printer.success(&format!("Pushed {artifact}"));
     printer.key_value("Digest", &digest);
 
+    // Sign if requested
+    if sign {
+        cfgd_core::oci::sign_artifact(artifact, key)
+            .map_err(|e| anyhow::anyhow!("{e}"))?;
+        printer.success("Signed artifact with cosign");
+    }
+
+    // Attach SLSA provenance attestation if requested
+    if attest {
+        let repo = detect_git_remote().unwrap_or_else(|| "unknown".to_string());
+        let commit = detect_git_head().unwrap_or_else(|| "unknown".to_string());
+
+        let provenance =
+            cfgd_core::oci::generate_slsa_provenance(artifact, &digest, &repo, &commit);
+        let tmp = tempfile::NamedTempFile::new()?;
+        std::fs::write(tmp.path(), &provenance)?;
+        cfgd_core::oci::attach_attestation(
+            artifact,
+            &tmp.path().display().to_string(),
+            key,
+        )
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+        printer.success("Attached SLSA provenance attestation");
+    }
+
     if apply {
         let module_yaml = std::fs::read_to_string(dir_path.join("module.yaml"))?;
         let module_doc = cfgd_core::config::parse_module(&module_yaml)
@@ -2112,6 +2151,30 @@ pub(super) fn cmd_module_push(
     }
 
     Ok(())
+}
+
+fn detect_git_remote() -> Option<String> {
+    let output = std::process::Command::new("git")
+        .args(["remote", "get-url", "origin"])
+        .output()
+        .ok()?;
+    if output.status.success() {
+        Some(String::from_utf8_lossy(&output.stdout).trim().to_string())
+    } else {
+        None
+    }
+}
+
+fn detect_git_head() -> Option<String> {
+    let output = std::process::Command::new("git")
+        .args(["rev-parse", "HEAD"])
+        .output()
+        .ok()?;
+    if output.status.success() {
+        Some(String::from_utf8_lossy(&output.stdout).trim().to_string())
+    } else {
+        None
+    }
 }
 
 async fn apply_module_crd(
@@ -2177,17 +2240,31 @@ pub(super) fn cmd_module_pull(
     artifact_ref: &str,
     output: &str,
     require_signature: bool,
+    verify_attestation: bool,
+    key: Option<&str>,
 ) -> anyhow::Result<()> {
     let output_path = Path::new(output);
 
     printer.header("Pull Module");
     printer.key_value("Artifact", artifact_ref);
     printer.key_value("Output", output);
+
+    // Verify signature if requested (uses cosign, not the old tag-check)
     if require_signature {
-        printer.key_value("Signature", "required");
+        cfgd_core::oci::verify_signature(artifact_ref, key)
+            .map_err(|e| anyhow::anyhow!("{e}"))?;
+        printer.success("Signature verified");
     }
 
-    cfgd_core::oci::pull_module(artifact_ref, output_path, require_signature)
+    // Verify attestation if requested
+    if verify_attestation {
+        cfgd_core::oci::verify_attestation(artifact_ref, "slsaprovenance", key)
+            .map_err(|e| anyhow::anyhow!("{e}"))?;
+        printer.success("SLSA provenance attestation verified");
+    }
+
+    // Pull uses the existing require_signature=false since we've already verified above
+    cfgd_core::oci::pull_module(artifact_ref, output_path, false)
         .map_err(|e| anyhow::anyhow!("{e}"))?;
 
     printer.success(&format!("Pulled {artifact_ref} to {output}"));
@@ -2203,6 +2280,155 @@ pub(super) fn cmd_module_pull(
             printer.key_value("Packages", &doc.spec.packages.len().to_string());
             printer.key_value("Files", &doc.spec.files.len().to_string());
         }
+    }
+
+    Ok(())
+}
+
+pub(super) fn cmd_module_build(
+    printer: &Printer,
+    dir: &str,
+    target: Option<&str>,
+    base_image: Option<&str>,
+    artifact: Option<&str>,
+    sign: bool,
+    key: Option<&str>,
+) -> anyhow::Result<()> {
+    let dir_path = Path::new(dir);
+    if !dir_path.join("module.yaml").exists() {
+        anyhow::bail!(
+            "Directory '{}' does not contain a module.yaml",
+            dir_path.display()
+        );
+    }
+
+    printer.header("Build Module");
+    printer.key_value("Directory", dir);
+    if let Some(t) = target {
+        printer.key_value("Target", t);
+    }
+    if let Some(img) = base_image {
+        printer.key_value("Base image", img);
+    }
+
+    let default_platform = format!("{}/{}", std::env::consts::OS, std::env::consts::ARCH);
+    let targets: Vec<&str> = target
+        .map(|t| t.split(',').collect())
+        .unwrap_or_else(|| vec![default_platform.as_str()]);
+
+    if targets.len() == 1 {
+        let output_dir = cfgd_core::oci::build_module(dir_path, Some(targets[0]), base_image)
+            .map_err(|e| anyhow::anyhow!("{e}"))?;
+        printer.success(&format!("Built to {}", output_dir.display()));
+
+        if let Some(art) = artifact {
+            let digest = cfgd_core::oci::push_module(&output_dir, art, Some(targets[0]))
+                .map_err(|e| anyhow::anyhow!("{e}"))?;
+            printer.success(&format!("Pushed {art}"));
+            printer.key_value("Digest", &digest);
+
+            if sign {
+                cfgd_core::oci::sign_artifact(art, key)
+                    .map_err(|e| anyhow::anyhow!("{e}"))?;
+                printer.success("Signed artifact");
+            }
+        }
+    } else {
+        let mut builds: Vec<(std::path::PathBuf, String)> = Vec::new();
+        for t in &targets {
+            printer.info(&format!("Building for {t}..."));
+            let output_dir = cfgd_core::oci::build_module(dir_path, Some(t), base_image)
+                .map_err(|e| anyhow::anyhow!("{e}"))?;
+            printer.success(&format!("Built {t} to {}", output_dir.display()));
+            builds.push((output_dir, t.to_string()));
+        }
+
+        if let Some(art) = artifact {
+            let build_refs: Vec<(&Path, &str)> = builds
+                .iter()
+                .map(|(dir, plat)| (dir.as_path(), plat.as_str()))
+                .collect();
+            let digest = cfgd_core::oci::push_module_multiplatform(&build_refs, art)
+                .map_err(|e| anyhow::anyhow!("{e}"))?;
+            printer.success(&format!("Pushed multi-platform index {art}"));
+            printer.key_value("Digest", &digest);
+
+            if sign {
+                cfgd_core::oci::sign_artifact(art, key)
+                    .map_err(|e| anyhow::anyhow!("{e}"))?;
+                printer.success("Signed artifact");
+            }
+        }
+    }
+
+    Ok(())
+}
+
+pub(super) fn cmd_module_keys_generate(
+    printer: &Printer,
+    output_dir: Option<&str>,
+) -> anyhow::Result<()> {
+    if !cfgd_core::command_available("cosign") {
+        anyhow::bail!(
+            "cosign not found — install it from https://docs.sigstore.dev/cosign/installation/"
+        );
+    }
+
+    printer.header("Generate Cosign Key Pair");
+
+    let dir = output_dir.unwrap_or(".");
+    std::fs::create_dir_all(dir)?;
+
+    let status = std::process::Command::new("cosign")
+        .args(["generate-key-pair"])
+        .current_dir(dir)
+        .stdin(std::process::Stdio::inherit())
+        .stdout(std::process::Stdio::inherit())
+        .stderr(std::process::Stdio::inherit())
+        .status()
+        .map_err(|e| anyhow::anyhow!("failed to run cosign: {e}"))?;
+
+    if !status.success() {
+        anyhow::bail!("cosign generate-key-pair failed");
+    }
+
+    let key_dir = Path::new(dir);
+    if key_dir.join("cosign.key").exists() {
+        printer.success(&format!("Private key: {}/cosign.key", dir));
+        printer.success(&format!("Public key:  {}/cosign.pub", dir));
+        printer.info("Sign with: cfgd module push --sign --key cosign.key ...");
+        printer.info("Verify with: cosign verify --key cosign.pub <artifact>");
+    }
+
+    Ok(())
+}
+
+pub(super) fn cmd_module_keys_list(printer: &Printer) -> anyhow::Result<()> {
+    printer.header("Signing Keys");
+
+    let locations = [
+        ("./cosign.key", "./cosign.pub"),
+        ("~/.cfgd/cosign.key", "~/.cfgd/cosign.pub"),
+    ];
+
+    let mut found = false;
+    for (private, public) in &locations {
+        let priv_path = cfgd_core::expand_tilde(Path::new(private));
+        let pub_path = cfgd_core::expand_tilde(Path::new(public));
+
+        if pub_path.exists() {
+            found = true;
+            let has_private = if priv_path.exists() { "yes" } else { "no" };
+            printer.key_value(
+                &pub_path.display().to_string(),
+                &format!("private key: {has_private}"),
+            );
+        }
+    }
+
+    if !found {
+        printer.info("No signing keys found");
+        printer.info("Generate with: cfgd module keys generate");
     }
 
     Ok(())

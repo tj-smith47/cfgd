@@ -276,15 +276,20 @@ fn check_trusted_registries(spec: &ModuleSpec, registries: &[String]) -> Result<
 /// Reject unsigned modules when any ClusterConfigPolicy disallows unsigned.
 fn check_unsigned_policy(spec: &ModuleSpec, disallow_unsigned: bool) -> Result<(), String> {
     if disallow_unsigned && spec.oci_artifact.is_some() {
-        let has_key = spec
+        let has_signing = spec
             .signature
             .as_ref()
             .and_then(|s| s.cosign.as_ref())
-            .map(|c| !c.public_key.is_empty())
+            .map(|c| {
+                c.keyless
+                    || c.public_key
+                        .as_ref()
+                        .is_some_and(|pk| !pk.is_empty())
+            })
             .unwrap_or(false);
-        if !has_key {
+        if !has_signing {
             return Err(
-                "unsigned modules are not allowed: spec.signature.cosign.publicKey is required"
+                "unsigned modules are not allowed: configure spec.signature.cosign with publicKey or keyless"
                     .to_string(),
             );
         }
@@ -713,8 +718,10 @@ mod tests {
             oci_artifact: Some("registry.example.com/mod:v1".to_string()),
             signature: Some(ModuleSignature {
                 cosign: Some(CosignSignature {
-                    public_key: "-----BEGIN PUBLIC KEY-----\ndata\n-----END PUBLIC KEY-----"
-                        .to_string(),
+                    public_key: Some(
+                        "-----BEGIN PUBLIC KEY-----\ndata\n-----END PUBLIC KEY-----".to_string(),
+                    ),
+                    ..Default::default()
                 }),
             }),
             ..Default::default()

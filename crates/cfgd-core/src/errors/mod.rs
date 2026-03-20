@@ -384,6 +384,21 @@ pub enum OciError {
     #[error("archive error: {message}")]
     ArchiveError { message: String },
 
+    #[error("build error: {message}")]
+    BuildError { message: String },
+
+    #[error("signing error: {message}")]
+    SigningError { message: String },
+
+    #[error("signature verification failed for {reference}: {message}")]
+    VerificationFailed { reference: String, message: String },
+
+    #[error("attestation error: {message}")]
+    AttestationError { message: String },
+
+    #[error("{tool} not found — install it or add it to PATH")]
+    ToolNotFound { tool: String },
+
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
 

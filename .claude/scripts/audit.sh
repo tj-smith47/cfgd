@@ -151,10 +151,11 @@ log_section "Controlled Shell Execution"
 # gateway/ allowed for SSH/GPG enrollment signature verification
 # output/ allowed for Printer::run_with_output (controlled execution layer for progress UI)
 # generate/ allowed for tool inspection (--version checks) and system settings scanning
+# oci/ allowed for Docker credential helper execution (docker-credential-*)
 check_pattern warn \
-    "std::process::Command confined to packages/, secrets/, system/, reconciler/, sources/, platform/, cli/, gateway/, output/, generate/, lib.rs" \
+    "std::process::Command confined to packages/, secrets/, system/, reconciler/, sources/, platform/, cli/, gateway/, output/, generate/, oci, lib.rs" \
     'std::process::Command|Command::new' \
-    'packages/|secrets/|system/|reconciler/|sources/|platform/|cli/|gateway/|output/|generate/|lib\.rs:'
+    'packages/|secrets/|system/|reconciler/|sources/|platform/|cli/|gateway/|output/|generate/|oci|lib\.rs:'
 
 log_section "Error Type Discipline"
 check_pattern error \

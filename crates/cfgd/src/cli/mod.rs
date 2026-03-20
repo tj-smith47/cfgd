@@ -996,6 +996,15 @@ pub enum ModuleCommand {
         /// After push, apply a Module CRD to the cluster referencing the artifact
         #[arg(long)]
         apply: bool,
+        /// Sign the artifact with cosign after push
+        #[arg(long)]
+        sign: bool,
+        /// Path to cosign private key (omit for keyless signing via Fulcio/Rekor)
+        #[arg(long)]
+        key: Option<String>,
+        /// Attach SLSA provenance attestation after push
+        #[arg(long)]
+        attest: bool,
     },
     /// Pull a module from an OCI registry
     Pull {
@@ -1008,7 +1017,50 @@ pub enum ModuleCommand {
         /// Require a cosign signature on the artifact
         #[arg(long)]
         require_signature: bool,
+        /// Verify SLSA provenance attestation on the artifact
+        #[arg(long)]
+        verify_attestation: bool,
+        /// Path to cosign public key for verification (omit for keyless)
+        #[arg(long)]
+        key: Option<String>,
     },
+    /// Build a module into an OCI-ready artifact using Docker/Podman
+    Build {
+        /// Path to the module directory (must contain module.yaml)
+        dir: String,
+        /// Target platform(s), comma-separated (e.g. linux/amd64,linux/arm64)
+        #[arg(long)]
+        target: Option<String>,
+        /// Base container image (default: ubuntu:22.04)
+        #[arg(long)]
+        base_image: Option<String>,
+        /// OCI artifact reference — if provided, push the built artifact
+        #[arg(long)]
+        artifact: Option<String>,
+        /// Sign the artifact after push (requires --artifact and cosign)
+        #[arg(long)]
+        sign: bool,
+        /// Path to cosign private key for signing
+        #[arg(long)]
+        key: Option<String>,
+    },
+    /// Manage cosign signing keys for module artifacts
+    Keys {
+        #[command(subcommand)]
+        command: ModuleKeysCommand,
+    },
+}
+
+#[derive(Subcommand, Clone)]
+pub enum ModuleKeysCommand {
+    /// Generate a new cosign key pair
+    Generate {
+        /// Output directory for the key pair (default: current directory)
+        #[arg(long, short)]
+        output: Option<String>,
+    },
+    /// List known signing keys
+    List,
 }
 
 #[derive(Clone, clap::ValueEnum)]
@@ -1142,12 +1194,57 @@ pub fn execute(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
                 artifact,
                 platform,
                 apply,
-            } => module::cmd_module_push(printer, dir, artifact, platform.as_deref(), *apply),
+                sign,
+                key,
+                attest,
+            } => module::cmd_module_push(
+                printer,
+                dir,
+                artifact,
+                module::PushOptions {
+                    platform: platform.as_deref(),
+                    apply: *apply,
+                    sign: *sign,
+                    key: key.as_deref(),
+                    attest: *attest,
+                },
+            ),
             ModuleCommand::Pull {
                 artifact_ref,
                 output,
                 require_signature,
-            } => module::cmd_module_pull(printer, artifact_ref, output, *require_signature),
+                verify_attestation,
+                key,
+            } => module::cmd_module_pull(
+                printer,
+                artifact_ref,
+                output,
+                *require_signature,
+                *verify_attestation,
+                key.as_deref(),
+            ),
+            ModuleCommand::Build {
+                dir,
+                target,
+                base_image,
+                artifact,
+                sign,
+                key,
+            } => module::cmd_module_build(
+                printer,
+                dir,
+                target.as_deref(),
+                base_image.as_deref(),
+                artifact.as_deref(),
+                *sign,
+                key.as_deref(),
+            ),
+            ModuleCommand::Keys { command } => match command {
+                ModuleKeysCommand::Generate { output } => {
+                    module::cmd_module_keys_generate(printer, output.as_deref())
+                }
+                ModuleKeysCommand::List => module::cmd_module_keys_list(printer),
+            },
         },
         Command::Sync => cmd_sync(cli, printer),
         Command::Pull => cmd_pull(cli, printer),

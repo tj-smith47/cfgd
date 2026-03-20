@@ -67,7 +67,11 @@ impl OciReference {
     /// - `repo/name` (defaults to `docker.io`, tag `latest`)
     /// - `localhost:5000/repo:tag`
     pub fn parse(reference: &str) -> Result<Self, OciError> {
-        if reference.is_empty() {
+        if reference.is_empty()
+            || reference
+                .chars()
+                .any(|c| c.is_whitespace() || c.is_control())
+        {
             return Err(OciError::InvalidReference {
                 reference: reference.to_string(),
             });
@@ -713,7 +717,18 @@ pub fn push_module(
 ) -> Result<String, OciError> {
     let oci_ref = OciReference::parse(artifact_ref)?;
     let auth = RegistryAuth::resolve(&oci_ref.registry);
+    let agent = ureq::Agent::new();
+    push_module_inner(&agent, dir, &oci_ref, auth.as_ref(), platform)
+}
 
+/// Inner push logic shared by single-platform and multi-platform push.
+fn push_module_inner(
+    agent: &ureq::Agent,
+    dir: &Path,
+    oci_ref: &OciReference,
+    auth: Option<&RegistryAuth>,
+    platform: Option<&str>,
+) -> Result<String, OciError> {
     // Read module.yaml
     let module_yaml_path = dir.join("module.yaml");
     if !module_yaml_path.exists() {
@@ -736,25 +751,11 @@ pub fn push_module(
         .map(String::from)
         .unwrap_or_else(|| format!("{}/{}", std::env::consts::OS, std::env::consts::ARCH));
 
-    let agent = ureq::Agent::new();
-
     // Upload config blob
-    let config_digest = upload_blob(
-        &agent,
-        &oci_ref,
-        auth.as_ref(),
-        &config_blob,
-        MEDIA_TYPE_MODULE_CONFIG,
-    )?;
+    let config_digest = upload_blob(agent, oci_ref, auth, &config_blob, MEDIA_TYPE_MODULE_CONFIG)?;
 
     // Upload layer blob
-    let layer_digest = upload_blob(
-        &agent,
-        &oci_ref,
-        auth.as_ref(),
-        &layer_data,
-        MEDIA_TYPE_MODULE_LAYER,
-    )?;
+    let layer_digest = upload_blob(agent, oci_ref, auth, &layer_data, MEDIA_TYPE_MODULE_LAYER)?;
 
     // Build manifest
     let mut annotations = HashMap::new();
@@ -793,10 +794,10 @@ pub fn push_module(
     );
 
     authenticated_request(
-        &agent,
+        agent,
         "PUT",
         &manifest_url,
-        auth.as_ref(),
+        auth,
         None,
         Some(MEDIA_TYPE_OCI_MANIFEST),
         Some(&manifest_json),
@@ -813,6 +814,517 @@ pub fn push_module(
     );
 
     Ok(manifest_digest)
+}
+
+// ---------------------------------------------------------------------------
+// Multi-platform index
+// ---------------------------------------------------------------------------
+
+const MEDIA_TYPE_OCI_INDEX: &str = "application/vnd.oci.image.index.v1+json";
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct OciIndex {
+    schema_version: u32,
+    media_type: String,
+    manifests: Vec<OciPlatformManifest>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct OciPlatformManifest {
+    media_type: String,
+    digest: String,
+    size: u64,
+    platform: OciPlatform,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct OciPlatform {
+    os: String,
+    architecture: String,
+}
+
+/// Parse "os/arch" (e.g. "linux/amd64") into (os, arch).
+pub fn parse_platform_target(target: &str) -> Result<(&str, &str), OciError> {
+    target
+        .split_once('/')
+        .ok_or_else(|| OciError::BuildError {
+            message: format!(
+                "invalid platform target '{target}' — expected os/arch (e.g. linux/amd64)"
+            ),
+        })
+}
+
+/// Push a module for multiple platforms, creating an OCI index (manifest list).
+///
+/// Each `builds` entry is `(build_dir, platform)` where platform is "os/arch".
+/// Pushes each platform-specific manifest, then pushes the index.
+pub fn push_module_multiplatform(
+    builds: &[(&Path, &str)],
+    artifact_ref: &str,
+) -> Result<String, OciError> {
+    let oci_ref = OciReference::parse(artifact_ref)?;
+    let auth = RegistryAuth::resolve(&oci_ref.registry);
+    let agent = ureq::Agent::new();
+
+    let mut platform_manifests = Vec::new();
+
+    for (dir, platform) in builds {
+        let (os, arch) = parse_platform_target(platform)?;
+
+        // Push each platform as its own tagged manifest
+        let platform_tag = format!(
+            "{}-{}",
+            oci_ref.reference_str(),
+            platform.replace('/', "-")
+        );
+        let platform_ref = OciReference {
+            registry: oci_ref.registry.clone(),
+            repository: oci_ref.repository.clone(),
+            reference: ReferenceKind::Tag(platform_tag),
+        };
+
+        let digest =
+            push_module_inner(&agent, dir, &platform_ref, auth.as_ref(), Some(platform))?;
+
+        // Get manifest size for the index entry
+        let manifest_url = format!(
+            "{}/{}/manifests/{}",
+            oci_ref.api_base(),
+            oci_ref.repository,
+            &digest,
+        );
+        let size = authenticated_request(
+            &agent,
+            "HEAD",
+            &manifest_url,
+            auth.as_ref(),
+            Some(MEDIA_TYPE_OCI_MANIFEST),
+            None,
+            None,
+        )
+        .ok()
+        .and_then(|r| {
+            r.header("Content-Length")
+                .and_then(|s| s.parse::<u64>().ok())
+        })
+        .unwrap_or(0);
+
+        platform_manifests.push(OciPlatformManifest {
+            media_type: MEDIA_TYPE_OCI_MANIFEST.to_string(),
+            digest,
+            size,
+            platform: OciPlatform {
+                os: os.to_string(),
+                architecture: arch.to_string(),
+            },
+        });
+    }
+
+    // Build and push the index
+    let index = OciIndex {
+        schema_version: 2,
+        media_type: MEDIA_TYPE_OCI_INDEX.to_string(),
+        manifests: platform_manifests,
+    };
+    let index_json = serde_json::to_vec(&index)?;
+
+    let index_url = format!(
+        "{}/{}/manifests/{}",
+        oci_ref.api_base(),
+        oci_ref.repository,
+        oci_ref.reference_str(),
+    );
+
+    authenticated_request(
+        &agent,
+        "PUT",
+        &index_url,
+        auth.as_ref(),
+        None,
+        Some(MEDIA_TYPE_OCI_INDEX),
+        Some(&index_json),
+    )
+    .map_err(|e| OciError::ManifestPushFailed {
+        message: format!("index push failed: {e}"),
+    })?;
+
+    let index_digest = sha256_digest(&index_json);
+    tracing::info!(
+        reference = %oci_ref,
+        digest = %index_digest,
+        platforms = builds.len(),
+        "multi-platform module pushed"
+    );
+
+    Ok(index_digest)
+}
+
+// ---------------------------------------------------------------------------
+// Build
+// ---------------------------------------------------------------------------
+
+/// Detect which container runtime is available (docker or podman).
+pub fn detect_container_runtime() -> Option<&'static str> {
+    if crate::command_available("docker") {
+        Some("docker")
+    } else if crate::command_available("podman") {
+        Some("podman")
+    } else {
+        None
+    }
+}
+
+/// Generate a Dockerfile for building a module in an isolated container.
+fn build_dockerfile(base_image: &str, packages: &[&str]) -> String {
+    let mut lines = vec![format!("FROM {base_image}")];
+    if !packages.is_empty() {
+        let pkg_list = packages.join(" ");
+        lines.push(format!(
+            "RUN apt-get update && apt-get install -y {pkg_list} && rm -rf /var/lib/apt/lists/*"
+        ));
+    }
+    lines.push("WORKDIR /build".to_string());
+    lines.push("COPY . /build/".to_string());
+    lines.join("\n")
+}
+
+/// Build a module directory into an OCI-ready artifact using a container.
+///
+/// Creates a Dockerfile, builds a container image, copies out the installed
+/// files, and packages them as a tar.gz layer ready for `push_module()`.
+///
+/// Returns the path to the build output directory.
+pub fn build_module(
+    dir: &Path,
+    target_platform: Option<&str>,
+    base_image: Option<&str>,
+) -> Result<std::path::PathBuf, OciError> {
+    let module_yaml_path = dir.join("module.yaml");
+    if !module_yaml_path.exists() {
+        return Err(OciError::ModuleYamlNotFound {
+            dir: dir.to_path_buf(),
+        });
+    }
+
+    let runtime = detect_container_runtime().ok_or(OciError::ToolNotFound {
+        tool: "docker or podman".to_string(),
+    })?;
+
+    let module_yaml = std::fs::read_to_string(&module_yaml_path)?;
+    let module_doc = crate::config::parse_module(&module_yaml).map_err(|e| OciError::BuildError {
+        message: format!("invalid module.yaml: {e}"),
+    })?;
+
+    // Extract package names from module spec
+    let pkg_names: Vec<String> = module_doc.spec.packages.iter().map(|p| p.name.clone()).collect();
+    let packages: Vec<&str> = pkg_names.iter().map(|s| s.as_str()).collect();
+
+    let base = base_image.unwrap_or("ubuntu:22.04");
+    let dockerfile_content = build_dockerfile(base, &packages);
+
+    // Write Dockerfile to temp build context
+    let build_dir = tempfile::tempdir().map_err(|e| OciError::BuildError {
+        message: format!("cannot create temp dir: {e}"),
+    })?;
+    std::fs::write(build_dir.path().join("Dockerfile"), &dockerfile_content)?;
+
+    // Copy module directory contents into build context
+    crate::copy_dir_recursive(dir, build_dir.path())?;
+
+    // Build the container image
+    let tag = format!(
+        "cfgd-build-{}:{}",
+        module_doc.metadata.name,
+        std::process::id(),
+    );
+    let container_name = format!("cfgd-build-{}", std::process::id());
+
+    let mut build_cmd = std::process::Command::new(runtime);
+    build_cmd.arg("build").arg("-t").arg(&tag);
+
+    if let Some(platform) = target_platform {
+        build_cmd.arg("--platform").arg(platform);
+    }
+
+    build_cmd
+        .arg("-f")
+        .arg(build_dir.path().join("Dockerfile"))
+        .arg(build_dir.path());
+
+    let build_output = build_cmd.output().map_err(|e| OciError::BuildError {
+        message: format!("{runtime} build failed: {e}"),
+    })?;
+
+    if !build_output.status.success() {
+        let stderr = String::from_utf8_lossy(&build_output.stderr);
+        return Err(OciError::BuildError {
+            message: format!("{runtime} build failed:\n{stderr}"),
+        });
+    }
+
+    // Create container and copy build output
+    let output_dir = tempfile::tempdir().map_err(|e| OciError::BuildError {
+        message: format!("cannot create output dir: {e}"),
+    })?;
+
+    let create_output = std::process::Command::new(runtime)
+        .args(["create", "--name", &container_name, &tag])
+        .output()
+        .map_err(|e| OciError::BuildError {
+            message: format!("container create failed: {e}"),
+        })?;
+
+    if !create_output.status.success() {
+        return Err(OciError::BuildError {
+            message: format!(
+                "container create failed: {}",
+                String::from_utf8_lossy(&create_output.stderr)
+            ),
+        });
+    }
+
+    // Copy /build directory out of the container
+    let cp_output = std::process::Command::new(runtime)
+        .args([
+            "cp",
+            &format!("{container_name}:/build/."),
+            &output_dir.path().display().to_string(),
+        ])
+        .output()
+        .map_err(|e| OciError::BuildError {
+            message: format!("container cp failed: {e}"),
+        })?;
+
+    // Cleanup container and image (best effort)
+    let _ = std::process::Command::new(runtime)
+        .args(["rm", "-f", &container_name])
+        .output();
+    let _ = std::process::Command::new(runtime)
+        .args(["rmi", "-f", &tag])
+        .output();
+
+    if !cp_output.status.success() {
+        return Err(OciError::BuildError {
+            message: format!(
+                "container cp failed: {}",
+                String::from_utf8_lossy(&cp_output.stderr)
+            ),
+        });
+    }
+
+    let out = output_dir.path().to_path_buf();
+    let _keep = output_dir.keep();
+    tracing::info!(output = %out.display(), "module built");
+    Ok(out)
+}
+
+// ---------------------------------------------------------------------------
+// Signing (cosign)
+// ---------------------------------------------------------------------------
+
+/// Sign an OCI artifact with cosign.
+///
+/// If `key_path` is Some, uses `cosign sign --key <path>`.
+/// If `key_path` is None, uses keyless signing (Fulcio/Rekor via OIDC).
+pub fn sign_artifact(artifact_ref: &str, key_path: Option<&str>) -> Result<(), OciError> {
+    if !crate::command_available("cosign") {
+        return Err(OciError::ToolNotFound {
+            tool: "cosign".to_string(),
+        });
+    }
+
+    let mut cmd = std::process::Command::new("cosign");
+    cmd.arg("sign");
+
+    if let Some(key) = key_path {
+        cmd.arg("--key").arg(key);
+    } else {
+        cmd.arg("--yes");
+    }
+
+    cmd.arg(artifact_ref);
+
+    let output = cmd.output().map_err(|e| OciError::SigningError {
+        message: format!("failed to run cosign: {e}"),
+    })?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(OciError::SigningError {
+            message: format!("cosign sign failed: {stderr}"),
+        });
+    }
+
+    tracing::info!(reference = artifact_ref, "artifact signed with cosign");
+    Ok(())
+}
+
+/// Verify the cosign signature on an OCI artifact.
+///
+/// If `key_path` is Some, uses `cosign verify --key <path>`.
+/// If `key_path` is None, uses keyless verification (Fulcio/Rekor).
+pub fn verify_signature(artifact_ref: &str, key_path: Option<&str>) -> Result<(), OciError> {
+    if !crate::command_available("cosign") {
+        return Err(OciError::ToolNotFound {
+            tool: "cosign".to_string(),
+        });
+    }
+
+    let mut cmd = std::process::Command::new("cosign");
+    cmd.arg("verify");
+
+    if let Some(key) = key_path {
+        cmd.arg("--key").arg(key);
+    } else {
+        cmd.arg("--certificate-identity-regexp").arg(".*");
+        cmd.arg("--certificate-oidc-issuer-regexp").arg(".*");
+    }
+
+    cmd.arg(artifact_ref);
+
+    let output = cmd.output().map_err(|e| OciError::VerificationFailed {
+        reference: artifact_ref.to_string(),
+        message: format!("failed to run cosign: {e}"),
+    })?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(OciError::VerificationFailed {
+            reference: artifact_ref.to_string(),
+            message: format!("cosign verify failed: {stderr}"),
+        });
+    }
+
+    tracing::info!(reference = artifact_ref, "signature verified");
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Attestations (SLSA provenance / in-toto)
+// ---------------------------------------------------------------------------
+
+/// Generate a SLSA v1 provenance predicate JSON for a module artifact.
+pub fn generate_slsa_provenance(
+    artifact_ref: &str,
+    digest: &str,
+    source_repo: &str,
+    source_commit: &str,
+) -> String {
+    let now = crate::utc_now_iso8601();
+    serde_json::to_string_pretty(&serde_json::json!({
+        "_type": "https://in-toto.io/Statement/v1",
+        "predicateType": "https://slsa.dev/provenance/v1",
+        "subject": [{
+            "name": artifact_ref,
+            "digest": {
+                "sha256": digest.strip_prefix("sha256:").unwrap_or(digest),
+            }
+        }],
+        "predicate": {
+            "buildDefinition": {
+                "buildType": "https://cfgd.io/ModuleBuild/v1",
+                "externalParameters": {
+                    "source": {
+                        "uri": source_repo,
+                        "digest": { "gitCommit": source_commit },
+                    }
+                },
+            },
+            "runDetails": {
+                "builder": {
+                    "id": "https://cfgd.io/builder/v1",
+                },
+                "metadata": {
+                    "invocationId": &now,
+                    "startedOn": &now,
+                }
+            }
+        }
+    }))
+    .unwrap_or_default()
+}
+
+/// Attach an in-toto attestation to an OCI artifact using cosign.
+pub fn attach_attestation(
+    artifact_ref: &str,
+    attestation_path: &str,
+    key_path: Option<&str>,
+) -> Result<(), OciError> {
+    if !crate::command_available("cosign") {
+        return Err(OciError::ToolNotFound {
+            tool: "cosign".to_string(),
+        });
+    }
+
+    let mut cmd = std::process::Command::new("cosign");
+    cmd.arg("attest");
+
+    if let Some(key) = key_path {
+        cmd.arg("--key").arg(key);
+    } else {
+        cmd.arg("--yes");
+    }
+
+    cmd.arg("--predicate")
+        .arg(attestation_path)
+        .arg("--type")
+        .arg("slsaprovenance")
+        .arg(artifact_ref);
+
+    let output = cmd.output().map_err(|e| OciError::AttestationError {
+        message: format!("failed to run cosign attest: {e}"),
+    })?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(OciError::AttestationError {
+            message: format!("cosign attest failed: {stderr}"),
+        });
+    }
+
+    tracing::info!(reference = artifact_ref, "attestation attached");
+    Ok(())
+}
+
+/// Verify an in-toto attestation on an OCI artifact.
+pub fn verify_attestation(
+    artifact_ref: &str,
+    predicate_type: &str,
+    key_path: Option<&str>,
+) -> Result<(), OciError> {
+    if !crate::command_available("cosign") {
+        return Err(OciError::ToolNotFound {
+            tool: "cosign".to_string(),
+        });
+    }
+
+    let mut cmd = std::process::Command::new("cosign");
+    cmd.arg("verify-attestation");
+
+    if let Some(key) = key_path {
+        cmd.arg("--key").arg(key);
+    } else {
+        cmd.arg("--certificate-identity-regexp").arg(".*");
+        cmd.arg("--certificate-oidc-issuer-regexp").arg(".*");
+    }
+
+    cmd.arg("--type").arg(predicate_type).arg(artifact_ref);
+
+    let output = cmd.output().map_err(|e| OciError::AttestationError {
+        message: format!("failed to run cosign verify-attestation: {e}"),
+    })?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(OciError::AttestationError {
+            message: format!("attestation verification failed: {stderr}"),
+        });
+    }
+
+    tracing::info!(reference = artifact_ref, "attestation verified");
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -1353,5 +1865,141 @@ mod tests {
             Some("repository:myorg/mymod:pull")
         );
         assert_eq!(extract_auth_param(header, "nonexistent"), None);
+    }
+
+    // --- Build ---
+
+    #[test]
+    fn build_module_rejects_missing_module_yaml() {
+        let dir = tempfile::tempdir().unwrap();
+        let result = build_module(dir.path(), None, None);
+        assert!(matches!(result, Err(OciError::ModuleYamlNotFound { .. })));
+    }
+
+    #[test]
+    fn detect_container_runtime_returns_option() {
+        let rt = detect_container_runtime();
+        if let Some(name) = rt {
+            assert!(name == "docker" || name == "podman");
+        }
+    }
+
+    #[test]
+    fn generate_build_dockerfile_content() {
+        let dockerfile = build_dockerfile("ubuntu:22.04", &["curl", "wget"]);
+        assert!(dockerfile.contains("FROM ubuntu:22.04"));
+        assert!(dockerfile.contains("curl"));
+        assert!(dockerfile.contains("wget"));
+        assert!(dockerfile.contains("WORKDIR /build"));
+    }
+
+    #[test]
+    fn generate_build_dockerfile_no_packages() {
+        let dockerfile = build_dockerfile("alpine:3.18", &[]);
+        assert!(dockerfile.contains("FROM alpine:3.18"));
+        assert!(!dockerfile.contains("apt-get"));
+    }
+
+    // --- Multi-platform ---
+
+    #[test]
+    fn oci_index_manifest_serialization() {
+        let index = OciIndex {
+            schema_version: 2,
+            media_type: MEDIA_TYPE_OCI_INDEX.to_string(),
+            manifests: vec![
+                OciPlatformManifest {
+                    media_type: MEDIA_TYPE_OCI_MANIFEST.to_string(),
+                    digest: "sha256:abc".to_string(),
+                    size: 1024,
+                    platform: OciPlatform {
+                        os: "linux".to_string(),
+                        architecture: "amd64".to_string(),
+                    },
+                },
+                OciPlatformManifest {
+                    media_type: MEDIA_TYPE_OCI_MANIFEST.to_string(),
+                    digest: "sha256:def".to_string(),
+                    size: 2048,
+                    platform: OciPlatform {
+                        os: "linux".to_string(),
+                        architecture: "arm64".to_string(),
+                    },
+                },
+            ],
+        };
+        let json = serde_json::to_string(&index).unwrap();
+        assert!(json.contains("schemaVersion"));
+        assert!(json.contains("amd64"));
+        assert!(json.contains("arm64"));
+
+        let parsed: OciIndex = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.manifests.len(), 2);
+    }
+
+    #[test]
+    fn parse_platform_target_valid() {
+        let (os, arch) = parse_platform_target("linux/amd64").unwrap();
+        assert_eq!(os, "linux");
+        assert_eq!(arch, "amd64");
+    }
+
+    #[test]
+    fn parse_platform_target_invalid() {
+        assert!(parse_platform_target("invalid").is_err());
+    }
+
+    // --- Signing ---
+
+    #[test]
+    fn sign_artifact_rejects_when_cosign_missing() {
+        if crate::command_available("cosign") {
+            return;
+        }
+        let result = sign_artifact("ghcr.io/test/mod:v1", None);
+        assert!(matches!(result, Err(OciError::ToolNotFound { .. })));
+    }
+
+    #[test]
+    fn verify_signature_rejects_when_cosign_missing() {
+        if crate::command_available("cosign") {
+            return;
+        }
+        let result = verify_signature("ghcr.io/test/mod:v1", None);
+        assert!(matches!(result, Err(OciError::ToolNotFound { .. })));
+    }
+
+    // --- Attestations ---
+
+    #[test]
+    fn attach_attestation_rejects_when_cosign_missing() {
+        if crate::command_available("cosign") {
+            return;
+        }
+        let result = attach_attestation("ghcr.io/test/mod:v1", "provenance.json", None);
+        assert!(matches!(result, Err(OciError::ToolNotFound { .. })));
+    }
+
+    #[test]
+    fn verify_attestation_rejects_when_cosign_missing() {
+        if crate::command_available("cosign") {
+            return;
+        }
+        let result = verify_attestation("ghcr.io/test/mod:v1", "slsaprovenance", None);
+        assert!(matches!(result, Err(OciError::ToolNotFound { .. })));
+    }
+
+    #[test]
+    fn generate_slsa_provenance_creates_valid_json() {
+        let prov = generate_slsa_provenance(
+            "ghcr.io/test/mod:v1",
+            "sha256:abc123",
+            "https://github.com/myorg/myrepo",
+            "abc123def",
+        );
+        let parsed: serde_json::Value = serde_json::from_str(&prov).unwrap();
+        assert_eq!(parsed["predicateType"], "https://slsa.dev/provenance/v1");
+        assert_eq!(parsed["subject"][0]["name"], "ghcr.io/test/mod:v1");
+        assert_eq!(parsed["subject"][0]["digest"]["sha256"], "abc123");
     }
 }
