@@ -28,9 +28,8 @@ prometheus-client = "0.22"
 sha2 = "0.10"
 thiserror = "2"
 tokio-stream = { version = "0.1", features = ["net"] }
-hyper = { version = "1", features = ["http1", "server"] }
 hyper-util = { version = "0.1", features = ["tokio"] }
-http-body-util = "0.1"
+axum = "0.8"
 hostname = "0.4"
 
 [target.'cfg(target_os = "linux")'.dependencies]

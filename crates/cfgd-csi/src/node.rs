@@ -8,6 +8,7 @@ use tonic::{Request, Response, Status};
 
 use crate::cache::Cache;
 use crate::csi::v1::node_server::Node;
+use crate::metrics::{CsiMetrics, ModuleLabels, PublishLabels, PullLabels};
 use crate::csi::v1::{
     NodeExpandVolumeRequest, NodeExpandVolumeResponse, NodeGetCapabilitiesRequest,
     NodeGetCapabilitiesResponse, NodeGetInfoRequest, NodeGetInfoResponse,
@@ -19,12 +20,13 @@ use crate::csi::v1::{
 
 pub struct CfgdNode {
     cache: Arc<Cache>,
+    metrics: Arc<CsiMetrics>,
     node_id: String,
 }
 
 impl CfgdNode {
-    pub fn new(cache: Arc<Cache>, node_id: String) -> Self {
-        Self { cache, node_id }
+    pub fn new(cache: Arc<Cache>, metrics: Arc<CsiMetrics>, node_id: String) -> Self {
+        Self { cache, metrics, node_id }
     }
 }
 
@@ -80,9 +82,33 @@ impl Node for CfgdNode {
             "staging volume — pulling to cache"
         );
 
+        let start = std::time::Instant::now();
+        let cached = self.cache.get(module, version).is_some();
         self.cache
             .get_or_pull(module, version, &oci_ref)
             .map_err(|e| Status::internal(format!("cache pull failed: {e}")))?;
+
+        let duration = start.elapsed().as_secs_f64();
+        self.metrics
+            .pull_duration_seconds
+            .get_or_create(&PullLabels {
+                module: module.to_string(),
+                cached: cached.to_string(),
+            })
+            .observe(duration);
+
+        if cached {
+            self.metrics
+                .cache_hits_total
+                .get_or_create(&ModuleLabels {
+                    module: module.to_string(),
+                })
+                .inc();
+        }
+
+        self.metrics
+            .cache_size_bytes
+            .set(self.cache.current_size_bytes() as i64);
 
         Ok(Response::new(NodeStageVolumeResponse {}))
     }
@@ -139,7 +165,16 @@ impl Node for CfgdNode {
         std::fs::create_dir_all(target_path)
             .map_err(|e| Status::internal(format!("cannot create target dir: {e}")))?;
 
-        bind_mount_readonly(&source, target)?;
+        let result = bind_mount_readonly(&source, target);
+        let result_str = if result.is_ok() { "success" } else { "error" };
+        self.metrics
+            .volume_publish_total
+            .get_or_create(&PublishLabels {
+                module: module.to_string(),
+                result: result_str.to_string(),
+            })
+            .inc();
+        result?;
 
         Ok(Response::new(NodePublishVolumeResponse {}))
     }
@@ -298,7 +333,9 @@ mod tests {
     }
 
     fn test_node(cache: Arc<Cache>) -> CfgdNode {
-        CfgdNode::new(cache, "test-node".to_string())
+        let mut registry = prometheus_client::registry::Registry::default();
+        let metrics = Arc::new(CsiMetrics::new(&mut registry));
+        CfgdNode::new(cache, metrics, "test-node".to_string())
     }
 
     #[tokio::test]

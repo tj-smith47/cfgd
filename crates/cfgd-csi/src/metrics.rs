@@ -14,13 +14,19 @@ pub struct PublishLabels {
 #[derive(Clone, Debug, Hash, PartialEq, Eq, EncodeLabelSet)]
 pub struct PullLabels {
     pub module: String,
+    pub cached: String,
+}
+
+#[derive(Clone, Debug, Hash, PartialEq, Eq, EncodeLabelSet)]
+pub struct ModuleLabels {
+    pub module: String,
 }
 
 pub struct CsiMetrics {
     pub volume_publish_total: Family<PublishLabels, Counter>,
     pub pull_duration_seconds: Family<PullLabels, Histogram>,
     pub cache_size_bytes: Gauge,
-    pub cache_hits_total: Counter,
+    pub cache_hits_total: Family<ModuleLabels, Counter>,
 }
 
 impl CsiMetrics {
@@ -48,7 +54,7 @@ impl CsiMetrics {
             cache_size_bytes.clone(),
         );
 
-        let cache_hits_total = Counter::default();
+        let cache_hits_total = Family::<ModuleLabels, Counter>::default();
         registry.register(
             "cfgd_csi_cache_hits_total",
             "Total cache hit count",
@@ -87,7 +93,12 @@ mod tests {
             })
             .inc();
 
-        metrics.cache_hits_total.inc();
+        metrics
+            .cache_hits_total
+            .get_or_create(&ModuleLabels {
+                module: "nettools".to_string(),
+            })
+            .inc();
         metrics.cache_size_bytes.set(42);
 
         let mut buf = String::new();

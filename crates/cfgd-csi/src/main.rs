@@ -49,15 +49,34 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let cache = Arc::new(Cache::new(cache_dir.clone(), cache_max)?);
 
-    // Metrics
     let mut registry = prometheus_client::registry::Registry::default();
-    let _metrics = Arc::new(CsiMetrics::new(&mut registry));
+    let metrics = Arc::new(CsiMetrics::new(&mut registry));
     let registry = Arc::new(registry);
 
-    // Metrics HTTP server
+    // Metrics HTTP server (axum, matching operator pattern)
     let metrics_registry = registry.clone();
     tokio::spawn(async move {
-        if let Err(e) = serve_metrics(metrics_port, metrics_registry).await {
+        let app = axum::Router::new().route(
+            "/metrics",
+            axum::routing::get(move || {
+                let r = metrics_registry.clone();
+                async move {
+                    let mut buf = String::new();
+                    if prometheus_client::encoding::text::encode(&mut buf, &r).is_err() {
+                        return (
+                            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                            "encoding error".to_string(),
+                        );
+                    }
+                    (axum::http::StatusCode::OK, buf)
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind(("0.0.0.0", metrics_port))
+            .await
+            .expect("failed to bind metrics port");
+        tracing::info!(port = metrics_port, "metrics server listening");
+        if let Err(e) = axum::serve(listener, app).await {
             tracing::error!(error = %e, "metrics server failed");
         }
     });
@@ -75,7 +94,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     Server::builder()
         .add_service(IdentityServer::new(CfgdIdentity::new(cache_dir)))
-        .add_service(NodeServer::new(CfgdNode::new(cache, node_id)))
+        .add_service(NodeServer::new(CfgdNode::new(cache, metrics, node_id)))
         .serve_with_incoming_shutdown(stream, async {
             shutdown_signal().await;
             tracing::info!("received shutdown signal, draining");
@@ -94,49 +113,5 @@ async fn shutdown_signal() {
     tokio::select! {
         _ = sigterm.recv() => {}
         _ = ctrl_c => {}
-    }
-}
-
-async fn serve_metrics(
-    port: u16,
-    registry: Arc<prometheus_client::registry::Registry>,
-) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let listener = tokio::net::TcpListener::bind(("0.0.0.0", port)).await?;
-    tracing::info!(port = port, "metrics server listening");
-
-    loop {
-        let (stream, _) = listener.accept().await?;
-        let registry = registry.clone();
-        tokio::spawn(async move {
-            let service = hyper::service::service_fn(move |_req| {
-                let registry = registry.clone();
-                async move {
-                    let mut buf = String::new();
-                    if prometheus_client::encoding::text::encode(&mut buf, &registry).is_err() {
-                        return Ok::<_, std::convert::Infallible>(
-                            hyper::Response::builder()
-                                .status(500)
-                                .body(http_body_util::Full::new(hyper::body::Bytes::from(
-                                    "encoding error",
-                                )))
-                                .unwrap(),
-                        );
-                    }
-                    let body_bytes = buf.into_bytes();
-                    Ok(hyper::Response::builder()
-                        .status(200)
-                        .header("Content-Type", "text/plain; charset=utf-8")
-                        .header("Content-Length", body_bytes.len())
-                        .body(http_body_util::Full::new(hyper::body::Bytes::from(
-                            body_bytes,
-                        )))
-                        .unwrap())
-                }
-            });
-            let io = hyper_util::rt::TokioIo::new(stream);
-            let _ = hyper::server::conn::http1::Builder::new()
-                .serve_connection(io, service)
-                .await;
-        });
     }
 }

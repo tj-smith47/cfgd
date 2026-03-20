@@ -9,6 +9,7 @@ use cfgd_csi::csi::v1::{
     NodeGetInfoRequest, NodePublishVolumeRequest, ProbeRequest, node_service_capability,
 };
 use cfgd_csi::identity::CfgdIdentity;
+use cfgd_csi::metrics::CsiMetrics;
 use cfgd_csi::node::CfgdNode;
 use tokio::net::UnixListener;
 use tokio_stream::wrappers::UnixListenerStream;
@@ -22,6 +23,8 @@ async fn start_server(tmp: &tempfile::TempDir) -> Channel {
     std::fs::create_dir_all(&cache_dir).unwrap();
 
     let cache = Arc::new(Cache::new(cache_dir.clone(), 1024 * 1024).unwrap());
+    let mut registry = prometheus_client::registry::Registry::default();
+    let metrics = Arc::new(CsiMetrics::new(&mut registry));
 
     let listener = UnixListener::bind(&socket_path).unwrap();
     let stream = UnixListenerStream::new(listener);
@@ -31,6 +34,7 @@ async fn start_server(tmp: &tempfile::TempDir) -> Channel {
             .add_service(IdentityServer::new(CfgdIdentity::new(cache_dir)))
             .add_service(NodeServer::new(CfgdNode::new(
                 cache,
+                metrics,
                 "test-node".to_string(),
             )))
             .serve_with_incoming(stream)
