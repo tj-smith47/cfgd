@@ -15,8 +15,8 @@ use k8s_openapi::api::core::v1::Namespace;
 use crate::crds::{
     ClusterConfigPolicy, ClusterConfigPolicySpec, ClusterConfigPolicyStatus, Condition,
     ConfigPolicy, ConfigPolicySpec, ConfigPolicyStatus, DriftAlert, DriftAlertStatus,
-    LabelSelector, MachineConfig, MachineConfigSpec, MachineConfigStatus, ModuleRef, PackageRef,
-    version_satisfies,
+    DriftSeverity, LabelSelector, MachineConfig, MachineConfigSpec,
+    MachineConfigStatus, ModuleRef, PackageRef, version_satisfies,
 };
 use crate::errors::OperatorError;
 
@@ -440,6 +440,10 @@ async fn reconcile_drift_alert(
 
                 // Set Resolved=True before deletion
                 let now = cfgd_core::utc_now_iso8601();
+                let is_escalated = matches!(
+                    obj.spec.severity,
+                    DriftSeverity::High | DriftSeverity::Critical
+                );
                 let da_status = serde_json::json!({
                     "status": DriftAlertStatus {
                         detected_at: obj.status.as_ref().and_then(|s| s.detected_at.clone()),
@@ -447,10 +451,26 @@ async fn reconcile_drift_alert(
                         resolved: true,
                         conditions: vec![
                             Condition {
+                                condition_type: "Acknowledged".to_string(),
+                                status: "False".to_string(),
+                                reason: "NotAcknowledged".to_string(),
+                                message: "Drift alert has not been acknowledged".to_string(),
+                                last_transition_time: now.clone(),
+                                observed_generation: obj.meta().generation,
+                            },
+                            Condition {
                                 condition_type: "Resolved".to_string(),
                                 status: "True".to_string(),
                                 reason: "DriftResolved".to_string(),
                                 message: "Drift has been resolved".to_string(),
+                                last_transition_time: now.clone(),
+                                observed_generation: obj.meta().generation,
+                            },
+                            Condition {
+                                condition_type: "Escalated".to_string(),
+                                status: if is_escalated { "True" } else { "False" }.to_string(),
+                                reason: if is_escalated { "SeverityThreshold" } else { "BelowThreshold" }.to_string(),
+                                message: format!("Severity: {:?}", obj.spec.severity),
                                 last_transition_time: now,
                                 observed_generation: obj.meta().generation,
                             },
@@ -552,12 +572,24 @@ async fn reconcile_drift_alert(
                 } else {
                     Api::namespaced(ctx.client.clone(), &namespace)
                 };
+                let is_escalated = matches!(
+                    obj.spec.severity,
+                    DriftSeverity::High | DriftSeverity::Critical
+                );
                 let da_status = serde_json::json!({
                     "status": DriftAlertStatus {
                         detected_at: Some(now.clone()),
                         resolved_at: None,
                         resolved: false,
                         conditions: vec![
+                            Condition {
+                                condition_type: "Acknowledged".to_string(),
+                                status: "False".to_string(),
+                                reason: "NotAcknowledged".to_string(),
+                                message: "Drift alert has not been acknowledged".to_string(),
+                                last_transition_time: now.clone(),
+                                observed_generation: obj.meta().generation,
+                            },
                             Condition {
                                 condition_type: "Resolved".to_string(),
                                 status: "False".to_string(),
@@ -567,6 +599,14 @@ async fn reconcile_drift_alert(
                                     obj.spec.device_id,
                                     obj.spec.drift_details.len()
                                 ),
+                                last_transition_time: now.clone(),
+                                observed_generation: obj.meta().generation,
+                            },
+                            Condition {
+                                condition_type: "Escalated".to_string(),
+                                status: if is_escalated { "True" } else { "False" }.to_string(),
+                                reason: if is_escalated { "SeverityThreshold" } else { "BelowThreshold" }.to_string(),
+                                message: format!("Severity: {:?}", obj.spec.severity),
                                 last_transition_time: now,
                                 observed_generation: obj.meta().generation,
                             },
@@ -840,6 +880,19 @@ fn matches_selector(
         match labels.get(key) {
             Some(v) if v == value => {}
             _ => return false,
+        }
+    }
+    for req in &selector.match_expressions {
+        let label_value = labels.get(&req.key);
+        let matched = match req.operator.as_str() {
+            "In" => label_value.is_some_and(|v| req.values.contains(v)),
+            "NotIn" => label_value.is_none_or(|v| !req.values.contains(v)),
+            "Exists" => label_value.is_some(),
+            "DoesNotExist" => label_value.is_none(),
+            _ => true, // unknown operator — don't block
+        };
+        if !matched {
+            return false;
         }
     }
     true
@@ -1149,6 +1202,7 @@ fn error_policy_ccp(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::crds::LabelSelectorRequirement;
 
     fn mc_spec(hostname: &str, profile: &str) -> MachineConfigSpec {
         MachineConfigSpec {
@@ -1498,6 +1552,76 @@ mod tests {
         };
         let merged = merge_policy_requirements(&cluster, Some(&ns));
         assert_eq!(merged.modules.len(), 2);
+    }
+
+    #[test]
+    fn matches_selector_expressions_in() {
+        let mut labels = BTreeMap::new();
+        labels.insert("env".to_string(), "prod".to_string());
+        let selector = LabelSelector {
+            match_labels: Default::default(),
+            match_expressions: vec![LabelSelectorRequirement {
+                key: "env".to_string(),
+                operator: "In".to_string(),
+                values: vec!["prod".to_string(), "staging".to_string()],
+            }],
+        };
+        assert!(matches_selector(Some(&labels), &selector));
+    }
+
+    #[test]
+    fn matches_selector_expressions_not_in() {
+        let mut labels = BTreeMap::new();
+        labels.insert("env".to_string(), "dev".to_string());
+        let selector = LabelSelector {
+            match_labels: Default::default(),
+            match_expressions: vec![LabelSelectorRequirement {
+                key: "env".to_string(),
+                operator: "NotIn".to_string(),
+                values: vec!["prod".to_string()],
+            }],
+        };
+        assert!(matches_selector(Some(&labels), &selector));
+    }
+
+    #[test]
+    fn matches_selector_expressions_exists() {
+        let mut labels = BTreeMap::new();
+        labels.insert("tier".to_string(), "frontend".to_string());
+        let selector = LabelSelector {
+            match_labels: Default::default(),
+            match_expressions: vec![LabelSelectorRequirement {
+                key: "tier".to_string(),
+                operator: "Exists".to_string(),
+                values: vec![],
+            }],
+        };
+        assert!(matches_selector(Some(&labels), &selector));
+    }
+
+    #[test]
+    fn matches_selector_expressions_does_not_exist() {
+        let labels = BTreeMap::new();
+        let selector = LabelSelector {
+            match_labels: Default::default(),
+            match_expressions: vec![LabelSelectorRequirement {
+                key: "restricted".to_string(),
+                operator: "DoesNotExist".to_string(),
+                values: vec![],
+            }],
+        };
+        assert!(matches_selector(Some(&labels), &selector));
+    }
+
+    #[test]
+    fn drift_alert_escalated_on_high_severity() {
+        use crate::crds::DriftSeverity;
+        let is_escalated =
+            matches!(DriftSeverity::High, DriftSeverity::High | DriftSeverity::Critical);
+        assert!(is_escalated);
+        let is_not_escalated =
+            matches!(DriftSeverity::Low, DriftSeverity::High | DriftSeverity::Critical);
+        assert!(!is_not_escalated);
     }
 
     #[test]
