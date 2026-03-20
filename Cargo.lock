@@ -577,6 +577,8 @@ dependencies = [
  "futures",
  "hyper",
  "hyper-util",
+ "json-patch",
+ "jsonptr",
  "k8s-openapi",
  "kube",
  "opentelemetry",

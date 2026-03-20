@@ -14,8 +14,8 @@ use tower::ServiceExt;
 use tracing::{info, warn};
 
 use crate::crds::{
-    ClusterConfigPolicy, ClusterConfigPolicySpec, ConfigPolicySpec, DriftAlertSpec,
-    MachineConfigSpec, ModuleSpec,
+    ClusterConfigPolicy, ClusterConfigPolicySpec, ConfigPolicy, ConfigPolicySpec, DriftAlertSpec,
+    MachineConfigSpec, Module, ModuleSpec,
 };
 use crate::errors::OperatorError;
 use crate::metrics::{Metrics, WebhookLabels};
@@ -74,6 +74,7 @@ pub async fn run_webhook_server(
         )
         .route("/validate-driftalert", post(handle_validate_drift_alert))
         .route("/validate-module", post(handle_validate_module))
+        .route("/mutate-pods", post(handle_mutate_pods))
         .route("/healthz", axum::routing::get(|| async { "ok" }))
         .with_state(WebhookState { metrics, client });
 
@@ -403,6 +404,318 @@ fn load_private_key(
         .ok_or_else(|| {
             OperatorError::Webhook(format!("no private key found in {}", path.display()))
         })
+}
+
+// ---------------------------------------------------------------------------
+// Pod module mutating webhook — /mutate-pods
+// ---------------------------------------------------------------------------
+
+/// Parse the `cfgd.io/modules` annotation value into (name, version) pairs.
+/// Format: `"name:version,name:version"` (commas separate, colons delimit name:version).
+fn parse_module_annotations(value: &str) -> Vec<(String, String)> {
+    value
+        .split(',')
+        .filter_map(|entry| {
+            let entry = entry.trim();
+            if entry.is_empty() {
+                return None;
+            }
+            let (name, version) = entry.split_once(':')?;
+            let name = name.trim();
+            let version = version.trim();
+            if name.is_empty() || version.is_empty() {
+                return None;
+            }
+            Some((name.to_string(), version.to_string()))
+        })
+        .collect()
+}
+
+/// Collect required modules from ConfigPolicy and ClusterConfigPolicy.
+async fn collect_required_modules(
+    client: &Client,
+    namespace: &str,
+) -> Vec<String> {
+    let mut required = Vec::new();
+
+    // Namespace-scoped ConfigPolicy
+    if let Ok(policies) = Api::<ConfigPolicy>::namespaced(client.clone(), namespace)
+        .list(&ListParams::default())
+        .await
+    {
+        for policy in &policies {
+            for module_ref in &policy.spec.required_modules {
+                if module_ref.required && !required.contains(&module_ref.name) {
+                    required.push(module_ref.name.clone());
+                }
+            }
+        }
+    }
+
+    // Cluster-scoped ClusterConfigPolicy
+    if let Ok(policies) = Api::<ClusterConfigPolicy>::all(client.clone())
+        .list(&ListParams::default())
+        .await
+    {
+        for policy in &policies {
+            for module_ref in &policy.spec.required_modules {
+                if module_ref.required && !required.contains(&module_ref.name) {
+                    required.push(module_ref.name.clone());
+                }
+            }
+        }
+    }
+
+    required
+}
+
+fn ptr(path: &str) -> jsonptr::PointerBuf {
+    jsonptr::PointerBuf::parse(path).expect("valid JSON pointer")
+}
+
+/// Build JSON patch operations to inject CSI volumes, volumeMounts, and env vars.
+fn build_injection_patches(
+    pod: &serde_json::Value,
+    modules: &[(String, String, ModuleSpec)],
+) -> Vec<json_patch::PatchOperation> {
+    let mut patches = Vec::new();
+    let containers = pod
+        .pointer("/spec/containers")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
+    let has_volumes = pod.pointer("/spec/volumes").is_some();
+    let has_init_containers = pod.pointer("/spec/initContainers").is_some();
+
+    if modules.is_empty() {
+        return patches;
+    }
+
+    // Ensure /spec/volumes exists
+    if !has_volumes {
+        patches.push(json_patch::PatchOperation::Add(json_patch::AddOperation {
+            path: ptr("/spec/volumes"),
+            value: serde_json::json!([]),
+        }));
+    }
+
+    let mut needs_scripts_emptydir = false;
+
+    for (name, version, spec) in modules {
+        let vol_name = format!("cfgd-module-{name}");
+        let mount_path = format!("/cfgd-modules/{name}");
+
+        // Add CSI volume
+        patches.push(json_patch::PatchOperation::Add(json_patch::AddOperation {
+            path: ptr("/spec/volumes/-"),
+            value: serde_json::json!({
+                "name": vol_name,
+                "csi": {
+                    "driver": "csi.cfgd.io",
+                    "readOnly": true,
+                    "volumeAttributes": {
+                        "module": name,
+                        "version": version,
+                        "ociRef": spec.oci_artifact.as_deref().unwrap_or("")
+                    }
+                }
+            }),
+        }));
+
+        // Add volumeMount to each container
+        for (i, _) in containers.iter().enumerate() {
+            patches.push(json_patch::PatchOperation::Add(json_patch::AddOperation {
+                path: ptr(&format!("/spec/containers/{i}/volumeMounts/-")),
+                value: serde_json::json!({
+                    "name": vol_name,
+                    "mountPath": mount_path,
+                    "readOnly": true
+                }),
+            }));
+
+            // Add env vars from module spec
+            for env_var in &spec.env {
+                if env_var.append {
+                    // PATH-style: prepend to existing
+                    patches.push(json_patch::PatchOperation::Add(
+                        json_patch::AddOperation {
+                            path: ptr(&format!("/spec/containers/{i}/env/-")),
+                            value: serde_json::json!({
+                                "name": env_var.name,
+                                "value": format!("{}:$({}_ORIG)", env_var.value, env_var.name)
+                            }),
+                        },
+                    ));
+                } else {
+                    patches.push(json_patch::PatchOperation::Add(
+                        json_patch::AddOperation {
+                            path: ptr(&format!("/spec/containers/{i}/env/-")),
+                            value: serde_json::json!({
+                                "name": env_var.name,
+                                "value": env_var.value
+                            }),
+                        },
+                    ));
+                }
+            }
+        }
+
+        // If module has postApply script, we need an init container
+        if spec.scripts.post_apply.is_some() {
+            needs_scripts_emptydir = true;
+        }
+    }
+
+    // Add init containers for modules with postApply scripts
+    let script_modules: Vec<_> = modules
+        .iter()
+        .filter(|(_, _, spec)| spec.scripts.post_apply.is_some())
+        .collect();
+
+    if !script_modules.is_empty() {
+        if !has_init_containers {
+            patches.push(json_patch::PatchOperation::Add(json_patch::AddOperation {
+                path: ptr("/spec/initContainers"),
+                value: serde_json::json!([]),
+            }));
+        }
+
+        if needs_scripts_emptydir {
+            patches.push(json_patch::PatchOperation::Add(json_patch::AddOperation {
+                path: ptr("/spec/volumes/-"),
+                value: serde_json::json!({
+                    "name": "cfgd-scripts",
+                    "emptyDir": {}
+                }),
+            }));
+        }
+
+        for (name, _version, spec) in &script_modules {
+            let script_path = spec.scripts.post_apply.as_deref().unwrap_or("post-apply.sh");
+            patches.push(json_patch::PatchOperation::Add(json_patch::AddOperation {
+                path: ptr("/spec/initContainers/-"),
+                value: serde_json::json!({
+                    "name": format!("cfgd-init-{name}"),
+                    "image": "busybox:latest",
+                    "command": ["sh", "-c", format!("/cfgd-modules/{name}/{script_path}")],
+                    "volumeMounts": [
+                        {
+                            "name": format!("cfgd-module-{name}"),
+                            "mountPath": format!("/cfgd-modules/{name}"),
+                            "readOnly": true
+                        },
+                        {
+                            "name": "cfgd-scripts",
+                            "mountPath": "/cfgd-scripts"
+                        }
+                    ]
+                }),
+            }));
+        }
+    }
+
+    patches
+}
+
+async fn handle_mutate_pods(
+    axum::extract::State(state): axum::extract::State<WebhookState>,
+    Json(review): Json<AdmissionReview<DynamicObject>>,
+) -> Json<AdmissionReview<DynamicObject>> {
+    let start = std::time::Instant::now();
+    let req: AdmissionRequest<DynamicObject> =
+        match AdmissionReview::<DynamicObject>::try_into(review) {
+            Ok(r) => r,
+            Err(e) => {
+                record_webhook_metrics(&state.metrics, "mutate_pods", "error", start);
+                return Json(
+                    AdmissionResponse::invalid(format!("bad admission request: {e}")).into_review(),
+                );
+            }
+        };
+
+    let namespace = req.namespace.as_deref().unwrap_or("default");
+
+    // Parse pod annotations for cfgd.io/modules
+    let pod_obj = match &req.object {
+        Some(obj) => serde_json::to_value(obj).unwrap_or_default(),
+        None => {
+            record_webhook_metrics(&state.metrics, "mutate_pods", "allowed", start);
+            return Json(AdmissionResponse::from(&req).into_review());
+        }
+    };
+
+    let annotations = pod_obj
+        .pointer("/metadata/annotations")
+        .and_then(|v| v.as_object())
+        .cloned()
+        .unwrap_or_default();
+
+    let annotation_modules = annotations
+        .get("cfgd.io/modules")
+        .and_then(|v| v.as_str())
+        .map(parse_module_annotations)
+        .unwrap_or_default();
+
+    // Collect required modules from ConfigPolicy + ClusterConfigPolicy
+    let required_names = collect_required_modules(&state.client, namespace).await;
+
+    // Merge: annotation modules + required modules (annotation takes precedence for version)
+    let mut all_modules: Vec<(String, String)> = annotation_modules;
+    for name in &required_names {
+        if !all_modules.iter().any(|(n, _)| n == name) {
+            // Required module without explicit version — use "latest"
+            all_modules.push((name.clone(), "latest".to_string()));
+        }
+    }
+
+    if all_modules.is_empty() {
+        record_webhook_metrics(&state.metrics, "mutate_pods", "allowed", start);
+        return Json(AdmissionResponse::from(&req).into_review());
+    }
+
+    // Look up Module CRDs for each module
+    let modules_api: Api<Module> = Api::all(state.client.clone());
+    let mut resolved = Vec::new();
+
+    for (name, version) in &all_modules {
+        match modules_api.get(name).await {
+            Ok(module) => {
+                resolved.push((name.clone(), version.clone(), module.spec.clone()));
+            }
+            Err(e) => {
+                warn!(module = name, error = %e, "Module CRD not found, skipping injection");
+            }
+        }
+    }
+
+    if resolved.is_empty() {
+        record_webhook_metrics(&state.metrics, "mutate_pods", "allowed", start);
+        return Json(AdmissionResponse::from(&req).into_review());
+    }
+
+    // Build JSON patches
+    let patches = build_injection_patches(&pod_obj, &resolved);
+
+    let resp = match AdmissionResponse::from(&req)
+        .with_patch(json_patch::Patch(patches))
+    {
+        Ok(r) => r,
+        Err(e) => {
+            warn!(error = %e, "failed to serialize patch");
+            record_webhook_metrics(&state.metrics, "mutate_pods", "error", start);
+            return Json(AdmissionResponse::from(&req).into_review());
+        }
+    };
+
+    let module_names: Vec<_> = resolved.iter().map(|(n, _, _)| n.as_str()).collect();
+    info!(
+        namespace = namespace,
+        modules = ?module_names,
+        "injected modules into pod"
+    );
+
+    record_webhook_metrics(&state.metrics, "mutate_pods", "patched", start);
+    Json(resp.into_review())
 }
 
 #[cfg(test)]
@@ -750,6 +1063,155 @@ mod tests {
         };
         let result = check_unsigned_policy(&spec, true);
         assert!(result.is_ok());
+    }
+
+    // --- Pod mutation tests ---
+
+    #[test]
+    fn parse_module_annotation_valid() {
+        let result = parse_module_annotations("nettools:1.0,debug:2.1");
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0], ("nettools".to_string(), "1.0".to_string()));
+        assert_eq!(result[1], ("debug".to_string(), "2.1".to_string()));
+    }
+
+    #[test]
+    fn parse_module_annotation_empty() {
+        assert!(parse_module_annotations("").is_empty());
+    }
+
+    #[test]
+    fn parse_module_annotation_with_spaces() {
+        let result = parse_module_annotations(" nettools : 1.0 , debug : 2.1 ");
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0].0, "nettools");
+        assert_eq!(result[1].0, "debug");
+    }
+
+    #[test]
+    fn parse_module_annotation_invalid_entries_skipped() {
+        let result = parse_module_annotations("good:1.0,badentry,:noname,alsobad:");
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].0, "good");
+    }
+
+    #[test]
+    fn build_patches_injects_csi_volume() {
+        let pod = serde_json::json!({
+            "spec": {
+                "containers": [
+                    {"name": "app", "image": "busybox"}
+                ]
+            }
+        });
+        let modules = vec![(
+            "nettools".to_string(),
+            "1.0".to_string(),
+            ModuleSpec {
+                oci_artifact: Some("ghcr.io/org/nettools:1.0".to_string()),
+                ..Default::default()
+            },
+        )];
+        let patches = build_injection_patches(&pod, &modules);
+
+        // Should have: add /spec/volumes, add volume, add volumeMount
+        assert!(patches.len() >= 3);
+
+        // Check volume patch contains CSI driver reference
+        let patch_json = serde_json::to_string(&patches).unwrap();
+        assert!(patch_json.contains("csi.cfgd.io"));
+        assert!(patch_json.contains("cfgd-module-nettools"));
+        assert!(patch_json.contains("/cfgd-modules/nettools"));
+    }
+
+    #[test]
+    fn build_patches_with_env_vars() {
+        let pod = serde_json::json!({
+            "spec": {
+                "containers": [
+                    {"name": "app", "image": "busybox"}
+                ],
+                "volumes": []
+            }
+        });
+        let modules = vec![(
+            "tools".to_string(),
+            "2.0".to_string(),
+            ModuleSpec {
+                env: vec![
+                    crate::crds::ModuleEnvVar {
+                        name: "EDITOR".to_string(),
+                        value: "vim".to_string(),
+                        append: false,
+                    },
+                ],
+                ..Default::default()
+            },
+        )];
+        let patches = build_injection_patches(&pod, &modules);
+        let patch_json = serde_json::to_string(&patches).unwrap();
+        assert!(patch_json.contains("EDITOR"));
+        assert!(patch_json.contains("vim"));
+    }
+
+    #[test]
+    fn build_patches_with_post_apply_script() {
+        let pod = serde_json::json!({
+            "spec": {
+                "containers": [
+                    {"name": "app", "image": "busybox"}
+                ]
+            }
+        });
+        let modules = vec![(
+            "setup".to_string(),
+            "1.0".to_string(),
+            ModuleSpec {
+                scripts: crate::crds::ModuleScripts {
+                    post_apply: Some("setup.sh".to_string()),
+                },
+                ..Default::default()
+            },
+        )];
+        let patches = build_injection_patches(&pod, &modules);
+        let patch_json = serde_json::to_string(&patches).unwrap();
+        assert!(patch_json.contains("initContainers"));
+        assert!(patch_json.contains("cfgd-init-setup"));
+        assert!(patch_json.contains("cfgd-scripts"));
+        assert!(patch_json.contains("setup.sh"));
+    }
+
+    #[test]
+    fn build_patches_empty_modules_returns_empty() {
+        let pod = serde_json::json!({
+            "spec": {
+                "containers": [{"name": "app"}]
+            }
+        });
+        let patches = build_injection_patches(&pod, &[]);
+        assert!(patches.is_empty());
+    }
+
+    #[test]
+    fn build_patches_multiple_containers() {
+        let pod = serde_json::json!({
+            "spec": {
+                "containers": [
+                    {"name": "app"},
+                    {"name": "sidecar"}
+                ]
+            }
+        });
+        let modules = vec![(
+            "mod1".to_string(),
+            "1.0".to_string(),
+            ModuleSpec::default(),
+        )];
+        let patches = build_injection_patches(&pod, &modules);
+        let patch_json = serde_json::to_string(&patches).unwrap();
+        // Should have volumeMount patches for both containers (indices 0 and 1)
+        assert!(patch_json.contains("/spec/containers/0/volumeMounts/-"));
+        assert!(patch_json.contains("/spec/containers/1/volumeMounts/-"));
     }
 
     fn test_metrics() -> Metrics {
