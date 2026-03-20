@@ -1,4 +1,7 @@
+#![allow(clippy::result_large_err)] // tonic::Status is inherently 176 bytes
+
 use std::collections::HashMap;
+use std::path::Path;
 use std::sync::Arc;
 
 use tonic::{Request, Response, Status};
@@ -25,7 +28,6 @@ impl CfgdNode {
     }
 }
 
-#[allow(clippy::result_large_err)] // tonic::Status is inherently large (176 bytes)
 fn require_attr<'a>(
     attrs: &'a HashMap<String, String>,
     key: &str,
@@ -39,6 +41,21 @@ fn require_attr<'a>(
         })
 }
 
+fn require_volume_id(volume_id: &str) -> Result<(), Status> {
+    if volume_id.is_empty() {
+        return Err(Status::invalid_argument("volume_id is required"));
+    }
+    Ok(())
+}
+
+fn resolve_oci_ref(attrs: &HashMap<String, String>, module: &str, version: &str) -> String {
+    attrs
+        .get("ociRef")
+        .filter(|v| !v.is_empty())
+        .cloned()
+        .unwrap_or_else(|| format!("cfgd-modules/{module}:{version}"))
+}
+
 #[tonic::async_trait]
 impl Node for CfgdNode {
     async fn node_stage_volume(
@@ -46,13 +63,15 @@ impl Node for CfgdNode {
         request: Request<NodeStageVolumeRequest>,
     ) -> Result<Response<NodeStageVolumeResponse>, Status> {
         let req = request.into_inner();
+        require_volume_id(&req.volume_id)?;
+        if req.staging_target_path.is_empty() {
+            return Err(Status::invalid_argument("staging_target_path is required"));
+        }
+
         let attrs = &req.volume_context;
         let module = require_attr(attrs, "module")?;
         let version = require_attr(attrs, "version")?;
-
-        let oci_ref = attrs.get("ociRef").cloned().unwrap_or_else(|| {
-            format!("cfgd-modules/{module}:{version}")
-        });
+        let oci_ref = resolve_oci_ref(attrs, module, version);
 
         tracing::info!(
             module = module,
@@ -73,6 +92,7 @@ impl Node for CfgdNode {
         request: Request<NodeUnstageVolumeRequest>,
     ) -> Result<Response<NodeUnstageVolumeResponse>, Status> {
         let req = request.into_inner();
+        require_volume_id(&req.volume_id)?;
         tracing::debug!(volume_id = req.volume_id, "unstage volume (no-op, cache persists)");
         Ok(Response::new(NodeUnstageVolumeResponse {}))
     }
@@ -82,6 +102,8 @@ impl Node for CfgdNode {
         request: Request<NodePublishVolumeRequest>,
     ) -> Result<Response<NodePublishVolumeResponse>, Status> {
         let req = request.into_inner();
+        require_volume_id(&req.volume_id)?;
+
         let attrs = &req.volume_context;
         let module = require_attr(attrs, "module")?;
         let version = require_attr(attrs, "version")?;
@@ -89,6 +111,14 @@ impl Node for CfgdNode {
 
         if target_path.is_empty() {
             return Err(Status::invalid_argument("target_path is required"));
+        }
+
+        let target = Path::new(target_path);
+
+        // Idempotent: if already mounted, return success
+        if is_mountpoint(target) {
+            tracing::debug!(target = target_path, "already mounted, returning success");
+            return Ok(Response::new(NodePublishVolumeResponse {}));
         }
 
         tracing::info!(
@@ -100,20 +130,16 @@ impl Node for CfgdNode {
         );
 
         // Get cached content (should have been staged already, but pull if needed)
-        let oci_ref = attrs.get("ociRef").cloned().unwrap_or_else(|| {
-            format!("cfgd-modules/{module}:{version}")
-        });
+        let oci_ref = resolve_oci_ref(attrs, module, version);
         let source = self
             .cache
             .get_or_pull(module, version, &oci_ref)
             .map_err(|e| Status::internal(format!("cache pull failed: {e}")))?;
 
-        // Create target directory
         std::fs::create_dir_all(target_path)
             .map_err(|e| Status::internal(format!("cannot create target dir: {e}")))?;
 
-        // Bind mount source to target (read-only)
-        bind_mount_readonly(&source, std::path::Path::new(target_path))?;
+        bind_mount_readonly(&source, target)?;
 
         Ok(Response::new(NodePublishVolumeResponse {}))
     }
@@ -123,8 +149,9 @@ impl Node for CfgdNode {
         request: Request<NodeUnpublishVolumeRequest>,
     ) -> Result<Response<NodeUnpublishVolumeResponse>, Status> {
         let req = request.into_inner();
-        let target_path = &req.target_path;
+        require_volume_id(&req.volume_id)?;
 
+        let target_path = &req.target_path;
         if target_path.is_empty() {
             return Err(Status::invalid_argument("target_path is required"));
         }
@@ -135,7 +162,11 @@ impl Node for CfgdNode {
             "unpublishing volume"
         );
 
-        unmount(std::path::Path::new(target_path))?;
+        let target = Path::new(target_path);
+        unmount(target)?;
+
+        // CSI spec: SP MUST delete the file or directory it created at this path
+        let _ = std::fs::remove_dir(target);
 
         Ok(Response::new(NodeUnpublishVolumeResponse {}))
     }
@@ -183,16 +214,32 @@ impl Node for CfgdNode {
     }
 }
 
+/// Check if a path is a mountpoint by comparing device IDs with parent.
+fn is_mountpoint(path: &Path) -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let Ok(path_meta) = std::fs::metadata(path) else {
+            return false;
+        };
+        let Ok(parent_meta) = std::fs::metadata(path.join("..")) else {
+            return false;
+        };
+        path_meta.dev() != parent_meta.dev()
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = path;
+        false
+    }
+}
+
 /// Bind mount `source` to `target` as read-only.
 ///
 /// Two-step operation on Linux: bind mount, then remount read-only.
 /// (MS_BIND | MS_RDONLY in a single call does NOT work.)
 #[cfg(target_os = "linux")]
-#[allow(clippy::result_large_err)]
-fn bind_mount_readonly(
-    source: &std::path::Path,
-    target: &std::path::Path,
-) -> Result<(), Status> {
+fn bind_mount_readonly(source: &Path, target: &Path) -> Result<(), Status> {
     use nix::mount::{MsFlags, mount};
 
     mount(
@@ -217,20 +264,13 @@ fn bind_mount_readonly(
 }
 
 #[cfg(not(target_os = "linux"))]
-#[allow(clippy::result_large_err)]
-fn bind_mount_readonly(
-    _source: &std::path::Path,
-    _target: &std::path::Path,
-) -> Result<(), Status> {
-    Err(Status::unimplemented(
-        "bind mount only supported on Linux",
-    ))
+fn bind_mount_readonly(_source: &Path, _target: &Path) -> Result<(), Status> {
+    Err(Status::unimplemented("bind mount only supported on Linux"))
 }
 
-/// Unmount a target path.
+/// Unmount a target path with MNT_DETACH (lazy unmount).
 #[cfg(target_os = "linux")]
-#[allow(clippy::result_large_err)]
-fn unmount(target: &std::path::Path) -> Result<(), Status> {
+fn unmount(target: &Path) -> Result<(), Status> {
     use nix::mount::{MntFlags, umount2};
 
     match umount2(target, MntFlags::MNT_DETACH) {
@@ -244,7 +284,8 @@ fn unmount(target: &std::path::Path) -> Result<(), Status> {
 }
 
 #[cfg(not(target_os = "linux"))]
-fn unmount(_target: &std::path::Path) -> Result<(), Status> {
+fn unmount(_target: &Path) -> Result<(), Status> {
+    // Non-linux stub for compilation — CSI driver only runs on Linux
     Ok(())
 }
 
@@ -353,11 +394,35 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn node_publish_volume_missing_volume_id() {
+        let dir = tempfile::tempdir().unwrap();
+        let node = test_node(test_cache(dir.path()));
+        let req = NodePublishVolumeRequest {
+            volume_id: String::new(),
+            target_path: "/tmp/target".to_string(),
+            volume_context: [
+                ("module".to_string(), "nettools".to_string()),
+                ("version".to_string(), "1.0".to_string()),
+            ]
+            .into_iter()
+            .collect(),
+            ..Default::default()
+        };
+        let err = node
+            .node_publish_volume(Request::new(req))
+            .await
+            .unwrap_err();
+        assert_eq!(err.code(), tonic::Code::InvalidArgument);
+        assert!(err.message().contains("volume_id"));
+    }
+
+    #[tokio::test]
     async fn node_stage_volume_missing_module_attr() {
         let dir = tempfile::tempdir().unwrap();
         let node = test_node(test_cache(dir.path()));
         let req = NodeStageVolumeRequest {
             volume_id: "vol-1".to_string(),
+            staging_target_path: "/tmp/staging".to_string(),
             volume_context: HashMap::new(),
             ..Default::default()
         };
@@ -369,6 +434,47 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn node_stage_volume_missing_volume_id() {
+        let dir = tempfile::tempdir().unwrap();
+        let node = test_node(test_cache(dir.path()));
+        let req = NodeStageVolumeRequest {
+            volume_id: String::new(),
+            staging_target_path: "/tmp/staging".to_string(),
+            volume_context: HashMap::new(),
+            ..Default::default()
+        };
+        let err = node
+            .node_stage_volume(Request::new(req))
+            .await
+            .unwrap_err();
+        assert_eq!(err.code(), tonic::Code::InvalidArgument);
+        assert!(err.message().contains("volume_id"));
+    }
+
+    #[tokio::test]
+    async fn node_stage_volume_missing_staging_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let node = test_node(test_cache(dir.path()));
+        let req = NodeStageVolumeRequest {
+            volume_id: "vol-1".to_string(),
+            staging_target_path: String::new(),
+            volume_context: [
+                ("module".to_string(), "nettools".to_string()),
+                ("version".to_string(), "1.0".to_string()),
+            ]
+            .into_iter()
+            .collect(),
+            ..Default::default()
+        };
+        let err = node
+            .node_stage_volume(Request::new(req))
+            .await
+            .unwrap_err();
+        assert_eq!(err.code(), tonic::Code::InvalidArgument);
+        assert!(err.message().contains("staging_target_path"));
+    }
+
+    #[tokio::test]
     async fn node_unstage_volume_succeeds() {
         let dir = tempfile::tempdir().unwrap();
         let node = test_node(test_cache(dir.path()));
@@ -376,10 +482,22 @@ mod tests {
             volume_id: "vol-1".to_string(),
             ..Default::default()
         };
-        let resp = node
+        assert!(node.node_unstage_volume(Request::new(req)).await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn node_unstage_volume_missing_volume_id() {
+        let dir = tempfile::tempdir().unwrap();
+        let node = test_node(test_cache(dir.path()));
+        let req = NodeUnstageVolumeRequest {
+            volume_id: String::new(),
+            ..Default::default()
+        };
+        let err = node
             .node_unstage_volume(Request::new(req))
-            .await;
-        assert!(resp.is_ok());
+            .await
+            .unwrap_err();
+        assert_eq!(err.code(), tonic::Code::InvalidArgument);
     }
 
     #[tokio::test]
@@ -389,6 +507,21 @@ mod tests {
         let req = NodeUnpublishVolumeRequest {
             volume_id: "vol-1".to_string(),
             target_path: String::new(),
+        };
+        let err = node
+            .node_unpublish_volume(Request::new(req))
+            .await
+            .unwrap_err();
+        assert_eq!(err.code(), tonic::Code::InvalidArgument);
+    }
+
+    #[tokio::test]
+    async fn node_unpublish_volume_missing_volume_id() {
+        let dir = tempfile::tempdir().unwrap();
+        let node = test_node(test_cache(dir.path()));
+        let req = NodeUnpublishVolumeRequest {
+            volume_id: String::new(),
+            target_path: "/tmp/target".to_string(),
         };
         let err = node
             .node_unpublish_volume(Request::new(req))
@@ -425,5 +558,35 @@ mod tests {
             .await
             .unwrap_err();
         assert_eq!(err.code(), tonic::Code::Unimplemented);
+    }
+
+    #[test]
+    fn resolve_oci_ref_uses_provided_value() {
+        let attrs: HashMap<String, String> = [
+            ("ociRef".to_string(), "ghcr.io/myorg/mod:v1".to_string()),
+        ]
+        .into_iter()
+        .collect();
+        assert_eq!(resolve_oci_ref(&attrs, "mod", "v1"), "ghcr.io/myorg/mod:v1");
+    }
+
+    #[test]
+    fn resolve_oci_ref_falls_back_to_default() {
+        let attrs: HashMap<String, String> = HashMap::new();
+        assert_eq!(
+            resolve_oci_ref(&attrs, "nettools", "1.0"),
+            "cfgd-modules/nettools:1.0"
+        );
+    }
+
+    #[test]
+    fn is_mountpoint_false_for_regular_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(!is_mountpoint(dir.path()));
+    }
+
+    #[test]
+    fn is_mountpoint_false_for_nonexistent() {
+        assert!(!is_mountpoint(Path::new("/nonexistent/path/cfgd-test")));
     }
 }
