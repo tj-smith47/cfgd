@@ -13,4 +13,7 @@ pub enum OperatorError {
 
     #[error("Webhook error: {0}")]
     Webhook(String),
+
+    #[error("Health server error: {0}")]
+    Health(String),
 }

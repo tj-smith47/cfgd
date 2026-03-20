@@ -2,6 +2,7 @@ mod controllers;
 mod crds;
 mod errors;
 mod gateway;
+mod health;
 mod webhook;
 
 use std::path::Path;
@@ -30,6 +31,21 @@ async fn main() -> Result<()> {
 
     let client = Client::try_default().await?;
 
+    let health_state = health::HealthState::new();
+    let health_port: u16 = std::env::var("HEALTH_PORT")
+        .unwrap_or_else(|_| "8081".to_string())
+        .parse()
+        .unwrap_or(8081);
+
+    tokio::spawn({
+        let hs = health_state.clone();
+        async move {
+            if let Err(e) = health::run_health_server(health_port, hs).await {
+                tracing::error!(error = %e, "Health server failed");
+            }
+        }
+    });
+
     let cert_dir = std::env::var("WEBHOOK_CERT_DIR")
         .unwrap_or_else(|_| "/tmp/k8s-webhook-server/serving-certs".to_string());
     let webhook_port: u16 = std::env::var("WEBHOOK_PORT")
@@ -50,6 +66,8 @@ async fn main() -> Result<()> {
             "Webhook certs not found, webhook server disabled"
         );
     }
+
+    health_state.set_ready();
 
     // Device gateway — optional HTTP server for device checkin, enrollment, drift, web UI
     let gateway_enabled = std::env::var("DEVICE_GATEWAY_ENABLED")
