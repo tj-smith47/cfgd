@@ -13,7 +13,6 @@ use std::sync::Arc;
 use anyhow::Result;
 use kube::Client;
 use tokio::sync::Mutex;
-use tracing_subscriber::EnvFilter;
 use uuid::Uuid;
 
 use crate::crds::{ClusterConfigPolicy, ConfigPolicy, DriftAlert, MachineConfig};
@@ -25,11 +24,7 @@ async fn main() -> Result<()> {
         .install_default()
         .expect("Failed to install rustls crypto provider");
 
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
-        )
-        .init();
+    init_tracing();
 
     tracing::info!("Starting cfgd-operator");
     log_crd_info();
@@ -201,6 +196,55 @@ async fn shutdown_signal() {
         _ = ctrl_c => tracing::info!("Received SIGINT, initiating graceful shutdown"),
         _ = sigterm.recv() => tracing::info!("Received SIGTERM, initiating graceful shutdown"),
     }
+}
+
+fn init_tracing() {
+    use tracing_subscriber::layer::SubscriberExt;
+    use tracing_subscriber::util::SubscriberInitExt;
+
+    let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
+    let fmt_layer = tracing_subscriber::fmt::layer();
+
+    if std::env::var("OTEL_EXPORTER_OTLP_ENDPOINT").is_ok() {
+        match init_otel_tracer() {
+            Ok(tracer) => {
+                let otel_layer = tracing_opentelemetry::layer().with_tracer(tracer);
+                tracing_subscriber::registry()
+                    .with(env_filter)
+                    .with(fmt_layer)
+                    .with(otel_layer)
+                    .init();
+                tracing::info!("OpenTelemetry tracing initialized");
+                return;
+            }
+            Err(e) => {
+                eprintln!("Failed to initialize OpenTelemetry: {e}, falling back to fmt only");
+            }
+        }
+    }
+
+    tracing_subscriber::registry()
+        .with(env_filter)
+        .with(fmt_layer)
+        .init();
+}
+
+fn init_otel_tracer() -> Result<opentelemetry_sdk::trace::SdkTracer, Box<dyn std::error::Error>> {
+    use opentelemetry::trace::TracerProvider;
+
+    let exporter = opentelemetry_otlp::SpanExporter::builder()
+        .with_tonic()
+        .build()?;
+
+    let provider = opentelemetry_sdk::trace::SdkTracerProvider::builder()
+        .with_batch_exporter(exporter)
+        .build();
+
+    let tracer = provider.tracer("cfgd-operator");
+    opentelemetry::global::set_tracer_provider(provider);
+
+    Ok(tracer)
 }
 
 fn log_crd_info() {
