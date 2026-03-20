@@ -4,22 +4,28 @@ Single source of truth for all incomplete work. Completed work is in [COMPLETED.
 
 ---
 
-## Distribution & publishing gaps
+## E2E test gaps
 
-Blocking real-world adoption of shipped Kubernetes features (Tiers 1–4). Do first.
+Existing E2E suites cover Tier 1 CRDs and CLI. Module, ClusterConfigPolicy, webhook mutation, CSI driver, OCI supply chain, and kubectl plugin have unit tests but no cluster-level validation.
 
-- [ ] CSI driver container image: `crates/cfgd-csi/` is implemented but has no Dockerfile and no release workflow. Helm chart references `ghcr.io/tj-smith47/cfgd-csi` which doesn't exist. Add `Dockerfile.csi` and build job to `release.yml`.
-- [ ] kubectl-cfgd binary: `main.rs` detects `argv[0] == "kubectl-cfgd"` but release workflow only builds `cfgd`. Add symlink/rename step to release job to produce `kubectl-cfgd` artifacts for all 4 platforms.
-- [ ] Krew manifest: `manifests/krew/cfgd.yaml` has SHA256 values of `"TBD"`, version hardcoded to `v0.1.0`, URLs reference non-existent binaries. Populate dynamically in release workflow after kubectl-cfgd artifacts are built.
-- [ ] Helm chart registry: chart at `chart/cfgd/` is not published. Add chart-releaser or OCI push job to `release.yml` so users can `helm install` from a registry instead of local checkout.
-- [ ] OLM bundle: `ecosystem/olm/` CSV has hardcoded `v0.1.0`, no bundle image build, no OperatorHub submission workflow. Add OLM bundle build job to `release.yml`.
+### Operator E2E (`tests/e2e/operator/`) — expand existing script
+
+- [ ] Module CRD: create, verify controller sets status (verified, resolvedArtifact), webhook rejects invalid OCI refs and malformed PEM keys
+- [ ] ClusterConfigPolicy: create with namespaceSelector, verify only matching namespaces evaluated, verify cluster-wins merge with namespace ConfigPolicy
+- [ ] Validation webhooks: Module, ClusterConfigPolicy, DriftAlert endpoints reject invalid specs
+- [ ] Mutating webhook: pod with `cfgd.io/modules` annotation in labeled namespace gets CSI volumes injected, mountPolicy Debug skips volumeMount, env vars set on containers
+- [ ] OCI supply chain: push module to test registry (kind-hosted), pull with signature verification, verify content integrity
+- [ ] Update CRD wait loop to include all 5 CRDs (currently only waits for 3)
+
+### Full-stack E2E (`tests/e2e/full-stack/`) — expand existing script
+
+- [ ] CSI driver: deploy DaemonSet via Helm, create pod referencing CSI volume, verify module content mounted read-only, verify unmount on pod delete
+- [ ] kubectl cfgd plugin: `inject deployment/test -m mod:v1` patches annotation, `status` lists modules, `version` returns server version
+- [ ] Debug flow: pod with mountPolicy Debug module, `kubectl cfgd debug` creates ephemeral container that accesses debug-only volume
 
 ## Ecosystem integration
 
-Tiers 1–2 landed. These updates are unblocked — pick up now.
-
 - [ ] Update `policies/` for new CRD fields: ClusterConfigPolicy CRD, Module CRD `spec.signature.cosign.publicKey`, `spec.security.trustedRegistries`, MachineConfig conditions split (Reconciled, DriftDetected, ModulesResolved, Compliant), `observedGeneration` on Condition struct, DriftAlert conditions (Acknowledged, Resolved, Escalated)
-- [ ] Update `ecosystem/olm/` CSV to include ClusterConfigPolicy and Module CRDs, new webhook endpoints (`/validate-module`, `/validate-clusterconfigpolicy`, `/validate-driftalert`, `/mutate-pods`), printer columns, short names
 - [ ] Update idiomatic naming in ecosystem files after naming audit: `moduleRef`/`configRef` style cross-references, TitleCase enums, camelCase CRD field names
 
 ## CRD versioning

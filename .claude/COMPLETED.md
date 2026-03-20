@@ -896,3 +896,21 @@ Module state is stored by module name, not by profile — so status/verify/apply
 - JSON patches ensure volumeMounts/env arrays exist before appending (RFC 6902 compliance)
 - `kubectl cfgd inject` targets workload controllers (Deployment/StatefulSet) via annotation patch, not running pods
 - Pod-level Events (ModuleInjected/ModuleInjectionFailed) deferred — pod has no UID during CREATE admission
+
+### Distribution & publishing
+- [x] `Dockerfile.csi`: multi-stage build with protobuf-compiler, `docker-csi` job in release.yml pushes `ghcr.io/tj-smith47/cfgd-csi`
+- [x] `docker-agent` job: builds and pushes `ghcr.io/tj-smith47/cfgd` from existing `Dockerfile`
+- [x] kubectl-cfgd: release workflow copies cfgd binary as kubectl-cfgd, packages per platform, uploads to GitHub Release
+- [x] Krew manifest: `krew-manifest` job computes SHA256 from build artifacts, populates version and checksums dynamically
+- [x] Helm chart OCI: `helm-chart` job packages and pushes to `oci://ghcr.io/tj-smith47/charts/cfgd`
+- [x] OLM bundle: `bundle.Dockerfile`, `olm-bundle` job builds and pushes bundle image, CSV updated with all 5 CRDs, 6 webhookdefinitions, env vars, volume mounts, RBAC for all resources
+- [x] CRDs moved to Helm-native `chart/cfgd/crds/` with kustomize base at `manifests/crds/`
+- [x] Homebrew sha256 extraction fixed (specific filenames instead of ambiguous glob)
+- [x] values.schema.json property definitions for csiDriver and mutatingWebhook sections
+
+### mountPolicy feature
+- [x] `MountPolicy` enum (Always/Debug) on `ModuleSpec` — Debug modules get CSI volume but no volumeMount/env on declared containers
+- [x] `debugModules` field on ConfigPolicySpec and ClusterConfigPolicySpec — policy-level debug module staging
+- [x] Policy `debugModules` overrides Module CRD's `mountPolicy` during webhook resolution
+- [x] `x-kubernetes-list-type`/`list-map-keys` annotations on `debugModules` for strategic merge patch
+- [x] CRD YAML regenerated with mountPolicy and debugModules schemas
