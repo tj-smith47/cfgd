@@ -21,6 +21,8 @@ use crate::crds::{
 use crate::errors::OperatorError;
 use crate::metrics::{DriftLabels, Metrics, PolicyLabels, ReconcileLabels};
 
+const FIELD_MANAGER_OPERATOR: &str = "cfgd-operator";
+const FIELD_MANAGER_STATUS: &str = "cfgd-operator/status";
 const MACHINE_CONFIG_FINALIZER: &str = "cfgd.io/machine-config-cleanup";
 
 pub struct ControllerContext {
@@ -154,7 +156,7 @@ async fn reconcile_machine_config(
         machines_api
             .patch(
                 &name,
-                &PatchParams::default(),
+                &PatchParams::apply(FIELD_MANAGER_OPERATOR),
                 &Patch::Merge(patch),
             )
             .await
@@ -177,7 +179,7 @@ async fn reconcile_machine_config(
         machines_api
             .patch(
                 &name,
-                &PatchParams::default(),
+                &PatchParams::apply(FIELD_MANAGER_OPERATOR),
                 &Patch::Merge(patch),
             )
             .await
@@ -297,7 +299,7 @@ async fn reconcile_machine_config(
     if let Err(e) = machines_api
         .patch_status(
             &name,
-            &PatchParams::apply("cfgd-operator"),
+            &PatchParams::apply(FIELD_MANAGER_STATUS),
             &Patch::Merge(status),
         )
         .await
@@ -470,7 +472,7 @@ async fn reconcile_drift_alert(
                 da_api
                     .patch(
                         &name,
-                        &PatchParams::default(),
+                        &PatchParams::apply(FIELD_MANAGER_OPERATOR),
                         &Patch::Merge(patch),
                     )
                     .await
@@ -543,7 +545,7 @@ async fn reconcile_drift_alert(
                 if let Err(e) = alerts
                     .patch_status(
                         &name,
-                        &PatchParams::apply("cfgd-operator"),
+                        &PatchParams::apply(FIELD_MANAGER_STATUS),
                         &Patch::Merge(da_status),
                     )
                     .await
@@ -604,7 +606,7 @@ async fn reconcile_drift_alert(
                 machines
                     .patch_status(
                         mc_name,
-                        &PatchParams::apply("cfgd-operator"),
+                        &PatchParams::apply(FIELD_MANAGER_STATUS),
                         &Patch::Merge(mc_status),
                     )
                     .await
@@ -687,7 +689,7 @@ async fn reconcile_drift_alert(
                 da_api
                     .patch_status(
                         &name,
-                        &PatchParams::apply("cfgd-operator"),
+                        &PatchParams::apply(FIELD_MANAGER_STATUS),
                         &Patch::Merge(da_status),
                     )
                     .await
@@ -903,7 +905,7 @@ async fn reconcile_config_policy(
     policies
         .patch_status(
             &name,
-            &PatchParams::apply("cfgd-operator"),
+            &PatchParams::apply(FIELD_MANAGER_STATUS),
             &Patch::Merge(status),
         )
         .await
@@ -1251,7 +1253,7 @@ async fn reconcile_cluster_config_policy(
     ccp_api
         .patch_status(
             &name,
-            &PatchParams::apply("cfgd-operator"),
+            &PatchParams::apply(FIELD_MANAGER_STATUS),
             &Patch::Merge(status),
         )
         .await
