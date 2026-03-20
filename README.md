@@ -4,7 +4,7 @@
 
 # cfgd
 
-Declarative, GitOps-inspired machine configuration — from a single laptop to a fleet of Kubernetes nodes. Written in Rust.
+Declarative machine configuration via portable profiles and shareable modules. Written in Rust.
 
 [![E2E – CLI](https://github.com/tj-smith47/cfgd/actions/workflows/e2e-cli.yml/badge.svg)](https://github.com/tj-smith47/cfgd/actions/workflows/e2e-cli.yml)
 [![E2E – Full Stack](https://github.com/tj-smith47/cfgd/actions/workflows/e2e-full-stack.yml/badge.svg)](https://github.com/tj-smith47/cfgd/actions/workflows/e2e-full-stack.yml)
@@ -79,27 +79,49 @@ cfgd module create my-dev-env
 cfgd profile update --active --module community/nvim
 ```
 
-A module declares packages with cross-platform resolution, config files, and lifecycle scripts:
+A module declares packages with cross-platform resolution, config files, environment, shell aliases, and lifecycle scripts:
 
 ```yaml
 apiVersion: cfgd.io/v1alpha1
 kind: Module
 metadata:
   name: nvim
+  description: Neovim editor configuration
 spec:
   depends: [node, python]
   packages:
     - name: neovim
-      minVersion: "0.9"
-      prefer: [brew, snap, apt]
+      minVersion: "0.10"
+      prefer: [brew, snap]
+      deny: [apt]
     - name: ripgrep
     - name: fd
       aliases:
         apt: fd-find
         dnf: fd-find
+    - name: node
+      prefer: [brew, apt]
+      aliases:
+        apt: nodejs
+    - name: gcc
+      aliases:
+        apt: build-essential
+        dnf: "@development-tools"
+      platforms: [linux]
   files:
-    - source: config/init.lua
+    - source: files/init.lua
       target: ~/.config/nvim/init.lua
+    - source: files/lua
+      target: ~/.config/nvim/lua
+  env:
+    - name: EDITOR
+      value: nvim
+  aliases:
+    - name: v
+      command: nvim
+  scripts:
+    postApply:
+      - nvim --headless '+Lazy! sync' '+MasonToolsInstallSync' +qa
 ```
 
 See [docs/modules.md](docs/modules.md) for the full spec including git file sources, registries, and dependency resolution.
@@ -135,46 +157,24 @@ cfgd is a good fit when you want: continuous reconciliation (not just one-shot a
 
 ## Documentation
 
-<details>
-<summary>Full reference docs</summary>
-
-**Core concepts**
-
 | Document | Description |
 |---|---|
 | [Configuration](docs/configuration.md) | Root config (cfgd.yaml), file strategies, aliases, themes |
 | [Profiles](docs/profiles.md) | Profile YAML, inheritance, merge rules, variables |
 | [Modules](docs/modules.md) | Module spec, cross-platform packages, dependencies, git file sources, registries |
 | [Reconciliation](docs/reconciliation.md) | Phase ordering, failure handling, state store |
-
-**Capabilities**
-
-| Document | Description |
-|---|---|
 | [Packages](docs/packages.md) | All package managers, skip behavior, dry-run |
 | [Templates](docs/templates.md) | Tera template system, context variables, custom functions |
 | [Secrets](docs/secrets.md) | SOPS/age backends, 1Password, Bitwarden, Vault |
 | [System Configurators](docs/system-configurators.md) | Shell, macOS defaults, systemd, sysctl, kubelet, and more |
 | [Sources](docs/sources.md) | Multi-source config, policy tiers, composition, subscriptions |
-
-**Operations**
-
-| Document | Description |
-|---|---|
 | [Daemon](docs/daemon.md) | File watching, reconciliation loop, sync, notifications, service install |
 | [Operator](docs/operator.md) | CRD-based machine management, device gateway, DaemonSet node agent |
 | [Team Config](docs/team-config.md) | Crossplane-powered team config distribution |
 | [Safety](docs/safety.md) | Atomic writes, backups, rollback, apply locking, path safety |
-
-**Reference**
-
-| Document | Description |
-|---|---|
 | [CLI Reference](docs/cli-reference.md) | Complete command reference with flags and examples |
 | [Bootstrap](docs/bootstrap.md) | `cfgd init` flow, apply options, install script |
 | [AI Generate](docs/ai-generate.md) | AI-guided config generation, MCP server setup |
-
-</details>
 
 ## Building from Source
 
