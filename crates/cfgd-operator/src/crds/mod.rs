@@ -282,6 +282,105 @@ pub struct ClusterConfigPolicyStatus {
 }
 
 // ---------------------------------------------------------------------------
+// Module
+// ---------------------------------------------------------------------------
+
+/// An entry in a Module's package list with optional per-platform overrides.
+#[derive(Deserialize, Serialize, Clone, Debug, Default, PartialEq, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct PackageEntry {
+    pub name: String,
+    /// Per-platform package name overrides (e.g. {"brew": "gnu-sed", "apt": "sed"}).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub platforms: BTreeMap<String, String>,
+}
+
+/// A file managed by a Module.
+#[derive(Deserialize, Serialize, Clone, Debug, Default, PartialEq, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ModuleFileSpec {
+    pub source: String,
+    pub target: String,
+}
+
+/// Scripts that run during module lifecycle.
+#[derive(Deserialize, Serialize, Clone, Debug, Default, PartialEq, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ModuleScripts {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub post_apply: Option<String>,
+}
+
+/// An environment variable set by a Module.
+#[derive(Deserialize, Serialize, Clone, Debug, Default, PartialEq, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ModuleEnvVar {
+    pub name: String,
+    pub value: String,
+    #[serde(default)]
+    pub append: bool,
+}
+
+/// Cosign public key for OCI artifact signature verification.
+#[derive(Deserialize, Serialize, Clone, Debug, Default, PartialEq, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct CosignSignature {
+    pub public_key: String,
+}
+
+/// Signature configuration for a Module's OCI artifact.
+#[derive(Deserialize, Serialize, Clone, Debug, Default, PartialEq, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ModuleSignature {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cosign: Option<CosignSignature>,
+}
+
+#[derive(CustomResource, Deserialize, Serialize, Clone, Debug, Default, JsonSchema)]
+#[kube(
+    group = "cfgd.io",
+    version = "v1alpha1",
+    kind = "Module",
+    status = "ModuleStatus",
+    shortname = "mod",
+    category = "cfgd",
+    printcolumn = r#"{"name": "Artifact", "type": "string", "jsonPath": ".spec.ociArtifact"}"#,
+    printcolumn = r#"{"name": "Verified", "type": "boolean", "jsonPath": ".status.verified"}"#,
+    printcolumn = r#"{"name": "Platforms", "type": "string", "jsonPath": ".status.availablePlatforms"}"#,
+    printcolumn = r#"{"name": "Age", "type": "date", "jsonPath": ".metadata.creationTimestamp"}"#
+)]
+#[serde(rename_all = "camelCase")]
+pub struct ModuleSpec {
+    #[serde(default)]
+    pub packages: Vec<PackageEntry>,
+    #[serde(default)]
+    pub files: Vec<ModuleFileSpec>,
+    #[serde(default)]
+    pub scripts: ModuleScripts,
+    #[serde(default)]
+    pub env: Vec<ModuleEnvVar>,
+    #[serde(default)]
+    pub depends: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub oci_artifact: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signature: Option<ModuleSignature>,
+}
+
+#[derive(Deserialize, Serialize, Clone, Debug, Default, PartialEq, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ModuleStatus {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resolved_artifact: Option<String>,
+    #[serde(default)]
+    pub available_platforms: Vec<String>,
+    #[serde(default)]
+    pub verified: bool,
+    #[serde(default)]
+    pub conditions: Vec<Condition>,
+}
+
+// ---------------------------------------------------------------------------
 // Shared validation
 // ---------------------------------------------------------------------------
 
@@ -426,6 +525,82 @@ impl DriftAlertSpec {
             Err(errors)
         }
     }
+}
+
+impl ModuleSpec {
+    /// Validate the spec, returning all validation errors found.
+    pub fn validate(&self) -> Result<(), Vec<String>> {
+        let mut errors = Vec::new();
+        for (i, pkg) in self.packages.iter().enumerate() {
+            if pkg.name.is_empty() {
+                errors.push(format!("spec.packages[{i}].name must not be empty"));
+            }
+        }
+        for (i, dep) in self.depends.iter().enumerate() {
+            if dep.is_empty() {
+                errors.push(format!("spec.depends[{i}] must not be empty"));
+            }
+        }
+        if let Some(ref oci) = self.oci_artifact
+            && !is_valid_oci_reference(oci)
+        {
+            errors.push(format!(
+                "spec.ociArtifact '{}' is not a valid OCI reference",
+                oci
+            ));
+        }
+        if let Some(ref sig) = self.signature
+            && let Some(ref cosign) = sig.cosign
+            && !is_valid_pem_public_key(&cosign.public_key)
+        {
+            errors.push(
+                "spec.signature.cosign.publicKey is not a valid PEM-encoded public key".to_string(),
+            );
+        }
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(errors)
+        }
+    }
+}
+
+/// Validate an OCI artifact reference (e.g. "registry.example.com/repo:tag" or "repo@sha256:...").
+pub(crate) fn is_valid_oci_reference(reference: &str) -> bool {
+    if reference.is_empty() {
+        return false;
+    }
+    // Must have at least a name component; allow host/repo:tag or host/repo@digest
+    // Reject obviously invalid: whitespace, control chars
+    if reference
+        .chars()
+        .any(|c| c.is_whitespace() || c.is_control())
+    {
+        return false;
+    }
+    // Must contain at least one path separator or be a simple name
+    // OCI references: [host[:port]/]repo[:tag][@digest]
+    // At minimum, must have a non-empty name part
+    let name_part = if let Some((name, _digest)) = reference.split_once('@') {
+        name
+    } else if let Some((name, _tag)) = reference.rsplit_once(':') {
+        // Check it's not just a port (host:port/repo)
+        if name.contains('/') || !name.contains('.') {
+            name
+        } else {
+            reference
+        }
+    } else {
+        reference
+    };
+    !name_part.is_empty()
+}
+
+/// Check if a string looks like a PEM-encoded public key.
+pub(crate) fn is_valid_pem_public_key(key: &str) -> bool {
+    let trimmed = key.trim();
+    trimmed.starts_with("-----BEGIN PUBLIC KEY-----")
+        && trimmed.ends_with("-----END PUBLIC KEY-----")
 }
 
 // Re-export shared version utilities from cfgd-core
@@ -863,5 +1038,155 @@ mod tests {
             ..Default::default()
         };
         assert!(spec.validate().is_err());
+    }
+
+    // -----------------------------------------------------------------------
+    // Module CRD tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn module_crd_is_cluster_scoped() {
+        use kube::CustomResourceExt;
+        let crd = Module::crd();
+        assert_eq!(crd.spec.scope, "Cluster");
+    }
+
+    #[test]
+    fn module_crd_has_short_name() {
+        use kube::CustomResourceExt;
+        let crd = Module::crd();
+        let short_names = crd.spec.names.short_names.as_ref().unwrap();
+        assert!(short_names.contains(&"mod".to_string()));
+    }
+
+    #[test]
+    fn module_crd_has_category() {
+        use kube::CustomResourceExt;
+        let crd = Module::crd();
+        let categories = crd.spec.names.categories.as_ref().unwrap();
+        assert!(categories.contains(&"cfgd".to_string()));
+    }
+
+    #[test]
+    fn module_crd_has_printer_columns() {
+        use kube::CustomResourceExt;
+        let crd = Module::crd();
+        let version = &crd.spec.versions[0];
+        let columns = version.additional_printer_columns.as_ref().unwrap();
+        let col_names: Vec<&str> = columns.iter().map(|c| c.name.as_str()).collect();
+        assert!(col_names.contains(&"Artifact"));
+        assert!(col_names.contains(&"Verified"));
+        assert!(col_names.contains(&"Platforms"));
+        assert!(col_names.contains(&"Age"));
+    }
+
+    #[test]
+    fn module_validate_accepts_minimal() {
+        let spec = ModuleSpec::default();
+        assert!(spec.validate().is_ok());
+    }
+
+    #[test]
+    fn module_validate_accepts_full() {
+        let spec = ModuleSpec {
+            packages: vec![PackageEntry {
+                name: "vim".to_string(),
+                platforms: BTreeMap::new(),
+            }],
+            files: vec![ModuleFileSpec {
+                source: "vimrc".to_string(),
+                target: "~/.vimrc".to_string(),
+            }],
+            scripts: ModuleScripts {
+                post_apply: Some("echo done".to_string()),
+            },
+            env: vec![ModuleEnvVar {
+                name: "EDITOR".to_string(),
+                value: "vim".to_string(),
+                append: false,
+            }],
+            depends: vec!["base".to_string()],
+            oci_artifact: Some("registry.example.com/modules/vim:v1".to_string()),
+            signature: Some(ModuleSignature {
+                cosign: Some(CosignSignature {
+                    public_key: "-----BEGIN PUBLIC KEY-----\nMFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE\n-----END PUBLIC KEY-----".to_string(),
+                }),
+            }),
+        };
+        assert!(spec.validate().is_ok());
+    }
+
+    #[test]
+    fn module_validate_rejects_empty_package_name() {
+        let spec = ModuleSpec {
+            packages: vec![PackageEntry {
+                name: String::new(),
+                platforms: BTreeMap::new(),
+            }],
+            ..Default::default()
+        };
+        assert!(spec.validate().is_err());
+    }
+
+    #[test]
+    fn module_validate_rejects_empty_depends() {
+        let spec = ModuleSpec {
+            depends: vec![String::new()],
+            ..Default::default()
+        };
+        assert!(spec.validate().is_err());
+    }
+
+    #[test]
+    fn module_validate_rejects_malformed_oci_ref() {
+        let spec = ModuleSpec {
+            oci_artifact: Some("  ".to_string()),
+            ..Default::default()
+        };
+        assert!(spec.validate().is_err());
+    }
+
+    #[test]
+    fn module_validate_rejects_invalid_pem_key() {
+        let spec = ModuleSpec {
+            signature: Some(ModuleSignature {
+                cosign: Some(CosignSignature {
+                    public_key: "not-a-pem-key".to_string(),
+                }),
+            }),
+            ..Default::default()
+        };
+        assert!(spec.validate().is_err());
+    }
+
+    #[test]
+    fn oci_reference_validation() {
+        assert!(is_valid_oci_reference("registry.example.com/repo:v1"));
+        assert!(is_valid_oci_reference("repo:tag"));
+        assert!(is_valid_oci_reference(
+            "repo@sha256:abcdef1234567890abcdef1234567890"
+        ));
+        assert!(is_valid_oci_reference("myrepo"));
+        assert!(!is_valid_oci_reference(""));
+        assert!(!is_valid_oci_reference("has space"));
+    }
+
+    #[test]
+    fn pem_key_validation() {
+        assert!(is_valid_pem_public_key(
+            "-----BEGIN PUBLIC KEY-----\ndata\n-----END PUBLIC KEY-----"
+        ));
+        assert!(!is_valid_pem_public_key("not-pem"));
+        assert!(!is_valid_pem_public_key(
+            "-----BEGIN PRIVATE KEY-----\ndata\n-----END PRIVATE KEY-----"
+        ));
+    }
+
+    #[test]
+    fn module_status_defaults() {
+        let status = ModuleStatus::default();
+        assert!(!status.verified);
+        assert!(status.available_platforms.is_empty());
+        assert!(status.resolved_artifact.is_none());
     }
 }

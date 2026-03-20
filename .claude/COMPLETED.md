@@ -775,3 +775,35 @@ Module state is stored by module name, not by profile — so status/verify/apply
 - [x] GitLab CI template at `ecosystem/gitlab/` — `.cfgd-ci.yml` include template with `.cfgd-plan` and `.cfgd-apply` jobs
 - [x] Tekton task at `ecosystem/tekton/` — `cfgd-apply` Task with dry-run, output-format, and workspace support
 - [x] DevContainer Feature adapter — `cfgd module export --format=devcontainer` generates `install.sh` + `devcontainer-feature.json` from a module
+
+---
+
+## Tier 2 — Module CRD & OCI Foundation
+
+### Module CRD
+- [x] `ModuleSpec` struct with kube derive: cluster-scoped, group `cfgd.io/v1alpha1`, short name `mod`, category `cfgd`. Fields: packages, files, scripts, env, depends, ociArtifact, signature
+- [x] Supporting types: `PackageEntry`, `ModuleFileSpec`, `ModuleScripts`, `ModuleEnvVar`, `ModuleSignature`/`CosignSignature`. All derive required traits with `#[serde(rename_all = "camelCase")]`
+- [x] `ModuleStatus` struct: resolvedArtifact, availablePlatforms, verified, conditions
+- [x] Printer columns: Artifact, Verified, Platforms, Age (NAME is implicit)
+- [x] `ModuleSpec::validate()`: non-empty package names, non-empty depends, valid OCI reference format, valid PEM public key
+- [x] Module controller: watch Module CRDs, validate ociArtifact against trusted registries from ClusterConfigPolicy, set Available/Verified conditions, emit events (Available, Verified, PullFailed, SignatureInvalid, TrustedRegistryViolation, UnsignedNotAllowed)
+- [x] MachineConfig controller enhancement: resolve moduleRefs against Module CRDs (cluster-scoped), set ModulesResolved condition (False with missing names, or True/AllResolved)
+- [x] `gen_crds.rs` includes Module CRD with SMD annotations; Helm CRD template generated
+
+### Validation webhook enhancements
+- [x] `/validate-module` endpoint: structural validation via `ModuleSpec::validate()`, plus ClusterConfigPolicy-based trusted registry enforcement and unsigned module rejection at admission time
+- [x] ValidatingWebhookConfiguration rule in Helm chart for Module CRD
+- [x] RBAC: Module CRD verbs (get, list, watch, create, update, patch, delete), status, finalizers added to operator ClusterRole
+- [x] Unit tests: accept valid Module, reject empty package name, reject malformed OCI reference, reject invalid PEM key, reject untrusted registry, reject unsigned when required
+
+### OCI pipeline Phase A — push/pull
+- [x] OCI Distribution Spec client in cfgd-core/src/oci.rs (using ureq, no new crate dependencies). Media type constants defined
+- [x] Registry auth: Docker config.json parsing, credential helper programs, REGISTRY_USERNAME/REGISTRY_PASSWORD env vars
+- [x] `cfgd module push <dir> --artifact <ref>`: config blob + tar+gzip layer with cfgd.io/platform annotation, push to registry
+- [x] `cfgd module pull <ref> --output <dir>`: authenticate, pull manifest + layer, verify digest, extract. `--require-signature` flag
+- [x] Push and pull subcommands wired into clap under `cfgd module`
+- [x] Unit tests: OCI reference parsing (8), config blob round-trip, tar+gzip round-trip, Docker auth parsing, base64, digest, manifest serialization, Www-Authenticate parsing (24 total)
+
+### OCI pipeline Phase D — CRD sync
+- [x] `cfgd module push --apply`: construct Module CRD from module.yaml + ociArtifact ref, server-side apply with field manager `cfgd`
+- [x] Kubeconfig discovery: kube::Client::try_default() (in-cluster → KUBECONFIG → ~/.kube/config)

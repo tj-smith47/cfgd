@@ -39,6 +39,9 @@ pub enum CfgdError {
     #[error("generate error: {0}")]
     Generate(#[from] GenerateError),
 
+    #[error("oci error: {0}")]
+    Oci(#[from] OciError),
+
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
 }
@@ -347,6 +350,45 @@ pub enum DaemonError {
 
     #[error("watch error: {message}")]
     WatchError { message: String },
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum OciError {
+    #[error("invalid OCI reference: {reference}")]
+    InvalidReference { reference: String },
+
+    #[error("registry authentication failed for {registry}: {message}")]
+    AuthFailed { registry: String, message: String },
+
+    #[error("registry request failed: {message}")]
+    RequestFailed { message: String },
+
+    #[error("blob upload failed for {digest}: {message}")]
+    BlobUploadFailed { digest: String, message: String },
+
+    #[error("manifest push failed: {message}")]
+    ManifestPushFailed { message: String },
+
+    #[error("manifest not found: {reference}")]
+    ManifestNotFound { reference: String },
+
+    #[error("blob not found: {digest}")]
+    BlobNotFound { digest: String },
+
+    #[error("module.yaml not found in {dir}")]
+    ModuleYamlNotFound { dir: PathBuf },
+
+    #[error("signature required but not found for {reference}")]
+    SignatureRequired { reference: String },
+
+    #[error("archive error: {message}")]
+    ArchiveError { message: String },
+
+    #[error("io error: {0}")]
+    Io(#[from] std::io::Error),
+
+    #[error("json error: {0}")]
+    Json(#[from] serde_json::Error),
 }
 
 #[cfg(test)]

@@ -70,4 +70,19 @@ webhooks:
         apiVersions: ["v1alpha1"]
         operations: ["CREATE", "UPDATE"]
         resources: ["driftalerts"]
+  - name: validate-module.cfgd.io
+    admissionReviewVersions: ["v1"]
+    sideEffects: None
+    failurePolicy: {{ .Values.webhook.failurePolicy }}
+    timeoutSeconds: {{ .Values.webhook.timeoutSeconds }}
+    clientConfig:
+      service:
+        name: {{ include "cfgd.fullname" . }}-webhook
+        namespace: {{ .Release.Namespace }}
+        path: /validate-module
+    rules:
+      - apiGroups: ["cfgd.io"]
+        apiVersions: ["v1alpha1"]
+        operations: ["CREATE", "UPDATE"]
+        resources: ["modules"]
 {{- end }}

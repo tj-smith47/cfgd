@@ -8,15 +8,15 @@ metadata:
 rules:
   # Full CRUD on cfgd CRDs
   - apiGroups: ["cfgd.io"]
-    resources: ["machineconfigs", "configpolicies", "clusterconfigpolicies", "driftalerts"]
+    resources: ["machineconfigs", "configpolicies", "clusterconfigpolicies", "driftalerts", "modules"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
   # Status subresource patching
   - apiGroups: ["cfgd.io"]
-    resources: ["machineconfigs/status", "configpolicies/status", "clusterconfigpolicies/status", "driftalerts/status"]
+    resources: ["machineconfigs/status", "configpolicies/status", "clusterconfigpolicies/status", "driftalerts/status", "modules/status"]
     verbs: ["get", "update", "patch"]
   # Finalizer updates
   - apiGroups: ["cfgd.io"]
-    resources: ["machineconfigs/finalizers", "configpolicies/finalizers", "clusterconfigpolicies/finalizers", "driftalerts/finalizers"]
+    resources: ["machineconfigs/finalizers", "configpolicies/finalizers", "clusterconfigpolicies/finalizers", "driftalerts/finalizers", "modules/finalizers"]
     verbs: ["update"]
   # Namespace awareness for multi-namespace operation
   - apiGroups: [""]

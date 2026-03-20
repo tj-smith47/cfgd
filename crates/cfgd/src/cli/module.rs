@@ -2072,6 +2072,142 @@ fn export_devcontainer(
     Ok(())
 }
 
+// --- OCI Push / Pull ---
+
+pub(super) fn cmd_module_push(
+    printer: &Printer,
+    dir: &str,
+    artifact: &str,
+    platform: Option<&str>,
+    apply: bool,
+) -> anyhow::Result<()> {
+    let dir_path = Path::new(dir);
+    if !dir_path.join("module.yaml").exists() {
+        anyhow::bail!(
+            "Directory '{}' does not contain a module.yaml",
+            dir_path.display()
+        );
+    }
+
+    printer.header("Push Module");
+    printer.key_value("Directory", dir);
+    printer.key_value("Artifact", artifact);
+    if let Some(p) = platform {
+        printer.key_value("Platform", p);
+    }
+
+    let digest = cfgd_core::oci::push_module(dir_path, artifact, platform)
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+
+    printer.success(&format!("Pushed {artifact}"));
+    printer.key_value("Digest", &digest);
+
+    if apply {
+        let module_yaml = std::fs::read_to_string(dir_path.join("module.yaml"))?;
+        let module_doc = cfgd_core::config::parse_module(&module_yaml)
+            .map_err(|e| anyhow::anyhow!("Failed to parse module.yaml: {e}"))?;
+
+        let rt = tokio::runtime::Runtime::new()?;
+        rt.block_on(apply_module_crd(printer, &module_doc, artifact))?;
+    }
+
+    Ok(())
+}
+
+async fn apply_module_crd(
+    printer: &Printer,
+    module_doc: &cfgd_core::config::ModuleDocument,
+    artifact: &str,
+) -> anyhow::Result<()> {
+    use kube::Client;
+    use kube::api::{Api, Patch, PatchParams};
+
+    let client = Client::try_default()
+        .await
+        .map_err(|e| anyhow::anyhow!("Failed to connect to cluster: {e}"))?;
+
+    let name = &module_doc.metadata.name;
+    let module_json = serde_json::json!({
+        "apiVersion": cfgd_core::API_VERSION,
+        "kind": "Module",
+        "metadata": {
+            "name": name,
+        },
+        "spec": {
+            "ociArtifact": artifact,
+            "packages": module_doc.spec.packages.iter().map(|p| {
+                serde_json::json!({ "name": p.name })
+            }).collect::<Vec<_>>(),
+            "files": module_doc.spec.files.iter().map(|f| {
+                serde_json::json!({
+                    "source": f.source,
+                    "target": f.target,
+                })
+            }).collect::<Vec<_>>(),
+            "depends": module_doc.spec.depends,
+        }
+    });
+
+    let modules: Api<kube::core::DynamicObject> = Api::all_with(
+        client,
+        &kube::discovery::ApiResource {
+            group: "cfgd.io".into(),
+            version: "v1alpha1".into(),
+            api_version: cfgd_core::API_VERSION.into(),
+            kind: "Module".into(),
+            plural: "modules".into(),
+        },
+    );
+
+    modules
+        .patch(
+            name,
+            &PatchParams::apply("cfgd"),
+            &Patch::Apply(module_json),
+        )
+        .await
+        .map_err(|e| anyhow::anyhow!("Failed to apply Module CRD: {e}"))?;
+
+    printer.success(&format!("Applied Module CRD '{name}' to cluster"));
+    Ok(())
+}
+
+pub(super) fn cmd_module_pull(
+    printer: &Printer,
+    artifact_ref: &str,
+    output: &str,
+    require_signature: bool,
+) -> anyhow::Result<()> {
+    let output_path = Path::new(output);
+
+    printer.header("Pull Module");
+    printer.key_value("Artifact", artifact_ref);
+    printer.key_value("Output", output);
+    if require_signature {
+        printer.key_value("Signature", "required");
+    }
+
+    cfgd_core::oci::pull_module(artifact_ref, output_path, require_signature)
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+
+    printer.success(&format!("Pulled {artifact_ref} to {output}"));
+
+    // Check if module.yaml exists in extracted content
+    if output_path.join("module.yaml").exists() {
+        let contents = std::fs::read_to_string(output_path.join("module.yaml"))?;
+        if let Ok(doc) = cfgd_core::config::parse_module(&contents) {
+            printer.key_value("Module", &doc.metadata.name);
+            if let Some(desc) = &doc.metadata.description {
+                printer.key_value("Description", desc);
+            }
+            printer.key_value("Packages", &doc.spec.packages.len().to_string());
+            printer.key_value("Files", &doc.spec.files.len().to_string());
+        }
+    }
+
+    Ok(())
+}
+
 /// Mask a value for display: show `***` with last 3 chars visible.
 /// Short values (3 chars or fewer) are fully masked.
 fn mask_value(value: &str) -> String {

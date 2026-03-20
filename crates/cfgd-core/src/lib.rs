@@ -4,6 +4,7 @@ pub mod daemon;
 pub mod errors;
 pub mod generate;
 pub mod modules;
+pub mod oci;
 pub mod output;
 pub mod platform;
 pub mod providers;

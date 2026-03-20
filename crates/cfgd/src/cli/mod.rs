@@ -983,6 +983,32 @@ pub enum ModuleCommand {
         #[arg(long, short)]
         output: Option<String>,
     },
+    /// Push a module directory to an OCI registry as an artifact
+    Push {
+        /// Path to the module directory (must contain module.yaml)
+        dir: String,
+        /// OCI artifact reference (e.g. ghcr.io/myorg/mymodule:v1.0.0)
+        #[arg(long)]
+        artifact: String,
+        /// Platform annotation (default: auto-detected from OS/arch)
+        #[arg(long)]
+        platform: Option<String>,
+        /// After push, apply a Module CRD to the cluster referencing the artifact
+        #[arg(long)]
+        apply: bool,
+    },
+    /// Pull a module from an OCI registry
+    Pull {
+        /// OCI artifact reference (e.g. ghcr.io/myorg/mymodule:v1.0.0)
+        #[arg(name = "ref")]
+        artifact_ref: String,
+        /// Output directory to extract the module into
+        #[arg(long, short)]
+        output: String,
+        /// Require a cosign signature on the artifact
+        #[arg(long)]
+        require_signature: bool,
+    },
 }
 
 #[derive(Clone, clap::ValueEnum)]
@@ -1111,6 +1137,17 @@ pub fn execute(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
                 format,
                 output,
             } => module::cmd_module_export(cli, printer, name, format, output.as_deref()),
+            ModuleCommand::Push {
+                dir,
+                artifact,
+                platform,
+                apply,
+            } => module::cmd_module_push(printer, dir, artifact, platform.as_deref(), *apply),
+            ModuleCommand::Pull {
+                artifact_ref,
+                output,
+                require_signature,
+            } => module::cmd_module_pull(printer, artifact_ref, output, *require_signature),
         },
         Command::Sync => cmd_sync(cli, printer),
         Command::Pull => cmd_pull(cli, printer),

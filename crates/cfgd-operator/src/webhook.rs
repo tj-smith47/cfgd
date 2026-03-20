@@ -4,6 +4,8 @@ use std::sync::Arc;
 use axum::routing::post;
 use axum::{Json, Router};
 use hyper_util::rt::{TokioExecutor, TokioIo};
+use kube::Client;
+use kube::api::{Api, ListParams};
 use kube::core::DynamicObject;
 use kube::core::admission::{AdmissionRequest, AdmissionResponse, AdmissionReview};
 use tokio::net::TcpListener;
@@ -11,14 +13,24 @@ use tokio_rustls::TlsAcceptor;
 use tower::ServiceExt;
 use tracing::{info, warn};
 
-use crate::crds::{ClusterConfigPolicySpec, ConfigPolicySpec, DriftAlertSpec, MachineConfigSpec};
+use crate::crds::{
+    ClusterConfigPolicy, ClusterConfigPolicySpec, ConfigPolicySpec, DriftAlertSpec,
+    MachineConfigSpec, ModuleSpec,
+};
 use crate::errors::OperatorError;
 use crate::metrics::{Metrics, WebhookLabels};
+
+#[derive(Clone)]
+struct WebhookState {
+    metrics: Metrics,
+    client: Client,
+}
 
 pub async fn run_webhook_server(
     cert_dir: &str,
     port: u16,
     metrics: Metrics,
+    client: Client,
 ) -> Result<(), OperatorError> {
     let cert_path = Path::new(cert_dir).join("tls.crt");
     let key_path = Path::new(cert_dir).join("tls.key");
@@ -61,8 +73,9 @@ pub async fn run_webhook_server(
             post(handle_validate_cluster_config_policy),
         )
         .route("/validate-driftalert", post(handle_validate_drift_alert))
+        .route("/validate-module", post(handle_validate_module))
         .route("/healthz", axum::routing::get(|| async { "ok" }))
-        .with_state(metrics);
+        .with_state(WebhookState { metrics, client });
 
     let addr: std::net::SocketAddr = ([0, 0, 0, 0], port).into();
     let listener = TcpListener::bind(addr)
@@ -147,31 +160,136 @@ fn handle_validate<S: Validatable + 'static>(
 }
 
 async fn handle_validate_machine_config(
-    axum::extract::State(metrics): axum::extract::State<Metrics>,
+    axum::extract::State(state): axum::extract::State<WebhookState>,
     Json(review): Json<AdmissionReview<DynamicObject>>,
 ) -> Json<AdmissionReview<DynamicObject>> {
-    handle_validate::<MachineConfigSpec>("validate_machineconfig", &metrics, review)
+    handle_validate::<MachineConfigSpec>("validate_machineconfig", &state.metrics, review)
 }
 
 async fn handle_validate_config_policy(
-    axum::extract::State(metrics): axum::extract::State<Metrics>,
+    axum::extract::State(state): axum::extract::State<WebhookState>,
     Json(review): Json<AdmissionReview<DynamicObject>>,
 ) -> Json<AdmissionReview<DynamicObject>> {
-    handle_validate::<ConfigPolicySpec>("validate_configpolicy", &metrics, review)
+    handle_validate::<ConfigPolicySpec>("validate_configpolicy", &state.metrics, review)
 }
 
 async fn handle_validate_cluster_config_policy(
-    axum::extract::State(metrics): axum::extract::State<Metrics>,
+    axum::extract::State(state): axum::extract::State<WebhookState>,
     Json(review): Json<AdmissionReview<DynamicObject>>,
 ) -> Json<AdmissionReview<DynamicObject>> {
-    handle_validate::<ClusterConfigPolicySpec>("validate_clusterconfigpolicy", &metrics, review)
+    handle_validate::<ClusterConfigPolicySpec>(
+        "validate_clusterconfigpolicy",
+        &state.metrics,
+        review,
+    )
 }
 
 async fn handle_validate_drift_alert(
-    axum::extract::State(metrics): axum::extract::State<Metrics>,
+    axum::extract::State(state): axum::extract::State<WebhookState>,
     Json(review): Json<AdmissionReview<DynamicObject>>,
 ) -> Json<AdmissionReview<DynamicObject>> {
-    handle_validate::<DriftAlertSpec>("validate_driftalert", &metrics, review)
+    handle_validate::<DriftAlertSpec>("validate_driftalert", &state.metrics, review)
+}
+
+async fn handle_validate_module(
+    axum::extract::State(state): axum::extract::State<WebhookState>,
+    Json(review): Json<AdmissionReview<DynamicObject>>,
+) -> Json<AdmissionReview<DynamicObject>> {
+    let start = std::time::Instant::now();
+    let req: AdmissionRequest<DynamicObject> =
+        match AdmissionReview::<DynamicObject>::try_into(review) {
+            Ok(r) => r,
+            Err(e) => {
+                record_webhook_metrics(&state.metrics, "validate_module", "error", start);
+                return Json(
+                    AdmissionResponse::invalid(format!("bad admission request: {e}")).into_review(),
+                );
+            }
+        };
+
+    // Structural validation first
+    let validation_result = validate_object_spec::<ModuleSpec>(&req);
+    if let Err(reason) = validation_result {
+        record_webhook_metrics(&state.metrics, "validate_module", "denied", start);
+        return Json(AdmissionResponse::from(&req).deny(reason).into_review());
+    }
+
+    // Policy enforcement: trusted registries + unsigned rejection
+    if let Some(obj) = &req.object
+        && let Some(spec_value) = obj.data.get("spec")
+        && let Ok(spec) = serde_json::from_value::<ModuleSpec>(spec_value.clone())
+        && let Err(reason) = enforce_module_policy(&state.client, &spec).await
+    {
+        record_webhook_metrics(&state.metrics, "validate_module", "denied", start);
+        return Json(AdmissionResponse::from(&req).deny(reason).into_review());
+    }
+
+    record_webhook_metrics(&state.metrics, "validate_module", "allowed", start);
+    Json(AdmissionResponse::from(&req).into_review())
+}
+
+/// Enforce ClusterConfigPolicy rules on a Module: trusted registries and unsigned rejection.
+async fn enforce_module_policy(client: &Client, spec: &ModuleSpec) -> Result<(), String> {
+    let ccpols: Api<ClusterConfigPolicy> = Api::all(client.clone());
+    let policies = ccpols
+        .list(&ListParams::default())
+        .await
+        .map_err(|e| format!("failed to list ClusterConfigPolicies: {e}"))?;
+
+    let mut all_registries: Vec<String> = Vec::new();
+    let mut any_disallow_unsigned = false;
+
+    for policy in &policies {
+        all_registries.extend(policy.spec.security.trusted_registries.clone());
+        if !policy.spec.security.allow_unsigned {
+            any_disallow_unsigned = true;
+        }
+    }
+
+    check_trusted_registries(spec, &all_registries)?;
+    check_unsigned_policy(spec, any_disallow_unsigned)?;
+    Ok(())
+}
+
+/// Check that a Module's OCI artifact matches at least one trusted registry pattern.
+fn check_trusted_registries(spec: &ModuleSpec, registries: &[String]) -> Result<(), String> {
+    if let Some(ref oci_ref) = spec.oci_artifact
+        && !registries.is_empty()
+    {
+        let matches = registries.iter().any(|pattern| {
+            if let Some(prefix) = pattern.strip_suffix('*') {
+                oci_ref.starts_with(prefix)
+            } else {
+                oci_ref.starts_with(pattern)
+            }
+        });
+        if !matches {
+            return Err(format!(
+                "spec.ociArtifact '{}' does not match any trusted registry",
+                oci_ref
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Reject unsigned modules when any ClusterConfigPolicy disallows unsigned.
+fn check_unsigned_policy(spec: &ModuleSpec, disallow_unsigned: bool) -> Result<(), String> {
+    if disallow_unsigned && spec.oci_artifact.is_some() {
+        let has_key = spec
+            .signature
+            .as_ref()
+            .and_then(|s| s.cosign.as_ref())
+            .map(|c| !c.public_key.is_empty())
+            .unwrap_or(false);
+        if !has_key {
+            return Err(
+                "unsigned modules are not allowed: spec.signature.cosign.publicKey is required"
+                    .to_string(),
+            );
+        }
+    }
+    Ok(())
 }
 
 fn record_webhook_metrics(
@@ -217,6 +335,12 @@ impl Validatable for ClusterConfigPolicySpec {
 impl Validatable for DriftAlertSpec {
     fn validate(&self) -> Result<(), Vec<String>> {
         DriftAlertSpec::validate(self)
+    }
+}
+
+impl Validatable for ModuleSpec {
+    fn validate(&self) -> Result<(), Vec<String>> {
+        ModuleSpec::validate(self)
     }
 }
 
@@ -443,6 +567,160 @@ mod tests {
             serde_json::to_value(result.0).expect("serialize response");
         let allowed = review_resp["response"]["allowed"].as_bool().unwrap();
         assert!(!allowed);
+    }
+
+    fn make_module_review(spec_json: serde_json::Value) -> AdmissionReview<DynamicObject> {
+        serde_json::from_value(serde_json::json!({
+            "apiVersion": "admission.k8s.io/v1",
+            "kind": "AdmissionReview",
+            "request": {
+                "uid": "test-uid",
+                "kind": {"group": "cfgd.io", "version": "v1alpha1", "kind": "Module"},
+                "resource": {"group": "cfgd.io", "version": "v1alpha1", "resource": "modules"},
+                "operation": "CREATE",
+                "userInfo": {"username": "test-user"},
+                "object": {
+                    "apiVersion": "cfgd.io/v1alpha1",
+                    "kind": "Module",
+                    "metadata": {"name": "test-module"},
+                    "spec": spec_json
+                }
+            }
+        }))
+        .expect("test module review")
+    }
+
+    #[test]
+    fn validate_module_accepts_valid() {
+        let review = make_module_review(serde_json::json!({
+            "packages": [{"name": "vim"}],
+            "files": [{"source": "vimrc", "target": "~/.vimrc"}],
+            "env": [{"name": "EDITOR", "value": "vim"}],
+            "depends": ["base"],
+            "ociArtifact": "registry.example.com/modules/vim:v1",
+            "signature": {
+                "cosign": {
+                    "publicKey": "-----BEGIN PUBLIC KEY-----\nMFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE\n-----END PUBLIC KEY-----"
+                }
+            }
+        }));
+        let req = extract_req(review);
+        assert!(validate_object_spec::<ModuleSpec>(&req).is_ok());
+    }
+
+    #[test]
+    fn validate_module_rejects_empty_package_name() {
+        let review = make_module_review(serde_json::json!({
+            "packages": [{"name": ""}]
+        }));
+        let req = extract_req(review);
+        let result = validate_object_spec::<ModuleSpec>(&req);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("packages"));
+    }
+
+    #[test]
+    fn validate_module_rejects_malformed_oci_reference() {
+        let review = make_module_review(serde_json::json!({
+            "ociArtifact": "  "
+        }));
+        let req = extract_req(review);
+        let result = validate_object_spec::<ModuleSpec>(&req);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("ociArtifact"));
+    }
+
+    #[test]
+    fn validate_module_rejects_invalid_pem_key() {
+        let review = make_module_review(serde_json::json!({
+            "signature": {
+                "cosign": {
+                    "publicKey": "not-a-pem-key"
+                }
+            }
+        }));
+        let req = extract_req(review);
+        let result = validate_object_spec::<ModuleSpec>(&req);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("publicKey"));
+    }
+
+    #[test]
+    fn handle_validate_module_allows_valid() {
+        let metrics = test_metrics();
+        let review = make_module_review(serde_json::json!({
+            "packages": [{"name": "vim"}]
+        }));
+        let result = handle_validate::<ModuleSpec>("validate_module", &metrics, review);
+        let review_resp: serde_json::Value =
+            serde_json::to_value(result.0).expect("serialize response");
+        let allowed = review_resp["response"]["allowed"].as_bool().unwrap();
+        assert!(allowed);
+    }
+
+    #[test]
+    fn handle_validate_module_denies_invalid() {
+        let metrics = test_metrics();
+        let review = make_module_review(serde_json::json!({
+            "packages": [{"name": ""}]
+        }));
+        let result = handle_validate::<ModuleSpec>("validate_module", &metrics, review);
+        let review_resp: serde_json::Value =
+            serde_json::to_value(result.0).expect("serialize response");
+        let allowed = review_resp["response"]["allowed"].as_bool().unwrap();
+        assert!(!allowed);
+    }
+
+    #[test]
+    fn enforce_module_policy_rejects_untrusted_registry() {
+        // Test the policy logic directly — no kube client needed
+        let spec = ModuleSpec {
+            oci_artifact: Some("evil.registry.io/modules/hack:v1".to_string()),
+            ..Default::default()
+        };
+        let registries = vec!["trusted.registry.io/".to_string()];
+        let result = check_trusted_registries(&spec, &registries);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("trusted registry"));
+    }
+
+    #[test]
+    fn enforce_module_policy_allows_trusted_registry() {
+        let spec = ModuleSpec {
+            oci_artifact: Some("trusted.registry.io/modules/vim:v1".to_string()),
+            ..Default::default()
+        };
+        let registries = vec!["trusted.registry.io/*".to_string()];
+        let result = check_trusted_registries(&spec, &registries);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn enforce_module_policy_rejects_unsigned_when_required() {
+        let spec = ModuleSpec {
+            oci_artifact: Some("registry.example.com/mod:v1".to_string()),
+            ..Default::default()
+        };
+        let result = check_unsigned_policy(&spec, true);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("unsigned"));
+    }
+
+    #[test]
+    fn enforce_module_policy_allows_signed_when_required() {
+        use crate::crds::{CosignSignature, ModuleSignature};
+        let spec = ModuleSpec {
+            oci_artifact: Some("registry.example.com/mod:v1".to_string()),
+            signature: Some(ModuleSignature {
+                cosign: Some(CosignSignature {
+                    public_key: "-----BEGIN PUBLIC KEY-----\ndata\n-----END PUBLIC KEY-----"
+                        .to_string(),
+                }),
+            }),
+            ..Default::default()
+        };
+        let result = check_unsigned_policy(&spec, true);
+        assert!(result.is_ok());
     }
 
     fn test_metrics() -> Metrics {

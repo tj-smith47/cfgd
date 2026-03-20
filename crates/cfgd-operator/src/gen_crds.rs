@@ -1,6 +1,6 @@
 use kube::CustomResourceExt;
 
-use cfgd_operator::crds::{ClusterConfigPolicy, ConfigPolicy, DriftAlert, MachineConfig};
+use cfgd_operator::crds::{ClusterConfigPolicy, ConfigPolicy, DriftAlert, MachineConfig, Module};
 
 fn main() {
     let mut mc_crd =
@@ -22,7 +22,11 @@ fn main() {
     inject_smd_annotations(&mut ccp_crd);
     let ccp = serde_yaml::to_string(&ccp_crd).expect("ClusterConfigPolicy CRD to YAML");
 
-    print!("{mc}---\n{cp}---\n{da}---\n{ccp}");
+    let mut mod_crd = serde_json::to_value(Module::crd()).expect("serialize Module CRD");
+    inject_smd_annotations(&mut mod_crd);
+    let modl = serde_yaml::to_string(&mod_crd).expect("Module CRD to YAML");
+
+    print!("{mc}---\n{cp}---\n{da}---\n{ccp}---\n{modl}");
 }
 
 fn inject_smd_annotations(crd: &mut serde_json::Value) {
@@ -55,10 +59,17 @@ fn inject_smd_annotations(crd: &mut serde_json::Value) {
         refs["x-kubernetes-list-map-keys"] = serde_json::json!(["name"]);
     }
 
-    // files list: merge by "path" key (MachineConfig only)
+    // files list: merge by map key — "path" for MachineConfig, "source" for Module
     if let Some(files) = crd.pointer_mut(&format!("{spec_base}/spec/properties/files")) {
         files["x-kubernetes-list-type"] = serde_json::json!("map");
-        files["x-kubernetes-list-map-keys"] = serde_json::json!(["path"]);
+        // Determine map key from the items schema: Module files have "source"+"target",
+        // MachineConfig files have "path"+"content"+"source"+"mode".
+        let has_path_property = files.pointer("/items/properties/path").is_some();
+        if has_path_property {
+            files["x-kubernetes-list-map-keys"] = serde_json::json!(["path"]);
+        } else {
+            files["x-kubernetes-list-map-keys"] = serde_json::json!(["source"]);
+        }
     }
 
     // driftDetails list: merge by "field" key (DriftAlert only)
@@ -82,6 +93,17 @@ fn inject_smd_annotations(crd: &mut serde_json::Value) {
         "{spec_base}/spec/properties/security/properties/trustedRegistries"
     )) {
         registries["x-kubernetes-list-type"] = serde_json::json!("set");
+    }
+
+    // Module: env list — merge by "name" key
+    if let Some(env) = crd.pointer_mut(&format!("{spec_base}/spec/properties/env")) {
+        env["x-kubernetes-list-type"] = serde_json::json!("map");
+        env["x-kubernetes-list-map-keys"] = serde_json::json!(["name"]);
+    }
+
+    // Module: depends — atomic set
+    if let Some(depends) = crd.pointer_mut(&format!("{spec_base}/spec/properties/depends")) {
+        depends["x-kubernetes-list-type"] = serde_json::json!("set");
     }
 }
 

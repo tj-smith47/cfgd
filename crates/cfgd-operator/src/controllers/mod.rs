@@ -16,8 +16,9 @@ use k8s_openapi::api::core::v1::Namespace;
 use crate::crds::{
     ClusterConfigPolicy, ClusterConfigPolicySpec, ClusterConfigPolicyStatus, Condition,
     ConfigPolicy, ConfigPolicySpec, ConfigPolicyStatus, DriftAlert, DriftAlertStatus,
-    DriftSeverity, LabelSelector, MachineConfig, MachineConfigSpec, MachineConfigStatus, ModuleRef,
-    PackageRef, SelectorOperator, version_satisfies,
+    DriftSeverity, LabelSelector, MachineConfig, MachineConfigSpec, MachineConfigStatus, Module,
+    ModuleRef, ModuleSignature, ModuleSpec, ModuleStatus, PackageRef, SelectorOperator,
+    is_valid_oci_reference, is_valid_pem_public_key, version_satisfies,
 };
 use crate::errors::OperatorError;
 use crate::metrics::{DriftLabels, Metrics, PolicyLabels, ReconcileLabels};
@@ -68,16 +69,19 @@ pub async fn run(client: Client, metrics: Metrics) -> Result<(), OperatorError> 
     let alerts: Api<DriftAlert> = Api::all(client.clone());
     let policies: Api<ConfigPolicy> = Api::all(client.clone());
     let cluster_policies: Api<ClusterConfigPolicy> = Api::all(client.clone());
+    let modules: Api<Module> = Api::all(client.clone());
 
     let mc_ctx = Arc::clone(&ctx);
     let da_ctx = Arc::clone(&ctx);
     let cp_ctx = Arc::clone(&ctx);
     let ccp_ctx = Arc::clone(&ctx);
+    let mod_ctx = Arc::clone(&ctx);
 
     info!("Starting MachineConfig controller");
     info!("Starting DriftAlert controller");
     info!("Starting ConfigPolicy controller");
     info!("Starting ClusterConfigPolicy controller");
+    info!("Starting Module controller");
 
     let mc_controller = Controller::new(machines, WatcherConfig::default())
         .owns(
@@ -144,7 +148,26 @@ pub async fn run(client: Client, metrics: Metrics) -> Result<(), OperatorError> 
             }
         });
 
-    tokio::join!(mc_controller, da_controller, cp_controller, ccp_controller);
+    let mod_controller = Controller::new(modules, WatcherConfig::default())
+        .run(reconcile_module, error_policy_module, mod_ctx)
+        .for_each(|result| async move {
+            match result {
+                Ok((obj_ref, _action)) => {
+                    info!(name = %obj_ref.name, "Module reconciled");
+                }
+                Err(err) => {
+                    warn!(error = %err, "Module reconciliation error");
+                }
+            }
+        });
+
+    tokio::join!(
+        mc_controller,
+        da_controller,
+        cp_controller,
+        ccp_controller,
+        mod_controller
+    );
 
     Ok(())
 }
@@ -395,6 +418,10 @@ async fn reconcile_machine_config(
         cleanup_drift_alerts(&ctx.client, &namespace, &name).await;
     }
 
+    // Resolve moduleRefs against Module CRDs (cluster-scoped)
+    let (modules_resolved_status, modules_resolved_reason, modules_resolved_message) =
+        resolve_module_refs(&ctx.client, &obj.spec.module_refs).await;
+
     let now = cfgd_core::utc_now_iso8601();
 
     let (drift_status, drift_reason, drift_message) = if has_drift {
@@ -435,8 +462,8 @@ async fn reconcile_machine_config(
                 ),
                 build_condition(
                     existing_conditions,
-                    "ModulesResolved", "True", "AllResolved",
-                    "All module references resolved",
+                    "ModulesResolved", modules_resolved_status, modules_resolved_reason,
+                    &modules_resolved_message,
                     &now, current_generation,
                 ),
                 // Compliant is set by policy controllers — preserve existing value
@@ -1506,6 +1533,395 @@ fn error_policy_ccp(
 }
 
 // ---------------------------------------------------------------------------
+// Module controller — validates OCI artifacts, signatures, trusted registries
+// ---------------------------------------------------------------------------
+
+async fn reconcile_module(
+    obj: Arc<Module>,
+    ctx: Arc<ControllerContext>,
+) -> Result<Action, OperatorError> {
+    let start = std::time::Instant::now();
+    let name = obj.name_any();
+
+    info!(
+        name = %name,
+        oci_artifact = ?obj.spec.oci_artifact,
+        has_signature = obj.spec.signature.is_some(),
+        packages = obj.spec.packages.len(),
+        "Reconciling Module"
+    );
+
+    let current_generation = obj.meta().generation;
+    let existing_conditions = obj
+        .status
+        .as_ref()
+        .map(|s| s.conditions.as_slice())
+        .unwrap_or(&[]);
+    let now = cfgd_core::utc_now_iso8601();
+
+    let mut conditions = Vec::new();
+
+    // Evaluate Available condition
+    let (avail_status, avail_reason, avail_message, avail_event) =
+        evaluate_module_availability(&ctx.client, &name, &obj.spec).await;
+
+    conditions.push(build_condition(
+        existing_conditions,
+        "Available",
+        avail_status,
+        avail_reason,
+        avail_message,
+        &now,
+        current_generation,
+    ));
+
+    // Evaluate Verified condition
+    let (ver_status, ver_reason, ver_message, ver_event) =
+        evaluate_module_verification(&obj.spec.signature);
+
+    conditions.push(build_condition(
+        existing_conditions,
+        "Verified",
+        ver_status,
+        ver_reason,
+        ver_message,
+        &now,
+        current_generation,
+    ));
+
+    // Determine resolved artifact (just echo the reference if valid)
+    let resolved_artifact = obj.spec.oci_artifact.clone();
+    let verified = ver_status == "True";
+
+    let status = serde_json::json!({
+        "status": ModuleStatus {
+            resolved_artifact,
+            available_platforms: vec![],
+            verified,
+            conditions,
+        }
+    });
+
+    let modules_api: Api<Module> = Api::all(ctx.client.clone());
+    modules_api
+        .patch_status(
+            &name,
+            &PatchParams::apply(FIELD_MANAGER_STATUS),
+            &Patch::Merge(status),
+        )
+        .await
+        .map_err(|e| {
+            OperatorError::Reconciliation(format!("failed to update Module status for {name}: {e}"))
+        })?;
+
+    info!(name = %name, "Module status updated");
+
+    // Emit availability event
+    publish_event(
+        &ctx.recorder,
+        &Event {
+            type_: avail_event.0,
+            reason: avail_event.1.into(),
+            note: Some(avail_event.2),
+            action: "Reconcile".into(),
+            secondary: None,
+        },
+        &obj.object_ref(&()),
+    )
+    .await;
+
+    // Emit verification event
+    publish_event(
+        &ctx.recorder,
+        &Event {
+            type_: ver_event.0,
+            reason: ver_event.1.into(),
+            note: Some(ver_event.2),
+            action: "Reconcile".into(),
+            secondary: None,
+        },
+        &obj.object_ref(&()),
+    )
+    .await;
+
+    let labels = ReconcileLabels {
+        controller: "module".to_string(),
+        result: "success".to_string(),
+    };
+    ctx.metrics
+        .reconciliations_total
+        .get_or_create(&labels)
+        .inc();
+    ctx.metrics
+        .reconciliation_duration_seconds
+        .get_or_create(&labels)
+        .observe(start.elapsed().as_secs_f64());
+
+    Ok(Action::requeue(std::time::Duration::from_secs(60)))
+}
+
+/// Evaluate the Available condition for a Module.
+/// Returns (status, reason, message, (event_type, event_reason, event_note)).
+async fn evaluate_module_availability<'a>(
+    client: &Client,
+    module_name: &str,
+    spec: &ModuleSpec,
+) -> (&'a str, &'a str, &'a str, (EventType, &'a str, String)) {
+    let oci_ref = match &spec.oci_artifact {
+        None => {
+            return (
+                "True",
+                "NoArtifact",
+                "Module is local-only (no OCI artifact)",
+                (
+                    EventType::Normal,
+                    "Available",
+                    format!("Module {} is local-only", module_name),
+                ),
+            );
+        }
+        Some(r) => r,
+    };
+
+    // Validate OCI reference format
+    if !is_valid_oci_reference(oci_ref) {
+        return (
+            "False",
+            "InvalidReference",
+            "OCI artifact reference is invalid",
+            (
+                EventType::Warning,
+                "PullFailed",
+                format!(
+                    "Module {} has invalid OCI reference: {}",
+                    module_name, oci_ref
+                ),
+            ),
+        );
+    }
+
+    // Read all ClusterConfigPolicies for security constraints
+    let ccp_api: Api<ClusterConfigPolicy> = Api::all(client.clone());
+    let ccp_list = match ccp_api.list(&ListParams::default()).await {
+        Ok(list) => list,
+        Err(e) => {
+            warn!(error = %e, "Failed to list ClusterConfigPolicies for Module validation");
+            // If we can't list policies, allow the module (fail-open for availability)
+            return (
+                "True",
+                "ArtifactAvailable",
+                "OCI artifact reference is valid",
+                (
+                    EventType::Normal,
+                    "Available",
+                    format!("Module {} artifact available: {}", module_name, oci_ref),
+                ),
+            );
+        }
+    };
+
+    // Collect all trusted registries from ClusterConfigPolicies
+    let mut all_trusted_registries: Vec<String> = Vec::new();
+    let mut any_disallow_unsigned = false;
+
+    for ccp in &ccp_list {
+        let security = &ccp.spec.security;
+        all_trusted_registries.extend(security.trusted_registries.clone());
+        if !security.allow_unsigned {
+            any_disallow_unsigned = true;
+        }
+    }
+
+    // Check trusted registries (only if any are configured)
+    if !all_trusted_registries.is_empty() {
+        let matches_registry = all_trusted_registries.iter().any(|pattern| {
+            if let Some(prefix) = pattern.strip_suffix('*') {
+                oci_ref.starts_with(prefix)
+            } else {
+                oci_ref.starts_with(pattern.as_str())
+            }
+        });
+
+        if !matches_registry {
+            return (
+                "False",
+                "TrustedRegistryViolation",
+                "OCI artifact is not from a trusted registry",
+                (
+                    EventType::Warning,
+                    "TrustedRegistryViolation",
+                    format!(
+                        "Module {} artifact {} is not from a trusted registry",
+                        module_name, oci_ref
+                    ),
+                ),
+            );
+        }
+    }
+
+    // Check unsigned policy
+    if any_disallow_unsigned {
+        let has_cosign_key = spec
+            .signature
+            .as_ref()
+            .and_then(|s| s.cosign.as_ref())
+            .is_some_and(|c| !c.public_key.is_empty());
+
+        if !has_cosign_key {
+            return (
+                "False",
+                "UnsignedNotAllowed",
+                "Module has no signature but unsigned modules are not allowed",
+                (
+                    EventType::Warning,
+                    "UnsignedNotAllowed",
+                    format!(
+                        "Module {} has no signature but policy requires signing",
+                        module_name
+                    ),
+                ),
+            );
+        }
+    }
+
+    (
+        "True",
+        "ArtifactAvailable",
+        "OCI artifact reference is valid",
+        (
+            EventType::Normal,
+            "Available",
+            format!("Module {} artifact available: {}", module_name, oci_ref),
+        ),
+    )
+}
+
+/// Evaluate the Verified condition for a Module.
+/// Returns (status, reason, message, (event_type, event_reason, event_note)).
+fn evaluate_module_verification<'a>(
+    signature: &Option<ModuleSignature>,
+) -> (&'a str, &'a str, &'a str, (EventType, &'a str, String)) {
+    match signature {
+        None => (
+            "False",
+            "NotSigned",
+            "No signature configuration present",
+            (
+                EventType::Normal,
+                "Verified",
+                "Module has no signature configuration".to_string(),
+            ),
+        ),
+        Some(sig) => match &sig.cosign {
+            None => (
+                "False",
+                "NotSigned",
+                "No cosign signature configured",
+                (
+                    EventType::Normal,
+                    "Verified",
+                    "Module has no cosign signature configured".to_string(),
+                ),
+            ),
+            Some(cosign) => {
+                if is_valid_pem_public_key(&cosign.public_key) {
+                    (
+                        "True",
+                        "SignatureConfigured",
+                        "Cosign public key is configured and valid",
+                        (
+                            EventType::Normal,
+                            "Verified",
+                            "Module has valid cosign signature configuration".to_string(),
+                        ),
+                    )
+                } else {
+                    (
+                        "False",
+                        "SignatureInvalid",
+                        "Cosign public key is not valid PEM",
+                        (
+                            EventType::Warning,
+                            "SignatureInvalid",
+                            "Module cosign public key is not valid PEM".to_string(),
+                        ),
+                    )
+                }
+            }
+        },
+    }
+}
+
+fn error_policy_module(
+    _obj: Arc<Module>,
+    error: &OperatorError,
+    ctx: Arc<ControllerContext>,
+) -> Action {
+    warn!(error = %error, "Module reconciliation error, requeuing");
+    ctx.metrics
+        .reconciliations_total
+        .get_or_create(&ReconcileLabels {
+            controller: "module".to_string(),
+            result: "error".to_string(),
+        })
+        .inc();
+    Action::requeue(std::time::Duration::from_secs(30))
+}
+
+// ---------------------------------------------------------------------------
+// MachineConfig moduleRef resolution helper
+// ---------------------------------------------------------------------------
+
+/// Resolve module references against cluster-scoped Module CRDs.
+/// Returns (status, reason, message) for the ModulesResolved condition.
+async fn resolve_module_refs(
+    client: &Client,
+    module_refs: &[ModuleRef],
+) -> (&'static str, &'static str, String) {
+    if module_refs.is_empty() {
+        return (
+            "True",
+            "AllResolved",
+            "No module references to resolve".to_string(),
+        );
+    }
+
+    let modules_api: Api<Module> = Api::all(client.clone());
+    let module_list = match modules_api.list(&ListParams::default()).await {
+        Ok(list) => list,
+        Err(e) => {
+            warn!(error = %e, "Failed to list Modules for moduleRef resolution");
+            return (
+                "Unknown",
+                "ResolutionError",
+                "Failed to list Module resources".to_string(),
+            );
+        }
+    };
+
+    let existing_names: Vec<String> = module_list.iter().map(|m| m.name_any()).collect();
+    let missing: Vec<&str> = module_refs
+        .iter()
+        .filter(|mr| !existing_names.iter().any(|n| n == &mr.name))
+        .map(|mr| mr.name.as_str())
+        .collect();
+
+    if missing.is_empty() {
+        (
+            "True",
+            "AllResolved",
+            "All module references resolved".to_string(),
+        )
+    } else {
+        (
+            "False",
+            "ModulesNotFound",
+            format!("Missing modules: {}", missing.join(", ")),
+        )
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -2151,5 +2567,45 @@ mod tests {
         );
         assert_eq!(conditions[1].status, "False"); // Not resolved
         assert_eq!(conditions[2].status, "True"); // High is escalated
+    }
+
+    #[test]
+    fn module_verification_no_signature() {
+        let (status, reason, message, _event) = evaluate_module_verification(&None);
+        assert_eq!(status, "False");
+        assert_eq!(reason, "NotSigned");
+        assert!(message.contains("No signature"));
+    }
+
+    #[test]
+    fn module_verification_no_cosign() {
+        let sig = ModuleSignature { cosign: None };
+        let (status, reason, _message, _event) = evaluate_module_verification(&Some(sig));
+        assert_eq!(status, "False");
+        assert_eq!(reason, "NotSigned");
+    }
+
+    #[test]
+    fn module_verification_valid_pem() {
+        let sig = ModuleSignature {
+            cosign: Some(crate::crds::CosignSignature {
+                public_key: "-----BEGIN PUBLIC KEY-----\nMFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE\n-----END PUBLIC KEY-----".to_string(),
+            }),
+        };
+        let (status, reason, _message, _event) = evaluate_module_verification(&Some(sig));
+        assert_eq!(status, "True");
+        assert_eq!(reason, "SignatureConfigured");
+    }
+
+    #[test]
+    fn module_verification_invalid_pem() {
+        let sig = ModuleSignature {
+            cosign: Some(crate::crds::CosignSignature {
+                public_key: "not-a-pem-key".to_string(),
+            }),
+        };
+        let (status, reason, _message, _event) = evaluate_module_verification(&Some(sig));
+        assert_eq!(status, "False");
+        assert_eq!(reason, "SignatureInvalid");
     }
 }

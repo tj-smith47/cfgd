@@ -20,7 +20,7 @@ use uuid::Uuid;
 static OTEL_PROVIDER: std::sync::OnceLock<opentelemetry_sdk::trace::SdkTracerProvider> =
     std::sync::OnceLock::new();
 
-use crate::crds::{ClusterConfigPolicy, ConfigPolicy, DriftAlert, MachineConfig};
+use crate::crds::{ClusterConfigPolicy, ConfigPolicy, DriftAlert, MachineConfig, Module};
 use crate::gateway::GatewayConfig;
 
 #[tokio::main]
@@ -79,9 +79,15 @@ async fn main() -> Result<()> {
     if Path::new(&cert_dir).join("tls.crt").exists() {
         tracing::info!(cert_dir = %cert_dir, port = webhook_port, "Starting webhook server");
         let webhook_metrics = metrics.clone();
+        let webhook_client = client.clone();
         tokio::spawn(async move {
-            if let Err(e) =
-                webhook::run_webhook_server(&cert_dir, webhook_port, webhook_metrics).await
+            if let Err(e) = webhook::run_webhook_server(
+                &cert_dir,
+                webhook_port,
+                webhook_metrics,
+                webhook_client,
+            )
+            .await
             {
                 tracing::error!(error = %e, "Webhook server failed");
             }
@@ -294,5 +300,9 @@ fn log_crd_info() {
     tracing::info!(
         crd = %ClusterConfigPolicy::crd_name(),
         "Registered CRD: ClusterConfigPolicy"
+    );
+    tracing::info!(
+        crd = %Module::crd_name(),
+        "Registered CRD: Module"
     );
 }
