@@ -13,8 +13,13 @@ use tracing::{info, warn};
 
 use crate::crds::{ClusterConfigPolicySpec, ConfigPolicySpec, MachineConfigSpec};
 use crate::errors::OperatorError;
+use crate::metrics::{Metrics, WebhookLabels};
 
-pub async fn run_webhook_server(cert_dir: &str, port: u16) -> Result<(), OperatorError> {
+pub async fn run_webhook_server(
+    cert_dir: &str,
+    port: u16,
+    metrics: Metrics,
+) -> Result<(), OperatorError> {
     let cert_path = Path::new(cert_dir).join("tls.crt");
     let key_path = Path::new(cert_dir).join("tls.key");
 
@@ -55,7 +60,8 @@ pub async fn run_webhook_server(cert_dir: &str, port: u16) -> Result<(), Operato
             "/validate-clusterconfigpolicy",
             post(handle_validate_cluster_config_policy),
         )
-        .route("/healthz", axum::routing::get(|| async { "ok" }));
+        .route("/healthz", axum::routing::get(|| async { "ok" }))
+        .with_state(metrics);
 
     let addr: std::net::SocketAddr = ([0, 0, 0, 0], port).into();
     let listener = TcpListener::bind(addr)
@@ -113,66 +119,95 @@ pub async fn run_webhook_server(cert_dir: &str, port: u16) -> Result<(), Operato
 // ---------------------------------------------------------------------------
 
 async fn handle_validate_machine_config(
+    axum::extract::State(metrics): axum::extract::State<Metrics>,
     Json(review): Json<AdmissionReview<DynamicObject>>,
 ) -> Json<AdmissionReview<DynamicObject>> {
+    let start = std::time::Instant::now();
     let req: AdmissionRequest<DynamicObject> =
         match AdmissionReview::<DynamicObject>::try_into(review) {
             Ok(r) => r,
             Err(e) => {
+                record_webhook_metrics(&metrics, "validate_machineconfig", "error", start);
                 return Json(
                     AdmissionResponse::invalid(format!("bad admission request: {e}")).into_review(),
                 );
             }
         };
 
-    let resp = match validate_object_spec::<MachineConfigSpec>(&req) {
-        Ok(()) => AdmissionResponse::from(&req),
-        Err(reason) => AdmissionResponse::from(&req).deny(reason),
+    let (resp, result) = match validate_object_spec::<MachineConfigSpec>(&req) {
+        Ok(()) => (AdmissionResponse::from(&req), "allowed"),
+        Err(reason) => (AdmissionResponse::from(&req).deny(reason), "denied"),
     };
+    record_webhook_metrics(&metrics, "validate_machineconfig", result, start);
 
     Json(resp.into_review())
 }
 
 async fn handle_validate_config_policy(
+    axum::extract::State(metrics): axum::extract::State<Metrics>,
     Json(review): Json<AdmissionReview<DynamicObject>>,
 ) -> Json<AdmissionReview<DynamicObject>> {
+    let start = std::time::Instant::now();
     let req: AdmissionRequest<DynamicObject> =
         match AdmissionReview::<DynamicObject>::try_into(review) {
             Ok(r) => r,
             Err(e) => {
+                record_webhook_metrics(&metrics, "validate_configpolicy", "error", start);
                 return Json(
                     AdmissionResponse::invalid(format!("bad admission request: {e}")).into_review(),
                 );
             }
         };
 
-    let resp = match validate_object_spec::<ConfigPolicySpec>(&req) {
-        Ok(()) => AdmissionResponse::from(&req),
-        Err(reason) => AdmissionResponse::from(&req).deny(reason),
+    let (resp, result) = match validate_object_spec::<ConfigPolicySpec>(&req) {
+        Ok(()) => (AdmissionResponse::from(&req), "allowed"),
+        Err(reason) => (AdmissionResponse::from(&req).deny(reason), "denied"),
     };
+    record_webhook_metrics(&metrics, "validate_configpolicy", result, start);
 
     Json(resp.into_review())
 }
 
 async fn handle_validate_cluster_config_policy(
+    axum::extract::State(metrics): axum::extract::State<Metrics>,
     Json(review): Json<AdmissionReview<DynamicObject>>,
 ) -> Json<AdmissionReview<DynamicObject>> {
+    let start = std::time::Instant::now();
     let req: AdmissionRequest<DynamicObject> =
         match AdmissionReview::<DynamicObject>::try_into(review) {
             Ok(r) => r,
             Err(e) => {
+                record_webhook_metrics(&metrics, "validate_clusterconfigpolicy", "error", start);
                 return Json(
                     AdmissionResponse::invalid(format!("bad admission request: {e}")).into_review(),
                 );
             }
         };
 
-    let resp = match validate_object_spec::<ClusterConfigPolicySpec>(&req) {
-        Ok(()) => AdmissionResponse::from(&req),
-        Err(reason) => AdmissionResponse::from(&req).deny(reason),
+    let (resp, result) = match validate_object_spec::<ClusterConfigPolicySpec>(&req) {
+        Ok(()) => (AdmissionResponse::from(&req), "allowed"),
+        Err(reason) => (AdmissionResponse::from(&req).deny(reason), "denied"),
     };
+    record_webhook_metrics(&metrics, "validate_clusterconfigpolicy", result, start);
 
     Json(resp.into_review())
+}
+
+fn record_webhook_metrics(
+    metrics: &Metrics,
+    operation: &str,
+    result: &str,
+    start: std::time::Instant,
+) {
+    let labels = WebhookLabels {
+        operation: operation.to_string(),
+        result: result.to_string(),
+    };
+    metrics.webhook_requests_total.get_or_create(&labels).inc();
+    metrics
+        .webhook_duration_seconds
+        .get_or_create(&labels)
+        .observe(start.elapsed().as_secs_f64());
 }
 
 /// Trait for CRD specs that have a validate method.

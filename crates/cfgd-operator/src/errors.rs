@@ -19,4 +19,7 @@ pub enum OperatorError {
 
     #[error("Leader election error: {0}")]
     Leader(String),
+
+    #[error("Metrics server error: {0}")]
+    Metrics(String),
 }

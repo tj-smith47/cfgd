@@ -19,15 +19,17 @@ use crate::crds::{
     MachineConfigStatus, ModuleRef, PackageRef, version_satisfies,
 };
 use crate::errors::OperatorError;
+use crate::metrics::{DriftLabels, Metrics, PolicyLabels, ReconcileLabels};
 
 const MACHINE_CONFIG_FINALIZER: &str = "cfgd.io/machine-config-cleanup";
 
 pub struct ControllerContext {
     pub client: Client,
     pub recorder: Recorder,
+    pub metrics: Metrics,
 }
 
-pub async fn run(client: Client) -> Result<(), OperatorError> {
+pub async fn run(client: Client, metrics: Metrics) -> Result<(), OperatorError> {
     let reporter = Reporter {
         controller: "cfgd-operator".into(),
         instance: std::env::var("POD_NAME").ok(),
@@ -37,6 +39,7 @@ pub async fn run(client: Client) -> Result<(), OperatorError> {
     let ctx = Arc::new(ControllerContext {
         client: client.clone(),
         recorder,
+        metrics,
     });
 
     let machines: Api<MachineConfig> = Api::all(client.clone());
@@ -123,6 +126,7 @@ async fn reconcile_machine_config(
     obj: Arc<MachineConfig>,
     ctx: Arc<ControllerContext>,
 ) -> Result<Action, OperatorError> {
+    let start = std::time::Instant::now();
     let name = obj.name_any();
     let namespace = obj.namespace().unwrap_or_default();
 
@@ -318,7 +322,28 @@ async fn reconcile_machine_config(
             )
             .await
             .ok();
+
+        ctx.metrics
+            .drift_events_total
+            .get_or_create(&DriftLabels {
+                severity: "warning".to_string(),
+                namespace: namespace.clone(),
+            })
+            .inc();
     }
+
+    let labels = ReconcileLabels {
+        controller: "machine_config".to_string(),
+        result: "success".to_string(),
+    };
+    ctx.metrics
+        .reconciliations_total
+        .get_or_create(&labels)
+        .inc();
+    ctx.metrics
+        .reconciliation_duration_seconds
+        .get_or_create(&labels)
+        .observe(start.elapsed().as_secs_f64());
 
     Ok(Action::requeue(std::time::Duration::from_secs(60)))
 }
@@ -335,9 +360,16 @@ fn validate_spec(spec: &MachineConfigSpec) -> Result<(), OperatorError> {
 fn error_policy_mc(
     _obj: Arc<MachineConfig>,
     error: &OperatorError,
-    _ctx: Arc<ControllerContext>,
+    ctx: Arc<ControllerContext>,
 ) -> Action {
     warn!(error = %error, "MachineConfig reconciliation error, requeuing");
+    ctx.metrics
+        .reconciliations_total
+        .get_or_create(&ReconcileLabels {
+            controller: "machine_config".to_string(),
+            result: "error".to_string(),
+        })
+        .inc();
     Action::requeue(std::time::Duration::from_secs(30))
 }
 
@@ -349,6 +381,7 @@ async fn reconcile_drift_alert(
     obj: Arc<DriftAlert>,
     ctx: Arc<ControllerContext>,
 ) -> Result<Action, OperatorError> {
+    let start = std::time::Instant::now();
     let name = obj.name_any();
     let namespace = obj.namespace().unwrap_or_default();
     let mc_name = &obj.spec.machine_config_ref.name;
@@ -509,6 +542,14 @@ async fn reconcile_drift_alert(
             }
 
             if !has_drift_condition {
+                ctx.metrics
+                    .drift_events_total
+                    .get_or_create(&DriftLabels {
+                        severity: format!("{:?}", obj.spec.severity),
+                        namespace: namespace.clone(),
+                    })
+                    .inc();
+
                 let now = cfgd_core::utc_now_iso8601();
                 let mc_generation = mc.meta().generation;
                 let mc_status = serde_json::json!({
@@ -640,6 +681,19 @@ async fn reconcile_drift_alert(
         }
     }
 
+    let labels = ReconcileLabels {
+        controller: "drift_alert".to_string(),
+        result: "success".to_string(),
+    };
+    ctx.metrics
+        .reconciliations_total
+        .get_or_create(&labels)
+        .inc();
+    ctx.metrics
+        .reconciliation_duration_seconds
+        .get_or_create(&labels)
+        .observe(start.elapsed().as_secs_f64());
+
     Ok(Action::requeue(std::time::Duration::from_secs(60)))
 }
 
@@ -695,9 +749,16 @@ async fn cleanup_drift_alerts(client: &Client, namespace: &str, mc_name: &str) {
 fn error_policy_da(
     _obj: Arc<DriftAlert>,
     error: &OperatorError,
-    _ctx: Arc<ControllerContext>,
+    ctx: Arc<ControllerContext>,
 ) -> Action {
     warn!(error = %error, "DriftAlert reconciliation error, requeuing");
+    ctx.metrics
+        .reconciliations_total
+        .get_or_create(&ReconcileLabels {
+            controller: "drift_alert".to_string(),
+            result: "error".to_string(),
+        })
+        .inc();
     Action::requeue(std::time::Duration::from_secs(30))
 }
 
@@ -709,6 +770,7 @@ async fn reconcile_config_policy(
     obj: Arc<ConfigPolicy>,
     ctx: Arc<ControllerContext>,
 ) -> Result<Action, OperatorError> {
+    let start = std::time::Instant::now();
     let name = obj.name_any();
     let namespace = obj.namespace().unwrap_or_default();
 
@@ -864,6 +926,27 @@ async fn reconcile_config_policy(
             .ok();
     }
 
+    ctx.metrics
+        .devices_compliant
+        .get_or_create(&PolicyLabels {
+            policy: name.clone(),
+            namespace: namespace.clone(),
+        })
+        .set(i64::from(compliant_count));
+
+    let labels = ReconcileLabels {
+        controller: "config_policy".to_string(),
+        result: "success".to_string(),
+    };
+    ctx.metrics
+        .reconciliations_total
+        .get_or_create(&labels)
+        .inc();
+    ctx.metrics
+        .reconciliation_duration_seconds
+        .get_or_create(&labels)
+        .observe(start.elapsed().as_secs_f64());
+
     Ok(Action::requeue(std::time::Duration::from_secs(60)))
 }
 
@@ -945,9 +1028,16 @@ fn validate_policy_compliance(
 fn error_policy_cp(
     _obj: Arc<ConfigPolicy>,
     error: &OperatorError,
-    _ctx: Arc<ControllerContext>,
+    ctx: Arc<ControllerContext>,
 ) -> Action {
     warn!(error = %error, "ConfigPolicy reconciliation error, requeuing");
+    ctx.metrics
+        .reconciliations_total
+        .get_or_create(&ReconcileLabels {
+            controller: "config_policy".to_string(),
+            result: "error".to_string(),
+        })
+        .inc();
     Action::requeue(std::time::Duration::from_secs(30))
 }
 
@@ -1005,6 +1095,7 @@ async fn reconcile_cluster_config_policy(
     obj: Arc<ClusterConfigPolicy>,
     ctx: Arc<ControllerContext>,
 ) -> Result<Action, OperatorError> {
+    let start = std::time::Instant::now();
     let name = obj.name_any();
 
     info!(
@@ -1183,15 +1274,43 @@ async fn reconcile_cluster_config_policy(
             .ok();
     }
 
+    ctx.metrics
+        .devices_compliant
+        .get_or_create(&PolicyLabels {
+            policy: name.clone(),
+            namespace: String::new(), // cluster-scoped
+        })
+        .set(i64::from(compliant_count));
+
+    let labels = ReconcileLabels {
+        controller: "cluster_config_policy".to_string(),
+        result: "success".to_string(),
+    };
+    ctx.metrics
+        .reconciliations_total
+        .get_or_create(&labels)
+        .inc();
+    ctx.metrics
+        .reconciliation_duration_seconds
+        .get_or_create(&labels)
+        .observe(start.elapsed().as_secs_f64());
+
     Ok(Action::requeue(std::time::Duration::from_secs(60)))
 }
 
 fn error_policy_ccp(
     _obj: Arc<ClusterConfigPolicy>,
     error: &OperatorError,
-    _ctx: Arc<ControllerContext>,
+    ctx: Arc<ControllerContext>,
 ) -> Action {
     warn!(error = %error, "ClusterConfigPolicy reconciliation error, requeuing");
+    ctx.metrics
+        .reconciliations_total
+        .get_or_create(&ReconcileLabels {
+            controller: "cluster_config_policy".to_string(),
+            result: "error".to_string(),
+        })
+        .inc();
     Action::requeue(std::time::Duration::from_secs(30))
 }
 

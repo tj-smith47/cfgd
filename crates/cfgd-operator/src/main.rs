@@ -4,12 +4,15 @@ mod errors;
 mod gateway;
 mod health;
 mod leader;
+mod metrics;
 mod webhook;
 
 use std::path::Path;
+use std::sync::Arc;
 
 use anyhow::Result;
 use kube::Client;
+use tokio::sync::Mutex;
 use tracing_subscriber::EnvFilter;
 use uuid::Uuid;
 
@@ -48,6 +51,24 @@ async fn main() -> Result<()> {
         }
     });
 
+    let mut registry = prometheus_client::registry::Registry::default();
+    let metrics = metrics::Metrics::new(&mut registry);
+    let registry = Arc::new(Mutex::new(registry));
+
+    let metrics_port: u16 = std::env::var("METRICS_PORT")
+        .unwrap_or_else(|_| "8443".to_string())
+        .parse()
+        .unwrap_or(8443);
+
+    tokio::spawn({
+        let reg = registry.clone();
+        async move {
+            if let Err(e) = metrics::run_metrics_server(metrics_port, reg).await {
+                tracing::error!(error = %e, "Metrics server failed");
+            }
+        }
+    });
+
     let cert_dir = std::env::var("WEBHOOK_CERT_DIR")
         .unwrap_or_else(|_| "/tmp/k8s-webhook-server/serving-certs".to_string());
     let webhook_port: u16 = std::env::var("WEBHOOK_PORT")
@@ -57,8 +78,11 @@ async fn main() -> Result<()> {
 
     if Path::new(&cert_dir).join("tls.crt").exists() {
         tracing::info!(cert_dir = %cert_dir, port = webhook_port, "Starting webhook server");
+        let webhook_metrics = metrics.clone();
         tokio::spawn(async move {
-            if let Err(e) = webhook::run_webhook_server(&cert_dir, webhook_port).await {
+            if let Err(e) =
+                webhook::run_webhook_server(&cert_dir, webhook_port, webhook_metrics).await
+            {
                 tracing::error!(error = %e, "Webhook server failed");
             }
         });
@@ -89,7 +113,7 @@ async fn main() -> Result<()> {
             let le = leader::LeaderElection::new(client.clone(), namespace, identity);
             le.run(|| async {
                 health_state.set_ready();
-                run_operator(client).await.map_err(|e| {
+                run_operator(client, metrics).await.map_err(|e| {
                     errors::OperatorError::Leader(format!("Operator run failed: {e}"))
                 })
             })
@@ -97,7 +121,7 @@ async fn main() -> Result<()> {
             .map_err(|e| anyhow::anyhow!("{}", e))?;
         } else {
             health_state.set_ready();
-            run_operator(client).await?;
+            run_operator(client, metrics).await?;
         }
 
         Ok::<(), anyhow::Error>(())
@@ -120,7 +144,7 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-async fn run_operator(client: Client) -> Result<()> {
+async fn run_operator(client: Client, metrics: metrics::Metrics) -> Result<()> {
     // Device gateway — optional HTTP server for device checkin, enrollment, drift, web UI
     let gateway_enabled = std::env::var("DEVICE_GATEWAY_ENABLED")
         .map(|v| v == "true" || v == "1")
@@ -146,7 +170,7 @@ async fn run_operator(client: Client) -> Result<()> {
         // Spawn controllers with retry — if they fail, retry after delay
         tokio::spawn(async move {
             loop {
-                match controllers::run(client.clone()).await {
+                match controllers::run(client.clone(), metrics.clone()).await {
                     Ok(()) => break,
                     Err(e) => {
                         tracing::error!(error = %e, "Controllers failed — retrying in 5s");
@@ -161,7 +185,7 @@ async fn run_operator(client: Client) -> Result<()> {
             .await
             .map_err(|e| anyhow::anyhow!("{}", e))?;
     } else {
-        controllers::run(client).await?;
+        controllers::run(client, metrics).await?;
     }
 
     Ok(())
