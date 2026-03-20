@@ -762,4 +762,99 @@ mod tests {
         let short_names = crd.spec.names.short_names.as_ref().unwrap();
         assert!(short_names.contains(&"da".to_string()));
     }
+
+    #[test]
+    fn mc_validate_accepts_file_with_both_content_and_source() {
+        let mut spec = minimal_mc_spec("host1", "default");
+        spec.files.push(FileSpec {
+            path: "/etc/foo".to_string(),
+            content: Some("data".to_string()),
+            source: Some("https://example.com/foo".to_string()),
+            mode: "0644".to_string(),
+        });
+        // Both content and source is allowed — content takes priority at apply time
+        assert!(spec.validate().is_ok());
+    }
+
+    #[test]
+    fn mc_validate_rejects_file_mode_exceeding_7777() {
+        let mut spec = minimal_mc_spec("host1", "default");
+        spec.files.push(FileSpec {
+            path: "/etc/foo".to_string(),
+            content: Some("data".to_string()),
+            source: None,
+            mode: "17777".to_string(),
+        });
+        assert!(spec.validate().is_err());
+    }
+
+    #[test]
+    fn mc_validate_rejects_empty_module_ref_name() {
+        let mut spec = minimal_mc_spec("host1", "default");
+        spec.module_refs.push(ModuleRef {
+            name: String::new(),
+            required: false,
+        });
+        assert!(spec.validate().is_err());
+    }
+
+    #[test]
+    fn da_validate_rejects_empty_device_id() {
+        let spec = DriftAlertSpec {
+            device_id: String::new(),
+            machine_config_ref: MachineConfigReference {
+                name: "mc-1".to_string(),
+                namespace: None,
+            },
+            drift_details: vec![],
+            severity: DriftSeverity::Low,
+        };
+        assert!(spec.validate().is_err());
+    }
+
+    #[test]
+    fn da_validate_rejects_empty_mc_ref_name() {
+        let spec = DriftAlertSpec {
+            device_id: "dev-1".to_string(),
+            machine_config_ref: MachineConfigReference {
+                name: String::new(),
+                namespace: None,
+            },
+            drift_details: vec![],
+            severity: DriftSeverity::Low,
+        };
+        assert!(spec.validate().is_err());
+    }
+
+    #[test]
+    fn da_validate_accepts_valid() {
+        let spec = DriftAlertSpec {
+            device_id: "dev-1".to_string(),
+            machine_config_ref: MachineConfigReference {
+                name: "mc-1".to_string(),
+                namespace: None,
+            },
+            drift_details: vec![],
+            severity: DriftSeverity::Medium,
+        };
+        assert!(spec.validate().is_ok());
+    }
+
+    #[test]
+    fn ccp_validate_rejects_empty_package_name() {
+        let spec = ClusterConfigPolicySpec {
+            packages: vec![PackageRef { name: String::new(), version: None }],
+            ..Default::default()
+        };
+        assert!(spec.validate().is_err());
+    }
+
+    #[test]
+    fn ccp_validate_rejects_empty_module_name() {
+        let spec = ClusterConfigPolicySpec {
+            required_modules: vec![ModuleRef { name: String::new(), required: false }],
+            ..Default::default()
+        };
+        assert!(spec.validate().is_err());
+    }
 }

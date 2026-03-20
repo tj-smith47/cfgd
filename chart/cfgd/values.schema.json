@@ -49,9 +49,9 @@
               "type": "boolean",
               "description": "Enable leader election for HA deployments"
             },
-            "leaseDuration": { "type": "string" },
-            "renewDeadline": { "type": "string" },
-            "retryPeriod": { "type": "string" }
+            "leaseDuration": { "type": "string", "description": "Lease duration (e.g. 15s)" },
+            "renewDeadline": { "type": "string", "description": "Renew deadline (e.g. 10s)" },
+            "retryPeriod": { "type": "string", "description": "Retry period (e.g. 2s)" }
           }
         },
         "nodeSelector": { "type": "object" },

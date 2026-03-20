@@ -12,7 +12,9 @@ spec:
   policyTypes: [Ingress, Egress]
   ingress:
     - ports:
+        {{- if .Values.webhook.enabled }}
         - port: {{ .Values.webhook.port }}
+        {{- end }}
         {{- if .Values.deviceGateway.enabled }}
         - port: {{ .Values.deviceGateway.port }}
         {{- end }}
