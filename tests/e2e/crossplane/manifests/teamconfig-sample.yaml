@@ -1,0 +1,20 @@
+apiVersion: cfgd.io/v1alpha1
+kind: TeamConfig
+metadata:
+  name: test-team
+spec:
+  team: test-team
+  profile: developer
+  members:
+    - username: alice
+      hostname: dev-laptop-1
+    - username: bob
+      hostname: dev-laptop-2
+  policy:
+    required:
+      packages:
+        brew:
+          - kubectl
+          - git
+    requiredModules:
+      - corp-vpn
