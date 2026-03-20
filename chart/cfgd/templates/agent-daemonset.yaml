@@ -1,0 +1,105 @@
+{{- if .Values.agent.enabled }}
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: {{ include "cfgd.fullname" . }}-agent
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "cfgd.labels" . | nindent 4 }}
+    app.kubernetes.io/component: agent
+spec:
+  selector:
+    matchLabels:
+      {{- include "cfgd.agentSelectorLabels" . | nindent 6 }}
+  updateStrategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 1
+  template:
+    metadata:
+      labels:
+        {{- include "cfgd.agentSelectorLabels" . | nindent 8 }}
+    spec:
+      serviceAccountName: {{ include "cfgd.serviceAccountName" . }}
+      {{- with .Values.agent.priorityClassName }}
+      priorityClassName: {{ . }}
+      {{- end }}
+      hostPID: true
+      hostNetwork: true
+      containers:
+        - name: cfgd
+          image: "{{ .Values.agent.image.repository }}:{{ .Values.agent.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.agent.image.pullPolicy }}
+          command:
+            - /usr/local/bin/cfgd
+            - --config
+            - /etc/cfgd/cfgd.yaml
+            - daemon
+          env:
+            {{- if .Values.agent.apiKey }}
+            - name: CFGD_API_KEY
+              value: {{ .Values.agent.apiKey | quote }}
+            {{- else if .Values.agent.apiKeySecret.name }}
+            - name: CFGD_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.agent.apiKeySecret.name }}
+                  key: {{ .Values.agent.apiKeySecret.key }}
+            {{- end }}
+            - name: CFGD_DEVICE_ID
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+          securityContext:
+            privileged: true
+            readOnlyRootFilesystem: false
+          resources:
+            {{- toYaml .Values.agent.resources | nindent 12 }}
+          volumeMounts:
+            - name: host-root
+              mountPath: /host
+              readOnly: false
+            - name: host-proc
+              mountPath: /proc
+              readOnly: true
+            - name: host-sys
+              mountPath: /sys
+              readOnly: false
+            - name: host-etc
+              mountPath: /etc
+              readOnly: false
+            - name: cfgd-config
+              mountPath: /etc/cfgd/cfgd.yaml
+              subPath: cfgd.yaml
+              readOnly: true
+            {{- with .Values.agent.extraVolumeMounts }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+      volumes:
+        - name: host-root
+          hostPath:
+            path: /
+        - name: host-proc
+          hostPath:
+            path: /proc
+        - name: host-sys
+          hostPath:
+            path: /sys
+        - name: host-etc
+          hostPath:
+            path: /etc
+        - name: cfgd-config
+          configMap:
+            name: {{ include "cfgd.fullname" . }}-agent-config
+        {{- with .Values.agent.extraVolumes }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- with .Values.agent.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.agent.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}

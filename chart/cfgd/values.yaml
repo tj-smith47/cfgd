@@ -1,0 +1,136 @@
+# Operator configuration
+operator:
+  enabled: true
+  replicaCount: 1
+  image:
+    repository: ghcr.io/tj-smith47/cfgd-operator
+    tag: ""  # defaults to Chart.appVersion
+    pullPolicy: IfNotPresent
+  resources:
+    limits:
+      cpu: 200m
+      memory: 256Mi
+    requests:
+      cpu: 100m
+      memory: 128Mi
+  leaderElection:
+    enabled: true
+    leaseDuration: 15s
+    renewDeadline: 10s
+    retryPeriod: 2s
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+
+# Agent DaemonSet
+agent:
+  enabled: false
+  image:
+    repository: ghcr.io/tj-smith47/cfgd
+    tag: ""  # defaults to Chart.appVersion
+    pullPolicy: IfNotPresent
+  serverUrl: ""
+  apiKey: ""
+  apiKeySecret:
+    name: ""
+    key: "api-key"
+  reconcileInterval: "5m"
+  configSource: ""
+  profile: ""
+  resources:
+    limits:
+      cpu: 100m
+      memory: 128Mi
+    requests:
+      cpu: 50m
+      memory: 64Mi
+  nodeSelector: {}
+  tolerations:
+    - operator: Exists
+      effect: NoSchedule
+    - operator: Exists
+      effect: NoExecute
+  extraVolumes: []
+  extraVolumeMounts: []
+  priorityClassName: system-node-critical
+
+# Install CRDs
+installCRDs: true
+
+# Service account (shared)
+serviceAccount:
+  create: true
+  name: ""
+  annotations: {}
+
+# Webhook
+webhook:
+  enabled: true
+  port: 9443
+  certManager:
+    enabled: true
+    issuerRef:
+      name: cfgd-selfsigned-issuer
+      kind: Issuer
+  failurePolicy: Fail
+  timeoutSeconds: 10
+
+# Device gateway
+deviceGateway:
+  enabled: false
+  port: 8080
+  dbPath: /data/cfgd-gateway.db
+  apiKey: ""
+  apiKeySecret:
+    name: ""
+    key: "api-key"
+  enrollmentMethod: token
+  retentionDays: 90
+  persistence:
+    enabled: true
+    size: 1Gi
+    storageClass: ""
+
+# CSI driver (future)
+csiDriver:
+  enabled: false
+
+# Security contexts
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 65532
+  runAsGroup: 65532
+  fsGroup: 65532
+  seccompProfile:
+    type: RuntimeDefault
+
+containerSecurityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop: [ALL]
+
+# PDB
+podDisruptionBudget:
+  enabled: false
+  minAvailable: 1
+
+# Network policy
+networkPolicy:
+  enabled: false
+
+# Metrics
+metrics:
+  enabled: true
+  port: 8443
+  serviceMonitor:
+    enabled: false
+    interval: 30s
+
+# Health probes
+probes:
+  port: 8081
+
+# RBAC examples (opt-in)
+rbacExamples:
+  enabled: false

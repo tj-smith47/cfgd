@@ -1,0 +1,13 @@
+{{- if and .Values.operator.enabled .Values.podDisruptionBudget.enabled (gt (int .Values.operator.replicaCount) 1) }}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "cfgd.fullname" . }}-operator
+  labels:
+    {{- include "cfgd.labels" . | nindent 4 }}
+spec:
+  minAvailable: {{ .Values.podDisruptionBudget.minAvailable }}
+  selector:
+    matchLabels:
+      {{- include "cfgd.operatorSelectorLabels" . | nindent 6 }}
+{{- end }}

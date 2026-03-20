@@ -1,0 +1,31 @@
+{{- if and .Values.operator.enabled .Values.webhook.enabled .Values.webhook.certManager.enabled }}
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: {{ include "cfgd.fullname" . }}-selfsigned-issuer
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "cfgd.labels" . | nindent 4 }}
+spec:
+  selfSigned: {}
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: {{ include "cfgd.webhookCertSecret" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "cfgd.labels" . | nindent 4 }}
+spec:
+  secretName: {{ include "cfgd.webhookCertSecret" . }}
+  issuerRef:
+    name: {{ include "cfgd.fullname" . }}-selfsigned-issuer
+    kind: Issuer
+  dnsNames:
+    - {{ include "cfgd.fullname" . }}-webhook
+    - {{ include "cfgd.fullname" . }}-webhook.{{ .Release.Namespace }}
+    - {{ include "cfgd.fullname" . }}-webhook.{{ .Release.Namespace }}.svc
+    - {{ include "cfgd.fullname" . }}-webhook.{{ .Release.Namespace }}.svc.cluster.local
+  duration: 8760h  # 1 year
+  renewBefore: 720h  # 30 days
+{{- end }}

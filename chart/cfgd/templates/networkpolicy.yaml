@@ -1,0 +1,29 @@
+{{- if and .Values.operator.enabled .Values.networkPolicy.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "cfgd.fullname" . }}-operator
+  labels:
+    {{- include "cfgd.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "cfgd.operatorSelectorLabels" . | nindent 6 }}
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - ports:
+        - port: {{ .Values.webhook.port }}
+        {{- if .Values.deviceGateway.enabled }}
+        - port: {{ .Values.deviceGateway.port }}
+        {{- end }}
+        - port: {{ .Values.probes.port }}
+        {{- if .Values.metrics.enabled }}
+        - port: {{ .Values.metrics.port }}
+        {{- end }}
+      from:
+        - namespaceSelector: {}
+  egress:
+    - ports:
+        - port: 443
+        - port: 6443
+{{- end }}

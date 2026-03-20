@@ -1,0 +1,15 @@
+{{- if and .Values.operator.enabled .Values.metrics.enabled .Values.metrics.serviceMonitor.enabled }}
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ include "cfgd.fullname" . }}-operator
+  labels:
+    {{- include "cfgd.labels" . | nindent 4 }}
+spec:
+  selector:
+    matchLabels:
+      {{- include "cfgd.operatorSelectorLabels" . | nindent 6 }}
+  endpoints:
+    - port: metrics
+      interval: {{ .Values.metrics.serviceMonitor.interval }}
+{{- end }}

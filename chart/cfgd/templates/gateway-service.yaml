@@ -1,0 +1,18 @@
+{{- if and .Values.operator.enabled .Values.deviceGateway.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "cfgd.fullname" . }}-gateway
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "cfgd.labels" . | nindent 4 }}
+spec:
+  type: ClusterIP
+  ports:
+    - port: {{ .Values.deviceGateway.port }}
+      targetPort: gateway
+      protocol: TCP
+      name: http-gateway
+  selector:
+    {{- include "cfgd.operatorSelectorLabels" . | nindent 4 }}
+{{- end }}

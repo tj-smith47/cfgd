@@ -24,6 +24,8 @@
 # Docker and deployment
 !Dockerfile
 !Dockerfile.*
+!chart/
+!chart/**
 !charts/
 !charts/**
 !manifests/

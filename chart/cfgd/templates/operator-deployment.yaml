@@ -1,0 +1,140 @@
+{{- if .Values.operator.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "cfgd.fullname" . }}-operator
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "cfgd.labels" . | nindent 4 }}
+    app.kubernetes.io/component: operator
+spec:
+  replicas: {{ .Values.operator.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "cfgd.operatorSelectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "cfgd.operatorSelectorLabels" . | nindent 8 }}
+    spec:
+      serviceAccountName: {{ include "cfgd.serviceAccountName" . }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: operator
+          image: "{{ .Values.operator.image.repository }}:{{ .Values.operator.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.operator.image.pullPolicy }}
+          securityContext:
+            {{- toYaml .Values.containerSecurityContext | nindent 12 }}
+          env:
+            - name: RUST_LOG
+              value: "info"
+            - name: HEALTH_PORT
+              value: {{ .Values.probes.port | quote }}
+            {{- if .Values.operator.leaderElection.enabled }}
+            - name: LEADER_ELECTION_ENABLED
+              value: "true"
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            {{- end }}
+            {{- if .Values.webhook.enabled }}
+            - name: WEBHOOK_CERT_DIR
+              value: "/tmp/k8s-webhook-server/serving-certs"
+            - name: WEBHOOK_PORT
+              value: {{ .Values.webhook.port | quote }}
+            {{- end }}
+            {{- if .Values.deviceGateway.enabled }}
+            - name: DEVICE_GATEWAY_ENABLED
+              value: "true"
+            - name: DEVICE_GATEWAY_PORT
+              value: {{ .Values.deviceGateway.port | quote }}
+            - name: CFGD_SERVER_DB_PATH
+              value: {{ .Values.deviceGateway.dbPath | quote }}
+            - name: CFGD_ENROLLMENT_METHOD
+              value: {{ .Values.deviceGateway.enrollmentMethod | quote }}
+            - name: CFGD_RETENTION_DAYS
+              value: {{ .Values.deviceGateway.retentionDays | quote }}
+            {{- if .Values.deviceGateway.apiKeySecret.name }}
+            - name: CFGD_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.deviceGateway.apiKeySecret.name }}
+                  key: {{ .Values.deviceGateway.apiKeySecret.key }}
+            {{- else if .Values.deviceGateway.apiKey }}
+            - name: CFGD_API_KEY
+              value: {{ .Values.deviceGateway.apiKey | quote }}
+            {{- end }}
+            {{- end }}
+          ports:
+            {{- if .Values.webhook.enabled }}
+            - name: webhook
+              containerPort: {{ .Values.webhook.port }}
+              protocol: TCP
+            {{- end }}
+            {{- if .Values.deviceGateway.enabled }}
+            - name: gateway
+              containerPort: {{ .Values.deviceGateway.port }}
+              protocol: TCP
+            {{- end }}
+            - name: health
+              containerPort: {{ .Values.probes.port }}
+              protocol: TCP
+            {{- if .Values.metrics.enabled }}
+            - name: metrics
+              containerPort: {{ .Values.metrics.port }}
+              protocol: TCP
+            {{- end }}
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: health
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: health
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          volumeMounts:
+            {{- if .Values.webhook.enabled }}
+            - name: webhook-certs
+              mountPath: /tmp/k8s-webhook-server/serving-certs
+              readOnly: true
+            {{- end }}
+            {{- if and .Values.deviceGateway.enabled .Values.deviceGateway.persistence.enabled }}
+            - name: gateway-data
+              mountPath: /data
+            {{- end }}
+          resources:
+            {{- toYaml .Values.operator.resources | nindent 12 }}
+      volumes:
+        {{- if .Values.webhook.enabled }}
+        - name: webhook-certs
+          secret:
+            secretName: {{ include "cfgd.webhookCertSecret" . }}
+        {{- end }}
+        {{- if and .Values.deviceGateway.enabled .Values.deviceGateway.persistence.enabled }}
+        - name: gateway-data
+          persistentVolumeClaim:
+            claimName: {{ include "cfgd.fullname" . }}-gateway-data
+        {{- end }}
+      {{- with .Values.operator.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.operator.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.operator.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}

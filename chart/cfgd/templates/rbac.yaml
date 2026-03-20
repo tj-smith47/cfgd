@@ -1,0 +1,51 @@
+{{- if and .Values.serviceAccount.create .Values.operator.enabled }}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "cfgd.fullname" . }}-operator
+  labels:
+    {{- include "cfgd.labels" . | nindent 4 }}
+rules:
+  # Full CRUD on cfgd CRDs
+  - apiGroups: ["cfgd.io"]
+    resources: ["machineconfigs", "configpolicies", "clusterconfigpolicies", "driftalerts"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # Status subresource patching
+  - apiGroups: ["cfgd.io"]
+    resources: ["machineconfigs/status", "configpolicies/status", "clusterconfigpolicies/status", "driftalerts/status"]
+    verbs: ["get", "update", "patch"]
+  # Finalizer updates
+  - apiGroups: ["cfgd.io"]
+    resources: ["machineconfigs/finalizers", "configpolicies/finalizers", "clusterconfigpolicies/finalizers", "driftalerts/finalizers"]
+    verbs: ["update"]
+  # Namespace awareness for multi-namespace operation
+  - apiGroups: [""]
+    resources: ["namespaces"]
+    verbs: ["get", "list", "watch"]
+  # Events for recording operator activity
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["create", "patch"]
+  - apiGroups: ["events.k8s.io"]
+    resources: ["events"]
+    verbs: ["create", "patch"]
+  # Leader election
+  - apiGroups: ["coordination.k8s.io"]
+    resources: ["leases"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "cfgd.fullname" . }}-operator
+  labels:
+    {{- include "cfgd.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "cfgd.fullname" . }}-operator
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "cfgd.serviceAccountName" . }}
+    namespace: {{ .Release.Namespace }}
+{{- end }}

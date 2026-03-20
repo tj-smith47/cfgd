@@ -1,0 +1,17 @@
+{{- if and .Values.operator.enabled .Values.metrics.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "cfgd.fullname" . }}-metrics
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "cfgd.labels" . | nindent 4 }}
+spec:
+  ports:
+    - name: metrics
+      port: {{ .Values.metrics.port }}
+      targetPort: metrics
+      protocol: TCP
+  selector:
+    {{- include "cfgd.operatorSelectorLabels" . | nindent 4 }}
+{{- end }}

@@ -1,0 +1,18 @@
+{{- if and .Values.operator.enabled .Values.deviceGateway.enabled .Values.deviceGateway.persistence.enabled }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "cfgd.fullname" . }}-gateway-data
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "cfgd.labels" . | nindent 4 }}
+spec:
+  accessModes:
+    - ReadWriteOnce
+  {{- if .Values.deviceGateway.persistence.storageClass }}
+  storageClassName: {{ .Values.deviceGateway.persistence.storageClass | quote }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.deviceGateway.persistence.size }}
+{{- end }}

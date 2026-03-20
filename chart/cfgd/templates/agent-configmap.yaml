@@ -1,0 +1,36 @@
+{{- if .Values.agent.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "cfgd.fullname" . }}-agent-config
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "cfgd.labels" . | nindent 4 }}
+    app.kubernetes.io/component: agent
+data:
+  cfgd.yaml: |
+    apiVersion: cfgd.io/v1alpha1
+    kind: Config
+    metadata:
+      name: {{ include "cfgd.fullname" . }}-agent
+    spec:
+      profile: {{ .Values.agent.profile | default "default" }}
+      {{- if or .Values.agent.configSource .Values.agent.serverUrl }}
+      origin:
+        {{- if .Values.agent.configSource }}
+        - type: Git
+          url: {{ .Values.agent.configSource }}
+          branch: main
+        {{- end }}
+        {{- if .Values.agent.serverUrl }}
+        - type: Server
+          url: {{ .Values.agent.serverUrl }}
+        {{- end }}
+      {{- end }}
+      daemon:
+        enabled: true
+        reconcile:
+          interval: {{ .Values.agent.reconcileInterval | default "5m" | quote }}
+          autoApply: true
+          driftPolicy: Auto
+{{- end }}
