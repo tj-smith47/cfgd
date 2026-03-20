@@ -1,15 +1,24 @@
+use std::path::PathBuf;
+
 use tonic::{Request, Response, Status};
 
 use crate::csi::v1::identity_server::Identity;
 use crate::csi::v1::{
     GetPluginCapabilitiesRequest, GetPluginCapabilitiesResponse, GetPluginInfoRequest,
-    GetPluginInfoResponse, PluginCapability, ProbeRequest, ProbeResponse,
-    plugin_capability,
+    GetPluginInfoResponse, ProbeRequest, ProbeResponse,
 };
 
 pub const DRIVER_NAME: &str = "csi.cfgd.io";
 
-pub struct CfgdIdentity;
+pub struct CfgdIdentity {
+    cache_dir: PathBuf,
+}
+
+impl CfgdIdentity {
+    pub fn new(cache_dir: PathBuf) -> Self {
+        Self { cache_dir }
+    }
+}
 
 #[tonic::async_trait]
 impl Identity for CfgdIdentity {
@@ -30,14 +39,10 @@ impl Identity for CfgdIdentity {
         _request: Request<GetPluginCapabilitiesRequest>,
     ) -> Result<Response<GetPluginCapabilitiesResponse>, Status> {
         tracing::debug!("GetPluginCapabilities called");
+        // Node-only plugin — no plugin-level capabilities to advertise.
+        // Node capabilities (STAGE_UNSTAGE_VOLUME) are reported via NodeGetCapabilities.
         Ok(Response::new(GetPluginCapabilitiesResponse {
-            capabilities: vec![PluginCapability {
-                r#type: Some(plugin_capability::Type::VolumeExpansion(
-                    plugin_capability::VolumeExpansion {
-                        r#type: 0, // UNKNOWN — we don't support expansion
-                    },
-                )),
-            }],
+            capabilities: vec![],
         }))
     }
 
@@ -46,7 +51,14 @@ impl Identity for CfgdIdentity {
         _request: Request<ProbeRequest>,
     ) -> Result<Response<ProbeResponse>, Status> {
         tracing::debug!("Probe called");
-        Ok(Response::new(ProbeResponse { ready: Some(true) }))
+        let ready = self.cache_dir.is_dir();
+        if !ready {
+            tracing::warn!(
+                cache_dir = %self.cache_dir.display(),
+                "probe: cache directory not accessible"
+            );
+        }
+        Ok(Response::new(ProbeResponse { ready: Some(ready) }))
     }
 }
 
@@ -54,36 +66,55 @@ impl Identity for CfgdIdentity {
 mod tests {
     use super::*;
 
+    fn test_identity(dir: &std::path::Path) -> CfgdIdentity {
+        CfgdIdentity::new(dir.to_path_buf())
+    }
+
     #[tokio::test]
-    async fn get_plugin_info_returns_driver_name() {
-        let svc = CfgdIdentity;
+    async fn get_plugin_info_returns_driver_name_and_version() {
+        let dir = tempfile::tempdir().unwrap();
+        let svc = test_identity(dir.path());
         let resp = svc
             .get_plugin_info(Request::new(GetPluginInfoRequest {}))
             .await
             .unwrap();
         let info = resp.into_inner();
         assert_eq!(info.name, DRIVER_NAME);
-        assert!(!info.vendor_version.is_empty());
+        assert_eq!(info.vendor_version, env!("CARGO_PKG_VERSION"));
     }
 
     #[tokio::test]
-    async fn get_plugin_capabilities_returns_capabilities() {
-        let svc = CfgdIdentity;
+    async fn get_plugin_capabilities_returns_empty() {
+        let dir = tempfile::tempdir().unwrap();
+        let svc = test_identity(dir.path());
         let resp = svc
             .get_plugin_capabilities(Request::new(GetPluginCapabilitiesRequest {}))
             .await
             .unwrap();
-        let caps = resp.into_inner();
-        assert!(!caps.capabilities.is_empty());
+        assert!(
+            resp.into_inner().capabilities.is_empty(),
+            "Node-only plugin should not advertise plugin-level capabilities"
+        );
     }
 
     #[tokio::test]
-    async fn probe_returns_ready() {
-        let svc = CfgdIdentity;
+    async fn probe_returns_ready_when_cache_dir_exists() {
+        let dir = tempfile::tempdir().unwrap();
+        let svc = test_identity(dir.path());
         let resp = svc
             .probe(Request::new(ProbeRequest {}))
             .await
             .unwrap();
         assert_eq!(resp.into_inner().ready, Some(true));
+    }
+
+    #[tokio::test]
+    async fn probe_returns_not_ready_when_cache_dir_missing() {
+        let svc = CfgdIdentity::new(PathBuf::from("/nonexistent/cfgd-csi-test-path"));
+        let resp = svc
+            .probe(Request::new(ProbeRequest {}))
+            .await
+            .unwrap();
+        assert_eq!(resp.into_inner().ready, Some(false));
     }
 }

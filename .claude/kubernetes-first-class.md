@@ -694,8 +694,8 @@ A CSI driver is a separate binary deployed as a DaemonSet implementing the gRPC 
 
 **Identity Service**:
 - `GetPluginInfo`: returns driver name `csi.cfgd.io`
-- `GetPluginCapabilities`: `VOLUME_CONDITION` (optional)
-- `Probe`: health check
+- `GetPluginCapabilities`: empty (Node-only plugin, no plugin-level capabilities)
+- `Probe`: health check (validates cache directory accessibility)
 
 **Node Service**:
 - `NodeGetCapabilities`: `STAGE_UNSTAGE_VOLUME`
