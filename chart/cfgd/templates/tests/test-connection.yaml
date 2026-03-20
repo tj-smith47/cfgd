@@ -1,0 +1,22 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: "{{ include "cfgd.fullname" . }}-test"
+  labels:
+    {{- include "cfgd.labels" . | nindent 4 }}
+  annotations:
+    "helm.sh/hook": test
+spec:
+  containers:
+    - name: test
+      image: bitnami/kubectl:latest
+      command: ['sh', '-c']
+      args:
+        - |
+          echo "Checking CRDs..."
+          kubectl get crd machineconfigs.cfgd.io || exit 1
+          kubectl get crd configpolicies.cfgd.io || exit 1
+          kubectl get crd driftalerts.cfgd.io || exit 1
+          kubectl get crd clusterconfigpolicies.cfgd.io || exit 1
+          echo "All CRDs established"
+  restartPolicy: Never

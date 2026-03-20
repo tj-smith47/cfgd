@@ -1,0 +1,9 @@
+operator:
+  enabled: true
+  replicaCount: 1
+agent:
+  enabled: false
+webhook:
+  enabled: true
+deviceGateway:
+  enabled: false

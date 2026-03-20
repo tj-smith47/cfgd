@@ -1,0 +1,333 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "title": "cfgd Helm Chart Values",
+  "type": "object",
+  "properties": {
+    "operator": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "description": "Enable the cfgd operator deployment"
+        },
+        "replicaCount": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Number of operator replicas"
+        },
+        "image": {
+          "type": "object",
+          "properties": {
+            "repository": {
+              "type": "string",
+              "description": "Operator container image repository"
+            },
+            "tag": {
+              "type": "string",
+              "description": "Operator container image tag (defaults to Chart.appVersion)"
+            },
+            "pullPolicy": {
+              "type": "string",
+              "enum": ["Always", "IfNotPresent", "Never"],
+              "description": "Image pull policy"
+            }
+          },
+          "required": ["repository"]
+        },
+        "resources": {
+          "type": "object",
+          "description": "CPU/memory resource requests and limits",
+          "properties": {
+            "limits": { "type": "object" },
+            "requests": { "type": "object" }
+          }
+        },
+        "leaderElection": {
+          "type": "object",
+          "properties": {
+            "enabled": {
+              "type": "boolean",
+              "description": "Enable leader election for HA deployments"
+            },
+            "leaseDuration": { "type": "string" },
+            "renewDeadline": { "type": "string" },
+            "retryPeriod": { "type": "string" }
+          }
+        },
+        "nodeSelector": { "type": "object" },
+        "tolerations": { "type": "array" },
+        "affinity": { "type": "object" }
+      },
+      "required": ["image"]
+    },
+    "agent": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "description": "Enable the cfgd agent DaemonSet"
+        },
+        "image": {
+          "type": "object",
+          "properties": {
+            "repository": {
+              "type": "string",
+              "description": "Agent container image repository"
+            },
+            "tag": { "type": "string" },
+            "pullPolicy": {
+              "type": "string",
+              "enum": ["Always", "IfNotPresent", "Never"]
+            }
+          },
+          "required": ["repository"]
+        },
+        "serverUrl": {
+          "type": "string",
+          "description": "URL of the cfgd operator/gateway"
+        },
+        "apiKey": {
+          "type": "string",
+          "description": "API key for agent authentication (use apiKeySecret for production)"
+        },
+        "apiKeySecret": {
+          "type": "object",
+          "properties": {
+            "name": { "type": "string" },
+            "key": { "type": "string" }
+          }
+        },
+        "reconcileInterval": {
+          "type": "string",
+          "description": "Reconciliation interval (e.g. 5m, 1h)"
+        },
+        "configSource": {
+          "type": "string",
+          "description": "Git repository URL for configuration source"
+        },
+        "profile": {
+          "type": "string",
+          "description": "Configuration profile to apply"
+        },
+        "resources": {
+          "type": "object",
+          "properties": {
+            "limits": { "type": "object" },
+            "requests": { "type": "object" }
+          }
+        },
+        "nodeSelector": { "type": "object" },
+        "tolerations": { "type": "array" },
+        "extraVolumes": { "type": "array" },
+        "extraVolumeMounts": { "type": "array" },
+        "priorityClassName": { "type": "string" }
+      }
+    },
+    "installCRDs": {
+      "type": "boolean",
+      "description": "Install CRD manifests with the chart"
+    },
+    "serviceAccount": {
+      "type": "object",
+      "properties": {
+        "create": {
+          "type": "boolean",
+          "description": "Create a ServiceAccount"
+        },
+        "name": {
+          "type": "string",
+          "description": "Override ServiceAccount name"
+        },
+        "annotations": {
+          "type": "object",
+          "description": "Annotations to add to the ServiceAccount"
+        }
+      }
+    },
+    "webhook": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "description": "Enable the admission webhook"
+        },
+        "port": {
+          "type": "integer",
+          "description": "Webhook listen port"
+        },
+        "certManager": {
+          "type": "object",
+          "properties": {
+            "enabled": {
+              "type": "boolean",
+              "description": "Use cert-manager for webhook TLS certificates"
+            },
+            "issuerRef": {
+              "type": "object",
+              "properties": {
+                "name": { "type": "string" },
+                "kind": { "type": "string" }
+              }
+            }
+          }
+        },
+        "failurePolicy": {
+          "type": "string",
+          "enum": ["Fail", "Ignore"]
+        },
+        "timeoutSeconds": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 30
+        }
+      }
+    },
+    "deviceGateway": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "description": "Enable the device gateway"
+        },
+        "port": {
+          "type": "integer",
+          "description": "Gateway listen port"
+        },
+        "dbPath": {
+          "type": "string",
+          "description": "Path to the gateway SQLite database"
+        },
+        "apiKey": {
+          "type": "string",
+          "description": "API key for gateway authentication (use apiKeySecret for production)"
+        },
+        "apiKeySecret": {
+          "type": "object",
+          "properties": {
+            "name": { "type": "string" },
+            "key": { "type": "string" }
+          }
+        },
+        "enrollmentMethod": {
+          "type": "string",
+          "enum": ["token", "ssh", "gpg"],
+          "description": "Device enrollment method"
+        },
+        "retentionDays": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Number of days to retain gateway data"
+        },
+        "persistence": {
+          "type": "object",
+          "properties": {
+            "enabled": {
+              "type": "boolean",
+              "description": "Enable persistent storage for gateway database"
+            },
+            "size": {
+              "type": "string",
+              "description": "PVC size (e.g. 1Gi, 5Gi)"
+            },
+            "storageClass": {
+              "type": "string",
+              "description": "StorageClass name (empty for cluster default)"
+            }
+          }
+        }
+      }
+    },
+    "csiDriver": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "description": "Enable the CSI driver"
+        }
+      }
+    },
+    "podSecurityContext": {
+      "type": "object",
+      "description": "Pod-level security context"
+    },
+    "containerSecurityContext": {
+      "type": "object",
+      "description": "Container-level security context"
+    },
+    "podDisruptionBudget": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "description": "Enable PodDisruptionBudget"
+        },
+        "minAvailable": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Minimum number of available pods"
+        }
+      }
+    },
+    "networkPolicy": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "description": "Enable NetworkPolicy"
+        }
+      }
+    },
+    "metrics": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "description": "Enable metrics endpoint"
+        },
+        "port": {
+          "type": "integer",
+          "description": "Metrics listen port"
+        },
+        "serviceMonitor": {
+          "type": "object",
+          "properties": {
+            "enabled": {
+              "type": "boolean",
+              "description": "Create a Prometheus ServiceMonitor resource"
+            },
+            "interval": {
+              "type": "string",
+              "description": "Scrape interval (e.g. 30s)"
+            }
+          }
+        }
+      }
+    },
+    "probes": {
+      "type": "object",
+      "properties": {
+        "port": {
+          "type": "integer",
+          "description": "Health probe listen port"
+        }
+      }
+    },
+    "rbacExamples": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "description": "Install example RBAC resources"
+        }
+      }
+    },
+    "nameOverride": {
+      "type": "string",
+      "description": "Override chart name"
+    },
+    "fullnameOverride": {
+      "type": "string",
+      "description": "Override full release name"
+    }
+  }
+}

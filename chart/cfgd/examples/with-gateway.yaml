@@ -1,0 +1,10 @@
+operator:
+  enabled: true
+  replicaCount: 1
+webhook:
+  enabled: true
+deviceGateway:
+  enabled: true
+  persistence:
+    enabled: true
+    size: 5Gi

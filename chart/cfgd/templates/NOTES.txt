@@ -1,0 +1,20 @@
+Thank you for installing {{ .Chart.Name }}!
+
+{{- if .Values.operator.enabled }}
+
+Operator: {{ include "cfgd.fullname" . }}-operator
+  Verify: kubectl get pods -n {{ .Release.Namespace }} -l app.kubernetes.io/name={{ include "cfgd.name" . }}
+  CRDs:   kubectl get crd | grep cfgd.io
+{{- end }}
+
+{{- if .Values.deviceGateway.enabled }}
+
+Gateway: http://{{ include "cfgd.fullname" . }}-gateway.{{ .Release.Namespace }}:{{ .Values.deviceGateway.port }}
+{{- end }}
+
+{{- if .Values.agent.enabled }}
+
+Agent: kubectl get ds -n {{ .Release.Namespace }} -l app.kubernetes.io/component=agent
+{{- end }}
+
+Documentation: https://github.com/tj-smith47/cfgd

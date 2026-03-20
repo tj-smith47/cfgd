@@ -1,0 +1,24 @@
+operator:
+  enabled: true
+  replicaCount: 2
+  leaderElection:
+    enabled: true
+agent:
+  enabled: true
+  configSource: "https://github.com/myorg/dotfiles"
+  profile: developer
+webhook:
+  enabled: true
+deviceGateway:
+  enabled: true
+  persistence:
+    enabled: true
+    size: 10Gi
+metrics:
+  enabled: true
+  serviceMonitor:
+    enabled: true
+podDisruptionBudget:
+  enabled: true
+networkPolicy:
+  enabled: true
