@@ -35,6 +35,21 @@ spec:
         properties:
           spec:
             properties:
+              debugModules:
+                default: []
+                description: Modules staged as debug-only (CSI volume without volumeMount on declared containers).
+                items:
+                  description: Reference to a module that should be installed on the machine.
+                  properties:
+                    name:
+                      type: string
+                    required:
+                      default: false
+                      type: boolean
+                  required:
+                  - name
+                  type: object
+                type: array
               packageVersions:
                 additionalProperties:
                   type: string

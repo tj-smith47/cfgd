@@ -15,7 +15,7 @@ use tracing::{info, warn};
 
 use crate::crds::{
     ClusterConfigPolicy, ClusterConfigPolicySpec, ConfigPolicy, ConfigPolicySpec, DriftAlertSpec,
-    MachineConfigSpec, Module, ModuleSpec,
+    MachineConfigSpec, Module, ModuleSpec, MountPolicy,
 };
 use crate::errors::OperatorError;
 use crate::metrics::{Metrics, WebhookLabels};
@@ -437,14 +437,22 @@ fn sanitize_k8s_name(name: &str) -> String {
     cfgd_core::sanitize_k8s_name(name)
 }
 
-/// Collect required modules from ConfigPolicy and ClusterConfigPolicy.
-/// ClusterConfigPolicy entries are filtered by their namespaceSelector against
-/// the pod's namespace labels.
-async fn collect_required_modules(
+/// Modules collected from policies, split by mount behavior.
+struct PolicyModules {
+    required: Vec<String>,
+    debug: Vec<String>,
+}
+
+/// Collect required and debug modules from ConfigPolicy and ClusterConfigPolicy.
+/// ClusterConfigPolicy entries are filtered by their namespaceSelector.
+async fn collect_policy_modules(
     client: &Client,
     namespace: &str,
-) -> Vec<String> {
-    let mut required = Vec::new();
+) -> PolicyModules {
+    let mut result = PolicyModules {
+        required: Vec::new(),
+        debug: Vec::new(),
+    };
 
     // Namespace-scoped ConfigPolicy
     if let Ok(policies) = Api::<ConfigPolicy>::namespaced(client.clone(), namespace)
@@ -453,8 +461,13 @@ async fn collect_required_modules(
     {
         for policy in &policies {
             for module_ref in &policy.spec.required_modules {
-                if module_ref.required && !required.contains(&module_ref.name) {
-                    required.push(module_ref.name.clone());
+                if module_ref.required && !result.required.contains(&module_ref.name) {
+                    result.required.push(module_ref.name.clone());
+                }
+            }
+            for module_ref in &policy.spec.debug_modules {
+                if !result.debug.contains(&module_ref.name) {
+                    result.debug.push(module_ref.name.clone());
                 }
             }
         }
@@ -479,14 +492,19 @@ async fn collect_required_modules(
                 continue;
             }
             for module_ref in &policy.spec.required_modules {
-                if module_ref.required && !required.contains(&module_ref.name) {
-                    required.push(module_ref.name.clone());
+                if module_ref.required && !result.required.contains(&module_ref.name) {
+                    result.required.push(module_ref.name.clone());
+                }
+            }
+            for module_ref in &policy.spec.debug_modules {
+                if !result.debug.contains(&module_ref.name) {
+                    result.debug.push(module_ref.name.clone());
                 }
             }
         }
     }
 
-    required
+    result
 }
 
 fn ptr(path: &str) -> jsonptr::PointerBuf {
@@ -559,7 +577,13 @@ fn build_injection_patches(
             }),
         }));
 
-        // Add volumeMount + env vars to each container
+        // Debug modules: volume only, no volumeMount/env on declared containers.
+        // They are only accessible via ephemeral debug containers.
+        if spec.mount_policy == MountPolicy::Debug {
+            continue;
+        }
+
+        // Always modules: volumeMount + env vars on each declared container
         for (i, _) in containers.iter().enumerate() {
             patches.push(json_patch::PatchOperation::Add(json_patch::AddOperation {
                 path: ptr(&format!("/spec/containers/{i}/volumeMounts/-")),
@@ -572,8 +596,6 @@ fn build_injection_patches(
 
             for env_var in &spec.env {
                 if env_var.append {
-                    // PATH-style: prepend module value to existing variable.
-                    // $(VAR) is expanded by kubelet against pod-spec-defined env vars.
                     patches.push(json_patch::PatchOperation::Add(
                         json_patch::AddOperation {
                             path: ptr(&format!("/spec/containers/{i}/env/-")),
@@ -700,14 +722,20 @@ async fn handle_mutate_pods(
         .map(parse_module_annotations)
         .unwrap_or_default();
 
-    // Collect required modules from ConfigPolicy + ClusterConfigPolicy
-    let required_names = collect_required_modules(&state.client, namespace).await;
+    // Collect required + debug modules from ConfigPolicy + ClusterConfigPolicy
+    let policy = collect_policy_modules(&state.client, namespace).await;
 
-    // Merge: annotation modules + required modules (annotation takes precedence for version)
+    // Merge: annotation modules + policy required modules
     let mut all_modules: Vec<(String, String)> = annotation_modules;
-    for name in &required_names {
+    for name in &policy.required {
         if !all_modules.iter().any(|(n, _)| n == name) {
-            // Required module without explicit version — use "latest"
+            all_modules.push((name.clone(), "latest".to_string()));
+        }
+    }
+    // Add policy debug modules (these will use MountPolicy::Debug from the Module CRD,
+    // or be treated as debug-only if the CRD has mountPolicy: Debug)
+    for name in &policy.debug {
+        if !all_modules.iter().any(|(n, _)| n == name) {
             all_modules.push((name.clone(), "latest".to_string()));
         }
     }
@@ -1292,6 +1320,78 @@ mod tests {
         // Should have volumeMount patches for both containers (indices 0 and 1)
         assert!(patch_json.contains("/spec/containers/0/volumeMounts/-"));
         assert!(patch_json.contains("/spec/containers/1/volumeMounts/-"));
+    }
+
+    #[test]
+    fn build_patches_debug_module_volume_only() {
+        let pod = serde_json::json!({
+            "spec": {
+                "containers": [
+                    {"name": "app", "image": "busybox"}
+                ]
+            }
+        });
+        let modules = vec![(
+            "tcpdump".to_string(),
+            "4.0".to_string(),
+            ModuleSpec {
+                mount_policy: MountPolicy::Debug,
+                oci_artifact: Some("ghcr.io/org/tcpdump:4.0".to_string()),
+                ..Default::default()
+            },
+        )];
+        let patches = build_injection_patches(&pod, &modules);
+        let patch_json = serde_json::to_string(&patches).unwrap();
+
+        // Should have CSI volume
+        assert!(patch_json.contains("cfgd-module-tcpdump"));
+        assert!(patch_json.contains(cfgd_core::CSI_DRIVER_NAME));
+
+        // Should NOT have volumeMount on declared containers
+        assert!(!patch_json.contains("volumeMounts/-"));
+        // Should NOT have env vars
+        assert!(!patch_json.contains("/env/-"));
+    }
+
+    #[test]
+    fn build_patches_mixed_always_and_debug() {
+        let pod = serde_json::json!({
+            "spec": {
+                "containers": [
+                    {"name": "app", "image": "busybox"}
+                ]
+            }
+        });
+        let modules = vec![
+            (
+                "mylib".to_string(),
+                "1.0".to_string(),
+                ModuleSpec {
+                    mount_policy: MountPolicy::Always,
+                    ..Default::default()
+                },
+            ),
+            (
+                "tcpdump".to_string(),
+                "4.0".to_string(),
+                ModuleSpec {
+                    mount_policy: MountPolicy::Debug,
+                    ..Default::default()
+                },
+            ),
+        ];
+        let patches = build_injection_patches(&pod, &modules);
+        let patch_json = serde_json::to_string(&patches).unwrap();
+
+        // Both should have CSI volumes
+        assert!(patch_json.contains("cfgd-module-mylib"));
+        assert!(patch_json.contains("cfgd-module-tcpdump"));
+
+        // Only mylib should have volumeMount
+        assert!(patch_json.contains("/cfgd-modules/mylib"));
+        // tcpdump mount path should only appear in the volume, not in a volumeMount
+        let mount_count = patch_json.matches("volumeMounts/-").count();
+        assert_eq!(mount_count, 1, "only Always module should get volumeMount");
     }
 
     fn test_metrics() -> Metrics {

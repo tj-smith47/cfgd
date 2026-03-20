@@ -146,6 +146,9 @@ pub struct LabelSelectorRequirement {
 pub struct ConfigPolicySpec {
     #[serde(default)]
     pub required_modules: Vec<ModuleRef>,
+    /// Modules staged as debug-only (CSI volume without volumeMount on declared containers).
+    #[serde(default)]
+    pub debug_modules: Vec<ModuleRef>,
     #[serde(default)]
     pub packages: Vec<PackageRef>,
     /// Version requirements keyed by package name (semver ranges, e.g. {"kubectl": ">=1.28"}).
@@ -253,6 +256,9 @@ pub struct ClusterConfigPolicySpec {
     pub namespace_selector: LabelSelector,
     #[serde(default)]
     pub required_modules: Vec<ModuleRef>,
+    /// Modules staged as debug-only across matching namespaces.
+    #[serde(default)]
+    pub debug_modules: Vec<ModuleRef>,
     #[serde(default)]
     pub packages: Vec<PackageRef>,
     #[serde(default)]
@@ -376,6 +382,23 @@ pub struct ModuleSpec {
     pub oci_artifact: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub signature: Option<ModuleSignature>,
+    /// Controls how the module is mounted in pods.
+    /// `Always` (default): CSI volume + volumeMount on all declared containers + env vars.
+    /// `Debug`: CSI volume only — no volumeMount or env on declared containers.
+    ///   Only accessible via ephemeral debug containers (`kubectl cfgd debug`).
+    #[serde(default)]
+    pub mount_policy: MountPolicy,
+}
+
+/// Controls how a module is exposed to pod containers.
+#[derive(Deserialize, Serialize, Clone, Debug, Default, PartialEq, Eq, JsonSchema)]
+pub enum MountPolicy {
+    /// Mount into all declared containers with volumeMount and env vars.
+    #[default]
+    Always,
+    /// Stage the CSI volume on the pod but do not mount into declared containers.
+    /// Only accessible via ephemeral debug containers.
+    Debug,
 }
 
 #[derive(Deserialize, Serialize, Clone, Debug, Default, PartialEq, JsonSchema)]
@@ -668,14 +691,11 @@ mod tests {
     #[test]
     fn cp_validate_rejects_empty_package_name() {
         let spec = ConfigPolicySpec {
-            required_modules: vec![],
             packages: vec![PackageRef {
                 name: String::new(),
                 version: None,
             }],
-            package_versions: Default::default(),
-            settings: Default::default(),
-            target_selector: Default::default(),
+            ..Default::default()
         };
         assert!(spec.validate().is_err());
     }
@@ -687,10 +707,7 @@ mod tests {
                 name: String::new(),
                 required: true,
             }],
-            packages: vec![],
-            package_versions: Default::default(),
-            settings: Default::default(),
-            target_selector: Default::default(),
+            ..Default::default()
         };
         assert!(spec.validate().is_err());
     }
@@ -700,11 +717,8 @@ mod tests {
         let mut versions = BTreeMap::new();
         versions.insert("kubectl".to_string(), "not valid".to_string());
         let spec = ConfigPolicySpec {
-            required_modules: vec![],
-            packages: vec![],
             package_versions: versions,
-            settings: Default::default(),
-            target_selector: Default::default(),
+            ..Default::default()
         };
         assert!(spec.validate().is_err());
     }
@@ -715,11 +729,8 @@ mod tests {
         versions.insert("kubectl".to_string(), ">=1.28".to_string());
         versions.insert("git".to_string(), "~2.40".to_string());
         let spec = ConfigPolicySpec {
-            required_modules: vec![],
-            packages: vec![],
             package_versions: versions,
-            settings: Default::default(),
-            target_selector: Default::default(),
+            ..Default::default()
         };
         assert!(spec.validate().is_ok());
     }
@@ -814,14 +825,7 @@ mod tests {
 
     #[test]
     fn ccp_validate_accepts_minimal() {
-        let spec = ClusterConfigPolicySpec {
-            namespace_selector: Default::default(),
-            required_modules: vec![],
-            packages: vec![],
-            package_versions: Default::default(),
-            settings: Default::default(),
-            security: Default::default(),
-        };
+        let spec = ClusterConfigPolicySpec::default();
         assert!(spec.validate().is_ok());
     }
 
@@ -830,12 +834,8 @@ mod tests {
         let mut versions = BTreeMap::new();
         versions.insert("kubectl".to_string(), "not valid".to_string());
         let spec = ClusterConfigPolicySpec {
-            namespace_selector: Default::default(),
-            required_modules: vec![],
-            packages: vec![],
             package_versions: versions,
-            settings: Default::default(),
-            security: Default::default(),
+            ..Default::default()
         };
         assert!(spec.validate().is_err());
     }
@@ -1108,6 +1108,7 @@ mod tests {
                     ..Default::default()
                 }),
             }),
+            ..Default::default()
         };
         assert!(spec.validate().is_ok());
     }
