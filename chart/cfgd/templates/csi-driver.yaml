@@ -8,6 +8,7 @@ metadata:
 spec:
   attachRequired: false
   podInfoOnMount: true
+  fsGroupPolicy: None
   volumeLifecycleModes:
     - Ephemeral
     - Persistent
