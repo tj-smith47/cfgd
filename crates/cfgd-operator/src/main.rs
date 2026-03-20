@@ -73,29 +73,48 @@ async fn main() -> Result<()> {
         .map(|v| v == "true" || v == "1")
         .unwrap_or(false);
 
-    if leader_enabled {
-        let namespace = std::env::var("POD_NAMESPACE").unwrap_or_else(|_| "cfgd-system".to_string());
-        let identity =
-            std::env::var("POD_NAME").unwrap_or_else(|_| Uuid::new_v4().to_string());
+    let operator_future = async {
+        if leader_enabled {
+            let namespace =
+                std::env::var("POD_NAMESPACE").unwrap_or_else(|_| "cfgd-system".to_string());
+            let identity =
+                std::env::var("POD_NAME").unwrap_or_else(|_| Uuid::new_v4().to_string());
 
-        tracing::info!(
-            namespace = %namespace,
-            identity = %identity,
-            "Leader election enabled"
-        );
+            tracing::info!(
+                namespace = %namespace,
+                identity = %identity,
+                "Leader election enabled"
+            );
 
-        let le = leader::LeaderElection::new(client.clone(), namespace, identity);
-        le.run(|| async {
-            health_state.set_ready();
-            run_operator(client).await.map_err(|e| {
-                errors::OperatorError::Leader(format!("Operator run failed: {e}"))
+            let le = leader::LeaderElection::new(client.clone(), namespace, identity);
+            le.run(|| async {
+                health_state.set_ready();
+                run_operator(client).await.map_err(|e| {
+                    errors::OperatorError::Leader(format!("Operator run failed: {e}"))
+                })
             })
-        })
-        .await
-        .map_err(|e| anyhow::anyhow!("{}", e))?;
-    } else {
-        health_state.set_ready();
-        run_operator(client).await?;
+            .await
+            .map_err(|e| anyhow::anyhow!("{}", e))?;
+        } else {
+            health_state.set_ready();
+            run_operator(client).await?;
+        }
+
+        Ok::<(), anyhow::Error>(())
+    };
+
+    tokio::select! {
+        result = operator_future => {
+            if let Err(e) = result {
+                tracing::error!(error = %e, "Operator exited with error");
+                return Err(e);
+            }
+        },
+        _ = shutdown_signal() => {
+            tracing::info!("Draining in-flight reconciliations (2s grace)...");
+            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+            tracing::info!("Shutdown complete");
+        },
     }
 
     Ok(())
@@ -146,6 +165,17 @@ async fn run_operator(client: Client) -> Result<()> {
     }
 
     Ok(())
+}
+
+async fn shutdown_signal() {
+    let ctrl_c = tokio::signal::ctrl_c();
+    let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+        .expect("failed to install SIGTERM handler");
+
+    tokio::select! {
+        _ = ctrl_c => tracing::info!("Received SIGINT, initiating graceful shutdown"),
+        _ = sigterm.recv() => tracing::info!("Received SIGTERM, initiating graceful shutdown"),
+    }
 }
 
 fn log_crd_info() {
