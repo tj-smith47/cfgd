@@ -752,7 +752,12 @@ async fn handle_mutate_pods(
     for (name, version) in &all_modules {
         match modules_api.get(name).await {
             Ok(module) => {
-                resolved.push((name.clone(), version.clone(), module.spec.clone()));
+                let mut spec = module.spec.clone();
+                // Policy debugModules overrides the Module CRD's mountPolicy
+                if policy.debug.contains(name) {
+                    spec.mount_policy = MountPolicy::Debug;
+                }
+                resolved.push((name.clone(), version.clone(), spec));
             }
             Err(e) => {
                 warn!(module = name, error = %e, "Module CRD not found, skipping injection");

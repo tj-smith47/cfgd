@@ -59,6 +59,12 @@ fn inject_smd_annotations(crd: &mut serde_json::Value) {
         refs["x-kubernetes-list-map-keys"] = serde_json::json!(["name"]);
     }
 
+    // debugModules list: merge by "name" key (ConfigPolicy/ClusterConfigPolicy)
+    if let Some(refs) = crd.pointer_mut(&format!("{spec_base}/spec/properties/debugModules")) {
+        refs["x-kubernetes-list-type"] = serde_json::json!("map");
+        refs["x-kubernetes-list-map-keys"] = serde_json::json!(["name"]);
+    }
+
     // files list: merge by map key — "path" for MachineConfig, "source" for Module
     if let Some(files) = crd.pointer_mut(&format!("{spec_base}/spec/properties/files")) {
         files["x-kubernetes-list-type"] = serde_json::json!("map");
