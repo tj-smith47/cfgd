@@ -14,6 +14,7 @@ set -eu
 REPO="${CFGD_REPO:-tj-smith47/cfgd}"
 VERSION="${CFGD_VERSION:-latest}"
 INSTALL_DIR="${CFGD_INSTALL_DIR:-}"
+DRY_RUN=false
 
 # --- Helpers ---
 
@@ -35,6 +36,50 @@ warn() {
 
 command_exists() {
     command -v "$1" >/dev/null 2>&1
+}
+
+# Download a URL to a file. Requires curl or wget (checked in main before calling).
+fetch() {
+    local url="$1" dest="$2"
+    if command_exists curl; then
+        curl -fsSL -o "$dest" "$url"
+    else
+        wget -q -O "$dest" "$url"
+    fi
+}
+
+# Download a URL and print to stdout.
+fetch_stdout() {
+    local url="$1"
+    if command_exists curl; then
+        curl -fsSL "$url"
+    else
+        wget -qO- "$url"
+    fi
+}
+
+usage() {
+    cat <<EOF
+cfgd installer
+
+Usage:
+  curl -fsSL https://raw.githubusercontent.com/tj-smith47/cfgd/master/install.sh | sh
+  curl -fsSL ... | sh -s -- [OPTIONS] [-- CFGD_ARGS...]
+
+Options:
+  --help       Show this help message
+  --dry-run    Print what would be done without making changes
+  --version V  Install a specific version (default: latest)
+
+Environment variables:
+  CFGD_INSTALL_DIR  Override install directory (default: /usr/local/bin or ~/.local/bin)
+  CFGD_VERSION      Override version to install (default: latest)
+  CFGD_REPO         Override GitHub repo (default: tj-smith47/cfgd)
+
+Alternative install methods:
+  brew install tj-smith47/tap/cfgd
+  cargo install cfgd
+EOF
 }
 
 # --- OS / Architecture Detection ---
@@ -83,16 +128,8 @@ resolve_install_dir() {
 
 resolve_version() {
     if [ "$VERSION" = "latest" ]; then
-        if command_exists curl; then
-            VERSION=$(curl -fsSL "https://api.github.com/repos/${REPO}/releases/latest" \
-                | grep '"tag_name"' | head -1 | sed 's/.*"tag_name": *"//;s/".*//')
-        elif command_exists wget; then
-            VERSION=$(wget -qO- "https://api.github.com/repos/${REPO}/releases/latest" \
-                | grep '"tag_name"' | head -1 | sed 's/.*"tag_name": *"//;s/".*//')
-        else
-            error "Neither curl nor wget found — install one to continue"
-            exit 1
-        fi
+        VERSION=$(fetch_stdout "https://api.github.com/repos/${REPO}/releases/latest" \
+            | grep '"tag_name"' | head -1 | sed 's/.*"tag_name": *"//;s/".*//')
 
         if [ -z "$VERSION" ]; then
             error "Could not determine latest version from GitHub"
@@ -113,53 +150,49 @@ download_and_install() {
     local checksum_name="cfgd-${VERSION_NUM}-checksums.txt"
     local base_url="https://github.com/${REPO}/releases/download/${VERSION}"
 
+    if [ "$DRY_RUN" = true ]; then
+        info "[dry-run] Would download ${base_url}/${archive_name}"
+        info "[dry-run] Would verify checksum from ${base_url}/${checksum_name}"
+        info "[dry-run] Would extract and install cfgd to ${dest_dir}/cfgd"
+        if [ ! -w "$dest_dir" ]; then
+            info "[dry-run] Would require sudo for ${dest_dir}"
+        fi
+        return
+    fi
+
     local tmp_dir
     tmp_dir="$(mktemp -d)"
     trap 'rm -rf "$tmp_dir"' EXIT
 
     info "Downloading cfgd ${VERSION} for ${os}/${arch}..."
 
-    # Download archive
-    if command_exists curl; then
-        curl -fsSL -o "${tmp_dir}/${archive_name}" "${base_url}/${archive_name}" || {
-            error "Download failed: ${base_url}/${archive_name}"
-            exit 1
-        }
-    else
-        wget -q -O "${tmp_dir}/${archive_name}" "${base_url}/${archive_name}" || {
-            error "Download failed: ${base_url}/${archive_name}"
-            exit 1
-        }
-    fi
+    fetch "${base_url}/${archive_name}" "${tmp_dir}/${archive_name}" || {
+        error "Download failed: ${base_url}/${archive_name}"
+        exit 1
+    }
 
-    # Download checksums
-    local checksum_verified=false
-    if command_exists curl; then
-        curl -fsSL -o "${tmp_dir}/${checksum_name}" "${base_url}/${checksum_name}" 2>/dev/null && checksum_verified=true
-    elif command_exists wget; then
-        wget -q -O "${tmp_dir}/${checksum_name}" "${base_url}/${checksum_name}" 2>/dev/null && checksum_verified=true
-    fi
-
-    # Verify checksum
-    if [ "$checksum_verified" = true ]; then
+    # Download and verify checksum
+    if fetch "${base_url}/${checksum_name}" "${tmp_dir}/${checksum_name}" 2>/dev/null; then
         info "Verifying checksum..."
-        cd "$tmp_dir"
+
+        local sha_cmd=""
         if command_exists sha256sum; then
-            grep "$archive_name" "$checksum_name" | sha256sum -c --quiet 2>/dev/null || {
-                error "Checksum verification failed"
-                exit 1
-            }
-            success "Checksum verified"
+            sha_cmd="sha256sum"
         elif command_exists shasum; then
-            grep "$archive_name" "$checksum_name" | shasum -a 256 -c --quiet 2>/dev/null || {
+            sha_cmd="shasum -a 256"
+        fi
+
+        if [ -n "$sha_cmd" ]; then
+            cd "$tmp_dir"
+            grep "$archive_name" "$checksum_name" | $sha_cmd -c --quiet 2>/dev/null || {
                 error "Checksum verification failed"
                 exit 1
             }
+            cd - >/dev/null
             success "Checksum verified"
         else
             warn "No sha256sum/shasum found — skipping checksum verification"
         fi
-        cd - >/dev/null
     else
         warn "Checksums not available — skipping verification"
     fi
@@ -197,12 +230,49 @@ ensure_in_path() {
 # --- Main ---
 
 main() {
+    # Parse installer flags (before forwarding remaining args to cfgd)
+    local cfgd_args=""
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --help)
+                usage
+                exit 0
+                ;;
+            --dry-run)
+                DRY_RUN=true
+                shift
+                ;;
+            --version)
+                VERSION="$2"
+                shift 2
+                ;;
+            *)
+                # Remaining args are forwarded to cfgd
+                cfgd_args="$*"
+                break
+                ;;
+        esac
+    done
+
     info "cfgd installer"
     echo ""
 
     # Check prerequisites
     if ! command_exists curl && ! command_exists wget; then
-        error "Neither curl nor wget found — install one to continue"
+        if command_exists brew; then
+            error "Neither curl nor wget found"
+            info "Homebrew is available — install with:"
+            info "  brew install tj-smith47/tap/cfgd"
+        elif command_exists cargo; then
+            error "Neither curl nor wget found"
+            info "Cargo is available — install with:"
+            info "  cargo install cfgd"
+        else
+            error "Neither curl nor wget found — install one to continue"
+            info "Alternative install methods:"
+            info "  brew install tj-smith47/tap/cfgd"
+            info "  cargo install cfgd"
+        fi
         exit 1
     fi
 
@@ -214,9 +284,21 @@ main() {
     info "Detected: ${os}/${arch}"
     info "Install directory: ${dest_dir}"
 
+    # Check for existing installation
+    if command_exists cfgd; then
+        local current
+        current="$(cfgd --version 2>/dev/null || echo "unknown")"
+        info "Existing installation: ${current}"
+    fi
+
     resolve_version
     info "Version: ${VERSION}"
     echo ""
+
+    if [ "$DRY_RUN" = true ]; then
+        info "[dry-run] No changes will be made"
+        echo ""
+    fi
 
     download_and_install "$os" "$arch" "$dest_dir"
     ensure_in_path "$dest_dir"
@@ -225,10 +307,16 @@ main() {
     success "Installation complete!"
     echo ""
 
+    if [ "$DRY_RUN" = true ]; then
+        return
+    fi
+
     # If arguments were passed, forward them to cfgd
-    if [ $# -gt 0 ]; then
-        info "Running: cfgd $*"
+    if [ -n "$cfgd_args" ]; then
+        info "Running: cfgd ${cfgd_args}"
         echo ""
+        # Re-split cfgd_args back into positional params
+        eval "set -- $cfgd_args"
         exec "${dest_dir}/cfgd" "$@"
     else
         info "Get started:"

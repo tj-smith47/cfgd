@@ -977,14 +977,42 @@ pub fn detect_container_runtime() -> Option<&'static str> {
     }
 }
 
+/// Detect the package manager install command based on the base image name.
+fn detect_pkg_install_cmd(base_image: &str) -> &'static str {
+    let lower = base_image.to_ascii_lowercase();
+    if lower.starts_with("alpine") || lower.contains("/alpine") {
+        "apk add --no-cache"
+    } else if lower.starts_with("fedora")
+        || lower.contains("/fedora")
+        || lower.starts_with("rockylinux")
+        || lower.contains("/rockylinux")
+        || lower.starts_with("almalinux")
+        || lower.contains("/almalinux")
+    {
+        "dnf install -y"
+    } else if lower.starts_with("centos") || lower.contains("/centos") {
+        "yum install -y"
+    } else if lower.starts_with("archlinux") || lower.contains("/archlinux") {
+        "pacman -Sy --noconfirm"
+    } else {
+        // Debian, Ubuntu, and default
+        "apt-get update && apt-get install -y"
+    }
+}
+
 /// Generate a Dockerfile for building a module in an isolated container.
 fn build_dockerfile(base_image: &str, packages: &[&str]) -> String {
     let mut lines = vec![format!("FROM {base_image}")];
     if !packages.is_empty() {
         let pkg_list = packages.join(" ");
-        lines.push(format!(
-            "RUN apt-get update && apt-get install -y {pkg_list} && rm -rf /var/lib/apt/lists/*"
-        ));
+        let install_cmd = detect_pkg_install_cmd(base_image);
+        if install_cmd.starts_with("apt-get") {
+            lines.push(format!(
+                "RUN {install_cmd} {pkg_list} && rm -rf /var/lib/apt/lists/*"
+            ));
+        } else {
+            lines.push(format!("RUN {install_cmd} {pkg_list}"));
+        }
     }
     lines.push("WORKDIR /build".to_string());
     lines.push("COPY . /build/".to_string());
@@ -1976,6 +2004,37 @@ mod tests {
     #[test]
     fn parse_platform_target_invalid() {
         assert!(parse_platform_target("invalid").is_err());
+    }
+
+    // --- Dockerfile generation ---
+
+    #[test]
+    fn build_dockerfile_debian_default() {
+        let df = build_dockerfile("ubuntu:22.04", &["curl", "jq"]);
+        assert!(df.contains("FROM ubuntu:22.04"));
+        assert!(df.contains("apt-get"));
+        assert!(df.contains("curl jq"));
+        assert!(df.contains("rm -rf /var/lib/apt/lists"));
+    }
+
+    #[test]
+    fn build_dockerfile_alpine() {
+        let df = build_dockerfile("alpine:3.18", &["curl"]);
+        assert!(df.contains("apk add --no-cache"));
+        assert!(!df.contains("apt-get"));
+    }
+
+    #[test]
+    fn build_dockerfile_fedora() {
+        let df = build_dockerfile("fedora:39", &["strace"]);
+        assert!(df.contains("dnf install -y"));
+    }
+
+    #[test]
+    fn build_dockerfile_no_packages() {
+        let df = build_dockerfile("ubuntu:22.04", &[]);
+        assert!(!df.contains("RUN"));
+        assert!(df.contains("WORKDIR /build"));
     }
 
     // --- Signing ---

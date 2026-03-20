@@ -40,7 +40,7 @@ Completed. Moved to [COMPLETED.md](COMPLETED.md).
 
 ## Tier 4 — Pod module injection (needs CSI driver)
 
-### CSI driver (3-6 months)
+### CSI driver
 
 - [ ] Separate binary in `crates/cfgd-csi/`, Node plugin only, `tonic` gRPC
 - [ ] Identity RPCs: `GetPluginInfo`, `GetPluginCapabilities`, `Probe`

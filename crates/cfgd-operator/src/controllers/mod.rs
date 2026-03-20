@@ -1,6 +1,8 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
+use sha2::Digest;
+
 use futures::StreamExt;
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::OwnerReference;
 use kube::api::{Api, ListParams, Patch, PatchParams};
@@ -1576,29 +1578,28 @@ async fn reconcile_module(
     ));
 
     // Evaluate Verified condition
-    let (ver_status, ver_reason, ver_message, ver_event) =
-        evaluate_module_verification(&obj.spec.signature);
+    let ver = evaluate_module_verification(&obj.spec.signature);
 
     conditions.push(build_condition(
         existing_conditions,
         "Verified",
-        ver_status,
-        ver_reason,
-        ver_message,
+        ver.status,
+        ver.reason,
+        ver.message,
         &now,
         current_generation,
     ));
 
     // Determine resolved artifact (just echo the reference if valid)
     let resolved_artifact = obj.spec.oci_artifact.clone();
-    let verified = ver_status == "True";
+    let verified = ver.status == "True";
 
     let status = serde_json::json!({
         "status": ModuleStatus {
             resolved_artifact,
             available_platforms: vec![],
             verified,
-            signature_digest: None,
+            signature_digest: ver.signature_digest,
             attestations: vec![],
             conditions,
         }
@@ -1636,9 +1637,9 @@ async fn reconcile_module(
     publish_event(
         &ctx.recorder,
         &Event {
-            type_: ver_event.0,
-            reason: ver_event.1.into(),
-            note: Some(ver_event.2),
+            type_: ver.event.0,
+            reason: ver.event.1.into(),
+            note: Some(ver.event.2),
             action: "Reconcile".into(),
             secondary: None,
         },
@@ -1802,77 +1803,99 @@ async fn evaluate_module_availability<'a>(
 
 /// Evaluate the Verified condition for a Module.
 /// Returns (status, reason, message, (event_type, event_reason, event_note)).
-fn evaluate_module_verification<'a>(
-    signature: &Option<ModuleSignature>,
-) -> (&'a str, &'a str, &'a str, (EventType, &'a str, String)) {
+/// Result of module verification evaluation.
+struct ModuleVerificationResult {
+    status: &'static str,
+    reason: &'static str,
+    message: &'static str,
+    event: (EventType, &'static str, String),
+    /// SHA256 fingerprint of the public key, or keyless identity description.
+    signature_digest: Option<String>,
+}
+
+fn evaluate_module_verification(signature: &Option<ModuleSignature>) -> ModuleVerificationResult {
     match signature {
-        None => (
-            "False",
-            "NotSigned",
-            "No signature configuration present",
-            (
+        None => ModuleVerificationResult {
+            status: "False",
+            reason: "NotSigned",
+            message: "No signature configuration present",
+            event: (
                 EventType::Normal,
                 "Verified",
                 "Module has no signature configuration".to_string(),
             ),
-        ),
+            signature_digest: None,
+        },
         Some(sig) => match &sig.cosign {
-            None => (
-                "False",
-                "NotSigned",
-                "No cosign signature configured",
-                (
+            None => ModuleVerificationResult {
+                status: "False",
+                reason: "NotSigned",
+                message: "No cosign signature configured",
+                event: (
                     EventType::Normal,
                     "Verified",
                     "Module has no cosign signature configured".to_string(),
                 ),
-            ),
+                signature_digest: None,
+            },
             Some(cosign) => {
                 // Keyless mode — no public key needed
                 if cosign.keyless {
-                    return (
-                        "True",
-                        "SignatureConfigured",
-                        "Keyless cosign verification configured (Fulcio/Rekor)",
-                        (
+                    let identity_desc = format!(
+                        "keyless:{}@{}",
+                        cosign.certificate_identity.as_deref().unwrap_or("*"),
+                        cosign.certificate_oidc_issuer.as_deref().unwrap_or("*"),
+                    );
+                    return ModuleVerificationResult {
+                        status: "True",
+                        reason: "SignatureConfigured",
+                        message: "Keyless cosign verification configured (Fulcio/Rekor)",
+                        event: (
                             EventType::Normal,
                             "Verified",
                             "Module has keyless cosign verification configured".to_string(),
                         ),
-                    );
+                        signature_digest: Some(identity_desc),
+                    };
                 }
                 // Static key mode — validate PEM
                 match &cosign.public_key {
-                    Some(pk) if is_valid_pem_public_key(pk) => (
-                        "True",
-                        "SignatureConfigured",
-                        "Cosign public key is configured and valid",
-                        (
-                            EventType::Normal,
-                            "Verified",
-                            "Module has valid cosign signature configuration".to_string(),
-                        ),
-                    ),
-                    Some(_) => (
-                        "False",
-                        "SignatureInvalid",
-                        "Cosign public key is not valid PEM",
-                        (
+                    Some(pk) if is_valid_pem_public_key(pk) => {
+                        let fingerprint = format!("sha256:{:x}", sha2::Sha256::digest(pk.as_bytes()));
+                        ModuleVerificationResult {
+                            status: "True",
+                            reason: "SignatureConfigured",
+                            message: "Cosign public key is configured and valid",
+                            event: (
+                                EventType::Normal,
+                                "Verified",
+                                "Module has valid cosign signature configuration".to_string(),
+                            ),
+                            signature_digest: Some(fingerprint),
+                        }
+                    }
+                    Some(_) => ModuleVerificationResult {
+                        status: "False",
+                        reason: "SignatureInvalid",
+                        message: "Cosign public key is not valid PEM",
+                        event: (
                             EventType::Warning,
                             "SignatureInvalid",
                             "Module cosign public key is not valid PEM".to_string(),
                         ),
-                    ),
-                    None => (
-                        "False",
-                        "SignatureInvalid",
-                        "Cosign signature configured but no public key or keyless mode",
-                        (
+                        signature_digest: None,
+                    },
+                    None => ModuleVerificationResult {
+                        status: "False",
+                        reason: "SignatureInvalid",
+                        message: "Cosign signature configured but no public key or keyless mode",
+                        event: (
                             EventType::Warning,
                             "SignatureInvalid",
                             "No public key and keyless not enabled".to_string(),
                         ),
-                    ),
+                        signature_digest: None,
+                    },
                 }
             }
         },
@@ -2598,18 +2621,20 @@ mod tests {
 
     #[test]
     fn module_verification_no_signature() {
-        let (status, reason, message, _event) = evaluate_module_verification(&None);
-        assert_eq!(status, "False");
-        assert_eq!(reason, "NotSigned");
-        assert!(message.contains("No signature"));
+        let result = evaluate_module_verification(&None);
+        assert_eq!(result.status, "False");
+        assert_eq!(result.reason, "NotSigned");
+        assert!(result.message.contains("No signature"));
+        assert!(result.signature_digest.is_none());
     }
 
     #[test]
     fn module_verification_no_cosign() {
         let sig = ModuleSignature { cosign: None };
-        let (status, reason, _message, _event) = evaluate_module_verification(&Some(sig));
-        assert_eq!(status, "False");
-        assert_eq!(reason, "NotSigned");
+        let result = evaluate_module_verification(&Some(sig));
+        assert_eq!(result.status, "False");
+        assert_eq!(result.reason, "NotSigned");
+        assert!(result.signature_digest.is_none());
     }
 
     #[test]
@@ -2620,9 +2645,11 @@ mod tests {
                 ..Default::default()
             }),
         };
-        let (status, reason, _message, _event) = evaluate_module_verification(&Some(sig));
-        assert_eq!(status, "True");
-        assert_eq!(reason, "SignatureConfigured");
+        let result = evaluate_module_verification(&Some(sig));
+        assert_eq!(result.status, "True");
+        assert_eq!(result.reason, "SignatureConfigured");
+        assert!(result.signature_digest.is_some());
+        assert!(result.signature_digest.unwrap().starts_with("sha256:"));
     }
 
     #[test]
@@ -2633,9 +2660,10 @@ mod tests {
                 ..Default::default()
             }),
         };
-        let (status, reason, _message, _event) = evaluate_module_verification(&Some(sig));
-        assert_eq!(status, "False");
-        assert_eq!(reason, "SignatureInvalid");
+        let result = evaluate_module_verification(&Some(sig));
+        assert_eq!(result.status, "False");
+        assert_eq!(result.reason, "SignatureInvalid");
+        assert!(result.signature_digest.is_none());
     }
 
     #[test]
@@ -2648,8 +2676,12 @@ mod tests {
                 ..Default::default()
             }),
         };
-        let (status, reason, _message, _event) = evaluate_module_verification(&Some(sig));
-        assert_eq!(status, "True");
-        assert_eq!(reason, "SignatureConfigured");
+        let result = evaluate_module_verification(&Some(sig));
+        assert_eq!(result.status, "True");
+        assert_eq!(result.reason, "SignatureConfigured");
+        assert_eq!(
+            result.signature_digest.unwrap(),
+            "keyless:user@example.com@https://accounts.google.com"
+        );
     }
 }

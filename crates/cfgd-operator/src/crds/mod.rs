@@ -1182,5 +1182,7 @@ mod tests {
         assert!(!status.verified);
         assert!(status.available_platforms.is_empty());
         assert!(status.resolved_artifact.is_none());
+        assert!(status.signature_digest.is_none());
+        assert!(status.attestations.is_empty());
     }
 }

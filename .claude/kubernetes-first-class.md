@@ -679,7 +679,7 @@ Config blob contains module metadata (name, version, env, scripts, dependencies)
 
 ### Scope Assessment
 
-A CSI driver is a separate binary deployed as a DaemonSet implementing the gRPC CSI spec. This is 3-6 months of dedicated engineering for production-grade implementation.
+A CSI driver is a separate binary deployed as a DaemonSet implementing the gRPC CSI spec.
 
 ### Architecture
 
