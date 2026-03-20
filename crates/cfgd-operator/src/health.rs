@@ -38,7 +38,7 @@ async fn readyz_handler(
     }
 }
 
-pub async fn run_health_server(port: u16, state: HealthState) -> Result<(), OperatorError> {
+pub async fn run_probe_server(port: u16, state: HealthState) -> Result<(), OperatorError> {
     let app = axum::Router::new()
         .route("/healthz", axum::routing::get(healthz_handler))
         .route("/readyz", axum::routing::get(readyz_handler))

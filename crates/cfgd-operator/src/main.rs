@@ -16,7 +16,7 @@ use tokio::sync::Mutex;
 use tracing_subscriber::EnvFilter;
 use uuid::Uuid;
 
-use crate::crds::{ConfigPolicy, DriftAlert, MachineConfig};
+use crate::crds::{ClusterConfigPolicy, ConfigPolicy, DriftAlert, MachineConfig};
 use crate::gateway::GatewayConfig;
 
 #[tokio::main]
@@ -45,7 +45,7 @@ async fn main() -> Result<()> {
     tokio::spawn({
         let hs = health_state.clone();
         async move {
-            if let Err(e) = health::run_health_server(health_port, hs).await {
+            if let Err(e) = health::run_probe_server(health_port, hs).await {
                 tracing::error!(error = %e, "Health server failed");
             }
         }
@@ -163,6 +163,7 @@ async fn run_operator(client: Client, metrics: metrics::Metrics) -> Result<()> {
                 .ok()
                 .and_then(|s| s.parse().ok())
                 .unwrap_or(90),
+            metrics: Some(metrics.clone()),
         };
 
         tracing::info!("Device gateway enabled");
@@ -216,5 +217,9 @@ fn log_crd_info() {
     tracing::info!(
         crd = %DriftAlert::crd_name(),
         "Registered CRD: DriftAlert"
+    );
+    tracing::info!(
+        crd = %ClusterConfigPolicy::crd_name(),
+        "Registered CRD: ClusterConfigPolicy"
     );
 }

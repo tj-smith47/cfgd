@@ -189,7 +189,23 @@ async fn reconcile_machine_config(
         info!(name = %name, "Added finalizer to MachineConfig");
     }
 
-    validate_spec(&obj.spec)?;
+    if let Err(e) = validate_spec(&obj.spec) {
+        let error_msg = e.to_string();
+        ctx.recorder
+            .publish(
+                &Event {
+                    type_: EventType::Warning,
+                    reason: "ReconcileError".into(),
+                    note: Some(format!("Reconciliation failed for {}: {}", name, error_msg)),
+                    action: "Reconcile".into(),
+                    secondary: None,
+                },
+                &obj.object_ref(&()),
+            )
+            .await
+            .ok();
+        return Err(e);
+    }
 
     info!(
         name = %name,
@@ -278,16 +294,30 @@ async fn reconcile_machine_config(
         }
     });
 
-    machines_api
+    if let Err(e) = machines_api
         .patch_status(
             &name,
             &PatchParams::apply("cfgd-operator"),
             &Patch::Merge(status),
         )
         .await
-        .map_err(|e| {
-            OperatorError::Reconciliation(format!("failed to update status for {name}: {e}"))
-        })?;
+    {
+        let error_msg = format!("failed to update status for {name}: {e}");
+        ctx.recorder
+            .publish(
+                &Event {
+                    type_: EventType::Warning,
+                    reason: "ReconcileError".into(),
+                    note: Some(format!("Reconciliation failed for {}: {}", name, error_msg)),
+                    action: "Reconcile".into(),
+                    secondary: None,
+                },
+                &obj.object_ref(&()),
+            )
+            .await
+            .ok();
+        return Err(OperatorError::Reconciliation(error_msg));
+    }
 
     info!(name = %name, "Status updated with last_reconciled timestamp");
 

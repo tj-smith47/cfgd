@@ -12,6 +12,7 @@ use tower_http::trace::TraceLayer;
 
 use crate::gateway::api::AppState;
 use crate::gateway::db::ServerDb;
+use crate::metrics::Metrics;
 
 /// Configuration for the device gateway HTTP server.
 pub struct GatewayConfig {
@@ -19,6 +20,7 @@ pub struct GatewayConfig {
     pub db_path: String,
     pub kube_client: Option<kube::Client>,
     pub retention_days: u32,
+    pub metrics: Option<Metrics>,
 }
 
 /// Start the device gateway HTTP server.
@@ -47,6 +49,7 @@ pub async fn start_gateway(config: GatewayConfig) -> Result<(), Box<dyn std::err
         kube_client: config.kube_client,
         event_tx,
         enrollment_method,
+        metrics: config.metrics,
     };
 
     // Periodic event cleanup — runs daily to prevent unbounded DB growth

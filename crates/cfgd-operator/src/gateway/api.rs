@@ -15,6 +15,7 @@ use tokio_stream::wrappers::BroadcastStream;
 
 use super::db::{FleetEvent, ServerDb};
 use super::errors::GatewayError;
+use crate::metrics::Metrics;
 
 /// Server-level enrollment method.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -45,6 +46,7 @@ pub struct AppState {
     pub kube_client: Option<kube::Client>,
     pub event_tx: tokio::sync::broadcast::Sender<FleetEvent>,
     pub enrollment_method: EnrollmentMethod,
+    pub metrics: Option<Metrics>,
 }
 
 pub type SharedState = AppState;
@@ -453,6 +455,10 @@ async fn enroll(
                 "device enrolled"
             );
 
+            if let Some(ref m) = state.metrics {
+                m.devices_enrolled_total.inc();
+            }
+
             Ok((
                 StatusCode::CREATED,
                 Json(EnrollResponse {
@@ -785,6 +791,10 @@ async fn verify_enrollment(
         username = %challenge.username,
         "device enrolled via key verification"
     );
+
+    if let Some(ref m) = state.metrics {
+        m.devices_enrolled_total.inc();
+    }
 
     Ok((
         StatusCode::CREATED,

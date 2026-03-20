@@ -43,6 +43,7 @@ pub struct Metrics {
     pub webhook_requests_total: Family<WebhookLabels, Counter>,
     pub webhook_duration_seconds: Family<WebhookLabels, Histogram>,
     pub devices_compliant: Family<PolicyLabels, Gauge>,
+    pub devices_enrolled_total: Counter,
 }
 
 impl Metrics {
@@ -95,6 +96,13 @@ impl Metrics {
             devices_compliant.clone(),
         );
 
+        let devices_enrolled_total = Counter::default();
+        sub.register(
+            "devices_enrolled_total",
+            "Total device enrollments",
+            devices_enrolled_total.clone(),
+        );
+
         Self {
             reconciliations_total,
             reconciliation_duration_seconds,
@@ -102,6 +110,7 @@ impl Metrics {
             webhook_requests_total,
             webhook_duration_seconds,
             devices_compliant,
+            devices_enrolled_total,
         }
     }
 }

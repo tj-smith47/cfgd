@@ -9,7 +9,7 @@ Single source of truth for all incomplete work. Completed work is in [COMPLETED.
 ### Operator operational readiness
 
 - [ ] Leader election via `coordination.k8s.io/v1` Lease — `main.rs` acquires lease before starting controllers; Helm `replicaCount` > 1 enabled
-- [ ] Graceful shutdown — SIGTERM handler, drain in-flight reconciliations (30s grace), stop webhook, flush metrics
+- [ ] Graceful shutdown — SIGTERM handler, drain in-flight reconciliations (2s grace), stop webhook, flush metrics
 - [ ] Health probes on dedicated HTTP port (8081) — `/healthz` liveness, `/readyz` readiness (503 until leader lease acquired)
 - [ ] Security contexts in Helm deployment template — `runAsNonRoot`, `readOnlyRootFilesystem`, `capabilities.drop: [ALL]`, UID 65532
 - [ ] PodDisruptionBudget (conditional on `replicaCount >= 2`)
