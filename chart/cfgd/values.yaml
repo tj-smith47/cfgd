@@ -117,6 +117,17 @@ csiDriver:
       repository: registry.k8s.io/sig-storage/csi-node-driver-registrar
       tag: v2.10.0
 
+# Pod module mutating webhook
+mutatingWebhook:
+  enabled: true
+  failurePolicy: Ignore
+  timeoutSeconds: 10
+  namespaceSelector:
+    matchExpressions:
+      - key: cfgd.io/inject-modules
+        operator: In
+        values: ["true"]
+
 # Security contexts
 podSecurityContext:
   runAsNonRoot: true
