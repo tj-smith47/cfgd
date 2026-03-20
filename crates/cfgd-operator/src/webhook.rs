@@ -730,6 +730,25 @@ mod tests {
         assert!(result.is_ok());
     }
 
+    #[test]
+    fn enforce_module_policy_allows_keyless_when_required() {
+        use crate::crds::{CosignSignature, ModuleSignature};
+        let spec = ModuleSpec {
+            oci_artifact: Some("registry.example.com/mod:v1".to_string()),
+            signature: Some(ModuleSignature {
+                cosign: Some(CosignSignature {
+                    keyless: true,
+                    certificate_identity: Some("user@example.com".to_string()),
+                    certificate_oidc_issuer: Some("https://accounts.google.com".to_string()),
+                    ..Default::default()
+                }),
+            }),
+            ..Default::default()
+        };
+        let result = check_unsigned_policy(&spec, true);
+        assert!(result.is_ok());
+    }
+
     fn test_metrics() -> Metrics {
         let mut registry = prometheus_client::registry::Registry::default();
         Metrics::new(&mut registry)

@@ -2241,19 +2241,13 @@ pub(super) fn cmd_module_pull(
     output: &str,
     require_signature: bool,
     verify_attestation: bool,
-    key: Option<&str>,
+    verify_opts: cfgd_core::oci::VerifyOptions<'_>,
 ) -> anyhow::Result<()> {
     let output_path = Path::new(output);
 
     printer.header("Pull Module");
     printer.key_value("Artifact", artifact_ref);
     printer.key_value("Output", output);
-
-    let verify_opts = cfgd_core::oci::VerifyOptions {
-        key,
-        identity: None,
-        issuer: None,
-    };
 
     // Verify signature if requested (uses cosign, not the old tag-check)
     if require_signature {

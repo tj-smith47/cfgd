@@ -1023,6 +1023,12 @@ pub enum ModuleCommand {
         /// Path to cosign public key for verification (omit for keyless)
         #[arg(long)]
         key: Option<String>,
+        /// Certificate identity regexp for keyless verification
+        #[arg(long)]
+        certificate_identity: Option<String>,
+        /// Certificate OIDC issuer regexp for keyless verification
+        #[arg(long)]
+        certificate_oidc_issuer: Option<String>,
     },
     /// Build a module into an OCI-ready artifact using Docker/Podman
     Build {
@@ -1224,13 +1230,19 @@ pub fn execute(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
                 require_signature,
                 verify_attestation,
                 key,
+                certificate_identity,
+                certificate_oidc_issuer,
             } => module::cmd_module_pull(
                 printer,
                 artifact_ref,
                 output,
                 *require_signature,
                 *verify_attestation,
-                key.as_deref(),
+                cfgd_core::oci::VerifyOptions {
+                    key: key.as_deref(),
+                    identity: certificate_identity.as_deref(),
+                    issuer: certificate_oidc_issuer.as_deref(),
+                },
             ),
             ModuleCommand::Build {
                 dir,

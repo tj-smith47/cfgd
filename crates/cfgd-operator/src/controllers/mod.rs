@@ -2637,4 +2637,19 @@ mod tests {
         assert_eq!(status, "False");
         assert_eq!(reason, "SignatureInvalid");
     }
+
+    #[test]
+    fn module_verification_keyless() {
+        let sig = ModuleSignature {
+            cosign: Some(crate::crds::CosignSignature {
+                keyless: true,
+                certificate_identity: Some("user@example.com".to_string()),
+                certificate_oidc_issuer: Some("https://accounts.google.com".to_string()),
+                ..Default::default()
+            }),
+        };
+        let (status, reason, _message, _event) = evaluate_module_verification(&Some(sig));
+        assert_eq!(status, "True");
+        assert_eq!(reason, "SignatureConfigured");
+    }
 }
