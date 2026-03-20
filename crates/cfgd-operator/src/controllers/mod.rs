@@ -723,7 +723,7 @@ async fn reconcile_drift_alert(
     Ok(Action::requeue(std::time::Duration::from_secs(60)))
 }
 
-/// Clean up resolved DriftAlerts for a MachineConfig that is no longer drifted.
+/// Check whether any active DriftAlerts exist for a MachineConfig.
 async fn has_active_drift_alerts(client: &Client, namespace: &str, mc_name: &str) -> bool {
     let alerts: Api<DriftAlert> = if namespace.is_empty() {
         Api::all(client.clone())

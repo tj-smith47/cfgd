@@ -235,6 +235,7 @@ pub enum DriftSeverity {
     category = "cfgd",
     printcolumn = r#"{"name": "Compliant", "type": "integer", "jsonPath": ".status.compliantCount"}"#,
     printcolumn = r#"{"name": "NonCompliant", "type": "integer", "jsonPath": ".status.nonCompliantCount"}"#,
+    printcolumn = r#"{"name": "Enforced", "type": "string", "jsonPath": ".status.conditions[?(@.type==\"Enforced\")].status"}"#,
     printcolumn = r#"{"name": "Age", "type": "date", "jsonPath": ".metadata.creationTimestamp"}"#
 )]
 #[serde(rename_all = "camelCase")]
@@ -286,6 +287,11 @@ impl MachineConfigSpec {
         }
         if self.profile.is_empty() {
             errors.push("spec.profile must not be empty".to_string());
+        }
+        for (i, m) in self.module_refs.iter().enumerate() {
+            if m.name.is_empty() {
+                errors.push(format!("spec.moduleRefs[{i}].name must not be empty"));
+            }
         }
         for (i, pkg) in self.packages.iter().enumerate() {
             if pkg.name.is_empty() {
@@ -370,6 +376,16 @@ impl ClusterConfigPolicySpec {
     /// Validate the spec, returning all validation errors found.
     pub fn validate(&self) -> Result<(), Vec<String>> {
         let mut errors = Vec::new();
+        for (i, pkg) in self.packages.iter().enumerate() {
+            if pkg.name.is_empty() {
+                errors.push(format!("spec.packages[{i}].name must not be empty"));
+            }
+        }
+        for (i, m) in self.required_modules.iter().enumerate() {
+            if m.name.is_empty() {
+                errors.push(format!("spec.requiredModules[{i}].name must not be empty"));
+            }
+        }
         for (pkg, req_str) in &self.package_versions {
             if pkg.is_empty() {
                 errors.push("spec.packageVersions key must not be empty".to_string());
@@ -379,6 +395,29 @@ impl ClusterConfigPolicySpec {
                     "spec.packageVersions['{pkg}'] = '{req_str}' is not a valid semver requirement"
                 ));
             }
+        }
+        for key in self.settings.keys() {
+            if key.is_empty() {
+                errors.push("spec.settings key must not be empty".to_string());
+            }
+        }
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(errors)
+        }
+    }
+}
+
+impl DriftAlertSpec {
+    /// Validate the spec, returning all validation errors found.
+    pub fn validate(&self) -> Result<(), Vec<String>> {
+        let mut errors = Vec::new();
+        if self.device_id.is_empty() {
+            errors.push("spec.deviceId must not be empty".to_string());
+        }
+        if self.machine_config_ref.name.is_empty() {
+            errors.push("spec.machineConfigRef.name must not be empty".to_string());
         }
         if errors.is_empty() {
             Ok(())

@@ -66,6 +66,22 @@ fn inject_smd_annotations(crd: &mut serde_json::Value) {
         details["x-kubernetes-list-type"] = serde_json::json!("map");
         details["x-kubernetes-list-map-keys"] = serde_json::json!(["field"]);
     }
+
+    // matchExpressions: merge by "key"
+    for selector_path in &["targetSelector", "namespaceSelector"] {
+        let path = format!("{spec_base}/spec/properties/{selector_path}/properties/matchExpressions");
+        if let Some(exprs) = crd.pointer_mut(&path) {
+            exprs["x-kubernetes-list-type"] = serde_json::json!("map");
+            exprs["x-kubernetes-list-map-keys"] = serde_json::json!(["key"]);
+        }
+    }
+
+    // trustedRegistries: atomic set
+    if let Some(registries) = crd.pointer_mut(&format!(
+        "{spec_base}/spec/properties/security/properties/trustedRegistries"
+    )) {
+        registries["x-kubernetes-list-type"] = serde_json::json!("set");
+    }
 }
 
 fn inject_cel_rules(crd: &mut serde_json::Value) {

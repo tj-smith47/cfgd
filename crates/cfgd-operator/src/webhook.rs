@@ -11,7 +11,7 @@ use tokio_rustls::TlsAcceptor;
 use tower::ServiceExt;
 use tracing::{info, warn};
 
-use crate::crds::{ClusterConfigPolicySpec, ConfigPolicySpec, MachineConfigSpec};
+use crate::crds::{ClusterConfigPolicySpec, ConfigPolicySpec, DriftAlertSpec, MachineConfigSpec};
 use crate::errors::OperatorError;
 use crate::metrics::{Metrics, WebhookLabels};
 
@@ -59,6 +59,10 @@ pub async fn run_webhook_server(
         .route(
             "/validate-clusterconfigpolicy",
             post(handle_validate_cluster_config_policy),
+        )
+        .route(
+            "/validate-driftalert",
+            post(handle_validate_drift_alert),
         )
         .route("/healthz", axum::routing::get(|| async { "ok" }))
         .with_state(metrics);
@@ -193,6 +197,31 @@ async fn handle_validate_cluster_config_policy(
     Json(resp.into_review())
 }
 
+async fn handle_validate_drift_alert(
+    axum::extract::State(metrics): axum::extract::State<Metrics>,
+    Json(review): Json<AdmissionReview<DynamicObject>>,
+) -> Json<AdmissionReview<DynamicObject>> {
+    let start = std::time::Instant::now();
+    let req: AdmissionRequest<DynamicObject> =
+        match AdmissionReview::<DynamicObject>::try_into(review) {
+            Ok(r) => r,
+            Err(e) => {
+                record_webhook_metrics(&metrics, "validate_driftalert", "error", start);
+                return Json(
+                    AdmissionResponse::invalid(format!("bad admission request: {e}")).into_review(),
+                );
+            }
+        };
+
+    let (resp, result) = match validate_object_spec::<DriftAlertSpec>(&req) {
+        Ok(()) => (AdmissionResponse::from(&req), "allowed"),
+        Err(reason) => (AdmissionResponse::from(&req).deny(reason), "denied"),
+    };
+    record_webhook_metrics(&metrics, "validate_driftalert", result, start);
+
+    Json(resp.into_review())
+}
+
 fn record_webhook_metrics(
     metrics: &Metrics,
     operation: &str,
@@ -230,6 +259,12 @@ impl Validatable for ConfigPolicySpec {
 impl Validatable for ClusterConfigPolicySpec {
     fn validate(&self) -> Result<(), Vec<String>> {
         ClusterConfigPolicySpec::validate(self)
+    }
+}
+
+impl Validatable for DriftAlertSpec {
+    fn validate(&self) -> Result<(), Vec<String>> {
+        DriftAlertSpec::validate(self)
     }
 }
 
