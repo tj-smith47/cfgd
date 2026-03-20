@@ -22,24 +22,19 @@ Completed. Moved to [COMPLETED.md](COMPLETED.md).
 
 ---
 
-## Tier 3 — OCI build & supply chain (needs OCI pipeline)
+## ~~Tier 3 — OCI build & supply chain (needs OCI pipeline)~~
 
-### OCI pipeline Phase B — module build (4-8 weeks)
+Completed. Moved to [COMPLETED.md](COMPLETED.md).
 
-- [ ] `cfgd module build --target <platform>`: resolve module, install into isolated root (container/chroot), collect binaries/config/env, package as OCI artifact
-- [ ] Multi-platform builds (one layer per platform)
-- [ ] Docker/Podman integration for container-based builds
+### Implementation notes
 
-### OCI pipeline Phase C — signing
-
-- [ ] `cfgd module push --sign`: sign OCI artifact with cosign at push time (static key via `--key` flag)
-- [ ] Keyless signing via Fulcio + Rekor (OIDC identity-based, no static key management)
-- [ ] `cfgd module keys` subcommand: generate cosign key pairs, list keys, rotate
-
-### Supply chain security
-
-- [ ] SLSA Level 3 provenance attestations for binaries and container images via `slsa-framework/slsa-github-generator`
-- [ ] In-toto attestation support on Module OCI artifacts (verify at resolution time)
+- Container builds use Docker/Podman via `std::process::Command` — consistent with cfgd's external tool pattern
+- Signing shells out to `cosign` rather than embedding `sigstore-rs` — lighter weight, standard tooling
+- `VerifyOptions` struct supports both static key and keyless (identity/issuer regexp) verification
+- Keyless verification requires at least identity or issuer constraint — rejects wildcard-only
+- OCI arch mapping (`x86_64` → `amd64`, `aarch64` → `arm64`) via `rust_arch_to_oci()`
+- `push_module_inner` returns `(digest, manifest_size)` to avoid HEAD requests in multi-platform index
+- SLSA provenance follows in-toto Statement v1 / SLSA Provenance v1 predicate format
 
 ---
 

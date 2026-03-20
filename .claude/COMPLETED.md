@@ -807,3 +807,35 @@ Module state is stored by module name, not by profile — so status/verify/apply
 ### OCI pipeline Phase D — CRD sync
 - [x] `cfgd module push --apply`: construct Module CRD from module.yaml + ociArtifact ref, server-side apply with field manager `cfgd`
 - [x] Kubeconfig discovery: kube::Client::try_default() (in-cluster → KUBECONFIG → ~/.kube/config)
+
+---
+
+## Tier 3 — OCI Build & Supply Chain Security
+
+### OCI pipeline Phase B — module build
+- [x] `cfgd module build --target <platform>`: Docker/Podman container-based builds, Dockerfile generation from module.yaml packages, container create → cp → extract pipeline
+- [x] Multi-platform builds: OCI image index manifest (`push_module_multiplatform`), per-platform tagged manifests, comma-separated `--target linux/amd64,linux/arm64`
+- [x] Docker/Podman integration: `detect_container_runtime()` auto-detection, `--base-image` flag, build context with generated Dockerfile
+- [x] OCI arch name mapping: `rust_arch_to_oci()` converts `x86_64`→`amd64`, `aarch64`→`arm64`; `current_platform()` helper
+
+### OCI pipeline Phase C — signing
+- [x] `cfgd module push --sign`: cosign sign at push time, static key via `--key` flag
+- [x] Keyless signing via Fulcio + Rekor: `--sign` without `--key`, OIDC identity-based with `--yes` non-interactive
+- [x] `cfgd module keys generate`: wraps `cosign generate-key-pair`, outputs to specified directory
+- [x] `cfgd module keys list`: checks `./cosign.pub` and `~/.cfgd/cosign.pub`
+- [x] `cfgd module keys rotate`: backs up old key pair, generates new, re-signs specified `--artifacts`
+- [x] `verify_signature()` with `VerifyOptions` struct: static key or keyless with identity/issuer constraints
+- [x] Keyless verification requires at least identity or issuer — rejects wildcard-only (security hardening)
+
+### Supply chain security
+- [x] SLSA v1 provenance: `generate_slsa_provenance()` returns in-toto Statement v1 with SLSA Provenance v1 predicate, git source URI + commit
+- [x] `cfgd module push --attest`: attaches provenance via `cosign attest`, auto-detects git remote/commit
+- [x] `cfgd module pull --verify-attestation`: verifies provenance at pull time via `cosign verify-attestation`
+- [x] `attach_attestation()` and `verify_attestation()` with `VerifyOptions` for key/keyless modes
+
+### CRD enhancements (Tier 3)
+- [x] `CosignSignature` expanded: optional `publicKey`, `keyless` bool, `certificateIdentity`, `certificateOidcIssuer`
+- [x] `ModuleStatus` expanded: `signatureDigest`, `attestations` fields
+- [x] Module controller: keyless verification support in `evaluate_module_verification()`
+- [x] Webhook `check_unsigned_policy`: accepts keyless mode as valid signing
+- [x] OciError expanded: `BuildError`, `SigningError`, `VerificationFailed`, `AttestationError`, `ToolNotFound`
