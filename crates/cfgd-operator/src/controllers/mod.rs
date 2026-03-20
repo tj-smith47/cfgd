@@ -1980,6 +1980,9 @@ mod tests {
     use super::*;
     use crate::crds::LabelSelectorRequirement;
 
+    const TEST_PEM_KEY: &str =
+        "-----BEGIN PUBLIC KEY-----\nMFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE\n-----END PUBLIC KEY-----";
+
     fn mc_spec(hostname: &str, profile: &str) -> MachineConfigSpec {
         MachineConfigSpec {
             hostname: hostname.to_string(),
@@ -2641,7 +2644,7 @@ mod tests {
     fn module_verification_valid_pem() {
         let sig = ModuleSignature {
             cosign: Some(crate::crds::CosignSignature {
-                public_key: Some("-----BEGIN PUBLIC KEY-----\nMFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE\n-----END PUBLIC KEY-----".to_string()),
+                public_key: Some(TEST_PEM_KEY.to_string()),
                 ..Default::default()
             }),
         };

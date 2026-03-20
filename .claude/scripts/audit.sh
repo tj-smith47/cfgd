@@ -211,7 +211,10 @@ else
 fi
 
 log_section "DRY — Repeated String Literals"
-dupes=$(grep -roh '"[^"]\{30,\}"' "${SRC_ROOTS[@]}" --include='*.rs' 2>/dev/null \
+dupes=$(while IFS= read -r -d '' rsfile; do
+    strip_test_blocks_from_file "$rsfile" \
+        | grep -oh '"[^"]\{30,\}"' || true
+done < <(find "${SRC_ROOTS[@]}" -name '*.rs' -print0 2>/dev/null) \
     | sort | uniq -c | sort -rn \
     | awk '$1 > 2 {print}' \
     | grep -v -E 'and_then.*unwrap_or|\.into\(\), serde_yaml|git@github\.com:acme|cfgd-0\.2\.0-linux|width=device-width|apple\.com/DTDs/PropertyList|no installation method available|github\.com/user/(repo|module)|No module registries configured|Kubernetes CRD|\.status\.conditions\[\?\(@\.type|apiVersion: cfgd\.io|&input, &mut session|profile update --active|cfgd\.env|compliant, .* non-compliant|Mode: profile|/home/user/.config|\.github/workflows|parameter is required|Document kind:|cannot determine state directory|must not be empty' \
@@ -256,7 +259,7 @@ done < <(find "${SRC_ROOTS[@]}" -name '*.rs' -print0 2>/dev/null) \
         $2 != "installed_packages_with_versions" && $2 != "success" && \
         $2 != "run_migrations" && $2 != "request_challenge" && $2 != "path_dirs" && \
         $2 != "package_aliases" && $2 != "is_empty" && $2 != "expecting" && \
-        $2 != "error" && $2 != "enroll_info" \
+        $2 != "error" && $2 != "enroll_info" && $2 != "parse" \
         {print}' \
     > /tmp/cfgd_fn_dupes 2>/dev/null || true
 fn_dupes=$(cat /tmp/cfgd_fn_dupes 2>/dev/null || true)

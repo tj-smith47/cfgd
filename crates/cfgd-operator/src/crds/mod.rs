@@ -602,6 +602,9 @@ pub use cfgd_core::version_satisfies;
 mod tests {
     use super::*;
 
+    const TEST_PEM_KEY: &str =
+        "-----BEGIN PUBLIC KEY-----\nMFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE\n-----END PUBLIC KEY-----";
+
     fn minimal_mc_spec(hostname: &str, profile: &str) -> MachineConfigSpec {
         MachineConfigSpec {
             hostname: hostname.to_string(),
@@ -1101,7 +1104,7 @@ mod tests {
             oci_artifact: Some("registry.example.com/modules/vim:v1".to_string()),
             signature: Some(ModuleSignature {
                 cosign: Some(CosignSignature {
-                    public_key: Some("-----BEGIN PUBLIC KEY-----\nMFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE\n-----END PUBLIC KEY-----".to_string()),
+                    public_key: Some(TEST_PEM_KEY.to_string()),
                     ..Default::default()
                 }),
             }),

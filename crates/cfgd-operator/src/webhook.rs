@@ -411,6 +411,9 @@ mod tests {
     use kube::core::DynamicObject;
     use kube::core::admission::{AdmissionRequest, AdmissionReview};
 
+    const TEST_PEM_KEY: &str =
+        "-----BEGIN PUBLIC KEY-----\nMFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE\n-----END PUBLIC KEY-----";
+
     fn make_review(spec_json: serde_json::Value) -> AdmissionReview<DynamicObject> {
         serde_json::from_value(serde_json::json!({
             "apiVersion": "admission.k8s.io/v1",
@@ -605,7 +608,7 @@ mod tests {
             "ociArtifact": "registry.example.com/modules/vim:v1",
             "signature": {
                 "cosign": {
-                    "publicKey": "-----BEGIN PUBLIC KEY-----\nMFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE\n-----END PUBLIC KEY-----"
+                    "publicKey": TEST_PEM_KEY
                 }
             }
         }));
