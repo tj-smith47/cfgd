@@ -547,6 +547,9 @@ name = "cfgd-csi"
 version = "0.1.0"
 dependencies = [
  "cfgd-core",
+ "hostname",
+ "http-body-util",
+ "hyper",
  "hyper-util",
  "nix",
  "prometheus-client",
