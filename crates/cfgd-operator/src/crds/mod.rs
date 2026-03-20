@@ -339,9 +339,7 @@ impl ConfigPolicySpec {
         }
         for (i, mr) in self.required_modules.iter().enumerate() {
             if mr.name.is_empty() {
-                errors.push(format!(
-                    "spec.requiredModules[{i}].name must not be empty"
-                ));
+                errors.push(format!("spec.requiredModules[{i}].name must not be empty"));
             }
         }
         for (pkg, req_str) in &self.package_versions {

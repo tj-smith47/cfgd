@@ -3,8 +3,8 @@ use std::time::Duration;
 use chrono::Utc;
 use k8s_openapi::api::coordination::v1::Lease;
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::MicroTime;
-use kube::api::{Api, Patch, PatchParams, PostParams};
 use kube::Client;
+use kube::api::{Api, Patch, PatchParams, PostParams};
 
 use crate::errors::OperatorError;
 

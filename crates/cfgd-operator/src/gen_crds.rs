@@ -9,8 +9,7 @@ fn main() {
     inject_smd_annotations(&mut mc_crd);
     let mc = serde_yaml::to_string(&mc_crd).expect("MachineConfig CRD to YAML");
 
-    let mut cp_crd =
-        serde_json::to_value(ConfigPolicy::crd()).expect("serialize ConfigPolicy CRD");
+    let mut cp_crd = serde_json::to_value(ConfigPolicy::crd()).expect("serialize ConfigPolicy CRD");
     inject_smd_annotations(&mut cp_crd);
     let cp = serde_yaml::to_string(&cp_crd).expect("ConfigPolicy CRD to YAML");
 
@@ -18,8 +17,8 @@ fn main() {
     inject_smd_annotations(&mut da_crd);
     let da = serde_yaml::to_string(&da_crd).expect("DriftAlert CRD to YAML");
 
-    let mut ccp_crd =
-        serde_json::to_value(ClusterConfigPolicy::crd()).expect("serialize ClusterConfigPolicy CRD");
+    let mut ccp_crd = serde_json::to_value(ClusterConfigPolicy::crd())
+        .expect("serialize ClusterConfigPolicy CRD");
     inject_smd_annotations(&mut ccp_crd);
     let ccp = serde_yaml::to_string(&ccp_crd).expect("ClusterConfigPolicy CRD to YAML");
 
@@ -70,9 +69,7 @@ fn inject_smd_annotations(crd: &mut serde_json::Value) {
 }
 
 fn inject_cel_rules(crd: &mut serde_json::Value) {
-    if let Some(spec) =
-        crd.pointer_mut("/spec/versions/0/schema/openAPIV3Schema/properties/spec")
-    {
+    if let Some(spec) = crd.pointer_mut("/spec/versions/0/schema/openAPIV3Schema/properties/spec") {
         spec["x-kubernetes-validations"] = serde_json::json!([
             {
                 "rule": "self.hostname.size() > 0",

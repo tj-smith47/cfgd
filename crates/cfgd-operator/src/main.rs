@@ -96,8 +96,7 @@ async fn main() -> Result<()> {
         if leader_enabled {
             let namespace =
                 std::env::var("POD_NAMESPACE").unwrap_or_else(|_| "cfgd-system".to_string());
-            let identity =
-                std::env::var("POD_NAME").unwrap_or_else(|_| Uuid::new_v4().to_string());
+            let identity = std::env::var("POD_NAME").unwrap_or_else(|_| Uuid::new_v4().to_string());
 
             tracing::info!(
                 namespace = %namespace,
@@ -108,9 +107,9 @@ async fn main() -> Result<()> {
             let le = leader::LeaderElection::new(client.clone(), namespace, identity);
             le.run(|| async {
                 health_state.set_ready();
-                run_operator(client, metrics).await.map_err(|e| {
-                    errors::OperatorError::Leader(format!("Operator run failed: {e}"))
-                })
+                run_operator(client, metrics)
+                    .await
+                    .map_err(|e| errors::OperatorError::Leader(format!("Operator run failed: {e}")))
             })
             .await
             .map_err(|e| anyhow::anyhow!("{}", e))?;

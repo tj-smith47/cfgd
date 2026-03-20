@@ -15,8 +15,8 @@ use k8s_openapi::api::core::v1::Namespace;
 use crate::crds::{
     ClusterConfigPolicy, ClusterConfigPolicySpec, ClusterConfigPolicyStatus, Condition,
     ConfigPolicy, ConfigPolicySpec, ConfigPolicyStatus, DriftAlert, DriftAlertStatus,
-    DriftSeverity, LabelSelector, MachineConfig, MachineConfigSpec,
-    MachineConfigStatus, ModuleRef, PackageRef, version_satisfies,
+    DriftSeverity, LabelSelector, MachineConfig, MachineConfigSpec, MachineConfigStatus, ModuleRef,
+    PackageRef, version_satisfies,
 };
 use crate::errors::OperatorError;
 use crate::metrics::{DriftLabels, Metrics, PolicyLabels, ReconcileLabels};
@@ -99,11 +99,7 @@ pub async fn run(client: Client, metrics: Metrics) -> Result<(), OperatorError> 
         });
 
     let ccp_controller = Controller::new(cluster_policies, Default::default())
-        .run(
-            reconcile_cluster_config_policy,
-            error_policy_ccp,
-            ccp_ctx,
-        )
+        .run(reconcile_cluster_config_policy, error_policy_ccp, ccp_ctx)
         .for_each(|result| async move {
             match result {
                 Ok((obj_ref, _action)) => {
@@ -184,9 +180,7 @@ async fn reconcile_machine_config(
             )
             .await
             .map_err(|e| {
-                OperatorError::Reconciliation(format!(
-                    "failed to add finalizer to {name}: {e}"
-                ))
+                OperatorError::Reconciliation(format!("failed to add finalizer to {name}: {e}"))
             })?;
         info!(name = %name, "Added finalizer to MachineConfig");
     }
@@ -982,10 +976,7 @@ async fn reconcile_config_policy(
     Ok(Action::requeue(std::time::Duration::from_secs(60)))
 }
 
-fn matches_selector(
-    labels: Option<&BTreeMap<String, String>>,
-    selector: &LabelSelector,
-) -> bool {
+fn matches_selector(labels: Option<&BTreeMap<String, String>>, selector: &LabelSelector) -> bool {
     if selector.match_labels.is_empty() && selector.match_expressions.is_empty() {
         return true;
     }
@@ -1140,9 +1131,10 @@ async fn reconcile_cluster_config_policy(
 
     // List all namespaces, filtering by namespace_selector if non-empty
     let ns_api: Api<Namespace> = Api::all(ctx.client.clone());
-    let ns_list = ns_api.list(&ListParams::default()).await.map_err(|e| {
-        OperatorError::Reconciliation(format!("failed to list namespaces: {e}"))
-    })?;
+    let ns_list = ns_api
+        .list(&ListParams::default())
+        .await
+        .map_err(|e| OperatorError::Reconciliation(format!("failed to list namespaces: {e}")))?;
 
     let matching_namespaces: Vec<String> = ns_list
         .items
@@ -1158,8 +1150,7 @@ async fn reconcile_cluster_config_policy(
     let mut non_compliant_count: u32 = 0;
 
     for ns_name in &matching_namespaces {
-        let machines: Api<MachineConfig> =
-            Api::namespaced(ctx.client.clone(), ns_name);
+        let machines: Api<MachineConfig> = Api::namespaced(ctx.client.clone(), ns_name);
         let mc_list = machines.list(&ListParams::default()).await.map_err(|e| {
             OperatorError::Reconciliation(format!(
                 "failed to list MachineConfigs in namespace {ns_name}: {e}"
@@ -1167,8 +1158,7 @@ async fn reconcile_cluster_config_policy(
         })?;
 
         // List namespace-scoped ConfigPolicies for merging
-        let ns_policies: Api<ConfigPolicy> =
-            Api::namespaced(ctx.client.clone(), ns_name);
+        let ns_policies: Api<ConfigPolicy> = Api::namespaced(ctx.client.clone(), ns_name);
         let cp_list = ns_policies
             .list(&ListParams::default())
             .await
@@ -1382,10 +1372,7 @@ mod tests {
 
     #[test]
     fn matches_selector_empty_matches_all() {
-        assert!(matches_selector(
-            None,
-            &LabelSelector::default(),
-        ));
+        assert!(matches_selector(None, &LabelSelector::default(),));
     }
 
     #[test]
@@ -1415,13 +1402,28 @@ mod tests {
     fn policy_compliance_all_packages_present() {
         let mut spec = mc_spec("h", "p");
         spec.packages = vec![
-            PackageRef { name: "vim".to_string(), version: None },
-            PackageRef { name: "git".to_string(), version: None },
-            PackageRef { name: "curl".to_string(), version: None },
+            PackageRef {
+                name: "vim".to_string(),
+                version: None,
+            },
+            PackageRef {
+                name: "git".to_string(),
+                version: None,
+            },
+            PackageRef {
+                name: "curl".to_string(),
+                version: None,
+            },
         ];
         let required = vec![
-            PackageRef { name: "vim".to_string(), version: None },
-            PackageRef { name: "git".to_string(), version: None },
+            PackageRef {
+                name: "vim".to_string(),
+                version: None,
+            },
+            PackageRef {
+                name: "git".to_string(),
+                version: None,
+            },
         ];
         assert!(validate_policy_compliance(
             &spec,
@@ -1436,10 +1438,19 @@ mod tests {
     #[test]
     fn policy_compliance_missing_package() {
         let mut spec = mc_spec("h", "p");
-        spec.packages = vec![PackageRef { name: "vim".to_string(), version: None }];
+        spec.packages = vec![PackageRef {
+            name: "vim".to_string(),
+            version: None,
+        }];
         let required = vec![
-            PackageRef { name: "vim".to_string(), version: None },
-            PackageRef { name: "git".to_string(), version: None },
+            PackageRef {
+                name: "vim".to_string(),
+                version: None,
+            },
+            PackageRef {
+                name: "git".to_string(),
+                version: None,
+            },
         ];
         assert!(!validate_policy_compliance(
             &spec,
@@ -1457,8 +1468,10 @@ mod tests {
         policy_settings.insert("key".to_string(), "value".to_string());
 
         let mut spec = mc_spec("h", "p");
-        spec.system_settings
-            .insert("key".to_string(), serde_json::Value::String("value".to_string()));
+        spec.system_settings.insert(
+            "key".to_string(),
+            serde_json::Value::String("value".to_string()),
+        );
         assert!(validate_policy_compliance(
             &spec,
             None,
@@ -1483,7 +1496,10 @@ mod tests {
     #[test]
     fn policy_version_enforcement_satisfied() {
         let mut spec = mc_spec("h", "p");
-        spec.packages = vec![PackageRef { name: "kubectl".to_string(), version: None }];
+        spec.packages = vec![PackageRef {
+            name: "kubectl".to_string(),
+            version: None,
+        }];
         let mut status = MachineConfigStatus::default();
         status
             .package_versions
@@ -1503,7 +1519,10 @@ mod tests {
     #[test]
     fn policy_version_enforcement_not_satisfied() {
         let mut spec = mc_spec("h", "p");
-        spec.packages = vec![PackageRef { name: "kubectl".to_string(), version: None }];
+        spec.packages = vec![PackageRef {
+            name: "kubectl".to_string(),
+            version: None,
+        }];
         let mut status = MachineConfigStatus::default();
         status
             .package_versions
@@ -1523,7 +1542,10 @@ mod tests {
     #[test]
     fn policy_version_enforcement_missing_version_report() {
         let mut spec = mc_spec("h", "p");
-        spec.packages = vec![PackageRef { name: "kubectl".to_string(), version: None }];
+        spec.packages = vec![PackageRef {
+            name: "kubectl".to_string(),
+            version: None,
+        }];
         let mut reqs = BTreeMap::new();
         reqs.insert("kubectl".to_string(), ">=1.28".to_string());
         assert!(!validate_policy_compliance(
@@ -1564,8 +1586,14 @@ mod tests {
             },
         ];
         let required_modules = vec![
-            ModuleRef { name: "corp-vpn".to_string(), required: false },
-            ModuleRef { name: "corp-certs".to_string(), required: false },
+            ModuleRef {
+                name: "corp-vpn".to_string(),
+                required: false,
+            },
+            ModuleRef {
+                name: "corp-certs".to_string(),
+                required: false,
+            },
         ];
         assert!(validate_policy_compliance(
             &spec,
@@ -1585,8 +1613,14 @@ mod tests {
             required: true,
         }];
         let required_modules = vec![
-            ModuleRef { name: "corp-vpn".to_string(), required: false },
-            ModuleRef { name: "corp-certs".to_string(), required: false },
+            ModuleRef {
+                name: "corp-vpn".to_string(),
+                required: false,
+            },
+            ModuleRef {
+                name: "corp-certs".to_string(),
+                required: false,
+            },
         ];
         assert!(!validate_policy_compliance(
             &spec,
@@ -1767,11 +1801,15 @@ mod tests {
     #[test]
     fn drift_alert_escalated_on_high_severity() {
         use crate::crds::DriftSeverity;
-        let is_escalated =
-            matches!(DriftSeverity::High, DriftSeverity::High | DriftSeverity::Critical);
+        let is_escalated = matches!(
+            DriftSeverity::High,
+            DriftSeverity::High | DriftSeverity::Critical
+        );
         assert!(is_escalated);
-        let is_not_escalated =
-            matches!(DriftSeverity::Low, DriftSeverity::High | DriftSeverity::Critical);
+        let is_not_escalated = matches!(
+            DriftSeverity::Low,
+            DriftSeverity::High | DriftSeverity::Critical
+        );
         assert!(!is_not_escalated);
     }
 

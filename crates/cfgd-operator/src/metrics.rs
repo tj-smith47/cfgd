@@ -1,11 +1,11 @@
 use std::sync::Arc;
 
-use prometheus_client::encoding::text::encode;
 use prometheus_client::encoding::EncodeLabelSet;
+use prometheus_client::encoding::text::encode;
 use prometheus_client::metrics::counter::Counter;
 use prometheus_client::metrics::family::Family;
 use prometheus_client::metrics::gauge::Gauge;
-use prometheus_client::metrics::histogram::{exponential_buckets, Histogram};
+use prometheus_client::metrics::histogram::{Histogram, exponential_buckets};
 use prometheus_client::registry::Registry;
 use tokio::sync::Mutex;
 
@@ -57,9 +57,10 @@ impl Metrics {
             reconciliations_total.clone(),
         );
 
-        let reconciliation_duration_seconds = Family::<ReconcileLabels, Histogram>::new_with_constructor(|| {
-            Histogram::new(exponential_buckets(0.001, 2.0, 16))
-        });
+        let reconciliation_duration_seconds =
+            Family::<ReconcileLabels, Histogram>::new_with_constructor(|| {
+                Histogram::new(exponential_buckets(0.001, 2.0, 16))
+            });
         sub.register(
             "reconciliation_duration_seconds",
             "Duration of reconciliation attempts in seconds",
@@ -80,9 +81,10 @@ impl Metrics {
             webhook_requests_total.clone(),
         );
 
-        let webhook_duration_seconds = Family::<WebhookLabels, Histogram>::new_with_constructor(|| {
-            Histogram::new(exponential_buckets(0.001, 2.0, 16))
-        });
+        let webhook_duration_seconds =
+            Family::<WebhookLabels, Histogram>::new_with_constructor(|| {
+                Histogram::new(exponential_buckets(0.001, 2.0, 16))
+            });
         sub.register(
             "webhook_duration_seconds",
             "Duration of webhook requests in seconds",
@@ -117,19 +119,29 @@ impl Metrics {
 
 async fn metrics_handler(
     axum::extract::State(registry): axum::extract::State<Arc<Mutex<Registry>>>,
-) -> (axum::http::StatusCode, [(axum::http::header::HeaderName, &'static str); 1], String) {
+) -> (
+    axum::http::StatusCode,
+    [(axum::http::header::HeaderName, &'static str); 1],
+    String,
+) {
     let reg = registry.lock().await;
     let mut buf = String::new();
     if encode(&mut buf, &reg).is_err() {
         return (
             axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-            [(axum::http::header::CONTENT_TYPE, "text/plain; charset=utf-8")],
+            [(
+                axum::http::header::CONTENT_TYPE,
+                "text/plain; charset=utf-8",
+            )],
             "Failed to encode metrics".to_string(),
         );
     }
     (
         axum::http::StatusCode::OK,
-        [(axum::http::header::CONTENT_TYPE, "application/openmetrics-text; version=1.0.0; charset=utf-8")],
+        [(
+            axum::http::header::CONTENT_TYPE,
+            "application/openmetrics-text; version=1.0.0; charset=utf-8",
+        )],
         buf,
     )
 }
