@@ -69,7 +69,8 @@ fn inject_smd_annotations(crd: &mut serde_json::Value) {
 
     // matchExpressions: merge by "key"
     for selector_path in &["targetSelector", "namespaceSelector"] {
-        let path = format!("{spec_base}/spec/properties/{selector_path}/properties/matchExpressions");
+        let path =
+            format!("{spec_base}/spec/properties/{selector_path}/properties/matchExpressions");
         if let Some(exprs) = crd.pointer_mut(&path) {
             exprs["x-kubernetes-list-type"] = serde_json::json!("map");
             exprs["x-kubernetes-list-map-keys"] = serde_json::json!(["key"]);

@@ -60,10 +60,7 @@ pub async fn run_webhook_server(
             "/validate-clusterconfigpolicy",
             post(handle_validate_cluster_config_policy),
         )
-        .route(
-            "/validate-driftalert",
-            post(handle_validate_drift_alert),
-        )
+        .route("/validate-driftalert", post(handle_validate_drift_alert))
         .route("/healthz", axum::routing::get(|| async { "ok" }))
         .with_state(metrics);
 

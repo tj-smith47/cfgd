@@ -843,7 +843,10 @@ mod tests {
     #[test]
     fn ccp_validate_rejects_empty_package_name() {
         let spec = ClusterConfigPolicySpec {
-            packages: vec![PackageRef { name: String::new(), version: None }],
+            packages: vec![PackageRef {
+                name: String::new(),
+                version: None,
+            }],
             ..Default::default()
         };
         assert!(spec.validate().is_err());
@@ -852,7 +855,10 @@ mod tests {
     #[test]
     fn ccp_validate_rejects_empty_module_name() {
         let spec = ClusterConfigPolicySpec {
-            required_modules: vec![ModuleRef { name: String::new(), required: false }],
+            required_modules: vec![ModuleRef {
+                name: String::new(),
+                required: false,
+            }],
             ..Default::default()
         };
         assert!(spec.validate().is_err());
