@@ -6,7 +6,7 @@ pub enum CsiError {
     ModuleNotFound { name: String, version: String },
 
     #[error("OCI pull failed: {0}")]
-    PullFailed(#[from] cfgd_core::errors::OciError),
+    PullFailed(Box<cfgd_core::errors::OciError>),
 
     #[error("mount failed: {message}")]
     MountFailed { message: String },
@@ -19,4 +19,10 @@ pub enum CsiError {
 
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
+}
+
+impl From<cfgd_core::errors::OciError> for CsiError {
+    fn from(e: cfgd_core::errors::OciError) -> Self {
+        CsiError::PullFailed(Box::new(e))
+    }
 }
