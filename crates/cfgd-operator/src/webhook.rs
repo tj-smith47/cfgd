@@ -119,104 +119,59 @@ pub async fn run_webhook_server(
 // Webhook handlers — delegate to shared validation in crds/mod.rs
 // ---------------------------------------------------------------------------
 
-async fn handle_validate_machine_config(
-    axum::extract::State(metrics): axum::extract::State<Metrics>,
-    Json(review): Json<AdmissionReview<DynamicObject>>,
+/// Generic webhook validation handler — shared logic for all CRD types.
+fn handle_validate<S: Validatable + 'static>(
+    operation: &'static str,
+    metrics: &Metrics,
+    review: AdmissionReview<DynamicObject>,
 ) -> Json<AdmissionReview<DynamicObject>> {
     let start = std::time::Instant::now();
     let req: AdmissionRequest<DynamicObject> =
         match AdmissionReview::<DynamicObject>::try_into(review) {
             Ok(r) => r,
             Err(e) => {
-                record_webhook_metrics(&metrics, "validate_machineconfig", "error", start);
+                record_webhook_metrics(metrics, operation, "error", start);
                 return Json(
                     AdmissionResponse::invalid(format!("bad admission request: {e}")).into_review(),
                 );
             }
         };
 
-    let (resp, result) = match validate_object_spec::<MachineConfigSpec>(&req) {
+    let (resp, result) = match validate_object_spec::<S>(&req) {
         Ok(()) => (AdmissionResponse::from(&req), "allowed"),
         Err(reason) => (AdmissionResponse::from(&req).deny(reason), "denied"),
     };
-    record_webhook_metrics(&metrics, "validate_machineconfig", result, start);
+    record_webhook_metrics(metrics, operation, result, start);
 
     Json(resp.into_review())
+}
+
+async fn handle_validate_machine_config(
+    axum::extract::State(metrics): axum::extract::State<Metrics>,
+    Json(review): Json<AdmissionReview<DynamicObject>>,
+) -> Json<AdmissionReview<DynamicObject>> {
+    handle_validate::<MachineConfigSpec>("validate_machineconfig", &metrics, review)
 }
 
 async fn handle_validate_config_policy(
     axum::extract::State(metrics): axum::extract::State<Metrics>,
     Json(review): Json<AdmissionReview<DynamicObject>>,
 ) -> Json<AdmissionReview<DynamicObject>> {
-    let start = std::time::Instant::now();
-    let req: AdmissionRequest<DynamicObject> =
-        match AdmissionReview::<DynamicObject>::try_into(review) {
-            Ok(r) => r,
-            Err(e) => {
-                record_webhook_metrics(&metrics, "validate_configpolicy", "error", start);
-                return Json(
-                    AdmissionResponse::invalid(format!("bad admission request: {e}")).into_review(),
-                );
-            }
-        };
-
-    let (resp, result) = match validate_object_spec::<ConfigPolicySpec>(&req) {
-        Ok(()) => (AdmissionResponse::from(&req), "allowed"),
-        Err(reason) => (AdmissionResponse::from(&req).deny(reason), "denied"),
-    };
-    record_webhook_metrics(&metrics, "validate_configpolicy", result, start);
-
-    Json(resp.into_review())
+    handle_validate::<ConfigPolicySpec>("validate_configpolicy", &metrics, review)
 }
 
 async fn handle_validate_cluster_config_policy(
     axum::extract::State(metrics): axum::extract::State<Metrics>,
     Json(review): Json<AdmissionReview<DynamicObject>>,
 ) -> Json<AdmissionReview<DynamicObject>> {
-    let start = std::time::Instant::now();
-    let req: AdmissionRequest<DynamicObject> =
-        match AdmissionReview::<DynamicObject>::try_into(review) {
-            Ok(r) => r,
-            Err(e) => {
-                record_webhook_metrics(&metrics, "validate_clusterconfigpolicy", "error", start);
-                return Json(
-                    AdmissionResponse::invalid(format!("bad admission request: {e}")).into_review(),
-                );
-            }
-        };
-
-    let (resp, result) = match validate_object_spec::<ClusterConfigPolicySpec>(&req) {
-        Ok(()) => (AdmissionResponse::from(&req), "allowed"),
-        Err(reason) => (AdmissionResponse::from(&req).deny(reason), "denied"),
-    };
-    record_webhook_metrics(&metrics, "validate_clusterconfigpolicy", result, start);
-
-    Json(resp.into_review())
+    handle_validate::<ClusterConfigPolicySpec>("validate_clusterconfigpolicy", &metrics, review)
 }
 
 async fn handle_validate_drift_alert(
     axum::extract::State(metrics): axum::extract::State<Metrics>,
     Json(review): Json<AdmissionReview<DynamicObject>>,
 ) -> Json<AdmissionReview<DynamicObject>> {
-    let start = std::time::Instant::now();
-    let req: AdmissionRequest<DynamicObject> =
-        match AdmissionReview::<DynamicObject>::try_into(review) {
-            Ok(r) => r,
-            Err(e) => {
-                record_webhook_metrics(&metrics, "validate_driftalert", "error", start);
-                return Json(
-                    AdmissionResponse::invalid(format!("bad admission request: {e}")).into_review(),
-                );
-            }
-        };
-
-    let (resp, result) = match validate_object_spec::<DriftAlertSpec>(&req) {
-        Ok(()) => (AdmissionResponse::from(&req), "allowed"),
-        Err(reason) => (AdmissionResponse::from(&req).deny(reason), "denied"),
-    };
-    record_webhook_metrics(&metrics, "validate_driftalert", result, start);
-
-    Json(resp.into_review())
+    handle_validate::<DriftAlertSpec>("validate_driftalert", &metrics, review)
 }
 
 fn record_webhook_metrics(
@@ -319,4 +274,179 @@ fn load_private_key(
         .ok_or_else(|| {
             OperatorError::Webhook(format!("no private key found in {}", path.display()))
         })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use kube::core::DynamicObject;
+    use kube::core::admission::{AdmissionRequest, AdmissionReview};
+
+    fn make_review(spec_json: serde_json::Value) -> AdmissionReview<DynamicObject> {
+        serde_json::from_value(serde_json::json!({
+            "apiVersion": "admission.k8s.io/v1",
+            "kind": "AdmissionReview",
+            "request": {
+                "uid": "test-uid",
+                "kind": {"group": "cfgd.io", "version": "v1alpha1", "kind": "MachineConfig"},
+                "resource": {"group": "cfgd.io", "version": "v1alpha1", "resource": "machineconfigs"},
+                "operation": "CREATE",
+                "userInfo": {"username": "test-user"},
+                "object": {
+                    "apiVersion": "cfgd.io/v1alpha1",
+                    "kind": "MachineConfig",
+                    "metadata": {"name": "test", "namespace": "default"},
+                    "spec": spec_json
+                }
+            }
+        }))
+        .expect("test review")
+    }
+
+    fn extract_req(review: AdmissionReview<DynamicObject>) -> AdmissionRequest<DynamicObject> {
+        AdmissionReview::<DynamicObject>::try_into(review).expect("parse review")
+    }
+
+    #[test]
+    fn validate_mc_spec_valid() {
+        let review = make_review(serde_json::json!({
+            "hostname": "test-host",
+            "profile": "developer"
+        }));
+        let req = extract_req(review);
+        assert!(validate_object_spec::<MachineConfigSpec>(&req).is_ok());
+    }
+
+    #[test]
+    fn validate_mc_spec_empty_hostname_denied() {
+        let review = make_review(serde_json::json!({
+            "hostname": "",
+            "profile": "developer"
+        }));
+        let req = extract_req(review);
+        let result = validate_object_spec::<MachineConfigSpec>(&req);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("hostname"));
+    }
+
+    #[test]
+    fn validate_mc_spec_missing_spec_denied() {
+        let review: AdmissionReview<DynamicObject> = serde_json::from_value(serde_json::json!({
+            "apiVersion": "admission.k8s.io/v1",
+            "kind": "AdmissionReview",
+            "request": {
+                "uid": "test-uid",
+                "kind": {"group": "cfgd.io", "version": "v1alpha1", "kind": "MachineConfig"},
+                "resource": {"group": "cfgd.io", "version": "v1alpha1", "resource": "machineconfigs"},
+                "operation": "CREATE",
+                "userInfo": {"username": "test-user"},
+                "object": {
+                    "apiVersion": "cfgd.io/v1alpha1",
+                    "kind": "MachineConfig",
+                    "metadata": {"name": "test", "namespace": "default"}
+                }
+            }
+        }))
+        .expect("test review");
+        let req = extract_req(review);
+        let result = validate_object_spec::<MachineConfigSpec>(&req);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("spec is required"));
+    }
+
+    #[test]
+    fn validate_delete_operation_allowed() {
+        // DELETE operations have no object — should be allowed
+        let review: AdmissionReview<DynamicObject> = serde_json::from_value(serde_json::json!({
+            "apiVersion": "admission.k8s.io/v1",
+            "kind": "AdmissionReview",
+            "request": {
+                "uid": "test-uid",
+                "kind": {"group": "cfgd.io", "version": "v1alpha1", "kind": "MachineConfig"},
+                "resource": {"group": "cfgd.io", "version": "v1alpha1", "resource": "machineconfigs"},
+                "operation": "DELETE",
+                "userInfo": {"username": "test-user"}
+            }
+        }))
+        .expect("test review");
+        let req = extract_req(review);
+        assert!(validate_object_spec::<MachineConfigSpec>(&req).is_ok());
+    }
+
+    #[test]
+    fn validate_config_policy_valid() {
+        let review = make_review(serde_json::json!({
+            "packages": [{"name": "vim"}],
+            "requiredModules": [{"name": "corp-vpn"}]
+        }));
+        let req = extract_req(review);
+        assert!(validate_object_spec::<ConfigPolicySpec>(&req).is_ok());
+    }
+
+    #[test]
+    fn validate_config_policy_empty_package_name_denied() {
+        let review = make_review(serde_json::json!({
+            "packages": [{"name": ""}]
+        }));
+        let req = extract_req(review);
+        let result = validate_object_spec::<ConfigPolicySpec>(&req);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn validate_drift_alert_valid() {
+        let review = make_review(serde_json::json!({
+            "deviceId": "dev-1",
+            "machineConfigRef": {"name": "mc-1"},
+            "severity": "High"
+        }));
+        let req = extract_req(review);
+        assert!(validate_object_spec::<DriftAlertSpec>(&req).is_ok());
+    }
+
+    #[test]
+    fn validate_drift_alert_empty_device_id_denied() {
+        let review = make_review(serde_json::json!({
+            "deviceId": "",
+            "machineConfigRef": {"name": "mc-1"},
+            "severity": "Low"
+        }));
+        let req = extract_req(review);
+        let result = validate_object_spec::<DriftAlertSpec>(&req);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("deviceId"));
+    }
+
+    #[test]
+    fn handle_validate_generic_allows_valid() {
+        let metrics = test_metrics();
+        let review = make_review(serde_json::json!({
+            "hostname": "test-host",
+            "profile": "developer"
+        }));
+        let result = handle_validate::<MachineConfigSpec>("test_op", &metrics, review);
+        let review_resp: serde_json::Value =
+            serde_json::to_value(result.0).expect("serialize response");
+        let allowed = review_resp["response"]["allowed"].as_bool().unwrap();
+        assert!(allowed);
+    }
+
+    #[test]
+    fn handle_validate_generic_denies_invalid() {
+        let metrics = test_metrics();
+        let review = make_review(serde_json::json!({
+            "hostname": "",
+            "profile": "developer"
+        }));
+        let result = handle_validate::<MachineConfigSpec>("test_op", &metrics, review);
+        let review_resp: serde_json::Value =
+            serde_json::to_value(result.0).expect("serialize response");
+        let allowed = review_resp["response"]["allowed"].as_bool().unwrap();
+        assert!(!allowed);
+    }
+
+    fn test_metrics() -> Metrics {
+        let mut registry = prometheus_client::registry::Registry::default();
+        Metrics::new(&mut registry)
+    }
 }

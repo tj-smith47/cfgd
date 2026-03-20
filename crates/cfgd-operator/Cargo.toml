@@ -50,6 +50,7 @@ rusqlite = { version = "0.32", features = ["bundled"] }
 uuid = { version = "1", features = ["v4"] }
 sha2 = "0.10"
 tokio-stream = { version = "0.1", features = ["sync"] }
+tokio-util = "0.7"
 tempfile = "3"
 chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }
 prometheus-client = "0.22"

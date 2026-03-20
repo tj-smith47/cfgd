@@ -7,8 +7,9 @@ use kube::api::{Api, ListParams, Patch, PatchParams};
 use kube::runtime::Controller;
 use kube::runtime::controller::Action;
 use kube::runtime::events::{Event, EventType, Recorder, Reporter};
+use kube::runtime::watcher::Config as WatcherConfig;
 use kube::{Client, Resource, ResourceExt};
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 use k8s_openapi::api::core::v1::Namespace;
 
@@ -16,7 +17,7 @@ use crate::crds::{
     ClusterConfigPolicy, ClusterConfigPolicySpec, ClusterConfigPolicyStatus, Condition,
     ConfigPolicy, ConfigPolicySpec, ConfigPolicyStatus, DriftAlert, DriftAlertStatus,
     DriftSeverity, LabelSelector, MachineConfig, MachineConfigSpec, MachineConfigStatus, ModuleRef,
-    PackageRef, version_satisfies,
+    PackageRef, SelectorOperator, version_satisfies,
 };
 use crate::errors::OperatorError;
 use crate::metrics::{DriftLabels, Metrics, PolicyLabels, ReconcileLabels};
@@ -29,6 +30,25 @@ pub struct ControllerContext {
     pub client: Client,
     pub recorder: Recorder,
     pub metrics: Metrics,
+}
+
+/// Get a namespaced API for a resource, or return an error if namespace is empty.
+fn namespaced_api<
+    T: kube::Resource<DynamicType = (), Scope = kube::core::NamespaceResourceScope>
+        + Clone
+        + serde::de::DeserializeOwned
+        + std::fmt::Debug,
+>(
+    client: &Client,
+    namespace: &str,
+) -> Result<Api<T>, OperatorError> {
+    if namespace.is_empty() {
+        Err(OperatorError::Reconciliation(
+            "resource has no namespace — cannot perform namespaced operation".to_string(),
+        ))
+    } else {
+        Ok(Api::namespaced(client.clone(), namespace))
+    }
 }
 
 pub async fn run(client: Client, metrics: Metrics) -> Result<(), OperatorError> {
@@ -59,7 +79,11 @@ pub async fn run(client: Client, metrics: Metrics) -> Result<(), OperatorError> 
     info!("Starting ConfigPolicy controller");
     info!("Starting ClusterConfigPolicy controller");
 
-    let mc_controller = Controller::new(machines, Default::default())
+    let mc_controller = Controller::new(machines, WatcherConfig::default())
+        .owns(
+            Api::<DriftAlert>::all(client.clone()),
+            WatcherConfig::default(),
+        )
         .run(reconcile_machine_config, error_policy_mc, mc_ctx)
         .for_each(|result| async move {
             match result {
@@ -72,7 +96,7 @@ pub async fn run(client: Client, metrics: Metrics) -> Result<(), OperatorError> 
             }
         });
 
-    let da_controller = Controller::new(alerts, Default::default())
+    let da_controller = Controller::new(alerts, WatcherConfig::default())
         .run(reconcile_drift_alert, error_policy_da, da_ctx)
         .for_each(|result| async move {
             match result {
@@ -85,7 +109,16 @@ pub async fn run(client: Client, metrics: Metrics) -> Result<(), OperatorError> 
             }
         });
 
-    let cp_controller = Controller::new(policies, Default::default())
+    let cp_controller = Controller::new(policies, WatcherConfig::default())
+        .watches(
+            Api::<MachineConfig>::all(client.clone()),
+            WatcherConfig::default(),
+            |mc| {
+                // When a MachineConfig changes, requeue all ConfigPolicies in its namespace
+                mc.namespace()
+                    .map(|ns| kube::runtime::reflector::ObjectRef::new("").within(&ns))
+            },
+        )
         .run(reconcile_config_policy, error_policy_cp, cp_ctx)
         .for_each(|result| async move {
             match result {
@@ -98,7 +131,7 @@ pub async fn run(client: Client, metrics: Metrics) -> Result<(), OperatorError> 
             }
         });
 
-    let ccp_controller = Controller::new(cluster_policies, Default::default())
+    let ccp_controller = Controller::new(cluster_policies, WatcherConfig::default())
         .run(reconcile_cluster_config_policy, error_policy_ccp, ccp_ctx)
         .for_each(|result| async move {
             match result {
@@ -117,6 +150,137 @@ pub async fn run(client: Client, metrics: Metrics) -> Result<(), OperatorError> 
 }
 
 // ---------------------------------------------------------------------------
+// Condition helpers
+// ---------------------------------------------------------------------------
+
+/// Find an existing condition's status by type, returning None if not found.
+fn find_condition_status(conditions: &[Condition], condition_type: &str) -> Option<String> {
+    conditions
+        .iter()
+        .find(|c| c.condition_type == condition_type)
+        .map(|c| c.status.clone())
+}
+
+/// Find an existing condition's last_transition_time by type.
+fn find_condition_transition_time(
+    conditions: &[Condition],
+    condition_type: &str,
+) -> Option<String> {
+    conditions
+        .iter()
+        .find(|c| c.condition_type == condition_type)
+        .map(|c| c.last_transition_time.clone())
+}
+
+/// Build a condition, preserving lastTransitionTime if the status hasn't changed.
+fn build_condition(
+    existing_conditions: &[Condition],
+    condition_type: &str,
+    status: &str,
+    reason: &str,
+    message: &str,
+    now: &str,
+    observed_generation: Option<i64>,
+) -> Condition {
+    let existing_status = find_condition_status(existing_conditions, condition_type);
+    let transition_time = if existing_status.as_deref() == Some(status) {
+        // Status unchanged — preserve existing transition time
+        find_condition_transition_time(existing_conditions, condition_type)
+            .unwrap_or_else(|| now.to_string())
+    } else {
+        // Status changed — new transition time
+        now.to_string()
+    };
+
+    Condition {
+        condition_type: condition_type.to_string(),
+        status: status.to_string(),
+        reason: reason.to_string(),
+        message: message.to_string(),
+        last_transition_time: transition_time,
+        observed_generation,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// DriftAlert condition builder (DRY helper for M1)
+// ---------------------------------------------------------------------------
+
+fn build_drift_alert_conditions(
+    severity: &DriftSeverity,
+    resolved: bool,
+    device_id: &str,
+    details_count: usize,
+    now: &str,
+    observed_generation: Option<i64>,
+) -> Vec<Condition> {
+    let is_escalated = matches!(severity, DriftSeverity::High | DriftSeverity::Critical);
+
+    let (resolved_status, resolved_reason, resolved_message) = if resolved {
+        (
+            "True",
+            "DriftResolved",
+            "Drift has been resolved".to_string(),
+        )
+    } else {
+        (
+            "False",
+            "DriftActive",
+            format!(
+                "Drift active on device {} — {} detail(s)",
+                device_id, details_count
+            ),
+        )
+    };
+
+    vec![
+        Condition {
+            condition_type: "Acknowledged".to_string(),
+            status: "False".to_string(),
+            reason: "NotAcknowledged".to_string(),
+            message: "Drift alert has not been acknowledged".to_string(),
+            last_transition_time: now.to_string(),
+            observed_generation,
+        },
+        Condition {
+            condition_type: "Resolved".to_string(),
+            status: resolved_status.to_string(),
+            reason: resolved_reason.to_string(),
+            message: resolved_message,
+            last_transition_time: now.to_string(),
+            observed_generation,
+        },
+        Condition {
+            condition_type: "Escalated".to_string(),
+            status: if is_escalated { "True" } else { "False" }.to_string(),
+            reason: if is_escalated {
+                "SeverityThreshold"
+            } else {
+                "BelowThreshold"
+            }
+            .to_string(),
+            message: format!("Severity: {:?}", severity),
+            last_transition_time: now.to_string(),
+            observed_generation,
+        },
+    ]
+}
+
+// ---------------------------------------------------------------------------
+// Publish event helper (logs on failure instead of silent .ok())
+// ---------------------------------------------------------------------------
+
+async fn publish_event(
+    recorder: &Recorder,
+    event: &Event,
+    obj_ref: &k8s_openapi::api::core::v1::ObjectReference,
+) {
+    if let Err(e) = recorder.publish(event, obj_ref).await {
+        debug!(error = %e, "Failed to publish event (best-effort)");
+    }
+}
+
+// ---------------------------------------------------------------------------
 // MachineConfig controller
 // ---------------------------------------------------------------------------
 
@@ -128,11 +292,7 @@ async fn reconcile_machine_config(
     let name = obj.name_any();
     let namespace = obj.namespace().unwrap_or_default();
 
-    let machines_api: Api<MachineConfig> = if namespace.is_empty() {
-        Api::all(ctx.client.clone())
-    } else {
-        Api::namespaced(ctx.client.clone(), &namespace)
-    };
+    let machines_api: Api<MachineConfig> = namespaced_api(&ctx.client, &namespace)?;
 
     let finalizers = obj.metadata.finalizers.as_deref().unwrap_or(&[]);
     let has_finalizer = finalizers.iter().any(|f| f == MACHINE_CONFIG_FINALIZER);
@@ -187,19 +347,18 @@ async fn reconcile_machine_config(
 
     if let Err(e) = validate_spec(&obj.spec) {
         let error_msg = e.to_string();
-        ctx.recorder
-            .publish(
-                &Event {
-                    type_: EventType::Warning,
-                    reason: "ReconcileError".into(),
-                    note: Some(format!("Reconciliation failed for {}: {}", name, error_msg)),
-                    action: "Reconcile".into(),
-                    secondary: None,
-                },
-                &obj.object_ref(&()),
-            )
-            .await
-            .ok();
+        publish_event(
+            &ctx.recorder,
+            &Event {
+                type_: EventType::Warning,
+                reason: "ReconcileError".into(),
+                note: Some(format!("Reconciliation failed for {}: {}", name, error_msg)),
+                action: "Reconcile".into(),
+                secondary: None,
+            },
+            &obj.object_ref(&()),
+        )
+        .await;
         return Err(e);
     }
 
@@ -214,7 +373,11 @@ async fn reconcile_machine_config(
     );
 
     let current_generation = obj.meta().generation;
-    let observed_generation = obj.status.as_ref().and_then(|s| s.observed_generation);
+    let existing_status = obj.status.as_ref();
+    let observed_generation = existing_status.and_then(|s| s.observed_generation);
+    let existing_conditions = existing_status
+        .map(|s| s.conditions.as_slice())
+        .unwrap_or(&[]);
 
     // Check if any DriftAlerts exist for this MachineConfig
     let has_drift = has_active_drift_alerts(&ctx.client, &namespace, &name).await;
@@ -236,57 +399,65 @@ async fn reconcile_machine_config(
 
     let (drift_status, drift_reason, drift_message) = if has_drift {
         (
-            "True".to_string(),
-            "DriftActive".to_string(),
+            "True",
+            "DriftActive",
             format!("MachineConfig {} has detected drift on device", name),
         )
     } else {
         (
-            "False".to_string(),
-            "NoDrift".to_string(),
+            "False",
+            "NoDrift",
             format!("No drift detected for MachineConfig {}", name),
         )
     };
+
+    // Preserve existing package_versions from status (C1 fix)
+    let existing_package_versions = existing_status
+        .map(|s| s.package_versions.clone())
+        .unwrap_or_default();
 
     let status = serde_json::json!({
         "status": MachineConfigStatus {
             last_reconciled: Some(now.clone()),
             observed_generation: current_generation,
             conditions: vec![
-                Condition {
-                    condition_type: "Reconciled".to_string(),
-                    status: "True".to_string(),
-                    reason: "ReconcileSuccess".to_string(),
-                    message: format!("MachineConfig {} reconciled successfully", name),
-                    last_transition_time: now.clone(),
-                    observed_generation: current_generation,
-                },
-                Condition {
-                    condition_type: "DriftDetected".to_string(),
-                    status: drift_status,
-                    reason: drift_reason,
-                    message: drift_message,
-                    last_transition_time: now.clone(),
-                    observed_generation: current_generation,
-                },
-                Condition {
-                    condition_type: "ModulesResolved".to_string(),
-                    status: "True".to_string(),
-                    reason: "AllResolved".to_string(),
-                    message: "All module references resolved".to_string(),
-                    last_transition_time: now.clone(),
-                    observed_generation: current_generation,
-                },
-                Condition {
-                    condition_type: "Compliant".to_string(),
-                    status: "True".to_string(),
-                    reason: "PolicyCompliant".to_string(),
-                    message: "Compliant with all applicable policies".to_string(),
-                    last_transition_time: now,
-                    observed_generation: current_generation,
-                },
+                build_condition(
+                    existing_conditions,
+                    "Reconciled", "True", "ReconcileSuccess",
+                    &format!("MachineConfig {} reconciled successfully", name),
+                    &now, current_generation,
+                ),
+                build_condition(
+                    existing_conditions,
+                    "DriftDetected", drift_status, drift_reason,
+                    &drift_message,
+                    &now, current_generation,
+                ),
+                build_condition(
+                    existing_conditions,
+                    "ModulesResolved", "True", "AllResolved",
+                    "All module references resolved",
+                    &now, current_generation,
+                ),
+                // Compliant is set by policy controllers — preserve existing value
+                build_condition(
+                    existing_conditions,
+                    "Compliant",
+                    find_condition_status(existing_conditions, "Compliant")
+                        .as_deref()
+                        .unwrap_or("Unknown"),
+                    find_condition_status(existing_conditions, "Compliant")
+                        .as_deref()
+                        .map(|s| if s == "True" { "PolicyCompliant" } else if s == "False" { "PolicyViolation" } else { "NotEvaluated" })
+                        .unwrap_or("NotEvaluated"),
+                    find_condition_status(existing_conditions, "Compliant")
+                        .as_deref()
+                        .map(|_| "Policy compliance evaluated by ConfigPolicy controller")
+                        .unwrap_or("Awaiting policy evaluation"),
+                    &now, current_generation,
+                ),
             ],
-            package_versions: Default::default(),
+            package_versions: existing_package_versions,
         }
     });
 
@@ -299,55 +470,52 @@ async fn reconcile_machine_config(
         .await
     {
         let error_msg = format!("failed to update status for {name}: {e}");
-        ctx.recorder
-            .publish(
-                &Event {
-                    type_: EventType::Warning,
-                    reason: "ReconcileError".into(),
-                    note: Some(format!("Reconciliation failed for {}: {}", name, error_msg)),
-                    action: "Reconcile".into(),
-                    secondary: None,
-                },
-                &obj.object_ref(&()),
-            )
-            .await
-            .ok();
-        return Err(OperatorError::Reconciliation(error_msg));
-    }
-
-    info!(name = %name, "Status updated with last_reconciled timestamp");
-
-    ctx.recorder
-        .publish(
+        publish_event(
+            &ctx.recorder,
             &Event {
-                type_: EventType::Normal,
-                reason: "Reconciled".into(),
-                note: Some(format!("MachineConfig {} reconciled successfully", name)),
+                type_: EventType::Warning,
+                reason: "ReconcileError".into(),
+                note: Some(format!("Reconciliation failed for {}: {}", name, error_msg)),
                 action: "Reconcile".into(),
                 secondary: None,
             },
             &obj.object_ref(&()),
         )
-        .await
-        .ok();
+        .await;
+        return Err(OperatorError::Reconciliation(error_msg));
+    }
+
+    info!(name = %name, "Status updated with last_reconciled timestamp");
+
+    publish_event(
+        &ctx.recorder,
+        &Event {
+            type_: EventType::Normal,
+            reason: "Reconciled".into(),
+            note: Some(format!("MachineConfig {} reconciled successfully", name)),
+            action: "Reconcile".into(),
+            secondary: None,
+        },
+        &obj.object_ref(&()),
+    )
+    .await;
 
     if has_drift {
-        ctx.recorder
-            .publish(
-                &Event {
-                    type_: EventType::Warning,
-                    reason: "DriftDetected".into(),
-                    note: Some(format!(
-                        "Drift detected on device for MachineConfig {}",
-                        name
-                    )),
-                    action: "DriftCheck".into(),
-                    secondary: None,
-                },
-                &obj.object_ref(&()),
-            )
-            .await
-            .ok();
+        publish_event(
+            &ctx.recorder,
+            &Event {
+                type_: EventType::Warning,
+                reason: "DriftDetected".into(),
+                note: Some(format!(
+                    "Drift detected on device for MachineConfig {}",
+                    name
+                )),
+                action: "DriftCheck".into(),
+                secondary: None,
+            },
+            &obj.object_ref(&()),
+        )
+        .await;
 
         ctx.metrics
             .drift_events_total
@@ -427,20 +595,23 @@ async fn reconcile_drift_alert(
         "Reconciling DriftAlert"
     );
 
-    let machines: Api<MachineConfig> = if mc_namespace.is_empty() {
-        Api::all(ctx.client.clone())
-    } else {
-        Api::namespaced(ctx.client.clone(), mc_namespace)
-    };
+    let machines: Api<MachineConfig> = namespaced_api(&ctx.client, mc_namespace)?;
 
     match machines.get(mc_name).await {
         Ok(mc) => {
-            // Set owner reference on DriftAlert pointing to the MachineConfig
+            // Require valid UID for owner reference (H7 fix)
+            let mc_uid = mc.metadata.uid.clone().ok_or_else(|| {
+                OperatorError::Reconciliation(format!(
+                    "MachineConfig {} has no UID — cannot set owner reference",
+                    mc.name_any()
+                ))
+            })?;
+
             let owner_ref = OwnerReference {
                 api_version: cfgd_core::API_VERSION.to_string(),
                 kind: "MachineConfig".to_string(),
                 name: mc.name_any(),
-                uid: mc.metadata.uid.clone().unwrap_or_default(),
+                uid: mc_uid,
                 controller: Some(true),
                 block_owner_deletion: Some(true),
             };
@@ -458,11 +629,7 @@ async fn reconcile_drift_alert(
                         "ownerReferences": updated_owners
                     }
                 });
-                let da_api: Api<DriftAlert> = if namespace.is_empty() {
-                    Api::all(ctx.client.clone())
-                } else {
-                    Api::namespaced(ctx.client.clone(), &namespace)
-                };
+                let da_api: Api<DriftAlert> = namespaced_api(&ctx.client, &namespace)?;
                 da_api
                     .patch(
                         &name,
@@ -491,49 +658,22 @@ async fn reconcile_drift_alert(
 
             // If MC has no drift condition and no drift details, this alert is resolved — delete it
             if !has_drift_condition && obj.spec.drift_details.is_empty() {
-                let alerts: Api<DriftAlert> = if namespace.is_empty() {
-                    Api::all(ctx.client.clone())
-                } else {
-                    Api::namespaced(ctx.client.clone(), &namespace)
-                };
+                let alerts: Api<DriftAlert> = namespaced_api(&ctx.client, &namespace)?;
 
-                // Set Resolved=True before deletion
                 let now = cfgd_core::utc_now_iso8601();
-                let is_escalated = matches!(
-                    obj.spec.severity,
-                    DriftSeverity::High | DriftSeverity::Critical
-                );
                 let da_status = serde_json::json!({
                     "status": DriftAlertStatus {
                         detected_at: obj.status.as_ref().and_then(|s| s.detected_at.clone()),
                         resolved_at: Some(now.clone()),
                         resolved: true,
-                        conditions: vec![
-                            Condition {
-                                condition_type: "Acknowledged".to_string(),
-                                status: "False".to_string(),
-                                reason: "NotAcknowledged".to_string(),
-                                message: "Drift alert has not been acknowledged".to_string(),
-                                last_transition_time: now.clone(),
-                                observed_generation: obj.meta().generation,
-                            },
-                            Condition {
-                                condition_type: "Resolved".to_string(),
-                                status: "True".to_string(),
-                                reason: "DriftResolved".to_string(),
-                                message: "Drift has been resolved".to_string(),
-                                last_transition_time: now.clone(),
-                                observed_generation: obj.meta().generation,
-                            },
-                            Condition {
-                                condition_type: "Escalated".to_string(),
-                                status: if is_escalated { "True" } else { "False" }.to_string(),
-                                reason: if is_escalated { "SeverityThreshold" } else { "BelowThreshold" }.to_string(),
-                                message: format!("Severity: {:?}", obj.spec.severity),
-                                last_transition_time: now,
-                                observed_generation: obj.meta().generation,
-                            },
-                        ],
+                        conditions: build_drift_alert_conditions(
+                            &obj.spec.severity,
+                            true,
+                            &obj.spec.device_id,
+                            obj.spec.drift_details.len(),
+                            &now,
+                            obj.meta().generation,
+                        ),
                     }
                 });
                 if let Err(e) = alerts
@@ -547,23 +687,36 @@ async fn reconcile_drift_alert(
                     warn!(name = %name, error = %e, "Failed to set Resolved condition on DriftAlert");
                 }
 
-                ctx.recorder
-                    .publish(
-                        &Event {
-                            type_: EventType::Normal,
-                            reason: "DriftResolved".into(),
-                            note: Some(format!("DriftAlert {} resolved", name)),
-                            action: "DriftCheck".into(),
-                            secondary: None,
-                        },
-                        &obj.object_ref(&()),
-                    )
-                    .await
-                    .ok();
+                publish_event(
+                    &ctx.recorder,
+                    &Event {
+                        type_: EventType::Normal,
+                        reason: "DriftResolved".into(),
+                        note: Some(format!("DriftAlert {} resolved", name)),
+                        action: "DriftCheck".into(),
+                        secondary: None,
+                    },
+                    &obj.object_ref(&()),
+                )
+                .await;
 
                 if let Err(e) = alerts.delete(&name, &Default::default()).await {
                     warn!(name = %name, error = %e, "Failed to delete resolved DriftAlert");
                 }
+
+                let labels = ReconcileLabels {
+                    controller: "drift_alert".to_string(),
+                    result: "success".to_string(),
+                };
+                ctx.metrics
+                    .reconciliations_total
+                    .get_or_create(&labels)
+                    .inc();
+                ctx.metrics
+                    .reconciliation_duration_seconds
+                    .get_or_create(&labels)
+                    .observe(start.elapsed().as_secs_f64());
+
                 return Ok(Action::requeue(std::time::Duration::from_secs(60)));
             }
 
@@ -615,69 +768,38 @@ async fn reconcile_drift_alert(
                     "MachineConfig drift condition set"
                 );
 
-                ctx.recorder
-                    .publish(
-                        &Event {
-                            type_: EventType::Warning,
-                            reason: "DriftDetected".into(),
-                            note: Some(format!(
-                                "Drift detected from device {} — {} details",
-                                obj.spec.device_id,
-                                obj.spec.drift_details.len()
-                            )),
-                            action: "DriftCheck".into(),
-                            secondary: None,
-                        },
-                        &mc.object_ref(&()),
-                    )
-                    .await
-                    .ok();
+                publish_event(
+                    &ctx.recorder,
+                    &Event {
+                        type_: EventType::Warning,
+                        reason: "DriftDetected".into(),
+                        note: Some(format!(
+                            "Drift detected from device {} — {} details",
+                            obj.spec.device_id,
+                            obj.spec.drift_details.len()
+                        )),
+                        action: "DriftCheck".into(),
+                        secondary: None,
+                    },
+                    &mc.object_ref(&()),
+                )
+                .await;
 
                 // Patch DriftAlert status with Resolved=False condition
-                let da_api: Api<DriftAlert> = if namespace.is_empty() {
-                    Api::all(ctx.client.clone())
-                } else {
-                    Api::namespaced(ctx.client.clone(), &namespace)
-                };
-                let is_escalated = matches!(
-                    obj.spec.severity,
-                    DriftSeverity::High | DriftSeverity::Critical
-                );
+                let da_api: Api<DriftAlert> = namespaced_api(&ctx.client, &namespace)?;
                 let da_status = serde_json::json!({
                     "status": DriftAlertStatus {
                         detected_at: Some(now.clone()),
                         resolved_at: None,
                         resolved: false,
-                        conditions: vec![
-                            Condition {
-                                condition_type: "Acknowledged".to_string(),
-                                status: "False".to_string(),
-                                reason: "NotAcknowledged".to_string(),
-                                message: "Drift alert has not been acknowledged".to_string(),
-                                last_transition_time: now.clone(),
-                                observed_generation: obj.meta().generation,
-                            },
-                            Condition {
-                                condition_type: "Resolved".to_string(),
-                                status: "False".to_string(),
-                                reason: "DriftActive".to_string(),
-                                message: format!(
-                                    "Drift active on device {} — {} detail(s)",
-                                    obj.spec.device_id,
-                                    obj.spec.drift_details.len()
-                                ),
-                                last_transition_time: now.clone(),
-                                observed_generation: obj.meta().generation,
-                            },
-                            Condition {
-                                condition_type: "Escalated".to_string(),
-                                status: if is_escalated { "True" } else { "False" }.to_string(),
-                                reason: if is_escalated { "SeverityThreshold" } else { "BelowThreshold" }.to_string(),
-                                message: format!("Severity: {:?}", obj.spec.severity),
-                                last_transition_time: now,
-                                observed_generation: obj.meta().generation,
-                            },
-                        ],
+                        conditions: build_drift_alert_conditions(
+                            &obj.spec.severity,
+                            false,
+                            &obj.spec.device_id,
+                            obj.spec.drift_details.len(),
+                            &now,
+                            obj.meta().generation,
+                        ),
                     }
                 });
                 da_api
@@ -699,6 +821,20 @@ async fn reconcile_drift_alert(
                 machine_config = %mc_name,
                 "DriftAlert references non-existent MachineConfig"
             );
+            // Record as error, not success (H6 fix)
+            let labels = ReconcileLabels {
+                controller: "drift_alert".to_string(),
+                result: "error".to_string(),
+            };
+            ctx.metrics
+                .reconciliations_total
+                .get_or_create(&labels)
+                .inc();
+            ctx.metrics
+                .reconciliation_duration_seconds
+                .get_or_create(&labels)
+                .observe(start.elapsed().as_secs_f64());
+            return Ok(Action::requeue(std::time::Duration::from_secs(60)));
         }
         Err(e) => {
             return Err(OperatorError::Reconciliation(format!(
@@ -724,6 +860,7 @@ async fn reconcile_drift_alert(
 }
 
 /// Check whether any active DriftAlerts exist for a MachineConfig.
+/// Matches by spec.machineConfigRef.name since labels may not be set.
 async fn has_active_drift_alerts(client: &Client, namespace: &str, mc_name: &str) -> bool {
     let alerts: Api<DriftAlert> = if namespace.is_empty() {
         Api::all(client.clone())
@@ -731,10 +868,16 @@ async fn has_active_drift_alerts(client: &Client, namespace: &str, mc_name: &str
         Api::namespaced(client.clone(), namespace)
     };
 
-    let lp = ListParams::default().labels(&format!("cfgd.io/machine-config={mc_name}"));
-    match alerts.list(&lp).await {
-        Ok(list) => !list.items.is_empty(),
-        Err(_) => false,
+    // List all DriftAlerts and filter by machineConfigRef.name since labels are not guaranteed
+    match alerts.list(&ListParams::default()).await {
+        Ok(list) => list
+            .items
+            .iter()
+            .any(|da| da.spec.machine_config_ref.name == mc_name),
+        Err(e) => {
+            warn!(error = %e, mc_name = %mc_name, "Failed to list DriftAlerts for drift check");
+            false
+        }
     }
 }
 
@@ -745,10 +888,8 @@ async fn cleanup_drift_alerts(client: &Client, namespace: &str, mc_name: &str) {
         Api::namespaced(client.clone(), namespace)
     };
 
-    // Use label selector to filter at API server instead of listing all alerts
-    let lp = ListParams::default().labels(&format!("cfgd.io/machine-config={mc_name}"));
-
-    let list = match alerts.list(&lp).await {
+    // List all and filter by machineConfigRef.name (labels may not be set)
+    let list = match alerts.list(&ListParams::default()).await {
         Ok(l) => l,
         Err(e) => {
             warn!(error = %e, "Failed to list DriftAlerts for cleanup");
@@ -757,6 +898,9 @@ async fn cleanup_drift_alerts(client: &Client, namespace: &str, mc_name: &str) {
     };
 
     for alert in list {
+        if alert.spec.machine_config_ref.name != mc_name {
+            continue;
+        }
         let alert_name = alert.name_any();
         if let Err(e) = alerts.delete(&alert_name, &Default::default()).await {
             warn!(
@@ -808,11 +952,7 @@ async fn reconcile_config_policy(
         "Reconciling ConfigPolicy"
     );
 
-    let machines: Api<MachineConfig> = if namespace.is_empty() {
-        Api::all(ctx.client.clone())
-    } else {
-        Api::namespaced(ctx.client.clone(), &namespace)
-    };
+    let machines: Api<MachineConfig> = namespaced_api(&ctx.client, &namespace)?;
 
     let mc_list = machines.list(&ListParams::default()).await.map_err(|e| {
         OperatorError::Reconciliation(format!("failed to list MachineConfigs: {e}"))
@@ -835,27 +975,72 @@ async fn reconcile_config_policy(
             &obj.spec.package_versions,
             &obj.spec.settings,
         );
+
+        // Update the MachineConfig's Compliant condition
+        let mc_name = mc.name_any();
+        let mc_existing_conditions = mc
+            .status
+            .as_ref()
+            .map(|s| s.conditions.as_slice())
+            .unwrap_or(&[]);
+        let now = cfgd_core::utc_now_iso8601();
+        let (comp_status, comp_reason, comp_message) = if compliant {
+            (
+                "True",
+                "PolicyCompliant",
+                format!("Compliant with policy {}", name),
+            )
+        } else {
+            (
+                "False",
+                "PolicyViolation",
+                format!("Violates policy {}", name),
+            )
+        };
+        let compliant_condition = build_condition(
+            mc_existing_conditions,
+            "Compliant",
+            comp_status,
+            comp_reason,
+            &comp_message,
+            &now,
+            mc.meta().generation,
+        );
+        let mc_status_patch = serde_json::json!({
+            "status": {
+                "conditions": [compliant_condition]
+            }
+        });
+        if let Err(e) = machines
+            .patch_status(
+                &mc_name,
+                &PatchParams::apply(FIELD_MANAGER_STATUS),
+                &Patch::Merge(mc_status_patch),
+            )
+            .await
+        {
+            warn!(name = %mc_name, error = %e, "Failed to update Compliant condition on MachineConfig");
+        }
+
         if compliant {
             compliant_count += 1;
         } else {
             non_compliant_count += 1;
-            let mc_name = mc.name_any();
-            ctx.recorder
-                .publish(
-                    &Event {
-                        type_: EventType::Warning,
-                        reason: "PolicyViolation".into(),
-                        note: Some(format!(
-                            "MachineConfig {} violates policy {}",
-                            mc_name, name
-                        )),
-                        action: "PolicyEvaluate".into(),
-                        secondary: None,
-                    },
-                    &mc.object_ref(&()),
-                )
-                .await
-                .ok();
+            publish_event(
+                &ctx.recorder,
+                &Event {
+                    type_: EventType::Warning,
+                    reason: "PolicyViolation".into(),
+                    note: Some(format!(
+                        "MachineConfig {} violates policy {}",
+                        mc_name, name
+                    )),
+                    action: "PolicyEvaluate".into(),
+                    secondary: None,
+                },
+                &mc.object_ref(&()),
+            )
+            .await;
         }
     }
 
@@ -866,32 +1051,26 @@ async fn reconcile_config_policy(
         "False"
     };
 
-    let policies: Api<ConfigPolicy> = if namespace.is_empty() {
-        Api::all(ctx.client.clone())
-    } else {
-        Api::namespaced(ctx.client.clone(), &namespace)
-    };
+    let policies: Api<ConfigPolicy> = namespaced_api(&ctx.client, &namespace)?;
+
+    let existing_conditions = obj
+        .status
+        .as_ref()
+        .map(|s| s.conditions.as_slice())
+        .unwrap_or(&[]);
 
     let status = serde_json::json!({
         "status": ConfigPolicyStatus {
             compliant_count,
             non_compliant_count,
             conditions: vec![
-                Condition {
-                    condition_type: "Enforced".to_string(),
-                    status: overall_status.to_string(),
-                    reason: if non_compliant_count == 0 {
-                        "AllCompliant".to_string()
-                    } else {
-                        "NonCompliantTargets".to_string()
-                    },
-                    message: format!(
-                        "{} compliant, {} non-compliant",
-                        compliant_count, non_compliant_count
-                    ),
-                    last_transition_time: now,
-                    observed_generation: obj.meta().generation,
-                },
+                build_condition(
+                    existing_conditions,
+                    "Enforced", overall_status,
+                    if non_compliant_count == 0 { "AllCompliant" } else { "NonCompliantTargets" },
+                    &format!("{} compliant, {} non-compliant", compliant_count, non_compliant_count),
+                    &now, obj.meta().generation,
+                ),
             ],
         }
     });
@@ -916,40 +1095,38 @@ async fn reconcile_config_policy(
         "ConfigPolicy status updated"
     );
 
-    ctx.recorder
-        .publish(
+    publish_event(
+        &ctx.recorder,
+        &Event {
+            type_: EventType::Normal,
+            reason: "Evaluated".into(),
+            note: Some(format!(
+                "{} compliant, {} non-compliant",
+                compliant_count, non_compliant_count
+            )),
+            action: "Evaluate".into(),
+            secondary: None,
+        },
+        &obj.object_ref(&()),
+    )
+    .await;
+
+    if non_compliant_count > 0 {
+        publish_event(
+            &ctx.recorder,
             &Event {
-                type_: EventType::Normal,
-                reason: "Evaluated".into(),
+                type_: EventType::Warning,
+                reason: "NonCompliantTargets".into(),
                 note: Some(format!(
-                    "{} compliant, {} non-compliant",
-                    compliant_count, non_compliant_count
+                    "{} non-compliant MachineConfigs",
+                    non_compliant_count
                 )),
                 action: "Evaluate".into(),
                 secondary: None,
             },
             &obj.object_ref(&()),
         )
-        .await
-        .ok();
-
-    if non_compliant_count > 0 {
-        ctx.recorder
-            .publish(
-                &Event {
-                    type_: EventType::Warning,
-                    reason: "NonCompliantTargets".into(),
-                    note: Some(format!(
-                        "{} non-compliant MachineConfigs",
-                        non_compliant_count
-                    )),
-                    action: "Evaluate".into(),
-                    secondary: None,
-                },
-                &obj.object_ref(&()),
-            )
-            .await
-            .ok();
+        .await;
     }
 
     ctx.metrics
@@ -990,12 +1167,11 @@ fn matches_selector(labels: Option<&BTreeMap<String, String>>, selector: &LabelS
     }
     for req in &selector.match_expressions {
         let label_value = labels.get(&req.key);
-        let matched = match req.operator.as_str() {
-            "In" => label_value.is_some_and(|v| req.values.contains(v)),
-            "NotIn" => label_value.is_none_or(|v| !req.values.contains(v)),
-            "Exists" => label_value.is_some(),
-            "DoesNotExist" => label_value.is_none(),
-            _ => true, // unknown operator — don't block
+        let matched = match req.operator {
+            SelectorOperator::In => label_value.is_some_and(|v| req.values.contains(v)),
+            SelectorOperator::NotIn => label_value.is_none_or(|v| !req.values.contains(v)),
+            SelectorOperator::Exists => label_value.is_some(),
+            SelectorOperator::DoesNotExist => label_value.is_none(),
         };
         if !matched {
             return false;
@@ -1010,7 +1186,7 @@ fn validate_policy_compliance(
     required_modules: &[ModuleRef],
     packages: &[PackageRef],
     package_versions: &BTreeMap<String, String>,
-    settings: &BTreeMap<String, String>,
+    settings: &BTreeMap<String, serde_json::Value>,
 ) -> bool {
     // Check required modules are present in moduleRefs
     for module in required_modules {
@@ -1039,7 +1215,7 @@ fn validate_policy_compliance(
     }
     for (key, value) in settings {
         match spec.system_settings.get(key) {
-            Some(v) if *v == serde_json::Value::String(value.clone()) => {}
+            Some(v) if v == value => {}
             _ => return false,
         }
     }
@@ -1071,21 +1247,21 @@ fn error_policy_cp(
 struct MergedPolicyRequirements {
     packages: Vec<PackageRef>,
     modules: Vec<ModuleRef>,
-    settings: BTreeMap<String, String>,
+    settings: BTreeMap<String, serde_json::Value>,
     versions: BTreeMap<String, String>,
 }
 
 fn merge_policy_requirements(
     cluster: &ClusterConfigPolicySpec,
-    namespace: Option<&ConfigPolicySpec>,
+    namespace_policies: &[&ConfigPolicySpec],
 ) -> MergedPolicyRequirements {
     let mut packages = cluster.packages.clone();
     let mut modules = cluster.required_modules.clone();
     let mut settings = BTreeMap::new();
     let mut versions = BTreeMap::new();
 
-    // Start with namespace-scoped values as base
-    if let Some(ns) = namespace {
+    // Collect union of all namespace-scoped policies as base
+    for ns in namespace_policies {
         for pkg in &ns.packages {
             if !packages.iter().any(|p| p.name == pkg.name) {
                 packages.push(pkg.clone());
@@ -1096,9 +1272,8 @@ fn merge_policy_requirements(
                 modules.push(module.clone());
             }
         }
-        // Namespace settings as base
+        // Namespace settings as base (later policies override earlier for same key)
         settings.extend(ns.settings.clone());
-        // Namespace versions as base
         versions.extend(ns.package_versions.clone());
     }
 
@@ -1157,9 +1332,9 @@ async fn reconcile_cluster_config_policy(
             ))
         })?;
 
-        // List namespace-scoped ConfigPolicies for merging
-        let ns_policies: Api<ConfigPolicy> = Api::namespaced(ctx.client.clone(), ns_name);
-        let cp_list = ns_policies
+        // List ALL namespace-scoped ConfigPolicies for merging (C5 fix)
+        let ns_policies_api: Api<ConfigPolicy> = Api::namespaced(ctx.client.clone(), ns_name);
+        let cp_list = ns_policies_api
             .list(&ListParams::default())
             .await
             .map_err(|e| {
@@ -1168,10 +1343,9 @@ async fn reconcile_cluster_config_policy(
                 ))
             })?;
 
-        // Use the first matching namespace policy for merge (if any)
-        let ns_policy_spec = cp_list.items.first().map(|cp| &cp.spec);
-
-        let merged = merge_policy_requirements(&obj.spec, ns_policy_spec);
+        let ns_policy_specs: Vec<&ConfigPolicySpec> =
+            cp_list.items.iter().map(|cp| &cp.spec).collect();
+        let merged = merge_policy_requirements(&obj.spec, &ns_policy_specs);
 
         for mc in &mc_list {
             let compliant = validate_policy_compliance(
@@ -1187,22 +1361,21 @@ async fn reconcile_cluster_config_policy(
             } else {
                 non_compliant_count += 1;
                 let mc_name = mc.name_any();
-                ctx.recorder
-                    .publish(
-                        &Event {
-                            type_: EventType::Warning,
-                            reason: "PolicyViolation".into(),
-                            note: Some(format!(
-                                "MachineConfig {} violates policy {}",
-                                mc_name, name
-                            )),
-                            action: "PolicyEvaluate".into(),
-                            secondary: None,
-                        },
-                        &mc.object_ref(&()),
-                    )
-                    .await
-                    .ok();
+                publish_event(
+                    &ctx.recorder,
+                    &Event {
+                        type_: EventType::Warning,
+                        reason: "PolicyViolation".into(),
+                        note: Some(format!(
+                            "MachineConfig {} violates policy {}",
+                            mc_name, name
+                        )),
+                        action: "PolicyEvaluate".into(),
+                        secondary: None,
+                    },
+                    &mc.object_ref(&()),
+                )
+                .await;
             }
         }
     }
@@ -1216,26 +1389,24 @@ async fn reconcile_cluster_config_policy(
 
     let ccp_api: Api<ClusterConfigPolicy> = Api::all(ctx.client.clone());
 
+    let existing_conditions = obj
+        .status
+        .as_ref()
+        .map(|s| s.conditions.as_slice())
+        .unwrap_or(&[]);
+
     let status = serde_json::json!({
         "status": ClusterConfigPolicyStatus {
             compliant_count,
             non_compliant_count,
             conditions: vec![
-                Condition {
-                    condition_type: "Enforced".to_string(),
-                    status: overall_status.to_string(),
-                    reason: if non_compliant_count == 0 {
-                        "AllCompliant".to_string()
-                    } else {
-                        "NonCompliantTargets".to_string()
-                    },
-                    message: format!(
-                        "{} compliant, {} non-compliant",
-                        compliant_count, non_compliant_count
-                    ),
-                    last_transition_time: now,
-                    observed_generation: obj.meta().generation,
-                },
+                build_condition(
+                    existing_conditions,
+                    "Enforced", overall_status,
+                    if non_compliant_count == 0 { "AllCompliant" } else { "NonCompliantTargets" },
+                    &format!("{} compliant, {} non-compliant", compliant_count, non_compliant_count),
+                    &now, obj.meta().generation,
+                ),
             ],
         }
     });
@@ -1260,40 +1431,38 @@ async fn reconcile_cluster_config_policy(
         "ClusterConfigPolicy status updated"
     );
 
-    ctx.recorder
-        .publish(
+    publish_event(
+        &ctx.recorder,
+        &Event {
+            type_: EventType::Normal,
+            reason: "Evaluated".into(),
+            note: Some(format!(
+                "{} compliant, {} non-compliant",
+                compliant_count, non_compliant_count
+            )),
+            action: "Evaluate".into(),
+            secondary: None,
+        },
+        &obj.object_ref(&()),
+    )
+    .await;
+
+    if non_compliant_count > 0 {
+        publish_event(
+            &ctx.recorder,
             &Event {
-                type_: EventType::Normal,
-                reason: "Evaluated".into(),
+                type_: EventType::Warning,
+                reason: "NonCompliantTargets".into(),
                 note: Some(format!(
-                    "{} compliant, {} non-compliant",
-                    compliant_count, non_compliant_count
+                    "{} non-compliant MachineConfigs",
+                    non_compliant_count
                 )),
                 action: "Evaluate".into(),
                 secondary: None,
             },
             &obj.object_ref(&()),
         )
-        .await
-        .ok();
-
-    if non_compliant_count > 0 {
-        ctx.recorder
-            .publish(
-                &Event {
-                    type_: EventType::Warning,
-                    reason: "NonCompliantTargets".into(),
-                    note: Some(format!(
-                        "{} non-compliant MachineConfigs",
-                        non_compliant_count
-                    )),
-                    action: "Evaluate".into(),
-                    secondary: None,
-                },
-                &obj.object_ref(&()),
-            )
-            .await
-            .ok();
+        .await;
     }
 
     ctx.metrics
@@ -1337,7 +1506,7 @@ fn error_policy_ccp(
 }
 
 // ---------------------------------------------------------------------------
-// Utilities
+// Tests
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
@@ -1372,7 +1541,7 @@ mod tests {
 
     #[test]
     fn matches_selector_empty_matches_all() {
-        assert!(matches_selector(None, &LabelSelector::default(),));
+        assert!(matches_selector(None, &LabelSelector::default()));
     }
 
     #[test]
@@ -1465,7 +1634,10 @@ mod tests {
     #[test]
     fn policy_compliance_settings() {
         let mut policy_settings = BTreeMap::new();
-        policy_settings.insert("key".to_string(), "value".to_string());
+        policy_settings.insert(
+            "key".to_string(),
+            serde_json::Value::String("value".to_string()),
+        );
 
         let mut spec = mc_spec("h", "p");
         spec.system_settings.insert(
@@ -1482,7 +1654,39 @@ mod tests {
         ));
 
         let mut wrong = BTreeMap::new();
-        wrong.insert("key".to_string(), "wrong".to_string());
+        wrong.insert(
+            "key".to_string(),
+            serde_json::Value::String("wrong".to_string()),
+        );
+        assert!(!validate_policy_compliance(
+            &spec,
+            None,
+            &[],
+            &[],
+            &Default::default(),
+            &wrong
+        ));
+    }
+
+    #[test]
+    fn policy_compliance_settings_non_string() {
+        let mut policy_settings = BTreeMap::new();
+        policy_settings.insert("enabled".to_string(), serde_json::json!(true));
+
+        let mut spec = mc_spec("h", "p");
+        spec.system_settings
+            .insert("enabled".to_string(), serde_json::json!(true));
+        assert!(validate_policy_compliance(
+            &spec,
+            None,
+            &[],
+            &[],
+            &Default::default(),
+            &policy_settings
+        ));
+
+        let mut wrong = BTreeMap::new();
+        wrong.insert("enabled".to_string(), serde_json::json!(false));
         assert!(!validate_policy_compliance(
             &spec,
             None,
@@ -1665,26 +1869,35 @@ mod tests {
             }],
             ..Default::default()
         };
-        let merged = merge_policy_requirements(&cluster, Some(&ns));
+        let merged = merge_policy_requirements(&cluster, &[&ns]);
         assert_eq!(merged.packages.len(), 2);
     }
 
     #[test]
     fn merge_policy_cluster_wins_settings() {
         let mut cluster_settings = BTreeMap::new();
-        cluster_settings.insert("key".to_string(), "cluster-value".to_string());
+        cluster_settings.insert(
+            "key".to_string(),
+            serde_json::Value::String("cluster-value".to_string()),
+        );
         let cluster = ClusterConfigPolicySpec {
             settings: cluster_settings,
             ..Default::default()
         };
         let mut ns_settings = BTreeMap::new();
-        ns_settings.insert("key".to_string(), "ns-value".to_string());
+        ns_settings.insert(
+            "key".to_string(),
+            serde_json::Value::String("ns-value".to_string()),
+        );
         let ns = ConfigPolicySpec {
             settings: ns_settings,
             ..Default::default()
         };
-        let merged = merge_policy_requirements(&cluster, Some(&ns));
-        assert_eq!(merged.settings["key"], "cluster-value");
+        let merged = merge_policy_requirements(&cluster, &[&ns]);
+        assert_eq!(
+            merged.settings["key"],
+            serde_json::Value::String("cluster-value".to_string())
+        );
     }
 
     #[test]
@@ -1701,7 +1914,7 @@ mod tests {
             package_versions: ns_versions,
             ..Default::default()
         };
-        let merged = merge_policy_requirements(&cluster, Some(&ns));
+        let merged = merge_policy_requirements(&cluster, &[&ns]);
         assert_eq!(merged.versions["kubectl"], ">=1.29");
     }
 
@@ -1714,7 +1927,7 @@ mod tests {
             }],
             ..Default::default()
         };
-        let merged = merge_policy_requirements(&cluster, None);
+        let merged = merge_policy_requirements(&cluster, &[]);
         assert_eq!(merged.packages.len(), 1);
         assert_eq!(merged.packages[0].name, "vim");
     }
@@ -1735,8 +1948,35 @@ mod tests {
             }],
             ..Default::default()
         };
-        let merged = merge_policy_requirements(&cluster, Some(&ns));
+        let merged = merge_policy_requirements(&cluster, &[&ns]);
         assert_eq!(merged.modules.len(), 2);
+    }
+
+    #[test]
+    fn merge_policy_multiple_namespace_policies() {
+        let cluster = ClusterConfigPolicySpec {
+            packages: vec![PackageRef {
+                name: "vim".to_string(),
+                version: None,
+            }],
+            ..Default::default()
+        };
+        let ns1 = ConfigPolicySpec {
+            packages: vec![PackageRef {
+                name: "git".to_string(),
+                version: None,
+            }],
+            ..Default::default()
+        };
+        let ns2 = ConfigPolicySpec {
+            packages: vec![PackageRef {
+                name: "curl".to_string(),
+                version: None,
+            }],
+            ..Default::default()
+        };
+        let merged = merge_policy_requirements(&cluster, &[&ns1, &ns2]);
+        assert_eq!(merged.packages.len(), 3);
     }
 
     #[test]
@@ -1747,7 +1987,7 @@ mod tests {
             match_labels: Default::default(),
             match_expressions: vec![LabelSelectorRequirement {
                 key: "env".to_string(),
-                operator: "In".to_string(),
+                operator: SelectorOperator::In,
                 values: vec!["prod".to_string(), "staging".to_string()],
             }],
         };
@@ -1762,7 +2002,7 @@ mod tests {
             match_labels: Default::default(),
             match_expressions: vec![LabelSelectorRequirement {
                 key: "env".to_string(),
-                operator: "NotIn".to_string(),
+                operator: SelectorOperator::NotIn,
                 values: vec!["prod".to_string()],
             }],
         };
@@ -1777,7 +2017,7 @@ mod tests {
             match_labels: Default::default(),
             match_expressions: vec![LabelSelectorRequirement {
                 key: "tier".to_string(),
-                operator: "Exists".to_string(),
+                operator: SelectorOperator::Exists,
                 values: vec![],
             }],
         };
@@ -1791,7 +2031,7 @@ mod tests {
             match_labels: Default::default(),
             match_expressions: vec![LabelSelectorRequirement {
                 key: "restricted".to_string(),
-                operator: "DoesNotExist".to_string(),
+                operator: SelectorOperator::DoesNotExist,
                 values: vec![],
             }],
         };
@@ -1829,8 +2069,87 @@ mod tests {
             }],
             ..Default::default()
         };
-        let merged = merge_policy_requirements(&cluster, Some(&ns));
+        let merged = merge_policy_requirements(&cluster, &[&ns]);
         // Should not duplicate — cluster already has vim
         assert_eq!(merged.packages.len(), 1);
+    }
+
+    #[test]
+    fn build_condition_preserves_transition_time_when_status_unchanged() {
+        let existing = vec![Condition {
+            condition_type: "Reconciled".to_string(),
+            status: "True".to_string(),
+            reason: "ReconcileSuccess".to_string(),
+            message: "old message".to_string(),
+            last_transition_time: "2024-01-01T00:00:00Z".to_string(),
+            observed_generation: Some(1),
+        }];
+        let c = build_condition(
+            &existing,
+            "Reconciled",
+            "True",
+            "ReconcileSuccess",
+            "new message",
+            "2024-06-01T00:00:00Z",
+            Some(2),
+        );
+        // Status unchanged → preserve old transition time
+        assert_eq!(c.last_transition_time, "2024-01-01T00:00:00Z");
+        // But generation and message update
+        assert_eq!(c.observed_generation, Some(2));
+        assert_eq!(c.message, "new message");
+    }
+
+    #[test]
+    fn build_condition_updates_transition_time_when_status_changes() {
+        let existing = vec![Condition {
+            condition_type: "DriftDetected".to_string(),
+            status: "False".to_string(),
+            reason: "NoDrift".to_string(),
+            message: "no drift".to_string(),
+            last_transition_time: "2024-01-01T00:00:00Z".to_string(),
+            observed_generation: Some(1),
+        }];
+        let c = build_condition(
+            &existing,
+            "DriftDetected",
+            "True",
+            "DriftActive",
+            "drift found",
+            "2024-06-01T00:00:00Z",
+            Some(2),
+        );
+        // Status changed → new transition time
+        assert_eq!(c.last_transition_time, "2024-06-01T00:00:00Z");
+    }
+
+    #[test]
+    fn build_drift_alert_conditions_resolved() {
+        let conditions = build_drift_alert_conditions(
+            &DriftSeverity::Low,
+            true,
+            "dev-1",
+            0,
+            "2024-01-01T00:00:00Z",
+            Some(1),
+        );
+        assert_eq!(conditions.len(), 3);
+        assert_eq!(conditions[1].condition_type, "Resolved");
+        assert_eq!(conditions[1].status, "True");
+        assert_eq!(conditions[2].status, "False"); // Low is not escalated
+    }
+
+    #[test]
+    fn build_drift_alert_conditions_active_high() {
+        let conditions = build_drift_alert_conditions(
+            &DriftSeverity::High,
+            false,
+            "dev-1",
+            3,
+            "2024-01-01T00:00:00Z",
+            Some(1),
+        );
+        assert_eq!(conditions[1].status, "False"); // Not resolved
+        assert_eq!(conditions[2].status, "True"); // High is escalated
     }
 }

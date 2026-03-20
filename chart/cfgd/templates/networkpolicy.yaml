@@ -26,6 +26,10 @@ spec:
         - namespaceSelector: {}
   egress:
     - ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
         - port: 443
         - port: 6443
 {{- end }}

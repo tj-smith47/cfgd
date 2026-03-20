@@ -39,7 +39,7 @@ pub struct MachineConfigSpec {
 }
 
 /// Reference to a package with optional version pin.
-#[derive(Deserialize, Serialize, Clone, Debug, JsonSchema)]
+#[derive(Deserialize, Serialize, Clone, Debug, PartialEq, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct PackageRef {
     pub name: String,
@@ -48,7 +48,7 @@ pub struct PackageRef {
 }
 
 /// Reference to a module that should be installed on the machine.
-#[derive(Deserialize, Serialize, Clone, Debug, JsonSchema)]
+#[derive(Deserialize, Serialize, Clone, Debug, PartialEq, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct ModuleRef {
     pub name: String,
@@ -56,7 +56,7 @@ pub struct ModuleRef {
     pub required: bool,
 }
 
-#[derive(Deserialize, Serialize, Clone, Debug, JsonSchema)]
+#[derive(Deserialize, Serialize, Clone, Debug, PartialEq, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct FileSpec {
     pub path: String,
@@ -70,7 +70,7 @@ fn default_mode() -> String {
     "0644".to_string()
 }
 
-#[derive(Deserialize, Serialize, Clone, Debug, Default, JsonSchema)]
+#[derive(Deserialize, Serialize, Clone, Debug, Default, PartialEq, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct MachineConfigStatus {
     pub last_reconciled: Option<String>,
@@ -83,7 +83,7 @@ pub struct MachineConfigStatus {
     pub package_versions: BTreeMap<String, String>,
 }
 
-#[derive(Deserialize, Serialize, Clone, Debug, JsonSchema)]
+#[derive(Deserialize, Serialize, Clone, Debug, PartialEq, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct Condition {
     #[serde(rename = "type")]
@@ -101,7 +101,7 @@ pub struct Condition {
 // ---------------------------------------------------------------------------
 
 /// Kubernetes-style label selector with match_labels and match_expressions.
-#[derive(Deserialize, Serialize, Clone, Debug, Default, JsonSchema)]
+#[derive(Deserialize, Serialize, Clone, Debug, Default, PartialEq, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct LabelSelector {
     #[serde(default)]
@@ -110,12 +110,20 @@ pub struct LabelSelector {
     pub match_expressions: Vec<LabelSelectorRequirement>,
 }
 
+#[derive(Deserialize, Serialize, Clone, Debug, PartialEq, Eq, JsonSchema)]
+pub enum SelectorOperator {
+    In,
+    NotIn,
+    Exists,
+    DoesNotExist,
+}
+
 /// A single requirement for label selector expressions.
-#[derive(Deserialize, Serialize, Clone, Debug, JsonSchema)]
+#[derive(Deserialize, Serialize, Clone, Debug, PartialEq, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct LabelSelectorRequirement {
     pub key: String,
-    pub operator: String,
+    pub operator: SelectorOperator,
     #[serde(default)]
     pub values: Vec<String>,
 }
@@ -144,12 +152,12 @@ pub struct ConfigPolicySpec {
     #[serde(default)]
     pub package_versions: BTreeMap<String, String>,
     #[serde(default)]
-    pub settings: BTreeMap<String, String>,
+    pub settings: BTreeMap<String, serde_json::Value>,
     #[serde(default)]
     pub target_selector: LabelSelector,
 }
 
-#[derive(Deserialize, Serialize, Clone, Debug, Default, JsonSchema)]
+#[derive(Deserialize, Serialize, Clone, Debug, Default, PartialEq, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct ConfigPolicyStatus {
     pub compliant_count: u32,
@@ -163,7 +171,7 @@ pub struct ConfigPolicyStatus {
 // ---------------------------------------------------------------------------
 
 /// Typed reference to a MachineConfig resource.
-#[derive(Deserialize, Serialize, Clone, Debug, JsonSchema)]
+#[derive(Deserialize, Serialize, Clone, Debug, PartialEq, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct MachineConfigReference {
     pub name: String,
@@ -194,7 +202,7 @@ pub struct DriftAlertSpec {
     pub severity: DriftSeverity,
 }
 
-#[derive(Deserialize, Serialize, Clone, Debug, Default, JsonSchema)]
+#[derive(Deserialize, Serialize, Clone, Debug, Default, PartialEq, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct DriftAlertStatus {
     pub detected_at: Option<String>,
@@ -205,7 +213,7 @@ pub struct DriftAlertStatus {
     pub conditions: Vec<Condition>,
 }
 
-#[derive(Deserialize, Serialize, Clone, Debug, JsonSchema)]
+#[derive(Deserialize, Serialize, Clone, Debug, PartialEq, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct DriftDetail {
     pub field: String,
@@ -213,7 +221,7 @@ pub struct DriftDetail {
     pub actual: String,
 }
 
-#[derive(Deserialize, Serialize, Clone, Debug, JsonSchema)]
+#[derive(Deserialize, Serialize, Clone, Debug, PartialEq, Eq, JsonSchema)]
 pub enum DriftSeverity {
     Low,
     Medium,
@@ -250,12 +258,12 @@ pub struct ClusterConfigPolicySpec {
     #[serde(default)]
     pub package_versions: BTreeMap<String, String>,
     #[serde(default)]
-    pub settings: BTreeMap<String, String>,
+    pub settings: BTreeMap<String, serde_json::Value>,
     #[serde(default)]
     pub security: SecurityPolicy,
 }
 
-#[derive(Deserialize, Serialize, Clone, Debug, Default, JsonSchema)]
+#[derive(Deserialize, Serialize, Clone, Debug, Default, PartialEq, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct SecurityPolicy {
     #[serde(default)]
@@ -264,7 +272,7 @@ pub struct SecurityPolicy {
     pub allow_unsigned: bool,
 }
 
-#[derive(Deserialize, Serialize, Clone, Debug, Default, JsonSchema)]
+#[derive(Deserialize, Serialize, Clone, Debug, Default, PartialEq, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct ClusterConfigPolicyStatus {
     pub compliant_count: u32,
@@ -276,6 +284,41 @@ pub struct ClusterConfigPolicyStatus {
 // ---------------------------------------------------------------------------
 // Shared validation
 // ---------------------------------------------------------------------------
+
+fn validate_policy_fields(
+    packages: &[PackageRef],
+    required_modules: &[ModuleRef],
+    package_versions: &BTreeMap<String, String>,
+    settings: &BTreeMap<String, serde_json::Value>,
+) -> Vec<String> {
+    let mut errors = Vec::new();
+    for (i, pkg) in packages.iter().enumerate() {
+        if pkg.name.is_empty() {
+            errors.push(format!("spec.packages[{i}].name must not be empty"));
+        }
+    }
+    for (i, mr) in required_modules.iter().enumerate() {
+        if mr.name.is_empty() {
+            errors.push(format!("spec.requiredModules[{i}].name must not be empty"));
+        }
+    }
+    for (pkg, req_str) in package_versions {
+        if pkg.is_empty() {
+            errors.push("spec.packageVersions key must not be empty".to_string());
+        }
+        if VersionReq::parse(req_str).is_err() {
+            errors.push(format!(
+                "spec.packageVersions['{pkg}'] = '{req_str}' is not a valid semver requirement"
+            ));
+        }
+    }
+    for key in settings.keys() {
+        if key.is_empty() {
+            errors.push("spec.settings key must not be empty".to_string());
+        }
+    }
+    errors
+}
 
 impl MachineConfigSpec {
     /// Validate the spec, returning all validation errors found.
@@ -336,34 +379,12 @@ impl MachineConfigSpec {
 impl ConfigPolicySpec {
     /// Validate the spec, returning all validation errors found.
     pub fn validate(&self) -> Result<(), Vec<String>> {
-        let mut errors = Vec::new();
-
-        for (i, pkg) in self.packages.iter().enumerate() {
-            if pkg.name.is_empty() {
-                errors.push(format!("spec.packages[{i}].name must not be empty"));
-            }
-        }
-        for (i, mr) in self.required_modules.iter().enumerate() {
-            if mr.name.is_empty() {
-                errors.push(format!("spec.requiredModules[{i}].name must not be empty"));
-            }
-        }
-        for (pkg, req_str) in &self.package_versions {
-            if pkg.is_empty() {
-                errors.push("spec.packageVersions key must not be empty".to_string());
-            }
-            if VersionReq::parse(req_str).is_err() {
-                errors.push(format!(
-                    "spec.packageVersions['{pkg}'] = '{req_str}' is not a valid semver requirement"
-                ));
-            }
-        }
-        for key in self.settings.keys() {
-            if key.is_empty() {
-                errors.push("spec.settings key must not be empty".to_string());
-            }
-        }
-
+        let errors = validate_policy_fields(
+            &self.packages,
+            &self.required_modules,
+            &self.package_versions,
+            &self.settings,
+        );
         if errors.is_empty() {
             Ok(())
         } else {
@@ -375,32 +396,12 @@ impl ConfigPolicySpec {
 impl ClusterConfigPolicySpec {
     /// Validate the spec, returning all validation errors found.
     pub fn validate(&self) -> Result<(), Vec<String>> {
-        let mut errors = Vec::new();
-        for (i, pkg) in self.packages.iter().enumerate() {
-            if pkg.name.is_empty() {
-                errors.push(format!("spec.packages[{i}].name must not be empty"));
-            }
-        }
-        for (i, m) in self.required_modules.iter().enumerate() {
-            if m.name.is_empty() {
-                errors.push(format!("spec.requiredModules[{i}].name must not be empty"));
-            }
-        }
-        for (pkg, req_str) in &self.package_versions {
-            if pkg.is_empty() {
-                errors.push("spec.packageVersions key must not be empty".to_string());
-            }
-            if VersionReq::parse(req_str).is_err() {
-                errors.push(format!(
-                    "spec.packageVersions['{pkg}'] = '{req_str}' is not a valid semver requirement"
-                ));
-            }
-        }
-        for key in self.settings.keys() {
-            if key.is_empty() {
-                errors.push("spec.settings key must not be empty".to_string());
-            }
-        }
+        let errors = validate_policy_fields(
+            &self.packages,
+            &self.required_modules,
+            &self.package_versions,
+            &self.settings,
+        );
         if errors.is_empty() {
             Ok(())
         } else {

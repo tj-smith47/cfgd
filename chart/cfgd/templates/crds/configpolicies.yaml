@@ -1,4 +1,4 @@
-{{- if .Values.installCRDs }}
+---
 apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
 metadata:
@@ -76,8 +76,7 @@ spec:
                 - name
                 x-kubernetes-list-type: map
               settings:
-                additionalProperties:
-                  type: string
+                additionalProperties: true
                 default: {}
                 type: object
               targetSelector:
@@ -94,6 +93,11 @@ spec:
                         key:
                           type: string
                         operator:
+                          enum:
+                          - In
+                          - NotIn
+                          - Exists
+                          - DoesNotExist
                           type: string
                         values:
                           default: []
@@ -167,4 +171,3 @@ spec:
     storage: true
     subresources:
       status: {}
-{{- end }}

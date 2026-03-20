@@ -5,6 +5,7 @@ use k8s_openapi::api::coordination::v1::Lease;
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::MicroTime;
 use kube::Client;
 use kube::api::{Api, Patch, PatchParams, PostParams};
+use tokio_util::sync::CancellationToken;
 
 use crate::errors::OperatorError;
 
@@ -59,7 +60,9 @@ impl LeaderElection {
                     let duration_secs = spec
                         .and_then(|s| s.lease_duration_seconds)
                         .unwrap_or(self.lease_duration_secs);
-                    let expiry = renew_time.0 + chrono::Duration::seconds(i64::from(duration_secs));
+                    let expiry = renew_time.0
+                        + chrono::TimeDelta::try_seconds(i64::from(duration_secs))
+                            .unwrap_or_default();
                     now > expiry
                 } else {
                     // No renew time means expired
@@ -126,7 +129,11 @@ impl LeaderElection {
         }
     }
 
-    pub async fn run<F, Fut>(&self, on_started: F) -> Result<(), OperatorError>
+    pub async fn run<F, Fut>(
+        &self,
+        shutdown: CancellationToken,
+        on_started: F,
+    ) -> Result<(), OperatorError>
     where
         F: FnOnce() -> Fut,
         Fut: std::future::Future<Output = Result<(), OperatorError>>,
@@ -153,26 +160,57 @@ impl LeaderElection {
             }
         }
 
-        // Spawn background renewal task
+        // Clone existing config fields instead of re-reading env vars
         let renewal_client = self.client.clone();
         let renewal_ns = self.namespace.clone();
         let renewal_identity = self.identity.clone();
-        let renew_interval = Duration::from_secs(self.renew_deadline_secs / 2);
+        let renewal_lease_duration = self.lease_duration_secs;
+        let renewal_renew_deadline = self.renew_deadline_secs;
+        let renewal_retry_period = self.retry_period_secs;
+
+        let renew_interval = Duration::from_secs(std::cmp::max(1, self.renew_deadline_secs / 2));
+        let renewal_shutdown = shutdown.clone();
 
         tokio::spawn(async move {
-            let renewal = LeaderElection::new(renewal_client, renewal_ns, renewal_identity);
+            let renewal = LeaderElection {
+                client: renewal_client,
+                namespace: renewal_ns,
+                identity: renewal_identity,
+                lease_duration_secs: renewal_lease_duration,
+                renew_deadline_secs: renewal_renew_deadline,
+                retry_period_secs: renewal_retry_period,
+            };
+
+            let max_failures =
+                (renewal.lease_duration_secs as u64) / std::cmp::max(1, renewal.retry_period_secs);
+            let mut consecutive_failures: u64 = 0;
+
             loop {
                 tokio::time::sleep(renew_interval).await;
                 match renewal.try_acquire().await {
                     Ok(true) => {
                         tracing::debug!("Leader lease renewed");
+                        consecutive_failures = 0;
                     }
                     Ok(false) => {
-                        tracing::error!("Lost leader lease — another instance took over");
-                        std::process::exit(1);
+                        tracing::error!(
+                            "Lost leader lease — another instance took over, shutting down"
+                        );
+                        renewal_shutdown.cancel();
+                        return;
                     }
                     Err(e) => {
-                        tracing::warn!(error = %e, "Leader lease renewal failed");
+                        consecutive_failures += 1;
+                        tracing::warn!(
+                            error = %e,
+                            consecutive = consecutive_failures,
+                            "Leader lease renewal failed"
+                        );
+                        if consecutive_failures >= max_failures {
+                            tracing::error!("Too many consecutive renewal failures, shutting down");
+                            renewal_shutdown.cancel();
+                            return;
+                        }
                     }
                 }
             }

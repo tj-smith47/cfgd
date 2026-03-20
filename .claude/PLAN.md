@@ -14,29 +14,38 @@ Completed. Moved to [COMPLETED.md](COMPLETED.md).
 
 ### Module CRD
 
-- [ ] Cluster-scoped CRD: packages, files, scripts, env, depends, `ociArtifact`, `signature.cosign.publicKey`
-- [ ] Status: `resolvedArtifact`, `availablePlatforms`, `verified`, conditions (`Available`, `Verified`)
-- [ ] Printer columns: `NAME ARTIFACT VERIFIED PLATFORMS AGE`. Short name: `mod`
-- [ ] Module controller: validate OCI ref against trusted registries, verify cosign signature, set conditions
+- [ ] `ModuleSpec` struct with kube derive: cluster-scoped, group `cfgd.io/v1alpha1`, short name `mod`, category `cfgd`. Fields: packages (`Vec<PackageEntry>`), files (`Vec<ModuleFileSpec>`), scripts (`ModuleScripts`), env (`Vec<ModuleEnvVar>`), depends (`Vec<String>`), ociArtifact (`Option<String>`), signature (`Option<ModuleSignature>`)
+- [ ] Supporting types: `PackageEntry` (name, platforms `BTreeMap`), `ModuleFileSpec` (source, target), `ModuleScripts` (postApply), `ModuleEnvVar` (name, value, append), `ModuleSignature`/`CosignSignature` (publicKey). All derive `Deserialize`, `Serialize`, `Clone`, `Debug`, `Default`, `JsonSchema`; all `#[serde(rename_all = "camelCase")]`
+- [ ] `ModuleStatus` struct: `resolvedArtifact` (`Option<String>`), `availablePlatforms` (`Vec<String>`), `verified` (bool), `conditions` (`Vec<Condition>`)
+- [ ] Printer columns: `NAME` (metadata.name), `ARTIFACT` (.spec.ociArtifact), `VERIFIED` (.status.verified), `PLATFORMS` (.status.availablePlatforms), `AGE` (metadata.creationTimestamp)
+- [ ] `ModuleSpec::validate()`: non-empty package names, non-empty depends entries, valid OCI reference format when ociArtifact is set, valid PEM-encoded public key when signature.cosign.publicKey is set
+- [ ] Module controller: watch Module CRDs, validate ociArtifact against trusted registries from all ClusterConfigPolicy resources, set `Available` condition (True when ociArtifact resolves to a valid digest in the registry, False with reason if missing/untrusted/unreachable). Verify cosign signature using `sigstore-rs`: if `spec.signature.cosign.publicKey` is set, verify OCI artifact signature against it and set `Verified` condition (True/SignatureValid or False/SignatureInvalid); if no signature config, set Verified=False/NotSigned. When `ClusterConfigPolicy.spec.security.allowUnsigned == false`, set Available=False/UnsignedNotAllowed for modules without valid signatures. Emit events: `Available`, `Verified`, `PullFailed`, `SignatureInvalid`, `TrustedRegistryViolation`, `UnsignedNotAllowed`
+- [ ] MachineConfig controller enhancement: resolve each `moduleRef` against Module CRDs (cluster-scoped API lookup), set `ModulesResolved` condition to False with comma-separated missing module names, or True/AllResolved
+- [ ] Update `gen_crds.rs` to include Module CRD; regenerate Helm CRD templates
 
 ### Validation webhook enhancements
 
-- [ ] `/validate-driftalert` endpoint
-- [ ] `/validate-clusterconfigpolicy` endpoint
-- [ ] `/validate-module` endpoint (OCI reference format, signature fields)
-- [ ] Trusted registry enforcement: reject Module CRD with untrusted `ociArtifact` prefix
+- [ ] `/validate-module` endpoint: delegates to `ModuleSpec::validate()`, plus trusted registry enforcement (read all ClusterConfigPolicy resources, collect `trustedRegistries`, glob-match against `spec.ociArtifact`, reject if no pattern matches and registries are configured). When `allowUnsigned == false` in any ClusterConfigPolicy, reject Module creates/updates that lack `spec.signature.cosign.publicKey`
+- [ ] ValidatingWebhookConfiguration rule in Helm chart for Module CRD pointing to `/validate-module`
+- [ ] RBAC: add Module CRD verbs (get, list, watch, create, update, patch, delete) and ClusterConfigPolicy read (get, list) to operator ClusterRole
+- [ ] Unit tests: accept valid Module, reject empty package name, reject malformed OCI reference, reject untrusted registry, reject invalid PEM key
+- [ ] Integration test: create Module via webhook, verify accepted; create Module with untrusted ociArtifact, verify rejected
 
-### OCI pipeline Phase A — push/pull (2-4 weeks)
+### OCI pipeline Phase A — push/pull
 
-- [ ] OCI manifest/layer structure: `application/vnd.cfgd.module.v1+tar+gzip`, config blob with module metadata
-- [ ] Integrate `oci-distribution` or `oras-rs` crate
-- [ ] Registry auth via Docker config.json / credential helpers
-- [ ] `cfgd module push <dir>`: push directory as OCI artifact
-- [ ] `cfgd module pull <ref>`: download OCI artifact
+- [ ] Add `oci-distribution` and `sigstore-rs` crate dependencies to cfgd-core (shared by cfgd binary for push/pull CLI and cfgd-operator for controller artifact resolution + signature verification). Define media type constants: config `application/vnd.cfgd.module.config.v1+json`, layer `application/vnd.cfgd.module.layer.v1.tar+gzip`
+- [ ] Registry auth module: parse `~/.docker/config.json` for registry credentials, support credential helper programs (`docker-credential-*`), support `REGISTRY_USERNAME`/`REGISTRY_PASSWORD` env vars as fallback
+- [ ] `cfgd module push <dir> --artifact <ref>`: read module.yaml from dir, serialize as config blob, tar+gzip directory contents as single layer with `cfgd.io/platform` annotation (auto-detected from host), build OCI manifest, push to registry
+- [ ] `cfgd module pull <ref> --output <dir>`: authenticate to registry, pull OCI manifest, download layer matching current platform (or only layer if single-platform), extract tar+gzip to output directory. If module has cosign signature, verify it (using cfgd-core's sigstore-rs integration); reject unsigned artifacts when `--require-signature` flag is set
+- [ ] Wire `push` and `pull` subcommands into clap under `cfgd module` with argument parsing (required: dir/ref, artifact ref; optional: platform override, output dir)
+- [ ] Unit tests: OCI reference format parsing, config blob serialization/deserialization round-trip, tar+gzip archive creation and extraction
+- [ ] Integration test: push to mock/local registry, pull back, verify extracted contents match original directory
 
-### OCI pipeline Phase D — CRD sync (1-2 weeks)
+### OCI pipeline Phase D — CRD sync
 
-- [ ] `cfgd module push --apply`: create/update Module CRD on cluster from pushed artifact
+- [ ] `cfgd module push --apply` flag: after successful push, construct Module CRD from module.yaml metadata + pushed ociArtifact reference, apply to cluster via server-side apply with field manager `cfgd`
+- [ ] Kubeconfig discovery: check in-cluster service account first, then `KUBECONFIG` env var, then `~/.kube/config` default path
+- [ ] Integration test: push --apply creates Module CRD with correct ociArtifact, re-push updates the existing CRD
 
 ---
 
@@ -48,11 +57,11 @@ Completed. Moved to [COMPLETED.md](COMPLETED.md).
 - [ ] Multi-platform builds (one layer per platform)
 - [ ] Docker/Podman integration for container-based builds
 
-### OCI pipeline Phase C — signing (1-2 weeks)
+### OCI pipeline Phase C — signing
 
-- [ ] `cfgd module push --sign` with cosign
-- [ ] Verification at pull time; reject unsigned when policy requires
-- [ ] Key management: static keys and keyless (Fulcio + Rekor)
+- [ ] `cfgd module push --sign`: sign OCI artifact with cosign at push time (static key via `--key` flag)
+- [ ] Keyless signing via Fulcio + Rekor (OIDC identity-based, no static key management)
+- [ ] `cfgd module keys` subcommand: generate cosign key pairs, list keys, rotate
 
 ### Supply chain security
 

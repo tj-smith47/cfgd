@@ -46,21 +46,23 @@ crates/
 └── cfgd-operator/src/      # k8s operator binary crate
     ├── main.rs             # Operator entry point (controllers + optional gateway)
     ├── lib.rs              # Crate root, module declarations
-    ├── crds/               # CRD definitions (MachineConfig, ConfigPolicy, DriftAlert)
-    ├── controllers/        # kube-rs reconciliation controllers
-    ├── webhook.rs          # Admission webhook server (TLS)
+    ├── crds/               # CRD definitions (MachineConfig, ConfigPolicy, DriftAlert, ClusterConfigPolicy)
+    ├── controllers/        # kube-rs reconciliation controllers (4 controllers)
+    ├── webhook.rs          # Admission webhook server (TLS, 4 validation endpoints)
+    ├── health.rs           # Dedicated health probe server (/healthz, /readyz)
+    ├── leader.rs           # Lease-based leader election
+    ├── metrics.rs          # Prometheus metrics registry + HTTP endpoint
     ├── gen_crds.rs         # CRD JSON schema generation utility
     ├── errors.rs           # Operator-specific error types
-    ├── gateway/            # Device gateway (optional, enabled via DEVICE_GATEWAY_ENABLED)
-    │   ├── mod.rs          # Gateway setup, Axum router assembly
-    │   ├── api.rs          # REST API: checkin, enrollment, devices, drift, admin, SSE
-    │   ├── db.rs           # SQLite: devices, credentials, tokens, challenges, events
-    │   ├── fleet.rs        # Fleet status aggregation
-    │   ├── web.rs          # Web dashboard (HTML/CSS/JS)
-    │   └── errors.rs       # GatewayError with IntoResponse
-    └── chart/cfgd-operator/ # Operator Helm chart
-charts/
-└── cfgd/                   # DaemonSet agent Helm chart
+    └── gateway/            # Device gateway (optional, enabled via DEVICE_GATEWAY_ENABLED)
+        ├── mod.rs          # Gateway setup, Axum router assembly
+        ├── api.rs          # REST API: checkin, enrollment, devices, drift, admin, SSE
+        ├── db.rs           # SQLite: devices, credentials, tokens, challenges, events
+        ├── fleet.rs        # Fleet status aggregation
+        ├── web.rs          # Web dashboard (HTML/CSS/JS)
+        └── errors.rs       # GatewayError with IntoResponse
+chart/
+└── cfgd/                   # Unified Helm chart (operator + agent)
 ```
 
 See `.claude/kubernetes-first-class.md` for the Kubernetes ecosystem design (CRDs, controllers, webhooks, CSI, OCI, observability, multi-tenancy, Crossplane).

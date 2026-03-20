@@ -26,6 +26,7 @@ spec:
       {{- end }}
       hostPID: true
       hostNetwork: true
+      dnsPolicy: ClusterFirstWithHostNet
       containers:
         - name: cfgd
           image: "{{ .Values.agent.image.repository }}:{{ .Values.agent.image.tag | default .Chart.AppVersion }}"
@@ -66,7 +67,7 @@ spec:
               mountPath: /sys
               readOnly: false
             - name: host-etc
-              mountPath: /etc
+              mountPath: /host/etc
               readOnly: false
             - name: cfgd-config
               mountPath: /etc/cfgd/cfgd.yaml

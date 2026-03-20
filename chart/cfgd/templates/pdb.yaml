@@ -3,6 +3,7 @@ apiVersion: policy/v1
 kind: PodDisruptionBudget
 metadata:
   name: {{ include "cfgd.fullname" . }}-operator
+  namespace: {{ .Release.Namespace }}
   labels:
     {{- include "cfgd.labels" . | nindent 4 }}
 spec:

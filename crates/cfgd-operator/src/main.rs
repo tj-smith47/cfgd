@@ -7,12 +7,14 @@ mod leader;
 mod metrics;
 mod webhook;
 
+use std::io::Write;
 use std::path::Path;
 use std::sync::Arc;
 
 use anyhow::Result;
 use kube::Client;
 use tokio::sync::Mutex;
+use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
 static OTEL_PROVIDER: std::sync::OnceLock<opentelemetry_sdk::trace::SdkTracerProvider> =
@@ -95,6 +97,8 @@ async fn main() -> Result<()> {
         .map(|v| v == "true" || v == "1")
         .unwrap_or(false);
 
+    let shutdown = CancellationToken::new();
+
     let operator_future = async {
         if leader_enabled {
             let namespace =
@@ -108,7 +112,7 @@ async fn main() -> Result<()> {
             );
 
             let le = leader::LeaderElection::new(client.clone(), namespace, identity);
-            le.run(|| async {
+            le.run(shutdown.clone(), || async {
                 health_state.set_ready();
                 run_operator(client, metrics)
                     .await
@@ -132,6 +136,16 @@ async fn main() -> Result<()> {
             }
         },
         _ = shutdown_signal() => {
+            tracing::info!("Draining in-flight reconciliations (2s grace)...");
+            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+            if let Some(provider) = OTEL_PROVIDER.get()
+                && let Err(e) = provider.shutdown()
+            {
+                tracing::warn!(error = %e, "OpenTelemetry tracer provider shutdown failed");
+            }
+            tracing::info!("Shutdown complete");
+        },
+        _ = shutdown.cancelled() => {
             tracing::info!("Draining in-flight reconciliations (2s grace)...");
             tokio::time::sleep(std::time::Duration::from_secs(2)).await;
             if let Some(provider) = OTEL_PROVIDER.get()
@@ -226,7 +240,11 @@ fn init_tracing() {
                 return;
             }
             Err(e) => {
-                eprintln!("Failed to initialize OpenTelemetry: {e}, falling back to fmt only");
+                // Tracing not yet initialized; write directly to stderr
+                let _ = writeln!(
+                    std::io::stderr(),
+                    "Failed to initialize OpenTelemetry: {e}, falling back to fmt only"
+                );
             }
         }
     }
