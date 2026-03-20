@@ -208,7 +208,7 @@ Processing order: leaf dependencies first (node, python), then dependents (nvim)
 
 Scripts listed under `scripts.postApply` run after all of the module's packages are installed and files are deployed. They execute sequentially in the order listed. If a script fails, subsequent scripts in that module are skipped and the failure is reported in the plan output.
 
-Use post-apply scripts for tasks that depend on the packages and files being in place — plugin installations, cache rebuilds, index updates:
+Use `postApply` scripts for tasks that depend on the packages and files being in place — plugin installations, cache rebuilds, index updates:
 
 ```yaml
 scripts:

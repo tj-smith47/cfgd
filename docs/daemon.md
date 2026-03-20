@@ -82,7 +82,7 @@ When `autoApply: false`, policies have no effect. In manual mode, `cfgd plan` sh
 
 Setting `lockedConflict: Accept` causes the daemon to automatically remove your local overrides when they conflict with a locked item from a source. This is destructive — your local value is replaced without confirmation. The `Notify` default is safer: cfgd flags the conflict and waits for you to resolve it with `cfgd decide`.
 
-See [sources.md](sources.md#auto-apply-decisions) for the full decision workflow.
+See [sources.md](sources.md#automatic-apply-decisions) for the full decision workflow.
 
 ## Reconcile Patches
 

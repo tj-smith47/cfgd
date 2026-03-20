@@ -76,8 +76,8 @@ spec:
       driftPolicy: NotifyOnly  # Auto | NotifyOnly | Prompt
 ```
 
-- **NotifyOnly** (default): detects drift, sends notification, records events, but does NOT auto-apply. User must run `cfgd apply` manually.
-- **Auto**: applies drift corrections automatically (opt-in)
+- **NotifyOnly** (default): detects drift, sends notification, records events, but does NOT automatically apply. User must run `cfgd apply` manually.
+- **Auto**: applies drift corrections automatically (you must opt in)
 - **Prompt**: future interactive approval mechanism
 
 ## Module Removal Cleanup

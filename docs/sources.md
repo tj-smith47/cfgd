@@ -170,7 +170,7 @@ cfgd source create --name my-team               # create a cfgd-source.yaml
 cfgd source edit                                # open cfgd-source.yaml in $EDITOR
 ```
 
-## Auto-Apply Decisions
+## Automatic Apply Decisions
 
 When the daemon detects new items from a source update, behavior depends on the daemon policy:
 
@@ -185,7 +185,7 @@ daemon:
 ```
 
 - `Notify`: record a pending decision, send notification, don't apply
-- `Accept`: auto-apply without prompting
+- `Accept`: automatically apply without prompting
 - `Reject`/`Ignore`: skip silently
 
 Resolve pending decisions with `cfgd decide`:
@@ -215,7 +215,7 @@ Notifications fire once per new pending decision, not on every reconcile cycle. 
 
 - **Source removed while decisions pending** — pending decisions for that source are automatically rejected (source gone = items gone).
 - **User manually installs a pending package** — on the next reconcile, cfgd detects the package is already present and auto-accepts the decision (desired state already matches actual state).
-- **Policies only apply in auto-apply mode** — when `autoApply: false`, `cfgd plan` shows everything and you decide interactively. Policies are for unattended daemon reconciles.
+- **Policies only apply when `autoApply` is enabled** — when `autoApply: false`, `cfgd plan` shows everything and you decide interactively. Policies are for unattended daemon reconciles.
 - **Rejection doesn't persist across source versions** — if you reject an item and the source later updates it (new version, changed description), a fresh pending decision is created. This prevents stale rejections from silently blocking items the team considers important.
 
 ## Source Constraints
@@ -238,7 +238,7 @@ If the source tries to deploy a file to `~/.bashrc` (not in the allowed list), c
 
 ### `noScripts`
 
-When `true` (the default), the source cannot include pre-reconcile or post-reconcile scripts. If a source manifest declares scripts while `noScripts: true`, cfgd rejects those scripts at composition time. Subscribers can relax this by setting `allowScripts: true` in their subscription — the scripts are then shown in `cfgd plan` before execution.
+When `true` (the default), the source cannot include `preReconcile` or `postReconcile` scripts. If a source manifest declares scripts while `noScripts: true`, cfgd rejects those scripts at composition time. Subscribers can relax this by setting `allowScripts: true` in their subscription — the scripts are then shown in `cfgd plan` before execution.
 
 ### `allowSystemChanges`
 
@@ -400,7 +400,7 @@ Bump `metadata.version` in `cfgd-source.yaml` when making changes. Subscribers w
 
 | Threat | Mitigation |
 |---|---|
-| Arbitrary code execution | `noScripts: true` by default; scripts require explicit opt-in and are shown in plan |
+| Arbitrary code execution | `noScripts: true` by default; scripts require explicit subscriber approval and are shown in plan |
 | Secret exfiltration | Sources cannot access your SOPS/age keys or encrypted files |
 | Arbitrary path writes | Sources must declare `allowedTargetPaths`; enforced at composition level |
 | Template data leak | Source templates can only access source-provided env vars, not your personal env vars |
