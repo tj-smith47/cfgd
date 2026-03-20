@@ -410,6 +410,8 @@ fn load_private_key(
 // Pod module mutating webhook — /mutate-pods
 // ---------------------------------------------------------------------------
 
+const MODULES_ANNOTATION: &str = "cfgd.io/modules";
+
 /// Parse the `cfgd.io/modules` annotation value into (name, version) pairs.
 /// Format: `"name:version,name:version"` (commas separate, colons delimit name:version).
 fn parse_module_annotations(value: &str) -> Vec<(String, String)> {
@@ -431,7 +433,20 @@ fn parse_module_annotations(value: &str) -> Vec<(String, String)> {
         .collect()
 }
 
+/// Sanitize a module name for use in Kubernetes object names (RFC 1123 DNS label).
+fn sanitize_k8s_name(name: &str) -> String {
+    name.to_ascii_lowercase()
+        .replace('_', "-")
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || *c == '-')
+        .collect::<String>()
+        .trim_matches('-')
+        .to_string()
+}
+
 /// Collect required modules from ConfigPolicy and ClusterConfigPolicy.
+/// ClusterConfigPolicy entries are filtered by their namespaceSelector against
+/// the pod's namespace labels.
 async fn collect_required_modules(
     client: &Client,
     namespace: &str,
@@ -452,12 +467,24 @@ async fn collect_required_modules(
         }
     }
 
-    // Cluster-scoped ClusterConfigPolicy
+    // Cluster-scoped ClusterConfigPolicy — filter by namespaceSelector
+    let ns_labels = Api::<k8s_openapi::api::core::v1::Namespace>::all(client.clone())
+        .get(namespace)
+        .await
+        .ok()
+        .and_then(|ns| ns.metadata.labels);
+
     if let Ok(policies) = Api::<ClusterConfigPolicy>::all(client.clone())
         .list(&ListParams::default())
         .await
     {
         for policy in &policies {
+            if !crate::controllers::matches_selector(
+                ns_labels.as_ref(),
+                &policy.spec.namespace_selector,
+            ) {
+                continue;
+            }
             for module_ref in &policy.spec.required_modules {
                 if module_ref.required && !required.contains(&module_ref.name) {
                     required.push(module_ref.name.clone());
@@ -501,8 +528,25 @@ fn build_injection_patches(
 
     let mut needs_scripts_emptydir = false;
 
+    // Ensure volumeMounts and env arrays exist on each container
+    for (i, container) in containers.iter().enumerate() {
+        if container.pointer("/volumeMounts").is_none() {
+            patches.push(json_patch::PatchOperation::Add(json_patch::AddOperation {
+                path: ptr(&format!("/spec/containers/{i}/volumeMounts")),
+                value: serde_json::json!([]),
+            }));
+        }
+        if container.pointer("/env").is_none() {
+            patches.push(json_patch::PatchOperation::Add(json_patch::AddOperation {
+                path: ptr(&format!("/spec/containers/{i}/env")),
+                value: serde_json::json!([]),
+            }));
+        }
+    }
+
     for (name, version, spec) in modules {
-        let vol_name = format!("cfgd-module-{name}");
+        let safe_name = sanitize_k8s_name(name);
+        let vol_name = format!("cfgd-module-{safe_name}");
         let mount_path = format!("/cfgd-modules/{name}");
 
         // Add CSI volume
@@ -522,7 +566,7 @@ fn build_injection_patches(
             }),
         }));
 
-        // Add volumeMount to each container
+        // Add volumeMount + env vars to each container
         for (i, _) in containers.iter().enumerate() {
             patches.push(json_patch::PatchOperation::Add(json_patch::AddOperation {
                 path: ptr(&format!("/spec/containers/{i}/volumeMounts/-")),
@@ -533,16 +577,16 @@ fn build_injection_patches(
                 }),
             }));
 
-            // Add env vars from module spec
             for env_var in &spec.env {
                 if env_var.append {
-                    // PATH-style: prepend to existing
+                    // PATH-style: prepend module value to existing variable.
+                    // $(VAR) is expanded by kubelet against pod-spec-defined env vars.
                     patches.push(json_patch::PatchOperation::Add(
                         json_patch::AddOperation {
                             path: ptr(&format!("/spec/containers/{i}/env/-")),
                             value: serde_json::json!({
                                 "name": env_var.name,
-                                "value": format!("{}:$({}_ORIG)", env_var.value, env_var.name)
+                                "value": format!("{}:$({})", env_var.value, env_var.name)
                             }),
                         },
                     ));
@@ -560,7 +604,6 @@ fn build_injection_patches(
             }
         }
 
-        // If module has postApply script, we need an init container
         if spec.scripts.post_apply.is_some() {
             needs_scripts_emptydir = true;
         }
@@ -591,16 +634,17 @@ fn build_injection_patches(
         }
 
         for (name, _version, spec) in &script_modules {
+            let safe_name = sanitize_k8s_name(name);
             let script_path = spec.scripts.post_apply.as_deref().unwrap_or("post-apply.sh");
             patches.push(json_patch::PatchOperation::Add(json_patch::AddOperation {
                 path: ptr("/spec/initContainers/-"),
                 value: serde_json::json!({
-                    "name": format!("cfgd-init-{name}"),
-                    "image": "busybox:latest",
+                    "name": format!("cfgd-init-{safe_name}"),
+                    "image": "busybox:1.36",
                     "command": ["sh", "-c", format!("/cfgd-modules/{name}/{script_path}")],
                     "volumeMounts": [
                         {
-                            "name": format!("cfgd-module-{name}"),
+                            "name": format!("cfgd-module-{safe_name}"),
                             "mountPath": format!("/cfgd-modules/{name}"),
                             "readOnly": true
                         },
@@ -637,7 +681,14 @@ async fn handle_mutate_pods(
 
     // Parse pod annotations for cfgd.io/modules
     let pod_obj = match &req.object {
-        Some(obj) => serde_json::to_value(obj).unwrap_or_default(),
+        Some(obj) => match serde_json::to_value(obj) {
+            Ok(v) => v,
+            Err(e) => {
+                warn!(error = %e, "failed to serialize pod object");
+                record_webhook_metrics(&state.metrics, "mutate_pods", "error", start);
+                return Json(AdmissionResponse::from(&req).into_review());
+            }
+        },
         None => {
             record_webhook_metrics(&state.metrics, "mutate_pods", "allowed", start);
             return Json(AdmissionResponse::from(&req).into_review());
@@ -651,7 +702,7 @@ async fn handle_mutate_pods(
         .unwrap_or_default();
 
     let annotation_modules = annotations
-        .get("cfgd.io/modules")
+        .get(MODULES_ANNOTATION)
         .and_then(|v| v.as_str())
         .map(parse_module_annotations)
         .unwrap_or_default();
@@ -1179,6 +1230,42 @@ mod tests {
         assert!(patch_json.contains("cfgd-init-setup"));
         assert!(patch_json.contains("cfgd-scripts"));
         assert!(patch_json.contains("setup.sh"));
+    }
+
+    #[test]
+    fn build_patches_with_append_env_var() {
+        let pod = serde_json::json!({
+            "spec": {
+                "containers": [
+                    {"name": "app", "image": "busybox"}
+                ],
+                "volumes": []
+            }
+        });
+        let modules = vec![(
+            "tools".to_string(),
+            "1.0".to_string(),
+            ModuleSpec {
+                env: vec![crate::crds::ModuleEnvVar {
+                    name: "PATH".to_string(),
+                    value: "/cfgd-modules/tools/bin".to_string(),
+                    append: true,
+                }],
+                ..Default::default()
+            },
+        )];
+        let patches = build_injection_patches(&pod, &modules);
+        let patch_json = serde_json::to_string(&patches).unwrap();
+        // Should use $(PATH) expansion, not $(PATH_ORIG)
+        assert!(patch_json.contains("/cfgd-modules/tools/bin:$(PATH)"));
+        assert!(!patch_json.contains("_ORIG"));
+    }
+
+    #[test]
+    fn sanitize_k8s_name_handles_special_chars() {
+        assert_eq!(sanitize_k8s_name("my_Module"), "my-module");
+        assert_eq!(sanitize_k8s_name("simple"), "simple");
+        assert_eq!(sanitize_k8s_name("--leading--"), "leading");
     }
 
     #[test]

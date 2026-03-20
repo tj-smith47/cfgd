@@ -1182,7 +1182,7 @@ async fn reconcile_config_policy(
     Ok(Action::requeue(std::time::Duration::from_secs(60)))
 }
 
-fn matches_selector(labels: Option<&BTreeMap<String, String>>, selector: &LabelSelector) -> bool {
+pub(crate) fn matches_selector(labels: Option<&BTreeMap<String, String>>, selector: &LabelSelector) -> bool {
     if selector.match_labels.is_empty() && selector.match_expressions.is_empty() {
         return true;
     }
