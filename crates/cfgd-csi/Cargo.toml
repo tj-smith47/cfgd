@@ -23,7 +23,6 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 prometheus-client = "0.22"
 sha2 = "0.10"
 thiserror = "2"
-filetime = "0.2"
 tokio-stream = { version = "0.1", features = ["net"] }
 hyper-util = { version = "0.1", features = ["tokio"] }
 

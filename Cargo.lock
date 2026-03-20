@@ -547,7 +547,6 @@ name = "cfgd-csi"
 version = "0.1.0"
 dependencies = [
  "cfgd-core",
- "filetime",
  "hyper-util",
  "nix",
  "prometheus-client",
