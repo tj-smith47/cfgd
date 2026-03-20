@@ -39,10 +39,10 @@ enum PluginCommand {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         command: Vec<String>,
     },
-    /// Inject modules into a running pod (patch pod spec)
+    /// Inject modules into a workload (patches pod template, triggers rollout)
     Inject {
-        /// Pod name
-        pod: String,
+        /// Resource in kind/name format (e.g. deployment/myapp, statefulset/db)
+        resource: String,
         /// Module(s) to inject
         #[arg(long, short)]
         module: Vec<String>,
@@ -55,6 +55,8 @@ enum PluginCommand {
     /// Show client and server version
     Version,
 }
+
+const MODULE_REQUIRED: &str = "at least one --module is required";
 
 fn parse_module_arg(arg: &str) -> anyhow::Result<(&str, &str)> {
     arg.split_once(':')
@@ -99,6 +101,11 @@ pub fn plugin_main() -> anyhow::Result<()> {
         .without_time()
         .init();
 
+    if std::env::var_os("NO_COLOR").is_some() {
+        console::set_colors_enabled(false);
+        console::set_colors_enabled_stderr(false);
+    }
+
     let printer = Printer::with_format(
         cfgd_core::output::Verbosity::Normal,
         None,
@@ -120,10 +127,10 @@ pub fn plugin_main() -> anyhow::Result<()> {
             command,
         } => cmd_exec(&printer, &pod, &module, &namespace, &command),
         PluginCommand::Inject {
-            pod,
+            resource,
             module,
             namespace,
-        } => cmd_inject(&printer, &pod, &module, &namespace),
+        } => cmd_inject(&printer, &resource, &module, &namespace),
         PluginCommand::Status => cmd_status(&printer),
         PluginCommand::Version => cmd_version(&printer),
     }
@@ -137,7 +144,7 @@ fn cmd_debug(
     image: &str,
 ) -> anyhow::Result<()> {
     if modules.is_empty() {
-        anyhow::bail!("at least one --module is required");
+        anyhow::bail!(MODULE_REQUIRED);
     }
 
     let parsed: Vec<(&str, &str)> = modules
@@ -211,7 +218,7 @@ fn cmd_exec(
     command: &[String],
 ) -> anyhow::Result<()> {
     if modules.is_empty() {
-        anyhow::bail!("at least one --module is required");
+        anyhow::bail!(MODULE_REQUIRED);
     }
     if command.is_empty() {
         anyhow::bail!("command is required after --");
@@ -228,18 +235,23 @@ fn cmd_exec(
         .collect();
     let path_prefix = path_extensions.join(":");
 
-    // Build env vars for kubectl exec
-    let mut exec_args = vec![
+    // Wrap in sh -c so $PATH is expanded by the container's shell
+    let inner_cmd = command
+        .iter()
+        .map(|c| cfgd_core::shell_escape_value(c))
+        .collect::<Vec<_>>()
+        .join(" ");
+    let exec_args = vec![
         "kubectl".to_string(),
         "exec".to_string(),
         "-n".to_string(),
         namespace.to_string(),
         pod.to_string(),
         "--".to_string(),
-        "env".to_string(),
-        format!("PATH={path_prefix}:$PATH"),
+        "sh".to_string(),
+        "-c".to_string(),
+        format!("export PATH={path_prefix}:$PATH; exec {inner_cmd}"),
     ];
-    exec_args.extend(command.iter().cloned());
 
     printer.info(&format!("Executing in {namespace}/{pod} with modules"));
 
@@ -258,59 +270,67 @@ fn cmd_exec(
 
 fn cmd_inject(
     printer: &Printer,
-    pod: &str,
+    resource: &str,
     modules: &[String],
     namespace: &str,
 ) -> anyhow::Result<()> {
     if modules.is_empty() {
-        anyhow::bail!("at least one --module is required");
+        anyhow::bail!(MODULE_REQUIRED);
     }
+
+    let (kind, name) = resource.split_once('/').ok_or_else(|| {
+        anyhow::anyhow!(
+            "invalid resource format '{resource}' — expected kind/name (e.g. deployment/myapp)"
+        )
+    })?;
 
     let parsed: Vec<(&str, &str)> = modules
         .iter()
         .map(|m| parse_module_arg(m))
         .collect::<Result<_, _>>()?;
 
-    let rt = tokio::runtime::Runtime::new()?;
-    rt.block_on(async {
-        let client = kube::Client::try_default().await?;
-        let pods: kube::Api<k8s_openapi::api::core::v1::Pod> =
-            kube::Api::namespaced(client, namespace);
+    let module_names: Vec<_> = parsed.iter().map(|(n, v)| format!("{n}:{v}")).collect();
+    let annotation_value = module_names.join(",");
 
-        let mut volumes = Vec::new();
-        let mut volume_mounts = Vec::new();
-
-        for (name, version) in &parsed {
-            volumes.push(build_csi_volume(name, version));
-            volume_mounts.push(build_volume_mount(name));
-        }
-
-        let patch = serde_json::json!({
-            "spec": {
-                "volumes": volumes,
-                "containers": [{
-                    "name": "inject-placeholder",
-                    "volumeMounts": volume_mounts
-                }]
+    // Patch the workload's pod template with the cfgd.io/modules annotation.
+    // The mutating webhook will inject CSI volumes on the next pod creation.
+    let patch_json = serde_json::json!({
+        "spec": {
+            "template": {
+                "metadata": {
+                    "annotations": {
+                        "cfgd.io/modules": annotation_value
+                    }
+                }
             }
-        });
+        }
+    });
 
-        pods.patch(
-            pod,
-            &kube::api::PatchParams::apply("kubectl-cfgd"),
-            &kube::api::Patch::Strategic(patch),
-        )
-        .await
-        .map_err(|e| anyhow::anyhow!("failed to inject modules: {e}"))?;
+    let patch_str = serde_json::to_string(&patch_json)?;
 
-        let module_names: Vec<_> = parsed.iter().map(|(n, v)| format!("{n}:{v}")).collect();
-        printer.success(&format!(
-            "Injected modules into {namespace}/{pod}: {}",
-            module_names.join(", ")
-        ));
+    let status = std::process::Command::new("kubectl")
+        .args([
+            "patch", kind, name,
+            "-n", namespace,
+            "--type", "strategic",
+            "-p", &patch_str,
+        ])
+        .stdin(std::process::Stdio::inherit())
+        .stdout(std::process::Stdio::inherit())
+        .stderr(std::process::Stdio::inherit())
+        .status()?;
 
-        Ok(())
-    })
+    if !status.success() {
+        anyhow::bail!("kubectl patch failed");
+    }
+
+    printer.success(&format!(
+        "Injected modules into {namespace}/{kind}/{name}: {}",
+        module_names.join(", ")
+    ));
+    printer.info("Pods will receive modules on next rollout");
+
+    Ok(())
 }
 
 fn cmd_status(printer: &Printer) -> anyhow::Result<()> {
