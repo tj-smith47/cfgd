@@ -91,9 +91,31 @@ deviceGateway:
     size: 1Gi
     storageClass: ""
 
-# CSI driver (future)
+# CSI driver
 csiDriver:
   enabled: false
+  image:
+    repository: ghcr.io/tj-smith47/cfgd-csi
+    tag: ""
+    pullPolicy: IfNotPresent
+  cache:
+    maxSizeGi: 5
+    storageClass: ""
+  metricsPort: 9090
+  resources:
+    limits:
+      cpu: 100m
+      memory: 128Mi
+    requests:
+      cpu: 50m
+      memory: 64Mi
+  nodeSelector: {}
+  tolerations:
+    - operator: Exists
+  registrar:
+    image:
+      repository: registry.k8s.io/sig-storage/csi-node-driver-registrar
+      tag: v2.10.0
 
 # Security contexts
 podSecurityContext:

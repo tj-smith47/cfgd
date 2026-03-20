@@ -1,0 +1,96 @@
+{{- if .Values.csiDriver.enabled }}
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: {{ include "cfgd.fullname" . }}-csi
+  labels:
+    {{- include "cfgd.labels" . | nindent 4 }}
+    app.kubernetes.io/component: csi-driver
+spec:
+  selector:
+    matchLabels:
+      {{- include "cfgd.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: csi-driver
+  template:
+    metadata:
+      labels:
+        {{- include "cfgd.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: csi-driver
+    spec:
+      serviceAccountName: {{ include "cfgd.fullname" . }}-csi
+      {{- with .Values.csiDriver.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.csiDriver.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: cfgd-csi
+          image: "{{ .Values.csiDriver.image.repository }}:{{ .Values.csiDriver.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.csiDriver.image.pullPolicy }}
+          securityContext:
+            privileged: true
+          env:
+            - name: CSI_ENDPOINT
+              value: /csi/csi.sock
+            - name: CACHE_DIR
+              value: /var/lib/cfgd-csi/cache
+            - name: CACHE_MAX_BYTES
+              value: "{{ mul .Values.csiDriver.cache.maxSizeGi 1073741824 }}"
+            - name: METRICS_PORT
+              value: "{{ .Values.csiDriver.metricsPort }}"
+          ports:
+            - containerPort: {{ .Values.csiDriver.metricsPort }}
+              name: metrics
+              protocol: TCP
+          resources:
+            {{- toYaml .Values.csiDriver.resources | nindent 12 }}
+          volumeMounts:
+            - name: plugin-dir
+              mountPath: /csi
+            - name: pods-mount-dir
+              mountPath: /var/lib/kubelet
+              mountPropagation: Bidirectional
+            - name: cache
+              mountPath: /var/lib/cfgd-csi/cache
+        - name: node-driver-registrar
+          image: "{{ .Values.csiDriver.registrar.image.repository }}:{{ .Values.csiDriver.registrar.image.tag }}"
+          args:
+            - "--v=2"
+            - "--csi-address=/csi/csi.sock"
+            - "--kubelet-registration-path=/var/lib/kubelet/plugins/csi.cfgd.io/csi.sock"
+          volumeMounts:
+            - name: plugin-dir
+              mountPath: /csi
+            - name: registration-dir
+              mountPath: /registration
+      volumes:
+        - name: plugin-dir
+          hostPath:
+            path: /var/lib/kubelet/plugins/csi.cfgd.io/
+            type: DirectoryOrCreate
+        - name: pods-mount-dir
+          hostPath:
+            path: /var/lib/kubelet
+            type: Directory
+        - name: registration-dir
+          hostPath:
+            path: /var/lib/kubelet/plugins_registry/
+            type: DirectoryOrCreate
+        - name: cache
+          {{- if .Values.csiDriver.cache.storageClass }}
+          ephemeral:
+            volumeClaimTemplate:
+              spec:
+                accessModes: ["ReadWriteOnce"]
+                storageClassName: {{ .Values.csiDriver.cache.storageClass }}
+                resources:
+                  requests:
+                    storage: {{ .Values.csiDriver.cache.maxSizeGi }}Gi
+          {{- else }}
+          emptyDir:
+            sizeLimit: {{ .Values.csiDriver.cache.maxSizeGi }}Gi
+          {{- end }}
+{{- end }}
