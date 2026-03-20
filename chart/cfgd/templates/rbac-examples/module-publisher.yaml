@@ -1,0 +1,12 @@
+{{- if .Values.rbacExamples.enabled }}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "cfgd.fullname" . }}-module-publisher
+  labels:
+    {{- include "cfgd.labels" . | nindent 4 }}
+rules:
+  - apiGroups: ["cfgd.io"]
+    resources: ["modules"]
+    verbs: ["get", "list", "watch", "create", "update", "patch"]
+{{- end }}

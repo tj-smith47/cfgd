@@ -1,0 +1,12 @@
+{{- if .Values.rbacExamples.enabled }}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "cfgd.fullname" . }}-team-member
+  labels:
+    {{- include "cfgd.labels" . | nindent 4 }}
+rules:
+  - apiGroups: ["cfgd.io"]
+    resources: ["machineconfigs", "configpolicies", "driftalerts"]
+    verbs: ["get", "list", "watch"]
+{{- end }}
