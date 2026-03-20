@@ -839,3 +839,35 @@ Module state is stored by module name, not by profile — so status/verify/apply
 - [x] Module controller: keyless verification support in `evaluate_module_verification()`
 - [x] Webhook `check_unsigned_policy`: accepts keyless mode as valid signing
 - [x] OciError expanded: `BuildError`, `SigningError`, `VerificationFailed`, `AttestationError`, `ToolNotFound`
+
+## Tier 4 — Pod Module Injection
+
+### CSI driver (`crates/cfgd-csi/`)
+- [x] Separate binary with `tonic` gRPC on unix socket, Identity + Node services
+- [x] Identity RPCs: `GetPluginInfo` (`csi.cfgd.io`), `GetPluginCapabilities` (empty, Node-only), `Probe` (checks cache dir)
+- [x] Node RPCs: `NodePublishVolume` (bind mount, idempotent), `NodeUnpublishVolume` (unmount + cleanup), `NodeStageVolume` (OCI pull to cache), `NodeUnstageVolume` (no-op)
+- [x] `NodeGetCapabilities`: `STAGE_UNSTAGE_VOLUME`; `NodeGetInfo`: hostname as node ID
+- [x] LRU cache with `.cfgd-last-access` marker files, atomic population via temp dir + rename
+- [x] Path traversal protection via `validate_no_traversal`, completion sentinel for partial extraction safety
+- [x] CSI metrics: `cfgd_csi_volume_publish_total` (module, result), `pull_duration_seconds` (module, cached), `cache_size_bytes`, `cache_hits_total` (module)
+- [x] Metrics wired into Node service: stage records pull duration/cache hits, publish records volume_publish_total
+- [x] Helm DaemonSet with node-driver-registrar + liveness-probe sidecars, CSIDriver object, RBAC
+- [x] 41 tests (35 unit + 6 gRPC integration via temp unix socket)
+
+### Pod module mutating webhook
+- [x] `POST /mutate-pods` endpoint: parse `cfgd.io/modules` annotation + ConfigPolicy/ClusterConfigPolicy `requiredModules`
+- [x] ClusterConfigPolicy filtered by `namespaceSelector` via `matches_selector`
+- [x] JSON patches: CSI volumes, volumeMounts, env vars (with append for PATH), init containers for `postApply` scripts
+- [x] Ensures volumeMounts/env arrays exist before RFC 6902 append (fixes missing-array patch failure)
+- [x] Module name sanitization for Kubernetes RFC 1123 DNS label rules
+- [x] MutatingWebhookConfiguration Helm template: `failurePolicy: Ignore`, `reinvocationPolicy: IfNeeded`, namespace label selector
+- [x] 11 tests: annotation parsing, volume injection, env vars, init containers, multiple containers
+
+### kubectl cfgd plugin
+- [x] `debug`: ephemeral container with CSI volumes, PATH extension, custom PS1
+- [x] `exec`: runs command with module PATH via `sh -c` wrapper (proper `$PATH` expansion)
+- [x] `inject`: patches workload controller (Deployment/StatefulSet) pod template annotation
+- [x] `status`: lists Module CRDs with verification status
+- [x] `version`: client + Kubernetes server version
+- [x] argv[0] detection (`kubectl-cfgd`), Krew manifest at `manifests/krew/cfgd.yaml`
+- [x] 5 tests: module arg parsing, CSI volume/mount spec generation

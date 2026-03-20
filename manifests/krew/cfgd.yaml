@@ -1,0 +1,40 @@
+apiVersion: krew.googlecontainertools.github.com/v1alpha2
+kind: Plugin
+metadata:
+  name: cfgd
+spec:
+  version: "v0.1.0"
+  shortDescription: "Manage cfgd modules on pods"
+  homepage: https://github.com/tj-smith47/cfgd
+  description: |
+    kubectl plugin for cfgd module injection. Provides debug, exec, inject,
+    status, and version subcommands for managing cfgd modules on Kubernetes pods.
+  platforms:
+    - selector:
+        matchLabels:
+          os: linux
+          arch: amd64
+      uri: https://github.com/tj-smith47/cfgd/releases/download/v0.1.0/kubectl-cfgd_linux_amd64.tar.gz
+      sha256: "TBD"
+      bin: kubectl-cfgd
+    - selector:
+        matchLabels:
+          os: linux
+          arch: arm64
+      uri: https://github.com/tj-smith47/cfgd/releases/download/v0.1.0/kubectl-cfgd_linux_arm64.tar.gz
+      sha256: "TBD"
+      bin: kubectl-cfgd
+    - selector:
+        matchLabels:
+          os: darwin
+          arch: amd64
+      uri: https://github.com/tj-smith47/cfgd/releases/download/v0.1.0/kubectl-cfgd_darwin_amd64.tar.gz
+      sha256: "TBD"
+      bin: kubectl-cfgd
+    - selector:
+        matchLabels:
+          os: darwin
+          arch: arm64
+      uri: https://github.com/tj-smith47/cfgd/releases/download/v0.1.0/kubectl-cfgd_darwin_arm64.tar.gz
+      sha256: "TBD"
+      bin: kubectl-cfgd

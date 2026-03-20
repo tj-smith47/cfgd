@@ -259,7 +259,8 @@ done < <(find "${SRC_ROOTS[@]}" -name '*.rs' -print0 2>/dev/null) \
         $2 != "installed_packages_with_versions" && $2 != "success" && \
         $2 != "run_migrations" && $2 != "request_challenge" && $2 != "path_dirs" && \
         $2 != "package_aliases" && $2 != "is_empty" && $2 != "expecting" && \
-        $2 != "error" && $2 != "enroll_info" && $2 != "parse" \
+        $2 != "error" && $2 != "enroll_info" && $2 != "parse" && \
+        $2 != "cmd_status" && $2 != "cmd_version" \
         {print}' \
     > /tmp/cfgd_fn_dupes 2>/dev/null || true
 fn_dupes=$(cat /tmp/cfgd_fn_dupes 2>/dev/null || true)

@@ -38,31 +38,19 @@ Completed. Moved to [COMPLETED.md](COMPLETED.md).
 
 ---
 
-## Tier 4 — Pod module injection (needs CSI driver)
+## ~~Tier 4 — Pod module injection (needs CSI driver)~~
 
-### CSI driver
+Completed. Moved to [COMPLETED.md](COMPLETED.md).
 
-- [ ] Separate binary in `crates/cfgd-csi/`, Node plugin only, `tonic` gRPC
-- [ ] Identity RPCs: `GetPluginInfo`, `GetPluginCapabilities`, `Probe`
-- [ ] Node RPCs: `NodePublishVolume` (pull OCI artifact, mount read-only), `NodeUnpublishVolume`, `NodeStageVolume` (cache), `NodeUnstageVolume`
-- [ ] DaemonSet deployment with `node-driver-registrar` sidecar
-- [ ] Node-level cache at `/var/lib/cfgd-csi/cache/` with LRU eviction (default 5Gi)
-- [ ] CSI metrics: `cfgd_csi_volume_publish_total`, `pull_duration_seconds`, `cache_size_bytes`, `cache_hits_total`
+### Implementation notes
 
-### Pod module mutating webhook
-
-- [ ] `POST /mutate-pods` endpoint — parse `cfgd.io/modules` annotation + ConfigPolicy `requiredModules`
-- [ ] MutatingWebhookConfiguration: `failurePolicy: Ignore`, `sideEffects: None`, namespace label selector
-- [ ] Inject CSI volumes, volumeMounts, env vars per module spec
-- [ ] Inject init container + shared emptyDir for modules with `scripts.postApply`
-- [ ] Emit `ModuleInjected` / `ModuleInjectionFailed` Events on pods
-
-### kubectl cfgd plugin
-
-- [ ] `debug`, `exec`, `inject`, `status`, `version` subcommands
-- [ ] Same binary as cfgd, plugin mode via argv[0] detection
-- [ ] Ephemeral container creation with CSI volumes, PATH extension, custom PS1
-- [ ] Krew manifest and distribution
+- CSI driver uses `tonic` gRPC on unix socket, `nix` crate for bind mounts (Linux-only, cfg-gated)
+- LRU cache uses `.cfgd-last-access` marker files (filesystem atime unreliable with noatime/relatime)
+- Atomic cache population via temp dir + rename prevents concurrent corruption
+- Mutating webhook filters ClusterConfigPolicy by namespaceSelector before injecting required modules
+- JSON patches ensure volumeMounts/env arrays exist before appending (RFC 6902 compliance)
+- `kubectl cfgd inject` targets workload controllers (Deployment/StatefulSet) via annotation patch, not running pods
+- Pod-level Events (ModuleInjected/ModuleInjectionFailed) deferred — pod has no UID during CREATE admission
 
 ---
 

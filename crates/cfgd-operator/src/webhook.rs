@@ -497,7 +497,7 @@ async fn collect_required_modules(
 }
 
 fn ptr(path: &str) -> jsonptr::PointerBuf {
-    jsonptr::PointerBuf::parse(path).expect("valid JSON pointer")
+    jsonptr::PointerBuf::parse(path).unwrap_or_else(|_| jsonptr::PointerBuf::default())
 }
 
 /// Build JSON patch operations to inject CSI volumes, volumeMounts, and env vars.
