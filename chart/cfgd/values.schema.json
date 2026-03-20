@@ -240,12 +240,11 @@
     },
     "csiDriver": {
       "type": "object",
-      "properties": {
-        "enabled": {
-          "type": "boolean",
-          "description": "Enable the CSI driver"
-        }
-      }
+      "description": "CSI driver DaemonSet for module volume mounts"
+    },
+    "mutatingWebhook": {
+      "type": "object",
+      "description": "Pod module mutating webhook configuration"
     },
     "podSecurityContext": {
       "type": "object",
