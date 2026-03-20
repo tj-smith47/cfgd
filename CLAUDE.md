@@ -34,8 +34,9 @@ crates/
 │   ├── server_client.rs    # Device gateway HTTP client (checkin, enrollment, device flow)
 │   └── upgrade.rs          # Self-upgrade: GitHub release detection, download, checksum verify
 ├── cfgd/src/               # Unified binary crate (workstation + node)
-│   ├── main.rs             # Entry point, clap dispatch
+│   ├── main.rs             # Entry point, clap dispatch, kubectl plugin argv[0] detection
 │   ├── cli/                # Clap command definitions, argument parsing
+│   │   └── plugin.rs       # kubectl cfgd plugin: debug, exec, inject, status, version
 │   ├── files/              # File management: copy, template, diff, permissions
 │   ├── packages/           # PackageManager implementations (brew, apt, cargo, npm, pipx, dnf)
 │   ├── secrets/            # SOPS/age backends, 1Password/Bitwarden/Vault providers
@@ -48,7 +49,7 @@ crates/
     ├── lib.rs              # Crate root, module declarations
     ├── crds/               # CRD definitions (MachineConfig, ConfigPolicy, DriftAlert, ClusterConfigPolicy)
     ├── controllers/        # kube-rs reconciliation controllers (4 controllers)
-    ├── webhook.rs          # Admission webhook server (TLS, 4 validation endpoints)
+    ├── webhook.rs          # Admission webhook server (TLS, 4 validation + 1 mutation endpoints)
     ├── health.rs           # Dedicated health probe server (/healthz, /readyz)
     ├── leader.rs           # Lease-based leader election
     ├── metrics.rs          # Prometheus metrics registry + HTTP endpoint
@@ -61,8 +62,16 @@ crates/
         ├── fleet.rs        # Fleet status aggregation
         ├── web.rs          # Web dashboard (HTML/CSS/JS)
         └── errors.rs       # GatewayError with IntoResponse
+├── cfgd-csi/src/           # CSI Node plugin binary crate
+│   ├── main.rs             # Entry point: gRPC server on unix socket, metrics HTTP
+│   ├── lib.rs              # Crate root, proto include
+│   ├── identity.rs         # CSI Identity service (GetPluginInfo, Probe)
+│   ├── node.rs             # CSI Node service (Publish/Unpublish/Stage/Unstage)
+│   ├── cache.rs            # LRU module cache with atomic population
+│   ├── metrics.rs          # Prometheus CSI metrics
+│   └── errors.rs           # CsiError enum
 chart/
-└── cfgd/                   # Unified Helm chart (operator + agent)
+└── cfgd/                   # Unified Helm chart (operator + agent + CSI driver)
 ```
 
 See `.claude/kubernetes-first-class.md` for the Kubernetes ecosystem design (CRDs, controllers, webhooks, CSI, OCI, observability, multi-tenancy, Crossplane).
@@ -136,6 +145,9 @@ Current shared items (keep this list updated when adding new ones):
 - `acquire_apply_lock(state_dir)` — exclusive flock-based apply lock; returns `ApplyLockGuard` (RAII release on drop)
 - `resolve_effective_reconcile(module, profile_chain, config)` — resolve per-module reconcile settings from patches; returns `EffectiveReconcile`
 - `EffectiveReconcile` — resolved reconcile settings (interval, auto_apply, drift_policy) with no Options
+- `CSI_DRIVER_NAME` — canonical CSI driver name string (`csi.cfgd.io`); use everywhere instead of string literals
+- `MODULES_ANNOTATION` — canonical annotation key (`cfgd.io/modules`); use everywhere instead of string literals
+- `sanitize_k8s_name(name)` — sanitize a string for Kubernetes RFC 1123 DNS label rules
 
 ### Database Conventions
 

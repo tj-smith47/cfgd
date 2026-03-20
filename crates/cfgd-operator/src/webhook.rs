@@ -410,7 +410,7 @@ fn load_private_key(
 // Pod module mutating webhook — /mutate-pods
 // ---------------------------------------------------------------------------
 
-const MODULES_ANNOTATION: &str = "cfgd.io/modules";
+const MODULES_ANNOTATION: &str = cfgd_core::MODULES_ANNOTATION;
 
 /// Parse the `cfgd.io/modules` annotation value into (name, version) pairs.
 /// Format: `"name:version,name:version"` (commas separate, colons delimit name:version).
@@ -433,15 +433,8 @@ fn parse_module_annotations(value: &str) -> Vec<(String, String)> {
         .collect()
 }
 
-/// Sanitize a module name for use in Kubernetes object names (RFC 1123 DNS label).
 fn sanitize_k8s_name(name: &str) -> String {
-    name.to_ascii_lowercase()
-        .replace('_', "-")
-        .chars()
-        .filter(|c| c.is_ascii_alphanumeric() || *c == '-')
-        .collect::<String>()
-        .trim_matches('-')
-        .to_string()
+    cfgd_core::sanitize_k8s_name(name)
 }
 
 /// Collect required modules from ConfigPolicy and ClusterConfigPolicy.
@@ -555,7 +548,7 @@ fn build_injection_patches(
             value: serde_json::json!({
                 "name": vol_name,
                 "csi": {
-                    "driver": "csi.cfgd.io",
+                    "driver": cfgd_core::CSI_DRIVER_NAME,
                     "readOnly": true,
                     "volumeAttributes": {
                         "module": name,
@@ -1170,7 +1163,7 @@ mod tests {
 
         // Check volume patch contains CSI driver reference
         let patch_json = serde_json::to_string(&patches).unwrap();
-        assert!(patch_json.contains("csi.cfgd.io"));
+        assert!(patch_json.contains(cfgd_core::CSI_DRIVER_NAME));
         assert!(patch_json.contains("cfgd-module-nettools"));
         assert!(patch_json.contains("/cfgd-modules/nettools"));
     }

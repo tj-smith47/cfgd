@@ -8,7 +8,7 @@ use crate::csi::v1::{
     GetPluginInfoResponse, ProbeRequest, ProbeResponse,
 };
 
-pub const DRIVER_NAME: &str = "csi.cfgd.io";
+pub const DRIVER_NAME: &str = cfgd_core::CSI_DRIVER_NAME;
 
 pub struct CfgdIdentity {
     cache_dir: PathBuf,

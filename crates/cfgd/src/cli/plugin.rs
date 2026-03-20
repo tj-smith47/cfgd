@@ -63,25 +63,8 @@ fn parse_module_arg(arg: &str) -> anyhow::Result<(&str, &str)> {
         .ok_or_else(|| anyhow::anyhow!("invalid module format '{arg}' — expected name:version"))
 }
 
-fn build_csi_volume(name: &str, version: &str) -> serde_json::Value {
-    let safe = name
-        .to_ascii_lowercase()
-        .replace('_', "-");
-    serde_json::json!({
-        "name": format!("cfgd-module-{safe}"),
-        "csi": {
-            "driver": "csi.cfgd.io",
-            "readOnly": true,
-            "volumeAttributes": {
-                "module": name,
-                "version": version
-            }
-        }
-    })
-}
-
 fn build_volume_mount(name: &str) -> serde_json::Value {
-    let safe = name.to_ascii_lowercase().replace('_', "-");
+    let safe = cfgd_core::sanitize_k8s_name(name);
     serde_json::json!({
         "name": format!("cfgd-module-{safe}"),
         "mountPath": format!("/cfgd-modules/{name}"),
@@ -158,13 +141,13 @@ fn cmd_debug(
         let pods: kube::Api<k8s_openapi::api::core::v1::Pod> =
             kube::Api::namespaced(client, namespace);
 
-        // Build ephemeral container spec
-        let mut volumes = Vec::new();
+        // Ephemeral containers can only mount volumes already on the pod.
+        // The pod must have been created with modules injected (via mutating
+        // webhook or `kubectl cfgd inject` followed by rollout).
         let mut volume_mounts = Vec::new();
         let mut path_extensions = Vec::new();
 
-        for (name, version) in &parsed {
-            volumes.push(build_csi_volume(name, version));
+        for (name, _version) in &parsed {
             volume_mounts.push(build_volume_mount(name));
             path_extensions.push(format!("/cfgd-modules/{name}/bin"));
         }
@@ -299,7 +282,7 @@ fn cmd_inject(
             "template": {
                 "metadata": {
                     "annotations": {
-                        "cfgd.io/modules": annotation_value
+                        cfgd_core::MODULES_ANNOTATION: annotation_value
                     }
                 }
             }
@@ -415,15 +398,6 @@ mod tests {
     }
 
     #[test]
-    fn build_csi_volume_correct_structure() {
-        let vol = build_csi_volume("nettools", "1.0");
-        assert_eq!(vol["name"], "cfgd-module-nettools");
-        assert_eq!(vol["csi"]["driver"], "csi.cfgd.io");
-        assert_eq!(vol["csi"]["volumeAttributes"]["module"], "nettools");
-        assert_eq!(vol["csi"]["volumeAttributes"]["version"], "1.0");
-    }
-
-    #[test]
     fn build_volume_mount_correct_structure() {
         let mount = build_volume_mount("nettools");
         assert_eq!(mount["name"], "cfgd-module-nettools");
@@ -432,8 +406,8 @@ mod tests {
     }
 
     #[test]
-    fn build_csi_volume_sanitizes_name() {
-        let vol = build_csi_volume("my_Module", "1.0");
-        assert_eq!(vol["name"], "cfgd-module-my-module");
+    fn build_volume_mount_sanitizes_name() {
+        let mount = build_volume_mount("my_Module");
+        assert_eq!(mount["name"], "cfgd-module-my-module");
     }
 }

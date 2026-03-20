@@ -20,6 +20,8 @@ pub mod upgrade;
 
 /// The canonical API version string used in all cfgd YAML documents (local and CRD).
 pub const API_VERSION: &str = "cfgd.io/v1alpha1";
+pub const CSI_DRIVER_NAME: &str = "csi.cfgd.io";
+pub const MODULES_ANNOTATION: &str = "cfgd.io/modules";
 
 /// Returns the current UTC time as an ISO 8601 / RFC 3339 string.
 pub fn utc_now_iso8601() -> String {
@@ -459,6 +461,19 @@ pub fn validate_no_traversal(path: &std::path::Path) -> std::result::Result<(), 
 
 /// Escape a value for use in shell `export` statements.
 ///
+/// Sanitize a string for use as a Kubernetes object name (RFC 1123 DNS label).
+/// Lowercases, replaces underscores with hyphens, filters non-alphanumeric chars,
+/// and trims leading/trailing hyphens.
+pub fn sanitize_k8s_name(name: &str) -> String {
+    name.to_ascii_lowercase()
+        .replace('_', "-")
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || *c == '-')
+        .collect::<String>()
+        .trim_matches('-')
+        .to_string()
+}
+
 /// Uses single quotes for values containing shell metacharacters (`$`, backtick,
 /// `\`, `"`). Single quotes within the value are escaped via `'\''`.
 pub fn shell_escape_value(value: &str) -> String {
