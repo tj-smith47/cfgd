@@ -1,0 +1,167 @@
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: machineconfigs.cfgd.io
+spec:
+  group: cfgd.io
+  names:
+    categories:
+    - cfgd
+    kind: MachineConfig
+    plural: machineconfigs
+    shortNames:
+    - mc
+    singular: machineconfig
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.hostname
+      name: Hostname
+      type: string
+    - jsonPath: .spec.profile
+      name: Profile
+      type: string
+    - jsonPath: .status.conditions[?(@.type=="Reconciled")].status
+      name: Reconciled
+      type: string
+    - jsonPath: .status.conditions[?(@.type=="DriftDetected")].status
+      name: Drift
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: Auto-generated derived type for MachineConfigSpec via `CustomResource`
+        properties:
+          spec:
+            properties:
+              files:
+                default: []
+                items:
+                  properties:
+                    content:
+                      nullable: true
+                      type: string
+                    mode:
+                      default: '0644'
+                      type: string
+                    path:
+                      type: string
+                    source:
+                      nullable: true
+                      type: string
+                  required:
+                  - path
+                  type: object
+                  x-kubernetes-validations:
+                  - message: each file must have content or source
+                    rule: has(self.content) || has(self.source)
+                type: array
+                x-kubernetes-list-map-keys:
+                - path
+                x-kubernetes-list-type: map
+              hostname:
+                type: string
+              moduleRefs:
+                default: []
+                items:
+                  description: Reference to a module that should be installed on the machine.
+                  properties:
+                    name:
+                      type: string
+                    required:
+                      default: false
+                      type: boolean
+                  required:
+                  - name
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - name
+                x-kubernetes-list-type: map
+              packages:
+                default: []
+                items:
+                  description: Reference to a package with optional version pin.
+                  properties:
+                    name:
+                      type: string
+                    version:
+                      nullable: true
+                      type: string
+                  required:
+                  - name
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - name
+                x-kubernetes-list-type: map
+              profile:
+                type: string
+              systemSettings:
+                additionalProperties: true
+                default: {}
+                type: object
+            required:
+            - hostname
+            - profile
+            type: object
+            x-kubernetes-validations:
+            - message: hostname must not be empty
+              rule: self.hostname.size() > 0
+          status:
+            nullable: true
+            properties:
+              conditions:
+                default: []
+                items:
+                  properties:
+                    lastTransitionTime:
+                      type: string
+                    message:
+                      type: string
+                    observedGeneration:
+                      format: int64
+                      nullable: true
+                      type: integer
+                    reason:
+                      type: string
+                    status:
+                      type: string
+                    type:
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - type
+                x-kubernetes-list-type: map
+              lastReconciled:
+                nullable: true
+                type: string
+              observedGeneration:
+                format: int64
+                nullable: true
+                type: integer
+              packageVersions:
+                additionalProperties:
+                  type: string
+                default: {}
+                description: 'Reported installed versions keyed by package name (e.g. {"kubectl": "1.28.3"}).'
+                type: object
+            type: object
+        required:
+        - spec
+        title: MachineConfig
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

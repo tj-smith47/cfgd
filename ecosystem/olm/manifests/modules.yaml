@@ -1,0 +1,205 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: modules.cfgd.io
+spec:
+  group: cfgd.io
+  names:
+    categories:
+    - cfgd
+    kind: Module
+    plural: modules
+    shortNames:
+    - mod
+    singular: module
+  scope: Cluster
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.ociArtifact
+      name: Artifact
+      type: string
+    - jsonPath: .status.verified
+      name: Verified
+      type: boolean
+    - jsonPath: .status.availablePlatforms
+      name: Platforms
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: Auto-generated derived type for ModuleSpec via `CustomResource`
+        properties:
+          spec:
+            properties:
+              depends:
+                default: []
+                items:
+                  type: string
+                type: array
+                x-kubernetes-list-type: set
+              env:
+                default: []
+                items:
+                  description: An environment variable set by a Module.
+                  properties:
+                    append:
+                      default: false
+                      type: boolean
+                    name:
+                      type: string
+                    value:
+                      type: string
+                  required:
+                  - name
+                  - value
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - name
+                x-kubernetes-list-type: map
+              files:
+                default: []
+                items:
+                  description: A file managed by a Module.
+                  properties:
+                    source:
+                      type: string
+                    target:
+                      type: string
+                  required:
+                  - source
+                  - target
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - source
+                x-kubernetes-list-type: map
+              mountPolicy:
+                default: Always
+                description: 'Controls how the module is mounted in pods. `Always` (default): CSI volume + volumeMount on all declared containers + env vars. `Debug`: CSI volume only — no volumeMount or env on declared containers. Only accessible via ephemeral debug containers (`kubectl cfgd debug`).'
+                enum:
+                - Always
+                - Debug
+                type: string
+              ociArtifact:
+                nullable: true
+                type: string
+              packages:
+                default: []
+                items:
+                  description: An entry in a Module's package list with optional per-platform overrides.
+                  properties:
+                    name:
+                      type: string
+                    platforms:
+                      additionalProperties:
+                        type: string
+                      description: 'Per-platform package name overrides (e.g. {"brew": "gnu-sed", "apt": "sed"}).'
+                      type: object
+                  required:
+                  - name
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - name
+                x-kubernetes-list-type: map
+              scripts:
+                default: {}
+                description: Scripts that run during module lifecycle.
+                properties:
+                  postApply:
+                    nullable: true
+                    type: string
+                type: object
+              signature:
+                description: Signature configuration for a Module's OCI artifact.
+                nullable: true
+                properties:
+                  cosign:
+                    description: Cosign configuration for OCI artifact signature verification.
+                    nullable: true
+                    properties:
+                      certificateIdentity:
+                        description: Certificate identity pattern for keyless verification (regex).
+                        nullable: true
+                        type: string
+                      certificateOidcIssuer:
+                        description: Certificate OIDC issuer pattern for keyless verification (regex).
+                        nullable: true
+                        type: string
+                      keyless:
+                        default: false
+                        description: Enable keyless verification via Fulcio/Rekor (OIDC identity-based).
+                        type: boolean
+                      publicKey:
+                        description: PEM-encoded public key for static key verification.
+                        nullable: true
+                        type: string
+                    type: object
+                type: object
+            type: object
+          status:
+            nullable: true
+            properties:
+              attestations:
+                description: Attestation types found on the artifact (e.g. "slsaprovenance").
+                items:
+                  type: string
+                type: array
+              availablePlatforms:
+                default: []
+                items:
+                  type: string
+                type: array
+              conditions:
+                default: []
+                items:
+                  properties:
+                    lastTransitionTime:
+                      type: string
+                    message:
+                      type: string
+                    observedGeneration:
+                      format: int64
+                      nullable: true
+                      type: integer
+                    reason:
+                      type: string
+                    status:
+                      type: string
+                    type:
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - type
+                x-kubernetes-list-type: map
+              resolvedArtifact:
+                nullable: true
+                type: string
+              signatureDigest:
+                description: Digest of the cosign signature (if verified).
+                nullable: true
+                type: string
+              verified:
+                default: false
+                type: boolean
+            type: object
+        required:
+        - spec
+        title: Module
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

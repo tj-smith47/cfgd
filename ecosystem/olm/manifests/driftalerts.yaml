@@ -1,0 +1,131 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: driftalerts.cfgd.io
+spec:
+  group: cfgd.io
+  names:
+    categories:
+    - cfgd
+    kind: DriftAlert
+    plural: driftalerts
+    shortNames:
+    - da
+    singular: driftalert
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.deviceId
+      name: Device
+      type: string
+    - jsonPath: .spec.severity
+      name: Severity
+      type: string
+    - jsonPath: .status.conditions[?(@.type=="Resolved")].status
+      name: Resolved
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: Auto-generated derived type for DriftAlertSpec via `CustomResource`
+        properties:
+          spec:
+            properties:
+              deviceId:
+                type: string
+              driftDetails:
+                default: []
+                items:
+                  properties:
+                    actual:
+                      type: string
+                    expected:
+                      type: string
+                    field:
+                      type: string
+                  required:
+                  - actual
+                  - expected
+                  - field
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - field
+                x-kubernetes-list-type: map
+              machineConfigRef:
+                description: Typed reference to a MachineConfig resource.
+                properties:
+                  name:
+                    type: string
+                  namespace:
+                    nullable: true
+                    type: string
+                required:
+                - name
+                type: object
+              severity:
+                enum:
+                - Low
+                - Medium
+                - High
+                - Critical
+                type: string
+            required:
+            - deviceId
+            - machineConfigRef
+            - severity
+            type: object
+          status:
+            nullable: true
+            properties:
+              conditions:
+                default: []
+                items:
+                  properties:
+                    lastTransitionTime:
+                      type: string
+                    message:
+                      type: string
+                    observedGeneration:
+                      format: int64
+                      nullable: true
+                      type: integer
+                    reason:
+                      type: string
+                    status:
+                      type: string
+                    type:
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - type
+                x-kubernetes-list-type: map
+              detectedAt:
+                nullable: true
+                type: string
+              resolved:
+                default: false
+                type: boolean
+              resolvedAt:
+                nullable: true
+                type: string
+            type: object
+        required:
+        - spec
+        title: DriftAlert
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

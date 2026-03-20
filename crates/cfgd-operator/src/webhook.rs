@@ -561,6 +561,15 @@ fn build_injection_patches(
         let mount_path = format!("/cfgd-modules/{name}");
 
         // Add CSI volume
+        let mut vol_attrs = serde_json::json!({
+            "module": name,
+            "version": version
+        });
+        if let Some(ref oci_ref) = spec.oci_artifact {
+            vol_attrs["ociRef"] = serde_json::Value::String(oci_ref.clone());
+        } else {
+            warn!(module = name, "Module CRD has no ociArtifact — CSI driver will use fallback registry");
+        }
         patches.push(json_patch::PatchOperation::Add(json_patch::AddOperation {
             path: ptr("/spec/volumes/-"),
             value: serde_json::json!({
@@ -568,11 +577,7 @@ fn build_injection_patches(
                 "csi": {
                     "driver": cfgd_core::CSI_DRIVER_NAME,
                     "readOnly": true,
-                    "volumeAttributes": {
-                        "module": name,
-                        "version": version,
-                        "ociRef": spec.oci_artifact.as_deref().unwrap_or("")
-                    }
+                    "volumeAttributes": vol_attrs
                 }
             }),
         }));

@@ -13,8 +13,7 @@ metadata:
           "spec": {
             "hostname": "workstation-1",
             "profile": "default",
-            "moduleRefs": [{ "name": "nvim", "required": true }],
-            "packages": ["curl", "git"]
+            "moduleRefs": [{ "name": "nvim", "required": true }]
           }
         },
         {
@@ -22,9 +21,34 @@ metadata:
           "kind": "ConfigPolicy",
           "metadata": { "name": "baseline", "namespace": "default" },
           "spec": {
-            "name": "security-baseline",
-            "requiredModules": ["security-tools"],
-            "packages": ["fail2ban"]
+            "requiredModules": [{ "name": "security-tools", "required": true }]
+          }
+        },
+        {
+          "apiVersion": "cfgd.io/v1alpha1",
+          "kind": "ClusterConfigPolicy",
+          "metadata": { "name": "org-baseline" },
+          "spec": {
+            "requiredModules": [{ "name": "compliance-tools", "required": true }]
+          }
+        },
+        {
+          "apiVersion": "cfgd.io/v1alpha1",
+          "kind": "Module",
+          "metadata": { "name": "nettools" },
+          "spec": {
+            "packages": [{ "name": "curl" }, { "name": "jq" }],
+            "mountPolicy": "Always"
+          }
+        },
+        {
+          "apiVersion": "cfgd.io/v1alpha1",
+          "kind": "DriftAlert",
+          "metadata": { "name": "example-drift", "namespace": "default" },
+          "spec": {
+            "machineConfigRef": { "name": "example", "namespace": "default" },
+            "deviceId": "workstation-1",
+            "severity": "warning"
           }
         }
       ]
@@ -48,17 +72,13 @@ spec:
 
     ### Features
 
-    - **MachineConfig CRD** — declare desired machine state (packages, files, env, modules)
-    - **ConfigPolicy CRD** — enforce organization-wide configuration baselines
+    - **MachineConfig CRD** — declare desired machine state
+    - **ConfigPolicy CRD** — enforce namespace-scoped configuration baselines
+    - **ClusterConfigPolicy CRD** — enforce cluster-wide configuration mandates
     - **DriftAlert CRD** — track and alert on configuration drift
+    - **Module CRD** — reusable configuration bundles with OCI distribution
+    - **Pod module injection** — mutating webhook injects module volumes into pods
     - **Device Gateway** — optional enrollment and fleet management endpoint
-    - **Module system** — reusable configuration bundles with dependency resolution
-
-    ### Getting Started
-
-    1. Install the operator via OLM or Helm
-    2. Create a MachineConfig resource for your workstation
-    3. The operator reconciles drift and reports status via conditions
   maturity: alpha
   version: 0.1.0
   replaces: ""
@@ -69,7 +89,8 @@ spec:
     - dotfiles
     - gitops
     - machine-config
-    - workstation
+    - modules
+    - kubernetes
 
   maintainers:
     - name: cfgd maintainers
@@ -85,7 +106,7 @@ spec:
       url: https://github.com/tj-smith47/cfgd
 
   icon:
-    - base64data: ""
+    - base64data: "iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAAABHNCSVQICAgIfAhkiAAAADlJREFUOI1jYBgFgwkwMjAw/KcXByM04H86ADYY0dOAmhqGuIG+BtDFBcjAiJ4GYAMMDAz/0dkjHQAALxMHEXfNfsoAAAAASUVORK5CYII="
       mediatype: image/png
 
   installModes:
@@ -117,11 +138,34 @@ spec:
                 containers:
                   - name: operator
                     image: ghcr.io/tj-smith47/cfgd-operator:v0.1.0
+                    env:
+                      - name: WEBHOOK_PORT
+                        value: "9443"
+                      - name: WEBHOOK_CERT_DIR
+                        value: /tmp/k8s-webhook-server/serving-certs
+                      - name: HEALTH_PORT
+                        value: "8081"
+                      - name: METRICS_PORT
+                        value: "8443"
+                      - name: LEADER_ELECTION_ENABLED
+                        value: "true"
+                      - name: POD_NAMESPACE
+                        valueFrom:
+                          fieldRef:
+                            fieldPath: metadata.namespace
+                      - name: RUST_LOG
+                        value: "info"
                     ports:
-                      - containerPort: 8443
+                      - containerPort: 9443
                         name: webhook
                       - containerPort: 8081
                         name: health
+                      - containerPort: 8443
+                        name: metrics
+                    volumeMounts:
+                      - name: webhook-certs
+                        mountPath: /tmp/k8s-webhook-server/serving-certs
+                        readOnly: true
                     readinessProbe:
                       httpGet:
                         path: /readyz
@@ -144,21 +188,115 @@ spec:
                       readOnlyRootFilesystem: true
                       capabilities:
                         drop: [ALL]
+                volumes:
+                  - name: webhook-certs
+                    secret:
+                      secretName: cfgd-operator-webhook-tls
       clusterPermissions:
         - serviceAccountName: cfgd-operator
           rules:
             - apiGroups: ["cfgd.io"]
-              resources: ["machineconfigs", "configpolicies", "driftalerts", "modules"]
+              resources: ["machineconfigs", "configpolicies", "clusterconfigpolicies", "driftalerts", "modules"]
               verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
             - apiGroups: ["cfgd.io"]
-              resources: ["machineconfigs/status", "configpolicies/status", "driftalerts/status", "modules/status"]
+              resources: ["machineconfigs/status", "configpolicies/status", "clusterconfigpolicies/status", "driftalerts/status", "modules/status"]
               verbs: ["get", "update", "patch"]
             - apiGroups: [""]
               resources: ["events"]
               verbs: ["create", "patch"]
+            - apiGroups: [""]
+              resources: ["namespaces"]
+              verbs: ["get", "list"]
+            - apiGroups: [""]
+              resources: ["pods"]
+              verbs: ["get", "list"]
             - apiGroups: ["coordination.k8s.io"]
               resources: ["leases"]
               verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+            - apiGroups: ["admissionregistration.k8s.io"]
+              resources: ["validatingwebhookconfigurations", "mutatingwebhookconfigurations"]
+              verbs: ["get", "list", "watch"]
+
+  webhookdefinitions:
+    - type: ValidatingAdmissionWebhook
+      admissionReviewVersions: ["v1"]
+      containerPort: 9443
+      targetPort: 9443
+      deploymentName: cfgd-operator
+      failurePolicy: Fail
+      sideEffects: None
+      rules:
+        - apiGroups: ["cfgd.io"]
+          apiVersions: ["v1alpha1"]
+          operations: ["CREATE", "UPDATE"]
+          resources: ["machineconfigs"]
+      webhookPath: /validate-machineconfig
+    - type: ValidatingAdmissionWebhook
+      admissionReviewVersions: ["v1"]
+      containerPort: 9443
+      targetPort: 9443
+      deploymentName: cfgd-operator
+      failurePolicy: Fail
+      sideEffects: None
+      rules:
+        - apiGroups: ["cfgd.io"]
+          apiVersions: ["v1alpha1"]
+          operations: ["CREATE", "UPDATE"]
+          resources: ["configpolicies"]
+      webhookPath: /validate-configpolicy
+    - type: ValidatingAdmissionWebhook
+      admissionReviewVersions: ["v1"]
+      containerPort: 9443
+      targetPort: 9443
+      deploymentName: cfgd-operator
+      failurePolicy: Fail
+      sideEffects: None
+      rules:
+        - apiGroups: ["cfgd.io"]
+          apiVersions: ["v1alpha1"]
+          operations: ["CREATE", "UPDATE"]
+          resources: ["clusterconfigpolicies"]
+      webhookPath: /validate-clusterconfigpolicy
+    - type: ValidatingAdmissionWebhook
+      admissionReviewVersions: ["v1"]
+      containerPort: 9443
+      targetPort: 9443
+      deploymentName: cfgd-operator
+      failurePolicy: Fail
+      sideEffects: None
+      rules:
+        - apiGroups: ["cfgd.io"]
+          apiVersions: ["v1alpha1"]
+          operations: ["CREATE", "UPDATE"]
+          resources: ["driftalerts"]
+      webhookPath: /validate-driftalert
+    - type: ValidatingAdmissionWebhook
+      admissionReviewVersions: ["v1"]
+      containerPort: 9443
+      targetPort: 9443
+      deploymentName: cfgd-operator
+      failurePolicy: Fail
+      sideEffects: None
+      rules:
+        - apiGroups: ["cfgd.io"]
+          apiVersions: ["v1alpha1"]
+          operations: ["CREATE", "UPDATE"]
+          resources: ["modules"]
+      webhookPath: /validate-module
+    - type: MutatingAdmissionWebhook
+      admissionReviewVersions: ["v1"]
+      containerPort: 9443
+      targetPort: 9443
+      deploymentName: cfgd-operator
+      failurePolicy: Ignore
+      sideEffects: None
+      reinvocationPolicy: IfNeeded
+      rules:
+        - apiGroups: [""]
+          apiVersions: ["v1"]
+          operations: ["CREATE"]
+          resources: ["pods"]
+      webhookPath: /mutate-pods
 
   customresourcedefinitions:
     owned:
@@ -171,9 +309,19 @@ spec:
         version: v1alpha1
         kind: ConfigPolicy
         displayName: Config Policy
-        description: Enforces configuration baselines across machines
+        description: Enforces namespace-scoped configuration baselines
+      - name: clusterconfigpolicies.cfgd.io
+        version: v1alpha1
+        kind: ClusterConfigPolicy
+        displayName: Cluster Config Policy
+        description: Enforces cluster-wide configuration mandates
       - name: driftalerts.cfgd.io
         version: v1alpha1
         kind: DriftAlert
         displayName: Drift Alert
         description: Tracks configuration drift events
+      - name: modules.cfgd.io
+        version: v1alpha1
+        kind: Module
+        displayName: Module
+        description: Reusable configuration module with OCI distribution
