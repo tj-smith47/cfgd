@@ -11,6 +11,12 @@ mod secrets;
 mod system;
 
 fn main() -> anyhow::Result<()> {
+    // kubectl plugin detection — must be before normal CLI parsing
+    let argv0 = std::env::args().next().unwrap_or_default();
+    if argv0.ends_with("kubectl-cfgd") || argv0.ends_with("kubectl-cfgd.exe") {
+        return cli::plugin::plugin_main();
+    }
+
     // Expand aliases before clap parsing
     let raw_args: Vec<String> = std::env::args().collect();
     let expanded = cli::expand_aliases(raw_args);
