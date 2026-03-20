@@ -1061,6 +1061,15 @@ pub enum ModuleKeysCommand {
     },
     /// List known signing keys
     List,
+    /// Rotate signing keys: generate a new pair and re-sign specified artifacts
+    Rotate {
+        /// Directory containing the current cosign.key to replace
+        #[arg(long, short)]
+        dir: Option<String>,
+        /// OCI artifact references to re-sign with the new key
+        #[arg(long)]
+        artifacts: Vec<String>,
+    },
 }
 
 #[derive(Clone, clap::ValueEnum)]
@@ -1244,6 +1253,9 @@ pub fn execute(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
                     module::cmd_module_keys_generate(printer, output.as_deref())
                 }
                 ModuleKeysCommand::List => module::cmd_module_keys_list(printer),
+                ModuleKeysCommand::Rotate { dir, artifacts } => {
+                    module::cmd_module_keys_rotate(printer, dir.as_deref(), artifacts)
+                }
             },
         },
         Command::Sync => cmd_sync(cli, printer),

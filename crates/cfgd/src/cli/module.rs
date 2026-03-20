@@ -2128,8 +2128,8 @@ pub(super) fn cmd_module_push(
         let repo = detect_git_remote().unwrap_or_else(|| "unknown".to_string());
         let commit = detect_git_head().unwrap_or_else(|| "unknown".to_string());
 
-        let provenance =
-            cfgd_core::oci::generate_slsa_provenance(artifact, &digest, &repo, &commit);
+        let provenance = cfgd_core::oci::generate_slsa_provenance(artifact, &digest, &repo, &commit)
+            .map_err(|e| anyhow::anyhow!("{e}"))?;
         let tmp = tempfile::NamedTempFile::new()?;
         std::fs::write(tmp.path(), &provenance)?;
         cfgd_core::oci::attach_attestation(
@@ -2249,16 +2249,22 @@ pub(super) fn cmd_module_pull(
     printer.key_value("Artifact", artifact_ref);
     printer.key_value("Output", output);
 
+    let verify_opts = cfgd_core::oci::VerifyOptions {
+        key,
+        identity: None,
+        issuer: None,
+    };
+
     // Verify signature if requested (uses cosign, not the old tag-check)
     if require_signature {
-        cfgd_core::oci::verify_signature(artifact_ref, key)
+        cfgd_core::oci::verify_signature(artifact_ref, &verify_opts)
             .map_err(|e| anyhow::anyhow!("{e}"))?;
         printer.success("Signature verified");
     }
 
     // Verify attestation if requested
     if verify_attestation {
-        cfgd_core::oci::verify_attestation(artifact_ref, "slsaprovenance", key)
+        cfgd_core::oci::verify_attestation(artifact_ref, "slsaprovenance", &verify_opts)
             .map_err(|e| anyhow::anyhow!("{e}"))?;
         printer.success("SLSA provenance attestation verified");
     }
@@ -2311,7 +2317,7 @@ pub(super) fn cmd_module_build(
         printer.key_value("Base image", img);
     }
 
-    let default_platform = format!("{}/{}", std::env::consts::OS, std::env::consts::ARCH);
+    let default_platform = cfgd_core::oci::current_platform();
     let targets: Vec<&str> = target
         .map(|t| t.split(',').collect())
         .unwrap_or_else(|| vec![default_platform.as_str()]);
@@ -2431,6 +2437,82 @@ pub(super) fn cmd_module_keys_list(printer: &Printer) -> anyhow::Result<()> {
         printer.info("Generate with: cfgd module keys generate");
     }
 
+    Ok(())
+}
+
+pub(super) fn cmd_module_keys_rotate(
+    printer: &Printer,
+    dir: Option<&str>,
+    artifacts: &[String],
+) -> anyhow::Result<()> {
+    if !cfgd_core::command_available("cosign") {
+        anyhow::bail!(
+            "cosign not found — install it from https://docs.sigstore.dev/cosign/installation/"
+        );
+    }
+
+    let key_dir = dir.unwrap_or(".");
+    let old_key = Path::new(key_dir).join("cosign.key");
+    let old_pub = Path::new(key_dir).join("cosign.pub");
+
+    if !old_key.exists() {
+        anyhow::bail!(
+            "No existing cosign.key found in {} — generate one first with: cfgd module keys generate",
+            key_dir
+        );
+    }
+
+    printer.header("Rotate Cosign Key Pair");
+
+    // Back up old keys
+    let backup_suffix = cfgd_core::utc_now_iso8601().replace([':', '-', 'T', 'Z'], "");
+    let backup_key = Path::new(key_dir).join(format!("cosign.key.{backup_suffix}"));
+    let backup_pub = Path::new(key_dir).join(format!("cosign.pub.{backup_suffix}"));
+
+    std::fs::rename(&old_key, &backup_key)?;
+    printer.info(&format!("Backed up old private key to {}", backup_key.display()));
+    if old_pub.exists() {
+        std::fs::rename(&old_pub, &backup_pub)?;
+        printer.info(&format!("Backed up old public key to {}", backup_pub.display()));
+    }
+
+    // Generate new key pair
+    let status = std::process::Command::new("cosign")
+        .args(["generate-key-pair"])
+        .current_dir(key_dir)
+        .stdin(std::process::Stdio::inherit())
+        .stdout(std::process::Stdio::inherit())
+        .stderr(std::process::Stdio::inherit())
+        .status()
+        .map_err(|e| anyhow::anyhow!("failed to run cosign: {e}"))?;
+
+    if !status.success() {
+        // Restore old keys on failure
+        if backup_key.exists() {
+            let _ = std::fs::rename(&backup_key, &old_key);
+        }
+        if backup_pub.exists() {
+            let _ = std::fs::rename(&backup_pub, &old_pub);
+        }
+        anyhow::bail!("cosign generate-key-pair failed — old keys restored");
+    }
+
+    printer.success("Generated new key pair");
+
+    // Re-sign artifacts with the new key
+    let new_key_path = Path::new(key_dir).join("cosign.key");
+    for artifact in artifacts {
+        printer.info(&format!("Re-signing {artifact}..."));
+        cfgd_core::oci::sign_artifact(artifact, Some(&new_key_path.display().to_string()))
+            .map_err(|e| anyhow::anyhow!("{e}"))?;
+        printer.success(&format!("Re-signed {artifact}"));
+    }
+
+    if artifacts.is_empty() {
+        printer.info("No artifacts specified — re-sign manually with: cfgd module push --sign --key cosign.key ...");
+    }
+
+    printer.success("Key rotation complete");
     Ok(())
 }
 

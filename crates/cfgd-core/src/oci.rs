@@ -718,17 +718,19 @@ pub fn push_module(
     let oci_ref = OciReference::parse(artifact_ref)?;
     let auth = RegistryAuth::resolve(&oci_ref.registry);
     let agent = ureq::Agent::new();
-    push_module_inner(&agent, dir, &oci_ref, auth.as_ref(), platform)
+    let (digest, _size) = push_module_inner(&agent, dir, &oci_ref, auth.as_ref(), platform)?;
+    Ok(digest)
 }
 
 /// Inner push logic shared by single-platform and multi-platform push.
+/// Returns (manifest_digest, manifest_size_bytes).
 fn push_module_inner(
     agent: &ureq::Agent,
     dir: &Path,
     oci_ref: &OciReference,
     auth: Option<&RegistryAuth>,
     platform: Option<&str>,
-) -> Result<String, OciError> {
+) -> Result<(String, u64), OciError> {
     // Read module.yaml
     let module_yaml_path = dir.join("module.yaml");
     if !module_yaml_path.exists() {
@@ -749,7 +751,7 @@ fn push_module_inner(
     // Build platform annotation
     let platform_str = platform
         .map(String::from)
-        .unwrap_or_else(|| format!("{}/{}", std::env::consts::OS, std::env::consts::ARCH));
+        .unwrap_or_else(current_platform);
 
     // Upload config blob
     let config_digest = upload_blob(agent, oci_ref, auth, &config_blob, MEDIA_TYPE_MODULE_CONFIG)?;
@@ -806,6 +808,7 @@ fn push_module_inner(
         message: format!("{e}"),
     })?;
 
+    let manifest_size = manifest_json.len() as u64;
     let manifest_digest = sha256_digest(&manifest_json);
     tracing::info!(
         reference = %oci_ref,
@@ -813,7 +816,7 @@ fn push_module_inner(
         "module pushed"
     );
 
-    Ok(manifest_digest)
+    Ok((manifest_digest, manifest_size))
 }
 
 // ---------------------------------------------------------------------------
@@ -843,6 +846,27 @@ struct OciPlatformManifest {
 struct OciPlatform {
     os: String,
     architecture: String,
+}
+
+/// Map Rust arch names to OCI architecture names.
+pub fn rust_arch_to_oci(arch: &str) -> &str {
+    match arch {
+        "x86_64" => "amd64",
+        "aarch64" => "arm64",
+        "arm" => "arm",
+        "s390x" => "s390x",
+        "powerpc64" => "ppc64le",
+        other => other,
+    }
+}
+
+/// Return the current platform in OCI format (os/arch).
+pub fn current_platform() -> String {
+    format!(
+        "{}/{}",
+        std::env::consts::OS,
+        rust_arch_to_oci(std::env::consts::ARCH)
+    )
 }
 
 /// Parse "os/arch" (e.g. "linux/amd64") into (os, arch).
@@ -885,31 +909,8 @@ pub fn push_module_multiplatform(
             reference: ReferenceKind::Tag(platform_tag),
         };
 
-        let digest =
+        let (digest, size) =
             push_module_inner(&agent, dir, &platform_ref, auth.as_ref(), Some(platform))?;
-
-        // Get manifest size for the index entry
-        let manifest_url = format!(
-            "{}/{}/manifests/{}",
-            oci_ref.api_base(),
-            oci_ref.repository,
-            &digest,
-        );
-        let size = authenticated_request(
-            &agent,
-            "HEAD",
-            &manifest_url,
-            auth.as_ref(),
-            Some(MEDIA_TYPE_OCI_MANIFEST),
-            None,
-            None,
-        )
-        .ok()
-        .and_then(|r| {
-            r.header("Content-Length")
-                .and_then(|s| s.parse::<u64>().ok())
-        })
-        .unwrap_or(0);
 
         platform_manifests.push(OciPlatformManifest {
             media_type: MEDIA_TYPE_OCI_MANIFEST.to_string(),
@@ -1024,14 +1025,13 @@ pub fn build_module(
     let base = base_image.unwrap_or("ubuntu:22.04");
     let dockerfile_content = build_dockerfile(base, &packages);
 
-    // Write Dockerfile to temp build context
+    // Copy module directory into temp build context, then write Dockerfile
+    // (write after copy so a user's Dockerfile doesn't overwrite the generated one)
     let build_dir = tempfile::tempdir().map_err(|e| OciError::BuildError {
         message: format!("cannot create temp dir: {e}"),
     })?;
-    std::fs::write(build_dir.path().join("Dockerfile"), &dockerfile_content)?;
-
-    // Copy module directory contents into build context
     crate::copy_dir_recursive(dir, build_dir.path())?;
+    std::fs::write(build_dir.path().join("Dockerfile"), &dockerfile_content)?;
 
     // Build the container image
     let tag = format!(
@@ -1039,7 +1039,11 @@ pub fn build_module(
         module_doc.metadata.name,
         std::process::id(),
     );
-    let container_name = format!("cfgd-build-{}", std::process::id());
+    let container_name = format!(
+        "cfgd-build-{}-{}",
+        std::process::id(),
+        crate::utc_now_iso8601().replace([':', '-', 'T', 'Z'], ""),
+    );
 
     let mut build_cmd = std::process::Command::new(runtime);
     build_cmd.arg("build").arg("-t").arg(&tag);
@@ -1161,11 +1165,46 @@ pub fn sign_artifact(artifact_ref: &str, key_path: Option<&str>) -> Result<(), O
     Ok(())
 }
 
+/// Options for cosign verification (signature or attestation).
+pub struct VerifyOptions<'a> {
+    /// Path to cosign public key for static key verification.
+    pub key: Option<&'a str>,
+    /// Certificate identity regexp for keyless verification.
+    pub identity: Option<&'a str>,
+    /// Certificate OIDC issuer regexp for keyless verification.
+    pub issuer: Option<&'a str>,
+}
+
+/// Validate that keyless verification has at least one identity constraint.
+fn validate_verify_options(opts: &VerifyOptions<'_>) -> Result<(), OciError> {
+    if opts.key.is_none() && opts.identity.is_none() && opts.issuer.is_none() {
+        return Err(OciError::VerificationFailed {
+            reference: String::new(),
+            message: "keyless verification requires identity or issuer constraint (use --key, or provide VerifyOptions.identity/issuer)".to_string(),
+        });
+    }
+    Ok(())
+}
+
+/// Apply verification args to a cosign command.
+fn apply_verify_args(cmd: &mut std::process::Command, opts: &VerifyOptions<'_>) {
+    if let Some(key) = opts.key {
+        cmd.arg("--key").arg(key);
+    } else {
+        let identity = opts.identity.unwrap_or(".*");
+        let issuer = opts.issuer.unwrap_or(".*");
+        cmd.arg("--certificate-identity-regexp").arg(identity);
+        cmd.arg("--certificate-oidc-issuer-regexp").arg(issuer);
+    }
+}
+
 /// Verify the cosign signature on an OCI artifact.
 ///
-/// If `key_path` is Some, uses `cosign verify --key <path>`.
-/// If `key_path` is None, uses keyless verification (Fulcio/Rekor).
-pub fn verify_signature(artifact_ref: &str, key_path: Option<&str>) -> Result<(), OciError> {
+/// Uses `cosign verify --key <path>` for static key, or keyless verification
+/// with certificate identity/issuer constraints from `VerifyOptions`.
+pub fn verify_signature(artifact_ref: &str, opts: &VerifyOptions<'_>) -> Result<(), OciError> {
+    validate_verify_options(opts)?;
+
     if !crate::command_available("cosign") {
         return Err(OciError::ToolNotFound {
             tool: "cosign".to_string(),
@@ -1174,14 +1213,7 @@ pub fn verify_signature(artifact_ref: &str, key_path: Option<&str>) -> Result<()
 
     let mut cmd = std::process::Command::new("cosign");
     cmd.arg("verify");
-
-    if let Some(key) = key_path {
-        cmd.arg("--key").arg(key);
-    } else {
-        cmd.arg("--certificate-identity-regexp").arg(".*");
-        cmd.arg("--certificate-oidc-issuer-regexp").arg(".*");
-    }
-
+    apply_verify_args(&mut cmd, opts);
     cmd.arg(artifact_ref);
 
     let output = cmd.output().map_err(|e| OciError::VerificationFailed {
@@ -1211,7 +1243,7 @@ pub fn generate_slsa_provenance(
     digest: &str,
     source_repo: &str,
     source_commit: &str,
-) -> String {
+) -> Result<String, OciError> {
     let now = crate::utc_now_iso8601();
     serde_json::to_string_pretty(&serde_json::json!({
         "_type": "https://in-toto.io/Statement/v1",
@@ -1243,7 +1275,9 @@ pub fn generate_slsa_provenance(
             }
         }
     }))
-    .unwrap_or_default()
+    .map_err(|e| OciError::AttestationError {
+        message: format!("failed to serialize SLSA provenance: {e}"),
+    })
 }
 
 /// Attach an in-toto attestation to an OCI artifact using cosign.
@@ -1292,8 +1326,10 @@ pub fn attach_attestation(
 pub fn verify_attestation(
     artifact_ref: &str,
     predicate_type: &str,
-    key_path: Option<&str>,
+    opts: &VerifyOptions<'_>,
 ) -> Result<(), OciError> {
+    validate_verify_options(opts)?;
+
     if !crate::command_available("cosign") {
         return Err(OciError::ToolNotFound {
             tool: "cosign".to_string(),
@@ -1302,14 +1338,7 @@ pub fn verify_attestation(
 
     let mut cmd = std::process::Command::new("cosign");
     cmd.arg("verify-attestation");
-
-    if let Some(key) = key_path {
-        cmd.arg("--key").arg(key);
-    } else {
-        cmd.arg("--certificate-identity-regexp").arg(".*");
-        cmd.arg("--certificate-oidc-issuer-regexp").arg(".*");
-    }
-
+    apply_verify_args(&mut cmd, opts);
     cmd.arg("--type").arg(predicate_type).arg(artifact_ref);
 
     let output = cmd.output().map_err(|e| OciError::AttestationError {
@@ -1961,11 +1990,23 @@ mod tests {
     }
 
     #[test]
+    fn verify_signature_rejects_keyless_without_identity() {
+        let result = verify_signature(
+            "ghcr.io/test/mod:v1",
+            &VerifyOptions { key: None, identity: None, issuer: None },
+        );
+        assert!(matches!(result, Err(OciError::VerificationFailed { .. })));
+    }
+
+    #[test]
     fn verify_signature_rejects_when_cosign_missing() {
         if crate::command_available("cosign") {
             return;
         }
-        let result = verify_signature("ghcr.io/test/mod:v1", None);
+        let result = verify_signature(
+            "ghcr.io/test/mod:v1",
+            &VerifyOptions { key: Some("cosign.pub"), identity: None, issuer: None },
+        );
         assert!(matches!(result, Err(OciError::ToolNotFound { .. })));
     }
 
@@ -1981,11 +2022,25 @@ mod tests {
     }
 
     #[test]
+    fn verify_attestation_rejects_keyless_without_identity() {
+        let result = verify_attestation(
+            "ghcr.io/test/mod:v1",
+            "slsaprovenance",
+            &VerifyOptions { key: None, identity: None, issuer: None },
+        );
+        assert!(matches!(result, Err(OciError::VerificationFailed { .. })));
+    }
+
+    #[test]
     fn verify_attestation_rejects_when_cosign_missing() {
         if crate::command_available("cosign") {
             return;
         }
-        let result = verify_attestation("ghcr.io/test/mod:v1", "slsaprovenance", None);
+        let result = verify_attestation(
+            "ghcr.io/test/mod:v1",
+            "slsaprovenance",
+            &VerifyOptions { key: Some("cosign.pub"), identity: None, issuer: None },
+        );
         assert!(matches!(result, Err(OciError::ToolNotFound { .. })));
     }
 
@@ -1996,7 +2051,8 @@ mod tests {
             "sha256:abc123",
             "https://github.com/myorg/myrepo",
             "abc123def",
-        );
+        )
+        .unwrap();
         let parsed: serde_json::Value = serde_json::from_str(&prov).unwrap();
         assert_eq!(parsed["predicateType"], "https://slsa.dev/provenance/v1");
         assert_eq!(parsed["subject"][0]["name"], "ghcr.io/test/mod:v1");
