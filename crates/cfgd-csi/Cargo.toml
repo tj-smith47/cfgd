@@ -1,5 +1,6 @@
 [package]
 name = "cfgd-csi"
+description = "CSI Node plugin for cfgd module injection into Kubernetes pods"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -22,10 +23,12 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 prometheus-client = "0.22"
 sha2 = "0.10"
 thiserror = "2"
-nix = { version = "0.29", features = ["mount", "fs"] }
 filetime = "0.2"
 tokio-stream = { version = "0.1", features = ["net"] }
 hyper-util = { version = "0.1", features = ["tokio"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+nix = { version = "0.29", features = ["mount", "fs"] }
 
 [build-dependencies]
 tonic-build = "0.13"
