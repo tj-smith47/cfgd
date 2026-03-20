@@ -19,4 +19,7 @@ spec:
           kubectl get crd driftalerts.cfgd.io || exit 1
           kubectl get crd clusterconfigpolicies.cfgd.io || exit 1
           echo "All CRDs established"
+          echo "Checking operator..."
+          kubectl get pods -n {{ .Release.Namespace }} -l app.kubernetes.io/name={{ include "cfgd.name" . }} | grep Running || exit 1
+          echo "Operator running!"
   restartPolicy: Never

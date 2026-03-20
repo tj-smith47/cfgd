@@ -15,6 +15,9 @@ use kube::Client;
 use tokio::sync::Mutex;
 use uuid::Uuid;
 
+static OTEL_PROVIDER: std::sync::OnceLock<opentelemetry_sdk::trace::SdkTracerProvider> =
+    std::sync::OnceLock::new();
+
 use crate::crds::{ClusterConfigPolicy, ConfigPolicy, DriftAlert, MachineConfig};
 use crate::gateway::GatewayConfig;
 
@@ -131,6 +134,11 @@ async fn main() -> Result<()> {
         _ = shutdown_signal() => {
             tracing::info!("Draining in-flight reconciliations (2s grace)...");
             tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+            if let Some(provider) = OTEL_PROVIDER.get()
+                && let Err(e) = provider.shutdown()
+            {
+                tracing::warn!(error = %e, "OpenTelemetry tracer provider shutdown failed");
+            }
             tracing::info!("Shutdown complete");
         },
     }
@@ -241,7 +249,11 @@ fn init_otel_tracer() -> Result<opentelemetry_sdk::trace::SdkTracer, Box<dyn std
         .build();
 
     let tracer = provider.tracer("cfgd-operator");
-    opentelemetry::global::set_tracer_provider(provider);
+    opentelemetry::global::set_tracer_provider(provider.clone());
+    opentelemetry::global::set_text_map_propagator(
+        opentelemetry_sdk::propagation::TraceContextPropagator::new(),
+    );
+    let _ = OTEL_PROVIDER.set(provider);
 
     Ok(tracer)
 }

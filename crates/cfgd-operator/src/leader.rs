@@ -8,6 +8,7 @@ use kube::api::{Api, Patch, PatchParams, PostParams};
 
 use crate::errors::OperatorError;
 
+const FIELD_MANAGER: &str = "cfgd-operator";
 const LEASE_NAME: &str = "cfgd-operator-leader";
 const LEASE_DURATION_SECS: i32 = 15;
 const RENEW_DEADLINE_SECS: u64 = 10;
@@ -76,7 +77,7 @@ impl LeaderElection {
                     leases
                         .patch(
                             LEASE_NAME,
-                            &PatchParams::apply("cfgd-operator"),
+                            &PatchParams::apply(FIELD_MANAGER),
                             &Patch::Merge(&patch),
                         )
                         .await?;
