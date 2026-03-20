@@ -3,8 +3,6 @@ apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
 metadata:
   name: machineconfigs.cfgd.io
-  labels:
-    {{- include "cfgd.labels" . | nindent 4 }}
 spec:
   group: cfgd.io
   names:
@@ -62,6 +60,9 @@ spec:
                   - message: each file must have content or source
                     rule: has(self.content) || has(self.source)
                 type: array
+                x-kubernetes-list-map-keys:
+                - path
+                x-kubernetes-list-type: map
               hostname:
                 type: string
               moduleRefs:
@@ -78,6 +79,9 @@ spec:
                   - name
                   type: object
                 type: array
+                x-kubernetes-list-map-keys:
+                - name
+                x-kubernetes-list-type: map
               packages:
                 default: []
                 items:
@@ -92,6 +96,9 @@ spec:
                   - name
                   type: object
                 type: array
+                x-kubernetes-list-map-keys:
+                - name
+                x-kubernetes-list-type: map
               profile:
                 type: string
               systemSettings:
@@ -134,6 +141,9 @@ spec:
                   - type
                   type: object
                 type: array
+                x-kubernetes-list-map-keys:
+                - type
+                x-kubernetes-list-type: map
               lastReconciled:
                 nullable: true
                 type: string

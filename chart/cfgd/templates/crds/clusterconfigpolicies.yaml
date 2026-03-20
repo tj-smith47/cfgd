@@ -3,8 +3,6 @@ apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
 metadata:
   name: clusterconfigpolicies.cfgd.io
-  labels:
-    {{- include "cfgd.labels" . | nindent 4 }}
 spec:
   group: cfgd.io
   names:
@@ -24,6 +22,9 @@ spec:
     - jsonPath: .status.nonCompliantCount
       name: NonCompliant
       type: integer
+    - jsonPath: .status.conditions[?(@.type=="Enforced")].status
+      name: Enforced
+      type: string
     - jsonPath: .metadata.creationTimestamp
       name: Age
       type: date
@@ -59,6 +60,9 @@ spec:
                       - operator
                       type: object
                     type: array
+                    x-kubernetes-list-map-keys:
+                    - key
+                    x-kubernetes-list-type: map
                   matchLabels:
                     additionalProperties:
                       type: string
@@ -84,6 +88,9 @@ spec:
                   - name
                   type: object
                 type: array
+                x-kubernetes-list-map-keys:
+                - name
+                x-kubernetes-list-type: map
               requiredModules:
                 default: []
                 items:
@@ -98,6 +105,9 @@ spec:
                   - name
                   type: object
                 type: array
+                x-kubernetes-list-map-keys:
+                - name
+                x-kubernetes-list-type: map
               security:
                 default:
                   allowUnsigned: false
@@ -111,6 +121,7 @@ spec:
                     items:
                       type: string
                     type: array
+                    x-kubernetes-list-type: set
                 type: object
               settings:
                 additionalProperties:
@@ -151,6 +162,9 @@ spec:
                   - type
                   type: object
                 type: array
+                x-kubernetes-list-map-keys:
+                - type
+                x-kubernetes-list-type: map
               nonCompliantCount:
                 format: uint32
                 minimum: 0.0
