@@ -16,4 +16,7 @@ pub enum OperatorError {
 
     #[error("Health server error: {0}")]
     Health(String),
+
+    #[error("Leader election error: {0}")]
+    Leader(String),
 }

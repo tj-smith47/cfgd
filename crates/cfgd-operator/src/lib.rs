@@ -3,4 +3,5 @@ pub mod crds;
 pub mod errors;
 pub mod gateway;
 pub mod health;
+pub mod leader;
 pub mod webhook;

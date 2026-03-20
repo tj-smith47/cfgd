@@ -3,6 +3,7 @@ mod crds;
 mod errors;
 mod gateway;
 mod health;
+mod leader;
 mod webhook;
 
 use std::path::Path;
@@ -10,6 +11,7 @@ use std::path::Path;
 use anyhow::Result;
 use kube::Client;
 use tracing_subscriber::EnvFilter;
+use uuid::Uuid;
 
 use crate::crds::{ConfigPolicy, DriftAlert, MachineConfig};
 use crate::gateway::GatewayConfig;
@@ -67,8 +69,39 @@ async fn main() -> Result<()> {
         );
     }
 
-    health_state.set_ready();
+    let leader_enabled = std::env::var("LEADER_ELECTION_ENABLED")
+        .map(|v| v == "true" || v == "1")
+        .unwrap_or(false);
 
+    if leader_enabled {
+        let namespace = std::env::var("POD_NAMESPACE").unwrap_or_else(|_| "cfgd-system".to_string());
+        let identity =
+            std::env::var("POD_NAME").unwrap_or_else(|_| Uuid::new_v4().to_string());
+
+        tracing::info!(
+            namespace = %namespace,
+            identity = %identity,
+            "Leader election enabled"
+        );
+
+        let le = leader::LeaderElection::new(client.clone(), namespace, identity);
+        le.run(|| async {
+            health_state.set_ready();
+            run_operator(client).await.map_err(|e| {
+                errors::OperatorError::Leader(format!("Operator run failed: {e}"))
+            })
+        })
+        .await
+        .map_err(|e| anyhow::anyhow!("{}", e))?;
+    } else {
+        health_state.set_ready();
+        run_operator(client).await?;
+    }
+
+    Ok(())
+}
+
+async fn run_operator(client: Client) -> Result<()> {
     // Device gateway — optional HTTP server for device checkin, enrollment, drift, web UI
     let gateway_enabled = std::env::var("DEVICE_GATEWAY_ENABLED")
         .map(|v| v == "true" || v == "1")
