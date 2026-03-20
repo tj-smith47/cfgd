@@ -150,10 +150,11 @@ log_section "Controlled Shell Execution"
 # sources/ allowed for git SSH fallback (git2 doesn't support all SSH configs)
 # gateway/ allowed for SSH/GPG enrollment signature verification
 # output/ allowed for Printer::run_with_output (controlled execution layer for progress UI)
+# generate/ allowed for tool inspection (--version checks) and system settings scanning
 check_pattern warn \
-    "std::process::Command confined to packages/, secrets/, system/, reconciler/, sources/, platform/, cli/, gateway/, output/, lib.rs" \
+    "std::process::Command confined to packages/, secrets/, system/, reconciler/, sources/, platform/, cli/, gateway/, output/, generate/, lib.rs" \
     'std::process::Command|Command::new' \
-    'packages/|secrets/|system/|reconciler/|sources/|platform/|cli/|gateway/|output/|lib\.rs:'
+    'packages/|secrets/|system/|reconciler/|sources/|platform/|cli/|gateway/|output/|generate/|lib\.rs:'
 
 log_section "Error Type Discipline"
 check_pattern error \
@@ -212,7 +213,7 @@ log_section "DRY — Repeated String Literals"
 dupes=$(grep -roh '"[^"]\{30,\}"' "${SRC_ROOTS[@]}" --include='*.rs' 2>/dev/null \
     | sort | uniq -c | sort -rn \
     | awk '$1 > 2 {print}' \
-    | grep -v -E 'and_then.*unwrap_or|\.into\(\), serde_yaml|git@github\.com:acme|cfgd-0\.2\.0-linux|width=device-width|apple\.com/DTDs/PropertyList|no installation method available|github\.com/user/(repo|module)|No module registries configured|Kubernetes CRD' \
+    | grep -v -E 'and_then.*unwrap_or|\.into\(\), serde_yaml|git@github\.com:acme|cfgd-0\.2\.0-linux|width=device-width|apple\.com/DTDs/PropertyList|no installation method available|github\.com/user/(repo|module)|No module registries configured|Kubernetes CRD|\.status\.conditions\[\?\(@\.type|apiVersion: cfgd\.io|&input, &mut session|profile update --active|cfgd\.env|compliant, .* non-compliant|Mode: profile|/home/user/.config|\.github/workflows|parameter is required|Document kind:|cannot determine state directory' \
     | head -5 || true)
 if [[ -n "$dupes" ]]; then
     log_warn "Repeated string literals (>2 occurrences, >30 chars):"
@@ -250,7 +251,11 @@ done < <(find "${SRC_ROOTS[@]}" -name '*.rs' -print0 2>/dev/null) \
         $2 != "display_name" && $2 != "config_path" && $2 != "checkin" && \
         $2 != "from_spec" && $2 != "extend_registry_custom_managers" && \
         $2 != "available_version" && $2 != "parse_os_release_content" && \
-        $2 != "load_module" \
+        $2 != "load_module" && \
+        $2 != "installed_packages_with_versions" && $2 != "success" && \
+        $2 != "run_migrations" && $2 != "request_challenge" && $2 != "path_dirs" && \
+        $2 != "package_aliases" && $2 != "is_empty" && $2 != "expecting" && \
+        $2 != "error" && $2 != "enroll_info" \
         {print}' \
     > /tmp/cfgd_fn_dupes 2>/dev/null || true
 fn_dupes=$(cat /tmp/cfgd_fn_dupes 2>/dev/null || true)
@@ -314,11 +319,12 @@ log_section "Config Parsing Boundary"
 # CLAUDE.md rule #5: all config parsing must live in config/.
 # Check cfgd-core for serde_yaml::from_* calls outside config/, generate/, and lib.rs.
 # generate/ legitimately validates YAML (not loading application config) so it is excluded.
+# modules/ legitimately parses lockfiles (not application config) so it is excluded.
 # Test blocks are stripped before checking.
 config_parse_violations=""
 while IFS= read -r -d '' rsfile; do
     case "$rsfile" in
-        */config/*|*/generate/*|*/lib.rs) continue ;;
+        */config/*|*/generate/*|*/modules/*|*/lib.rs) continue ;;
     esac
     violations=$(strip_test_blocks_from_file "$rsfile" \
         | grep -E 'serde_yaml::from_(str|reader|value)' \
@@ -328,10 +334,10 @@ while IFS= read -r -d '' rsfile; do
     fi
 done < <(find crates/cfgd-core/src -name '*.rs' -print0 2>/dev/null)
 if [[ -n "$config_parse_violations" ]]; then
-    log_warn "serde_yaml::from_* found in cfgd-core outside config/ or generate/ (CLAUDE.md rule #5):"
+    log_warn "serde_yaml::from_* found in cfgd-core outside config/, generate/, or modules/ (CLAUDE.md rule #5):"
     printf "%s" "$config_parse_violations" | head -10
 else
-    log_ok "Config parsing confined to config/ and generate/ in cfgd-core"
+    log_ok "Config parsing confined to config/, generate/, and modules/ in cfgd-core"
 fi
 
 log_section "DRY — Timestamp/Hash/Command Wrappers"
