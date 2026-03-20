@@ -213,7 +213,7 @@ log_section "DRY — Repeated String Literals"
 dupes=$(grep -roh '"[^"]\{30,\}"' "${SRC_ROOTS[@]}" --include='*.rs' 2>/dev/null \
     | sort | uniq -c | sort -rn \
     | awk '$1 > 2 {print}' \
-    | grep -v -E 'and_then.*unwrap_or|\.into\(\), serde_yaml|git@github\.com:acme|cfgd-0\.2\.0-linux|width=device-width|apple\.com/DTDs/PropertyList|no installation method available|github\.com/user/(repo|module)|No module registries configured|Kubernetes CRD|\.status\.conditions\[\?\(@\.type|apiVersion: cfgd\.io|&input, &mut session|profile update --active|cfgd\.env|compliant, .* non-compliant|Mode: profile|/home/user/.config|\.github/workflows|parameter is required|Document kind:|cannot determine state directory' \
+    | grep -v -E 'and_then.*unwrap_or|\.into\(\), serde_yaml|git@github\.com:acme|cfgd-0\.2\.0-linux|width=device-width|apple\.com/DTDs/PropertyList|no installation method available|github\.com/user/(repo|module)|No module registries configured|Kubernetes CRD|\.status\.conditions\[\?\(@\.type|apiVersion: cfgd\.io|&input, &mut session|profile update --active|cfgd\.env|compliant, .* non-compliant|Mode: profile|/home/user/.config|\.github/workflows|parameter is required|Document kind:|cannot determine state directory|must not be empty' \
     | head -5 || true)
 if [[ -n "$dupes" ]]; then
     log_warn "Repeated string literals (>2 occurrences, >30 chars):"

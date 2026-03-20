@@ -4,6 +4,73 @@ Reference for the original design rationale and acceptance criteria of shipped f
 
 ---
 
+## Tier 1 — Operator Hardening & CRD Enhancement
+
+### Operator operational readiness
+- [x] Leader election via `coordination.k8s.io/v1` Lease — `main.rs` acquires lease before starting controllers; Helm `replicaCount` > 1 enabled
+- [x] Graceful shutdown — SIGTERM handler, drain in-flight reconciliations (2s grace), stop webhook, flush metrics
+- [x] Health probes on dedicated HTTP port (8081) — `/healthz` liveness, `/readyz` readiness (503 until leader lease acquired)
+- [x] Security contexts in Helm deployment template — `runAsNonRoot`, `readOnlyRootFilesystem`, `capabilities.drop: [ALL]`, UID 65532
+- [x] PodDisruptionBudget (conditional on `replicaCount >= 2`)
+- [x] NetworkPolicy restricting ingress to webhook/gateway/probe ports, egress to kube-apiserver
+
+### CRD enhancements (existing 3 CRDs)
+- [x] Printer columns: MachineConfig (`NAME HOSTNAME PROFILE RECONCILED DRIFT AGE`), ConfigPolicy (`NAME COMPLIANT NON-COMPLIANT ENFORCED AGE`), DriftAlert (`NAME DEVICE SEVERITY RESOLVED AGE`)
+- [x] Short names: `mc`, `cpol`, `da`. Categories: `cfgd` for all
+- [x] MachineConfig conditions split: `Ready` → `Reconciled`, `DriftDetected`, `ModulesResolved`, `Compliant`
+- [x] DriftAlert: `status.conditions` array with `Acknowledged`, `Resolved`, `Escalated`
+- [x] `observedGeneration` on Condition struct (per KEP-1623)
+- [x] CEL validation rules on MachineConfig (non-empty hostname, files have content or source)
+- [x] MachineConfig finalizer: `cfgd.io/machine-config-cleanup`
+- [x] Owner references: MachineConfig → DriftAlert cascade
+
+### CRD API design fixes
+- [x] Typed `PackageRef { name, version }` replaces `Vec<String>` in MachineConfig and ConfigPolicy
+- [x] `packageVersions` moved from MachineConfigSpec to MachineConfigStatus
+- [x] Removed `ConfigPolicySpec.name`
+- [x] Typed `LabelSelector { matchLabels, matchExpressions }` with full expression evaluation
+- [x] Typed `MachineConfigReference { name, namespace }` in DriftAlertSpec
+- [x] `Vec<ModuleRef>` in ConfigPolicySpec
+- [x] Removed `driftDetected: bool` from MachineConfigStatus (expressed as condition)
+- [x] `systemSettings: BTreeMap<String, serde_json::Value>`
+
+### ClusterConfigPolicy CRD
+- [x] Cluster-scoped CRD with `namespaceSelector`, `security.trustedRegistries`, `security.allowUnsigned`
+- [x] Controller with namespace filtering, evaluates MachineConfigs across namespaces
+- [x] Merge semantics: packages/modules union, settings/versions cluster-wins
+
+### Kubernetes Events
+- [x] MachineConfig controller emits: `Reconciled`, `ReconcileError`, `DriftDetected`, `PolicyViolation`
+- [x] ConfigPolicy/ClusterConfigPolicy controllers emit: `Evaluated`, `NonCompliantTargets`
+- [x] DriftAlert controller emits: `DriftDetected` (on MC), `DriftResolved`
+- [x] Uses `kube::runtime::events::Recorder`, best-effort `.ok()`
+
+### Observability
+- [x] Prometheus `/metrics` endpoint on port 8443 — `prometheus-client` crate
+- [x] 7 metrics: reconciliations_total, duration_seconds, drift_events, devices_compliant, devices_enrolled_total, webhook_requests, webhook_duration
+- [x] ServiceMonitor template (conditional on `metrics.serviceMonitor.enabled`)
+- [x] OpenTelemetry tracing via `tracing-opentelemetry`, `OTEL_EXPORTER_OTLP_ENDPOINT` config
+
+### Helm chart restructure
+- [x] Unified chart at `chart/cfgd/` (operator + agent)
+- [x] Restructured values.yaml with operator/agent/webhook/gateway/security/metrics/probes sections
+- [x] `values.schema.json`, `NOTES.txt`, test hook pod, example values files
+
+### Multi-tenancy RBAC
+- [x] Helm-templated RBAC examples: platform admin, team lead, team member, module publisher
+- [x] Namespace isolation documentation (`docs/multi-tenancy.md`)
+
+### Crossplane testing
+- [x] E2E tests: TeamConfig → MachineConfig generation, member add/remove
+- [x] CI pipeline for function-cfgd (in release.yml)
+- [x] XRD uses `apiextensions.crossplane.io/v2`
+
+### Server-side apply
+- [x] Field manager constants: FIELD_MANAGER_OPERATOR (spec), FIELD_MANAGER_STATUS (status)
+- [x] Structured merge diff annotations on CRD schemas (conditions, packages, moduleRefs, files, driftDetails)
+
+---
+
 ## Idiomatic Naming Audit (from Tier 1)
 
 - [x] Cross-references use `moduleRef`/`configRef` style
