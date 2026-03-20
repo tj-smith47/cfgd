@@ -4,6 +4,7 @@ members = [
     "crates/cfgd-core",
     "crates/cfgd",
     "crates/cfgd-operator",
+    "crates/cfgd-csi",
 ]
 
 [workspace.package]

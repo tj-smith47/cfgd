@@ -26,8 +26,6 @@
 !Dockerfile.*
 !chart/
 !chart/**
-!charts/
-!charts/**
 !manifests/
 !manifests/**
 

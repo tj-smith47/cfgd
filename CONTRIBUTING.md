@@ -81,14 +81,14 @@ crates/
 3. **All providers implement their traits** — the reconciler depends on `ProviderRegistry`, never concrete implementations
 4. **`thiserror` for library errors, `anyhow` only in `main.rs` and `cli/`**
 5. **Config structs in `config/` only** — with `serde::Deserialize` + `serde::Serialize`
-6. **No `std::process::Command` outside `cli/`, `packages/`, `secrets/`, `system/`, `reconciler/`, `platform/`, `sources/`, and `gateway/`**
+6. **No `std::process::Command` outside `cli/`, `packages/`, `secrets/`, `system/`, `reconciler/`, `platform/`, `sources/`, `gateway/`, `output/`, `generate/`, and `oci/`**
 
 ### Style
 
 - `cargo fmt` defaults (no custom rustfmt.toml)
 - `cargo clippy -- -D warnings` — all warnings are errors
 - Group imports: std, external crates, internal modules (separated by blank lines)
-- `#[serde(rename_all = "kebab-case")]` on config structs
+- `#[serde(rename_all = "camelCase")]` on config structs
 - Co-located unit tests in `#[cfg(test)] mod tests {}`
 
 ### Commit Messages

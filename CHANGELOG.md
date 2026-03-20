@@ -245,5 +245,3 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - CLI flag consistency audit — normalize flags across all commands
 - Implement shell aliases in profiles and modules
 - Pre-release hardening — security audit, panic fixes, correctness across all crates #minor
-
-
