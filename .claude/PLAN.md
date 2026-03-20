@@ -4,92 +4,50 @@ Single source of truth for all incomplete work. Completed work is in [COMPLETED.
 
 ---
 
-## ~~Tier 1 — Operator hardening & existing CRD enhancement (no new dependencies)~~
+## Distribution & publishing gaps
 
-Completed. Moved to [COMPLETED.md](COMPLETED.md).
+Blocking real-world adoption of shipped Kubernetes features (Tiers 1–4). Do first.
 
----
+- [ ] CSI driver container image: `crates/cfgd-csi/` is implemented but has no Dockerfile and no release workflow. Helm chart references `ghcr.io/tj-smith47/cfgd-csi` which doesn't exist. Add `Dockerfile.csi` and build job to `release.yml`.
+- [ ] kubectl-cfgd binary: `main.rs` detects `argv[0] == "kubectl-cfgd"` but release workflow only builds `cfgd`. Add symlink/rename step to release job to produce `kubectl-cfgd` artifacts for all 4 platforms.
+- [ ] Krew manifest: `manifests/krew/cfgd.yaml` has SHA256 values of `"TBD"`, version hardcoded to `v0.1.0`, URLs reference non-existent binaries. Populate dynamically in release workflow after kubectl-cfgd artifacts are built.
+- [ ] Helm chart registry: chart at `chart/cfgd/` is not published. Add chart-releaser or OCI push job to `release.yml` so users can `helm install` from a registry instead of local checkout.
+- [ ] OLM bundle: `ecosystem/olm/` CSV has hardcoded `v0.1.0`, no bundle image build, no OperatorHub submission workflow. Add OLM bundle build job to `release.yml`.
 
-## ~~Tier 2 — Module CRD & OCI foundation (needs Module CRD)~~
+## Ecosystem integration
 
-Completed. Moved to [COMPLETED.md](COMPLETED.md).
-
-### Implementation notes
-
-- OCI client implemented using `ureq` (sync HTTP) with hand-rolled OCI Distribution Spec client instead of `oci-client` crate — lighter weight, fewer dependencies, sync-friendly
-- Signature verification checks PEM key format validity; actual cryptographic verification against OCI artifact signatures deferred to Tier 3 (OCI pipeline Phase C — signing) when `sigstore-rs` is integrated
-- Integration tests (webhook policy enforcement against live cluster, push/pull against real registry, push --apply CRD creation) require a running Kubernetes cluster and OCI registry — these are exercised via E2E testing, not unit tests
-
----
-
-## ~~Tier 3 — OCI build & supply chain (needs OCI pipeline)~~
-
-Completed. Moved to [COMPLETED.md](COMPLETED.md).
-
-### Implementation notes
-
-- Container builds use Docker/Podman via `std::process::Command` — consistent with cfgd's external tool pattern
-- Signing shells out to `cosign` rather than embedding `sigstore-rs` — lighter weight, standard tooling
-- `VerifyOptions` struct supports both static key and keyless (identity/issuer regexp) verification
-- Keyless verification requires at least identity or issuer constraint — rejects wildcard-only
-- OCI arch mapping (`x86_64` → `amd64`, `aarch64` → `arm64`) via `rust_arch_to_oci()`
-- `push_module_inner` returns `(digest, manifest_size)` to avoid HEAD requests in multi-platform index
-- SLSA provenance follows in-toto Statement v1 / SLSA Provenance v1 predicate format
-
----
-
-## ~~Tier 4 — Pod module injection (needs CSI driver)~~
-
-Completed. Moved to [COMPLETED.md](COMPLETED.md).
-
-### Implementation notes
-
-- CSI driver uses `tonic` gRPC on unix socket, `nix` crate for bind mounts (Linux-only, cfg-gated)
-- LRU cache uses `.cfgd-last-access` marker files (filesystem atime unreliable with noatime/relatime)
-- Atomic cache population via temp dir + rename prevents concurrent corruption
-- Mutating webhook filters ClusterConfigPolicy by namespaceSelector before injecting required modules
-- JSON patches ensure volumeMounts/env arrays exist before appending (RFC 6902 compliance)
-- `kubectl cfgd inject` targets workload controllers (Deployment/StatefulSet) via annotation patch, not running pods
-- Pod-level Events (ModuleInjected/ModuleInjectionFailed) deferred — pod has no UID during CREATE admission
-
----
-
-## Tier 5 — Stability & graduation (needs production time)
-
-### CRD versioning
-
-- [ ] Conversion webhook for v1alpha1 → v1beta1
-- [ ] Both versions served simultaneously, v1beta1 as storage version
-- [ ] Migration runbook: deploy, convert on read, storage migration, remove v1alpha1
-- [ ] Graduation criteria: 3+ months production, stable schema for 1 month, E2E passing
-
----
-
-## Independent work (no tier dependencies)
-
-### Windows support
-
-Full design in [windows-support.md](windows-support.md). 26 unguarded `std::os::unix` uses across 13 files.
-
-- [ ] Phase 1 — compilation gates: `#[cfg(unix)]` on all 26 unix-specific sites (reconciler symlink restore, upgrade chmod, daemon signals, files `PermissionsExt`, system configurators, secrets perms). Add `cargo build --target x86_64-pc-windows-msvc` CI job
-- [ ] Phase 2 — file management: symlink → try `std::os::windows::fs::symlink_file`/`symlink_dir`, fallback to copy if permission denied. Skip Unix permission bits on NTFS (different ACL model)
-- [ ] Phase 3 — package managers: `winget.rs` (`winget list`/`install --accept-agreements`/`uninstall`), `chocolatey.rs` (`choco list --local-only`/`install -y`/`uninstall -y`, bootstrap via PowerShell), `scoop.rs` (`scoop list`/`install`/`uninstall`, bootstrap via `irm get.scoop.sh | iex`). Config schema: `spec.packages.winget`, `.chocolatey`, `.scoop`
-- [ ] Phase 4 — PowerShell env integration: generate `~/.cfgd-env.ps1` with `$env:NAME = "value"` syntax, inject `. ~/.cfgd-env.ps1` into `$PROFILE` (idempotent). System env via `setx` for registry-level vars
-- [ ] Phase 5 — Windows Service daemon: `windows-service` crate behind `#[cfg(windows)]`, `cfgd daemon install` → SCM registration, `cfgd daemon start/stop` → SCM control, Event Log integration instead of syslog
-- [ ] Phase 6 — CI and release: cross-compile job (`x86_64-pc-windows-msvc`), `.zip` release artifact alongside `.tar.gz`, Windows-specific docs section
-
-### Ecosystem integration — post-k8s updates
-
-Once CRD enhancements (Tier 1) and Module CRD (Tier 2) land, update ecosystem files:
+Tiers 1–2 landed. These updates are unblocked — pick up now.
 
 - [ ] Update `policies/` for new CRD fields: ClusterConfigPolicy CRD, Module CRD `spec.signature.cosign.publicKey`, `spec.security.trustedRegistries`, MachineConfig conditions split (Reconciled, DriftDetected, ModulesResolved, Compliant), `observedGeneration` on Condition struct, DriftAlert conditions (Acknowledged, Resolved, Escalated)
 - [ ] Update `ecosystem/olm/` CSV to include ClusterConfigPolicy and Module CRDs, new webhook endpoints (`/validate-module`, `/validate-clusterconfigpolicy`, `/validate-driftalert`, `/mutate-pods`), printer columns, short names
 - [ ] Update idiomatic naming in ecosystem files after naming audit: `moduleRef`/`configRef` style cross-references, TitleCase enums, camelCase CRD field names
 
-### Upstream KEPs (blocked on v1 CRD graduation + production adoption)
+## CRD versioning
 
-Viable after Tier 5 completes and cfgd has months of production usage demonstrating the annotation-driven pattern works.
+Trigger: 3+ months production usage with stable schema (no breaking CRD field changes for 1 month). Do not start before that threshold — premature graduation creates conversion debt.
 
-- [ ] KEP: `spec.modules[].moduleRef` pod spec field — native PodSpec field for declaring module dependencies, replaces `cfgd.io/modules` annotation. Scheduler-transparent, webhook-consumed. Graduation: alpha (feature-gated) → beta (default-on, deprecate annotation) → GA
-- [ ] KEP: `cfgdModule:` volume type — native volume type alongside `configMap:` and `secret:`, simplifies pod YAML by eliminating explicit CSI volume definitions
-- [ ] KEP: `kubectl debug --module` flag — extend `kubectl debug` to accept `--module name:version` for injecting modules into ephemeral debug containers, replaces `kubectl cfgd debug`
+- [ ] Conversion webhook for v1alpha1 → v1beta1
+- [ ] Both versions served simultaneously, v1beta1 as storage version
+- [ ] Migration runbook: deploy, convert on read, storage migration, remove v1alpha1
+- [ ] Graduation criteria documented and gates enforced in CI
+
+## Upstream KEPs
+
+Trigger: v1 CRD graduation complete + months of production usage demonstrating the annotation-driven pattern works. These are proposals to upstream Kubernetes, not cfgd implementation work.
+
+- [ ] KEP: `spec.modules[].moduleRef` pod spec field — native PodSpec field for declaring module dependencies, replaces `cfgd.io/modules` annotation
+- [ ] KEP: `cfgdModule:` volume type — native volume type alongside `configMap:` and `secret:`
+- [ ] KEP: `kubectl debug --module` flag — extend `kubectl debug` for module injection into ephemeral debug containers
+
+---
+
+## Windows support
+
+Full design in [windows-support.md](windows-support.md). 26 unguarded `std::os::unix` uses across 13 files. No Kubernetes dependency — pick up when targeting Windows users.
+
+- [ ] Phase 1 — compilation gates: `#[cfg(unix)]` on all 26 unix-specific sites. Add `cargo build --target x86_64-pc-windows-msvc` CI job
+- [ ] Phase 2 — file management: symlink fallback to copy, skip Unix permission bits on NTFS
+- [ ] Phase 3 — package managers: winget, chocolatey, scoop
+- [ ] Phase 4 — PowerShell env integration
+- [ ] Phase 5 — Windows Service daemon
+- [ ] Phase 6 — CI and release: cross-compile job, `.zip` release artifact, Windows docs

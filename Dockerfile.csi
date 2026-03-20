@@ -1,0 +1,24 @@
+FROM rust:1.94-slim-bookworm AS builder
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    pkg-config perl make protobuf-compiler \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /build
+COPY Cargo.toml Cargo.lock ./
+COPY crates/ crates/
+
+RUN cargo build --release --bin cfgd-csi
+
+# --- Runtime ---
+
+FROM debian:bookworm-slim
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=builder /build/target/release/cfgd-csi /usr/local/bin/cfgd-csi
+
+# CSI driver runs as root (privileged container, required for bind mounts)
+ENTRYPOINT ["cfgd-csi"]

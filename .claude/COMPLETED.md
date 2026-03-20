@@ -808,6 +808,11 @@ Module state is stored by module name, not by profile — so status/verify/apply
 - [x] `cfgd module push --apply`: construct Module CRD from module.yaml + ociArtifact ref, server-side apply with field manager `cfgd`
 - [x] Kubeconfig discovery: kube::Client::try_default() (in-cluster → KUBECONFIG → ~/.kube/config)
 
+### Implementation notes
+- OCI client implemented using `ureq` (sync HTTP) with hand-rolled OCI Distribution Spec client instead of `oci-client` crate — lighter weight, fewer dependencies, sync-friendly
+- Signature verification checks PEM key format validity; actual cryptographic verification against OCI artifact signatures deferred to Tier 3 (OCI pipeline Phase C — signing) when `sigstore-rs` is integrated
+- Integration tests (webhook policy enforcement against live cluster, push/pull against real registry, push --apply CRD creation) require a running Kubernetes cluster and OCI registry — these are exercised via E2E testing, not unit tests
+
 ---
 
 ## Tier 3 — OCI Build & Supply Chain Security
@@ -840,6 +845,17 @@ Module state is stored by module name, not by profile — so status/verify/apply
 - [x] Webhook `check_unsigned_policy`: accepts keyless mode as valid signing
 - [x] OciError expanded: `BuildError`, `SigningError`, `VerificationFailed`, `AttestationError`, `ToolNotFound`
 
+### Implementation notes
+- Container builds use Docker/Podman via `std::process::Command` — consistent with cfgd's external tool pattern
+- Signing shells out to `cosign` rather than embedding `sigstore-rs` — lighter weight, standard tooling
+- `VerifyOptions` struct supports both static key and keyless (identity/issuer regexp) verification
+- Keyless verification requires at least identity or issuer constraint — rejects wildcard-only
+- OCI arch mapping (`x86_64` → `amd64`, `aarch64` → `arm64`) via `rust_arch_to_oci()`
+- `push_module_inner` returns `(digest, manifest_size)` to avoid HEAD requests in multi-platform index
+- SLSA provenance follows in-toto Statement v1 / SLSA Provenance v1 predicate format
+
+---
+
 ## Tier 4 — Pod Module Injection
 
 ### CSI driver (`crates/cfgd-csi/`)
@@ -871,3 +887,12 @@ Module state is stored by module name, not by profile — so status/verify/apply
 - [x] `version`: client + Kubernetes server version
 - [x] argv[0] detection (`kubectl-cfgd`), Krew manifest at `manifests/krew/cfgd.yaml`
 - [x] 5 tests: module arg parsing, CSI volume/mount spec generation
+
+### Implementation notes
+- CSI driver uses `tonic` gRPC on unix socket, `nix` crate for bind mounts (Linux-only, cfg-gated)
+- LRU cache uses `.cfgd-last-access` marker files (filesystem atime unreliable with noatime/relatime)
+- Atomic cache population via temp dir + rename prevents concurrent corruption
+- Mutating webhook filters ClusterConfigPolicy by namespaceSelector before injecting required modules
+- JSON patches ensure volumeMounts/env arrays exist before appending (RFC 6902 compliance)
+- `kubectl cfgd inject` targets workload controllers (Deployment/StatefulSet) via annotation patch, not running pods
+- Pod-level Events (ModuleInjected/ModuleInjectionFailed) deferred — pod has no UID during CREATE admission

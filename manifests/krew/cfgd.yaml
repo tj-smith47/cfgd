@@ -1,3 +1,6 @@
+# Krew plugin manifest for kubectl-cfgd.
+# Version, URIs, and SHA256 checksums are populated by the release workflow.
+# Do not edit sha256 values manually — they are computed from release artifacts.
 apiVersion: krew.googlecontainertools.github.com/v1alpha2
 kind: Plugin
 metadata:
@@ -14,27 +17,27 @@ spec:
         matchLabels:
           os: linux
           arch: amd64
-      uri: https://github.com/tj-smith47/cfgd/releases/download/v0.1.0/kubectl-cfgd_linux_amd64.tar.gz
-      sha256: "TBD"
+      uri: https://github.com/tj-smith47/cfgd/releases/download/v0.1.0/kubectl-cfgd-0.1.0-linux-x86_64.tar.gz
+      sha256: "POPULATED_BY_RELEASE_WORKFLOW"
       bin: kubectl-cfgd
     - selector:
         matchLabels:
           os: linux
           arch: arm64
-      uri: https://github.com/tj-smith47/cfgd/releases/download/v0.1.0/kubectl-cfgd_linux_arm64.tar.gz
-      sha256: "TBD"
+      uri: https://github.com/tj-smith47/cfgd/releases/download/v0.1.0/kubectl-cfgd-0.1.0-linux-aarch64.tar.gz
+      sha256: "POPULATED_BY_RELEASE_WORKFLOW"
       bin: kubectl-cfgd
     - selector:
         matchLabels:
           os: darwin
           arch: amd64
-      uri: https://github.com/tj-smith47/cfgd/releases/download/v0.1.0/kubectl-cfgd_darwin_amd64.tar.gz
-      sha256: "TBD"
+      uri: https://github.com/tj-smith47/cfgd/releases/download/v0.1.0/kubectl-cfgd-0.1.0-darwin-x86_64.tar.gz
+      sha256: "POPULATED_BY_RELEASE_WORKFLOW"
       bin: kubectl-cfgd
     - selector:
         matchLabels:
           os: darwin
           arch: arm64
-      uri: https://github.com/tj-smith47/cfgd/releases/download/v0.1.0/kubectl-cfgd_darwin_arm64.tar.gz
-      sha256: "TBD"
+      uri: https://github.com/tj-smith47/cfgd/releases/download/v0.1.0/kubectl-cfgd-0.1.0-darwin-aarch64.tar.gz
+      sha256: "POPULATED_BY_RELEASE_WORKFLOW"
       bin: kubectl-cfgd
