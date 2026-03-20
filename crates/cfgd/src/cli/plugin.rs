@@ -3,7 +3,10 @@ use clap::{Parser, Subcommand};
 use cfgd_core::output::Printer;
 
 #[derive(Parser)]
-#[command(name = "kubectl-cfgd", about = "cfgd kubectl plugin — manage modules on pods")]
+#[command(
+    name = "kubectl-cfgd",
+    about = "cfgd kubectl plugin — manage modules on pods"
+)]
 struct PluginCli {
     #[command(subcommand)]
     command: PluginCommand,
@@ -293,10 +296,15 @@ fn cmd_inject(
 
     let status = std::process::Command::new("kubectl")
         .args([
-            "patch", kind, name,
-            "-n", namespace,
-            "--type", "strategic",
-            "-p", &patch_str,
+            "patch",
+            kind,
+            name,
+            "-n",
+            namespace,
+            "--type",
+            "strategic",
+            "-p",
+            &patch_str,
         ])
         .stdin(std::process::Stdio::inherit())
         .stdout(std::process::Stdio::inherit())

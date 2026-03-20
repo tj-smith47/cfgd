@@ -1182,7 +1182,10 @@ async fn reconcile_config_policy(
     Ok(Action::requeue(std::time::Duration::from_secs(60)))
 }
 
-pub(crate) fn matches_selector(labels: Option<&BTreeMap<String, String>>, selector: &LabelSelector) -> bool {
+pub(crate) fn matches_selector(
+    labels: Option<&BTreeMap<String, String>>,
+    selector: &LabelSelector,
+) -> bool {
     if selector.match_labels.is_empty() && selector.match_expressions.is_empty() {
         return true;
     }
@@ -1768,9 +1771,7 @@ async fn evaluate_module_availability<'a>(
             .signature
             .as_ref()
             .and_then(|s| s.cosign.as_ref())
-            .is_some_and(|c| {
-                c.keyless || c.public_key.as_ref().is_some_and(|pk| !pk.is_empty())
-            });
+            .is_some_and(|c| c.keyless || c.public_key.as_ref().is_some_and(|pk| !pk.is_empty()));
 
         if !has_cosign_key {
             return (
@@ -1861,7 +1862,8 @@ fn evaluate_module_verification(signature: &Option<ModuleSignature>) -> ModuleVe
                 // Static key mode — validate PEM
                 match &cosign.public_key {
                     Some(pk) if is_valid_pem_public_key(pk) => {
-                        let fingerprint = format!("sha256:{:x}", sha2::Sha256::digest(pk.as_bytes()));
+                        let fingerprint =
+                            format!("sha256:{:x}", sha2::Sha256::digest(pk.as_bytes()));
                         ModuleVerificationResult {
                             status: "True",
                             reason: "SignatureConfigured",
@@ -1980,8 +1982,7 @@ mod tests {
     use super::*;
     use crate::crds::LabelSelectorRequirement;
 
-    const TEST_PEM_KEY: &str =
-        "-----BEGIN PUBLIC KEY-----\nMFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE\n-----END PUBLIC KEY-----";
+    const TEST_PEM_KEY: &str = "-----BEGIN PUBLIC KEY-----\nMFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE\n-----END PUBLIC KEY-----";
 
     fn mc_spec(hostname: &str, profile: &str) -> MachineConfigSpec {
         MachineConfigSpec {

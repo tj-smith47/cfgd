@@ -8,15 +8,15 @@ use tonic::{Request, Response, Status};
 
 use crate::cache::Cache;
 use crate::csi::v1::node_server::Node;
-use crate::metrics::{CsiMetrics, ModuleLabels, PublishLabels, PullLabels};
 use crate::csi::v1::{
     NodeExpandVolumeRequest, NodeExpandVolumeResponse, NodeGetCapabilitiesRequest,
     NodeGetCapabilitiesResponse, NodeGetInfoRequest, NodeGetInfoResponse,
     NodeGetVolumeStatsRequest, NodeGetVolumeStatsResponse, NodePublishVolumeRequest,
-    NodePublishVolumeResponse, NodeStageVolumeRequest, NodeStageVolumeResponse,
-    NodeUnpublishVolumeRequest, NodeUnpublishVolumeResponse, NodeUnstageVolumeRequest,
-    NodeUnstageVolumeResponse, NodeServiceCapability, node_service_capability,
+    NodePublishVolumeResponse, NodeServiceCapability, NodeStageVolumeRequest,
+    NodeStageVolumeResponse, NodeUnpublishVolumeRequest, NodeUnpublishVolumeResponse,
+    NodeUnstageVolumeRequest, NodeUnstageVolumeResponse, node_service_capability,
 };
+use crate::metrics::{CsiMetrics, ModuleLabels, PublishLabels, PullLabels};
 
 pub struct CfgdNode {
     cache: Arc<Cache>,
@@ -26,14 +26,15 @@ pub struct CfgdNode {
 
 impl CfgdNode {
     pub fn new(cache: Arc<Cache>, metrics: Arc<CsiMetrics>, node_id: String) -> Self {
-        Self { cache, metrics, node_id }
+        Self {
+            cache,
+            metrics,
+            node_id,
+        }
     }
 }
 
-fn require_attr<'a>(
-    attrs: &'a HashMap<String, String>,
-    key: &str,
-) -> Result<&'a str, Status> {
+fn require_attr<'a>(attrs: &'a HashMap<String, String>, key: &str) -> Result<&'a str, Status> {
     attrs
         .get(key)
         .map(|v| v.as_str())
@@ -119,7 +120,10 @@ impl Node for CfgdNode {
     ) -> Result<Response<NodeUnstageVolumeResponse>, Status> {
         let req = request.into_inner();
         require_volume_id(&req.volume_id)?;
-        tracing::debug!(volume_id = req.volume_id, "unstage volume (no-op, cache persists)");
+        tracing::debug!(
+            volume_id = req.volume_id,
+            "unstage volume (no-op, cache persists)"
+        );
         Ok(Response::new(NodeUnstageVolumeResponse {}))
     }
 
@@ -463,10 +467,7 @@ mod tests {
             volume_context: HashMap::new(),
             ..Default::default()
         };
-        let err = node
-            .node_stage_volume(Request::new(req))
-            .await
-            .unwrap_err();
+        let err = node.node_stage_volume(Request::new(req)).await.unwrap_err();
         assert_eq!(err.code(), tonic::Code::InvalidArgument);
     }
 
@@ -480,10 +481,7 @@ mod tests {
             volume_context: HashMap::new(),
             ..Default::default()
         };
-        let err = node
-            .node_stage_volume(Request::new(req))
-            .await
-            .unwrap_err();
+        let err = node.node_stage_volume(Request::new(req)).await.unwrap_err();
         assert_eq!(err.code(), tonic::Code::InvalidArgument);
         assert!(err.message().contains("volume_id"));
     }
@@ -503,10 +501,7 @@ mod tests {
             .collect(),
             ..Default::default()
         };
-        let err = node
-            .node_stage_volume(Request::new(req))
-            .await
-            .unwrap_err();
+        let err = node.node_stage_volume(Request::new(req)).await.unwrap_err();
         assert_eq!(err.code(), tonic::Code::InvalidArgument);
         assert!(err.message().contains("staging_target_path"));
     }
@@ -599,11 +594,10 @@ mod tests {
 
     #[test]
     fn resolve_oci_ref_uses_provided_value() {
-        let attrs: HashMap<String, String> = [
-            ("ociRef".to_string(), "ghcr.io/myorg/mod:v1".to_string()),
-        ]
-        .into_iter()
-        .collect();
+        let attrs: HashMap<String, String> =
+            [("ociRef".to_string(), "ghcr.io/myorg/mod:v1".to_string())]
+                .into_iter()
+                .collect();
         assert_eq!(resolve_oci_ref(&attrs, "mod", "v1"), "ghcr.io/myorg/mod:v1");
     }
 

@@ -31,9 +31,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cache_max: u64 = env_or("CACHE_MAX_BYTES", "5368709120")
         .parse()
         .unwrap_or(5_368_709_120);
-    let metrics_port: u16 = env_or("METRICS_PORT", "9090")
-        .parse()
-        .unwrap_or(9090);
+    let metrics_port: u16 = env_or("METRICS_PORT", "9090").parse().unwrap_or(9090);
 
     let node_id = hostname::get()
         .map(|h| h.to_string_lossy().to_string())
@@ -106,9 +104,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 async fn shutdown_signal() {
-    let mut sigterm =
-        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
-            .expect("failed to register SIGTERM handler");
+    let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+        .expect("failed to register SIGTERM handler");
     let ctrl_c = tokio::signal::ctrl_c();
     tokio::select! {
         _ = sigterm.recv() => {}

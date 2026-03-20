@@ -2118,8 +2118,7 @@ pub(super) fn cmd_module_push(
 
     // Sign if requested
     if sign {
-        cfgd_core::oci::sign_artifact(artifact, key)
-            .map_err(|e| anyhow::anyhow!("{e}"))?;
+        cfgd_core::oci::sign_artifact(artifact, key).map_err(|e| anyhow::anyhow!("{e}"))?;
         printer.success("Signed artifact with cosign");
     }
 
@@ -2128,16 +2127,13 @@ pub(super) fn cmd_module_push(
         let repo = detect_git_remote().unwrap_or_else(|| "unknown".to_string());
         let commit = detect_git_head().unwrap_or_else(|| "unknown".to_string());
 
-        let provenance = cfgd_core::oci::generate_slsa_provenance(artifact, &digest, &repo, &commit)
-            .map_err(|e| anyhow::anyhow!("{e}"))?;
+        let provenance =
+            cfgd_core::oci::generate_slsa_provenance(artifact, &digest, &repo, &commit)
+                .map_err(|e| anyhow::anyhow!("{e}"))?;
         let tmp = tempfile::NamedTempFile::new()?;
         std::fs::write(tmp.path(), &provenance)?;
-        cfgd_core::oci::attach_attestation(
-            artifact,
-            &tmp.path().display().to_string(),
-            key,
-        )
-        .map_err(|e| anyhow::anyhow!("{e}"))?;
+        cfgd_core::oci::attach_attestation(artifact, &tmp.path().display().to_string(), key)
+            .map_err(|e| anyhow::anyhow!("{e}"))?;
         printer.success("Attached SLSA provenance attestation");
     }
 
@@ -2328,8 +2324,7 @@ pub(super) fn cmd_module_build(
             printer.key_value("Digest", &digest);
 
             if sign {
-                cfgd_core::oci::sign_artifact(art, key)
-                    .map_err(|e| anyhow::anyhow!("{e}"))?;
+                cfgd_core::oci::sign_artifact(art, key).map_err(|e| anyhow::anyhow!("{e}"))?;
                 printer.success("Signed artifact");
             }
         }
@@ -2354,8 +2349,7 @@ pub(super) fn cmd_module_build(
             printer.key_value("Digest", &digest);
 
             if sign {
-                cfgd_core::oci::sign_artifact(art, key)
-                    .map_err(|e| anyhow::anyhow!("{e}"))?;
+                cfgd_core::oci::sign_artifact(art, key).map_err(|e| anyhow::anyhow!("{e}"))?;
                 printer.success("Signed artifact");
             }
         }
@@ -2464,10 +2458,16 @@ pub(super) fn cmd_module_keys_rotate(
     let backup_pub = Path::new(key_dir).join(format!("cosign.pub.{backup_suffix}"));
 
     std::fs::rename(&old_key, &backup_key)?;
-    printer.info(&format!("Backed up old private key to {}", backup_key.display()));
+    printer.info(&format!(
+        "Backed up old private key to {}",
+        backup_key.display()
+    ));
     if old_pub.exists() {
         std::fs::rename(&old_pub, &backup_pub)?;
-        printer.info(&format!("Backed up old public key to {}", backup_pub.display()));
+        printer.info(&format!(
+            "Backed up old public key to {}",
+            backup_pub.display()
+        ));
     }
 
     // Generate new key pair

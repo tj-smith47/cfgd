@@ -625,8 +625,7 @@ pub use cfgd_core::version_satisfies;
 mod tests {
     use super::*;
 
-    const TEST_PEM_KEY: &str =
-        "-----BEGIN PUBLIC KEY-----\nMFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE\n-----END PUBLIC KEY-----";
+    const TEST_PEM_KEY: &str = "-----BEGIN PUBLIC KEY-----\nMFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE\n-----END PUBLIC KEY-----";
 
     fn minimal_mc_spec(hostname: &str, profile: &str) -> MachineConfigSpec {
         MachineConfigSpec {

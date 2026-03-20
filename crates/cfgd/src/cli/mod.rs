@@ -1,8 +1,8 @@
 mod explain;
 pub mod generate;
-pub mod plugin;
 mod init;
 mod module;
+pub mod plugin;
 mod profile;
 
 use std::collections::HashMap;

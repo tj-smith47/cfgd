@@ -281,12 +281,7 @@ fn check_unsigned_policy(spec: &ModuleSpec, disallow_unsigned: bool) -> Result<(
             .signature
             .as_ref()
             .and_then(|s| s.cosign.as_ref())
-            .map(|c| {
-                c.keyless
-                    || c.public_key
-                        .as_ref()
-                        .is_some_and(|pk| !pk.is_empty())
-            })
+            .map(|c| c.keyless || c.public_key.as_ref().is_some_and(|pk| !pk.is_empty()))
             .unwrap_or(false);
         if !has_signing {
             return Err(
@@ -445,10 +440,7 @@ struct PolicyModules {
 
 /// Collect required and debug modules from ConfigPolicy and ClusterConfigPolicy.
 /// ClusterConfigPolicy entries are filtered by their namespaceSelector.
-async fn collect_policy_modules(
-    client: &Client,
-    namespace: &str,
-) -> PolicyModules {
+async fn collect_policy_modules(client: &Client, namespace: &str) -> PolicyModules {
     let mut result = PolicyModules {
         required: Vec::new(),
         debug: Vec::new(),
@@ -568,7 +560,10 @@ fn build_injection_patches(
         if let Some(ref oci_ref) = spec.oci_artifact {
             vol_attrs["ociRef"] = serde_json::Value::String(oci_ref.clone());
         } else {
-            warn!(module = name, "Module CRD has no ociArtifact — CSI driver will use fallback registry");
+            warn!(
+                module = name,
+                "Module CRD has no ociArtifact — CSI driver will use fallback registry"
+            );
         }
         patches.push(json_patch::PatchOperation::Add(json_patch::AddOperation {
             path: ptr("/spec/volumes/-"),
@@ -601,25 +596,21 @@ fn build_injection_patches(
 
             for env_var in &spec.env {
                 if env_var.append {
-                    patches.push(json_patch::PatchOperation::Add(
-                        json_patch::AddOperation {
-                            path: ptr(&format!("/spec/containers/{i}/env/-")),
-                            value: serde_json::json!({
-                                "name": env_var.name,
-                                "value": format!("{}:$({})", env_var.value, env_var.name)
-                            }),
-                        },
-                    ));
+                    patches.push(json_patch::PatchOperation::Add(json_patch::AddOperation {
+                        path: ptr(&format!("/spec/containers/{i}/env/-")),
+                        value: serde_json::json!({
+                            "name": env_var.name,
+                            "value": format!("{}:$({})", env_var.value, env_var.name)
+                        }),
+                    }));
                 } else {
-                    patches.push(json_patch::PatchOperation::Add(
-                        json_patch::AddOperation {
-                            path: ptr(&format!("/spec/containers/{i}/env/-")),
-                            value: serde_json::json!({
-                                "name": env_var.name,
-                                "value": env_var.value
-                            }),
-                        },
-                    ));
+                    patches.push(json_patch::PatchOperation::Add(json_patch::AddOperation {
+                        path: ptr(&format!("/spec/containers/{i}/env/-")),
+                        value: serde_json::json!({
+                            "name": env_var.name,
+                            "value": env_var.value
+                        }),
+                    }));
                 }
             }
         }
@@ -655,7 +646,11 @@ fn build_injection_patches(
 
         for (name, _version, spec) in &script_modules {
             let safe_name = sanitize_k8s_name(name);
-            let script_path = spec.scripts.post_apply.as_deref().unwrap_or("post-apply.sh");
+            let script_path = spec
+                .scripts
+                .post_apply
+                .as_deref()
+                .unwrap_or("post-apply.sh");
             patches.push(json_patch::PatchOperation::Add(json_patch::AddOperation {
                 path: ptr("/spec/initContainers/-"),
                 value: serde_json::json!({
@@ -778,9 +773,7 @@ async fn handle_mutate_pods(
     // Build JSON patches
     let patches = build_injection_patches(&pod_obj, &resolved);
 
-    let resp = match AdmissionResponse::from(&req)
-        .with_patch(json_patch::Patch(patches))
-    {
+    let resp = match AdmissionResponse::from(&req).with_patch(json_patch::Patch(patches)) {
         Ok(r) => r,
         Err(e) => {
             warn!(error = %e, "failed to serialize patch");
@@ -806,8 +799,7 @@ mod tests {
     use kube::core::DynamicObject;
     use kube::core::admission::{AdmissionRequest, AdmissionReview};
 
-    const TEST_PEM_KEY: &str =
-        "-----BEGIN PUBLIC KEY-----\nMFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE\n-----END PUBLIC KEY-----";
+    const TEST_PEM_KEY: &str = "-----BEGIN PUBLIC KEY-----\nMFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE\n-----END PUBLIC KEY-----";
 
     fn make_review(spec_json: serde_json::Value) -> AdmissionReview<DynamicObject> {
         serde_json::from_value(serde_json::json!({
@@ -1220,13 +1212,11 @@ mod tests {
             "tools".to_string(),
             "2.0".to_string(),
             ModuleSpec {
-                env: vec![
-                    crate::crds::ModuleEnvVar {
-                        name: "EDITOR".to_string(),
-                        value: "vim".to_string(),
-                        append: false,
-                    },
-                ],
+                env: vec![crate::crds::ModuleEnvVar {
+                    name: "EDITOR".to_string(),
+                    value: "vim".to_string(),
+                    append: false,
+                }],
                 ..Default::default()
             },
         )];
@@ -1320,11 +1310,7 @@ mod tests {
                 ]
             }
         });
-        let modules = vec![(
-            "mod1".to_string(),
-            "1.0".to_string(),
-            ModuleSpec::default(),
-        )];
+        let modules = vec![("mod1".to_string(), "1.0".to_string(), ModuleSpec::default())];
         let patches = build_injection_patches(&pod, &modules);
         let patch_json = serde_json::to_string(&patches).unwrap();
         // Should have volumeMount patches for both containers (indices 0 and 1)

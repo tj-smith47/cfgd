@@ -80,11 +80,7 @@ async fn identity_probe() {
     let channel = start_server(&tmp).await;
     let mut client = cfgd_csi::csi::v1::identity_client::IdentityClient::new(channel);
 
-    let resp = client
-        .probe(ProbeRequest {})
-        .await
-        .unwrap()
-        .into_inner();
+    let resp = client.probe(ProbeRequest {}).await.unwrap().into_inner();
     assert_eq!(resp.ready, Some(true));
 }
 

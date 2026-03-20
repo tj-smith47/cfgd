@@ -101,20 +101,14 @@ mod tests {
     async fn probe_returns_ready_when_cache_dir_exists() {
         let dir = tempfile::tempdir().unwrap();
         let svc = test_identity(dir.path());
-        let resp = svc
-            .probe(Request::new(ProbeRequest {}))
-            .await
-            .unwrap();
+        let resp = svc.probe(Request::new(ProbeRequest {})).await.unwrap();
         assert_eq!(resp.into_inner().ready, Some(true));
     }
 
     #[tokio::test]
     async fn probe_returns_not_ready_when_cache_dir_missing() {
         let svc = CfgdIdentity::new(PathBuf::from("/nonexistent/cfgd-csi-test-path"));
-        let resp = svc
-            .probe(Request::new(ProbeRequest {}))
-            .await
-            .unwrap();
+        let resp = svc.probe(Request::new(ProbeRequest {})).await.unwrap();
         assert_eq!(resp.into_inner().ready, Some(false));
     }
 }

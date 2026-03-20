@@ -749,9 +749,7 @@ fn push_module_inner(
     let layer_data = create_tar_gz(dir)?;
 
     // Build platform annotation
-    let platform_str = platform
-        .map(String::from)
-        .unwrap_or_else(current_platform);
+    let platform_str = platform.map(String::from).unwrap_or_else(current_platform);
 
     // Upload config blob
     let config_digest = upload_blob(agent, oci_ref, auth, &config_blob, MEDIA_TYPE_MODULE_CONFIG)?;
@@ -871,13 +869,11 @@ pub fn current_platform() -> String {
 
 /// Parse "os/arch" (e.g. "linux/amd64") into (os, arch).
 pub fn parse_platform_target(target: &str) -> Result<(&str, &str), OciError> {
-    target
-        .split_once('/')
-        .ok_or_else(|| OciError::BuildError {
-            message: format!(
-                "invalid platform target '{target}' — expected os/arch (e.g. linux/amd64)"
-            ),
-        })
+    target.split_once('/').ok_or_else(|| OciError::BuildError {
+        message: format!(
+            "invalid platform target '{target}' — expected os/arch (e.g. linux/amd64)"
+        ),
+    })
 }
 
 /// Push a module for multiple platforms, creating an OCI index (manifest list).
@@ -898,11 +894,7 @@ pub fn push_module_multiplatform(
         let (os, arch) = parse_platform_target(platform)?;
 
         // Push each platform as its own tagged manifest
-        let platform_tag = format!(
-            "{}-{}",
-            oci_ref.reference_str(),
-            platform.replace('/', "-")
-        );
+        let platform_tag = format!("{}-{}", oci_ref.reference_str(), platform.replace('/', "-"));
         let platform_ref = OciReference {
             registry: oci_ref.registry.clone(),
             repository: oci_ref.repository.clone(),
@@ -1042,12 +1034,18 @@ pub fn build_module(
     })?;
 
     let module_yaml = std::fs::read_to_string(&module_yaml_path)?;
-    let module_doc = crate::config::parse_module(&module_yaml).map_err(|e| OciError::BuildError {
-        message: format!("invalid module.yaml: {e}"),
-    })?;
+    let module_doc =
+        crate::config::parse_module(&module_yaml).map_err(|e| OciError::BuildError {
+            message: format!("invalid module.yaml: {e}"),
+        })?;
 
     // Extract package names from module spec
-    let pkg_names: Vec<String> = module_doc.spec.packages.iter().map(|p| p.name.clone()).collect();
+    let pkg_names: Vec<String> = module_doc
+        .spec
+        .packages
+        .iter()
+        .map(|p| p.name.clone())
+        .collect();
     let packages: Vec<&str> = pkg_names.iter().map(|s| s.as_str()).collect();
 
     let base = base_image.unwrap_or("ubuntu:22.04");
@@ -2052,7 +2050,11 @@ mod tests {
     fn verify_signature_rejects_keyless_without_identity() {
         let result = verify_signature(
             "ghcr.io/test/mod:v1",
-            &VerifyOptions { key: None, identity: None, issuer: None },
+            &VerifyOptions {
+                key: None,
+                identity: None,
+                issuer: None,
+            },
         );
         assert!(matches!(result, Err(OciError::VerificationFailed { .. })));
     }
@@ -2064,7 +2066,11 @@ mod tests {
         }
         let result = verify_signature(
             "ghcr.io/test/mod:v1",
-            &VerifyOptions { key: Some("cosign.pub"), identity: None, issuer: None },
+            &VerifyOptions {
+                key: Some("cosign.pub"),
+                identity: None,
+                issuer: None,
+            },
         );
         assert!(matches!(result, Err(OciError::ToolNotFound { .. })));
     }
@@ -2085,7 +2091,11 @@ mod tests {
         let result = verify_attestation(
             "ghcr.io/test/mod:v1",
             "slsaprovenance",
-            &VerifyOptions { key: None, identity: None, issuer: None },
+            &VerifyOptions {
+                key: None,
+                identity: None,
+                issuer: None,
+            },
         );
         assert!(matches!(result, Err(OciError::VerificationFailed { .. })));
     }
@@ -2098,7 +2108,11 @@ mod tests {
         let result = verify_attestation(
             "ghcr.io/test/mod:v1",
             "slsaprovenance",
-            &VerifyOptions { key: Some("cosign.pub"), identity: None, issuer: None },
+            &VerifyOptions {
+                key: Some("cosign.pub"),
+                identity: None,
+                issuer: None,
+            },
         );
         assert!(matches!(result, Err(OciError::ToolNotFound { .. })));
     }
