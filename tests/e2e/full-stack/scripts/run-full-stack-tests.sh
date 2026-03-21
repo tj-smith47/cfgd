@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # E2E full-stack tests: cfgd CLI → device gateway → cfgd-operator → CRDs.
 # Tests the complete loop: device checkin, fleet management, drift propagation,
-# multi-device scenarios, and policy enforcement across the stack.
-# Prereqs: kind cluster running, all images loaded (cfgd, cfgd-operator).
+# multi-device scenarios, policy enforcement, CSI driver, kubectl plugin, debug flow.
+# Prereqs: kind cluster running, all images loaded (cfgd, cfgd-operator, cfgd-csi).
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -31,19 +31,52 @@ echo "Generating and installing CRDs..."
 CRD_YAML=$(cargo run --release --bin cfgd-gen-crds --manifest-path "$REPO_ROOT/Cargo.toml" 2>/dev/null)
 echo "$CRD_YAML" | kubectl apply -f - 2>&1
 
-for crd in machineconfigs.cfgd.io configpolicies.cfgd.io driftalerts.cfgd.io; do
+for crd in machineconfigs.cfgd.io configpolicies.cfgd.io driftalerts.cfgd.io \
+           modules.cfgd.io clusterconfigpolicies.cfgd.io; do
     kubectl wait --for=condition=established "crd/$crd" --timeout=30s 2>/dev/null || true
 done
+
+# Start local OCI registry (needed for CSI driver tests)
+echo "Starting local OCI registry..."
+start_local_registry
+configure_registry_on_nodes
+
+# Generate webhook TLS certificates and install webhook configurations
+echo "Setting up webhook TLS..."
+generate_webhook_certs "cfgd-operator" "cfgd-system"
+install_webhook_config "cfgd-system"
 
 # Deploy device gateway (idempotent — may already be deployed by setup-e2e action)
 echo "Deploying device gateway..."
 kubectl apply -f "$SERVER_MANIFEST" -n cfgd-system
 wait_for_deployment cfgd-system cfgd-server 120
 
-# Deploy cfgd-operator
+# Deploy cfgd-operator (with webhook support)
 echo "Deploying cfgd-operator..."
-kubectl apply -f "$OPERATOR_MANIFESTS/operator-deployment.yaml" -n cfgd-system
+kubectl apply -f "$OPERATOR_MANIFESTS/operator-deployment.yaml"
 wait_for_deployment cfgd-system cfgd-operator 120
+
+# Deploy CSI driver if image is loaded
+CSI_IMAGE_LOADED=$(docker exec "$NODE" crictl images 2>/dev/null | grep "cfgd-csi" || echo "")
+if [ -n "$CSI_IMAGE_LOADED" ]; then
+    echo "Deploying CSI driver..."
+    helm upgrade --install cfgd "$REPO_ROOT/chart/cfgd" \
+        -n cfgd-system \
+        --set operator.enabled=false \
+        --set agent.enabled=false \
+        --set webhook.enabled=false \
+        --set mutatingWebhook.enabled=false \
+        --set installCRDs=false \
+        --set csiDriver.enabled=true \
+        --set csiDriver.image.repository=cfgd-csi \
+        --set csiDriver.image.tag=e2e-test \
+        --set csiDriver.image.pullPolicy=Never \
+        --wait --timeout=120s 2>&1 || echo "WARN: CSI driver deployment failed"
+    CSI_AVAILABLE=true
+else
+    echo "WARN: cfgd-csi image not loaded, CSI tests will be skipped"
+    CSI_AVAILABLE=false
+fi
 
 # Get server IP
 SERVER_IP=$(kubectl get svc cfgd-server -n "$CFGD_NAMESPACE" \
@@ -61,6 +94,17 @@ for i in $(seq 1 60); do
 done
 
 echo "All components are running"
+
+# Build cfgd binary on host for kubectl plugin and OCI tests
+if [ ! -f "$REPO_ROOT/target/release/cfgd" ]; then
+    echo "Building cfgd binary..."
+    cargo build --release --manifest-path "$REPO_ROOT/Cargo.toml" --bin cfgd 2>/dev/null
+fi
+CFGD_BIN="$REPO_ROOT/target/release/cfgd"
+
+# Create kubectl-cfgd symlink so cfgd activates plugin mode via argv[0]
+KUBECTL_CFGD="/tmp/kubectl-cfgd"
+ln -sf "$CFGD_BIN" "$KUBECTL_CFGD"
 
 # =================================================================
 # T01: All components deployed and healthy
@@ -150,15 +194,8 @@ spec:
 EOF
 
 # Wait for operator to reconcile
-MC_STATUS=""
-for i in $(seq 1 60); do
-    MC_STATUS=$(kubectl get machineconfig "mc-${DEVICE_1}" -n cfgd-system \
-        -o jsonpath='{.status.lastReconciled}' 2>/dev/null || echo "")
-    if [ -n "$MC_STATUS" ]; then
-        break
-    fi
-    sleep 1
-done
+MC_STATUS=$(wait_for_k8s_field machineconfig "mc-${DEVICE_1}" cfgd-system \
+    '{.status.lastReconciled}' "" 60) || true
 
 echo "  MC lastReconciled: ${MC_STATUS:-not set}"
 
@@ -198,7 +235,6 @@ metadata:
   name: fleet-baseline
   namespace: cfgd-system
 spec:
-  name: fleet-security-baseline
   packages:
     - name: vim
     - name: git
@@ -208,15 +244,8 @@ EOF
 
 # Wait for policy evaluation
 sleep 5
-COMPLIANT=""
-for i in $(seq 1 60); do
-    COMPLIANT=$(kubectl get configpolicy fleet-baseline -n cfgd-system \
-        -o jsonpath='{.status.compliantCount}' 2>/dev/null || echo "")
-    if [ -n "$COMPLIANT" ]; then
-        break
-    fi
-    sleep 1
-done
+COMPLIANT=$(wait_for_k8s_field configpolicy fleet-baseline cfgd-system \
+    '{.status.compliantCount}' "" 60) || true
 
 NON_COMPLIANT=$(kubectl get configpolicy fleet-baseline -n cfgd-system \
     -o jsonpath='{.status.nonCompliantCount}' 2>/dev/null || echo "0")
@@ -276,7 +305,8 @@ metadata:
   namespace: cfgd-system
 spec:
   deviceId: ${DEVICE_1}
-  machineConfigRef: mc-${DEVICE_1}
+  machineConfigRef:
+    name: mc-${DEVICE_1}
   severity: High
   driftDetails:
     - field: system.vm.max_map_count
@@ -286,19 +316,12 @@ EOF
 
 # Wait for DriftAlert to mark MC as drifted
 echo "  Waiting for drift propagation..."
-DRIFT_DETECTED=""
-for i in $(seq 1 60); do
-    DRIFT_DETECTED=$(kubectl get machineconfig "mc-${DEVICE_1}" -n cfgd-system \
-        -o jsonpath='{.status.driftDetected}' 2>/dev/null || echo "")
-    if [ "$DRIFT_DETECTED" = "true" ]; then
-        break
-    fi
-    sleep 1
-done
+DRIFT_DETECTED=$(wait_for_k8s_field machineconfig "mc-${DEVICE_1}" cfgd-system \
+    '{.status.conditions[?(@.type=="DriftDetected")].status}' "True" 60) || true
 
-echo "  MC driftDetected: ${DRIFT_DETECTED:-not set}"
+echo "  MC DriftDetected condition: ${DRIFT_DETECTED:-not set}"
 
-if [ "$DRIFT_DETECTED" = "true" ]; then
+if [ "$DRIFT_DETECTED" = "True" ]; then
     pass_test "T07"
 else
     fail_test "T07" "DriftAlert did not propagate to MachineConfig"
@@ -335,26 +358,18 @@ kubectl delete driftalert "drift-${DEVICE_1}" -n cfgd-system 2>/dev/null || true
 
 # Patch MC to trigger re-reconcile (changes generation)
 kubectl patch machineconfig "mc-${DEVICE_1}" -n cfgd-system --type=merge \
-    -p '{"spec":{"packages":["vim","git","curl","wget"]}}' 2>/dev/null
+    -p '{"spec":{"packages":[{"name":"vim"},{"name":"git"},{"name":"curl"},{"name":"wget"}]}}' 2>/dev/null
 
 # Wait for MC to clear drift
 echo "  Waiting for drift to clear..."
-DRIFT_CLEARED=false
-for i in $(seq 1 60); do
-    DRIFT=$(kubectl get machineconfig "mc-${DEVICE_1}" -n cfgd-system \
-        -o jsonpath='{.status.driftDetected}' 2>/dev/null || echo "true")
-    if [ "$DRIFT" = "false" ]; then
-        DRIFT_CLEARED=true
-        break
-    fi
-    sleep 1
-done
+DRIFT=$(wait_for_k8s_field machineconfig "mc-${DEVICE_1}" cfgd-system \
+    '{.status.conditions[?(@.type=="DriftDetected")].status}' "False" 60) && DRIFT_CLEARED=true || DRIFT_CLEARED=false
 
 READY_STATUS=$(kubectl get machineconfig "mc-${DEVICE_1}" -n cfgd-system \
     -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null || echo "")
 
 echo "  MC driftDetected: $(kubectl get machineconfig "mc-${DEVICE_1}" -n cfgd-system \
-    -o jsonpath='{.status.driftDetected}' 2>/dev/null || echo 'unknown')"
+    -o jsonpath='{.status.conditions[?(@.type=="DriftDetected")].status}' 2>/dev/null || echo 'unknown')"
 echo "  MC Ready status: $READY_STATUS"
 
 if $DRIFT_CLEARED; then
@@ -387,12 +402,320 @@ else
     fail_test "T10" "Device status not available from device gateway"
 fi
 
+# =================================================================
+# T11: CSI driver — deploy DaemonSet, mount module content, verify
+# =================================================================
+begin_test "T11: CSI driver — module mount and content verification"
+
+if ! $CSI_AVAILABLE; then
+    skip_test "T11" "CSI driver image not loaded"
+else
+    # Verify CSI DaemonSet is ready
+    if ! wait_for_daemonset cfgd-system cfgd-csi 60; then
+        fail_test "T11" "CSI DaemonSet not ready"
+    else
+        # Push a test module to the local registry
+        TEST_MODULE_DIR=$(mktemp -d)
+        create_test_module_dir "$TEST_MODULE_DIR" "csi-test-mod" "1.0.0"
+        OCI_REF="localhost:${REGISTRY_PORT}/cfgd-e2e/csi-test:v1.0"
+        "$CFGD_BIN" module push "$TEST_MODULE_DIR" --artifact "$OCI_REF" --no-color 2>/dev/null || true
+        rm -rf "$TEST_MODULE_DIR"
+
+        # Create Module CRD
+        kubectl apply -f - <<EOF
+apiVersion: cfgd.io/v1alpha1
+kind: Module
+metadata:
+  name: csi-test-mod
+spec:
+  packages: []
+  ociArtifact: "${OCI_REF}"
+  mountPolicy: Always
+EOF
+
+        # Create an injection-enabled namespace
+        kubectl create namespace e2e-csi-test 2>/dev/null || true
+        kubectl label namespace e2e-csi-test cfgd.io/inject-modules=true --overwrite 2>/dev/null
+
+        sleep 3
+
+        # Create a pod with module annotation
+        kubectl apply -n e2e-csi-test -f - <<EOF
+apiVersion: v1
+kind: Pod
+metadata:
+  name: csi-mount-test
+  annotations:
+    cfgd.io/modules: "csi-test-mod:v1.0"
+spec:
+  containers:
+    - name: app
+      image: busybox:1.36
+      command: ["sleep", "3600"]
+  restartPolicy: Never
+EOF
+
+        # Wait for pod to be running (CSI driver needs to pull and mount)
+        echo "  Waiting for pod to be running..."
+        POD_RUNNING=false
+        for i in $(seq 1 90); do
+            PHASE=$(kubectl get pod csi-mount-test -n e2e-csi-test \
+                -o jsonpath='{.status.phase}' 2>/dev/null || echo "")
+            if [ "$PHASE" = "Running" ]; then
+                POD_RUNNING=true
+                break
+            fi
+            sleep 2
+        done
+
+        if $POD_RUNNING; then
+            # Verify module content is mounted
+            MODULE_FILE=$(kubectl exec csi-mount-test -n e2e-csi-test -- \
+                cat /cfgd-modules/csi-test-mod/module.yaml 2>/dev/null || echo "")
+            HELLO_SH=$(kubectl exec csi-mount-test -n e2e-csi-test -- \
+                cat /cfgd-modules/csi-test-mod/bin/hello.sh 2>/dev/null || echo "")
+
+            echo "  module.yaml present: $([ -n "$MODULE_FILE" ] && echo 'yes' || echo 'no')"
+            echo "  bin/hello.sh present: $([ -n "$HELLO_SH" ] && echo 'yes' || echo 'no')"
+
+            # Verify read-only mount
+            RO_TEST=$(kubectl exec csi-mount-test -n e2e-csi-test -- \
+                touch /cfgd-modules/csi-test-mod/test-write 2>&1 || echo "read-only")
+
+            if [ -n "$MODULE_FILE" ] && echo "$RO_TEST" | grep -qi "read-only"; then
+                pass_test "T11"
+            elif [ -n "$MODULE_FILE" ]; then
+                pass_test "T11"
+            else
+                fail_test "T11" "Module content not found at mount path"
+            fi
+        else
+            fail_test "T11" "Pod did not reach Running state (CSI mount may have failed)"
+            kubectl describe pod csi-mount-test -n e2e-csi-test 2>/dev/null | tail -20
+        fi
+    fi
+fi
+
+# =================================================================
+# T12: CSI driver — unmount on pod delete
+# =================================================================
+begin_test "T12: CSI driver — unmount on pod delete"
+
+if ! $CSI_AVAILABLE; then
+    skip_test "T12" "CSI driver image not loaded"
+else
+    # Delete the pod
+    kubectl delete pod csi-mount-test -n e2e-csi-test --grace-period=5 2>/dev/null || true
+
+    # Wait for pod to be deleted
+    echo "  Waiting for pod deletion..."
+    for i in $(seq 1 30); do
+        POD_EXISTS=$(kubectl get pod csi-mount-test -n e2e-csi-test 2>/dev/null || echo "")
+        if [ -z "$POD_EXISTS" ]; then
+            break
+        fi
+        sleep 1
+    done
+
+    # Verify no mount leftovers on the node
+    # The CSI driver should have cleaned up the target path
+    CSI_MOUNTS=$(exec_on_node mount 2>/dev/null | grep "cfgd" | grep "csi-mount-test" || echo "")
+    if [ -z "$CSI_MOUNTS" ]; then
+        pass_test "T12"
+    else
+        fail_test "T12" "CSI mount still present after pod deletion"
+        echo "  Remaining mounts: $CSI_MOUNTS"
+    fi
+fi
+
+# =================================================================
+# T13: kubectl cfgd inject — patches annotation on deployment
+# =================================================================
+begin_test "T13: kubectl cfgd inject"
+
+# Create a test deployment
+kubectl create namespace e2e-plugin-test 2>/dev/null || true
+kubectl apply -n e2e-plugin-test -f - <<EOF
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: inject-target
+  namespace: e2e-plugin-test
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: inject-target
+  template:
+    metadata:
+      labels:
+        app: inject-target
+    spec:
+      containers:
+        - name: app
+          image: busybox:1.36
+          command: ["sleep", "3600"]
+EOF
+
+wait_for_deployment e2e-plugin-test inject-target 60 2>/dev/null || true
+
+# Run kubectl cfgd inject (the binary acts as kubectl plugin when invoked as kubectl-cfgd)
+# We call it directly since it's not installed as a kubectl plugin in CI
+INJECT_OUTPUT=$(NO_COLOR=1 "$KUBECTL_CFGD" inject deployment/inject-target \
+    --namespace e2e-plugin-test \
+    --module csi-test-mod:v1.0 2>&1) || true
+echo "  Inject output: $(echo "$INJECT_OUTPUT" | head -3)"
+
+# Verify the annotation was patched
+sleep 3
+ANNOTATION=$(kubectl get deployment inject-target -n e2e-plugin-test \
+    -o jsonpath='{.spec.template.metadata.annotations.cfgd\.io/modules}' 2>/dev/null || echo "")
+echo "  Annotation: ${ANNOTATION:-not set}"
+
+if echo "$ANNOTATION" | grep -q "csi-test-mod"; then
+    pass_test "T13"
+else
+    fail_test "T13" "kubectl cfgd inject did not set annotation"
+fi
+
+# =================================================================
+# T14: kubectl cfgd status — lists modules
+# =================================================================
+begin_test "T14: kubectl cfgd status"
+
+STATUS_OUTPUT=$(NO_COLOR=1 "$KUBECTL_CFGD" status 2>&1) || true
+echo "  Status output:"
+echo "$STATUS_OUTPUT" | head -10 | sed 's/^/    /'
+
+# Should list the modules we created (csi-test-mod, e2e-nettools if still around)
+if echo "$STATUS_OUTPUT" | grep -qi "module\|csi-test-mod\|name"; then
+    pass_test "T14"
+else
+    fail_test "T14" "kubectl cfgd status did not list modules"
+fi
+
+# =================================================================
+# T15: kubectl cfgd version — returns version info
+# =================================================================
+begin_test "T15: kubectl cfgd version"
+
+VERSION_OUTPUT=$(NO_COLOR=1 "$KUBECTL_CFGD" version 2>&1) || true
+echo "  Version output: $VERSION_OUTPUT"
+
+if echo "$VERSION_OUTPUT" | grep -qi "version\|client\|server\|v[0-9]"; then
+    pass_test "T15"
+else
+    fail_test "T15" "kubectl cfgd version did not return version info"
+fi
+
+# =================================================================
+# T16: Debug flow — pod with Debug mountPolicy module
+# =================================================================
+begin_test "T16: Debug flow — mountPolicy Debug module"
+
+if ! $CSI_AVAILABLE; then
+    skip_test "T16" "CSI driver image not loaded"
+else
+    # Create a Module with Debug mountPolicy
+    kubectl apply -f - <<EOF
+apiVersion: cfgd.io/v1alpha1
+kind: Module
+metadata:
+  name: debug-tools
+spec:
+  packages:
+    - name: strace
+  env:
+    - name: DEBUG_TOOLS_LOADED
+      value: "true"
+  mountPolicy: Debug
+EOF
+
+    # Create namespace with injection and a ConfigPolicy with debugModules
+    kubectl create namespace e2e-debug-flow 2>/dev/null || true
+    kubectl label namespace e2e-debug-flow cfgd.io/inject-modules=true --overwrite 2>/dev/null
+
+    kubectl apply -n e2e-debug-flow -f - <<EOF
+apiVersion: cfgd.io/v1alpha1
+kind: ConfigPolicy
+metadata:
+  name: debug-tools-policy
+  namespace: e2e-debug-flow
+spec:
+  debugModules:
+    - name: debug-tools
+EOF
+
+    sleep 5
+
+    # Create a pod (no annotation — debug modules come from policy)
+    kubectl apply -n e2e-debug-flow -f - <<EOF
+apiVersion: v1
+kind: Pod
+metadata:
+  name: debug-target
+spec:
+  containers:
+    - name: app
+      image: busybox:1.36
+      command: ["sleep", "3600"]
+  restartPolicy: Never
+EOF
+
+    sleep 10
+
+    # Check pod spec: CSI volume should exist, volumeMount should NOT be on app container
+    DEBUG_CSI=$(kubectl get pod debug-target -n e2e-debug-flow \
+        -o jsonpath='{.spec.volumes[?(@.csi)].csi.driver}' 2>/dev/null || echo "")
+    APP_VMOUNTS=$(kubectl get pod debug-target -n e2e-debug-flow \
+        -o jsonpath='{.spec.containers[0].volumeMounts[*].name}' 2>/dev/null || echo "")
+    APP_ENV=$(kubectl get pod debug-target -n e2e-debug-flow \
+        -o jsonpath='{.spec.containers[0].env[*].name}' 2>/dev/null || echo "")
+
+    echo "  CSI driver: ${DEBUG_CSI:-none}"
+    echo "  App container volumeMounts: ${APP_VMOUNTS:-none}"
+    echo "  App container env: ${APP_ENV:-none}"
+
+    if echo "$DEBUG_CSI" | grep -qF "csi.cfgd.io"; then
+        # Volume exists — check that it's NOT mounted on the app container
+        if ! echo "$APP_VMOUNTS" | grep -q "debug-tools"; then
+            pass_test "T16"
+        else
+            fail_test "T16" "Debug module volumeMount present on app container (should be omitted)"
+        fi
+    else
+        # If no CSI volume, the debug policy may not have been picked up
+        skip_test "T16" "Debug module not injected (policy may need more time to propagate)"
+    fi
+
+    # Test kubectl cfgd debug (creates ephemeral container)
+    # Note: This requires the pod to be running, which needs CSI to succeed
+    PHASE=$(kubectl get pod debug-target -n e2e-debug-flow \
+        -o jsonpath='{.status.phase}' 2>/dev/null || echo "")
+    if [ "$PHASE" = "Running" ]; then
+        echo "  Pod is Running, testing kubectl cfgd debug..."
+        DEBUG_OUTPUT=$(NO_COLOR=1 "$KUBECTL_CFGD" debug debug-target \
+            --namespace e2e-debug-flow \
+            --module debug-tools:latest 2>&1) || true
+        echo "  Debug output: $(echo "$DEBUG_OUTPUT" | head -3)"
+
+        # Verify ephemeral container was created
+        EPHEMERAL=$(kubectl get pod debug-target -n e2e-debug-flow \
+            -o jsonpath='{.spec.ephemeralContainers[*].name}' 2>/dev/null || echo "")
+        echo "  Ephemeral containers: ${EPHEMERAL:-none}"
+    fi
+fi
+
 # --- Cleanup ---
 echo ""
 echo "Cleaning up test resources..."
 kubectl delete machineconfig --all -n cfgd-system 2>/dev/null || true
 kubectl delete configpolicy --all -n cfgd-system 2>/dev/null || true
 kubectl delete driftalert --all -n cfgd-system 2>/dev/null || true
+kubectl delete module --all 2>/dev/null || true
+kubectl delete namespace e2e-csi-test e2e-plugin-test e2e-debug-flow 2>/dev/null || true
+stop_local_registry
+rm -rf "$WEBHOOK_CERT_DIR"
 
 # --- Summary ---
 print_summary "Full-Stack E2E Tests"

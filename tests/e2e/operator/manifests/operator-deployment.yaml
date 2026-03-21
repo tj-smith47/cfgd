@@ -20,9 +20,24 @@ spec:
         - name: cfgd-operator
           image: cfgd-operator:e2e-test
           imagePullPolicy: Never
+          ports:
+            - name: webhook
+              containerPort: 9443
+              protocol: TCP
+            - name: health
+              containerPort: 8081
+              protocol: TCP
           env:
             - name: RUST_LOG
               value: "info"
+            - name: WEBHOOK_CERT_DIR
+              value: "/etc/webhook/certs"
+            - name: WEBHOOK_PORT
+              value: "9443"
+          volumeMounts:
+            - name: webhook-certs
+              mountPath: /etc/webhook/certs
+              readOnly: true
           resources:
             limits:
               cpu: 200m
@@ -30,6 +45,11 @@ spec:
             requests:
               cpu: 50m
               memory: 64Mi
+      volumes:
+        - name: webhook-certs
+          secret:
+            secretName: cfgd-webhook-certs
+            optional: true
 ---
 apiVersion: v1
 kind: ServiceAccount
@@ -50,6 +70,21 @@ rules:
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
   - apiGroups: ["cfgd.io"]
     resources: ["driftalerts", "driftalerts/status"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["cfgd.io"]
+    resources: ["modules", "modules/status"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["cfgd.io"]
+    resources: ["clusterconfigpolicies", "clusterconfigpolicies/status"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: [""]
+    resources: ["namespaces"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["create", "patch"]
+  - apiGroups: ["coordination.k8s.io"]
+    resources: ["leases"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1

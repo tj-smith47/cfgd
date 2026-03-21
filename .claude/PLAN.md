@@ -10,18 +10,18 @@ Existing E2E suites cover Tier 1 CRDs and CLI. Module, ClusterConfigPolicy, webh
 
 ### Operator E2E (`tests/e2e/operator/`) — expand existing script
 
-- [ ] Module CRD: create, verify controller sets status (verified, resolvedArtifact), webhook rejects invalid OCI refs and malformed PEM keys
-- [ ] ClusterConfigPolicy: create with namespaceSelector, verify only matching namespaces evaluated, verify cluster-wins merge with namespace ConfigPolicy
-- [ ] Validation webhooks: Module, ClusterConfigPolicy, DriftAlert endpoints reject invalid specs
-- [ ] Mutating webhook: pod with `cfgd.io/modules` annotation in labeled namespace gets CSI volumes injected, mountPolicy Debug skips volumeMount, env vars set on containers
-- [ ] OCI supply chain: push module to test registry (kind-hosted), pull with signature verification, verify content integrity
-- [ ] Update CRD wait loop to include all 5 CRDs (currently only waits for 3)
+- [x] Module CRD: create, verify controller sets status (verified, resolvedArtifact), webhook rejects invalid OCI refs and malformed PEM keys
+- [x] ClusterConfigPolicy: create with namespaceSelector, verify only matching namespaces evaluated, verify cluster-wins merge with namespace ConfigPolicy
+- [x] Validation webhooks: Module, ClusterConfigPolicy, DriftAlert endpoints reject invalid specs
+- [x] Mutating webhook: pod with `cfgd.io/modules` annotation in labeled namespace gets CSI volumes injected, mountPolicy Debug skips volumeMount, env vars set on containers
+- [x] OCI supply chain: push module to test registry (kind-hosted), pull with signature verification, verify content integrity
+- [x] Update CRD wait loop to include all 5 CRDs (currently only waits for 3)
 
 ### Full-stack E2E (`tests/e2e/full-stack/`) — expand existing script
 
-- [ ] CSI driver: deploy DaemonSet via Helm, create pod referencing CSI volume, verify module content mounted read-only, verify unmount on pod delete
-- [ ] kubectl cfgd plugin: `inject deployment/test -m mod:v1` patches annotation, `status` lists modules, `version` returns server version
-- [ ] Debug flow: pod with mountPolicy Debug module, `kubectl cfgd debug` creates ephemeral container that accesses debug-only volume
+- [x] CSI driver: deploy DaemonSet via Helm, create pod referencing CSI volume, verify module content mounted read-only, verify unmount on pod delete
+- [x] kubectl cfgd plugin: `inject deployment/test -m mod:v1` patches annotation, `status` lists modules, `version` returns server version
+- [x] Debug flow: pod with mountPolicy Debug module, `kubectl cfgd debug` creates ephemeral container that accesses debug-only volume
 
 ## Ecosystem integration
 

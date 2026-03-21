@@ -11,7 +11,7 @@ inputs:
     required: false
     default: 'tests/e2e/node/kind-config.yaml'
   images:
-    description: 'Space-separated list of images to build (node operator)'
+    description: 'Space-separated list of images to build (node operator csi)'
     required: false
     default: 'node operator'
 
@@ -54,6 +54,11 @@ runs:
               echo "Building cfgd-operator..."
               docker build -f Dockerfile.operator -t cfgd-operator:e2e-test .
               kind load docker-image cfgd-operator:e2e-test --name "$CLUSTER"
+              ;;
+            csi)
+              echo "Building cfgd-csi..."
+              docker build -f Dockerfile.csi -t cfgd-csi:e2e-test .
+              kind load docker-image cfgd-csi:e2e-test --name "$CLUSTER"
               ;;
           esac
         done

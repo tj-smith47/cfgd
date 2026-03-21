@@ -33,7 +33,7 @@ env:
 
 jobs:
   operator-tests:
-    name: "Operator Tests (T01–T10)"
+    name: "Operator Tests (T01–T18)"
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:

@@ -1002,9 +1002,9 @@ pub enum ModuleCommand {
         /// Export format
         #[arg(long, value_enum)]
         format: ExportFormat,
-        /// Output directory (default: current directory)
-        #[arg(long, short)]
-        output: Option<String>,
+        /// Directory to write exported files (default: current directory)
+        #[arg(long)]
+        dir: Option<String>,
     },
     /// Push a module directory to an OCI registry as an artifact
     Push {
@@ -1034,9 +1034,9 @@ pub enum ModuleCommand {
         /// OCI artifact reference (e.g. ghcr.io/myorg/mymodule:v1.0.0)
         #[arg(name = "ref")]
         artifact_ref: String,
-        /// Output directory to extract the module into
-        #[arg(long, short)]
-        output: String,
+        /// Directory to extract the module into
+        #[arg(long)]
+        dir: String,
         /// Require a cosign signature on the artifact
         #[arg(long)]
         require_signature: bool,
@@ -1224,11 +1224,9 @@ pub fn execute(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
                 }
                 ModuleRegistryCommand::List => module::cmd_module_registry_list(cli, printer),
             },
-            ModuleCommand::Export {
-                name,
-                format,
-                output,
-            } => module::cmd_module_export(cli, printer, name, format, output.as_deref()),
+            ModuleCommand::Export { name, format, dir } => {
+                module::cmd_module_export(cli, printer, name, format, dir.as_deref())
+            }
             ModuleCommand::Push {
                 dir,
                 artifact,
@@ -1251,7 +1249,7 @@ pub fn execute(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
             ),
             ModuleCommand::Pull {
                 artifact_ref,
-                output,
+                dir,
                 require_signature,
                 verify_attestation,
                 key,
@@ -1260,7 +1258,7 @@ pub fn execute(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
             } => module::cmd_module_pull(
                 printer,
                 artifact_ref,
-                output,
+                dir,
                 *require_signature,
                 *verify_attestation,
                 cfgd_core::oci::VerifyOptions {
@@ -8878,7 +8876,6 @@ spec:
         assert!(result.is_ok());
     }
 
-    #[test]
     #[test]
     fn cmd_diff_empty_profile() {
         let (config_dir, state_dir) = setup_test_env();
