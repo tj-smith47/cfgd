@@ -770,7 +770,7 @@ echo "  Container env vars: $POD_ENV"
 echo "  CSI driver: $CSI_DRIVER"
 
 PASS=true
-if ! echo "$CSI_DRIVER" | grep -qF "csi.cfgd.io"; then
+if ! echo "$CSI_DRIVER" | grep -qF "$CSI_DRIVER_NAME"; then
     echo "  WARN: CSI volume not injected (expected driver=csi.cfgd.io)"
     PASS=false
 fi
@@ -847,7 +847,7 @@ echo "  Container volumeMounts: $DEBUG_VMOUNTS"
 echo "  CSI driver: $DEBUG_CSI"
 
 # For Debug policy, the CSI volume should exist but NOT be mounted on containers
-if echo "$DEBUG_CSI" | grep -qF "csi.cfgd.io"; then
+if echo "$DEBUG_CSI" | grep -qF "$CSI_DRIVER_NAME"; then
     if ! echo "$DEBUG_VMOUNTS" | grep -q "debug-mod"; then
         pass_test "T17"
     else

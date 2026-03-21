@@ -11,10 +11,9 @@ mod secrets;
 mod system;
 
 fn main() -> anyhow::Result<()> {
-    // Install rustls crypto provider before any kube client usage
-    rustls::crypto::ring::default_provider()
-        .install_default()
-        .ok();
+    if let Err(e) = rustls::crypto::ring::default_provider().install_default() {
+        eprintln!("rustls CryptoProvider already installed: {e:?}");
+    }
 
     // kubectl plugin detection — must be before normal CLI parsing
     let argv0 = std::env::args().next().unwrap_or_default();

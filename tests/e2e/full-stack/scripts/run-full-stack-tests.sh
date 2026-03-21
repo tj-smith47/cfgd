@@ -665,7 +665,7 @@ EOF
     echo "  App container volumeMounts: ${APP_VMOUNTS:-none}"
     echo "  App container env: ${APP_ENV:-none}"
 
-    if echo "$DEBUG_CSI" | grep -qF "csi.cfgd.io"; then
+    if echo "$DEBUG_CSI" | grep -qF "$CSI_DRIVER_NAME"; then
         # Volume exists — check that it's NOT mounted on the app container
         if ! echo "$APP_VMOUNTS" | grep -q "debug-tools"; then
             pass_test "T16"

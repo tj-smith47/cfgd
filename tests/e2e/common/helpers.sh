@@ -349,6 +349,9 @@ EOF
 
 # --- OCI registry helpers ---
 
+CSI_DRIVER_NAME="csi.cfgd.io"
+MODULES_ANNOTATION="cfgd.io/modules"
+
 REGISTRY_NAME="cfgd-e2e-registry"
 REGISTRY_PORT="${REGISTRY_PORT:-5001}"
 
