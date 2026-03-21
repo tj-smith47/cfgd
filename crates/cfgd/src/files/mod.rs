@@ -5,12 +5,12 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
-use sha2::{Digest, Sha256};
 use similar::TextDiff;
 use tera::{Context, Tera};
 
 use cfgd_core::config::{EnvVar, FileStrategy, ManagedFileSpec, MergedProfile, ResolvedProfile};
 use cfgd_core::errors::{FileError, Result};
+use cfgd_core::expand_tilde;
 use cfgd_core::output::Printer;
 use cfgd_core::providers::{FileAction, FileDiff, FileDiffKind, FileEntry, FileLayer, FileTree};
 
@@ -222,7 +222,7 @@ impl CfgdFileManager {
                         .to_string();
 
                     let content_hash =
-                        format!("{:x}", sha2::Sha256::digest(rendered_content.as_bytes()));
+                        cfgd_core::sha256_hex(rendered_content.as_bytes());
                     actions.push(FileAction::Update {
                         source: source_path.clone(),
                         target: target_path.clone(),
@@ -238,7 +238,7 @@ impl CfgdFileManager {
                 }
             } else {
                 let content_hash =
-                    format!("{:x}", sha2::Sha256::digest(rendered_content.as_bytes()));
+                    cfgd_core::sha256_hex(rendered_content.as_bytes());
                 actions.push(FileAction::Create {
                     source: source_path.clone(),
                     target: target_path.clone(),
@@ -626,7 +626,7 @@ impl cfgd_core::providers::FileManager for CfgdFileManager {
                             };
                             if let Some(plan_hash) = expected_hash {
                                 let current_hash =
-                                    format!("{:x}", sha2::Sha256::digest(content.as_bytes()));
+                                    cfgd_core::sha256_hex(content.as_bytes());
                                 if current_hash != plan_hash {
                                     return Err(FileError::SourceChanged {
                                         path: source.clone(),
@@ -804,12 +804,9 @@ fn set_permissions(path: &Path, mode: u32) -> Result<()> {
     })
 }
 
-/// Expand ~ to home directory in a path.
-pub use cfgd_core::expand_tilde;
-
 /// Compute SHA256 hash of content.
 fn sha256_hash(content: &str) -> String {
-    format!("{:x}", Sha256::digest(content.as_bytes()))
+    cfgd_core::sha256_hex(content.as_bytes())
 }
 
 /// Format a Tera error with source location details.

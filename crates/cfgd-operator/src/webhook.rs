@@ -428,10 +428,6 @@ fn parse_module_annotations(value: &str) -> Vec<(String, String)> {
         .collect()
 }
 
-fn sanitize_k8s_name(name: &str) -> String {
-    cfgd_core::sanitize_k8s_name(name)
-}
-
 /// Modules collected from policies, split by mount behavior.
 struct PolicyModules {
     required: Vec<String>,
@@ -548,7 +544,7 @@ fn build_injection_patches(
     }
 
     for (name, version, spec) in modules {
-        let safe_name = sanitize_k8s_name(name);
+        let safe_name = cfgd_core::sanitize_k8s_name(name);
         let vol_name = format!("cfgd-module-{safe_name}");
         let mount_path = format!("/cfgd-modules/{name}");
 
@@ -645,7 +641,7 @@ fn build_injection_patches(
         }
 
         for (name, _version, spec) in &script_modules {
-            let safe_name = sanitize_k8s_name(name);
+            let safe_name = cfgd_core::sanitize_k8s_name(name);
             let script_path = spec
                 .scripts
                 .post_apply
@@ -1280,13 +1276,6 @@ mod tests {
         // Should use $(PATH) expansion, not $(PATH_ORIG)
         assert!(patch_json.contains("/cfgd-modules/tools/bin:$(PATH)"));
         assert!(!patch_json.contains("_ORIG"));
-    }
-
-    #[test]
-    fn sanitize_k8s_name_handles_special_chars() {
-        assert_eq!(sanitize_k8s_name("my_Module"), "my-module");
-        assert_eq!(sanitize_k8s_name("simple"), "simple");
-        assert_eq!(sanitize_k8s_name("--leading--"), "leading");
     }
 
     #[test]

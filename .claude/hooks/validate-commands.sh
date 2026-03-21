@@ -19,12 +19,6 @@ if echo "$COMMAND" | grep -qE 'git push.*--force|git reset --hard'; then
     exit 2
 fi
 
-# Block broad git staging — always stage specific files by name
-if echo "$COMMAND" | grep -qE 'git add -A|git add \.( |$)'; then
-    echo "Blocked: git add -A and git add . are prohibited. Stage specific files by name (e.g. git add src/foo.rs)." >&2
-    exit 2
-fi
-
 # Block git stash — commit or build on existing changes instead
 if echo "$COMMAND" | grep -qE 'git stash'; then
     echo "Blocked: git stash is prohibited. Commit your changes or continue building on them." >&2

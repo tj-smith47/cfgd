@@ -320,6 +320,13 @@ pub struct FileState {
     pub oversized: bool,
 }
 
+/// Compute SHA256 hash of data and return as lowercase hex string.
+use sha2::Digest as _;
+
+pub fn sha256_hex(data: &[u8]) -> String {
+    format!("{:x}", sha2::Sha256::digest(data))
+}
+
 /// Atomically write content to a file using temp-file-then-rename.
 ///
 /// The temp file is created in the same directory as `target` to guarantee a
@@ -327,8 +334,6 @@ pub struct FileState {
 /// existing target file if one exists. Creates parent directories as needed.
 ///
 /// Returns the SHA256 hex digest of the written content.
-use sha2::Digest as _;
-
 pub fn atomic_write(
     target: &std::path::Path,
     content: &[u8],
@@ -347,7 +352,7 @@ pub fn atomic_write(
         let _ = tmp.as_file().set_permissions(meta.permissions());
     }
 
-    let hash = format!("{:x}", sha2::Sha256::digest(content));
+    let hash = sha256_hex(content);
 
     // persist() does atomic rename on Unix
     tmp.persist(target).map_err(|e| e.error)?;
@@ -411,7 +416,7 @@ pub fn capture_file_state(
     }
 
     let content = std::fs::read(path)?;
-    let hash = format!("{:x}", sha2::Sha256::digest(&content));
+    let hash = sha256_hex(&content);
 
     Ok(Some(FileState {
         content,

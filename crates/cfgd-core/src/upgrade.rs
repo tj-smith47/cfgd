@@ -7,7 +7,6 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
 use semver::Version;
-use sha2::{Digest, Sha256};
 
 use crate::errors::{Result, UpgradeError};
 
@@ -212,8 +211,7 @@ fn sha256_file(path: &Path) -> std::result::Result<String, UpgradeError> {
     let bytes = fs::read(path).map_err(|e| UpgradeError::DownloadFailed {
         message: format!("read {}: {}", path.display(), e),
     })?;
-    let hash = Sha256::digest(&bytes);
-    Ok(format!("{:x}", hash))
+    Ok(crate::sha256_hex(&bytes))
 }
 
 /// Download, verify checksum, extract, and atomically install the new binary.

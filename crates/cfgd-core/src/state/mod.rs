@@ -2,7 +2,6 @@ use std::path::{Path, PathBuf};
 
 use rusqlite::{Connection, params};
 use serde::Serialize;
-use sha2::{Digest, Sha256};
 
 use crate::errors::{Result, StateError};
 
@@ -1314,7 +1313,7 @@ impl StateStore {
 
 /// Compute SHA256 hash of a serializable plan for deduplication.
 pub fn plan_hash(data: &str) -> String {
-    format!("{:x}", Sha256::digest(data.as_bytes()))
+    crate::sha256_hex(data.as_bytes())
 }
 
 pub fn default_state_dir() -> Result<PathBuf> {

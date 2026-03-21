@@ -9,7 +9,6 @@ use std::time::{Duration, Instant};
 
 use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
 use tokio::net::UnixListener;
 use tokio::sync::{Mutex, mpsc};
@@ -266,14 +265,14 @@ fn generate_device_id() -> std::result::Result<String, String> {
         .map_err(|e| format!("failed to get hostname: {}", e))?
         .to_string_lossy()
         .to_string();
-    Ok(format!("{:x}", Sha256::digest(host.as_bytes())))
+    Ok(crate::sha256_hex(host.as_bytes()))
 }
 
 /// Compute a SHA256 hash of the resolved profile serialized to YAML.
 fn compute_config_hash(resolved: &ResolvedProfile) -> std::result::Result<String, String> {
     let yaml = serde_yaml::to_string(&resolved.merged.packages)
         .map_err(|e| format!("failed to serialize profile for hashing: {}", e))?;
-    Ok(format!("{:x}", Sha256::digest(yaml.as_bytes())))
+    Ok(crate::sha256_hex(yaml.as_bytes()))
 }
 
 /// Perform a server check-in. Returns true if the server indicates config has changed.
@@ -1420,7 +1419,7 @@ fn hash_resources(resources: &HashSet<String>) -> String {
     let mut sorted: Vec<&String> = resources.iter().collect();
     sorted.sort();
     let combined: String = sorted.iter().map(|r| format!("{}\n", r)).collect();
-    format!("{:x}", Sha256::digest(combined.as_bytes()))
+    crate::sha256_hex(combined.as_bytes())
 }
 
 /// Process auto-apply decisions for source items. Returns the set of resource paths

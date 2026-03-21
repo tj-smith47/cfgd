@@ -176,7 +176,7 @@ pub(super) fn cmd_profile_switch(cli: &Cli, name: &str, printer: &Printer) -> an
     cfg.spec.profile = Some(name.to_string());
 
     let yaml = serde_yaml::to_string(&cfg)?;
-    std::fs::write(&config_path, &yaml)?;
+    cfgd_core::atomic_write_str(&config_path, &yaml)?;
 
     printer.success(&format!("Switched profile: {} → {}", old_profile, name));
     printer.info(MSG_RUN_APPLY);
@@ -495,7 +495,7 @@ pub(super) fn cmd_profile_create(
     };
 
     let yaml = serde_yaml::to_string(&doc)?;
-    std::fs::write(&profile_path, &yaml)?;
+    cfgd_core::atomic_write_str(&profile_path, &yaml)?;
 
     printer.success(&format!(
         "Created profile '{}' at {}",
@@ -610,14 +610,14 @@ pub(super) fn cmd_profile_update(
             // Remote git URL — fetch, lock, and add to profile
             // Save profile first with current changes, then delegate to remote add
             let yaml = serde_yaml::to_string(&doc)?;
-            std::fs::write(&profile_path, &yaml)?;
+            cfgd_core::atomic_write_str(&profile_path, &yaml)?;
             module::cmd_module_add_remote(cli, printer, m, None, false, false)?;
             // Reload profile (remote add may have modified it)
             doc = config::load_profile(&profile_path)?;
             changes += 1;
         } else if modules::is_registry_ref(m) {
             let yaml = serde_yaml::to_string(&doc)?;
-            std::fs::write(&profile_path, &yaml)?;
+            cfgd_core::atomic_write_str(&profile_path, &yaml)?;
             module::cmd_module_add_from_registry(cli, printer, m, false, false)?;
             doc = config::load_profile(&profile_path)?;
             changes += 1;
@@ -931,7 +931,7 @@ pub(super) fn cmd_profile_update(
     }
 
     let yaml = serde_yaml::to_string(&doc)?;
-    std::fs::write(&profile_path, &yaml)?;
+    cfgd_core::atomic_write_str(&profile_path, &yaml)?;
     printer.newline();
     printer.success(&format!(
         "Updated profile '{}' ({} change(s))",

@@ -1,8 +1,6 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use sha2::Digest;
-
 use futures::StreamExt;
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::OwnerReference;
 use kube::api::{Api, ListParams, Patch, PatchParams};
@@ -20,8 +18,9 @@ use crate::crds::{
     ConfigPolicy, ConfigPolicySpec, ConfigPolicyStatus, DriftAlert, DriftAlertStatus,
     DriftSeverity, LabelSelector, MachineConfig, MachineConfigSpec, MachineConfigStatus, Module,
     ModuleRef, ModuleSignature, ModuleSpec, ModuleStatus, PackageRef, SelectorOperator,
-    is_valid_oci_reference, is_valid_pem_public_key, version_satisfies,
+    is_valid_oci_reference, is_valid_pem_public_key,
 };
+use cfgd_core::version_satisfies;
 use crate::errors::OperatorError;
 use crate::metrics::{DriftLabels, Metrics, PolicyLabels, ReconcileLabels};
 
@@ -1863,7 +1862,7 @@ fn evaluate_module_verification(signature: &Option<ModuleSignature>) -> ModuleVe
                 match &cosign.public_key {
                     Some(pk) if is_valid_pem_public_key(pk) => {
                         let fingerprint =
-                            format!("sha256:{:x}", sha2::Sha256::digest(pk.as_bytes()));
+                            format!("sha256:{}", cfgd_core::sha256_hex(pk.as_bytes()));
                         ModuleVerificationResult {
                             status: "True",
                             reason: "SignatureConfigured",

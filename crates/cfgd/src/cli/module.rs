@@ -326,7 +326,7 @@ pub(super) fn load_module_document(
 
 fn save_module_document(doc: &config::ModuleDocument, path: &Path) -> anyhow::Result<()> {
     let yaml = serde_yaml::to_string(doc)?;
-    std::fs::write(path, &yaml)?;
+    cfgd_core::atomic_write_str(path, &yaml)?;
     Ok(())
 }
 
@@ -1342,7 +1342,7 @@ pub(super) fn cmd_module_add_remote(
             if !doc.spec.modules.contains(&profile_module_ref) {
                 doc.spec.modules.push(profile_module_ref.clone());
                 let yaml = serde_yaml::to_string(&doc)?;
-                std::fs::write(&profile_path, &yaml)?;
+                cfgd_core::atomic_write_str(&profile_path, &yaml)?;
                 printer.success(&format!(
                     "Added module '{}' to profile '{}'",
                     profile_module_ref, profile_name
@@ -1727,7 +1727,7 @@ pub(super) fn cmd_module_registry_add(
     }
 
     let yaml = serde_yaml::to_string(&doc)?;
-    std::fs::write(&cli.config, &yaml)?;
+    cfgd_core::atomic_write_str(&cli.config, &yaml)?;
 
     printer.success(&format!(
         "Added module registry '{}' ({})",
@@ -1763,7 +1763,7 @@ pub(super) fn cmd_module_registry_remove(
         registries.retain(|s| s.get("name").and_then(|v| v.as_str()) != Some(name));
         if registries.len() < before {
             let yaml = serde_yaml::to_string(&doc)?;
-            std::fs::write(&cli.config, &yaml)?;
+            cfgd_core::atomic_write_str(&cli.config, &yaml)?;
             printer.success(&format!("Removed module registry '{}'", name));
 
             // Warn about profile references that now point to a removed registry
@@ -1837,7 +1837,7 @@ pub(super) fn cmd_module_registry_rename(
         }
     }
     let yaml = serde_yaml::to_string(&doc)?;
-    std::fs::write(&cli.config, &yaml)?;
+    cfgd_core::atomic_write_str(&cli.config, &yaml)?;
 
     // Cascade to profiles: old_name/module → new_name/module
     let profiles_dir = cli
@@ -1868,7 +1868,7 @@ pub(super) fn cmd_module_registry_rename(
             }
             if changed {
                 let yaml = serde_yaml::to_string(&profile)?;
-                std::fs::write(&path, &yaml)?;
+                cfgd_core::atomic_write_str(&path, &yaml)?;
             }
         }
     }

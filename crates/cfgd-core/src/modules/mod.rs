@@ -10,7 +10,6 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 
 use serde::Serialize;
-use sha2::{Digest, Sha256};
 
 use crate::config::{EnvVar, ModulePackageEntry, ModuleSpec, ShellAlias, parse_module};
 use crate::errors::{ConfigError, ModuleError, Result};
@@ -579,7 +578,7 @@ pub fn parse_git_source(source: &str) -> Result<GitSource> {
 /// Compute the cache directory for a git source URL.
 /// Uses SHA-256 hash of the repo URL for uniqueness.
 pub fn git_cache_dir(cache_base: &Path, repo_url: &str) -> PathBuf {
-    let hash = format!("{:x}", Sha256::digest(repo_url.as_bytes()));
+    let hash = crate::sha256_hex(repo_url.as_bytes());
     cache_base.join(&hash[..32])
 }
 
@@ -878,7 +877,7 @@ pub fn hash_module_contents(module_dir: &Path) -> Result<String> {
         hasher_input.push(0);
     }
 
-    Ok(format!("sha256:{:x}", Sha256::digest(&hasher_input)))
+    Ok(format!("sha256:{}", crate::sha256_hex(&hasher_input)))
 }
 
 fn collect_files_for_hash(

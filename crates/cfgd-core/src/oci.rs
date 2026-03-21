@@ -9,7 +9,6 @@ use std::io::Read;
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 
 use crate::errors::OciError;
 
@@ -537,7 +536,7 @@ fn authenticated_request(
 // ---------------------------------------------------------------------------
 
 fn sha256_digest(data: &[u8]) -> String {
-    format!("sha256:{:x}", Sha256::digest(data))
+    format!("sha256:{}", crate::sha256_hex(data))
 }
 
 /// Upload a blob to the registry via the monolithic upload flow.

@@ -9,7 +9,6 @@ use axum::routing::{delete, get, post, put};
 use axum::{Extension, Json, Router};
 use futures::stream::Stream;
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 use tokio_stream::StreamExt;
 use tokio_stream::wrappers::BroadcastStream;
 
@@ -262,7 +261,7 @@ pub fn router(state: SharedState) -> Router<SharedState> {
 
 /// Hash a token or API key for storage.
 fn hash_token(token: &str) -> String {
-    format!("{:x}", Sha256::digest(token.as_bytes()))
+    cfgd_core::sha256_hex(token.as_bytes())
 }
 
 /// Generate a cryptographically random token with a given prefix.

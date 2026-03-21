@@ -3,7 +3,6 @@ use std::path::PathBuf;
 use std::str::FromStr;
 
 use serde::Serialize;
-use sha2::{Digest, Sha256};
 
 use crate::config::{MergedProfile, ResolvedProfile, ScriptSpec};
 use crate::errors::Result;
@@ -418,13 +417,8 @@ impl<'a> Reconciler<'a> {
         profile_aliases: &[crate::config::ShellAlias],
         modules: &[ResolvedModule],
     ) -> (Vec<Action>, Vec<String>) {
-        // Merge: profile env first, then module env wins on conflict by name
-        let mut merged: Vec<crate::config::EnvVar> = profile_env.to_vec();
-        let mut merged_aliases: Vec<crate::config::ShellAlias> = profile_aliases.to_vec();
-        for module in modules {
-            crate::merge_env(&mut merged, &module.env);
-            crate::merge_aliases(&mut merged_aliases, &module.aliases);
-        }
+        let (merged, merged_aliases) =
+            merge_module_env_aliases(profile_env, profile_aliases, modules);
 
         if merged.is_empty() && merged_aliases.is_empty() {
             return (Vec::new(), Vec::new());
@@ -651,7 +645,7 @@ impl<'a> Reconciler<'a> {
                     })
                     .collect();
                 pkg_parts.sort();
-                format!("{:x}", Sha256::digest(pkg_parts.join("|").as_bytes()))
+                crate::sha256_hex(pkg_parts.join("|").as_bytes())
             };
 
             // Hash the file targets
@@ -662,7 +656,7 @@ impl<'a> Reconciler<'a> {
                     .map(|f| format!("{}:{}", f.source.display(), f.target.display()))
                     .collect();
                 file_parts.sort();
-                format!("{:x}", Sha256::digest(file_parts.join("|").as_bytes()))
+                crate::sha256_hex(file_parts.join("|").as_bytes())
             };
 
             // Collect git source info
@@ -1416,7 +1410,7 @@ impl<'a> Reconciler<'a> {
                     // Record in module file manifest
                     let hash = if target.exists() && !target.is_symlink() {
                         let bytes = std::fs::read(&target).unwrap_or_default();
-                        format!("{:x}", sha2::Sha256::digest(&bytes))
+                        crate::sha256_hex(&bytes)
                     } else {
                         String::new()
                     };
@@ -1686,6 +1680,20 @@ pub struct VerifyResult {
     pub actual: String,
 }
 
+fn merge_module_env_aliases(
+    profile_env: &[crate::config::EnvVar],
+    profile_aliases: &[crate::config::ShellAlias],
+    modules: &[ResolvedModule],
+) -> (Vec<crate::config::EnvVar>, Vec<crate::config::ShellAlias>) {
+    let mut merged = profile_env.to_vec();
+    let mut merged_aliases = profile_aliases.to_vec();
+    for module in modules {
+        crate::merge_env(&mut merged, &module.env);
+        crate::merge_aliases(&mut merged_aliases, &module.aliases);
+    }
+    (merged, merged_aliases)
+}
+
 /// Verify env file and shell rc source line match expected state.
 fn verify_env(
     profile_env: &[crate::config::EnvVar],
@@ -1694,13 +1702,8 @@ fn verify_env(
     state: &StateStore,
     results: &mut Vec<VerifyResult>,
 ) {
-    // Merge profile + module env and aliases (same logic as plan_env)
-    let mut merged: Vec<crate::config::EnvVar> = profile_env.to_vec();
-    let mut merged_aliases: Vec<crate::config::ShellAlias> = profile_aliases.to_vec();
-    for module in modules {
-        crate::merge_env(&mut merged, &module.env);
-        crate::merge_aliases(&mut merged_aliases, &module.aliases);
-    }
+    let (merged, merged_aliases) =
+        merge_module_env_aliases(profile_env, profile_aliases, modules);
 
     if merged.is_empty() && merged_aliases.is_empty() {
         return;
@@ -2090,7 +2093,7 @@ fn strip_shell_quotes(s: &str) -> &str {
 fn content_hash_if_exists(path: &std::path::Path) -> Option<String> {
     std::fs::read(path)
         .ok()
-        .map(|bytes| format!("{:x}", Sha256::digest(&bytes)))
+        .map(|bytes| crate::sha256_hex(&bytes))
 }
 
 /// Append source provenance suffix for non-local origins.

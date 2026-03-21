@@ -1591,7 +1591,7 @@ impl cfgd_core::daemon::DaemonHooks for WorkstationDaemonHooks {
     }
 
     fn expand_tilde(&self, path: &std::path::Path) -> std::path::PathBuf {
-        crate::files::expand_tilde(path)
+        cfgd_core::expand_tilde(path)
     }
 }
 
@@ -5365,7 +5365,7 @@ fn add_source_to_config(config_path: &Path, source: &config::SourceSpec) -> anyh
     seq.push(source_value);
 
     let output = serde_yaml::to_string(&raw)?;
-    std::fs::write(config_path, output)?;
+    cfgd_core::atomic_write_str(config_path, &output)?;
 
     Ok(())
 }
@@ -5391,7 +5391,7 @@ fn remove_source_from_config(config_path: &Path, name: &str) -> anyhow::Result<(
     }
 
     let output = serde_yaml::to_string(&raw)?;
-    std::fs::write(config_path, output)?;
+    cfgd_core::atomic_write_str(config_path, &output)?;
 
     Ok(())
 }
@@ -5491,7 +5491,7 @@ where
         .ok_or_else(|| anyhow::anyhow!("source '{}' not found in config file", source_name))?;
     f(source)?;
     let output = serde_yaml::to_string(&raw)?;
-    std::fs::write(config_path, output)?;
+    cfgd_core::atomic_write_str(config_path, &output)?;
     Ok(())
 }
 
@@ -6056,11 +6056,7 @@ fn cmd_checkin(
     // Compute config hash
     let config_yaml = serde_yaml::to_string(&resolved.merged.system)
         .map_err(|e| anyhow::anyhow!("failed to serialize system config: {}", e))?;
-    let config_hash = {
-        use sha2::{Digest, Sha256};
-        let hash = Sha256::digest(config_yaml.as_bytes());
-        format!("{:x}", hash)
-    };
+    let config_hash = cfgd_core::sha256_hex(config_yaml.as_bytes());
 
     // Check in
     let resp = client

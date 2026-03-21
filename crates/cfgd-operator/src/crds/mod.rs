@@ -618,9 +618,6 @@ pub(crate) fn is_valid_pem_public_key(key: &str) -> bool {
         && trimmed.ends_with("-----END PUBLIC KEY-----")
 }
 
-// Re-export shared version utilities from cfgd-core
-pub use cfgd_core::version_satisfies;
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -735,37 +732,6 @@ mod tests {
     }
 
     #[test]
-    fn parse_loose_version_full_semver() {
-        assert!(cfgd_core::parse_loose_version("1.28.3").is_some());
-        assert!(cfgd_core::parse_loose_version("0.1.0").is_some());
-    }
-
-    #[test]
-    fn parse_loose_version_two_part() {
-        assert!(cfgd_core::parse_loose_version("1.28").is_some());
-    }
-
-    #[test]
-    fn parse_loose_version_single_part() {
-        assert!(cfgd_core::parse_loose_version("1").is_some());
-    }
-
-    #[test]
-    fn parse_loose_version_rejects_garbage() {
-        assert!(cfgd_core::parse_loose_version("abc").is_none());
-        assert!(cfgd_core::parse_loose_version("").is_none());
-        assert!(cfgd_core::parse_loose_version("1.2.3.4").is_none());
-    }
-
-    #[test]
-    fn version_satisfies_basic() {
-        assert!(version_satisfies("1.28.3", ">=1.28"));
-        assert!(!version_satisfies("1.27.0", ">=1.28"));
-        assert!(version_satisfies("2.40.1", "~2.40"));
-        assert!(!version_satisfies("2.39.0", "~2.40"));
-    }
-
-    #[test]
     fn condition_has_observed_generation() {
         let c = Condition {
             condition_type: "Ready".to_string(),
@@ -776,13 +742,6 @@ mod tests {
             observed_generation: Some(1),
         };
         assert_eq!(c.observed_generation, Some(1));
-    }
-
-    #[test]
-    fn version_satisfies_loose() {
-        assert!(version_satisfies("1.28", ">=1.28"));
-        assert!(version_satisfies("2", ">=1.28"));
-        assert!(!version_satisfies("1", ">=1.28"));
     }
 
     #[test]

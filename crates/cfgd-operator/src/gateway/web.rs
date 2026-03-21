@@ -4,6 +4,8 @@ use axum::http::HeaderMap;
 use axum::response::Html;
 use axum::routing::get;
 
+use cfgd_core::xml_escape;
+
 use super::api::{SharedState, extract_bearer_token};
 use super::errors::GatewayError;
 use super::fleet;
@@ -127,15 +129,15 @@ async fn dashboard(State(state): State<SharedState>) -> Result<Html<String>, Gat
                 <td>{last_checkin}</td>
                 <td><code>{hash}</code></td>
             </tr>"#,
-            id_raw = html_escape(&d.id),
-            id = html_escape(&d.id),
-            hostname = html_escape(&d.hostname),
-            os = html_escape(&d.os),
-            arch = html_escape(&d.arch),
+            id_raw = xml_escape(&d.id),
+            id = xml_escape(&d.id),
+            hostname = xml_escape(&d.hostname),
+            os = xml_escape(&d.os),
+            arch = xml_escape(&d.arch),
             status_class = status_class,
-            status = html_escape(d.status.as_str()),
-            last_checkin = html_escape(&d.last_checkin),
-            hash = html_escape(&d.config_hash),
+            status = xml_escape(d.status.as_str()),
+            last_checkin = xml_escape(&d.last_checkin),
+            hash = xml_escape(&d.config_hash),
         ));
     }
 
@@ -241,7 +243,7 @@ async fn device_detail(
                 <h2>Desired Configuration</h2>
                 <pre><code>{}</code></pre>
             </div>"#,
-            html_escape(&formatted)
+            xml_escape(&formatted)
         )
     } else {
         r#"<div class="section">
@@ -263,9 +265,9 @@ async fn device_detail(
                 let actual = d.get("actual").and_then(|v| v.as_str()).unwrap_or("?");
                 format!(
                     "{}: {} &rarr; {}",
-                    html_escape(field),
-                    html_escape(expected),
-                    html_escape(actual)
+                    xml_escape(field),
+                    xml_escape(expected),
+                    xml_escape(actual)
                 )
             })
             .collect();
@@ -275,10 +277,10 @@ async fn device_detail(
                 <td>{id}</td>
                 <td>{details}</td>
             </tr>"#,
-            timestamp = html_escape(&e.timestamp),
-            id = html_escape(&e.id),
+            timestamp = xml_escape(&e.timestamp),
+            id = xml_escape(&e.id),
             details = if detail_summary.is_empty() {
-                html_escape(&e.details)
+                xml_escape(&e.details)
             } else {
                 detail_summary.join("<br>")
             },
@@ -317,8 +319,8 @@ async fn device_detail(
                 <td><code>{config_hash}</code></td>
                 <td>{changed}</td>
             </tr>"#,
-            timestamp = html_escape(&c.timestamp),
-            config_hash = html_escape(&c.config_hash),
+            timestamp = xml_escape(&c.timestamp),
+            config_hash = xml_escape(&c.config_hash),
             changed = changed_badge,
         ));
     }
@@ -342,7 +344,7 @@ async fn device_detail(
         )
     };
 
-    let device_id_js = html_escape(&device.id);
+    let device_id_js = xml_escape(&device.id);
 
     let html = format!(
         r#"<!DOCTYPE html>
@@ -558,15 +560,15 @@ async fn device_detail(
 </body>
 </html>"#,
         styles = COMMON_STYLES,
-        hostname = html_escape(&device.hostname),
-        device_id = html_escape(&device.id),
+        hostname = xml_escape(&device.hostname),
+        device_id = xml_escape(&device.id),
         device_id_js = device_id_js,
         status_class = status_class,
-        status = html_escape(device.status.as_str()),
-        os = html_escape(&device.os),
-        arch = html_escape(&device.arch),
-        last_checkin = html_escape(&device.last_checkin),
-        config_hash = html_escape(&device.config_hash),
+        status = xml_escape(device.status.as_str()),
+        os = xml_escape(&device.os),
+        arch = xml_escape(&device.arch),
+        last_checkin = xml_escape(&device.last_checkin),
+        config_hash = xml_escape(&device.config_hash),
         desired_config_html = desired_config_html,
         drift_count = drift_events.len(),
         drift_html = drift_html,
@@ -592,7 +594,7 @@ async fn fleet_events(State(state): State<SharedState>) -> Result<Html<String>, 
             let parsed: Vec<serde_json::Value> =
                 serde_json::from_str(&e.summary).unwrap_or_default();
             if parsed.is_empty() {
-                html_escape(&e.summary)
+                xml_escape(&e.summary)
             } else {
                 parsed
                     .iter()
@@ -602,16 +604,16 @@ async fn fleet_events(State(state): State<SharedState>) -> Result<Html<String>, 
                         let actual = d.get("actual").and_then(|v| v.as_str()).unwrap_or("?");
                         format!(
                             "{}: {} &rarr; {}",
-                            html_escape(field),
-                            html_escape(expected),
-                            html_escape(actual)
+                            xml_escape(field),
+                            xml_escape(expected),
+                            xml_escape(actual)
                         )
                     })
                     .collect::<Vec<_>>()
                     .join(", ")
             }
         } else {
-            format!("<code>{}</code>", html_escape(&e.summary))
+            format!("<code>{}</code>", xml_escape(&e.summary))
         };
         event_rows.push_str(&format!(
             r#"<tr>
@@ -620,11 +622,11 @@ async fn fleet_events(State(state): State<SharedState>) -> Result<Html<String>, 
                 <td><span class="status {type_class}">{event_type}</span></td>
                 <td>{summary}</td>
             </tr>"#,
-            timestamp = html_escape(&e.timestamp),
-            device_id_raw = html_escape(&e.device_id),
-            device_id = html_escape(&e.device_id),
+            timestamp = xml_escape(&e.timestamp),
+            device_id_raw = xml_escape(&e.device_id),
+            device_id = xml_escape(&e.device_id),
             type_class = type_class,
-            event_type = html_escape(&e.event_type),
+            event_type = xml_escape(&e.event_type),
             summary = summary_display,
         ));
     }
@@ -658,7 +660,7 @@ async fn fleet_events(State(state): State<SharedState>) -> Result<Html<String>, 
         .map(|id| {
             format!(
                 r#"<option value="{id}">{id}</option>"#,
-                id = html_escape(id)
+                id = xml_escape(id)
             )
         })
         .collect::<Vec<_>>()
@@ -819,43 +821,9 @@ fn status_to_class(status: &str) -> &'static str {
     }
 }
 
-fn html_escape(s: &str) -> String {
-    s.replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('"', "&quot;")
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    // --- html_escape ---
-
-    #[test]
-    fn html_escape_ampersand() {
-        assert_eq!(html_escape("a&b"), "a&amp;b");
-    }
-
-    #[test]
-    fn html_escape_lt_gt() {
-        assert_eq!(html_escape("<script>"), "&lt;script&gt;");
-    }
-
-    #[test]
-    fn html_escape_quotes() {
-        assert_eq!(html_escape(r#"say "hello""#), "say &quot;hello&quot;");
-    }
-
-    #[test]
-    fn html_escape_no_op() {
-        assert_eq!(html_escape("plain text"), "plain text");
-    }
-
-    #[test]
-    fn html_escape_all_special() {
-        assert_eq!(html_escape(r#"&<>""#), "&amp;&lt;&gt;&quot;");
-    }
 
     // --- status_to_class ---
 

@@ -58,7 +58,7 @@ pub(super) fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result
                     overrides: config::ThemeOverrides::default(),
                 });
                 let yaml = serde_yaml::to_string(&cfg)?;
-                std::fs::write(&config_path, &yaml)?;
+                cfgd_core::atomic_write_str(&config_path, &yaml)?;
             }
         }
     } else {
@@ -146,7 +146,7 @@ pub(super) fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result
                 let mut cfg = config::load_config(&config_path)?;
                 cfg.spec.profile = Some(name.to_string());
                 let yaml = serde_yaml::to_string(&cfg)?;
-                std::fs::write(&config_path, &yaml)?;
+                cfgd_core::atomic_write_str(&config_path, &yaml)?;
                 printer.success(&format!("Set active profile: {}", name));
                 name.to_string()
             } else {
