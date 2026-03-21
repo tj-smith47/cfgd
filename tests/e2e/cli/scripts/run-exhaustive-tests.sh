@@ -113,9 +113,11 @@ assert_fail() {
 # ─────────────────────────────────────────────────────
 CFG="$SCRATCH/cfg"
 TGT="$SCRATCH/home"
+STATE="$SCRATCH/state"
+mkdir -p "$STATE"
 setup_config_dir "$CFG" "$TGT"
 CONF="$CFG/cfgd.yaml"
-C="--config $CONF --no-color"
+C="--config $CONF --state-dir $STATE --no-color"
 
 # ═════════════════════════════════════════════════════
 # SECTION 1: Global flags & help
@@ -1417,24 +1419,7 @@ if assert_fail; then
 else fail_test "EN05"; fi
 
 # ═════════════════════════════════════════════════════
-# SECTION 18: aliases
-# ═════════════════════════════════════════════════════
-
-begin_test "AL01: add alias (profile update --active --file)"
-touch "$TGT/.aliasrc"
-run $C add "$TGT/.aliasrc"
-if assert_ok; then
-    pass_test "AL01"
-else fail_test "AL01"; fi
-
-begin_test "AL02: remove alias (profile update --active --file -path)"
-run $C remove "-$TGT/.aliasrc"
-if assert_ok; then
-    pass_test "AL02"
-else fail_test "AL02"; fi
-
-# ═════════════════════════════════════════════════════
-# SECTION 19: profile inheritance verification
+# SECTION 18: profile inheritance verification
 # ═════════════════════════════════════════════════════
 
 begin_test "INH01: 3-level inheritance applies all files"

@@ -3918,7 +3918,7 @@ fn cmd_doctor(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
     {
         printer.newline();
         printer.subheader("Config Sources");
-        let cache_dir = source_cache_dir().ok();
+        let cache_dir = source_cache_dir(cli).ok();
         for source in &cfg.spec.sources {
             let cached = cache_dir.as_ref().and_then(|cd| {
                 if cd.join(&source.name).exists() {
@@ -4334,7 +4334,7 @@ fn cmd_sync(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
         printer.newline();
         printer.subheader("Sources");
 
-        let cache_dir = source_cache_dir()?;
+        let cache_dir = source_cache_dir(cli)?;
         let mut mgr = SourceManager::new(&cache_dir);
         mgr.set_allow_unsigned(cfg.spec.security.as_ref().is_some_and(|s| s.allow_unsigned));
         let mut changes_detected = false;
@@ -4456,8 +4456,12 @@ fn which(command: &str) -> bool {
 
 // --- Source management commands (Phase 9) ---
 
-fn source_cache_dir() -> anyhow::Result<std::path::PathBuf> {
-    SourceManager::default_cache_dir().map_err(|e| anyhow::anyhow!(e))
+fn source_cache_dir(cli: &Cli) -> anyhow::Result<std::path::PathBuf> {
+    if let Some(ref state_dir) = cli.state_dir {
+        Ok(state_dir.join("sources"))
+    } else {
+        SourceManager::default_cache_dir().map_err(|e| anyhow::anyhow!(e))
+    }
 }
 
 fn cmd_source_add(cli: &Cli, printer: &Printer, args: &SourceAddArgs) -> anyhow::Result<()> {
@@ -4491,7 +4495,7 @@ fn cmd_source_add(cli: &Cli, printer: &Printer, args: &SourceAddArgs) -> anyhow:
     }
 
     // Clone and parse the source
-    let cache_dir = source_cache_dir()?;
+    let cache_dir = source_cache_dir(cli)?;
     let mut mgr = SourceManager::new(&cache_dir);
     if config_path.exists()
         && let Ok(existing_cfg) = config::load_config(&config_path)
@@ -4886,7 +4890,7 @@ fn cmd_source_show(cli: &Cli, printer: &Printer, name: &str) -> anyhow::Result<(
     }
 
     // Load and show manifest from cache
-    let cache_dir = source_cache_dir()?;
+    let cache_dir = source_cache_dir(cli)?;
     let mut mgr = SourceManager::new(&cache_dir);
     mgr.set_allow_unsigned(cfg.spec.security.as_ref().is_some_and(|s| s.allow_unsigned));
     // Populate the manager from the cached source on disk
@@ -5004,7 +5008,7 @@ fn cmd_source_remove(
     state.remove_source_config_hash(name)?;
 
     // Remove cached data
-    let cache_dir = source_cache_dir()?;
+    let cache_dir = source_cache_dir(cli)?;
     let mut mgr = SourceManager::new(&cache_dir);
     let _ = mgr.remove_source(name);
 
@@ -5023,7 +5027,7 @@ fn cmd_source_update(cli: &Cli, printer: &Printer, name: Option<&str>) -> anyhow
         return Ok(());
     }
 
-    let cache_dir = source_cache_dir()?;
+    let cache_dir = source_cache_dir(cli)?;
     let mut mgr = SourceManager::new(&cache_dir);
     mgr.set_allow_unsigned(cfg.spec.security.as_ref().is_some_and(|s| s.allow_unsigned));
     let state = open_state_store(cli.state_dir.as_deref())?;
@@ -5929,7 +5933,7 @@ fn compose_with_sources(
         });
     }
 
-    let cache_dir = source_cache_dir()?;
+    let cache_dir = source_cache_dir(cli)?;
     let mut mgr = SourceManager::new(&cache_dir);
     mgr.set_allow_unsigned(cfg.spec.security.as_ref().is_some_and(|s| s.allow_unsigned));
     mgr.load_sources(&cfg.spec.sources, printer)?;

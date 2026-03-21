@@ -71,11 +71,9 @@ if [ -n "$CSI_IMAGE_LOADED" ]; then
         --set csiDriver.image.repository=cfgd-csi \
         --set csiDriver.image.tag=e2e-test \
         --set csiDriver.image.pullPolicy=Never \
+        --set "csiDriver.extraEnv[0].name=OCI_INSECURE_REGISTRIES" \
+        --set "csiDriver.extraEnv[0].value=${REGISTRY_NAME}:5000" \
         --wait --timeout=120s 2>&1 || echo "WARN: CSI driver deployment failed"
-    # Configure CSI driver to use HTTP for the in-cluster test registry
-    kubectl set env daemonset/cfgd-csi -n cfgd-system -c cfgd-csi \
-        "OCI_INSECURE_REGISTRIES=${REGISTRY_NAME}:5000" 2>/dev/null || true
-    kubectl rollout status daemonset/cfgd-csi -n cfgd-system --timeout=60s 2>/dev/null || true
     CSI_AVAILABLE=true
 else
     echo "WARN: cfgd-csi image not loaded, CSI tests will be skipped"
@@ -100,11 +98,7 @@ done
 echo "All components are running"
 
 # Build cfgd binary on host for kubectl plugin and OCI tests
-if [ ! -f "$REPO_ROOT/target/release/cfgd" ]; then
-    echo "Building cfgd binary..."
-    cargo build --release --manifest-path "$REPO_ROOT/Cargo.toml" --bin cfgd 2>/dev/null
-fi
-CFGD_BIN="$REPO_ROOT/target/release/cfgd"
+ensure_cfgd_binary
 
 # Create kubectl-cfgd symlink so cfgd activates plugin mode via argv[0]
 KUBECTL_CFGD="/tmp/kubectl-cfgd"
@@ -334,8 +328,8 @@ fi
 # =================================================================
 begin_test "T08: Policy sees drifted MachineConfig"
 
-DRIFT_STATUS=$(kubectl get machineconfig "mc-${DEVICE_1}" -n cfgd-system \
-    -o jsonpath='{.status.conditions[?(@.type=="DriftDetected")].status}' 2>/dev/null || echo "")
+# Reuse DRIFT_DETECTED from T07; only fetch reason (one kubectl call instead of two)
+DRIFT_STATUS="$DRIFT_DETECTED"
 DRIFT_REASON=$(kubectl get machineconfig "mc-${DEVICE_1}" -n cfgd-system \
     -o jsonpath='{.status.conditions[?(@.type=="DriftDetected")].reason}' 2>/dev/null || echo "")
 
@@ -460,15 +454,8 @@ EOF
         # Wait for pod to be running (CSI driver needs to pull and mount)
         echo "  Waiting for pod to be running..."
         POD_RUNNING=false
-        for i in $(seq 1 90); do
-            PHASE=$(kubectl get pod csi-mount-test -n e2e-csi-test \
-                -o jsonpath='{.status.phase}' 2>/dev/null || echo "")
-            if [ "$PHASE" = "Running" ]; then
-                POD_RUNNING=true
-                break
-            fi
-            sleep 2
-        done
+        wait_for_k8s_field pod csi-mount-test e2e-csi-test \
+            '{.status.phase}' Running 180 > /dev/null && POD_RUNNING=true || true
 
         if $POD_RUNNING; then
             # Verify module content is mounted

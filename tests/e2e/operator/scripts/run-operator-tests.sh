@@ -510,14 +510,8 @@ EOF
 echo "  Empty pkg result: $(echo "$RESULT_EMPTY_PKG" | tail -1)"
 
 PASS=true
-if ! echo "$RESULT_INVALID_OCI" | grep -qi "denied\|error\|invalid\|rejected"; then
-    echo "  WARN: Invalid OCI ref was not rejected by webhook"
-    PASS=false
-fi
-if ! echo "$RESULT_BAD_PEM" | grep -qi "denied\|error\|invalid\|rejected\|pem\|public.key"; then
-    echo "  WARN: Bad PEM key was not rejected by webhook"
-    PASS=false
-fi
+assert_rejected "$RESULT_INVALID_OCI" "Invalid OCI ref" || PASS=false
+assert_rejected "$RESULT_BAD_PEM" "Bad PEM key" || PASS=false
 
 if $PASS; then
     pass_test "T12"
@@ -663,10 +657,7 @@ spec:
 EOF
 )
 echo "  Bad semver result: $(echo "$RESULT_BAD_SEMVER" | tail -1)"
-if ! echo "$RESULT_BAD_SEMVER" | grep -qi "denied\|error\|invalid\|rejected"; then
-    echo "  WARN: Invalid semver was not rejected"
-    PASS=false
-fi
+assert_rejected "$RESULT_BAD_SEMVER" "Invalid semver" || PASS=false
 
 # DriftAlert with empty deviceId
 RESULT_EMPTY_DEVICE=$(kubectl apply -n cfgd-system -f - 2>&1 <<EOF || true
@@ -687,10 +678,7 @@ spec:
 EOF
 )
 echo "  Empty deviceId result: $(echo "$RESULT_EMPTY_DEVICE" | tail -1)"
-if ! echo "$RESULT_EMPTY_DEVICE" | grep -qi "denied\|error\|invalid\|rejected"; then
-    echo "  WARN: Empty deviceId was not rejected"
-    PASS=false
-fi
+assert_rejected "$RESULT_EMPTY_DEVICE" "Empty deviceId" || PASS=false
 
 # MachineConfig with empty hostname
 RESULT_EMPTY_HOST=$(kubectl apply -n cfgd-system -f - 2>&1 <<EOF || true
@@ -707,10 +695,7 @@ spec:
 EOF
 )
 echo "  Empty hostname result: $(echo "$RESULT_EMPTY_HOST" | tail -1)"
-if ! echo "$RESULT_EMPTY_HOST" | grep -qi "denied\|error\|invalid\|rejected"; then
-    echo "  WARN: Empty hostname was not rejected"
-    PASS=false
-fi
+assert_rejected "$RESULT_EMPTY_HOST" "Empty hostname" || PASS=false
 
 if $PASS; then
     pass_test "T15"
@@ -885,12 +870,7 @@ create_test_module_dir "$TEST_MODULE_DIR" "e2e-oci-test" "1.0.0"
 
 OCI_REF="localhost:${REGISTRY_PORT}/cfgd-e2e/oci-test:v1.0"
 
-# Build cfgd binary if not already available
-if [ ! -f "$REPO_ROOT/target/release/cfgd" ]; then
-    echo "  Building cfgd..."
-    cargo build --release --manifest-path "$REPO_ROOT/Cargo.toml" --bin cfgd 2>/dev/null
-fi
-CFGD_BIN="$REPO_ROOT/target/release/cfgd"
+ensure_cfgd_binary
 
 # Push module to local registry
 echo "  Pushing module to ${OCI_REF}..."

@@ -112,6 +112,7 @@ csiDriver:
   nodeSelector: {}
   tolerations:
     - operator: Exists
+  extraEnv: []
   registrar:
     image:
       repository: registry.k8s.io/sig-storage/csi-node-driver-registrar

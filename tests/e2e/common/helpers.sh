@@ -202,11 +202,7 @@ SANEOF
 install_webhook_config() {
     local namespace="${1:-cfgd-system}"
 
-    # Create TLS Secret from generated certs
-    kubectl create secret tls cfgd-webhook-certs \
-        --cert="$WEBHOOK_CERT_DIR/tls.crt" \
-        --key="$WEBHOOK_CERT_DIR/tls.key" \
-        -n "$namespace" 2>/dev/null || \
+    # Create or update TLS Secret (idempotent via dry-run + apply)
     kubectl create secret tls cfgd-webhook-certs \
         --cert="$WEBHOOK_CERT_DIR/tls.crt" \
         --key="$WEBHOOK_CERT_DIR/tls.key" \
@@ -359,8 +355,9 @@ REGISTRY_PORT="${REGISTRY_PORT:-5001}"
 # Start a local OCI registry container accessible from host (localhost:$REGISTRY_PORT)
 # and from inside kind (cfgd-e2e-registry:5000).
 start_local_registry() {
-    if docker inspect "$REGISTRY_NAME" > /dev/null 2>&1; then
-        echo "  Registry $REGISTRY_NAME already running"
+    # Start or reuse existing registry (no TOCTOU — just try to start)
+    if docker start "$REGISTRY_NAME" > /dev/null 2>&1; then
+        echo "  Registry $REGISTRY_NAME already exists, started"
         return 0
     fi
 
@@ -462,6 +459,18 @@ wait_for_k8s_field() {
     return 1
 }
 
+# --- Build helpers ---
+
+# Ensure the cfgd binary is built (idempotent). Sets CFGD_BIN.
+ensure_cfgd_binary() {
+    if [ ! -f "$REPO_ROOT/target/release/cfgd" ]; then
+        echo "  Building cfgd..."
+        cargo build --release --manifest-path "$REPO_ROOT/Cargo.toml" --bin cfgd 2>/dev/null
+    fi
+    CFGD_BIN="$REPO_ROOT/target/release/cfgd"
+    export CFGD_BIN
+}
+
 # --- Assertion helpers ---
 
 assert_contains() {
@@ -493,6 +502,16 @@ assert_equals() {
         return 0
     fi
     echo "  ASSERT FAILED: expected='$expected' actual='$actual'"
+    return 1
+}
+
+assert_rejected() {
+    local output="$1"
+    local description="$2"
+    if echo "$output" | grep -qi "denied\|error\|invalid\|rejected"; then
+        return 0
+    fi
+    echo "  ASSERT FAILED: '$description' was not rejected by webhook"
     return 1
 }
 

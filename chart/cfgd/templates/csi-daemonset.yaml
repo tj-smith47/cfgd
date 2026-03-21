@@ -49,6 +49,9 @@ spec:
               value: "{{ .Values.csiDriver.metricsPort }}"
             - name: RUST_LOG
               value: "info"
+            {{- with .Values.csiDriver.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
           ports:
             - containerPort: {{ .Values.csiDriver.metricsPort }}
               name: metrics
