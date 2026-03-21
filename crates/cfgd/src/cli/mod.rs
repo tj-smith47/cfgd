@@ -417,17 +417,8 @@ pub enum Command {
 
     /// Manage the daemon
     Daemon {
-        /// Install as a system service
-        #[arg(long)]
-        install: bool,
-
-        /// Uninstall the system service
-        #[arg(long)]
-        uninstall: bool,
-
-        /// Show daemon status
-        #[arg(long)]
-        status: bool,
+        #[command(subcommand)]
+        command: Option<DaemonCommand>,
     },
 
     /// Manage secrets
@@ -694,6 +685,18 @@ pub enum SourceCommand {
         #[arg(long)]
         version: Option<String>,
     },
+}
+
+#[derive(Subcommand)]
+pub enum DaemonCommand {
+    /// Run daemon in foreground (default when no subcommand given)
+    Run,
+    /// Install as a system service (launchd on macOS, systemd on Linux)
+    Install,
+    /// Uninstall the system service
+    Uninstall,
+    /// Show daemon status
+    Status,
 }
 
 #[derive(Subcommand)]
@@ -1295,11 +1298,7 @@ pub fn execute(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
         },
         Command::Sync => cmd_sync(cli, printer),
         Command::Pull => cmd_pull(cli, printer),
-        Command::Daemon {
-            install,
-            uninstall,
-            status,
-        } => cmd_daemon(cli, printer, *install, *uninstall, *status),
+        Command::Daemon { command } => cmd_daemon(cli, printer, command.as_ref()),
         Command::Secret { command } => match command {
             SecretCommand::Encrypt { file } => cmd_secret_encrypt(cli, printer, file),
             SecretCommand::Decrypt { file } => cmd_secret_decrypt(cli, printer, file),
@@ -3999,23 +3998,12 @@ fn resolve_profile_name(cli: &Cli, name: Option<&str>, active: bool) -> anyhow::
     }
 }
 
-fn cmd_daemon(
-    cli: &Cli,
-    printer: &Printer,
-    install: bool,
-    uninstall: bool,
-    status: bool,
-) -> anyhow::Result<()> {
-    if status {
-        return cmd_daemon_status(printer);
-    }
-
-    if install {
-        return cmd_daemon_install(cli, printer);
-    }
-
-    if uninstall {
-        return cmd_daemon_uninstall(printer);
+fn cmd_daemon(cli: &Cli, printer: &Printer, command: Option<&DaemonCommand>) -> anyhow::Result<()> {
+    match command {
+        Some(DaemonCommand::Status) => return cmd_daemon_status(printer),
+        Some(DaemonCommand::Install) => return cmd_daemon_install(cli, printer),
+        Some(DaemonCommand::Uninstall) => return cmd_daemon_uninstall(printer),
+        Some(DaemonCommand::Run) | None => {}
     }
 
     // Run daemon in foreground
@@ -4040,9 +4028,29 @@ fn cmd_daemon(
 }
 
 fn cmd_daemon_status(printer: &Printer) -> anyhow::Result<()> {
+    let status = cfgd_core::daemon::query_daemon_status()?;
+
+    if printer.is_structured() {
+        match &status {
+            Some(s) => printer.write_structured(s),
+            None => printer.write_structured(&cfgd_core::daemon::DaemonStatusResponse {
+                running: false,
+                pid: 0,
+                uptime_secs: 0,
+                last_reconcile: None,
+                last_sync: None,
+                drift_count: 0,
+                sources: vec![],
+                update_available: None,
+                module_reconcile: vec![],
+            }),
+        };
+        return Ok(());
+    }
+
     printer.header("Daemon Status");
 
-    match cfgd_core::daemon::query_daemon_status()? {
+    match status {
         Some(status) => {
             printer.success("Daemon is running");
             printer.key_value("PID", &status.pid.to_string());
@@ -4085,7 +4093,7 @@ fn cmd_daemon_status(printer: &Printer) -> anyhow::Result<()> {
         None => {
             printer.warning("Daemon is not running");
             printer.info("Start with: cfgd daemon");
-            printer.info("Install as service: cfgd daemon --install");
+            printer.info("Install as service: cfgd daemon install");
         }
     }
 
@@ -6346,6 +6354,33 @@ spec:
                 .get_arguments()
                 .any(|a| a.get_id() == "install_daemon"),
             "init should have --install-daemon flag"
+        );
+    }
+
+    #[test]
+    fn cli_daemon_has_subcommands() {
+        use clap::CommandFactory;
+        let cmd = Cli::command();
+        let daemon_cmd = cmd
+            .get_subcommands()
+            .find(|c| c.get_name() == "daemon")
+            .unwrap();
+        let subcommands: Vec<&str> = daemon_cmd.get_subcommands().map(|c| c.get_name()).collect();
+        assert!(
+            subcommands.contains(&"run"),
+            "daemon should have run subcommand"
+        );
+        assert!(
+            subcommands.contains(&"install"),
+            "daemon should have install subcommand"
+        );
+        assert!(
+            subcommands.contains(&"uninstall"),
+            "daemon should have uninstall subcommand"
+        );
+        assert!(
+            subcommands.contains(&"status"),
+            "daemon should have status subcommand"
         );
     }
 

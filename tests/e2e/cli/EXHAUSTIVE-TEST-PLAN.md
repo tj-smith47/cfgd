@@ -213,10 +213,10 @@ All source tests use a local git repo created inline as the "remote."
 
 | ID | Command | Assertion |
 |---|---|---|
-| DM01 | `daemon --help` | Lists flags |
-| DM02 | `daemon --status` | Reports not running |
-| DM03 | `daemon --install` | Graceful in container |
-| DM04 | `daemon --uninstall` | Graceful in container |
+| DM01 | `daemon --help` | Lists subcommands |
+| DM02 | `daemon status` | Reports not running |
+| DM03 | `daemon install` | Graceful in container |
+| DM04 | `daemon uninstall` | Graceful in container |
 
 ### sync / pull (SP01–SP02)
 

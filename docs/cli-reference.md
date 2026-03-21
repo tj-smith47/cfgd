@@ -435,10 +435,11 @@ cfgd secret edit <file>             # decrypt, edit, re-encrypt
 ## Daemon Commands
 
 ```sh
-cfgd daemon                # run in foreground
-cfgd daemon --install      # install as system service
-cfgd daemon --status       # check running state
-cfgd daemon --uninstall    # remove service
+cfgd daemon                # run in foreground (default)
+cfgd daemon run            # run in foreground (explicit)
+cfgd daemon install        # install as system service
+cfgd daemon status         # check running state
+cfgd daemon uninstall      # remove service
 ```
 
 ## Decision Commands

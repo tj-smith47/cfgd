@@ -2111,7 +2111,7 @@ fn uninstall_systemd_service() -> Result<()> {
     Ok(())
 }
 
-// --- Status Query (for cfgd daemon --status) ---
+// --- Status Query (for cfgd daemon status) ---
 
 pub fn query_daemon_status() -> Result<Option<DaemonStatusResponse>> {
     let socket_path = PathBuf::from(DEFAULT_SOCKET_PATH);

@@ -235,7 +235,7 @@ pub(super) fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result
             Ok(()) => printer.success("Daemon service installed"),
             Err(e) => {
                 printer.warning(&format!("Could not install daemon: {}", e));
-                printer.info("Install later with: cfgd daemon --install");
+                printer.info("Install later with: cfgd daemon install");
             }
         }
     }
@@ -745,7 +745,7 @@ fn finish_enrollment(
     printer.info("  cfgd checkin --server-url <url>  — report status to server");
     printer.info("  cfgd apply --dry-run             — preview configuration");
     printer.info("  cfgd apply                       — apply configuration");
-    printer.info("  cfgd daemon --install             — start background sync");
+    printer.info("  cfgd daemon install               — start background sync");
 
     Ok(())
 }

@@ -142,7 +142,7 @@ When drift is detected, the daemon notifies via:
 
 ## Health API
 
-The daemon exposes a health endpoint on a Unix socket at `/tmp/cfgd.sock`. Query it with `cfgd daemon --status` to get:
+The daemon exposes a health endpoint on a Unix socket at `/tmp/cfgd.sock`. Query it with `cfgd daemon status` to get:
 
 - Whether the daemon is running
 - Last reconcile time
@@ -152,15 +152,16 @@ The daemon exposes a health endpoint on a Unix socket at `/tmp/cfgd.sock`. Query
 ## CLI Commands
 
 ```sh
-cfgd daemon                # run in foreground
-cfgd daemon --install      # install as launchd (macOS) or systemd (Linux) service
-cfgd daemon --status       # check running state, last reconcile, drift count
-cfgd daemon --uninstall    # remove the service
+cfgd daemon                # run in foreground (default)
+cfgd daemon run            # run in foreground (explicit)
+cfgd daemon install        # install as launchd (macOS) or systemd (Linux) service
+cfgd daemon status         # check running state, last reconcile, drift count
+cfgd daemon uninstall      # remove the service
 ```
 
 ## Service Management
 
-`cfgd daemon --install` creates a native service definition:
+`cfgd daemon install` creates a native service definition:
 
 - **macOS**: LaunchAgent plist in `~/Library/LaunchAgents/`
 - **Linux**: systemd user unit in `~/.config/systemd/user/`
