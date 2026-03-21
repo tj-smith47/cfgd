@@ -72,6 +72,10 @@ if [ -n "$CSI_IMAGE_LOADED" ]; then
         --set csiDriver.image.tag=e2e-test \
         --set csiDriver.image.pullPolicy=Never \
         --wait --timeout=120s 2>&1 || echo "WARN: CSI driver deployment failed"
+    # Configure CSI driver to use HTTP for the in-cluster test registry
+    kubectl set env daemonset/cfgd-csi -n cfgd-system -c cfgd-csi \
+        "OCI_INSECURE_REGISTRIES=${REGISTRY_NAME}:5000" 2>/dev/null || true
+    kubectl rollout status daemonset/cfgd-csi -n cfgd-system --timeout=60s 2>/dev/null || true
     CSI_AVAILABLE=true
 else
     echo "WARN: cfgd-csi image not loaded, CSI tests will be skipped"
@@ -252,12 +256,10 @@ NON_COMPLIANT=$(kubectl get configpolicy fleet-baseline -n cfgd-system \
 
 echo "  Fleet policy — compliant: ${COMPLIANT:-0}, non-compliant: ${NON_COMPLIANT:-0}"
 
-if [ "${COMPLIANT:-0}" -ge 2 ]; then
-    pass_test "T05"
-elif [ -n "$COMPLIANT" ]; then
+if [ "${COMPLIANT:-0}" -ge 1 ]; then
     pass_test "T05"
 else
-    fail_test "T05" "Fleet policy not evaluated"
+    fail_test "T05" "Fleet policy not evaluated (compliantCount=${COMPLIANT:-0})"
 fi
 
 # =================================================================
@@ -286,7 +288,7 @@ echo "  Drift events: $(echo "$DRIFT_EVENTS" | head -c 200)"
 # Restore
 exec_on_node sysctl -w "vm.max_map_count=$ORIG" > /dev/null 2>&1 || true
 
-if echo "$OUTPUT" | grep -qiE "drift|ok" || [ "$DRIFT_EVENTS" != "[]" ]; then
+if echo "$OUTPUT" | grep -qi "drift" || [ "$DRIFT_EVENTS" != "[]" ]; then
     pass_test "T06"
 else
     fail_test "T06" "Drift not detected or reported to device gateway"
@@ -332,20 +334,18 @@ fi
 # =================================================================
 begin_test "T08: Policy sees drifted MachineConfig"
 
-READY_STATUS=$(kubectl get machineconfig "mc-${DEVICE_1}" -n cfgd-system \
-    -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null || echo "")
-READY_REASON=$(kubectl get machineconfig "mc-${DEVICE_1}" -n cfgd-system \
-    -o jsonpath='{.status.conditions[?(@.type=="Ready")].reason}' 2>/dev/null || echo "")
+DRIFT_STATUS=$(kubectl get machineconfig "mc-${DEVICE_1}" -n cfgd-system \
+    -o jsonpath='{.status.conditions[?(@.type=="DriftDetected")].status}' 2>/dev/null || echo "")
+DRIFT_REASON=$(kubectl get machineconfig "mc-${DEVICE_1}" -n cfgd-system \
+    -o jsonpath='{.status.conditions[?(@.type=="DriftDetected")].reason}' 2>/dev/null || echo "")
 
-echo "  MC Ready status: $READY_STATUS"
-echo "  MC Ready reason: $READY_REASON"
+echo "  MC DriftDetected status: $DRIFT_STATUS"
+echo "  MC DriftDetected reason: $DRIFT_REASON"
 
-if [ "$READY_STATUS" = "False" ] && [ "$READY_REASON" = "DriftDetected" ]; then
-    pass_test "T08"
-elif [ "$READY_STATUS" = "False" ]; then
+if [ "$DRIFT_STATUS" = "True" ]; then
     pass_test "T08"
 else
-    fail_test "T08" "MC Ready condition not False after drift"
+    fail_test "T08" "MC DriftDetected condition not True (status=$DRIFT_STATUS, reason=$DRIFT_REASON)"
 fi
 
 # =================================================================
@@ -414,14 +414,16 @@ else
     if ! wait_for_daemonset cfgd-system cfgd-csi 60; then
         fail_test "T11" "CSI DaemonSet not ready"
     else
-        # Push a test module to the local registry
+        # Push a test module to the local registry (from host via localhost)
         TEST_MODULE_DIR=$(mktemp -d)
         create_test_module_dir "$TEST_MODULE_DIR" "csi-test-mod" "1.0.0"
-        OCI_REF="localhost:${REGISTRY_PORT}/cfgd-e2e/csi-test:v1.0"
-        "$CFGD_BIN" module push "$TEST_MODULE_DIR" --artifact "$OCI_REF" --no-color 2>/dev/null || true
+        OCI_REF_HOST="localhost:${REGISTRY_PORT}/cfgd-e2e/csi-test:v1.0"
+        # In-cluster ref uses Docker network name (CSI uses OCI_INSECURE_REGISTRIES for HTTP)
+        OCI_REF_CLUSTER="${REGISTRY_NAME}:5000/cfgd-e2e/csi-test:v1.0"
+        "$CFGD_BIN" module push "$TEST_MODULE_DIR" --artifact "$OCI_REF_HOST" --no-color 2>/dev/null || true
         rm -rf "$TEST_MODULE_DIR"
 
-        # Create Module CRD
+        # Create Module CRD with in-cluster OCI ref
         kubectl apply -f - <<EOF
 apiVersion: cfgd.io/v1alpha1
 kind: Module
@@ -429,7 +431,7 @@ metadata:
   name: csi-test-mod
 spec:
   packages: []
-  ociArtifact: "${OCI_REF}"
+  ociArtifact: "${OCI_REF_CLUSTER}"
   mountPolicy: Always
 EOF
 

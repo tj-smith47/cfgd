@@ -150,6 +150,7 @@ impl OciReference {
         let scheme = if self.registry == "localhost"
             || self.registry.starts_with("localhost:")
             || self.registry.starts_with("127.0.0.1")
+            || is_insecure_registry(&self.registry)
         {
             "http"
         } else {
@@ -157,6 +158,14 @@ impl OciReference {
         };
         format!("{scheme}://{}/v2", self.registry)
     }
+}
+
+/// Check if a registry is listed in `OCI_INSECURE_REGISTRIES` (comma-separated).
+fn is_insecure_registry(registry: &str) -> bool {
+    std::env::var("OCI_INSECURE_REGISTRIES")
+        .unwrap_or_default()
+        .split(',')
+        .any(|r| r.trim() == registry)
 }
 
 // ---------------------------------------------------------------------------

@@ -11,6 +11,11 @@ mod secrets;
 mod system;
 
 fn main() -> anyhow::Result<()> {
+    // Install rustls crypto provider before any kube client usage
+    rustls::crypto::ring::default_provider()
+        .install_default()
+        .ok();
+
     // kubectl plugin detection — must be before normal CLI parsing
     let argv0 = std::env::args().next().unwrap_or_default();
     if argv0.ends_with("kubectl-cfgd") || argv0.ends_with("kubectl-cfgd.exe") {
