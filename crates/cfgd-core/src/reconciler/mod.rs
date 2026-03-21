@@ -1702,8 +1702,7 @@ fn verify_env(
     state: &StateStore,
     results: &mut Vec<VerifyResult>,
 ) {
-    let (merged, merged_aliases) =
-        merge_module_env_aliases(profile_env, profile_aliases, modules);
+    let (merged, merged_aliases) = merge_module_env_aliases(profile_env, profile_aliases, modules);
 
     if merged.is_empty() && merged_aliases.is_empty() {
         return;

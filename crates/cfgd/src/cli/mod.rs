@@ -8606,7 +8606,6 @@ spec:
 
     #[test]
     fn cmd_status_with_empty_state() {
-
         let (config_dir, state_dir) = setup_test_env();
 
         let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
@@ -8618,7 +8617,6 @@ spec:
 
     #[test]
     fn cmd_status_module_not_found() {
-
         let (config_dir, state_dir) = setup_test_env();
 
         let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
@@ -8631,7 +8629,6 @@ spec:
 
     #[test]
     fn cmd_status_module_found() {
-
         let (config_dir, state_dir) = setup_test_env();
 
         // Create a module
@@ -8652,7 +8649,6 @@ spec:
 
     #[test]
     fn cmd_verify_module() {
-
         let (config_dir, state_dir) = setup_test_env();
 
         // Create a module with no packages (so verify succeeds trivially)
@@ -8673,7 +8669,6 @@ spec:
 
     #[test]
     fn cmd_log_with_empty_state() {
-
         let (_config_dir, state_dir) = setup_test_env();
 
         let printer = test_printer();
@@ -8684,7 +8679,6 @@ spec:
 
     #[test]
     fn cmd_apply_dry_run_empty_profile() {
-
         let (config_dir, state_dir) = setup_test_env();
 
         let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
@@ -8704,7 +8698,6 @@ spec:
 
     #[test]
     fn cmd_apply_dry_run_with_phase_filter() {
-
         let (config_dir, state_dir) = setup_test_env();
 
         let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
@@ -8724,7 +8717,6 @@ spec:
 
     #[test]
     fn cmd_apply_dry_run_invalid_phase() {
-
         let (config_dir, state_dir) = setup_test_env();
 
         let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
@@ -8745,7 +8737,6 @@ spec:
 
     #[test]
     fn cmd_apply_dry_run_with_skip() {
-
         let (config_dir, state_dir) = setup_test_env();
 
         let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
@@ -8765,7 +8756,6 @@ spec:
 
     #[test]
     fn cmd_apply_dry_run_with_only() {
-
         let (config_dir, state_dir) = setup_test_env();
 
         let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
@@ -8785,7 +8775,6 @@ spec:
 
     #[test]
     fn cmd_apply_real_with_empty_profile() {
-
         let (config_dir, state_dir) = setup_test_env();
 
         // Use a profile with no packages/files so apply does nothing
@@ -8815,7 +8804,6 @@ spec:
 
     #[test]
     fn cmd_status_after_apply() {
-
         let (config_dir, state_dir) = setup_test_env();
 
         // Apply with empty profile
@@ -8849,7 +8837,6 @@ spec:
 
     #[test]
     fn cmd_log_after_apply() {
-
         let (config_dir, state_dir) = setup_test_env();
 
         let empty_profile = "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: empty\nspec:\n  inherits: []\n  modules: []\n";
@@ -8882,7 +8869,6 @@ spec:
 
     #[test]
     fn cmd_verify_empty_profile() {
-
         let (config_dir, state_dir) = setup_test_env();
 
         let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
@@ -8895,7 +8881,6 @@ spec:
     #[test]
     #[test]
     fn cmd_diff_empty_profile() {
-
         let (config_dir, state_dir) = setup_test_env();
 
         let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
@@ -8907,7 +8892,6 @@ spec:
 
     #[test]
     fn cmd_apply_dry_run_with_files() {
-
         let (config_dir, state_dir) = setup_test_env();
 
         // Create a source file
@@ -8949,7 +8933,6 @@ spec:
 
     #[test]
     fn cmd_apply_creates_file() {
-
         let (config_dir, state_dir) = setup_test_env();
 
         let files_dir = config_dir.path().join("files");
@@ -8990,7 +8973,6 @@ spec:
 
     #[test]
     fn cmd_apply_idempotent() {
-
         let (config_dir, state_dir) = setup_test_env();
 
         let files_dir = config_dir.path().join("files");
@@ -9033,7 +9015,6 @@ spec:
 
     #[test]
     fn cmd_diff_with_files() {
-
         let (config_dir, state_dir) = setup_test_env();
 
         let files_dir = config_dir.path().join("files");
@@ -9066,7 +9047,6 @@ spec:
 
     #[test]
     fn cmd_status_structured_output() {
-
         let (config_dir, state_dir) = setup_test_env();
 
         let cli = Cli {
@@ -9081,7 +9061,6 @@ spec:
 
     #[test]
     fn cmd_log_structured_output() {
-
         let (_config_dir, state_dir) = setup_test_env();
 
         let printer = Printer::new(cfgd_core::output::Verbosity::Quiet);
@@ -9092,7 +9071,6 @@ spec:
 
     #[test]
     fn execute_status_command() {
-
         let (config_dir, state_dir) = setup_test_env();
 
         let cli = Cli {
@@ -9107,7 +9085,6 @@ spec:
 
     #[test]
     fn execute_log_command() {
-
         let (_config_dir, state_dir) = setup_test_env();
 
         let dir = tempfile::tempdir().unwrap();
@@ -9134,7 +9111,6 @@ spec:
 
     #[test]
     fn execute_verify_command() {
-
         let (config_dir, state_dir) = setup_test_env();
 
         let cli = Cli {
@@ -9149,7 +9125,6 @@ spec:
 
     #[test]
     fn execute_diff_command() {
-
         let (config_dir, state_dir) = setup_test_env();
 
         let cli = Cli {
@@ -9164,7 +9139,6 @@ spec:
 
     #[test]
     fn execute_doctor_command() {
-
         let (config_dir, state_dir) = setup_test_env();
 
         let cli = Cli {
@@ -9179,7 +9153,6 @@ spec:
 
     #[test]
     fn execute_profile_list() {
-
         let (config_dir, state_dir) = setup_test_env();
 
         let cli = Cli {
@@ -9195,7 +9168,6 @@ spec:
 
     #[test]
     fn execute_profile_show() {
-
         let (config_dir, state_dir) = setup_test_env();
 
         let cli = Cli {
@@ -9211,7 +9183,6 @@ spec:
 
     #[test]
     fn execute_config_show() {
-
         let (config_dir, state_dir) = setup_test_env();
 
         let cli = Cli {
@@ -9227,7 +9198,6 @@ spec:
 
     #[test]
     fn execute_config_get() {
-
         let (config_dir, state_dir) = setup_test_env();
 
         let cli = Cli {
@@ -9245,7 +9215,6 @@ spec:
 
     #[test]
     fn execute_config_set() {
-
         let (config_dir, state_dir) = setup_test_env();
 
         let cli = Cli {
@@ -9264,7 +9233,6 @@ spec:
 
     #[test]
     fn execute_apply_dry_run() {
-
         let (config_dir, state_dir) = setup_test_env();
 
         let cli = Cli {
@@ -9387,7 +9355,6 @@ spec:
 
     #[test]
     fn cmd_apply_with_module_filter() {
-
         let (config_dir, state_dir) = setup_test_env();
 
         // Create a module
@@ -9422,7 +9389,6 @@ spec:
 
     #[test]
     fn cmd_apply_with_env_vars() {
-
         let (config_dir, state_dir) = setup_test_env();
 
         // Profile with env vars
@@ -9450,7 +9416,6 @@ spec:
 
     #[test]
     fn cmd_status_with_modules() {
-
         let (config_dir, state_dir) = setup_test_env();
 
         create_module_in_dir(
@@ -9474,7 +9439,6 @@ spec:
 
     #[test]
     fn cmd_status_with_drift_events() {
-
         let (config_dir, state_dir) = setup_test_env();
 
         // Apply first to create state
@@ -9521,7 +9485,6 @@ spec:
 
     #[test]
     fn cmd_source_list_no_sources() {
-
         let (config_dir, state_dir) = setup_test_env();
 
         let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
@@ -9532,7 +9495,6 @@ spec:
 
     #[test]
     fn cmd_source_list_no_config() {
-
         let (_config_dir, state_dir) = setup_test_env();
 
         let dir = tempfile::tempdir().unwrap();
@@ -9549,58 +9511,76 @@ spec:
 
     #[test]
     fn cmd_decide_accept_all_empty() {
-
         let (_config_dir, state_dir) = setup_test_env();
 
         let printer = test_printer();
 
-        let result = super::cmd_decide(&printer, "accept", None, None, true, Some(state_dir.path()));
+        let result =
+            super::cmd_decide(&printer, "accept", None, None, true, Some(state_dir.path()));
         assert!(result.is_ok());
     }
 
     #[test]
     fn cmd_decide_reject_all_empty() {
-
         let (_config_dir, state_dir) = setup_test_env();
 
         let printer = test_printer();
 
-        let result = super::cmd_decide(&printer, "reject", None, None, true, Some(state_dir.path()));
+        let result =
+            super::cmd_decide(&printer, "reject", None, None, true, Some(state_dir.path()));
         assert!(result.is_ok());
     }
 
     #[test]
     fn cmd_decide_invalid_action() {
-
         let (_config_dir, state_dir) = setup_test_env();
 
         let printer = test_printer();
 
-        let result = super::cmd_decide(&printer, "invalid", None, None, false, Some(state_dir.path()));
+        let result = super::cmd_decide(
+            &printer,
+            "invalid",
+            None,
+            None,
+            false,
+            Some(state_dir.path()),
+        );
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("Unknown action"));
     }
 
     #[test]
     fn cmd_decide_accept_specific_resource() {
-
         let (_config_dir, state_dir) = setup_test_env();
 
         let printer = test_printer();
 
         // No pending decisions, but should not error
-        let result = super::cmd_decide(&printer, "accept", Some("packages.brew.curl"), None, false, Some(state_dir.path()));
+        let result = super::cmd_decide(
+            &printer,
+            "accept",
+            Some("packages.brew.curl"),
+            None,
+            false,
+            Some(state_dir.path()),
+        );
         assert!(result.is_ok());
     }
 
     #[test]
     fn cmd_decide_reject_by_source() {
-
         let (_config_dir, state_dir) = setup_test_env();
 
         let printer = test_printer();
 
-        let result = super::cmd_decide(&printer, "reject", None, Some("acme"), false, Some(state_dir.path()));
+        let result = super::cmd_decide(
+            &printer,
+            "reject",
+            None,
+            Some("acme"),
+            false,
+            Some(state_dir.path()),
+        );
         assert!(result.is_ok());
     }
 
@@ -9609,7 +9589,6 @@ spec:
     // profile create/delete tested via existing module_create tests above
     #[test]
     fn execute_profile_switch() {
-
         let (config_dir, state_dir) = setup_test_env();
 
         let cli = Cli {
@@ -9633,7 +9612,6 @@ spec:
 
     #[test]
     fn execute_module_list() {
-
         let (config_dir, state_dir) = setup_test_env();
 
         let cli = Cli {
@@ -9649,7 +9627,6 @@ spec:
 
     #[test]
     fn execute_workflow_generate() {
-
         let (config_dir, state_dir) = setup_test_env();
 
         let cli = Cli {
@@ -9667,7 +9644,6 @@ spec:
 
     #[test]
     fn cmd_sync_no_sources() {
-
         let (config_dir, state_dir) = setup_test_env();
 
         let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
@@ -9680,7 +9656,6 @@ spec:
 
     #[test]
     fn cmd_pull_no_sources() {
-
         let (config_dir, state_dir) = setup_test_env();
 
         let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
@@ -9694,7 +9669,6 @@ spec:
 
     #[test]
     fn cmd_apply_dry_run_each_phase() {
-
         let (config_dir, state_dir) = setup_test_env();
 
         let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
@@ -9720,7 +9694,6 @@ spec:
 
     #[test]
     fn cmd_verify_after_apply_with_env() {
-
         let (config_dir, state_dir) = setup_test_env();
 
         let profile = "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec:\n  env:\n    - name: EDITOR\n      value: vim\n  modules: []\n";

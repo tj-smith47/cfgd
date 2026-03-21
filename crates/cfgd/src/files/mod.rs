@@ -221,8 +221,7 @@ impl CfgdFileManager {
                         )
                         .to_string();
 
-                    let content_hash =
-                        cfgd_core::sha256_hex(rendered_content.as_bytes());
+                    let content_hash = cfgd_core::sha256_hex(rendered_content.as_bytes());
                     actions.push(FileAction::Update {
                         source: source_path.clone(),
                         target: target_path.clone(),
@@ -237,8 +236,7 @@ impl CfgdFileManager {
                     }
                 }
             } else {
-                let content_hash =
-                    cfgd_core::sha256_hex(rendered_content.as_bytes());
+                let content_hash = cfgd_core::sha256_hex(rendered_content.as_bytes());
                 actions.push(FileAction::Create {
                     source: source_path.clone(),
                     target: target_path.clone(),
@@ -625,8 +623,7 @@ impl cfgd_core::providers::FileManager for CfgdFileManager {
                                 _ => None,
                             };
                             if let Some(plan_hash) = expected_hash {
-                                let current_hash =
-                                    cfgd_core::sha256_hex(content.as_bytes());
+                                let current_hash = cfgd_core::sha256_hex(content.as_bytes());
                                 if current_hash != plan_hash {
                                     return Err(FileError::SourceChanged {
                                         path: source.clone(),

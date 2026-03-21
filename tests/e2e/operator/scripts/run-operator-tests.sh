@@ -74,9 +74,9 @@ spec:
   hostname: e2e-host-1
   profile: dev-workstation
   packages:
-    - vim
-    - git
-    - curl
+    - name: vim
+    - name: git
+    - name: curl
   files:
     - path: /home/user/.gitconfig
       content: "[user]\n    name = Test"
@@ -126,7 +126,7 @@ sleep 2
 
 # Update the spec
 kubectl patch machineconfig e2e-workstation-1 -n cfgd-system --type=merge \
-    -p '{"spec":{"packages":["vim","git","curl","ripgrep"]}}' 2>/dev/null
+    -p '{"spec":{"packages":[{"name":"vim"},{"name":"git"},{"name":"curl"},{"name":"ripgrep"}]}}' 2>/dev/null
 
 # Wait for new reconciliation
 echo "  Waiting for re-reconciliation..."
@@ -163,8 +163,8 @@ metadata:
 spec:
   name: security-baseline
   packages:
-    - vim
-    - git
+    - name: vim
+    - name: git
   settings:
     shell: /bin/zsh
 EOF
@@ -215,7 +215,7 @@ spec:
   hostname: e2e-host-2
   profile: minimal
   packages:
-    - curl
+    - name: curl
   systemSettings: {}
 EOF
 
@@ -261,7 +261,7 @@ metadata:
 spec:
   name: version-baseline
   packages:
-    - vim
+    - name: vim
   packageVersions:
     vim: ">=9.0"
 EOF
@@ -345,7 +345,7 @@ kubectl delete driftalert e2e-drift-1 -n cfgd-system 2>/dev/null || true
 
 # Update MC spec to bump generation and trigger re-reconcile (clear drift flag)
 kubectl patch machineconfig e2e-workstation-1 -n cfgd-system --type=merge \
-    -p '{"spec":{"packages":["vim","git","curl","wget"]}}' 2>/dev/null
+    -p '{"spec":{"packages":[{"name":"vim"},{"name":"git"},{"name":"curl"},{"name":"wget"}]}}' 2>/dev/null
 
 # Wait for MC to clear drift status
 echo "  Waiting for drift to clear..."
@@ -382,7 +382,7 @@ metadata:
 spec:
   name: dev-only-policy
   packages:
-    - ripgrep
+    - name: ripgrep
   targetSelector:
     profile: dev-workstation
 EOF

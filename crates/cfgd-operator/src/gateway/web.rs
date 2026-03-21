@@ -657,12 +657,7 @@ async fn fleet_events(State(state): State<SharedState>) -> Result<Html<String>, 
     device_ids.dedup();
     let device_options: String = device_ids
         .iter()
-        .map(|id| {
-            format!(
-                r#"<option value="{id}">{id}</option>"#,
-                id = xml_escape(id)
-            )
-        })
+        .map(|id| format!(r#"<option value="{id}">{id}</option>"#, id = xml_escape(id)))
         .collect::<Vec<_>>()
         .join("\n");
 

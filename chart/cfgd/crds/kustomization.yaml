@@ -1,7 +1,6 @@
-# This kustomization.yaml exists so that manifests/crds/ can reference this
-# directory as a kustomize base. It allows non-Helm users to install CRDs via:
-#   kubectl apply -k manifests/crds/
-# Helm ignores this file — it only processes .yaml CRD manifests in crds/.
+# Kustomize base for CRDs. Used by manifests/crds/ and directly via:
+#   kubectl apply -k chart/cfgd/crds/
+# Excluded from Helm via .helmignore (Helm would otherwise try to install it as a CRD).
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 resources:

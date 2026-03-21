@@ -20,9 +20,9 @@ use crate::crds::{
     ModuleRef, ModuleSignature, ModuleSpec, ModuleStatus, PackageRef, SelectorOperator,
     is_valid_oci_reference, is_valid_pem_public_key,
 };
-use cfgd_core::version_satisfies;
 use crate::errors::OperatorError;
 use crate::metrics::{DriftLabels, Metrics, PolicyLabels, ReconcileLabels};
+use cfgd_core::version_satisfies;
 
 const FIELD_MANAGER_OPERATOR: &str = "cfgd-operator";
 const FIELD_MANAGER_STATUS: &str = "cfgd-operator/status";

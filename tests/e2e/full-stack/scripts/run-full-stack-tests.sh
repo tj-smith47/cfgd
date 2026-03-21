@@ -141,9 +141,9 @@ spec:
   hostname: ${DEVICE_1}
   profile: k8s-worker-minimal
   packages:
-    - vim
-    - git
-    - curl
+    - name: vim
+    - name: git
+    - name: curl
   systemSettings:
     "net.ipv4.ip_forward": "1"
     "vm.max_map_count": "262144"
@@ -184,8 +184,8 @@ spec:
   hostname: ${DEVICE_2}
   profile: k8s-worker-minimal
   packages:
-    - vim
-    - git
+    - name: vim
+    - name: git
   systemSettings:
     "net.ipv4.ip_forward": "1"
 EOF
@@ -200,8 +200,8 @@ metadata:
 spec:
   name: fleet-security-baseline
   packages:
-    - vim
-    - git
+    - name: vim
+    - name: git
   settings:
     "net.ipv4.ip_forward": "1"
 EOF
