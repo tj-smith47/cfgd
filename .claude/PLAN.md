@@ -28,22 +28,13 @@ Existing E2E suites cover Tier 1 CRDs and CLI. Module, ClusterConfigPolicy, webh
 - [ ] Update `policies/` for new CRD fields: ClusterConfigPolicy CRD, Module CRD `spec.signature.cosign.publicKey`, `spec.security.trustedRegistries`, MachineConfig conditions split (Reconciled, DriftDetected, ModulesResolved, Compliant), `observedGeneration` on Condition struct, DriftAlert conditions (Acknowledged, Resolved, Escalated)
 - [ ] Update idiomatic naming in ecosystem files after naming audit: `moduleRef`/`configRef` style cross-references, TitleCase enums, camelCase CRD field names
 
-## CRD versioning
+---
 
-Trigger: 3+ months production usage with stable schema (no breaking CRD field changes for 1 month). Do not start before that threshold — premature graduation creates conversion debt.
+## CLI UX improvements
 
-- [ ] Conversion webhook for v1alpha1 → v1beta1
-- [ ] Both versions served simultaneously, v1beta1 as storage version
-- [ ] Migration runbook: deploy, convert on read, storage migration, remove v1alpha1
-- [ ] Graduation criteria documented and gates enforced in CI
+11 items covering CLI consistency, new commands, and script lifecycle overhaul. Full plan with design detail and execution order in [plans/cli-ux-improvements.md](plans/cli-ux-improvements.md).
 
-## Upstream KEPs
-
-Trigger: v1 CRD graduation complete + months of production usage demonstrating the annotation-driven pattern works. These are proposals to upstream Kubernetes, not cfgd implementation work.
-
-- [ ] KEP: `spec.modules[].moduleRef` pod spec field — native PodSpec field for declaring module dependencies, replaces `cfgd.io/modules` annotation
-- [ ] KEP: `cfgdModule:` volume type — native volume type alongside `configMap:` and `secret:`
-- [ ] KEP: `kubectl debug --module` flag — extend `kubectl debug` for module injection into ephemeral debug containers
+- [ ] Implement CLI UX improvements (daemon subcommands, profile show name, --yes on source remove, OutputFormatArg, source create positional, ls aliases, diff --module, profile update default active, plan command, structured output, script lifecycle overhaul)
 
 ---
 
@@ -68,3 +59,11 @@ Full design in [windows-support.md](windows-support.md). 26 unguarded `std::os::
 - [ ] Phase 4 — PowerShell env integration
 - [ ] Phase 5 — Windows Service daemon
 - [ ] Phase 6 — CI and release: cross-compile job, `.zip` release artifact, Windows docs
+
+---
+
+## Upstream Kubernetes work
+
+Deferred until after adoption. CRD versioning (v1alpha1→v1beta1 conversion webhook, dual-version serving, migration runbook) and 3 upstream KEPs (native moduleRef pod spec field, cfgdModule volume type, kubectl debug --module). Full plan in [plans/upstream-kubernetes.md](plans/upstream-kubernetes.md).
+
+- [ ] CRD versioning and upstream KEPs (see plan for details and trigger criteria)
