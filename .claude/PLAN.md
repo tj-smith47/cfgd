@@ -6,11 +6,10 @@ Single source of truth for all incomplete work. Completed work is in [COMPLETED.
 
 | # | Section | Rationale |
 |---|---------|-----------|
-| 1 | Source management improvements | Small, self-contained, wires up existing infrastructure |
-| 2 | CLI UX improvements | Stabilize CLI surface before updating ecosystem docs |
-| 3 | Ecosystem integration | Align policies/docs after CLI + source changes settle |
-| 4 | Windows support | Large standalone effort, no dependencies on above |
-| 5 | Upstream Kubernetes work | Deferred until after adoption (explicit trigger criteria) |
+| 1 | CLI UX improvements | Stabilize CLI surface before updating ecosystem docs |
+| 2 | Ecosystem integration | Align policies/docs after CLI + source changes settle |
+| 3 | Windows support | Large standalone effort, no dependencies on above |
+| 4 | Upstream Kubernetes work | Deferred until after adoption (explicit trigger criteria) |
 
 ---
 
@@ -26,17 +25,6 @@ Single source of truth for all incomplete work. Completed work is in [COMPLETED.
 11 items covering CLI consistency, new commands, and script lifecycle overhaul. Full plan with design detail and execution order in [plans/cli-ux-improvements.md](plans/cli-ux-improvements.md).
 
 - [ ] Implement CLI UX improvements (daemon subcommands, profile show name, --yes on source remove, OutputFormatArg, source create positional, ls aliases, diff --module, profile update default active, plan command, structured output, script lifecycle overhaul)
-
----
-
-## Source management improvements
-
-Platform-aware source profile auto-selection. Cross-platform sources (e.g., a team config with separate macOS/Ubuntu/Fedora profiles) should auto-detect the correct profile when none is explicitly specified during `cfgd source add`. Infrastructure exists in `config::match_platform_profile()`, `PlatformInfo`, and `detect_platform()` but is unwired and missing schema support.
-
-- [x] Add `platform_profiles: HashMap<String, String>` field to `ConfigSourceProvides` in `config/mod.rs` (maps platform identifier → profile name, e.g., `{"debian": "linux-debian", "macos": "macos-arm"}`)
-- [x] Update source manifest documentation in `docs/sources.md` to describe the new field with examples
-- [x] Wire `detect_platform()` → `match_platform_profile()` into `cmd_source_add` as fallback when user doesn't specify `--profile` and the source manifest provides `platform_profiles`
-- [x] Add tests for platform matching (exact distro match, OS fallback, no-match returns None)
 
 ---
 

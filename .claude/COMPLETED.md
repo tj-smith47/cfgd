@@ -747,6 +747,17 @@ Commands supported:
 
 ---
 
+## Source management improvements
+
+Platform-aware source profile auto-selection. Cross-platform sources auto-detect the correct profile via `platformProfiles` in the source manifest when `--profile` is not specified during `cfgd source add`.
+
+- [x] `platform_profiles: HashMap<String, String>` field on `ConfigSourceProvides` (maps platform identifier → profile name)
+- [x] `detect_platform()` + `match_platform_profile()` wired into `cmd_source_add` as fallback (exact distro → OS fallback → interactive)
+- [x] Source manifest documentation in `docs/sources.md` updated with `platformProfiles` field, matching order, and examples
+- [x] Tests: unit tests for match_platform_profile (exact distro, OS fallback, no-match) + SRC24 E2E test
+
+---
+
 ## Buffered script output (completed)
 
 `Printer::run_with_output()` implements Docker-style bounded scrolling (5 visible lines, spinner, collapse to summary).
