@@ -1,6 +1,7 @@
 use clap::{Args, Subcommand};
 
 use cfgd_core::config::{self, AiConfig};
+use cfgd_core::generate::{PresentYamlRequest, PresentYamlResponse};
 use cfgd_core::output::Printer;
 
 use crate::ai::client::{AnthropicClient, ContentBlock};
@@ -272,40 +273,32 @@ fn handle_present_yaml(
     input: &serde_json::Value,
     auto_accept: bool,
 ) -> anyhow::Result<ContentBlock> {
-    let content = input.get("content").and_then(|v| v.as_str()).unwrap_or("");
-    let kind = input
-        .get("kind")
-        .and_then(|v| v.as_str())
-        .unwrap_or("Unknown");
-    let description = input
-        .get("description")
-        .and_then(|v| v.as_str())
-        .unwrap_or("");
+    let req: PresentYamlRequest = serde_json::from_value(input.clone())?;
 
-    printer.header(&format!("Generated {} — {}", kind, description));
-    printer.syntax_highlight(content, "yaml");
+    printer.header(&format!("Generated {} — {}", req.kind, req.description));
+    printer.syntax_highlight(&req.content, "yaml");
 
-    let response_json = if auto_accept {
-        serde_json::json!({"action": "accept"})
+    let response = if auto_accept {
+        PresentYamlResponse::Accept
     } else {
         let options = vec!["Accept", "Reject", "Give feedback", "Step through"];
         let choice = inquire::Select::new("What would you like to do?", options).prompt()?;
 
         match choice {
-            "Accept" => serde_json::json!({"action": "accept"}),
-            "Reject" => serde_json::json!({"action": "reject"}),
+            "Accept" => PresentYamlResponse::Accept,
+            "Reject" => PresentYamlResponse::Reject,
             "Give feedback" => {
                 let feedback = inquire::Text::new("Your feedback:").prompt()?;
-                serde_json::json!({"action": "feedback", "message": feedback})
+                PresentYamlResponse::Feedback { message: feedback }
             }
-            "Step through" => serde_json::json!({"action": "stepThrough"}),
-            _ => serde_json::json!({"action": "reject"}),
+            "Step through" => PresentYamlResponse::StepThrough,
+            _ => PresentYamlResponse::Reject,
         }
     };
 
     Ok(ContentBlock::ToolResult {
         tool_use_id: tool_use_id.to_string(),
-        content: serde_json::to_string(&response_json)?,
+        content: serde_json::to_string(&serde_json::to_value(response)?)?,
         is_error: None,
     })
 }

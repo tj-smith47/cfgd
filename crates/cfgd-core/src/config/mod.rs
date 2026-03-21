@@ -1274,7 +1274,14 @@ pub fn resolve_profile(profile_name: &str, profiles_dir: &Path) -> Result<Resolv
     let mut layers = Vec::new();
     for name in &resolution_order {
         let path = find_profile_path(profiles_dir, name);
-        let doc = load_profile(&path)?;
+        let doc = load_profile(&path).map_err(|e| match e {
+            crate::errors::CfgdError::Config(ConfigError::NotFound { .. }) => {
+                crate::errors::CfgdError::Config(ConfigError::ProfileNotFound {
+                    name: name.clone(),
+                })
+            }
+            other => other,
+        })?;
         layers.push(ProfileLayer {
             source: "local".to_string(),
             profile_name: name.clone(),
@@ -1305,7 +1312,14 @@ fn resolve_inheritance_order(
     visited.push(profile_name.to_string());
 
     let path = find_profile_path(profiles_dir, profile_name);
-    let doc = load_profile(&path)?;
+    let doc = load_profile(&path).map_err(|e| match e {
+        crate::errors::CfgdError::Config(ConfigError::NotFound { .. }) => {
+            crate::errors::CfgdError::Config(ConfigError::ProfileNotFound {
+                name: profile_name.to_string(),
+            })
+        }
+        other => other,
+    })?;
 
     let mut order = Vec::new();
     for parent in &doc.spec.inherits {
@@ -1482,17 +1496,6 @@ fn merge_layers(layers: &[ProfileLayer]) -> MergedProfile {
     }
 
     merged
-}
-
-/// Interpolate env vars in a string value.
-/// Replaces `${name}` with the corresponding env var value.
-pub fn interpolate_env(input: &str, env: &[EnvVar]) -> String {
-    let mut result = input.to_string();
-    for ev in env {
-        let placeholder = format!("${{{}}}", ev.name);
-        result = result.replace(&placeholder, &ev.value);
-    }
-    result
 }
 
 /// Get the list of desired packages for a specific package manager from a merged profile.
@@ -1914,30 +1917,6 @@ spec:
             domain.get(&serde_yaml::Value::String("key3".into())),
             Some(&serde_yaml::Value::String("value3".into()))
         );
-    }
-
-    #[test]
-    fn interpolate_env_replaces_placeholders() {
-        let env = vec![
-            EnvVar {
-                name: "name".into(),
-                value: "cfgd".into(),
-            },
-            EnvVar {
-                name: "version".into(),
-                value: "42".into(),
-            },
-        ];
-
-        let result = interpolate_env("Hello ${name} v${version}!", &env);
-        assert_eq!(result, "Hello cfgd v42!");
-    }
-
-    #[test]
-    fn interpolate_env_no_match() {
-        let env: Vec<EnvVar> = vec![];
-        let result = interpolate_env("no ${vars} here", &env);
-        assert_eq!(result, "no ${vars} here");
     }
 
     #[test]

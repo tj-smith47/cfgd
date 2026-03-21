@@ -144,9 +144,6 @@ spec:
     - vim
     - git
     - curl
-  packageVersions:
-    vim: "9.0.1"
-    git: "2.40.0"
   systemSettings:
     "net.ipv4.ip_forward": "1"
     "vm.max_map_count": "262144"

@@ -77,9 +77,6 @@ spec:
     - vim
     - git
     - curl
-  packageVersions:
-    vim: "9.0.1"
-    git: "2.40.0"
   files:
     - path: /home/user/.gitconfig
       content: "[user]\n    name = Test"

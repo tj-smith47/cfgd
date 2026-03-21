@@ -703,16 +703,6 @@ impl Printer {
         inquire::Confirm::new(message).with_default(false).prompt()
     }
 
-    pub fn prompt_confirm_with_default(
-        &self,
-        message: &str,
-        default: bool,
-    ) -> std::result::Result<bool, inquire::InquireError> {
-        inquire::Confirm::new(message)
-            .with_default(default)
-            .prompt()
-    }
-
     pub fn prompt_select<'a>(
         &self,
         message: &str,

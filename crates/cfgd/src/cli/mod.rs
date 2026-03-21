@@ -62,6 +62,14 @@ struct VerifyOutput {
 }
 
 #[derive(Serialize)]
+struct RollbackOutput {
+    apply_id: i64,
+    files_restored: usize,
+    files_removed: usize,
+    non_file_actions: Vec<String>,
+}
+
+#[derive(Serialize)]
 struct DoctorOutput {
     config: DoctorConfigCheck,
     git: bool,
@@ -546,6 +554,16 @@ pub enum Command {
 
     /// AI-guided configuration generation
     Generate(generate::GenerateArgs),
+
+    /// Roll back a previous apply by restoring file backups
+    Rollback {
+        /// Apply ID to roll back (from 'cfgd log')
+        apply_id: i64,
+
+        /// Skip confirmation prompt
+        #[arg(long, short, env = "CFGD_YES")]
+        yes: bool,
+    },
 
     /// Start MCP server for AI editor integration
     #[command(name = "mcp-server")]
@@ -1376,6 +1394,7 @@ pub fn execute(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
             Ok(())
         }
         Command::Generate(args) => generate::cmd_generate(cli, printer, args),
+        Command::Rollback { apply_id, yes } => cmd_rollback(printer, *apply_id, *yes),
         Command::McpServer => crate::mcp::server::run_mcp_server(&cli.config),
     }
 }
@@ -1759,12 +1778,16 @@ fn cmd_apply(cli: &Cli, printer: &Printer, args: &ApplyArgs) -> anyhow::Result<(
     };
 
     // Compose with sources if configured
-    let source_env = if !cfg.spec.sources.is_empty() {
+    let (source_env, source_commits) = if !cfg.spec.sources.is_empty() {
         let composition_result = compose_with_sources(cli, &resolved, printer)?;
         let se = composition_result.source_env;
-        (Some(composition_result.resolved), se)
+        let sc = composition_result.source_commits;
+        ((Some(composition_result.resolved), se), sc)
     } else {
-        (None, std::collections::HashMap::new())
+        (
+            (None, std::collections::HashMap::new()),
+            std::collections::HashMap::new(),
+        )
     };
     let mut effective_resolved = source_env.0.unwrap_or(resolved);
     let source_env = source_env.1;
@@ -1984,6 +2007,20 @@ fn cmd_apply(cli: &Cli, printer: &Printer, args: &ApplyArgs) -> anyhow::Result<(
 
     printer.newline();
     print_apply_result(&result, printer);
+
+    // Link source commits to this apply for provenance tracking
+    if !source_commits.is_empty() {
+        for (source_name, commit_hash) in &source_commits {
+            if let Err(e) = state.record_source_apply(source_name, result.apply_id, commit_hash) {
+                tracing::warn!(
+                    source = %source_name,
+                    commit = %commit_hash,
+                    error = %e,
+                    "failed to record source apply"
+                );
+            }
+        }
+    }
 
     // Prune old backups — keep last 10 applies' worth
     if let Ok(state) = open_state_store() {
@@ -4136,6 +4173,118 @@ fn format_bytes(bytes: u64) -> String {
     }
 }
 
+fn cmd_rollback(printer: &Printer, apply_id: i64, yes: bool) -> anyhow::Result<()> {
+    let state = open_state_store()?;
+
+    // Check if the apply exists by looking up journal entries and backups
+    let journal_entries = state.journal_completed_actions(apply_id)?;
+    let backups = state.get_apply_backups(apply_id)?;
+
+    if journal_entries.is_empty() && backups.is_empty() {
+        anyhow::bail!("no apply found with ID {}", apply_id);
+    }
+
+    // Count file vs non-file actions for the preview
+    let mut file_count = 0usize;
+    let mut non_file_count = 0usize;
+    for entry in &journal_entries {
+        let is_file = entry.phase == "files"
+            || entry.action_type == "file"
+            || entry.resource_id.starts_with("file:");
+        if is_file {
+            file_count += 1;
+        } else {
+            non_file_count += 1;
+        }
+    }
+
+    printer.header("Rollback");
+    printer.key_value("Apply ID", &apply_id.to_string());
+    printer.key_value("File actions to revert", &file_count.to_string());
+    printer.key_value("File backups available", &backups.len().to_string());
+    if non_file_count > 0 {
+        printer.key_value(
+            "Non-file actions (manual review)",
+            &non_file_count.to_string(),
+        );
+    }
+
+    if file_count == 0 {
+        printer.warning("No file actions to roll back");
+        if non_file_count > 0 {
+            printer.info("Only non-file actions were recorded; these require manual reversal");
+            for entry in &journal_entries {
+                printer.info(&format!("  {}", entry.resource_id));
+            }
+        }
+        return Ok(());
+    }
+
+    // Confirm
+    if !yes {
+        printer.newline();
+        let confirmed = printer
+            .prompt_confirm("Roll back this apply?")
+            .unwrap_or(false);
+        if !confirmed {
+            printer.info("Aborted");
+            return Ok(());
+        }
+    }
+
+    printer.newline();
+
+    // Construct a minimal Reconciler — rollback only needs state, but Reconciler
+    // requires a ProviderRegistry reference.
+    let registry = ProviderRegistry::new();
+    let reconciler = Reconciler::new(&registry, &state);
+    let result = reconciler.rollback_apply(apply_id, printer)?;
+
+    if printer.is_structured() {
+        printer.write_structured(&RollbackOutput {
+            apply_id,
+            files_restored: result.files_restored,
+            files_removed: result.files_removed,
+            non_file_actions: result.non_file_actions.clone(),
+        });
+        return Ok(());
+    }
+
+    printer.newline();
+    if result.files_restored > 0 {
+        printer.success(&format!(
+            "{} file(s) restored from backup",
+            result.files_restored
+        ));
+    }
+    if result.files_removed > 0 {
+        printer.success(&format!(
+            "{} newly created file(s) removed",
+            result.files_removed
+        ));
+    }
+
+    if !result.non_file_actions.is_empty() {
+        printer.newline();
+        printer.warning(&format!(
+            "{} non-file action(s) require manual review:",
+            result.non_file_actions.len()
+        ));
+        for action in &result.non_file_actions {
+            printer.info(&format!("  {}", action));
+        }
+    }
+
+    if result.files_restored == 0 && result.files_removed == 0 {
+        printer.info("No files were changed during rollback");
+    } else {
+        printer.newline();
+        printer.success("Rollback complete");
+    }
+
+    Ok(())
+}
+
 fn cmd_sync(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
     printer.header("Sync");
 
@@ -4164,9 +4313,57 @@ fn cmd_sync(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
 
         for source_spec in &cfg.spec.sources {
             printer.info(&format!("Syncing source '{}'...", source_spec.name));
+
+            // Capture old manifest before syncing (for permission change detection)
+            let source_dir = cache_dir.join(&source_spec.name);
+            let old_manifest = if source_dir.exists() {
+                mgr.parse_manifest(&source_spec.name, &source_dir).ok()
+            } else {
+                None
+            };
+
             match mgr.load_source(source_spec, printer) {
                 Ok(()) => {
                     if let Some(cached) = mgr.get(&source_spec.name) {
+                        // Detect permission-expanding changes
+                        if let Some(ref old) = old_manifest {
+                            let old_input =
+                                build_permission_input(&source_spec.name, &old.spec.policy);
+                            let new_input = build_permission_input(
+                                &source_spec.name,
+                                &cached.manifest.spec.policy,
+                            );
+                            let perm_changes =
+                                composition::detect_permission_changes(&[old_input], &[new_input]);
+                            if !perm_changes.is_empty() {
+                                printer.newline();
+                                printer.warning(&format!(
+                                    "Source '{}' update changes permissions:",
+                                    source_spec.name
+                                ));
+                                for change in &perm_changes {
+                                    printer.warning(&format!("  - {}", change.description));
+                                }
+                                match printer.prompt_confirm("Accept permission changes?") {
+                                    Ok(true) => {}
+                                    Ok(false) => {
+                                        printer.info(&format!(
+                                            "Skipped source '{}' (permission changes rejected)",
+                                            source_spec.name
+                                        ));
+                                        continue;
+                                    }
+                                    Err(_) => {
+                                        printer.info(&format!(
+                                            "Skipped source '{}' (prompt cancelled)",
+                                            source_spec.name
+                                        ));
+                                        continue;
+                                    }
+                                }
+                            }
+                        }
+
                         let commit_short = cached
                             .last_commit
                             .as_deref()
@@ -4297,8 +4494,9 @@ fn cmd_source_add(cli: &Cli, printer: &Printer, args: &SourceAddArgs) -> anyhow:
         printer.key_value("Description", desc);
     }
 
-    if !manifest.spec.provides.profiles.is_empty() {
-        printer.key_value("Profiles", &manifest.spec.provides.profiles.join(", "));
+    let provided_profiles = cfgd_core::config::source_profile_names(&manifest.spec.provides);
+    if !provided_profiles.is_empty() {
+        printer.key_value("Profiles", &provided_profiles.join(", "));
     }
 
     // Show policy summary
@@ -4343,14 +4541,12 @@ fn cmd_source_add(cli: &Cli, printer: &Printer, args: &SourceAddArgs) -> anyhow:
     // Interactive profile selection if not provided
     let selected_profile = if profile.is_some() {
         profile.map(|s| s.to_string())
-    } else if manifest.spec.provides.profiles.len() == 1 {
-        Some(manifest.spec.provides.profiles[0].clone())
-    } else if !manifest.spec.provides.profiles.is_empty() {
+    } else if provided_profiles.len() == 1 {
+        Some(provided_profiles[0].clone())
+    } else if !provided_profiles.is_empty() {
         printer.newline();
-        let selection = printer.prompt_select(
-            "Select a profile to subscribe to:",
-            &manifest.spec.provides.profiles,
-        )?;
+        let selection =
+            printer.prompt_select("Select a profile to subscribe to:", &provided_profiles)?;
         Some(selection.clone())
     } else {
         None
@@ -4777,6 +4973,7 @@ fn cmd_source_remove(
 
     // Remove from state
     state.remove_config_source(name)?;
+    state.remove_source_config_hash(name)?;
 
     // Remove cached data
     let cache_dir = source_cache_dir()?;
@@ -4816,9 +5013,53 @@ fn cmd_source_update(cli: &Cli, printer: &Printer, name: Option<&str>) -> anyhow
     }
 
     for source in &sources_to_update {
+        // Capture old manifest before fetching (for permission change detection)
+        let source_dir = cache_dir.join(&source.name);
+        let old_manifest = if source_dir.exists() {
+            mgr.parse_manifest(&source.name, &source_dir).ok()
+        } else {
+            None
+        };
+
         match mgr.load_source(source, printer) {
             Ok(()) => {
                 if let Some(cached) = mgr.get(&source.name) {
+                    // Detect permission-expanding changes between old and new manifests
+                    if let Some(ref old) = old_manifest {
+                        let old_input = build_permission_input(&source.name, &old.spec.policy);
+                        let new_input =
+                            build_permission_input(&source.name, &cached.manifest.spec.policy);
+                        let perm_changes =
+                            composition::detect_permission_changes(&[old_input], &[new_input]);
+                        if !perm_changes.is_empty() {
+                            printer.newline();
+                            printer.warning(&format!(
+                                "Source '{}' update changes permissions:",
+                                source.name
+                            ));
+                            for change in &perm_changes {
+                                printer.warning(&format!("  - {}", change.description));
+                            }
+                            match printer.prompt_confirm("Accept permission changes?") {
+                                Ok(true) => {}
+                                Ok(false) => {
+                                    printer.info(&format!(
+                                        "Skipped source '{}' (permission changes rejected)",
+                                        source.name
+                                    ));
+                                    continue;
+                                }
+                                Err(_) => {
+                                    printer.info(&format!(
+                                        "Skipped source '{}' (prompt cancelled)",
+                                        source.name
+                                    ));
+                                    continue;
+                                }
+                            }
+                        }
+                    }
+
                     state.upsert_config_source(
                         &source.name,
                         &source.origin.url,
@@ -4832,11 +5073,26 @@ fn cmd_source_update(cli: &Cli, printer: &Printer, name: Option<&str>) -> anyhow
             }
             Err(e) => {
                 printer.error(&format!("Failed to update source '{}': {}", source.name, e));
+                state.update_config_source_status(&source.name, "error")?;
             }
         }
     }
 
     Ok(())
+}
+
+/// Build a minimal [`CompositionInput`] from a source policy for permission change detection.
+/// Only the `source_name`, `policy`, and `constraints` fields are used by
+/// [`composition::detect_permission_changes`]; the rest are defaulted.
+fn build_permission_input(name: &str, policy: &config::ConfigSourcePolicy) -> CompositionInput {
+    CompositionInput {
+        source_name: name.to_string(),
+        priority: 0,
+        policy: policy.clone(),
+        constraints: policy.constraints.clone(),
+        layers: Vec::new(),
+        subscription: SubscriptionConfig::default(),
+    }
 }
 
 fn cmd_source_override(
@@ -5641,6 +5897,7 @@ fn compose_with_sources(
             resolved: local_resolved.clone(),
             conflicts: Vec::new(),
             source_env: std::collections::HashMap::new(),
+            source_commits: std::collections::HashMap::new(),
         });
     }
 
@@ -5686,6 +5943,18 @@ fn compose_with_sources(
                 }
             }
 
+            // Check if local config overrides any locked resources from this source
+            if let Err(e) = composition::check_locked_violations(
+                &source_spec.name,
+                &cached.manifest.spec.policy.locked,
+                &local_resolved.merged,
+            ) {
+                printer.warning(&format!(
+                    "Locked resource conflict with source '{}': {}",
+                    source_spec.name, e
+                ));
+            }
+
             inputs.push(CompositionInput {
                 source_name: source_spec.name.clone(),
                 priority: source_spec.subscription.priority,
@@ -5697,7 +5966,18 @@ fn compose_with_sources(
         }
     }
 
-    let result = composition::compose(local_resolved, &inputs)?;
+    let mut result = composition::compose(local_resolved, &inputs)?;
+
+    // Collect source commit hashes for record_source_apply linkage
+    for source_spec in &cfg.spec.sources {
+        if let Some(cached) = mgr.get(&source_spec.name)
+            && let Some(ref commit) = cached.last_commit
+        {
+            result
+                .source_commits
+                .insert(source_spec.name.clone(), commit.clone());
+        }
+    }
 
     // Display conflicts
     if !result.conflicts.is_empty() {
@@ -5718,6 +5998,19 @@ fn compose_with_sources(
                     printer.info(&conflict.details);
                 }
                 composition::ResolutionType::Default => {}
+            }
+        }
+
+        // Persist conflicts to state
+        if let Ok(state) = open_state_store() {
+            for conflict in &result.conflicts {
+                let _ = state.record_source_conflict(
+                    &conflict.winning_source,
+                    "composition",
+                    &conflict.resource_id,
+                    conflict.resolution_type.label(),
+                    Some(&conflict.details),
+                );
             }
         }
     }

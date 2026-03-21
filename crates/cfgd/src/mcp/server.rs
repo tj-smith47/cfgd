@@ -4,6 +4,7 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use cfgd_core::generate::PresentYamlRequest;
 use cfgd_core::generate::session::GenerateSession;
 use cfgd_core::providers::PackageManager;
 
@@ -195,21 +196,20 @@ impl McpServer {
                 // present_yaml is handled here in MCP mode: return the YAML content
                 // formatted for the client to display. The MCP client handles presentation.
                 if dispatch_name == "present_yaml" {
-                    let content = arguments
-                        .get("content")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("");
-                    let kind = arguments
-                        .get("kind")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("Unknown");
-                    let description = arguments
-                        .get("description")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("");
+                    let req = match serde_json::from_value::<PresentYamlRequest>(arguments.clone())
+                    {
+                        Ok(r) => r,
+                        Err(e) => {
+                            return JsonRpcResponse::error(
+                                request.id.clone(),
+                                -32602,
+                                format!("Invalid present_yaml arguments: {}", e),
+                            );
+                        }
+                    };
                     let text = format!(
                         "## {} — {}\n\n```yaml\n{}\n```\n\nPlease review and respond with your choice: accept, reject, feedback (with message), or stepThrough.",
-                        kind, description, content
+                        req.kind, req.description, req.content
                     );
                     return JsonRpcResponse::success(
                         request.id.clone(),

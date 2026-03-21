@@ -578,6 +578,22 @@ pub async fn run_daemon(
                     if changed {
                         tracing::info!("server reports config changed at startup");
                     }
+                    // Consume any pending server config at startup so the first
+                    // reconcile tick picks up the changes.
+                    match crate::state::load_pending_server_config() {
+                        Ok(Some(_pending)) => {
+                            tracing::info!(
+                                "startup: found pending server config — first reconcile will apply it"
+                            );
+                            if let Err(e) = crate::state::clear_pending_server_config() {
+                                tracing::warn!("startup: failed to clear pending server config: {}", e);
+                            }
+                        }
+                        Ok(None) => {}
+                        Err(e) => {
+                            tracing::warn!("startup: failed to load pending server config: {}", e);
+                        }
+                    }
                 }
                 Err(e) => {
                     tracing::warn!("startup check-in: failed to resolve profile: {}", e);
@@ -1249,6 +1265,27 @@ fn handle_reconcile(
         tracing::info!(
             "reconcile: server reports config has changed — will reconcile on next tick"
         );
+    }
+
+    // Consume any pending server-pushed config (saved by CLI checkin or enrollment)
+    match crate::state::load_pending_server_config() {
+        Ok(Some(pending)) => {
+            let keys: Vec<String> = pending
+                .as_object()
+                .map(|obj| obj.keys().cloned().collect())
+                .unwrap_or_default();
+            tracing::info!(
+                keys = ?keys,
+                "consumed pending server config — next reconcile will pick up changes"
+            );
+            if let Err(e) = crate::state::clear_pending_server_config() {
+                tracing::warn!("failed to clear pending server config: {}", e);
+            }
+        }
+        Ok(None) => {}
+        Err(e) => {
+            tracing::warn!("failed to load pending server config: {}", e);
+        }
     }
 }
 

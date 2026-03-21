@@ -82,6 +82,9 @@ pub struct CompositionResult {
     /// Source templates must only access their own env vars + system facts,
     /// NOT the subscriber's personal env vars.
     pub source_env: HashMap<String, Vec<EnvVar>>,
+    /// Source name → commit hash, populated by the caller that has access to
+    /// `SourceManager` (not by `compose()` itself, which only sees layers).
+    pub source_commits: HashMap<String, String>,
 }
 
 /// Compose multiple source configs with a local resolved profile.
@@ -154,6 +157,7 @@ pub fn compose(local: &ResolvedProfile, sources: &[CompositionInput]) -> Result<
         },
         conflicts,
         source_env,
+        source_commits: HashMap::new(),
     })
 }
 

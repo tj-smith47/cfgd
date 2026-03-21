@@ -5,7 +5,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "$SCRIPT_DIR/../../common/helpers.sh"
-CHART_DIR="$REPO_ROOT/charts/cfgd"
+CHART_DIR="$REPO_ROOT/chart/cfgd"
 VALUES_FILE="$SCRIPT_DIR/../values-test.yaml"
 FIXTURES="$SCRIPT_DIR/../fixtures"
 

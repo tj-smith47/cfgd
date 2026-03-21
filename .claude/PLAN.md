@@ -47,6 +47,17 @@ Trigger: v1 CRD graduation complete + months of production usage demonstrating t
 
 ---
 
+## Source management improvements
+
+Platform-aware source profile auto-selection. Cross-platform sources (e.g., a team config with separate macOS/Ubuntu/Fedora profiles) should auto-detect the correct profile when none is explicitly specified during `cfgd source add`. Infrastructure exists in `config::match_platform_profile()`, `PlatformInfo`, and `detect_platform()` but is unwired and missing schema support.
+
+- [ ] Add `platform_profiles: HashMap<String, String>` field to `ConfigSourceProvides` in `config/mod.rs` (maps platform identifier → profile name, e.g., `{"debian": "linux-debian", "macos": "macos-arm"}`)
+- [ ] Update source manifest documentation in `docs/sources.md` to describe the new field with examples
+- [ ] Wire `detect_platform()` → `match_platform_profile()` into `cmd_source_add` as fallback when user doesn't specify `--profile` and the source manifest provides `platform_profiles`
+- [ ] Add tests for platform matching (exact distro match, OS fallback, no-match returns None)
+
+---
+
 ## Windows support
 
 Full design in [windows-support.md](windows-support.md). 26 unguarded `std::os::unix` uses across 13 files. No Kubernetes dependency — pick up when targeting Windows users.
