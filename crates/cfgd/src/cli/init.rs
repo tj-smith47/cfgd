@@ -409,8 +409,8 @@ spec:
   theme: {theme_value}
   fileStrategy: Symlink
   aliases:
-    add: "profile update --active --file"
-    remove: "profile update --active --file"
+    add: "profile update --file"
+    remove: "profile update --file"
   # profile: base
   # modules:
   #   registries: []

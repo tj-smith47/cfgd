@@ -212,10 +212,10 @@ cfgd profile create work-linux \
 
 ### `cfgd profile update [name]`
 
-Modify an existing profile. Use `--active` to target the current profile. Prefix a value with `-` to remove it.
+Modify an existing profile. When no name is given, defaults to the active profile. Prefix a value with `-` to remove it.
 
 ```sh
-cfgd profile update --active --package brew:jq
+cfgd profile update --package brew:jq
 cfgd profile update work --module new-tool --module -old-tool
 cfgd profile update work --package brew:jq --package -brew:unused --alias vim=nvim --alias -old
 ```
@@ -475,7 +475,7 @@ cfgd config get theme                        # → dracula
 cfgd config get theme.name                   # → dracula
 cfgd config get daemon.reconcile.interval    # → 5m
 cfgd config get fileStrategy                 # → Symlink
-cfgd config get aliases.add                  # → profile update --active --file
+cfgd config get aliases.add                  # → profile update --file
 cfgd config get daemon                       # prints full daemon YAML block
 ```
 

@@ -200,7 +200,7 @@ cfgd profile update work \
 
 Prefix a value with `-` to remove it (e.g. `--module -old-tool` removes `old-tool`).
 
-The `--active` flag uses the currently active profile from cfgd.yaml, so `cfgd profile update --active --file ~/.zshrc` is equivalent to `cfgd add ~/.zshrc`.
+When no profile name is given, `profile update` defaults to the active profile from cfgd.yaml, so `cfgd profile update --file ~/.zshrc` is equivalent to `cfgd add ~/.zshrc`.
 
 ## The `modules` Field
 

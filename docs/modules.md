@@ -433,7 +433,7 @@ Add a local module to your profile, or reference remote modules in your profile 
 
 ```sh
 cfgd module create nvim                       # create a new local module
-cfgd profile update --active --module nvim    # add local module to active profile
+cfgd profile update --module nvim              # add local module to active profile
 ```
 
 For registry or git-hosted modules, reference them in your profile YAML:

@@ -1,7 +1,20 @@
 use super::*;
 
-pub(super) fn cmd_profile_show(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
-    let (_cfg, resolved) = load_config_and_profile(cli, printer)?;
+pub(super) fn cmd_profile_show(
+    cli: &Cli,
+    printer: &Printer,
+    name: Option<&str>,
+) -> anyhow::Result<()> {
+    let (_cfg, resolved) = match name {
+        Some(n) => {
+            let cfg = config::load_config(&cli.config)?;
+            printer.key_value("Config", &cli.config.display().to_string());
+            printer.key_value("Profile", n);
+            let resolved = config::resolve_profile(n, &profiles_dir(cli))?;
+            (cfg, resolved)
+        }
+        None => load_config_and_profile(cli, printer)?,
+    };
 
     if printer.write_structured(&resolved) {
         return Ok(());

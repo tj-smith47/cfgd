@@ -397,7 +397,11 @@ pub enum Command {
     },
 
     /// Show detailed diffs
-    Diff,
+    Diff {
+        /// Show diff for a specific module only
+        #[arg(long)]
+        module: Option<String>,
+    },
 
     /// Show apply history
     Log {
@@ -607,6 +611,7 @@ pub enum SourceCommand {
     Add(Box<SourceAddArgs>),
 
     /// List subscribed sources
+    #[command(alias = "ls")]
     List,
 
     /// Show details of a source
@@ -627,6 +632,10 @@ pub enum SourceCommand {
         /// Remove all resources from this source
         #[arg(long)]
         remove_all: bool,
+
+        /// Skip confirmation prompt (defaults to --keep-all behavior)
+        #[arg(long, short, env = "CFGD_YES")]
+        yes: bool,
     },
 
     /// Update sources (fetch latest)
@@ -674,7 +683,6 @@ pub enum SourceCommand {
     /// Create a new cfgd-source.yaml in the current directory
     Create {
         /// Source name
-        #[arg(long)]
         name: Option<String>,
 
         /// Description
@@ -796,11 +804,8 @@ pub struct ProfileCreateArgs {
 
 #[derive(Parser)]
 pub struct ProfileUpdateArgs {
-    /// Profile name (optional when --active is used)
+    /// Profile name (default: active profile)
     pub name: Option<String>,
-    /// Use the active profile from cfgd.yaml
-    #[arg(long)]
-    pub active: bool,
     /// Inherited profiles (repeatable, prefix with - to remove)
     #[arg(long = "inherit", allow_hyphen_values = true)]
     pub inherits: Vec<String>,
@@ -839,6 +844,7 @@ pub struct ProfileUpdateArgs {
 #[derive(Subcommand)]
 pub enum ProfileCommand {
     /// List available profiles
+    #[command(alias = "ls")]
     List,
     /// Switch to a different profile (alias: use)
     #[command(alias = "use")]
@@ -847,7 +853,10 @@ pub enum ProfileCommand {
         name: String,
     },
     /// Show the resolved profile
-    Show,
+    Show {
+        /// Profile name (default: active profile)
+        name: Option<String>,
+    },
     /// Create a new profile
     Create(Box<ProfileCreateArgs>),
     /// Modify an existing profile
@@ -942,6 +951,7 @@ pub struct ModuleUpdateArgs {
 #[derive(Subcommand)]
 pub enum ModuleCommand {
     /// List available modules and their status
+    #[command(alias = "ls")]
     List,
     /// Show module details: packages, files, deps, resolved managers
     Show {
@@ -1092,6 +1102,7 @@ pub enum ModuleKeysCommand {
         output: Option<String>,
     },
     /// List known signing keys
+    #[command(alias = "ls")]
     List,
     /// Rotate signing keys: generate a new pair and re-sign specified artifacts
     Rotate {
@@ -1133,6 +1144,7 @@ pub enum ModuleRegistryCommand {
         new_name: String,
     },
     /// List configured module registries
+    #[command(alias = "ls")]
     List,
 }
 
@@ -1141,18 +1153,20 @@ pub fn execute(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
     match &cli.command {
         Command::Apply(args) => cmd_apply(cli, printer, args),
         Command::Status { module } => cmd_status(cli, printer, module.as_deref()),
-        Command::Diff => cmd_diff(cli, printer),
+        Command::Diff { module } => cmd_diff(cli, printer, module.as_deref()),
         Command::Log { limit, show_output } => {
             cmd_log(printer, *limit, *show_output, cli.state_dir.as_deref())
         }
         Command::Verify { module } => cmd_verify(cli, printer, module.as_deref()),
         Command::Profile { command } => match command {
-            ProfileCommand::Show => profile::cmd_profile_show(cli, printer),
+            ProfileCommand::Show { name } => {
+                profile::cmd_profile_show(cli, printer, name.as_deref())
+            }
             ProfileCommand::List => profile::cmd_profile_list(cli, printer),
             ProfileCommand::Switch { name } => profile::cmd_profile_switch(cli, name, printer),
             ProfileCommand::Create(args) => profile::cmd_profile_create(cli, printer, args),
             ProfileCommand::Update(args) => {
-                let profile_name = resolve_profile_name(cli, args.name.as_deref(), args.active)?;
+                let profile_name = resolve_profile_name(cli, args.name.as_deref())?;
                 profile::cmd_profile_update(cli, printer, &profile_name, args)
             }
             ProfileCommand::Edit { name } => profile::cmd_profile_edit(cli, printer, name),
@@ -1316,7 +1330,8 @@ pub fn execute(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
                 name,
                 keep_all,
                 remove_all,
-            } => cmd_source_remove(cli, printer, name, *keep_all, *remove_all),
+                yes,
+            } => cmd_source_remove(cli, printer, name, *keep_all || *yes, *remove_all),
             SourceCommand::Update { name } => cmd_source_update(cli, printer, name.as_deref()),
             SourceCommand::Override {
                 source,
@@ -2477,11 +2492,82 @@ fn cmd_verify(cli: &Cli, printer: &Printer, module_filter: Option<&str>) -> anyh
     Ok(())
 }
 
-fn cmd_diff(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
+fn cmd_diff(cli: &Cli, printer: &Printer, module_filter: Option<&str>) -> anyhow::Result<()> {
     printer.header("Diff");
 
-    let (_cfg, mut resolved) = load_config_and_profile(cli, printer)?;
     let config_dir = config_dir(cli);
+
+    if let Some(mod_name) = module_filter {
+        // Module-only diff: load just that module's files and packages
+        let registry = build_registry();
+        let platform = Platform::detect();
+        let mgr_map = managers_map(&registry);
+        let cache_base = modules::default_module_cache_dir()?;
+        let resolved_modules = modules::resolve_modules(
+            &[mod_name.to_string()],
+            &config_dir,
+            &cache_base,
+            &platform,
+            &mgr_map,
+        )?;
+
+        printer.key_value("Module", mod_name);
+        printer.newline();
+
+        // Module file diffs
+        printer.subheader("Files");
+        let mut has_file_diff = false;
+        for module in &resolved_modules {
+            for file in &module.files {
+                if file.target.exists() {
+                    if file.source.exists() {
+                        let source_content =
+                            std::fs::read_to_string(&file.source).unwrap_or_default();
+                        let target_content =
+                            std::fs::read_to_string(&file.target).unwrap_or_default();
+                        if source_content != target_content {
+                            has_file_diff = true;
+                            printer.info(&format!("{}:", file.target.display()));
+                            printer.diff(&target_content, &source_content);
+                        }
+                    }
+                } else {
+                    has_file_diff = true;
+                    printer.warning(&format!("{}: missing", file.target.display()));
+                }
+            }
+        }
+        if !has_file_diff {
+            printer.success("No file drift");
+        }
+
+        // Module package diffs — check if resolved packages are installed
+        printer.newline();
+        printer.subheader("Packages");
+        let mut has_pkg_drift = false;
+        for module in &resolved_modules {
+            for pkg in &module.packages {
+                if pkg.manager == "script" {
+                    continue;
+                }
+                if let Some(mgr) = mgr_map.get(pkg.manager.as_str()) {
+                    let installed = mgr.installed_packages().unwrap_or_default();
+                    if !installed.contains(&pkg.resolved_name) {
+                        has_pkg_drift = true;
+                        printer
+                            .warning(&format!("{}: missing — {}", pkg.manager, pkg.resolved_name));
+                    }
+                }
+            }
+        }
+        if !has_pkg_drift {
+            printer.success("No package drift");
+        }
+
+        return Ok(());
+    }
+
+    let (_cfg, mut resolved) = load_config_and_profile(cli, printer)?;
 
     // Resolve manifest files
     packages::resolve_manifest_packages(&mut resolved.merged.packages, &config_dir)?;
@@ -2504,37 +2590,7 @@ fn cmd_diff(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
         .map(|m| m.as_ref())
         .collect();
     let pkg_actions = packages::plan_packages(&resolved.merged, &all_managers)?;
-    let pkg_diffs: Vec<&PackageAction> = pkg_actions
-        .iter()
-        .filter(|a| !matches!(a, PackageAction::Skip { .. }))
-        .collect();
-    if pkg_diffs.is_empty() {
-        printer.success("No package drift");
-    } else {
-        for action in &pkg_diffs {
-            match action {
-                PackageAction::Bootstrap {
-                    manager, method, ..
-                } => {
-                    printer.warning(&format!(
-                        "{}: not installed — can bootstrap via {}",
-                        manager, method
-                    ));
-                }
-                PackageAction::Install {
-                    manager, packages, ..
-                } => {
-                    printer.warning(&format!("{}: missing — {}", manager, packages.join(", ")));
-                }
-                PackageAction::Uninstall {
-                    manager, packages, ..
-                } => {
-                    printer.warning(&format!("{}: extra — {}", manager, packages.join(", ")));
-                }
-                PackageAction::Skip { .. } => {}
-            }
-        }
-    }
+    print_package_drift(&pkg_actions, printer);
 
     // System drift
     printer.newline();
@@ -2568,6 +2624,40 @@ fn cmd_diff(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
     }
 
     Ok(())
+}
+
+fn print_package_drift(pkg_actions: &[PackageAction], printer: &Printer) {
+    let pkg_diffs: Vec<&PackageAction> = pkg_actions
+        .iter()
+        .filter(|a| !matches!(a, PackageAction::Skip { .. }))
+        .collect();
+    if pkg_diffs.is_empty() {
+        printer.success("No package drift");
+    } else {
+        for action in &pkg_diffs {
+            match action {
+                PackageAction::Bootstrap {
+                    manager, method, ..
+                } => {
+                    printer.warning(&format!(
+                        "{}: not installed — can bootstrap via {}",
+                        manager, method
+                    ));
+                }
+                PackageAction::Install {
+                    manager, packages, ..
+                } => {
+                    printer.warning(&format!("{}: missing — {}", manager, packages.join(", ")));
+                }
+                PackageAction::Uninstall {
+                    manager, packages, ..
+                } => {
+                    printer.warning(&format!("{}: extra — {}", manager, packages.join(", ")));
+                }
+                PackageAction::Skip { .. } => {}
+            }
+        }
+    }
 }
 
 // --- Validation helpers ---
@@ -3976,25 +4066,21 @@ pub(super) fn list_yaml_stems(dir: &Path) -> anyhow::Result<Vec<String>> {
     Ok(names)
 }
 
-/// Resolve profile name from explicit name or --active flag.
-fn resolve_profile_name(cli: &Cli, name: Option<&str>, active: bool) -> anyhow::Result<String> {
-    match (name, active) {
-        (Some(n), _) => Ok(n.to_string()),
-        (None, true) => {
-            let config_path = &cli.config;
-            if !config_path.exists() {
-                anyhow::bail!("{}", MSG_NO_CONFIG);
-            }
-            let cfg = config::load_config(config_path)?;
-            if let Some(ref profile_override) = cli.profile {
-                Ok(profile_override.clone())
-            } else {
-                Ok(cfg.active_profile()?.to_string())
-            }
-        }
-        (None, false) => {
-            anyhow::bail!("Profile name required (or use --active for the active profile)")
-        }
+/// Resolve profile name from explicit name or default to active profile.
+fn resolve_profile_name(cli: &Cli, name: Option<&str>) -> anyhow::Result<String> {
+    if let Some(n) = name {
+        return Ok(n.to_string());
+    }
+    // Default to active profile
+    let config_path = &cli.config;
+    if !config_path.exists() {
+        anyhow::bail!("{}", MSG_NO_CONFIG);
+    }
+    let cfg = config::load_config(config_path)?;
+    if let Some(ref profile_override) = cli.profile {
+        Ok(profile_override.clone())
+    } else {
+        Ok(cfg.active_profile()?.to_string())
     }
 }
 
@@ -6664,7 +6750,6 @@ spec:
     fn empty_profile_update_args() -> ProfileUpdateArgs {
         ProfileUpdateArgs {
             name: None,
-            active: false,
             inherits: vec![],
             modules: vec![],
             packages: vec![],
@@ -7746,31 +7831,17 @@ spec:
     fn resolve_profile_name_explicit_takes_precedence() {
         let dir = create_test_config_dir();
         let cli = test_cli(dir.path());
-        let result = resolve_profile_name(&cli, Some("my-profile"), false);
+        let result = resolve_profile_name(&cli, Some("my-profile"));
         assert_eq!(result.unwrap(), "my-profile");
     }
 
     #[test]
-    fn resolve_profile_name_active_reads_config() {
+    fn resolve_profile_name_defaults_to_active() {
         let dir = create_test_config_dir();
         std::fs::write(dir.path().join("cfgd.yaml"), TEST_CONFIG_YAML).unwrap();
         let cli = test_cli(dir.path());
-        let result = resolve_profile_name(&cli, None, true);
+        let result = resolve_profile_name(&cli, None);
         assert_eq!(result.unwrap(), "default");
-    }
-
-    #[test]
-    fn resolve_profile_name_neither_errors() {
-        let dir = create_test_config_dir();
-        let cli = test_cli(dir.path());
-        let result = resolve_profile_name(&cli, None, false);
-        assert!(result.is_err());
-        assert!(
-            result
-                .unwrap_err()
-                .to_string()
-                .contains("Profile name required")
-        );
     }
 
     #[test]
@@ -7860,7 +7931,7 @@ spec:
              \x20\x20\x20\x20\x20 interval: 5m\n\
              \x20\x20\x20\x20\x20 onChange: false\n\
              \x20 aliases:\n\
-             \x20\x20\x20 add: 'profile update --active --file'\n\
+             \x20\x20\x20 add: 'profile update --file'\n\
              \x20\x20\x20 deploy: 'apply --yes'\n",
         )
         .unwrap();
@@ -8546,7 +8617,7 @@ spec:
         std::fs::write(dir.path().join("cfgd.yaml"), TEST_CONFIG_YAML).unwrap();
 
         let cli = test_cli(dir.path());
-        let result = super::resolve_profile_name(&cli, Some("work"), false).unwrap();
+        let result = super::resolve_profile_name(&cli, Some("work")).unwrap();
         assert_eq!(result, "work");
     }
 
@@ -8930,7 +9001,7 @@ spec:
         let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
         let printer = test_printer();
 
-        let result = super::cmd_diff(&cli, &printer);
+        let result = super::cmd_diff(&cli, &printer, None);
         assert!(result.is_ok());
     }
 
@@ -9085,7 +9156,7 @@ spec:
         let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
         let printer = test_printer();
 
-        let result = super::cmd_diff(&cli, &printer);
+        let result = super::cmd_diff(&cli, &printer, None);
         assert!(result.is_ok());
     }
 
@@ -9172,7 +9243,7 @@ spec:
         let (config_dir, state_dir) = setup_test_env();
 
         let cli = Cli {
-            command: Command::Diff,
+            command: Command::Diff { module: None },
             ..test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()))
         };
         let printer = test_printer();
@@ -9216,7 +9287,7 @@ spec:
 
         let cli = Cli {
             command: Command::Profile {
-                command: ProfileCommand::Show,
+                command: ProfileCommand::Show { name: None },
             },
             ..test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()))
         };
