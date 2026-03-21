@@ -130,7 +130,7 @@ Every cfgd command, subcommand, and flag. All tests are self-contained — no ex
 | M34 | `module registry add <local-git>` | Registry added |
 | M35 | `module registry remove X` | Registry removed |
 
-### source (SRC01–SRC23)
+### source (SRC01–SRC24)
 
 All source tests use a local git repo created inline as the "remote."
 
@@ -159,6 +159,7 @@ All source tests use a local git repo created inline as the "remote."
 | SRC21 | `source create --name X` | Local source manifest created |
 | SRC22 | `source remove X --keep-all` | Removed, resources kept |
 | SRC23 | `source remove X --remove-all` | Removed, resources cleaned |
+| SRC24 | `source add` (no --profile, platformProfiles) | Auto-selects profile for platform |
 
 ### explain (E01–E12)
 

@@ -961,6 +961,43 @@ else
     fail_test "SRC11"
 fi
 
+begin_test "SRC24: source add with platformProfiles auto-selection"
+PLATFORM_REPO="$SCRATCH/platform-source-repo"
+mkdir -p "$PLATFORM_REPO/profiles"
+cat > "$PLATFORM_REPO/cfgd-source.yaml" << YAML
+apiVersion: cfgd.io/v1alpha1
+kind: ConfigSource
+metadata:
+  name: platform-source
+spec:
+  provides:
+    profiles: [linux-base, macos-arm]
+    platformProfiles:
+      linux: linux-base
+      macos: macos-arm
+  policy:
+    constraints: {}
+YAML
+cat > "$PLATFORM_REPO/profiles/linux-base.yaml" << YAML
+apiVersion: cfgd.io/v1alpha1
+kind: Profile
+metadata:
+  name: linux-base
+YAML
+cat > "$PLATFORM_REPO/profiles/macos-arm.yaml" << YAML
+apiVersion: cfgd.io/v1alpha1
+kind: Profile
+metadata:
+  name: macos-arm
+YAML
+(cd "$PLATFORM_REPO" && git init -q -b master && git add -A && git commit -qm "init platform source")
+run $C source add "file://$PLATFORM_REPO" --yes --name platform-team --priority 500
+if assert_ok && assert_contains "$OUTPUT" "Auto-selected profile"; then
+    pass_test "SRC24"
+else
+    fail_test "SRC24"
+fi
+
 begin_test "SRC12: source list (after adds)"
 run $C source list
 if assert_ok; then

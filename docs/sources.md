@@ -29,6 +29,12 @@ spec:
       - acme-base
       - acme-backend
       - acme-frontend
+    platformProfiles:
+      macos: acme-base
+      debian: acme-backend
+      ubuntu: acme-backend
+      fedora: acme-frontend
+      linux: acme-base
     modules: [corp-vpn, corp-certs, approved-editor]
 
   policy:
@@ -87,6 +93,34 @@ spec:
         interval: "1h"
         autoApply: false
         pinVersion: "~2"
+```
+
+## Platform-Aware Profile Auto-Selection
+
+Cross-platform sources (e.g., a team config with separate macOS/Ubuntu/Fedora profiles) can declare a `platformProfiles` map in their manifest. When a subscriber runs `cfgd source add` without `--profile`, cfgd detects the local platform and selects the matching profile automatically.
+
+```yaml
+spec:
+  provides:
+    profiles: [linux-debian, linux-fedora, macos-arm]
+    platformProfiles:
+      debian: linux-debian
+      fedora: linux-fedora
+      macos: macos-arm
+      linux: linux-debian
+```
+
+Keys are platform identifiers — either a Linux distro ID (from `/etc/os-release`, e.g., `debian`, `ubuntu`, `fedora`, `arch`) or an OS name (`macos`, `linux`, `windows`). Values are profile names that must appear in `profiles` or `profileDetails`.
+
+Matching order:
+1. **Exact distro match** — if the machine is Debian, look for a `debian` key
+2. **OS fallback** — if no distro key matches, look for a `linux` / `macos` key
+3. **No match** — fall through to single-profile auto-select or interactive prompt
+
+When auto-selection succeeds, cfgd prints the selected profile and platform. You can always override with `--profile`:
+
+```sh
+cfgd source add git@github.com:acme-corp/dev-config.git --profile linux-fedora
 ```
 
 ## Policy Tiers
@@ -350,6 +384,10 @@ spec:
     profiles:
       - base
       - backend
+    platformProfiles:
+      macos: base
+      debian: backend
+      linux: base
   policy:
     required:
       packages:

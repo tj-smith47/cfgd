@@ -2272,8 +2272,8 @@ spec:
         inherits:
           - acme-base
     platformProfiles:
-      macos: profiles/platform/macos.yaml
-      debian: profiles/platform/debian.yaml
+      macos: acme-base
+      debian: acme-backend
   policy: {}
 "#;
         let doc = parse_config_source(yaml).unwrap();
@@ -2290,7 +2290,7 @@ spec:
         assert_eq!(doc.spec.provides.platform_profiles.len(), 2);
         assert_eq!(
             doc.spec.provides.platform_profiles.get("macos").unwrap(),
-            "profiles/platform/macos.yaml"
+            "acme-base"
         );
     }
 

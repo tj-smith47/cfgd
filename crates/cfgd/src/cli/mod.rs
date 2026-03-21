@@ -4570,9 +4570,29 @@ fn cmd_source_add(cli: &Cli, printer: &Printer, args: &SourceAddArgs) -> anyhow:
         ));
     }
 
-    // Interactive profile selection if not provided
+    // Profile selection: explicit flag > platform auto-detect > single profile > interactive
+    let auto_detected_profile =
+        if profile.is_none() && !manifest.spec.provides.platform_profiles.is_empty() {
+            let platform = cfgd_core::config::detect_platform();
+            cfgd_core::config::match_platform_profile(
+                &platform,
+                &manifest.spec.provides.platform_profiles,
+            )
+            .inspect(|matched| {
+                printer.success(&format!(
+                    "Auto-selected profile '{}' for platform {}",
+                    matched,
+                    platform.distro.as_deref().unwrap_or(&platform.os)
+                ));
+            })
+        } else {
+            None
+        };
+
     let selected_profile = if profile.is_some() {
         profile.map(|s| s.to_string())
+    } else if auto_detected_profile.is_some() {
+        auto_detected_profile
     } else if provided_profiles.len() == 1 {
         Some(provided_profiles[0].clone())
     } else if !provided_profiles.is_empty() {
