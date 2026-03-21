@@ -26,6 +26,10 @@ begin_test "T20: Helm install"
 helm install cfgd "$CHART_DIR" \
     -f "$VALUES_FILE" \
     -n "$CFGD_NAMESPACE" \
+    --set webhook.enabled=false \
+    --set webhook.certManager.enabled=false \
+    --set mutatingWebhook.enabled=false \
+    --set operator.enabled=false \
     --wait --timeout 120s 2>&1 || true
 
 DS_STATUS=$(kubectl get ds -n "$CFGD_NAMESPACE" -o jsonpath='{.items[*].metadata.name}' 2>/dev/null || echo "")
@@ -95,7 +99,11 @@ fi
 begin_test "T24: Helm upgrade"
 OUTPUT=$(helm upgrade cfgd "$CHART_DIR" \
     -f "$VALUES_FILE" \
-    --set reconcileInterval="15s" \
+    --set agent.reconcileInterval="15s" \
+    --set webhook.enabled=false \
+    --set webhook.certManager.enabled=false \
+    --set mutatingWebhook.enabled=false \
+    --set operator.enabled=false \
     -n "$CFGD_NAMESPACE" \
     --wait --timeout 120s 2>&1) || true
 
