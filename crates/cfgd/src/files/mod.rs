@@ -480,7 +480,7 @@ impl cfgd_core::providers::FileManager for CfgdFileManager {
                 source: e,
             })?;
 
-            let hash = sha256_hash(&content);
+            let hash = cfgd_core::sha256_hex(content.as_bytes());
             let metadata = fs::metadata(path).map_err(|e| FileError::Io {
                 path: path.clone(),
                 source: e,
@@ -715,7 +715,7 @@ fn scan_directory(
             source: e,
         })?;
 
-        let hash = sha256_hash(&content);
+        let hash = cfgd_core::sha256_hex(content.as_bytes());
         let metadata = fs::metadata(&path).map_err(|e| FileError::Io {
             path: path.clone(),
             source: e,
@@ -799,11 +799,6 @@ fn set_permissions(path: &Path, mode: u32) -> Result<()> {
             .into()
         }
     })
-}
-
-/// Compute SHA256 hash of content.
-fn sha256_hash(content: &str) -> String {
-    cfgd_core::sha256_hex(content.as_bytes())
 }
 
 /// Format a Tera error with source location details.
@@ -906,11 +901,11 @@ mod tests {
     }
 
     #[test]
-    fn sha256_hash_deterministic() {
-        let h1 = sha256_hash("hello world");
-        let h2 = sha256_hash("hello world");
+    fn sha256_hex_deterministic() {
+        let h1 = cfgd_core::sha256_hex(b"hello world");
+        let h2 = cfgd_core::sha256_hex(b"hello world");
         assert_eq!(h1, h2);
-        assert_ne!(h1, sha256_hash("different"));
+        assert_ne!(h1, cfgd_core::sha256_hex(b"different"));
     }
 
     #[test]

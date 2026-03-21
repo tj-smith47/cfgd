@@ -498,7 +498,7 @@ pub(super) fn regenerate_workflow(config_dir: &Path, printer: &Printer) -> anyho
 }
 
 fn check_prerequisites(printer: &Printer) -> bool {
-    if !which("git") {
+    if !cfgd_core::command_available("git") {
         printer.error("git is not installed — cfgd requires git");
         if cfg!(target_os = "macos") {
             printer.info("Install with: xcode-select --install");

@@ -3545,7 +3545,7 @@ fn cmd_doctor(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
         )
     };
 
-    let git_available = which("git");
+    let git_available = cfgd_core::command_available("git");
 
     let config_dir = config_dir(cli);
     let age_key_override = loaded_cfg
@@ -4440,18 +4440,6 @@ fn default_device_id() -> String {
     hostname::get()
         .map(|h| h.to_string_lossy().to_string())
         .unwrap_or_else(|_| "unknown".to_string())
-}
-
-fn which(command: &str) -> bool {
-    if let Ok(path_var) = std::env::var("PATH") {
-        for dir in std::env::split_paths(&path_var) {
-            let candidate = dir.join(command);
-            if candidate.is_file() {
-                return true;
-            }
-        }
-    }
-    false
 }
 
 // --- Source management commands (Phase 9) ---
