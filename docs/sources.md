@@ -200,7 +200,7 @@ cfgd source replace acme-corp git@github.com:newco/dev-config.git
 Publish your own source:
 
 ```sh
-cfgd source create --name my-team               # create a cfgd-source.yaml
+cfgd source create my-team                       # create a cfgd-source.yaml
 cfgd source edit                                # open cfgd-source.yaml in $EDITOR
 ```
 

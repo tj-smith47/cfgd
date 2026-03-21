@@ -1331,7 +1331,13 @@ pub fn execute(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
                 keep_all,
                 remove_all,
                 yes,
-            } => cmd_source_remove(cli, printer, name, *keep_all || *yes, *remove_all),
+            } => cmd_source_remove(
+                cli,
+                printer,
+                name,
+                *keep_all || (*yes && !*remove_all),
+                *remove_all,
+            ),
             SourceCommand::Update { name } => cmd_source_update(cli, printer, name.as_deref()),
             SourceCommand::Override {
                 source,

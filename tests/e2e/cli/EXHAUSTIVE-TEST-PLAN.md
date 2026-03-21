@@ -94,7 +94,7 @@ Every cfgd command, subcommand, and flag. All tests are self-contained — no ex
 | P15 | `profile create` (duplicate) | Exit non-zero |
 | P16 | `profile switch base` | Active profile changes |
 | P17 | `profile switch dev` | Switches back |
-| P18–P36 | `profile update --active --<thing> [value/-value]` | Each unified flag pair (add/remove via `-` prefix) for: package, file, env, system, module, inherit, secret, pre-apply, post-apply, private |
+| P18–P36 | `profile update --<thing> [value/-value]` | Each unified flag pair (add/remove via `-` prefix) for: package, file, env, system, module, inherit, secret, pre-apply, post-apply, private |
 | P37 | `profile update <name>` (named) | Updates non-active profile |
 | P38 | `profile delete X --yes` | Removed |
 | P39 | `profile delete X -y` | Short flag |
@@ -156,7 +156,7 @@ All source tests use a local git repo created inline as the "remote."
 | SRC18 | `source override X set path val` | Override set |
 | SRC19 | `source override X reject path` | Rejection set |
 | SRC20 | `source replace old new-url` | Source URL updated |
-| SRC21 | `source create --name X` | Local source manifest created |
+| SRC21 | `source create X` | Local source manifest created |
 | SRC22 | `source remove X --keep-all` | Removed, resources kept |
 | SRC23 | `source remove X --remove-all` | Removed, resources cleaned |
 | SRC24 | `source add` (no --profile, platformProfiles) | Auto-selects profile for platform |

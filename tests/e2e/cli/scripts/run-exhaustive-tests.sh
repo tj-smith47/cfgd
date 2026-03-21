@@ -79,8 +79,8 @@ metadata:
 spec:
   profile: dev
   aliases:
-    add: "profile update --active --file"
-    remove: "profile update --active --file"
+    add: "profile update --file"
+    remove: "profile update --file"
 YAML
 }
 
@@ -514,63 +514,63 @@ if assert_ok; then
     pass_test "P17"
 else fail_test "P17"; fi
 
-begin_test "P18: profile update --active --package (add)"
-run $C profile update --active --package brew:htop
+begin_test "P18: profile update --package (add)"
+run $C profile update --package brew:htop
 if assert_ok; then
     pass_test "P18"
 else fail_test "P18"; fi
 
-begin_test "P19: profile update --active --package (remove)"
-run $C profile update --active --package -brew:htop
+begin_test "P19: profile update --package (remove)"
+run $C profile update --package -brew:htop
 if assert_ok; then
     pass_test "P19"
 else fail_test "P19"; fi
 
-begin_test "P20: profile update --active --file (add)"
+begin_test "P20: profile update --file (add)"
 touch "$TGT/.bashrc"
-run $C profile update --active --file "$TGT/.bashrc"
+run $C profile update --file "$TGT/.bashrc"
 if assert_ok; then
     pass_test "P20"
 else fail_test "P20"; fi
 
-begin_test "P21: profile update --active --file (remove)"
-run $C profile update --active --file "-$TGT/.bashrc"
+begin_test "P21: profile update --file (remove)"
+run $C profile update --file "-$TGT/.bashrc"
 if assert_ok; then
     pass_test "P21"
 else fail_test "P21"; fi
 
-begin_test "P22: profile update --active --env (add)"
-run $C profile update --active --env FOO=bar
+begin_test "P22: profile update --env (add)"
+run $C profile update --env FOO=bar
 if assert_ok; then
     pass_test "P22"
 else fail_test "P22"; fi
 
-begin_test "P23: profile update --active --env (remove)"
-run $C profile update --active --env -FOO
+begin_test "P23: profile update --env (remove)"
+run $C profile update --env -FOO
 if assert_ok; then
     pass_test "P23"
 else fail_test "P23"; fi
 
-begin_test "P24: profile update --active --system (add)"
-run $C profile update --active --system shell=/bin/zsh
+begin_test "P24: profile update --system (add)"
+run $C profile update --system shell=/bin/zsh
 if assert_ok; then
     pass_test "P24"
 else fail_test "P24"; fi
 
-begin_test "P25: profile update --active --system (remove)"
-run $C profile update --active --system -shell
+begin_test "P25: profile update --system (remove)"
+run $C profile update --system -shell
 if assert_ok; then
     pass_test "P25"
 else fail_test "P25"; fi
 
-begin_test "P26: profile update --active --module (add)"
-run $C profile update --active --module nvim
+begin_test "P26: profile update --module (add)"
+run $C profile update --module nvim
 if assert_ok; then
     pass_test "P26"
 else fail_test "P26"; fi
 
-begin_test "P27: profile update --active --module (remove)"
-run $C profile update --active --module -nvim
+begin_test "P27: profile update --module (remove)"
+run $C profile update --module -nvim
 if assert_ok; then
     pass_test "P27"
 else fail_test "P27"; fi
@@ -593,38 +593,38 @@ if assert_ok; then
     pass_test "P30"
 else fail_test "P30"; fi
 
-begin_test "P31: profile update --active --secret (add)"
-run $C profile update --active --secret "op://vault/key:$TGT/.ssh/key"
+begin_test "P31: profile update --secret (add)"
+run $C profile update --secret "op://vault/key:$TGT/.ssh/key"
 if assert_ok; then
     pass_test "P31"
 else fail_test "P31"; fi
 
-begin_test "P32: profile update --active --secret (remove)"
-run $C profile update --active --secret "-$TGT/.ssh/key"
+begin_test "P32: profile update --secret (remove)"
+run $C profile update --secret "-$TGT/.ssh/key"
 if assert_ok; then
     pass_test "P32"
 else fail_test "P32"; fi
 
-begin_test "P33: profile update --active --pre-apply (add)"
-run $C profile update --active --pre-apply "$SCRATCH/pre.sh"
+begin_test "P33: profile update --pre-apply (add)"
+run $C profile update --pre-apply "$SCRATCH/pre.sh"
 if assert_ok; then
     pass_test "P33"
 else fail_test "P33"; fi
 
-begin_test "P34: profile update --active --pre-apply (remove)"
-run $C profile update --active --pre-apply "-$SCRATCH/pre.sh"
+begin_test "P34: profile update --pre-apply (remove)"
+run $C profile update --pre-apply "-$SCRATCH/pre.sh"
 if assert_ok; then
     pass_test "P34"
 else fail_test "P34"; fi
 
-begin_test "P35: profile update --active --post-apply (add)"
-run $C profile update --active --post-apply "$SCRATCH/post.sh"
+begin_test "P35: profile update --post-apply (add)"
+run $C profile update --post-apply "$SCRATCH/post.sh"
 if assert_ok; then
     pass_test "P35"
 else fail_test "P35"; fi
 
-begin_test "P36: profile update --active --post-apply (remove)"
-run $C profile update --active --post-apply "-$SCRATCH/post.sh"
+begin_test "P36: profile update --post-apply (remove)"
+run $C profile update --post-apply "-$SCRATCH/post.sh"
 if assert_ok; then
     pass_test "P36"
 else fail_test "P36"; fi
@@ -1069,7 +1069,7 @@ else
 fi
 
 begin_test "SRC21: source create"
-run $C source create --name my-source --description "local source" --version "1.0.0"
+run $C source create my-source --description "local source" --version "1.0.0"
 if assert_ok; then
     pass_test "SRC21"
 else fail_test "SRC21"; fi
@@ -1490,8 +1490,8 @@ metadata:
 spec:
   profile: dev
   aliases:
-    add: "profile update --active --file"
-    remove: "profile update --active --file"
+    add: "profile update --file"
+    remove: "profile update --file"
 YAML
 
 # ═════════════════════════════════════════════════════
@@ -1500,7 +1500,7 @@ YAML
 
 begin_test "TPL01: tera template renders env vars"
 # Add a template file to the profile
-run $C profile update --active --file "$CFG/files/config.toml.tera:$TGT/.config.toml"
+run $C profile update --file "$CFG/files/config.toml.tera:$TGT/.config.toml"
 run $C apply --yes
 if [ -f "$TGT/.config.toml" ]; then
     CONTENT=$(cat "$TGT/.config.toml")

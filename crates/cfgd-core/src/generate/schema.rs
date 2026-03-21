@@ -533,11 +533,11 @@ spec:
   # Built-in defaults (add, remove) can be overridden or extended.
   # optional, default: {}
   aliases:
-    add: "profile update --active --file"
-    remove: "profile update --active --file"
+    add: "profile update --file"
+    remove: "profile update --file"
     up: "apply --yes"
     s: status
-    pkg: "profile update --active --package"
+    pkg: "profile update --package"
 
   # AI assistant configuration for cfgd generate.
   # optional

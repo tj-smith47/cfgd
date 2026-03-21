@@ -76,7 +76,7 @@ One module. Cross-platform. Shareable via git. Versioned. Install someone's comp
 
 ```sh
 cfgd module create my-dev-env
-cfgd profile update --active --module community/nvim
+cfgd profile update --module community/nvim
 ```
 
 A module declares packages with cross-platform resolution, config files, environment, shell aliases, and lifecycle scripts:
