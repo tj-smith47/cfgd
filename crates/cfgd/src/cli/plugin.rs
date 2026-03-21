@@ -76,11 +76,7 @@ fn build_volume_mount(name: &str) -> serde_json::Value {
 }
 
 pub fn plugin_main() -> anyhow::Result<()> {
-    // Install rustls crypto provider before any kube client usage
-    rustls::crypto::ring::default_provider()
-        .install_default()
-        .ok(); // ignore if already installed
-
+    // rustls CryptoProvider is already installed by main() before dispatching here
     let cli = PluginCli::parse();
 
     tracing_subscriber::fmt()

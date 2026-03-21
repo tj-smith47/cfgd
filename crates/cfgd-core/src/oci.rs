@@ -2139,4 +2139,37 @@ mod tests {
         assert_eq!(parsed["subject"][0]["name"], "ghcr.io/test/mod:v1");
         assert_eq!(parsed["subject"][0]["digest"]["sha256"], "abc123");
     }
+
+    #[test]
+    fn insecure_registry_env_var() {
+        // Save and restore env var to avoid affecting other tests
+        let prev = std::env::var("OCI_INSECURE_REGISTRIES").ok();
+
+        // SAFETY: test is single-threaded for this env var; save/restore brackets usage
+        unsafe {
+            std::env::set_var(
+                "OCI_INSECURE_REGISTRIES",
+                "myregistry:5000,other.local:8080",
+            );
+        }
+        assert!(is_insecure_registry("myregistry:5000"));
+        assert!(is_insecure_registry("other.local:8080"));
+        assert!(!is_insecure_registry("ghcr.io"));
+        assert!(!is_insecure_registry("myregistry:5001"));
+
+        // Verify api_base uses HTTP for insecure registries
+        let r = OciReference::parse("myregistry:5000/test/mod:v1").unwrap();
+        assert!(r.api_base().starts_with("http://"));
+
+        let r2 = OciReference::parse("ghcr.io/test/mod:v1").unwrap();
+        assert!(r2.api_base().starts_with("https://"));
+
+        // Restore
+        unsafe {
+            match prev {
+                Some(v) => std::env::set_var("OCI_INSECURE_REGISTRIES", v),
+                None => std::env::remove_var("OCI_INSECURE_REGISTRIES"),
+            }
+        }
+    }
 }
