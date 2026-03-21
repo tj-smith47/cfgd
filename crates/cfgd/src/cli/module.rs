@@ -54,7 +54,7 @@ pub(super) fn cmd_module_list(cli: &Cli, printer: &Printer) -> anyhow::Result<()
     };
 
     // Load module state from DB
-    let state = open_state_store()?;
+    let state = open_state_store(cli.state_dir.as_deref())?;
     let state_map = module_state_map(&state);
 
     let mut names: Vec<String> = all_modules.keys().cloned().collect();
@@ -145,7 +145,7 @@ pub(super) fn cmd_module_show(
         } else {
             "local"
         };
-        let state = open_state_store()?;
+        let state = open_state_store(cli.state_dir.as_deref())?;
         let state_rec = state.module_state_by_name(name)?;
         let output = ModuleShowOutput {
             name: name.to_string(),
@@ -180,7 +180,7 @@ pub(super) fn cmd_module_show(
     }
 
     // Module state from DB
-    let state = open_state_store()?;
+    let state = open_state_store(cli.state_dir.as_deref())?;
     if let Some(state_rec) = state.module_state_by_name(name)? {
         printer.key_value("Status", &state_rec.status);
         printer.key_value("Last applied", &state_rec.installed_at);
@@ -661,7 +661,7 @@ pub(super) fn cmd_module_create(
         let config_path = config_dir.join("cfgd.yaml");
         let cfg = config::load_config(&config_path)?;
         let registry = super::build_registry_with_config(Some(&cfg));
-        let store = super::open_state_store()?;
+        let store = super::open_state_store(cli.state_dir.as_deref())?;
 
         let platform = cfgd_core::platform::Platform::detect();
         let mgr_map = super::managers_map(&registry);
@@ -1085,7 +1085,7 @@ pub(super) fn cmd_module_delete(
     std::fs::remove_dir_all(&module_dir)?;
 
     // Clean module state from DB
-    if let Ok(state) = open_state_store()
+    if let Ok(state) = open_state_store(cli.state_dir.as_deref())
         && let Err(e) = state.remove_module_state(name)
     {
         printer.warning(&format!("Failed to clean module state: {}", e));
@@ -2744,6 +2744,7 @@ spec:
             no_color: false,
             output: "table".to_string(),
             jsonpath: None,
+            state_dir: None,
         };
 
         let result = super::export_devcontainer(

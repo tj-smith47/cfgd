@@ -307,6 +307,10 @@ pub struct Cli {
     #[arg(long, global = true)]
     pub jsonpath: Option<String>,
 
+    /// Override state directory (default: $CFGD_STATE_DIR or platform data dir)
+    #[arg(long, global = true, env = "CFGD_STATE_DIR")]
+    pub state_dir: Option<PathBuf>,
+
     #[command(subcommand)]
     pub command: Command,
 }
@@ -1135,7 +1139,9 @@ pub fn execute(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
         Command::Apply(args) => cmd_apply(cli, printer, args),
         Command::Status { module } => cmd_status(cli, printer, module.as_deref()),
         Command::Diff => cmd_diff(cli, printer),
-        Command::Log { limit, show_output } => cmd_log(printer, *limit, *show_output),
+        Command::Log { limit, show_output } => {
+            cmd_log(printer, *limit, *show_output, cli.state_dir.as_deref())
+        }
         Command::Verify { module } => cmd_verify(cli, printer, module.as_deref()),
         Command::Profile { command } => match command {
             ProfileCommand::Show => profile::cmd_profile_show(cli, printer),
@@ -1353,6 +1359,7 @@ pub fn execute(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
             resource.as_deref(),
             source.as_deref(),
             *all,
+            cli.state_dir.as_deref(),
         ),
         Command::Config { command } => match command {
             ConfigCommand::Show => cmd_config_show(cli, printer),
@@ -1394,7 +1401,9 @@ pub fn execute(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
             Ok(())
         }
         Command::Generate(args) => generate::cmd_generate(cli, printer, args),
-        Command::Rollback { apply_id, yes } => cmd_rollback(printer, *apply_id, *yes),
+        Command::Rollback { apply_id, yes } => {
+            cmd_rollback(printer, *apply_id, *yes, cli.state_dir.as_deref())
+        }
         Command::McpServer => crate::mcp::server::run_mcp_server(&cli.config),
     }
 }
@@ -1693,8 +1702,13 @@ fn print_daemon_install_success(printer: &Printer) {
     }
 }
 
-fn open_state_store() -> anyhow::Result<StateStore> {
-    Ok(StateStore::open_default()?)
+fn open_state_store(state_dir: Option<&Path>) -> anyhow::Result<StateStore> {
+    if let Some(dir) = state_dir {
+        std::fs::create_dir_all(dir)?;
+        Ok(StateStore::open(&dir.join("cfgd.db"))?)
+    } else {
+        Ok(StateStore::open_default()?)
+    }
 }
 
 /// Display apply result summary via Printer. Returns the status for caller control flow.
@@ -1740,7 +1754,7 @@ fn cmd_apply(cli: &Cli, printer: &Printer, args: &ApplyArgs) -> anyhow::Result<(
     }
 
     let config_dir = config_dir(cli);
-    let state = open_state_store()?;
+    let state = open_state_store(cli.state_dir.as_deref())?;
 
     // When --module is set, try loading profile but fall back to empty if none configured
     let (cfg, resolved) = if let Some(mod_name) = module_filter {
@@ -1991,9 +2005,15 @@ fn cmd_apply(cli: &Cli, printer: &Printer, args: &ApplyArgs) -> anyhow::Result<(
     printer.newline();
 
     // Acquire apply lock to prevent concurrent applies
-    let state_dir = cfgd_core::state::default_state_dir()
-        .map_err(|e| anyhow::anyhow!("cannot determine state directory: {}", e))?;
-    let _apply_lock = cfgd_core::acquire_apply_lock(&state_dir)?;
+    let lock_state_dir;
+    let apply_lock_dir: &std::path::Path = if let Some(dir) = cli.state_dir.as_deref() {
+        dir
+    } else {
+        lock_state_dir = cfgd_core::state::default_state_dir()
+            .map_err(|e| anyhow::anyhow!("cannot determine state directory: {}", e))?;
+        &lock_state_dir
+    };
+    let _apply_lock = cfgd_core::acquire_apply_lock(apply_lock_dir)?;
 
     // Apply
     let result = reconciler.apply(
@@ -2023,7 +2043,7 @@ fn cmd_apply(cli: &Cli, printer: &Printer, args: &ApplyArgs) -> anyhow::Result<(
     }
 
     // Prune old backups — keep last 10 applies' worth
-    if let Ok(state) = open_state_store() {
+    if let Ok(state) = open_state_store(cli.state_dir.as_deref()) {
         let _ = state.prune_old_backups(10);
     }
 
@@ -2036,7 +2056,7 @@ fn cmd_status(cli: &Cli, printer: &Printer, module_filter: Option<&str>) -> anyh
     }
 
     let (cfg, resolved) = load_config_and_profile(cli, printer)?;
-    let state = open_state_store()?;
+    let state = open_state_store(cli.state_dir.as_deref())?;
 
     let last_apply = state.last_apply()?;
     let drift_events = state.unresolved_drift()?;
@@ -2221,7 +2241,7 @@ fn cmd_status_module(cli: &Cli, printer: &Printer, mod_name: &str) -> anyhow::Re
         .get(mod_name)
         .ok_or_else(|| anyhow::anyhow!("Module '{}' not found", mod_name))?;
 
-    let state = open_state_store()?;
+    let state = open_state_store(cli.state_dir.as_deref())?;
     let state_rec = state.module_state_by_name(mod_name)?;
 
     if printer.is_structured() {
@@ -2287,8 +2307,13 @@ fn cmd_status_module(cli: &Cli, printer: &Printer, mod_name: &str) -> anyhow::Re
     Ok(())
 }
 
-fn cmd_log(printer: &Printer, count: u32, show_output: Option<i64>) -> anyhow::Result<()> {
-    let state = open_state_store()?;
+fn cmd_log(
+    printer: &Printer,
+    count: u32,
+    show_output: Option<i64>,
+    state_dir: Option<&Path>,
+) -> anyhow::Result<()> {
+    let state = open_state_store(state_dir)?;
 
     if let Some(apply_id) = show_output {
         return cmd_log_show_output(printer, &state, apply_id);
@@ -2395,7 +2420,7 @@ fn print_verify_results(results: &[reconciler::VerifyResult], printer: &Printer)
 
 fn cmd_verify(cli: &Cli, printer: &Printer, module_filter: Option<&str>) -> anyhow::Result<()> {
     let config_dir = config_dir(cli);
-    let state = open_state_store()?;
+    let state = open_state_store(cli.state_dir.as_deref())?;
 
     let (resolved, resolved_modules, registry) = if let Some(mod_name) = module_filter {
         let resolved = empty_resolved_profile(mod_name);
@@ -4173,8 +4198,13 @@ fn format_bytes(bytes: u64) -> String {
     }
 }
 
-fn cmd_rollback(printer: &Printer, apply_id: i64, yes: bool) -> anyhow::Result<()> {
-    let state = open_state_store()?;
+fn cmd_rollback(
+    printer: &Printer,
+    apply_id: i64,
+    yes: bool,
+    state_dir: Option<&Path>,
+) -> anyhow::Result<()> {
+    let state = open_state_store(state_dir)?;
 
     // Check if the apply exists by looking up journal entries and backups
     let journal_entries = state.journal_completed_actions(apply_id)?;
@@ -4669,7 +4699,7 @@ fn cmd_source_add(cli: &Cli, printer: &Printer, args: &SourceAddArgs) -> anyhow:
     add_source_to_config(&config_path, &source_spec)?;
 
     // Update state store
-    let state = open_state_store()?;
+    let state = open_state_store(cli.state_dir.as_deref())?;
     state.upsert_config_source(
         &source_name,
         url,
@@ -4712,7 +4742,7 @@ fn cmd_source_list(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
         return Ok(());
     }
 
-    let state = open_state_store()?;
+    let state = open_state_store(cli.state_dir.as_deref())?;
 
     let entries: Vec<SourceListEntry> = cfg
         .spec
@@ -4780,7 +4810,7 @@ fn cmd_source_show(cli: &Cli, printer: &Printer, name: &str) -> anyhow::Result<(
         .ok_or_else(|| anyhow::anyhow!("Source '{}' not found", name))?;
 
     if printer.is_structured() {
-        let state = open_state_store()?;
+        let state = open_state_store(cli.state_dir.as_deref())?;
         let state_info = state.config_source_by_name(name)?;
         let resources = state.managed_resources_by_source(name)?;
         let output = SourceShowOutput {
@@ -4829,7 +4859,7 @@ fn cmd_source_show(cli: &Cli, printer: &Printer, name: &str) -> anyhow::Result<(
     }
 
     // Show state info
-    let state = open_state_store()?;
+    let state = open_state_store(cli.state_dir.as_deref())?;
     if let Some(state_info) = state.config_source_by_name(name)? {
         printer.newline();
         printer.subheader("State");
@@ -4920,7 +4950,7 @@ fn cmd_source_remove(
         anyhow::bail!("Source '{}' not found in config", name);
     }
 
-    let state = open_state_store()?;
+    let state = open_state_store(cli.state_dir.as_deref())?;
     let resources = state.managed_resources_by_source(name)?;
 
     if !resources.is_empty() && !keep_all && !remove_all {
@@ -4998,7 +5028,7 @@ fn cmd_source_update(cli: &Cli, printer: &Printer, name: Option<&str>) -> anyhow
     let cache_dir = source_cache_dir()?;
     let mut mgr = SourceManager::new(&cache_dir);
     mgr.set_allow_unsigned(cfg.spec.security.as_ref().is_some_and(|s| s.allow_unsigned));
-    let state = open_state_store()?;
+    let state = open_state_store(cli.state_dir.as_deref())?;
 
     let sources_to_update: Vec<&config::SourceSpec> = if let Some(name) = name {
         cfg.spec.sources.iter().filter(|s| s.name == name).collect()
@@ -6002,7 +6032,7 @@ fn compose_with_sources(
         }
 
         // Persist conflicts to state
-        if let Ok(state) = open_state_store() {
+        if let Ok(state) = open_state_store(cli.state_dir.as_deref()) {
             for conflict in &result.conflicts {
                 let _ = state.record_source_conflict(
                     &conflict.winning_source,
@@ -6115,6 +6145,7 @@ fn cmd_decide(
     resource: Option<&str>,
     source: Option<&str>,
     all: bool,
+    state_dir: Option<&Path>,
 ) -> anyhow::Result<()> {
     let resolution = match action {
         "accept" => "accepted",
@@ -6124,7 +6155,7 @@ fn cmd_decide(
         }
     };
 
-    let state = open_state_store()?;
+    let state = open_state_store(state_dir)?;
 
     if all {
         let count = state.resolve_all_decisions(resolution)?;
@@ -6547,6 +6578,10 @@ spec:
     // --- Module CRUD tests ---
 
     fn test_cli(dir: &Path) -> Cli {
+        test_cli_with_state(dir, None)
+    }
+
+    fn test_cli_with_state(dir: &Path, state_dir: Option<PathBuf>) -> Cli {
         Cli {
             config: dir.join("cfgd.yaml"),
             profile: None,
@@ -6555,6 +6590,7 @@ spec:
             quiet: true,
             output: "table".to_string(),
             jsonpath: None,
+            state_dir,
             command: Command::Status { module: None },
         }
     }
@@ -8548,17 +8584,15 @@ spec:
         assert!(result.is_ok());
     }
 
-    // --- Command handler tests (require CFGD_STATE_DIR) ---
+    // --- Command handler tests (require state store) ---
     //
     // These test full command handlers that depend on the state store.
-    // Each test sets CFGD_STATE_DIR to its own tempdir.
-    // Tests using set_var must use the STATE_DIR_LOCK to avoid races.
+    // Each test passes the state dir through the Cli struct (no env vars, no serial needed).
 
-    use std::sync::Mutex as StdMutex;
-    static STATE_DIR_LOCK: StdMutex<()> = StdMutex::new(());
-
-    /// Set up a full test environment: config dir + state dir + env var.
+    /// Set up a full test environment: config dir + state dir.
     /// Returns (config_dir_tempdir, state_dir_tempdir).
+    /// Use `test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()))` to get a Cli
+    /// that uses the state dir directly (no env vars, no cross-thread races).
     fn setup_test_env() -> (tempfile::TempDir, tempfile::TempDir) {
         let config_dir = create_test_config_dir();
         std::fs::write(config_dir.path().join("cfgd.yaml"), TEST_CONFIG_YAML).unwrap();
@@ -8567,20 +8601,15 @@ spec:
         std::fs::create_dir_all(config_dir.path().join("modules")).unwrap();
 
         let state_dir = tempfile::tempdir().unwrap();
-        // SAFETY: guarded by STATE_DIR_LOCK
-        unsafe {
-            std::env::set_var("CFGD_STATE_DIR", state_dir.path());
-        }
-
         (config_dir, state_dir)
     }
 
     #[test]
     fn cmd_status_with_empty_state() {
-        let _lock = STATE_DIR_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        let (config_dir, _state_dir) = setup_test_env();
 
-        let cli = test_cli(config_dir.path());
+        let (config_dir, state_dir) = setup_test_env();
+
+        let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
         let printer = test_printer();
 
         let result = super::cmd_status(&cli, &printer, None);
@@ -8589,10 +8618,10 @@ spec:
 
     #[test]
     fn cmd_status_module_not_found() {
-        let _lock = STATE_DIR_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        let (config_dir, _state_dir) = setup_test_env();
 
-        let cli = test_cli(config_dir.path());
+        let (config_dir, state_dir) = setup_test_env();
+
+        let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
         let printer = test_printer();
 
         let result = super::cmd_status(&cli, &printer, Some("nonexistent"));
@@ -8602,8 +8631,8 @@ spec:
 
     #[test]
     fn cmd_status_module_found() {
-        let _lock = STATE_DIR_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        let (config_dir, _state_dir) = setup_test_env();
+
+        let (config_dir, state_dir) = setup_test_env();
 
         // Create a module
         let mod_dir = config_dir.path().join("modules").join("test-mod");
@@ -8614,7 +8643,7 @@ spec:
         )
         .unwrap();
 
-        let cli = test_cli(config_dir.path());
+        let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
         let printer = test_printer();
 
         let result = super::cmd_status(&cli, &printer, Some("test-mod"));
@@ -8623,8 +8652,8 @@ spec:
 
     #[test]
     fn cmd_verify_module() {
-        let _lock = STATE_DIR_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        let (config_dir, _state_dir) = setup_test_env();
+
+        let (config_dir, state_dir) = setup_test_env();
 
         // Create a module with no packages (so verify succeeds trivially)
         let mod_dir = config_dir.path().join("modules").join("test-mod");
@@ -8635,7 +8664,7 @@ spec:
         )
         .unwrap();
 
-        let cli = test_cli(config_dir.path());
+        let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
         let printer = test_printer();
 
         let result = super::cmd_verify(&cli, &printer, Some("test-mod"));
@@ -8644,22 +8673,21 @@ spec:
 
     #[test]
     fn cmd_log_with_empty_state() {
-        let _lock = STATE_DIR_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        let (config_dir, _state_dir) = setup_test_env();
 
-        let _cli = test_cli(config_dir.path());
+        let (_config_dir, state_dir) = setup_test_env();
+
         let printer = test_printer();
 
-        let result = super::cmd_log(&printer, 10, None);
+        let result = super::cmd_log(&printer, 10, None, Some(state_dir.path()));
         assert!(result.is_ok());
     }
 
     #[test]
     fn cmd_apply_dry_run_empty_profile() {
-        let _lock = STATE_DIR_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        let (config_dir, _state_dir) = setup_test_env();
 
-        let cli = test_cli(config_dir.path());
+        let (config_dir, state_dir) = setup_test_env();
+
+        let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
         let printer = test_printer();
         let args = ApplyArgs {
             dry_run: true,
@@ -8676,10 +8704,10 @@ spec:
 
     #[test]
     fn cmd_apply_dry_run_with_phase_filter() {
-        let _lock = STATE_DIR_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        let (config_dir, _state_dir) = setup_test_env();
 
-        let cli = test_cli(config_dir.path());
+        let (config_dir, state_dir) = setup_test_env();
+
+        let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
         let printer = test_printer();
         let args = ApplyArgs {
             dry_run: true,
@@ -8696,10 +8724,10 @@ spec:
 
     #[test]
     fn cmd_apply_dry_run_invalid_phase() {
-        let _lock = STATE_DIR_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        let (config_dir, _state_dir) = setup_test_env();
 
-        let cli = test_cli(config_dir.path());
+        let (config_dir, state_dir) = setup_test_env();
+
+        let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
         let printer = test_printer();
         let args = ApplyArgs {
             dry_run: true,
@@ -8717,10 +8745,10 @@ spec:
 
     #[test]
     fn cmd_apply_dry_run_with_skip() {
-        let _lock = STATE_DIR_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        let (config_dir, _state_dir) = setup_test_env();
 
-        let cli = test_cli(config_dir.path());
+        let (config_dir, state_dir) = setup_test_env();
+
+        let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
         let printer = test_printer();
         let args = ApplyArgs {
             dry_run: true,
@@ -8737,10 +8765,10 @@ spec:
 
     #[test]
     fn cmd_apply_dry_run_with_only() {
-        let _lock = STATE_DIR_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        let (config_dir, _state_dir) = setup_test_env();
 
-        let cli = test_cli(config_dir.path());
+        let (config_dir, state_dir) = setup_test_env();
+
+        let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
         let printer = test_printer();
         let args = ApplyArgs {
             dry_run: true,
@@ -8757,8 +8785,8 @@ spec:
 
     #[test]
     fn cmd_apply_real_with_empty_profile() {
-        let _lock = STATE_DIR_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        let (config_dir, _state_dir) = setup_test_env();
+
+        let (config_dir, state_dir) = setup_test_env();
 
         // Use a profile with no packages/files so apply does nothing
         let empty_profile = "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: empty\nspec:\n  inherits: []\n  modules: []\n";
@@ -8770,7 +8798,7 @@ spec:
         let empty_config = "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec:\n  profile: empty\n";
         std::fs::write(config_dir.path().join("cfgd.yaml"), empty_config).unwrap();
 
-        let cli = test_cli(config_dir.path());
+        let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
         let printer = test_printer();
         let args = ApplyArgs {
             dry_run: false,
@@ -8787,8 +8815,8 @@ spec:
 
     #[test]
     fn cmd_status_after_apply() {
-        let _lock = STATE_DIR_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        let (config_dir, _state_dir) = setup_test_env();
+
+        let (config_dir, state_dir) = setup_test_env();
 
         // Apply with empty profile
         let empty_profile = "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: empty\nspec:\n  inherits: []\n  modules: []\n";
@@ -8800,7 +8828,7 @@ spec:
         let empty_config = "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec:\n  profile: empty\n";
         std::fs::write(config_dir.path().join("cfgd.yaml"), empty_config).unwrap();
 
-        let cli = test_cli(config_dir.path());
+        let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
         let printer = test_printer();
 
         // Apply first
@@ -8821,8 +8849,8 @@ spec:
 
     #[test]
     fn cmd_log_after_apply() {
-        let _lock = STATE_DIR_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        let (config_dir, _state_dir) = setup_test_env();
+
+        let (config_dir, state_dir) = setup_test_env();
 
         let empty_profile = "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: empty\nspec:\n  inherits: []\n  modules: []\n";
         std::fs::write(
@@ -8833,7 +8861,7 @@ spec:
         let empty_config = "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec:\n  profile: empty\n";
         std::fs::write(config_dir.path().join("cfgd.yaml"), empty_config).unwrap();
 
-        let cli = test_cli(config_dir.path());
+        let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
         let printer = test_printer();
 
         // Apply
@@ -8848,16 +8876,16 @@ spec:
         super::cmd_apply(&cli, &printer, &args).unwrap();
 
         // Log should show one entry
-        let result = super::cmd_log(&printer, 10, None);
+        let result = super::cmd_log(&printer, 10, None, Some(state_dir.path()));
         assert!(result.is_ok());
     }
 
     #[test]
     fn cmd_verify_empty_profile() {
-        let _lock = STATE_DIR_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        let (config_dir, _state_dir) = setup_test_env();
 
-        let cli = test_cli(config_dir.path());
+        let (config_dir, state_dir) = setup_test_env();
+
+        let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
         let printer = test_printer();
 
         let result = super::cmd_verify(&cli, &printer, None);
@@ -8865,11 +8893,12 @@ spec:
     }
 
     #[test]
+    #[test]
     fn cmd_diff_empty_profile() {
-        let _lock = STATE_DIR_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        let (config_dir, _state_dir) = setup_test_env();
 
-        let cli = test_cli(config_dir.path());
+        let (config_dir, state_dir) = setup_test_env();
+
+        let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
         let printer = test_printer();
 
         let result = super::cmd_diff(&cli, &printer);
@@ -8878,8 +8907,8 @@ spec:
 
     #[test]
     fn cmd_apply_dry_run_with_files() {
-        let _lock = STATE_DIR_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        let (config_dir, _state_dir) = setup_test_env();
+
+        let (config_dir, state_dir) = setup_test_env();
 
         // Create a source file
         let files_dir = config_dir.path().join("files");
@@ -8901,7 +8930,7 @@ spec:
         let config = "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec:\n  profile: withfile\n";
         std::fs::write(config_dir.path().join("cfgd.yaml"), config).unwrap();
 
-        let cli = test_cli(config_dir.path());
+        let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
         let printer = test_printer();
         let args = ApplyArgs {
             dry_run: true,
@@ -8920,8 +8949,8 @@ spec:
 
     #[test]
     fn cmd_apply_creates_file() {
-        let _lock = STATE_DIR_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        let (config_dir, _state_dir) = setup_test_env();
+
+        let (config_dir, state_dir) = setup_test_env();
 
         let files_dir = config_dir.path().join("files");
         std::fs::create_dir_all(&files_dir).unwrap();
@@ -8941,7 +8970,7 @@ spec:
         let config = "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec:\n  profile: withfile\n";
         std::fs::write(config_dir.path().join("cfgd.yaml"), config).unwrap();
 
-        let cli = test_cli(config_dir.path());
+        let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
         let printer = test_printer();
         let args = ApplyArgs {
             dry_run: false,
@@ -8961,8 +8990,8 @@ spec:
 
     #[test]
     fn cmd_apply_idempotent() {
-        let _lock = STATE_DIR_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        let (config_dir, _state_dir) = setup_test_env();
+
+        let (config_dir, state_dir) = setup_test_env();
 
         let files_dir = config_dir.path().join("files");
         std::fs::create_dir_all(&files_dir).unwrap();
@@ -8982,7 +9011,7 @@ spec:
         let config = "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec:\n  profile: withfile\n";
         std::fs::write(config_dir.path().join("cfgd.yaml"), config).unwrap();
 
-        let cli = test_cli(config_dir.path());
+        let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
         let printer = test_printer();
         let args = ApplyArgs {
             dry_run: false,
@@ -9004,8 +9033,8 @@ spec:
 
     #[test]
     fn cmd_diff_with_files() {
-        let _lock = STATE_DIR_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        let (config_dir, _state_dir) = setup_test_env();
+
+        let (config_dir, state_dir) = setup_test_env();
 
         let files_dir = config_dir.path().join("files");
         std::fs::create_dir_all(&files_dir).unwrap();
@@ -9028,7 +9057,7 @@ spec:
         let config = "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec:\n  profile: withfile\n";
         std::fs::write(config_dir.path().join("cfgd.yaml"), config).unwrap();
 
-        let cli = test_cli(config_dir.path());
+        let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
         let printer = test_printer();
 
         let result = super::cmd_diff(&cli, &printer);
@@ -9037,12 +9066,12 @@ spec:
 
     #[test]
     fn cmd_status_structured_output() {
-        let _lock = STATE_DIR_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        let (config_dir, _state_dir) = setup_test_env();
+
+        let (config_dir, state_dir) = setup_test_env();
 
         let cli = Cli {
             output: "json".to_string(),
-            ..test_cli(config_dir.path())
+            ..test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()))
         };
         let printer = Printer::new(cfgd_core::output::Verbosity::Quiet);
 
@@ -9052,23 +9081,23 @@ spec:
 
     #[test]
     fn cmd_log_structured_output() {
-        let _lock = STATE_DIR_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        let (_config_dir, _state_dir) = setup_test_env();
+
+        let (_config_dir, state_dir) = setup_test_env();
 
         let printer = Printer::new(cfgd_core::output::Verbosity::Quiet);
 
-        let result = super::cmd_log(&printer, 5, None);
+        let result = super::cmd_log(&printer, 5, None, Some(state_dir.path()));
         assert!(result.is_ok());
     }
 
     #[test]
     fn execute_status_command() {
-        let _lock = STATE_DIR_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        let (config_dir, _state_dir) = setup_test_env();
+
+        let (config_dir, state_dir) = setup_test_env();
 
         let cli = Cli {
             command: Command::Status { module: None },
-            ..test_cli(config_dir.path())
+            ..test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()))
         };
         let printer = test_printer();
 
@@ -9078,8 +9107,8 @@ spec:
 
     #[test]
     fn execute_log_command() {
-        let _lock = STATE_DIR_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        let (_config_dir, _state_dir) = setup_test_env();
+
+        let (_config_dir, state_dir) = setup_test_env();
 
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("cfgd.yaml"), TEST_CONFIG_YAML).unwrap();
@@ -9095,7 +9124,7 @@ spec:
                 limit: 10,
                 show_output: None,
             },
-            ..test_cli(dir.path())
+            ..test_cli_with_state(dir.path(), Some(state_dir.path().to_path_buf()))
         };
         let printer = test_printer();
 
@@ -9105,12 +9134,12 @@ spec:
 
     #[test]
     fn execute_verify_command() {
-        let _lock = STATE_DIR_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        let (config_dir, _state_dir) = setup_test_env();
+
+        let (config_dir, state_dir) = setup_test_env();
 
         let cli = Cli {
             command: Command::Verify { module: None },
-            ..test_cli(config_dir.path())
+            ..test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()))
         };
         let printer = test_printer();
 
@@ -9120,12 +9149,12 @@ spec:
 
     #[test]
     fn execute_diff_command() {
-        let _lock = STATE_DIR_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        let (config_dir, _state_dir) = setup_test_env();
+
+        let (config_dir, state_dir) = setup_test_env();
 
         let cli = Cli {
             command: Command::Diff,
-            ..test_cli(config_dir.path())
+            ..test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()))
         };
         let printer = test_printer();
 
@@ -9135,12 +9164,12 @@ spec:
 
     #[test]
     fn execute_doctor_command() {
-        let _lock = STATE_DIR_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        let (config_dir, _state_dir) = setup_test_env();
+
+        let (config_dir, state_dir) = setup_test_env();
 
         let cli = Cli {
             command: Command::Doctor,
-            ..test_cli(config_dir.path())
+            ..test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()))
         };
         let printer = test_printer();
 
@@ -9150,14 +9179,14 @@ spec:
 
     #[test]
     fn execute_profile_list() {
-        let _lock = STATE_DIR_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        let (config_dir, _state_dir) = setup_test_env();
+
+        let (config_dir, state_dir) = setup_test_env();
 
         let cli = Cli {
             command: Command::Profile {
                 command: ProfileCommand::List,
             },
-            ..test_cli(config_dir.path())
+            ..test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()))
         };
         let printer = test_printer();
 
@@ -9166,14 +9195,14 @@ spec:
 
     #[test]
     fn execute_profile_show() {
-        let _lock = STATE_DIR_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        let (config_dir, _state_dir) = setup_test_env();
+
+        let (config_dir, state_dir) = setup_test_env();
 
         let cli = Cli {
             command: Command::Profile {
                 command: ProfileCommand::Show,
             },
-            ..test_cli(config_dir.path())
+            ..test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()))
         };
         let printer = test_printer();
 
@@ -9182,14 +9211,14 @@ spec:
 
     #[test]
     fn execute_config_show() {
-        let _lock = STATE_DIR_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        let (config_dir, _state_dir) = setup_test_env();
+
+        let (config_dir, state_dir) = setup_test_env();
 
         let cli = Cli {
             command: Command::Config {
                 command: ConfigCommand::Show,
             },
-            ..test_cli(config_dir.path())
+            ..test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()))
         };
         let printer = test_printer();
 
@@ -9198,8 +9227,8 @@ spec:
 
     #[test]
     fn execute_config_get() {
-        let _lock = STATE_DIR_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        let (config_dir, _state_dir) = setup_test_env();
+
+        let (config_dir, state_dir) = setup_test_env();
 
         let cli = Cli {
             command: Command::Config {
@@ -9207,7 +9236,7 @@ spec:
                     key: "profile".to_string(),
                 },
             },
-            ..test_cli(config_dir.path())
+            ..test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()))
         };
         let printer = test_printer();
 
@@ -9216,8 +9245,8 @@ spec:
 
     #[test]
     fn execute_config_set() {
-        let _lock = STATE_DIR_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        let (config_dir, _state_dir) = setup_test_env();
+
+        let (config_dir, state_dir) = setup_test_env();
 
         let cli = Cli {
             command: Command::Config {
@@ -9226,7 +9255,7 @@ spec:
                     value: "work".to_string(),
                 },
             },
-            ..test_cli(config_dir.path())
+            ..test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()))
         };
         let printer = test_printer();
 
@@ -9235,8 +9264,8 @@ spec:
 
     #[test]
     fn execute_apply_dry_run() {
-        let _lock = STATE_DIR_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        let (config_dir, _state_dir) = setup_test_env();
+
+        let (config_dir, state_dir) = setup_test_env();
 
         let cli = Cli {
             command: Command::Apply(ApplyArgs {
@@ -9247,7 +9276,7 @@ spec:
                 only: vec![],
                 module: None,
             }),
-            ..test_cli(config_dir.path())
+            ..test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()))
         };
         let printer = test_printer();
 
@@ -9358,8 +9387,8 @@ spec:
 
     #[test]
     fn cmd_apply_with_module_filter() {
-        let _lock = STATE_DIR_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        let (config_dir, _state_dir) = setup_test_env();
+
+        let (config_dir, state_dir) = setup_test_env();
 
         // Create a module
         create_module_in_dir(
@@ -9376,7 +9405,7 @@ spec:
         )
         .unwrap();
 
-        let cli = test_cli(config_dir.path());
+        let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
         let printer = test_printer();
         let args = ApplyArgs {
             dry_run: true,
@@ -9393,8 +9422,8 @@ spec:
 
     #[test]
     fn cmd_apply_with_env_vars() {
-        let _lock = STATE_DIR_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        let (config_dir, _state_dir) = setup_test_env();
+
+        let (config_dir, state_dir) = setup_test_env();
 
         // Profile with env vars
         let profile = "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec:\n  env:\n    - name: EDITOR\n      value: vim\n    - name: PAGER\n      value: less\n  modules: []\n";
@@ -9404,7 +9433,7 @@ spec:
         )
         .unwrap();
 
-        let cli = test_cli(config_dir.path());
+        let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
         let printer = test_printer();
         let args = ApplyArgs {
             dry_run: false,
@@ -9421,8 +9450,8 @@ spec:
 
     #[test]
     fn cmd_status_with_modules() {
-        let _lock = STATE_DIR_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        let (config_dir, _state_dir) = setup_test_env();
+
+        let (config_dir, state_dir) = setup_test_env();
 
         create_module_in_dir(
             config_dir.path(),
@@ -9437,7 +9466,7 @@ spec:
         )
         .unwrap();
 
-        let cli = test_cli(config_dir.path());
+        let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
         let printer = test_printer();
 
         assert!(super::cmd_status(&cli, &printer, None).is_ok());
@@ -9445,8 +9474,8 @@ spec:
 
     #[test]
     fn cmd_status_with_drift_events() {
-        let _lock = STATE_DIR_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        let (config_dir, _state_dir) = setup_test_env();
+
+        let (config_dir, state_dir) = setup_test_env();
 
         // Apply first to create state
         let empty_profile = "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: empty\nspec:\n  inherits: []\n  modules: []\n";
@@ -9458,7 +9487,7 @@ spec:
         let empty_config = "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec:\n  profile: empty\n";
         std::fs::write(config_dir.path().join("cfgd.yaml"), empty_config).unwrap();
 
-        let cli = test_cli(config_dir.path());
+        let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
         let printer = test_printer();
 
         // Apply, then record a drift event manually
@@ -9473,7 +9502,7 @@ spec:
         super::cmd_apply(&cli, &printer, &args).unwrap();
 
         // Record a drift event
-        let state = super::open_state_store().unwrap();
+        let state = super::open_state_store(Some(state_dir.path())).unwrap();
         state
             .record_drift(
                 "package",
@@ -9492,10 +9521,10 @@ spec:
 
     #[test]
     fn cmd_source_list_no_sources() {
-        let _lock = STATE_DIR_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        let (config_dir, _state_dir) = setup_test_env();
 
-        let cli = test_cli(config_dir.path());
+        let (config_dir, state_dir) = setup_test_env();
+
+        let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
         let printer = test_printer();
 
         assert!(super::cmd_source_list(&cli, &printer).is_ok());
@@ -9503,13 +9532,13 @@ spec:
 
     #[test]
     fn cmd_source_list_no_config() {
-        let _lock = STATE_DIR_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        let (_config_dir, _state_dir) = setup_test_env();
+
+        let (_config_dir, state_dir) = setup_test_env();
 
         let dir = tempfile::tempdir().unwrap();
         let cli = Cli {
             config: dir.path().join("nonexistent.yaml"),
-            ..test_cli(dir.path())
+            ..test_cli_with_state(dir.path(), Some(state_dir.path().to_path_buf()))
         };
         let printer = test_printer();
 
@@ -9520,58 +9549,58 @@ spec:
 
     #[test]
     fn cmd_decide_accept_all_empty() {
-        let _lock = STATE_DIR_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        let (_config_dir, _state_dir) = setup_test_env();
+
+        let (_config_dir, state_dir) = setup_test_env();
 
         let printer = test_printer();
 
-        let result = super::cmd_decide(&printer, "accept", None, None, true);
+        let result = super::cmd_decide(&printer, "accept", None, None, true, Some(state_dir.path()));
         assert!(result.is_ok());
     }
 
     #[test]
     fn cmd_decide_reject_all_empty() {
-        let _lock = STATE_DIR_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        let (_config_dir, _state_dir) = setup_test_env();
+
+        let (_config_dir, state_dir) = setup_test_env();
 
         let printer = test_printer();
 
-        let result = super::cmd_decide(&printer, "reject", None, None, true);
+        let result = super::cmd_decide(&printer, "reject", None, None, true, Some(state_dir.path()));
         assert!(result.is_ok());
     }
 
     #[test]
     fn cmd_decide_invalid_action() {
-        let _lock = STATE_DIR_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        let (_config_dir, _state_dir) = setup_test_env();
+
+        let (_config_dir, state_dir) = setup_test_env();
 
         let printer = test_printer();
 
-        let result = super::cmd_decide(&printer, "invalid", None, None, false);
+        let result = super::cmd_decide(&printer, "invalid", None, None, false, Some(state_dir.path()));
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("Unknown action"));
     }
 
     #[test]
     fn cmd_decide_accept_specific_resource() {
-        let _lock = STATE_DIR_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        let (_config_dir, _state_dir) = setup_test_env();
+
+        let (_config_dir, state_dir) = setup_test_env();
 
         let printer = test_printer();
 
         // No pending decisions, but should not error
-        let result = super::cmd_decide(&printer, "accept", Some("packages.brew.curl"), None, false);
+        let result = super::cmd_decide(&printer, "accept", Some("packages.brew.curl"), None, false, Some(state_dir.path()));
         assert!(result.is_ok());
     }
 
     #[test]
     fn cmd_decide_reject_by_source() {
-        let _lock = STATE_DIR_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        let (_config_dir, _state_dir) = setup_test_env();
+
+        let (_config_dir, state_dir) = setup_test_env();
 
         let printer = test_printer();
 
-        let result = super::cmd_decide(&printer, "reject", None, Some("acme"), false);
+        let result = super::cmd_decide(&printer, "reject", None, Some("acme"), false, Some(state_dir.path()));
         assert!(result.is_ok());
     }
 
@@ -9580,8 +9609,8 @@ spec:
     // profile create/delete tested via existing module_create tests above
     #[test]
     fn execute_profile_switch() {
-        let _lock = STATE_DIR_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        let (config_dir, _state_dir) = setup_test_env();
+
+        let (config_dir, state_dir) = setup_test_env();
 
         let cli = Cli {
             command: Command::Profile {
@@ -9589,7 +9618,7 @@ spec:
                     name: "work".to_string(),
                 },
             },
-            ..test_cli(config_dir.path())
+            ..test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()))
         };
         let printer = test_printer();
 
@@ -9604,14 +9633,14 @@ spec:
 
     #[test]
     fn execute_module_list() {
-        let _lock = STATE_DIR_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        let (config_dir, _state_dir) = setup_test_env();
+
+        let (config_dir, state_dir) = setup_test_env();
 
         let cli = Cli {
             command: Command::Module {
                 command: ModuleCommand::List,
             },
-            ..test_cli(config_dir.path())
+            ..test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()))
         };
         let printer = test_printer();
 
@@ -9620,14 +9649,14 @@ spec:
 
     #[test]
     fn execute_workflow_generate() {
-        let _lock = STATE_DIR_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        let (config_dir, _state_dir) = setup_test_env();
+
+        let (config_dir, state_dir) = setup_test_env();
 
         let cli = Cli {
             command: Command::Workflow {
                 command: WorkflowCommand::Generate { force: false },
             },
-            ..test_cli(config_dir.path())
+            ..test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()))
         };
         let printer = test_printer();
 
@@ -9638,10 +9667,10 @@ spec:
 
     #[test]
     fn cmd_sync_no_sources() {
-        let _lock = STATE_DIR_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        let (config_dir, _state_dir) = setup_test_env();
 
-        let cli = test_cli(config_dir.path());
+        let (config_dir, state_dir) = setup_test_env();
+
+        let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
         let printer = test_printer();
 
         // With no sources configured, sync should succeed as a no-op
@@ -9651,10 +9680,10 @@ spec:
 
     #[test]
     fn cmd_pull_no_sources() {
-        let _lock = STATE_DIR_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        let (config_dir, _state_dir) = setup_test_env();
 
-        let cli = test_cli(config_dir.path());
+        let (config_dir, state_dir) = setup_test_env();
+
+        let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
         let printer = test_printer();
 
         let result = super::cmd_pull(&cli, &printer);
@@ -9665,10 +9694,10 @@ spec:
 
     #[test]
     fn cmd_apply_dry_run_each_phase() {
-        let _lock = STATE_DIR_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        let (config_dir, _state_dir) = setup_test_env();
 
-        let cli = test_cli(config_dir.path());
+        let (config_dir, state_dir) = setup_test_env();
+
+        let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
         let printer = test_printer();
 
         for phase in &[
@@ -9691,8 +9720,8 @@ spec:
 
     #[test]
     fn cmd_verify_after_apply_with_env() {
-        let _lock = STATE_DIR_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        let (config_dir, _state_dir) = setup_test_env();
+
+        let (config_dir, state_dir) = setup_test_env();
 
         let profile = "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec:\n  env:\n    - name: EDITOR\n      value: vim\n  modules: []\n";
         std::fs::write(
@@ -9701,7 +9730,7 @@ spec:
         )
         .unwrap();
 
-        let cli = test_cli(config_dir.path());
+        let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
         let printer = test_printer();
 
         // Apply

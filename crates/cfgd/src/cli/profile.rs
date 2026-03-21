@@ -662,7 +662,7 @@ pub(super) fn cmd_profile_update(
                 }
             }
             // Clean module state and deployed files from DB
-            if let Ok(state) = open_state_store() {
+            if let Ok(state) = open_state_store(cli.state_dir.as_deref()) {
                 // Query file manifest for deployed files
                 if let Ok(manifest) = state.module_deployed_files(m) {
                     if !manifest.is_empty() {

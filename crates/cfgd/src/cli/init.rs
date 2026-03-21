@@ -104,7 +104,7 @@ pub(super) fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result
 
             let cfg = config::load_config(&config_path)?;
             let registry = super::build_registry_with_config(Some(&cfg));
-            let store = super::open_state_store()?;
+            let store = super::open_state_store(None)?;
 
             // Build a minimal resolved profile for the reconciler
             let resolved = config::ResolvedProfile {
@@ -165,7 +165,7 @@ pub(super) fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result
             let cfg = config::load_config(&config_path)?;
             let resolved = config::resolve_profile(&profile_name, &profiles_dir)?;
             let mut registry = super::build_registry_with_config(Some(&cfg));
-            let store = super::open_state_store()?;
+            let store = super::open_state_store(None)?;
 
             // Resolve modules (profile modules + any --apply-module additions)
             let mut module_names = resolved.merged.modules.clone();
