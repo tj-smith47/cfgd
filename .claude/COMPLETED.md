@@ -914,3 +914,62 @@ Module state is stored by module name, not by profile — so status/verify/apply
 - [x] Policy `debugModules` overrides Module CRD's `mountPolicy` during webhook resolution
 - [x] `x-kubernetes-list-type`/`list-map-keys` annotations on `debugModules` for strategic merge patch
 - [x] CRD YAML regenerated with mountPolicy and debugModules schemas
+
+## E2E test gaps
+
+### Operator E2E (`tests/e2e/operator/`) — T01-T18
+- [x] Module CRD: create, verify controller sets status (verified, resolvedArtifact), webhook rejects invalid OCI refs and malformed PEM keys
+- [x] ClusterConfigPolicy: create with namespaceSelector, verify only matching namespaces evaluated, verify cluster-wins merge with namespace ConfigPolicy
+- [x] Validation webhooks: Module, ClusterConfigPolicy, DriftAlert endpoints reject invalid specs
+- [x] Mutating webhook: pod with `cfgd.io/modules` annotation in labeled namespace gets CSI volumes injected, mountPolicy Debug skips volumeMount, env vars set on containers
+- [x] OCI supply chain: push module to test registry (kind-hosted), pull with signature verification, verify content integrity
+- [x] Update CRD wait loop to include all 5 CRDs (currently only waits for 3)
+
+### Full-stack E2E (`tests/e2e/full-stack/`) — T01-T16
+- [x] CSI driver: deploy DaemonSet via Helm, create pod referencing CSI volume, verify module content mounted read-only, verify unmount on pod delete
+- [x] kubectl cfgd plugin: `inject deployment/test -m mod:v1` patches annotation, `status` lists modules, `version` returns server version
+- [x] Debug flow: pod with mountPolicy Debug module, `kubectl cfgd debug` creates ephemeral container that accesses debug-only volume
+
+---
+
+## YAML convention alignment
+
+Switched all YAML serialization from kebab-case/lowercase to camelCase/PascalCase to match Kubernetes ecosystem conventions. Zero `rename_all = "kebab-case"` or `rename_all = "lowercase"` serde attributes remain.
+
+- [x] All config structs: `rename_all = "camelCase"` (config/mod.rs ~63 sites, server_client.rs, daemon/mod.rs, upgrade.rs, gateway/api.rs, gateway/db.rs)
+- [x] All enums: removed `rename_all`, serialize as PascalCase by default (FileStrategy, PolicyAction, OriginType, NotifyMethod, LayerPolicy, DriftSeverity, ApplyStatus, PhaseName)
+- [x] Removed explicit `#[serde(rename = "apiVersion")]` from 5 document structs (camelCase handles it naturally)
+- [x] Updated all unit test YAML strings, integration test fixtures, example YAML files, Helm chart templates, documentation
+- [x] CLAUDE.md style rule updated to reflect camelCase convention
+
+---
+
+## AI-guided configuration generation (`cfgd generate` + MCP server)
+
+Full design in `.claude/specs/2026-03-19-generate-design.md`. Four-layer implementation: core types, tool implementations, embedded CLI client, MCP server.
+
+- [x] `GenerateError` enum and `CfgdError::Generate` variant in cfgd-core errors
+- [x] `AiConfig` struct (provider, model, apiKeyEnv) in config/mod.rs, integrated into ConfigSpec
+- [x] Core generate module: schema export (`get_schema`), YAML validation (`validate_yaml`), session state (`GenerateSession`), write functions
+- [x] Tool implementations in cfgd binary: `scan_installed_packages`, `scan_dotfiles`, `scan_shell_config`, `scan_system_settings`, `inspect_tool`, `query_package_manager`, `read_file`/`list_directory`/`adopt_files` with security model
+- [x] `PackageManager` trait extensions: `installed_packages_with_versions()`, `package_aliases()` with default implementations
+- [x] Embedded Anthropic API client: `ai/client.rs` (streaming), `ai/tools.rs` (dispatch), `ai/conversation.rs` (state management)
+- [x] Orchestration skill embedded as const string in `generate/skill.md`
+- [x] MCP server: JSON-RPC stdin/stdout transport, tool/resource/prompt definitions
+- [x] CLI: `cfgd generate` (full/module/profile modes) and `cfgd mcp-server` commands
+- [x] `docs/ai-generate.md` user guide
+
+---
+
+## Documentation consistency fixes
+
+- [x] `docs/reconciliation.md`: added missing Env phase, completed system configurator list
+- [x] `docs/safety.md`: fixed drift_policy to camelCase driftPolicy
+- [x] `docs/cli-reference.md`: fixed --server to --server-url for enroll
+- [x] `docs/operator.md`: fixed cfgd init --server to cfgd enroll --server-url
+- [x] `docs/modules.md`: fixed CLI commands section to match actual implementation
+- [x] `README.md`: fixed module add syntax, added safety doc to table
+- [x] `docs/bootstrap.md`: fixed module add syntax
+- [x] `CLAUDE.md`: added Helm chart paths to module map
+- [x] `docs/cli-reference.md` and `docs/modules.md`: fixed module create --name to positional
+- [x] `docs/packages.md`, `docs/system-configurators.md`, `docs/templates.md`: added CLI cross-references

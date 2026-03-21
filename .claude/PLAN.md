@@ -2,26 +2,17 @@
 
 Single source of truth for all incomplete work. Completed work is in [COMPLETED.md](COMPLETED.md). Design detail in [kubernetes-first-class.md](kubernetes-first-class.md).
 
+## Implementation order
+
+| # | Section | Rationale |
+|---|---------|-----------|
+| 1 | Source management improvements | Small, self-contained, wires up existing infrastructure |
+| 2 | CLI UX improvements | Stabilize CLI surface before updating ecosystem docs |
+| 3 | Ecosystem integration | Align policies/docs after CLI + source changes settle |
+| 4 | Windows support | Large standalone effort, no dependencies on above |
+| 5 | Upstream Kubernetes work | Deferred until after adoption (explicit trigger criteria) |
+
 ---
-
-## E2E test gaps
-
-Existing E2E suites cover Tier 1 CRDs and CLI. Module, ClusterConfigPolicy, webhook mutation, CSI driver, OCI supply chain, and kubectl plugin have unit tests but no cluster-level validation.
-
-### Operator E2E (`tests/e2e/operator/`) — expand existing script
-
-- [x] Module CRD: create, verify controller sets status (verified, resolvedArtifact), webhook rejects invalid OCI refs and malformed PEM keys
-- [x] ClusterConfigPolicy: create with namespaceSelector, verify only matching namespaces evaluated, verify cluster-wins merge with namespace ConfigPolicy
-- [x] Validation webhooks: Module, ClusterConfigPolicy, DriftAlert endpoints reject invalid specs
-- [x] Mutating webhook: pod with `cfgd.io/modules` annotation in labeled namespace gets CSI volumes injected, mountPolicy Debug skips volumeMount, env vars set on containers
-- [x] OCI supply chain: push module to test registry (kind-hosted), pull with signature verification, verify content integrity
-- [x] Update CRD wait loop to include all 5 CRDs (currently only waits for 3)
-
-### Full-stack E2E (`tests/e2e/full-stack/`) — expand existing script
-
-- [x] CSI driver: deploy DaemonSet via Helm, create pod referencing CSI volume, verify module content mounted read-only, verify unmount on pod delete
-- [x] kubectl cfgd plugin: `inject deployment/test -m mod:v1` patches annotation, `status` lists modules, `version` returns server version
-- [x] Debug flow: pod with mountPolicy Debug module, `kubectl cfgd debug` creates ephemeral container that accesses debug-only volume
 
 ## Ecosystem integration
 

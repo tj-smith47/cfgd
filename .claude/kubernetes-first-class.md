@@ -40,28 +40,27 @@ Crossplane integration (XRD, composition function, enrollment) is covered in § 
 
 | Component | State | Code Location |
 |---|---|---|
-| CRD controllers (MC, CP, DA) | Implemented | `controllers/mod.rs` |
-| Validation webhook | Implemented | `webhook.rs` |
+| CRD controllers (MC, CP, DA, CCP, Module) | Implemented | `controllers/mod.rs` |
+| Validation webhook (5 endpoints) | Implemented | `webhook.rs` |
+| Pod module mutating webhook | Implemented | `webhook.rs` `/mutate-pods` |
 | Device gateway (HTTP API) | Implemented | `gateway/` |
 | Web dashboard | Implemented | `gateway/web.rs` |
-| CRD definitions (3 CRDs) | Implemented | `crds/mod.rs` |
-| Crossplane function (Go) | Implemented, untested | `function-cfgd/fn.go` |
-| Crossplane XRD + Composition | Implemented, untested | `manifests/crossplane/` |
-| Helm chart | Implemented | `chart/cfgd-operator/` |
+| CRD definitions (5 CRDs) | Implemented | `crds/mod.rs` |
+| Leader election | Implemented | `leader.rs` |
+| Graceful shutdown | Implemented | `main.rs` (SIGTERM + drain) |
+| Health probes | Implemented | `health.rs` (port 8081) |
+| Prometheus /metrics | Implemented | `metrics.rs` (port 8443) |
+| Kubernetes Events emission | Implemented | `controllers/mod.rs` (Recorder) |
+| Security context hardening | Implemented | `chart/cfgd/` (PSA restricted) |
+| PDB / NetworkPolicy | Implemented | `chart/cfgd/templates/` |
+| Helm chart (unified) | Implemented | `chart/cfgd/` |
+| OCI module pipeline | Implemented | `cfgd-core/src/oci.rs` |
+| CSI driver | Implemented | `crates/cfgd-csi/src/` |
+| kubectl cfgd plugin | Implemented | `cfgd/src/cli/plugin.rs` |
+| Crossplane function (Go) | Implemented | `function-cfgd/fn.go` |
+| Crossplane XRD + Composition | Implemented | `manifests/crossplane/` |
 | E2E tests (operator, full-stack) | Implemented | `tests/e2e/` |
 | Server client (device side) | Implemented | `cfgd-core/src/server_client.rs` |
-| Leader election | Not started | |
-| Prometheus /metrics | Not started | |
-| Graceful shutdown | Not started | |
-| Security context hardening | Not started | |
-| Module CRD | Not started | |
-| ClusterConfigPolicy CRD | Not started | |
-| Pod module mutating webhook | Not started | |
-| CSI driver | Not started | |
-| OCI module pipeline | Not started | |
-| kubectl cfgd plugin | Not started | |
-| Kubernetes Events emission | Not started | |
-| PDB / NetworkPolicy | Not started | |
 
 ### System Diagram
 

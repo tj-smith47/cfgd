@@ -99,10 +99,6 @@ spec:
       aliases:
         apt: fd-find
         dnf: fd-find
-    - name: node
-      prefer: [brew, apt]
-      aliases:
-        apt: nodejs
     - name: gcc
       aliases:
         apt: build-essential

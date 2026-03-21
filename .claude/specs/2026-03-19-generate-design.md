@@ -37,12 +37,12 @@ spec:
   ai:
     provider: claude              # only supported value initially
     model: claude-sonnet-4-6      # default model
-    api-key-env: ANTHROPIC_API_KEY # env var name (never the key itself)
+    apiKeyEnv: ANTHROPIC_API_KEY # env var name (never the key itself)
 ```
 
-API keys are never stored in config files. The `api-key-env` field names the environment variable to read. Defaults to `ANTHROPIC_API_KEY`. If the key is missing at runtime, the user gets a clear message explaining how to set it.
+API keys are never stored in config files. The `apiKeyEnv` field names the environment variable to read. Defaults to `ANTHROPIC_API_KEY`. If the key is missing at runtime, the user gets a clear message explaining how to set it.
 
-The `ai` field on `ConfigSpec` is `Option<AiConfig>` with `#[serde(default)]`, matching existing optional fields. Existing `cfgd.yaml` files without an `ai:` section continue to work — defaults are applied at runtime (provider: claude, model: claude-sonnet-4-6, api-key-env: ANTHROPIC_API_KEY).
+The `ai` field on `ConfigSpec` is `Option<AiConfig>` with `#[serde(default)]`, matching existing optional fields. Existing `cfgd.yaml` files without an `ai:` section continue to work — defaults are applied at runtime (provider: claude, model: claude-sonnet-4-6, apiKeyEnv: ANTHROPIC_API_KEY).
 
 CLI flags `--model` and `--provider` override config values.
 
@@ -338,7 +338,7 @@ Each layer is independently shippable. Commit between each layer. Update relevan
 
 ### Layer 1: Core Types & Validation (cfgd-core)
 
-- `AiConfig` struct in `config/mod.rs` (provider, model, api-key-env fields)
+- `AiConfig` struct in `config/mod.rs` (provider, model, apiKeyEnv fields)
 - `get_schema(kind)` — hand-maintained annotated YAML examples, embedded as const strings. Snapshot test that fails if schema strings diverge from struct fields.
 - `validate_yaml(content, kind)` — deserialize into config structs, return structured errors
 - `present_yaml` tool types (request/response structs for the confirmation flow)
