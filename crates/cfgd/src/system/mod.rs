@@ -1041,7 +1041,13 @@ impl EnvironmentConfigurator {
     fn windows_set_var(name: &str, value: &str, printer: &Printer) {
         let result = Command::new("setx").args([name, value]).output();
         match result {
-            Ok(output) if output.status.success() => {}
+            Ok(output) if output.status.success() => {
+                // Also set in current process so subsequent operations see the change
+                // SAFETY: single-threaded apply phase
+                unsafe {
+                    std::env::set_var(name, value);
+                }
+            }
             Ok(output) => {
                 printer.warning(&format!("setx {} failed: {}", name, stderr_string(&output)));
             }
@@ -1207,12 +1213,6 @@ pub struct WindowsRegistryConfigurator;
 
 impl WindowsRegistryConfigurator {
     /// Parse a registry path into (hive, subpath).
-    /// e.g., `"HKCU\Software\Microsoft"` → `("HKCU", "Software\Microsoft")`
-    #[cfg(test)]
-    fn parse_reg_path(path: &str) -> Option<(&str, &str)> {
-        path.split_once('\\')
-    }
-
     /// Read a single registry value using `reg query`.
     /// Returns `None` on non-Windows or if the value does not exist.
     fn read_reg_value(key_path: &str, value_name: &str) -> Option<String> {
@@ -1802,27 +1802,6 @@ HKEY_CURRENT_USER\\Environment\n\
     #[test]
     fn registry_configurator_name() {
         assert_eq!(WindowsRegistryConfigurator.name(), "windowsRegistry");
-    }
-
-    #[test]
-    fn registry_parse_reg_path_valid() {
-        assert_eq!(
-            WindowsRegistryConfigurator::parse_reg_path(r"HKCU\Software\Microsoft"),
-            Some(("HKCU", r"Software\Microsoft"))
-        );
-    }
-
-    #[test]
-    fn registry_parse_reg_path_single_level() {
-        assert_eq!(
-            WindowsRegistryConfigurator::parse_reg_path(r"HKLM\SOFTWARE"),
-            Some(("HKLM", "SOFTWARE"))
-        );
-    }
-
-    #[test]
-    fn registry_parse_reg_path_invalid() {
-        assert_eq!(WindowsRegistryConfigurator::parse_reg_path("invalid"), None);
     }
 
     #[test]
