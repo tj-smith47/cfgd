@@ -2183,10 +2183,15 @@ pub(crate) fn execute_script(
         // File path — check executable bit, run directly (OS handles shebang)
         let meta = std::fs::metadata(&resolved)?;
         if !crate::is_executable(&resolved, &meta) {
+            #[cfg(unix)]
+            let hint = "chmod +x";
+            #[cfg(windows)]
+            let hint = "use a .exe, .cmd, .bat, or .ps1 extension";
             return Err(crate::errors::CfgdError::Config(ConfigError::Invalid {
                 message: format!(
-                    "script '{}' exists but is not executable",
-                    resolved.display()
+                    "script '{}' exists but is not executable ({})",
+                    resolved.display(),
+                    hint,
                 ),
             }));
         }
@@ -2260,7 +2265,7 @@ pub(crate) fn execute_script(
             }
             None => {
                 if start.elapsed() > effective_timeout {
-                    // Timeout — send SIGTERM then force kill
+                    // Timeout — terminate process then force kill
                     crate::terminate_process(child.id());
                     // Wait briefly for graceful shutdown
                     std::thread::sleep(std::time::Duration::from_secs(5));
