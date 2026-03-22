@@ -25,7 +25,7 @@ Single source of truth for all incomplete work. Completed work is in [COMPLETED.
 11 items covering CLI consistency, new commands, and script lifecycle overhaul. Full plan with design detail and execution order in [plans/cli-ux-improvements.md](plans/cli-ux-improvements.md).
 
 - [x] Implement CLI UX improvements (daemon subcommands, profile show name, --yes on source remove, OutputFormatArg, source create positional, ls aliases, diff --module, profile update default active, plan command, structured output, script lifecycle overhaul)
-- [ ] Update user-facing docs for CLI UX changes (script lifecycle hooks, plan command, output formats, --skip-scripts, --on-drift)
+- [x] Update user-facing docs for CLI UX changes (script lifecycle hooks, plan command, output formats, --skip-scripts, --on-drift)
 
 ---
 
