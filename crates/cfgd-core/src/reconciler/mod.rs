@@ -1301,7 +1301,7 @@ impl<'a> Reconciler<'a> {
             }
             EnvAction::InjectSourceLine { rc_path, line } => {
                 let existing = std::fs::read_to_string(rc_path).unwrap_or_default();
-                if existing.contains("cfgd.env") {
+                if existing.contains(line) {
                     // Already injected
                     return Ok(format!("env:inject:{}:skipped", rc_path.display()));
                 }
@@ -2565,7 +2565,7 @@ fn generate_powershell_env_content(
     env: &[crate::config::EnvVar],
     aliases: &[crate::config::ShellAlias],
 ) -> String {
-    let mut lines = vec!["# managed by cfgd - do not edit".to_string()];
+    let mut lines = vec!["# managed by cfgd — do not edit".to_string()];
     for ev in env {
         if ev.value.contains("$env:") {
             // Value references other env vars — don't quote
