@@ -1891,6 +1891,7 @@ fn build_registry_with_config_and_packages(
     registry
 }
 
+#[cfg(unix)]
 fn print_daemon_install_success(printer: &Printer) {
     if cfg!(target_os = "macos") {
         printer.success("Installed launchd service: com.cfgd.daemon");
