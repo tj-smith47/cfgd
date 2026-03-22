@@ -1508,8 +1508,6 @@ pub(super) fn cmd_module_upgrade(
 }
 
 pub(super) fn cmd_module_search(cli: &Cli, printer: &Printer, query: &str) -> anyhow::Result<()> {
-    printer.header(&format!("Search Modules: {}", query));
-
     let cache_base = modules::default_module_cache_dir()?;
 
     if !cli.config.exists() {
@@ -1524,16 +1522,20 @@ pub(super) fn cmd_module_search(cli: &Cli, printer: &Printer, query: &str) -> an
         .map(|m| &m.registries[..])
         .unwrap_or(&[]);
     if registries.is_empty() {
+        if printer.is_structured() {
+            printer.write_structured(&Vec::<super::ModuleSearchResult>::new());
+            return Ok(());
+        }
+        printer.header(&format!("Search Modules: {}", query));
         printer.info("No module registries configured");
         printer.info("Add a registry: cfgd module registry add <git-url>");
         return Ok(());
     }
 
-    let mut found_any = false;
+    let mut all_results: Vec<super::ModuleSearchResult> = Vec::new();
+    let mut errors: Vec<String> = Vec::new();
 
     for source in registries {
-        printer.info(&format!("Searching {} ({})", source.name, source.url));
-
         match modules::fetch_registry_modules(source, &cache_base) {
             Ok(registry_modules) => {
                 let query_lower = query.to_lowercase();
@@ -1542,36 +1544,57 @@ pub(super) fn cmd_module_search(cli: &Cli, printer: &Printer, query: &str) -> an
                     .filter(|m| m.name.to_lowercase().contains(&query_lower))
                     .collect();
 
-                if matches.is_empty() {
-                    printer.info("  No matches");
-                    continue;
+                for m in &matches {
+                    let latest = m.tags.last().cloned();
+                    let desc = if m.description.is_empty() {
+                        None
+                    } else {
+                        Some(m.description.clone())
+                    };
+                    all_results.push(super::ModuleSearchResult {
+                        name: format!("{}/{}", m.registry, m.name),
+                        registry: m.registry.clone(),
+                        description: desc,
+                        version: latest,
+                    });
                 }
-
-                found_any = true;
-                let rows: Vec<Vec<String>> = matches
-                    .iter()
-                    .map(|m| {
-                        let latest = m.tags.last().cloned().unwrap_or_else(|| "-".into());
-                        vec![
-                            format!("{}/{}", m.registry, m.name),
-                            m.description.clone(),
-                            latest,
-                            format!("{}", m.tags.len()),
-                        ]
-                    })
-                    .collect();
-
-                printer.table(&["Module", "Description", "Latest", "Tags"], &rows);
             }
             Err(e) => {
-                printer.warning(&format!("  Failed to fetch source: {}", e));
+                errors.push(format!("{}: {}", source.name, e));
             }
         }
     }
 
-    if !found_any {
+    if printer.write_structured(&all_results) {
+        return Ok(());
+    }
+
+    printer.header(&format!("Search Modules: {}", query));
+
+    for source in registries {
+        printer.info(&format!("Searching {} ({})", source.name, source.url));
+    }
+
+    for err in &errors {
+        printer.warning(&format!("  Failed to fetch source: {}", err));
+    }
+
+    if all_results.is_empty() {
         printer.newline();
         printer.info("No modules found matching your query");
+    } else {
+        let rows: Vec<Vec<String>> = all_results
+            .iter()
+            .map(|m| {
+                vec![
+                    m.name.clone(),
+                    m.description.clone().unwrap_or_default(),
+                    m.version.clone().unwrap_or_else(|| "-".into()),
+                ]
+            })
+            .collect();
+
+        printer.table(&["Module", "Description", "Latest"], &rows);
     }
 
     Ok(())
@@ -1894,9 +1917,12 @@ pub(super) fn cmd_module_registry_rename(
 }
 
 pub(super) fn cmd_module_registry_list(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
-    printer.header("Module Registries");
-
     if !cli.config.exists() {
+        if printer.is_structured() {
+            printer.write_structured(&Vec::<super::RegistryListEntry>::new());
+            return Ok(());
+        }
+        printer.header("Module Registries");
         printer.info("No config found");
         return Ok(());
     }
@@ -1909,14 +1935,33 @@ pub(super) fn cmd_module_registry_list(cli: &Cli, printer: &Printer) -> anyhow::
         .map(|m| &m.registries[..])
         .unwrap_or(&[]);
     if registries.is_empty() {
+        if printer.is_structured() {
+            printer.write_structured(&Vec::<super::RegistryListEntry>::new());
+            return Ok(());
+        }
+        printer.header("Module Registries");
         printer.info("No module registries configured");
         printer.info("Add one: cfgd module registry add <git-url>");
         return Ok(());
     }
 
-    let rows: Vec<Vec<String>> = registries
+    let entries: Vec<super::RegistryListEntry> = registries
         .iter()
-        .map(|s| vec![s.name.clone(), s.url.clone()])
+        .map(|s| super::RegistryListEntry {
+            name: s.name.clone(),
+            url: s.url.clone(),
+        })
+        .collect();
+
+    if printer.write_structured(&entries) {
+        return Ok(());
+    }
+
+    printer.header("Module Registries");
+
+    let rows: Vec<Vec<String>> = entries
+        .iter()
+        .map(|e| vec![e.name.clone(), e.url.clone()])
         .collect();
 
     printer.table(&["Name", "URL"], &rows);
@@ -2414,31 +2459,56 @@ pub(super) fn cmd_module_keys_generate(
 }
 
 pub(super) fn cmd_module_keys_list(printer: &Printer) -> anyhow::Result<()> {
-    printer.header("Signing Keys");
-
     let locations = [
         ("./cosign.key", "./cosign.pub"),
         ("~/.cfgd/cosign.key", "~/.cfgd/cosign.pub"),
     ];
 
-    let mut found = false;
+    let mut entries: Vec<super::KeyListEntry> = Vec::new();
     for (private, public) in &locations {
         let priv_path = cfgd_core::expand_tilde(Path::new(private));
         let pub_path = cfgd_core::expand_tilde(Path::new(public));
 
         if pub_path.exists() {
-            found = true;
-            let has_private = if priv_path.exists() { "yes" } else { "no" };
-            printer.key_value(
-                &pub_path.display().to_string(),
-                &format!("private key: {has_private}"),
-            );
+            let fingerprint = if priv_path.exists() {
+                Some("private key: yes".to_string())
+            } else {
+                Some("private key: no".to_string())
+            };
+            let created = std::fs::metadata(&pub_path)
+                .ok()
+                .and_then(|m| m.modified().ok())
+                .map(|t| {
+                    let secs = t
+                        .duration_since(std::time::SystemTime::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_secs();
+                    cfgd_core::unix_secs_to_iso8601(secs)
+                });
+            entries.push(super::KeyListEntry {
+                path: pub_path.display().to_string(),
+                fingerprint,
+                created,
+            });
         }
     }
 
-    if !found {
+    if printer.write_structured(&entries) {
+        return Ok(());
+    }
+
+    printer.header("Signing Keys");
+
+    if entries.is_empty() {
         printer.info("No signing keys found");
         printer.info("Generate with: cfgd module keys generate");
+    } else {
+        for entry in &entries {
+            printer.key_value(
+                &entry.path,
+                entry.fingerprint.as_deref().unwrap_or(""),
+            );
+        }
     }
 
     Ok(())

@@ -120,11 +120,14 @@ pub(super) fn cmd_profile_show(
 }
 
 pub(super) fn cmd_profile_list(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
-    printer.header("Available Profiles");
-
     let profiles_dir = profiles_dir(cli);
 
     if !profiles_dir.exists() {
+        if printer.is_structured() {
+            printer.write_structured(&Vec::<super::ProfileListEntry>::new());
+            return Ok(());
+        }
+        printer.header("Available Profiles");
         printer.warning(&format!(
             "Profiles directory not found: {}",
             profiles_dir.display()
@@ -140,15 +143,56 @@ pub(super) fn cmd_profile_list(cli: &Cli, printer: &Printer) -> anyhow::Result<(
             .unwrap_or_default()
     });
 
-    for name in &profiles {
-        if *name == active {
-            printer.success(&format!("{} (active)", name));
+    let entries: Vec<super::ProfileListEntry> = profiles
+        .iter()
+        .map(|name| {
+            let profile_path = profiles_dir.join(format!("{}.yaml", name));
+            let (inherits, module_count) =
+                if let Ok(doc) = config::load_profile(&profile_path) {
+                    let inh = if doc.spec.inherits.is_empty() {
+                        None
+                    } else {
+                        Some(doc.spec.inherits.join(", "))
+                    };
+                    (inh, doc.spec.modules.len())
+                } else {
+                    // Try .yml extension
+                    let yml_path = profiles_dir.join(format!("{}.yml", name));
+                    if let Ok(doc) = config::load_profile(&yml_path) {
+                        let inh = if doc.spec.inherits.is_empty() {
+                            None
+                        } else {
+                            Some(doc.spec.inherits.join(", "))
+                        };
+                        (inh, doc.spec.modules.len())
+                    } else {
+                        (None, 0)
+                    }
+                };
+            super::ProfileListEntry {
+                name: name.clone(),
+                active: *name == active,
+                inherits,
+                module_count,
+            }
+        })
+        .collect();
+
+    if printer.write_structured(&entries) {
+        return Ok(());
+    }
+
+    printer.header("Available Profiles");
+
+    for entry in &entries {
+        if entry.active {
+            printer.success(&format!("{} (active)", entry.name));
         } else {
-            printer.info(name);
+            printer.info(&entry.name);
         }
     }
 
-    if profiles.is_empty() {
+    if entries.is_empty() {
         printer.info("No profiles found");
     }
 

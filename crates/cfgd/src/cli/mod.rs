@@ -189,6 +189,44 @@ struct SourceResourceEntry {
     resource_id: String,
 }
 
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct ProfileListEntry {
+    pub name: String,
+    pub active: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub inherits: Option<String>,
+    pub module_count: usize,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct ModuleSearchResult {
+    pub name: String,
+    pub registry: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct RegistryListEntry {
+    pub name: String,
+    pub url: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct KeyListEntry {
+    pub path: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fingerprint: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub created: Option<String>,
+}
+
 fn default_config_file() -> PathBuf {
     cfgd_core::default_config_dir().join("cfgd.yaml")
 }
