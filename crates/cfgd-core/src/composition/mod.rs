@@ -570,6 +570,28 @@ fn merge_packages(target: &mut PackagesSpec, source: &PackagesSpec) {
     }
     union_extend(&mut target.pipx, &source.pipx);
     union_extend(&mut target.dnf, &source.dnf);
+    union_extend(&mut target.apk, &source.apk);
+    union_extend(&mut target.pacman, &source.pacman);
+    union_extend(&mut target.zypper, &source.zypper);
+    union_extend(&mut target.yum, &source.yum);
+    union_extend(&mut target.pkg, &source.pkg);
+    if let Some(ref snap) = source.snap {
+        let target_snap = target.snap.get_or_insert_with(Default::default);
+        union_extend(&mut target_snap.packages, &snap.packages);
+        union_extend(&mut target_snap.classic, &snap.classic);
+    }
+    if let Some(ref flatpak) = source.flatpak {
+        let target_flatpak = target.flatpak.get_or_insert_with(Default::default);
+        union_extend(&mut target_flatpak.packages, &flatpak.packages);
+        if flatpak.remote.is_some() {
+            target_flatpak.remote = flatpak.remote.clone();
+        }
+    }
+    union_extend(&mut target.nix, &source.nix);
+    union_extend(&mut target.go, &source.go);
+    union_extend(&mut target.winget, &source.winget);
+    union_extend(&mut target.chocolatey, &source.chocolatey);
+    union_extend(&mut target.scoop, &source.scoop);
 }
 
 /// Filter rejected items from recommended policy items.

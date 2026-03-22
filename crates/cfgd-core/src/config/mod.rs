@@ -938,6 +938,12 @@ pub struct PackagesSpec {
     #[serde(default)]
     pub go: Vec<String>,
     #[serde(default)]
+    pub winget: Vec<String>,
+    #[serde(default)]
+    pub chocolatey: Vec<String>,
+    #[serde(default)]
+    pub scoop: Vec<String>,
+    #[serde(default)]
     pub custom: Vec<CustomManagerSpec>,
 }
 
@@ -1450,6 +1456,9 @@ fn merge_layers(layers: &[ProfileLayer]) -> MergedProfile {
             }
             union_extend(&mut merged.packages.nix, &pkgs.nix);
             union_extend(&mut merged.packages.go, &pkgs.go);
+            union_extend(&mut merged.packages.winget, &pkgs.winget);
+            union_extend(&mut merged.packages.chocolatey, &pkgs.chocolatey);
+            union_extend(&mut merged.packages.scoop, &pkgs.scoop);
             // Custom managers: merge by name, union packages
             for custom in &pkgs.custom {
                 if let Some(existing) = merged
@@ -1600,6 +1609,9 @@ fn desired_packages_for_spec(manager_name: &str, packages: &PackagesSpec) -> Vec
             .unwrap_or_default(),
         "nix" => packages.nix.clone(),
         "go" => packages.go.clone(),
+        "winget" => packages.winget.clone(),
+        "chocolatey" => packages.chocolatey.clone(),
+        "scoop" => packages.scoop.clone(),
         _ => {
             // Check custom managers
             for custom in &packages.custom {
@@ -2664,6 +2676,39 @@ patches:
     fn desired_packages_unknown_manager() {
         let spec = PackagesSpec::default();
         assert!(desired_packages_for_spec("nonexistent", &spec).is_empty());
+    }
+
+    #[test]
+    fn desired_packages_winget() {
+        let spec = PackagesSpec {
+            winget: vec!["Microsoft.VisualStudioCode".into(), "Git.Git".into()],
+            ..Default::default()
+        };
+        assert_eq!(
+            desired_packages_for_spec("winget", &spec),
+            vec!["Microsoft.VisualStudioCode", "Git.Git"]
+        );
+    }
+
+    #[test]
+    fn desired_packages_chocolatey() {
+        let spec = PackagesSpec {
+            chocolatey: vec!["nodejs".into()],
+            ..Default::default()
+        };
+        assert_eq!(
+            desired_packages_for_spec("chocolatey", &spec),
+            vec!["nodejs"]
+        );
+    }
+
+    #[test]
+    fn desired_packages_scoop() {
+        let spec = PackagesSpec {
+            scoop: vec!["ripgrep".into()],
+            ..Default::default()
+        };
+        assert_eq!(desired_packages_for_spec("scoop", &spec), vec!["ripgrep"]);
     }
 
     // --- load_config filesystem ---

@@ -86,6 +86,58 @@ pub(super) fn cmd_profile_show(
         printer.key_value("dnf", &pkgs.dnf.join(", "));
         has_packages = true;
     }
+    if !pkgs.apk.is_empty() {
+        printer.key_value("apk", &pkgs.apk.join(", "));
+        has_packages = true;
+    }
+    if !pkgs.pacman.is_empty() {
+        printer.key_value("pacman", &pkgs.pacman.join(", "));
+        has_packages = true;
+    }
+    if !pkgs.zypper.is_empty() {
+        printer.key_value("zypper", &pkgs.zypper.join(", "));
+        has_packages = true;
+    }
+    if !pkgs.yum.is_empty() {
+        printer.key_value("yum", &pkgs.yum.join(", "));
+        has_packages = true;
+    }
+    if !pkgs.pkg.is_empty() {
+        printer.key_value("pkg", &pkgs.pkg.join(", "));
+        has_packages = true;
+    }
+    if let Some(ref snap) = pkgs.snap
+        && !snap.packages.is_empty()
+    {
+        printer.key_value("snap", &snap.packages.join(", "));
+        has_packages = true;
+    }
+    if let Some(ref flatpak) = pkgs.flatpak
+        && !flatpak.packages.is_empty()
+    {
+        printer.key_value("flatpak", &flatpak.packages.join(", "));
+        has_packages = true;
+    }
+    if !pkgs.nix.is_empty() {
+        printer.key_value("nix", &pkgs.nix.join(", "));
+        has_packages = true;
+    }
+    if !pkgs.go.is_empty() {
+        printer.key_value("go", &pkgs.go.join(", "));
+        has_packages = true;
+    }
+    if !pkgs.winget.is_empty() {
+        printer.key_value("winget", &pkgs.winget.join(", "));
+        has_packages = true;
+    }
+    if !pkgs.chocolatey.is_empty() {
+        printer.key_value("chocolatey", &pkgs.chocolatey.join(", "));
+        has_packages = true;
+    }
+    if !pkgs.scoop.is_empty() {
+        printer.key_value("scoop", &pkgs.scoop.join(", "));
+        has_packages = true;
+    }
     if !has_packages {
         printer.info("(none)");
     }

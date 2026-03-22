@@ -246,6 +246,24 @@ spec:
     go:
       - golang.org/x/tools/gopls@latest
 
+    # winget (Windows Package Manager)
+    # list of strings — winget package IDs
+    winget:
+      - Microsoft.VisualStudioCode
+      - Git.Git
+
+    # Chocolatey (Windows)
+    # list of strings — Chocolatey package names
+    chocolatey:
+      - nodejs
+      - 7zip
+
+    # Scoop (Windows)
+    # list of strings — Scoop package names
+    scoop:
+      - ripgrep
+      - fd
+
     # Custom package managers
     # list of objects, each defining how to interact with a custom manager
     custom:
@@ -686,6 +704,9 @@ mod tests {
         assert!(schema.contains("flatpak"));
         assert!(schema.contains("nix"));
         assert!(schema.contains("go"));
+        assert!(schema.contains("winget"));
+        assert!(schema.contains("chocolatey"));
+        assert!(schema.contains("scoop"));
         assert!(schema.contains("custom"));
         // FilesSpec fields
         assert!(schema.contains("managed"));
