@@ -331,18 +331,10 @@ pub fn command_available(cmd: &str) -> bool {
         .map(|paths| {
             std::env::split_paths(&paths).any(|dir| {
                 let path = dir.join(cmd);
-                #[cfg(unix)]
-                {
-                    use std::os::unix::fs::PermissionsExt;
-                    path.is_file()
-                        && std::fs::metadata(&path)
-                            .map(|m| m.permissions().mode() & 0o111 != 0)
-                            .unwrap_or(false)
-                }
-                #[cfg(not(unix))]
-                {
-                    path.is_file()
-                }
+                path.is_file()
+                    && std::fs::metadata(&path)
+                        .map(|m| is_executable(&path, &m))
+                        .unwrap_or(false)
             })
         })
         .unwrap_or(false)
@@ -508,13 +500,7 @@ pub fn capture_file_state(
         }));
     }
 
-    #[cfg(unix)]
-    let permissions = {
-        use std::os::unix::fs::PermissionsExt;
-        Some(symlink_meta.permissions().mode() & 0o777)
-    };
-    #[cfg(not(unix))]
-    let permissions = None;
+    let permissions = file_permissions_mode(&symlink_meta);
 
     if symlink_meta.len() > MAX_BACKUP_FILE_SIZE {
         return Ok(Some(FileState {
@@ -914,6 +900,7 @@ mod tests {
         assert_eq!(std::fs::read_to_string(&target).unwrap(), "nested");
     }
 
+    #[cfg(unix)]
     #[test]
     fn atomic_write_preserves_permissions() {
         use std::os::unix::fs::PermissionsExt;
