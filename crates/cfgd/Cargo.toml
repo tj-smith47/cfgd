@@ -42,6 +42,13 @@ rustls = "0.23"
 k8s-openapi = { version = "0.24", features = ["latest"] }
 schemars = "0.8"
 
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = [
+    "Win32_UI_Shell",
+    "Win32_System_Registry",
+    "Win32_Storage_FileSystem",
+] }
+
 [dev-dependencies]
 assert_cmd = "2"
 predicates = "3"
