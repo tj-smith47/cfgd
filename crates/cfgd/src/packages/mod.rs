@@ -2621,12 +2621,12 @@ impl PackageManager for WingetManager {
     }
 
     fn available_version(&self, package: &str) -> Result<Option<String>> {
-        let output = std::process::Command::new("winget")
+        let output = Command::new("winget")
             .args(["show", "--id", package])
             .output()
-            .map_err(|e| PackageError::ListFailed {
+            .map_err(|e| PackageError::CommandFailed {
                 manager: "winget".into(),
-                message: e.to_string(),
+                source: e,
             })?;
         if !output.status.success() {
             return Ok(None);
@@ -2743,12 +2743,12 @@ impl PackageManager for ChocolateyManager {
     }
 
     fn available_version(&self, package: &str) -> Result<Option<String>> {
-        let output = std::process::Command::new("choco")
+        let output = Command::new("choco")
             .args(["info", package])
             .output()
-            .map_err(|e| PackageError::ListFailed {
+            .map_err(|e| PackageError::CommandFailed {
                 manager: "chocolatey".into(),
-                message: e.to_string(),
+                source: e,
             })?;
         if !output.status.success() {
             return Ok(None);
@@ -2861,12 +2861,12 @@ impl PackageManager for ScoopManager {
     }
 
     fn available_version(&self, package: &str) -> Result<Option<String>> {
-        let output = std::process::Command::new("scoop")
+        let output = Command::new("scoop")
             .args(["info", package])
             .output()
-            .map_err(|e| PackageError::ListFailed {
+            .map_err(|e| PackageError::CommandFailed {
                 manager: "scoop".into(),
-                message: e.to_string(),
+                source: e,
             })?;
         if !output.status.success() {
             return Ok(None);
