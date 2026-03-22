@@ -1812,6 +1812,88 @@ spec: {}
     }
 
     #[test]
+    fn resolve_package_alias_winget() {
+        let winget =
+            MockManager::new("winget").with_package("Microsoft.VisualStudioCode", "1.85.0");
+        let managers = make_manager_map(&[("winget", &winget)]);
+        let platform = linux_ubuntu_platform(); // platform doesn't matter for prefer-based resolution
+
+        let entry = ModulePackageEntry {
+            name: "vscode".to_string(),
+            min_version: None,
+            prefer: vec!["winget".to_string()],
+            aliases: [(
+                "winget".to_string(),
+                "Microsoft.VisualStudioCode".to_string(),
+            )]
+            .into_iter()
+            .collect(),
+            script: None,
+            deny: vec![],
+            platforms: vec![],
+        };
+
+        let result = resolve_package(&entry, "editor", &platform, &managers)
+            .unwrap()
+            .unwrap();
+        assert_eq!(result.canonical_name, "vscode");
+        assert_eq!(result.resolved_name, "Microsoft.VisualStudioCode");
+        assert_eq!(result.manager, "winget");
+    }
+
+    #[test]
+    fn resolve_package_alias_chocolatey() {
+        let choco = MockManager::new("chocolatey").with_package("nodejs.install", "21.4.0");
+        let managers = make_manager_map(&[("chocolatey", &choco)]);
+        let platform = linux_ubuntu_platform();
+
+        let entry = ModulePackageEntry {
+            name: "node".to_string(),
+            min_version: None,
+            prefer: vec!["chocolatey".to_string()],
+            aliases: [("chocolatey".to_string(), "nodejs.install".to_string())]
+                .into_iter()
+                .collect(),
+            script: None,
+            deny: vec![],
+            platforms: vec![],
+        };
+
+        let result = resolve_package(&entry, "runtime", &platform, &managers)
+            .unwrap()
+            .unwrap();
+        assert_eq!(result.canonical_name, "node");
+        assert_eq!(result.resolved_name, "nodejs.install");
+        assert_eq!(result.manager, "chocolatey");
+    }
+
+    #[test]
+    fn resolve_package_alias_scoop() {
+        let scoop = MockManager::new("scoop").with_package("rg", "14.1.0");
+        let managers = make_manager_map(&[("scoop", &scoop)]);
+        let platform = linux_ubuntu_platform();
+
+        let entry = ModulePackageEntry {
+            name: "ripgrep".to_string(),
+            min_version: None,
+            prefer: vec!["scoop".to_string()],
+            aliases: [("scoop".to_string(), "rg".to_string())]
+                .into_iter()
+                .collect(),
+            script: None,
+            deny: vec![],
+            platforms: vec![],
+        };
+
+        let result = resolve_package(&entry, "tools", &platform, &managers)
+            .unwrap()
+            .unwrap();
+        assert_eq!(result.canonical_name, "ripgrep");
+        assert_eq!(result.resolved_name, "rg");
+        assert_eq!(result.manager, "scoop");
+    }
+
+    #[test]
     fn resolve_package_manager_not_registered() {
         let managers: HashMap<String, &dyn PackageManager> = HashMap::new();
         let platform = linux_ubuntu_platform();
