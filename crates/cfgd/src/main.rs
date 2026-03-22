@@ -15,6 +15,9 @@ fn main() -> anyhow::Result<()> {
         eprintln!("rustls CryptoProvider already installed: {e:?}");
     }
 
+    // Clean up old binary from Windows upgrade rename-dance (no-op on Unix)
+    cfgd_core::upgrade::cleanup_old_binary();
+
     // kubectl plugin detection — must be before normal CLI parsing
     let argv0 = std::env::args().next().unwrap_or_default();
     if argv0.ends_with("kubectl-cfgd") || argv0.ends_with("kubectl-cfgd.exe") {

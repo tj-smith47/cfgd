@@ -298,8 +298,8 @@ pub fn download_and_install(release: &ReleaseInfo, asset: &ReleaseAsset) -> Resu
         message: format!("set permissions: {}", e),
     })?;
 
-    // Atomic install: rename new binary over old
-    // On the same filesystem this is atomic. If cross-filesystem, copy + rename.
+    // Install new binary over old.
+    // Unix: atomic rename via tempfile. Windows: rename-dance (can't overwrite running exe).
     let target = &current_exe;
     atomic_replace(&new_binary, target)?;
 
