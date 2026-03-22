@@ -1834,8 +1834,8 @@ fn build_registry_with_config_and_packages(
             .push(Box::new(SystemdUnitConfigurator));
     }
 
-    // Environment configurator is available on all Unix systems
-    if cfg!(unix) {
+    // Environment configurator is available on Unix and Windows
+    if cfg!(unix) || cfg!(windows) {
         registry
             .system_configurators
             .push(Box::new(EnvironmentConfigurator));

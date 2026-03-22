@@ -991,6 +991,65 @@ impl EnvironmentConfigurator {
             }
         }
     }
+
+    // --- Windows ---
+
+    /// Parse the output of `reg query HKCU\Environment` into a map of variable
+    /// names to values. Handles both `REG_SZ` and `REG_EXPAND_SZ` value types.
+    ///
+    /// Each data line has the format (with 4-space separators):
+    /// `    NAME    REG_SZ    VALUE`
+    fn parse_reg_query_output(stdout: &str) -> BTreeMap<String, String> {
+        let mut vars = BTreeMap::new();
+        for line in stdout.lines() {
+            let line = line.trim();
+            if line.is_empty() || line.starts_with("HKEY_") {
+                continue;
+            }
+            // Format: "NAME    REG_SZ    VALUE" or "NAME    REG_EXPAND_SZ    VALUE"
+            // Fields are separated by 4 spaces.
+            let parts: Vec<&str> = line.splitn(3, "    ").collect();
+            if parts.len() == 3 {
+                let name = parts[0].trim();
+                let value = parts[2].trim();
+                if !name.is_empty() {
+                    vars.insert(name.to_string(), value.to_string());
+                }
+            }
+        }
+        vars
+    }
+
+    /// Read current user environment variables from the Windows registry.
+    /// On non-Windows platforms, returns empty map.
+    fn windows_current_vars() -> BTreeMap<String, String> {
+        if !cfg!(windows) {
+            return BTreeMap::new();
+        }
+        let output = match Command::new("reg")
+            .args(["query", r"HKCU\Environment"])
+            .output()
+        {
+            Ok(o) if o.status.success() => o,
+            _ => return BTreeMap::new(),
+        };
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        Self::parse_reg_query_output(&stdout)
+    }
+
+    /// Set a user environment variable via `setx` (persists to registry).
+    fn windows_set_var(name: &str, value: &str, printer: &Printer) {
+        let result = Command::new("setx").args([name, value]).output();
+        match result {
+            Ok(output) if output.status.success() => {}
+            Ok(output) => {
+                printer.warning(&format!("setx {} failed: {}", name, stderr_string(&output)));
+            }
+            Err(e) => {
+                printer.warning(&format!("setx {} failed: {}", name, e));
+            }
+        }
+    }
 }
 
 impl SystemConfigurator for EnvironmentConfigurator {
@@ -999,11 +1058,13 @@ impl SystemConfigurator for EnvironmentConfigurator {
     }
 
     fn is_available(&self) -> bool {
-        cfg!(unix)
+        cfg!(unix) || cfg!(windows)
     }
 
     fn current_state(&self) -> Result<serde_yaml::Value> {
-        let vars = if cfg!(target_os = "macos") {
+        let vars = if cfg!(windows) {
+            Self::windows_current_vars()
+        } else if cfg!(target_os = "macos") {
             Self::macos_current_vars()
         } else {
             Self::linux_current_vars()
@@ -1020,7 +1081,9 @@ impl SystemConfigurator for EnvironmentConfigurator {
 
     fn diff(&self, desired: &serde_yaml::Value) -> Result<Vec<SystemDrift>> {
         let desired_vars = Self::desired_vars(desired);
-        let current_vars = if cfg!(target_os = "macos") {
+        let current_vars = if cfg!(windows) {
+            Self::windows_current_vars()
+        } else if cfg!(target_os = "macos") {
             Self::macos_current_vars()
         } else {
             Self::linux_current_vars()
@@ -1061,7 +1124,15 @@ impl SystemConfigurator for EnvironmentConfigurator {
             managed.len()
         ));
 
-        if cfg!(target_os = "macos") {
+        if cfg!(windows) {
+            for (key, value) in &managed {
+                Self::windows_set_var(key, value, printer);
+            }
+            printer.success(&format!(
+                "Set {} user environment variable(s) via setx",
+                managed.len()
+            ));
+        } else if cfg!(target_os = "macos") {
             // macOS: ~/.config/cfgd/env.sh for shells
             match Self::macos_write_env_sh(&managed) {
                 Ok(()) => {
@@ -1256,7 +1327,7 @@ mod tests {
     #[test]
     fn environment_configurator_is_available() {
         let ec = EnvironmentConfigurator;
-        assert_eq!(ec.is_available(), cfg!(unix));
+        assert_eq!(ec.is_available(), cfg!(unix) || cfg!(windows));
     }
 
     #[test]
@@ -1317,6 +1388,47 @@ CFGD_TEST_NONEXISTENT_VAR_12345: "test_value"
         let yaml = serde_yaml::Value::Mapping(serde_yaml::Mapping::new());
         let drifts = ec.diff(&yaml).unwrap();
         assert!(drifts.is_empty());
+    }
+
+    // --- Windows registry output parsing ---
+
+    #[test]
+    fn windows_reg_query_parsing_typical() {
+        let output = "\
+HKEY_CURRENT_USER\\Environment\n\
+\n\
+    EDITOR    REG_SZ    code\n\
+    GOPATH    REG_SZ    C:\\Users\\user\\go\n\
+    Path    REG_EXPAND_SZ    C:\\Users\\user\\.cargo\\bin;%PATH%\n";
+
+        let vars = EnvironmentConfigurator::parse_reg_query_output(output);
+        assert_eq!(vars.len(), 3);
+        assert_eq!(vars["EDITOR"], "code");
+        assert_eq!(vars["GOPATH"], r"C:\Users\user\go");
+        assert_eq!(vars["Path"], r"C:\Users\user\.cargo\bin;%PATH%");
+    }
+
+    #[test]
+    fn windows_reg_query_parsing_empty() {
+        let output = "HKEY_CURRENT_USER\\Environment\n\n";
+        let vars = EnvironmentConfigurator::parse_reg_query_output(output);
+        assert!(vars.is_empty());
+    }
+
+    #[test]
+    fn windows_reg_query_parsing_blank_input() {
+        let vars = EnvironmentConfigurator::parse_reg_query_output("");
+        assert!(vars.is_empty());
+    }
+
+    #[test]
+    fn windows_reg_query_parsing_single_var() {
+        let output = "HKEY_CURRENT_USER\\Environment\n\
+                       \n\
+                           JAVA_HOME    REG_SZ    C:\\Program Files\\Java\\jdk-17\n";
+        let vars = EnvironmentConfigurator::parse_reg_query_output(output);
+        assert_eq!(vars.len(), 1);
+        assert_eq!(vars["JAVA_HOME"], r"C:\Program Files\Java\jdk-17");
     }
 
     // --- diff_yaml_mapping ---
