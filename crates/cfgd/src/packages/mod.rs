@@ -2763,6 +2763,122 @@ impl PackageManager for ChocolateyManager {
     }
 }
 
+// --- Windows Package Manager (scoop) ---
+
+pub struct ScoopManager;
+
+fn parse_scoop_list(output: &str) -> HashSet<String> {
+    let mut packages = HashSet::new();
+    let mut header_passed = false;
+    for line in output.lines() {
+        let line = line.trim();
+        if line.starts_with("----") {
+            header_passed = true;
+            continue;
+        }
+        if !header_passed || line.is_empty() {
+            continue;
+        }
+        if let Some(name) = line.split_whitespace().next() {
+            packages.insert(name.to_string());
+        }
+    }
+    packages
+}
+
+impl PackageManager for ScoopManager {
+    fn name(&self) -> &str {
+        "scoop"
+    }
+
+    fn is_available(&self) -> bool {
+        cfgd_core::command_available("scoop")
+    }
+
+    fn can_bootstrap(&self) -> bool {
+        true
+    }
+
+    fn bootstrap(&self, printer: &Printer) -> Result<()> {
+        run_pkg_cmd_live(
+            printer,
+            "scoop",
+            Command::new("powershell").args([
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-Command",
+                "irm get.scoop.sh | iex",
+            ]),
+            "Installing Scoop",
+            "install",
+        )?;
+        Ok(())
+    }
+
+    fn installed_packages(&self) -> Result<HashSet<String>> {
+        let output = run_pkg_cmd("scoop", Command::new("scoop").arg("list"), "list")?;
+        Ok(parse_scoop_list(&String::from_utf8_lossy(&output.stdout)))
+    }
+
+    fn install(&self, packages: &[String], printer: &Printer) -> Result<()> {
+        for pkg in packages {
+            run_pkg_cmd_live(
+                printer,
+                "scoop",
+                Command::new("scoop").args(["install", pkg]),
+                &format!("Installing {}", pkg),
+                "install",
+            )?;
+        }
+        Ok(())
+    }
+
+    fn uninstall(&self, packages: &[String], printer: &Printer) -> Result<()> {
+        for pkg in packages {
+            run_pkg_cmd_live(
+                printer,
+                "scoop",
+                Command::new("scoop").args(["uninstall", pkg]),
+                &format!("Uninstalling {}", pkg),
+                "uninstall",
+            )?;
+        }
+        Ok(())
+    }
+
+    fn update(&self, printer: &Printer) -> Result<()> {
+        run_pkg_cmd_live(
+            printer,
+            "scoop",
+            Command::new("scoop").args(["update", "*"]),
+            "Upgrading all scoop packages",
+            "install",
+        )?;
+        Ok(())
+    }
+
+    fn available_version(&self, package: &str) -> Result<Option<String>> {
+        let output = std::process::Command::new("scoop")
+            .args(["info", package])
+            .output()
+            .map_err(|e| PackageError::ListFailed {
+                manager: "scoop".into(),
+                message: e.to_string(),
+            })?;
+        if !output.status.success() {
+            return Ok(None);
+        }
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        for line in stdout.lines() {
+            if let Some(rest) = line.strip_prefix("Version:") {
+                return Ok(Some(rest.trim().to_string()));
+            }
+        }
+        Ok(None)
+    }
+}
+
 // --- Custom (user-defined) package manager ---
 
 pub struct ScriptedManager {
@@ -3227,6 +3343,11 @@ pub fn add_package(
                 packages.chocolatey.push(package_name.to_string());
             }
         }
+        "scoop" => {
+            if !packages.scoop.contains(&package_name.to_string()) {
+                packages.scoop.push(package_name.to_string());
+            }
+        }
         _ => {
             // Check custom managers
             if let Some(custom) = packages.custom.iter_mut().find(|c| c.name == manager_name) {
@@ -3379,6 +3500,11 @@ pub fn remove_package(
             packages.chocolatey.retain(|p| p != package_name);
             packages.chocolatey.len() < before
         }
+        "scoop" => {
+            let before = packages.scoop.len();
+            packages.scoop.retain(|p| p != package_name);
+            packages.scoop.len() < before
+        }
         _ => {
             // Check custom managers
             if let Some(custom) = packages.custom.iter_mut().find(|c| c.name == manager_name) {
@@ -3418,6 +3544,7 @@ pub fn all_package_managers() -> Vec<Box<dyn PackageManager>> {
         Box::new(GoInstallManager),
         Box::new(WingetManager),
         Box::new(ChocolateyManager),
+        Box::new(ScoopManager),
     ]
 }
 
@@ -3886,7 +4013,7 @@ mod tests {
     #[test]
     fn all_package_managers_creates_all() {
         let managers = all_package_managers();
-        assert_eq!(managers.len(), 19);
+        assert_eq!(managers.len(), 20);
 
         let names: Vec<&str> = managers.iter().map(|m| m.name()).collect();
         assert!(names.contains(&"brew"));
@@ -3908,6 +4035,7 @@ mod tests {
         assert!(names.contains(&"go"));
         assert!(names.contains(&"winget"));
         assert!(names.contains(&"chocolatey"));
+        assert!(names.contains(&"scoop"));
     }
 
     #[test]
@@ -4911,6 +5039,13 @@ custom:
     }
 
     #[test]
+    fn add_package_scoop() {
+        let mut spec = PackagesSpec::default();
+        add_package("scoop", "7zip", &mut spec).unwrap();
+        assert_eq!(spec.scoop, vec!["7zip"]);
+    }
+
+    #[test]
     fn add_package_unknown_manager_returns_error() {
         let mut spec = PackagesSpec::default();
         assert!(add_package("nonexistent", "pkg", &mut spec).is_err());
@@ -5025,6 +5160,14 @@ custom:
         add_package("chocolatey", "python", &mut spec).unwrap();
         assert!(remove_package("chocolatey", "python", &mut spec).unwrap());
         assert!(spec.chocolatey.is_empty());
+    }
+
+    #[test]
+    fn remove_package_scoop() {
+        let mut spec = PackagesSpec::default();
+        add_package("scoop", "ripgrep", &mut spec).unwrap();
+        assert!(remove_package("scoop", "ripgrep", &mut spec).unwrap());
+        assert!(spec.scoop.is_empty());
     }
 
     #[test]
@@ -5522,6 +5665,23 @@ custom:
         assert!(packages.contains("chocolatey"));
         assert!(packages.contains("nodejs"));
         assert!(packages.contains("python"));
+        assert_eq!(packages.len(), 3);
+    }
+
+    // --- scoop output parsing ---
+
+    #[test]
+    fn scoop_parse_list_output() {
+        let output = "Installed apps:\n\n\
+                      Name     Version Source\n\
+                      ----     ------- ------\n\
+                      7zip     23.01   main\n\
+                      ripgrep  14.1.0  main\n\
+                      fd       9.0.0   main\n";
+        let packages = parse_scoop_list(output);
+        assert!(packages.contains("7zip"));
+        assert!(packages.contains("ripgrep"));
+        assert!(packages.contains("fd"));
         assert_eq!(packages.len(), 3);
     }
 
