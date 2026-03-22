@@ -668,7 +668,7 @@ pub fn acquire_apply_lock(state_dir: &std::path::Path) -> errors::Result<ApplyLo
 
     Ok(ApplyLockGuard {
         _file: f,
-        path: lock_path,
+        _path: lock_path,
     })
 }
 
@@ -677,7 +677,7 @@ pub fn acquire_apply_lock(state_dir: &std::path::Path) -> errors::Result<ApplyLo
 #[derive(Debug)]
 pub struct ApplyLockGuard {
     _file: std::fs::File,
-    path: std::path::PathBuf,
+    _path: std::path::PathBuf,
 }
 
 #[cfg(unix)]
@@ -685,7 +685,7 @@ impl Drop for ApplyLockGuard {
     fn drop(&mut self) {
         // flock is released automatically when the fd is closed.
         // Clear the PID from the lock file so stale reads aren't confusing.
-        let _ = std::fs::write(&self.path, "");
+        let _ = self._file.set_len(0);
     }
 }
 
@@ -726,11 +726,16 @@ pub fn acquire_apply_lock(state_dir: &std::path::Path) -> errors::Result<ApplyLo
         )
     };
     if ret == 0 {
-        let holder = std::fs::read_to_string(&lock_path).unwrap_or_default();
-        return Err(errors::StateError::ApplyLockHeld {
-            holder: format!("pid {}", holder.trim()),
+        let err = std::io::Error::last_os_error();
+        // ERROR_LOCK_VIOLATION (33) = lock held by another process
+        if err.raw_os_error() == Some(33) {
+            let holder = std::fs::read_to_string(&lock_path).unwrap_or_default();
+            return Err(errors::StateError::ApplyLockHeld {
+                holder: format!("pid {}", holder.trim()),
+            }
+            .into());
         }
-        .into());
+        return Err(err.into());
     }
 
     let mut f = file;
@@ -740,7 +745,7 @@ pub fn acquire_apply_lock(state_dir: &std::path::Path) -> errors::Result<ApplyLo
 
     Ok(ApplyLockGuard {
         _file: f,
-        path: lock_path,
+        _path: lock_path,
     })
 }
 
@@ -749,15 +754,15 @@ pub fn acquire_apply_lock(state_dir: &std::path::Path) -> errors::Result<ApplyLo
 #[derive(Debug)]
 pub struct ApplyLockGuard {
     _file: std::fs::File,
-    path: std::path::PathBuf,
+    _path: std::path::PathBuf,
 }
 
 #[cfg(windows)]
 impl Drop for ApplyLockGuard {
     fn drop(&mut self) {
         // Windows releases the lock when the file handle is closed (on drop).
-        // Clear the PID from the lock file so stale reads aren't confusing.
-        let _ = std::fs::write(&self.path, "");
+        // Clear the PID via the same handle to avoid mandatory-lock conflicts.
+        let _ = self._file.set_len(0);
     }
 }
 
