@@ -2502,6 +2502,142 @@ impl PackageManager for GoInstallManager {
     }
 }
 
+// --- Windows Package Manager (winget) ---
+
+pub struct WingetManager;
+
+fn parse_winget_list(output: &str) -> HashSet<String> {
+    let mut packages = HashSet::new();
+    let mut header_seen = false;
+    let mut id_start = 0;
+    let mut id_end = 0;
+
+    for line in output.lines() {
+        if line.starts_with("---") || line.starts_with("===") {
+            header_seen = true;
+            continue;
+        }
+        if !header_seen {
+            if let Some(pos) = line.find("Id") {
+                id_start = pos;
+                if let Some(ver_pos) = line.find("Version") {
+                    id_end = ver_pos;
+                }
+            }
+            continue;
+        }
+        if line.trim().is_empty() {
+            continue;
+        }
+        if id_end > id_start && line.len() >= id_end {
+            let id = line[id_start..id_end].trim();
+            if !id.is_empty() {
+                packages.insert(id.to_string());
+            }
+        }
+    }
+    packages
+}
+
+impl PackageManager for WingetManager {
+    fn name(&self) -> &str {
+        "winget"
+    }
+
+    fn is_available(&self) -> bool {
+        cfgd_core::command_available("winget")
+    }
+
+    fn can_bootstrap(&self) -> bool {
+        false
+    }
+
+    fn bootstrap(&self, _printer: &Printer) -> Result<()> {
+        Err(PackageError::BootstrapFailed {
+            manager: "winget".into(),
+            message: "winget ships with Windows; install App Installer from the Microsoft Store"
+                .into(),
+        }
+        .into())
+    }
+
+    fn installed_packages(&self) -> Result<HashSet<String>> {
+        let output = std::process::Command::new("winget")
+            .args(["list", "--source", "winget"])
+            .output()
+            .map_err(|e| PackageError::ListFailed {
+                manager: "winget".into(),
+                message: e.to_string(),
+            })?;
+        Ok(parse_winget_list(&String::from_utf8_lossy(&output.stdout)))
+    }
+
+    fn install(&self, packages: &[String], printer: &Printer) -> Result<()> {
+        for pkg in packages {
+            run_pkg_cmd_live(
+                printer,
+                "winget",
+                Command::new("winget").args([
+                    "install",
+                    "--id",
+                    pkg,
+                    "--accept-package-agreements",
+                    "--accept-source-agreements",
+                ]),
+                &format!("Installing {}", pkg),
+                "install",
+            )?;
+        }
+        Ok(())
+    }
+
+    fn uninstall(&self, packages: &[String], printer: &Printer) -> Result<()> {
+        for pkg in packages {
+            run_pkg_cmd_live(
+                printer,
+                "winget",
+                Command::new("winget").args(["uninstall", "--id", pkg]),
+                &format!("Uninstalling {}", pkg),
+                "uninstall",
+            )?;
+        }
+        Ok(())
+    }
+
+    fn update(&self, printer: &Printer) -> Result<()> {
+        run_pkg_cmd_live(
+            printer,
+            "winget",
+            Command::new("winget").args([
+                "upgrade",
+                "--all",
+                "--accept-package-agreements",
+                "--accept-source-agreements",
+            ]),
+            "Upgrading all winget packages",
+            "install",
+        )?;
+        Ok(())
+    }
+
+    fn available_version(&self, package: &str) -> Result<Option<String>> {
+        let output = std::process::Command::new("winget")
+            .args(["show", "--id", package])
+            .output()
+            .map_err(|e| PackageError::ListFailed {
+                manager: "winget".into(),
+                message: e.to_string(),
+            })?;
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        for line in stdout.lines() {
+            if let Some(rest) = line.strip_prefix("Version:") {
+                return Ok(Some(rest.trim().to_string()));
+            }
+        }
+        Ok(None)
+    }
+}
+
 // --- Custom (user-defined) package manager ---
 
 pub struct ScriptedManager {
@@ -2956,6 +3092,11 @@ pub fn add_package(
                 packages.go.push(package_name.to_string());
             }
         }
+        "winget" => {
+            if !packages.winget.contains(&package_name.to_string()) {
+                packages.winget.push(package_name.to_string());
+            }
+        }
         _ => {
             // Check custom managers
             if let Some(custom) = packages.custom.iter_mut().find(|c| c.name == manager_name) {
@@ -3098,6 +3239,11 @@ pub fn remove_package(
             packages.go.retain(|p| p != package_name);
             packages.go.len() < before
         }
+        "winget" => {
+            let before = packages.winget.len();
+            packages.winget.retain(|p| p != package_name);
+            packages.winget.len() < before
+        }
         _ => {
             // Check custom managers
             if let Some(custom) = packages.custom.iter_mut().find(|c| c.name == manager_name) {
@@ -3135,6 +3281,7 @@ pub fn all_package_managers() -> Vec<Box<dyn PackageManager>> {
         Box::new(FlatpakManager),
         Box::new(NixManager),
         Box::new(GoInstallManager),
+        Box::new(WingetManager),
     ]
 }
 
@@ -3603,7 +3750,7 @@ mod tests {
     #[test]
     fn all_package_managers_creates_all() {
         let managers = all_package_managers();
-        assert_eq!(managers.len(), 17);
+        assert_eq!(managers.len(), 18);
 
         let names: Vec<&str> = managers.iter().map(|m| m.name()).collect();
         assert!(names.contains(&"brew"));
@@ -3623,6 +3770,7 @@ mod tests {
         assert!(names.contains(&"flatpak"));
         assert!(names.contains(&"nix"));
         assert!(names.contains(&"go"));
+        assert!(names.contains(&"winget"));
     }
 
     #[test]
@@ -4612,6 +4760,13 @@ custom:
     }
 
     #[test]
+    fn add_package_winget() {
+        let mut spec = PackagesSpec::default();
+        add_package("winget", "Microsoft.VisualStudioCode", &mut spec).unwrap();
+        assert_eq!(spec.winget, vec!["Microsoft.VisualStudioCode"]);
+    }
+
+    #[test]
     fn add_package_unknown_manager_returns_error() {
         let mut spec = PackagesSpec::default();
         assert!(add_package("nonexistent", "pkg", &mut spec).is_err());
@@ -4710,6 +4865,14 @@ custom:
         let mut spec = PackagesSpec::default();
         add_package("go", "gopls", &mut spec).unwrap();
         assert!(remove_package("go", "gopls", &mut spec).unwrap());
+    }
+
+    #[test]
+    fn remove_package_winget() {
+        let mut spec = PackagesSpec::default();
+        add_package("winget", "Git.Git", &mut spec).unwrap();
+        assert!(remove_package("winget", "Git.Git", &mut spec).unwrap());
+        assert!(spec.winget.is_empty());
     }
 
     #[test]
@@ -5164,6 +5327,34 @@ custom:
         let pkgs = parse_pipx_list_versions(&json);
         assert_eq!(pkgs.len(), 1);
         assert_eq!(pkgs[0].version, "unknown");
+    }
+
+    // --- winget output parsing ---
+
+    #[test]
+    fn winget_parse_list_output() {
+        let output = "Name            Id                    Version\n\
+                      -----------------------------------------------\n\
+                      Visual Studio   Microsoft.VisualStudio 17.8.3\n\
+                      Git             Git.Git                2.43.0\n";
+        let packages = parse_winget_list(output);
+        assert!(packages.contains("Microsoft.VisualStudio"));
+        assert!(packages.contains("Git.Git"));
+    }
+
+    #[test]
+    fn winget_parse_list_empty() {
+        let packages = parse_winget_list("");
+        assert!(packages.is_empty());
+    }
+
+    #[test]
+    fn winget_parse_list_no_separator_line() {
+        // Without a separator line, no packages are parsed (header not yet seen).
+        let output = "Name   Id      Version\n\
+                      foo    foo.Bar  1.0\n";
+        let packages = parse_winget_list(output);
+        assert!(packages.is_empty());
     }
 
     // --- package_aliases tests ---
