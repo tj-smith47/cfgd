@@ -466,42 +466,97 @@ impl<'a> Reconciler<'a> {
 
         let mut actions = Vec::new();
 
-        // Always plan the env file write — apply phase skips if content matches
-        let env_path = crate::expand_tilde(std::path::Path::new("~/.cfgd.env"));
-        let content = generate_env_file_content(&merged, &merged_aliases);
-        actions.push(Action::Env(EnvAction::WriteEnvFile {
-            path: env_path.clone(),
-            content,
-        }));
+        let warnings = if cfg!(windows) {
+            // PowerShell env file — always generated on Windows
+            let ps_path = crate::expand_tilde(std::path::Path::new("~/.cfgd-env.ps1"));
+            let ps_content = generate_powershell_env_content(&merged, &merged_aliases);
+            actions.push(Action::Env(EnvAction::WriteEnvFile {
+                path: ps_path,
+                content: ps_content,
+            }));
 
-        // Always plan shell rc injection — apply phase skips if already present
-        let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".to_string());
-        let rc_path = if shell.contains("zsh") {
-            crate::expand_tilde(std::path::Path::new("~/.zshrc"))
-        } else {
-            crate::expand_tilde(std::path::Path::new("~/.bashrc"))
-        };
-        actions.push(Action::Env(EnvAction::InjectSourceLine {
-            rc_path: rc_path.clone(),
-            line: "[ -f ~/.cfgd.env ] && source ~/.cfgd.env".to_string(),
-        }));
-
-        // Fish shell: generate separate file if fish config dir exists
-        let fish_conf_d = crate::expand_tilde(std::path::Path::new("~/.config/fish/conf.d"));
-        if fish_conf_d.exists() {
-            let fish_path = fish_conf_d.join("cfgd-env.fish");
-            let fish_content = generate_fish_env_content(&merged, &merged_aliases);
-            let existing_fish = std::fs::read_to_string(&fish_path).unwrap_or_default();
-            if existing_fish != fish_content {
-                actions.push(Action::Env(EnvAction::WriteEnvFile {
-                    path: fish_path,
-                    content: fish_content,
+            // Inject dot-source line into PowerShell profiles
+            let ps_profile_dirs = [
+                crate::expand_tilde(std::path::Path::new("~/Documents/PowerShell")),
+                crate::expand_tilde(std::path::Path::new("~/Documents/WindowsPowerShell")),
+            ];
+            for profile_dir in &ps_profile_dirs {
+                let profile_path = profile_dir.join("Microsoft.PowerShell_profile.ps1");
+                actions.push(Action::Env(EnvAction::InjectSourceLine {
+                    rc_path: profile_path,
+                    line: ". ~/.cfgd-env.ps1".to_string(),
                 }));
             }
-        }
 
-        // Check for conflicts with existing definitions in the shell rc file
-        let warnings = detect_rc_env_conflicts(&rc_path, &merged, &merged_aliases);
+            // If Git Bash is available, also generate bash env file
+            if crate::command_available("sh") {
+                let bash_path = crate::expand_tilde(std::path::Path::new("~/.cfgd.env"));
+                let bash_content = generate_env_file_content(&merged, &merged_aliases);
+                actions.push(Action::Env(EnvAction::WriteEnvFile {
+                    path: bash_path,
+                    content: bash_content,
+                }));
+                let bashrc = crate::expand_tilde(std::path::Path::new("~/.bashrc"));
+                actions.push(Action::Env(EnvAction::InjectSourceLine {
+                    rc_path: bashrc,
+                    line: "[ -f ~/.cfgd.env ] && source ~/.cfgd.env".to_string(),
+                }));
+            }
+
+            // Fish shell on Windows (if present)
+            let fish_conf_d = crate::expand_tilde(std::path::Path::new("~/.config/fish/conf.d"));
+            if fish_conf_d.exists() {
+                let fish_path = fish_conf_d.join("cfgd-env.fish");
+                let fish_content = generate_fish_env_content(&merged, &merged_aliases);
+                let existing_fish = std::fs::read_to_string(&fish_path).unwrap_or_default();
+                if existing_fish != fish_content {
+                    actions.push(Action::Env(EnvAction::WriteEnvFile {
+                        path: fish_path,
+                        content: fish_content,
+                    }));
+                }
+            }
+
+            // No rc conflict detection on Windows (PowerShell profiles don't use
+            // export/alias syntax)
+            Vec::new()
+        } else {
+            // Unix: bash/zsh env file + source line + fish
+            let env_path = crate::expand_tilde(std::path::Path::new("~/.cfgd.env"));
+            let content = generate_env_file_content(&merged, &merged_aliases);
+            actions.push(Action::Env(EnvAction::WriteEnvFile {
+                path: env_path.clone(),
+                content,
+            }));
+
+            let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".to_string());
+            let rc_path = if shell.contains("zsh") {
+                crate::expand_tilde(std::path::Path::new("~/.zshrc"))
+            } else {
+                crate::expand_tilde(std::path::Path::new("~/.bashrc"))
+            };
+            actions.push(Action::Env(EnvAction::InjectSourceLine {
+                rc_path: rc_path.clone(),
+                line: "[ -f ~/.cfgd.env ] && source ~/.cfgd.env".to_string(),
+            }));
+
+            // Fish shell: generate separate file if fish config dir exists
+            let fish_conf_d = crate::expand_tilde(std::path::Path::new("~/.config/fish/conf.d"));
+            if fish_conf_d.exists() {
+                let fish_path = fish_conf_d.join("cfgd-env.fish");
+                let fish_content = generate_fish_env_content(&merged, &merged_aliases);
+                let existing_fish = std::fs::read_to_string(&fish_path).unwrap_or_default();
+                if existing_fish != fish_content {
+                    actions.push(Action::Env(EnvAction::WriteEnvFile {
+                        path: fish_path,
+                        content: fish_content,
+                    }));
+                }
+            }
+
+            // Check for conflicts with existing definitions in the shell rc file
+            detect_rc_env_conflicts(&rc_path, &merged, &merged_aliases)
+        };
 
         (actions, warnings)
     }
@@ -1980,15 +2035,117 @@ fn verify_env(
         return;
     }
 
-    let expected_content = generate_env_file_content(&merged, &merged_aliases);
-    let env_path = expand_tilde(std::path::Path::new("~/.cfgd.env"));
+    if cfg!(windows) {
+        // Verify PowerShell env file
+        let ps_path = expand_tilde(std::path::Path::new("~/.cfgd-env.ps1"));
+        let expected_ps = generate_powershell_env_content(&merged, &merged_aliases);
+        verify_env_file(&ps_path, &expected_ps, state, results);
 
-    // Check env file content
-    match std::fs::read_to_string(&env_path) {
-        Ok(actual) if actual == expected_content => {
+        // Verify PowerShell profile injection
+        let ps_profile_dirs = [
+            expand_tilde(std::path::Path::new("~/Documents/PowerShell")),
+            expand_tilde(std::path::Path::new("~/Documents/WindowsPowerShell")),
+        ];
+        for profile_dir in &ps_profile_dirs {
+            let profile_path = profile_dir.join("Microsoft.PowerShell_profile.ps1");
+            if let Ok(content) = std::fs::read_to_string(&profile_path) {
+                let has_line = content.contains("cfgd-env.ps1");
+                results.push(VerifyResult {
+                    resource_type: "env-rc".to_string(),
+                    resource_id: profile_path.display().to_string(),
+                    matches: has_line,
+                    expected: "source line present".to_string(),
+                    actual: if has_line {
+                        "source line present".to_string()
+                    } else {
+                        "source line missing".to_string()
+                    },
+                });
+                if !has_line {
+                    state
+                        .record_drift(
+                            "env-rc",
+                            &profile_path.display().to_string(),
+                            Some("source line present"),
+                            Some("source line missing"),
+                            "local",
+                        )
+                        .ok();
+                }
+            }
+        }
+
+        // If Git Bash available, also verify bash env file
+        if crate::command_available("sh") {
+            let bash_path = expand_tilde(std::path::Path::new("~/.cfgd.env"));
+            let expected_bash = generate_env_file_content(&merged, &merged_aliases);
+            verify_env_file(&bash_path, &expected_bash, state, results);
+        }
+    } else {
+        // Unix: verify bash/zsh env file
+        let env_path = expand_tilde(std::path::Path::new("~/.cfgd.env"));
+        let expected_content = generate_env_file_content(&merged, &merged_aliases);
+        verify_env_file(&env_path, &expected_content, state, results);
+
+        // Check shell rc source line
+        let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".to_string());
+        let rc_path = if shell.contains("zsh") {
+            expand_tilde(std::path::Path::new("~/.zshrc"))
+        } else {
+            expand_tilde(std::path::Path::new("~/.bashrc"))
+        };
+
+        if let Ok(rc_content) = std::fs::read_to_string(&rc_path) {
+            if rc_content.contains("cfgd.env") {
+                results.push(VerifyResult {
+                    resource_type: "env-rc".to_string(),
+                    resource_id: rc_path.display().to_string(),
+                    matches: true,
+                    expected: "source line present".to_string(),
+                    actual: "source line present".to_string(),
+                });
+            } else {
+                results.push(VerifyResult {
+                    resource_type: "env-rc".to_string(),
+                    resource_id: rc_path.display().to_string(),
+                    matches: false,
+                    expected: "source line present".to_string(),
+                    actual: "source line missing".to_string(),
+                });
+                state
+                    .record_drift(
+                        "env-rc",
+                        &rc_path.display().to_string(),
+                        Some("source line present"),
+                        Some("source line missing"),
+                        "local",
+                    )
+                    .ok();
+            }
+        }
+    }
+
+    // Check fish env file if fish conf.d exists (both platforms)
+    let fish_conf_d = expand_tilde(std::path::Path::new("~/.config/fish/conf.d"));
+    if fish_conf_d.exists() {
+        let fish_path = fish_conf_d.join("cfgd-env.fish");
+        let expected_fish = generate_fish_env_content(&merged, &merged_aliases);
+        verify_env_file(&fish_path, &expected_fish, state, results);
+    }
+}
+
+/// Verify a single env file's content matches expected.
+fn verify_env_file(
+    path: &std::path::Path,
+    expected: &str,
+    state: &StateStore,
+    results: &mut Vec<VerifyResult>,
+) {
+    match std::fs::read_to_string(path) {
+        Ok(actual) if actual == expected => {
             results.push(VerifyResult {
                 resource_type: "env".to_string(),
-                resource_id: env_path.display().to_string(),
+                resource_id: path.display().to_string(),
                 matches: true,
                 expected: "current".to_string(),
                 actual: "current".to_string(),
@@ -1997,7 +2154,7 @@ fn verify_env(
         Ok(_) => {
             results.push(VerifyResult {
                 resource_type: "env".to_string(),
-                resource_id: env_path.display().to_string(),
+                resource_id: path.display().to_string(),
                 matches: false,
                 expected: "current".to_string(),
                 actual: "stale".to_string(),
@@ -2005,7 +2162,7 @@ fn verify_env(
             state
                 .record_drift(
                     "env",
-                    &env_path.display().to_string(),
+                    &path.display().to_string(),
                     Some("current"),
                     Some("stale"),
                     "local",
@@ -2015,7 +2172,7 @@ fn verify_env(
         Err(_) => {
             results.push(VerifyResult {
                 resource_type: "env".to_string(),
-                resource_id: env_path.display().to_string(),
+                resource_id: path.display().to_string(),
                 matches: false,
                 expected: "present".to_string(),
                 actual: "missing".to_string(),
@@ -2023,85 +2180,12 @@ fn verify_env(
             state
                 .record_drift(
                     "env",
-                    &env_path.display().to_string(),
+                    &path.display().to_string(),
                     Some("present"),
                     Some("missing"),
                     "local",
                 )
                 .ok();
-        }
-    }
-
-    // Check shell rc source line
-    let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".to_string());
-    let rc_path = if shell.contains("zsh") {
-        expand_tilde(std::path::Path::new("~/.zshrc"))
-    } else {
-        expand_tilde(std::path::Path::new("~/.bashrc"))
-    };
-
-    if let Ok(rc_content) = std::fs::read_to_string(&rc_path) {
-        if rc_content.contains("cfgd.env") {
-            results.push(VerifyResult {
-                resource_type: "env-rc".to_string(),
-                resource_id: rc_path.display().to_string(),
-                matches: true,
-                expected: "source line present".to_string(),
-                actual: "source line present".to_string(),
-            });
-        } else {
-            results.push(VerifyResult {
-                resource_type: "env-rc".to_string(),
-                resource_id: rc_path.display().to_string(),
-                matches: false,
-                expected: "source line present".to_string(),
-                actual: "source line missing".to_string(),
-            });
-            state
-                .record_drift(
-                    "env-rc",
-                    &rc_path.display().to_string(),
-                    Some("source line present"),
-                    Some("source line missing"),
-                    "local",
-                )
-                .ok();
-        }
-    }
-
-    // Check fish env file if fish conf.d exists
-    let fish_conf_d = expand_tilde(std::path::Path::new("~/.config/fish/conf.d"));
-    if fish_conf_d.exists() {
-        let fish_path = fish_conf_d.join("cfgd-env.fish");
-        let expected_fish = generate_fish_env_content(&merged, &merged_aliases);
-        match std::fs::read_to_string(&fish_path) {
-            Ok(actual) if actual == expected_fish => {
-                results.push(VerifyResult {
-                    resource_type: "env".to_string(),
-                    resource_id: fish_path.display().to_string(),
-                    matches: true,
-                    expected: "current".to_string(),
-                    actual: "current".to_string(),
-                });
-            }
-            Ok(_) => {
-                results.push(VerifyResult {
-                    resource_type: "env".to_string(),
-                    resource_id: fish_path.display().to_string(),
-                    matches: false,
-                    expected: "current".to_string(),
-                    actual: "stale".to_string(),
-                });
-            }
-            Err(_) => {
-                results.push(VerifyResult {
-                    resource_type: "env".to_string(),
-                    resource_id: fish_path.display().to_string(),
-                    matches: false,
-                    expected: "present".to_string(),
-                    actual: "missing".to_string(),
-                });
-            }
         }
     }
 }
@@ -2473,6 +2557,43 @@ fn generate_fish_env_content(
         lines.push(format!("abbr -a {} {}", alias.name, alias.command));
     }
     lines.push(String::new());
+    lines.join("\n")
+}
+
+/// Generate PowerShell env file content from merged env vars and aliases.
+fn generate_powershell_env_content(
+    env: &[crate::config::EnvVar],
+    aliases: &[crate::config::ShellAlias],
+) -> String {
+    let mut lines = vec!["# managed by cfgd - do not edit".to_string()];
+    for ev in env {
+        if ev.value.contains("$env:") {
+            // Value references other env vars — don't quote
+            lines.push(format!("$env:{} = {}", ev.name, ev.value));
+        } else {
+            lines.push(format!(
+                "$env:{} = \"{}\"",
+                ev.name,
+                ev.value.replace('"', "`\"")
+            ));
+        }
+    }
+    for alias in aliases {
+        if alias.command.split_whitespace().count() == 1 {
+            // Simple alias — use Set-Alias
+            lines.push(format!(
+                "Set-Alias -Name {} -Value {}",
+                alias.name, alias.command
+            ));
+        } else {
+            // Complex alias — use function wrapper
+            lines.push(format!(
+                "function {} {{ {} @args }}",
+                alias.name, alias.command
+            ));
+        }
+    }
+    lines.push(String::new()); // trailing newline
     lines.join("\n")
 }
 
@@ -4401,6 +4522,63 @@ mod tests {
         assert_eq!(super::strip_shell_quotes("'hello'"), "hello");
         assert_eq!(super::strip_shell_quotes("hello"), "hello");
         assert_eq!(super::strip_shell_quotes("\"\""), "");
+    }
+
+    // --- PowerShell env generation tests ---
+
+    #[test]
+    fn generate_powershell_env_basic() {
+        let env = vec![
+            crate::config::EnvVar {
+                name: "EDITOR".into(),
+                value: "code".into(),
+            },
+            crate::config::EnvVar {
+                name: "PATH".into(),
+                value: r"C:\Users\user\.cargo\bin;$env:PATH".into(),
+            },
+        ];
+        let content = super::generate_powershell_env_content(&env, &[]);
+        assert!(content.starts_with("# managed by cfgd"));
+        assert!(content.contains(r#"$env:EDITOR = "code""#));
+        // PATH references $env: so should not be quoted
+        assert!(content.contains(r"$env:PATH = C:\Users\user\.cargo\bin;$env:PATH"));
+    }
+
+    #[test]
+    fn generate_powershell_env_with_aliases() {
+        let aliases = vec![
+            crate::config::ShellAlias {
+                name: "g".into(),
+                command: "git".into(),
+            },
+            crate::config::ShellAlias {
+                name: "ll".into(),
+                command: "Get-ChildItem -Force".into(),
+            },
+        ];
+        let content = super::generate_powershell_env_content(&[], &aliases);
+        assert!(content.contains("Set-Alias -Name g -Value git"));
+        assert!(content.contains("function ll {"));
+        assert!(content.contains("Get-ChildItem -Force @args"));
+    }
+
+    #[test]
+    fn generate_powershell_env_escapes_quotes() {
+        let env = vec![crate::config::EnvVar {
+            name: "GREETING".into(),
+            value: r#"say "hello""#.into(),
+        }];
+        let content = super::generate_powershell_env_content(&env, &[]);
+        assert!(content.contains("$env:GREETING = \"say `\"hello`\"\""));
+    }
+
+    #[test]
+    fn generate_powershell_env_empty() {
+        let content = super::generate_powershell_env_content(&[], &[]);
+        assert!(content.starts_with("# managed by cfgd"));
+        // Only header + trailing newline
+        assert_eq!(content.lines().count(), 1);
     }
 
     // --- Apply execution path tests ---
