@@ -1188,6 +1188,182 @@ impl SystemConfigurator for EnvironmentConfigurator {
     }
 }
 
+/// WindowsRegistryConfigurator — reads/writes Windows registry settings.
+///
+/// Manages `spec.system.windowsRegistry` entries declaratively, analogous to
+/// `MacosDefaultsConfigurator` for macOS `defaults` domains.
+///
+/// Config format:
+/// ```yaml
+/// system:
+///   windowsRegistry:
+///     HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced:
+///       HideFileExt: 0
+///       ShowHiddenFiles: 1
+///     HKCU\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize:
+///       AppsUseLightTheme: 0
+/// ```
+pub struct WindowsRegistryConfigurator;
+
+impl WindowsRegistryConfigurator {
+    /// Parse a registry path into (hive, subpath).
+    /// e.g., `"HKCU\Software\Microsoft"` → `("HKCU", "Software\Microsoft")`
+    #[cfg(test)]
+    fn parse_reg_path(path: &str) -> Option<(&str, &str)> {
+        path.split_once('\\')
+    }
+
+    /// Read a single registry value using `reg query`.
+    /// Returns `None` on non-Windows or if the value does not exist.
+    fn read_reg_value(key_path: &str, value_name: &str) -> Option<String> {
+        if !cfg!(windows) {
+            return None;
+        }
+        let output = Command::new("reg")
+            .args(["query", key_path, "/v", value_name])
+            .output()
+            .ok()?;
+        if !output.status.success() {
+            return None;
+        }
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        Self::parse_reg_value_output(&stdout, value_name)
+    }
+
+    /// Write a registry value using `reg add`.
+    /// Infers the type: numeric values use `REG_DWORD`, otherwise `REG_SZ`.
+    fn write_reg_value(
+        key_path: &str,
+        value_name: &str,
+        value: &str,
+        printer: &Printer,
+    ) -> Result<()> {
+        if !cfg!(windows) {
+            return Ok(());
+        }
+        let reg_type = if value.parse::<u32>().is_ok() {
+            "REG_DWORD"
+        } else {
+            "REG_SZ"
+        };
+
+        let output = Command::new("reg")
+            .args([
+                "add", key_path, "/v", value_name, "/t", reg_type, "/d", value, "/f",
+            ])
+            .output()
+            .map_err(cfgd_core::errors::CfgdError::Io)?;
+
+        if !output.status.success() {
+            printer.warning(&format!(
+                "reg add failed for {}\\{}: {}",
+                key_path,
+                value_name,
+                stderr_string(&output)
+            ));
+        }
+        Ok(())
+    }
+
+    /// Parse `reg query` output for a single value.
+    ///
+    /// Input lines look like: `"    ValueName    REG_DWORD    0x0"`
+    /// For DWORD values, converts hex (`0x...`) to decimal string for comparison.
+    fn parse_reg_value_output(output: &str, value_name: &str) -> Option<String> {
+        for line in output.lines() {
+            let line = line.trim();
+            if line.is_empty() || line.starts_with("HKEY_") {
+                continue;
+            }
+            // Fields are separated by 4 spaces.
+            let parts: Vec<&str> = line.splitn(3, "    ").collect();
+            if parts.len() == 3 && parts[0].trim() == value_name {
+                let reg_type = parts[1].trim();
+                let raw_value = parts[2].trim();
+                // Convert DWORD hex to decimal for comparison
+                if reg_type == "REG_DWORD"
+                    && let Some(hex_str) = raw_value.strip_prefix("0x")
+                    && let Ok(n) = u32::from_str_radix(hex_str, 16)
+                {
+                    return Some(n.to_string());
+                }
+                return Some(raw_value.to_string());
+            }
+        }
+        None
+    }
+}
+
+impl SystemConfigurator for WindowsRegistryConfigurator {
+    fn name(&self) -> &str {
+        "windowsRegistry"
+    }
+
+    fn is_available(&self) -> bool {
+        cfg!(windows)
+    }
+
+    fn current_state(&self) -> Result<serde_yaml::Value> {
+        Ok(serde_yaml::Value::Mapping(serde_yaml::Mapping::new()))
+    }
+
+    fn diff(&self, desired: &serde_yaml::Value) -> Result<Vec<SystemDrift>> {
+        let mapping = match desired.as_mapping() {
+            Some(m) => m,
+            None => return Ok(Vec::new()),
+        };
+
+        let mut drifts = Vec::new();
+        for (key_path_val, values_val) in mapping {
+            let key_path = match key_path_val.as_str() {
+                Some(k) => k,
+                None => continue,
+            };
+            let values = match values_val.as_mapping() {
+                Some(m) => m,
+                None => continue,
+            };
+            drifts.extend(diff_yaml_mapping(
+                values,
+                key_path,
+                yaml_value_to_defaults_string,
+                |value_name| Self::read_reg_value(key_path, value_name).unwrap_or_default(),
+            ));
+        }
+
+        Ok(drifts)
+    }
+
+    fn apply(&self, desired: &serde_yaml::Value, printer: &Printer) -> Result<()> {
+        let mapping = match desired.as_mapping() {
+            Some(m) => m,
+            None => return Ok(()),
+        };
+
+        for (key_path_val, values_val) in mapping {
+            let key_path = match key_path_val.as_str() {
+                Some(k) => k,
+                None => continue,
+            };
+            let values = match values_val.as_mapping() {
+                Some(m) => m,
+                None => continue,
+            };
+            for (name_val, desired_val) in values {
+                let name = match name_val.as_str() {
+                    Some(n) => n,
+                    None => continue,
+                };
+                let desired_str = yaml_value_to_defaults_string(desired_val);
+                Self::write_reg_value(key_path, name, &desired_str, printer)?;
+                printer.success(&format!("Set {}\\{} = {}", key_path, name, desired_str));
+            }
+        }
+
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1619,5 +1795,127 @@ HKEY_CURRENT_USER\\Environment\n\
     fn find_profile_guid_missing_profiles() {
         let settings = serde_json::json!({});
         assert_eq!(find_profile_guid(&settings, "PowerShell"), None);
+    }
+
+    // --- WindowsRegistryConfigurator ---
+
+    #[test]
+    fn registry_configurator_name() {
+        assert_eq!(WindowsRegistryConfigurator.name(), "windowsRegistry");
+    }
+
+    #[test]
+    fn registry_parse_reg_path_valid() {
+        assert_eq!(
+            WindowsRegistryConfigurator::parse_reg_path(r"HKCU\Software\Microsoft"),
+            Some(("HKCU", r"Software\Microsoft"))
+        );
+    }
+
+    #[test]
+    fn registry_parse_reg_path_single_level() {
+        assert_eq!(
+            WindowsRegistryConfigurator::parse_reg_path(r"HKLM\SOFTWARE"),
+            Some(("HKLM", "SOFTWARE"))
+        );
+    }
+
+    #[test]
+    fn registry_parse_reg_path_invalid() {
+        assert_eq!(WindowsRegistryConfigurator::parse_reg_path("invalid"), None);
+    }
+
+    #[test]
+    fn registry_parse_reg_value_dword() {
+        let output = "HKEY_CURRENT_USER\\Software\\Test\n\
+                      \n\
+                          HideFileExt    REG_DWORD    0x0\n";
+        assert_eq!(
+            WindowsRegistryConfigurator::parse_reg_value_output(output, "HideFileExt"),
+            Some("0".to_string())
+        );
+    }
+
+    #[test]
+    fn registry_parse_reg_value_dword_nonzero() {
+        let output = "HKEY_CURRENT_USER\\Software\\Test\n\
+                      \n\
+                          ShowHidden    REG_DWORD    0x1\n";
+        assert_eq!(
+            WindowsRegistryConfigurator::parse_reg_value_output(output, "ShowHidden"),
+            Some("1".to_string())
+        );
+    }
+
+    #[test]
+    fn registry_parse_reg_value_dword_large() {
+        let output = "HKEY_CURRENT_USER\\Software\\Test\n\
+                      \n\
+                          Timeout    REG_DWORD    0xff\n";
+        assert_eq!(
+            WindowsRegistryConfigurator::parse_reg_value_output(output, "Timeout"),
+            Some("255".to_string())
+        );
+    }
+
+    #[test]
+    fn registry_parse_reg_value_string() {
+        let output = "HKEY_CURRENT_USER\\Software\\Test\n\
+                      \n\
+                          Theme    REG_SZ    dark\n";
+        assert_eq!(
+            WindowsRegistryConfigurator::parse_reg_value_output(output, "Theme"),
+            Some("dark".to_string())
+        );
+    }
+
+    #[test]
+    fn registry_parse_reg_value_missing() {
+        let output = "HKEY_CURRENT_USER\\Software\\Test\n\n";
+        assert_eq!(
+            WindowsRegistryConfigurator::parse_reg_value_output(output, "Missing"),
+            None
+        );
+    }
+
+    #[test]
+    fn registry_parse_reg_value_wrong_name() {
+        let output = "HKEY_CURRENT_USER\\Software\\Test\n\
+                      \n\
+                          OtherValue    REG_SZ    hello\n";
+        assert_eq!(
+            WindowsRegistryConfigurator::parse_reg_value_output(output, "Missing"),
+            None
+        );
+    }
+
+    #[test]
+    fn registry_parse_reg_value_empty_input() {
+        assert_eq!(
+            WindowsRegistryConfigurator::parse_reg_value_output("", "Anything"),
+            None
+        );
+    }
+
+    #[test]
+    fn registry_diff_empty_desired() {
+        let wrc = WindowsRegistryConfigurator;
+        let yaml = serde_yaml::Value::Mapping(serde_yaml::Mapping::new());
+        let drifts = wrc.diff(&yaml).unwrap();
+        assert!(drifts.is_empty());
+    }
+
+    #[test]
+    fn registry_diff_non_mapping_desired() {
+        let wrc = WindowsRegistryConfigurator;
+        let yaml = serde_yaml::Value::String("not a mapping".into());
+        let drifts = wrc.diff(&yaml).unwrap();
+        assert!(drifts.is_empty());
+    }
+
+    #[test]
+    fn registry_is_available_matches_platform() {
+        let wrc = WindowsRegistryConfigurator;
+        assert_eq!(wrc.is_available(), cfg!(windows));
     }
 }
