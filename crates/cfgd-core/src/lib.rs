@@ -139,10 +139,7 @@ fn home_dir_var() -> Option<String> {
 /// On Windows, uses `symlink_file` or `symlink_dir` based on the source type.
 /// If symlink creation fails on Windows due to insufficient privileges,
 /// returns an error with guidance to enable Developer Mode or run as admin.
-pub fn create_symlink(
-    source: &std::path::Path,
-    target: &std::path::Path,
-) -> std::io::Result<()> {
+pub fn create_symlink(source: &std::path::Path, target: &std::path::Path) -> std::io::Result<()> {
     #[cfg(unix)]
     {
         create_symlink_impl(source, target)
@@ -168,18 +165,12 @@ pub fn create_symlink(
 }
 
 #[cfg(unix)]
-fn create_symlink_impl(
-    source: &std::path::Path,
-    target: &std::path::Path,
-) -> std::io::Result<()> {
+fn create_symlink_impl(source: &std::path::Path, target: &std::path::Path) -> std::io::Result<()> {
     std::os::unix::fs::symlink(source, target)
 }
 
 #[cfg(windows)]
-fn create_symlink_impl(
-    source: &std::path::Path,
-    target: &std::path::Path,
-) -> std::io::Result<()> {
+fn create_symlink_impl(source: &std::path::Path, target: &std::path::Path) -> std::io::Result<()> {
     if source.is_dir() {
         std::os::windows::fs::symlink_dir(source, target)
     } else {
@@ -244,8 +235,8 @@ pub fn is_same_inode(a: &std::path::Path, b: &std::path::Path) -> bool {
 #[cfg(windows)]
 pub fn is_same_inode(a: &std::path::Path, b: &std::path::Path) -> bool {
     use std::os::windows::io::AsRawHandle;
-    use windows_sys::Win32::Storage::FileSystem::GetFileInformationByHandle;
     use windows_sys::Win32::Storage::FileSystem::BY_HANDLE_FILE_INFORMATION;
+    use windows_sys::Win32::Storage::FileSystem::GetFileInformationByHandle;
 
     fn file_info(path: &std::path::Path) -> Option<BY_HANDLE_FILE_INFORMATION> {
         let file = std::fs::File::open(path).ok()?;

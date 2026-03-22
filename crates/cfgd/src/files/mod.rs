@@ -735,7 +735,6 @@ fn scan_directory(
     Ok(())
 }
 
-
 /// Ensure the target's parent directory exists and the target is writable.
 fn ensure_target_writable(target: &Path) -> Result<()> {
     if let Some(parent) = target.parent() {
@@ -1572,7 +1571,10 @@ mod tests {
         fm.apply(&actions, &printer).unwrap();
 
         assert!(target.exists());
-        assert!(cfgd_core::is_same_inode(&files_dir.join("test.txt"), &target));
+        assert!(cfgd_core::is_same_inode(
+            &files_dir.join("test.txt"),
+            &target
+        ));
         assert_eq!(fs::read_to_string(&target).unwrap(), "hardlink content");
     }
 

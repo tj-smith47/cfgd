@@ -764,7 +764,10 @@ pub(super) fn cmd_profile_update(
                                     if backup.was_symlink {
                                         let _ = std::fs::remove_file(path);
                                         if let Some(ref link_target) = backup.symlink_target {
-                                            let _ = cfgd_core::create_symlink(std::path::Path::new(link_target), path);
+                                            let _ = cfgd_core::create_symlink(
+                                                std::path::Path::new(link_target),
+                                                path,
+                                            );
                                         }
                                         printer
                                             .info(&format!("  Restored symlink: {}", f.file_path));

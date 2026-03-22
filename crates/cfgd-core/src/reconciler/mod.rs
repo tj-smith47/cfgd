@@ -1135,7 +1135,9 @@ impl<'a> Reconciler<'a> {
                     // Restore symlink
                     if let Some(ref link_target) = bk.symlink_target {
                         let _ = std::fs::remove_file(target);
-                        if let Err(e) = crate::create_symlink(std::path::Path::new(link_target), target) {
+                        if let Err(e) =
+                            crate::create_symlink(std::path::Path::new(link_target), target)
+                        {
                             printer.warning(&format!(
                                 "rollback: failed to restore symlink {}: {}",
                                 target.display(),
@@ -2141,10 +2143,7 @@ pub(crate) fn build_script_env(
                 ReconcileContext::Reconcile => "reconcile".to_string(),
             },
         ),
-        (
-            "CFGD_PHASE".to_string(),
-            phase.display_name().to_string(),
-        ),
+        ("CFGD_PHASE".to_string(), phase.display_name().to_string()),
         ("CFGD_DRY_RUN".to_string(), dry_run.to_string()),
     ];
     if let Some(name) = module_name {
