@@ -1939,20 +1939,20 @@ spec:
 
         let map = base.as_mapping().unwrap();
         let domain = map
-            .get(&serde_yaml::Value::String("domain1".into()))
+            .get(serde_yaml::Value::String("domain1".into()))
             .unwrap()
             .as_mapping()
             .unwrap();
         assert_eq!(
-            domain.get(&serde_yaml::Value::String("key1".into())),
+            domain.get(serde_yaml::Value::String("key1".into())),
             Some(&serde_yaml::Value::String("value1".into()))
         );
         assert_eq!(
-            domain.get(&serde_yaml::Value::String("key2".into())),
+            domain.get(serde_yaml::Value::String("key2".into())),
             Some(&serde_yaml::Value::String("overridden".into()))
         );
         assert_eq!(
-            domain.get(&serde_yaml::Value::String("key3".into())),
+            domain.get(serde_yaml::Value::String("key3".into())),
             Some(&serde_yaml::Value::String("value3".into()))
         );
     }
@@ -2672,9 +2672,7 @@ patches:
     fn load_config_valid_yaml() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("cfgd.yaml");
-        let yaml = format!(
-            "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: test\nspec:\n  profile: default\n"
-        );
+        let yaml = "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: test\nspec:\n  profile: default\n".to_string();
         std::fs::write(&path, &yaml).unwrap();
         let cfg = load_config(&path).unwrap();
         assert_eq!(cfg.metadata.name, "test");

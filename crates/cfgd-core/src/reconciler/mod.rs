@@ -124,7 +124,10 @@ pub enum ModuleActionKind {
         files: Vec<crate::modules::ResolvedFile>,
     },
     /// Run a module lifecycle script.
-    RunScript { script: ScriptEntry },
+    RunScript {
+        script: ScriptEntry,
+        phase: ScriptPhase,
+    },
     /// Skip a module (dependency not met, user declined, etc.).
     Skip { reason: String },
 }
@@ -165,6 +168,19 @@ pub enum ScriptPhase {
     PostReconcile,
     OnDrift,
     OnChange,
+}
+
+impl ScriptPhase {
+    pub fn display_name(&self) -> &'static str {
+        match self {
+            ScriptPhase::PreApply => "preApply",
+            ScriptPhase::PostApply => "postApply",
+            ScriptPhase::PreReconcile => "preReconcile",
+            ScriptPhase::PostReconcile => "postReconcile",
+            ScriptPhase::OnDrift => "onDrift",
+            ScriptPhase::OnChange => "onChange",
+        }
+    }
 }
 
 /// A phase in the reconciliation plan.
@@ -296,7 +312,7 @@ impl<'a> Reconciler<'a> {
         // Packages are grouped with system/native managers first, then
         // bootstrappable managers, so build deps are installed before
         // packages that need them.
-        let module_phase_actions = self.plan_modules(&module_actions);
+        let module_phase_actions = self.plan_modules(&module_actions, context);
         phases.push(Phase {
             name: PhaseName::Modules,
             actions: module_phase_actions,
@@ -597,10 +613,37 @@ impl<'a> Reconciler<'a> {
         (pre_actions, post_actions)
     }
 
-    fn plan_modules(&self, modules: &[ResolvedModule]) -> Vec<Action> {
+    fn plan_modules(&self, modules: &[ResolvedModule], context: ReconcileContext) -> Vec<Action> {
         let mut actions = Vec::new();
 
         for module in modules {
+            // Select pre/post scripts based on context
+            let (pre_scripts, pre_phase, post_scripts, post_phase) = match context {
+                ReconcileContext::Apply => (
+                    &module.pre_apply_scripts,
+                    ScriptPhase::PreApply,
+                    &module.post_apply_scripts,
+                    ScriptPhase::PostApply,
+                ),
+                ReconcileContext::Reconcile => (
+                    &module.pre_reconcile_scripts,
+                    ScriptPhase::PreReconcile,
+                    &module.post_reconcile_scripts,
+                    ScriptPhase::PostReconcile,
+                ),
+            };
+
+            // Pre-scripts for this module
+            for script in pre_scripts {
+                actions.push(Action::Module(ModuleAction {
+                    module_name: module.name.clone(),
+                    kind: ModuleActionKind::RunScript {
+                        script: script.clone(),
+                        phase: pre_phase.clone(),
+                    },
+                }));
+            }
+
             // Packages: group by manager for efficient batch install
             let mut by_manager: HashMap<String, Vec<crate::modules::ResolvedPackage>> =
                 HashMap::new();
@@ -648,12 +691,13 @@ impl<'a> Reconciler<'a> {
                 }));
             }
 
-            // Post-apply scripts
-            for script in &module.post_apply_scripts {
+            // Post-scripts for this module
+            for script in post_scripts {
                 actions.push(Action::Module(ModuleAction {
                     module_name: module.name.clone(),
                     kind: ModuleActionKind::RunScript {
                         script: script.clone(),
+                        phase: post_phase.clone(),
                     },
                 }));
             }
@@ -879,10 +923,18 @@ impl<'a> Reconciler<'a> {
                 action_index += 1;
 
                 // If a pre-script failed without continueOnError, abort
-                if should_abort
-                    && let Action::Script(ScriptAction::Run { phase: sp, .. }) = action
-                    && matches!(sp, ScriptPhase::PreApply | ScriptPhase::PreReconcile)
-                {
+                let is_pre_script = matches!(
+                    action,
+                    Action::Script(ScriptAction::Run { phase: sp, .. })
+                        if matches!(sp, ScriptPhase::PreApply | ScriptPhase::PreReconcile)
+                ) || matches!(
+                    action,
+                    Action::Module(ModuleAction {
+                        kind: ModuleActionKind::RunScript { phase: sp, .. },
+                        ..
+                    }) if matches!(sp, ScriptPhase::PreApply | ScriptPhase::PreReconcile)
+                );
+                if should_abort && is_pre_script {
                     return Err(crate::errors::CfgdError::Config(ConfigError::Invalid {
                         message: format!("pre-script failed, aborting apply: {}", desc),
                     }));
@@ -912,7 +964,7 @@ impl<'a> Reconciler<'a> {
                     entry,
                     config_dir,
                     &env_vars,
-                    PROFILE_SCRIPT_TIMEOUT,
+                    crate::PROFILE_SCRIPT_TIMEOUT,
                     printer,
                 ) {
                     Ok((desc, changed, _)) => {
@@ -936,6 +988,69 @@ impl<'a> Reconciler<'a> {
                         });
                         if !continue_on_err {
                             return Err(e);
+                        }
+                    }
+                }
+            }
+        }
+
+        // --- Module-level onChange: run per-module onChange scripts if that module had changes ---
+        if any_changed && !skip_scripts {
+            let profile_name = resolved
+                .layers
+                .last()
+                .map(|l| l.profile_name.as_str())
+                .unwrap_or("unknown");
+            for module in module_actions {
+                if module.on_change_scripts.is_empty() {
+                    continue;
+                }
+                let prefix = format!("module:{}:", module.name);
+                let module_changed = results
+                    .iter()
+                    .any(|r| r.changed && r.description.starts_with(&prefix));
+                if !module_changed {
+                    continue;
+                }
+                let env_vars = build_script_env(
+                    config_dir,
+                    profile_name,
+                    context,
+                    &ScriptPhase::OnChange,
+                    false,
+                    Some(&module.name),
+                    Some(&module.dir),
+                );
+                let working = &module.dir;
+                for entry in &module.on_change_scripts {
+                    match execute_script(entry, working, &env_vars, MODULE_SCRIPT_TIMEOUT, printer)
+                    {
+                        Ok((desc, changed, _)) => {
+                            results.push(ActionResult {
+                                phase: "modules".to_string(),
+                                description: desc,
+                                success: true,
+                                error: None,
+                                changed,
+                            });
+                        }
+                        Err(e) => {
+                            let continue_on_err =
+                                effective_continue_on_error(entry, &ScriptPhase::OnChange);
+                            results.push(ActionResult {
+                                phase: "modules".to_string(),
+                                description: format!(
+                                    "module:{}:onChange: {}",
+                                    module.name,
+                                    entry.run_str()
+                                ),
+                                success: false,
+                                error: Some(format!("{}", e)),
+                                changed: false,
+                            });
+                            if !continue_on_err {
+                                return Err(e);
+                            }
                         }
                     }
                 }
@@ -1378,18 +1493,11 @@ impl<'a> Reconciler<'a> {
                     entry,
                     config_dir,
                     &env_vars,
-                    PROFILE_SCRIPT_TIMEOUT,
+                    crate::PROFILE_SCRIPT_TIMEOUT,
                     printer,
                 )?;
 
-                let phase_name = match phase {
-                    ScriptPhase::PreApply => "preApply",
-                    ScriptPhase::PostApply => "postApply",
-                    ScriptPhase::PreReconcile => "preReconcile",
-                    ScriptPhase::PostReconcile => "postReconcile",
-                    ScriptPhase::OnDrift => "onDrift",
-                    ScriptPhase::OnChange => "onChange",
-                };
+                let phase_name = phase.display_name();
 
                 let _ = (desc, changed); // description from execute_script is for display
                 Ok((
@@ -1600,7 +1708,10 @@ impl<'a> Reconciler<'a> {
                     files.len()
                 ))
             }
-            ModuleActionKind::RunScript { script, .. } => {
+            ModuleActionKind::RunScript {
+                script,
+                phase: script_phase,
+            } => {
                 let profile_name = resolved
                     .layers
                     .last()
@@ -1610,7 +1721,7 @@ impl<'a> Reconciler<'a> {
                     config_dir,
                     profile_name,
                     context,
-                    &ScriptPhase::PostApply,
+                    script_phase,
                     false,
                     Some(&action.module_name),
                     module_dir.as_deref(),
@@ -1997,9 +2108,6 @@ fn verify_env(
 // Unified script executor
 // ---------------------------------------------------------------------------
 
-/// Default timeout for profile-level scripts — re-exported from lib.rs.
-const PROFILE_SCRIPT_TIMEOUT: std::time::Duration = crate::PROFILE_SCRIPT_TIMEOUT;
-
 /// Default timeout for module-level scripts.
 const MODULE_SCRIPT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
 
@@ -2035,15 +2143,7 @@ pub(crate) fn build_script_env(
         ),
         (
             "CFGD_PHASE".to_string(),
-            match phase {
-                ScriptPhase::PreApply => "preApply",
-                ScriptPhase::PostApply => "postApply",
-                ScriptPhase::PreReconcile => "preReconcile",
-                ScriptPhase::PostReconcile => "postReconcile",
-                ScriptPhase::OnDrift => "onDrift",
-                ScriptPhase::OnChange => "onChange",
-            }
-            .to_string(),
+            phase.display_name().to_string(),
         ),
         ("CFGD_DRY_RUN".to_string(), dry_run.to_string()),
     ];
@@ -2278,15 +2378,7 @@ pub fn format_action_description(action: &Action) -> String {
         },
         Action::Script(sa) => match sa {
             ScriptAction::Run { entry, phase, .. } => {
-                let p = match phase {
-                    ScriptPhase::PreApply => "preApply",
-                    ScriptPhase::PostApply => "postApply",
-                    ScriptPhase::PreReconcile => "preReconcile",
-                    ScriptPhase::PostReconcile => "postReconcile",
-                    ScriptPhase::OnDrift => "onDrift",
-                    ScriptPhase::OnChange => "onChange",
-                };
-                format!("script:{}:{}", p, entry.run_str())
+                format!("script:{}:{}", phase.display_name(), entry.run_str())
             }
         },
         Action::Module(ma) => match &ma.kind {
@@ -2623,17 +2715,9 @@ pub fn format_plan_items(phase: &Phase) -> Vec<String> {
                     origin,
                     ..
                 } => {
-                    let p = match phase {
-                        ScriptPhase::PreApply => "preApply",
-                        ScriptPhase::PostApply => "postApply",
-                        ScriptPhase::PreReconcile => "preReconcile",
-                        ScriptPhase::PostReconcile => "postReconcile",
-                        ScriptPhase::OnDrift => "onDrift",
-                        ScriptPhase::OnChange => "onChange",
-                    };
                     format!(
                         "run {} script: {}{}",
-                        p,
+                        phase.display_name(),
                         entry.run_str(),
                         provenance_suffix(origin)
                     )
@@ -2697,8 +2781,13 @@ fn format_module_action_item(action: &ModuleAction) -> String {
                 )
             }
         }
-        ModuleActionKind::RunScript { script, .. } => {
-            format!("[{}] post-apply: {}", action.module_name, script.run_str())
+        ModuleActionKind::RunScript { script, phase } => {
+            format!(
+                "[{}] {}: {}",
+                action.module_name,
+                phase.display_name(),
+                script.run_str()
+            )
         }
         ModuleActionKind::Skip { reason } => {
             format!("[{}] skip: {}", action.module_name, reason)
@@ -3186,6 +3275,10 @@ mod tests {
             env: vec![],
             aliases: vec![],
             post_apply_scripts: vec![],
+            pre_apply_scripts: Vec::new(),
+            pre_reconcile_scripts: Vec::new(),
+            post_reconcile_scripts: Vec::new(),
+            on_change_scripts: Vec::new(),
             depends: vec![],
             dir: PathBuf::from("."),
         }
@@ -3217,7 +3310,6 @@ mod tests {
             .unwrap();
 
         // Module phase should have at least 1 action (InstallPackages)
-        let module_phase = module_phase;
         assert!(!module_phase.actions.is_empty());
 
         // Check that actions are ModuleAction
@@ -3250,6 +3342,10 @@ mod tests {
             env: vec![],
             aliases: vec![],
             post_apply_scripts: vec![],
+            pre_apply_scripts: Vec::new(),
+            pre_reconcile_scripts: Vec::new(),
+            post_reconcile_scripts: Vec::new(),
+            on_change_scripts: Vec::new(),
             depends: vec![],
             dir: PathBuf::from("."),
         }];
@@ -3300,6 +3396,10 @@ mod tests {
                 ScriptEntry::Simple("nvim --headless +qa".to_string()),
                 ScriptEntry::Simple("echo done".to_string()),
             ],
+            pre_apply_scripts: Vec::new(),
+            pre_reconcile_scripts: Vec::new(),
+            post_reconcile_scripts: Vec::new(),
+            on_change_scripts: Vec::new(),
             depends: vec![],
             dir: PathBuf::from("."),
         }];
@@ -3324,7 +3424,7 @@ mod tests {
         for action in &module_phase.actions {
             match action {
                 Action::Module(ma) => match &ma.kind {
-                    ModuleActionKind::RunScript { script } => {
+                    ModuleActionKind::RunScript { script, .. } => {
                         assert!(!script.run_str().is_empty());
                     }
                     _ => panic!("expected RunScript action"),
@@ -3355,6 +3455,10 @@ mod tests {
                 env: vec![],
                 aliases: vec![],
                 post_apply_scripts: vec![],
+                pre_apply_scripts: Vec::new(),
+                pre_reconcile_scripts: Vec::new(),
+                post_reconcile_scripts: Vec::new(),
+                on_change_scripts: Vec::new(),
                 depends: vec![],
                 dir: PathBuf::from("."),
             },
@@ -3371,6 +3475,10 @@ mod tests {
                 env: vec![],
                 aliases: vec![],
                 post_apply_scripts: vec![],
+                pre_apply_scripts: Vec::new(),
+                pre_reconcile_scripts: Vec::new(),
+                post_reconcile_scripts: Vec::new(),
+                on_change_scripts: Vec::new(),
                 depends: vec!["node".to_string()],
                 dir: PathBuf::from("."),
             },
@@ -3718,6 +3826,10 @@ mod tests {
             env: vec![],
             aliases: vec![],
             post_apply_scripts: vec![],
+            pre_apply_scripts: Vec::new(),
+            pre_reconcile_scripts: Vec::new(),
+            post_reconcile_scripts: Vec::new(),
+            on_change_scripts: Vec::new(),
             depends: vec![],
             dir: PathBuf::from("."),
         }];
@@ -3760,6 +3872,10 @@ mod tests {
             env: vec![],
             aliases: vec![],
             post_apply_scripts: vec![],
+            pre_apply_scripts: Vec::new(),
+            pre_reconcile_scripts: Vec::new(),
+            post_reconcile_scripts: Vec::new(),
+            on_change_scripts: Vec::new(),
             depends: vec![],
             dir: PathBuf::from("."),
         }];
@@ -3876,6 +3992,10 @@ mod tests {
             env: vec![],
             aliases: vec![],
             post_apply_scripts: vec![],
+            pre_apply_scripts: Vec::new(),
+            pre_reconcile_scripts: Vec::new(),
+            post_reconcile_scripts: Vec::new(),
+            on_change_scripts: Vec::new(),
             depends: vec![],
             dir: PathBuf::from("."),
         }];
@@ -3915,6 +4035,10 @@ mod tests {
             env: vec![],
             aliases: vec![],
             post_apply_scripts: vec![],
+            pre_apply_scripts: Vec::new(),
+            pre_reconcile_scripts: Vec::new(),
+            post_reconcile_scripts: Vec::new(),
+            on_change_scripts: Vec::new(),
             depends: vec![],
             dir: PathBuf::from("."),
         }];
@@ -3951,6 +4075,10 @@ mod tests {
             env: vec![],
             aliases: vec![],
             post_apply_scripts: vec![],
+            pre_apply_scripts: Vec::new(),
+            pre_reconcile_scripts: Vec::new(),
+            post_reconcile_scripts: Vec::new(),
+            on_change_scripts: Vec::new(),
             depends: vec![],
             dir: PathBuf::from("."),
         }];
@@ -4018,6 +4146,10 @@ mod tests {
             }],
             aliases: vec![],
             post_apply_scripts: vec![],
+            pre_apply_scripts: Vec::new(),
+            pre_reconcile_scripts: Vec::new(),
+            post_reconcile_scripts: Vec::new(),
+            on_change_scripts: Vec::new(),
             depends: vec![],
             dir: PathBuf::from("."),
         }];
@@ -4123,6 +4255,10 @@ mod tests {
                 command: "nvim".into(),
             }],
             post_apply_scripts: vec![],
+            pre_apply_scripts: Vec::new(),
+            pre_reconcile_scripts: Vec::new(),
+            post_reconcile_scripts: Vec::new(),
+            on_change_scripts: Vec::new(),
             depends: vec![],
             dir: PathBuf::from("."),
         }];
@@ -5094,45 +5230,6 @@ mod tests {
     fn combine_script_output_empty() {
         assert!(super::combine_script_output("", "").is_none());
         assert!(super::combine_script_output("  ", " \n ").is_none());
-    }
-
-    // --- Unified script executor tests ---
-
-    #[test]
-    fn parse_duration_str_seconds() {
-        let d = super::parse_duration_str("30s").unwrap();
-        assert_eq!(d, std::time::Duration::from_secs(30));
-    }
-
-    #[test]
-    fn parse_duration_str_minutes() {
-        let d = super::parse_duration_str("5m").unwrap();
-        assert_eq!(d, std::time::Duration::from_secs(300));
-    }
-
-    #[test]
-    fn parse_duration_str_hours() {
-        let d = super::parse_duration_str("1h").unwrap();
-        assert_eq!(d, std::time::Duration::from_secs(3600));
-    }
-
-    #[test]
-    fn parse_duration_str_plain_seconds() {
-        let d = super::parse_duration_str("60").unwrap();
-        assert_eq!(d, std::time::Duration::from_secs(60));
-    }
-
-    #[test]
-    fn parse_duration_str_whitespace() {
-        let d = super::parse_duration_str(" 10 s ").unwrap();
-        assert_eq!(d, std::time::Duration::from_secs(10));
-    }
-
-    #[test]
-    fn parse_duration_str_invalid() {
-        assert!(super::parse_duration_str("abc").is_err());
-        assert!(super::parse_duration_str("").is_err());
-        assert!(super::parse_duration_str("xs").is_err());
     }
 
     #[test]

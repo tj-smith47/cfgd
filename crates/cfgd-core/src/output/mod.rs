@@ -353,6 +353,23 @@ fn apply_jsonpath(value: &serde_json::Value, expr: &str) -> String {
     }
 }
 
+/// Extract a name-like identity field from a JSON value.
+/// Tries "name" first, then common identity fields as fallbacks.
+fn name_from_value(value: &serde_json::Value) -> Option<String> {
+    for key in &["name", "context", "phase", "resourceType", "url"] {
+        if let Some(s) = value.get(key).and_then(|v| v.as_str()) {
+            return Some(s.to_string());
+        }
+    }
+    // Try numeric identity fields
+    for key in &["applyId"] {
+        if let Some(n) = value.get(key).and_then(|v| v.as_i64()) {
+            return Some(n.to_string());
+        }
+    }
+    None
+}
+
 fn walk_jsonpath<'a>(value: &'a serde_json::Value, path: &str) -> Vec<&'a serde_json::Value> {
     if path.is_empty() {
         return vec![value];
@@ -740,6 +757,11 @@ impl Printer {
         !matches!(self.output_format, OutputFormat::Table | OutputFormat::Wide)
     }
 
+    /// Returns `true` when `-o wide` was specified, enabling extra columns.
+    pub fn is_wide(&self) -> bool {
+        matches!(self.output_format, OutputFormat::Wide)
+    }
+
     /// Write a serializable value as structured output to stdout.
     /// Returns `true` if output was emitted (caller should skip human formatting).
     /// Returns `false` if output format is Table/Wide (caller should do human formatting).
@@ -763,14 +785,14 @@ impl Printer {
                 match &json_value {
                     serde_json::Value::Array(arr) => {
                         for item in arr {
-                            if let Some(name) = item.get("name").and_then(|v| v.as_str()) {
-                                self.stdout_line(name);
+                            if let Some(name) = name_from_value(item) {
+                                self.stdout_line(&name);
                             }
                         }
                     }
                     obj => {
-                        if let Some(name) = obj.get("name").and_then(|v| v.as_str()) {
-                            self.stdout_line(name);
+                        if let Some(name) = name_from_value(obj) {
+                            self.stdout_line(&name);
                         }
                     }
                 }
@@ -1146,10 +1168,7 @@ mod tests {
     fn run_with_output_captures_stdout() {
         let printer = Printer::new(Verbosity::Quiet);
         let output = printer
-            .run_with_output(
-                &mut std::process::Command::new("echo").arg("hello"),
-                "test echo",
-            )
+            .run_with_output(std::process::Command::new("echo").arg("hello"), "test echo")
             .unwrap();
         assert!(output.status.success());
         assert!(output.stdout.contains("hello"));

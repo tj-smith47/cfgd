@@ -280,10 +280,7 @@ fn apply_plan(
         return Ok(());
     }
 
-    for phase in &plan.phases {
-        let items = cfgd_core::reconciler::format_plan_items(phase);
-        printer.plan_phase(phase.name.display_name(), &items);
-    }
+    super::display_plan_table(plan, printer, None);
     printer.info(&format!("{} action(s) planned", total));
 
     if dry_run {

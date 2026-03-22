@@ -75,7 +75,7 @@ config_fields=$(grep -E '^\s+pub [a-z_]+:' crates/cfgd-core/src/config/mod.rs 2>
 if [[ -n "$config_fields" ]]; then
     # Check docs for kebab-case field names that should be camelCase
     doc_hits=$(grep -rnE "($config_fields)" docs/ README.md --include='*.md' 2>/dev/null \
-        | grep -v 'spec-reference/\|\.claude/' \
+        | grep -v '\.claude/' \
         | grep -v '\-\-' \
         | grep -v '\.txt\|\.key\|\.sh\|\.rs\|\.yaml\|\.json' \
         | grep -v 'keygen\|x86_64\|aarch64\|cert-manager\|kube-system' \

@@ -1147,6 +1147,7 @@ fn handle_reconcile(
     } else {
         Vec::new()
     };
+    let resolved_modules_ref = resolved_modules.clone();
     let plan = match reconciler.plan(
         &resolved,
         file_actions,
@@ -1267,19 +1268,49 @@ fn handle_reconcile(
                     "drift policy is Auto — applying {} action(s)",
                     effective_total
                 );
-                // Auto-apply is intentionally not implemented here yet.
-                // The reconciler apply requires the full CLI context (Printer,
-                // file manager, secret backend). When implemented, it will call
-                // reconciler.apply() with the plan. For now, drift is recorded
-                // above and the user is notified to run `cfgd apply`.
-                if notify_on_drift {
-                    notifier.notify(
-                        "cfgd: drift detected — auto-apply pending",
-                        &format!(
-                            "{} resource(s) drifted. Run `cfgd apply` to reconcile.",
-                            effective_total
-                        ),
-                    );
+                let printer = Printer::new(Verbosity::Quiet);
+                match reconciler.apply(
+                    &plan,
+                    &resolved,
+                    &config_dir,
+                    &printer,
+                    None,
+                    &resolved_modules_ref,
+                    crate::reconciler::ReconcileContext::Reconcile,
+                    false,
+                ) {
+                    Ok(result) => {
+                        let succeeded = result.succeeded();
+                        let failed = result.failed();
+                        tracing::info!(
+                            "auto-apply complete: {} succeeded, {} failed",
+                            succeeded,
+                            failed
+                        );
+                        if failed > 0 && notify_on_drift {
+                            notifier.notify(
+                                "cfgd: auto-apply partial failure",
+                                &format!(
+                                    "{} action(s) succeeded, {} failed. Run `cfgd status` for details.",
+                                    succeeded, failed
+                                ),
+                            );
+                        } else if notify_on_drift {
+                            notifier.notify(
+                                "cfgd: auto-apply succeeded",
+                                &format!("{} action(s) applied successfully.", succeeded),
+                            );
+                        }
+                    }
+                    Err(e) => {
+                        tracing::error!("auto-apply failed: {}", e);
+                        if notify_on_drift {
+                            notifier.notify(
+                                "cfgd: auto-apply failed",
+                                &format!("Auto-apply failed: {}. Run `cfgd apply` manually.", e),
+                            );
+                        }
+                    }
                 }
             }
             config::DriftPolicy::NotifyOnly | config::DriftPolicy::Prompt => {

@@ -1,6 +1,6 @@
 # Daemon
 
-The daemon runs as a long-lived process that watches for drift and optionally auto-corrects it.
+The daemon runs as a long-lived process that watches for drift and optionally auto-corrects it. For the complete daemon configuration field reference, see the [Config spec reference](spec/config.md#specdaemon).
 
 ## What It Does
 
@@ -98,7 +98,7 @@ scripts:
       continueOnError: true
 ```
 
-Environment variables available to onDrift scripts: `CFGD_CONFIG_DIR`, `CFGD_PROFILE`, `CFGD_CONTEXT=reconcile`, `CFGD_PHASE=onDrift`, `CFGD_DRY_RUN=false`.
+Environment variables available to onDrift scripts: `CFGD_CONFIG_DIR`, `CFGD_PROFILE`, `CFGD_CONTEXT=reconcile`, `CFGD_PHASE=onDrift`, `CFGD_DRY_RUN=false`. See the [Profile spec reference](spec/profile.md#specscripts) for the full script entry schema, timeout defaults, and `continueOnError` behaviour.
 
 ## Reconcile Patches
 

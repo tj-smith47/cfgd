@@ -28,24 +28,16 @@ fn main() -> anyhow::Result<()> {
 
     // Resolve output format with --jsonpath backwards compat
     let mut output_format = cli.output.0.clone();
-    let jsonpath_compat = if let Some(ref expr) = cli.jsonpath {
+    if let Some(ref expr) = cli.jsonpath {
         match &output_format {
-            cfgd_core::output::OutputFormat::Table => {
-                output_format = cfgd_core::output::OutputFormat::Jsonpath(expr.clone());
-                true // emit deprecation hint after printer is ready
-            }
             cfgd_core::output::OutputFormat::Jsonpath(_) => {
                 anyhow::bail!("cannot use both --jsonpath and -o jsonpath=...");
             }
             _ => {
-                // --jsonpath with json/yaml — apply jsonpath extraction
                 output_format = cfgd_core::output::OutputFormat::Jsonpath(expr.clone());
-                true
             }
         }
-    } else {
-        false
-    };
+    }
 
     // Determine verbosity
     let verbosity = if cli.quiet {
@@ -84,10 +76,6 @@ fn main() -> anyhow::Result<()> {
         .and_then(|c| c.spec.theme);
     let printer =
         cfgd_core::output::Printer::with_format(verbosity, theme_config.as_ref(), output_format);
-
-    if jsonpath_compat {
-        printer.warning("--jsonpath is deprecated; use -o jsonpath=EXPR instead");
-    }
 
     if let Err(e) = cli::execute(&cli, &printer) {
         printer.error(&format!("{:#}", e));

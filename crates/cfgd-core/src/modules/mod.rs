@@ -56,7 +56,11 @@ pub struct ResolvedModule {
     pub files: Vec<ResolvedFile>,
     pub env: Vec<EnvVar>,
     pub aliases: Vec<ShellAlias>,
+    pub pre_apply_scripts: Vec<crate::config::ScriptEntry>,
     pub post_apply_scripts: Vec<crate::config::ScriptEntry>,
+    pub pre_reconcile_scripts: Vec<crate::config::ScriptEntry>,
+    pub post_reconcile_scripts: Vec<crate::config::ScriptEntry>,
+    pub on_change_scripts: Vec<crate::config::ScriptEntry>,
     pub depends: Vec<String>,
     /// Module directory — used as working directory for module scripts.
     pub dir: PathBuf,
@@ -808,12 +812,14 @@ pub fn resolve_modules(
         let packages = resolve_module_packages(module, platform, managers)?;
         let files = resolve_module_files(module, cache_base)?;
 
-        let post_apply_scripts = module
-            .spec
-            .scripts
-            .as_ref()
-            .map(|s| s.post_apply.clone())
+        let scripts = module.spec.scripts.as_ref();
+        let pre_apply_scripts = scripts.map(|s| s.pre_apply.clone()).unwrap_or_default();
+        let post_apply_scripts = scripts.map(|s| s.post_apply.clone()).unwrap_or_default();
+        let pre_reconcile_scripts = scripts.map(|s| s.pre_reconcile.clone()).unwrap_or_default();
+        let post_reconcile_scripts = scripts
+            .map(|s| s.post_reconcile.clone())
             .unwrap_or_default();
+        let on_change_scripts = scripts.map(|s| s.on_change.clone()).unwrap_or_default();
 
         // Warn if module defines onDrift scripts — onDrift is profile-level only
         if let Some(ref scripts) = module.spec.scripts
@@ -831,7 +837,11 @@ pub fn resolve_modules(
             files,
             env: module.spec.env.clone(),
             aliases: module.spec.aliases.clone(),
+            pre_apply_scripts,
             post_apply_scripts,
+            pre_reconcile_scripts,
+            post_reconcile_scripts,
+            on_change_scripts,
             depends: module.spec.depends.clone(),
             dir: module.dir.clone(),
         });

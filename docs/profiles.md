@@ -2,6 +2,8 @@
 
 Profiles declare the desired state of a machine. They can inherit from other profiles to share common configuration.
 
+For the complete field-by-field reference, see the [Profile spec reference](spec/profile.md).
+
 ## Profile YAML
 
 ```yaml
@@ -224,4 +226,4 @@ spec:
       formulae: [extra-tool]  # profile-level, alongside module packages
 ```
 
-See [modules.md](modules.md) for the module spec.
+See [modules.md](modules.md) for usage and the [Module spec reference](spec/module.md) for field details.

@@ -1,6 +1,6 @@
 # Team Config Distribution
 
-How a platform engineer distributes and enforces team configuration across developer machines using [Crossplane](https://www.crossplane.io/). Builds on the [cfgd-operator](operator.md) CRDs.
+How a platform engineer distributes and enforces team configuration across developer machines using [Crossplane](https://www.crossplane.io/). Builds on the [cfgd-operator](operator.md) CRDs. For the complete field-by-field reference, see the [TeamConfig spec reference](spec/teamconfig.md).
 
 [Crossplane](https://docs.crossplane.io/latest/) is a Kubernetes framework for defining custom composite resources. In cfgd's case, a platform engineer defines a single TeamConfig resource listing team members, and Crossplane's composition function automatically generates one MachineConfig CRD per team member — no manual YAML per developer.
 

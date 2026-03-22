@@ -2,6 +2,8 @@
 
 Modules are self-contained, portable configuration packages. A module bundles everything needed for one tool — packages (cross-platform), config files (local or git-sourced), and lifecycle scripts — into a single deployable unit.
 
+For the complete field-by-field reference, see the [Module spec reference](spec/module.md).
+
 ## Why Modules
 
 Without modules, profiles declare packages by manager: `brew: [neovim]`, `apt: [neovim]`. This means no portability (a profile for macOS doesn't work on Ubuntu), no granularity (you can't apply "just my nvim setup"), and no dependency tracking (nvim needs Node.js for LSP but that's implicit).
@@ -208,8 +210,6 @@ Processing order: leaf dependencies first (node, python), then dependents (nvim)
 
 Modules support lifecycle hooks that run at different points during apply and reconciliation. Scripts can be inline commands or file paths (relative to the module directory).
 
-### Hook Types
-
 | Hook | When it runs |
 |---|---|
 | `preApply` | Before the module's packages and files are applied |
@@ -220,40 +220,7 @@ Modules support lifecycle hooks that run at different points during apply and re
 
 `onDrift` is profile-level only and cannot be set on modules.
 
-### Simple and Full forms
-
-Scripts support two forms:
-
-```yaml
-scripts:
-  postApply:
-    # Simple form — inline command or file path
-    - nvim --headless "+Lazy! sync" +qa
-    # Full form — with timeout and error control
-    - run: scripts/rebuild-index.sh
-      timeout: 60s
-      continueOnError: true
-```
-
-| Field | Type | Default | Description |
-|---|---|---|---|
-| `run` | string | required | Command or script path |
-| `timeout` | string | 2m (module) | Duration: `30s`, `5m`, `1h` |
-| `continueOnError` | bool | varies by hook | If true, failure is logged but doesn't abort |
-
-Default `continueOnError`: `false` for `preApply`/`preReconcile`, `true` for `postApply`/`postReconcile`/`onChange`.
-
-Each script runs in the module directory with these environment variables:
-
-| Variable | Value |
-|---|---|
-| `CFGD_CONFIG_DIR` | Absolute path to config directory |
-| `CFGD_PROFILE` | Active profile name |
-| `CFGD_CONTEXT` | `apply` or `reconcile` |
-| `CFGD_PHASE` | Hook name (e.g., `postApply`) |
-| `CFGD_DRY_RUN` | `true` or `false` |
-| `CFGD_MODULE_NAME` | Module name |
-| `CFGD_MODULE_DIR` | Module directory path |
+Each entry can be a simple string (`"scripts/rebuild-index.sh"`) or a full object with `run`, `timeout`, and `continueOnError` fields. Default timeout for module scripts is 2 minutes. See the [Module spec reference](spec/module.md#specscripts) for the complete field reference, defaults, and environment variables available to scripts.
 
 ## Profile Integration
 

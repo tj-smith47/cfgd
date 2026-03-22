@@ -2,7 +2,7 @@
 
 cfgd supports subscribing to multiple config sources — team baselines, security policies, org-wide standards — alongside your personal config. Sources are composed with policy tiers that control what you can and can't override.
 
-This is different from [module registries](modules.md#module-registries), which are simple collections of reusable modules. Sources provide complete profiles with **policy enforcement** — a team can require certain packages, lock certain files, and recommend others, with cfgd enforcing those policies on every reconcile.
+This is different from [module registries](modules.md#module-registries), which are simple collections of reusable modules. Sources provide complete profiles with **policy enforcement** — a team can require certain packages, lock certain files, and recommend others, with cfgd enforcing those policies on every reconcile. For the source subscription field reference, see the [Config spec reference](spec/config.md#specsources).
 
 ## Conceptual Model
 

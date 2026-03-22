@@ -33,6 +33,7 @@ const MSG_NOTHING_TO_DO: &str = "Nothing to do — everything is up to date";
 // --- Structured output types ---
 
 #[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 struct StatusOutput {
     last_apply: Option<cfgd_core::state::ApplyRecord>,
     drift: Vec<cfgd_core::state::DriftEvent>,
@@ -43,6 +44,7 @@ struct StatusOutput {
 }
 
 #[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 struct ModuleStatusEntry {
     name: String,
     packages: usize,
@@ -51,11 +53,13 @@ struct ModuleStatusEntry {
 }
 
 #[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 struct LogOutput {
     entries: Vec<cfgd_core::state::ApplyRecord>,
 }
 
 #[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 struct VerifyOutput {
     results: Vec<cfgd_core::reconciler::VerifyResult>,
     pass_count: usize,
@@ -63,6 +67,7 @@ struct VerifyOutput {
 }
 
 #[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 struct RollbackOutput {
     apply_id: i64,
     files_restored: usize,
@@ -96,6 +101,7 @@ struct PlanActionOutput {
 }
 
 #[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 struct DoctorOutput {
     config: DoctorConfigCheck,
     git: bool,
@@ -106,6 +112,7 @@ struct DoctorOutput {
 }
 
 #[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 struct DoctorConfigCheck {
     valid: bool,
     path: String,
@@ -115,6 +122,7 @@ struct DoctorConfigCheck {
 }
 
 #[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 struct DoctorSecretsCheck {
     sops_available: bool,
     sops_version: Option<String>,
@@ -125,12 +133,14 @@ struct DoctorSecretsCheck {
 }
 
 #[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 struct DoctorProviderCheck {
     name: String,
     available: bool,
 }
 
 #[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 struct DoctorManagerCheck {
     name: String,
     available: bool,
@@ -139,6 +149,7 @@ struct DoctorManagerCheck {
 }
 
 #[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 struct DoctorModuleCheck {
     name: String,
     valid: bool,
@@ -146,12 +157,14 @@ struct DoctorModuleCheck {
 }
 
 #[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 struct DoctorConfiguratorCheck {
     name: String,
     available: bool,
 }
 
 #[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 struct SourceListEntry {
     name: String,
     url: String,
@@ -162,6 +175,7 @@ struct SourceListEntry {
 }
 
 #[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 struct SourceShowOutput {
     name: String,
     url: String,
@@ -177,6 +191,7 @@ struct SourceShowOutput {
 }
 
 #[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 struct SourceStateInfo {
     status: String,
     last_fetched: Option<String>,
@@ -185,6 +200,7 @@ struct SourceStateInfo {
 }
 
 #[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 struct SourceResourceEntry {
     resource_type: String,
     resource_id: String,
@@ -2063,84 +2079,18 @@ fn cmd_apply(cli: &Cli, printer: &Printer, args: &ApplyArgs) -> anyhow::Result<(
 
     // Strip script phases when --skip-scripts is set
     if args.skip_scripts {
-        plan.phases
-            .retain(|p| !matches!(p.name, PhaseName::PreScripts | PhaseName::PostScripts));
-        // Also strip module-level RunScript actions
-        for phase in &mut plan.phases {
-            if phase.name == PhaseName::Modules {
-                phase.actions.retain(|a| {
-                    !matches!(
-                        a,
-                        reconciler::Action::Module(reconciler::ModuleAction {
-                            kind: reconciler::ModuleActionKind::RunScript { .. },
-                            ..
-                        })
-                    )
-                });
-            }
-        }
+        strip_scripts_from_plan(&mut plan);
     }
 
     if dry_run {
-        // Show pending decisions (not included in this plan)
-        if let Ok(pending) = state.pending_decisions()
-            && !pending.is_empty()
-        {
-            printer.newline();
-            printer.subheader("Pending Decisions (not included in this plan)");
-            for d in &pending {
-                printer.info(&format!(
-                    "  {} {} — {} by {} (run `cfgd decide accept/reject`)",
-                    d.tier, d.resource, d.action, d.source,
-                ));
-            }
-        }
-
-        // Build structured output
-        let plan_output = build_plan_output(&plan, "apply", phase_filter.as_ref());
-
-        if printer.write_structured(&plan_output) {
-            return Ok(());
-        }
-
-        printer.newline();
-        display_plan_table(&plan, printer, phase_filter.as_ref());
-
-        // Show diffs for file updates
-        if let Some(ref fm) = dry_run_fm {
-            for phase_item in &plan.phases {
-                if phase_item.name != PhaseName::Files {
-                    continue;
-                }
-                for action in &phase_item.actions {
-                    if let reconciler::Action::File(FileAction::Update { source, target, .. }) =
-                        action
-                        && let Ok(target_content) = std::fs::read_to_string(target)
-                    {
-                        let source_content = if crate::files::is_tera_template(source) {
-                            fm.render_template_for_display(source).unwrap_or_default()
-                        } else {
-                            std::fs::read_to_string(source).unwrap_or_default()
-                        };
-                        printer.newline();
-                        printer.subheader(&format!("{}", target.display()));
-                        printer.diff(&target_content, &source_content);
-                    }
-                }
-            }
-        }
-
-        for w in &plan.warnings {
-            printer.warning(w);
-        }
-
-        printer.newline();
-        if plan_output.total_actions == 0 {
-            printer.success(MSG_NOTHING_TO_DO);
-        } else {
-            printer.info(&format!("{} action(s) planned", plan_output.total_actions));
-        }
-
+        display_plan_preview(
+            &plan,
+            printer,
+            &state,
+            "apply",
+            phase_filter.as_ref(),
+            dry_run_fm.as_ref(),
+        );
         return Ok(());
     }
 
@@ -2320,9 +2270,32 @@ fn build_plan_output(
     }
 }
 
+/// Strip all script-related actions from a plan.
+/// Removes PreScripts/PostScripts phases, module-level RunScript actions,
+/// and script-based package installs (manager: "script").
+fn strip_scripts_from_plan(plan: &mut reconciler::Plan) {
+    plan.phases
+        .retain(|p| !matches!(p.name, PhaseName::PreScripts | PhaseName::PostScripts));
+    for phase in &mut plan.phases {
+        if phase.name == PhaseName::Modules {
+            phase.actions.retain(|a| match a {
+                reconciler::Action::Module(reconciler::ModuleAction {
+                    kind: reconciler::ModuleActionKind::RunScript { .. },
+                    ..
+                }) => false,
+                reconciler::Action::Module(reconciler::ModuleAction {
+                    kind: reconciler::ModuleActionKind::InstallPackages { resolved },
+                    ..
+                }) => resolved.first().is_none_or(|p| p.manager != "script"),
+                _ => true,
+            });
+        }
+    }
+}
+
 /// Display a reconciliation plan in table mode.
 /// Used by both `cmd_plan` and `cmd_apply --dry-run`.
-fn display_plan_table(
+pub(super) fn display_plan_table(
     plan: &reconciler::Plan,
     printer: &Printer,
     phase_filter: Option<&PhaseName>,
@@ -2335,6 +2308,77 @@ fn display_plan_table(
         }
         let items = reconciler::format_plan_items(phase_item);
         printer.plan_phase(phase_item.name.display_name(), &items);
+    }
+}
+
+/// Display the full plan output: pending decisions, structured/table output,
+/// file diffs, warnings, and summary line.
+/// Used by both `cmd_plan` and `cmd_apply --dry-run`.
+fn display_plan_preview(
+    plan: &reconciler::Plan,
+    printer: &Printer,
+    state: &cfgd_core::state::StateStore,
+    context: &str,
+    phase_filter: Option<&PhaseName>,
+    dry_run_fm: Option<&CfgdFileManager>,
+) {
+    // Show pending decisions (not included in this plan)
+    if let Ok(pending) = state.pending_decisions()
+        && !pending.is_empty()
+    {
+        printer.newline();
+        printer.subheader("Pending Decisions (not included in this plan)");
+        for d in &pending {
+            printer.info(&format!(
+                "  {} {} — {} by {} (run `cfgd decide accept/reject`)",
+                d.tier, d.resource, d.action, d.source,
+            ));
+        }
+    }
+
+    // Build structured output
+    let plan_output = build_plan_output(plan, context, phase_filter);
+
+    if printer.write_structured(&plan_output) {
+        return;
+    }
+
+    // Table mode display
+    printer.newline();
+    display_plan_table(plan, printer, phase_filter);
+
+    // Show diffs for file updates
+    if let Some(fm) = dry_run_fm {
+        for phase_item in &plan.phases {
+            if phase_item.name != PhaseName::Files {
+                continue;
+            }
+            for action in &phase_item.actions {
+                if let reconciler::Action::File(FileAction::Update { source, target, .. }) = action
+                    && let Ok(target_content) = std::fs::read_to_string(target)
+                {
+                    let source_content = if crate::files::is_tera_template(source) {
+                        fm.render_template_for_display(source).unwrap_or_default()
+                    } else {
+                        std::fs::read_to_string(source).unwrap_or_default()
+                    };
+                    printer.newline();
+                    printer.subheader(&format!("{}", target.display()));
+                    printer.diff(&target_content, &source_content);
+                }
+            }
+        }
+    }
+
+    for w in &plan.warnings {
+        printer.warning(w);
+    }
+
+    printer.newline();
+    if plan_output.total_actions == 0 {
+        printer.success(MSG_NOTHING_TO_DO);
+    } else {
+        printer.info(&format!("{} action(s) planned", plan_output.total_actions));
     }
 }
 
@@ -2464,83 +2508,17 @@ fn cmd_plan(cli: &Cli, printer: &Printer, args: &PlanArgs) -> anyhow::Result<()>
 
     // Strip script phases when --skip-scripts is set
     if args.skip_scripts {
-        plan.phases
-            .retain(|p| !matches!(p.name, PhaseName::PreScripts | PhaseName::PostScripts));
-        // Also strip module-level RunScript actions
-        for phase in &mut plan.phases {
-            if phase.name == PhaseName::Modules {
-                phase.actions.retain(|a| {
-                    !matches!(
-                        a,
-                        reconciler::Action::Module(reconciler::ModuleAction {
-                            kind: reconciler::ModuleActionKind::RunScript { .. },
-                            ..
-                        })
-                    )
-                });
-            }
-        }
+        strip_scripts_from_plan(&mut plan);
     }
 
-    // Show pending decisions
-    if let Ok(pending) = state.pending_decisions()
-        && !pending.is_empty()
-    {
-        printer.newline();
-        printer.subheader("Pending Decisions (not included in this plan)");
-        for d in &pending {
-            printer.info(&format!(
-                "  {} {} — {} by {} (run `cfgd decide accept/reject`)",
-                d.tier, d.resource, d.action, d.source,
-            ));
-        }
-    }
-
-    // Build structured output
-    let plan_output = build_plan_output(&plan, &args.context, phase_filter.as_ref());
-
-    // Structured output takes precedence
-    if printer.write_structured(&plan_output) {
-        return Ok(());
-    }
-
-    // Table mode display
-    printer.newline();
-    display_plan_table(&plan, printer, phase_filter.as_ref());
-
-    // Show diffs for file updates
-    if let Some(ref fm) = dry_run_fm {
-        for phase_item in &plan.phases {
-            if phase_item.name != PhaseName::Files {
-                continue;
-            }
-            for action in &phase_item.actions {
-                if let reconciler::Action::File(FileAction::Update { source, target, .. }) = action
-                    && let Ok(target_content) = std::fs::read_to_string(target)
-                {
-                    let source_content = if crate::files::is_tera_template(source) {
-                        fm.render_template_for_display(source).unwrap_or_default()
-                    } else {
-                        std::fs::read_to_string(source).unwrap_or_default()
-                    };
-                    printer.newline();
-                    printer.subheader(&format!("{}", target.display()));
-                    printer.diff(&target_content, &source_content);
-                }
-            }
-        }
-    }
-
-    for w in &plan.warnings {
-        printer.warning(w);
-    }
-
-    printer.newline();
-    if plan_output.total_actions == 0 {
-        printer.success(MSG_NOTHING_TO_DO);
-    } else {
-        printer.info(&format!("{} action(s) planned", plan_output.total_actions));
-    }
+    display_plan_preview(
+        &plan,
+        printer,
+        &state,
+        &args.context,
+        phase_filter.as_ref(),
+        dry_run_fm.as_ref(),
+    );
 
     Ok(())
 }
@@ -2741,6 +2719,7 @@ fn cmd_status_module(cli: &Cli, printer: &Printer, mod_name: &str) -> anyhow::Re
 
     if printer.is_structured() {
         #[derive(serde::Serialize)]
+        #[serde(rename_all = "camelCase")]
         struct ModuleStatus {
             name: String,
             packages: usize,
@@ -8492,7 +8471,7 @@ spec:
         let spec = raw.get("spec").unwrap();
 
         let val = walk_yaml_path(spec, "daemon.enabled").unwrap();
-        assert_eq!(val.as_bool().unwrap(), true);
+        assert!(val.as_bool().unwrap());
     }
 
     #[test]

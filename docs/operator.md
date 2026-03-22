@@ -8,11 +8,11 @@ No [Crossplane](https://www.crossplane.io/) dependency — CRDs can be managed b
 
 API group: `cfgd.io/v1alpha1`
 
-| CRD | Scope | Description |
-|---|---|---|
-| `MachineConfig` | Namespaced | Desired machine state — hostname, profile, packages, files, module refs |
-| `ConfigPolicy` | Namespaced | Team-level policy mandates — required packages, modules, settings |
-| `DriftAlert` | Namespaced | Reported drift from devices — severity, expected vs actual |
+| CRD | Scope | Spec Reference | Description |
+|---|---|---|---|
+| `MachineConfig` | Namespaced | [spec](spec/machineconfig.md) | Desired machine state — hostname, profile, packages, files, module refs |
+| `ConfigPolicy` | Namespaced | [spec](spec/configpolicy.md) | Team-level policy mandates — required packages, modules, settings |
+| `DriftAlert` | Namespaced | [spec](spec/driftalert.md) | Reported drift from devices — severity, expected vs actual |
 
 ### MachineConfig
 

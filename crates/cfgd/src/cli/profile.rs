@@ -183,11 +183,26 @@ pub(super) fn cmd_profile_list(cli: &Cli, printer: &Printer) -> anyhow::Result<(
 
     printer.header("Available Profiles");
 
-    for entry in &entries {
-        if entry.active {
-            printer.success(&format!("{} (active)", entry.name));
-        } else {
-            printer.info(&entry.name);
+    if printer.is_wide() {
+        let rows: Vec<Vec<String>> = entries
+            .iter()
+            .map(|e| {
+                vec![
+                    e.name.clone(),
+                    if e.active { "yes" } else { "-" }.to_string(),
+                    e.inherits.clone().unwrap_or_else(|| "-".into()),
+                    e.module_count.to_string(),
+                ]
+            })
+            .collect();
+        printer.table(&["Profile", "Active", "Inherits", "Modules"], &rows);
+    } else {
+        for entry in &entries {
+            if entry.active {
+                printer.success(&format!("{} (active)", entry.name));
+            } else {
+                printer.info(&entry.name);
+            }
         }
     }
 
@@ -1397,9 +1412,7 @@ mod tests {
     #[test]
     fn profiles_inheriting_no_match() {
         let dir = tempfile::tempdir().unwrap();
-        let profile = format!(
-            "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: child\nspec:\n  inherits:\n    - other\n  modules: []\n"
-        );
+        let profile = "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: child\nspec:\n  inherits:\n    - other\n  modules: []\n".to_string();
         std::fs::write(dir.path().join("child.yaml"), &profile).unwrap();
 
         let result = profiles_inheriting(dir.path(), "base").unwrap();
@@ -1409,9 +1422,7 @@ mod tests {
     #[test]
     fn profiles_inheriting_match_found() {
         let dir = tempfile::tempdir().unwrap();
-        let profile = format!(
-            "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: child\nspec:\n  inherits:\n    - base\n  modules: []\n"
-        );
+        let profile = "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: child\nspec:\n  inherits:\n    - base\n  modules: []\n".to_string();
         std::fs::write(dir.path().join("child.yaml"), &profile).unwrap();
 
         let result = profiles_inheriting(dir.path(), "base").unwrap();

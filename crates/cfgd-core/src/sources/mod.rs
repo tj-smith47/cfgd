@@ -800,8 +800,10 @@ spec:
         let dir = tempfile::tempdir().unwrap();
         let mut mgr = SourceManager::new(dir.path());
         mgr.set_allow_unsigned(true);
-        let mut constraints = crate::config::SourceConstraints::default();
-        constraints.require_signed_commits = true;
+        let constraints = crate::config::SourceConstraints {
+            require_signed_commits: true,
+            ..Default::default()
+        };
         // Even though require_signed_commits is true, allow_unsigned bypasses it
         assert!(
             mgr.verify_commit_signature("test", dir.path(), &constraints)
@@ -821,8 +823,10 @@ spec:
             .unwrap();
 
         let mgr = SourceManager::new(dir.path());
-        let mut constraints = crate::config::SourceConstraints::default();
-        constraints.require_signed_commits = true;
+        let constraints = crate::config::SourceConstraints {
+            require_signed_commits: true,
+            ..Default::default()
+        };
 
         let result = mgr.verify_commit_signature("test-source", dir.path(), &constraints);
         assert!(result.is_err());

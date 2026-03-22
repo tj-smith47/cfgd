@@ -2,6 +2,8 @@
 
 cfgd config files follow a structure inspired by the [Kubernetes Resource Model](https://github.com/kubernetes/design-proposals-archive/blob/main/architecture/resource-management.md): every document has `apiVersion`, `kind`, `metadata`, and `spec` fields. This gives a consistent shape across configs, profiles, modules, and sources. TOML is also supported (use `.toml` extension).
 
+For the complete field-by-field reference, see the [Config spec reference](spec/config.md).
+
 ## Root Config — `cfgd.yaml`
 
 The entry point. Tells cfgd which profile to activate, where config is stored, and how the daemon behaves.

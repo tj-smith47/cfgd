@@ -5,6 +5,7 @@ use serde::Serialize;
 use super::*;
 
 #[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 struct ModuleListEntry {
     name: String,
     active: bool,
@@ -16,6 +17,7 @@ struct ModuleListEntry {
 }
 
 #[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 struct ModuleShowOutput {
     name: String,
     directory: String,
@@ -97,20 +99,42 @@ pub(super) fn cmd_module_list(cli: &Cli, printer: &Printer) -> anyhow::Result<()
 
     printer.header("Modules");
 
-    let rows: Vec<Vec<String>> = entries
-        .iter()
-        .map(|e| {
-            vec![
-                e.name.clone(),
-                if e.active { "yes" } else { "-" }.to_string(),
-                e.source.clone(),
-                e.status.clone(),
-                format!("{} pkgs, {} files, {} deps", e.packages, e.files, e.depends),
-            ]
-        })
-        .collect();
-
-    printer.table(&["Module", "Active", "Source", "Status", "Contents"], &rows);
+    if printer.is_wide() {
+        let rows: Vec<Vec<String>> = entries
+            .iter()
+            .map(|e| {
+                vec![
+                    e.name.clone(),
+                    if e.active { "yes" } else { "-" }.to_string(),
+                    e.source.clone(),
+                    e.status.clone(),
+                    e.packages.to_string(),
+                    e.files.to_string(),
+                    e.depends.to_string(),
+                ]
+            })
+            .collect();
+        printer.table(
+            &[
+                "Module", "Active", "Source", "Status", "Packages", "Files", "Deps",
+            ],
+            &rows,
+        );
+    } else {
+        let rows: Vec<Vec<String>> = entries
+            .iter()
+            .map(|e| {
+                vec![
+                    e.name.clone(),
+                    if e.active { "yes" } else { "-" }.to_string(),
+                    e.source.clone(),
+                    e.status.clone(),
+                    format!("{} pkgs, {} files, {} deps", e.packages, e.files, e.depends),
+                ]
+            })
+            .collect();
+        printer.table(&["Module", "Active", "Source", "Status", "Contents"], &rows);
+    }
 
     Ok(())
 }
@@ -694,10 +718,7 @@ pub(super) fn cmd_module_create(
             printer.success("Nothing to do");
         } else {
             if !args.yes {
-                for phase in &plan.phases {
-                    let items = cfgd_core::reconciler::format_plan_items(phase);
-                    printer.plan_phase(phase.name.display_name(), &items);
-                }
+                super::display_plan_table(&plan, printer, None);
                 printer.info(&format!("{} action(s) planned", total));
                 let confirmed = printer
                     .prompt_confirm("Apply these changes?")
@@ -1583,6 +1604,19 @@ pub(super) fn cmd_module_search(cli: &Cli, printer: &Printer, query: &str) -> an
     if all_results.is_empty() {
         printer.newline();
         printer.info("No modules found matching your query");
+    } else if printer.is_wide() {
+        let rows: Vec<Vec<String>> = all_results
+            .iter()
+            .map(|m| {
+                vec![
+                    m.name.clone(),
+                    m.registry.clone(),
+                    m.description.clone().unwrap_or_default(),
+                    m.version.clone().unwrap_or_else(|| "-".into()),
+                ]
+            })
+            .collect();
+        printer.table(&["Module", "Registry", "Description", "Latest"], &rows);
     } else {
         let rows: Vec<Vec<String>> = all_results
             .iter()
@@ -1594,7 +1628,6 @@ pub(super) fn cmd_module_search(cli: &Cli, printer: &Printer, query: &str) -> an
                 ]
             })
             .collect();
-
         printer.table(&["Module", "Description", "Latest"], &rows);
     }
 
