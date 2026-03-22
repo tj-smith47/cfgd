@@ -2529,8 +2529,8 @@ fn parse_winget_list(output: &str) -> HashSet<String> {
         if line.trim().is_empty() {
             continue;
         }
-        if id_end > id_start && line.len() >= id_end {
-            let id = line[id_start..id_end].trim();
+        if id_end > id_start && let Some(slice) = line.get(id_start..id_end) {
+            let id = slice.trim();
             if !id.is_empty() {
                 packages.insert(id.to_string());
             }
@@ -2562,13 +2562,11 @@ impl PackageManager for WingetManager {
     }
 
     fn installed_packages(&self) -> Result<HashSet<String>> {
-        let output = std::process::Command::new("winget")
-            .args(["list", "--source", "winget"])
-            .output()
-            .map_err(|e| PackageError::ListFailed {
-                manager: "winget".into(),
-                message: e.to_string(),
-            })?;
+        let output = run_pkg_cmd(
+            "winget",
+            Command::new("winget").args(["list", "--source", "winget"]),
+            "list",
+        )?;
         Ok(parse_winget_list(&String::from_utf8_lossy(&output.stdout)))
     }
 
@@ -2628,6 +2626,9 @@ impl PackageManager for WingetManager {
                 manager: "winget".into(),
                 message: e.to_string(),
             })?;
+        if !output.status.success() {
+            return Ok(None);
+        }
         let stdout = String::from_utf8_lossy(&output.stdout);
         for line in stdout.lines() {
             if let Some(rest) = line.strip_prefix("Version:") {
