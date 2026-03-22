@@ -101,7 +101,7 @@ my-config/
 │       └── config
 ├── secrets/               # SOPS-encrypted files
 │   └── api-keys.yaml
-└── scripts/               # pre/post reconcile scripts
+└── scripts/               # lifecycle hook scripts
     ├── pre-setup.sh
     └── post-setup.sh
 ```
@@ -175,5 +175,4 @@ These flags work with any subcommand:
 | `--verbose` | `-v` | `CFGD_VERBOSE` | Show debug output |
 | `--quiet` | `-q` | `CFGD_QUIET` | Suppress all non-error output |
 | `--no-color` | | `NO_COLOR` | Disable colored terminal output |
-| `--output <format>` | `-o` | | Output format: `table` (default), `json`, `yaml` |
-| `--jsonpath <expr>` | | | JSONPath expression to extract from structured output |
+| `--output <format>` | `-o` | | Output format: `table` (default), `wide`, `json`, `yaml`, `name`, `jsonpath=EXPR`, `template=TMPL`, `template-file=PATH` |

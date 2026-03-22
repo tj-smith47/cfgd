@@ -124,10 +124,18 @@ spec:
       backend: string
 
   scripts:
+    preApply:
+      - string | { run: string, timeout: string, continueOnError: bool }
+    postApply:
+      - string | { run: string, timeout: string, continueOnError: bool }
     preReconcile:
-      - path/to/script.sh
+      - string | { run: string, timeout: string, continueOnError: bool }
     postReconcile:
-      - path/to/script.sh
+      - string | { run: string, timeout: string, continueOnError: bool }
+    onDrift:
+      - string | { run: string, timeout: string, continueOnError: bool }
+    onChange:
+      - string | { run: string, timeout: string, continueOnError: bool }
 ```
 
 ---
@@ -154,7 +162,7 @@ spec:
 | `files` | object | No | | Managed files and permissions. See [spec.files](#specfiles). |
 | `system` | map | No | `{}` | System configurator settings. Keys map to configurator names; values are configurator-specific. See [spec.system](#specsystem). |
 | `secrets` | list | No | `[]` | Secret references to decrypt and place on disk. See [spec.secrets[]](#specsecrets). |
-| `scripts` | object | No | | Pre/post-reconcile lifecycle scripts. See [spec.scripts](#specscripts). |
+| `scripts` | object | No | | Lifecycle scripts (pre/post apply, pre/post reconcile, onChange, onDrift). See [spec.scripts](#specscripts). |
 
 ---
 
@@ -511,25 +519,36 @@ secrets:
 
 ### spec.scripts
 
-Lifecycle scripts run before and after reconciliation. Scripts are executed in the order listed.
-Their output is captured in the cfgd journal and environment variable values are masked.
+Lifecycle scripts run at different points during apply and reconciliation. Scripts are executed in the order listed. Each entry can be a simple string (command or file path) or an object with `run`, `timeout`, and `continueOnError` fields.
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
-| `preReconcile` | list of path | No | `[]` | Scripts to run before reconciliation begins. Failure aborts the reconcile. |
-| `postReconcile` | list of path | No | `[]` | Scripts to run after reconciliation completes successfully. |
+| `preApply` | list | No | `[]` | Scripts to run before user-initiated apply. Failure aborts the apply. |
+| `postApply` | list | No | `[]` | Scripts to run after user-initiated apply completes. |
+| `preReconcile` | list | No | `[]` | Scripts to run before daemon-initiated reconciliation. Failure aborts the reconcile. |
+| `postReconcile` | list | No | `[]` | Scripts to run after daemon-initiated reconciliation completes. |
+| `onDrift` | list | No | `[]` | Scripts to run when drift is detected, before any remediation. Profile-level only. |
+| `onChange` | list | No | `[]` | Scripts to run after apply/reconcile only if resources actually changed. |
 
-Paths are relative to the config root directory. Scripts must be executable.
+Each entry can be a string or an object:
 
-**Example:**
 ```yaml
 scripts:
-  preReconcile:
-    - scripts/check-vpn.sh
-  postReconcile:
-    - scripts/setup-work-env.sh
+  preApply:
+    - scripts/check-vpn.sh                     # simple form
+    - run: scripts/notify-slack.sh              # full form
+      continueOnError: true
+      timeout: 30s
+  postApply:
     - scripts/reload-shell.sh
+  onChange:
+    - run: systemctl restart myservice
+      timeout: 60s
 ```
+
+Default timeouts: 5 minutes for profile scripts, 2 minutes for module scripts. Default `continueOnError`: `false` for pre-hooks, `true` for post-hooks and event hooks.
+
+Paths are relative to the config root directory. If the path resolves to an existing file, it is executed directly (the OS uses the shebang to select the interpreter). If not, it is passed through `sh -c`.
 
 ---
 

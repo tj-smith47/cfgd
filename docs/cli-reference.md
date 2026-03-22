@@ -82,16 +82,39 @@ cfgd apply --phase packages         # single phase
 cfgd apply --module nvim            # single module + deps (no profile required)
 cfgd apply --only packages.brew     # dot-notation filter
 cfgd apply --skip system.sysctl     # skip specific items
+cfgd apply --skip-scripts           # apply without running any hooks
 ```
 
 | Flag | Description |
 |---|---|
-| `--dry-run` | Preview changes without applying |
+| `--dry-run` | Preview changes without applying (supports `-o json`) |
 | `--phase <name>` | Apply only a specific phase |
 | `--yes`, `-y` | Skip confirmation prompt |
 | `--module <name>` | Apply only this module and its dependencies |
 | `--skip <path>` | Skip items by dot-notation path (repeatable) |
 | `--only <path>` | Apply only items matching dot-notation paths (repeatable) |
+| `--skip-scripts` | Skip all script hooks (pre/post/onChange) |
+
+### `cfgd plan`
+
+Preview the reconciliation plan without applying. This is the canonical preview command — `apply --dry-run` is a convenience that delegates to the same logic.
+
+```sh
+cfgd plan                               # preview with default (apply) context
+cfgd plan --context reconcile           # preview what the daemon would run
+cfgd plan --module nvim                 # plan for a single module
+cfgd plan --skip-scripts                # exclude all script hooks
+cfgd plan -o json                       # structured plan output
+```
+
+| Flag | Description |
+|---|---|
+| `--phase <name>` | Show only a specific phase |
+| `--module <name>` | Plan only this module and its dependencies |
+| `--skip <path>` | Skip items by dot-notation path (repeatable) |
+| `--only <path>` | Plan only items matching dot-notation paths (repeatable) |
+| `--skip-scripts` | Exclude all script hooks from the plan |
+| `--context <ctx>` | `apply` (default) or `reconcile` — selects which hooks to include |
 
 ### `cfgd status`
 
@@ -100,7 +123,7 @@ Show configuration status, drift, and pending decisions.
 ```sh
 cfgd status                                 # human-readable table
 cfgd status -o json                         # full status as JSON
-cfgd status -o json --jsonpath '{.drift}'   # extract drift events
+cfgd status -o jsonpath='{.drift}'          # extract drift events
 cfgd status --module nvim                   # status for a single module (no profile required)
 ```
 
@@ -207,8 +230,12 @@ cfgd profile create work-linux \
 | `--file <path>` | Manage file (repeatable) |
 | `--private-files` | Mark files as private (gitignored) |
 | `--secret <source:target>` | Add secret (repeatable) |
-| `--pre-apply <path>` | Add pre-apply script (repeatable) |
-| `--post-apply <path>` | Add post-apply script (repeatable) |
+| `--pre-apply <script>` | Add pre-apply script (repeatable) |
+| `--post-apply <script>` | Add post-apply script (repeatable) |
+| `--pre-reconcile <script>` | Add pre-reconcile script (repeatable) |
+| `--post-reconcile <script>` | Add post-reconcile script (repeatable) |
+| `--on-change <script>` | Add on-change script (repeatable) |
+| `--on-drift <script>` | Add on-drift script (repeatable) |
 
 ### `cfgd profile update [name]`
 
@@ -230,8 +257,12 @@ cfgd profile update work --package brew:jq --package -brew:unused --alias vim=nv
 | `--alias <name=cmd>` | Add/remove alias (prefix with `-` to remove by name) |
 | `--system <key=val>` | Add/remove system setting (prefix with `-` to remove by key) |
 | `--secret <src:tgt>` | Add/remove secret (prefix with `-` to remove by target) |
-| `--pre-apply <path>` | Add/remove pre-apply script (prefix with `-` to remove) |
-| `--post-apply <path>` | Add/remove post-apply script (prefix with `-` to remove) |
+| `--pre-apply <script>` | Add/remove pre-apply script (prefix with `-` to remove) |
+| `--post-apply <script>` | Add/remove post-apply script (prefix with `-` to remove) |
+| `--pre-reconcile <script>` | Add/remove pre-reconcile script (prefix with `-` to remove) |
+| `--post-reconcile <script>` | Add/remove post-reconcile script (prefix with `-` to remove) |
+| `--on-change <script>` | Add/remove on-change script (prefix with `-` to remove) |
+| `--on-drift <script>` | Add/remove on-drift script (prefix with `-` to remove) |
 
 ### `cfgd profile edit <name>`
 

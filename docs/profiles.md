@@ -106,10 +106,18 @@ spec:
       template: "token: ${secret:value}"
 
   scripts:
+    preApply:
+      - scripts/check-vpn.sh
+    postApply:
+      - scripts/reload-shell.sh
     preReconcile:
       - scripts/pre-setup.sh
     postReconcile:
       - scripts/post-setup.sh
+    onDrift:
+      - scripts/notify-slack.sh
+    onChange:
+      - scripts/rebuild-cache.sh
 ```
 
 ## Inheritance

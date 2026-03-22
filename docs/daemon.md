@@ -84,6 +84,22 @@ Setting `lockedConflict: Accept` causes the daemon to automatically remove your 
 
 See [sources.md](sources.md#automatic-apply-decisions) for the full decision workflow.
 
+## Drift Hooks
+
+When the daemon detects drift, it runs any `onDrift` scripts defined in the active profile before deciding how to handle the drift (auto-apply, notify, or prompt). This fires regardless of the drift policy — `onDrift` is observability, not remediation.
+
+```yaml
+# In your profile
+scripts:
+  onDrift:
+    - scripts/notify-slack.sh
+    - run: scripts/snapshot-state.sh
+      timeout: 30s
+      continueOnError: true
+```
+
+Environment variables available to onDrift scripts: `CFGD_CONFIG_DIR`, `CFGD_PROFILE`, `CFGD_CONTEXT=reconcile`, `CFGD_PHASE=onDrift`, `CFGD_DRY_RUN=false`.
+
 ## Reconcile Patches
 
 Override reconcile settings for specific modules or profiles. Patches live in your `cfgd.yaml` — you control your machine's sync behavior regardless of what upstream profiles or modules recommend.

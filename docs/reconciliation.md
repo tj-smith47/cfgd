@@ -6,19 +6,31 @@ cfgd follows the same pattern as Kubernetes controllers: declare desired state, 
 
 Apply runs in a fixed phase order:
 
-1. **Modules** — resolve module dependencies, install module packages, deploy module files
-2. **System** — shell, macOS defaults, launch agents, systemd units, environment, sysctl, kernelModules, containerd, kubelet, apparmor, seccomp, certificates
-3. **Packages** — install/uninstall across all package managers (profile-level packages)
-4. **Files** — copy, template, set permissions (profile-level files)
-5. **Env** — write env vars and shell aliases to `~/.cfgd.env`, inject shell rc source lines
-6. **Secrets** — decrypt SOPS files, resolve external provider references
-7. **Scripts** — run pre/post reconcile scripts
+1. **Pre-Scripts** — profile-level pre-apply or pre-reconcile hooks (context-dependent)
+2. **Env** — write env vars and shell aliases to `~/.cfgd.env`, inject shell rc source lines
+3. **Modules** — resolve module dependencies, install module packages, deploy module files, run module-level hooks
+4. **Packages** — install/uninstall across all package managers (profile-level packages)
+5. **System** — shell, macOS defaults, launch agents, systemd units, environment, sysctl, kernelModules, containerd, kubelet, apparmor, seccomp, certificates
+6. **Files** — copy, template, set permissions (profile-level files)
+7. **Secrets** — decrypt SOPS files, resolve external provider references
+8. **Post-Scripts** — profile-level post-apply or post-reconcile hooks, onChange hooks
 
 Each phase can be applied independently with `cfgd apply --phase <name>`.
 
+## Apply vs Reconcile Context
+
+cfgd distinguishes between user-initiated apply and daemon-initiated reconciliation:
+
+- **Apply context** (`cfgd apply`, `cfgd plan`) — runs `preApply`/`postApply` hooks
+- **Reconcile context** (daemon auto-reconcile) — runs `preReconcile`/`postReconcile` hooks
+
+Both contexts run `onChange` hooks when actions produce changes. `onDrift` hooks fire only in the daemon's drift detection path, before any reconciliation plan is generated.
+
+Use `cfgd plan --context reconcile` to preview what the daemon would run.
+
 ## Plan Output
 
-`cfgd apply --dry-run` shows the full plan before any changes:
+`cfgd plan` (or `cfgd apply --dry-run`) shows the full plan before any changes. Use `-o json` for structured output in CI pipelines.
 
 ```
 Modules:

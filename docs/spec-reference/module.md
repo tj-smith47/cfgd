@@ -2,7 +2,7 @@
 
 A Module document is a self-contained, portable configuration package for one tool or capability.
 It bundles cross-platform package declarations, config files, environment variables, shell aliases,
-and post-apply lifecycle scripts into a single deployable unit. Modules live in `modules/` in your
+and lifecycle scripts into a single deployable unit. Modules live in `modules/` in your
 config directory, or in a remote module registry.
 
 ## Document Structure
@@ -46,8 +46,16 @@ spec:
       command: string
 
   scripts:
+    preApply:
+      - string | { run: string, timeout: string, continueOnError: bool }
     postApply:
-      - string
+      - string | { run: string, timeout: string, continueOnError: bool }
+    preReconcile:
+      - string | { run: string, timeout: string, continueOnError: bool }
+    postReconcile:
+      - string | { run: string, timeout: string, continueOnError: bool }
+    onChange:
+      - string | { run: string, timeout: string, continueOnError: bool }
 ```
 
 ---
@@ -229,21 +237,29 @@ aliases:
 
 ### spec.scripts
 
-Lifecycle scripts executed after all packages and files for this module have been applied.
+Lifecycle scripts executed at different points during module apply and reconciliation. `onDrift` is not available at the module level (profile-level only).
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
-| `postApply` | list of string | No | `[]` | Shell commands or script paths to run after the module is applied. Run in order; a non-zero exit code from any command is recorded but does not prevent remaining commands from running. |
+| `preApply` | list | No | `[]` | Run before the module's packages and files are applied. Failure aborts. |
+| `postApply` | list | No | `[]` | Run after the module is fully applied. |
+| `preReconcile` | list | No | `[]` | Run before daemon-initiated reconciliation of this module. |
+| `postReconcile` | list | No | `[]` | Run after daemon-initiated reconciliation of this module. |
+| `onChange` | list | No | `[]` | Run after apply/reconcile only if this module's resources changed. |
 
-Entries can be inline shell commands or paths to scripts (relative to the module directory).
+Each entry can be a simple string or a full object with `run`, `timeout`, and `continueOnError`.
 
 **Example:**
 ```yaml
 scripts:
   postApply:
     - nvim --headless "+Lazy! sync" +qa
-    - nvim --headless -c "MasonInstallAll" -c "qa"
+    - run: scripts/rebuild-index.sh
+      timeout: 60s
+      continueOnError: true
 ```
+
+Default timeout: 2 minutes. Scripts run in the module directory.
 
 ---
 
@@ -319,7 +335,7 @@ merged spec using the following rules:
 | `files.managed` | Overlay by `target` — the module's entry for a given target replaces any profile entry for the same target. |
 | `env` | Override by name — module variable wins over profile variable of the same name. |
 | `aliases` | Override by name — same rule as `env`. |
-| `scripts.postApply` | Appended after the profile's `postReconcile` scripts. |
+| `scripts` | Each hook list is appended after the profile's corresponding hook list. |
 
 ---
 

@@ -204,20 +204,56 @@ Modules declare `depends: [node, python]`. cfgd builds a dependency graph and fi
 
 Processing order: leaf dependencies first (node, python), then dependents (nvim).
 
-## Post-Apply Scripts
+## Script Lifecycle
 
-Scripts listed under `scripts.postApply` run after all of the module's packages are installed and files are deployed. They execute sequentially in the order listed. If a script fails, subsequent scripts in that module are skipped and the failure is reported in the plan output.
+Modules support lifecycle hooks that run at different points during apply and reconciliation. Scripts can be inline commands or file paths (relative to the module directory).
 
-Use `postApply` scripts for tasks that depend on the packages and files being in place — plugin installations, cache rebuilds, index updates:
+### Hook Types
+
+| Hook | When it runs |
+|---|---|
+| `preApply` | Before the module's packages and files are applied |
+| `postApply` | After all of the module's packages are installed and files are deployed |
+| `preReconcile` | Before the module is reconciled by the daemon |
+| `postReconcile` | After daemon-initiated reconciliation of the module |
+| `onChange` | After apply/reconcile, only if this module's resources actually changed |
+
+`onDrift` is profile-level only and cannot be set on modules.
+
+### Simple and Full forms
+
+Scripts support two forms:
 
 ```yaml
 scripts:
   postApply:
+    # Simple form — inline command or file path
     - nvim --headless "+Lazy! sync" +qa
-    - nvim --headless -c "MasonInstallAll" -c "qa"
+    # Full form — with timeout and error control
+    - run: scripts/rebuild-index.sh
+      timeout: 60s
+      continueOnError: true
 ```
 
-Each script runs with `/bin/sh -e` in the module directory.
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `run` | string | required | Command or script path |
+| `timeout` | string | 2m (module) | Duration: `30s`, `5m`, `1h` |
+| `continueOnError` | bool | varies by hook | If true, failure is logged but doesn't abort |
+
+Default `continueOnError`: `false` for `preApply`/`preReconcile`, `true` for `postApply`/`postReconcile`/`onChange`.
+
+Each script runs in the module directory with these environment variables:
+
+| Variable | Value |
+|---|---|
+| `CFGD_CONFIG_DIR` | Absolute path to config directory |
+| `CFGD_PROFILE` | Active profile name |
+| `CFGD_CONTEXT` | `apply` or `reconcile` |
+| `CFGD_PHASE` | Hook name (e.g., `postApply`) |
+| `CFGD_DRY_RUN` | `true` or `false` |
+| `CFGD_MODULE_NAME` | Module name |
+| `CFGD_MODULE_DIR` | Module directory path |
 
 ## Profile Integration
 
