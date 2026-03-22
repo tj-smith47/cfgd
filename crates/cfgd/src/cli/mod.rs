@@ -1811,9 +1811,13 @@ fn build_registry_with_config_and_packages(
 
     // Register system configurators based on OS
     use crate::system::*;
-    registry
-        .system_configurators
-        .push(Box::new(ShellConfigurator));
+
+    // ShellConfigurator uses `chsh` (Unix-only)
+    if cfg!(unix) {
+        registry
+            .system_configurators
+            .push(Box::new(ShellConfigurator));
+    }
 
     if cfg!(target_os = "macos") {
         registry
@@ -1831,32 +1835,37 @@ fn build_registry_with_config_and_packages(
     }
 
     // Environment configurator is available on all Unix systems
-    registry
-        .system_configurators
-        .push(Box::new(EnvironmentConfigurator));
+    if cfg!(unix) {
+        registry
+            .system_configurators
+            .push(Box::new(EnvironmentConfigurator));
+    }
 
-    // Node/infrastructure system configurators (Linux-only, availability-gated)
-    registry
-        .system_configurators
-        .push(Box::new(SysctlConfigurator));
-    registry
-        .system_configurators
-        .push(Box::new(KernelModuleConfigurator));
-    registry
-        .system_configurators
-        .push(Box::new(ContainerdConfigurator));
-    registry
-        .system_configurators
-        .push(Box::new(KubeletConfigurator));
-    registry
-        .system_configurators
-        .push(Box::new(AppArmorConfigurator));
-    registry
-        .system_configurators
-        .push(Box::new(SeccompConfigurator));
-    registry
-        .system_configurators
-        .push(Box::new(CertificateConfigurator));
+    // Node/infrastructure system configurators (Linux-only, gated at compile time)
+    #[cfg(unix)]
+    {
+        registry
+            .system_configurators
+            .push(Box::new(SysctlConfigurator));
+        registry
+            .system_configurators
+            .push(Box::new(KernelModuleConfigurator));
+        registry
+            .system_configurators
+            .push(Box::new(ContainerdConfigurator));
+        registry
+            .system_configurators
+            .push(Box::new(KubeletConfigurator));
+        registry
+            .system_configurators
+            .push(Box::new(AppArmorConfigurator));
+        registry
+            .system_configurators
+            .push(Box::new(SeccompConfigurator));
+        registry
+            .system_configurators
+            .push(Box::new(CertificateConfigurator));
+    }
 
     // Register secret backend and providers
     let (backend_name, age_key_path) = secret_backend_from_config(cfg);
@@ -4651,9 +4660,17 @@ fn cmd_daemon_status(printer: &Printer) -> anyhow::Result<()> {
 fn cmd_daemon_install(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
     printer.header("Install Daemon Service");
 
-    cfgd_core::daemon::install_service(&cli.config, cli.profile.as_deref())?;
-
-    print_daemon_install_success(printer);
+    #[cfg(unix)]
+    {
+        cfgd_core::daemon::install_service(&cli.config, cli.profile.as_deref())?;
+        print_daemon_install_success(printer);
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = cli;
+        printer.warning("Service installation is not yet supported on this platform");
+        printer.info("Run the daemon directly with: cfgd daemon");
+    }
 
     Ok(())
 }
@@ -4661,14 +4678,22 @@ fn cmd_daemon_install(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
 fn cmd_daemon_uninstall(printer: &Printer) -> anyhow::Result<()> {
     printer.header("Uninstall Daemon Service");
 
-    if cfg!(target_os = "macos") {
-        printer.info("Unloading: launchctl unload ~/Library/LaunchAgents/com.cfgd.daemon.plist");
-    } else {
-        printer.info("Stopping: systemctl --user disable --now cfgd.service");
-    }
+    #[cfg(unix)]
+    {
+        if cfg!(target_os = "macos") {
+            printer
+                .info("Unloading: launchctl unload ~/Library/LaunchAgents/com.cfgd.daemon.plist");
+        } else {
+            printer.info("Stopping: systemctl --user disable --now cfgd.service");
+        }
 
-    cfgd_core::daemon::uninstall_service()?;
-    printer.success("Daemon service removed");
+        cfgd_core::daemon::uninstall_service()?;
+        printer.success("Daemon service removed");
+    }
+    #[cfg(not(unix))]
+    {
+        printer.warning("Service uninstallation is not yet supported on this platform");
+    }
 
     Ok(())
 }

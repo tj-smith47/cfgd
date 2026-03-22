@@ -240,15 +240,23 @@ pub(super) fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result
 
     // 8. Install daemon if requested
     if args.install_daemon {
-        let config_path = target_dir.join("cfgd.yaml");
-        let cfg = config::load_config(&config_path)?;
-        let profile = cfg.spec.profile.as_deref();
-        match cfgd_core::daemon::install_service(&config_path, profile) {
-            Ok(()) => printer.success("Daemon service installed"),
-            Err(e) => {
-                printer.warning(&format!("Could not install daemon: {}", e));
-                printer.info("Install later with: cfgd daemon install");
+        #[cfg(unix)]
+        {
+            let config_path = target_dir.join("cfgd.yaml");
+            let cfg = config::load_config(&config_path)?;
+            let profile = cfg.spec.profile.as_deref();
+            match cfgd_core::daemon::install_service(&config_path, profile) {
+                Ok(()) => printer.success("Daemon service installed"),
+                Err(e) => {
+                    printer.warning(&format!("Could not install daemon: {}", e));
+                    printer.info("Install later with: cfgd daemon install");
+                }
             }
+        }
+        #[cfg(not(unix))]
+        {
+            printer.warning("Daemon service installation is not yet supported on this platform");
+            printer.info("Run the daemon directly with: cfgd daemon");
         }
     }
 

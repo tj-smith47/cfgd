@@ -1,5 +1,7 @@
+#[cfg(unix)]
 mod node;
 
+#[cfg(unix)]
 pub use node::*;
 
 use std::collections::BTreeMap;
@@ -1124,7 +1126,7 @@ mod tests {
     #[test]
     fn environment_configurator_is_available() {
         let ec = EnvironmentConfigurator;
-        assert!(ec.is_available());
+        assert_eq!(ec.is_available(), cfg!(unix));
     }
 
     #[test]

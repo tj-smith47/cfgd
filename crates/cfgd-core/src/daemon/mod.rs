@@ -58,8 +58,11 @@ const DEFAULT_IPC_PATH: &str = "/tmp/cfgd.sock";
 const DEFAULT_IPC_PATH: &str = r"\\.\pipe\cfgd";
 const DEFAULT_RECONCILE_SECS: u64 = 300; // 5m
 const DEFAULT_SYNC_SECS: u64 = 300; // 5m
+#[cfg(unix)]
 const LAUNCHD_LABEL: &str = "com.cfgd.daemon";
+#[cfg(unix)]
 const LAUNCHD_AGENTS_DIR: &str = "Library/LaunchAgents";
+#[cfg(unix)]
 const SYSTEMD_USER_DIR: &str = ".config/systemd/user";
 
 // --- Sync Task ---
@@ -2077,7 +2080,10 @@ fn record_file_drift(path: &Path) -> bool {
 }
 
 // --- Service Management ---
+// Service install/uninstall is Unix-only (launchd on macOS, systemd on Linux).
+// Windows Service support is planned for Plan 2.
 
+#[cfg(unix)]
 pub fn install_service(config_path: &Path, profile: Option<&str>) -> Result<()> {
     let cfgd_binary = std::env::current_exe().map_err(|e| DaemonError::ServiceInstallFailed {
         message: format!("cannot determine binary path: {}", e),
@@ -2090,6 +2096,7 @@ pub fn install_service(config_path: &Path, profile: Option<&str>) -> Result<()> 
     }
 }
 
+#[cfg(unix)]
 pub fn uninstall_service() -> Result<()> {
     if cfg!(target_os = "macos") {
         uninstall_launchd_service()
@@ -2098,6 +2105,7 @@ pub fn uninstall_service() -> Result<()> {
     }
 }
 
+#[cfg(unix)]
 fn install_launchd_service(binary: &Path, config_path: &Path, profile: Option<&str>) -> Result<()> {
     let home = std::env::var("HOME").map_err(|_| DaemonError::ServiceInstallFailed {
         message: "HOME not set".to_string(),
@@ -2157,6 +2165,7 @@ fn install_launchd_service(binary: &Path, config_path: &Path, profile: Option<&s
     Ok(())
 }
 
+#[cfg(unix)]
 fn uninstall_launchd_service() -> Result<()> {
     let home = std::env::var("HOME").map_err(|_| DaemonError::ServiceInstallFailed {
         message: "HOME not set".to_string(),
@@ -2175,6 +2184,7 @@ fn uninstall_launchd_service() -> Result<()> {
     Ok(())
 }
 
+#[cfg(unix)]
 fn install_systemd_service(binary: &Path, config_path: &Path, profile: Option<&str>) -> Result<()> {
     let home = std::env::var("HOME").map_err(|_| DaemonError::ServiceInstallFailed {
         message: "HOME not set".to_string(),
@@ -2225,6 +2235,7 @@ WantedBy=default.target"#
     Ok(())
 }
 
+#[cfg(unix)]
 fn uninstall_systemd_service() -> Result<()> {
     let home = std::env::var("HOME").map_err(|_| DaemonError::ServiceInstallFailed {
         message: "HOME not set".to_string(),
@@ -2464,6 +2475,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn systemd_unit_path() {
         let home = "/home/testuser";
         let unit_dir = PathBuf::from(home).join(SYSTEMD_USER_DIR);
@@ -2603,6 +2615,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn launchd_plist_path() {
         let home = "/Users/testuser";
         let plist_dir = PathBuf::from(home).join(LAUNCHD_AGENTS_DIR);
