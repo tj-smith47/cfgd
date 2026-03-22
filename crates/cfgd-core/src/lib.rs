@@ -108,7 +108,8 @@ pub fn default_config_dir() -> std::path::PathBuf {
 /// Expand `~` and `~/...` paths to the user's home directory.
 pub fn expand_tilde(path: &std::path::Path) -> std::path::PathBuf {
     let path_str = path.display().to_string();
-    if let Ok(home) = std::env::var("HOME") {
+    let home = home_dir_var();
+    if let Some(home) = home {
         if path_str == "~" {
             return std::path::PathBuf::from(home);
         }
@@ -117,6 +118,21 @@ pub fn expand_tilde(path: &std::path::Path) -> std::path::PathBuf {
         }
     }
     path.to_path_buf()
+}
+
+/// Resolve the user's home directory from environment variables.
+/// Unix: checks HOME.
+/// Windows: checks USERPROFILE first, then HOME (for WSL/Git Bash contexts).
+#[cfg(unix)]
+fn home_dir_var() -> Option<String> {
+    std::env::var("HOME").ok()
+}
+
+#[cfg(windows)]
+fn home_dir_var() -> Option<String> {
+    std::env::var("USERPROFILE")
+        .or_else(|_| std::env::var("HOME"))
+        .ok()
 }
 
 /// Parse a potentially loose version string into a semver Version.
@@ -769,6 +785,14 @@ mod tests {
     #[test]
     fn version_satisfies_invalid_requirement() {
         assert!(!version_satisfies("1.0.0", "not valid"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn home_dir_var_uses_home_on_unix() {
+        let result = home_dir_var();
+        assert!(result.is_some());
+        assert_eq!(result.unwrap(), std::env::var("HOME").unwrap());
     }
 
     #[test]
