@@ -810,7 +810,12 @@ pub fn resolve_modules(
             .spec
             .scripts
             .as_ref()
-            .map(|s| s.post_apply.clone())
+            .map(|s| {
+                s.post_apply
+                    .iter()
+                    .map(|e| e.run_str().to_string())
+                    .collect()
+            })
             .unwrap_or_default();
 
         resolved.push(ResolvedModule {
@@ -1329,13 +1334,13 @@ pub fn diff_module_specs(old: &LoadedModule, new: &LoadedModule) -> Vec<String> 
         .spec
         .scripts
         .as_ref()
-        .map(|s| s.post_apply.iter().map(|s| s.as_str()).collect())
+        .map(|s| s.post_apply.iter().map(|e| e.run_str()).collect())
         .unwrap_or_default();
     let new_scripts: Vec<&str> = new
         .spec
         .scripts
         .as_ref()
-        .map(|s| s.post_apply.iter().map(|s| s.as_str()).collect())
+        .map(|s| s.post_apply.iter().map(|e| e.run_str()).collect())
         .unwrap_or_default();
     let old_script_set: HashSet<&str> = old_scripts.into_iter().collect();
     let new_script_set: HashSet<&str> = new_scripts.into_iter().collect();
@@ -2066,7 +2071,10 @@ spec:
             "https://github.com/user/repo.git@v1.0"
         );
         let scripts = doc.spec.scripts.unwrap();
-        assert_eq!(scripts.post_apply, vec!["echo done"]);
+        assert_eq!(
+            scripts.post_apply,
+            vec![crate::config::ScriptEntry::Simple("echo done".to_string())]
+        );
     }
 
     #[test]
@@ -2885,8 +2893,9 @@ spec:
                 files: vec![],
                 env: vec![],
                 aliases: vec![],
-                scripts: Some(crate::config::ModuleScriptSpec {
-                    post_apply: vec!["echo old".into()],
+                scripts: Some(crate::config::ScriptSpec {
+                    post_apply: vec![crate::config::ScriptEntry::Simple("echo old".to_string())],
+                    ..Default::default()
                 }),
             },
             dir: PathBuf::from("/tmp"),
@@ -2899,8 +2908,9 @@ spec:
                 files: vec![],
                 env: vec![],
                 aliases: vec![],
-                scripts: Some(crate::config::ModuleScriptSpec {
-                    post_apply: vec!["echo new".into()],
+                scripts: Some(crate::config::ScriptSpec {
+                    post_apply: vec![crate::config::ScriptEntry::Simple("echo new".to_string())],
+                    ..Default::default()
                 }),
             },
             dir: PathBuf::from("/tmp"),

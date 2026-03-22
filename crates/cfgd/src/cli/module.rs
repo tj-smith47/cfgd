@@ -591,11 +591,12 @@ pub(super) fn cmd_module_create(
     let scripts = if post_apply_list.is_empty() {
         None
     } else {
-        Some(config::ModuleScriptSpec {
+        Some(config::ScriptSpec {
             post_apply: post_apply_list
                 .iter()
-                .map(|s| s.replace("\\!", "!"))
+                .map(|s| config::ScriptEntry::Simple(s.replace("\\!", "!")))
                 .collect(),
+            ..Default::default()
         })
     };
 
@@ -926,9 +927,10 @@ pub(super) fn cmd_module_update_local(
         let scripts = doc
             .spec
             .scripts
-            .get_or_insert_with(config::ModuleScriptSpec::default);
-        if !scripts.post_apply.contains(script) {
-            scripts.post_apply.push(script.clone());
+            .get_or_insert_with(config::ScriptSpec::default);
+        let entry = config::ScriptEntry::Simple(script.clone());
+        if !scripts.post_apply.contains(&entry) {
+            scripts.post_apply.push(entry);
             printer.success(&format!("Added post-apply script: {}", script));
             changes += 1;
         }
@@ -938,7 +940,7 @@ pub(super) fn cmd_module_update_local(
     for script in &remove_post_apply {
         if let Some(ref mut scripts) = doc.spec.scripts {
             let before = scripts.post_apply.len();
-            scripts.post_apply.retain(|s| s != script);
+            scripts.post_apply.retain(|e| e.run_str() != script);
             if scripts.post_apply.len() < before {
                 printer.success(&format!("Removed post-apply script: {}", script));
                 changes += 1;
@@ -1997,7 +1999,7 @@ fn export_devcontainer(
         for script in &scripts.post_apply {
             install_lines.push(String::new());
             install_lines.push(format!("# Post-apply: {}", script));
-            install_lines.push(script.clone());
+            install_lines.push(script.run_str().to_string());
         }
     }
 

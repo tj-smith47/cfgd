@@ -399,6 +399,8 @@ fn merge_with_policy(
 
         // Scripts: append in order
         if let Some(ref scripts) = spec.scripts {
+            merged.scripts.pre_apply.extend(scripts.pre_apply.clone());
+            merged.scripts.post_apply.extend(scripts.post_apply.clone());
             merged
                 .scripts
                 .pre_reconcile
@@ -407,6 +409,8 @@ fn merge_with_policy(
                 .scripts
                 .post_reconcile
                 .extend(scripts.post_reconcile.clone());
+            merged.scripts.on_drift.extend(scripts.on_drift.clone());
+            merged.scripts.on_change.extend(scripts.on_change.clone());
         }
 
         // Modules: union (deduplicated)
@@ -425,7 +429,12 @@ pub fn validate_constraints(
     // Check script constraint
     if constraints.no_scripts
         && let Some(ref scripts) = spec.scripts
-        && (!scripts.pre_reconcile.is_empty() || !scripts.post_reconcile.is_empty())
+        && (!scripts.pre_apply.is_empty()
+            || !scripts.post_apply.is_empty()
+            || !scripts.pre_reconcile.is_empty()
+            || !scripts.post_reconcile.is_empty()
+            || !scripts.on_drift.is_empty()
+            || !scripts.on_change.is_empty())
     {
         return Err(CompositionError::ScriptsNotAllowed {
             source_name: source_name.to_string(),
@@ -1180,7 +1189,7 @@ mod tests {
         };
         let spec = ProfileSpec {
             scripts: Some(ScriptSpec {
-                pre_reconcile: vec!["setup.sh".into()],
+                pre_reconcile: vec![ScriptEntry::Simple("setup.sh".to_string())],
                 ..Default::default()
             }),
             ..Default::default()
@@ -1198,7 +1207,7 @@ mod tests {
         };
         let spec = ProfileSpec {
             scripts: Some(ScriptSpec {
-                pre_reconcile: vec!["setup.sh".into()],
+                pre_reconcile: vec![ScriptEntry::Simple("setup.sh".to_string())],
                 ..Default::default()
             }),
             ..Default::default()

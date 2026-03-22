@@ -261,14 +261,15 @@ fn update_script_list(
     add: &[PathBuf],
     remove: &[PathBuf],
     label: &str,
-    field: fn(&mut config::ScriptSpec) -> &mut Vec<PathBuf>,
+    field: fn(&mut config::ScriptSpec) -> &mut Vec<config::ScriptEntry>,
     printer: &Printer,
 ) -> u32 {
     let mut changes = 0u32;
     for script in add {
         let scripts = scripts_opt.get_or_insert_with(Default::default);
         let list = field(scripts);
-        if list.contains(script) {
+        let entry = config::ScriptEntry::Simple(script.to_string_lossy().to_string());
+        if list.contains(&entry) {
             printer.warning(&format!(
                 "{} script '{}' already exists",
                 label,
@@ -276,15 +277,16 @@ fn update_script_list(
             ));
             continue;
         }
-        list.push(script.clone());
+        list.push(entry);
         printer.success(&format!("Added {}: {}", label, script.display()));
         changes += 1;
     }
     for script in remove {
+        let script_str = script.to_string_lossy();
         if let Some(scripts) = scripts_opt.as_mut() {
             let list = field(scripts);
             let before = list.len();
-            list.retain(|s| s != script);
+            list.retain(|e| e.run_str() != script_str.as_ref());
             if list.len() < before {
                 printer.success(&format!("Removed {}: {}", label, script.display()));
                 changes += 1;
@@ -472,8 +474,15 @@ pub(super) fn cmd_profile_create(
         None
     } else {
         Some(config::ScriptSpec {
-            pre_reconcile: pre_reconcile.to_vec(),
-            post_reconcile: post_reconcile.to_vec(),
+            pre_reconcile: pre_reconcile
+                .iter()
+                .map(|p| config::ScriptEntry::Simple(p.to_string_lossy().to_string()))
+                .collect(),
+            post_reconcile: post_reconcile
+                .iter()
+                .map(|p| config::ScriptEntry::Simple(p.to_string_lossy().to_string()))
+                .collect(),
+            ..Default::default()
         })
     };
 
@@ -1196,7 +1205,7 @@ mod tests {
         assert!(scripts.is_some());
         assert_eq!(
             scripts.unwrap().pre_reconcile,
-            vec![PathBuf::from("setup.sh")]
+            vec![config::ScriptEntry::Simple("setup.sh".to_string())]
         );
     }
 
@@ -1204,8 +1213,8 @@ mod tests {
     fn update_script_list_add_to_existing() {
         let printer = make_printer();
         let mut scripts = Some(config::ScriptSpec {
-            pre_reconcile: vec![PathBuf::from("a.sh")],
-            post_reconcile: vec![],
+            pre_reconcile: vec![config::ScriptEntry::Simple("a.sh".to_string())],
+            ..Default::default()
         });
         let add = vec![PathBuf::from("b.sh")];
         let changes = update_script_list(
@@ -1219,7 +1228,10 @@ mod tests {
         assert_eq!(changes, 1);
         assert_eq!(
             scripts.unwrap().pre_reconcile,
-            vec![PathBuf::from("a.sh"), PathBuf::from("b.sh")]
+            vec![
+                config::ScriptEntry::Simple("a.sh".to_string()),
+                config::ScriptEntry::Simple("b.sh".to_string())
+            ]
         );
     }
 
@@ -1227,8 +1239,8 @@ mod tests {
     fn update_script_list_add_duplicate() {
         let printer = make_printer();
         let mut scripts = Some(config::ScriptSpec {
-            pre_reconcile: vec![PathBuf::from("a.sh")],
-            post_reconcile: vec![],
+            pre_reconcile: vec![config::ScriptEntry::Simple("a.sh".to_string())],
+            ..Default::default()
         });
         let add = vec![PathBuf::from("a.sh")];
         let changes = update_script_list(
@@ -1247,8 +1259,11 @@ mod tests {
     fn update_script_list_remove_existing() {
         let printer = make_printer();
         let mut scripts = Some(config::ScriptSpec {
-            pre_reconcile: vec![PathBuf::from("a.sh"), PathBuf::from("b.sh")],
-            post_reconcile: vec![],
+            pre_reconcile: vec![
+                config::ScriptEntry::Simple("a.sh".to_string()),
+                config::ScriptEntry::Simple("b.sh".to_string()),
+            ],
+            ..Default::default()
         });
         let remove = vec![PathBuf::from("a.sh")];
         let changes = update_script_list(
@@ -1260,15 +1275,18 @@ mod tests {
             &printer,
         );
         assert_eq!(changes, 1);
-        assert_eq!(scripts.unwrap().pre_reconcile, vec![PathBuf::from("b.sh")]);
+        assert_eq!(
+            scripts.unwrap().pre_reconcile,
+            vec![config::ScriptEntry::Simple("b.sh".to_string())]
+        );
     }
 
     #[test]
     fn update_script_list_remove_nonexistent() {
         let printer = make_printer();
         let mut scripts = Some(config::ScriptSpec {
-            pre_reconcile: vec![PathBuf::from("a.sh")],
-            post_reconcile: vec![],
+            pre_reconcile: vec![config::ScriptEntry::Simple("a.sh".to_string())],
+            ..Default::default()
         });
         let remove = vec![PathBuf::from("nope.sh")];
         let changes = update_script_list(

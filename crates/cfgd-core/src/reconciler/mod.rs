@@ -531,17 +531,17 @@ impl<'a> Reconciler<'a> {
     fn plan_scripts(&self, scripts: &ScriptSpec) -> Vec<Action> {
         let mut actions = Vec::new();
 
-        for path in &scripts.pre_reconcile {
+        for entry in &scripts.pre_reconcile {
             actions.push(Action::Script(ScriptAction::Run {
-                path: path.clone(),
+                path: PathBuf::from(entry.run_str()),
                 phase: ScriptPhase::PreReconcile,
                 origin: "local".to_string(),
             }));
         }
 
-        for path in &scripts.post_reconcile {
+        for entry in &scripts.post_reconcile {
             actions.push(Action::Script(ScriptAction::Run {
-                path: path.clone(),
+                path: PathBuf::from(entry.run_str()),
                 phase: ScriptPhase::PostReconcile,
                 origin: "local".to_string(),
             }));
@@ -2572,8 +2572,10 @@ mod tests {
         let reconciler = Reconciler::new(&registry, &state);
 
         let mut resolved = make_empty_resolved();
-        resolved.merged.scripts.pre_reconcile = vec![PathBuf::from("scripts/pre.sh")];
-        resolved.merged.scripts.post_reconcile = vec![PathBuf::from("scripts/post.sh")];
+        resolved.merged.scripts.pre_reconcile =
+            vec![ScriptEntry::Simple("scripts/pre.sh".to_string())];
+        resolved.merged.scripts.post_reconcile =
+            vec![ScriptEntry::Simple("scripts/post.sh".to_string())];
 
         let plan = reconciler
             .plan(&resolved, Vec::new(), Vec::new(), Vec::new())

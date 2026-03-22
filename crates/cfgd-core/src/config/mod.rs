@@ -725,7 +725,7 @@ pub struct ModuleSpec {
     pub aliases: Vec<ShellAlias>,
 
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub scripts: Option<ModuleScriptSpec>,
+    pub scripts: Option<ScriptSpec>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -767,11 +767,37 @@ pub struct ModuleFileEntry {
     pub private: bool,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ModuleScriptSpec {
-    #[serde(default)]
-    pub post_apply: Vec<String>,
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum ScriptEntry {
+    Simple(String),
+    Full {
+        run: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        timeout: Option<String>,
+        #[serde(
+            default,
+            skip_serializing_if = "Option::is_none",
+            rename = "continueOnError"
+        )]
+        continue_on_error: Option<bool>,
+    },
+}
+
+impl ScriptEntry {
+    /// Extract the run command string from any variant.
+    pub fn run_str(&self) -> &str {
+        match self {
+            ScriptEntry::Simple(s) => s,
+            ScriptEntry::Full { run, .. } => run,
+        }
+    }
+}
+
+impl std::fmt::Display for ScriptEntry {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.run_str())
+    }
 }
 
 // --- Module Lockfile ---
@@ -1098,9 +1124,17 @@ pub struct SecretSpec {
 #[serde(rename_all = "camelCase")]
 pub struct ScriptSpec {
     #[serde(default)]
-    pub pre_reconcile: Vec<PathBuf>,
+    pub pre_apply: Vec<ScriptEntry>,
     #[serde(default)]
-    pub post_reconcile: Vec<PathBuf>,
+    pub post_apply: Vec<ScriptEntry>,
+    #[serde(default)]
+    pub pre_reconcile: Vec<ScriptEntry>,
+    #[serde(default)]
+    pub post_reconcile: Vec<ScriptEntry>,
+    #[serde(default)]
+    pub on_drift: Vec<ScriptEntry>,
+    #[serde(default)]
+    pub on_change: Vec<ScriptEntry>,
 }
 
 // --- Profile Resolution ---
@@ -1484,6 +1518,8 @@ fn merge_layers(layers: &[ProfileLayer]) -> MergedProfile {
 
         // Scripts: append in order
         if let Some(ref scripts) = spec.scripts {
+            merged.scripts.pre_apply.extend(scripts.pre_apply.clone());
+            merged.scripts.post_apply.extend(scripts.post_apply.clone());
             merged
                 .scripts
                 .pre_reconcile
@@ -1492,6 +1528,8 @@ fn merge_layers(layers: &[ProfileLayer]) -> MergedProfile {
                 .scripts
                 .post_reconcile
                 .extend(scripts.post_reconcile.clone());
+            merged.scripts.on_drift.extend(scripts.on_drift.clone());
+            merged.scripts.on_change.extend(scripts.on_change.clone());
         }
     }
 
@@ -2736,5 +2774,76 @@ spec:
         assert!(names.contains(&"A"));
         assert!(names.contains(&"B"));
         assert!(names.contains(&"C"));
+    }
+
+    #[test]
+    fn script_entry_deserialize_simple() {
+        let yaml = r#""echo hello""#;
+        let entry: ScriptEntry = serde_yaml::from_str(yaml).unwrap();
+        match entry {
+            ScriptEntry::Simple(s) => assert_eq!(s, "echo hello"),
+            _ => panic!("expected Simple variant"),
+        }
+    }
+
+    #[test]
+    fn script_entry_deserialize_full() {
+        let yaml = r#"
+run: scripts/check.sh
+timeout: 30s
+continueOnError: true
+"#;
+        let entry: ScriptEntry = serde_yaml::from_str(yaml).unwrap();
+        match entry {
+            ScriptEntry::Full {
+                run,
+                timeout,
+                continue_on_error,
+            } => {
+                assert_eq!(run, "scripts/check.sh");
+                assert_eq!(timeout, Some("30s".to_string()));
+                assert_eq!(continue_on_error, Some(true));
+            }
+            _ => panic!("expected Full variant"),
+        }
+    }
+
+    #[test]
+    fn script_spec_deserialize_all_hooks() {
+        let yaml = r#"
+preApply:
+  - scripts/pre.sh
+postApply:
+  - run: scripts/post.sh
+    timeout: 60s
+preReconcile:
+  - scripts/reconcile-pre.sh
+postReconcile:
+  - scripts/reconcile-post.sh
+onDrift:
+  - scripts/drift.sh
+onChange:
+  - run: systemctl restart myservice
+    continueOnError: true
+"#;
+        let spec: ScriptSpec = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(spec.pre_apply.len(), 1);
+        assert_eq!(spec.post_apply.len(), 1);
+        assert_eq!(spec.pre_reconcile.len(), 1);
+        assert_eq!(spec.post_reconcile.len(), 1);
+        assert_eq!(spec.on_drift.len(), 1);
+        assert_eq!(spec.on_change.len(), 1);
+    }
+
+    #[test]
+    fn script_spec_backward_compat_empty() {
+        let yaml = "{}";
+        let spec: ScriptSpec = serde_yaml::from_str(yaml).unwrap();
+        assert!(spec.pre_apply.is_empty());
+        assert!(spec.post_apply.is_empty());
+        assert!(spec.pre_reconcile.is_empty());
+        assert!(spec.post_reconcile.is_empty());
+        assert!(spec.on_drift.is_empty());
+        assert!(spec.on_change.is_empty());
     }
 }

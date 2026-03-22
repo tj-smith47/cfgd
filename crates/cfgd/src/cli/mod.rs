@@ -6900,7 +6900,7 @@ spec:
                 .as_ref()
                 .unwrap()
                 .post_apply
-                .contains(&"echo done".to_string())
+                .contains(&config::ScriptEntry::Simple("echo done".to_string()))
         );
         assert!(module_dir.join("files").join("testfile.txt").exists());
     }
@@ -7416,10 +7416,13 @@ spec:
 
         let doc = config::load_profile(&dir.path().join("profiles").join("default.yaml")).unwrap();
         let scripts = doc.spec.scripts.as_ref().unwrap();
-        assert_eq!(scripts.pre_reconcile, vec![PathBuf::from("scripts/pre.sh")]);
+        assert_eq!(
+            scripts.pre_reconcile,
+            vec![config::ScriptEntry::Simple("scripts/pre.sh".to_string())]
+        );
         assert_eq!(
             scripts.post_reconcile,
-            vec![PathBuf::from("scripts/post.sh")]
+            vec![config::ScriptEntry::Simple("scripts/post.sh".to_string())]
         );
 
         // Remove pre-reconcile

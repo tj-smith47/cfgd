@@ -354,17 +354,37 @@ spec:
     - source: 1password://Work/GitHub/token
       target: ~/.config/gh/token
 
-  # Lifecycle scripts — run before/after reconciliation.
+  # Lifecycle scripts — hook into apply, reconcile, drift, and change events.
+  # Each hook accepts a list of script entries. Entries can be simple strings
+  # (command to run) or objects with run, timeout, and continueOnError fields.
   # optional
   scripts:
-    # Scripts run before reconcile. Paths relative to config repo.
+    # Scripts run before apply. Paths relative to config repo or inline commands.
+    # optional, default: []
+    preApply:
+      - scripts/pre-setup.sh
+    # Scripts run after apply.
+    # optional, default: []
+    postApply:
+      - run: scripts/post-setup.sh
+        timeout: 60s
+        continueOnError: false
+    # Scripts run before reconcile.
     # optional, default: []
     preReconcile:
-      - scripts/pre-setup.sh
-    # Scripts run after reconcile. Paths relative to config repo.
+      - scripts/reconcile-pre.sh
+    # Scripts run after reconcile.
     # optional, default: []
     postReconcile:
-      - scripts/post-setup.sh
+      - scripts/reconcile-post.sh
+    # Scripts run when drift is detected.
+    # optional, default: []
+    onDrift:
+      - scripts/on-drift.sh
+    # Scripts run when configuration changes.
+    # optional, default: []
+    onChange:
+      - scripts/on-change.sh
 "#;
 
 const CONFIG_SCHEMA: &str = r#"# cfgd Config schema — cfgd.io/v1alpha1
@@ -633,7 +653,7 @@ mod tests {
         assert!(schema.contains("target"));
         assert!(schema.contains("strategy"));
         assert!(schema.contains("private"));
-        // ModuleScriptSpec
+        // ScriptSpec (unified — all hooks except onDrift for modules)
         assert!(schema.contains("postApply"));
     }
 
@@ -670,9 +690,13 @@ mod tests {
         // FilesSpec fields
         assert!(schema.contains("managed"));
         assert!(schema.contains("permissions"));
-        // ScriptSpec
+        // ScriptSpec (all 6 hook types)
+        assert!(schema.contains("preApply"));
+        assert!(schema.contains("postApply"));
         assert!(schema.contains("preReconcile"));
         assert!(schema.contains("postReconcile"));
+        assert!(schema.contains("onDrift"));
+        assert!(schema.contains("onChange"));
     }
 
     #[test]
