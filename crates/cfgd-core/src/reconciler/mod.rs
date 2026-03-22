@@ -1135,7 +1135,7 @@ impl<'a> Reconciler<'a> {
                     // Restore symlink
                     if let Some(ref link_target) = bk.symlink_target {
                         let _ = std::fs::remove_file(target);
-                        if let Err(e) = std::os::unix::fs::symlink(link_target, target) {
+                        if let Err(e) = crate::create_symlink(std::path::Path::new(link_target), target) {
                             printer.warning(&format!(
                                 "rollback: failed to restore symlink {}: {}",
                                 target.display(),
@@ -1658,7 +1658,7 @@ impl<'a> Reconciler<'a> {
                     if file.source.is_dir() {
                         match strategy {
                             crate::config::FileStrategy::Symlink => {
-                                std::os::unix::fs::symlink(&file.source, &target)?;
+                                crate::create_symlink(&file.source, &target)?;
                             }
                             _ => {
                                 crate::copy_dir_recursive(&file.source, &target)?;
@@ -1667,7 +1667,7 @@ impl<'a> Reconciler<'a> {
                     } else if file.source.exists() {
                         match strategy {
                             crate::config::FileStrategy::Symlink => {
-                                std::os::unix::fs::symlink(&file.source, &target)?;
+                                crate::create_symlink(&file.source, &target)?;
                             }
                             crate::config::FileStrategy::Hardlink => {
                                 std::fs::hard_link(&file.source, &target)?;
@@ -2833,7 +2833,7 @@ fn apply_file_action_direct(
             }
             match strategy {
                 crate::config::FileStrategy::Symlink => {
-                    std::os::unix::fs::symlink(source, target)?;
+                    crate::create_symlink(source, target)?;
                 }
                 crate::config::FileStrategy::Hardlink => {
                     std::fs::hard_link(source, target)?;

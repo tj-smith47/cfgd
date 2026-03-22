@@ -135,6 +135,52 @@ fn home_dir_var() -> Option<String> {
         .ok()
 }
 
+/// Create a symbolic link. On Unix, uses `std::os::unix::fs::symlink`.
+/// On Windows, uses `symlink_file` or `symlink_dir` based on the source type.
+/// If symlink creation fails on Windows due to insufficient privileges,
+/// returns an error with guidance to enable Developer Mode or run as admin.
+pub fn create_symlink(
+    source: &std::path::Path,
+    target: &std::path::Path,
+) -> std::io::Result<()> {
+    create_symlink_impl(source, target).map_err(|e| {
+        #[cfg(windows)]
+        if e.raw_os_error() == Some(1314) {
+            // ERROR_PRIVILEGE_NOT_HELD
+            return std::io::Error::new(
+                e.kind(),
+                format!(
+                    "symlink creation requires Developer Mode or admin privileges: {} -> {}\n\
+                     Enable Developer Mode: Settings > Update & Security > For developers",
+                    source.display(),
+                    target.display()
+                ),
+            );
+        }
+        e
+    })
+}
+
+#[cfg(unix)]
+fn create_symlink_impl(
+    source: &std::path::Path,
+    target: &std::path::Path,
+) -> std::io::Result<()> {
+    std::os::unix::fs::symlink(source, target)
+}
+
+#[cfg(windows)]
+fn create_symlink_impl(
+    source: &std::path::Path,
+    target: &std::path::Path,
+) -> std::io::Result<()> {
+    if source.is_dir() {
+        std::os::windows::fs::symlink_dir(source, target)
+    } else {
+        std::os::windows::fs::symlink_file(source, target)
+    }
+}
+
 /// Parse a potentially loose version string into a semver Version.
 /// Handles "1.28" → "1.28.0" and "1" → "1.0.0".
 pub fn parse_loose_version(s: &str) -> Option<semver::Version> {
@@ -856,6 +902,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn capture_file_state_symlink() {
         let dir = tempfile::tempdir().unwrap();
         let real = dir.path().join("real.txt");
@@ -875,6 +922,17 @@ mod tests {
         let missing = dir.path().join("does_not_exist.txt");
         let state = capture_file_state(&missing).unwrap();
         assert!(state.is_none());
+    }
+
+    #[test]
+    fn create_symlink_creates_link() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("source.txt");
+        std::fs::write(&source, "hello").unwrap();
+        let link = dir.path().join("link.txt");
+        create_symlink(&source, &link).unwrap();
+        assert!(link.symlink_metadata().unwrap().file_type().is_symlink());
+        assert_eq!(std::fs::read_to_string(&link).unwrap(), "hello");
     }
 
     #[test]

@@ -593,7 +593,7 @@ impl cfgd_core::providers::FileManager for CfgdFileManager {
 
                     match strategy {
                         FileStrategy::Symlink => {
-                            std::os::unix::fs::symlink(source, target).map_err(|e| {
+                            cfgd_core::create_symlink(source, target).map_err(|e| {
                                 FileError::Io {
                                     path: target.clone(),
                                     source: e,

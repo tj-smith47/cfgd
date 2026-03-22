@@ -2885,6 +2885,7 @@ spec:
     // --- hash_module_contents: symlinks skipped ---
 
     #[test]
+    #[cfg(unix)]
     fn hash_module_contents_skips_symlinks() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("real.txt"), "hello").unwrap();

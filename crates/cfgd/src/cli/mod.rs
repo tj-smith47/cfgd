@@ -1700,7 +1700,7 @@ fn copy_files_to_dir(
             } else {
                 std::fs::remove_file(&source)?;
             }
-            std::os::unix::fs::symlink(&dest, &source)?;
+            cfgd_core::create_symlink(&dest, &source)?;
         }
         results.push((file_name.to_string_lossy().to_string(), target));
     }
@@ -8385,6 +8385,7 @@ spec:
     }
 
     #[test]
+    #[cfg(unix)]
     fn is_unmanaged_file_cfgd_symlink() {
         let dir = tempfile::tempdir().unwrap();
         let state = StateStore::open_in_memory().unwrap();
