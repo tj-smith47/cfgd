@@ -2194,9 +2194,19 @@ pub(crate) fn execute_script(
         c.current_dir(working_dir);
         c
     } else {
-        // Inline command — pass through sh -c
-        let mut c = std::process::Command::new("sh");
-        c.arg("-c").arg(run_str).current_dir(working_dir);
+        // Inline command — pass through sh -c on Unix, cmd.exe /C on Windows
+        #[cfg(unix)]
+        let c = {
+            let mut c = std::process::Command::new("sh");
+            c.arg("-c").arg(run_str).current_dir(working_dir);
+            c
+        };
+        #[cfg(windows)]
+        let c = {
+            let mut c = std::process::Command::new("cmd.exe");
+            c.arg("/C").arg(run_str).current_dir(working_dir);
+            c
+        };
         c
     };
 
