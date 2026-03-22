@@ -383,6 +383,21 @@ impl CfgdFileManager {
             .or_else(|| profile.files.permissions.get(&managed.source));
 
         if let Some(mode_str) = mode_str {
+            // On Windows, file permissions are not applicable (NTFS uses inherited ACLs).
+            // Skip generating SetPermissions actions and log a one-time info message.
+            #[cfg(windows)]
+            {
+                use std::sync::Once;
+                static WARN_ONCE: Once = Once::new();
+                WARN_ONCE.call_once(|| {
+                    tracing::info!(
+                        "file permissions are not applicable on Windows (NTFS uses inherited ACLs); \
+                         permissions settings will be ignored"
+                    );
+                });
+                let _ = mode_str;
+                return Ok(None);
+            }
             let desired_mode =
                 u32::from_str_radix(mode_str, 8).map_err(|_| FileError::TemplateError {
                     path: target.to_path_buf(),
