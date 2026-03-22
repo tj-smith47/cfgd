@@ -158,6 +158,7 @@ Current shared items (keep this list updated when adding new ones):
 - `PROFILE_SCRIPT_TIMEOUT` — default timeout for profile-level scripts (5 minutes); use instead of hardcoded `Duration::from_secs(300)`
 - `terminate_process(pid)` — send SIGTERM (Unix) or TerminateProcess (Windows) to a process by PID; cross-platform, ungated
 - `is_root()` — check if the current process runs with elevated privileges: euid==0 (Unix) or IsUserAnAdmin() (Windows)
+- `cleanup_old_binary()` — remove `.exe.old` left by the Windows rename-dance self-upgrade; no-op on Unix. Called from `main.rs` on startup (lives in `upgrade.rs`, not `lib.rs`)
 
 ### Database Conventions
 
