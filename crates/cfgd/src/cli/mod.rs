@@ -260,6 +260,45 @@ fn extract_config_path(args: &[String]) -> Option<PathBuf> {
     Some(default_config_file())
 }
 
+#[derive(Debug, Clone)]
+pub struct OutputFormatArg(pub cfgd_core::output::OutputFormat);
+
+impl std::str::FromStr for OutputFormatArg {
+    type Err = String;
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        use cfgd_core::output::OutputFormat;
+        match s {
+            "table" => Ok(Self(OutputFormat::Table)),
+            "wide" => Ok(Self(OutputFormat::Wide)),
+            "json" => Ok(Self(OutputFormat::Json)),
+            "yaml" => Ok(Self(OutputFormat::Yaml)),
+            "name" => Ok(Self(OutputFormat::Name)),
+            other => {
+                if let Some(expr) = other.strip_prefix("jsonpath=") {
+                    Ok(Self(OutputFormat::Jsonpath(expr.to_string())))
+                } else if let Some(tmpl) = other.strip_prefix("template=") {
+                    Ok(Self(OutputFormat::Template(tmpl.to_string())))
+                } else if let Some(path) = other.strip_prefix("template-file=") {
+                    Ok(Self(OutputFormat::TemplateFile(std::path::PathBuf::from(
+                        path,
+                    ))))
+                } else {
+                    Err(format!(
+                        "unknown output format '{}'. Valid: table, wide, json, yaml, name, jsonpath=EXPR, template=TMPL, template-file=PATH",
+                        other
+                    ))
+                }
+            }
+        }
+    }
+}
+
+impl From<OutputFormatArg> for clap::builder::OsStr {
+    fn from(_: OutputFormatArg) -> clap::builder::OsStr {
+        clap::builder::OsStr::from("table")
+    }
+}
+
 #[derive(Parser)]
 #[command(
     name = "cfgd",
@@ -299,9 +338,9 @@ pub struct Cli {
     #[arg(long, global = true)]
     pub no_color: bool,
 
-    /// Output format: table (default), json, yaml
+    /// Output format: table, wide, json, yaml, name, jsonpath=EXPR, template=TMPL, template-file=PATH
     #[arg(long, short = 'o', global = true, default_value = "table")]
-    pub output: String,
+    pub output: OutputFormatArg,
 
     /// JSONPath expression to extract from structured output
     #[arg(long, global = true)]
@@ -6725,7 +6764,7 @@ spec:
             no_color: true,
             verbose: false,
             quiet: true,
-            output: "table".to_string(),
+            output: OutputFormatArg(cfgd_core::output::OutputFormat::Table),
             jsonpath: None,
             state_dir,
             command: Command::Status { module: None },
@@ -9171,7 +9210,7 @@ spec:
         let (config_dir, state_dir) = setup_test_env();
 
         let cli = Cli {
-            output: "json".to_string(),
+            output: OutputFormatArg(cfgd_core::output::OutputFormat::Json),
             ..test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()))
         };
         let printer = Printer::new(cfgd_core::output::Verbosity::Quiet);
@@ -9840,5 +9879,51 @@ spec:
 
         // Verify
         assert!(super::cmd_verify(&cli, &printer, None).is_ok());
+    }
+
+    #[test]
+    fn output_format_arg_parse_basic() {
+        use super::OutputFormatArg;
+        let table: OutputFormatArg = "table".parse().unwrap();
+        assert_eq!(table.0, cfgd_core::output::OutputFormat::Table);
+        let wide: OutputFormatArg = "wide".parse().unwrap();
+        assert_eq!(wide.0, cfgd_core::output::OutputFormat::Wide);
+        let json: OutputFormatArg = "json".parse().unwrap();
+        assert_eq!(json.0, cfgd_core::output::OutputFormat::Json);
+        let yaml: OutputFormatArg = "yaml".parse().unwrap();
+        assert_eq!(yaml.0, cfgd_core::output::OutputFormat::Yaml);
+        let name: OutputFormatArg = "name".parse().unwrap();
+        assert_eq!(name.0, cfgd_core::output::OutputFormat::Name);
+    }
+
+    #[test]
+    fn output_format_arg_parse_data_carrying() {
+        use super::OutputFormatArg;
+        let jp: OutputFormatArg = "jsonpath=.items[*].name".parse().unwrap();
+        assert_eq!(
+            jp.0,
+            cfgd_core::output::OutputFormat::Jsonpath(".items[*].name".to_string())
+        );
+        let tmpl: OutputFormatArg = "template={{ name }}".parse().unwrap();
+        assert_eq!(
+            tmpl.0,
+            cfgd_core::output::OutputFormat::Template("{{ name }}".to_string())
+        );
+        let tf: OutputFormatArg = "template-file=/tmp/report.tera".parse().unwrap();
+        assert_eq!(
+            tf.0,
+            cfgd_core::output::OutputFormat::TemplateFile(std::path::PathBuf::from(
+                "/tmp/report.tera"
+            ))
+        );
+    }
+
+    #[test]
+    fn output_format_arg_parse_error() {
+        use super::OutputFormatArg;
+        let result: Result<OutputFormatArg, _> = "invalid".parse();
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.contains("unknown output format"));
     }
 }

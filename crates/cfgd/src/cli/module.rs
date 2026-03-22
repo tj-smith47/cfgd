@@ -2742,7 +2742,7 @@ spec:
             verbose: false,
             quiet: true,
             no_color: false,
-            output: "table".to_string(),
+            output: super::OutputFormatArg(cfgd_core::output::OutputFormat::Table),
             jsonpath: None,
             state_dir: None,
         };

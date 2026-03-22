@@ -26,22 +26,25 @@ fn main() -> anyhow::Result<()> {
     let expanded = cli::expand_aliases(raw_args);
     let cli = cli::Cli::parse_from(expanded);
 
-    // Parse output format
-    let output_format = match cli.output.as_str() {
-        "json" => cfgd_core::output::OutputFormat::Json,
-        "yaml" => cfgd_core::output::OutputFormat::Yaml,
-        "table" => {
-            // --jsonpath implies json output
-            if cli.jsonpath.is_some() {
-                cfgd_core::output::OutputFormat::Json
-            } else {
-                cfgd_core::output::OutputFormat::Table
+    // Resolve output format with --jsonpath backwards compat
+    let mut output_format = cli.output.0.clone();
+    let jsonpath_compat = if let Some(ref expr) = cli.jsonpath {
+        match &output_format {
+            cfgd_core::output::OutputFormat::Table => {
+                output_format = cfgd_core::output::OutputFormat::Jsonpath(expr.clone());
+                true // emit deprecation hint after printer is ready
+            }
+            cfgd_core::output::OutputFormat::Jsonpath(_) => {
+                anyhow::bail!("cannot use both --jsonpath and -o jsonpath=...");
+            }
+            _ => {
+                // --jsonpath with json/yaml — apply jsonpath extraction
+                output_format = cfgd_core::output::OutputFormat::Jsonpath(expr.clone());
+                true
             }
         }
-        other => {
-            eprintln!("Unknown output format '{}'. Use: table, json, yaml", other);
-            std::process::exit(1);
-        }
+    } else {
+        false
     };
 
     // Determine verbosity
@@ -79,12 +82,12 @@ fn main() -> anyhow::Result<()> {
         .then(|| cfgd_core::config::load_config(std::path::Path::new(&cli.config)).ok())
         .flatten()
         .and_then(|c| c.spec.theme);
-    let printer = cfgd_core::output::Printer::with_format(
-        verbosity,
-        theme_config.as_ref(),
-        output_format,
-        cli.jsonpath.clone(),
-    );
+    let printer =
+        cfgd_core::output::Printer::with_format(verbosity, theme_config.as_ref(), output_format);
+
+    if jsonpath_compat {
+        printer.warning("--jsonpath is deprecated; use -o jsonpath=EXPR instead");
+    }
 
     if let Err(e) = cli::execute(&cli, &printer) {
         printer.error(&format!("{:#}", e));

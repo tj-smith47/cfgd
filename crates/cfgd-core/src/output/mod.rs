@@ -16,11 +16,16 @@ use std::time::{Duration, Instant};
 
 use crate::config::ThemeConfig;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum OutputFormat {
     Table,
+    Wide,
     Json,
     Yaml,
+    Name,
+    Jsonpath(String),
+    Template(String),
+    TemplateFile(std::path::PathBuf),
 }
 
 // Default icons shared across all non-minimal presets
@@ -478,7 +483,6 @@ pub struct Printer {
     theme_set: ThemeSet,
     verbosity: Verbosity,
     output_format: OutputFormat,
-    jsonpath: Option<String>,
 }
 
 impl Printer {
@@ -487,20 +491,18 @@ impl Printer {
     }
 
     pub fn with_theme(verbosity: Verbosity, theme_config: Option<&ThemeConfig>) -> Self {
-        Self::with_format(verbosity, theme_config, OutputFormat::Table, None)
+        Self::with_format(verbosity, theme_config, OutputFormat::Table)
     }
 
     pub fn with_format(
         verbosity: Verbosity,
         theme_config: Option<&ThemeConfig>,
         output_format: OutputFormat,
-        jsonpath: Option<String>,
     ) -> Self {
         // Auto-quiet when structured output is active
-        let verbosity = if output_format != OutputFormat::Table {
-            Verbosity::Quiet
-        } else {
-            verbosity
+        let verbosity = match &output_format {
+            OutputFormat::Table | OutputFormat::Wide => verbosity,
+            _ => Verbosity::Quiet,
         };
         Self {
             theme: Theme::from_config(theme_config),
@@ -510,7 +512,6 @@ impl Printer {
             theme_set: ThemeSet::load_defaults(),
             verbosity,
             output_format,
-            jsonpath,
         }
     }
 
@@ -734,40 +735,103 @@ impl Printer {
         let _ = stdout.write_line(text);
     }
 
-    /// Whether structured output mode is active (json or yaml).
+    /// Whether structured output mode is active (not table or wide).
     pub fn is_structured(&self) -> bool {
-        self.output_format != OutputFormat::Table
+        !matches!(self.output_format, OutputFormat::Table | OutputFormat::Wide)
     }
 
-    /// Write a serializable value as structured output (JSON/YAML) to stdout.
+    /// Write a serializable value as structured output to stdout.
     /// Returns `true` if output was emitted (caller should skip human formatting).
-    /// Returns `false` if output format is Table (caller should do human formatting).
+    /// Returns `false` if output format is Table/Wide (caller should do human formatting).
     pub fn write_structured<T: Serialize>(&self, value: &T) -> bool {
-        match self.output_format {
-            OutputFormat::Table => false,
+        match &self.output_format {
+            OutputFormat::Table | OutputFormat::Wide => false,
             OutputFormat::Json => {
                 let json_value = serde_json::to_value(value).unwrap_or(serde_json::Value::Null);
-                let text = if let Some(ref expr) = self.jsonpath {
-                    apply_jsonpath(&json_value, expr)
-                } else {
-                    serde_json::to_string_pretty(&json_value).unwrap_or_default()
-                };
+                let text = serde_json::to_string_pretty(&json_value).unwrap_or_default();
                 self.stdout_line(&text);
                 true
             }
             OutputFormat::Yaml => {
-                if let Some(ref expr) = self.jsonpath {
-                    // jsonpath operates on JSON, then output as YAML
-                    let json_value = serde_json::to_value(value).unwrap_or(serde_json::Value::Null);
-                    let extracted = apply_jsonpath(&json_value, expr);
-                    self.stdout_line(&extracted);
-                } else {
-                    let yaml = serde_yaml::to_string(value).unwrap_or_default();
-                    let trimmed = yaml.strip_prefix("---\n").unwrap_or(&yaml);
-                    self.stdout_line(trimmed.trim_end());
+                let yaml = serde_yaml::to_string(value).unwrap_or_default();
+                let trimmed = yaml.strip_prefix("---\n").unwrap_or(&yaml);
+                self.stdout_line(trimmed.trim_end());
+                true
+            }
+            OutputFormat::Name => {
+                let json_value = serde_json::to_value(value).unwrap_or(serde_json::Value::Null);
+                match &json_value {
+                    serde_json::Value::Array(arr) => {
+                        for item in arr {
+                            if let Some(name) = item.get("name").and_then(|v| v.as_str()) {
+                                self.stdout_line(name);
+                            }
+                        }
+                    }
+                    obj => {
+                        if let Some(name) = obj.get("name").and_then(|v| v.as_str()) {
+                            self.stdout_line(name);
+                        }
+                    }
                 }
                 true
             }
+            OutputFormat::Jsonpath(expr) => {
+                let json_value = serde_json::to_value(value).unwrap_or(serde_json::Value::Null);
+                let text = apply_jsonpath(&json_value, expr);
+                self.stdout_line(&text);
+                true
+            }
+            OutputFormat::Template(tmpl) => {
+                self.render_template(value, tmpl);
+                true
+            }
+            OutputFormat::TemplateFile(path) => {
+                let path = crate::expand_tilde(path);
+                match std::fs::read_to_string(&path) {
+                    Ok(tmpl) => {
+                        self.render_template(value, &tmpl);
+                    }
+                    Err(e) => {
+                        self.error(&format!(
+                            "failed to read template file '{}': {}",
+                            path.display(),
+                            e
+                        ));
+                    }
+                }
+                true
+            }
+        }
+    }
+
+    fn render_template<T: Serialize>(&self, value: &T, template: &str) {
+        let json_value = serde_json::to_value(value).unwrap_or(serde_json::Value::Null);
+        let mut tera = tera::Tera::default();
+        let tmpl_name = "__inline__";
+        if let Err(e) = tera.add_raw_template(tmpl_name, template) {
+            self.error(&format!("invalid template: {}", e));
+            return;
+        }
+        match &json_value {
+            serde_json::Value::Array(arr) => {
+                for item in arr {
+                    match tera::Context::from_value(item.clone()) {
+                        Ok(ctx) => match tera.render(tmpl_name, &ctx) {
+                            Ok(rendered) => self.stdout_line(&rendered),
+                            Err(e) => self.error(&format!("template render error: {}", e)),
+                        },
+                        Err(e) => self.error(&format!("template context error: {}", e)),
+                    }
+                }
+            }
+            other => match tera::Context::from_value(other.clone()) {
+                Ok(ctx) => match tera.render(tmpl_name, &ctx) {
+                    Ok(rendered) => self.stdout_line(&rendered),
+                    Err(e) => self.error(&format!("template render error: {}", e)),
+                },
+                Err(e) => self.error(&format!("template context error: {}", e)),
+            },
         }
     }
 
@@ -1146,7 +1210,7 @@ mod tests {
 
     #[test]
     fn output_format_json_returns_true() {
-        let printer = Printer::with_format(Verbosity::Normal, None, OutputFormat::Json, None);
+        let printer = Printer::with_format(Verbosity::Normal, None, OutputFormat::Json);
         assert!(printer.is_structured());
         let val = serde_json::json!({"key": "value"});
         assert!(printer.write_structured(&val));
@@ -1154,14 +1218,14 @@ mod tests {
 
     #[test]
     fn output_format_yaml_returns_true() {
-        let printer = Printer::with_format(Verbosity::Normal, None, OutputFormat::Yaml, None);
+        let printer = Printer::with_format(Verbosity::Normal, None, OutputFormat::Yaml);
         assert!(printer.is_structured());
         assert!(printer.write_structured(&"hello"));
     }
 
     #[test]
     fn structured_mode_sets_quiet_verbosity() {
-        let printer = Printer::with_format(Verbosity::Normal, None, OutputFormat::Json, None);
+        let printer = Printer::with_format(Verbosity::Normal, None, OutputFormat::Json);
         assert_eq!(printer.verbosity(), Verbosity::Quiet);
     }
 

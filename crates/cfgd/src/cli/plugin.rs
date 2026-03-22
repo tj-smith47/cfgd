@@ -97,7 +97,6 @@ pub fn plugin_main() -> anyhow::Result<()> {
         cfgd_core::output::Verbosity::Normal,
         None,
         cfgd_core::output::OutputFormat::Table,
-        None,
     );
 
     match cli.command {

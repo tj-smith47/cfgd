@@ -61,6 +61,9 @@ ureq = "2"
 git2 = "0.19"
 openssl = { version = "0.10", features = ["vendored"] }
 
+# Templating (output format)
+tera = "1"
+
 # Semver (multi-source version pinning)
 semver = "1"
 
