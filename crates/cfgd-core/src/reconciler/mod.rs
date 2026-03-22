@@ -2251,14 +2251,7 @@ pub(crate) fn execute_script(
             None => {
                 if start.elapsed() > effective_timeout {
                     // Timeout — send SIGTERM then force kill
-                    #[cfg(unix)]
-                    {
-                        // Safety: libc::kill is a standard POSIX signal call.
-                        // child.id() is a valid PID from a process we spawned.
-                        unsafe {
-                            libc::kill(child.id() as libc::pid_t, libc::SIGTERM);
-                        }
-                    }
+                    crate::terminate_process(child.id());
                     // Wait briefly for graceful shutdown
                     std::thread::sleep(std::time::Duration::from_secs(5));
                     // Force kill if still running

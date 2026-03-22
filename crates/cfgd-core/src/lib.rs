@@ -255,6 +255,41 @@ pub fn is_same_inode(a: &std::path::Path, b: &std::path::Path) -> bool {
     }
 }
 
+/// Send a termination signal to a process by PID.
+/// Unix: sends SIGTERM. Windows: calls TerminateProcess.
+#[cfg(unix)]
+pub fn terminate_process(pid: u32) {
+    unsafe {
+        libc::kill(pid as libc::pid_t, libc::SIGTERM);
+    }
+}
+
+#[cfg(windows)]
+pub fn terminate_process(pid: u32) {
+    use windows_sys::Win32::Foundation::CloseHandle;
+    use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_TERMINATE, TerminateProcess};
+    unsafe {
+        let handle = OpenProcess(PROCESS_TERMINATE, 0, pid);
+        if !handle.is_null() {
+            TerminateProcess(handle, 1);
+            CloseHandle(handle);
+        }
+    }
+}
+
+/// Check if the current process is running with elevated privileges.
+/// Unix: checks euid == 0. Windows: checks IsUserAnAdmin().
+#[cfg(unix)]
+pub fn is_root() -> bool {
+    unsafe { libc::geteuid() == 0 }
+}
+
+#[cfg(windows)]
+pub fn is_root() -> bool {
+    use windows_sys::Win32::UI::Shell::IsUserAnAdmin;
+    unsafe { IsUserAnAdmin() != 0 }
+}
+
 /// Parse a potentially loose version string into a semver Version.
 /// Handles "1.28" → "1.28.0" and "1" → "1.0.0".
 pub fn parse_loose_version(s: &str) -> Option<semver::Version> {

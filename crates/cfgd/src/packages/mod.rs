@@ -115,14 +115,7 @@ const LINUXBREW_PATH: &str = "/home/linuxbrew/.linuxbrew/bin/brew";
 
 /// Check if running as root (UID 0).
 fn is_root() -> bool {
-    #[cfg(unix)]
-    {
-        unsafe { libc::geteuid() == 0 }
-    }
-    #[cfg(not(unix))]
-    {
-        false
-    }
+    cfgd_core::is_root()
 }
 
 /// Check if brew is available, including linuxbrew fallback on Linux.

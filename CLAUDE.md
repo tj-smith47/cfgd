@@ -156,6 +156,8 @@ Current shared items (keep this list updated when adding new ones):
 - `sanitize_k8s_name(name)` — sanitize a string for Kubernetes RFC 1123 DNS label rules
 - `parse_duration_str(s)` — parse "30s", "5m", "1h", or plain seconds into `Duration`; returns `Result<Duration, String>`
 - `PROFILE_SCRIPT_TIMEOUT` — default timeout for profile-level scripts (5 minutes); use instead of hardcoded `Duration::from_secs(300)`
+- `terminate_process(pid)` — send SIGTERM (Unix) or TerminateProcess (Windows) to a process by PID; cross-platform, ungated
+- `is_root()` — check if the current process runs with elevated privileges: euid==0 (Unix) or IsUserAnAdmin() (Windows)
 
 ### Database Conventions
 
