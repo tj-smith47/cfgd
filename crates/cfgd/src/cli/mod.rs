@@ -1812,8 +1812,8 @@ fn build_registry_with_config_and_packages(
     // Register system configurators based on OS
     use crate::system::*;
 
-    // ShellConfigurator uses `chsh` (Unix-only)
-    if cfg!(unix) {
+    // ShellConfigurator: `chsh` on Unix, Windows Terminal settings.json on Windows
+    if cfg!(unix) || cfg!(windows) {
         registry
             .system_configurators
             .push(Box::new(ShellConfigurator));

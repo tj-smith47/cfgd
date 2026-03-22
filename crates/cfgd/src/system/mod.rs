@@ -64,8 +64,49 @@ pub(crate) fn diff_yaml_mapping(
     drifts
 }
 
-/// ShellConfigurator — reads/sets default shell via `chsh`.
+/// ShellConfigurator — reads/sets default shell.
+///
+/// **Unix**: reads `$SHELL`, uses `chsh -s` to change the default shell.
+/// **Windows**: manages Windows Terminal's default profile via its `settings.json`.
+///   The desired value is the profile *name* (e.g. "PowerShell", "Git Bash").
 pub struct ShellConfigurator;
+
+/// Path to Windows Terminal settings.json (Microsoft Store install).
+fn windows_terminal_settings_path() -> Option<std::path::PathBuf> {
+    let local_app_data = std::env::var("LOCALAPPDATA").ok()?;
+    let path = std::path::PathBuf::from(local_app_data)
+        .join("Packages/Microsoft.WindowsTerminal_8wekyb3d8bbwe/LocalState/settings.json");
+    if path.exists() { Some(path) } else { None }
+}
+
+/// Resolve the human-readable name of the current default profile.
+fn resolve_default_profile_name(settings: &serde_json::Value) -> Option<String> {
+    let default_guid = settings.get("defaultProfile")?.as_str()?;
+    let profiles = settings.get("profiles")?.get("list")?.as_array()?;
+    for p in profiles {
+        if p.get("guid").and_then(|g| g.as_str()) == Some(default_guid) {
+            return p
+                .get("name")
+                .and_then(|n| n.as_str())
+                .map(|s| s.to_string());
+        }
+    }
+    None
+}
+
+/// Find the GUID of a profile by its name.
+fn find_profile_guid(settings: &serde_json::Value, name: &str) -> Option<String> {
+    let profiles = settings.get("profiles")?.get("list")?.as_array()?;
+    for p in profiles {
+        if p.get("name").and_then(|n| n.as_str()) == Some(name) {
+            return p
+                .get("guid")
+                .and_then(|g| g.as_str())
+                .map(|s| s.to_string());
+        }
+    }
+    None
+}
 
 impl SystemConfigurator for ShellConfigurator {
     fn name(&self) -> &str {
@@ -73,12 +114,29 @@ impl SystemConfigurator for ShellConfigurator {
     }
 
     fn is_available(&self) -> bool {
-        cfg!(unix)
+        cfg!(unix) || cfg!(windows)
     }
 
     fn current_state(&self) -> Result<serde_yaml::Value> {
-        let shell = std::env::var("SHELL").unwrap_or_default();
-        Ok(serde_yaml::Value::String(shell))
+        if cfg!(windows) {
+            // Read Windows Terminal settings.json for the default profile name
+            let path = match windows_terminal_settings_path() {
+                Some(p) => p,
+                None => return Ok(serde_yaml::Value::String(String::new())),
+            };
+            let content =
+                std::fs::read_to_string(&path).map_err(cfgd_core::errors::CfgdError::Io)?;
+            let settings: serde_json::Value = serde_json::from_str(&content).map_err(|e| {
+                cfgd_core::errors::CfgdError::Config(cfgd_core::errors::ConfigError::Invalid {
+                    message: e.to_string(),
+                })
+            })?;
+            let name = resolve_default_profile_name(&settings).unwrap_or_default();
+            Ok(serde_yaml::Value::String(name))
+        } else {
+            let shell = std::env::var("SHELL").unwrap_or_default();
+            Ok(serde_yaml::Value::String(shell))
+        }
     }
 
     fn diff(&self, desired: &serde_yaml::Value) -> Result<Vec<SystemDrift>> {
@@ -87,16 +145,44 @@ impl SystemConfigurator for ShellConfigurator {
             return Ok(Vec::new());
         }
 
-        let current_shell = std::env::var("SHELL").unwrap_or_default();
-        if current_shell == desired_shell {
-            return Ok(Vec::new());
+        if cfg!(windows) {
+            let path = match windows_terminal_settings_path() {
+                Some(p) => p,
+                None => {
+                    return Ok(vec![SystemDrift {
+                        key: "default-shell".to_string(),
+                        expected: desired_shell.to_string(),
+                        actual: "Windows Terminal not installed".to_string(),
+                    }]);
+                }
+            };
+            let content =
+                std::fs::read_to_string(&path).map_err(cfgd_core::errors::CfgdError::Io)?;
+            let settings: serde_json::Value = serde_json::from_str(&content).map_err(|e| {
+                cfgd_core::errors::CfgdError::Config(cfgd_core::errors::ConfigError::Invalid {
+                    message: e.to_string(),
+                })
+            })?;
+            let current = resolve_default_profile_name(&settings).unwrap_or_default();
+            if current == desired_shell {
+                return Ok(Vec::new());
+            }
+            Ok(vec![SystemDrift {
+                key: "default-shell".to_string(),
+                expected: desired_shell.to_string(),
+                actual: current,
+            }])
+        } else {
+            let current_shell = std::env::var("SHELL").unwrap_or_default();
+            if current_shell == desired_shell {
+                return Ok(Vec::new());
+            }
+            Ok(vec![SystemDrift {
+                key: "default-shell".to_string(),
+                expected: desired_shell.to_string(),
+                actual: current_shell,
+            }])
         }
-
-        Ok(vec![SystemDrift {
-            key: "default-shell".to_string(),
-            expected: desired_shell.to_string(),
-            actual: current_shell,
-        }])
     }
 
     fn apply(&self, desired: &serde_yaml::Value, printer: &Printer) -> Result<()> {
@@ -105,22 +191,66 @@ impl SystemConfigurator for ShellConfigurator {
             return Ok(());
         }
 
-        printer.info(&format!("Setting default shell to {}", desired_shell));
+        if cfg!(windows) {
+            let path = match windows_terminal_settings_path() {
+                Some(p) => p,
+                None => {
+                    printer.warning("Windows Terminal not installed; cannot set default profile");
+                    return Ok(());
+                }
+            };
+            let content =
+                std::fs::read_to_string(&path).map_err(cfgd_core::errors::CfgdError::Io)?;
+            let mut settings: serde_json::Value = serde_json::from_str(&content).map_err(|e| {
+                cfgd_core::errors::CfgdError::Config(cfgd_core::errors::ConfigError::Invalid {
+                    message: e.to_string(),
+                })
+            })?;
 
-        let output = Command::new("chsh")
-            .arg("-s")
-            .arg(desired_shell)
-            .output()
-            .map_err(cfgd_core::errors::CfgdError::Io)?;
+            let guid = match find_profile_guid(&settings, desired_shell) {
+                Some(g) => g,
+                None => {
+                    printer.warning(&format!(
+                        "No Windows Terminal profile named '{}' found",
+                        desired_shell
+                    ));
+                    return Ok(());
+                }
+            };
 
-        if !output.status.success() {
-            printer.warning(&format!(
-                "chsh failed (may require password): {}",
-                stderr_string(&output)
+            printer.info(&format!(
+                "Setting Windows Terminal default profile to '{}' ({})",
+                desired_shell, guid
             ));
-        }
 
-        Ok(())
+            settings["defaultProfile"] = serde_json::Value::String(guid);
+
+            let updated = serde_json::to_string_pretty(&settings).map_err(|e| {
+                cfgd_core::errors::CfgdError::Config(cfgd_core::errors::ConfigError::Invalid {
+                    message: e.to_string(),
+                })
+            })?;
+            cfgd_core::atomic_write_str(&path, &updated)?;
+
+            Ok(())
+        } else {
+            printer.info(&format!("Setting default shell to {}", desired_shell));
+
+            let output = Command::new("chsh")
+                .arg("-s")
+                .arg(desired_shell)
+                .output()
+                .map_err(cfgd_core::errors::CfgdError::Io)?;
+
+            if !output.status.success() {
+                printer.warning(&format!(
+                    "chsh failed (may require password): {}",
+                    stderr_string(&output)
+                ));
+            }
+
+            Ok(())
+        }
     }
 }
 
@@ -1308,5 +1438,74 @@ CFGD_TEST_NONEXISTENT_VAR_12345: "test_value"
         assert!(plist.contains("--flag1"));
         assert!(plist.contains("--flag2"));
         assert!(plist.contains("value"));
+    }
+
+    // --- Windows Terminal helpers ---
+
+    #[test]
+    fn parse_windows_terminal_default_profile() {
+        let settings = serde_json::json!({
+            "defaultProfile": "{574e775e-4f2a-5b96-ac1e-a2962a402336}",
+            "profiles": {
+                "list": [
+                    {"guid": "{574e775e-4f2a-5b96-ac1e-a2962a402336}", "name": "PowerShell"},
+                    {"guid": "{0caa0dad-35be-5f56-a8ff-afceeeaa6101}", "name": "Command Prompt"},
+                    {"guid": "{2c4de342-38b7-51cf-b940-2309a097f518}", "name": "Git Bash"},
+                ]
+            }
+        });
+        let default = resolve_default_profile_name(&settings);
+        assert_eq!(default, Some("PowerShell".to_string()));
+    }
+
+    #[test]
+    fn resolve_default_profile_name_unknown_guid() {
+        let settings = serde_json::json!({
+            "defaultProfile": "{00000000-0000-0000-0000-000000000000}",
+            "profiles": {
+                "list": [
+                    {"guid": "{574e775e-4f2a-5b96-ac1e-a2962a402336}", "name": "PowerShell"},
+                ]
+            }
+        });
+        assert_eq!(resolve_default_profile_name(&settings), None);
+    }
+
+    #[test]
+    fn resolve_default_profile_name_missing_fields() {
+        // No defaultProfile key
+        let settings = serde_json::json!({"profiles": {"list": []}});
+        assert_eq!(resolve_default_profile_name(&settings), None);
+
+        // No profiles key
+        let settings = serde_json::json!({"defaultProfile": "{abc}"});
+        assert_eq!(resolve_default_profile_name(&settings), None);
+
+        // Empty object
+        let settings = serde_json::json!({});
+        assert_eq!(resolve_default_profile_name(&settings), None);
+    }
+
+    #[test]
+    fn find_windows_terminal_profile_guid_test() {
+        let settings = serde_json::json!({
+            "profiles": {
+                "list": [
+                    {"guid": "{574e775e-4f2a-5b96-ac1e-a2962a402336}", "name": "PowerShell"},
+                    {"guid": "{2c4de342-38b7-51cf-b940-2309a097f518}", "name": "Git Bash"},
+                ]
+            }
+        });
+        assert_eq!(
+            find_profile_guid(&settings, "Git Bash"),
+            Some("{2c4de342-38b7-51cf-b940-2309a097f518}".to_string())
+        );
+        assert_eq!(find_profile_guid(&settings, "Nonexistent"), None);
+    }
+
+    #[test]
+    fn find_profile_guid_missing_profiles() {
+        let settings = serde_json::json!({});
+        assert_eq!(find_profile_guid(&settings, "PowerShell"), None);
     }
 }
