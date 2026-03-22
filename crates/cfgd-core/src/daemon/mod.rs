@@ -18,7 +18,7 @@ use crate::config::{
     ResolvedProfile,
 };
 use crate::errors::{DaemonError, Result};
-use crate::output::Printer;
+use crate::output::{Printer, Verbosity};
 use crate::providers::{FileAction, PackageAction, PackageManager, ProviderRegistry};
 use crate::state::StateStore;
 
@@ -1206,6 +1206,39 @@ fn handle_reconcile(
                     store.record_drift(&rtype, &rid, None, Some("drift detected"), "local")
                 {
                     tracing::warn!("failed to record drift: {}", e);
+                }
+            }
+        }
+
+        // Execute onDrift scripts from resolved profile
+        if !resolved.merged.scripts.on_drift.is_empty() {
+            let scripts = &resolved.merged.scripts;
+            tracing::info!("running {} onDrift script(s)", scripts.on_drift.len());
+            let script_env = crate::reconciler::build_script_env(
+                &config_dir,
+                profile_name,
+                crate::reconciler::ReconcileContext::Reconcile,
+                &crate::reconciler::ScriptPhase::OnDrift,
+                false,
+                None,
+                None,
+            );
+            let printer = Printer::new(Verbosity::Quiet);
+            let default_timeout = std::time::Duration::from_secs(300);
+            for entry in &scripts.on_drift {
+                match crate::reconciler::execute_script(
+                    entry,
+                    &config_dir,
+                    &script_env,
+                    default_timeout,
+                    &printer,
+                ) {
+                    Ok((desc, _, _)) => {
+                        tracing::info!("onDrift script completed: {}", desc);
+                    }
+                    Err(e) => {
+                        tracing::error!("onDrift script failed: {}", e);
+                    }
                 }
             }
         }

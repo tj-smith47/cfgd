@@ -89,12 +89,12 @@ Every cfgd command, subcommand, and flag. All tests are self-contained — no ex
 | P10 | `profile create X --private-files` | Private flag set |
 | P11 | `profile create X --module nvim` | Module ref added |
 | P12 | `profile create X` (all flags) | Multiple flags compose |
-| P13 | `profile create X --pre/post-reconcile` | Hook scripts added |
+| P13 | `profile create X --pre-apply --post-apply` | Hook scripts added |
 | P14 | `profile create X --secret spec` | Secret entry added |
 | P15 | `profile create` (duplicate) | Exit non-zero |
 | P16 | `profile switch base` | Active profile changes |
 | P17 | `profile switch dev` | Switches back |
-| P18–P36 | `profile update --<thing> [value/-value]` | Each unified flag pair (add/remove via `-` prefix) for: package, file, env, system, module, inherit, secret, pre-apply, post-apply, private |
+| P18–P36 | `profile update --<thing> [value/-value]` | Each unified flag pair (add/remove via `-` prefix) for: package, file, env, system, module, inherit, secret, pre-apply, post-apply, pre-reconcile, post-reconcile, on-change, private |
 | P37 | `profile update <name>` (named) | Updates non-active profile |
 | P38 | `profile delete X --yes` | Removed |
 | P39 | `profile delete X -y` | Short flag |

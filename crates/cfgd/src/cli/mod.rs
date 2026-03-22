@@ -374,6 +374,9 @@ pub struct ApplyArgs {
     /// Apply only the specified module and its dependencies
     #[arg(long)]
     pub module: Option<String>,
+    /// Skip all script hooks (pre/post/onChange)
+    #[arg(long)]
+    pub skip_scripts: bool,
 }
 
 #[derive(Subcommand)]
@@ -835,10 +838,19 @@ pub struct ProfileCreateArgs {
     pub secrets: Vec<String>,
     /// Pre-apply scripts (repeatable)
     #[arg(long = "pre-apply")]
-    pub pre_reconcile: Vec<PathBuf>,
+    pub pre_apply: Vec<String>,
     /// Post-apply scripts (repeatable)
     #[arg(long = "post-apply")]
-    pub post_reconcile: Vec<PathBuf>,
+    pub post_apply: Vec<String>,
+    /// Pre-reconcile scripts (repeatable)
+    #[arg(long = "pre-reconcile")]
+    pub pre_reconcile: Vec<String>,
+    /// Post-reconcile scripts (repeatable)
+    #[arg(long = "post-reconcile")]
+    pub post_reconcile: Vec<String>,
+    /// On-change scripts (repeatable)
+    #[arg(long = "on-change")]
+    pub on_change: Vec<String>,
 }
 
 #[derive(Parser)]
@@ -871,10 +883,19 @@ pub struct ProfileUpdateArgs {
     pub secrets: Vec<String>,
     /// Pre-apply scripts (repeatable, prefix with - to remove)
     #[arg(long = "pre-apply", allow_hyphen_values = true)]
-    pub pre_reconcile: Vec<PathBuf>,
+    pub pre_apply: Vec<String>,
     /// Post-apply scripts (repeatable, prefix with - to remove)
     #[arg(long = "post-apply", allow_hyphen_values = true)]
-    pub post_reconcile: Vec<PathBuf>,
+    pub post_apply: Vec<String>,
+    /// Pre-reconcile scripts (repeatable, prefix with - to remove)
+    #[arg(long = "pre-reconcile", allow_hyphen_values = true)]
+    pub pre_reconcile: Vec<String>,
+    /// Post-reconcile scripts (repeatable, prefix with - to remove)
+    #[arg(long = "post-reconcile", allow_hyphen_values = true)]
+    pub post_reconcile: Vec<String>,
+    /// On-change scripts (repeatable, prefix with - to remove)
+    #[arg(long = "on-change", allow_hyphen_values = true)]
+    pub on_change: Vec<String>,
     /// Mark all --file entries as private (local-only, excluded from git).
     #[arg(long = "private-files")]
     pub private: bool,
@@ -1943,6 +1964,12 @@ fn cmd_apply(cli: &Cli, printer: &Printer, args: &ApplyArgs) -> anyhow::Result<(
 
     // Apply --skip / --only filters
     filter_plan(&mut plan, skip, only);
+
+    // Strip script phases when --skip-scripts is set
+    if args.skip_scripts {
+        plan.phases
+            .retain(|p| !matches!(p.name, PhaseName::PreScripts | PhaseName::PostScripts));
+    }
 
     if dry_run {
         // Show pending decisions (not included in this plan)
@@ -6789,8 +6816,11 @@ spec:
             files: vec![],
             private: false,
             secrets: vec![],
+            pre_apply: vec![],
+            post_apply: vec![],
             pre_reconcile: vec![],
             post_reconcile: vec![],
+            on_change: vec![],
         }
     }
 
@@ -6805,8 +6835,11 @@ spec:
             aliases: vec![],
             system: vec![],
             secrets: vec![],
+            pre_apply: vec![],
+            post_apply: vec![],
             pre_reconcile: vec![],
             post_reconcile: vec![],
+            on_change: vec![],
             private: false,
         }
     }
@@ -7408,10 +7441,13 @@ spec:
         let cli = test_cli(dir.path());
         let printer = test_printer();
 
-        // Add pre-reconcile and post-reconcile
+        // Add pre-apply, post-apply, pre-reconcile, post-reconcile, on-change
         let args = ProfileUpdateArgs {
-            pre_reconcile: vec![PathBuf::from("scripts/pre.sh")],
-            post_reconcile: vec![PathBuf::from("scripts/post.sh")],
+            pre_apply: vec!["scripts/pre.sh".to_string()],
+            post_apply: vec!["scripts/post.sh".to_string()],
+            pre_reconcile: vec!["scripts/pre-rec.sh".to_string()],
+            post_reconcile: vec!["scripts/post-rec.sh".to_string()],
+            on_change: vec!["scripts/on-change.sh".to_string()],
             ..empty_profile_update_args()
         };
         profile::cmd_profile_update(&cli, &printer, "default", &args).unwrap();
@@ -7419,26 +7455,50 @@ spec:
         let doc = config::load_profile(&dir.path().join("profiles").join("default.yaml")).unwrap();
         let scripts = doc.spec.scripts.as_ref().unwrap();
         assert_eq!(
-            scripts.pre_reconcile,
+            scripts.pre_apply,
             vec![config::ScriptEntry::Simple("scripts/pre.sh".to_string())]
         );
         assert_eq!(
-            scripts.post_reconcile,
+            scripts.post_apply,
             vec![config::ScriptEntry::Simple("scripts/post.sh".to_string())]
         );
+        assert_eq!(
+            scripts.pre_reconcile,
+            vec![config::ScriptEntry::Simple(
+                "scripts/pre-rec.sh".to_string()
+            )]
+        );
+        assert_eq!(
+            scripts.post_reconcile,
+            vec![config::ScriptEntry::Simple(
+                "scripts/post-rec.sh".to_string()
+            )]
+        );
+        assert_eq!(
+            scripts.on_change,
+            vec![config::ScriptEntry::Simple(
+                "scripts/on-change.sh".to_string()
+            )]
+        );
 
-        // Remove pre-reconcile
+        // Remove all scripts
         let args = ProfileUpdateArgs {
-            pre_reconcile: vec![PathBuf::from("-scripts/pre.sh")],
-            post_reconcile: vec![PathBuf::from("-scripts/post.sh")],
+            pre_apply: vec!["-scripts/pre.sh".to_string()],
+            post_apply: vec!["-scripts/post.sh".to_string()],
+            pre_reconcile: vec!["-scripts/pre-rec.sh".to_string()],
+            post_reconcile: vec!["-scripts/post-rec.sh".to_string()],
+            on_change: vec!["-scripts/on-change.sh".to_string()],
             ..empty_profile_update_args()
         };
         profile::cmd_profile_update(&cli, &printer, "default", &args).unwrap();
 
         let doc = config::load_profile(&dir.path().join("profiles").join("default.yaml")).unwrap();
         let scripts = doc.spec.scripts.as_ref().unwrap();
+        assert!(scripts.pre_apply.is_empty());
+        assert!(scripts.post_apply.is_empty());
         assert!(scripts.pre_reconcile.is_empty());
         assert!(scripts.post_reconcile.is_empty());
+        assert!(scripts.on_change.is_empty());
     }
 
     #[test]
@@ -8856,6 +8916,7 @@ spec:
             skip: vec![],
             only: vec![],
             module: None,
+            skip_scripts: false,
         };
 
         let result = super::cmd_apply(&cli, &printer, &args);
@@ -8875,6 +8936,7 @@ spec:
             skip: vec![],
             only: vec![],
             module: None,
+            skip_scripts: false,
         };
 
         let result = super::cmd_apply(&cli, &printer, &args);
@@ -8894,6 +8956,7 @@ spec:
             skip: vec![],
             only: vec![],
             module: None,
+            skip_scripts: false,
         };
 
         let result = super::cmd_apply(&cli, &printer, &args);
@@ -8914,6 +8977,7 @@ spec:
             skip: vec!["packages".to_string()],
             only: vec![],
             module: None,
+            skip_scripts: false,
         };
 
         let result = super::cmd_apply(&cli, &printer, &args);
@@ -8933,6 +8997,7 @@ spec:
             skip: vec![],
             only: vec!["files".to_string()],
             module: None,
+            skip_scripts: false,
         };
 
         let result = super::cmd_apply(&cli, &printer, &args);
@@ -8962,6 +9027,7 @@ spec:
             skip: vec![],
             only: vec![],
             module: None,
+            skip_scripts: false,
         };
 
         let result = super::cmd_apply(&cli, &printer, &args);
@@ -8993,6 +9059,7 @@ spec:
             skip: vec![],
             only: vec![],
             module: None,
+            skip_scripts: false,
         };
         super::cmd_apply(&cli, &printer, &args).unwrap();
 
@@ -9025,6 +9092,7 @@ spec:
             skip: vec![],
             only: vec![],
             module: None,
+            skip_scripts: false,
         };
         super::cmd_apply(&cli, &printer, &args).unwrap();
 
@@ -9088,6 +9156,7 @@ spec:
             skip: vec![],
             only: vec![],
             module: None,
+            skip_scripts: false,
         };
 
         let result = super::cmd_apply(&cli, &printer, &args);
@@ -9127,6 +9196,7 @@ spec:
             skip: vec![],
             only: vec![],
             module: None,
+            skip_scripts: false,
         };
 
         let result = super::cmd_apply(&cli, &printer, &args);
@@ -9167,6 +9237,7 @@ spec:
             skip: vec![],
             only: vec![],
             module: None,
+            skip_scripts: false,
         };
 
         // First apply
@@ -9408,6 +9479,7 @@ spec:
                 skip: vec![],
                 only: vec![],
                 module: None,
+                skip_scripts: false,
             }),
             ..test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()))
         };
@@ -9546,6 +9618,7 @@ spec:
             skip: vec![],
             only: vec![],
             module: Some("test-mod".to_string()),
+            skip_scripts: false,
         };
 
         let result = super::cmd_apply(&cli, &printer, &args);
@@ -9573,6 +9646,7 @@ spec:
             skip: vec![],
             only: vec![],
             module: None,
+            skip_scripts: false,
         };
 
         let result = super::cmd_apply(&cli, &printer, &args);
@@ -9627,6 +9701,7 @@ spec:
             skip: vec![],
             only: vec![],
             module: None,
+            skip_scripts: false,
         };
         super::cmd_apply(&cli, &printer, &args).unwrap();
 
@@ -9856,6 +9931,7 @@ spec:
                 skip: vec![],
                 only: vec![],
                 module: None,
+                skip_scripts: false,
             };
             let result = super::cmd_apply(&cli, &printer, &args);
             assert!(result.is_ok(), "dry-run failed for phase: {}", phase);
@@ -9886,6 +9962,7 @@ spec:
             skip: vec![],
             only: vec![],
             module: None,
+            skip_scripts: false,
         };
         super::cmd_apply(&cli, &printer, &args).unwrap();
 

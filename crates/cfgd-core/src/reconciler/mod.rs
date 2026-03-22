@@ -2052,7 +2052,7 @@ fn parse_duration_str(s: &str) -> Result<std::time::Duration> {
 }
 
 /// Build environment variables injected into every script invocation.
-fn build_script_env(
+pub(crate) fn build_script_env(
     config_dir: &std::path::Path,
     profile_name: &str,
     context: ReconcileContext,
@@ -2100,7 +2100,7 @@ fn build_script_env(
 /// Unified script executor for all hook types at both profile and module level.
 ///
 /// Returns (description, changed, captured_output). All scripts set changed=true.
-fn execute_script(
+pub(crate) fn execute_script(
     entry: &ScriptEntry,
     working_dir: &std::path::Path,
     env_vars: &[(String, String)],
