@@ -1027,16 +1027,14 @@ impl SystemConfigurator for CertificateConfigurator {
                 for path_key in &["certPath", "keyPath"] {
                     if let Some(path) = cert.get(*path_key).and_then(|v| v.as_str())
                         && let Ok(meta) = fs::metadata(path)
+                        && let Some(current_mode) = cfgd_core::file_permissions_mode(&meta)
+                        && current_mode != desired_mode
                     {
-                        use std::os::unix::fs::PermissionsExt;
-                        let current_mode = meta.permissions().mode() & 0o777;
-                        if current_mode != desired_mode {
-                            drifts.push(SystemDrift {
-                                key: format!("cert.{}.{}.mode", name, path_key),
-                                expected: format!("{:04o}", desired_mode),
-                                actual: format!("{:04o}", current_mode),
-                            });
-                        }
+                        drifts.push(SystemDrift {
+                            key: format!("cert.{}.{}.mode", name, path_key),
+                            expected: format!("{:04o}", desired_mode),
+                            actual: format!("{:04o}", current_mode),
+                        });
                     }
                 }
             }
@@ -1071,18 +1069,14 @@ impl SystemConfigurator for CertificateConfigurator {
                 if let Some(path_str) = cert.get(*path_key).and_then(|v| v.as_str()) {
                     let path = Path::new(path_str);
                     if path.exists() {
-                        use std::os::unix::fs::PermissionsExt;
                         let meta = fs::metadata(path)?;
-                        let current_mode = meta.permissions().mode() & 0o777;
-                        if current_mode != desired_mode {
+                        let current_mode = cfgd_core::file_permissions_mode(&meta);
+                        if current_mode != Some(desired_mode) {
                             printer.info(&format!(
                                 "Setting permissions {:04o} on {} ({})",
                                 desired_mode, path_str, name
                             ));
-                            fs::set_permissions(
-                                path,
-                                std::fs::Permissions::from_mode(desired_mode),
-                            )?;
+                            cfgd_core::set_file_permissions(path, desired_mode)?;
                         }
                     } else {
                         printer.warning(&format!(
