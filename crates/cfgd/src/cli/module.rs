@@ -681,7 +681,13 @@ pub(super) fn cmd_module_create(
         };
 
         let reconciler = cfgd_core::reconciler::Reconciler::new(&registry, &store);
-        let plan = reconciler.plan(&resolved, Vec::new(), Vec::new(), resolved_modules)?;
+        let plan = reconciler.plan(
+            &resolved,
+            Vec::new(),
+            Vec::new(),
+            resolved_modules,
+            cfgd_core::reconciler::ReconcileContext::Apply,
+        )?;
 
         let total = plan.total_actions();
         if total == 0 {
@@ -706,7 +712,15 @@ pub(super) fn cmd_module_create(
                 .map_err(|e| anyhow::anyhow!("cannot determine state directory: {}", e))?;
             let _apply_lock = cfgd_core::acquire_apply_lock(&state_dir)?;
 
-            let result = reconciler.apply(&plan, &resolved, &config_dir, printer, None, &[])?;
+            let result = reconciler.apply(
+                &plan,
+                &resolved,
+                &config_dir,
+                printer,
+                None,
+                &[],
+                cfgd_core::reconciler::ReconcileContext::Apply,
+            )?;
             super::print_apply_result(&result, printer);
         }
     }

@@ -1147,7 +1147,13 @@ fn handle_reconcile(
     } else {
         Vec::new()
     };
-    let plan = match reconciler.plan(&resolved, file_actions, pkg_actions, resolved_modules) {
+    let plan = match reconciler.plan(
+        &resolved,
+        file_actions,
+        pkg_actions,
+        resolved_modules,
+        crate::reconciler::ReconcileContext::Reconcile,
+    ) {
         Ok(p) => p,
         Err(e) => {
             tracing::error!("reconcile: plan generation failed: {}", e);

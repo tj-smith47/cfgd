@@ -12,40 +12,50 @@ use crate::output::Printer;
 use crate::providers::{FileAction, PackageAction, ProviderRegistry, SecretAction};
 use crate::state::{ApplyStatus, StateStore};
 
+/// Whether the reconciler is running in CLI apply mode or daemon reconcile mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReconcileContext {
+    Apply,
+    Reconcile,
+}
+
 /// Ordered reconciliation phases.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub enum PhaseName {
-    Modules,
-    System,
-    Packages,
-    Files,
+    PreScripts,
     Env,
+    Modules,
+    Packages,
+    System,
+    Files,
     Secrets,
-    Scripts,
+    PostScripts,
 }
 
 impl PhaseName {
     pub fn as_str(&self) -> &str {
         match self {
-            PhaseName::Modules => "modules",
-            PhaseName::System => "system",
-            PhaseName::Packages => "packages",
-            PhaseName::Files => "files",
+            PhaseName::PreScripts => "pre-scripts",
             PhaseName::Env => "env",
+            PhaseName::Modules => "modules",
+            PhaseName::Packages => "packages",
+            PhaseName::System => "system",
+            PhaseName::Files => "files",
             PhaseName::Secrets => "secrets",
-            PhaseName::Scripts => "scripts",
+            PhaseName::PostScripts => "post-scripts",
         }
     }
 
     pub fn display_name(&self) -> &str {
         match self {
-            PhaseName::Modules => "Modules",
-            PhaseName::System => "System",
-            PhaseName::Packages => "Packages",
-            PhaseName::Files => "Files",
+            PhaseName::PreScripts => "Pre-Scripts",
             PhaseName::Env => "Environment",
+            PhaseName::Modules => "Modules",
+            PhaseName::Packages => "Packages",
+            PhaseName::System => "System",
+            PhaseName::Files => "Files",
             PhaseName::Secrets => "Secrets",
-            PhaseName::Scripts => "Scripts",
+            PhaseName::PostScripts => "Post-Scripts",
         }
     }
 }
@@ -55,13 +65,14 @@ impl FromStr for PhaseName {
 
     fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
         match s {
+            "pre-scripts" => Ok(PhaseName::PreScripts),
+            "env" => Ok(PhaseName::Env),
             "modules" => Ok(PhaseName::Modules),
             "system" => Ok(PhaseName::System),
             "packages" => Ok(PhaseName::Packages),
             "files" => Ok(PhaseName::Files),
-            "env" => Ok(PhaseName::Env),
             "secrets" => Ok(PhaseName::Secrets),
-            "scripts" => Ok(PhaseName::Scripts),
+            "post-scripts" => Ok(PhaseName::PostScripts),
             _ => Err(format!("unknown phase: {}", s)),
         }
     }
@@ -148,8 +159,12 @@ pub enum ScriptAction {
 /// When a script runs relative to reconciliation.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub enum ScriptPhase {
+    PreApply,
+    PostApply,
     PreReconcile,
     PostReconcile,
+    OnDrift,
+    OnChange,
 }
 
 /// A phase in the reconciliation plan.
@@ -200,6 +215,7 @@ pub struct ActionResult {
     pub description: String,
     pub success: bool,
     pub error: Option<String>,
+    pub changed: bool,
 }
 
 /// Result of an entire apply operation.
@@ -248,15 +264,24 @@ impl<'a> Reconciler<'a> {
         file_actions: Vec<FileAction>,
         pkg_actions: Vec<PackageAction>,
         module_actions: Vec<ResolvedModule>,
+        context: ReconcileContext,
     ) -> Result<Plan> {
         // Conflict detection: check for multiple sources targeting the same path
         Self::detect_file_conflicts(&file_actions, &module_actions)?;
 
         let mut phases = Vec::new();
 
-        // Phase 0: Env — write ~/.cfgd.env and inject shell rc source line.
-        // Runs first so that env vars (including PATH for bootstrapped managers)
-        // are available to all subsequent phases, especially post-apply scripts.
+        // Phase 0: PreScripts — pre-apply or pre-reconcile hooks.
+        let (pre_script_actions, post_script_actions) =
+            self.plan_scripts(&resolved.merged.scripts, context);
+        phases.push(Phase {
+            name: PhaseName::PreScripts,
+            actions: pre_script_actions,
+        });
+
+        // Phase 1: Env — write ~/.cfgd.env and inject shell rc source line.
+        // Runs early so that env vars (including PATH for bootstrapped managers)
+        // are available to all subsequent phases.
         let (env_actions, warnings) = Self::plan_env(
             &resolved.merged.env,
             &resolved.merged.aliases,
@@ -267,7 +292,7 @@ impl<'a> Reconciler<'a> {
             actions: env_actions,
         });
 
-        // Phase 1: Modules — module packages, files, and post-apply scripts.
+        // Phase 2: Modules — module packages, files, and post-apply scripts.
         // Packages are grouped with system/native managers first, then
         // bootstrappable managers, so build deps are installed before
         // packages that need them.
@@ -277,7 +302,7 @@ impl<'a> Reconciler<'a> {
             actions: module_phase_actions,
         });
 
-        // Phase 2: Packages — profile-level packages, installed after modules
+        // Phase 3: Packages — profile-level packages, installed after modules
         // so module deps are available.
         let package_actions = pkg_actions.into_iter().map(Action::Package).collect();
         phases.push(Phase {
@@ -285,32 +310,31 @@ impl<'a> Reconciler<'a> {
             actions: package_actions,
         });
 
-        // Phase 3: System — runs after packages so required binaries exist
+        // Phase 4: System — runs after packages so required binaries exist
         let system_actions = self.plan_system(&resolved.merged)?;
         phases.push(Phase {
             name: PhaseName::System,
             actions: system_actions,
         });
 
-        // Phase 4: Files
+        // Phase 5: Files
         let fa = file_actions.into_iter().map(Action::File).collect();
         phases.push(Phase {
             name: PhaseName::Files,
             actions: fa,
         });
 
-        // Phase 5: Secrets
+        // Phase 6: Secrets
         let secret_actions = self.plan_secrets(&resolved.merged);
         phases.push(Phase {
             name: PhaseName::Secrets,
             actions: secret_actions,
         });
 
-        // Phase 6: Scripts
-        let script_actions = self.plan_scripts(&resolved.merged.scripts);
+        // Phase 7: PostScripts — post-apply or post-reconcile hooks.
         phases.push(Phase {
-            name: PhaseName::Scripts,
-            actions: script_actions,
+            name: PhaseName::PostScripts,
+            actions: post_script_actions,
         });
 
         Ok(Plan { phases, warnings })
@@ -528,26 +552,49 @@ impl<'a> Reconciler<'a> {
         actions
     }
 
-    fn plan_scripts(&self, scripts: &ScriptSpec) -> Vec<Action> {
-        let mut actions = Vec::new();
+    fn plan_scripts(
+        &self,
+        scripts: &ScriptSpec,
+        context: ReconcileContext,
+    ) -> (Vec<Action>, Vec<Action>) {
+        let (pre_entries, pre_phase, post_entries, post_phase) = match context {
+            ReconcileContext::Apply => (
+                &scripts.pre_apply,
+                ScriptPhase::PreApply,
+                &scripts.post_apply,
+                ScriptPhase::PostApply,
+            ),
+            ReconcileContext::Reconcile => (
+                &scripts.pre_reconcile,
+                ScriptPhase::PreReconcile,
+                &scripts.post_reconcile,
+                ScriptPhase::PostReconcile,
+            ),
+        };
 
-        for entry in &scripts.pre_reconcile {
-            actions.push(Action::Script(ScriptAction::Run {
-                path: PathBuf::from(entry.run_str()),
-                phase: ScriptPhase::PreReconcile,
-                origin: "local".to_string(),
-            }));
-        }
+        let pre_actions = pre_entries
+            .iter()
+            .map(|entry| {
+                Action::Script(ScriptAction::Run {
+                    path: PathBuf::from(entry.run_str()),
+                    phase: pre_phase.clone(),
+                    origin: "local".to_string(),
+                })
+            })
+            .collect();
 
-        for entry in &scripts.post_reconcile {
-            actions.push(Action::Script(ScriptAction::Run {
-                path: PathBuf::from(entry.run_str()),
-                phase: ScriptPhase::PostReconcile,
-                origin: "local".to_string(),
-            }));
-        }
+        let post_actions = post_entries
+            .iter()
+            .map(|entry| {
+                Action::Script(ScriptAction::Run {
+                    path: PathBuf::from(entry.run_str()),
+                    phase: post_phase.clone(),
+                    origin: "local".to_string(),
+                })
+            })
+            .collect();
 
-        actions
+        (pre_actions, post_actions)
     }
 
     fn plan_modules(&self, modules: &[ResolvedModule]) -> Vec<Action> {
@@ -691,6 +738,7 @@ impl<'a> Reconciler<'a> {
 
     /// Apply a plan, executing each phase in order.
     /// Failed actions are logged and skipped — they don't abort the entire apply.
+    #[allow(clippy::too_many_arguments)]
     pub fn apply(
         &self,
         plan: &Plan,
@@ -699,6 +747,7 @@ impl<'a> Reconciler<'a> {
         printer: &Printer,
         phase_filter: Option<&PhaseName>,
         module_actions: &[ResolvedModule],
+        _context: ReconcileContext,
     ) -> Result<ApplyResult> {
         // Record apply up front as "in-progress" so the journal can reference it
         let plan_hash = crate::state::plan_hash(&plan.to_hash_string());
@@ -787,11 +836,13 @@ impl<'a> Reconciler<'a> {
                     }
                 };
 
+                let changed = success && !desc.contains(":skipped");
                 results.push(ActionResult {
                     phase: phase.name.as_str().to_string(),
                     description: desc,
                     success,
                     error,
+                    changed,
                 });
                 action_index += 1;
             }
@@ -1212,8 +1263,12 @@ impl<'a> Reconciler<'a> {
                 };
 
                 let phase_name = match phase {
+                    ScriptPhase::PreApply => "preApply",
+                    ScriptPhase::PostApply => "postApply",
                     ScriptPhase::PreReconcile => "preReconcile",
                     ScriptPhase::PostReconcile => "postReconcile",
+                    ScriptPhase::OnDrift => "onDrift",
+                    ScriptPhase::OnChange => "onChange",
                 };
 
                 let label = format!("Running {} script: {}", phase_name, path.display());
@@ -1907,8 +1962,12 @@ pub fn format_action_description(action: &Action) -> String {
         Action::Script(sa) => match sa {
             ScriptAction::Run { path, phase, .. } => {
                 let p = match phase {
+                    ScriptPhase::PreApply => "preApply",
+                    ScriptPhase::PostApply => "postApply",
                     ScriptPhase::PreReconcile => "preReconcile",
                     ScriptPhase::PostReconcile => "postReconcile",
+                    ScriptPhase::OnDrift => "onDrift",
+                    ScriptPhase::OnChange => "onChange",
                 };
                 format!("script:{}:{}", p, path.display())
             }
@@ -2248,8 +2307,12 @@ pub fn format_plan_items(phase: &Phase) -> Vec<String> {
                     ..
                 } => {
                     let p = match phase {
+                        ScriptPhase::PreApply => "preApply",
+                        ScriptPhase::PostApply => "postApply",
                         ScriptPhase::PreReconcile => "preReconcile",
                         ScriptPhase::PostReconcile => "postReconcile",
+                        ScriptPhase::OnDrift => "onDrift",
+                        ScriptPhase::OnChange => "onChange",
                     };
                     format!(
                         "run {} script: {}{}",
@@ -2507,17 +2570,23 @@ mod tests {
     }
 
     #[test]
-    fn empty_plan_has_five_phases() {
+    fn empty_plan_has_eight_phases() {
         let state = StateStore::open_in_memory().unwrap();
         let registry = ProviderRegistry::new();
         let reconciler = Reconciler::new(&registry, &state);
         let resolved = make_empty_resolved();
 
         let plan = reconciler
-            .plan(&resolved, Vec::new(), Vec::new(), Vec::new())
+            .plan(
+                &resolved,
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                ReconcileContext::Apply,
+            )
             .unwrap();
 
-        assert_eq!(plan.phases.len(), 7);
+        assert_eq!(plan.phases.len(), 8);
         assert!(plan.is_empty());
     }
 
@@ -2535,7 +2604,13 @@ mod tests {
         }];
 
         let plan = reconciler
-            .plan(&resolved, Vec::new(), pkg_actions, Vec::new())
+            .plan(
+                &resolved,
+                Vec::new(),
+                pkg_actions,
+                Vec::new(),
+                ReconcileContext::Apply,
+            )
             .unwrap();
 
         assert!(!plan.is_empty());
@@ -2558,7 +2633,13 @@ mod tests {
         }];
 
         let plan = reconciler
-            .plan(&resolved, file_actions, Vec::new(), Vec::new())
+            .plan(
+                &resolved,
+                file_actions,
+                Vec::new(),
+                Vec::new(),
+                ReconcileContext::Apply,
+            )
             .unwrap();
 
         assert!(!plan.is_empty());
@@ -2578,16 +2659,30 @@ mod tests {
             vec![ScriptEntry::Simple("scripts/post.sh".to_string())];
 
         let plan = reconciler
-            .plan(&resolved, Vec::new(), Vec::new(), Vec::new())
+            .plan(
+                &resolved,
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                ReconcileContext::Reconcile,
+            )
             .unwrap();
 
-        // Should have 2 script actions
-        let script_phase = plan
+        // Pre-scripts phase should have the pre_reconcile script
+        let pre_phase = plan
             .phases
             .iter()
-            .find(|p| p.name == PhaseName::Scripts)
+            .find(|p| p.name == PhaseName::PreScripts)
             .unwrap();
-        assert_eq!(script_phase.actions.len(), 2);
+        assert_eq!(pre_phase.actions.len(), 1);
+
+        // Post-scripts phase should have the post_reconcile script
+        let post_phase = plan
+            .phases
+            .iter()
+            .find(|p| p.name == PhaseName::PostScripts)
+            .unwrap();
+        assert_eq!(post_phase.actions.len(), 1);
     }
 
     #[test]
@@ -2598,12 +2693,26 @@ mod tests {
         let resolved = make_empty_resolved();
 
         let plan = reconciler
-            .plan(&resolved, Vec::new(), Vec::new(), Vec::new())
+            .plan(
+                &resolved,
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                ReconcileContext::Apply,
+            )
             .unwrap();
 
         let printer = Printer::new(crate::output::Verbosity::Quiet);
         let result = reconciler
-            .apply(&plan, &resolved, Path::new("."), &printer, None, &[])
+            .apply(
+                &plan,
+                &resolved,
+                Path::new("."),
+                &printer,
+                None,
+                &[],
+                ReconcileContext::Apply,
+            )
             .unwrap();
 
         // Empty plan — no actions means success with 0 results
@@ -2614,11 +2723,14 @@ mod tests {
     #[test]
     fn phase_name_roundtrip() {
         for name in &[
-            PhaseName::System,
+            PhaseName::PreScripts,
+            PhaseName::Env,
+            PhaseName::Modules,
             PhaseName::Packages,
+            PhaseName::System,
             PhaseName::Files,
             PhaseName::Secrets,
-            PhaseName::Scripts,
+            PhaseName::PostScripts,
         ] {
             let s = name.as_str();
             let parsed = PhaseName::from_str(s).unwrap();
@@ -2711,12 +2823,14 @@ mod tests {
                     description: "test".to_string(),
                     success: true,
                     error: None,
+                    changed: true,
                 },
                 ActionResult {
                     phase: "files".to_string(),
                     description: "test2".to_string(),
                     success: false,
                     error: Some("failed".to_string()),
+                    changed: false,
                 },
             ],
             status: ApplyStatus::Partial,
@@ -2767,11 +2881,16 @@ mod tests {
 
         let modules = vec![make_resolved_module("nvim")];
         let plan = reconciler
-            .plan(&resolved, Vec::new(), Vec::new(), modules)
+            .plan(
+                &resolved,
+                Vec::new(),
+                Vec::new(),
+                modules,
+                ReconcileContext::Apply,
+            )
             .unwrap();
 
-        // Should have 6 phases, first is Modules
-        assert_eq!(plan.phases.len(), 7);
+        assert_eq!(plan.phases.len(), 8);
         let module_phase = plan
             .phases
             .iter()
@@ -2816,7 +2935,13 @@ mod tests {
         }];
 
         let plan = reconciler
-            .plan(&resolved, Vec::new(), Vec::new(), modules)
+            .plan(
+                &resolved,
+                Vec::new(),
+                Vec::new(),
+                modules,
+                ReconcileContext::Apply,
+            )
             .unwrap();
 
         let module_phase = plan
@@ -2856,7 +2981,13 @@ mod tests {
         }];
 
         let plan = reconciler
-            .plan(&resolved, Vec::new(), Vec::new(), modules)
+            .plan(
+                &resolved,
+                Vec::new(),
+                Vec::new(),
+                modules,
+                ReconcileContext::Apply,
+            )
             .unwrap();
 
         let module_phase = plan
@@ -2920,7 +3051,13 @@ mod tests {
         ];
 
         let plan = reconciler
-            .plan(&resolved, Vec::new(), Vec::new(), modules)
+            .plan(
+                &resolved,
+                Vec::new(),
+                Vec::new(),
+                modules,
+                ReconcileContext::Apply,
+            )
             .unwrap();
 
         let module_phase = plan
@@ -3057,12 +3194,26 @@ mod tests {
 
         let modules = vec![make_resolved_module("nvim")];
         let plan = reconciler
-            .plan(&resolved, Vec::new(), Vec::new(), modules.clone())
+            .plan(
+                &resolved,
+                Vec::new(),
+                Vec::new(),
+                modules.clone(),
+                ReconcileContext::Apply,
+            )
             .unwrap();
 
         let printer = Printer::new(crate::output::Verbosity::Quiet);
         let _result = reconciler
-            .apply(&plan, &resolved, Path::new("."), &printer, None, &modules)
+            .apply(
+                &plan,
+                &resolved,
+                Path::new("."),
+                &printer,
+                None,
+                &modules,
+                ReconcileContext::Apply,
+            )
             .unwrap();
 
         // Module state should be recorded
@@ -3285,7 +3436,13 @@ mod tests {
         }];
 
         let plan = reconciler
-            .plan(&resolved, Vec::new(), Vec::new(), modules)
+            .plan(
+                &resolved,
+                Vec::new(),
+                Vec::new(),
+                modules,
+                ReconcileContext::Apply,
+            )
             .unwrap();
 
         let module_phase = plan
@@ -3344,7 +3501,13 @@ mod tests {
         let resolved = make_empty_resolved();
 
         let plan = reconciler
-            .plan(&resolved, Vec::new(), Vec::new(), Vec::new())
+            .plan(
+                &resolved,
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                ReconcileContext::Apply,
+            )
             .unwrap();
 
         let module_phase = plan
@@ -3861,12 +4024,26 @@ mod tests {
         }];
 
         let plan = reconciler
-            .plan(&resolved, Vec::new(), pkg_actions, Vec::new())
+            .plan(
+                &resolved,
+                Vec::new(),
+                pkg_actions,
+                Vec::new(),
+                ReconcileContext::Apply,
+            )
             .unwrap();
 
         let printer = Printer::new(crate::output::Verbosity::Quiet);
         let result = reconciler
-            .apply(&plan, &resolved, Path::new("."), &printer, None, &[])
+            .apply(
+                &plan,
+                &resolved,
+                Path::new("."),
+                &printer,
+                None,
+                &[],
+                ReconcileContext::Apply,
+            )
             .unwrap();
 
         assert_eq!(result.status, ApplyStatus::Success);
@@ -3903,12 +4080,26 @@ mod tests {
         }];
 
         let plan = reconciler
-            .plan(&resolved, Vec::new(), pkg_actions, Vec::new())
+            .plan(
+                &resolved,
+                Vec::new(),
+                pkg_actions,
+                Vec::new(),
+                ReconcileContext::Apply,
+            )
             .unwrap();
 
         let printer = Printer::new(crate::output::Verbosity::Quiet);
         let result = reconciler
-            .apply(&plan, &resolved, Path::new("."), &printer, None, &[])
+            .apply(
+                &plan,
+                &resolved,
+                Path::new("."),
+                &printer,
+                None,
+                &[],
+                ReconcileContext::Apply,
+            )
             .unwrap();
 
         assert_eq!(result.status, ApplyStatus::Success);
@@ -3929,12 +4120,26 @@ mod tests {
         let resolved = make_empty_resolved();
 
         let plan = reconciler
-            .plan(&resolved, Vec::new(), Vec::new(), Vec::new())
+            .plan(
+                &resolved,
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                ReconcileContext::Apply,
+            )
             .unwrap();
 
         let printer = Printer::new(crate::output::Verbosity::Quiet);
         let result = reconciler
-            .apply(&plan, &resolved, Path::new("."), &printer, None, &[])
+            .apply(
+                &plan,
+                &resolved,
+                Path::new("."),
+                &printer,
+                None,
+                &[],
+                ReconcileContext::Apply,
+            )
             .unwrap();
 
         assert_eq!(result.status, ApplyStatus::Success);
@@ -3957,18 +4162,40 @@ mod tests {
         let resolved = make_empty_resolved();
 
         let plan = reconciler
-            .plan(&resolved, Vec::new(), Vec::new(), Vec::new())
+            .plan(
+                &resolved,
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                ReconcileContext::Apply,
+            )
             .unwrap();
         let printer = Printer::new(crate::output::Verbosity::Quiet);
 
         // First apply
         let result1 = reconciler
-            .apply(&plan, &resolved, Path::new("."), &printer, None, &[])
+            .apply(
+                &plan,
+                &resolved,
+                Path::new("."),
+                &printer,
+                None,
+                &[],
+                ReconcileContext::Apply,
+            )
             .unwrap();
 
         // Second apply
         let result2 = reconciler
-            .apply(&plan, &resolved, Path::new("."), &printer, None, &[])
+            .apply(
+                &plan,
+                &resolved,
+                Path::new("."),
+                &printer,
+                None,
+                &[],
+                ReconcileContext::Apply,
+            )
             .unwrap();
 
         // Each apply should get a unique, incrementing ID
@@ -4122,14 +4349,28 @@ mod tests {
         }];
 
         let plan = reconciler
-            .plan(&resolved, Vec::new(), pkg_actions, Vec::new())
+            .plan(
+                &resolved,
+                Vec::new(),
+                pkg_actions,
+                Vec::new(),
+                ReconcileContext::Apply,
+            )
             .unwrap();
         assert!(!plan.is_empty());
 
         // Apply
         let printer = Printer::new(crate::output::Verbosity::Quiet);
         let result = reconciler
-            .apply(&plan, &resolved, Path::new("."), &printer, None, &[])
+            .apply(
+                &plan,
+                &resolved,
+                Path::new("."),
+                &printer,
+                None,
+                &[],
+                ReconcileContext::Apply,
+            )
             .unwrap();
 
         assert_eq!(result.status, ApplyStatus::Success);
@@ -4168,11 +4409,25 @@ mod tests {
         }];
 
         let plan = reconciler
-            .plan(&resolved, Vec::new(), pkg_actions, Vec::new())
+            .plan(
+                &resolved,
+                Vec::new(),
+                pkg_actions,
+                Vec::new(),
+                ReconcileContext::Apply,
+            )
             .unwrap();
         let printer = Printer::new(crate::output::Verbosity::Quiet);
         let result = reconciler
-            .apply(&plan, &resolved, Path::new("."), &printer, None, &[])
+            .apply(
+                &plan,
+                &resolved,
+                Path::new("."),
+                &printer,
+                None,
+                &[],
+                ReconcileContext::Apply,
+            )
             .unwrap();
 
         // Verify the summary JSON in the state store
@@ -4204,7 +4459,13 @@ mod tests {
         }];
 
         let plan = reconciler
-            .plan(&resolved, Vec::new(), pkg_actions, Vec::new())
+            .plan(
+                &resolved,
+                Vec::new(),
+                pkg_actions,
+                Vec::new(),
+                ReconcileContext::Apply,
+            )
             .unwrap();
 
         let printer = Printer::new(crate::output::Verbosity::Quiet);
@@ -4218,6 +4479,7 @@ mod tests {
                 &printer,
                 Some(&PhaseName::Env),
                 &[],
+                ReconcileContext::Apply,
             )
             .unwrap();
 
@@ -4244,7 +4506,13 @@ mod tests {
         }];
 
         let plan = reconciler
-            .plan(&resolved, Vec::new(), pkg_actions, Vec::new())
+            .plan(
+                &resolved,
+                Vec::new(),
+                pkg_actions,
+                Vec::new(),
+                ReconcileContext::Apply,
+            )
             .unwrap();
 
         let printer = Printer::new(crate::output::Verbosity::Quiet);
@@ -4258,6 +4526,7 @@ mod tests {
                 &printer,
                 Some(&PhaseName::Packages),
                 &[],
+                ReconcileContext::Apply,
             )
             .unwrap();
 
@@ -4289,7 +4558,13 @@ mod tests {
         }];
 
         let plan = reconciler
-            .plan(&resolved, file_actions, Vec::new(), Vec::new())
+            .plan(
+                &resolved,
+                file_actions,
+                Vec::new(),
+                Vec::new(),
+                ReconcileContext::Apply,
+            )
             .unwrap();
 
         let printer = Printer::new(crate::output::Verbosity::Quiet);
@@ -4301,6 +4576,7 @@ mod tests {
                 &printer,
                 Some(&PhaseName::Files),
                 &[],
+                ReconcileContext::Apply,
             )
             .unwrap();
 
@@ -4342,12 +4618,26 @@ mod tests {
         ];
 
         let plan = reconciler
-            .plan(&resolved, Vec::new(), pkg_actions, Vec::new())
+            .plan(
+                &resolved,
+                Vec::new(),
+                pkg_actions,
+                Vec::new(),
+                ReconcileContext::Apply,
+            )
             .unwrap();
 
         let printer = Printer::new(crate::output::Verbosity::Quiet);
         let result = reconciler
-            .apply(&plan, &resolved, Path::new("."), &printer, None, &[])
+            .apply(
+                &plan,
+                &resolved,
+                Path::new("."),
+                &printer,
+                None,
+                &[],
+                ReconcileContext::Apply,
+            )
             .unwrap();
 
         assert_eq!(result.status, ApplyStatus::Success);
@@ -4376,12 +4666,26 @@ mod tests {
         }];
 
         let plan = reconciler
-            .plan(&resolved, Vec::new(), pkg_actions, Vec::new())
+            .plan(
+                &resolved,
+                Vec::new(),
+                pkg_actions,
+                Vec::new(),
+                ReconcileContext::Apply,
+            )
             .unwrap();
 
         let printer = Printer::new(crate::output::Verbosity::Quiet);
         let result = reconciler
-            .apply(&plan, &resolved, Path::new("."), &printer, None, &[])
+            .apply(
+                &plan,
+                &resolved,
+                Path::new("."),
+                &printer,
+                None,
+                &[],
+                ReconcileContext::Apply,
+            )
             .unwrap();
 
         assert_eq!(result.status, ApplyStatus::Success);

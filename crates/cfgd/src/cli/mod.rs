@@ -22,7 +22,7 @@ use cfgd_core::platform::Platform;
 use cfgd_core::providers::{
     FileAction, PackageAction, ProviderRegistry, SecretAction, SecretBackend,
 };
-use cfgd_core::reconciler::{self, PhaseName, Reconciler};
+use cfgd_core::reconciler::{self, PhaseName, ReconcileContext, Reconciler};
 use cfgd_core::sources::SourceManager;
 use cfgd_core::state::StateStore;
 
@@ -1839,7 +1839,7 @@ fn cmd_apply(cli: &Cli, printer: &Printer, args: &ApplyArgs) -> anyhow::Result<(
             Ok(pn) => Some(pn),
             Err(_) => {
                 anyhow::bail!(
-                    "Unknown phase '{}'. Valid phases: modules, system, packages, files, secrets, scripts",
+                    "Unknown phase '{}'. Valid phases: pre-scripts, env, modules, system, packages, files, secrets, post-scripts",
                     p
                 );
             }
@@ -1938,6 +1938,7 @@ fn cmd_apply(cli: &Cli, printer: &Printer, args: &ApplyArgs) -> anyhow::Result<(
         file_actions,
         pkg_actions,
         resolved_modules.clone(),
+        ReconcileContext::Apply,
     )?;
 
     // Apply --skip / --only filters
@@ -2080,6 +2081,7 @@ fn cmd_apply(cli: &Cli, printer: &Printer, args: &ApplyArgs) -> anyhow::Result<(
         printer,
         phase_filter.as_ref(),
         &resolved_modules,
+        ReconcileContext::Apply,
     )?;
 
     printer.newline();
@@ -9838,7 +9840,14 @@ spec:
         let printer = test_printer();
 
         for phase in &[
-            "packages", "files", "secrets", "scripts", "system", "modules",
+            "pre-scripts",
+            "env",
+            "modules",
+            "packages",
+            "system",
+            "files",
+            "secrets",
+            "post-scripts",
         ] {
             let args = ApplyArgs {
                 dry_run: true,

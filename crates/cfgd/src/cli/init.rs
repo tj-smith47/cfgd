@@ -123,7 +123,13 @@ pub(super) fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result
             )?;
 
             let reconciler = cfgd_core::reconciler::Reconciler::new(&registry, &store);
-            let plan = reconciler.plan(&resolved, Vec::new(), Vec::new(), resolved_modules)?;
+            let plan = reconciler.plan(
+                &resolved,
+                Vec::new(),
+                Vec::new(),
+                resolved_modules,
+                cfgd_core::reconciler::ReconcileContext::Apply,
+            )?;
 
             apply_plan(
                 &plan,
@@ -212,7 +218,13 @@ pub(super) fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result
             registry.file_manager = Some(Box::new(fm));
 
             let reconciler = cfgd_core::reconciler::Reconciler::new(&registry, &store);
-            let plan = reconciler.plan(&resolved, file_actions, pkg_actions, resolved_modules)?;
+            let plan = reconciler.plan(
+                &resolved,
+                file_actions,
+                pkg_actions,
+                resolved_modules,
+                cfgd_core::reconciler::ReconcileContext::Apply,
+            )?;
 
             apply_plan(
                 &plan,
@@ -292,7 +304,15 @@ fn apply_plan(
         .map_err(|e| anyhow::anyhow!("cannot determine state directory: {}", e))?;
     let _apply_lock = cfgd_core::acquire_apply_lock(&state_dir)?;
 
-    let result = reconciler.apply(plan, resolved, config_dir, printer, None, &[])?;
+    let result = reconciler.apply(
+        plan,
+        resolved,
+        config_dir,
+        printer,
+        None,
+        &[],
+        cfgd_core::reconciler::ReconcileContext::Apply,
+    )?;
     super::print_apply_result(&result, printer);
     Ok(())
 }
