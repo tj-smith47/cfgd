@@ -124,7 +124,8 @@ Current shared items (keep this list updated when adding new ones):
 - `deep_merge_yaml(base, overlay)` — recursive YAML value merge
 - `union_extend(target, source)` — Vec<String> merge without duplicates
 - `command_available(cmd)` — check if a CLI command exists on PATH
-- `expand_tilde(path)` — expand `~/...` to home directory
+- `expand_tilde(path)` — expand `~/...` or `~\...` to home directory; uses `HOME` on Unix, `USERPROFILE` (then `HOME`) on Windows
+- `create_symlink(source, target)` — cross-platform symlink creation; Windows uses `symlink_file`/`symlink_dir`, errors with Developer Mode guidance on permission failure
 - `git_ssh_credentials(url, username, allowed)` — git2 credential callback (SSH agent/keys + HTTPS credential helper)
 - `parse_loose_version(s)` — parse "1.28" → semver Version(1.28.0); handles 1-part, 2-part, and 3-part versions
 - `version_satisfies(version, requirement)` — check version against semver range (uses `parse_loose_version`)

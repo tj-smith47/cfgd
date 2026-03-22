@@ -113,7 +113,7 @@ pub fn expand_tilde(path: &std::path::Path) -> std::path::PathBuf {
         if path_str == "~" {
             return std::path::PathBuf::from(home);
         }
-        if path_str.starts_with("~/") {
+        if path_str.starts_with("~/") || path_str.starts_with("~\\") {
             return std::path::PathBuf::from(path_str.replacen('~', &home, 1));
         }
     }
@@ -143,22 +143,28 @@ pub fn create_symlink(
     source: &std::path::Path,
     target: &std::path::Path,
 ) -> std::io::Result<()> {
-    create_symlink_impl(source, target).map_err(|e| {
-        #[cfg(windows)]
-        if e.raw_os_error() == Some(1314) {
-            // ERROR_PRIVILEGE_NOT_HELD
-            return std::io::Error::new(
-                e.kind(),
-                format!(
-                    "symlink creation requires Developer Mode or admin privileges: {} -> {}\n\
-                     Enable Developer Mode: Settings > Update & Security > For developers",
-                    source.display(),
-                    target.display()
-                ),
-            );
-        }
-        e
-    })
+    #[cfg(unix)]
+    {
+        create_symlink_impl(source, target)
+    }
+    #[cfg(windows)]
+    {
+        create_symlink_impl(source, target).map_err(|e| {
+            if e.raw_os_error() == Some(1314) {
+                // ERROR_PRIVILEGE_NOT_HELD
+                return std::io::Error::new(
+                    e.kind(),
+                    format!(
+                        "symlink creation requires Developer Mode or admin privileges: {} -> {}\n\
+                         Enable Developer Mode: Settings > Update & Security > For developers",
+                        source.display(),
+                        target.display()
+                    ),
+                );
+            }
+            e
+        })
+    }
 }
 
 #[cfg(unix)]
