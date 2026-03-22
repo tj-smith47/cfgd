@@ -28,6 +28,7 @@ use cfgd_core::state::StateStore;
 
 const MSG_NO_CONFIG: &str = "No cfgd.yaml found — run 'cfgd init' first";
 const MSG_RUN_APPLY: &str = "Run 'cfgd apply --dry-run' to preview changes, then 'cfgd apply'";
+const MSG_NOTHING_TO_DO: &str = "Nothing to do — everything is up to date";
 
 // --- Structured output types ---
 
@@ -220,7 +221,7 @@ pub(super) struct RegistryListEntry {
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(super) struct KeyListEntry {
-    pub path: String,
+    pub name: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub fingerprint: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -939,6 +940,9 @@ pub struct ProfileCreateArgs {
     /// On-change scripts (repeatable)
     #[arg(long = "on-change")]
     pub on_change: Vec<String>,
+    /// On-drift scripts (repeatable)
+    #[arg(long = "on-drift")]
+    pub on_drift: Vec<String>,
 }
 
 #[derive(Parser)]
@@ -984,6 +988,9 @@ pub struct ProfileUpdateArgs {
     /// On-change scripts (repeatable, prefix with - to remove)
     #[arg(long = "on-change", allow_hyphen_values = true)]
     pub on_change: Vec<String>,
+    /// On-drift scripts (repeatable, prefix with - to remove)
+    #[arg(long = "on-drift", allow_hyphen_values = true)]
+    pub on_drift: Vec<String>,
     /// Mark all --file entries as private (local-only, excluded from git).
     #[arg(long = "private-files")]
     pub private: bool,
@@ -2058,6 +2065,20 @@ fn cmd_apply(cli: &Cli, printer: &Printer, args: &ApplyArgs) -> anyhow::Result<(
     if args.skip_scripts {
         plan.phases
             .retain(|p| !matches!(p.name, PhaseName::PreScripts | PhaseName::PostScripts));
+        // Also strip module-level RunScript actions
+        for phase in &mut plan.phases {
+            if phase.name == PhaseName::Modules {
+                phase.actions.retain(|a| {
+                    !matches!(
+                        a,
+                        reconciler::Action::Module(reconciler::ModuleAction {
+                            kind: reconciler::ModuleActionKind::RunScript { .. },
+                            ..
+                        })
+                    )
+                });
+            }
+        }
     }
 
     if dry_run {
@@ -2115,7 +2136,7 @@ fn cmd_apply(cli: &Cli, printer: &Printer, args: &ApplyArgs) -> anyhow::Result<(
 
         printer.newline();
         if plan_output.total_actions == 0 {
-            printer.success("Nothing to do — everything is up to date");
+            printer.success(MSG_NOTHING_TO_DO);
         } else {
             printer.info(&format!("{} action(s) planned", plan_output.total_actions));
         }
@@ -2139,7 +2160,7 @@ fn cmd_apply(cli: &Cli, printer: &Printer, args: &ApplyArgs) -> anyhow::Result<(
     };
 
     if !has_actions {
-        printer.success("Nothing to do — everything is up to date");
+        printer.success(MSG_NOTHING_TO_DO);
         return Ok(());
     }
 
@@ -2195,6 +2216,7 @@ fn cmd_apply(cli: &Cli, printer: &Printer, args: &ApplyArgs) -> anyhow::Result<(
         phase_filter.as_ref(),
         &resolved_modules,
         ReconcileContext::Apply,
+        args.skip_scripts,
     )?;
 
     printer.newline();
@@ -2444,6 +2466,20 @@ fn cmd_plan(cli: &Cli, printer: &Printer, args: &PlanArgs) -> anyhow::Result<()>
     if args.skip_scripts {
         plan.phases
             .retain(|p| !matches!(p.name, PhaseName::PreScripts | PhaseName::PostScripts));
+        // Also strip module-level RunScript actions
+        for phase in &mut plan.phases {
+            if phase.name == PhaseName::Modules {
+                phase.actions.retain(|a| {
+                    !matches!(
+                        a,
+                        reconciler::Action::Module(reconciler::ModuleAction {
+                            kind: reconciler::ModuleActionKind::RunScript { .. },
+                            ..
+                        })
+                    )
+                });
+            }
+        }
     }
 
     // Show pending decisions
@@ -2501,7 +2537,7 @@ fn cmd_plan(cli: &Cli, printer: &Printer, args: &PlanArgs) -> anyhow::Result<()>
 
     printer.newline();
     if plan_output.total_actions == 0 {
-        printer.success("Nothing to do — everything is up to date");
+        printer.success(MSG_NOTHING_TO_DO);
     } else {
         printer.info(&format!("{} action(s) planned", plan_output.total_actions));
     }
@@ -7194,6 +7230,7 @@ spec:
             pre_reconcile: vec![],
             post_reconcile: vec![],
             on_change: vec![],
+            on_drift: vec![],
         }
     }
 
@@ -7213,6 +7250,7 @@ spec:
             pre_reconcile: vec![],
             post_reconcile: vec![],
             on_change: vec![],
+            on_drift: vec![],
             private: false,
         }
     }

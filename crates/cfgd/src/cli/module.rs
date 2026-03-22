@@ -720,6 +720,7 @@ pub(super) fn cmd_module_create(
                 None,
                 &[],
                 cfgd_core::reconciler::ReconcileContext::Apply,
+                false,
             )?;
             super::print_apply_result(&result, printer);
         }
@@ -2486,7 +2487,7 @@ pub(super) fn cmd_module_keys_list(printer: &Printer) -> anyhow::Result<()> {
                     cfgd_core::unix_secs_to_iso8601(secs)
                 });
             entries.push(super::KeyListEntry {
-                path: pub_path.display().to_string(),
+                name: pub_path.display().to_string(),
                 fingerprint,
                 created,
             });
@@ -2504,10 +2505,7 @@ pub(super) fn cmd_module_keys_list(printer: &Printer) -> anyhow::Result<()> {
         printer.info("Generate with: cfgd module keys generate");
     } else {
         for entry in &entries {
-            printer.key_value(
-                &entry.path,
-                entry.fingerprint.as_deref().unwrap_or(""),
-            );
+            printer.key_value(&entry.name, entry.fingerprint.as_deref().unwrap_or(""));
         }
     }
 

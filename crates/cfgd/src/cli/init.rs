@@ -312,6 +312,7 @@ fn apply_plan(
         None,
         &[],
         cfgd_core::reconciler::ReconcileContext::Apply,
+        false,
     )?;
     super::print_apply_result(&result, printer);
     Ok(())

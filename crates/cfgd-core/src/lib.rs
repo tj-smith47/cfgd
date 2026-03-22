@@ -651,9 +651,80 @@ fn overlay_reconcile_patch(base: &mut EffectiveReconcile, patch: &config::Reconc
     }
 }
 
+// ---------------------------------------------------------------------------
+// Duration parsing
+// ---------------------------------------------------------------------------
+
+/// Parse a duration string like "30s", "5m", "1h", or a plain number (as seconds).
+///
+/// Returns an error description on invalid input.
+pub fn parse_duration_str(s: &str) -> Result<std::time::Duration, String> {
+    let s = s.trim();
+    if let Some(n) = s.strip_suffix('s') {
+        n.trim()
+            .parse::<u64>()
+            .map(std::time::Duration::from_secs)
+            .map_err(|_| format!("invalid timeout: {}", s))
+    } else if let Some(n) = s.strip_suffix('m') {
+        n.trim()
+            .parse::<u64>()
+            .map(|m| std::time::Duration::from_secs(m * 60))
+            .map_err(|_| format!("invalid timeout: {}", s))
+    } else if let Some(n) = s.strip_suffix('h') {
+        n.trim()
+            .parse::<u64>()
+            .map(|h| std::time::Duration::from_secs(h * 3600))
+            .map_err(|_| format!("invalid timeout: {}", s))
+    } else {
+        s.parse::<u64>()
+            .map(std::time::Duration::from_secs)
+            .map_err(|_| format!("invalid timeout '{}': use 30s, 5m, or 1h", s))
+    }
+}
+
+/// Default timeout for profile-level scripts (5 minutes).
+pub const PROFILE_SCRIPT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parse_duration_str_seconds() {
+        let d = parse_duration_str("30s").unwrap();
+        assert_eq!(d, std::time::Duration::from_secs(30));
+    }
+
+    #[test]
+    fn parse_duration_str_minutes() {
+        let d = parse_duration_str("5m").unwrap();
+        assert_eq!(d, std::time::Duration::from_secs(300));
+    }
+
+    #[test]
+    fn parse_duration_str_hours() {
+        let d = parse_duration_str("1h").unwrap();
+        assert_eq!(d, std::time::Duration::from_secs(3600));
+    }
+
+    #[test]
+    fn parse_duration_str_plain_seconds() {
+        let d = parse_duration_str("60").unwrap();
+        assert_eq!(d, std::time::Duration::from_secs(60));
+    }
+
+    #[test]
+    fn parse_duration_str_whitespace() {
+        let d = parse_duration_str(" 10 s ").unwrap();
+        assert_eq!(d, std::time::Duration::from_secs(10));
+    }
+
+    #[test]
+    fn parse_duration_str_invalid() {
+        assert!(parse_duration_str("abc").is_err());
+        assert!(parse_duration_str("").is_err());
+        assert!(parse_duration_str("xs").is_err());
+    }
 
     #[test]
     fn parse_loose_version_full_semver() {

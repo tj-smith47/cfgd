@@ -56,7 +56,7 @@ pub struct ResolvedModule {
     pub files: Vec<ResolvedFile>,
     pub env: Vec<EnvVar>,
     pub aliases: Vec<ShellAlias>,
-    pub post_apply_scripts: Vec<String>,
+    pub post_apply_scripts: Vec<crate::config::ScriptEntry>,
     pub depends: Vec<String>,
     /// Module directory — used as working directory for module scripts.
     pub dir: PathBuf,
@@ -812,13 +812,18 @@ pub fn resolve_modules(
             .spec
             .scripts
             .as_ref()
-            .map(|s| {
-                s.post_apply
-                    .iter()
-                    .map(|e| e.run_str().to_string())
-                    .collect()
-            })
+            .map(|s| s.post_apply.clone())
             .unwrap_or_default();
+
+        // Warn if module defines onDrift scripts — onDrift is profile-level only
+        if let Some(ref scripts) = module.spec.scripts
+            && !scripts.on_drift.is_empty()
+        {
+            tracing::warn!(
+                "module '{}' defines onDrift scripts, but onDrift is profile-level only — these will be ignored",
+                name
+            );
+        }
 
         resolved.push(ResolvedModule {
             name: name.clone(),

@@ -149,6 +149,8 @@ Current shared items (keep this list updated when adding new ones):
 - `CSI_DRIVER_NAME` — canonical CSI driver name string (`csi.cfgd.io`); use everywhere instead of string literals
 - `MODULES_ANNOTATION` — canonical annotation key (`cfgd.io/modules`); use everywhere instead of string literals
 - `sanitize_k8s_name(name)` — sanitize a string for Kubernetes RFC 1123 DNS label rules
+- `parse_duration_str(s)` — parse "30s", "5m", "1h", or plain seconds into `Duration`; returns `Result<Duration, String>`
+- `PROFILE_SCRIPT_TIMEOUT` — default timeout for profile-level scripts (5 minutes); use instead of hardcoded `Duration::from_secs(300)`
 
 ### Database Conventions
 

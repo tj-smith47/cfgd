@@ -1224,7 +1224,7 @@ fn handle_reconcile(
                 None,
             );
             let printer = Printer::new(Verbosity::Quiet);
-            let default_timeout = std::time::Duration::from_secs(300);
+            let default_timeout = crate::PROFILE_SCRIPT_TIMEOUT;
             for entry in &scripts.on_drift {
                 match crate::reconciler::execute_script(
                     entry,
@@ -2222,30 +2222,7 @@ pub fn git_pull_sync(repo_path: &Path) -> std::result::Result<bool, String> {
 // --- Helpers ---
 
 pub fn parse_duration_str(s: &str) -> Duration {
-    let s = s.trim();
-
-    if let Some(rest) = s.strip_suffix('s')
-        && let Ok(n) = rest.parse::<u64>()
-    {
-        return Duration::from_secs(n);
-    }
-    if let Some(rest) = s.strip_suffix('m')
-        && let Ok(n) = rest.parse::<u64>()
-    {
-        return Duration::from_secs(n * 60);
-    }
-    if let Some(rest) = s.strip_suffix('h')
-        && let Ok(n) = rest.parse::<u64>()
-    {
-        return Duration::from_secs(n * 3600);
-    }
-
-    // Try plain number as seconds
-    if let Ok(n) = s.parse::<u64>() {
-        return Duration::from_secs(n);
-    }
-
-    Duration::from_secs(DEFAULT_RECONCILE_SECS)
+    crate::parse_duration_str(s).unwrap_or(Duration::from_secs(DEFAULT_RECONCILE_SECS))
 }
 
 #[cfg(test)]

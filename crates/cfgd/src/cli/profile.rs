@@ -147,8 +147,17 @@ pub(super) fn cmd_profile_list(cli: &Cli, printer: &Printer) -> anyhow::Result<(
         .iter()
         .map(|name| {
             let profile_path = profiles_dir.join(format!("{}.yaml", name));
-            let (inherits, module_count) =
-                if let Ok(doc) = config::load_profile(&profile_path) {
+            let (inherits, module_count) = if let Ok(doc) = config::load_profile(&profile_path) {
+                let inh = if doc.spec.inherits.is_empty() {
+                    None
+                } else {
+                    Some(doc.spec.inherits.join(", "))
+                };
+                (inh, doc.spec.modules.len())
+            } else {
+                // Try .yml extension
+                let yml_path = profiles_dir.join(format!("{}.yml", name));
+                if let Ok(doc) = config::load_profile(&yml_path) {
                     let inh = if doc.spec.inherits.is_empty() {
                         None
                     } else {
@@ -156,19 +165,9 @@ pub(super) fn cmd_profile_list(cli: &Cli, printer: &Printer) -> anyhow::Result<(
                     };
                     (inh, doc.spec.modules.len())
                 } else {
-                    // Try .yml extension
-                    let yml_path = profiles_dir.join(format!("{}.yml", name));
-                    if let Ok(doc) = config::load_profile(&yml_path) {
-                        let inh = if doc.spec.inherits.is_empty() {
-                            None
-                        } else {
-                            Some(doc.spec.inherits.join(", "))
-                        };
-                        (inh, doc.spec.modules.len())
-                    } else {
-                        (None, 0)
-                    }
-                };
+                    (None, 0)
+                }
+            };
             super::ProfileListEntry {
                 name: name.clone(),
                 active: *name == active,
@@ -358,6 +357,7 @@ pub(super) fn cmd_profile_create(
     let pre_reconcile = &args.pre_reconcile;
     let post_reconcile = &args.post_reconcile;
     let on_change = &args.on_change;
+    let on_drift = &args.on_drift;
     validate_resource_name(name, "Profile")?;
     printer.header(&format!("Create Profile: {}", name));
 
@@ -395,7 +395,8 @@ pub(super) fn cmd_profile_create(
         && post_apply.is_empty()
         && pre_reconcile.is_empty()
         && post_reconcile.is_empty()
-        && on_change.is_empty();
+        && on_change.is_empty()
+        && on_drift.is_empty();
 
     let (inh, mods, pkgs_parsed, vars, sys) = if is_interactive {
         let inh_str = printer.prompt_text("Inherit from (comma-separated, or empty)", "")?;
@@ -511,7 +512,8 @@ pub(super) fn cmd_profile_create(
         || !post_apply.is_empty()
         || !pre_reconcile.is_empty()
         || !post_reconcile.is_empty()
-        || !on_change.is_empty();
+        || !on_change.is_empty()
+        || !on_drift.is_empty();
     let scripts = if !has_scripts {
         None
     } else {
@@ -536,7 +538,10 @@ pub(super) fn cmd_profile_create(
                 .iter()
                 .map(|s| config::ScriptEntry::Simple(s.clone()))
                 .collect(),
-            ..Default::default()
+            on_drift: on_drift
+                .iter()
+                .map(|s| config::ScriptEntry::Simple(s.clone()))
+                .collect(),
         })
     };
 
@@ -613,6 +618,7 @@ pub(super) fn cmd_profile_update(
     let (add_post_reconcile, remove_post_reconcile) =
         cfgd_core::split_add_remove(&args.post_reconcile);
     let (add_on_change, remove_on_change) = cfgd_core::split_add_remove(&args.on_change);
+    let (add_on_drift, remove_on_drift) = cfgd_core::split_add_remove(&args.on_drift);
     validate_resource_name(name, "Profile")?;
     printer.header(&format!("Update Profile: {}", name));
 
@@ -999,6 +1005,14 @@ pub(super) fn cmd_profile_update(
         &remove_on_change,
         "onChange",
         |s| &mut s.on_change,
+        printer,
+    );
+    changes += update_script_list(
+        &mut doc.spec.scripts,
+        &add_on_drift,
+        &remove_on_drift,
+        "onDrift",
+        |s| &mut s.on_drift,
         printer,
     );
 

@@ -124,7 +124,7 @@ pub enum ModuleActionKind {
         files: Vec<crate::modules::ResolvedFile>,
     },
     /// Run a module lifecycle script.
-    RunScript { script: String },
+    RunScript { script: ScriptEntry },
     /// Skip a module (dependency not met, user declined, etc.).
     Skip { reason: String },
 }
@@ -748,6 +748,7 @@ impl<'a> Reconciler<'a> {
         phase_filter: Option<&PhaseName>,
         module_actions: &[ResolvedModule],
         context: ReconcileContext,
+        skip_scripts: bool,
     ) -> Result<ApplyResult> {
         // Record apply up front as "in-progress" so the journal can reference it
         let plan_hash = crate::state::plan_hash(&plan.to_hash_string());
@@ -891,7 +892,7 @@ impl<'a> Reconciler<'a> {
 
         // --- onChange detection: run profile onChange scripts if anything changed ---
         let any_changed = results.iter().any(|r| r.changed);
-        if any_changed && !resolved.merged.scripts.on_change.is_empty() {
+        if any_changed && !skip_scripts && !resolved.merged.scripts.on_change.is_empty() {
             let profile_name = resolved
                 .layers
                 .last()
@@ -1615,15 +1616,8 @@ impl<'a> Reconciler<'a> {
                     module_dir.as_deref(),
                 );
 
-                let script_entry = ScriptEntry::Simple(script.clone());
                 let working = module_dir.as_deref().unwrap_or(config_dir);
-                execute_script(
-                    &script_entry,
-                    working,
-                    &env_vars,
-                    MODULE_SCRIPT_TIMEOUT,
-                    printer,
-                )?;
+                execute_script(script, working, &env_vars, MODULE_SCRIPT_TIMEOUT, printer)?;
 
                 Ok(format!("module:{}:script", action.module_name))
             }
@@ -2003,52 +1997,17 @@ fn verify_env(
 // Unified script executor
 // ---------------------------------------------------------------------------
 
-/// Default timeout for profile-level scripts.
-const PROFILE_SCRIPT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
+/// Default timeout for profile-level scripts — re-exported from lib.rs.
+const PROFILE_SCRIPT_TIMEOUT: std::time::Duration = crate::PROFILE_SCRIPT_TIMEOUT;
 
 /// Default timeout for module-level scripts.
 const MODULE_SCRIPT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
 
-/// Parse a duration string like "30s", "5m", "1h" or plain seconds.
+/// Parse a duration string — delegates to `crate::parse_duration_str`, mapping
+/// the error into `CfgdError::Config`.
 fn parse_duration_str(s: &str) -> Result<std::time::Duration> {
-    let s = s.trim();
-    if let Some(n) = s.strip_suffix('s') {
-        n.trim()
-            .parse::<u64>()
-            .map(std::time::Duration::from_secs)
-            .map_err(|_| {
-                crate::errors::CfgdError::Config(ConfigError::Invalid {
-                    message: format!("invalid timeout: {}", s),
-                })
-            })
-    } else if let Some(n) = s.strip_suffix('m') {
-        n.trim()
-            .parse::<u64>()
-            .map(|m| std::time::Duration::from_secs(m * 60))
-            .map_err(|_| {
-                crate::errors::CfgdError::Config(ConfigError::Invalid {
-                    message: format!("invalid timeout: {}", s),
-                })
-            })
-    } else if let Some(n) = s.strip_suffix('h') {
-        n.trim()
-            .parse::<u64>()
-            .map(|h| std::time::Duration::from_secs(h * 3600))
-            .map_err(|_| {
-                crate::errors::CfgdError::Config(ConfigError::Invalid {
-                    message: format!("invalid timeout: {}", s),
-                })
-            })
-    } else {
-        // Try as plain seconds
-        s.parse::<u64>()
-            .map(std::time::Duration::from_secs)
-            .map_err(|_| {
-                crate::errors::CfgdError::Config(ConfigError::Invalid {
-                    message: format!("invalid timeout '{}': use 30s, 5m, or 1h", s),
-                })
-            })
-    }
+    crate::parse_duration_str(s)
+        .map_err(|e| crate::errors::CfgdError::Config(ConfigError::Invalid { message: e }))
 }
 
 /// Build environment variables injected into every script invocation.
@@ -2739,7 +2698,7 @@ fn format_module_action_item(action: &ModuleAction) -> String {
             }
         }
         ModuleActionKind::RunScript { script, .. } => {
-            format!("[{}] post-apply: {}", action.module_name, script)
+            format!("[{}] post-apply: {}", action.module_name, script.run_str())
         }
         ModuleActionKind::Skip { reason } => {
             format!("[{}] skip: {}", action.module_name, reason)
@@ -3070,6 +3029,7 @@ mod tests {
                 None,
                 &[],
                 ReconcileContext::Apply,
+                false,
             )
             .unwrap();
 
@@ -3336,7 +3296,10 @@ mod tests {
             files: vec![],
             env: vec![],
             aliases: vec![],
-            post_apply_scripts: vec!["nvim --headless +qa".to_string(), "echo done".to_string()],
+            post_apply_scripts: vec![
+                ScriptEntry::Simple("nvim --headless +qa".to_string()),
+                ScriptEntry::Simple("echo done".to_string()),
+            ],
             depends: vec![],
             dir: PathBuf::from("."),
         }];
@@ -3362,7 +3325,7 @@ mod tests {
             match action {
                 Action::Module(ma) => match &ma.kind {
                     ModuleActionKind::RunScript { script } => {
-                        assert!(!script.is_empty());
+                        assert!(!script.run_str().is_empty());
                     }
                     _ => panic!("expected RunScript action"),
                 },
@@ -3576,6 +3539,7 @@ mod tests {
                 None,
                 &modules,
                 ReconcileContext::Apply,
+                false,
             )
             .unwrap();
 
@@ -4413,6 +4377,7 @@ mod tests {
                 None,
                 &[],
                 ReconcileContext::Apply,
+                false,
             )
             .unwrap();
 
@@ -4469,6 +4434,7 @@ mod tests {
                 None,
                 &[],
                 ReconcileContext::Apply,
+                false,
             )
             .unwrap();
 
@@ -4509,6 +4475,7 @@ mod tests {
                 None,
                 &[],
                 ReconcileContext::Apply,
+                false,
             )
             .unwrap();
 
@@ -4552,6 +4519,7 @@ mod tests {
                 None,
                 &[],
                 ReconcileContext::Apply,
+                false,
             )
             .unwrap();
 
@@ -4565,6 +4533,7 @@ mod tests {
                 None,
                 &[],
                 ReconcileContext::Apply,
+                false,
             )
             .unwrap();
 
@@ -4740,6 +4709,7 @@ mod tests {
                 None,
                 &[],
                 ReconcileContext::Apply,
+                false,
             )
             .unwrap();
 
@@ -4797,6 +4767,7 @@ mod tests {
                 None,
                 &[],
                 ReconcileContext::Apply,
+                false,
             )
             .unwrap();
 
@@ -4850,6 +4821,7 @@ mod tests {
                 Some(&PhaseName::Env),
                 &[],
                 ReconcileContext::Apply,
+                false,
             )
             .unwrap();
 
@@ -4897,6 +4869,7 @@ mod tests {
                 Some(&PhaseName::Packages),
                 &[],
                 ReconcileContext::Apply,
+                false,
             )
             .unwrap();
 
@@ -4947,6 +4920,7 @@ mod tests {
                 Some(&PhaseName::Files),
                 &[],
                 ReconcileContext::Apply,
+                false,
             )
             .unwrap();
 
@@ -5007,6 +4981,7 @@ mod tests {
                 None,
                 &[],
                 ReconcileContext::Apply,
+                false,
             )
             .unwrap();
 
@@ -5055,6 +5030,7 @@ mod tests {
                 None,
                 &[],
                 ReconcileContext::Apply,
+                false,
             )
             .unwrap();
 
