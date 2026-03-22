@@ -2529,7 +2529,9 @@ fn parse_winget_list(output: &str) -> HashSet<String> {
         if line.trim().is_empty() {
             continue;
         }
-        if id_end > id_start && let Some(slice) = line.get(id_start..id_end) {
+        if id_end > id_start
+            && let Some(slice) = line.get(id_start..id_end)
+        {
             let id = slice.trim();
             if !id.is_empty() {
                 packages.insert(id.to_string());
@@ -2633,6 +2635,128 @@ impl PackageManager for WingetManager {
         for line in stdout.lines() {
             if let Some(rest) = line.strip_prefix("Version:") {
                 return Ok(Some(rest.trim().to_string()));
+            }
+        }
+        Ok(None)
+    }
+}
+
+// --- Windows Package Manager (chocolatey) ---
+
+pub struct ChocolateyManager;
+
+fn parse_choco_list(output: &str) -> HashSet<String> {
+    let mut packages = HashSet::new();
+    for line in output.lines() {
+        let line = line.trim();
+        if line.is_empty()
+            || line.starts_with("Chocolatey v")
+            || line.ends_with("packages installed.")
+            || line.ends_with("packages installed.\r")
+        {
+            continue;
+        }
+        if let Some((name, _version)) = line.split_once(' ') {
+            packages.insert(name.to_string());
+        }
+    }
+    packages
+}
+
+impl PackageManager for ChocolateyManager {
+    fn name(&self) -> &str {
+        "chocolatey"
+    }
+
+    fn is_available(&self) -> bool {
+        cfgd_core::command_available("choco")
+    }
+
+    fn can_bootstrap(&self) -> bool {
+        true
+    }
+
+    fn bootstrap(&self, printer: &Printer) -> Result<()> {
+        run_pkg_cmd_live(
+            printer,
+            "chocolatey",
+            Command::new("powershell").args([
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-Command",
+                "Set-ExecutionPolicy Bypass -Scope Process -Force; \
+                 [System.Net.ServicePointManager]::SecurityProtocol = \
+                 [System.Net.ServicePointManager]::SecurityProtocol -bor 3072; \
+                 iex ((New-Object System.Net.WebClient).DownloadString('https://community.chocolatey.org/install.ps1'))",
+            ]),
+            "Installing Chocolatey",
+            "install",
+        )?;
+        Ok(())
+    }
+
+    fn installed_packages(&self) -> Result<HashSet<String>> {
+        let output = run_pkg_cmd("chocolatey", Command::new("choco").args(["list"]), "list")?;
+        Ok(parse_choco_list(&String::from_utf8_lossy(&output.stdout)))
+    }
+
+    fn install(&self, packages: &[String], printer: &Printer) -> Result<()> {
+        let mut args = vec!["install", "-y"];
+        let pkg_refs: Vec<&str> = packages.iter().map(|s| s.as_str()).collect();
+        args.extend(pkg_refs);
+        run_pkg_cmd_live(
+            printer,
+            "chocolatey",
+            Command::new("choco").args(&args),
+            "Installing chocolatey packages",
+            "install",
+        )?;
+        Ok(())
+    }
+
+    fn uninstall(&self, packages: &[String], printer: &Printer) -> Result<()> {
+        let mut args = vec!["uninstall", "-y"];
+        let pkg_refs: Vec<&str> = packages.iter().map(|s| s.as_str()).collect();
+        args.extend(pkg_refs);
+        run_pkg_cmd_live(
+            printer,
+            "chocolatey",
+            Command::new("choco").args(&args),
+            "Uninstalling chocolatey packages",
+            "uninstall",
+        )?;
+        Ok(())
+    }
+
+    fn update(&self, printer: &Printer) -> Result<()> {
+        run_pkg_cmd_live(
+            printer,
+            "chocolatey",
+            Command::new("choco").args(["upgrade", "all", "-y"]),
+            "Upgrading all chocolatey packages",
+            "install",
+        )?;
+        Ok(())
+    }
+
+    fn available_version(&self, package: &str) -> Result<Option<String>> {
+        let output = std::process::Command::new("choco")
+            .args(["info", package])
+            .output()
+            .map_err(|e| PackageError::ListFailed {
+                manager: "chocolatey".into(),
+                message: e.to_string(),
+            })?;
+        if !output.status.success() {
+            return Ok(None);
+        }
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        for line in stdout.lines() {
+            if let Some(rest) = line.strip_prefix("Title:")
+                && let Some((_name, version)) = rest.rsplit_once('|')
+            {
+                return Ok(Some(version.trim().to_string()));
             }
         }
         Ok(None)
@@ -3098,6 +3222,11 @@ pub fn add_package(
                 packages.winget.push(package_name.to_string());
             }
         }
+        "chocolatey" => {
+            if !packages.chocolatey.contains(&package_name.to_string()) {
+                packages.chocolatey.push(package_name.to_string());
+            }
+        }
         _ => {
             // Check custom managers
             if let Some(custom) = packages.custom.iter_mut().find(|c| c.name == manager_name) {
@@ -3245,6 +3374,11 @@ pub fn remove_package(
             packages.winget.retain(|p| p != package_name);
             packages.winget.len() < before
         }
+        "chocolatey" => {
+            let before = packages.chocolatey.len();
+            packages.chocolatey.retain(|p| p != package_name);
+            packages.chocolatey.len() < before
+        }
         _ => {
             // Check custom managers
             if let Some(custom) = packages.custom.iter_mut().find(|c| c.name == manager_name) {
@@ -3283,6 +3417,7 @@ pub fn all_package_managers() -> Vec<Box<dyn PackageManager>> {
         Box::new(NixManager),
         Box::new(GoInstallManager),
         Box::new(WingetManager),
+        Box::new(ChocolateyManager),
     ]
 }
 
@@ -3751,7 +3886,7 @@ mod tests {
     #[test]
     fn all_package_managers_creates_all() {
         let managers = all_package_managers();
-        assert_eq!(managers.len(), 18);
+        assert_eq!(managers.len(), 19);
 
         let names: Vec<&str> = managers.iter().map(|m| m.name()).collect();
         assert!(names.contains(&"brew"));
@@ -3772,6 +3907,7 @@ mod tests {
         assert!(names.contains(&"nix"));
         assert!(names.contains(&"go"));
         assert!(names.contains(&"winget"));
+        assert!(names.contains(&"chocolatey"));
     }
 
     #[test]
@@ -4768,6 +4904,13 @@ custom:
     }
 
     #[test]
+    fn add_package_chocolatey() {
+        let mut spec = PackagesSpec::default();
+        add_package("chocolatey", "nodejs", &mut spec).unwrap();
+        assert_eq!(spec.chocolatey, vec!["nodejs"]);
+    }
+
+    #[test]
     fn add_package_unknown_manager_returns_error() {
         let mut spec = PackagesSpec::default();
         assert!(add_package("nonexistent", "pkg", &mut spec).is_err());
@@ -4874,6 +5017,14 @@ custom:
         add_package("winget", "Git.Git", &mut spec).unwrap();
         assert!(remove_package("winget", "Git.Git", &mut spec).unwrap());
         assert!(spec.winget.is_empty());
+    }
+
+    #[test]
+    fn remove_package_chocolatey() {
+        let mut spec = PackagesSpec::default();
+        add_package("chocolatey", "python", &mut spec).unwrap();
+        assert!(remove_package("chocolatey", "python", &mut spec).unwrap());
+        assert!(spec.chocolatey.is_empty());
     }
 
     #[test]
@@ -5356,6 +5507,22 @@ custom:
                       foo    foo.Bar  1.0\n";
         let packages = parse_winget_list(output);
         assert!(packages.is_empty());
+    }
+
+    // --- chocolatey output parsing ---
+
+    #[test]
+    fn chocolatey_parse_list_output() {
+        let output = "Chocolatey v2.2.2\n\
+                      chocolatey 2.2.2\n\
+                      nodejs 21.4.0\n\
+                      python 3.12.1\n\
+                      3 packages installed.";
+        let packages = parse_choco_list(output);
+        assert!(packages.contains("chocolatey"));
+        assert!(packages.contains("nodejs"));
+        assert!(packages.contains("python"));
+        assert_eq!(packages.len(), 3);
     }
 
     // --- package_aliases tests ---
