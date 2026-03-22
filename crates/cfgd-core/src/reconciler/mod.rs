@@ -4,8 +4,8 @@ use std::str::FromStr;
 
 use serde::Serialize;
 
-use crate::config::{MergedProfile, ResolvedProfile, ScriptSpec};
-use crate::errors::Result;
+use crate::config::{MergedProfile, ResolvedProfile, ScriptEntry, ScriptSpec};
+use crate::errors::{ConfigError, Result};
 use crate::expand_tilde;
 use crate::modules::ResolvedModule;
 use crate::output::Printer;
@@ -150,7 +150,7 @@ pub enum SystemAction {
 #[derive(Debug, Serialize)]
 pub enum ScriptAction {
     Run {
-        path: PathBuf,
+        entry: ScriptEntry,
         phase: ScriptPhase,
         origin: String,
     },
@@ -576,7 +576,7 @@ impl<'a> Reconciler<'a> {
             .iter()
             .map(|entry| {
                 Action::Script(ScriptAction::Run {
-                    path: PathBuf::from(entry.run_str()),
+                    entry: entry.clone(),
                     phase: pre_phase.clone(),
                     origin: "local".to_string(),
                 })
@@ -587,7 +587,7 @@ impl<'a> Reconciler<'a> {
             .iter()
             .map(|entry| {
                 Action::Script(ScriptAction::Run {
-                    path: PathBuf::from(entry.run_str()),
+                    entry: entry.clone(),
                     phase: post_phase.clone(),
                     origin: "local".to_string(),
                 })
@@ -747,7 +747,7 @@ impl<'a> Reconciler<'a> {
         printer: &Printer,
         phase_filter: Option<&PhaseName>,
         module_actions: &[ResolvedModule],
-        _context: ReconcileContext,
+        context: ReconcileContext,
     ) -> Result<ApplyResult> {
         // Record apply up front as "in-progress" so the journal can reference it
         let plan_hash = crate::state::plan_hash(&plan.to_hash_string());
@@ -809,42 +809,135 @@ impl<'a> Reconciler<'a> {
                     )
                     .ok();
 
-                let result = self.apply_action(action, resolved, config_dir, printer, apply_id);
+                let result = self.apply_action(
+                    action,
+                    resolved,
+                    config_dir,
+                    printer,
+                    apply_id,
+                    context,
+                    module_actions,
+                );
 
-                let (desc, success, error) = match result {
+                let (desc, success, error, should_abort) = match result {
                     Ok((desc, script_output)) => {
                         if let Some(jid) = journal_id {
                             let _ =
                                 self.state
                                     .journal_complete(jid, None, script_output.as_deref());
                         }
-                        (desc, true, None)
+                        (desc, true, None, false)
                     }
                     Err(e) => {
                         let desc = format_action_description(action);
-                        printer.error(&format!(
-                            "[{}/{}] Failed: {} — {}",
-                            action_idx + 1,
-                            total,
-                            desc,
-                            e
-                        ));
+
+                        // Check if this is a script action with continueOnError
+                        let continue_on_err = if let Action::Script(ScriptAction::Run {
+                            entry,
+                            phase: script_phase,
+                            ..
+                        }) = action
+                        {
+                            effective_continue_on_error(entry, script_phase)
+                        } else {
+                            false
+                        };
+
+                        if continue_on_err {
+                            printer.warning(&format!(
+                                "[{}/{}] Script failed (continueOnError): {} — {}",
+                                action_idx + 1,
+                                total,
+                                desc,
+                                e
+                            ));
+                        } else {
+                            printer.error(&format!(
+                                "[{}/{}] Failed: {} — {}",
+                                action_idx + 1,
+                                total,
+                                desc,
+                                e
+                            ));
+                        }
                         if let Some(jid) = journal_id {
                             let _ = self.state.journal_fail(jid, &e.to_string());
                         }
-                        (desc, false, Some(e.to_string()))
+                        (desc, false, Some(e.to_string()), !continue_on_err)
                     }
                 };
 
                 let changed = success && !desc.contains(":skipped");
                 results.push(ActionResult {
                     phase: phase.name.as_str().to_string(),
-                    description: desc,
+                    description: desc.clone(),
                     success,
-                    error,
+                    error: error.clone(),
                     changed,
                 });
                 action_index += 1;
+
+                // If a pre-script failed without continueOnError, abort
+                if should_abort
+                    && let Action::Script(ScriptAction::Run { phase: sp, .. }) = action
+                    && matches!(sp, ScriptPhase::PreApply | ScriptPhase::PreReconcile)
+                {
+                    return Err(crate::errors::CfgdError::Config(ConfigError::Invalid {
+                        message: format!("pre-script failed, aborting apply: {}", desc),
+                    }));
+                }
+            }
+        }
+
+        // --- onChange detection: run profile onChange scripts if anything changed ---
+        let any_changed = results.iter().any(|r| r.changed);
+        if any_changed && !resolved.merged.scripts.on_change.is_empty() {
+            let profile_name = resolved
+                .layers
+                .last()
+                .map(|l| l.profile_name.as_str())
+                .unwrap_or("unknown");
+            let env_vars = build_script_env(
+                config_dir,
+                profile_name,
+                context,
+                &ScriptPhase::OnChange,
+                false,
+                None,
+                None,
+            );
+            for entry in &resolved.merged.scripts.on_change {
+                match execute_script(
+                    entry,
+                    config_dir,
+                    &env_vars,
+                    PROFILE_SCRIPT_TIMEOUT,
+                    printer,
+                ) {
+                    Ok((desc, changed, _)) => {
+                        results.push(ActionResult {
+                            phase: "post-scripts".to_string(),
+                            description: desc,
+                            success: true,
+                            error: None,
+                            changed,
+                        });
+                    }
+                    Err(e) => {
+                        let continue_on_err =
+                            effective_continue_on_error(entry, &ScriptPhase::OnChange);
+                        results.push(ActionResult {
+                            phase: "post-scripts".to_string(),
+                            description: format!("onChange: {}", entry.run_str()),
+                            success: false,
+                            error: Some(format!("{}", e)),
+                            changed: false,
+                        });
+                        if !continue_on_err {
+                            return Err(e);
+                        }
+                    }
+                }
             }
         }
 
@@ -982,6 +1075,7 @@ impl<'a> Reconciler<'a> {
         })
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn apply_action(
         &self,
         action: &Action,
@@ -989,6 +1083,8 @@ impl<'a> Reconciler<'a> {
         config_dir: &std::path::Path,
         printer: &Printer,
         apply_id: i64,
+        context: ReconcileContext,
+        module_actions: &[ResolvedModule],
     ) -> Result<(String, Option<String>)> {
         match action {
             Action::System(sys) => self
@@ -1001,9 +1097,19 @@ impl<'a> Reconciler<'a> {
             Action::Secret(secret) => self
                 .apply_secret_action(secret, config_dir, printer)
                 .map(|d| (d, None)),
-            Action::Script(script) => self.apply_script_action(script, config_dir, printer),
+            Action::Script(script) => {
+                self.apply_script_action(script, resolved, config_dir, printer, context)
+            }
             Action::Module(module) => self
-                .apply_module_action(module, config_dir, printer, apply_id)
+                .apply_module_action(
+                    module,
+                    config_dir,
+                    printer,
+                    apply_id,
+                    context,
+                    resolved,
+                    module_actions,
+                )
                 .map(|d| (d, None)),
             Action::Env(env) => Self::apply_env_action(env, printer).map(|d| (d, None)),
         }
@@ -1251,16 +1357,29 @@ impl<'a> Reconciler<'a> {
     fn apply_script_action(
         &self,
         action: &ScriptAction,
+        resolved: &ResolvedProfile,
         config_dir: &std::path::Path,
         printer: &Printer,
+        context: ReconcileContext,
     ) -> Result<(String, Option<String>)> {
         match action {
-            ScriptAction::Run { path, phase, .. } => {
-                let script_path = if path.is_absolute() {
-                    path.clone()
-                } else {
-                    config_dir.join(path)
-                };
+            ScriptAction::Run { entry, phase, .. } => {
+                let profile_name = resolved
+                    .layers
+                    .last()
+                    .map(|l| l.profile_name.as_str())
+                    .unwrap_or("unknown");
+
+                let env_vars =
+                    build_script_env(config_dir, profile_name, context, phase, false, None, None);
+
+                let (desc, changed, captured) = execute_script(
+                    entry,
+                    config_dir,
+                    &env_vars,
+                    PROFILE_SCRIPT_TIMEOUT,
+                    printer,
+                )?;
 
                 let phase_name = match phase {
                     ScriptPhase::PreApply => "preApply",
@@ -1271,84 +1390,74 @@ impl<'a> Reconciler<'a> {
                     ScriptPhase::OnChange => "onChange",
                 };
 
-                let label = format!("Running {} script: {}", phase_name, path.display());
-
-                let result = printer
-                    .run_with_output(
-                        std::process::Command::new("sh")
-                            .arg("-c")
-                            .arg(script_path.display().to_string())
-                            .current_dir(config_dir),
-                        &label,
-                    )
-                    .map_err(crate::errors::CfgdError::Io)?;
-
-                if !result.status.success() {
-                    return Err(crate::errors::CfgdError::Config(
-                        crate::errors::ConfigError::Invalid {
-                            message: format!(
-                                "script {} failed (exit {})",
-                                path.display(),
-                                result.status.code().unwrap_or(-1)
-                            ),
-                        },
-                    ));
-                }
-
-                let captured = combine_script_output(&result.stdout, &result.stderr);
+                let _ = (desc, changed); // description from execute_script is for display
                 Ok((
-                    format!("script:{}:{}", phase_name, path.display()),
+                    format!("script:{}:{}", phase_name, entry.run_str()),
                     captured,
                 ))
             }
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn apply_module_action(
         &self,
         action: &ModuleAction,
         config_dir: &std::path::Path,
         printer: &Printer,
         apply_id: i64,
+        context: ReconcileContext,
+        resolved: &ResolvedProfile,
+        module_actions: &[ResolvedModule],
     ) -> Result<String> {
+        // Find the module dir from the resolved modules list
+        let module_dir = module_actions
+            .iter()
+            .find(|m| m.name == action.module_name)
+            .map(|m| m.dir.clone());
+
         match &action.kind {
-            ModuleActionKind::InstallPackages { resolved } => {
+            ModuleActionKind::InstallPackages { resolved: pkgs } => {
                 // Packages in each InstallPackages action are already grouped by
                 // manager in plan_modules(), so just collect names and install.
-                let pkg_names: Vec<String> =
-                    resolved.iter().map(|p| p.resolved_name.clone()).collect();
+                let pkg_names: Vec<String> = pkgs.iter().map(|p| p.resolved_name.clone()).collect();
 
-                if let Some(first) = resolved.first() {
+                if let Some(first) = pkgs.first() {
                     if first.manager == "script" {
-                        // Script-based install: run each package's script
-                        for pkg in resolved {
+                        // Script-based install: run each package's script via execute_script
+                        for pkg in pkgs {
                             if let Some(ref script_content) = pkg.script {
-                                let label = format!(
-                                    "Module {}: running install script for {}",
-                                    action.module_name, pkg.canonical_name
+                                let profile_name = resolved
+                                    .layers
+                                    .last()
+                                    .map(|l| l.profile_name.as_str())
+                                    .unwrap_or("unknown");
+                                let env_vars = build_script_env(
+                                    config_dir,
+                                    profile_name,
+                                    context,
+                                    &ScriptPhase::PostApply,
+                                    false,
+                                    Some(&action.module_name),
+                                    module_dir.as_deref(),
                                 );
-                                let result = printer
-                                    .run_with_output(
-                                        std::process::Command::new("sh")
-                                            .arg("-c")
-                                            .arg(script_content)
-                                            .current_dir(config_dir),
-                                        &label,
-                                    )
-                                    .map_err(crate::errors::CfgdError::Io)?;
-
-                                if !result.status.success() {
-                                    return Err(crate::errors::CfgdError::Config(
-                                        crate::errors::ConfigError::Invalid {
-                                            message: format!(
-                                                "module {} install script for '{}' failed (exit {})",
-                                                action.module_name,
-                                                pkg.canonical_name,
-                                                result.status.code().unwrap_or(-1)
-                                            ),
-                                        },
-                                    ));
-                                }
+                                let script_entry = ScriptEntry::Simple(script_content.clone());
+                                let working = module_dir.as_deref().unwrap_or(config_dir);
+                                execute_script(
+                                    &script_entry,
+                                    working,
+                                    &env_vars,
+                                    MODULE_SCRIPT_TIMEOUT,
+                                    printer,
+                                )
+                                .map_err(|_| {
+                                    crate::errors::CfgdError::Config(ConfigError::Invalid {
+                                        message: format!(
+                                            "module {} install script for '{}' failed",
+                                            action.module_name, pkg.canonical_name
+                                        ),
+                                    })
+                                })?;
                             }
                         }
                     } else {
@@ -1491,29 +1600,30 @@ impl<'a> Reconciler<'a> {
                 ))
             }
             ModuleActionKind::RunScript { script, .. } => {
-                let label = format!("Module {}: running post-apply script", action.module_name);
+                let profile_name = resolved
+                    .layers
+                    .last()
+                    .map(|l| l.profile_name.as_str())
+                    .unwrap_or("unknown");
+                let env_vars = build_script_env(
+                    config_dir,
+                    profile_name,
+                    context,
+                    &ScriptPhase::PostApply,
+                    false,
+                    Some(&action.module_name),
+                    module_dir.as_deref(),
+                );
 
-                let result = printer
-                    .run_with_output(
-                        std::process::Command::new("sh")
-                            .arg("-c")
-                            .arg(script)
-                            .current_dir(config_dir),
-                        &label,
-                    )
-                    .map_err(crate::errors::CfgdError::Io)?;
-
-                if !result.status.success() {
-                    return Err(crate::errors::CfgdError::Config(
-                        crate::errors::ConfigError::Invalid {
-                            message: format!(
-                                "module {} post-apply script failed (exit {})",
-                                action.module_name,
-                                result.status.code().unwrap_or(-1)
-                            ),
-                        },
-                    ));
-                }
+                let script_entry = ScriptEntry::Simple(script.clone());
+                let working = module_dir.as_deref().unwrap_or(config_dir);
+                execute_script(
+                    &script_entry,
+                    working,
+                    &env_vars,
+                    MODULE_SCRIPT_TIMEOUT,
+                    printer,
+                )?;
 
                 Ok(format!("module:{}:script", action.module_name))
             }
@@ -1889,6 +1999,254 @@ fn verify_env(
     }
 }
 
+// ---------------------------------------------------------------------------
+// Unified script executor
+// ---------------------------------------------------------------------------
+
+/// Default timeout for profile-level scripts.
+const PROFILE_SCRIPT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
+
+/// Default timeout for module-level scripts.
+const MODULE_SCRIPT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
+
+/// Parse a duration string like "30s", "5m", "1h" or plain seconds.
+fn parse_duration_str(s: &str) -> Result<std::time::Duration> {
+    let s = s.trim();
+    if let Some(n) = s.strip_suffix('s') {
+        n.trim()
+            .parse::<u64>()
+            .map(std::time::Duration::from_secs)
+            .map_err(|_| {
+                crate::errors::CfgdError::Config(ConfigError::Invalid {
+                    message: format!("invalid timeout: {}", s),
+                })
+            })
+    } else if let Some(n) = s.strip_suffix('m') {
+        n.trim()
+            .parse::<u64>()
+            .map(|m| std::time::Duration::from_secs(m * 60))
+            .map_err(|_| {
+                crate::errors::CfgdError::Config(ConfigError::Invalid {
+                    message: format!("invalid timeout: {}", s),
+                })
+            })
+    } else if let Some(n) = s.strip_suffix('h') {
+        n.trim()
+            .parse::<u64>()
+            .map(|h| std::time::Duration::from_secs(h * 3600))
+            .map_err(|_| {
+                crate::errors::CfgdError::Config(ConfigError::Invalid {
+                    message: format!("invalid timeout: {}", s),
+                })
+            })
+    } else {
+        // Try as plain seconds
+        s.parse::<u64>()
+            .map(std::time::Duration::from_secs)
+            .map_err(|_| {
+                crate::errors::CfgdError::Config(ConfigError::Invalid {
+                    message: format!("invalid timeout '{}': use 30s, 5m, or 1h", s),
+                })
+            })
+    }
+}
+
+/// Build environment variables injected into every script invocation.
+fn build_script_env(
+    config_dir: &std::path::Path,
+    profile_name: &str,
+    context: ReconcileContext,
+    phase: &ScriptPhase,
+    dry_run: bool,
+    module_name: Option<&str>,
+    module_dir: Option<&std::path::Path>,
+) -> Vec<(String, String)> {
+    let mut env = vec![
+        (
+            "CFGD_CONFIG_DIR".to_string(),
+            config_dir.display().to_string(),
+        ),
+        ("CFGD_PROFILE".to_string(), profile_name.to_string()),
+        (
+            "CFGD_CONTEXT".to_string(),
+            match context {
+                ReconcileContext::Apply => "apply".to_string(),
+                ReconcileContext::Reconcile => "reconcile".to_string(),
+            },
+        ),
+        (
+            "CFGD_PHASE".to_string(),
+            match phase {
+                ScriptPhase::PreApply => "preApply",
+                ScriptPhase::PostApply => "postApply",
+                ScriptPhase::PreReconcile => "preReconcile",
+                ScriptPhase::PostReconcile => "postReconcile",
+                ScriptPhase::OnDrift => "onDrift",
+                ScriptPhase::OnChange => "onChange",
+            }
+            .to_string(),
+        ),
+        ("CFGD_DRY_RUN".to_string(), dry_run.to_string()),
+    ];
+    if let Some(name) = module_name {
+        env.push(("CFGD_MODULE_NAME".to_string(), name.to_string()));
+    }
+    if let Some(dir) = module_dir {
+        env.push(("CFGD_MODULE_DIR".to_string(), dir.display().to_string()));
+    }
+    env
+}
+
+/// Unified script executor for all hook types at both profile and module level.
+///
+/// Returns (description, changed, captured_output). All scripts set changed=true.
+fn execute_script(
+    entry: &ScriptEntry,
+    working_dir: &std::path::Path,
+    env_vars: &[(String, String)],
+    default_timeout: std::time::Duration,
+    _printer: &Printer,
+) -> Result<(String, bool, Option<String>)> {
+    let run_str = entry.run_str();
+    let effective_timeout = match entry {
+        ScriptEntry::Full {
+            timeout: Some(t), ..
+        } => parse_duration_str(t)?,
+        _ => default_timeout,
+    };
+
+    let resolved = if std::path::Path::new(run_str).is_relative() {
+        working_dir.join(run_str)
+    } else {
+        std::path::PathBuf::from(run_str)
+    };
+
+    let mut cmd = if resolved.exists() {
+        // File path — check executable bit, run directly (OS handles shebang)
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let meta = std::fs::metadata(&resolved)?;
+            if meta.permissions().mode() & 0o111 == 0 {
+                return Err(crate::errors::CfgdError::Config(ConfigError::Invalid {
+                    message: format!(
+                        "script '{}' exists but is not executable (chmod +x)",
+                        resolved.display()
+                    ),
+                }));
+            }
+        }
+        let mut c = std::process::Command::new(&resolved);
+        c.current_dir(working_dir);
+        c
+    } else {
+        // Inline command — pass through sh -c
+        let mut c = std::process::Command::new("sh");
+        c.arg("-c").arg(run_str).current_dir(working_dir);
+        c
+    };
+
+    // Inject environment variables
+    for (key, value) in env_vars {
+        cmd.env(key, value);
+    }
+
+    let label = format!("Running script: {}", run_str);
+
+    // Execute with timeout
+    cmd.stdin(std::process::Stdio::null());
+    cmd.stdout(std::process::Stdio::piped());
+    cmd.stderr(std::process::Stdio::piped());
+
+    let mut child = cmd.spawn()?;
+
+    let start = std::time::Instant::now();
+    loop {
+        match child.try_wait()? {
+            Some(status) => {
+                let stdout = child.stdout.take().map(|mut s| {
+                    let mut buf = String::new();
+                    std::io::Read::read_to_string(&mut s, &mut buf).ok();
+                    buf
+                });
+                let stderr = child.stderr.take().map(|mut s| {
+                    let mut buf = String::new();
+                    std::io::Read::read_to_string(&mut s, &mut buf).ok();
+                    buf
+                });
+
+                let captured = combine_script_output(
+                    stdout.as_deref().unwrap_or(""),
+                    stderr.as_deref().unwrap_or(""),
+                );
+
+                if !status.success() {
+                    let exit_code = status.code().unwrap_or(-1);
+                    return Err(crate::errors::CfgdError::Config(ConfigError::Invalid {
+                        message: format!(
+                            "script '{}' failed (exit {})\n{}",
+                            run_str,
+                            exit_code,
+                            captured.as_deref().unwrap_or("")
+                        ),
+                    }));
+                }
+
+                return Ok((label, true, captured));
+            }
+            None => {
+                if start.elapsed() > effective_timeout {
+                    // Timeout — send SIGTERM then force kill
+                    #[cfg(unix)]
+                    {
+                        // Safety: libc::kill is a standard POSIX signal call.
+                        // child.id() is a valid PID from a process we spawned.
+                        unsafe {
+                            libc::kill(child.id() as libc::pid_t, libc::SIGTERM);
+                        }
+                    }
+                    // Wait briefly for graceful shutdown
+                    std::thread::sleep(std::time::Duration::from_secs(5));
+                    // Force kill if still running
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err(crate::errors::CfgdError::Config(ConfigError::Invalid {
+                        message: format!(
+                            "script '{}' timed out after {}s",
+                            run_str,
+                            effective_timeout.as_secs()
+                        ),
+                    }));
+                }
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
+        }
+    }
+}
+
+/// Default `continue_on_error` behavior per script phase.
+/// Pre-hooks abort on failure; post-hooks, onChange, onDrift continue.
+fn default_continue_on_error(phase: &ScriptPhase) -> bool {
+    match phase {
+        ScriptPhase::PreApply | ScriptPhase::PreReconcile => false,
+        ScriptPhase::PostApply
+        | ScriptPhase::PostReconcile
+        | ScriptPhase::OnChange
+        | ScriptPhase::OnDrift => true,
+    }
+}
+
+/// Resolve the effective `continue_on_error` for a script entry in a given phase.
+fn effective_continue_on_error(entry: &ScriptEntry, phase: &ScriptPhase) -> bool {
+    match entry {
+        ScriptEntry::Full {
+            continue_on_error: Some(v),
+            ..
+        } => *v,
+        _ => default_continue_on_error(phase),
+    }
+}
+
 /// Combine stdout and stderr into a single captured output string.
 /// Returns `None` if both are empty.
 fn combine_script_output(stdout: &str, stderr: &str) -> Option<String> {
@@ -1960,7 +2318,7 @@ pub fn format_action_description(action: &Action) -> String {
             }
         },
         Action::Script(sa) => match sa {
-            ScriptAction::Run { path, phase, .. } => {
+            ScriptAction::Run { entry, phase, .. } => {
                 let p = match phase {
                     ScriptPhase::PreApply => "preApply",
                     ScriptPhase::PostApply => "postApply",
@@ -1969,7 +2327,7 @@ pub fn format_action_description(action: &Action) -> String {
                     ScriptPhase::OnDrift => "onDrift",
                     ScriptPhase::OnChange => "onChange",
                 };
-                format!("script:{}:{}", p, path.display())
+                format!("script:{}:{}", p, entry.run_str())
             }
         },
         Action::Module(ma) => match &ma.kind {
@@ -2301,7 +2659,7 @@ pub fn format_plan_items(phase: &Phase) -> Vec<String> {
             },
             Action::Script(sa) => match sa {
                 ScriptAction::Run {
-                    path,
+                    entry,
                     phase,
                     origin,
                     ..
@@ -2317,7 +2675,7 @@ pub fn format_plan_items(phase: &Phase) -> Vec<String> {
                     format!(
                         "run {} script: {}{}",
                         p,
-                        path.display(),
+                        entry.run_str(),
                         provenance_suffix(origin)
                     )
                 }
@@ -2869,6 +3227,7 @@ mod tests {
             aliases: vec![],
             post_apply_scripts: vec![],
             depends: vec![],
+            dir: PathBuf::from("."),
         }
     }
 
@@ -2932,6 +3291,7 @@ mod tests {
             aliases: vec![],
             post_apply_scripts: vec![],
             depends: vec![],
+            dir: PathBuf::from("."),
         }];
 
         let plan = reconciler
@@ -2978,6 +3338,7 @@ mod tests {
             aliases: vec![],
             post_apply_scripts: vec!["nvim --headless +qa".to_string(), "echo done".to_string()],
             depends: vec![],
+            dir: PathBuf::from("."),
         }];
 
         let plan = reconciler
@@ -3032,6 +3393,7 @@ mod tests {
                 aliases: vec![],
                 post_apply_scripts: vec![],
                 depends: vec![],
+                dir: PathBuf::from("."),
             },
             ResolvedModule {
                 name: "nvim".to_string(),
@@ -3047,6 +3409,7 @@ mod tests {
                 aliases: vec![],
                 post_apply_scripts: vec![],
                 depends: vec!["node".to_string()],
+                dir: PathBuf::from("."),
             },
         ];
 
@@ -3392,6 +3755,7 @@ mod tests {
             aliases: vec![],
             post_apply_scripts: vec![],
             depends: vec![],
+            dir: PathBuf::from("."),
         }];
 
         let results = verify(&resolved, &registry, &state, &printer, &modules).unwrap();
@@ -3433,6 +3797,7 @@ mod tests {
             aliases: vec![],
             post_apply_scripts: vec![],
             depends: vec![],
+            dir: PathBuf::from("."),
         }];
 
         let plan = reconciler
@@ -3548,6 +3913,7 @@ mod tests {
             aliases: vec![],
             post_apply_scripts: vec![],
             depends: vec![],
+            dir: PathBuf::from("."),
         }];
 
         let result = Reconciler::detect_file_conflicts(&file_actions, &modules);
@@ -3586,6 +3952,7 @@ mod tests {
             aliases: vec![],
             post_apply_scripts: vec![],
             depends: vec![],
+            dir: PathBuf::from("."),
         }];
 
         let result = Reconciler::detect_file_conflicts(&file_actions, &modules);
@@ -3621,6 +3988,7 @@ mod tests {
             aliases: vec![],
             post_apply_scripts: vec![],
             depends: vec![],
+            dir: PathBuf::from("."),
         }];
 
         let result = Reconciler::detect_file_conflicts(&file_actions, &modules);
@@ -3687,6 +4055,7 @@ mod tests {
             aliases: vec![],
             post_apply_scripts: vec![],
             depends: vec![],
+            dir: PathBuf::from("."),
         }];
         // plan_env merges and generates actions — the merged env should have EDITOR=nvim
         let (actions, _warnings) = Reconciler::plan_env(&profile_env, &[], &modules);
@@ -3791,6 +4160,7 @@ mod tests {
             }],
             post_apply_scripts: vec![],
             depends: vec![],
+            dir: PathBuf::from("."),
         }];
         let (actions, _warnings) = Reconciler::plan_env(&[], &profile_aliases, &modules);
         // Find the WriteEnvFile action and check it has "nvim" not "vi"
@@ -4748,5 +5118,375 @@ mod tests {
     fn combine_script_output_empty() {
         assert!(super::combine_script_output("", "").is_none());
         assert!(super::combine_script_output("  ", " \n ").is_none());
+    }
+
+    // --- Unified script executor tests ---
+
+    #[test]
+    fn parse_duration_str_seconds() {
+        let d = super::parse_duration_str("30s").unwrap();
+        assert_eq!(d, std::time::Duration::from_secs(30));
+    }
+
+    #[test]
+    fn parse_duration_str_minutes() {
+        let d = super::parse_duration_str("5m").unwrap();
+        assert_eq!(d, std::time::Duration::from_secs(300));
+    }
+
+    #[test]
+    fn parse_duration_str_hours() {
+        let d = super::parse_duration_str("1h").unwrap();
+        assert_eq!(d, std::time::Duration::from_secs(3600));
+    }
+
+    #[test]
+    fn parse_duration_str_plain_seconds() {
+        let d = super::parse_duration_str("60").unwrap();
+        assert_eq!(d, std::time::Duration::from_secs(60));
+    }
+
+    #[test]
+    fn parse_duration_str_whitespace() {
+        let d = super::parse_duration_str(" 10 s ").unwrap();
+        assert_eq!(d, std::time::Duration::from_secs(10));
+    }
+
+    #[test]
+    fn parse_duration_str_invalid() {
+        assert!(super::parse_duration_str("abc").is_err());
+        assert!(super::parse_duration_str("").is_err());
+        assert!(super::parse_duration_str("xs").is_err());
+    }
+
+    #[test]
+    fn continue_on_error_defaults_per_phase() {
+        // Pre-hooks default to false (abort on failure)
+        assert!(!super::default_continue_on_error(&ScriptPhase::PreApply));
+        assert!(!super::default_continue_on_error(
+            &ScriptPhase::PreReconcile
+        ));
+        // Post-hooks and event hooks default to true (continue on failure)
+        assert!(super::default_continue_on_error(&ScriptPhase::PostApply));
+        assert!(super::default_continue_on_error(
+            &ScriptPhase::PostReconcile
+        ));
+        assert!(super::default_continue_on_error(&ScriptPhase::OnChange));
+        assert!(super::default_continue_on_error(&ScriptPhase::OnDrift));
+    }
+
+    #[test]
+    fn effective_continue_on_error_uses_explicit_value() {
+        let entry = ScriptEntry::Full {
+            run: "echo test".to_string(),
+            timeout: None,
+            continue_on_error: Some(true),
+        };
+        // Should be true even for pre-apply (which defaults to false)
+        assert!(super::effective_continue_on_error(
+            &entry,
+            &ScriptPhase::PreApply
+        ));
+
+        let entry_false = ScriptEntry::Full {
+            run: "echo test".to_string(),
+            timeout: None,
+            continue_on_error: Some(false),
+        };
+        // Should be false even for post-apply (which defaults to true)
+        assert!(!super::effective_continue_on_error(
+            &entry_false,
+            &ScriptPhase::PostApply
+        ));
+    }
+
+    #[test]
+    fn effective_continue_on_error_falls_back_to_default() {
+        let simple = ScriptEntry::Simple("echo test".to_string());
+        assert!(!super::effective_continue_on_error(
+            &simple,
+            &ScriptPhase::PreApply
+        ));
+        assert!(super::effective_continue_on_error(
+            &simple,
+            &ScriptPhase::PostApply
+        ));
+
+        let full_no_override = ScriptEntry::Full {
+            run: "echo test".to_string(),
+            timeout: None,
+            continue_on_error: None,
+        };
+        assert!(!super::effective_continue_on_error(
+            &full_no_override,
+            &ScriptPhase::PreApply
+        ));
+        assert!(super::effective_continue_on_error(
+            &full_no_override,
+            &ScriptPhase::PostApply
+        ));
+    }
+
+    #[test]
+    fn plan_scripts_with_apply_context_uses_pre_post_apply() {
+        let state = StateStore::open_in_memory().unwrap();
+        let registry = ProviderRegistry::new();
+        let reconciler = Reconciler::new(&registry, &state);
+
+        let mut resolved = make_empty_resolved();
+        resolved.merged.scripts.pre_apply = vec![ScriptEntry::Simple("scripts/pre.sh".to_string())];
+        resolved.merged.scripts.post_apply =
+            vec![ScriptEntry::Simple("scripts/post.sh".to_string())];
+
+        let plan = reconciler
+            .plan(
+                &resolved,
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                ReconcileContext::Apply,
+            )
+            .unwrap();
+
+        let pre_phase = plan
+            .phases
+            .iter()
+            .find(|p| p.name == PhaseName::PreScripts)
+            .unwrap();
+        assert_eq!(pre_phase.actions.len(), 1);
+        match &pre_phase.actions[0] {
+            Action::Script(ScriptAction::Run { entry, phase, .. }) => {
+                assert_eq!(entry.run_str(), "scripts/pre.sh");
+                assert_eq!(*phase, ScriptPhase::PreApply);
+            }
+            _ => panic!("expected Script action"),
+        }
+
+        let post_phase = plan
+            .phases
+            .iter()
+            .find(|p| p.name == PhaseName::PostScripts)
+            .unwrap();
+        assert_eq!(post_phase.actions.len(), 1);
+        match &post_phase.actions[0] {
+            Action::Script(ScriptAction::Run { entry, phase, .. }) => {
+                assert_eq!(entry.run_str(), "scripts/post.sh");
+                assert_eq!(*phase, ScriptPhase::PostApply);
+            }
+            _ => panic!("expected Script action"),
+        }
+    }
+
+    #[test]
+    fn plan_scripts_carries_full_entry() {
+        let state = StateStore::open_in_memory().unwrap();
+        let registry = ProviderRegistry::new();
+        let reconciler = Reconciler::new(&registry, &state);
+
+        let mut resolved = make_empty_resolved();
+        resolved.merged.scripts.pre_apply = vec![ScriptEntry::Full {
+            run: "scripts/check.sh".to_string(),
+            timeout: Some("10s".to_string()),
+            continue_on_error: Some(true),
+        }];
+
+        let plan = reconciler
+            .plan(
+                &resolved,
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                ReconcileContext::Apply,
+            )
+            .unwrap();
+
+        let pre_phase = plan
+            .phases
+            .iter()
+            .find(|p| p.name == PhaseName::PreScripts)
+            .unwrap();
+        assert_eq!(pre_phase.actions.len(), 1);
+        match &pre_phase.actions[0] {
+            Action::Script(ScriptAction::Run { entry, .. }) => match entry {
+                ScriptEntry::Full {
+                    run,
+                    timeout,
+                    continue_on_error,
+                } => {
+                    assert_eq!(run, "scripts/check.sh");
+                    assert_eq!(timeout.as_deref(), Some("10s"));
+                    assert_eq!(*continue_on_error, Some(true));
+                }
+                _ => panic!("expected Full entry"),
+            },
+            _ => panic!("expected Script action"),
+        }
+    }
+
+    #[test]
+    fn build_script_env_includes_expected_vars() {
+        let env = super::build_script_env(
+            std::path::Path::new("/home/user/.config/cfgd"),
+            "default",
+            ReconcileContext::Apply,
+            &ScriptPhase::PreApply,
+            false,
+            None,
+            None,
+        );
+        let map: HashMap<String, String> = env.into_iter().collect();
+        assert_eq!(
+            map.get("CFGD_CONFIG_DIR").unwrap(),
+            "/home/user/.config/cfgd"
+        );
+        assert_eq!(map.get("CFGD_PROFILE").unwrap(), "default");
+        assert_eq!(map.get("CFGD_CONTEXT").unwrap(), "apply");
+        assert_eq!(map.get("CFGD_PHASE").unwrap(), "preApply");
+        assert_eq!(map.get("CFGD_DRY_RUN").unwrap(), "false");
+        assert!(!map.contains_key("CFGD_MODULE_NAME"));
+        assert!(!map.contains_key("CFGD_MODULE_DIR"));
+    }
+
+    #[test]
+    fn build_script_env_includes_module_vars() {
+        let env = super::build_script_env(
+            std::path::Path::new("/config"),
+            "work",
+            ReconcileContext::Reconcile,
+            &ScriptPhase::PostApply,
+            true,
+            Some("nvim"),
+            Some(std::path::Path::new("/modules/nvim")),
+        );
+        let map: HashMap<String, String> = env.into_iter().collect();
+        assert_eq!(map.get("CFGD_MODULE_NAME").unwrap(), "nvim");
+        assert_eq!(map.get("CFGD_MODULE_DIR").unwrap(), "/modules/nvim");
+        assert_eq!(map.get("CFGD_DRY_RUN").unwrap(), "true");
+        assert_eq!(map.get("CFGD_CONTEXT").unwrap(), "reconcile");
+    }
+
+    #[test]
+    fn execute_script_inline_command() {
+        let printer = Printer::new(crate::output::Verbosity::Quiet);
+        let entry = ScriptEntry::Simple("echo hello".to_string());
+        let dir = tempfile::tempdir().unwrap();
+        let (desc, changed, output) = super::execute_script(
+            &entry,
+            dir.path(),
+            &[],
+            std::time::Duration::from_secs(10),
+            &printer,
+        )
+        .unwrap();
+        assert!(desc.contains("echo hello"));
+        assert!(changed);
+        assert_eq!(output, Some("hello".to_string()));
+    }
+
+    #[test]
+    fn execute_script_failure_returns_error() {
+        let printer = Printer::new(crate::output::Verbosity::Quiet);
+        let entry = ScriptEntry::Simple("exit 1".to_string());
+        let dir = tempfile::tempdir().unwrap();
+        let result = super::execute_script(
+            &entry,
+            dir.path(),
+            &[],
+            std::time::Duration::from_secs(10),
+            &printer,
+        );
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("exit 1"),
+            "error should mention exit code: {err}"
+        );
+    }
+
+    #[test]
+    fn execute_script_with_timeout_override() {
+        let printer = Printer::new(crate::output::Verbosity::Quiet);
+        let entry = ScriptEntry::Full {
+            run: "echo fast".to_string(),
+            timeout: Some("5s".to_string()),
+            continue_on_error: None,
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let (_, _, output) = super::execute_script(
+            &entry,
+            dir.path(),
+            &[],
+            std::time::Duration::from_secs(300),
+            &printer,
+        )
+        .unwrap();
+        assert_eq!(output, Some("fast".to_string()));
+    }
+
+    #[test]
+    fn execute_script_injects_env_vars() {
+        let printer = Printer::new(crate::output::Verbosity::Quiet);
+        let entry = ScriptEntry::Simple("echo $MY_VAR".to_string());
+        let dir = tempfile::tempdir().unwrap();
+        let env = vec![("MY_VAR".to_string(), "test_value".to_string())];
+        let (_, _, output) = super::execute_script(
+            &entry,
+            dir.path(),
+            &env,
+            std::time::Duration::from_secs(10),
+            &printer,
+        )
+        .unwrap();
+        assert_eq!(output, Some("test_value".to_string()));
+    }
+
+    #[test]
+    fn execute_script_runs_executable_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let script_path = dir.path().join("test.sh");
+        std::fs::write(&script_path, "#!/bin/sh\necho from_file\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&script_path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let printer = Printer::new(crate::output::Verbosity::Quiet);
+        let entry = ScriptEntry::Simple("test.sh".to_string());
+        let (_, _, output) = super::execute_script(
+            &entry,
+            dir.path(),
+            &[],
+            std::time::Duration::from_secs(10),
+            &printer,
+        )
+        .unwrap();
+        assert_eq!(output, Some("from_file".to_string()));
+    }
+
+    #[test]
+    fn execute_script_rejects_non_executable_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let script_path = dir.path().join("noexec.sh");
+        std::fs::write(&script_path, "#!/bin/sh\necho hi\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&script_path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        }
+        let printer = Printer::new(crate::output::Verbosity::Quiet);
+        let entry = ScriptEntry::Simple("noexec.sh".to_string());
+        let result = super::execute_script(
+            &entry,
+            dir.path(),
+            &[],
+            std::time::Duration::from_secs(10),
+            &printer,
+        );
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("not executable"),
+            "should say not executable: {err}"
+        );
     }
 }

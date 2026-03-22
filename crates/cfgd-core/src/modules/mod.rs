@@ -58,6 +58,8 @@ pub struct ResolvedModule {
     pub aliases: Vec<ShellAlias>,
     pub post_apply_scripts: Vec<String>,
     pub depends: Vec<String>,
+    /// Module directory — used as working directory for module scripts.
+    pub dir: PathBuf,
 }
 
 // ---------------------------------------------------------------------------
@@ -826,6 +828,7 @@ pub fn resolve_modules(
             aliases: module.spec.aliases.clone(),
             post_apply_scripts,
             depends: module.spec.depends.clone(),
+            dir: module.dir.clone(),
         });
     }
 

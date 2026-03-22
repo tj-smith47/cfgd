@@ -1347,8 +1347,8 @@ fn action_resource_info(action: &crate::reconciler::Action) -> (String, String) 
         Action::Script(sa) => {
             use crate::reconciler::ScriptAction;
             match sa {
-                ScriptAction::Run { path, .. } => {
-                    ("script".to_string(), path.display().to_string())
+                ScriptAction::Run { entry, .. } => {
+                    ("script".to_string(), entry.run_str().to_string())
                 }
             }
         }

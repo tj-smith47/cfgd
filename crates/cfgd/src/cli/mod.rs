@@ -5731,8 +5731,8 @@ fn action_path(phase: &PhaseName, action: &reconciler::Action) -> String {
             }
         },
         reconciler::Action::Script(sa) => match sa {
-            reconciler::ScriptAction::Run { path, .. } => {
-                format!("{}:{}", prefix, path.display())
+            reconciler::ScriptAction::Run { entry, .. } => {
+                format!("{}:{}", prefix, entry.run_str())
             }
         },
         reconciler::Action::Module(ma) => {
