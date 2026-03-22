@@ -113,11 +113,6 @@ fn run_pkg_cmd_live(
 
 const LINUXBREW_PATH: &str = "/home/linuxbrew/.linuxbrew/bin/brew";
 
-/// Check if running as root (UID 0).
-fn is_root() -> bool {
-    cfgd_core::is_root()
-}
-
 /// Check if brew is available, including linuxbrew fallback on Linux.
 fn brew_available() -> bool {
     if command_available("brew") {
@@ -155,7 +150,7 @@ fn update_path_for_brew() {
 /// On Linux as non-root, uses LINUXBREW_PATH directly if brew is not in PATH.
 fn brew_cmd() -> Command {
     if cfg!(target_os = "linux") && std::path::Path::new(LINUXBREW_PATH).exists() {
-        if is_root() {
+        if cfgd_core::is_root() {
             if let Some(owner) = brew_owner() {
                 let mut cmd = Command::new("sudo");
                 cmd.args(["-u", &owner, LINUXBREW_PATH]);
@@ -400,7 +395,7 @@ impl PackageManager for BrewManager {
     fn bootstrap(&self, printer: &Printer) -> Result<()> {
         let install_url = "https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh";
 
-        if cfg!(target_os = "linux") && is_root() {
+        if cfg!(target_os = "linux") && cfgd_core::is_root() {
             // Linuxbrew-as-root: create linuxbrew user, install as that user
             printer.info("Creating linuxbrew system user");
             let user_status = Command::new("useradd")

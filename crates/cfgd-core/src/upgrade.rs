@@ -344,10 +344,10 @@ pub fn restart_daemon_if_running() -> bool {
         _ => return false,
     };
 
-    // Daemon is running — send SIGTERM so the service manager (launchd/systemd)
-    // restarts it with the new binary.
+    // Daemon is running — terminate so the service manager restarts it
+    // with the new binary.
     crate::terminate_process(status.pid);
-    tracing::info!("sent SIGTERM to daemon (pid {})", status.pid);
+    tracing::info!("terminated daemon (pid {})", status.pid);
     true
 }
 
