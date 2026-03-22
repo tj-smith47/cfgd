@@ -18,21 +18,29 @@ Declarative machine configuration via portable profiles and shareable modules. W
 
 </div>
 
-> **Status:** Alpha — APIs may change. Battle-tested on macOS and Linux workstations; Kubernetes operator in active development.
+> **Status:** Alpha — APIs may change.
 
 ---
 
 ## What is cfgd
 
-Most dotfile managers track files. cfgd manages your entire machine. You declare packages, files, secrets, and system settings in version-controlled YAML. cfgd diffs what you want against what you have, builds a plan, and reconciles — continuously. If something drifts, it's detected and corrected.
+Most dotfile managers track files. `cfgd` enables you to manage your entire machine. You declare packages, files, secrets, and system settings in version-controlled YAML. `cfgd` diffs what you want against what you have, builds a plan, and reconciles — continuously. If something drifts, it's detected and corrected.
 
 ## Why cfgd exists
 
-I switched jobs and spent a day setting up a new machine, forgetting half my config and gradually rediscovering things I'd lost over the next few weeks. I wanted to clone a repo and have my entire workstation — packages, dotfiles, system settings — just be there.
+I recently switched jobs, and spent a the last week of my previous job backing up my scripts and dotfiles, parsing out company specific information from them, and creating a tarball to transfer everything. Once I started the new job, I had to spend another few days getting my new machine reconfigured and ready for development. Over time, I gradually discovering things I'd forgotten over the next few weeks, as well as some things (e.g., System Settings) that I thought would have been nice to have included in the backup. This all felt very manual and piecemeal, and I thought there must be a better way; I should just be able to clone a repo and have my entire workstation — packages, scripts, dotfiles, system settings — feel like home in a matter of minutes.
 
-The other thing was devcontainers. I use neovim, and I wanted my full editor setup available in any ephemeral container without having to modify the devcontainer config in team repositories to accommodate my personal preferences. I needed something that could bootstrap my config into any environment from the outside, regardless of which repo I was working in.
+Another inspiring aspect had to do with working in devcontainers. At my previous company I had set up custom scripts to inject dotfiles into the devcontainer so a user could replicate their dev environment inside the container once they shell in. At minimum, I wanted my full neovim editor setup available in any ephemeral container without having to modify the devcontainer config in every team's repository I worked in just to accommodate my personal preferences. I needed something that could bootstrap my config into any environment from the outside, regardless of which / whose repo I was working in. Plus, I had some coworkers in need of education about the superiority of vim-motions, and wanted a quick and easy way to share my exact setup, down to the alias 😉
 
-cfgd started as a solution to those two problems and grew from there.
+`cfgd` started as a solution to those two problems, and evolved into something I've become really excited about. as a platform / infrastructure engineer I thought: what better way to make it stand out than to bake some GitOps functionality into it? 🤷🏻‍♂️
+
+## How It Works
+
+**Profiles** declare your machine's desired state — packages, files, system settings. They compose via inheritance, so you can layer `base -> work -> work-mac`. See [docs/profiles.md](docs/profiles.md).
+
+**Modules** are shareable, self-contained config packages. Install someone else's dev environment or publish your own. Cross-platform package resolution picks the right manager automatically. See [docs/modules.md](docs/modules.md).
+
+**Reconciliation** continuously ensures machines match their declared state. Drift is detected, reported, and optionally auto-corrected. Failed actions don't abort — they're logged and skipped. See [docs/reconciliation.md](docs/reconciliation.md).
 
 ## Quick Start
 
@@ -61,14 +69,6 @@ source <(cfgd completions bash)  # .bashrc
 source <(cfgd completions zsh)   # .zshrc
 cfgd completions fish | source   # config.fish
 ```
-
-## How It Works
-
-**Profiles** declare your machine's desired state — packages, files, system settings. They compose via inheritance, so you can layer `base -> work -> work-mac`. See [docs/profiles.md](docs/profiles.md).
-
-**Modules** are shareable, self-contained config packages. Install someone else's dev environment or publish your own. Cross-platform package resolution picks the right manager automatically. See [docs/modules.md](docs/modules.md).
-
-**Reconciliation** continuously ensures machines match their declared state. Drift is detected, reported, and optionally auto-corrected. Failed actions don't abort — they're logged and skipped. See [docs/reconciliation.md](docs/reconciliation.md).
 
 ## Shareable Modules
 
@@ -134,7 +134,7 @@ See [docs/modules.md](docs/modules.md) for the full spec including git file sour
 | **Team config** | **Policy tiers + Crossplane** | N/A | Flake inputs | N/A |
 | **Learning curve** | YAML + CLI | Go templates | Nix language | YAML + Jinja2 |
 
-cfgd is a good fit when you want: continuous reconciliation (not just one-shot apply), cross-platform package management without learning Nix, shareable dev environment modules, or team config distribution with policy enforcement.
+`cfgd` is a good fit when you want: one-liners for cross-platform machine bootstrapping, shareable dev environment modules, continuous reconciliation between machines or subscribed sources, or team config distribution with policy enforcement.
 
 ## Features
 
