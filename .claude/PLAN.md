@@ -14,19 +14,20 @@ Single source of truth for all incomplete work. Completed work is in [COMPLETED.
 
 ## Windows support
 
-Full design in [specs/2026-03-22-windows-support-design.md](specs/2026-03-22-windows-support-design.md). Implementation plan TBD (will be generated from the spec).
+Full design in [specs/2026-03-22-windows-support-design.md](specs/2026-03-22-windows-support-design.md). Implementation plan at [plans/2026-03-22-windows-support-plan-2-features.md](plans/2026-03-22-windows-support-plan-2-features.md). Prompt at [prompts/windows-support.md](prompts/windows-support.md).
 
-- [ ] Platform abstraction layer (cfgd-core/src/lib.rs): create_symlink, file_permissions_mode, set_file_permissions, is_executable, is_same_inode, acquire_apply_lock, terminate_process, is_root, expand_tilde USERPROFILE support
-- [ ] Daemon IPC: named pipe abstraction (DaemonIpc) alongside Unix domain socket
-- [ ] Script execution: Windows cmd.exe /C inline commands, extension-based executable check, TerminateProcess timeout
-- [ ] System configurators: ShellConfigurator (Windows Terminal), EnvironmentConfigurator (registry/setx), WindowsRegistryConfigurator, WindowsServiceConfigurator
-- [ ] Reconciler env: PowerShell env file generation, profile injection, Git Bash detection
+**Plan 1 (Platform Foundations) — COMPLETE.** Moved to COMPLETED.md.
+
+**Plan 2 (Windows Features) — remaining work:**
+
+- [ ] Config schema: winget, chocolatey, scoop fields in PackagesSpec + desired_packages_for
 - [ ] Package managers: winget, chocolatey, scoop (PackageManager trait implementations)
+- [ ] Module-level package aliases for Windows managers
+- [ ] Reconciler env: PowerShell env file generation, profile injection, Git Bash detection
+- [ ] System configurators: ShellConfigurator (Windows Terminal), EnvironmentConfigurator (registry/setx), WindowsRegistryConfigurator, WindowsServiceConfigurator
 - [ ] Windows daemon: Windows Service via windows-service crate, Event Log tracing subscriber
-- [ ] Self-upgrade: .zip extraction, rename-dance binary replacement, Windows release targets
-- [ ] CI: Windows job in ci.yml (fmt, clippy, test for cfgd-core + cfgd)
-- [ ] Release: x86_64-pc-windows-msvc and aarch64-pc-windows-msvc targets, .zip artifacts
 - [ ] Documentation: Windows installation, packages, configuration, daemon, CLI reference
+- [ ] JSON schema and explain command updates
 
 ---
 

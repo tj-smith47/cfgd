@@ -4,6 +4,22 @@ Reference for the original design rationale and acceptance criteria of shipped f
 
 ---
 
+## Windows Support — Plan 1: Platform Foundations
+
+Cross-platform abstractions making cfgd-core and cfgd compile and work on Windows. Full design in [specs/2026-03-22-windows-support-design.md](specs/2026-03-22-windows-support-design.md).
+
+- [x] Platform abstraction layer in `cfgd-core/src/lib.rs`: `create_symlink`, `file_permissions_mode`, `set_file_permissions`, `is_executable`, `is_same_inode`, `acquire_apply_lock` (LockFileEx), `terminate_process` (TerminateProcess), `is_root` (IsUserAnAdmin), `expand_tilde` (USERPROFILE)
+- [x] Daemon IPC: Unix domain sockets / Windows named pipes abstraction with `IpcStream`, `connect_daemon_ipc`, generic `handle_health_connection`
+- [x] Script execution: `cmd.exe /C` for inline commands on Windows, extension-based executable check, platform-neutral timeout termination
+- [x] Self-upgrade: `.zip` extraction via `zip` crate, rename-dance binary replacement (can't overwrite running exe on Windows), `cleanup_old_binary()` on startup
+- [x] Unix-only module gating: `node.rs` behind `#[cfg(unix)]`, daemon service management (launchd/systemd) gated, configurator registration platform-aware
+- [x] CI: Windows build/test job in `ci.yml` (fmt, clippy, test for cfgd-core + cfgd)
+- [x] Release: `x86_64-pc-windows-msvc` and `aarch64-pc-windows-msvc` targets, `.zip` packaging
+- [x] Config: info log when file permissions configured on Windows (NTFS uses inherited ACLs)
+- [x] Dependencies: `windows-sys` (Win32 APIs), `zip` (archive extraction)
+
+---
+
 ## Tier 1 — Operator Hardening & CRD Enhancement
 
 ### Operator operational readiness
