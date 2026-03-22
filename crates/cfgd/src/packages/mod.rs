@@ -2653,6 +2653,8 @@ fn parse_choco_list(output: &str) -> HashSet<String> {
             || line.starts_with("Chocolatey v")
             || line.ends_with("packages installed.")
             || line.ends_with("packages installed.\r")
+            || line.ends_with("package installed.")
+            || line.ends_with("package installed.\r")
         {
             continue;
         }
