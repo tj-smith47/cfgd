@@ -77,6 +77,12 @@ jobs:
           - target: aarch64-apple-darwin
             os: macos-14
             name: darwin-aarch64
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+            name: windows-x86_64
+          - target: aarch64-pc-windows-msvc
+            os: windows-latest
+            name: windows-aarch64
 
     runs-on: ${{ matrix.os }}
 
@@ -93,6 +99,15 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
 
+      - name: Install aarch64 target (Windows)
+        if: matrix.target == 'aarch64-pc-windows-msvc'
+        run: rustup target add aarch64-pc-windows-msvc
+
+      - name: Install protoc
+        uses: arduino/setup-protoc@v3
+        with:
+          version: "25.x"
+
       - name: Build
         env:
           CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
@@ -102,6 +117,7 @@ jobs:
         run: cargo build --release --target ${{ matrix.target }} --bin cfgd
 
       - name: Package cfgd
+        if: runner.os != 'Windows'
         run: |
           VERSION="${{ needs.prepare.outputs.version }}"
           ARCHIVE="cfgd-${VERSION}-${{ matrix.name }}.tar.gz"
@@ -112,7 +128,18 @@ jobs:
             shasum -a 256 "$ARCHIVE" > "${ARCHIVE}.sha256"
           fi
 
+      - name: Package cfgd (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $VERSION = "${{ needs.prepare.outputs.version }}"
+          $ARCHIVE = "cfgd-${VERSION}-${{ matrix.name }}.zip"
+          Compress-Archive -Path "target/${{ matrix.target }}/release/cfgd.exe" -DestinationPath "$ARCHIVE"
+          $HASH = (Get-FileHash "$ARCHIVE" -Algorithm SHA256).Hash.ToLower()
+          "${HASH}  ${ARCHIVE}" | Out-File "${ARCHIVE}.sha256" -Encoding ascii
+
       - name: Package kubectl-cfgd
+        if: runner.os != 'Windows'
         run: |
           VERSION="${{ needs.prepare.outputs.version }}"
           # kubectl plugin is the same binary, renamed
@@ -131,6 +158,8 @@ jobs:
           path: |
             cfgd-*.tar.gz
             cfgd-*.tar.gz.sha256
+            cfgd-*.zip
+            cfgd-*.zip.sha256
             kubectl-cfgd-*.tar.gz
             kubectl-cfgd-*.tar.gz.sha256
 
@@ -191,6 +220,7 @@ jobs:
           body_path: RELEASE_NOTES.md
           files: |
             cfgd-*.tar.gz
+            cfgd-*.zip
             kubectl-cfgd-*.tar.gz
             *-checksums.txt
           generate_release_notes: false
