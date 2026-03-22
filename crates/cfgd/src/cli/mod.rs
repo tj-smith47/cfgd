@@ -69,6 +69,31 @@ struct RollbackOutput {
     non_file_actions: Vec<String>,
 }
 
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PlanOutput {
+    context: String,
+    phases: Vec<PlanPhaseOutput>,
+    total_actions: usize,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    warnings: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PlanPhaseOutput {
+    phase: String,
+    actions: Vec<PlanActionOutput>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PlanActionOutput {
+    description: String,
+    #[serde(rename = "type")]
+    action_type: String,
+}
+
 #[derive(Serialize)]
 struct DoctorOutput {
     config: DoctorConfigCheck,
@@ -379,6 +404,28 @@ pub struct ApplyArgs {
     pub skip_scripts: bool,
 }
 
+#[derive(Parser)]
+pub struct PlanArgs {
+    /// Plan only a specific phase
+    #[arg(long)]
+    pub phase: Option<String>,
+    /// Skip specific items by dot-notation path (e.g., packages.brew.ripgrep, system.sysctl)
+    #[arg(long)]
+    pub skip: Vec<String>,
+    /// Plan only items matching dot-notation paths (e.g., packages, files)
+    #[arg(long)]
+    pub only: Vec<String>,
+    /// Plan only the specified module and its dependencies
+    #[arg(long)]
+    pub module: Option<String>,
+    /// Skip all script hooks (pre/post/onChange)
+    #[arg(long)]
+    pub skip_scripts: bool,
+    /// Reconciliation context: apply (default) or reconcile
+    #[arg(long, default_value = "apply")]
+    pub context: String,
+}
+
 #[derive(Subcommand)]
 pub enum Command {
     /// Initialize a new cfgd configuration repository
@@ -430,6 +477,9 @@ pub enum Command {
 
     /// Apply the configuration (use --dry-run to preview without applying)
     Apply(ApplyArgs),
+
+    /// Preview the reconciliation plan without applying
+    Plan(PlanArgs),
 
     /// Show configuration status and drift
     Status {
@@ -1212,6 +1262,7 @@ pub enum ModuleRegistryCommand {
 pub fn execute(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
     match &cli.command {
         Command::Apply(args) => cmd_apply(cli, printer, args),
+        Command::Plan(args) => cmd_plan(cli, printer, args),
         Command::Status { module } => cmd_status(cli, printer, module.as_deref()),
         Command::Diff { module } => cmd_diff(cli, printer, module.as_deref()),
         Command::Log { limit, show_output } => {
@@ -1986,17 +2037,15 @@ fn cmd_apply(cli: &Cli, printer: &Printer, args: &ApplyArgs) -> anyhow::Result<(
             }
         }
 
-        printer.newline();
+        // Build structured output
+        let plan_output = build_plan_output(&plan, "apply", phase_filter.as_ref());
 
-        for phase_item in &plan.phases {
-            if let Some(ref pf) = phase_filter
-                && &phase_item.name != pf
-            {
-                continue;
-            }
-            let items = reconciler::format_plan_items(phase_item);
-            printer.plan_phase(phase_item.name.display_name(), &items);
+        if printer.write_structured(&plan_output) {
+            return Ok(());
         }
+
+        printer.newline();
+        display_plan_table(&plan, printer, phase_filter.as_ref());
 
         // Show diffs for file updates
         if let Some(ref fm) = dry_run_fm {
@@ -2027,11 +2076,10 @@ fn cmd_apply(cli: &Cli, printer: &Printer, args: &ApplyArgs) -> anyhow::Result<(
         }
 
         printer.newline();
-        let total = plan.total_actions();
-        if total == 0 {
+        if plan_output.total_actions == 0 {
             printer.success("Nothing to do — everything is up to date");
         } else {
-            printer.info(&format!("{} action(s) planned", total));
+            printer.info(&format!("{} action(s) planned", plan_output.total_actions));
         }
 
         return Ok(());
@@ -2131,6 +2179,293 @@ fn cmd_apply(cli: &Cli, printer: &Printer, args: &ApplyArgs) -> anyhow::Result<(
     // Prune old backups — keep last 10 applies' worth
     if let Ok(state) = open_state_store(cli.state_dir.as_deref()) {
         let _ = state.prune_old_backups(10);
+    }
+
+    Ok(())
+}
+
+/// Derive a short action type string from a reconciler Action.
+fn action_type_str(action: &reconciler::Action) -> &'static str {
+    match action {
+        reconciler::Action::File(fa) => match fa {
+            FileAction::Create { .. } => "create",
+            FileAction::Update { .. } => "update",
+            FileAction::Delete { .. } => "delete",
+            FileAction::SetPermissions { .. } => "chmod",
+            FileAction::Skip { .. } => "skip",
+        },
+        reconciler::Action::Package(pa) => match pa {
+            PackageAction::Bootstrap { .. } => "bootstrap",
+            PackageAction::Install { .. } => "install",
+            PackageAction::Uninstall { .. } => "uninstall",
+            PackageAction::Skip { .. } => "skip",
+        },
+        reconciler::Action::Secret(sa) => match sa {
+            SecretAction::Decrypt { .. } => "decrypt",
+            SecretAction::Resolve { .. } => "resolve",
+            SecretAction::Skip { .. } => "skip",
+        },
+        reconciler::Action::System(sa) => match sa {
+            reconciler::SystemAction::SetValue { .. } => "set",
+            reconciler::SystemAction::Skip { .. } => "skip",
+        },
+        reconciler::Action::Script(_) => "run",
+        reconciler::Action::Module(ma) => match &ma.kind {
+            reconciler::ModuleActionKind::InstallPackages { .. } => "install",
+            reconciler::ModuleActionKind::DeployFiles { .. } => "deploy",
+            reconciler::ModuleActionKind::RunScript { .. } => "run",
+            reconciler::ModuleActionKind::Skip { .. } => "skip",
+        },
+        reconciler::Action::Env(ea) => match ea {
+            reconciler::EnvAction::WriteEnvFile { .. } => "write",
+            reconciler::EnvAction::InjectSourceLine { .. } => "inject",
+        },
+    }
+}
+
+/// Build a PlanOutput from a reconciler Plan, applying an optional phase filter.
+fn build_plan_output(
+    plan: &reconciler::Plan,
+    context_name: &str,
+    phase_filter: Option<&PhaseName>,
+) -> PlanOutput {
+    let mut phases = Vec::new();
+    for phase_item in &plan.phases {
+        if let Some(pf) = phase_filter
+            && &phase_item.name != pf
+        {
+            continue;
+        }
+        let items = reconciler::format_plan_items(phase_item);
+        let actions: Vec<PlanActionOutput> = phase_item
+            .actions
+            .iter()
+            .zip(items.iter())
+            .map(|(action, desc)| PlanActionOutput {
+                description: desc.clone(),
+                action_type: action_type_str(action).to_string(),
+            })
+            .collect();
+        phases.push(PlanPhaseOutput {
+            phase: phase_item.name.display_name().to_string(),
+            actions,
+        });
+    }
+    let total_actions = phases.iter().map(|p| p.actions.len()).sum();
+    PlanOutput {
+        context: context_name.to_string(),
+        phases,
+        total_actions,
+        warnings: plan.warnings.clone(),
+    }
+}
+
+/// Display a reconciliation plan in table mode.
+/// Used by both `cmd_plan` and `cmd_apply --dry-run`.
+fn display_plan_table(
+    plan: &reconciler::Plan,
+    printer: &Printer,
+    phase_filter: Option<&PhaseName>,
+) {
+    for phase_item in &plan.phases {
+        if let Some(pf) = phase_filter
+            && &phase_item.name != pf
+        {
+            continue;
+        }
+        let items = reconciler::format_plan_items(phase_item);
+        printer.plan_phase(phase_item.name.display_name(), &items);
+    }
+}
+
+fn cmd_plan(cli: &Cli, printer: &Printer, args: &PlanArgs) -> anyhow::Result<()> {
+    // Parse --context
+    let reconcile_context = match args.context.as_str() {
+        "apply" => ReconcileContext::Apply,
+        "reconcile" => ReconcileContext::Reconcile,
+        other => {
+            anyhow::bail!(
+                "Unknown context '{}'. Valid values: apply, reconcile",
+                other
+            );
+        }
+    };
+
+    printer.header("Plan");
+
+    let config_dir = config_dir(cli);
+    let state = open_state_store(cli.state_dir.as_deref())?;
+    let module_filter = args.module.as_deref();
+
+    // Load config and profile — same pattern as cmd_apply
+    let (cfg, resolved) = if let Some(mod_name) = module_filter {
+        match load_config_and_profile(cli, printer) {
+            Ok(pair) => pair,
+            Err(e) => {
+                tracing::debug!("profile load failed, using module-only mode: {}", e);
+                let cfg =
+                    config::load_config(&cli.config).unwrap_or_else(|_| config::minimal_config());
+                let resolved = empty_resolved_profile(mod_name);
+                printer.key_value("Config", &cli.config.display().to_string());
+                printer.key_value("Profile", "(module-only)");
+                (cfg, resolved)
+            }
+        }
+    } else {
+        load_config_and_profile(cli, printer)?
+    };
+
+    let mut registry = build_registry_with_config(Some(&cfg));
+
+    // Validate phase name if provided
+    let phase_filter = if let Some(ref p) = args.phase {
+        match p.parse::<PhaseName>() {
+            Ok(pn) => Some(pn),
+            Err(_) => {
+                anyhow::bail!(
+                    "Unknown phase '{}'. Valid phases: pre-scripts, env, modules, system, packages, files, secrets, post-scripts",
+                    p
+                );
+            }
+        }
+    } else {
+        None
+    };
+
+    // Compose with sources if configured
+    let source_env = if !cfg.spec.sources.is_empty() {
+        let composition_result = compose_with_sources(cli, &resolved, printer)?;
+        let se = composition_result.source_env;
+        (Some(composition_result.resolved), se)
+    } else {
+        (None, std::collections::HashMap::new())
+    };
+    let mut effective_resolved = source_env.0.unwrap_or(resolved);
+    let source_env = source_env.1;
+
+    // Resolve manifest files (Brewfile, package.json, etc.) into package lists
+    packages::resolve_manifest_packages(&mut effective_resolved.merged.packages, &config_dir)?;
+
+    // Extend registry with custom package managers from config
+    registry.package_managers.extend(packages::custom_managers(
+        &effective_resolved.merged.packages.custom,
+    ));
+
+    // Resolve modules
+    let module_names = if let Some(mod_name) = module_filter {
+        vec![mod_name.to_string()]
+    } else {
+        effective_resolved.merged.modules.clone()
+    };
+
+    let resolved_modules = if !module_names.is_empty() {
+        let platform = Platform::detect();
+        let mgr_map = managers_map(&registry);
+        let cache_base = modules::default_module_cache_dir()?;
+        modules::resolve_modules(&module_names, &config_dir, &cache_base, &platform, &mgr_map)?
+    } else {
+        Vec::new()
+    };
+
+    let module_only = module_filter.is_some();
+
+    // Plan-only mode: no secret providers needed
+    let (pkg_actions, file_actions, dry_run_fm) = if module_only {
+        (Vec::new(), Vec::new(), None)
+    } else {
+        let all_managers: Vec<&dyn cfgd_core::providers::PackageManager> = registry
+            .package_managers
+            .iter()
+            .map(|m| m.as_ref())
+            .collect();
+        let pkg = packages::plan_packages(&effective_resolved.merged, &all_managers)?;
+
+        let mut fm = CfgdFileManager::new(&config_dir, &effective_resolved)?;
+        fm.set_global_strategy(cfg.spec.file_strategy);
+        if !source_env.is_empty() {
+            fm.set_source_env(&source_env);
+        }
+
+        let fa = fm.plan(&effective_resolved.merged)?;
+        (pkg, fa, Some(fm))
+    };
+
+    let reconciler = Reconciler::new(&registry, &state);
+    let mut plan = reconciler.plan(
+        &effective_resolved,
+        file_actions,
+        pkg_actions,
+        resolved_modules,
+        reconcile_context,
+    )?;
+
+    // Apply --skip / --only filters
+    filter_plan(&mut plan, &args.skip, &args.only);
+
+    // Strip script phases when --skip-scripts is set
+    if args.skip_scripts {
+        plan.phases
+            .retain(|p| !matches!(p.name, PhaseName::PreScripts | PhaseName::PostScripts));
+    }
+
+    // Show pending decisions
+    if let Ok(pending) = state.pending_decisions()
+        && !pending.is_empty()
+    {
+        printer.newline();
+        printer.subheader("Pending Decisions (not included in this plan)");
+        for d in &pending {
+            printer.info(&format!(
+                "  {} {} — {} by {} (run `cfgd decide accept/reject`)",
+                d.tier, d.resource, d.action, d.source,
+            ));
+        }
+    }
+
+    // Build structured output
+    let plan_output = build_plan_output(&plan, &args.context, phase_filter.as_ref());
+
+    // Structured output takes precedence
+    if printer.write_structured(&plan_output) {
+        return Ok(());
+    }
+
+    // Table mode display
+    printer.newline();
+    display_plan_table(&plan, printer, phase_filter.as_ref());
+
+    // Show diffs for file updates
+    if let Some(ref fm) = dry_run_fm {
+        for phase_item in &plan.phases {
+            if phase_item.name != PhaseName::Files {
+                continue;
+            }
+            for action in &phase_item.actions {
+                if let reconciler::Action::File(FileAction::Update { source, target, .. }) = action
+                    && let Ok(target_content) = std::fs::read_to_string(target)
+                {
+                    let source_content = if crate::files::is_tera_template(source) {
+                        fm.render_template_for_display(source).unwrap_or_default()
+                    } else {
+                        std::fs::read_to_string(source).unwrap_or_default()
+                    };
+                    printer.newline();
+                    printer.subheader(&format!("{}", target.display()));
+                    printer.diff(&target_content, &source_content);
+                }
+            }
+        }
+    }
+
+    for w in &plan.warnings {
+        printer.warning(w);
+    }
+
+    printer.newline();
+    if plan_output.total_actions == 0 {
+        printer.success("Nothing to do — everything is up to date");
+    } else {
+        printer.info(&format!("{} action(s) planned", plan_output.total_actions));
     }
 
     Ok(())
