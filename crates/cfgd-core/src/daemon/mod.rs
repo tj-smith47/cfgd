@@ -2,6 +2,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::io::{BufRead, BufReader, Write as IoWrite};
+#[cfg(unix)]
 use std::os::unix::net::UnixStream as StdUnixStream;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -10,6 +11,7 @@ use std::time::{Duration, Instant};
 use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
+#[cfg(unix)]
 use tokio::net::UnixListener;
 use tokio::sync::{Mutex, mpsc};
 
@@ -50,7 +52,10 @@ pub trait DaemonHooks: Send + Sync {
 }
 
 const DEBOUNCE_MS: u64 = 500;
-const DEFAULT_SOCKET_PATH: &str = "/tmp/cfgd.sock";
+#[cfg(unix)]
+const DEFAULT_IPC_PATH: &str = "/tmp/cfgd.sock";
+#[cfg(windows)]
+const DEFAULT_IPC_PATH: &str = r"\\.\pipe\cfgd";
 const DEFAULT_RECONCILE_SECS: u64 = 300; // 5m
 const DEFAULT_SYNC_SECS: u64 = 300; // 5m
 const LAUNCHD_LABEL: &str = "com.cfgd.daemon";
@@ -516,28 +521,41 @@ pub async fn run_daemon(
     let (file_tx, mut file_rx) = mpsc::channel::<PathBuf>(256);
     let _watcher = setup_file_watcher(file_tx, &managed_paths, &config_dir)?;
 
-    // Check for already-running daemon via socket connectivity
-    let socket_path = PathBuf::from(DEFAULT_SOCKET_PATH);
-    if socket_path.exists() {
-        if StdUnixStream::connect(&socket_path).is_ok() {
+    // Check for already-running daemon via IPC connectivity
+    #[cfg(unix)]
+    {
+        let socket_path = PathBuf::from(DEFAULT_IPC_PATH);
+        if socket_path.exists() {
+            if StdUnixStream::connect(&socket_path).is_ok() {
+                return Err(DaemonError::AlreadyRunning {
+                    pid: std::process::id(),
+                }
+                .into());
+            }
+            // Stale socket from crashed daemon — remove it
+            let _ = std::fs::remove_file(&socket_path);
+        }
+    }
+    #[cfg(windows)]
+    {
+        if connect_daemon_ipc().is_some() {
             return Err(DaemonError::AlreadyRunning {
                 pid: std::process::id(),
             }
             .into());
         }
-        // Stale socket from crashed daemon — remove it
-        let _ = std::fs::remove_file(&socket_path);
     }
 
     // Start health server
     let health_state = Arc::clone(&state);
+    let ipc_path = DEFAULT_IPC_PATH.to_string();
     let health_handle = tokio::spawn(async move {
-        if let Err(e) = run_health_server(&socket_path, health_state).await {
+        if let Err(e) = run_health_server(&ipc_path, health_state).await {
             tracing::error!("health server error: {}", e);
         }
     });
 
-    printer.success(&format!("Health endpoint: {}", DEFAULT_SOCKET_PATH));
+    printer.success(&format!("Health endpoint: {}", DEFAULT_IPC_PATH));
     printer.success(&format!(
         "Reconcile interval: {}s",
         reconcile_interval.as_secs()
@@ -873,9 +891,13 @@ pub async fn run_daemon(
 
     // Cleanup
     health_handle.abort();
-    let socket_path = PathBuf::from(DEFAULT_SOCKET_PATH);
-    if socket_path.exists() {
-        let _ = std::fs::remove_file(&socket_path);
+    // Unix: remove socket file. Windows: named pipes are kernel objects, no cleanup needed.
+    #[cfg(unix)]
+    {
+        let socket_path = PathBuf::from(DEFAULT_IPC_PATH);
+        if socket_path.exists() {
+            let _ = std::fs::remove_file(&socket_path);
+        }
     }
 
     printer.success("Daemon stopped");
@@ -1884,9 +1906,10 @@ fn git_auto_commit_push(repo_path: &Path) -> std::result::Result<bool, String> {
 
 // --- Health Server ---
 
-async fn run_health_server(socket_path: &Path, state: Arc<Mutex<DaemonState>>) -> Result<()> {
-    let listener = UnixListener::bind(socket_path).map_err(|e| DaemonError::HealthSocketError {
-        message: format!("bind {}: {}", socket_path.display(), e),
+#[cfg(unix)]
+async fn run_health_server(ipc_path: &str, state: Arc<Mutex<DaemonState>>) -> Result<()> {
+    let listener = UnixListener::bind(ipc_path).map_err(|e| DaemonError::HealthSocketError {
+        message: format!("bind {}: {}", ipc_path, e),
     })?;
 
     loop {
@@ -1906,11 +1929,50 @@ async fn run_health_server(socket_path: &Path, state: Arc<Mutex<DaemonState>>) -
     }
 }
 
-async fn handle_health_connection(
-    stream: tokio::net::UnixStream,
+#[cfg(windows)]
+async fn run_health_server(ipc_path: &str, state: Arc<Mutex<DaemonState>>) -> Result<()> {
+    use tokio::net::windows::named_pipe::ServerOptions;
+
+    let mut server = ServerOptions::new()
+        .first_pipe_instance(true)
+        .create(ipc_path)
+        .map_err(|e| DaemonError::HealthSocketError {
+            message: format!("create pipe {}: {}", ipc_path, e),
+        })?;
+
+    loop {
+        server
+            .connect()
+            .await
+            .map_err(|e| DaemonError::HealthSocketError {
+                message: format!("accept pipe: {}", e),
+            })?;
+
+        let connected = server;
+        server = ServerOptions::new()
+            .first_pipe_instance(false)
+            .create(ipc_path)
+            .map_err(|e| DaemonError::HealthSocketError {
+                message: format!("create pipe {}: {}", ipc_path, e),
+            })?;
+
+        let state = Arc::clone(&state);
+        tokio::spawn(async move {
+            if let Err(e) = handle_health_connection(connected, state).await {
+                tracing::debug!("health connection error: {}", e);
+            }
+        });
+    }
+}
+
+async fn handle_health_connection<S>(
+    stream: S,
     state: Arc<Mutex<DaemonState>>,
-) -> std::result::Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let (reader, mut writer) = stream.into_split();
+) -> std::result::Result<(), Box<dyn std::error::Error + Send + Sync>>
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
+    let (reader, mut writer) = tokio::io::split(stream);
     let mut buf_reader = tokio::io::BufReader::new(reader);
 
     // Read the HTTP request line
@@ -2183,44 +2245,89 @@ fn uninstall_systemd_service() -> Result<()> {
 
 // --- Status Query (for cfgd daemon status) ---
 
-pub fn query_daemon_status() -> Result<Option<DaemonStatusResponse>> {
-    let socket_path = PathBuf::from(DEFAULT_SOCKET_PATH);
+/// Connect to the daemon IPC endpoint and query the /status endpoint.
+/// Returns `None` if the daemon is not reachable.
+fn connect_daemon_ipc() -> Option<IpcStream> {
+    #[cfg(unix)]
+    {
+        let path = PathBuf::from(DEFAULT_IPC_PATH);
+        if !path.exists() {
+            return None;
+        }
+        let stream = StdUnixStream::connect(&path).ok()?;
+        stream.set_read_timeout(Some(Duration::from_secs(5))).ok()?;
+        Some(IpcStream::Unix(stream))
+    }
+    #[cfg(windows)]
+    {
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(DEFAULT_IPC_PATH)
+            .ok()?;
+        Some(IpcStream::Pipe(file))
+    }
+}
 
-    if !socket_path.exists() {
-        return Ok(None);
+/// Platform-specific IPC stream wrapper implementing Read + Write.
+enum IpcStream {
+    #[cfg(unix)]
+    Unix(StdUnixStream),
+    #[cfg(windows)]
+    Pipe(std::fs::File),
+}
+
+impl std::io::Read for IpcStream {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        match self {
+            #[cfg(unix)]
+            IpcStream::Unix(s) => s.read(buf),
+            #[cfg(windows)]
+            IpcStream::Pipe(f) => f.read(buf),
+        }
+    }
+}
+
+impl std::io::Write for IpcStream {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        match self {
+            #[cfg(unix)]
+            IpcStream::Unix(s) => s.write(buf),
+            #[cfg(windows)]
+            IpcStream::Pipe(f) => f.write(buf),
+        }
     }
 
-    let stream = match StdUnixStream::connect(&socket_path) {
-        Ok(s) => s,
-        Err(_) => {
-            // Socket file exists but connection failed — daemon is not running
-            // (stale socket from a previous run)
-            return Ok(None);
+    fn flush(&mut self) -> std::io::Result<()> {
+        match self {
+            #[cfg(unix)]
+            IpcStream::Unix(s) => s.flush(),
+            #[cfg(windows)]
+            IpcStream::Pipe(f) => f.flush(),
         }
+    }
+}
+
+pub fn query_daemon_status() -> Result<Option<DaemonStatusResponse>> {
+    let mut stream = match connect_daemon_ipc() {
+        Some(s) => s,
+        None => return Ok(None),
     };
 
-    // Set a timeout
-    stream
-        .set_read_timeout(Some(Duration::from_secs(5)))
-        .map_err(|e| DaemonError::HealthSocketError {
-            message: format!("set timeout: {}", e),
-        })?;
-
-    let mut stream_ref = &stream;
     write!(
-        stream_ref,
+        stream,
         "GET /status HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n"
     )
     .map_err(|e| DaemonError::HealthSocketError {
         message: format!("write request: {}", e),
     })?;
 
-    let reader = BufReader::new(&stream);
+    let reader = BufReader::new(&mut stream);
     let mut lines: Vec<String> = Vec::new();
     let mut in_body = false;
 
-    for line in reader.lines() {
-        let line = line.map_err(|e| DaemonError::HealthSocketError {
+    for line_result in reader.lines() {
+        let line = line_result.map_err(|e| DaemonError::HealthSocketError {
             message: format!("read response: {}", e),
         })?;
 
