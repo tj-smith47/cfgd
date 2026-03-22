@@ -8,6 +8,8 @@ metadata:
     policies.kyverno.io/severity: high
     policies.kyverno.io/description: >-
       Requires all cfgd Module CRDs to have a cosign signature configured.
+      Accepts either static key verification (publicKey) or keyless
+      verification (keyless + certificateIdentity + certificateOidcIssuer).
       Unsigned modules are rejected to ensure supply chain integrity.
 spec:
   validationFailureAction: Enforce
@@ -22,9 +24,18 @@ spec:
       validate:
         message: >-
           Module {{ request.object.metadata.name }} must have a cosign
-          signature. Set spec.signature.cosign.publicKey.
-        pattern:
-          spec:
-            signature:
-              cosign:
-                publicKey: "?*"
+          signature. Set spec.signature.cosign.publicKey for static key
+          verification, or spec.signature.cosign.keyless with
+          certificateIdentity and certificateOidcIssuer for keyless
+          verification.
+        anyPattern:
+          - spec:
+              signature:
+                cosign:
+                  publicKey: "?*"
+          - spec:
+              signature:
+                cosign:
+                  keyless: true
+                  certificateIdentity: "?*"
+                  certificateOidcIssuer: "?*"

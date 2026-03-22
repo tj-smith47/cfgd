@@ -37,3 +37,109 @@ spec:
               message: >-
                 File '{{ element.path }}' has world-writable mode '{{ element.mode }}'.
                 Use restrictive permissions.
+    - name: warn-empty-config
+      match:
+        any:
+          - resources:
+              kinds:
+                - MachineConfig
+      validate:
+        message: >-
+          MachineConfig {{ request.object.metadata.name }} has no modules,
+          packages, or files — is this intentional?
+        deny:
+          conditions:
+            all:
+              - key: "{{ request.object.spec.moduleRefs | length(@) }}"
+                operator: Equals
+                value: 0
+              - key: "{{ request.object.spec.packages | length(@) }}"
+                operator: Equals
+                value: 0
+              - key: "{{ request.object.spec.files | length(@) }}"
+                operator: Equals
+                value: 0
+    - name: audit-drift-detected
+      match:
+        any:
+          - resources:
+              kinds:
+                - MachineConfig
+      preconditions:
+        all:
+          - key: "{{ request.object.status.conditions[?type == 'DriftDetected'] | length(@) }}"
+            operator: GreaterThan
+            value: 0
+      validate:
+        message: >-
+          MachineConfig {{ request.object.metadata.name }} has active drift.
+          Reconcile to restore desired state.
+        deny:
+          conditions:
+            any:
+              - key: "{{ request.object.status.conditions[?type == 'DriftDetected'].status | [0] }}"
+                operator: Equals
+                value: "True"
+    - name: audit-reconcile-failure
+      match:
+        any:
+          - resources:
+              kinds:
+                - MachineConfig
+      preconditions:
+        all:
+          - key: "{{ request.object.status.conditions[?type == 'Reconciled'] | length(@) }}"
+            operator: GreaterThan
+            value: 0
+      validate:
+        message: >-
+          MachineConfig {{ request.object.metadata.name }} is not reconciled.
+          Check status conditions for details.
+        deny:
+          conditions:
+            any:
+              - key: "{{ request.object.status.conditions[?type == 'Reconciled'].status | [0] }}"
+                operator: Equals
+                value: "False"
+    - name: audit-modules-unresolved
+      match:
+        any:
+          - resources:
+              kinds:
+                - MachineConfig
+      preconditions:
+        all:
+          - key: "{{ request.object.status.conditions[?type == 'ModulesResolved'] | length(@) }}"
+            operator: GreaterThan
+            value: 0
+      validate:
+        message: >-
+          MachineConfig {{ request.object.metadata.name }} has unresolved modules.
+          Check status conditions for details.
+        deny:
+          conditions:
+            any:
+              - key: "{{ request.object.status.conditions[?type == 'ModulesResolved'].status | [0] }}"
+                operator: Equals
+                value: "False"
+    - name: audit-non-compliant
+      match:
+        any:
+          - resources:
+              kinds:
+                - MachineConfig
+      preconditions:
+        all:
+          - key: "{{ request.object.status.conditions[?type == 'Compliant'] | length(@) }}"
+            operator: GreaterThan
+            value: 0
+      validate:
+        message: >-
+          MachineConfig {{ request.object.metadata.name }} is non-compliant.
+          Check status conditions for details.
+        deny:
+          conditions:
+            any:
+              - key: "{{ request.object.status.conditions[?type == 'Compliant'].status | [0] }}"
+                operator: Equals
+                value: "False"

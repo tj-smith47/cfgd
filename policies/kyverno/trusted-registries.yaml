@@ -8,13 +8,14 @@ metadata:
     policies.kyverno.io/severity: high
     policies.kyverno.io/description: >-
       Ensures that cfgd Module CRDs only reference OCI artifacts from
-      trusted registries. Prevents supply chain attacks via untrusted
-      module sources.
+      trusted registries, and that ClusterConfigPolicy CRDs only list
+      approved registries in spec.security.trustedRegistries. Prevents
+      supply chain attacks via untrusted module sources.
 spec:
   validationFailureAction: Enforce
   background: true
   rules:
-    - name: check-trusted-registry
+    - name: check-module-trusted-registry
       match:
         any:
           - resources:
@@ -28,3 +29,53 @@ spec:
         pattern:
           spec:
             ociArtifact: "ghcr.io/cfgd-org/* | registry.cfgd.io/*"
+    - name: require-oci-artifact
+      match:
+        any:
+          - resources:
+              kinds:
+                - Module
+      context:
+        - name: policySettings
+          configMap:
+            name: cfgd-policy-settings
+            namespace: cfgd-system
+      preconditions:
+        all:
+          - key: "{{ policySettings.data.\"require-oci-artifact\" || 'false' }}"
+            operator: Equals
+            value: "true"
+      validate:
+        message: >-
+          Module {{ request.object.metadata.name }} must specify an
+          ociArtifact (required by cfgd-policy-settings ConfigMap).
+        deny:
+          conditions:
+            any:
+              - key: "{{ request.object.spec.ociArtifact || '' }}"
+                operator: Equals
+                value: ""
+    - name: check-cluster-policy-trusted-registries
+      match:
+        any:
+          - resources:
+              kinds:
+                - ClusterConfigPolicy
+      preconditions:
+        all:
+          - key: "{{ request.object.spec.security.trustedRegistries | length(@) }}"
+            operator: GreaterThan
+            value: 0
+      validate:
+        foreach:
+          - list: "request.object.spec.security.trustedRegistries"
+            deny:
+              conditions:
+                all:
+                  - key: "{{ element }}"
+                    operator: AnyNotIn
+                    value: ["ghcr.io/cfgd-org/*", "registry.cfgd.io/*"]
+              message: >-
+                ClusterConfigPolicy {{ request.object.metadata.name }} includes
+                untrusted registry '{{ element }}' in spec.security.trustedRegistries.
+                Only ghcr.io/cfgd-org/ and registry.cfgd.io/ are allowed.

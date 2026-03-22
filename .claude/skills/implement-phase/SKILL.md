@@ -46,18 +46,30 @@ Then read all existing source files relevant to the work to understand what's al
 - Use `Sha256::digest()` for hashing. Do NOT use `Sha256::new()` + `update()` + `finalize()`.
 - Use `cfgd_core::command_available()` to check CLI tool availability. Do NOT redefine it.
 
-### After implementing:
+### After implementing — pre-completion gates (ALL required):
 
-1. `cargo fmt`
-2. `cargo clippy -- -D warnings`
-3. `cargo test`
-4. `bash .claude/scripts/audit.sh`
-5. **Cross-codebase review**: Read the new code alongside existing modules and check for:
-   - DRY violations: duplicated logic, copy-pasted patterns, functions with the same shape that should share code
-   - Design pattern deviations: inconsistent error handling, inconsistent API styles, approaches that differ from established patterns in the codebase
-   - Redundant calls, dead parameters, no-op tests (assertions that are always true)
-   - **Dead code triage**: For any unused item (function, struct, error variant, config field) — determine if it represents missing validation/enforcement that should be wired up NOW, or speculative code that should be deleted. Do not leave definitions without call sites.
-   - Do NOT limit this review to the code just written — compare against the full codebase
-6. Fix any issues found in step 5, then re-run steps 1-4.
-7. `bash .claude/scripts/completeness-check.sh` — verify all surfaces (docs, examples, fixtures, schemas, helm templates) are consistent with the code changes. Fix anything flagged.
-8. Walk through every checklist item in the section. Check off completed items in PLAN.md. Report pass/fail for each.
+Every gate must pass before the section is considered complete. Do not skip any.
+
+1. **Build and lint**
+   - `cargo fmt`
+   - `cargo clippy -- -D warnings`
+   - `cargo test --workspace` (ALL tests, not just the crate you changed)
+   - E2E tests: run any applicable shell-based test suites in `tests/e2e/*/scripts/` if the environment supports it (requires Docker/kind). If not runnable, note which E2E suites exist and what they cover.
+
+2. **Quality scripts**
+   - `bash .claude/scripts/audit.sh`
+   - `bash .claude/scripts/completeness-check.sh`
+   - Fix anything flagged, then re-run until clean.
+
+3. **Skill-based review gates** — invoke each of these skills:
+   - `/detecting-implementation-gaps` — verify all new code is reachable from entry points, no dead implementations
+   - `/deduplicating-code` — verify no duplicated logic was introduced, check for DRY violations across the full codebase
+   - `superpowers:requesting-code-review` — full code review of the changes against PLAN.md and CLAUDE.md standards
+   - `superpowers:verification-before-completion` — run fresh verification commands and confirm every claim with evidence
+
+   Fix all issues found by each skill before proceeding to the next.
+
+4. **Checklist completion** — walk through every checklist item in the section:
+   - Verify each item against evidence (not assumptions).
+   - Move completed items from PLAN.md to COMPLETED.md (completed items are MOVED, not duplicated).
+   - If any items remain incomplete, report what remains and why.

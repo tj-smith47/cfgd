@@ -48,7 +48,8 @@ metadata:
           "spec": {
             "machineConfigRef": { "name": "example", "namespace": "default" },
             "deviceId": "workstation-1",
-            "severity": "warning"
+            "severity": "Medium",
+            "driftDetails": [{ "field": "spec.packages[0].version", "expected": "1.28.0", "actual": "1.27.5" }]
           }
         }
       ]

@@ -1004,3 +1004,36 @@ Full design in `.claude/specs/2026-03-19-generate-design.md`. Four-layer impleme
 - [x] Script lifecycle overhaul: unified ScriptSpec/ScriptEntry with 6 hook types (preApply, postApply, preReconcile, postReconcile, onDrift, onChange), ReconcileContext (Apply/Reconcile), PreScripts/PostScripts phases, unified executor with timeout/continueOnError/onChange detection, environment variable injection, onDrift in daemon drift detection
 - [x] Updated user-facing docs for all CLI UX changes
 - [x] Renamed `docs/spec-reference/` to `docs/spec/`
+
+---
+
+## CLI UX follow-up fixes
+
+Code fixes identified by code review, dedup analysis, and gap analysis after the CLI UX implementation.
+
+- [x] Extract shared helpers in cli/mod.rs: `display_plan_preview()` and `strip_scripts_from_plan()` — deduplicate 60+ lines between cmd_apply dry-run and cmd_plan
+- [x] Delete duplicate `parse_duration_str` tests from reconciler (6 tests duplicating lib.rs)
+- [x] Remove `--jsonpath` deprecation warning — nobody uses this tool yet, no deprecation notices needed
+- [x] Wire up module-level preApply, preReconcile, postReconcile, onChange scripts (ResolvedModule now carries all hooks; plan_modules selects based on ReconcileContext; onChange runs per-module after apply)
+- [x] Implement `-o wide` with distinct behavior — add extra columns to list commands (profile list, module list, module search)
+- [x] Implement daemon auto-apply so preReconcile/postReconcile hooks actually execute (daemon calls reconciler.apply() when drift_policy is Auto)
+- [x] Make `-o name` work on all structured output types — `name_from_value()` tries name, context, phase, resourceType, url, applyId as fallbacks
+- [x] Add `#[serde(rename_all = "camelCase")]` to all pre-existing output structs (16 in cli/mod.rs + 2 in module.rs)
+- [x] Fix pre-existing clippy warnings in test code (useless `format!`, redundant binding, `assert_eq!` with literal bool, borrowed expressions, field reassign with default)
+- [x] `script`-based package installs (`manager: script`) respect `--skip-scripts` — `strip_scripts_from_plan()` also filters InstallPackages with manager "script"
+- [x] `PROFILE_SCRIPT_TIMEOUT` re-export in reconciler/mod.rs removed — use `crate::PROFILE_SCRIPT_TIMEOUT` directly at call sites
+- [x] Plan display loop in init.rs and module.rs calls `display_plan_table(plan, printer, None)` instead of duplicating the loop
+- [x] `ScriptPhase::display_name()` — deduplicated 4 identical match blocks into one canonical method (found during review)
+- [x] `ModuleStatus` struct in `cmd_status_module` — added missing `#[serde(rename_all = "camelCase")]` (found during review)
+- [x] `RunScript` display text uses actual phase name instead of hardcoded "post-apply" (found during review)
+---
+
+## Ecosystem integration
+- [x] Update `policies/` for new CRD fields — OPA and Kyverno policies for ClusterConfigPolicy (allowUnsigned, trustedRegistries, namespaceSelector, Enforced condition), Module keyless cosign verification, MachineConfig conditions (Reconciled, DriftDetected, ModulesResolved, Compliant), DriftAlert conditions (Acknowledged, Resolved, Escalated), drift detail validation, empty config warning
+- [x] Update idiomatic naming in ecosystem files — fixed DriftAlert severity `"warning"` → `"Medium"` (valid enum value), added missing `driftDetails` to OLM CSV example, verified camelCase field paths across all policies and ecosystem manifests
+
+---
+## Documentation cleanup
+- [x] Consolidated duplicate script lifecycle content — replaced duplicated field reference table, env vars table, and defaults in `docs/modules.md` with summary + cross-reference to `docs/spec/module.md#specscripts`; added spec cross-reference to `docs/daemon.md` onDrift section
+- [x] Added cross-references from 7 user-facing docs to `docs/spec/` for detailed field documentation (configuration, modules, profiles, operator, team-config, daemon, sources)
+- [x] Renamed stale `spec-reference` exclusion in `.claude/scripts/completeness-check.sh` to match the `docs/spec/` directory rename

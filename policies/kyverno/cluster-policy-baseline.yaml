@@ -1,0 +1,90 @@
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: cfgd-cluster-policy-baseline
+  annotations:
+    policies.kyverno.io/title: ClusterConfigPolicy Baseline
+    policies.kyverno.io/category: cfgd
+    policies.kyverno.io/severity: high
+    policies.kyverno.io/description: >-
+      Enforces security baseline checks on ClusterConfigPolicy CRDs:
+      unsigned modules must not be allowed, trusted registries must be
+      configured, and namespace selectors should be explicit.
+spec:
+  validationFailureAction: Enforce
+  background: true
+  rules:
+    - name: deny-allow-unsigned
+      match:
+        any:
+          - resources:
+              kinds:
+                - ClusterConfigPolicy
+      validate:
+        message: >-
+          ClusterConfigPolicy {{ request.object.metadata.name }} must not
+          allow unsigned modules. Set spec.security.allowUnsigned to false.
+        deny:
+          conditions:
+            any:
+              - key: "{{ request.object.spec.security.allowUnsigned || false }}"
+                operator: Equals
+                value: true
+    - name: require-trusted-registries
+      match:
+        any:
+          - resources:
+              kinds:
+                - ClusterConfigPolicy
+      validate:
+        message: >-
+          ClusterConfigPolicy {{ request.object.metadata.name }} must
+          configure at least one trusted registry in
+          spec.security.trustedRegistries.
+        deny:
+          conditions:
+            any:
+              - key: "{{ request.object.spec.security.trustedRegistries | length(@) }}"
+                operator: Equals
+                value: 0
+    - name: warn-wildcard-namespace-selector
+      match:
+        any:
+          - resources:
+              kinds:
+                - ClusterConfigPolicy
+      validate:
+        message: >-
+          ClusterConfigPolicy {{ request.object.metadata.name }} has a
+          wildcard namespaceSelector — consider restricting to specific
+          namespaces.
+        deny:
+          conditions:
+            all:
+              - key: "{{ request.object.spec.namespaceSelector.matchLabels | length(@) }}"
+                operator: Equals
+                value: 0
+              - key: "{{ request.object.spec.namespaceSelector.matchExpressions | length(@) }}"
+                operator: Equals
+                value: 0
+    - name: audit-not-enforced
+      match:
+        any:
+          - resources:
+              kinds:
+                - ClusterConfigPolicy
+      preconditions:
+        all:
+          - key: "{{ request.object.status.conditions[?type == 'Enforced'] | length(@) }}"
+            operator: GreaterThan
+            value: 0
+      validate:
+        message: >-
+          ClusterConfigPolicy {{ request.object.metadata.name }} is not
+          enforced. Check status conditions for details.
+        deny:
+          conditions:
+            any:
+              - key: "{{ request.object.status.conditions[?type == 'Enforced'].status | [0] }}"
+                operator: Equals
+                value: "False"

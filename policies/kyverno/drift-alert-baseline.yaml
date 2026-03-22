@@ -1,0 +1,97 @@
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: cfgd-drift-alert-baseline
+  annotations:
+    policies.kyverno.io/title: DriftAlert Baseline
+    policies.kyverno.io/category: cfgd
+    policies.kyverno.io/severity: medium
+    policies.kyverno.io/description: >-
+      Enforces baseline checks on DriftAlert CRDs: high and critical
+      severity alerts must be acknowledged, critical alerts must be
+      escalated, and alerts must include drift details.
+spec:
+  validationFailureAction: Audit
+  background: true
+  rules:
+    - name: require-drift-details
+      match:
+        any:
+          - resources:
+              kinds:
+                - DriftAlert
+      validate:
+        message: >-
+          DriftAlert {{ request.object.metadata.name }} must include at
+          least one entry in spec.driftDetails.
+        deny:
+          conditions:
+            any:
+              - key: "{{ request.object.spec.driftDetails | length(@) }}"
+                operator: Equals
+                value: 0
+    - name: audit-high-severity-unacknowledged
+      match:
+        any:
+          - resources:
+              kinds:
+                - DriftAlert
+      preconditions:
+        all:
+          - key: "{{ request.object.spec.severity }}"
+            operator: AnyIn
+            value: ["High", "Critical"]
+      validate:
+        message: >-
+          DriftAlert {{ request.object.metadata.name }} has
+          {{ request.object.spec.severity }} severity but is not
+          acknowledged. Set the Acknowledged condition to True.
+        deny:
+          conditions:
+            all:
+              - key: "{{ request.object.status.conditions[?type == 'Acknowledged' && status == 'True'] | length(@) }}"
+                operator: Equals
+                value: 0
+    - name: audit-critical-not-escalated
+      match:
+        any:
+          - resources:
+              kinds:
+                - DriftAlert
+      preconditions:
+        all:
+          - key: "{{ request.object.spec.severity }}"
+            operator: Equals
+            value: "Critical"
+      validate:
+        message: >-
+          DriftAlert {{ request.object.metadata.name }} has Critical
+          severity but has not been escalated. Set the Escalated condition
+          to True.
+        deny:
+          conditions:
+            all:
+              - key: "{{ request.object.status.conditions[?type == 'Escalated' && status == 'True'] | length(@) }}"
+                operator: Equals
+                value: 0
+    - name: audit-resolved-missing-timestamp
+      match:
+        any:
+          - resources:
+              kinds:
+                - DriftAlert
+      preconditions:
+        all:
+          - key: "{{ request.object.status.conditions[?type == 'Resolved' && status == 'True'] | length(@) }}"
+            operator: GreaterThan
+            value: 0
+      validate:
+        message: >-
+          DriftAlert {{ request.object.metadata.name }} has Resolved
+          condition but is missing status.resolvedAt timestamp.
+        deny:
+          conditions:
+            any:
+              - key: "{{ request.object.status.resolvedAt || '' }}"
+                operator: Equals
+                value: ""

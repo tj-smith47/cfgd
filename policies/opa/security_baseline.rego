@@ -4,6 +4,7 @@
 # - No privileged system settings
 # - File modes are restrictive
 # - Required security modules are present
+# - Configuration drift is flagged
 
 package cfgd.machineconfig.security_baseline
 
@@ -37,5 +38,56 @@ violation contains msg if {
 	count(object.get(input.spec, "files", [])) == 0
 	msg := sprintf("MachineConfig '%s' has no modules, packages, or files — is this intentional?", [
 		input.metadata.name,
+	])
+}
+
+# Flag MachineConfigs with active drift (DriftDetected condition is True)
+violation contains msg if {
+	input.kind == "MachineConfig"
+	some condition in input.status.conditions
+	condition.type == "DriftDetected"
+	condition.status == "True"
+	msg := sprintf("MachineConfig '%s' has active drift detected (reason: %s)", [
+		input.metadata.name,
+		condition.reason,
+	])
+}
+
+# Flag MachineConfigs that are not successfully reconciled
+violation contains msg if {
+	input.kind == "MachineConfig"
+	some condition in input.status.conditions
+	condition.type == "Reconciled"
+	condition.status == "False"
+	msg := sprintf("MachineConfig '%s' is not reconciled (reason: %s: %s)", [
+		input.metadata.name,
+		condition.reason,
+		condition.message,
+	])
+}
+
+# Flag MachineConfigs with unresolved modules
+violation contains msg if {
+	input.kind == "MachineConfig"
+	some condition in input.status.conditions
+	condition.type == "ModulesResolved"
+	condition.status == "False"
+	msg := sprintf("MachineConfig '%s' has unresolved modules (reason: %s: %s)", [
+		input.metadata.name,
+		condition.reason,
+		condition.message,
+	])
+}
+
+# Flag non-compliant MachineConfigs
+violation contains msg if {
+	input.kind == "MachineConfig"
+	some condition in input.status.conditions
+	condition.type == "Compliant"
+	condition.status == "False"
+	msg := sprintf("MachineConfig '%s' is non-compliant (%s: %s)", [
+		input.metadata.name,
+		condition.reason,
+		condition.message,
 	])
 }
