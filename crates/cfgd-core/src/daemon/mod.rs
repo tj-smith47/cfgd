@@ -2245,8 +2245,7 @@ fn uninstall_systemd_service() -> Result<()> {
 
 // --- Status Query (for cfgd daemon status) ---
 
-/// Connect to the daemon IPC endpoint and query the /status endpoint.
-/// Returns `None` if the daemon is not reachable.
+/// Connect to the daemon IPC endpoint. Returns `None` if the daemon is not reachable.
 fn connect_daemon_ipc() -> Option<IpcStream> {
     #[cfg(unix)]
     {
