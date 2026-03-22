@@ -231,6 +231,39 @@ pub fn is_executable(path: &std::path::Path, _metadata: &std::fs::Metadata) -> b
         .unwrap_or(false)
 }
 
+/// Check if two paths refer to the same file (same inode on Unix, same file index on Windows).
+#[cfg(unix)]
+pub fn is_same_inode(a: &std::path::Path, b: &std::path::Path) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    match (std::fs::metadata(a), std::fs::metadata(b)) {
+        (Ok(ma), Ok(mb)) => ma.ino() == mb.ino() && ma.dev() == mb.dev(),
+        _ => false,
+    }
+}
+
+#[cfg(windows)]
+pub fn is_same_inode(a: &std::path::Path, b: &std::path::Path) -> bool {
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Storage::FileSystem::GetFileInformationByHandle;
+    use windows_sys::Win32::Storage::FileSystem::BY_HANDLE_FILE_INFORMATION;
+
+    fn file_info(path: &std::path::Path) -> Option<BY_HANDLE_FILE_INFORMATION> {
+        let file = std::fs::File::open(path).ok()?;
+        let mut info = unsafe { std::mem::zeroed() };
+        let ret = unsafe { GetFileInformationByHandle(file.as_raw_handle() as _, &mut info) };
+        if ret != 0 { Some(info) } else { None }
+    }
+
+    match (file_info(a), file_info(b)) {
+        (Some(ia), Some(ib)) => {
+            ia.dwVolumeSerialNumber == ib.dwVolumeSerialNumber
+                && ia.nFileIndexHigh == ib.nFileIndexHigh
+                && ia.nFileIndexLow == ib.nFileIndexLow
+        }
+        _ => false,
+    }
+}
+
 /// Parse a potentially loose version string into a semver Version.
 /// Handles "1.28" → "1.28.0" and "1" → "1.0.0".
 pub fn parse_loose_version(s: &str) -> Option<semver::Version> {
@@ -1008,6 +1041,19 @@ mod tests {
         set_file_permissions(&file, 0o755).unwrap();
         let meta = std::fs::metadata(&file).unwrap();
         assert!(is_executable(&file, &meta));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn is_same_inode_detects_hard_links() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("original.txt");
+        std::fs::write(&file, "content").unwrap();
+        let link = dir.path().join("hardlink.txt");
+        std::fs::hard_link(&file, &link).unwrap();
+
+        assert!(is_same_inode(&file, &link));
+        assert!(!is_same_inode(&file, &dir.path().join("nonexistent")));
     }
 
     #[test]

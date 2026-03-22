@@ -157,7 +157,7 @@ impl CfgdFileManager {
                         .read_link()
                         .map(|link| link == source_path)
                         .unwrap_or(false),
-                    FileStrategy::Hardlink => is_same_inode(&source_path, &target_path),
+                    FileStrategy::Hardlink => cfgd_core::is_same_inode(&source_path, &target_path),
                     _ => false,
                 };
 
@@ -735,14 +735,6 @@ fn scan_directory(
     Ok(())
 }
 
-/// Check if two paths point to the same inode (hard link check).
-fn is_same_inode(a: &Path, b: &Path) -> bool {
-    use std::os::unix::fs::MetadataExt;
-    match (fs::metadata(a), fs::metadata(b)) {
-        (Ok(ma), Ok(mb)) => ma.ino() == mb.ino() && ma.dev() == mb.dev(),
-        _ => false,
-    }
-}
 
 /// Ensure the target's parent directory exists and the target is writable.
 fn ensure_target_writable(target: &Path) -> Result<()> {
@@ -1580,7 +1572,7 @@ mod tests {
         fm.apply(&actions, &printer).unwrap();
 
         assert!(target.exists());
-        assert!(is_same_inode(&files_dir.join("test.txt"), &target));
+        assert!(cfgd_core::is_same_inode(&files_dir.join("test.txt"), &target));
         assert_eq!(fs::read_to_string(&target).unwrap(), "hardlink content");
     }
 

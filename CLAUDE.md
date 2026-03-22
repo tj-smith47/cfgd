@@ -129,6 +129,7 @@ Current shared items (keep this list updated when adding new ones):
 - `file_permissions_mode(metadata) -> Option<u32>` — Unix mode bits (`mode() & 0o777`); returns `None` on Windows (NTFS uses inherited ACLs)
 - `set_file_permissions(path, mode)` — set Unix mode bits; no-op on Windows. Use instead of direct `PermissionsExt`
 - `is_executable(path, metadata) -> bool` — Unix checks executable bit; Windows checks file extension (`.exe`, `.cmd`, `.bat`, `.ps1`, `.com`)
+- `is_same_inode(a, b) -> bool` — check if two paths refer to the same file (same inode+dev on Unix, same file index+volume on Windows); use instead of inline `MetadataExt::ino()` comparisons
 - `git_ssh_credentials(url, username, allowed)` — git2 credential callback (SSH agent/keys + HTTPS credential helper)
 - `parse_loose_version(s)` — parse "1.28" → semver Version(1.28.0); handles 1-part, 2-part, and 3-part versions
 - `version_satisfies(version, requirement)` — check version against semver range (uses `parse_loose_version`)
