@@ -984,3 +984,23 @@ Full design in `.claude/specs/2026-03-19-generate-design.md`. Four-layer impleme
 - [x] `CLAUDE.md`: added Helm chart paths to module map
 - [x] `docs/cli-reference.md` and `docs/modules.md`: fixed module create --name to positional
 - [x] `docs/packages.md`, `docs/system-configurators.md`, `docs/templates.md`: added CLI cross-references
+
+---
+
+## CLI UX improvements
+
+11 items covering CLI consistency, new commands, and script lifecycle overhaul.
+
+- [x] Convert `daemon` from flags to subcommands (Run, Install, Uninstall, Status)
+- [x] `profile show` accepts optional name argument
+- [x] `--yes` flag on `source remove`
+- [x] Rich `-o` flag (`OutputFormatArg`) replacing bare String — supports table, wide, json, yaml, name, jsonpath=EXPR, template=TMPL, template-file=PATH
+- [x] Normalize `source create --name` to positional
+- [x] `ls` aliases on all `list` subcommands
+- [x] `--module` flag on `diff`
+- [x] `profile update` defaults to active profile (removed `--active`)
+- [x] `plan` top-level command with --phase, --skip, --only, --module, --skip-scripts, --context apply|reconcile, structured output
+- [x] Structured output for profile list, module search, module registry list, module keys list
+- [x] Script lifecycle overhaul: unified ScriptSpec/ScriptEntry with 6 hook types (preApply, postApply, preReconcile, postReconcile, onDrift, onChange), ReconcileContext (Apply/Reconcile), PreScripts/PostScripts phases, unified executor with timeout/continueOnError/onChange detection, environment variable injection, onDrift in daemon drift detection
+- [x] Updated user-facing docs for all CLI UX changes
+- [x] Renamed `docs/spec-reference/` to `docs/spec/`
