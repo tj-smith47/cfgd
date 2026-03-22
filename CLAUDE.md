@@ -123,6 +123,7 @@ Current shared items (keep this list updated when adding new ones):
 - `unix_secs_to_iso8601(secs)` — Unix epoch to ISO 8601
 - `deep_merge_yaml(base, overlay)` — recursive YAML value merge
 - `union_extend(target, source)` — Vec<String> merge without duplicates
+- `default_config_dir()` — cross-platform config directory (`~/.config/cfgd` on Unix, `AppData\Roaming\cfgd` on Windows via `directories` crate)
 - `command_available(cmd)` — check if a CLI command exists on PATH
 - `expand_tilde(path)` — expand `~/...` or `~\...` to home directory; uses `HOME` on Unix, `USERPROFILE` (then `HOME`) on Windows
 - `create_symlink(source, target)` — cross-platform symlink creation; Windows uses `symlink_file`/`symlink_dir`, errors with Developer Mode guidance on permission failure
