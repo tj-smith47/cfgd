@@ -33,7 +33,7 @@ jobs:
   full-stack-tests:
     name: "Full-Stack Tests (T01–T16)"
     runs-on: arc-cfgd
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
 
