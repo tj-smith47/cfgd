@@ -398,34 +398,37 @@ impl CfgdFileManager {
                 let _ = mode_str;
                 return Ok(None);
             }
-            let desired_mode =
-                u32::from_str_radix(mode_str, 8).map_err(|_| FileError::TemplateError {
-                    path: target.to_path_buf(),
-                    message: format!("invalid permission mode: {}", mode_str),
-                })?;
+            #[cfg(not(windows))]
+            {
+                let desired_mode =
+                    u32::from_str_radix(mode_str, 8).map_err(|_| FileError::TemplateError {
+                        path: target.to_path_buf(),
+                        message: format!("invalid permission mode: {}", mode_str),
+                    })?;
 
-            if target.exists() {
-                let metadata = fs::metadata(target).map_err(|e| FileError::Io {
-                    path: target.to_path_buf(),
-                    source: e,
-                })?;
-                let current_mode = cfgd_core::file_permissions_mode(&metadata);
+                if target.exists() {
+                    let metadata = fs::metadata(target).map_err(|e| FileError::Io {
+                        path: target.to_path_buf(),
+                        source: e,
+                    })?;
+                    let current_mode = cfgd_core::file_permissions_mode(&metadata);
 
-                if current_mode != Some(desired_mode) {
+                    if current_mode != Some(desired_mode) {
+                        return Ok(Some(FileAction::SetPermissions {
+                            target: target.to_path_buf(),
+                            mode: desired_mode,
+                            origin: "local".to_string(),
+                        }));
+                    }
+                } else {
+                    // Target doesn't exist yet (will be created); emit SetPermissions
+                    // so that apply sets the correct mode after creating the file.
                     return Ok(Some(FileAction::SetPermissions {
                         target: target.to_path_buf(),
                         mode: desired_mode,
                         origin: "local".to_string(),
                     }));
                 }
-            } else {
-                // Target doesn't exist yet (will be created); emit SetPermissions
-                // so that apply sets the correct mode after creating the file.
-                return Ok(Some(FileAction::SetPermissions {
-                    target: target.to_path_buf(),
-                    mode: desired_mode,
-                    origin: "local".to_string(),
-                }));
             }
         }
 
