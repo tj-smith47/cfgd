@@ -689,6 +689,78 @@ impl Drop for ApplyLockGuard {
     }
 }
 
+/// Acquire an exclusive apply lock via `LockFileEx`.
+///
+/// The lock file is created at `state_dir/apply.lock`. Uses
+/// `LOCKFILE_EXCLUSIVE_LOCK | LOCKFILE_FAIL_IMMEDIATELY` — returns
+/// `StateError::ApplyLockHeld` if another process holds the lock. The lock is
+/// released automatically when the guard is dropped (file handle closed).
+#[cfg(windows)]
+pub fn acquire_apply_lock(state_dir: &std::path::Path) -> errors::Result<ApplyLockGuard> {
+    use std::io::Write;
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Storage::FileSystem::{
+        LOCKFILE_EXCLUSIVE_LOCK, LOCKFILE_FAIL_IMMEDIATELY, LockFileEx,
+    };
+
+    std::fs::create_dir_all(state_dir)?;
+    let lock_path = state_dir.join("apply.lock");
+
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(&lock_path)?;
+
+    let handle = file.as_raw_handle() as windows_sys::Win32::Foundation::HANDLE;
+    let mut overlapped: windows_sys::Win32::System::IO::OVERLAPPED = unsafe { std::mem::zeroed() };
+    let ret = unsafe {
+        LockFileEx(
+            handle,
+            LOCKFILE_EXCLUSIVE_LOCK | LOCKFILE_FAIL_IMMEDIATELY,
+            0,
+            1,
+            0,
+            &mut overlapped,
+        )
+    };
+    if ret == 0 {
+        let holder = std::fs::read_to_string(&lock_path).unwrap_or_default();
+        return Err(errors::StateError::ApplyLockHeld {
+            holder: format!("pid {}", holder.trim()),
+        }
+        .into());
+    }
+
+    let mut f = file;
+    f.set_len(0)?;
+    write!(f, "{}", std::process::id())?;
+    f.sync_all()?;
+
+    Ok(ApplyLockGuard {
+        _file: f,
+        path: lock_path,
+    })
+}
+
+/// RAII guard that releases the apply lock when dropped (Windows).
+#[cfg(windows)]
+#[derive(Debug)]
+pub struct ApplyLockGuard {
+    _file: std::fs::File,
+    path: std::path::PathBuf,
+}
+
+#[cfg(windows)]
+impl Drop for ApplyLockGuard {
+    fn drop(&mut self) {
+        // Windows releases the lock when the file handle is closed (on drop).
+        // Clear the PID from the lock file so stale reads aren't confusing.
+        let _ = std::fs::write(&self.path, "");
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Reconcile patch resolution
 // ---------------------------------------------------------------------------

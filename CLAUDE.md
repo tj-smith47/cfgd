@@ -148,7 +148,7 @@ Current shared items (keep this list updated when adding new ones):
 - `validate_no_traversal(path)` — reject paths containing `..` components
 - `shell_escape_value(value)` — escape a value for shell `export` statements (single-quotes metacharacters)
 - `xml_escape(s)` — escape `&<>"'` for safe XML/plist inclusion
-- `acquire_apply_lock(state_dir)` — exclusive flock-based apply lock; returns `ApplyLockGuard` (RAII release on drop)
+- `acquire_apply_lock(state_dir)` — exclusive apply lock; uses `flock` on Unix, `LockFileEx` on Windows; returns `ApplyLockGuard` (RAII release on drop)
 - `resolve_effective_reconcile(module, profile_chain, config)` — resolve per-module reconcile settings from patches; returns `EffectiveReconcile`
 - `EffectiveReconcile` — resolved reconcile settings (interval, auto_apply, drift_policy) with no Options
 - `CSI_DRIVER_NAME` — canonical CSI driver name string (`csi.cfgd.io`); use everywhere instead of string literals
