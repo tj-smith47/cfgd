@@ -132,11 +132,15 @@ pub fn find_asset_for_platform(
         other => other,
     };
 
-    // Look for: cfgd-<version>-<os>-<arch>.tar.gz
+    // Look for: cfgd-<version>-<os>-<arch>.tar.gz (Unix) or .zip (Windows)
     let version_str = release.tag.strip_prefix('v').unwrap_or(&release.tag);
+    #[cfg(unix)]
+    let archive_suffix = ".tar.gz";
+    #[cfg(windows)]
+    let archive_suffix = ".zip";
     let expected_name = format!(
-        "cfgd-{}-{}-{}.tar.gz",
-        version_str, archive_os, archive_arch
+        "cfgd-{}-{}-{}{}",
+        version_str, archive_os, archive_arch, archive_suffix
     );
 
     release
@@ -262,19 +266,29 @@ pub fn download_and_install(release: &ReleaseInfo, asset: &ReleaseAsset) -> Resu
         tracing::warn!("no checksums asset found in release — skipping verification");
     }
 
-    // Extract the tarball
+    // Extract the archive
     let extract_dir = tmp_dir.path().join("extracted");
     fs::create_dir_all(&extract_dir).map_err(|e| UpgradeError::InstallFailed {
         message: format!("create extract dir: {}", e),
     })?;
 
+    #[cfg(unix)]
     extract_tarball(&archive_path, &extract_dir)?;
+    #[cfg(windows)]
+    extract_zip(&archive_path, &extract_dir)?;
 
     // Find the cfgd binary in the extracted contents
-    let new_binary = extract_dir.join("cfgd");
+    #[cfg(unix)]
+    let binary_name = "cfgd";
+    #[cfg(windows)]
+    let binary_name = "cfgd.exe";
+    let new_binary = extract_dir.join(binary_name);
     if !new_binary.exists() {
         return Err(UpgradeError::InstallFailed {
-            message: "extracted archive does not contain 'cfgd' binary".into(),
+            message: format!(
+                "extracted archive does not contain '{}' binary",
+                binary_name
+            ),
         }
         .into());
     }
@@ -295,6 +309,7 @@ pub fn download_and_install(release: &ReleaseInfo, asset: &ReleaseAsset) -> Resu
 /// Atomically replace `target` with `source`.
 /// Copies source to a NamedTempFile in the target directory, then persists it
 /// over the target (atomic rename on the same filesystem).
+#[cfg(unix)]
 fn atomic_replace(source: &Path, target: &Path) -> std::result::Result<(), UpgradeError> {
     let target_dir = target.parent().ok_or_else(|| UpgradeError::InstallFailed {
         message: "target has no parent directory".into(),
@@ -320,7 +335,30 @@ fn atomic_replace(source: &Path, target: &Path) -> std::result::Result<(), Upgra
     Ok(())
 }
 
+/// Replace `target` with `source` using the Windows rename-dance.
+/// Windows cannot overwrite a running executable, so we rename the current
+/// binary to `.exe.old`, copy the new one into place, and clean up `.old`
+/// on next startup via `cleanup_old_binary`.
+#[cfg(windows)]
+fn atomic_replace(source: &Path, target: &Path) -> std::result::Result<(), UpgradeError> {
+    let old = target.with_extension("exe.old");
+    // Clean up from previous upgrades
+    let _ = fs::remove_file(&old);
+    // Rename running binary out of the way (can't overwrite running exe on Windows)
+    if target.exists() {
+        fs::rename(target, &old).map_err(|e| UpgradeError::InstallFailed {
+            message: format!("rename {} -> {}: {}", target.display(), old.display(), e),
+        })?;
+    }
+    // Copy new binary into place
+    fs::copy(source, target).map_err(|e| UpgradeError::InstallFailed {
+        message: format!("copy {} -> {}: {}", source.display(), target.display(), e),
+    })?;
+    Ok(())
+}
+
 /// Extract a .tar.gz archive to a directory.
+#[cfg(unix)]
 fn extract_tarball(archive: &Path, dest: &Path) -> std::result::Result<(), UpgradeError> {
     let file = fs::File::open(archive).map_err(|e| UpgradeError::InstallFailed {
         message: format!("open archive {}: {}", archive.display(), e),
@@ -333,6 +371,21 @@ fn extract_tarball(archive: &Path, dest: &Path) -> std::result::Result<(), Upgra
         message: format!("extract archive: {}", e),
     })?;
 
+    Ok(())
+}
+
+/// Extract a .zip archive to a directory.
+#[cfg(windows)]
+fn extract_zip(archive: &Path, dest: &Path) -> std::result::Result<(), UpgradeError> {
+    let file = fs::File::open(archive).map_err(|e| UpgradeError::InstallFailed {
+        message: format!("open archive {}: {}", archive.display(), e),
+    })?;
+    let mut zip = zip::ZipArchive::new(file).map_err(|e| UpgradeError::InstallFailed {
+        message: format!("read zip {}: {}", archive.display(), e),
+    })?;
+    zip.extract(dest).map_err(|e| UpgradeError::InstallFailed {
+        message: format!("extract zip: {}", e),
+    })?;
     Ok(())
 }
 
@@ -349,6 +402,23 @@ pub fn restart_daemon_if_running() -> bool {
     crate::terminate_process(status.pid);
     tracing::info!("terminated daemon (pid {})", status.pid);
     true
+}
+
+/// Clean up the old binary left behind by the Windows rename-dance upgrade.
+/// Call this on startup. No-op on Unix.
+#[cfg(windows)]
+pub fn cleanup_old_binary() {
+    if let Ok(exe) = std::env::current_exe() {
+        let old = exe.with_extension("exe.old");
+        let _ = fs::remove_file(old);
+    }
+}
+
+/// Clean up the old binary left behind by the Windows rename-dance upgrade.
+/// Call this on startup. No-op on Unix.
+#[cfg(unix)]
+pub fn cleanup_old_binary() {
+    // Unix atomic_replace doesn't leave old files
 }
 
 /// Check for an update, using a 24h disk cache to avoid excessive API calls.
@@ -538,7 +608,11 @@ mod tests {
         let arch = std::env::consts::ARCH;
         let archive_os = if os == "macos" { "darwin" } else { os };
 
-        let expected_name = format!("cfgd-0.2.0-{}-{}.tar.gz", archive_os, arch);
+        #[cfg(unix)]
+        let suffix = ".tar.gz";
+        #[cfg(windows)]
+        let suffix = ".zip";
+        let expected_name = format!("cfgd-0.2.0-{}-{}{}", archive_os, arch, suffix);
 
         let release = ReleaseInfo {
             tag: "v0.2.0".into(),
@@ -644,6 +718,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn extract_tarball_valid() {
         use flate2::Compression;
         use flate2::write::GzEncoder;
