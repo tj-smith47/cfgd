@@ -925,11 +925,7 @@ fn verify_gpg_signature(
         return false;
     }
     // GPG requires restrictive permissions on its homedir
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(&gpg_home, std::fs::Permissions::from_mode(0o700));
-    }
+    let _ = cfgd_core::set_file_permissions(&gpg_home, 0o700);
 
     for key in keys {
         if std::fs::write(&key_path, &key.public_key).is_err() {

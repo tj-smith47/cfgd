@@ -456,12 +456,8 @@ pub fn save_credential(cred: &DeviceCredential) -> Result<PathBuf> {
     })?;
     std::fs::write(&path, &json)?;
 
-    // Restrict file permissions on Unix
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
-    }
+    // Restrict file permissions (no-op on Windows)
+    crate::set_file_permissions(&path, 0o600)?;
 
     Ok(path)
 }

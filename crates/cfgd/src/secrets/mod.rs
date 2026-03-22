@@ -595,16 +595,12 @@ pub fn init_age_key(config_dir: &Path) -> Result<PathBuf> {
         }
 
         // Set restrictive permissions on the key file
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&key_path, std::fs::Permissions::from_mode(0o600)).map_err(
-                |e| SecretError::EncryptionFailed {
-                    path: key_path.clone(),
-                    message: format!("failed to set key permissions: {}", e),
-                },
-            )?;
-        }
+        cfgd_core::set_file_permissions(&key_path, 0o600).map_err(|e| {
+            SecretError::EncryptionFailed {
+                path: key_path.clone(),
+                message: format!("failed to set key permissions: {}", e),
+            }
+        })?;
     }
 
     // Generate .sops.yaml if it doesn't exist

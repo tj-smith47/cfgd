@@ -2182,18 +2182,14 @@ pub(crate) fn execute_script(
 
     let mut cmd = if resolved.exists() {
         // File path — check executable bit, run directly (OS handles shebang)
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let meta = std::fs::metadata(&resolved)?;
-            if meta.permissions().mode() & 0o111 == 0 {
-                return Err(crate::errors::CfgdError::Config(ConfigError::Invalid {
-                    message: format!(
-                        "script '{}' exists but is not executable (chmod +x)",
-                        resolved.display()
-                    ),
-                }));
-            }
+        let meta = std::fs::metadata(&resolved)?;
+        if !crate::is_executable(&resolved, &meta) {
+            return Err(crate::errors::CfgdError::Config(ConfigError::Invalid {
+                message: format!(
+                    "script '{}' exists but is not executable",
+                    resolved.display()
+                ),
+            }));
         }
         let mut c = std::process::Command::new(&resolved);
         c.current_dir(working_dir);
@@ -2851,9 +2847,7 @@ fn apply_file_action_direct(
             Ok(())
         }
         FileAction::SetPermissions { target, mode, .. } => {
-            use std::os::unix::fs::PermissionsExt;
-            let perms = std::fs::Permissions::from_mode(*mode);
-            std::fs::set_permissions(target, perms)?;
+            crate::set_file_permissions(target, *mode)?;
             Ok(())
         }
         FileAction::Skip { .. } => Ok(()),

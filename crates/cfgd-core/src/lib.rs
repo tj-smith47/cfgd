@@ -187,6 +187,50 @@ fn create_symlink_impl(
     }
 }
 
+/// Get Unix permission mode bits from file metadata. Returns None on Windows.
+#[cfg(unix)]
+pub fn file_permissions_mode(metadata: &std::fs::Metadata) -> Option<u32> {
+    use std::os::unix::fs::PermissionsExt;
+    Some(metadata.permissions().mode() & 0o777)
+}
+
+#[cfg(windows)]
+pub fn file_permissions_mode(_metadata: &std::fs::Metadata) -> Option<u32> {
+    None
+}
+
+/// Set Unix permission mode bits on a file. No-op on Windows (NTFS uses inherited ACLs).
+#[cfg(unix)]
+pub fn set_file_permissions(path: &std::path::Path, mode: u32) -> std::io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode))
+}
+
+#[cfg(windows)]
+pub fn set_file_permissions(_path: &std::path::Path, _mode: u32) -> std::io::Result<()> {
+    tracing::debug!("set_file_permissions is a no-op on Windows (NTFS uses inherited ACLs)");
+    Ok(())
+}
+
+/// Check if a file is executable.
+/// Unix: checks the executable bit in mode.
+/// Windows: checks file extension against known executable types.
+#[cfg(unix)]
+pub fn is_executable(path: &std::path::Path, metadata: &std::fs::Metadata) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    let _ = path;
+    metadata.permissions().mode() & 0o111 != 0
+}
+
+#[cfg(windows)]
+pub fn is_executable(path: &std::path::Path, _metadata: &std::fs::Metadata) -> bool {
+    const EXECUTABLE_EXTENSIONS: &[&str] = &["exe", "cmd", "bat", "ps1", "com"];
+    path.extension()
+        .and_then(|e| e.to_str())
+        .map(|e| EXECUTABLE_EXTENSIONS.contains(&e.to_lowercase().as_str()))
+        .unwrap_or(false)
+}
+
 /// Parse a potentially loose version string into a semver Version.
 /// Handles "1.28" → "1.28.0" and "1" → "1.0.0".
 pub fn parse_loose_version(s: &str) -> Option<semver::Version> {
@@ -939,6 +983,44 @@ mod tests {
         create_symlink(&source, &link).unwrap();
         assert!(link.symlink_metadata().unwrap().file_type().is_symlink());
         assert_eq!(std::fs::read_to_string(&link).unwrap(), "hello");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn file_permissions_mode_returns_mode() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("test.txt");
+        std::fs::write(&file, "test").unwrap();
+        let meta = std::fs::metadata(&file).unwrap();
+        let mode = file_permissions_mode(&meta);
+        assert!(mode.is_some());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn set_file_permissions_changes_mode() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("test.txt");
+        std::fs::write(&file, "test").unwrap();
+        set_file_permissions(&file, 0o755).unwrap();
+        let meta = std::fs::metadata(&file).unwrap();
+        assert_eq!(file_permissions_mode(&meta), Some(0o755));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn is_executable_checks_mode() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("script.sh");
+        std::fs::write(&file, "#!/bin/sh").unwrap();
+
+        set_file_permissions(&file, 0o644).unwrap();
+        let meta = std::fs::metadata(&file).unwrap();
+        assert!(!is_executable(&file, &meta));
+
+        set_file_permissions(&file, 0o755).unwrap();
+        let meta = std::fs::metadata(&file).unwrap();
+        assert!(is_executable(&file, &meta));
     }
 
     #[test]

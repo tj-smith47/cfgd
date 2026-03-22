@@ -2100,11 +2100,7 @@ fn export_devcontainer(
     let mut install_content = install_lines.join("\n");
     install_content.push('\n');
     cfgd_core::atomic_write_str(&install_path, &install_content)?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&install_path, std::fs::Permissions::from_mode(0o755))?;
-    }
+    cfgd_core::set_file_permissions(&install_path, 0o755)?;
 
     // Build devcontainer-feature.json
     let mut options = serde_json::Map::new();

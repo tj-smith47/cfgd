@@ -279,15 +279,10 @@ pub fn download_and_install(release: &ReleaseInfo, asset: &ReleaseAsset) -> Resu
         .into());
     }
 
-    // Make it executable
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let perms = fs::Permissions::from_mode(0o755);
-        fs::set_permissions(&new_binary, perms).map_err(|e| UpgradeError::InstallFailed {
-            message: format!("set permissions: {}", e),
-        })?;
-    }
+    // Make it executable (no-op on Windows)
+    crate::set_file_permissions(&new_binary, 0o755).map_err(|e| UpgradeError::InstallFailed {
+        message: format!("set permissions: {}", e),
+    })?;
 
     // Atomic install: rename new binary over old
     // On the same filesystem this is atomic. If cross-filesystem, copy + rename.

@@ -1,8 +1,6 @@
 use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::fs;
-#[cfg(unix)]
-use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
@@ -396,9 +394,9 @@ impl CfgdFileManager {
                     path: target.to_path_buf(),
                     source: e,
                 })?;
-                let current_mode = metadata.permissions().mode() & 0o777;
+                let current_mode = cfgd_core::file_permissions_mode(&metadata);
 
-                if current_mode != desired_mode {
+                if current_mode != Some(desired_mode) {
                     return Ok(Some(FileAction::SetPermissions {
                         target: target.to_path_buf(),
                         mode: desired_mode,
@@ -491,7 +489,7 @@ impl cfgd_core::providers::FileManager for CfgdFileManager {
                 path.clone(),
                 FileEntry {
                     content_hash: hash,
-                    permissions: Some(metadata.permissions().mode() & 0o777),
+                    permissions: cfgd_core::file_permissions_mode(&metadata),
                     is_template: false,
                     source_path: path.clone(),
                     origin_source: "local".to_string(),
@@ -726,7 +724,7 @@ fn scan_directory(
             relative,
             FileEntry {
                 content_hash: hash,
-                permissions: Some(metadata.permissions().mode() & 0o777),
+                permissions: cfgd_core::file_permissions_mode(&metadata),
                 is_template: is_tera_template(&path),
                 source_path: path,
                 origin_source: origin.to_string(),
@@ -782,10 +780,9 @@ fn ensure_target_writable(target: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Set file permissions (Unix mode bits).
+/// Set file permissions (Unix mode bits). No-op on Windows.
 fn set_permissions(path: &Path, mode: u32) -> Result<()> {
-    let perms = fs::Permissions::from_mode(mode);
-    fs::set_permissions(path, perms).map_err(|e| {
+    cfgd_core::set_file_permissions(path, mode).map_err(|e| {
         if e.kind() == std::io::ErrorKind::PermissionDenied {
             FileError::PermissionDenied {
                 path: path.to_path_buf(),
@@ -863,6 +860,9 @@ fn register_custom_functions(tera: &mut Tera) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    use std::os::unix::fs::PermissionsExt;
 
     use cfgd_core::config::{
         EnvVar, FilesSpec, LayerPolicy, ManagedFileSpec, MergedProfile, ProfileLayer, ProfileSpec,
