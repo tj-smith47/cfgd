@@ -76,6 +76,45 @@ tasks:
     cmds:
       - bash .claude/scripts/audit.sh
 
+  # --- E2E ---
+
+  e2e:setup:
+    desc: Build images and ensure E2E infrastructure is current
+    cmds:
+      - bash tests/e2e/setup-cluster.sh
+
+  e2e:
+    desc: Run all E2E test suites
+    deps: [e2e:setup]
+    cmds:
+      - task: e2e:cli
+      - task: e2e:node
+      - task: e2e:operator
+      - task: e2e:full-stack
+
+  e2e:cli:
+    desc: Run CLI exhaustive E2E tests
+    cmds:
+      - bash tests/e2e/cli/scripts/run-exhaustive-tests.sh
+
+  e2e:node:
+    desc: Run node E2E tests (binary, helm, server, drift)
+    cmds:
+      - bash tests/e2e/node/scripts/run-binary-tests.sh
+      - bash tests/e2e/node/scripts/run-helm-tests.sh
+      - bash tests/e2e/node/scripts/run-server-tests.sh
+      - bash tests/e2e/node/scripts/run-drift-tests.sh
+
+  e2e:operator:
+    desc: Run operator E2E tests
+    cmds:
+      - bash tests/e2e/operator/scripts/run-operator-tests.sh
+
+  e2e:full-stack:
+    desc: Run full-stack E2E tests
+    cmds:
+      - bash tests/e2e/full-stack/scripts/run-full-stack-tests.sh
+
   # --- Clean ---
 
   clean:
