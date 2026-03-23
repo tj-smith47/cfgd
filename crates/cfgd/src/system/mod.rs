@@ -1685,21 +1685,13 @@ fn strip_gsettings_quotes(s: &str) -> &str {
         .unwrap_or(s)
 }
 
-/// Convert a YAML value to the bare string that `gsettings set` expects as an argument.
-/// `Command::new` bypasses the shell, so values must NOT be quoted — quoting is only
-/// for the `printer.info` display line.
-fn yaml_to_gsettings_value(value: &serde_yaml::Value) -> String {
-    match value {
-        serde_yaml::Value::String(s) => s.clone(),
-        serde_yaml::Value::Bool(b) => b.to_string(),
-        serde_yaml::Value::Number(n) => n.to_string(),
-        _ => format!("{:?}", value),
-    }
-}
-
-/// Convert a YAML value to the string that gsettings `get` would return
-/// (used for comparison in diff). Strings are bare (quotes stripped), bools/numbers bare.
-fn yaml_to_gsettings_display(value: &serde_yaml::Value) -> String {
+/// Convert a YAML value to a native-bool string representation.
+///
+/// Unlike `yaml_value_to_string` (which converts bools to `"0"`/`"1"` for macOS `defaults`),
+/// this converts bools to `"true"`/`"false"` — the format used by gsettings, KDE kwriteconfig,
+/// and xfconf-query. Used for both diff comparison and `Command` arguments (which bypass the
+/// shell, so values must NOT be quoted).
+fn yaml_value_to_native_bool_string(value: &serde_yaml::Value) -> String {
     match value {
         serde_yaml::Value::String(s) => s.clone(),
         serde_yaml::Value::Bool(b) => b.to_string(),
@@ -1753,7 +1745,7 @@ impl SystemConfigurator for GsettingsConfigurator {
             drifts.extend(diff_yaml_mapping(
                 values,
                 schema,
-                yaml_to_gsettings_display,
+                yaml_value_to_native_bool_string,
                 |key_str| read_gsettings_value(schema, key_str),
             ));
         }
@@ -1783,7 +1775,7 @@ impl SystemConfigurator for GsettingsConfigurator {
                     None => continue,
                 };
 
-                let gsettings_val = yaml_to_gsettings_value(desired_value);
+                let gsettings_val = yaml_value_to_native_bool_string(desired_value);
 
                 printer.info(&format!(
                     "gsettings set {} {} {}",
@@ -1898,7 +1890,7 @@ impl SystemConfigurator for KdeConfigConfigurator {
                 drifts.extend(diff_yaml_mapping(
                     keys_map,
                     &prefix,
-                    yaml_value_to_string,
+                    yaml_value_to_native_bool_string,
                     |key_str| read_kde_value(file, group, key_str),
                 ));
             }
@@ -1938,7 +1930,7 @@ impl SystemConfigurator for KdeConfigConfigurator {
                         Some(k) => k,
                         None => continue,
                     };
-                    let val_str = yaml_value_to_string(value);
+                    let val_str = yaml_value_to_native_bool_string(value);
 
                     printer.info(&format!(
                         "{} --file {} --group {} --key {} {}",
@@ -2675,42 +2667,25 @@ HKEY_CURRENT_USER\\Environment\n\
     }
 
     #[test]
-    fn gsettings_yaml_to_gsettings_value() {
+    fn yaml_value_to_native_bool_string_conversion() {
         // Strings are bare (no quotes — Command bypasses shell)
         assert_eq!(
-            yaml_to_gsettings_value(&serde_yaml::Value::String("dark".into())),
+            yaml_value_to_native_bool_string(&serde_yaml::Value::String("dark".into())),
             "dark"
         );
+        // Bools use true/false (not 0/1 like yaml_value_to_string)
         assert_eq!(
-            yaml_to_gsettings_value(&serde_yaml::Value::Bool(true)),
+            yaml_value_to_native_bool_string(&serde_yaml::Value::Bool(true)),
             "true"
         );
         assert_eq!(
-            yaml_to_gsettings_value(&serde_yaml::Value::Bool(false)),
+            yaml_value_to_native_bool_string(&serde_yaml::Value::Bool(false)),
             "false"
         );
         let n = serde_yaml::Value::Number(serde_yaml::Number::from(42));
-        assert_eq!(yaml_to_gsettings_value(&n), "42");
+        assert_eq!(yaml_value_to_native_bool_string(&n), "42");
         let f = serde_yaml::Value::Number(serde_yaml::Number::from(1.5));
-        assert_eq!(yaml_to_gsettings_value(&f), "1.5");
-    }
-
-    #[test]
-    fn gsettings_yaml_to_gsettings_display() {
-        assert_eq!(
-            yaml_to_gsettings_display(&serde_yaml::Value::String("prefer-dark".into())),
-            "prefer-dark"
-        );
-        assert_eq!(
-            yaml_to_gsettings_display(&serde_yaml::Value::Bool(true)),
-            "true"
-        );
-        assert_eq!(
-            yaml_to_gsettings_display(&serde_yaml::Value::Bool(false)),
-            "false"
-        );
-        let n = serde_yaml::Value::Number(serde_yaml::Number::from(48));
-        assert_eq!(yaml_to_gsettings_display(&n), "48");
+        assert_eq!(yaml_value_to_native_bool_string(&f), "1.5");
     }
 
     #[test]
