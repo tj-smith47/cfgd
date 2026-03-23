@@ -1835,6 +1835,16 @@ fn build_registry_with_config_and_packages(
         registry
             .system_configurators
             .push(Box::new(SystemdUnitConfigurator));
+        // Linux desktop configurators — each checks CLI availability at runtime via is_available()
+        registry
+            .system_configurators
+            .push(Box::new(GsettingsConfigurator));
+        registry
+            .system_configurators
+            .push(Box::new(KdeConfigConfigurator));
+        registry
+            .system_configurators
+            .push(Box::new(XfconfConfigurator));
     }
 
     // Environment configurator is available on Unix and Windows
