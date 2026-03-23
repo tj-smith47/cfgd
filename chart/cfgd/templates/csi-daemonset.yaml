@@ -27,7 +27,7 @@ spec:
         {{- toYaml . | nindent 8 }}
       {{- end }}
     spec:
-      serviceAccountName: {{ include "cfgd.fullname" . }}-csi
+      serviceAccountName: {{ include "cfgd.csiServiceAccountName" . }}
       {{- with .Values.csiDriver.imagePullSecrets }}
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}

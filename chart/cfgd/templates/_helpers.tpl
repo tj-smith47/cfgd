@@ -82,6 +82,13 @@ Agent service account name
 {{- end }}
 
 {{/*
+CSI driver service account name
+*/}}
+{{- define "cfgd.csiServiceAccountName" -}}
+{{ include "cfgd.fullname" . }}-csi
+{{- end }}
+
+{{/*
 Webhook certificate secret name
 */}}
 {{- define "cfgd.webhookCertSecret" -}}
