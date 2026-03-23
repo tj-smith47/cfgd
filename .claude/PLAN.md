@@ -18,16 +18,7 @@ Full design in [specs/2026-03-22-windows-support-design.md](specs/2026-03-22-win
 
 **Plan 1 (Platform Foundations) — COMPLETE.** Moved to COMPLETED.md.
 
-**Plan 2 (Windows Features) — remaining work:**
-
-- [ ] Config schema: winget, chocolatey, scoop fields in PackagesSpec + desired_packages_for
-- [ ] Package managers: winget, chocolatey, scoop (PackageManager trait implementations)
-- [ ] Module-level package aliases for Windows managers
-- [ ] Reconciler env: PowerShell env file generation, profile injection, Git Bash detection
-- [ ] System configurators: ShellConfigurator (Windows Terminal), EnvironmentConfigurator (registry/setx), WindowsRegistryConfigurator, WindowsServiceConfigurator
-- [ ] Windows daemon: Windows Service via windows-service crate, Event Log tracing subscriber
-- [ ] Documentation: Windows installation, packages, configuration, daemon, CLI reference
-- [ ] JSON schema and explain command updates
+**Plan 2 (Windows Features) — COMPLETE.** Moved to COMPLETED.md.
 
 ---
 

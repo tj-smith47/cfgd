@@ -38,9 +38,9 @@ crates/
 │   ├── cli/                # Clap command definitions, argument parsing
 │   │   └── plugin.rs       # kubectl cfgd plugin: debug, exec, inject, status, version
 │   ├── files/              # File management: copy, template, diff, permissions
-│   ├── packages/           # PackageManager implementations (brew, apt, cargo, npm, pipx, dnf)
+│   ├── packages/           # PackageManager implementations (brew, apt, cargo, npm, pipx, dnf, winget, chocolatey, scoop)
 │   ├── secrets/            # SOPS/age backends, 1Password/Bitwarden/Vault providers
-│   ├── system/             # All SystemConfigurators — workstation (shell, macosDefaults, systemd, launchd, environment) + node (sysctl, kernelModules, containerd, kubelet, apparmor, seccomp, certificates)
+│   ├── system/             # All SystemConfigurators — workstation (shell, macosDefaults, systemd, launchd, environment, windowsRegistry, windowsServices) + node (sysctl, kernelModules, containerd, kubelet, apparmor, seccomp, certificates)
 │   ├── generate/           # AI generate tools: system scanning, tool inspection, file access
 │   ├── ai/                 # Anthropic API client, tool dispatch, conversation management
 │   └── mcp/                # MCP server: JSON-RPC transport, tool/resource/prompt definitions

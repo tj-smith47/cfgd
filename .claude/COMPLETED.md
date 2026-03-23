@@ -20,6 +20,22 @@ Cross-platform abstractions making cfgd-core and cfgd compile and work on Window
 
 ---
 
+## Windows Support — Plan 2: Windows Features
+
+Windows-specific features: package managers, system configurators, PowerShell env, Windows Service daemon, documentation. Full design in [specs/2026-03-22-windows-support-design.md](specs/2026-03-22-windows-support-design.md). Implementation plan at [plans/2026-03-22-windows-support-plan-2-features.md](plans/2026-03-22-windows-support-plan-2-features.md).
+
+- [x] Config schema: `winget`, `chocolatey`, `scoop` fields in `PackagesSpec` + `desired_packages_for_spec` match arms + config merge (`union_extend`) + composition merge
+- [x] Package managers: `WingetManager`, `ChocolateyManager`, `ScoopManager` — full `PackageManager` trait implementations with output parsing, `add_package`/`remove_package`, registration in `all_package_managers`
+- [x] Module-level package aliases for Windows managers (generic `HashMap<String, String>` already supported; tests confirm)
+- [x] Reconciler env: `generate_powershell_env_content` (env vars + aliases), `plan_env`/`verify_env` Windows branching (PowerShell profile injection for PS7 + PS5.1, optional Git Bash env)
+- [x] System configurators: `ShellConfigurator` (Windows Terminal default profile), `EnvironmentConfigurator` (registry/setx), `WindowsRegistryConfigurator` (declarative registry settings via `reg` CLI), `WindowsServiceConfigurator` (Windows Services via `sc.exe`)
+- [x] Windows daemon: Windows Service lifecycle via `sc.exe` (install/uninstall/start/stop), `windows-service` crate SCM integration, `DaemonCommand::Service` variant, file-based logging to `%LOCALAPPDATA%\cfgd\daemon.log`, graceful shutdown via `rt.shutdown_timeout`
+- [x] Documentation: `packages.md`, `system-configurators.md`, `daemon.md`, `configuration.md`, `profiles.md`, `spec/profile.md` updated with Windows fields and examples
+- [x] JSON schema (`schema.rs`) and `explain` command (`explain.rs`) updated with all Windows fields
+- [x] Profile display (`profile.rs`) and doctor (`mod.rs`) updated with all package managers
+
+---
+
 ## Tier 1 — Operator Hardening & CRD Enhancement
 
 ### Operator operational readiness
