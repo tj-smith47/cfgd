@@ -270,7 +270,7 @@ pub fn terminate_process(pid: u32) {
     use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_TERMINATE, TerminateProcess};
     unsafe {
         let handle = OpenProcess(PROCESS_TERMINATE, 0, pid);
-        if !handle.is_null() {
+        if handle != 0 {
             TerminateProcess(handle, 1);
             CloseHandle(handle);
         }
@@ -339,7 +339,7 @@ pub fn git_ssh_credentials(
         if let Ok(cred) = git2::Cred::ssh_key_from_agent(username) {
             return Ok(cred);
         }
-        let home = std::env::var("HOME").unwrap_or_default();
+        let home = home_dir_var().unwrap_or_default();
         for key_name in &["id_ed25519", "id_rsa", "id_ecdsa"] {
             let key_path = std::path::Path::new(&home).join(".ssh").join(key_name);
             if key_path.exists()
@@ -385,15 +385,25 @@ pub fn copy_dir_recursive(
 }
 
 /// Check if a command is available on the system via PATH lookup.
+/// On Windows, tries common executable extensions (.exe, .cmd, .bat, .ps1, .com)
+/// since executables require an extension to be found.
 pub fn command_available(cmd: &str) -> bool {
+    let extensions: &[&str] = if cfg!(windows) {
+        &["", ".exe", ".cmd", ".bat", ".ps1", ".com"]
+    } else {
+        &[""]
+    };
     std::env::var_os("PATH")
         .map(|paths| {
             std::env::split_paths(&paths).any(|dir| {
-                let path = dir.join(cmd);
-                path.is_file()
-                    && std::fs::metadata(&path)
-                        .map(|m| is_executable(&path, &m))
-                        .unwrap_or(false)
+                extensions.iter().any(|ext| {
+                    let name = format!("{}{}", cmd, ext);
+                    let path = dir.join(&name);
+                    path.is_file()
+                        && std::fs::metadata(&path)
+                            .map(|m| is_executable(&path, &m))
+                            .unwrap_or(false)
+                })
             })
         })
         .unwrap_or(false)

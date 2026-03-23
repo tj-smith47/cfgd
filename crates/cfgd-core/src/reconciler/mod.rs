@@ -503,25 +503,10 @@ impl<'a> Reconciler<'a> {
                 }));
             }
 
-            // Fish shell on Windows (if present)
-            let fish_conf_d = crate::expand_tilde(std::path::Path::new("~/.config/fish/conf.d"));
-            if fish_conf_d.exists() {
-                let fish_path = fish_conf_d.join("cfgd-env.fish");
-                let fish_content = generate_fish_env_content(&merged, &merged_aliases);
-                let existing_fish = std::fs::read_to_string(&fish_path).unwrap_or_default();
-                if existing_fish != fish_content {
-                    actions.push(Action::Env(EnvAction::WriteEnvFile {
-                        path: fish_path,
-                        content: fish_content,
-                    }));
-                }
-            }
-
-            // No rc conflict detection on Windows (PowerShell profiles don't use
-            // export/alias syntax)
+            // No rc conflict detection on Windows
             Vec::new()
         } else {
-            // Unix: bash/zsh env file + source line + fish
+            // Unix: bash/zsh env file + source line
             let env_path = crate::expand_tilde(std::path::Path::new("~/.cfgd.env"));
             let content = generate_env_file_content(&merged, &merged_aliases);
             actions.push(Action::Env(EnvAction::WriteEnvFile {
@@ -540,23 +525,23 @@ impl<'a> Reconciler<'a> {
                 line: "[ -f ~/.cfgd.env ] && source ~/.cfgd.env".to_string(),
             }));
 
-            // Fish shell: generate separate file if fish config dir exists
-            let fish_conf_d = crate::expand_tilde(std::path::Path::new("~/.config/fish/conf.d"));
-            if fish_conf_d.exists() {
-                let fish_path = fish_conf_d.join("cfgd-env.fish");
-                let fish_content = generate_fish_env_content(&merged, &merged_aliases);
-                let existing_fish = std::fs::read_to_string(&fish_path).unwrap_or_default();
-                if existing_fish != fish_content {
-                    actions.push(Action::Env(EnvAction::WriteEnvFile {
-                        path: fish_path,
-                        content: fish_content,
-                    }));
-                }
-            }
-
             // Check for conflicts with existing definitions in the shell rc file
             detect_rc_env_conflicts(&rc_path, &merged, &merged_aliases)
         };
+
+        // Fish shell: generate separate file if fish config dir exists (all platforms)
+        let fish_conf_d = crate::expand_tilde(std::path::Path::new("~/.config/fish/conf.d"));
+        if fish_conf_d.exists() {
+            let fish_path = fish_conf_d.join("cfgd-env.fish");
+            let fish_content = generate_fish_env_content(&merged, &merged_aliases);
+            let existing_fish = std::fs::read_to_string(&fish_path).unwrap_or_default();
+            if existing_fish != fish_content {
+                actions.push(Action::Env(EnvAction::WriteEnvFile {
+                    path: fish_path,
+                    content: fish_content,
+                }));
+            }
+        }
 
         (actions, warnings)
     }

@@ -1045,7 +1045,9 @@ impl EnvironmentConfigurator {
                 }
             }
             Ok(output) => {
-                printer.warning(&format!("setx {} failed: {}", name, stderr_string(&output)));
+                // setx writes error messages to stdout, not stderr
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                printer.warning(&format!("setx {} failed: {}", name, stdout.trim()));
             }
             Err(e) => {
                 printer.warning(&format!("setx {} failed: {}", name, e));
@@ -1426,14 +1428,14 @@ impl WindowsServiceConfigurator {
         if !cfg!(windows) {
             return None;
         }
-        let query_output = Command::new("sc").args(["query", name]).output().ok()?;
+        let query_output = Command::new("sc.exe").args(["query", name]).output().ok()?;
         if !query_output.status.success() {
             return None;
         }
         let stdout = String::from_utf8_lossy(&query_output.stdout);
         let state = parse_sc_state(&stdout)?;
 
-        let qc_output = Command::new("sc").args(["qc", name]).output().ok()?;
+        let qc_output = Command::new("sc.exe").args(["qc", name]).output().ok()?;
         let qc_stdout = String::from_utf8_lossy(&qc_output.stdout);
         let start_type = parse_sc_start_type(&qc_stdout).unwrap_or_default();
 
@@ -1573,7 +1575,7 @@ impl SystemConfigurator for WindowsServiceConfigurator {
                         args.push(sc_start);
                     }
 
-                    let output = Command::new("sc")
+                    let output = Command::new("sc.exe")
                         .args(&args)
                         .output()
                         .map_err(cfgd_core::errors::CfgdError::Io)?;
@@ -1595,7 +1597,7 @@ impl SystemConfigurator for WindowsServiceConfigurator {
                 if let Some(ref start_type) = entry.start_type
                     && let Some(sc_start) = sc_start_type(start_type)
                 {
-                    let output = Command::new("sc")
+                    let output = Command::new("sc.exe")
                         .args(["config", &entry.name, "start=", sc_start])
                         .output()
                         .map_err(cfgd_core::errors::CfgdError::Io)?;
@@ -1617,7 +1619,7 @@ impl SystemConfigurator for WindowsServiceConfigurator {
             if let Some(ref state) = entry.state {
                 match state.as_str() {
                     "running" => {
-                        let output = Command::new("sc")
+                        let output = Command::new("sc.exe")
                             .args(["start", &entry.name])
                             .output()
                             .map_err(cfgd_core::errors::CfgdError::Io)?;
@@ -1635,7 +1637,7 @@ impl SystemConfigurator for WindowsServiceConfigurator {
                         }
                     }
                     "stopped" => {
-                        let output = Command::new("sc")
+                        let output = Command::new("sc.exe")
                             .args(["stop", &entry.name])
                             .output()
                             .map_err(cfgd_core::errors::CfgdError::Io)?;

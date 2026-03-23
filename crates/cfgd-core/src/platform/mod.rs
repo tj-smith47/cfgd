@@ -9,6 +9,7 @@ pub enum Os {
     Linux,
     MacOS,
     FreeBSD,
+    Windows,
 }
 
 /// Detected Linux distribution (or MacOS/FreeBSD pseudo-distro).
@@ -25,6 +26,7 @@ pub enum Distro {
     OpenSUSE,
     FreeBSD,
     MacOS,
+    Windows,
     Unknown,
 }
 
@@ -53,6 +55,15 @@ impl Platform {
     /// - FreeBSD: uses `cfg!(target_os)` and `freebsd-version`.
     pub fn detect() -> Self {
         let arch = detect_arch();
+
+        if cfg!(windows) {
+            return Platform {
+                os: Os::Windows,
+                distro: Distro::Windows,
+                version: String::new(),
+                arch,
+            };
+        }
 
         if cfg!(target_os = "macos") {
             let version = read_macos_version().unwrap_or_default();
@@ -115,6 +126,7 @@ impl Platform {
             Distro::Alpine => "apk",
             Distro::OpenSUSE => "zypper",
             Distro::FreeBSD => "pkg",
+            Distro::Windows => "winget",
             Distro::Unknown => "apt", // best-effort default for unknown Linux
         }
     }
@@ -126,6 +138,7 @@ impl Os {
             Os::Linux => "linux",
             Os::MacOS => "macos",
             Os::FreeBSD => "freebsd",
+            Os::Windows => "windows",
         }
     }
 }
@@ -144,6 +157,7 @@ impl Distro {
             Distro::OpenSUSE => "opensuse",
             Distro::FreeBSD => "freebsd",
             Distro::MacOS => "macos",
+            Distro::Windows => "windows",
             Distro::Unknown => "unknown",
         }
     }

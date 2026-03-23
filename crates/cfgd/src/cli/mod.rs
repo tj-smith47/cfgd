@@ -4721,11 +4721,14 @@ fn cmd_daemon_install(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
 
     cfgd_core::daemon::install_service(&cli.config, cli.profile.as_deref())?;
 
-    if cfg!(windows) {
+    #[cfg(windows)]
+    {
         printer.success("cfgd service installed and started");
         printer.info("The service will start automatically on boot");
-        printer.info("View logs in Event Viewer under Windows Logs > Application");
-    } else {
+        printer.info("Logs: %LOCALAPPDATA%\\cfgd\\daemon.log");
+    }
+    #[cfg(unix)]
+    {
         print_daemon_install_success(printer);
     }
 
