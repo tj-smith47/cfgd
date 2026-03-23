@@ -30,7 +30,7 @@ cfgd scans:
 - **Installed packages** — queries all available package managers (brew, apt, cargo, npm, pipx, dnf, etc.) for their installed package lists.
 - **Dotfiles** — walks `~` and `~/.config/` for config files, identifies which tool each belongs to.
 - **Shell config** — parses your RC files (`.zshrc`, `.bashrc`, `config.fish`) to extract aliases, exports, PATH additions, sourced files, and plugin managers.
-- **System settings** — macOS defaults domains, systemd user units, and LaunchAgents (platform-dependent).
+- **System settings** — macOS defaults domains, systemd user units, LaunchAgents, gsettings schemas, Windows registry values, and Windows services (platform-dependent).
 
 ### AI Proposes Structure
 
@@ -245,7 +245,7 @@ Any MCP-compatible client can connect by launching `cfgd mcp-server` as a subpro
 | `cfgd_scan_installed_packages` | List installed packages across all available package managers |
 | `cfgd_scan_dotfiles` | Scan the home directory for dotfiles and XDG config entries |
 | `cfgd_scan_shell_config` | Parse shell RC files: aliases, exports, PATH, plugin managers |
-| `cfgd_scan_system_settings` | macOS defaults, systemd units, LaunchAgents |
+| `cfgd_scan_system_settings` | macOS defaults, systemd units, LaunchAgents, gsettings schemas, Windows registry, Windows services |
 | `cfgd_detect_platform` | OS, distro, version, and CPU architecture |
 | `cfgd_inspect_tool` | Version, config file locations, plugin system for a named tool |
 | `cfgd_query_package_manager` | Check package availability and version in a specific manager |

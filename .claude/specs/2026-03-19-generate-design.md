@@ -137,7 +137,7 @@ Both the embedded CLI client and MCP server call the same tool implementations i
 | `scan_installed_packages(manager?)` | Delegates to `PackageManager::installed_packages_with_versions()` (new trait method, see below) via `ProviderRegistry`. Returns name, version, manager. Shells out per provider. |
 | `scan_dotfiles(home)` | Find dotfiles/config dirs in `~` and `~/.config/`. Pure filesystem scan, no shelling out. Returns path, size, type, associated tool guess. |
 | `scan_shell_config(shell)` | Parse shell rc files for aliases, exports, PATH additions, sourced files, plugin managers. Pure file parsing, no shelling out. |
-| `scan_system_settings()` | Platform-specific: macOS `defaults export`, systemd `systemctl --user list-unit-files`, launchctl. Shells out via existing `SystemConfigurator` trait where possible. |
+| `scan_system_settings()` | Platform-specific: macOS defaults domains, systemd user units, LaunchAgents, gsettings schemas, Windows registry values, Windows services. Shells out via existing `SystemConfigurator` trait where possible. |
 | `detect_platform()` | OS, distro, arch, available package managers. Already exists in cfgd-core `platform/`. |
 
 Note: `scan_dotfiles` and `scan_shell_config` are pure filesystem/parsing operations that don't shell out. They live in `generate/` for organizational cohesion with the other introspection tools, not because of `Command` usage.

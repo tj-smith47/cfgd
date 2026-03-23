@@ -217,7 +217,7 @@ These are non-negotiable. Every generated YAML must meet all of them.
 | `scan_installed_packages` | Lists installed packages with versions for a given manager (or all). Delegates to PackageManager providers. |
 | `scan_dotfiles` | Finds dotfiles and config directories in `~` and `~/.config/`. Returns path, size, type, and associated tool guess. |
 | `scan_shell_config` | Parses shell rc files for aliases, exports, PATH additions, sourced files, and plugin managers. |
-| `scan_system_settings` | Discovers macOS defaults, systemd user units, and launch agents. |
+| `scan_system_settings` | Discovers macOS defaults, systemd user units, LaunchAgents, gsettings schemas, Windows registry values, and Windows services. |
 
 ### Investigation
 
