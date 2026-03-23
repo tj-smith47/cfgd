@@ -48,6 +48,7 @@ windows-sys = { version = "0.59", features = [
     "Win32_System_Registry",
     "Win32_Storage_FileSystem",
 ] }
+windows-service = "0.7"
 
 [dev-dependencies]
 assert_cmd = "2"

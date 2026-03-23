@@ -1848,6 +1848,13 @@ fn build_registry_with_config_and_packages(
             .push(Box::new(WindowsRegistryConfigurator));
     }
 
+    // Windows service configurator
+    if cfg!(windows) {
+        registry
+            .system_configurators
+            .push(Box::new(WindowsServiceConfigurator));
+    }
+
     // Node/infrastructure system configurators (Linux-only, gated at compile time)
     #[cfg(unix)]
     {

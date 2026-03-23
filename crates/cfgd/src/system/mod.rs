@@ -1364,6 +1364,292 @@ impl SystemConfigurator for WindowsRegistryConfigurator {
     }
 }
 
+/// WindowsServiceConfigurator — manages Windows Services declaratively.
+///
+/// Uses `sc.exe` to query, create, configure, and start/stop services.
+///
+/// Config format:
+/// ```yaml
+/// system:
+///   windowsServices:
+///     - name: MyService
+///       displayName: My Custom Service
+///       binaryPath: C:\path\to\service.exe
+///       startType: auto    # auto | manual | disabled
+///       state: running     # running | stopped
+/// ```
+pub struct WindowsServiceConfigurator;
+
+/// Parsed service entry from YAML config.
+struct ServiceEntry {
+    name: String,
+    display_name: Option<String>,
+    binary_path: Option<String>,
+    start_type: Option<String>,
+    state: Option<String>,
+}
+
+impl WindowsServiceConfigurator {
+    /// Parse the YAML sequence of service entries.
+    fn parse_services(desired: &serde_yaml::Value) -> Vec<ServiceEntry> {
+        let seq = match desired.as_sequence() {
+            Some(s) => s,
+            None => return Vec::new(),
+        };
+        let mut entries = Vec::new();
+        for item in seq {
+            let name = match item.get("name").and_then(|v| v.as_str()) {
+                Some(n) => n.to_string(),
+                None => continue,
+            };
+            entries.push(ServiceEntry {
+                name,
+                display_name: item
+                    .get("displayName")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string()),
+                binary_path: item
+                    .get("binaryPath")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string()),
+                start_type: item
+                    .get("startType")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string()),
+                state: item
+                    .get("state")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string()),
+            });
+        }
+        entries
+    }
+
+    /// Query a service's current state and start type via `sc query` and `sc qc`.
+    fn query_service(name: &str) -> Option<(String, String)> {
+        if !cfg!(windows) {
+            return None;
+        }
+        let query_output = Command::new("sc").args(["query", name]).output().ok()?;
+        if !query_output.status.success() {
+            return None;
+        }
+        let stdout = String::from_utf8_lossy(&query_output.stdout);
+        let state = parse_sc_state(&stdout)?;
+
+        let qc_output = Command::new("sc").args(["qc", name]).output().ok()?;
+        let qc_stdout = String::from_utf8_lossy(&qc_output.stdout);
+        let start_type = parse_sc_start_type(&qc_stdout).unwrap_or_default();
+
+        Some((state, start_type))
+    }
+}
+
+/// Parse the STATE line from `sc query` output.
+///
+/// Input format: `"        STATE              : 4  RUNNING"`
+/// Returns normalized state: "running", "stopped", etc.
+fn parse_sc_state(output: &str) -> Option<String> {
+    for line in output.lines() {
+        let line = line.trim();
+        if line.starts_with("STATE")
+            && let Some((_, rest)) = line.split_once(':')
+        {
+            let rest = rest.trim();
+            if let Some(state_word) = rest.split_whitespace().nth(1) {
+                return Some(state_word.to_lowercase().replace('_', "-"));
+            }
+        }
+    }
+    None
+}
+
+/// Parse the START_TYPE line from `sc qc` output.
+///
+/// Input format: `"        START_TYPE         : 2   AUTO_START"`
+/// Returns normalized start type: "auto", "manual", "disabled".
+fn parse_sc_start_type(output: &str) -> Option<String> {
+    for line in output.lines() {
+        let line = line.trim();
+        if line.starts_with("START_TYPE")
+            && let Some((_, rest)) = line.split_once(':')
+        {
+            let rest = rest.trim().to_uppercase();
+            if rest.contains("AUTO_START") {
+                return Some("auto".to_string());
+            } else if rest.contains("DEMAND_START") {
+                return Some("manual".to_string());
+            } else if rest.contains("DISABLED") {
+                return Some("disabled".to_string());
+            }
+        }
+    }
+    None
+}
+
+impl SystemConfigurator for WindowsServiceConfigurator {
+    fn name(&self) -> &str {
+        "windowsServices"
+    }
+
+    fn is_available(&self) -> bool {
+        cfg!(windows)
+    }
+
+    fn current_state(&self) -> Result<serde_yaml::Value> {
+        Ok(serde_yaml::Value::Sequence(Vec::new()))
+    }
+
+    fn diff(&self, desired: &serde_yaml::Value) -> Result<Vec<SystemDrift>> {
+        let entries = Self::parse_services(desired);
+        let mut drifts = Vec::new();
+        for entry in &entries {
+            match Self::query_service(&entry.name) {
+                Some((current_state, current_start_type)) => {
+                    if let Some(ref desired_state) = entry.state
+                        && &current_state != desired_state
+                    {
+                        drifts.push(SystemDrift {
+                            key: format!("{}.state", entry.name),
+                            expected: desired_state.clone(),
+                            actual: current_state.clone(),
+                        });
+                    }
+                    if let Some(ref desired_start) = entry.start_type
+                        && &current_start_type != desired_start
+                    {
+                        drifts.push(SystemDrift {
+                            key: format!("{}.startType", entry.name),
+                            expected: desired_start.clone(),
+                            actual: current_start_type,
+                        });
+                    }
+                }
+                None => {
+                    if entry.binary_path.is_some() {
+                        drifts.push(SystemDrift {
+                            key: format!("{}.exists", entry.name),
+                            expected: "present".to_string(),
+                            actual: "absent".to_string(),
+                        });
+                    }
+                }
+            }
+        }
+        Ok(drifts)
+    }
+
+    fn apply(&self, desired: &serde_yaml::Value, printer: &Printer) -> Result<()> {
+        let entries = Self::parse_services(desired);
+        for entry in &entries {
+            let exists = Self::query_service(&entry.name).is_some();
+
+            if !exists {
+                if let Some(ref binary_path) = entry.binary_path {
+                    let bin_arg = format!("binPath= {}", binary_path);
+                    let mut args = vec!["create", &entry.name, &*bin_arg];
+
+                    let display_arg;
+                    if let Some(ref dn) = entry.display_name {
+                        display_arg = format!("DisplayName= {}", dn);
+                        args.push(&display_arg);
+                    }
+
+                    let start_arg;
+                    if let Some(ref st) = entry.start_type {
+                        start_arg = format!(
+                            "start= {}",
+                            match st.as_str() {
+                                "auto" => "auto",
+                                "manual" => "demand",
+                                "disabled" => "disabled",
+                                _ => "demand",
+                            }
+                        );
+                        args.push(&start_arg);
+                    }
+
+                    let output = Command::new("sc")
+                        .args(&args)
+                        .output()
+                        .map_err(cfgd_core::errors::CfgdError::Io)?;
+                    if output.status.success() {
+                        printer.success(&format!("Created service {}", entry.name));
+                    } else {
+                        printer.warning(&format!(
+                            "Failed to create service {}: {}",
+                            entry.name,
+                            stderr_string(&output)
+                        ));
+                    }
+                }
+            } else {
+                // Configure start type on existing service
+                if let Some(ref start_type) = entry.start_type {
+                    let sc_start = match start_type.as_str() {
+                        "auto" => "auto",
+                        "manual" => "demand",
+                        "disabled" => "disabled",
+                        _ => continue,
+                    };
+                    let start_arg = format!("start= {}", sc_start);
+                    let output = Command::new("sc")
+                        .args(["config", &entry.name, &start_arg])
+                        .output()
+                        .map_err(cfgd_core::errors::CfgdError::Io)?;
+                    if !output.status.success() {
+                        printer.warning(&format!(
+                            "Failed to set start type for {}: {}",
+                            entry.name,
+                            stderr_string(&output)
+                        ));
+                    }
+                }
+            }
+
+            // Set desired state
+            if let Some(ref state) = entry.state {
+                match state.as_str() {
+                    "running" => {
+                        let output = Command::new("sc")
+                            .args(["start", &entry.name])
+                            .output()
+                            .map_err(cfgd_core::errors::CfgdError::Io)?;
+                        if output.status.success() {
+                            printer.success(&format!("Started service {}", entry.name));
+                        } else {
+                            let stderr = stderr_string(&output);
+                            if !stderr.contains("already been started") {
+                                printer.warning(&format!(
+                                    "Failed to start {}: {}",
+                                    entry.name, stderr
+                                ));
+                            }
+                        }
+                    }
+                    "stopped" => {
+                        let output = Command::new("sc")
+                            .args(["stop", &entry.name])
+                            .output()
+                            .map_err(cfgd_core::errors::CfgdError::Io)?;
+                        if output.status.success() {
+                            printer.success(&format!("Stopped service {}", entry.name));
+                        } else {
+                            let stderr = stderr_string(&output);
+                            if !stderr.contains("has not been started") {
+                                printer
+                                    .warning(&format!("Failed to stop {}: {}", entry.name, stderr));
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1896,5 +2182,173 @@ HKEY_CURRENT_USER\\Environment\n\
     fn registry_is_available_matches_platform() {
         let wrc = WindowsRegistryConfigurator;
         assert_eq!(wrc.is_available(), cfg!(windows));
+    }
+
+    // --- WindowsServiceConfigurator ---
+
+    #[test]
+    fn service_configurator_name() {
+        assert_eq!(WindowsServiceConfigurator.name(), "windowsServices");
+    }
+
+    #[test]
+    fn service_configurator_is_available_matches_platform() {
+        assert_eq!(WindowsServiceConfigurator.is_available(), cfg!(windows));
+    }
+
+    #[test]
+    fn service_parse_sc_state_running() {
+        let output = "SERVICE_NAME: MyService\n\
+                      \tTYPE               : 10  WIN32_OWN_PROCESS\n\
+                      \tSTATE              : 4  RUNNING\n\
+                      \t\t\t\t\t(STOPPABLE, NOT_PAUSABLE)\n";
+        assert_eq!(parse_sc_state(output), Some("running".to_string()));
+    }
+
+    #[test]
+    fn service_parse_sc_state_stopped() {
+        let output = "SERVICE_NAME: MyService\n\
+                      \tSTATE              : 1  STOPPED\n";
+        assert_eq!(parse_sc_state(output), Some("stopped".to_string()));
+    }
+
+    #[test]
+    fn service_parse_sc_state_paused() {
+        let output = "\tSTATE              : 7  PAUSED\n";
+        assert_eq!(parse_sc_state(output), Some("paused".to_string()));
+    }
+
+    #[test]
+    fn service_parse_sc_state_no_state_line() {
+        let output = "SERVICE_NAME: MyService\n\
+                      \tTYPE               : 10  WIN32_OWN_PROCESS\n";
+        assert_eq!(parse_sc_state(output), None);
+    }
+
+    #[test]
+    fn service_parse_sc_state_empty_input() {
+        assert_eq!(parse_sc_state(""), None);
+    }
+
+    #[test]
+    fn service_parse_sc_start_type_auto() {
+        let output = "SERVICE_NAME: MyService\n\
+                      \tTYPE               : 10  WIN32_OWN_PROCESS\n\
+                      \tSTART_TYPE         : 2   AUTO_START\n\
+                      \tERROR_CONTROL      : 1   NORMAL\n";
+        assert_eq!(parse_sc_start_type(output), Some("auto".to_string()));
+    }
+
+    #[test]
+    fn service_parse_sc_start_type_manual() {
+        let output = "\tSTART_TYPE         : 3   DEMAND_START\n";
+        assert_eq!(parse_sc_start_type(output), Some("manual".to_string()));
+    }
+
+    #[test]
+    fn service_parse_sc_start_type_disabled() {
+        let output = "\tSTART_TYPE         : 4   DISABLED\n";
+        assert_eq!(parse_sc_start_type(output), Some("disabled".to_string()));
+    }
+
+    #[test]
+    fn service_parse_sc_start_type_no_start_type_line() {
+        let output = "SERVICE_NAME: MyService\n\
+                      \tTYPE               : 10  WIN32_OWN_PROCESS\n";
+        assert_eq!(parse_sc_start_type(output), None);
+    }
+
+    #[test]
+    fn service_parse_sc_start_type_empty_input() {
+        assert_eq!(parse_sc_start_type(""), None);
+    }
+
+    #[test]
+    fn service_parse_entries() {
+        let yaml: serde_yaml::Value = serde_yaml::from_str(
+            r#"
+- name: MyService
+  displayName: My Custom Service
+  binaryPath: C:\path\to\service.exe
+  startType: auto
+  state: running
+- name: AnotherService
+  startType: disabled
+  state: stopped
+"#,
+        )
+        .unwrap();
+        let entries = WindowsServiceConfigurator::parse_services(&yaml);
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].name, "MyService");
+        assert_eq!(
+            entries[0].display_name,
+            Some("My Custom Service".to_string())
+        );
+        assert_eq!(
+            entries[0].binary_path,
+            Some(r"C:\path\to\service.exe".to_string())
+        );
+        assert_eq!(entries[0].start_type, Some("auto".to_string()));
+        assert_eq!(entries[0].state, Some("running".to_string()));
+        assert_eq!(entries[1].name, "AnotherService");
+        assert_eq!(entries[1].binary_path, None);
+        assert_eq!(entries[1].display_name, None);
+        assert_eq!(entries[1].start_type, Some("disabled".to_string()));
+        assert_eq!(entries[1].state, Some("stopped".to_string()));
+    }
+
+    #[test]
+    fn service_parse_entries_empty_sequence() {
+        let yaml = serde_yaml::Value::Sequence(Vec::new());
+        let entries = WindowsServiceConfigurator::parse_services(&yaml);
+        assert!(entries.is_empty());
+    }
+
+    #[test]
+    fn service_parse_entries_non_sequence() {
+        let yaml = serde_yaml::Value::String("not a sequence".to_string());
+        let entries = WindowsServiceConfigurator::parse_services(&yaml);
+        assert!(entries.is_empty());
+    }
+
+    #[test]
+    fn service_parse_entries_skips_missing_name() {
+        let yaml: serde_yaml::Value = serde_yaml::from_str(
+            r#"
+- displayName: No Name Field
+  startType: auto
+- name: ValidService
+  state: running
+"#,
+        )
+        .unwrap();
+        let entries = WindowsServiceConfigurator::parse_services(&yaml);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].name, "ValidService");
+    }
+
+    #[test]
+    fn service_diff_empty_desired() {
+        let wsc = WindowsServiceConfigurator;
+        let yaml = serde_yaml::Value::Sequence(Vec::new());
+        let drifts = wsc.diff(&yaml).unwrap();
+        assert!(drifts.is_empty());
+    }
+
+    #[test]
+    fn service_diff_non_sequence_desired() {
+        let wsc = WindowsServiceConfigurator;
+        let yaml = serde_yaml::Value::String("not a sequence".into());
+        let drifts = wsc.diff(&yaml).unwrap();
+        assert!(drifts.is_empty());
+    }
+
+    #[test]
+    fn service_current_state_returns_empty_sequence() {
+        let wsc = WindowsServiceConfigurator;
+        let state = wsc.current_state().unwrap();
+        assert!(state.is_sequence());
+        assert!(state.as_sequence().unwrap().is_empty());
     }
 }
