@@ -372,8 +372,9 @@ spec:
     # Windows Service management (Windows only)
     windowsServices:
       - name: MyService              # required, string — service name
+        displayName: My Service      # optional, string — display name
         binaryPath: C:\svc\svc.exe  # required (for create), string — executable path
-        startType: Auto              # optional: Auto, Manual, Disabled (default: Auto)
+        startType: auto              # optional: auto, manual, disabled (default: auto)
         state: running               # optional: running, stopped (default: running)
 
   # Secret file declarations — SOPS-encrypted files or external secret provider references.

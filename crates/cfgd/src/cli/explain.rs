@@ -1022,14 +1022,14 @@ static SCHEMA_PROFILE: ResourceSchema = ResourceSchema {
                 },
                 SchemaField {
                     name: "windowsRegistry",
-                    type_desc: "mapping",
+                    type_desc: "map[string]map",
                     required: false,
                     description: "Windows registry settings (Windows only). Keys are registry paths, values are name-value maps",
                     children: &[],
                 },
                 SchemaField {
                     name: "windowsServices",
-                    type_desc: "sequence",
+                    type_desc: "[]object",
                     required: false,
                     description: "Windows Service management (Windows only). Each entry has name, binaryPath, startType, state",
                     children: &[],
