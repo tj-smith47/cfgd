@@ -10,79 +10,31 @@ metadata:
     cert-manager.io/inject-ca-from: {{ .Release.Namespace }}/{{ include "cfgd.webhookCertName" . }}
   {{- end }}
 webhooks:
-  - name: validate-machineconfig.cfgd.io
+  {{- $fullname := include "cfgd.fullname" . }}
+  {{- $namespace := .Release.Namespace }}
+  {{- $failurePolicy := .Values.webhook.failurePolicy }}
+  {{- $timeoutSeconds := .Values.webhook.timeoutSeconds }}
+  {{- range list
+    (dict "singular" "machineconfig" "plural" "machineconfigs")
+    (dict "singular" "configpolicy" "plural" "configpolicies")
+    (dict "singular" "clusterconfigpolicy" "plural" "clusterconfigpolicies")
+    (dict "singular" "driftalert" "plural" "driftalerts")
+    (dict "singular" "module" "plural" "modules")
+  }}
+  - name: validate-{{ .singular }}.cfgd.io
     admissionReviewVersions: ["v1"]
     sideEffects: None
-    failurePolicy: {{ .Values.webhook.failurePolicy }}
-    timeoutSeconds: {{ .Values.webhook.timeoutSeconds }}
+    failurePolicy: {{ $failurePolicy }}
+    timeoutSeconds: {{ $timeoutSeconds }}
     clientConfig:
       service:
-        name: {{ include "cfgd.fullname" . }}-webhook
-        namespace: {{ .Release.Namespace }}
-        path: /validate-machineconfig
+        name: {{ $fullname }}-webhook
+        namespace: {{ $namespace }}
+        path: /validate-{{ .singular }}
     rules:
       - apiGroups: ["cfgd.io"]
         apiVersions: ["v1alpha1"]
         operations: ["CREATE", "UPDATE"]
-        resources: ["machineconfigs"]
-  - name: validate-configpolicy.cfgd.io
-    admissionReviewVersions: ["v1"]
-    sideEffects: None
-    failurePolicy: {{ .Values.webhook.failurePolicy }}
-    timeoutSeconds: {{ .Values.webhook.timeoutSeconds }}
-    clientConfig:
-      service:
-        name: {{ include "cfgd.fullname" . }}-webhook
-        namespace: {{ .Release.Namespace }}
-        path: /validate-configpolicy
-    rules:
-      - apiGroups: ["cfgd.io"]
-        apiVersions: ["v1alpha1"]
-        operations: ["CREATE", "UPDATE"]
-        resources: ["configpolicies"]
-  - name: validate-clusterconfigpolicy.cfgd.io
-    admissionReviewVersions: ["v1"]
-    sideEffects: None
-    failurePolicy: {{ .Values.webhook.failurePolicy }}
-    timeoutSeconds: {{ .Values.webhook.timeoutSeconds }}
-    clientConfig:
-      service:
-        name: {{ include "cfgd.fullname" . }}-webhook
-        namespace: {{ .Release.Namespace }}
-        path: /validate-clusterconfigpolicy
-    rules:
-      - apiGroups: ["cfgd.io"]
-        apiVersions: ["v1alpha1"]
-        operations: ["CREATE", "UPDATE"]
-        resources: ["clusterconfigpolicies"]
-  - name: validate-driftalert.cfgd.io
-    admissionReviewVersions: ["v1"]
-    sideEffects: None
-    failurePolicy: {{ .Values.webhook.failurePolicy }}
-    timeoutSeconds: {{ .Values.webhook.timeoutSeconds }}
-    clientConfig:
-      service:
-        name: {{ include "cfgd.fullname" . }}-webhook
-        namespace: {{ .Release.Namespace }}
-        path: /validate-driftalert
-    rules:
-      - apiGroups: ["cfgd.io"]
-        apiVersions: ["v1alpha1"]
-        operations: ["CREATE", "UPDATE"]
-        resources: ["driftalerts"]
-  - name: validate-module.cfgd.io
-    admissionReviewVersions: ["v1"]
-    sideEffects: None
-    failurePolicy: {{ .Values.webhook.failurePolicy }}
-    timeoutSeconds: {{ .Values.webhook.timeoutSeconds }}
-    clientConfig:
-      service:
-        name: {{ include "cfgd.fullname" . }}-webhook
-        namespace: {{ .Release.Namespace }}
-        path: /validate-module
-    rules:
-      - apiGroups: ["cfgd.io"]
-        apiVersions: ["v1alpha1"]
-        operations: ["CREATE", "UPDATE"]
-        resources: ["modules"]
+        resources: [{{ .plural | quote }}]
+  {{- end }}
 {{- end }}
