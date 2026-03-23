@@ -20,7 +20,7 @@ spec:
       labels:
         {{- include "cfgd.agentSelectorLabels" . | nindent 8 }}
     spec:
-      serviceAccountName: {{ include "cfgd.serviceAccountName" . }}
+      serviceAccountName: {{ include "cfgd.agentServiceAccountName" . }}
       {{- with .Values.agent.imagePullSecrets }}
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}

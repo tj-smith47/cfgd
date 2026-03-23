@@ -1,4 +1,13 @@
-{{- if and .Values.serviceAccount.create .Values.agent.enabled }}
+{{- if .Values.agent.enabled }}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ include "cfgd.agentServiceAccountName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "cfgd.labels" . | nindent 4 }}
+    app.kubernetes.io/component: agent
+---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
@@ -34,6 +43,6 @@ roleRef:
   name: {{ include "cfgd.fullname" . }}-agent
 subjects:
   - kind: ServiceAccount
-    name: {{ include "cfgd.serviceAccountName" . }}
+    name: {{ include "cfgd.agentServiceAccountName" . }}
     namespace: {{ .Release.Namespace }}
 {{- end }}

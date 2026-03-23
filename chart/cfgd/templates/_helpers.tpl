@@ -67,6 +67,13 @@ Service account name
 {{- end }}
 
 {{/*
+Agent service account name
+*/}}
+{{- define "cfgd.agentServiceAccountName" -}}
+{{ include "cfgd.fullname" . }}-agent
+{{- end }}
+
+{{/*
 Webhook certificate secret name
 */}}
 {{- define "cfgd.webhookCertSecret" -}}
