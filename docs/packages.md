@@ -138,6 +138,9 @@ Each manager supports querying available package versions without installing:
 | npm | `npm view <pkg> version` |
 | pipx | PyPI JSON API |
 | cargo | `cargo search <pkg> --limit 1` |
+| winget | `winget show --id <pkg>` — Version field |
+| chocolatey | `choco info <pkg>` — Title line |
+| scoop | `scoop info <pkg>` — Version field |
 
 ## Dry Run
 

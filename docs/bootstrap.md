@@ -239,3 +239,24 @@ cfgd enroll --server-url https://cfgd.acme.com --gpg-key ABCD1234
 ```
 
 After enrollment, the device receives a permanent API key and pulls configuration from the device gateway. See [operator.md](operator.md#device-gateway) for enrollment details.
+
+## Windows Installation
+
+Download the latest release from GitHub, or install via a Windows package manager:
+
+```powershell
+# Direct download (extract and add to PATH)
+Invoke-WebRequest -Uri https://github.com/user/cfgd/releases/latest/download/cfgd-x86_64-pc-windows-msvc.zip -OutFile cfgd.zip
+Expand-Archive cfgd.zip -DestinationPath "$env:LOCALAPPDATA\cfgd"
+
+# Self-upgrade
+cfgd upgrade
+```
+
+After installation, bootstrap works the same as on Unix:
+
+```powershell
+cfgd init --from git@github.com:you/machine-config.git --apply --yes --install-daemon
+```
+
+The `--install-daemon` flag creates a Windows Service named `cfgd` that starts automatically on boot. Logs are written to `%LOCALAPPDATA%\cfgd\daemon.log`.
