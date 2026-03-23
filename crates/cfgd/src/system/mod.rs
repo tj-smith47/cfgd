@@ -1685,14 +1685,15 @@ fn strip_gsettings_quotes(s: &str) -> &str {
         .unwrap_or(s)
 }
 
-/// Convert a YAML value to the string format gsettings expects for `set`.
-/// Strings → `'value'` (single-quoted), bools → `true`/`false`, numbers → bare.
+/// Convert a YAML value to the bare string that `gsettings set` expects as an argument.
+/// `Command::new` bypasses the shell, so values must NOT be quoted — quoting is only
+/// for the `printer.info` display line.
 fn yaml_to_gsettings_value(value: &serde_yaml::Value) -> String {
     match value {
-        serde_yaml::Value::String(s) => format!("'{}'", s),
+        serde_yaml::Value::String(s) => s.clone(),
         serde_yaml::Value::Bool(b) => b.to_string(),
         serde_yaml::Value::Number(n) => n.to_string(),
-        _ => format!("'{:?}'", value),
+        _ => format!("{:?}", value),
     }
 }
 
@@ -2515,9 +2516,10 @@ HKEY_CURRENT_USER\\Environment\n\
 
     #[test]
     fn gsettings_yaml_to_gsettings_value() {
+        // Strings are bare (no quotes — Command bypasses shell)
         assert_eq!(
             yaml_to_gsettings_value(&serde_yaml::Value::String("dark".into())),
-            "'dark'"
+            "dark"
         );
         assert_eq!(
             yaml_to_gsettings_value(&serde_yaml::Value::Bool(true)),
@@ -2531,6 +2533,24 @@ HKEY_CURRENT_USER\\Environment\n\
         assert_eq!(yaml_to_gsettings_value(&n), "42");
         let f = serde_yaml::Value::Number(serde_yaml::Number::from(1.5));
         assert_eq!(yaml_to_gsettings_value(&f), "1.5");
+    }
+
+    #[test]
+    fn gsettings_yaml_to_gsettings_display() {
+        assert_eq!(
+            yaml_to_gsettings_display(&serde_yaml::Value::String("prefer-dark".into())),
+            "prefer-dark"
+        );
+        assert_eq!(
+            yaml_to_gsettings_display(&serde_yaml::Value::Bool(true)),
+            "true"
+        );
+        assert_eq!(
+            yaml_to_gsettings_display(&serde_yaml::Value::Bool(false)),
+            "false"
+        );
+        let n = serde_yaml::Value::Number(serde_yaml::Number::from(48));
+        assert_eq!(yaml_to_gsettings_display(&n), "48");
     }
 
     #[test]
