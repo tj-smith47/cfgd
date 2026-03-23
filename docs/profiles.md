@@ -69,6 +69,15 @@ spec:
     dnf:
       - gcc
       - make
+    winget:
+      - Microsoft.VisualStudioCode
+      - Git.Git
+    chocolatey:
+      - nodejs
+      - python
+    scoop:
+      - ripgrep
+      - fd
 
   files:
     managed:
@@ -99,6 +108,16 @@ spec:
       - name: myservice.service
         unitFile: systemd/myservice.service
         enabled: true
+    windowsRegistry:
+      - hive: HKCU
+        key: Software\MyApp
+        name: Theme
+        type: REG_SZ
+        data: dark
+    windowsServices:
+      - name: MyService
+        startType: auto
+        state: running
 
   secrets:
     - source: secrets/api-keys.yaml

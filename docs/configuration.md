@@ -72,7 +72,7 @@ spec:
 | `spec.daemon.notify.method` | no | `Desktop` | `Desktop`, `Stdout`, or `Webhook` |
 | `spec.secrets.backend` | no | `sops` | `sops` or `age` (see [secrets.md](secrets.md) for when to use which) |
 | `spec.theme` | no | `default` | Theme name (string) or object with `name` + `overrides` |
-| `spec.fileStrategy` | no | `Symlink` | `Symlink`, `Copy`, `Template`, or `Hardlink` |
+| `spec.fileStrategy` | no | `Symlink` | `Symlink`, `Copy`, `Template`, or `Hardlink` (Windows: `Symlink` requires Developer Mode or elevation) |
 | `spec.aliases.<name>` | no | — | CLI command aliases (e.g. `add: "profile update --file"`) |
 
 All fields can be read and written programmatically via `cfgd config get <key>` and `cfgd config set <key> <value>`. See the [CLI reference](cli-reference.md) for details.
@@ -131,6 +131,18 @@ files:
 ```
 
 Files can be marked `private: true` to exclude them from git (added to `.gitignore`).
+
+## Windows
+
+On Windows, cfgd supports the same configuration structure with these platform-specific behaviors:
+
+| Feature | Windows behavior |
+|---|---|
+| Package managers | `winget`, `chocolatey`, `scoop` (in addition to cross-platform managers like `cargo`, `npm`, `pipx`) |
+| System configurators | `windowsRegistry`, `windowsServices`; `shell` targets Windows Terminal; `environment` writes to `HKCU\Environment` via `setx` |
+| File strategy | `Symlink` requires Developer Mode or an elevated prompt; `Copy` is a safe default |
+| Daemon service | Registered as a Windows Service via `sc.exe`; starts at boot; logs to `%LOCALAPPDATA%\cfgd\daemon.log` |
+| Config directory | `%APPDATA%\cfgd` (equivalent to `~/.config/cfgd` on Unix) |
 
 ## Aliases
 

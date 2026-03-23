@@ -8,11 +8,18 @@ Each configurator follows the same pattern: read what the system has now, compar
 
 ### `shell`
 
-Sets the default login shell via `chsh`. Value is the path to the shell binary.
+Sets the default login shell via `chsh` (macOS/Linux). Value is the path to the shell binary.
 
 ```yaml
 system:
   shell: /bin/zsh
+```
+
+On Windows, `shell` sets the Windows Terminal default profile by writing to the Windows Terminal `settings.json`. Use the profile GUID or a well-known name (`PowerShell`, `Command Prompt`, `Git Bash`).
+
+```yaml
+system:
+  shell: PowerShell
 ```
 
 ### `macosDefaults` (macOS only)
@@ -60,7 +67,7 @@ system:
 
 ### `environment`
 
-Manages environment variables by writing them to shell profile files (e.g., `~/.profile`, `~/.zshenv`).
+Manages environment variables by writing them to shell profile files (e.g., `~/.profile`, `~/.zshenv`). On Windows, variables are written to the user environment via the registry (`HKCU\Environment`) using `setx`, and are available to new processes immediately after apply.
 
 ```yaml
 system:
@@ -68,6 +75,44 @@ system:
     GOPATH: ~/go
     EDITOR: nvim
 ```
+
+### `windowsRegistry` (Windows only)
+
+Manages Windows Registry values. Each entry specifies a hive, key path, value name, data type, and data. Supports `REG_SZ`, `REG_EXPAND_SZ`, `REG_DWORD`, `REG_QWORD`, and `REG_MULTI_SZ`.
+
+```yaml
+system:
+  windowsRegistry:
+    - hive: HKCU
+      key: Software\MyApp
+      name: Theme
+      type: REG_SZ
+      data: dark
+    - hive: HKCU
+      key: Software\MyApp
+      name: MaxConnections
+      type: REG_DWORD
+      data: "8"
+```
+
+### `windowsServices` (Windows only)
+
+Manages Windows Services via `sc.exe`. cfgd ensures each service exists with the specified configuration, start type, and running state.
+
+```yaml
+system:
+  windowsServices:
+    - name: MyService
+      displayName: My Background Service
+      binPath: C:\Program Files\MyApp\svc.exe
+      startType: auto
+      state: running
+    - name: LegacyService
+      startType: disabled
+      state: stopped
+```
+
+Supported `startType` values: `auto`, `demand`, `disabled`, `auto-delayed`. Supported `state` values: `running`, `stopped`.
 
 ## Node Configurators
 

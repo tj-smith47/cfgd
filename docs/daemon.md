@@ -34,7 +34,7 @@ The daemon runs as a long-lived process that watches for drift and optionally au
  └────────┘
 ```
 
-The daemon runs as a single tokio async runtime. Shutdown is graceful via SIGTERM/SIGINT.
+The daemon runs as a single tokio async runtime. Shutdown is graceful via SIGTERM/SIGINT (Unix) or the Windows Service control manager stop signal (Windows).
 
 ## Configuration
 
@@ -170,7 +170,7 @@ The daemon exposes a health endpoint on a Unix socket at `/tmp/cfgd.sock`. Query
 ```sh
 cfgd daemon                # run in foreground (default)
 cfgd daemon run            # run in foreground (explicit)
-cfgd daemon install        # install as launchd (macOS) or systemd (Linux) service
+cfgd daemon install        # install as launchd (macOS), systemd (Linux), or Windows Service
 cfgd daemon status         # check running state, last reconcile, drift count
 cfgd daemon uninstall      # remove the service
 ```
@@ -181,5 +181,18 @@ cfgd daemon uninstall      # remove the service
 
 - **macOS**: LaunchAgent plist in `~/Library/LaunchAgents/`
 - **Linux**: systemd user unit in `~/.config/systemd/user/`
+- **Windows**: Windows Service registered via `sc.exe`, running as the current user
 
-The service is configured to start at login and restart on failure.
+The service is configured to start at login (macOS/Linux) or at system boot (Windows) and restart on failure.
+
+### Windows Service
+
+On Windows, `cfgd daemon install` registers cfgd as a Windows Service named `cfgd`. The service starts automatically on boot and restarts on failure. Logs are written to `%LOCALAPPDATA%\cfgd\daemon.log` and also to the Windows Event Log under the `cfgd` source.
+
+```sh
+cfgd daemon install    # register and start the Windows Service
+cfgd daemon status     # show service state, last reconcile, drift count
+cfgd daemon uninstall  # stop and remove the Windows Service
+```
+
+Requires running in an elevated (Administrator) prompt for install and uninstall. `cfgd daemon status` works without elevation.

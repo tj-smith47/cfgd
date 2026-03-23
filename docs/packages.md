@@ -1,6 +1,6 @@
 # Package Managers
 
-cfgd manages packages across 15 package managers (Homebrew manages taps, formulae, and casks as separate sub-managers). Each is implemented behind a trait, so the reconciler works the same way regardless of which managers are available. You can also define custom script-based managers for tools that don't fit any built-in manager.
+cfgd manages packages across 18 package managers (Homebrew manages taps, formulae, and casks as separate sub-managers). Each is implemented behind a trait, so the reconciler works the same way regardless of which managers are available. You can also define custom script-based managers for tools that don't fit any built-in manager.
 
 ## Supported Managers
 
@@ -21,6 +21,9 @@ cfgd manages packages across 15 package managers (Homebrew manages taps, formula
 | Flatpak | Linux (with flatpak) | `flatpak` | `flatpak install` |
 | Nix | Any (with Nix) | `nix` | `nix profile install` |
 | Go | Any (with Go) | `go` | `go install` |
+| winget | Windows | `winget` | Windows Package Manager (Microsoft Store + winget repo) |
+| Chocolatey | Windows | `chocolatey` | Community package manager; cfgd bootstraps it automatically |
+| Scoop | Windows | `scoop` | User-directory installs; cfgd bootstraps it automatically |
 
 Package managers that aren't installed on the current system are silently skipped. `cfgd apply --dry-run` shows which managers will be used and which packages will be installed or removed.
 
@@ -50,6 +53,59 @@ packages:
     - httpie
   dnf:
     - gcc
+  winget:
+    - Microsoft.VisualStudioCode
+    - Git.Git
+    - Mozilla.Firefox
+  chocolatey:
+    - nodejs
+    - python
+    - 7zip
+  scoop:
+    - ripgrep
+    - fd
+    - bat
+```
+
+## Windows Package Managers
+
+### winget
+
+Windows Package Manager (`winget`) manages packages from the Microsoft Store and the winget community repository. Package IDs use the `Publisher.Package` format.
+
+```yaml
+spec:
+  packages:
+    winget:
+      - Microsoft.VisualStudioCode
+      - Git.Git
+      - Mozilla.Firefox
+```
+
+### chocolatey
+
+Chocolatey is a community-driven Windows package manager. cfgd bootstraps it automatically if it isn't installed.
+
+```yaml
+spec:
+  packages:
+    chocolatey:
+      - nodejs
+      - python
+      - 7zip
+```
+
+### scoop
+
+Scoop installs programs to your user directory without requiring elevated privileges. cfgd bootstraps it automatically if it isn't installed.
+
+```yaml
+spec:
+  packages:
+    scoop:
+      - ripgrep
+      - fd
+      - bat
 ```
 
 ## Module Packages
