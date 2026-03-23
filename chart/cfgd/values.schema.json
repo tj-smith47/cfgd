@@ -121,6 +121,7 @@
         "tolerations": { "type": "array" },
         "extraVolumes": { "type": "array" },
         "extraVolumeMounts": { "type": "array" },
+        "imagePullSecrets": { "type": "array", "description": "Image pull secrets for agent pods" },
         "priorityClassName": { "type": "string" }
       }
     },

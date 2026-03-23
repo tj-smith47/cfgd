@@ -23,6 +23,7 @@ helm install cfgd "$CHART_DIR" \
     --set "agent.image.repository=${REGISTRY}/cfgd" \
     --set "agent.image.tag=$IMAGE_TAG" \
     --set agent.serverUrl=http://cfgd-server.cfgd-system.svc.cluster.local:8080 \
+    --set "agent.imagePullSecrets[0].name=registry-credentials" \
     --set webhook.enabled=false \
     --set webhook.certManager.enabled=false \
     --set mutatingWebhook.enabled=false \
@@ -99,6 +100,7 @@ OUTPUT=$(helm upgrade cfgd "$CHART_DIR" \
     --set "agent.image.repository=${REGISTRY}/cfgd" \
     --set "agent.image.tag=$IMAGE_TAG" \
     --set agent.serverUrl=http://cfgd-server.cfgd-system.svc.cluster.local:8080 \
+    --set "agent.imagePullSecrets[0].name=registry-credentials" \
     --set agent.reconcileInterval="15s" \
     --set webhook.enabled=false \
     --set webhook.certManager.enabled=false \

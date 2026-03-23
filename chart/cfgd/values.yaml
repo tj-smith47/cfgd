@@ -52,6 +52,7 @@ agent:
       effect: NoExecute
   extraVolumes: []
   extraVolumeMounts: []
+  imagePullSecrets: []
   priorityClassName: system-node-critical
 
 # Install CRDs
