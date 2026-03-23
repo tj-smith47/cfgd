@@ -1542,31 +1542,34 @@ impl SystemConfigurator for WindowsServiceConfigurator {
     fn apply(&self, desired: &serde_yaml::Value, printer: &Printer) -> Result<()> {
         let entries = Self::parse_services(desired);
         for entry in &entries {
-            let exists = Self::query_service(&entry.name).is_some();
+            let mut exists = Self::query_service(&entry.name).is_some();
 
             if !exists {
                 if let Some(ref binary_path) = entry.binary_path {
-                    let bin_arg = format!("binPath= {}", binary_path);
-                    let mut args = vec!["create", &entry.name, &*bin_arg];
+                    // sc.exe requires key= and value as separate arguments
+                    let mut args: Vec<&str> =
+                        vec!["create", &entry.name, "binPath=", binary_path];
 
-                    let display_arg;
                     if let Some(ref dn) = entry.display_name {
-                        display_arg = format!("DisplayName= {}", dn);
-                        args.push(&display_arg);
+                        args.push("DisplayName=");
+                        args.push(dn);
                     }
 
-                    let start_arg;
                     if let Some(ref st) = entry.start_type {
-                        start_arg = format!(
-                            "start= {}",
-                            match st.as_str() {
-                                "auto" => "auto",
-                                "manual" => "demand",
-                                "disabled" => "disabled",
-                                _ => "demand",
+                        let sc_start = match st.as_str() {
+                            "auto" => "auto",
+                            "manual" => "demand",
+                            "disabled" => "disabled",
+                            other => {
+                                printer.warning(&format!(
+                                    "Unknown start type '{}' for service {}, using 'demand'",
+                                    other, entry.name
+                                ));
+                                "demand"
                             }
-                        );
-                        args.push(&start_arg);
+                        };
+                        args.push("start=");
+                        args.push(sc_start);
                     }
 
                     let output = Command::new("sc")
@@ -1575,11 +1578,14 @@ impl SystemConfigurator for WindowsServiceConfigurator {
                         .map_err(cfgd_core::errors::CfgdError::Io)?;
                     if output.status.success() {
                         printer.success(&format!("Created service {}", entry.name));
+                        exists = true;
                     } else {
+                        // sc.exe writes error messages to stdout
+                        let stdout = String::from_utf8_lossy(&output.stdout);
                         printer.warning(&format!(
                             "Failed to create service {}: {}",
                             entry.name,
-                            stderr_string(&output)
+                            stdout.trim()
                         ));
                     }
                 }
@@ -1590,24 +1596,36 @@ impl SystemConfigurator for WindowsServiceConfigurator {
                         "auto" => "auto",
                         "manual" => "demand",
                         "disabled" => "disabled",
-                        _ => continue,
+                        other => {
+                            printer.warning(&format!(
+                                "Unknown start type '{}' for service {}, skipping",
+                                other, entry.name
+                            ));
+                            // Don't skip state control — only skip the config step
+                            ""
+                        }
                     };
-                    let start_arg = format!("start= {}", sc_start);
-                    let output = Command::new("sc")
-                        .args(["config", &entry.name, &start_arg])
-                        .output()
-                        .map_err(cfgd_core::errors::CfgdError::Io)?;
-                    if !output.status.success() {
-                        printer.warning(&format!(
-                            "Failed to set start type for {}: {}",
-                            entry.name,
-                            stderr_string(&output)
-                        ));
+                    if !sc_start.is_empty() {
+                        let output = Command::new("sc")
+                            .args(["config", &entry.name, "start=", sc_start])
+                            .output()
+                            .map_err(cfgd_core::errors::CfgdError::Io)?;
+                        if !output.status.success() {
+                            let stdout = String::from_utf8_lossy(&output.stdout);
+                            printer.warning(&format!(
+                                "Failed to set start type for {}: {}",
+                                entry.name,
+                                stdout.trim()
+                            ));
+                        }
                     }
                 }
             }
 
-            // Set desired state
+            // Set desired state (only if the service exists)
+            if !exists {
+                continue;
+            }
             if let Some(ref state) = entry.state {
                 match state.as_str() {
                     "running" => {
