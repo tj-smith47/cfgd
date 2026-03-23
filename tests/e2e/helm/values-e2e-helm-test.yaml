@@ -1,0 +1,39 @@
+# Values for E2E Helm tests — installs agent DaemonSet into an ephemeral namespace.
+# Operator, webhooks, CRDs managed separately by persistent infrastructure.
+operator:
+  enabled: false
+
+agent:
+  enabled: true
+  image:
+    repository: registry.jarvispro.io/cfgd
+    tag: ""  # overridden via --set at runtime
+    pullPolicy: Always
+  reconcileInterval: "10s"
+  profile: "k8s-worker-minimal"
+  resources:
+    limits:
+      cpu: 200m
+      memory: 128Mi
+    requests:
+      cpu: 50m
+      memory: 64Mi
+  tolerations:
+    - operator: Exists
+      effect: NoSchedule
+    - operator: Exists
+      effect: NoExecute
+  priorityClassName: ""
+
+installCRDs: false
+
+webhook:
+  enabled: false
+  certManager:
+    enabled: false
+
+mutatingWebhook:
+  enabled: false
+
+csiDriver:
+  enabled: false
