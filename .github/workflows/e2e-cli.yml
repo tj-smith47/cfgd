@@ -27,30 +27,14 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  # Docker-based run (self-contained, no host deps)
-  exhaustive-docker:
-    name: "Exhaustive CLI (Docker)"
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Build test image
-        run: docker build -t cfgd-exhaustive -f tests/e2e/cli/Dockerfile .
-
-      - name: Run exhaustive tests
-        run: docker run --rm cfgd-exhaustive
-
-  # Native run (faster, uses cached build)
   exhaustive-native:
     name: "Exhaustive CLI (Native)"
-    runs-on: ubuntu-latest
+    runs-on: arc-cfgd
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
 
       - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
 
       - name: Build cfgd
         run: cargo build --release --bin cfgd
