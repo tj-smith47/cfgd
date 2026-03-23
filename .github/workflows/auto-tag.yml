@@ -40,3 +40,4 @@ jobs:
           RELEASE_BRANCHES: master
           TAG_CONTEXT: branch
           WITH_V: true
+          BRANCH_HISTORY: last

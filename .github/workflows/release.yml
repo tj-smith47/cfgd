@@ -36,6 +36,9 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          # Pin to the exact commit AutoTag processed so later pushes
+          # don't move HEAD past the tagged commit.
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
 
       - name: Get tag
         id: get-tag
@@ -44,14 +47,13 @@ jobs:
           if [ "${{ github.event_name }}" = "push" ]; then
             TAG="${{ github.ref_name }}"
           else
-            # For workflow_run events, check if a tag exists at HEAD
-            # (AutoTag skips if commit has #none)
+            # For workflow_run events, check if a tag exists at the AutoTag commit
             if ! git tag --points-at HEAD | grep -q .; then
               echo "No tag at HEAD - AutoTag likely skipped (commit has #none)"
               should_run=false
               TAG=""
             else
-              TAG=$(git describe --tags --abbrev=0)
+              TAG=$(git tag --points-at HEAD | grep '^v' | sort -V | tail -1)
             fi
           fi
           echo "tag=${TAG}" >> $GITHUB_OUTPUT
