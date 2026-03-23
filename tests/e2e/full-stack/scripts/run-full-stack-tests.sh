@@ -18,7 +18,7 @@ kubectl wait --for=condition=available deployment/cfgd-server -n cfgd-system --t
 echo "All persistent components running"
 
 # Check CSI driver
-CSI_READY=$(kubectl get ds -n cfgd-system -l app.kubernetes.io/name=cfgd-csi \
+CSI_READY=$(kubectl get ds -n cfgd-system -l app.kubernetes.io/component=csi-driver \
     -o jsonpath='{.items[0].status.numberReady}' 2>/dev/null || echo "0")
 CSI_AVAILABLE=true
 if [ "$CSI_READY" = "0" ] || [ -z "$CSI_READY" ]; then
