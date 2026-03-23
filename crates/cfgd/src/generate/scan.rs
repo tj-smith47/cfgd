@@ -548,6 +548,9 @@ pub struct SystemSettingsResult {
     pub launch_agents: Vec<String>,
     pub gsettings_schemas: Vec<String>,
     pub windows_services: Vec<String>,
+    /// Registry values from well-known paths (analogous to `defaults domains` on macOS).
+    /// Maps "HIVE\\Subkey\\ValueName" → current value string.
+    pub windows_registry: std::collections::BTreeMap<String, String>,
 }
 
 /// Scan platform-specific system settings.
@@ -558,6 +561,7 @@ pub fn scan_system_settings() -> Result<SystemSettingsResult, CfgdError> {
         launch_agents: vec![],
         gsettings_schemas: vec![],
         windows_services: vec![],
+        windows_registry: std::collections::BTreeMap::new(),
     };
 
     // macOS: run `defaults domains` and parse comma-separated list — don't export all, just list them
@@ -625,6 +629,43 @@ pub fn scan_system_settings() -> Result<SystemSettingsResult, CfgdError> {
             let schema = line.trim();
             if !schema.is_empty() {
                 result.gsettings_schemas.push(schema.to_string());
+            }
+        }
+    }
+
+    // Windows: scan well-known registry paths (analogous to `defaults domains` on macOS)
+    if cfgd_core::command_available("reg") {
+        let well_known_paths = [
+            r"HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced",
+            r"HKCU\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize",
+            r"HKCU\Control Panel\Desktop",
+            r"HKCU\Environment",
+        ];
+        for reg_path in &well_known_paths {
+            if let Ok(output) = std::process::Command::new("reg")
+                .args(["query", reg_path])
+                .output()
+                && output.status.success()
+            {
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                for line in stdout.lines() {
+                    let trimmed = line.trim();
+                    if trimmed.is_empty() || trimmed.starts_with("HKEY_") {
+                        continue;
+                    }
+                    // Format: "    ValueName    REG_TYPE    Data"
+                    let parts: Vec<&str> = trimmed.splitn(3, "    ").collect();
+                    if parts.len() == 3 {
+                        let name = parts[0].trim();
+                        let value = parts[2].trim();
+                        if !name.is_empty() {
+                            result.windows_registry.insert(
+                                format!(r"{}\{}", reg_path, name),
+                                value.to_string(),
+                            );
+                        }
+                    }
+                }
             }
         }
     }

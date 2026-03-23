@@ -134,6 +134,7 @@ Platform-specific system settings discovered by `scan_system_settings`:
 - `gsettings`: GNOME/GTK desktop settings (schemas and keys)
 - `kdeConfig`: KDE Plasma settings (files, groups, keys)
 - `xfconf`: XFCE desktop settings (channels and properties)
+- `windowsRegistry`: values from well-known registry paths (Explorer, Themes, Desktop, Environment)
 - `windowsServices`: installed Windows services
 
 Each entry is a key-value map specific to the system configurator.
