@@ -7,7 +7,6 @@ set -euo pipefail
 E2E_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 REPO_ROOT="$(cd "$E2E_ROOT/../.." && pwd)"
 
-KIND_CLUSTER="${KIND_CLUSTER:-cfgd-e2e}"
 CFGD_NAMESPACE="${CFGD_NAMESPACE:-cfgd-system}"
 
 PASS_COUNT=0
@@ -20,49 +19,71 @@ YELLOW='\033[1;33m'
 CYAN='\033[0;36m'
 NC='\033[0m'
 
-# --- Kind helpers ---
+# --- Pod helpers (replaces KIND node helpers) ---
 
-get_kind_node() {
-    kind get nodes --name "$KIND_CLUSTER" 2>/dev/null | head -1
+REGISTRY="${REGISTRY:-registry.jarvispro.io}"
+IMAGE_TAG="${IMAGE_TAG:-e2e-$(git -C "$REPO_ROOT" rev-parse --short HEAD 2>/dev/null || echo latest)}"
+E2E_NAMESPACE="${E2E_NAMESPACE:-cfgd-e2e-${GITHUB_RUN_ID:-$(date +%s)-$$}}"
+E2E_RUN_ID="${GITHUB_RUN_ID:-local-$$}"
+E2E_RUN_LABEL="cfgd.io/e2e-run=$E2E_RUN_ID"
+
+TEST_POD=""
+
+# Deploy the privileged test pod and wait for it to be Running.
+# Exports TEST_POD with the pod name.
+ensure_test_pod() {
+    local pod_name="cfgd-e2e-node-${E2E_RUN_ID}"
+    local manifest="$E2E_ROOT/manifests/privileged-test-pod.yaml"
+
+    create_e2e_namespace
+
+    # Substitute placeholders and apply (image first to avoid double-sub)
+    sed "s|IMAGE_PLACEHOLDER|${IMAGE_TAG}|g; s|RUN_PLACEHOLDER|${E2E_RUN_ID}|g" \
+        "$manifest" | kubectl apply -n "$E2E_NAMESPACE" -f -
+
+    echo "  Waiting for test pod $pod_name..."
+    kubectl wait --for=condition=Ready "pod/$pod_name" \
+        -n "$E2E_NAMESPACE" --timeout=120s
+
+    TEST_POD="$pod_name"
+    export TEST_POD
+    echo "  Test pod ready: $TEST_POD"
 }
 
-exec_on_node() {
-    local node
-    node="$(get_kind_node)"
-    docker exec "$node" "$@"
+exec_in_pod() {
+    kubectl exec "$TEST_POD" -n "$E2E_NAMESPACE" -- "$@"
 }
 
-copy_to_node() {
+cp_to_pod() {
     local src="$1"
     local dest="$2"
-    local node
-    node="$(get_kind_node)"
-    docker cp "$src" "$node:$dest"
+    kubectl cp "$src" "$E2E_NAMESPACE/$TEST_POD:$dest"
 }
 
-# Extract a binary from a Docker image and install it on the kind node.
-install_binary_on_node() {
-    local image="$1"
-    local binary_path="$2"
-    local binary_name
-    binary_name="$(basename "$binary_path")"
+# --- Namespace & cleanup helpers ---
 
-    local cid
-    cid=$(docker create "$image" --help 2>/dev/null)
-    docker cp "$cid:$binary_path" "/tmp/$binary_name"
-    docker rm "$cid" > /dev/null
-
-    local node
-    node="$(get_kind_node)"
-    docker cp "/tmp/$binary_name" "$node:/usr/local/bin/$binary_name"
-    docker exec "$node" chmod +x "/usr/local/bin/$binary_name"
-    rm -f "/tmp/$binary_name"
+create_e2e_namespace() {
+    if ! kubectl get namespace "$E2E_NAMESPACE" > /dev/null 2>&1; then
+        kubectl create namespace "$E2E_NAMESPACE"
+        kubectl label namespace "$E2E_NAMESPACE" "$E2E_RUN_LABEL" --overwrite
+    fi
 }
 
-# Install OS packages on the kind node (idempotent).
-install_packages_on_node() {
-    exec_on_node bash -c \
-        "apt-get update -qq && apt-get install -y -qq $* > /dev/null 2>&1" || true
+cleanup_e2e() {
+    echo "Cleaning up E2E resources for run $E2E_RUN_ID..."
+
+    # Clean up host files FIRST (while pod still exists, before namespace deletion)
+    if [ -n "$TEST_POD" ] && kubectl get pod "$TEST_POD" -n "$E2E_NAMESPACE" > /dev/null 2>&1; then
+        exec_in_pod rm -f /host-etc/sysctl.d/99-cfgd.conf /host-etc/modules-load.d/cfgd.conf 2>/dev/null || true
+    fi
+
+    # Delete ephemeral namespace (cascade deletes all namespaced resources)
+    kubectl delete namespace "$E2E_NAMESPACE" --ignore-not-found --wait=false 2>/dev/null || true
+
+    # Delete cluster-scoped resources by run label
+    for kind in module clusterconfigpolicy; do
+        kubectl delete "$kind" -l "$E2E_RUN_LABEL" --ignore-not-found 2>/dev/null || true
+    done
 }
 
 # --- K8s helpers ---
@@ -151,251 +172,10 @@ wait_for_url() {
     return 1
 }
 
-# --- Webhook/TLS helpers ---
-
-WEBHOOK_CERT_DIR=""
-
-# Generate self-signed CA and server certificate for webhook TLS.
-# Sets WEBHOOK_CERT_DIR to a temp directory containing tls.crt and tls.key.
-# Also sets CA_BUNDLE (base64-encoded CA cert) for webhook configurations.
-generate_webhook_certs() {
-    local service_name="${1:-cfgd-operator}"
-    local namespace="${2:-cfgd-system}"
-
-    WEBHOOK_CERT_DIR=$(mktemp -d)
-
-    # Generate CA
-    openssl req -x509 -newkey rsa:2048 -nodes -days 1 \
-        -keyout "$WEBHOOK_CERT_DIR/ca.key" \
-        -out "$WEBHOOK_CERT_DIR/ca.crt" \
-        -subj "/CN=cfgd-e2e-ca" 2>/dev/null
-
-    # Generate server key + CSR
-    openssl req -newkey rsa:2048 -nodes \
-        -keyout "$WEBHOOK_CERT_DIR/tls.key" \
-        -out "$WEBHOOK_CERT_DIR/tls.csr" \
-        -subj "/CN=${service_name}.${namespace}.svc" 2>/dev/null
-
-    # Sign with CA (include SANs for k8s webhook)
-    cat > "$WEBHOOK_CERT_DIR/san.cnf" <<SANEOF
-[req]
-distinguished_name = req_dn
-[req_dn]
-[v3_ext]
-subjectAltName = DNS:${service_name}.${namespace}.svc,DNS:${service_name}.${namespace}.svc.cluster.local,DNS:${service_name}.${namespace},DNS:${service_name}
-SANEOF
-
-    openssl x509 -req -in "$WEBHOOK_CERT_DIR/tls.csr" \
-        -CA "$WEBHOOK_CERT_DIR/ca.crt" \
-        -CAkey "$WEBHOOK_CERT_DIR/ca.key" \
-        -CAcreateserial -days 1 \
-        -extfile "$WEBHOOK_CERT_DIR/san.cnf" \
-        -extensions v3_ext \
-        -out "$WEBHOOK_CERT_DIR/tls.crt" 2>/dev/null
-
-    CA_BUNDLE=$(base64 -w0 < "$WEBHOOK_CERT_DIR/ca.crt")
-    export CA_BUNDLE
-    echo "  Webhook certs generated in $WEBHOOK_CERT_DIR"
-}
-
-# Create the k8s Secret and webhook configurations for the operator webhook.
-install_webhook_config() {
-    local namespace="${1:-cfgd-system}"
-
-    # Create or update TLS Secret (idempotent via dry-run + apply)
-    kubectl create secret tls cfgd-webhook-certs \
-        --cert="$WEBHOOK_CERT_DIR/tls.crt" \
-        --key="$WEBHOOK_CERT_DIR/tls.key" \
-        -n "$namespace" --dry-run=client -o yaml | kubectl apply -f -
-
-    # Webhook Service
-    kubectl apply -f - <<EOF
-apiVersion: v1
-kind: Service
-metadata:
-  name: cfgd-operator
-  namespace: ${namespace}
-spec:
-  selector:
-    app: cfgd-operator
-  ports:
-    - name: webhook
-      port: 443
-      targetPort: 9443
-      protocol: TCP
-EOF
-
-    # Validating Webhook Configurations
-    kubectl apply -f - <<EOF
-apiVersion: admissionregistration.k8s.io/v1
-kind: ValidatingWebhookConfiguration
-metadata:
-  name: cfgd-validating-webhooks
-webhooks:
-  - name: validate-machineconfig.cfgd.io
-    admissionReviewVersions: [v1]
-    clientConfig:
-      service:
-        name: cfgd-operator
-        namespace: ${namespace}
-        path: /validate-machineconfig
-      caBundle: "${CA_BUNDLE}"
-    rules:
-      - apiGroups: ["cfgd.io"]
-        apiVersions: ["v1alpha1"]
-        operations: [CREATE, UPDATE]
-        resources: [machineconfigs]
-    failurePolicy: Fail
-    sideEffects: None
-  - name: validate-configpolicy.cfgd.io
-    admissionReviewVersions: [v1]
-    clientConfig:
-      service:
-        name: cfgd-operator
-        namespace: ${namespace}
-        path: /validate-configpolicy
-      caBundle: "${CA_BUNDLE}"
-    rules:
-      - apiGroups: ["cfgd.io"]
-        apiVersions: ["v1alpha1"]
-        operations: [CREATE, UPDATE]
-        resources: [configpolicies]
-    failurePolicy: Fail
-    sideEffects: None
-  - name: validate-clusterconfigpolicy.cfgd.io
-    admissionReviewVersions: [v1]
-    clientConfig:
-      service:
-        name: cfgd-operator
-        namespace: ${namespace}
-        path: /validate-clusterconfigpolicy
-      caBundle: "${CA_BUNDLE}"
-    rules:
-      - apiGroups: ["cfgd.io"]
-        apiVersions: ["v1alpha1"]
-        operations: [CREATE, UPDATE]
-        resources: [clusterconfigpolicies]
-    failurePolicy: Fail
-    sideEffects: None
-  - name: validate-driftalert.cfgd.io
-    admissionReviewVersions: [v1]
-    clientConfig:
-      service:
-        name: cfgd-operator
-        namespace: ${namespace}
-        path: /validate-driftalert
-      caBundle: "${CA_BUNDLE}"
-    rules:
-      - apiGroups: ["cfgd.io"]
-        apiVersions: ["v1alpha1"]
-        operations: [CREATE, UPDATE]
-        resources: [driftalerts]
-    failurePolicy: Fail
-    sideEffects: None
-  - name: validate-module.cfgd.io
-    admissionReviewVersions: [v1]
-    clientConfig:
-      service:
-        name: cfgd-operator
-        namespace: ${namespace}
-        path: /validate-module
-      caBundle: "${CA_BUNDLE}"
-    rules:
-      - apiGroups: ["cfgd.io"]
-        apiVersions: ["v1alpha1"]
-        operations: [CREATE, UPDATE]
-        resources: [modules]
-    failurePolicy: Fail
-    sideEffects: None
-EOF
-
-    # Mutating Webhook Configuration
-    kubectl apply -f - <<EOF
-apiVersion: admissionregistration.k8s.io/v1
-kind: MutatingWebhookConfiguration
-metadata:
-  name: cfgd-mutating-webhooks
-webhooks:
-  - name: inject-modules.cfgd.io
-    admissionReviewVersions: [v1]
-    clientConfig:
-      service:
-        name: cfgd-operator
-        namespace: ${namespace}
-        path: /mutate-pods
-      caBundle: "${CA_BUNDLE}"
-    rules:
-      - apiGroups: [""]
-        apiVersions: ["v1"]
-        operations: [CREATE]
-        resources: [pods]
-    namespaceSelector:
-      matchExpressions:
-        - key: cfgd.io/inject-modules
-          operator: In
-          values: ["true"]
-    objectSelector:
-      matchExpressions:
-        - key: cfgd.io/skip-injection
-          operator: DoesNotExist
-    failurePolicy: Fail
-    sideEffects: None
-    reinvocationPolicy: IfNeeded
-    timeoutSeconds: 10
-EOF
-
-    echo "  Webhook configurations installed"
-}
-
-# --- OCI registry helpers ---
+# --- OCI / Module helpers ---
 
 CSI_DRIVER_NAME="csi.cfgd.io"
 MODULES_ANNOTATION="cfgd.io/modules"
-
-REGISTRY_NAME="cfgd-e2e-registry"
-REGISTRY_PORT="${REGISTRY_PORT:-5001}"
-
-# Start a local OCI registry container accessible from host (localhost:$REGISTRY_PORT)
-# and from inside kind (cfgd-e2e-registry:5000).
-start_local_registry() {
-    # Start or reuse existing registry (no TOCTOU — just try to start)
-    if docker start "$REGISTRY_NAME" > /dev/null 2>&1; then
-        echo "  Registry $REGISTRY_NAME already exists, started"
-        return 0
-    fi
-
-    docker run -d --restart=always \
-        -p "${REGISTRY_PORT}:5000" \
-        --name "$REGISTRY_NAME" \
-        registry:2 > /dev/null
-
-    # Connect to kind network so cluster nodes can reach it
-    local kind_network="kind"
-    docker network connect "$kind_network" "$REGISTRY_NAME" 2>/dev/null || true
-
-    echo "  Local registry started at localhost:${REGISTRY_PORT}"
-}
-
-stop_local_registry() {
-    docker rm -f "$REGISTRY_NAME" 2>/dev/null || true
-}
-
-# Configure kind nodes to trust the local registry (containerd mirror).
-configure_registry_on_nodes() {
-    local nodes
-    nodes=$(kind get nodes --name "$KIND_CLUSTER" 2>/dev/null)
-    for node in $nodes; do
-        # Add registry mirror via containerd config
-        docker exec "$node" bash -c "
-            mkdir -p /etc/containerd/certs.d/localhost:${REGISTRY_PORT}
-            cat > /etc/containerd/certs.d/localhost:${REGISTRY_PORT}/hosts.toml <<TOMLEOF
-[host.\"http://${REGISTRY_NAME}:5000\"]
-  capabilities = [\"pull\", \"resolve\"]
-TOMLEOF
-        " 2>/dev/null || true
-    done
-    echo "  Registry configured on kind nodes"
-}
 
 # Create a minimal test module directory for OCI push testing.
 # Usage: create_test_module_dir /tmp/test-module "my-module" "1.0.0"
