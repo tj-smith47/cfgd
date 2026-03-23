@@ -1336,7 +1336,7 @@ pub fn save_pending_server_config(config: &serde_json::Value) -> Result<PathBuf>
     let path = dir.join(PENDING_CONFIG_FILENAME);
     let json = serde_json::to_string_pretty(config)
         .map_err(|e| StateError::Database(format!("failed to serialize pending config: {}", e)))?;
-    std::fs::write(&path, json)
+    crate::atomic_write_str(&path, &json)
         .map_err(|_| StateError::DirectoryNotWritable { path: path.clone() })?;
     Ok(path)
 }

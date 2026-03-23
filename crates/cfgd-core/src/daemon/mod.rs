@@ -2426,7 +2426,7 @@ fn install_launchd_service(binary: &Path, config_path: &Path, profile: Option<&s
 </plist>"#
     );
 
-    std::fs::write(&plist_path, plist).map_err(|e| DaemonError::ServiceInstallFailed {
+    crate::atomic_write_str(&plist_path, &plist).map_err(|e| DaemonError::ServiceInstallFailed {
         message: format!("write plist: {}", e),
     })?;
 
@@ -2496,7 +2496,7 @@ RestartSec=10
 WantedBy=default.target"#
     );
 
-    std::fs::write(&unit_path, unit).map_err(|e| DaemonError::ServiceInstallFailed {
+    crate::atomic_write_str(&unit_path, &unit).map_err(|e| DaemonError::ServiceInstallFailed {
         message: format!("write unit file: {}", e),
     })?;
 

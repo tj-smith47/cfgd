@@ -871,16 +871,12 @@ pub fn load_lockfile(config_dir: &Path) -> Result<ModuleLockfile> {
 }
 
 /// Save the module lockfile to `<config_dir>/modules.lock`.
-/// Uses atomic write (temp file + rename) to prevent corruption.
+/// Uses `atomic_write_str` (temp file + rename) to prevent corruption.
 pub fn save_lockfile(config_dir: &Path, lockfile: &ModuleLockfile) -> Result<()> {
     let lockfile_path = config_dir.join("modules.lock");
     let contents = serde_yaml::to_string(lockfile).map_err(ConfigError::from)?;
-    let tmp_path = config_dir.join(".modules.lock.tmp");
-    std::fs::write(&tmp_path, &contents).map_err(|e| ConfigError::Invalid {
-        message: format!("cannot write lockfile {}: {e}", tmp_path.display()),
-    })?;
-    std::fs::rename(&tmp_path, &lockfile_path).map_err(|e| ConfigError::Invalid {
-        message: format!("cannot rename lockfile {}: {e}", lockfile_path.display()),
+    crate::atomic_write_str(&lockfile_path, &contents).map_err(|e| ConfigError::Invalid {
+        message: format!("cannot write lockfile {}: {e}", lockfile_path.display()),
     })?;
     Ok(())
 }

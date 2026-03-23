@@ -454,7 +454,7 @@ pub fn save_credential(cred: &DeviceCredential) -> Result<PathBuf> {
             e
         )))
     })?;
-    std::fs::write(&path, &json)?;
+    crate::atomic_write_str(&path, &json)?;
 
     // Restrict file permissions (no-op on Windows)
     crate::set_file_permissions(&path, 0o600)?;
