@@ -1069,3 +1069,20 @@ Code fixes identified by code review, dedup analysis, and gap analysis after the
 - [x] Consolidated duplicate script lifecycle content — replaced duplicated field reference table, env vars table, and defaults in `docs/modules.md` with summary + cross-reference to `docs/spec/module.md#specscripts`; added spec cross-reference to `docs/daemon.md` onDrift section
 - [x] Added cross-references from 7 user-facing docs to `docs/spec/` for detailed field documentation (configuration, modules, profiles, operator, team-config, daemon, sources)
 - [x] Renamed stale `spec-reference` exclusion in `.claude/scripts/completeness-check.sh` to match the `docs/spec/` directory rename
+
+---
+## Linux Desktop Configurators
+
+Three `SystemConfigurator` implementations for Linux desktop environment preferences, achieving parity with macOS `MacosDefaultsConfigurator` and Windows `WindowsRegistryConfigurator`.
+
+- [x] Evaluated scope: per-DE configurators (gsettings covers GNOME/Cinnamon/MATE/Budgie/Pantheon, kwriteconfig covers KDE Plasma, xfconf-query covers XFCE). LXQt/i3/Sway use config files already handled by cfgd file management.
+- [x] `GsettingsConfigurator` — GNOME/GTK desktop settings via `gsettings` CLI. Two-level mapping (schema → key → value). Uses `yaml_value_to_native_bool` for true/false booleans. `strip_gsettings_quotes` for reading values.
+- [x] `KdeConfigConfigurator` — KDE Plasma settings via `kwriteconfig5`/`kwriteconfig6`. Three-level mapping (file → group → key → value). Prefers v6, falls back to v5.
+- [x] `XfconfConfigurator` — XFCE settings via `xfconf-query`. Two-level mapping (channel → property → value). Auto-creates missing properties with `--create -t string` fallback.
+- [x] Registration in `build_provider_registry()` under `cfg!(target_os = "linux")`
+- [x] Schema entries in `explain.rs`, YAML examples in `schema.rs`, test assertions
+- [x] `gsettings_schemas` scanning in `scan_system_settings()` for AI generate
+- [x] Windows parity: added `windows_services` and `windows_registry` (well-known paths) scanning to `scan_system_settings()`
+- [x] Documentation: `system-configurators.md`, `configuration.md` Linux section, `spec/profile.md` table, `ai-generate.md`, `skill.md`, `generate-design.md`
+- [x] CLAUDE.md module map updated
+- [x] Doc prose kebab-case fixes (pre-apply → `preApply`, auto-apply → `autoApply`, etc.)
