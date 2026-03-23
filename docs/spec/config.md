@@ -213,7 +213,7 @@ Controls the long-running daemon process started with `cfgd daemon`.
 | `onChange` | bool | No | `false` | Also trigger reconciliation when config files change on disk (inotify/kqueue). |
 | `autoApply` | bool | No | `false` | Automatically apply detected drift without user confirmation. |
 | `driftPolicy` | enum | No | `NotifyOnly` | Governs what the daemon does when drift is detected. See [DriftPolicy values](#driftpolicy-values). |
-| `policy` | object | No | | Fine-grained auto-apply policy per change category. See [spec.daemon.reconcile.policy](#specdaemonreconcilepolicy). |
+| `policy` | object | No | | Fine-grained `autoApply` policy per change category. See [spec.daemon.reconcile.policy](#specdaemonreconcilepolicy). |
 | `patches` | list | No | `[]` | Per-module or per-profile reconcile overrides. See [spec.daemon.reconcile.patches[]](#specdaemonreconcilepatches). |
 
 #### DriftPolicy values
@@ -228,7 +228,7 @@ Controls the long-running daemon process started with `cfgd daemon`.
 
 ### spec.daemon.reconcile.policy
 
-Fine-grained policy for different categories of auto-apply decisions. All fields default to safe
+Fine-grained policy for different categories of `autoApply` decisions. All fields default to safe
 values (notify or ignore).
 
 | Field | Type | Required | Default | Description |
@@ -263,7 +263,7 @@ Precedence: Module patch > Profile patch > global reconcile settings.
 | `autoApply` | bool | No | | Override `autoApply` for this target. |
 | `driftPolicy` | enum | No | | Override `driftPolicy` for this target. See [DriftPolicy values](#driftpolicy-values). |
 
-**Example** — disable auto-apply for a sensitive module while enabling it everywhere else:
+**Example** — disable `autoApply` for a sensitive module while enabling it everywhere else:
 ```yaml
 daemon:
   reconcile:

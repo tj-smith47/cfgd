@@ -6,14 +6,14 @@ cfgd follows the same pattern as Kubernetes controllers: declare desired state, 
 
 Apply runs in a fixed phase order:
 
-1. **Pre-Scripts** — profile-level pre-apply or pre-reconcile hooks (context-dependent)
+1. **Pre-Scripts** — profile-level `preApply` or `preReconcile` hooks (context-dependent)
 2. **Env** — write env vars and shell aliases to `~/.cfgd.env`, inject shell rc source lines
 3. **Modules** — resolve module dependencies, install module packages, deploy module files, run module-level hooks
 4. **Packages** — install/uninstall across all package managers (profile-level packages)
 5. **System** — shell, macOS defaults, launch agents, systemd units, environment, sysctl, kernelModules, containerd, kubelet, apparmor, seccomp, certificates
 6. **Files** — copy, template, set permissions (profile-level files)
 7. **Secrets** — decrypt SOPS files, resolve external provider references
-8. **Post-Scripts** — profile-level post-apply or post-reconcile hooks, onChange hooks
+8. **Post-Scripts** — profile-level `postApply` or `postReconcile` hooks, `onChange` hooks
 
 Each phase can be applied independently with `cfgd apply --phase <name>`.
 

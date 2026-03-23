@@ -37,7 +37,7 @@ This enables rollback of partially failed applies.
 
 ## Rollback
 
-If an apply fails partway through, cfgd can restore files to their pre-apply state:
+If an apply fails partway through, cfgd can restore files to their state before apply:
 
 - File actions are rolled back in reverse order
 - Backed-up content is restored via atomic write

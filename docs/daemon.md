@@ -86,7 +86,7 @@ See [sources.md](sources.md#automatic-apply-decisions) for the full decision wor
 
 ## Drift Hooks
 
-When the daemon detects drift, it runs any `onDrift` scripts defined in the active profile before deciding how to handle the drift (auto-apply, notify, or prompt). This fires regardless of the drift policy — `onDrift` is observability, not remediation.
+When the daemon detects drift, it runs any `onDrift` scripts defined in the active profile before deciding how to handle the drift (`autoApply`, notify, or prompt). This fires regardless of the drift policy — `onDrift` is observability, not remediation.
 
 ```yaml
 # In your profile
