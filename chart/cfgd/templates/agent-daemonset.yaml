@@ -61,17 +61,11 @@ spec:
           resources:
             {{- toYaml .Values.agent.resources | nindent 12 }}
           volumeMounts:
-            - name: host-root
-              mountPath: /host
-              readOnly: false
             - name: host-proc
               mountPath: /proc
               readOnly: true
             - name: host-sys
               mountPath: /sys
-              readOnly: false
-            - name: host-etc
-              mountPath: /host/etc
               readOnly: false
             - name: cfgd-config
               mountPath: /etc/cfgd/cfgd.yaml
@@ -81,18 +75,12 @@ spec:
             {{- toYaml . | nindent 12 }}
             {{- end }}
       volumes:
-        - name: host-root
-          hostPath:
-            path: /
         - name: host-proc
           hostPath:
             path: /proc
         - name: host-sys
           hostPath:
             path: /sys
-        - name: host-etc
-          hostPath:
-            path: /etc
         - name: cfgd-config
           configMap:
             name: {{ include "cfgd.fullname" . }}-agent-config
