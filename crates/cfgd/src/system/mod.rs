@@ -1618,11 +1618,13 @@ impl SystemConfigurator for WindowsServiceConfigurator {
                         if output.status.success() {
                             printer.success(&format!("Started service {}", entry.name));
                         } else {
-                            let stderr = stderr_string(&output);
-                            if !stderr.contains("already been started") {
+                            // sc.exe writes error messages to stdout, not stderr
+                            let stdout =
+                                String::from_utf8_lossy(&output.stdout).to_string();
+                            if !stdout.contains("already been started") {
                                 printer.warning(&format!(
                                     "Failed to start {}: {}",
-                                    entry.name, stderr
+                                    entry.name, stdout
                                 ));
                             }
                         }
@@ -1635,10 +1637,12 @@ impl SystemConfigurator for WindowsServiceConfigurator {
                         if output.status.success() {
                             printer.success(&format!("Stopped service {}", entry.name));
                         } else {
-                            let stderr = stderr_string(&output);
-                            if !stderr.contains("has not been started") {
+                            // sc.exe writes error messages to stdout, not stderr
+                            let stdout =
+                                String::from_utf8_lossy(&output.stdout).to_string();
+                            if !stdout.contains("has not been started") {
                                 printer
-                                    .warning(&format!("Failed to stop {}: {}", entry.name, stderr));
+                                    .warning(&format!("Failed to stop {}: {}", entry.name, stdout));
                             }
                         }
                     }
