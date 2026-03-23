@@ -547,6 +547,7 @@ pub struct SystemSettingsResult {
     pub systemd_units: Vec<String>,
     pub launch_agents: Vec<String>,
     pub gsettings_schemas: Vec<String>,
+    pub windows_services: Vec<String>,
 }
 
 /// Scan platform-specific system settings.
@@ -556,6 +557,7 @@ pub fn scan_system_settings() -> Result<SystemSettingsResult, CfgdError> {
         systemd_units: vec![],
         launch_agents: vec![],
         gsettings_schemas: vec![],
+        windows_services: vec![],
     };
 
     // macOS: run `defaults domains` and parse comma-separated list — don't export all, just list them
@@ -627,9 +629,29 @@ pub fn scan_system_settings() -> Result<SystemSettingsResult, CfgdError> {
         }
     }
 
+    // Windows: list installed services via sc.exe
+    if cfgd_core::command_available("sc.exe")
+        && let Ok(output) = std::process::Command::new("sc.exe")
+            .args(["query", "type=", "service", "state=", "all"])
+            .output()
+        && output.status.success()
+    {
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        for line in stdout.lines() {
+            // Lines like: "SERVICE_NAME: MyService"
+            if let Some(rest) = line.trim().strip_prefix("SERVICE_NAME:") {
+                let name = rest.trim();
+                if !name.is_empty() {
+                    result.windows_services.push(name.to_string());
+                }
+            }
+        }
+    }
+
     result.systemd_units.sort();
     result.launch_agents.sort();
     result.gsettings_schemas.sort();
+    result.windows_services.sort();
     Ok(result)
 }
 
@@ -1194,6 +1216,13 @@ mod tests {
         assert_eq!(
             result.gsettings_schemas, sorted_schemas,
             "gsettings_schemas should be sorted"
+        );
+
+        let mut sorted_services = result.windows_services.clone();
+        sorted_services.sort();
+        assert_eq!(
+            result.windows_services, sorted_services,
+            "windows_services should be sorted"
         );
     }
 
