@@ -1661,6 +1661,154 @@ impl SystemConfigurator for WindowsServiceConfigurator {
     }
 }
 
+/// GsettingsConfigurator — reads/writes GNOME/GTK desktop settings via `gsettings`.
+///
+/// Covers GNOME, Cinnamon, MATE, Budgie, and Pantheon desktops (all use dconf/gsettings).
+///
+/// Config format (same two-level structure as macosDefaults):
+/// ```yaml
+/// system:
+///   gsettings:
+///     org.gnome.desktop.interface:
+///       color-scheme: prefer-dark
+///       font-name: "Cantarell 11"
+///     org.gnome.desktop.wm.preferences:
+///       button-layout: "close,minimize,maximize:"
+/// ```
+pub struct GsettingsConfigurator;
+
+/// Strip surrounding single quotes from gsettings output.
+/// gsettings returns strings as `'value'`, bools/numbers bare.
+fn strip_gsettings_quotes(s: &str) -> &str {
+    s.strip_prefix('\'')
+        .and_then(|s| s.strip_suffix('\''))
+        .unwrap_or(s)
+}
+
+/// Convert a YAML value to the string format gsettings expects for `set`.
+/// Strings → `'value'` (single-quoted), bools → `true`/`false`, numbers → bare.
+fn yaml_to_gsettings_value(value: &serde_yaml::Value) -> String {
+    match value {
+        serde_yaml::Value::String(s) => format!("'{}'", s),
+        serde_yaml::Value::Bool(b) => b.to_string(),
+        serde_yaml::Value::Number(n) => n.to_string(),
+        _ => format!("'{:?}'", value),
+    }
+}
+
+/// Convert a YAML value to the string that gsettings `get` would return
+/// (used for comparison in diff). Strings are bare (quotes stripped), bools/numbers bare.
+fn yaml_to_gsettings_display(value: &serde_yaml::Value) -> String {
+    match value {
+        serde_yaml::Value::String(s) => s.clone(),
+        serde_yaml::Value::Bool(b) => b.to_string(),
+        serde_yaml::Value::Number(n) => n.to_string(),
+        _ => format!("{:?}", value),
+    }
+}
+
+fn read_gsettings_value(schema: &str, key: &str) -> String {
+    Command::new("gsettings")
+        .args(["get", schema, key])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| {
+            let raw = String::from_utf8_lossy(&o.stdout).trim().to_string();
+            strip_gsettings_quotes(&raw).to_string()
+        })
+        .unwrap_or_default()
+}
+
+impl SystemConfigurator for GsettingsConfigurator {
+    fn name(&self) -> &str {
+        "gsettings"
+    }
+
+    fn is_available(&self) -> bool {
+        cfgd_core::command_available("gsettings")
+    }
+
+    fn current_state(&self) -> Result<serde_yaml::Value> {
+        Ok(serde_yaml::Value::Mapping(serde_yaml::Mapping::new()))
+    }
+
+    fn diff(&self, desired: &serde_yaml::Value) -> Result<Vec<SystemDrift>> {
+        let mapping = match desired.as_mapping() {
+            Some(m) => m,
+            None => return Ok(Vec::new()),
+        };
+
+        let mut drifts = Vec::new();
+        for (schema_key, schema_values) in mapping {
+            let schema = match schema_key.as_str() {
+                Some(s) => s,
+                None => continue,
+            };
+            let values = match schema_values.as_mapping() {
+                Some(m) => m,
+                None => continue,
+            };
+            drifts.extend(diff_yaml_mapping(
+                values,
+                schema,
+                yaml_to_gsettings_display,
+                |key_str| read_gsettings_value(schema, key_str),
+            ));
+        }
+
+        Ok(drifts)
+    }
+
+    fn apply(&self, desired: &serde_yaml::Value, printer: &Printer) -> Result<()> {
+        let mapping = match desired.as_mapping() {
+            Some(m) => m,
+            None => return Ok(()),
+        };
+
+        for (schema_key, schema_values) in mapping {
+            let schema = match schema_key.as_str() {
+                Some(s) => s,
+                None => continue,
+            };
+            let values = match schema_values.as_mapping() {
+                Some(m) => m,
+                None => continue,
+            };
+
+            for (key, desired_value) in values {
+                let key_str = match key.as_str() {
+                    Some(k) => k,
+                    None => continue,
+                };
+
+                let gsettings_val = yaml_to_gsettings_value(desired_value);
+
+                printer.info(&format!(
+                    "gsettings set {} {} {}",
+                    schema, key_str, gsettings_val
+                ));
+
+                let output = Command::new("gsettings")
+                    .args(["set", schema, key_str, &gsettings_val])
+                    .output()
+                    .map_err(cfgd_core::errors::CfgdError::Io)?;
+
+                if !output.status.success() {
+                    printer.warning(&format!(
+                        "gsettings set failed for {}.{}: {}",
+                        schema,
+                        key_str,
+                        stderr_string(&output)
+                    ));
+                }
+            }
+        }
+
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2346,5 +2494,65 @@ HKEY_CURRENT_USER\\Environment\n\
         let state = wsc.current_state().unwrap();
         assert!(state.is_sequence());
         assert!(state.as_sequence().unwrap().is_empty());
+    }
+
+    // --- GsettingsConfigurator ---
+
+    #[test]
+    fn gsettings_configurator_name() {
+        assert_eq!(GsettingsConfigurator.name(), "gsettings");
+    }
+
+    #[test]
+    fn gsettings_strip_quotes() {
+        assert_eq!(strip_gsettings_quotes("'prefer-dark'"), "prefer-dark");
+        assert_eq!(strip_gsettings_quotes("'hello world'"), "hello world");
+        assert_eq!(strip_gsettings_quotes("true"), "true");
+        assert_eq!(strip_gsettings_quotes("42"), "42");
+        assert_eq!(strip_gsettings_quotes("''"), "");
+        assert_eq!(strip_gsettings_quotes(""), "");
+    }
+
+    #[test]
+    fn gsettings_yaml_to_gsettings_value() {
+        assert_eq!(
+            yaml_to_gsettings_value(&serde_yaml::Value::String("dark".into())),
+            "'dark'"
+        );
+        assert_eq!(
+            yaml_to_gsettings_value(&serde_yaml::Value::Bool(true)),
+            "true"
+        );
+        assert_eq!(
+            yaml_to_gsettings_value(&serde_yaml::Value::Bool(false)),
+            "false"
+        );
+        let n = serde_yaml::Value::Number(serde_yaml::Number::from(42));
+        assert_eq!(yaml_to_gsettings_value(&n), "42");
+        let f = serde_yaml::Value::Number(serde_yaml::Number::from(1.5));
+        assert_eq!(yaml_to_gsettings_value(&f), "1.5");
+    }
+
+    #[test]
+    fn gsettings_diff_empty_desired() {
+        let configurator = GsettingsConfigurator;
+        let desired = serde_yaml::Value::Mapping(serde_yaml::Mapping::new());
+        let drifts = configurator.diff(&desired).unwrap();
+        assert!(drifts.is_empty());
+    }
+
+    #[test]
+    fn gsettings_diff_non_mapping() {
+        let configurator = GsettingsConfigurator;
+        let desired = serde_yaml::Value::String("not a mapping".into());
+        let drifts = configurator.diff(&desired).unwrap();
+        assert!(drifts.is_empty());
+    }
+
+    #[test]
+    fn gsettings_current_state_is_empty_mapping() {
+        let configurator = GsettingsConfigurator;
+        let state = configurator.current_state().unwrap();
+        assert!(state.as_mapping().unwrap().is_empty());
     }
 }
