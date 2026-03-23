@@ -64,6 +64,27 @@ pub(crate) fn diff_yaml_mapping(
     drifts
 }
 
+/// Parse a single line of `reg query` output into `(name, reg_type, value)`.
+///
+/// Lines have the format `"    NAME    REG_TYPE    VALUE"` with 4-space separators.
+/// Returns `None` for empty lines and registry key header lines (those starting with `HKEY_`).
+fn parse_reg_line(line: &str) -> Option<(&str, &str, &str)> {
+    let line = line.trim();
+    if line.is_empty() || line.starts_with("HKEY_") {
+        return None;
+    }
+    let parts: Vec<&str> = line.splitn(3, "    ").collect();
+    if parts.len() == 3 {
+        let name = parts[0].trim();
+        let reg_type = parts[1].trim();
+        let value = parts[2].trim();
+        if !name.is_empty() {
+            return Some((name, reg_type, value));
+        }
+    }
+    None
+}
+
 /// ShellConfigurator — reads/sets default shell.
 ///
 /// **Unix**: reads `$SHELL`, uses `chsh -s` to change the default shell.
@@ -992,28 +1013,14 @@ impl EnvironmentConfigurator {
 
     /// Parse the output of `reg query HKCU\Environment` into a map of variable
     /// names to values. Handles both `REG_SZ` and `REG_EXPAND_SZ` value types.
-    ///
-    /// Each data line has the format (with 4-space separators):
-    /// `    NAME    REG_SZ    VALUE`
     fn parse_reg_query_output(stdout: &str) -> BTreeMap<String, String> {
-        let mut vars = BTreeMap::new();
-        for line in stdout.lines() {
-            let line = line.trim();
-            if line.is_empty() || line.starts_with("HKEY_") {
-                continue;
-            }
-            // Format: "NAME    REG_SZ    VALUE" or "NAME    REG_EXPAND_SZ    VALUE"
-            // Fields are separated by 4 spaces.
-            let parts: Vec<&str> = line.splitn(3, "    ").collect();
-            if parts.len() == 3 {
-                let name = parts[0].trim();
-                let value = parts[2].trim();
-                if !name.is_empty() {
-                    vars.insert(name.to_string(), value.to_string());
-                }
-            }
-        }
-        vars
+        stdout
+            .lines()
+            .filter_map(|line| {
+                let (name, _reg_type, value) = parse_reg_line(line)?;
+                Some((name.to_string(), value.to_string()))
+            })
+            .collect()
     }
 
     /// Read current user environment variables from the Windows registry.
@@ -1269,15 +1276,9 @@ impl WindowsRegistryConfigurator {
     /// For DWORD values, converts hex (`0x...`) to decimal string for comparison.
     fn parse_reg_value_output(output: &str, value_name: &str) -> Option<String> {
         for line in output.lines() {
-            let line = line.trim();
-            if line.is_empty() || line.starts_with("HKEY_") {
-                continue;
-            }
-            // Fields are separated by 4 spaces.
-            let parts: Vec<&str> = line.splitn(3, "    ").collect();
-            if parts.len() == 3 && parts[0].trim() == value_name {
-                let reg_type = parts[1].trim();
-                let raw_value = parts[2].trim();
+            if let Some((name, reg_type, raw_value)) = parse_reg_line(line)
+                && name == value_name
+            {
                 // Convert DWORD hex to decimal for comparison
                 if reg_type == "REG_DWORD"
                     && let Some(hex_str) = raw_value.strip_prefix("0x")
@@ -1741,14 +1742,8 @@ mod tests {
 
     #[test]
     fn yaml_value_to_string_conversion() {
-        assert_eq!(
-            yaml_value_to_string(&serde_yaml::Value::Bool(true)),
-            "1"
-        );
-        assert_eq!(
-            yaml_value_to_string(&serde_yaml::Value::Bool(false)),
-            "0"
-        );
+        assert_eq!(yaml_value_to_string(&serde_yaml::Value::Bool(true)), "1");
+        assert_eq!(yaml_value_to_string(&serde_yaml::Value::Bool(false)), "0");
         assert_eq!(
             yaml_value_to_string(&serde_yaml::Value::Number(42.into())),
             "42"
@@ -1913,9 +1908,8 @@ HKEY_CURRENT_USER\\Environment\n\
             serde_yaml::Value::String("expected".into()),
         );
 
-        let drifts = diff_yaml_mapping(&desired, "", yaml_value_to_string, |_| {
-            "actual".to_string()
-        });
+        let drifts =
+            diff_yaml_mapping(&desired, "", yaml_value_to_string, |_| "actual".to_string());
         assert_eq!(drifts.len(), 1);
         assert_eq!(drifts[0].key, "key1");
         assert_eq!(drifts[0].expected, "expected");
@@ -1930,9 +1924,7 @@ HKEY_CURRENT_USER\\Environment\n\
             serde_yaml::Value::String("same".into()),
         );
 
-        let drifts = diff_yaml_mapping(&desired, "", yaml_value_to_string, |_| {
-            "same".to_string()
-        });
+        let drifts = diff_yaml_mapping(&desired, "", yaml_value_to_string, |_| "same".to_string());
         assert!(drifts.is_empty());
     }
 
@@ -1979,14 +1971,8 @@ HKEY_CURRENT_USER\\Environment\n\
     #[test]
     fn yaml_value_to_string_bool_converts_to_01() {
         // macos defaults uses "1"/"0" for bools, not "true"/"false"
-        assert_eq!(
-            yaml_value_to_string(&serde_yaml::Value::Bool(true)),
-            "1"
-        );
-        assert_eq!(
-            yaml_value_to_string(&serde_yaml::Value::Bool(false)),
-            "0"
-        );
+        assert_eq!(yaml_value_to_string(&serde_yaml::Value::Bool(true)), "1");
+        assert_eq!(yaml_value_to_string(&serde_yaml::Value::Bool(false)), "0");
     }
 
     #[test]

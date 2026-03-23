@@ -185,6 +185,36 @@ fn brew_owner() -> Option<String> {
     }
 }
 
+/// Try to install a package via common system package managers (apt, then dnf, then zypper).
+/// Returns `Ok(())` on first success, or a `BootstrapFailed` error if all attempts fail.
+fn bootstrap_via_system_manager(
+    printer: &Printer,
+    target_pkg: &str,
+    manager_name: &str,
+) -> Result<()> {
+    for cmd_name in ["apt", "dnf", "zypper"] {
+        if command_available(cmd_name) {
+            let result = printer
+                .run_with_output(
+                    Command::new("sudo").args([cmd_name, "install", "-y", target_pkg]),
+                    &format!("Installing {} via {}", target_pkg, cmd_name),
+                )
+                .map_err(|e| PackageError::BootstrapFailed {
+                    manager: manager_name.into(),
+                    message: format!("{} install failed: {}", cmd_name, e),
+                })?;
+            if result.status.success() {
+                return Ok(());
+            }
+        }
+    }
+    Err(PackageError::BootstrapFailed {
+        manager: manager_name.into(),
+        message: format!("could not install {} via apt, dnf, or zypper", target_pkg),
+    }
+    .into())
+}
+
 /// Strip trailing "-VERSION" from package names where version starts with a digit.
 /// Used by apk, pkg, and nix-env which output "name-version" format.
 fn strip_version_suffix(name: &str) -> String {
@@ -941,7 +971,9 @@ fn query_version_pkg(manager: &str, package: &str) -> Result<Option<String>> {
 // --- installed_packages_with_versions helpers ---
 
 /// Parse `dpkg-query -W -f='${Package}\t${Version}\n'` output into PackageInfo.
-pub(crate) fn parse_apt_versions(stdout: &str) -> Vec<cfgd_core::providers::PackageInfo> {
+/// Parse tab-separated `NAME\tVERSION` output into PackageInfo.
+/// Used by both apt (dpkg-query) and rpm (rpm -qa --queryformat) parsers.
+pub(crate) fn parse_tab_separated_versions(stdout: &str) -> Vec<cfgd_core::providers::PackageInfo> {
     stdout
         .lines()
         .filter_map(|line| {
@@ -963,27 +995,12 @@ pub(crate) fn parse_apt_versions(stdout: &str) -> Vec<cfgd_core::providers::Pack
         .collect()
 }
 
-/// Parse `rpm -qa --queryformat '%{NAME}\t%{VERSION}\n'` output into PackageInfo.
+pub(crate) fn parse_apt_versions(stdout: &str) -> Vec<cfgd_core::providers::PackageInfo> {
+    parse_tab_separated_versions(stdout)
+}
+
 pub(crate) fn parse_rpm_versions(stdout: &str) -> Vec<cfgd_core::providers::PackageInfo> {
-    stdout
-        .lines()
-        .filter_map(|line| {
-            let mut parts = line.splitn(2, '\t');
-            let name = parts.next()?.trim();
-            let version = parts.next().unwrap_or("unknown").trim();
-            if name.is_empty() {
-                return None;
-            }
-            Some(cfgd_core::providers::PackageInfo {
-                name: name.to_string(),
-                version: if version.is_empty() {
-                    "unknown".to_string()
-                } else {
-                    version.to_string()
-                },
-            })
-        })
-        .collect()
+    parse_tab_separated_versions(stdout)
 }
 
 fn list_apt_with_versions(manager: &str) -> Result<Vec<cfgd_core::providers::PackageInfo>> {
@@ -1832,56 +1849,7 @@ impl PackageManager for SnapManager {
     }
 
     fn bootstrap(&self, printer: &Printer) -> Result<()> {
-        if command_available("apt") {
-            let result = printer
-                .run_with_output(
-                    Command::new("sudo").args(["apt", "install", "-y", "snapd"]),
-                    "Installing snapd via apt",
-                )
-                .map_err(|e| PackageError::BootstrapFailed {
-                    manager: "snap".into(),
-                    message: format!("apt install failed: {}", e),
-                })?;
-            if result.status.success() {
-                return Ok(());
-            }
-        }
-
-        if command_available("dnf") {
-            let result = printer
-                .run_with_output(
-                    Command::new("sudo").args(["dnf", "install", "-y", "snapd"]),
-                    "Installing snapd via dnf",
-                )
-                .map_err(|e| PackageError::BootstrapFailed {
-                    manager: "snap".into(),
-                    message: format!("dnf install failed: {}", e),
-                })?;
-            if result.status.success() {
-                return Ok(());
-            }
-        }
-
-        if command_available("zypper") {
-            let result = printer
-                .run_with_output(
-                    Command::new("sudo").args(["zypper", "install", "-y", "snapd"]),
-                    "Installing snapd via zypper",
-                )
-                .map_err(|e| PackageError::BootstrapFailed {
-                    manager: "snap".into(),
-                    message: format!("zypper install failed: {}", e),
-                })?;
-            if result.status.success() {
-                return Ok(());
-            }
-        }
-
-        Err(PackageError::BootstrapFailed {
-            manager: "snap".into(),
-            message: "no installation method available".into(),
-        }
-        .into())
+        bootstrap_via_system_manager(printer, "snapd", "snap")
     }
 
     fn installed_packages(&self) -> Result<HashSet<String>> {
@@ -2004,56 +1972,7 @@ impl PackageManager for FlatpakManager {
     }
 
     fn bootstrap(&self, printer: &Printer) -> Result<()> {
-        if command_available("apt") {
-            let result = printer
-                .run_with_output(
-                    Command::new("sudo").args(["apt", "install", "-y", "flatpak"]),
-                    "Installing flatpak via apt",
-                )
-                .map_err(|e| PackageError::BootstrapFailed {
-                    manager: "flatpak".into(),
-                    message: format!("apt install failed: {}", e),
-                })?;
-            if result.status.success() {
-                return Ok(());
-            }
-        }
-
-        if command_available("dnf") {
-            let result = printer
-                .run_with_output(
-                    Command::new("sudo").args(["dnf", "install", "-y", "flatpak"]),
-                    "Installing flatpak via dnf",
-                )
-                .map_err(|e| PackageError::BootstrapFailed {
-                    manager: "flatpak".into(),
-                    message: format!("dnf install failed: {}", e),
-                })?;
-            if result.status.success() {
-                return Ok(());
-            }
-        }
-
-        if command_available("zypper") {
-            let result = printer
-                .run_with_output(
-                    Command::new("sudo").args(["zypper", "install", "-y", "flatpak"]),
-                    "Installing flatpak via zypper",
-                )
-                .map_err(|e| PackageError::BootstrapFailed {
-                    manager: "flatpak".into(),
-                    message: format!("zypper install failed: {}", e),
-                })?;
-            if result.status.success() {
-                return Ok(());
-            }
-        }
-
-        Err(PackageError::BootstrapFailed {
-            manager: "flatpak".into(),
-            message: "no installation method available".into(),
-        }
-        .into())
+        bootstrap_via_system_manager(printer, "flatpak", "flatpak")
     }
 
     fn installed_packages(&self) -> Result<HashSet<String>> {
@@ -2362,41 +2281,7 @@ impl PackageManager for GoInstallManager {
             }
         }
 
-        if command_available("apt") {
-            let result = printer
-                .run_with_output(
-                    Command::new("sudo").args(["apt", "install", "-y", "golang"]),
-                    "Installing Go via apt",
-                )
-                .map_err(|e| PackageError::BootstrapFailed {
-                    manager: "go".into(),
-                    message: format!("apt install failed: {}", e),
-                })?;
-            if result.status.success() {
-                return Ok(());
-            }
-        }
-
-        if command_available("dnf") {
-            let result = printer
-                .run_with_output(
-                    Command::new("sudo").args(["dnf", "install", "-y", "golang"]),
-                    "Installing Go via dnf",
-                )
-                .map_err(|e| PackageError::BootstrapFailed {
-                    manager: "go".into(),
-                    message: format!("dnf install failed: {}", e),
-                })?;
-            if result.status.success() {
-                return Ok(());
-            }
-        }
-
-        Err(PackageError::BootstrapFailed {
-            manager: "go".into(),
-            message: "no installation method available".into(),
-        }
-        .into())
+        bootstrap_via_system_manager(printer, "golang", "go")
     }
 
     fn installed_packages(&self) -> Result<HashSet<String>> {
@@ -3278,41 +3163,6 @@ pub fn add_package(
                 npm.global.push(package_name.to_string());
             }
         }
-        "pipx" => {
-            if !packages.pipx.contains(&package_name.to_string()) {
-                packages.pipx.push(package_name.to_string());
-            }
-        }
-        "dnf" => {
-            if !packages.dnf.contains(&package_name.to_string()) {
-                packages.dnf.push(package_name.to_string());
-            }
-        }
-        "apk" => {
-            if !packages.apk.contains(&package_name.to_string()) {
-                packages.apk.push(package_name.to_string());
-            }
-        }
-        "pacman" => {
-            if !packages.pacman.contains(&package_name.to_string()) {
-                packages.pacman.push(package_name.to_string());
-            }
-        }
-        "zypper" => {
-            if !packages.zypper.contains(&package_name.to_string()) {
-                packages.zypper.push(package_name.to_string());
-            }
-        }
-        "yum" => {
-            if !packages.yum.contains(&package_name.to_string()) {
-                packages.yum.push(package_name.to_string());
-            }
-        }
-        "pkg" => {
-            if !packages.pkg.contains(&package_name.to_string()) {
-                packages.pkg.push(package_name.to_string());
-            }
-        }
         "snap" => {
             let snap = packages.snap.get_or_insert_with(Default::default);
             if !snap.packages.contains(&package_name.to_string()) {
@@ -3325,34 +3175,15 @@ pub fn add_package(
                 flatpak.packages.push(package_name.to_string());
             }
         }
-        "nix" => {
-            if !packages.nix.contains(&package_name.to_string()) {
-                packages.nix.push(package_name.to_string());
-            }
-        }
-        "go" => {
-            if !packages.go.contains(&package_name.to_string()) {
-                packages.go.push(package_name.to_string());
-            }
-        }
-        "winget" => {
-            if !packages.winget.contains(&package_name.to_string()) {
-                packages.winget.push(package_name.to_string());
-            }
-        }
-        "chocolatey" => {
-            if !packages.chocolatey.contains(&package_name.to_string()) {
-                packages.chocolatey.push(package_name.to_string());
-            }
-        }
-        "scoop" => {
-            if !packages.scoop.contains(&package_name.to_string()) {
-                packages.scoop.push(package_name.to_string());
-            }
-        }
         _ => {
-            // Check custom managers
-            if let Some(custom) = packages.custom.iter_mut().find(|c| c.name == manager_name) {
+            // Simple Vec<String> managers (pipx, dnf, apk, pacman, zypper, yum, pkg, nix, go,
+            // winget, chocolatey, scoop) delegate through simple_list_mut.
+            if let Some(list) = packages.simple_list_mut(manager_name) {
+                if !list.contains(&package_name.to_string()) {
+                    list.push(package_name.to_string());
+                }
+            } else if let Some(custom) = packages.custom.iter_mut().find(|c| c.name == manager_name)
+            {
                 if !custom.packages.contains(&package_name.to_string()) {
                     custom.packages.push(package_name.to_string());
                 }
@@ -3428,41 +3259,6 @@ pub fn remove_package(
                 false
             }
         }
-        "pipx" => {
-            let before = packages.pipx.len();
-            packages.pipx.retain(|p| p != package_name);
-            packages.pipx.len() < before
-        }
-        "dnf" => {
-            let before = packages.dnf.len();
-            packages.dnf.retain(|p| p != package_name);
-            packages.dnf.len() < before
-        }
-        "apk" => {
-            let before = packages.apk.len();
-            packages.apk.retain(|p| p != package_name);
-            packages.apk.len() < before
-        }
-        "pacman" => {
-            let before = packages.pacman.len();
-            packages.pacman.retain(|p| p != package_name);
-            packages.pacman.len() < before
-        }
-        "zypper" => {
-            let before = packages.zypper.len();
-            packages.zypper.retain(|p| p != package_name);
-            packages.zypper.len() < before
-        }
-        "yum" => {
-            let before = packages.yum.len();
-            packages.yum.retain(|p| p != package_name);
-            packages.yum.len() < before
-        }
-        "pkg" => {
-            let before = packages.pkg.len();
-            packages.pkg.retain(|p| p != package_name);
-            packages.pkg.len() < before
-        }
         "snap" => {
             if let Some(ref mut snap) = packages.snap {
                 let before = snap.packages.len() + snap.classic.len();
@@ -3482,34 +3278,15 @@ pub fn remove_package(
                 false
             }
         }
-        "nix" => {
-            let before = packages.nix.len();
-            packages.nix.retain(|p| p != package_name);
-            packages.nix.len() < before
-        }
-        "go" => {
-            let before = packages.go.len();
-            packages.go.retain(|p| p != package_name);
-            packages.go.len() < before
-        }
-        "winget" => {
-            let before = packages.winget.len();
-            packages.winget.retain(|p| p != package_name);
-            packages.winget.len() < before
-        }
-        "chocolatey" => {
-            let before = packages.chocolatey.len();
-            packages.chocolatey.retain(|p| p != package_name);
-            packages.chocolatey.len() < before
-        }
-        "scoop" => {
-            let before = packages.scoop.len();
-            packages.scoop.retain(|p| p != package_name);
-            packages.scoop.len() < before
-        }
         _ => {
-            // Check custom managers
-            if let Some(custom) = packages.custom.iter_mut().find(|c| c.name == manager_name) {
+            // Simple Vec<String> managers (pipx, dnf, apk, pacman, zypper, yum, pkg, nix, go,
+            // winget, chocolatey, scoop) delegate through simple_list_mut.
+            if let Some(list) = packages.simple_list_mut(manager_name) {
+                let before = list.len();
+                list.retain(|p| p != package_name);
+                list.len() < before
+            } else if let Some(custom) = packages.custom.iter_mut().find(|c| c.name == manager_name)
+            {
                 let before = custom.packages.len();
                 custom.packages.retain(|p| p != package_name);
                 custom.packages.len() < before

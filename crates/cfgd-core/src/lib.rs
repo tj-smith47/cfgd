@@ -718,18 +718,17 @@ pub fn acquire_apply_lock(state_dir: &std::path::Path) -> errors::Result<ApplyLo
 }
 
 /// RAII guard that releases the apply lock when dropped.
-#[cfg(unix)]
+/// Both Unix (flock) and Windows (LockFileEx) release on file handle close.
 #[derive(Debug)]
 pub struct ApplyLockGuard {
     _file: std::fs::File,
     _path: std::path::PathBuf,
 }
 
-#[cfg(unix)]
 impl Drop for ApplyLockGuard {
     fn drop(&mut self) {
-        // flock is released automatically when the fd is closed.
-        // Clear the PID from the lock file so stale reads aren't confusing.
+        // Lock is released when the file handle is closed (on drop).
+        // Clear the PID so stale reads aren't confusing.
         let _ = self._file.set_len(0);
     }
 }
@@ -792,23 +791,6 @@ pub fn acquire_apply_lock(state_dir: &std::path::Path) -> errors::Result<ApplyLo
         _file: f,
         _path: lock_path,
     })
-}
-
-/// RAII guard that releases the apply lock when dropped (Windows).
-#[cfg(windows)]
-#[derive(Debug)]
-pub struct ApplyLockGuard {
-    _file: std::fs::File,
-    _path: std::path::PathBuf,
-}
-
-#[cfg(windows)]
-impl Drop for ApplyLockGuard {
-    fn drop(&mut self) {
-        // Windows releases the lock when the file handle is closed (on drop).
-        // Clear the PID via the same handle to avoid mandatory-lock conflicts.
-        let _ = self._file.set_len(0);
-    }
 }
 
 // ---------------------------------------------------------------------------

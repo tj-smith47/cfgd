@@ -947,6 +947,75 @@ pub struct PackagesSpec {
     pub custom: Vec<CustomManagerSpec>,
 }
 
+impl PackagesSpec {
+    /// Return a mutable reference to the package list for a simple `Vec<String>` manager.
+    /// Returns `None` for managers that use struct wrappers (brew, apt, cargo, npm, snap, flatpak)
+    /// or for unknown manager names.
+    pub fn simple_list_mut(&mut self, manager: &str) -> Option<&mut Vec<String>> {
+        match manager {
+            "pipx" => Some(&mut self.pipx),
+            "dnf" => Some(&mut self.dnf),
+            "apk" => Some(&mut self.apk),
+            "pacman" => Some(&mut self.pacman),
+            "zypper" => Some(&mut self.zypper),
+            "yum" => Some(&mut self.yum),
+            "pkg" => Some(&mut self.pkg),
+            "nix" => Some(&mut self.nix),
+            "go" => Some(&mut self.go),
+            "winget" => Some(&mut self.winget),
+            "chocolatey" => Some(&mut self.chocolatey),
+            "scoop" => Some(&mut self.scoop),
+            _ => None,
+        }
+    }
+
+    /// Return a reference to the package list for a simple `Vec<String>` manager.
+    /// Returns `None` for struct-wrapper managers or unknown names.
+    pub fn simple_list(&self, manager: &str) -> Option<&[String]> {
+        match manager {
+            "pipx" => Some(&self.pipx),
+            "dnf" => Some(&self.dnf),
+            "apk" => Some(&self.apk),
+            "pacman" => Some(&self.pacman),
+            "zypper" => Some(&self.zypper),
+            "yum" => Some(&self.yum),
+            "pkg" => Some(&self.pkg),
+            "nix" => Some(&self.nix),
+            "go" => Some(&self.go),
+            "winget" => Some(&self.winget),
+            "chocolatey" => Some(&self.chocolatey),
+            "scoop" => Some(&self.scoop),
+            _ => None,
+        }
+    }
+
+    /// Return all non-empty simple-list managers as `(name, packages)` pairs.
+    pub fn non_empty_simple_lists(&self) -> Vec<(&str, &[String])> {
+        let mut result = Vec::new();
+        for name in &[
+            "pipx",
+            "dnf",
+            "apk",
+            "pacman",
+            "zypper",
+            "yum",
+            "pkg",
+            "nix",
+            "go",
+            "winget",
+            "chocolatey",
+            "scoop",
+        ] {
+            if let Some(list) = self.simple_list(name)
+                && !list.is_empty()
+            {
+                result.push((*name, list));
+            }
+        }
+        result
+    }
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BrewSpec {

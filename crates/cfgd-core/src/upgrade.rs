@@ -341,6 +341,7 @@ fn atomic_replace(source: &Path, target: &Path) -> std::result::Result<(), Upgra
 /// on next startup via `cleanup_old_binary`.
 #[cfg(windows)]
 fn atomic_replace(source: &Path, target: &Path) -> std::result::Result<(), UpgradeError> {
+    // with_extension replaces .exe → .exe.old (not appends)
     let old = target.with_extension("exe.old");
     // Clean up from previous upgrades
     let _ = fs::remove_file(&old);

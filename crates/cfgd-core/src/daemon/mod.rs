@@ -2082,37 +2082,36 @@ fn record_file_drift(path: &Path) -> bool {
 // --- Service Management ---
 // launchd on macOS, systemd on Linux, Windows Service on Windows.
 
-#[cfg(windows)]
 pub fn install_service(config_path: &Path, profile: Option<&str>) -> Result<()> {
     let cfgd_binary = std::env::current_exe().map_err(|e| DaemonError::ServiceInstallFailed {
         message: format!("cannot determine binary path: {}", e),
     })?;
-    install_windows_service(&cfgd_binary, config_path, profile)
-}
-
-#[cfg(unix)]
-pub fn install_service(config_path: &Path, profile: Option<&str>) -> Result<()> {
-    let cfgd_binary = std::env::current_exe().map_err(|e| DaemonError::ServiceInstallFailed {
-        message: format!("cannot determine binary path: {}", e),
-    })?;
-    if cfg!(target_os = "macos") {
-        install_launchd_service(&cfgd_binary, config_path, profile)
-    } else {
-        install_systemd_service(&cfgd_binary, config_path, profile)
+    #[cfg(windows)]
+    {
+        install_windows_service(&cfgd_binary, config_path, profile)
+    }
+    #[cfg(unix)]
+    {
+        if cfg!(target_os = "macos") {
+            install_launchd_service(&cfgd_binary, config_path, profile)
+        } else {
+            install_systemd_service(&cfgd_binary, config_path, profile)
+        }
     }
 }
 
-#[cfg(windows)]
 pub fn uninstall_service() -> Result<()> {
-    uninstall_windows_service()
-}
-
-#[cfg(unix)]
-pub fn uninstall_service() -> Result<()> {
-    if cfg!(target_os = "macos") {
-        uninstall_launchd_service()
-    } else {
-        uninstall_systemd_service()
+    #[cfg(windows)]
+    {
+        uninstall_windows_service()
+    }
+    #[cfg(unix)]
+    {
+        if cfg!(target_os = "macos") {
+            uninstall_launchd_service()
+        } else {
+            uninstall_systemd_service()
+        }
     }
 }
 
@@ -2426,8 +2425,10 @@ fn install_launchd_service(binary: &Path, config_path: &Path, profile: Option<&s
 </plist>"#
     );
 
-    crate::atomic_write_str(&plist_path, &plist).map_err(|e| DaemonError::ServiceInstallFailed {
-        message: format!("write plist: {}", e),
+    crate::atomic_write_str(&plist_path, &plist).map_err(|e| {
+        DaemonError::ServiceInstallFailed {
+            message: format!("write plist: {}", e),
+        }
     })?;
 
     tracing::info!("installed launchd service: {}", plist_path.display());

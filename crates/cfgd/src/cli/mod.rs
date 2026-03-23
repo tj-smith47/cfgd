@@ -4181,26 +4181,8 @@ fn cmd_doctor(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
         {
             declared.push("npm".to_string());
         }
-        if !pkgs.pipx.is_empty() {
-            declared.push("pipx".to_string());
-        }
-        if !pkgs.dnf.is_empty() {
-            declared.push("dnf".to_string());
-        }
-        if !pkgs.apk.is_empty() {
-            declared.push("apk".to_string());
-        }
-        if !pkgs.pacman.is_empty() {
-            declared.push("pacman".to_string());
-        }
-        if !pkgs.zypper.is_empty() {
-            declared.push("zypper".to_string());
-        }
-        if !pkgs.yum.is_empty() {
-            declared.push("yum".to_string());
-        }
-        if !pkgs.pkg.is_empty() {
-            declared.push("pkg".to_string());
+        for (name, _) in pkgs.non_empty_simple_lists() {
+            declared.push(name.to_string());
         }
         if let Some(ref snap) = pkgs.snap
             && !snap.packages.is_empty()
@@ -4211,21 +4193,6 @@ fn cmd_doctor(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
             && !flatpak.packages.is_empty()
         {
             declared.push("flatpak".to_string());
-        }
-        if !pkgs.nix.is_empty() {
-            declared.push("nix".to_string());
-        }
-        if !pkgs.go.is_empty() {
-            declared.push("go".to_string());
-        }
-        if !pkgs.winget.is_empty() {
-            declared.push("winget".to_string());
-        }
-        if !pkgs.chocolatey.is_empty() {
-            declared.push("chocolatey".to_string());
-        }
-        if !pkgs.scoop.is_empty() {
-            declared.push("scoop".to_string());
         }
         for custom in &pkgs.custom {
             if !custom.packages.is_empty() {

@@ -2033,30 +2033,30 @@ fn verify_env(
         ];
         for profile_dir in &ps_profile_dirs {
             let profile_path = profile_dir.join("Microsoft.PowerShell_profile.ps1");
-            if let Ok(content) = std::fs::read_to_string(&profile_path) {
-                let has_line = content.contains("cfgd-env.ps1");
-                results.push(VerifyResult {
-                    resource_type: "env-rc".to_string(),
-                    resource_id: profile_path.display().to_string(),
-                    matches: has_line,
-                    expected: "source line present".to_string(),
-                    actual: if has_line {
-                        "source line present".to_string()
-                    } else {
-                        "source line missing".to_string()
-                    },
-                });
-                if !has_line {
-                    state
-                        .record_drift(
-                            "env-rc",
-                            &profile_path.display().to_string(),
-                            Some("source line present"),
-                            Some("source line missing"),
-                            "local",
-                        )
-                        .ok();
-                }
+            let has_line = std::fs::read_to_string(&profile_path)
+                .map(|content| content.contains("cfgd-env.ps1"))
+                .unwrap_or(false);
+            results.push(VerifyResult {
+                resource_type: "env-rc".to_string(),
+                resource_id: profile_path.display().to_string(),
+                matches: has_line,
+                expected: "source line present".to_string(),
+                actual: if has_line {
+                    "source line present".to_string()
+                } else {
+                    "source line missing".to_string()
+                },
+            });
+            if !has_line {
+                state
+                    .record_drift(
+                        "env-rc",
+                        &profile_path.display().to_string(),
+                        Some("source line present"),
+                        Some("source line missing"),
+                        "local",
+                    )
+                    .ok();
             }
         }
 
@@ -2080,33 +2080,30 @@ fn verify_env(
             expand_tilde(std::path::Path::new("~/.bashrc"))
         };
 
-        if let Ok(rc_content) = std::fs::read_to_string(&rc_path) {
-            if rc_content.contains("cfgd.env") {
-                results.push(VerifyResult {
-                    resource_type: "env-rc".to_string(),
-                    resource_id: rc_path.display().to_string(),
-                    matches: true,
-                    expected: "source line present".to_string(),
-                    actual: "source line present".to_string(),
-                });
+        let has_source_line = std::fs::read_to_string(&rc_path)
+            .map(|content| content.contains("cfgd.env"))
+            .unwrap_or(false);
+        results.push(VerifyResult {
+            resource_type: "env-rc".to_string(),
+            resource_id: rc_path.display().to_string(),
+            matches: has_source_line,
+            expected: "source line present".to_string(),
+            actual: if has_source_line {
+                "source line present".to_string()
             } else {
-                results.push(VerifyResult {
-                    resource_type: "env-rc".to_string(),
-                    resource_id: rc_path.display().to_string(),
-                    matches: false,
-                    expected: "source line present".to_string(),
-                    actual: "source line missing".to_string(),
-                });
-                state
-                    .record_drift(
-                        "env-rc",
-                        &rc_path.display().to_string(),
-                        Some("source line present"),
-                        Some("source line missing"),
-                        "local",
-                    )
-                    .ok();
-            }
+                "source line missing".to_string()
+            },
+        });
+        if !has_source_line {
+            state
+                .record_drift(
+                    "env-rc",
+                    &rc_path.display().to_string(),
+                    Some("source line present"),
+                    Some("source line missing"),
+                    "local",
+                )
+                .ok();
         }
     }
 
@@ -2181,6 +2178,7 @@ fn verify_env_file(
 
 /// Default timeout for module-level scripts.
 const MODULE_SCRIPT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
+const ENV_FILE_HEADER: &str = "# managed by cfgd \u{2014} do not edit";
 
 /// Parse a duration string — delegates to `crate::parse_duration_str`, mapping
 /// the error into `CfgdError::Config`.
@@ -2499,7 +2497,7 @@ fn generate_env_file_content(
     env: &[crate::config::EnvVar],
     aliases: &[crate::config::ShellAlias],
 ) -> String {
-    let mut lines = vec!["# managed by cfgd — do not edit".to_string()];
+    let mut lines = vec![ENV_FILE_HEADER.to_string()];
     for ev in env {
         if ev.value.contains('$') {
             // Unquoted so shell expansion works (e.g. $PATH)
@@ -2528,7 +2526,7 @@ fn generate_fish_env_content(
     env: &[crate::config::EnvVar],
     aliases: &[crate::config::ShellAlias],
 ) -> String {
-    let mut lines = vec!["# managed by cfgd — do not edit".to_string()];
+    let mut lines = vec![ENV_FILE_HEADER.to_string()];
     for ev in env {
         if ev.name == "PATH" {
             // Fish uses space-separated list for PATH, not colon-separated
@@ -2550,7 +2548,7 @@ fn generate_powershell_env_content(
     env: &[crate::config::EnvVar],
     aliases: &[crate::config::ShellAlias],
 ) -> String {
-    let mut lines = vec!["# managed by cfgd — do not edit".to_string()];
+    let mut lines = vec![ENV_FILE_HEADER.to_string()];
     for ev in env {
         if ev.value.contains("$env:") {
             // Value references other env vars — don't quote
