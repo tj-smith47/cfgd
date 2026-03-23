@@ -1,7 +1,10 @@
 version: "3"
 
+dotenv: [".env"]
+
 vars:
-  REGISTRY: registry.jarvispro.io
+  REGISTRY:
+    sh: echo "${REGISTRY:-ghcr.io/cfgd-org}"
   VERSION:
     sh: git describe --tags --abbrev=0 2>/dev/null || echo "v0.0.0"
   VERSION_NUM:
@@ -175,5 +178,5 @@ tasks:
     cmds:
       - task: docker:operator
       - task: push:operator
-      - kustomize build --enable-alpha-plugins --enable-exec /db/manifests/k3s/namespaces/cfgd-system | kubectl apply -f -
+      - kustomize build --enable-alpha-plugins --enable-exec "${CFGD_DEPLOY_MANIFESTS:?Set CFGD_DEPLOY_MANIFESTS to your kustomize directory}" | kubectl apply -f -
       - kubectl rollout restart deployment/cfgd-operator -n cfgd-system

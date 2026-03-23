@@ -46,14 +46,15 @@
 # Claude project config (plans, scripts, skills, hooks)
 !.claude/
 !.claude/*.md
-!.claude/specs/
-!.claude/specs/**
 !.claude/scripts/
 !.claude/scripts/**
 !.claude/skills/
 !.claude/skills/**
 !.claude/hooks/
 !.claude/hooks/**
+
+# Re-ignore specs (contain cluster-specific info)
+.claude/specs/
 
 # Tests
 !tests/
