@@ -2121,10 +2121,15 @@ pub fn uninstall_service() -> Result<()> {
 fn install_windows_service(binary: &Path, config_path: &Path, profile: Option<&str>) -> Result<()> {
     let config_abs =
         std::fs::canonicalize(config_path).unwrap_or_else(|_| config_path.to_path_buf());
+    let config_str = config_abs.display().to_string();
+    let config_str = config_str.strip_prefix(r"\\?\").unwrap_or(&config_str);
+
+    let binary_str = binary.display().to_string();
+    let binary_str = binary_str.strip_prefix(r"\\?\").unwrap_or(&binary_str);
+
     let mut bin_args = format!(
         "\"{}\" daemon service --config \"{}\"",
-        binary.display(),
-        config_abs.display(),
+        binary_str, config_str,
     );
     if let Some(p) = profile {
         bin_args.push_str(&format!(" --profile \"{}\"", p));
@@ -2234,9 +2239,34 @@ extern "system" fn ffi_service_main(_argc: u32, _argv: *mut *mut u16) {
 }
 
 #[cfg(windows)]
+fn init_windows_logging() {
+    let log_dir = std::env::var("LOCALAPPDATA")
+        .map(|d| PathBuf::from(d).join("cfgd"))
+        .unwrap_or_else(|_| crate::default_config_dir());
+
+    let _ = std::fs::create_dir_all(&log_dir);
+    let log_path = log_dir.join("daemon.log");
+
+    if let Ok(file) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&log_path)
+    {
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer(std::sync::Mutex::new(file))
+            .with_ansi(false)
+            .with_target(false)
+            .finish();
+        let _ = tracing::subscriber::set_global_default(subscriber);
+    }
+}
+
+#[cfg(windows)]
 fn windows_service_main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     use windows_service::service::*;
     use windows_service::service_control_handler::{self, ServiceControlHandlerResult};
+
+    init_windows_logging();
 
     let (shutdown_tx, shutdown_rx) = std::sync::mpsc::channel();
 
@@ -2292,15 +2322,15 @@ fn windows_service_main() -> std::result::Result<(), Box<dyn std::error::Error>>
         .ok_or("SERVICE_HOOKS not initialized — run_as_windows_service must be called first")?
         .clone();
 
-    // Spawn the daemon loop on a tokio runtime in a background thread
-    let daemon_handle = std::thread::spawn(move || {
-        let printer = Arc::new(crate::output::Printer::new(crate::output::Verbosity::Quiet));
-        let rt = tokio::runtime::Runtime::new().expect("failed to create tokio runtime");
-        rt.block_on(async {
-            if let Err(e) = run_daemon(config_path, profile_override, printer, hooks).await {
-                tracing::error!("Daemon error: {}", e);
-            }
-        });
+    // Create the tokio runtime on the main service thread so we can shut it down gracefully
+    let rt = tokio::runtime::Runtime::new()?;
+    let printer = Arc::new(crate::output::Printer::new(crate::output::Verbosity::Quiet));
+
+    // Spawn the daemon loop on the runtime
+    rt.spawn(async move {
+        if let Err(e) = run_daemon(config_path, profile_override, printer, hooks).await {
+            tracing::error!("Daemon error: {}", e);
+        }
     });
 
     // Report Running — daemon loop is now active
@@ -2328,8 +2358,8 @@ fn windows_service_main() -> std::result::Result<(), Box<dyn std::error::Error>>
         process_id: None,
     })?;
 
-    // The daemon thread will be terminated when the process exits
-    drop(daemon_handle);
+    // Gracefully shut down the runtime, giving in-flight operations time to complete
+    rt.shutdown_timeout(std::time::Duration::from_secs(5));
 
     status_handle.set_service_status(ServiceStatus {
         service_type: ServiceType::OWN_PROCESS,

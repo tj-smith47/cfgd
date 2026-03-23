@@ -25,6 +25,7 @@ syntect = "5"
 
 # Logging / Tracing
 tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["fmt"] }
 
 # Error handling
 thiserror = "2"
