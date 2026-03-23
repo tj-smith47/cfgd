@@ -2,7 +2,7 @@
 # E2E tests for cfgd-operator: CRD lifecycle, controller reconciliation,
 # policy compliance, DriftAlert propagation, Module CRD, ClusterConfigPolicy,
 # validation webhooks, mutating webhook, and OCI supply chain.
-# Prereqs: kind cluster running, cfgd-operator image loaded.
+# Prereqs: k3s cluster running, cfgd-operator deployed via setup-cluster.sh.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -11,41 +11,20 @@ MANIFESTS="$SCRIPT_DIR/../manifests"
 
 echo "=== cfgd Operator E2E Tests ==="
 
-# --- Setup ---
-# Generate and install CRDs
-echo "Generating CRDs..."
-CRD_YAML=$(cargo run --release --bin cfgd-gen-crds --manifest-path "$REPO_ROOT/Cargo.toml" 2>/dev/null)
-echo "$CRD_YAML" | kubectl apply -f - 2>&1
-echo "CRDs installed"
-
-# Wait for all 5 CRDs to be established
-echo "Waiting for CRDs to be established..."
-for crd in machineconfigs.cfgd.io configpolicies.cfgd.io driftalerts.cfgd.io \
-           modules.cfgd.io clusterconfigpolicies.cfgd.io; do
-    kubectl wait --for=condition=established "crd/$crd" --timeout=30s 2>/dev/null || true
-done
-
-# Generate webhook TLS certificates and install webhook configurations
-echo "Setting up webhook TLS..."
-generate_webhook_certs "cfgd-operator" "cfgd-system"
-install_webhook_config "cfgd-system"
-
-# Deploy operator (uses the TLS secret created above)
-echo "Deploying cfgd-operator..."
-kubectl apply -f "$MANIFESTS/operator-deployment.yaml"
-wait_for_deployment cfgd-system cfgd-operator 120
-
+# --- Verify infrastructure is ready ---
+echo "Verifying persistent infrastructure..."
+kubectl wait --for=condition=available deployment/cfgd-operator \
+    -n cfgd-system --timeout=30s
 echo "Operator is running"
 
-# Wait for webhook server to be ready (the operator starts the webhook server
-# only after TLS certs are found, which may take a moment after pod start)
-echo "Waiting for webhook server..."
-sleep 5
+kubectl get validatingwebhookconfiguration cfgd-validating-webhooks > /dev/null 2>&1 || {
+    echo "ERROR: Webhook configurations not found. Run setup-cluster.sh first."
+    exit 1
+}
 
-# Start local OCI registry for supply chain tests
-echo "Starting local OCI registry..."
-start_local_registry
-configure_registry_on_nodes
+# Set up ephemeral namespace for test resources
+create_e2e_namespace
+trap 'cleanup_e2e; for ns in "e2e-team-alpha-${E2E_RUN_ID}" "e2e-team-beta-${E2E_RUN_ID}" "e2e-inject-${E2E_RUN_ID}"; do kubectl delete namespace "$ns" --ignore-not-found --wait=false 2>/dev/null || true; done' EXIT
 
 # =================================================================
 # T01: CRDs are installed and established (all 5)
@@ -86,12 +65,12 @@ fi
 # =================================================================
 begin_test "T03: MachineConfig reconciliation"
 
-kubectl apply -n cfgd-system -f - <<EOF
+kubectl apply -n "$E2E_NAMESPACE" -f - <<EOF
 apiVersion: cfgd.io/v1alpha1
 kind: MachineConfig
 metadata:
   name: e2e-workstation-1
-  namespace: cfgd-system
+  namespace: ${E2E_NAMESPACE}
 spec:
   hostname: e2e-host-1
   profile: dev-workstation
@@ -109,14 +88,14 @@ EOF
 
 # Wait for controller to reconcile (status update)
 echo "  Waiting for MachineConfig status update..."
-MC_STATUS=$(wait_for_k8s_field machineconfig e2e-workstation-1 cfgd-system \
+MC_STATUS=$(wait_for_k8s_field machineconfig e2e-workstation-1 "$E2E_NAMESPACE" \
     '{.status.lastReconciled}' "" 60) || true
 
 echo "  lastReconciled: ${MC_STATUS:-not set}"
 
 if [ -n "$MC_STATUS" ]; then
     # Verify conditions
-    READY_STATUS=$(kubectl get machineconfig e2e-workstation-1 -n cfgd-system \
+    READY_STATUS=$(kubectl get machineconfig e2e-workstation-1 -n "$E2E_NAMESPACE" \
         -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null || echo "")
     echo "  Ready condition: $READY_STATUS"
 
@@ -140,7 +119,7 @@ BEFORE_TS="$MC_STATUS"
 sleep 2
 
 # Update the spec
-kubectl patch machineconfig e2e-workstation-1 -n cfgd-system --type=merge \
+kubectl patch machineconfig e2e-workstation-1 -n "$E2E_NAMESPACE" --type=merge \
     -p '{"spec":{"packages":[{"name":"vim"},{"name":"git"},{"name":"curl"},{"name":"ripgrep"}]}}' 2>/dev/null
 
 # Wait for new reconciliation — poll until timestamp changes
@@ -148,7 +127,7 @@ echo "  Waiting for re-reconciliation..."
 AFTER_TS=""
 deadline=$((SECONDS + 60))
 while [ $SECONDS -lt $deadline ]; do
-    AFTER_TS=$(kubectl get machineconfig e2e-workstation-1 -n cfgd-system \
+    AFTER_TS=$(kubectl get machineconfig e2e-workstation-1 -n "$E2E_NAMESPACE" \
         -o jsonpath='{.status.lastReconciled}' 2>/dev/null || echo "")
     if [ -n "$AFTER_TS" ] && [ "$AFTER_TS" != "$BEFORE_TS" ]; then
         break
@@ -170,12 +149,12 @@ fi
 # =================================================================
 begin_test "T05: ConfigPolicy — compliant check"
 
-kubectl apply -n cfgd-system -f - <<EOF
+kubectl apply -n "$E2E_NAMESPACE" -f - <<EOF
 apiVersion: cfgd.io/v1alpha1
 kind: ConfigPolicy
 metadata:
   name: e2e-security-baseline
-  namespace: cfgd-system
+  namespace: ${E2E_NAMESPACE}
 spec:
   packages:
     - name: vim
@@ -186,12 +165,12 @@ EOF
 
 # Wait for policy reconciliation
 echo "  Waiting for ConfigPolicy status..."
-CP_STATUS=$(wait_for_k8s_field configpolicy e2e-security-baseline cfgd-system \
+CP_STATUS=$(wait_for_k8s_field configpolicy e2e-security-baseline "$E2E_NAMESPACE" \
     '{.status.compliantCount}' "" 60) || true
 
-COMPLIANT=$(kubectl get configpolicy e2e-security-baseline -n cfgd-system \
+COMPLIANT=$(kubectl get configpolicy e2e-security-baseline -n "$E2E_NAMESPACE" \
     -o jsonpath='{.status.compliantCount}' 2>/dev/null || echo "0")
-NON_COMPLIANT=$(kubectl get configpolicy e2e-security-baseline -n cfgd-system \
+NON_COMPLIANT=$(kubectl get configpolicy e2e-security-baseline -n "$E2E_NAMESPACE" \
     -o jsonpath='{.status.nonCompliantCount}' 2>/dev/null || echo "0")
 
 echo "  Compliant: $COMPLIANT, Non-compliant: $NON_COMPLIANT"
@@ -213,12 +192,12 @@ fi
 begin_test "T06: ConfigPolicy — non-compliant detection"
 
 # Create a MachineConfig that's missing required packages
-kubectl apply -n cfgd-system -f - <<EOF
+kubectl apply -n "$E2E_NAMESPACE" -f - <<EOF
 apiVersion: cfgd.io/v1alpha1
 kind: MachineConfig
 metadata:
   name: e2e-workstation-2
-  namespace: cfgd-system
+  namespace: ${E2E_NAMESPACE}
 spec:
   hostname: e2e-host-2
   profile: minimal
@@ -233,7 +212,7 @@ sleep 5
 # Poll until nonCompliantCount >= 1 (can't use wait_for_k8s_field since we need >= not ==)
 NON_COMPLIANT="0"
 for i in $(seq 1 60); do
-    NON_COMPLIANT=$(kubectl get configpolicy e2e-security-baseline -n cfgd-system \
+    NON_COMPLIANT=$(kubectl get configpolicy e2e-security-baseline -n "$E2E_NAMESPACE" \
         -o jsonpath='{.status.nonCompliantCount}' 2>/dev/null || echo "0")
     if [ "${NON_COMPLIANT:-0}" -ge 1 ] 2>/dev/null; then
         break
@@ -241,12 +220,12 @@ for i in $(seq 1 60); do
     sleep 1
 done
 
-COMPLIANT=$(kubectl get configpolicy e2e-security-baseline -n cfgd-system \
+COMPLIANT=$(kubectl get configpolicy e2e-security-baseline -n "$E2E_NAMESPACE" \
     -o jsonpath='{.status.compliantCount}' 2>/dev/null || echo "0")
 
 echo "  Compliant: $COMPLIANT, Non-compliant: ${NON_COMPLIANT:-0}"
 
-ENFORCED=$(kubectl get configpolicy e2e-security-baseline -n cfgd-system \
+ENFORCED=$(kubectl get configpolicy e2e-security-baseline -n "$E2E_NAMESPACE" \
     -o jsonpath='{.status.conditions[?(@.type=="Enforced")].status}' 2>/dev/null || echo "")
 echo "  Enforced condition: $ENFORCED"
 
@@ -261,12 +240,12 @@ fi
 # =================================================================
 begin_test "T07: ConfigPolicy version enforcement"
 
-kubectl apply -n cfgd-system -f - <<EOF
+kubectl apply -n "$E2E_NAMESPACE" -f - <<EOF
 apiVersion: cfgd.io/v1alpha1
 kind: ConfigPolicy
 metadata:
   name: e2e-version-policy
-  namespace: cfgd-system
+  namespace: ${E2E_NAMESPACE}
 spec:
   packages:
     - name: vim
@@ -276,11 +255,11 @@ EOF
 
 sleep 5
 
-COMPLIANT=$(wait_for_k8s_field configpolicy e2e-version-policy cfgd-system \
+COMPLIANT=$(wait_for_k8s_field configpolicy e2e-version-policy "$E2E_NAMESPACE" \
     '{.status.compliantCount}' "" 20) || true
 
 echo "  Version policy status:"
-kubectl get configpolicy e2e-version-policy -n cfgd-system \
+kubectl get configpolicy e2e-version-policy -n "$E2E_NAMESPACE" \
     -o jsonpath='{.status}' 2>/dev/null | sed 's/^/    /' || true
 echo ""
 
@@ -296,12 +275,12 @@ fi
 # =================================================================
 begin_test "T08: DriftAlert creates drift on MachineConfig"
 
-kubectl apply -n cfgd-system -f - <<EOF
+kubectl apply -n "$E2E_NAMESPACE" -f - <<EOF
 apiVersion: cfgd.io/v1alpha1
 kind: DriftAlert
 metadata:
   name: e2e-drift-1
-  namespace: cfgd-system
+  namespace: ${E2E_NAMESPACE}
 spec:
   deviceId: e2e-host-1
   machineConfigRef:
@@ -315,12 +294,12 @@ EOF
 
 # Wait for DriftAlert controller to mark MC as drifted (via DriftDetected condition)
 echo "  Waiting for drift propagation..."
-DRIFT_COND=$(wait_for_k8s_field machineconfig e2e-workstation-1 cfgd-system \
+DRIFT_COND=$(wait_for_k8s_field machineconfig e2e-workstation-1 "$E2E_NAMESPACE" \
     '{.status.conditions[?(@.type=="DriftDetected")].status}' "True" 60) || true
 
 echo "  MC DriftDetected condition: ${DRIFT_COND:-not set}"
 
-READY_STATUS=$(kubectl get machineconfig e2e-workstation-1 -n cfgd-system \
+READY_STATUS=$(kubectl get machineconfig e2e-workstation-1 -n "$E2E_NAMESPACE" \
     -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null || echo "")
 echo "  MC Ready condition: $READY_STATUS"
 
@@ -336,15 +315,15 @@ fi
 begin_test "T09: DriftAlert cleanup"
 
 # Delete the drift alert
-kubectl delete driftalert e2e-drift-1 -n cfgd-system 2>/dev/null || true
+kubectl delete driftalert e2e-drift-1 -n "$E2E_NAMESPACE" 2>/dev/null || true
 
 # Update MC spec to bump generation and trigger re-reconcile (clear drift flag)
-kubectl patch machineconfig e2e-workstation-1 -n cfgd-system --type=merge \
+kubectl patch machineconfig e2e-workstation-1 -n "$E2E_NAMESPACE" --type=merge \
     -p '{"spec":{"packages":[{"name":"vim"},{"name":"git"},{"name":"curl"},{"name":"wget"}]}}' 2>/dev/null
 
 # Wait for MC to clear drift status (DriftDetected condition goes to False)
 echo "  Waiting for drift to clear..."
-DRIFT_COND=$(wait_for_k8s_field machineconfig e2e-workstation-1 cfgd-system \
+DRIFT_COND=$(wait_for_k8s_field machineconfig e2e-workstation-1 "$E2E_NAMESPACE" \
     '{.status.conditions[?(@.type=="DriftDetected")].status}' "False" 60) && DRIFT_CLEARED=true || DRIFT_CLEARED=false
 
 echo "  MC DriftDetected after cleanup: $DRIFT_COND"
@@ -361,15 +340,15 @@ fi
 begin_test "T10: ConfigPolicy target selector"
 
 # Add a label to e2e-workstation-1 so targetSelector can match it
-kubectl label machineconfig e2e-workstation-1 -n cfgd-system \
+kubectl label machineconfig e2e-workstation-1 -n "$E2E_NAMESPACE" \
     cfgd.io/profile=dev-workstation --overwrite 2>/dev/null || true
 
-kubectl apply -n cfgd-system -f - <<EOF
+kubectl apply -n "$E2E_NAMESPACE" -f - <<EOF
 apiVersion: cfgd.io/v1alpha1
 kind: ConfigPolicy
 metadata:
   name: e2e-selector-policy
-  namespace: cfgd-system
+  namespace: ${E2E_NAMESPACE}
 spec:
   packages:
     - name: ripgrep
@@ -380,10 +359,10 @@ EOF
 
 sleep 5
 
-COMPLIANT=$(wait_for_k8s_field configpolicy e2e-selector-policy cfgd-system \
+COMPLIANT=$(wait_for_k8s_field configpolicy e2e-selector-policy "$E2E_NAMESPACE" \
     '{.status.compliantCount}' "" 20) || true
 
-NON_COMPLIANT=$(kubectl get configpolicy e2e-selector-policy -n cfgd-system \
+NON_COMPLIANT=$(kubectl get configpolicy e2e-selector-policy -n "$E2E_NAMESPACE" \
     -o jsonpath='{.status.nonCompliantCount}' 2>/dev/null || echo "0")
 
 echo "  Selector policy — compliant: ${COMPLIANT:-0}, non-compliant: ${NON_COMPLIANT:-0}"
@@ -399,9 +378,9 @@ fi
 # --- Clean up T01-T10 resources ---
 echo ""
 echo "Cleaning up T01-T10 resources..."
-kubectl delete machineconfig e2e-workstation-1 e2e-workstation-2 -n cfgd-system 2>/dev/null || true
-kubectl delete configpolicy e2e-security-baseline e2e-version-policy e2e-selector-policy -n cfgd-system 2>/dev/null || true
-kubectl delete driftalert --all -n cfgd-system 2>/dev/null || true
+kubectl delete machineconfig e2e-workstation-1 e2e-workstation-2 -n "$E2E_NAMESPACE" 2>/dev/null || true
+kubectl delete configpolicy e2e-security-baseline e2e-version-policy e2e-selector-policy -n "$E2E_NAMESPACE" 2>/dev/null || true
+kubectl delete driftalert --all -n "$E2E_NAMESPACE" 2>/dev/null || true
 
 # =================================================================
 # T11: Module CRD — create and verify controller sets status
@@ -412,7 +391,9 @@ kubectl apply -f - <<EOF
 apiVersion: cfgd.io/v1alpha1
 kind: Module
 metadata:
-  name: e2e-nettools
+  name: e2e-nettools-${E2E_RUN_ID}
+  labels:
+    cfgd.io/e2e-run: "${E2E_RUN_ID}"
 spec:
   packages:
     - name: netcat
@@ -426,7 +407,7 @@ spec:
   env:
     - name: NETTOOLS_VERSION
       value: "1.0.0"
-  ociArtifact: "localhost:${REGISTRY_PORT}/cfgd-e2e/nettools:v1.0"
+  ociArtifact: "${REGISTRY}/cfgd-e2e/nettools:v1.0"
   signature:
     cosign:
       publicKey: |
@@ -439,14 +420,14 @@ EOF
 
 # Wait for Module controller to reconcile
 echo "  Waiting for Module status..."
-MOD_VERIFIED=$(wait_for_k8s_field module e2e-nettools "" \
+MOD_VERIFIED=$(wait_for_k8s_field module "e2e-nettools-${E2E_RUN_ID}" "" \
     '{.status.verified}' "" 60) || true
 
-RESOLVED=$(kubectl get module e2e-nettools \
+RESOLVED=$(kubectl get module "e2e-nettools-${E2E_RUN_ID}" \
     -o jsonpath='{.status.resolvedArtifact}' 2>/dev/null || echo "")
-AVAIL_COND=$(kubectl get module e2e-nettools \
+AVAIL_COND=$(kubectl get module "e2e-nettools-${E2E_RUN_ID}" \
     -o jsonpath='{.status.conditions[?(@.type=="Available")].status}' 2>/dev/null || echo "")
-VERIFIED_COND=$(kubectl get module e2e-nettools \
+VERIFIED_COND=$(kubectl get module "e2e-nettools-${E2E_RUN_ID}" \
     -o jsonpath='{.status.conditions[?(@.type=="Verified")].status}' 2>/dev/null || echo "")
 
 echo "  verified: ${MOD_VERIFIED:-not set}"
@@ -470,7 +451,9 @@ RESULT_INVALID_OCI=$(kubectl apply -f - 2>&1 <<EOF || true
 apiVersion: cfgd.io/v1alpha1
 kind: Module
 metadata:
-  name: e2e-bad-oci
+  name: e2e-bad-oci-${E2E_RUN_ID}
+  labels:
+    cfgd.io/e2e-run: "${E2E_RUN_ID}"
 spec:
   packages:
     - name: test
@@ -484,7 +467,9 @@ RESULT_BAD_PEM=$(kubectl apply -f - 2>&1 <<EOF || true
 apiVersion: cfgd.io/v1alpha1
 kind: Module
 metadata:
-  name: e2e-bad-pem
+  name: e2e-bad-pem-${E2E_RUN_ID}
+  labels:
+    cfgd.io/e2e-run: "${E2E_RUN_ID}"
 spec:
   packages:
     - name: test
@@ -501,7 +486,9 @@ RESULT_EMPTY_PKG=$(kubectl apply -f - 2>&1 <<EOF || true
 apiVersion: cfgd.io/v1alpha1
 kind: Module
 metadata:
-  name: e2e-empty-pkg
+  name: e2e-empty-pkg-${E2E_RUN_ID}
+  labels:
+    cfgd.io/e2e-run: "${E2E_RUN_ID}"
 spec:
   packages:
     - name: ""
@@ -520,7 +507,7 @@ else
 fi
 
 # Clean up any resources that might have been created
-kubectl delete module e2e-bad-oci e2e-bad-pem e2e-empty-pkg 2>/dev/null || true
+kubectl delete module "e2e-bad-oci-${E2E_RUN_ID}" "e2e-bad-pem-${E2E_RUN_ID}" "e2e-empty-pkg-${E2E_RUN_ID}" 2>/dev/null || true
 
 # =================================================================
 # T13: ClusterConfigPolicy — namespaceSelector filtering
@@ -528,13 +515,13 @@ kubectl delete module e2e-bad-oci e2e-bad-pem e2e-empty-pkg 2>/dev/null || true
 begin_test "T13: ClusterConfigPolicy — namespaceSelector filtering"
 
 # Create two namespaces: one matching, one not
-kubectl create namespace e2e-team-alpha 2>/dev/null || true
-kubectl create namespace e2e-team-beta 2>/dev/null || true
-kubectl label namespace e2e-team-alpha cfgd.io/team=alpha --overwrite 2>/dev/null
-kubectl label namespace e2e-team-beta cfgd.io/team=beta --overwrite 2>/dev/null
+kubectl create namespace "e2e-team-alpha-${E2E_RUN_ID}" 2>/dev/null || true
+kubectl create namespace "e2e-team-beta-${E2E_RUN_ID}" 2>/dev/null || true
+kubectl label namespace "e2e-team-alpha-${E2E_RUN_ID}" cfgd.io/team=alpha --overwrite 2>/dev/null
+kubectl label namespace "e2e-team-beta-${E2E_RUN_ID}" cfgd.io/team=beta --overwrite 2>/dev/null
 
 # Create MachineConfigs in both namespaces
-for ns in e2e-team-alpha e2e-team-beta; do
+for ns in "e2e-team-alpha-${E2E_RUN_ID}" "e2e-team-beta-${E2E_RUN_ID}"; do
     kubectl apply -n "$ns" -f - <<EOF
 apiVersion: cfgd.io/v1alpha1
 kind: MachineConfig
@@ -556,7 +543,9 @@ kubectl apply -f - <<EOF
 apiVersion: cfgd.io/v1alpha1
 kind: ClusterConfigPolicy
 metadata:
-  name: e2e-alpha-only
+  name: e2e-alpha-only-${E2E_RUN_ID}
+  labels:
+    cfgd.io/e2e-run: "${E2E_RUN_ID}"
 spec:
   namespaceSelector:
     matchLabels:
@@ -568,10 +557,10 @@ EOF
 
 # Wait for ClusterConfigPolicy status
 echo "  Waiting for ClusterConfigPolicy evaluation..."
-CCP_COMPLIANT=$(wait_for_k8s_field clusterconfigpolicy e2e-alpha-only "" \
+CCP_COMPLIANT=$(wait_for_k8s_field clusterconfigpolicy "e2e-alpha-only-${E2E_RUN_ID}" "" \
     '{.status.compliantCount}' "" 60) || true
 
-CCP_NON_COMPLIANT=$(kubectl get clusterconfigpolicy e2e-alpha-only \
+CCP_NON_COMPLIANT=$(kubectl get clusterconfigpolicy "e2e-alpha-only-${E2E_RUN_ID}" \
     -o jsonpath='{.status.nonCompliantCount}' 2>/dev/null || echo "0")
 
 echo "  ClusterConfigPolicy — compliant: ${CCP_COMPLIANT:-0}, non-compliant: ${CCP_NON_COMPLIANT:-0}"
@@ -590,12 +579,12 @@ fi
 begin_test "T14: ClusterConfigPolicy — cluster-wins merge"
 
 # Create a namespace-level ConfigPolicy in alpha namespace
-kubectl apply -n e2e-team-alpha -f - <<EOF
+kubectl apply -n "e2e-team-alpha-${E2E_RUN_ID}" -f - <<EOF
 apiVersion: cfgd.io/v1alpha1
 kind: ConfigPolicy
 metadata:
   name: ns-policy-alpha
-  namespace: e2e-team-alpha
+  namespace: e2e-team-alpha-${E2E_RUN_ID}
 spec:
   packages:
     - name: vim
@@ -608,7 +597,9 @@ kubectl apply -f - <<EOF
 apiVersion: cfgd.io/v1alpha1
 kind: ClusterConfigPolicy
 metadata:
-  name: e2e-cluster-override
+  name: e2e-cluster-override-${E2E_RUN_ID}
+  labels:
+    cfgd.io/e2e-run: "${E2E_RUN_ID}"
 spec:
   namespaceSelector:
     matchLabels:
@@ -622,9 +613,9 @@ EOF
 # Wait for reconciliation
 sleep 10
 
-CCP2_COMPLIANT=$(kubectl get clusterconfigpolicy e2e-cluster-override \
+CCP2_COMPLIANT=$(kubectl get clusterconfigpolicy "e2e-cluster-override-${E2E_RUN_ID}" \
     -o jsonpath='{.status.compliantCount}' 2>/dev/null || echo "")
-CCP2_NON_COMPLIANT=$(kubectl get clusterconfigpolicy e2e-cluster-override \
+CCP2_NON_COMPLIANT=$(kubectl get clusterconfigpolicy "e2e-cluster-override-${E2E_RUN_ID}" \
     -o jsonpath='{.status.nonCompliantCount}' 2>/dev/null || echo "0")
 
 echo "  Cluster-override policy — compliant: ${CCP2_COMPLIANT:-0}, non-compliant: ${CCP2_NON_COMPLIANT:-0}"
@@ -649,7 +640,9 @@ RESULT_BAD_SEMVER=$(kubectl apply -f - 2>&1 <<EOF || true
 apiVersion: cfgd.io/v1alpha1
 kind: ClusterConfigPolicy
 metadata:
-  name: e2e-bad-semver
+  name: e2e-bad-semver-${E2E_RUN_ID}
+  labels:
+    cfgd.io/e2e-run: "${E2E_RUN_ID}"
 spec:
   namespaceSelector: {}
   packageVersions:
@@ -660,12 +653,12 @@ echo "  Bad semver result: $(echo "$RESULT_BAD_SEMVER" | tail -1)"
 assert_rejected "$RESULT_BAD_SEMVER" "Invalid semver" || PASS=false
 
 # DriftAlert with empty deviceId
-RESULT_EMPTY_DEVICE=$(kubectl apply -n cfgd-system -f - 2>&1 <<EOF || true
+RESULT_EMPTY_DEVICE=$(kubectl apply -n "$E2E_NAMESPACE" -f - 2>&1 <<EOF || true
 apiVersion: cfgd.io/v1alpha1
 kind: DriftAlert
 metadata:
   name: e2e-bad-drift
-  namespace: cfgd-system
+  namespace: ${E2E_NAMESPACE}
 spec:
   deviceId: ""
   machineConfigRef:
@@ -681,12 +674,12 @@ echo "  Empty deviceId result: $(echo "$RESULT_EMPTY_DEVICE" | tail -1)"
 assert_rejected "$RESULT_EMPTY_DEVICE" "Empty deviceId" || PASS=false
 
 # MachineConfig with empty hostname
-RESULT_EMPTY_HOST=$(kubectl apply -n cfgd-system -f - 2>&1 <<EOF || true
+RESULT_EMPTY_HOST=$(kubectl apply -n "$E2E_NAMESPACE" -f - 2>&1 <<EOF || true
 apiVersion: cfgd.io/v1alpha1
 kind: MachineConfig
 metadata:
   name: e2e-bad-mc
-  namespace: cfgd-system
+  namespace: ${E2E_NAMESPACE}
 spec:
   hostname: ""
   profile: test
@@ -704,9 +697,9 @@ else
 fi
 
 # Clean up
-kubectl delete clusterconfigpolicy e2e-bad-semver 2>/dev/null || true
-kubectl delete driftalert e2e-bad-drift -n cfgd-system 2>/dev/null || true
-kubectl delete machineconfig e2e-bad-mc -n cfgd-system 2>/dev/null || true
+kubectl delete clusterconfigpolicy "e2e-bad-semver-${E2E_RUN_ID}" 2>/dev/null || true
+kubectl delete driftalert e2e-bad-drift -n "$E2E_NAMESPACE" 2>/dev/null || true
+kubectl delete machineconfig e2e-bad-mc -n "$E2E_NAMESPACE" 2>/dev/null || true
 
 # =================================================================
 # T16: Mutating webhook — pod injection with CSI volumes
@@ -714,15 +707,17 @@ kubectl delete machineconfig e2e-bad-mc -n cfgd-system 2>/dev/null || true
 begin_test "T16: Mutating webhook — pod injection"
 
 # Create a namespace with the injection label
-kubectl create namespace e2e-inject 2>/dev/null || true
-kubectl label namespace e2e-inject cfgd.io/inject-modules=true --overwrite 2>/dev/null
+kubectl create namespace "e2e-inject-${E2E_RUN_ID}" 2>/dev/null || true
+kubectl label namespace "e2e-inject-${E2E_RUN_ID}" cfgd.io/inject-modules=true --overwrite 2>/dev/null
 
 # Ensure a Module CRD exists for the webhook to look up
 kubectl apply -f - <<EOF
 apiVersion: cfgd.io/v1alpha1
 kind: Module
 metadata:
-  name: e2e-inject-mod
+  name: e2e-inject-mod-${E2E_RUN_ID}
+  labels:
+    cfgd.io/e2e-run: "${E2E_RUN_ID}"
 spec:
   packages:
     - name: curl
@@ -736,13 +731,13 @@ EOF
 sleep 5
 
 # Create a pod with the modules annotation in the labeled namespace
-kubectl apply -n e2e-inject -f - <<EOF
+kubectl apply -n "e2e-inject-${E2E_RUN_ID}" -f - <<EOF
 apiVersion: v1
 kind: Pod
 metadata:
   name: e2e-injected-pod
   annotations:
-    cfgd.io/modules: "e2e-inject-mod:v1"
+    cfgd.io/modules: "e2e-inject-mod-${E2E_RUN_ID}:v1"
 spec:
   containers:
     - name: app
@@ -755,13 +750,13 @@ EOF
 sleep 5
 
 # Check if CSI volume was injected
-POD_VOLUMES=$(kubectl get pod e2e-injected-pod -n e2e-inject \
+POD_VOLUMES=$(kubectl get pod e2e-injected-pod -n "e2e-inject-${E2E_RUN_ID}" \
     -o jsonpath='{.spec.volumes[*].name}' 2>/dev/null || echo "")
-POD_VMOUNTS=$(kubectl get pod e2e-injected-pod -n e2e-inject \
+POD_VMOUNTS=$(kubectl get pod e2e-injected-pod -n "e2e-inject-${E2E_RUN_ID}" \
     -o jsonpath='{.spec.containers[0].volumeMounts[*].name}' 2>/dev/null || echo "")
-POD_ENV=$(kubectl get pod e2e-injected-pod -n e2e-inject \
+POD_ENV=$(kubectl get pod e2e-injected-pod -n "e2e-inject-${E2E_RUN_ID}" \
     -o jsonpath='{.spec.containers[0].env[*].name}' 2>/dev/null || echo "")
-CSI_DRIVER=$(kubectl get pod e2e-injected-pod -n e2e-inject \
+CSI_DRIVER=$(kubectl get pod e2e-injected-pod -n "e2e-inject-${E2E_RUN_ID}" \
     -o jsonpath='{.spec.volumes[?(@.csi)].csi.driver}' 2>/dev/null || echo "")
 
 echo "  Pod volumes: $POD_VOLUMES"
@@ -795,7 +790,9 @@ kubectl apply -f - <<EOF
 apiVersion: cfgd.io/v1alpha1
 kind: Module
 metadata:
-  name: e2e-debug-mod
+  name: e2e-debug-mod-${E2E_RUN_ID}
+  labels:
+    cfgd.io/e2e-run: "${E2E_RUN_ID}"
 spec:
   packages:
     - name: strace
@@ -805,21 +802,21 @@ EOF
 sleep 3
 
 # Create a ConfigPolicy with the debug module (so webhook picks it up)
-kubectl apply -n e2e-inject -f - <<EOF
+kubectl apply -n "e2e-inject-${E2E_RUN_ID}" -f - <<EOF
 apiVersion: cfgd.io/v1alpha1
 kind: ConfigPolicy
 metadata:
   name: e2e-debug-policy
-  namespace: e2e-inject
+  namespace: e2e-inject-${E2E_RUN_ID}
 spec:
   debugModules:
-    - name: e2e-debug-mod
+    - name: e2e-debug-mod-${E2E_RUN_ID}
 EOF
 
 sleep 3
 
 # Create a pod in the injection namespace (no annotation needed — policy injects)
-kubectl apply -n e2e-inject -f - <<EOF
+kubectl apply -n "e2e-inject-${E2E_RUN_ID}" -f - <<EOF
 apiVersion: v1
 kind: Pod
 metadata:
@@ -835,11 +832,11 @@ EOF
 sleep 5
 
 # Check: CSI volume should exist but volumeMount should NOT be on the container
-DEBUG_VOLUMES=$(kubectl get pod e2e-debug-pod -n e2e-inject \
+DEBUG_VOLUMES=$(kubectl get pod e2e-debug-pod -n "e2e-inject-${E2E_RUN_ID}" \
     -o jsonpath='{.spec.volumes[*].name}' 2>/dev/null || echo "")
-DEBUG_VMOUNTS=$(kubectl get pod e2e-debug-pod -n e2e-inject \
+DEBUG_VMOUNTS=$(kubectl get pod e2e-debug-pod -n "e2e-inject-${E2E_RUN_ID}" \
     -o jsonpath='{.spec.containers[0].volumeMounts[*].name}' 2>/dev/null || echo "")
-DEBUG_CSI=$(kubectl get pod e2e-debug-pod -n e2e-inject \
+DEBUG_CSI=$(kubectl get pod e2e-debug-pod -n "e2e-inject-${E2E_RUN_ID}" \
     -o jsonpath='{.spec.volumes[?(@.csi)].csi.driver}' 2>/dev/null || echo "")
 
 echo "  Pod volumes: $DEBUG_VOLUMES"
@@ -868,7 +865,7 @@ begin_test "T18: OCI supply chain — push, pull, verify"
 TEST_MODULE_DIR=$(mktemp -d)
 create_test_module_dir "$TEST_MODULE_DIR" "e2e-oci-test" "1.0.0"
 
-OCI_REF="localhost:${REGISTRY_PORT}/cfgd-e2e/oci-test:v1.0"
+OCI_REF="${REGISTRY}/cfgd-e2e/oci-test:v1.0"
 
 ensure_cfgd_binary
 
@@ -923,36 +920,24 @@ if kubectl apply -f - 2>/dev/null <<EOF
 apiVersion: cfgd.io/v1alpha1
 kind: Module
 metadata:
-  name: e2e-oci-module
+  name: e2e-oci-module-${E2E_RUN_ID}
+  labels:
+    cfgd.io/e2e-run: "${E2E_RUN_ID}"
 spec:
   packages: []
   ociArtifact: "${OCI_REF}"
 EOF
 then
     sleep 5
-    OCI_RESOLVED=$(kubectl get module e2e-oci-module \
+    OCI_RESOLVED=$(kubectl get module "e2e-oci-module-${E2E_RUN_ID}" \
         -o jsonpath='{.status.resolvedArtifact}' 2>/dev/null || echo "")
-    OCI_AVAIL=$(kubectl get module e2e-oci-module \
+    OCI_AVAIL=$(kubectl get module "e2e-oci-module-${E2E_RUN_ID}" \
         -o jsonpath='{.status.conditions[?(@.type=="Available")].status}' 2>/dev/null || echo "")
     echo "  Module resolvedArtifact: ${OCI_RESOLVED:-not set}"
     echo "  Module Available: ${OCI_AVAIL:-not set}"
 else
     echo "  (Module rejected by policy — unsigned module not allowed, which is correct behavior)"
 fi
-
-# --- Cleanup ---
-echo ""
-echo "Cleaning up test resources..."
-kubectl delete module e2e-nettools e2e-inject-mod e2e-debug-mod e2e-oci-module 2>/dev/null || true
-kubectl delete clusterconfigpolicy e2e-alpha-only e2e-cluster-override 2>/dev/null || true
-kubectl delete machineconfig --all -n e2e-team-alpha 2>/dev/null || true
-kubectl delete machineconfig --all -n e2e-team-beta 2>/dev/null || true
-kubectl delete configpolicy --all -n e2e-team-alpha 2>/dev/null || true
-kubectl delete configpolicy --all -n e2e-inject 2>/dev/null || true
-kubectl delete pod --all -n e2e-inject 2>/dev/null || true
-kubectl delete namespace e2e-team-alpha e2e-team-beta e2e-inject 2>/dev/null || true
-stop_local_registry
-rm -rf "$WEBHOOK_CERT_DIR"
 
 # --- Summary ---
 print_summary "Operator E2E Tests"

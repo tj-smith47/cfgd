@@ -9,8 +9,10 @@ on:
       - "Dockerfile.operator"
       - "tests/e2e/operator/**"
       - "tests/e2e/common/**"
+      - "tests/e2e/manifests/**"
+      - "tests/e2e/setup-cluster.sh"
       - ".github/workflows/e2e-operator.yml"
-      - ".github/actions/setup-e2e/**"
+      - ".github/workflows/e2e-setup.yml"
   pull_request:
     branches: [master]
     paths:
@@ -19,35 +21,29 @@ on:
       - "Dockerfile.operator"
       - "tests/e2e/operator/**"
       - "tests/e2e/common/**"
+      - "tests/e2e/manifests/**"
+      - "tests/e2e/setup-cluster.sh"
       - ".github/workflows/e2e-operator.yml"
-      - ".github/actions/setup-e2e/**"
+      - ".github/workflows/e2e-setup.yml"
   workflow_dispatch:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
-env:
-  KIND_CLUSTER: cfgd-e2e
-  CFGD_NAMESPACE: cfgd-system
-
 jobs:
+  setup:
+    uses: ./.github/workflows/e2e-setup.yml
+
   operator-tests:
     name: "Operator Tests (T01–T18)"
-    runs-on: ubuntu-latest
-    timeout-minutes: 25
+    runs-on: arc-cfgd
+    needs: [setup]
+    timeout-minutes: 20
+    env:
+      IMAGE_TAG: ${{ needs.setup.outputs.image-tag }}
     steps:
       - uses: actions/checkout@v4
-
       - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-
-      - name: Setup E2E environment
-        uses: ./.github/actions/setup-e2e
-        with:
-          kind-cluster-name: ${{ env.KIND_CLUSTER }}
-          kind-config: tests/e2e/operator/kind-config.yaml
-          images: "operator"
-
       - name: Run operator tests
         run: bash tests/e2e/operator/scripts/run-operator-tests.sh
