@@ -68,7 +68,7 @@ pub(crate) fn diff_yaml_mapping(
 ///
 /// Lines have the format `"    NAME    REG_TYPE    VALUE"` with 4-space separators.
 /// Returns `None` for empty lines and registry key header lines (those starting with `HKEY_`).
-fn parse_reg_line(line: &str) -> Option<(&str, &str, &str)> {
+pub(crate) fn parse_reg_line(line: &str) -> Option<(&str, &str, &str)> {
     let line = line.trim();
     if line.is_empty() || line.starts_with("HKEY_") {
         return None;
@@ -1685,20 +1685,6 @@ fn strip_gsettings_quotes(s: &str) -> &str {
         .unwrap_or(s)
 }
 
-/// Convert a YAML value to a native-bool string representation.
-///
-/// Unlike `yaml_value_to_string` (which converts bools to `"0"`/`"1"` for macOS `defaults`),
-/// this converts bools to `"true"`/`"false"` — the format used by gsettings, KDE kwriteconfig,
-/// and xfconf-query. Used for both diff comparison and `Command` arguments (which bypass the
-/// shell, so values must NOT be quoted).
-fn yaml_value_to_native_bool_string(value: &serde_yaml::Value) -> String {
-    match value {
-        serde_yaml::Value::String(s) => s.clone(),
-        serde_yaml::Value::Bool(b) => b.to_string(),
-        serde_yaml::Value::Number(n) => n.to_string(),
-        _ => format!("{:?}", value),
-    }
-}
 
 fn read_gsettings_value(schema: &str, key: &str) -> String {
     Command::new("gsettings")
@@ -1745,7 +1731,7 @@ impl SystemConfigurator for GsettingsConfigurator {
             drifts.extend(diff_yaml_mapping(
                 values,
                 schema,
-                yaml_value_to_native_bool_string,
+                node::yaml_value_to_string,
                 |key_str| read_gsettings_value(schema, key_str),
             ));
         }
@@ -1775,7 +1761,7 @@ impl SystemConfigurator for GsettingsConfigurator {
                     None => continue,
                 };
 
-                let gsettings_val = yaml_value_to_native_bool_string(desired_value);
+                let gsettings_val = node::yaml_value_to_string(desired_value);
 
                 printer.info(&format!(
                     "gsettings set {} {} {}",
@@ -1890,7 +1876,7 @@ impl SystemConfigurator for KdeConfigConfigurator {
                 drifts.extend(diff_yaml_mapping(
                     keys_map,
                     &prefix,
-                    yaml_value_to_native_bool_string,
+                    node::yaml_value_to_string,
                     |key_str| read_kde_value(file, group, key_str),
                 ));
             }
@@ -1930,7 +1916,7 @@ impl SystemConfigurator for KdeConfigConfigurator {
                         Some(k) => k,
                         None => continue,
                     };
-                    let val_str = yaml_value_to_native_bool_string(value);
+                    let val_str = node::yaml_value_to_string(value);
 
                     printer.info(&format!(
                         "{} --file {} --group {} --key {} {}",
@@ -1938,9 +1924,7 @@ impl SystemConfigurator for KdeConfigConfigurator {
                     ));
 
                     let output = Command::new(write_cmd)
-                        .args([
-                            "--file", file, "--group", group, "--key", key_str, &val_str,
-                        ])
+                        .args(["--file", file, "--group", group, "--key", key_str, &val_str])
                         .output()
                         .map_err(cfgd_core::errors::CfgdError::Io)?;
 
@@ -2019,7 +2003,7 @@ impl SystemConfigurator for XfconfConfigurator {
             drifts.extend(diff_yaml_mapping(
                 values,
                 channel,
-                yaml_value_to_native_bool_string,
+                node::yaml_value_to_string,
                 |property| read_xfconf_value(channel, property),
             ));
         }
@@ -2049,7 +2033,7 @@ impl SystemConfigurator for XfconfConfigurator {
                     None => continue,
                 };
 
-                let val_str = yaml_value_to_native_bool_string(desired_value);
+                let val_str = node::yaml_value_to_string(desired_value);
 
                 printer.info(&format!(
                     "xfconf-query -c {} -p {} -s {}",
@@ -2781,25 +2765,25 @@ HKEY_CURRENT_USER\\Environment\n\
     }
 
     #[test]
-    fn yaml_value_to_native_bool_string_conversion() {
+    fn node_yaml_value_to_string_conversion() {
         // Strings are bare (no quotes — Command bypasses shell)
         assert_eq!(
-            yaml_value_to_native_bool_string(&serde_yaml::Value::String("dark".into())),
+            node::yaml_value_to_string(&serde_yaml::Value::String("dark".into())),
             "dark"
         );
         // Bools use true/false (not 0/1 like yaml_value_to_string)
         assert_eq!(
-            yaml_value_to_native_bool_string(&serde_yaml::Value::Bool(true)),
+            node::yaml_value_to_string(&serde_yaml::Value::Bool(true)),
             "true"
         );
         assert_eq!(
-            yaml_value_to_native_bool_string(&serde_yaml::Value::Bool(false)),
+            node::yaml_value_to_string(&serde_yaml::Value::Bool(false)),
             "false"
         );
         let n = serde_yaml::Value::Number(serde_yaml::Number::from(42));
-        assert_eq!(yaml_value_to_native_bool_string(&n), "42");
+        assert_eq!(node::yaml_value_to_string(&n), "42");
         let f = serde_yaml::Value::Number(serde_yaml::Number::from(1.5));
-        assert_eq!(yaml_value_to_native_bool_string(&f), "1.5");
+        assert_eq!(node::yaml_value_to_string(&f), "1.5");
     }
 
     #[test]

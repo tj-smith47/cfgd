@@ -1096,7 +1096,7 @@ impl SystemConfigurator for CertificateConfigurator {
 // Helpers
 // ---------------------------------------------------------------------------
 
-fn yaml_value_to_string(value: &serde_yaml::Value) -> String {
+pub(crate) fn yaml_value_to_string(value: &serde_yaml::Value) -> String {
     match value {
         serde_yaml::Value::Bool(b) => b.to_string(),
         serde_yaml::Value::Number(n) => n.to_string(),

@@ -660,20 +660,12 @@ pub fn scan_system_settings() -> Result<SystemSettingsResult, CfgdError> {
             {
                 let stdout = String::from_utf8_lossy(&output.stdout);
                 for line in stdout.lines() {
-                    let trimmed = line.trim();
-                    if trimmed.is_empty() || trimmed.starts_with("HKEY_") {
-                        continue;
-                    }
-                    // Format: "    ValueName    REG_TYPE    Data"
-                    let parts: Vec<&str> = trimmed.splitn(3, "    ").collect();
-                    if parts.len() == 3 {
-                        let name = parts[0].trim();
-                        let value = parts[2].trim();
-                        if !name.is_empty() {
-                            result
-                                .windows_registry
-                                .insert(format!(r"{}\{}", reg_path, name), value.to_string());
-                        }
+                    if let Some((name, _reg_type, value)) =
+                        crate::system::parse_reg_line(line)
+                    {
+                        result
+                            .windows_registry
+                            .insert(format!(r"{}\{}", reg_path, name), value.to_string());
                     }
                 }
             }
