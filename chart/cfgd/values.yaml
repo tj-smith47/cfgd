@@ -21,6 +21,23 @@ operator:
   nodeSelector: {}
   tolerations: []
   affinity: {}
+  imagePullSecrets: []
+  podAnnotations: {}
+  podLabels: {}
+  topologySpreadConstraints: []
+  terminationGracePeriodSeconds: 60
+  livenessProbe:
+    httpGet:
+      path: /healthz
+      port: health
+    initialDelaySeconds: 15
+    periodSeconds: 20
+  readinessProbe:
+    httpGet:
+      path: /readyz
+      port: health
+    initialDelaySeconds: 5
+    periodSeconds: 10
 
 # Agent DaemonSet
 agent:
@@ -54,6 +71,22 @@ agent:
   extraVolumeMounts: []
   imagePullSecrets: []
   priorityClassName: system-node-critical
+  # Agent pods run privileged by design (host config management requires root access).
+  # They do not use the shared podSecurityContext/containerSecurityContext values.
+  podAnnotations: {}
+  podLabels: {}
+  updateStrategy:
+    maxUnavailable: 1
+  livenessProbe:
+    exec:
+      command: ["/usr/local/bin/cfgd", "daemon", "status"]
+    initialDelaySeconds: 30
+    periodSeconds: 60
+  readinessProbe:
+    exec:
+      command: ["/usr/local/bin/cfgd", "daemon", "status"]
+    initialDelaySeconds: 10
+    periodSeconds: 30
 
 # Install CRDs
 installCRDs: true
@@ -115,6 +148,14 @@ csiDriver:
     - operator: Exists
   extraEnv: []
   imagePullSecrets: []
+  podAnnotations: {}
+  podLabels: {}
+  updateStrategy:
+    maxUnavailable: 1
+  livenessProbe:
+    image:
+      repository: registry.k8s.io/sig-storage/livenessprobe
+      tag: v2.12.0
   registrar:
     image:
       repository: registry.k8s.io/sig-storage/csi-node-driver-registrar

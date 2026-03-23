@@ -14,11 +14,18 @@ spec:
   updateStrategy:
     type: RollingUpdate
     rollingUpdate:
-      maxUnavailable: 1
+      maxUnavailable: {{ .Values.agent.updateStrategy.maxUnavailable }}
   template:
     metadata:
       labels:
         {{- include "cfgd.agentSelectorLabels" . | nindent 8 }}
+        {{- with .Values.agent.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- with .Values.agent.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
     spec:
       serviceAccountName: {{ include "cfgd.agentServiceAccountName" . }}
       {{- with .Values.agent.imagePullSecrets }}
@@ -60,6 +67,10 @@ spec:
             readOnlyRootFilesystem: false
           resources:
             {{- toYaml .Values.agent.resources | nindent 12 }}
+          livenessProbe:
+            {{- toYaml .Values.agent.livenessProbe | nindent 12 }}
+          readinessProbe:
+            {{- toYaml .Values.agent.readinessProbe | nindent 12 }}
           volumeMounts:
             - name: host-proc
               mountPath: /proc

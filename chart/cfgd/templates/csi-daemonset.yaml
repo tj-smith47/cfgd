@@ -15,12 +15,19 @@ spec:
   updateStrategy:
     type: RollingUpdate
     rollingUpdate:
-      maxUnavailable: 1
+      maxUnavailable: {{ .Values.csiDriver.updateStrategy.maxUnavailable }}
   template:
     metadata:
       labels:
         {{- include "cfgd.selectorLabels" . | nindent 8 }}
         app.kubernetes.io/component: csi-driver
+        {{- with .Values.csiDriver.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- with .Values.csiDriver.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
     spec:
       serviceAccountName: {{ include "cfgd.fullname" . }}-csi
       {{- with .Values.csiDriver.imagePullSecrets }}
@@ -83,7 +90,7 @@ spec:
             - name: registration-dir
               mountPath: /registration
         - name: liveness-probe
-          image: registry.k8s.io/sig-storage/livenessprobe:v2.12.0
+          image: "{{ .Values.csiDriver.livenessProbe.image.repository }}:{{ .Values.csiDriver.livenessProbe.image.tag }}"
           imagePullPolicy: IfNotPresent
           args:
             - "--csi-address=/csi/csi.sock"
