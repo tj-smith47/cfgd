@@ -70,32 +70,20 @@ impl SysctlConfigurator {
         Ok(())
     }
 
-    fn persist_sysctl(key: &str, value: &str) -> Result<()> {
+    fn persist_all_sysctls(entries: &BTreeMap<&str, String>) -> Result<()> {
         let conf_dir = Path::new("/etc/sysctl.d");
         if !conf_dir.exists() {
             fs::create_dir_all(conf_dir)?;
         }
         let conf_path = conf_dir.join("99-cfgd.conf");
 
-        let mut entries = BTreeMap::new();
-
-        if conf_path.exists() {
-            let content = fs::read_to_string(&conf_path)?;
-            for line in content.lines() {
-                let line = line.trim();
-                if line.is_empty() || line.starts_with('#') {
-                    continue;
-                }
-                if let Some((k, v)) = line.split_once('=') {
-                    entries.insert(k.trim().to_string(), v.trim().to_string());
-                }
-            }
+        if entries.is_empty() {
+            let _ = fs::remove_file(&conf_path);
+            return Ok(());
         }
 
-        entries.insert(key.to_string(), value.to_string());
-
         let mut content = String::from("# Managed by cfgd — do not edit manually\n");
-        for (k, v) in &entries {
+        for (k, v) in entries {
             content.push_str(&format!("{} = {}\n", k, v));
         }
 
@@ -126,7 +114,7 @@ impl SystemConfigurator for SysctlConfigurator {
         Ok(diff_yaml_mapping(
             mapping,
             "",
-            yaml_value_to_string,
+            sysctl_yaml_value_to_string,
             |key_str| Self::read_sysctl(key_str).unwrap_or_else(|_| "<unreadable>".to_string()),
         ))
     }
@@ -137,22 +125,26 @@ impl SystemConfigurator for SysctlConfigurator {
             None => return Ok(()),
         };
 
+        let mut all_entries = BTreeMap::new();
+
         for (key, value) in mapping {
             let key_str = match key.as_str() {
                 Some(k) => k,
                 None => continue,
             };
-            let desired_val = yaml_value_to_string(value);
+            let desired_val = sysctl_yaml_value_to_string(value);
 
             printer.info(&format!("sysctl -w {}={}", key_str, desired_val));
 
             Self::write_sysctl(key_str, &desired_val)?;
-            if let Err(e) = Self::persist_sysctl(key_str, &desired_val) {
-                printer.warning(&format!(
-                    "Failed to persist sysctl {}: {} (runtime value applied)",
-                    key_str, e
-                ));
-            }
+            all_entries.insert(key_str, desired_val);
+        }
+
+        if let Err(e) = Self::persist_all_sysctls(&all_entries) {
+            printer.warning(&format!(
+                "Failed to persist sysctls: {} (runtime values applied)",
+                e
+            ));
         }
 
         Ok(())
@@ -214,30 +206,20 @@ impl KernelModuleConfigurator {
         Ok(())
     }
 
-    fn persist_module(module: &str) -> Result<()> {
+    fn persist_modules(desired_modules: &[&str]) -> Result<()> {
         let conf_dir = Path::new("/etc/modules-load.d");
         if !conf_dir.exists() {
             fs::create_dir_all(conf_dir)?;
         }
         let conf_path = conf_dir.join("cfgd.conf");
 
-        let mut modules = Vec::new();
-        if conf_path.exists() {
-            let content = fs::read_to_string(&conf_path)?;
-            for line in content.lines() {
-                let line = line.trim();
-                if !line.is_empty() && !line.starts_with('#') {
-                    modules.push(line.to_string());
-                }
-            }
-        }
-
-        if !modules.iter().any(|m| m == module) {
-            modules.push(module.to_string());
+        if desired_modules.is_empty() {
+            let _ = fs::remove_file(&conf_path);
+            return Ok(());
         }
 
         let mut content = String::from("# Managed by cfgd — do not edit manually\n");
-        for m in &modules {
+        for m in desired_modules {
             content.push_str(m);
             content.push('\n');
         }
@@ -298,11 +280,15 @@ impl SystemConfigurator for KernelModuleConfigurator {
             None => return Ok(()),
         };
 
+        let mut desired_names: Vec<&str> = Vec::new();
+
         for module_val in modules {
             let module = match module_val.as_str() {
                 Some(m) => m,
                 None => continue,
             };
+
+            desired_names.push(module);
 
             if Self::is_module_loaded(module) {
                 continue;
@@ -310,13 +296,13 @@ impl SystemConfigurator for KernelModuleConfigurator {
 
             printer.info(&format!("modprobe {}", module));
             Self::load_module(module)?;
+        }
 
-            if let Err(e) = Self::persist_module(module) {
-                printer.warning(&format!(
-                    "Failed to persist module {}: {} (runtime loaded)",
-                    module, e
-                ));
-            }
+        if let Err(e) = Self::persist_modules(&desired_names) {
+            printer.warning(&format!(
+                "Failed to persist modules: {} (runtime loaded)",
+                e
+            ));
         }
 
         Ok(())
@@ -701,7 +687,13 @@ impl AppArmorConfigurator {
             .arg("--json")
             .output()
             .ok()
-            .map(|o| String::from_utf8_lossy(&o.stdout).contains(name))
+            .map(|o| {
+                let stdout = String::from_utf8_lossy(&o.stdout);
+                // Check for exact profile name match — JSON output uses profile names as keys
+                // wrapped in quotes: "profile_name"
+                let quoted = format!("\"{}\"", name);
+                stdout.contains(&quoted)
+            })
             .unwrap_or(false)
     }
 
@@ -761,6 +753,9 @@ impl SystemConfigurator for AppArmorConfigurator {
                 Some(p) => PathBuf::from(p),
                 None => continue,
             };
+            if cfgd_core::validate_no_traversal(&path).is_err() {
+                continue;
+            }
 
             if !path.exists() {
                 drifts.push(SystemDrift {
@@ -810,6 +805,13 @@ impl SystemConfigurator for AppArmorConfigurator {
                 Some(p) => PathBuf::from(p),
                 None => continue,
             };
+            if cfgd_core::validate_no_traversal(&path).is_err() {
+                printer.warning(&format!(
+                    "Skipping AppArmor profile {}: path traversal detected",
+                    name
+                ));
+                continue;
+            }
 
             if let Some(content) = profile.get("content").and_then(|v| v.as_str()) {
                 if let Some(parent) = path.parent() {
@@ -855,7 +857,7 @@ impl SystemConfigurator for SeccompConfigurator {
     }
 
     fn is_available(&self) -> bool {
-        Path::new("/proc/sys/kernel/seccomp").exists() || Path::new("/boot").exists()
+        Path::new("/proc/sys/kernel/seccomp").exists()
     }
 
     fn current_state(&self) -> Result<serde_yaml::Value> {
@@ -888,6 +890,9 @@ impl SystemConfigurator for SeccompConfigurator {
             };
 
             let profile_path = profiles_dir.join(file);
+            if cfgd_core::validate_no_traversal(std::path::Path::new(file)).is_err() {
+                continue;
+            }
 
             if !profile_path.exists() {
                 drifts.push(SystemDrift {
@@ -944,6 +949,13 @@ impl SystemConfigurator for SeccompConfigurator {
             };
 
             let profile_path = profiles_dir.join(file);
+            if cfgd_core::validate_no_traversal(std::path::Path::new(file)).is_err() {
+                printer.warning(&format!(
+                    "Skipping seccomp profile {}: path traversal in file name",
+                    name
+                ));
+                continue;
+            }
             printer.info(&format!(
                 "Writing seccomp profile {}: {}",
                 name,
@@ -1021,10 +1033,19 @@ impl SystemConfigurator for CertificateConfigurator {
                 });
             }
 
-            if let Some(mode_str) = cert.get("mode").and_then(|v| v.as_str())
-                && let Ok(desired_mode) = u32::from_str_radix(mode_str, 8)
+            if let Some(ca_path) = cert.get("caPath").and_then(|v| v.as_str())
+                && !Path::new(ca_path).exists()
             {
-                for path_key in &["certPath", "keyPath"] {
+                drifts.push(SystemDrift {
+                    key: format!("cert.{}.ca", name),
+                    expected: "present".to_string(),
+                    actual: "missing".to_string(),
+                });
+            }
+
+            if let Some(mode_str) = cert.get("mode").and_then(|v| v.as_str()) {
+                let desired_mode = u32::from_str_radix(mode_str, 8).unwrap_or(0o644);
+                for path_key in &["certPath", "keyPath", "caPath"] {
                     if let Some(path) = cert.get(*path_key).and_then(|v| v.as_str())
                         && let Ok(meta) = fs::metadata(path)
                         && let Some(current_mode) = cfgd_core::file_permissions_mode(&meta)
@@ -1105,11 +1126,43 @@ fn yaml_value_to_string(value: &serde_yaml::Value) -> String {
     }
 }
 
+/// Sysctl-specific conversion: booleans map to "1"/"0" to match /proc/sys semantics.
+fn sysctl_yaml_value_to_string(value: &serde_yaml::Value) -> String {
+    match value {
+        serde_yaml::Value::Bool(b) => if *b { "1" } else { "0" }.to_string(),
+        _ => yaml_value_to_string(value),
+    }
+}
+
 fn find_toml_value(table: &toml::Table, key: &str) -> Option<String> {
+    // First try dot-separated path lookup
+    if key.contains('.') {
+        let parts: Vec<&str> = key.rsplitn(2, '.').collect();
+        let (leaf, path) = (parts[0], parts[1]);
+        let mut current = table;
+        let mut found = true;
+        for segment in path.split('.') {
+            match current.get(segment).and_then(|v| v.as_table()) {
+                Some(t) => current = t,
+                None => {
+                    found = false;
+                    break;
+                }
+            }
+        }
+        if found
+            && let Some(val) = current.get(leaf)
+        {
+            return Some(toml_value_to_string(val));
+        }
+    }
+
+    // Fall back to direct key lookup at root level
     if let Some(val) = table.get(key) {
         return Some(toml_value_to_string(val));
     }
 
+    // Fall back to recursive search for backward compatibility
     for (_, val) in table {
         if let toml::Value::Table(nested) = val
             && let Some(found) = find_toml_value(nested, key)
@@ -1133,7 +1186,26 @@ fn toml_value_to_string(value: &toml::Value) -> String {
 
 fn set_toml_value(table: &mut toml::Table, key: &str, value: &serde_yaml::Value) {
     let toml_val = yaml_to_toml_value(value);
-    table.insert(key.to_string(), toml_val);
+
+    if !key.contains('.') {
+        table.insert(key.to_string(), toml_val);
+        return;
+    }
+
+    let parts: Vec<&str> = key.rsplitn(2, '.').collect();
+    let (leaf, path) = (parts[0], parts[1]);
+
+    let mut current = table;
+    for segment in path.split('.') {
+        let entry = current
+            .entry(segment.to_string())
+            .or_insert_with(|| toml::Value::Table(toml::Table::new()));
+        if !entry.is_table() {
+            *entry = toml::Value::Table(toml::Table::new());
+        }
+        current = entry.as_table_mut().expect("just ensured table");
+    }
+    current.insert(leaf.to_string(), toml_val);
 }
 
 fn yaml_to_toml_value(value: &serde_yaml::Value) -> toml::Value {
@@ -1410,6 +1482,89 @@ mod tests {
         let desired = serde_yaml::Value::Mapping(m);
         let drifts = ac.diff(&desired).unwrap();
         assert!(drifts.is_empty());
+    }
+
+    // --- sysctl_yaml_value_to_string ---
+
+    #[test]
+    fn sysctl_yaml_value_to_string_bool_maps_to_01() {
+        assert_eq!(
+            sysctl_yaml_value_to_string(&serde_yaml::Value::Bool(true)),
+            "1"
+        );
+        assert_eq!(
+            sysctl_yaml_value_to_string(&serde_yaml::Value::Bool(false)),
+            "0"
+        );
+    }
+
+    #[test]
+    fn sysctl_yaml_value_to_string_delegates_non_bool() {
+        assert_eq!(
+            sysctl_yaml_value_to_string(&serde_yaml::Value::Number(262144.into())),
+            "262144"
+        );
+        assert_eq!(
+            sysctl_yaml_value_to_string(&serde_yaml::Value::String("1".into())),
+            "1"
+        );
+    }
+
+    // --- find_toml_value dot-path ---
+
+    #[test]
+    fn find_toml_value_dot_path() {
+        let toml_str = r#"
+[plugins]
+[plugins.cri]
+sandbox_image = "registry.k8s.io/pause:3.9"
+[plugins.cri.containerd.runtimes.runc.options]
+SystemdCgroup = true
+"#;
+        let table: toml::Table = toml_str.parse().unwrap();
+        assert_eq!(
+            find_toml_value(&table, "plugins.cri.sandbox_image"),
+            Some("registry.k8s.io/pause:3.9".to_string())
+        );
+        assert_eq!(
+            find_toml_value(
+                &table,
+                "plugins.cri.containerd.runtimes.runc.options.SystemdCgroup"
+            ),
+            Some("true".to_string())
+        );
+    }
+
+    #[test]
+    fn find_toml_value_dot_path_missing() {
+        let mut table = toml::Table::new();
+        table.insert("key".to_string(), toml::Value::String("val".into()));
+        assert_eq!(find_toml_value(&table, "no.such.path"), None);
+    }
+
+    // --- set_toml_value dot-path ---
+
+    #[test]
+    fn set_toml_value_dot_path_creates_nested_tables() {
+        let mut table = toml::Table::new();
+        set_toml_value(
+            &mut table,
+            "plugins.cri.sandbox_image",
+            &serde_yaml::Value::String("pause:3.10".into()),
+        );
+        let val = find_toml_value(&table, "plugins.cri.sandbox_image");
+        assert_eq!(val, Some("pause:3.10".to_string()));
+    }
+
+    #[test]
+    fn set_toml_value_simple_key() {
+        let mut table = toml::Table::new();
+        set_toml_value(
+            &mut table,
+            "version",
+            &serde_yaml::Value::Number(2.into()),
+        );
+        assert_eq!(table.get("version").unwrap().as_integer(), Some(2));
     }
 
     #[test]

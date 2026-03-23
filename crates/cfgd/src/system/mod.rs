@@ -92,12 +92,19 @@ pub(crate) fn parse_reg_line(line: &str) -> Option<(&str, &str, &str)> {
 ///   The desired value is the profile *name* (e.g. "PowerShell", "Git Bash").
 pub struct ShellConfigurator;
 
-/// Path to Windows Terminal settings.json (Microsoft Store install).
+/// Path to Windows Terminal settings.json (Store, Preview, or non-Store install).
 fn windows_terminal_settings_path() -> Option<std::path::PathBuf> {
     let local_app_data = std::env::var("LOCALAPPDATA").ok()?;
-    let path = std::path::PathBuf::from(local_app_data)
-        .join("Packages/Microsoft.WindowsTerminal_8wekyb3d8bbwe/LocalState/settings.json");
-    if path.exists() { Some(path) } else { None }
+    let base = std::path::PathBuf::from(&local_app_data);
+
+    // Check paths in priority order: Store > Preview > non-Store
+    let candidates = [
+        base.join("Packages/Microsoft.WindowsTerminal_8wekyb3d8bbwe/LocalState/settings.json"),
+        base.join("Packages/Microsoft.WindowsTerminalPreview_8wekyb3d8bbwe/LocalState/settings.json"),
+        base.join("Microsoft/Windows Terminal/settings.json"),
+    ];
+
+    candidates.into_iter().find(|p| p.exists())
 }
 
 /// Resolve the human-readable name of the current default profile.
@@ -281,13 +288,6 @@ impl SystemConfigurator for MacosDefaultsConfigurator {
 
     fn is_available(&self) -> bool {
         cfg!(target_os = "macos")
-            || Command::new("defaults")
-                .arg("help")
-                .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::null())
-                .status()
-                .map(|s| s.success())
-                .unwrap_or(false)
     }
 
     fn current_state(&self) -> Result<serde_yaml::Value> {
@@ -469,14 +469,23 @@ impl SystemConfigurator for SystemdUnitConfigurator {
                 });
             }
 
-            // Check if unit file exists at specified path
             if let Some(unit_file) = unit.get("unitFile").and_then(|v| v.as_str()) {
-                let unit_path = std::path::Path::new(unit_file);
-                if !unit_path.exists() {
+                let dest = format!("/etc/systemd/system/{}", name);
+                let dest_path = std::path::Path::new(&dest);
+                if !dest_path.exists() {
                     drifts.push(SystemDrift {
                         key: format!("{}.unit-file", name),
-                        expected: unit_file.to_string(),
+                        expected: "present".to_string(),
                         actual: "missing".to_string(),
+                    });
+                } else if let Ok(source_content) = std::fs::read(unit_file)
+                    && let Ok(dest_content) = std::fs::read(&dest)
+                    && source_content != dest_content
+                {
+                    drifts.push(SystemDrift {
+                        key: format!("{}.unit-file", name),
+                        expected: "updated".to_string(),
+                        actual: "outdated".to_string(),
                     });
                 }
             }
@@ -557,13 +566,6 @@ impl SystemConfigurator for LaunchAgentConfigurator {
 
     fn is_available(&self) -> bool {
         cfg!(target_os = "macos")
-            || Command::new("launchctl")
-                .arg("version")
-                .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::null())
-                .status()
-                .map(|s| s.success())
-                .unwrap_or(false)
     }
 
     fn current_state(&self) -> Result<serde_yaml::Value> {
@@ -585,11 +587,31 @@ impl SystemConfigurator for LaunchAgentConfigurator {
             };
 
             let plist_path = launch_agent_plist_path(name);
+            let program = agent.get("program").and_then(|v| v.as_str()).unwrap_or("");
+            let run_at_load = agent
+                .get("runAtLoad")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            let args: Vec<&str> = agent
+                .get("args")
+                .and_then(|v| v.as_sequence())
+                .map(|seq| seq.iter().filter_map(|v| v.as_str()).collect::<Vec<&str>>())
+                .unwrap_or_default();
+            let expected_content = generate_launch_agent_plist(name, program, &args, run_at_load);
+
             if !plist_path.exists() {
                 drifts.push(SystemDrift {
                     key: format!("{}.plist", name),
                     expected: "present".to_string(),
                     actual: "missing".to_string(),
+                });
+            } else if let Ok(current_content) = std::fs::read_to_string(&plist_path)
+                && current_content != expected_content
+            {
+                drifts.push(SystemDrift {
+                    key: format!("{}.plist", name),
+                    expected: "updated".to_string(),
+                    actual: "outdated".to_string(),
                 });
             }
         }
@@ -651,7 +673,8 @@ impl SystemConfigurator for LaunchAgentConfigurator {
 }
 
 fn launch_agent_plist_path(name: &str) -> std::path::PathBuf {
-    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
+    let home = std::env::var("HOME").unwrap_or_else(|_| "~".to_string());
+    let home = cfgd_core::expand_tilde(Path::new(&home)).to_string_lossy().to_string();
     std::path::PathBuf::from(home)
         .join("Library/LaunchAgents")
         .join(format!("{}.plist", name))
@@ -796,7 +819,7 @@ impl EnvironmentConfigurator {
                 && let Some((key, value)) = rest.split_once('=')
             {
                 let key = key.trim();
-                let value = value.trim().trim_matches('"');
+                let value = value.trim().trim_matches('"').trim_matches('\'');
                 vars.insert(key.to_string(), value.to_string());
             }
         }
@@ -849,8 +872,9 @@ impl EnvironmentConfigurator {
             output.push_str(CFGD_BLOCK_BEGIN);
             output.push('\n');
             for (key, value) in managed {
-                if value.contains(' ') || value.contains('#') || value.contains('$') {
-                    output.push_str(&format!("{}=\"{}\"\n", key, value));
+                if value.contains(' ') || value.contains('#') || value.contains('$') || value.contains('"') {
+                    let escaped = value.replace('\\', "\\\\").replace('"', "\\\"");
+                    output.push_str(&format!("{}=\"{}\"\n", key, escaped));
                 } else {
                     output.push_str(&format!("{}={}\n", key, value));
                 }
@@ -892,12 +916,14 @@ impl EnvironmentConfigurator {
     // --- macOS ---
 
     fn macos_env_sh_path() -> std::path::PathBuf {
-        let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
+        let home = std::env::var("HOME").unwrap_or_else(|_| "~".to_string());
+        let home = cfgd_core::expand_tilde(Path::new(&home)).to_string_lossy().to_string();
         std::path::PathBuf::from(home).join(".config/cfgd/env.sh")
     }
 
     fn macos_plist_path() -> std::path::PathBuf {
-        let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
+        let home = std::env::var("HOME").unwrap_or_else(|_| "~".to_string());
+        let home = cfgd_core::expand_tilde(Path::new(&home)).to_string_lossy().to_string();
         std::path::PathBuf::from(home)
             .join("Library/LaunchAgents")
             .join(MACOS_LAUNCHD_PLIST_NAME)
@@ -1044,13 +1070,7 @@ impl EnvironmentConfigurator {
     fn windows_set_var(name: &str, value: &str, printer: &Printer) {
         let result = Command::new("setx").args([name, value]).output();
         match result {
-            Ok(output) if output.status.success() => {
-                // Also set in current process so subsequent operations see the change
-                // SAFETY: single-threaded apply phase
-                unsafe {
-                    std::env::set_var(name, value);
-                }
-            }
+            Ok(output) if output.status.success() => {}
             Ok(output) => {
                 // setx writes error messages to stdout, not stderr
                 let stdout = String::from_utf8_lossy(&output.stdout);
@@ -1235,8 +1255,32 @@ impl WindowsRegistryConfigurator {
         Self::parse_reg_value_output(&stdout, value_name)
     }
 
+    /// Read the registry type of an existing value.
+    fn read_reg_type(key_path: &str, value_name: &str) -> Option<String> {
+        if !cfg!(windows) {
+            return None;
+        }
+        let output = Command::new("reg")
+            .args(["query", key_path, "/v", value_name])
+            .output()
+            .ok()?;
+        if !output.status.success() {
+            return None;
+        }
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        for line in stdout.lines() {
+            if let Some((_, reg_type, _)) = parse_reg_line(line)
+                && line.contains(value_name)
+            {
+                return Some(reg_type.to_string());
+            }
+        }
+        None
+    }
+
     /// Write a registry value using `reg add`.
-    /// Infers the type: numeric values use `REG_DWORD`, otherwise `REG_SZ`.
+    /// Preserves REG_EXPAND_SZ if the existing value has that type, detects
+    /// `%VAR%` patterns, and infers REG_DWORD for numeric values.
     fn write_reg_value(
         key_path: &str,
         value_name: &str,
@@ -1246,7 +1290,18 @@ impl WindowsRegistryConfigurator {
         if !cfg!(windows) {
             return Ok(());
         }
-        let reg_type = if value.parse::<u32>().is_ok() {
+
+        // Check existing type to preserve REG_EXPAND_SZ
+        let existing_type = Self::read_reg_type(key_path, value_name);
+
+        let reg_type = if let Some(ref t) = existing_type
+            && t == "REG_EXPAND_SZ"
+        {
+            "REG_EXPAND_SZ"
+        } else if value.contains('%') && value.matches('%').count() >= 2 {
+            // Looks like it contains %VAR% patterns
+            "REG_EXPAND_SZ"
+        } else if value.parse::<u32>().is_ok() {
             "REG_DWORD"
         } else {
             "REG_SZ"
@@ -1388,6 +1443,25 @@ struct ServiceEntry {
     state: Option<String>,
 }
 
+struct ServiceQueryResult {
+    state: String,
+    start_type: String,
+    binary_path: String,
+    display_name: String,
+}
+
+fn parse_sc_config_value(output: &str, key: &str) -> Option<String> {
+    for line in output.lines() {
+        let line = line.trim();
+        if line.starts_with(key)
+            && let Some((_, rest)) = line.split_once(':')
+        {
+            return Some(rest.trim().to_string());
+        }
+    }
+    None
+}
+
 impl WindowsServiceConfigurator {
     /// Parse the YAML sequence of service entries.
     fn parse_services(desired: &serde_yaml::Value) -> Vec<ServiceEntry> {
@@ -1424,8 +1498,8 @@ impl WindowsServiceConfigurator {
         entries
     }
 
-    /// Query a service's current state and start type via `sc query` and `sc qc`.
-    fn query_service(name: &str) -> Option<(String, String)> {
+    /// Query a service's current state, start type, binary path, and display name.
+    fn query_service(name: &str) -> Option<ServiceQueryResult> {
         if !cfg!(windows) {
             return None;
         }
@@ -1439,8 +1513,15 @@ impl WindowsServiceConfigurator {
         let qc_output = Command::new("sc.exe").args(["qc", name]).output().ok()?;
         let qc_stdout = String::from_utf8_lossy(&qc_output.stdout);
         let start_type = parse_sc_start_type(&qc_stdout).unwrap_or_default();
+        let binary_path = parse_sc_config_value(&qc_stdout, "BINARY_PATH_NAME").unwrap_or_default();
+        let display_name = parse_sc_config_value(&qc_stdout, "DISPLAY_NAME").unwrap_or_default();
 
-        Some((state, start_type))
+        Some(ServiceQueryResult {
+            state,
+            start_type,
+            binary_path,
+            display_name,
+        })
     }
 }
 
@@ -1515,23 +1596,41 @@ impl SystemConfigurator for WindowsServiceConfigurator {
         let mut drifts = Vec::new();
         for entry in &entries {
             match Self::query_service(&entry.name) {
-                Some((current_state, current_start_type)) => {
+                Some(result) => {
                     if let Some(ref desired_state) = entry.state
-                        && &current_state != desired_state
+                        && &result.state != desired_state
                     {
                         drifts.push(SystemDrift {
                             key: format!("{}.state", entry.name),
                             expected: desired_state.clone(),
-                            actual: current_state.clone(),
+                            actual: result.state.clone(),
                         });
                     }
                     if let Some(ref desired_start) = entry.start_type
-                        && &current_start_type != desired_start
+                        && &result.start_type != desired_start
                     {
                         drifts.push(SystemDrift {
                             key: format!("{}.startType", entry.name),
                             expected: desired_start.clone(),
-                            actual: current_start_type,
+                            actual: result.start_type.clone(),
+                        });
+                    }
+                    if let Some(ref desired_binary) = entry.binary_path
+                        && result.binary_path != *desired_binary
+                    {
+                        drifts.push(SystemDrift {
+                            key: format!("{}.binaryPath", entry.name),
+                            expected: desired_binary.clone(),
+                            actual: result.binary_path.clone(),
+                        });
+                    }
+                    if let Some(ref desired_dn) = entry.display_name
+                        && result.display_name != *desired_dn
+                    {
+                        drifts.push(SystemDrift {
+                            key: format!("{}.displayName", entry.name),
+                            expected: desired_dn.clone(),
+                            actual: result.display_name.clone(),
                         });
                     }
                 }
@@ -1594,18 +1693,36 @@ impl SystemConfigurator for WindowsServiceConfigurator {
                     }
                 }
             } else {
-                // Configure start type on existing service
+                // Reconfigure existing service
+                let mut config_args: Vec<&str> = vec!["config", &entry.name];
+                let mut needs_config = false;
+
                 if let Some(ref start_type) = entry.start_type
                     && let Some(sc_start) = sc_start_type(start_type)
                 {
+                    config_args.push("start=");
+                    config_args.push(sc_start);
+                    needs_config = true;
+                }
+                if let Some(ref bp) = entry.binary_path {
+                    config_args.push("binPath=");
+                    config_args.push(bp);
+                    needs_config = true;
+                }
+                if let Some(ref dn) = entry.display_name {
+                    config_args.push("DisplayName=");
+                    config_args.push(dn);
+                    needs_config = true;
+                }
+                if needs_config {
                     let output = Command::new("sc.exe")
-                        .args(["config", &entry.name, "start=", sc_start])
+                        .args(&config_args)
                         .output()
                         .map_err(cfgd_core::errors::CfgdError::Io)?;
                     if !output.status.success() {
                         let stdout = String::from_utf8_lossy(&output.stdout);
                         printer.warning(&format!(
-                            "Failed to set start type for {}: {}",
+                            "Failed to configure service {}: {}",
                             entry.name,
                             stdout.trim()
                         ));
@@ -1617,39 +1734,43 @@ impl SystemConfigurator for WindowsServiceConfigurator {
             if !exists {
                 continue;
             }
-            if let Some(ref state) = entry.state {
-                match state.as_str() {
+            if let Some(ref desired_state) = entry.state {
+                // Query current state to avoid redundant start/stop and locale-dependent string matching
+                let current_state = Self::query_service(&entry.name).map(|r| r.state);
+                match desired_state.as_str() {
                     "running" => {
-                        let output = Command::new("sc.exe")
-                            .args(["start", &entry.name])
-                            .output()
-                            .map_err(cfgd_core::errors::CfgdError::Io)?;
-                        if output.status.success() {
-                            printer.success(&format!("Started service {}", entry.name));
-                        } else {
-                            // sc.exe writes error messages to stdout, not stderr
-                            let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-                            if !stdout.contains("already been started") {
+                        if current_state.as_deref() != Some("running") {
+                            let output = Command::new("sc.exe")
+                                .args(["start", &entry.name])
+                                .output()
+                                .map_err(cfgd_core::errors::CfgdError::Io)?;
+                            if output.status.success() {
+                                printer.success(&format!("Started service {}", entry.name));
+                            } else {
+                                let stdout = String::from_utf8_lossy(&output.stdout);
                                 printer.warning(&format!(
                                     "Failed to start {}: {}",
-                                    entry.name, stdout
+                                    entry.name,
+                                    stdout.trim()
                                 ));
                             }
                         }
                     }
                     "stopped" => {
-                        let output = Command::new("sc.exe")
-                            .args(["stop", &entry.name])
-                            .output()
-                            .map_err(cfgd_core::errors::CfgdError::Io)?;
-                        if output.status.success() {
-                            printer.success(&format!("Stopped service {}", entry.name));
-                        } else {
-                            // sc.exe writes error messages to stdout, not stderr
-                            let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-                            if !stdout.contains("has not been started") {
-                                printer
-                                    .warning(&format!("Failed to stop {}: {}", entry.name, stdout));
+                        if current_state.as_deref() != Some("stopped") {
+                            let output = Command::new("sc.exe")
+                                .args(["stop", &entry.name])
+                                .output()
+                                .map_err(cfgd_core::errors::CfgdError::Io)?;
+                            if output.status.success() {
+                                printer.success(&format!("Stopped service {}", entry.name));
+                            } else {
+                                let stdout = String::from_utf8_lossy(&output.stdout);
+                                printer.warning(&format!(
+                                    "Failed to stop {}: {}",
+                                    entry.name,
+                                    stdout.trim()
+                                ));
                             }
                         }
                     }
@@ -1936,8 +2057,18 @@ impl SystemConfigurator for KdeConfigConfigurator {
                         write_cmd, file, group, key_str, val_str
                     ));
 
+                    let type_flag = match value {
+                        serde_yaml::Value::Bool(_) => Some("bool"),
+                        serde_yaml::Value::Number(_) => Some("int"),
+                        _ => None,
+                    };
+                    let mut args = vec!["--file", file, "--group", group, "--key", key_str];
+                    if let Some(t) = type_flag {
+                        args.extend_from_slice(&["--type", t]);
+                    }
+                    args.push(&val_str);
                     let output = Command::new(write_cmd)
-                        .args(["--file", file, "--group", group, "--key", key_str, &val_str])
+                        .args(&args)
                         .output()
                         .map_err(cfgd_core::errors::CfgdError::Io)?;
 
@@ -2059,10 +2190,15 @@ impl SystemConfigurator for XfconfConfigurator {
                     .map_err(cfgd_core::errors::CfgdError::Io)?;
 
                 if !output.status.success() {
-                    // Property may not exist yet — retry with --create -t string
+                    // Property may not exist yet — retry with --create
+                    let xfconf_type = match desired_value {
+                        serde_yaml::Value::Bool(_) => "bool",
+                        serde_yaml::Value::Number(_) => "int",
+                        _ => "string",
+                    };
                     let create_output = Command::new("xfconf-query")
                         .args([
-                            "-c", channel, "-p", property, "--create", "-t", "string", "-s",
+                            "-c", channel, "-p", property, "--create", "-t", xfconf_type, "-s",
                             &val_str,
                         ])
                         .output()
@@ -2680,6 +2816,30 @@ HKEY_CURRENT_USER\\Environment\n\
     #[test]
     fn service_parse_sc_start_type_empty_input() {
         assert_eq!(parse_sc_start_type(""), None);
+    }
+
+    // --- parse_sc_config_value ---
+
+    #[test]
+    fn service_parse_sc_config_value_extracts_binary_path() {
+        let output = "SERVICE_NAME: MyService\n\
+                      \tTYPE               : 10  WIN32_OWN_PROCESS\n\
+                      \tBINARY_PATH_NAME   : C:\\path\\to\\service.exe\n\
+                      \tDISPLAY_NAME       : My Custom Service\n";
+        assert_eq!(
+            parse_sc_config_value(output, "BINARY_PATH_NAME"),
+            Some("C:\\path\\to\\service.exe".to_string())
+        );
+        assert_eq!(
+            parse_sc_config_value(output, "DISPLAY_NAME"),
+            Some("My Custom Service".to_string())
+        );
+    }
+
+    #[test]
+    fn service_parse_sc_config_value_missing_key() {
+        let output = "SERVICE_NAME: MyService\n";
+        assert_eq!(parse_sc_config_value(output, "BINARY_PATH_NAME"), None);
     }
 
     #[test]
