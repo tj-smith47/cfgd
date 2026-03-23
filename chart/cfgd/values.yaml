@@ -170,3 +170,9 @@ probes:
 # RBAC examples (opt-in)
 rbacExamples:
   enabled: false
+
+# Test pod
+test:
+  image:
+    repository: bitnami/kubectl
+    tag: "1.31"

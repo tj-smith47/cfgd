@@ -7,7 +7,7 @@ metadata:
     {{- include "cfgd.labels" . | nindent 4 }}
   {{- if .Values.webhook.certManager.enabled }}
   annotations:
-    cert-manager.io/inject-ca-from: {{ .Release.Namespace }}/{{ include "cfgd.webhookCertSecret" . }}
+    cert-manager.io/inject-ca-from: {{ .Release.Namespace }}/{{ include "cfgd.webhookCertName" . }}
   {{- end }}
 webhooks:
   - name: validate-machineconfig.cfgd.io

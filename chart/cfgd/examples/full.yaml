@@ -1,6 +1,6 @@
 operator:
   enabled: true
-  replicaCount: 2
+  replicaCount: 1
   leaderElection:
     enabled: true
 agent:

@@ -340,6 +340,25 @@
         }
       }
     },
+    "test": {
+      "type": "object",
+      "description": "Test pod configuration",
+      "properties": {
+        "image": {
+          "type": "object",
+          "properties": {
+            "repository": {
+              "type": "string",
+              "description": "Test pod image repository"
+            },
+            "tag": {
+              "type": "string",
+              "description": "Test pod image tag"
+            }
+          }
+        }
+      }
+    },
     "nameOverride": {
       "type": "string",
       "description": "Override chart name"

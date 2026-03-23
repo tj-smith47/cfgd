@@ -1,4 +1,7 @@
 {{- if and .Values.operator.enabled .Values.deviceGateway.enabled .Values.deviceGateway.persistence.enabled }}
+{{- if gt (int .Values.operator.replicaCount) 1 }}
+{{- fail "deviceGateway.persistence requires operator.replicaCount=1 (SQLite cannot be shared)" }}
+{{- end }}
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:

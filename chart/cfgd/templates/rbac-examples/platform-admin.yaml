@@ -7,6 +7,12 @@ metadata:
     {{- include "cfgd.labels" . | nindent 4 }}
 rules:
   - apiGroups: ["cfgd.io"]
-    resources: ["*"]
-    verbs: ["*"]
+    resources: ["machineconfigs", "configpolicies", "clusterconfigpolicies", "driftalerts", "modules"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["cfgd.io"]
+    resources: ["machineconfigs/status", "configpolicies/status", "clusterconfigpolicies/status", "driftalerts/status", "modules/status"]
+    verbs: ["get", "update", "patch"]
+  - apiGroups: ["cfgd.io"]
+    resources: ["machineconfigs/finalizers", "configpolicies/finalizers", "clusterconfigpolicies/finalizers", "driftalerts/finalizers", "modules/finalizers"]
+    verbs: ["update"]
 {{- end }}

@@ -79,3 +79,10 @@ Webhook certificate secret name
 {{- define "cfgd.webhookCertSecret" -}}
 {{ include "cfgd.fullname" . }}-webhook-tls
 {{- end }}
+
+{{/*
+Webhook certificate resource name (for cert-manager Certificate and inject-ca-from annotation)
+*/}}
+{{- define "cfgd.webhookCertName" -}}
+{{ include "cfgd.fullname" . }}-webhook-tls
+{{- end }}
