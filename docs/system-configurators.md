@@ -98,7 +98,7 @@ system:
 
 ### `xfconf` (Linux only)
 
-Reads and writes [XFCE desktop settings](https://docs.xfce.org/xfce/xfconf/start) via `xfconf-query`. Each key is a channel name, values are property-path to value mappings.
+Reads and writes [XFCE desktop settings](https://docs.xfce.org/xfce/xfconf/start) via `xfconf-query`. Each key is a channel name, values are property-path to value mappings. Properties that don't yet exist are created automatically as strings.
 
 ```yaml
 system:

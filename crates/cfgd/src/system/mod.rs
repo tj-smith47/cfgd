@@ -2046,12 +2046,23 @@ impl SystemConfigurator for XfconfConfigurator {
                     .map_err(cfgd_core::errors::CfgdError::Io)?;
 
                 if !output.status.success() {
-                    printer.warning(&format!(
-                        "xfconf-query set failed for {}.{}: {}",
-                        channel,
-                        property,
-                        stderr_string(&output)
-                    ));
+                    // Property may not exist yet — retry with --create -t string
+                    let create_output = Command::new("xfconf-query")
+                        .args([
+                            "-c", channel, "-p", property, "--create", "-t", "string", "-s",
+                            &val_str,
+                        ])
+                        .output()
+                        .map_err(cfgd_core::errors::CfgdError::Io)?;
+
+                    if !create_output.status.success() {
+                        printer.warning(&format!(
+                            "xfconf-query set failed for {}.{}: {}",
+                            channel,
+                            property,
+                            stderr_string(&create_output)
+                        ));
+                    }
                 }
             }
         }
