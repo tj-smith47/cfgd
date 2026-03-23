@@ -10,8 +10,7 @@ metadata:
 spec:
   selector:
     matchLabels:
-      {{- include "cfgd.selectorLabels" . | nindent 6 }}
-      app.kubernetes.io/component: csi-driver
+      {{- include "cfgd.csiSelectorLabels" . | nindent 6 }}
   updateStrategy:
     type: RollingUpdate
     rollingUpdate:
@@ -19,8 +18,7 @@ spec:
   template:
     metadata:
       labels:
-        {{- include "cfgd.selectorLabels" . | nindent 8 }}
-        app.kubernetes.io/component: csi-driver
+        {{- include "cfgd.csiSelectorLabels" . | nindent 8 }}
         {{- with .Values.csiDriver.podLabels }}
         {{- toYaml . | nindent 8 }}
         {{- end }}

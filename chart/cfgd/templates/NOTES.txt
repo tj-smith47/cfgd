@@ -17,4 +17,10 @@ Gateway: http://{{ include "cfgd.fullname" . }}-gateway.{{ .Release.Namespace }}
 Agent: kubectl get ds -n {{ .Release.Namespace }} -l app.kubernetes.io/component=agent
 {{- end }}
 
+{{- if .Values.csiDriver.enabled }}
+
+CSI Driver: kubectl get ds -n {{ .Release.Namespace }} -l app.kubernetes.io/component=csi-driver
+  Driver:   kubectl get csidriver csi.cfgd.io
+{{- end }}
+
 Documentation: https://github.com/tj-smith47/cfgd

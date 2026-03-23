@@ -1,3 +1,6 @@
+nameOverride: ""
+fullnameOverride: ""
+
 # Operator configuration
 operator:
   enabled: true

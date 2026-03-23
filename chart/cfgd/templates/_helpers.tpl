@@ -25,7 +25,7 @@ Create a default fully qualified app name.
 Common labels
 */}}
 {{- define "cfgd.labels" -}}
-helm.sh/chart: {{ include "cfgd.name" . }}-{{ .Chart.Version }}
+helm.sh/chart: {{ .Chart.Name }}-{{ .Chart.Version | replace "+" "_" }}
 {{ include "cfgd.selectorLabels" . }}
 app.kubernetes.io/version: {{ .Chart.AppVersion | quote }}
 app.kubernetes.io/managed-by: {{ .Release.Service }}
@@ -53,6 +53,14 @@ Agent selector labels
 {{- define "cfgd.agentSelectorLabels" -}}
 {{ include "cfgd.selectorLabels" . }}
 app.kubernetes.io/component: agent
+{{- end }}
+
+{{/*
+CSI driver selector labels
+*/}}
+{{- define "cfgd.csiSelectorLabels" -}}
+{{ include "cfgd.selectorLabels" . }}
+app.kubernetes.io/component: csi-driver
 {{- end }}
 
 {{/*

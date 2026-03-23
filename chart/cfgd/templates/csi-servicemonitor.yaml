@@ -1,16 +1,16 @@
-{{- if and .Values.operator.enabled .Values.metrics.enabled .Values.metrics.serviceMonitor.enabled }}
+{{- if and .Values.csiDriver.enabled .Values.metrics.enabled .Values.metrics.serviceMonitor.enabled }}
 apiVersion: monitoring.coreos.com/v1
 kind: ServiceMonitor
 metadata:
-  name: {{ include "cfgd.fullname" . }}-operator
+  name: {{ include "cfgd.fullname" . }}-csi
   namespace: {{ .Release.Namespace }}
   labels:
     {{- include "cfgd.labels" . | nindent 4 }}
-    app.kubernetes.io/component: operator
+    app.kubernetes.io/component: csi-driver
 spec:
   selector:
     matchLabels:
-      {{- include "cfgd.operatorSelectorLabels" . | nindent 6 }}
+      {{- include "cfgd.csiSelectorLabels" . | nindent 6 }}
   endpoints:
     - port: metrics
       interval: {{ .Values.metrics.serviceMonitor.interval }}

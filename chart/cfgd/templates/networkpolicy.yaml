@@ -26,10 +26,12 @@ spec:
         - namespaceSelector: {}
   egress:
     - ports:
-        - port: 53
+        - port: 53        # DNS
           protocol: UDP
-        - port: 53
+        - port: 53        # DNS (TCP fallback)
           protocol: TCP
-        - port: 443
-        - port: 6443
+        - port: 443       # HTTPS (registries, external APIs)
+        - port: 6443      # Kubernetes API server
+      # To tighten: add `to:` selectors restricting destinations to
+      # the API server endpoint and known registry IPs/CIDRs.
 {{- end }}

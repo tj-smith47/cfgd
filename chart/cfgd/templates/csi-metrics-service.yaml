@@ -1,0 +1,19 @@
+{{- if and .Values.csiDriver.enabled .Values.metrics.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "cfgd.fullname" . }}-csi-metrics
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "cfgd.labels" . | nindent 4 }}
+    app.kubernetes.io/component: csi-driver
+spec:
+  clusterIP: None
+  ports:
+    - name: metrics
+      port: {{ .Values.csiDriver.metricsPort }}
+      targetPort: metrics
+      protocol: TCP
+  selector:
+    {{- include "cfgd.csiSelectorLabels" . | nindent 4 }}
+{{- end }}
