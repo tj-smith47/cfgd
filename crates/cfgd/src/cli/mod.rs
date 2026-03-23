@@ -4750,7 +4750,9 @@ fn cmd_daemon_uninstall(printer: &Printer) -> anyhow::Result<()> {
 }
 
 fn cmd_daemon_service() -> anyhow::Result<()> {
-    cfgd_core::daemon::run_as_windows_service()?;
+    let hooks: std::sync::Arc<dyn cfgd_core::daemon::DaemonHooks> =
+        std::sync::Arc::new(WorkstationDaemonHooks);
+    cfgd_core::daemon::run_as_windows_service(hooks)?;
     Ok(())
 }
 

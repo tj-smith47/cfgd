@@ -2200,11 +2200,17 @@ fn uninstall_windows_service() -> Result<()> {
     Ok(())
 }
 
-/// Run the daemon as a Windows Service. Called by the SCM (Service Control Manager),
-/// not directly by users.
+/// Hooks stored before dispatching to the SCM so `windows_service_main` can retrieve them.
 #[cfg(windows)]
-pub fn run_as_windows_service() -> Result<()> {
+static SERVICE_HOOKS: std::sync::OnceLock<Arc<dyn DaemonHooks>> = std::sync::OnceLock::new();
+
+/// Run the daemon as a Windows Service. Called by the SCM (Service Control Manager),
+/// not directly by users. `hooks` provides the binary-specific provider implementations.
+#[cfg(windows)]
+pub fn run_as_windows_service(hooks: Arc<dyn DaemonHooks>) -> Result<()> {
     use windows_service::service_dispatcher;
+    // Store hooks before dispatching — ffi_service_main retrieves them via OnceLock.
+    let _ = SERVICE_HOOKS.set(hooks);
     service_dispatcher::start("cfgd", ffi_service_main).map_err(|e| DaemonError::ServiceError {
         message: format!("failed to start service dispatcher: {}", e),
     })?;
@@ -2213,7 +2219,7 @@ pub fn run_as_windows_service() -> Result<()> {
 
 /// Windows Service mode is only available on Windows.
 #[cfg(not(windows))]
-pub fn run_as_windows_service() -> Result<()> {
+pub fn run_as_windows_service(_hooks: Arc<dyn DaemonHooks>) -> Result<()> {
     Err(DaemonError::ServiceError {
         message: "Windows Service mode is only available on Windows".to_string(),
     }
@@ -2246,6 +2252,58 @@ fn windows_service_main() -> std::result::Result<(), Box<dyn std::error::Error>>
     };
 
     let status_handle = service_control_handler::register("cfgd", event_handler)?;
+
+    // Report StartPending while we initialize
+    status_handle.set_service_status(ServiceStatus {
+        service_type: ServiceType::OWN_PROCESS,
+        current_state: ServiceState::StartPending,
+        controls_accepted: ServiceControlAccept::empty(),
+        exit_code: ServiceExitCode::Win32(0),
+        checkpoint: 1,
+        wait_hint: std::time::Duration::from_secs(10),
+        process_id: None,
+    })?;
+
+    // Parse config/profile from process args.
+    // SCM invokes: cfgd.exe daemon service --config "C:\..." [--profile "name"]
+    let args: Vec<String> = std::env::args().collect();
+    let mut config_path = crate::default_config_dir().join("config.yaml");
+    let mut profile_override: Option<String> = None;
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--config" if i + 1 < args.len() => {
+                config_path = PathBuf::from(&args[i + 1]);
+                i += 2;
+            }
+            "--profile" if i + 1 < args.len() => {
+                profile_override = Some(args[i + 1].clone());
+                i += 2;
+            }
+            _ => {
+                i += 1;
+            }
+        }
+    }
+
+    // Retrieve hooks stored by run_as_windows_service
+    let hooks = SERVICE_HOOKS
+        .get()
+        .ok_or("SERVICE_HOOKS not initialized — run_as_windows_service must be called first")?
+        .clone();
+
+    // Spawn the daemon loop on a tokio runtime in a background thread
+    let daemon_handle = std::thread::spawn(move || {
+        let printer = Arc::new(crate::output::Printer::new(crate::output::Verbosity::Quiet));
+        let rt = tokio::runtime::Runtime::new().expect("failed to create tokio runtime");
+        rt.block_on(async {
+            if let Err(e) = run_daemon(config_path, profile_override, printer, hooks).await {
+                tracing::error!("Daemon error: {}", e);
+            }
+        });
+    });
+
+    // Report Running — daemon loop is now active
     status_handle.set_service_status(ServiceStatus {
         service_type: ServiceType::OWN_PROCESS,
         current_state: ServiceState::Running,
@@ -2258,6 +2316,20 @@ fn windows_service_main() -> std::result::Result<(), Box<dyn std::error::Error>>
 
     // Block until the SCM sends a stop/shutdown signal
     let _ = shutdown_rx.recv();
+
+    // Report StopPending
+    status_handle.set_service_status(ServiceStatus {
+        service_type: ServiceType::OWN_PROCESS,
+        current_state: ServiceState::StopPending,
+        controls_accepted: ServiceControlAccept::empty(),
+        exit_code: ServiceExitCode::Win32(0),
+        checkpoint: 1,
+        wait_hint: std::time::Duration::from_secs(5),
+        process_id: None,
+    })?;
+
+    // The daemon thread will be terminated when the process exits
+    drop(daemon_handle);
 
     status_handle.set_service_status(ServiceStatus {
         service_type: ServiceType::OWN_PROCESS,
