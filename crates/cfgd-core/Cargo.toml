@@ -93,6 +93,7 @@ windows-sys = { version = "0.59", features = [
     "Win32_System_Threading",
     "Win32_UI_Shell",
 ] }
+windows-service = "0.7"
 
 [dev-dependencies]
 tempfile = "3"

@@ -553,6 +553,7 @@ dependencies = [
  "toml",
  "tracing",
  "ureq",
+ "windows-service",
  "windows-sys 0.59.0",
  "zip",
 ]

@@ -846,12 +846,15 @@ pub enum SourceCommand {
 pub enum DaemonCommand {
     /// Run daemon in foreground (default when no subcommand given)
     Run,
-    /// Install as a system service (launchd on macOS, systemd on Linux)
+    /// Install as a system service (launchd on macOS, systemd on Linux, Windows Service on Windows)
     Install,
     /// Uninstall the system service
     Uninstall,
     /// Show daemon status
     Status,
+    /// Run as a Windows Service (called by SCM, not directly by users)
+    #[clap(hide = true)]
+    Service,
 }
 
 #[derive(Subcommand)]
@@ -4615,6 +4618,7 @@ fn cmd_daemon(cli: &Cli, printer: &Printer, command: Option<&DaemonCommand>) -> 
         Some(DaemonCommand::Status) => return cmd_daemon_status(printer),
         Some(DaemonCommand::Install) => return cmd_daemon_install(cli, printer),
         Some(DaemonCommand::Uninstall) => return cmd_daemon_uninstall(printer),
+        Some(DaemonCommand::Service) => return cmd_daemon_service(),
         Some(DaemonCommand::Run) | None => {}
     }
 
@@ -4715,16 +4719,14 @@ fn cmd_daemon_status(printer: &Printer) -> anyhow::Result<()> {
 fn cmd_daemon_install(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
     printer.header("Install Daemon Service");
 
-    #[cfg(unix)]
-    {
-        cfgd_core::daemon::install_service(&cli.config, cli.profile.as_deref())?;
+    cfgd_core::daemon::install_service(&cli.config, cli.profile.as_deref())?;
+
+    if cfg!(windows) {
+        printer.success("cfgd service installed and started");
+        printer.info("The service will start automatically on boot");
+        printer.info("View logs in Event Viewer under Windows Logs > Application");
+    } else {
         print_daemon_install_success(printer);
-    }
-    #[cfg(not(unix))]
-    {
-        let _ = cli;
-        printer.warning("Service installation is not yet supported on this platform");
-        printer.info("Run the daemon directly with: cfgd daemon");
     }
 
     Ok(())
@@ -4733,23 +4735,22 @@ fn cmd_daemon_install(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
 fn cmd_daemon_uninstall(printer: &Printer) -> anyhow::Result<()> {
     printer.header("Uninstall Daemon Service");
 
-    #[cfg(unix)]
-    {
-        if cfg!(target_os = "macos") {
-            printer
-                .info("Unloading: launchctl unload ~/Library/LaunchAgents/com.cfgd.daemon.plist");
-        } else {
-            printer.info("Stopping: systemctl --user disable --now cfgd.service");
-        }
-
-        cfgd_core::daemon::uninstall_service()?;
-        printer.success("Daemon service removed");
-    }
-    #[cfg(not(unix))]
-    {
-        printer.warning("Service uninstallation is not yet supported on this platform");
+    if cfg!(windows) {
+        printer.info("Stopping and removing Windows Service: cfgd");
+    } else if cfg!(target_os = "macos") {
+        printer.info("Unloading: launchctl unload ~/Library/LaunchAgents/com.cfgd.daemon.plist");
+    } else {
+        printer.info("Stopping: systemctl --user disable --now cfgd.service");
     }
 
+    cfgd_core::daemon::uninstall_service()?;
+    printer.success("Daemon service removed");
+
+    Ok(())
+}
+
+fn cmd_daemon_service() -> anyhow::Result<()> {
+    cfgd_core::daemon::run_as_windows_service()?;
     Ok(())
 }
 

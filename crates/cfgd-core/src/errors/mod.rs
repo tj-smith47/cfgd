@@ -348,6 +348,9 @@ pub enum DaemonError {
     #[error("service install failed: {message}")]
     ServiceInstallFailed { message: String },
 
+    #[error("service error: {message}")]
+    ServiceError { message: String },
+
     #[error("watch error: {message}")]
     WatchError { message: String },
 }

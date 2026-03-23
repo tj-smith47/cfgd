@@ -1547,8 +1547,7 @@ impl SystemConfigurator for WindowsServiceConfigurator {
             if !exists {
                 if let Some(ref binary_path) = entry.binary_path {
                     // sc.exe requires key= and value as separate arguments
-                    let mut args: Vec<&str> =
-                        vec!["create", &entry.name, "binPath=", binary_path];
+                    let mut args: Vec<&str> = vec!["create", &entry.name, "binPath=", binary_path];
 
                     if let Some(ref dn) = entry.display_name {
                         args.push("DisplayName=");
@@ -1637,8 +1636,7 @@ impl SystemConfigurator for WindowsServiceConfigurator {
                             printer.success(&format!("Started service {}", entry.name));
                         } else {
                             // sc.exe writes error messages to stdout, not stderr
-                            let stdout =
-                                String::from_utf8_lossy(&output.stdout).to_string();
+                            let stdout = String::from_utf8_lossy(&output.stdout).to_string();
                             if !stdout.contains("already been started") {
                                 printer.warning(&format!(
                                     "Failed to start {}: {}",
@@ -1656,8 +1654,7 @@ impl SystemConfigurator for WindowsServiceConfigurator {
                             printer.success(&format!("Stopped service {}", entry.name));
                         } else {
                             // sc.exe writes error messages to stdout, not stderr
-                            let stdout =
-                                String::from_utf8_lossy(&output.stdout).to_string();
+                            let stdout = String::from_utf8_lossy(&output.stdout).to_string();
                             if !stdout.contains("has not been started") {
                                 printer
                                     .warning(&format!("Failed to stop {}: {}", entry.name, stdout));

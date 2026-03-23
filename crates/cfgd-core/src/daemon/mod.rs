@@ -2080,20 +2080,31 @@ fn record_file_drift(path: &Path) -> bool {
 }
 
 // --- Service Management ---
-// Service install/uninstall is Unix-only (launchd on macOS, systemd on Linux).
-// Windows Service support is planned for Plan 2.
+// launchd on macOS, systemd on Linux, Windows Service on Windows.
+
+#[cfg(windows)]
+pub fn install_service(config_path: &Path, profile: Option<&str>) -> Result<()> {
+    let cfgd_binary = std::env::current_exe().map_err(|e| DaemonError::ServiceInstallFailed {
+        message: format!("cannot determine binary path: {}", e),
+    })?;
+    install_windows_service(&cfgd_binary, config_path, profile)
+}
 
 #[cfg(unix)]
 pub fn install_service(config_path: &Path, profile: Option<&str>) -> Result<()> {
     let cfgd_binary = std::env::current_exe().map_err(|e| DaemonError::ServiceInstallFailed {
         message: format!("cannot determine binary path: {}", e),
     })?;
-
     if cfg!(target_os = "macos") {
         install_launchd_service(&cfgd_binary, config_path, profile)
     } else {
         install_systemd_service(&cfgd_binary, config_path, profile)
     }
+}
+
+#[cfg(windows)]
+pub fn uninstall_service() -> Result<()> {
+    uninstall_windows_service()
 }
 
 #[cfg(unix)]
@@ -2103,6 +2114,162 @@ pub fn uninstall_service() -> Result<()> {
     } else {
         uninstall_systemd_service()
     }
+}
+
+/// Install cfgd as a Windows Service via sc.exe.
+#[cfg(windows)]
+fn install_windows_service(binary: &Path, config_path: &Path, profile: Option<&str>) -> Result<()> {
+    let config_abs =
+        std::fs::canonicalize(config_path).unwrap_or_else(|_| config_path.to_path_buf());
+    let mut bin_args = format!(
+        "\"{}\" daemon service --config \"{}\"",
+        binary.display(),
+        config_abs.display(),
+    );
+    if let Some(p) = profile {
+        bin_args.push_str(&format!(" --profile \"{}\"", p));
+    }
+
+    // sc.exe requires key= and value as separate arguments
+    let output = std::process::Command::new("sc.exe")
+        .args([
+            "create",
+            "cfgd",
+            "binPath=",
+            &bin_args,
+            "start=",
+            "auto",
+            "DisplayName=",
+            "cfgd Configuration Manager",
+        ])
+        .output()
+        .map_err(|e| DaemonError::ServiceInstallFailed {
+            message: format!("sc.exe create failed: {}", e),
+        })?;
+
+    if !output.status.success() {
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        return Err(DaemonError::ServiceInstallFailed {
+            message: format!("sc.exe create failed: {}", stdout.trim()),
+        }
+        .into());
+    }
+
+    // Set service description
+    let _ = std::process::Command::new("sc.exe")
+        .args([
+            "description",
+            "cfgd",
+            "Declarative machine configuration management daemon",
+        ])
+        .output();
+
+    // Start the service
+    let _ = std::process::Command::new("sc.exe")
+        .args(["start", "cfgd"])
+        .output();
+
+    tracing::info!("installed Windows Service: cfgd");
+    Ok(())
+}
+
+/// Uninstall cfgd Windows Service via sc.exe.
+#[cfg(windows)]
+fn uninstall_windows_service() -> Result<()> {
+    // Stop service first (ignore errors if not running)
+    let _ = std::process::Command::new("sc.exe")
+        .args(["stop", "cfgd"])
+        .output();
+
+    let output = std::process::Command::new("sc.exe")
+        .args(["delete", "cfgd"])
+        .output()
+        .map_err(|e| DaemonError::ServiceInstallFailed {
+            message: format!("sc.exe delete failed: {}", e),
+        })?;
+
+    if !output.status.success() {
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        return Err(DaemonError::ServiceInstallFailed {
+            message: format!("sc.exe delete failed: {}", stdout.trim()),
+        }
+        .into());
+    }
+
+    tracing::info!("removed Windows Service: cfgd");
+    Ok(())
+}
+
+/// Run the daemon as a Windows Service. Called by the SCM (Service Control Manager),
+/// not directly by users.
+#[cfg(windows)]
+pub fn run_as_windows_service() -> Result<()> {
+    use windows_service::service_dispatcher;
+    service_dispatcher::start("cfgd", ffi_service_main).map_err(|e| DaemonError::ServiceError {
+        message: format!("failed to start service dispatcher: {}", e),
+    })?;
+    Ok(())
+}
+
+/// Windows Service mode is only available on Windows.
+#[cfg(not(windows))]
+pub fn run_as_windows_service() -> Result<()> {
+    Err(DaemonError::ServiceError {
+        message: "Windows Service mode is only available on Windows".to_string(),
+    }
+    .into())
+}
+
+#[cfg(windows)]
+extern "system" fn ffi_service_main(_argc: u32, _argv: *mut *mut u16) {
+    if let Err(e) = windows_service_main() {
+        tracing::error!("Windows Service main failed: {}", e);
+    }
+}
+
+#[cfg(windows)]
+fn windows_service_main() -> std::result::Result<(), Box<dyn std::error::Error>> {
+    use windows_service::service::*;
+    use windows_service::service_control_handler::{self, ServiceControlHandlerResult};
+
+    let (shutdown_tx, shutdown_rx) = std::sync::mpsc::channel();
+
+    let event_handler = move |control_event| -> ServiceControlHandlerResult {
+        match control_event {
+            ServiceControl::Stop | ServiceControl::Shutdown => {
+                let _ = shutdown_tx.send(());
+                ServiceControlHandlerResult::NoError
+            }
+            ServiceControl::Interrogate => ServiceControlHandlerResult::NoError,
+            _ => ServiceControlHandlerResult::NotImplemented,
+        }
+    };
+
+    let status_handle = service_control_handler::register("cfgd", event_handler)?;
+    status_handle.set_service_status(ServiceStatus {
+        service_type: ServiceType::OWN_PROCESS,
+        current_state: ServiceState::Running,
+        controls_accepted: ServiceControlAccept::STOP | ServiceControlAccept::SHUTDOWN,
+        exit_code: ServiceExitCode::Win32(0),
+        checkpoint: 0,
+        wait_hint: std::time::Duration::default(),
+        process_id: None,
+    })?;
+
+    // Block until the SCM sends a stop/shutdown signal
+    let _ = shutdown_rx.recv();
+
+    status_handle.set_service_status(ServiceStatus {
+        service_type: ServiceType::OWN_PROCESS,
+        current_state: ServiceState::Stopped,
+        controls_accepted: ServiceControlAccept::empty(),
+        exit_code: ServiceExitCode::Win32(0),
+        checkpoint: 0,
+        wait_hint: std::time::Duration::default(),
+        process_id: None,
+    })?;
+
+    Ok(())
 }
 
 #[cfg(unix)]
