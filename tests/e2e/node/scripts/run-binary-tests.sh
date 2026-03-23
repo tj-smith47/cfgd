@@ -71,8 +71,8 @@ fi
 # T04: cfgd apply --yes
 # =================================================================
 begin_test "T04: cfgd apply"
-OUTPUT=$(exec_in_pod cfgd --config /etc/cfgd/cfgd.yaml apply --yes --no-color 2>&1)
-RC=$?
+RC=0
+OUTPUT=$(exec_in_pod cfgd --config /etc/cfgd/cfgd.yaml apply --yes --no-color 2>&1) || RC=$?
 echo "  Apply exit code: $RC"
 echo "  Apply output (first 20 lines):"
 echo "$OUTPUT" | head -20 | sed 's/^/    /'
@@ -191,8 +191,8 @@ spec:
   profile: k8s-worker-seccomp
 INNEREOF'
 
-OUTPUT=$(exec_in_pod cfgd --config /etc/cfgd/e2e-seccomp-cfgd.yaml apply --yes --no-color 2>&1) || true
-RC=$?
+RC=0
+OUTPUT=$(exec_in_pod cfgd --config /etc/cfgd/e2e-seccomp-cfgd.yaml apply --yes --no-color 2>&1) || RC=$?
 
 if [ "$RC" -eq 0 ] && \
    exec_in_pod test -f /tmp/cfgd-e2e-seccomp/audit.json; then

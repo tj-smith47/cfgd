@@ -106,7 +106,7 @@ OUTPUT=$(exec_in_pod cfgd \
     checkin \
     --server-url "$SERVER_URL" \
     --device-id "$DEVICE_1" \
-    --no-color 2>&1)
+    --no-color 2>&1) || true
 echo "  Checkin output: $OUTPUT"
 
 DEVICES=$(exec_in_pod curl -sf "${SERVER_URL}/api/v1/devices" 2>/dev/null || echo "[]")
@@ -128,7 +128,7 @@ OUTPUT=$(exec_in_pod cfgd \
     checkin \
     --server-url "$SERVER_URL" \
     --device-id "$DEVICE_2" \
-    --no-color 2>&1)
+    --no-color 2>&1) || true
 
 DEVICES=$(exec_in_pod curl -sf "${SERVER_URL}/api/v1/devices" 2>/dev/null || echo "[]")
 
@@ -247,7 +247,7 @@ OUTPUT=$(exec_in_pod cfgd \
     checkin \
     --server-url "$SERVER_URL" \
     --device-id "$DEVICE_1" \
-    --no-color 2>&1)
+    --no-color 2>&1) || true
 echo "  Checkin with drift: $OUTPUT" | head -5
 
 # Check device gateway for drift events

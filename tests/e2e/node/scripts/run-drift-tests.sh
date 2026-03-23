@@ -36,7 +36,7 @@ APPLIED=$(exec_in_pod cat /proc/sys/vm/max_map_count)
 echo "  After apply: $APPLIED"
 
 # Introduce drift
-exec_in_pod sysctl -w vm.max_map_count=65530 > /dev/null 2>&1
+exec_in_pod sysctl -w vm.max_map_count=65530 > /dev/null 2>&1 || true
 DRIFTED=$(exec_in_pod cat /proc/sys/vm/max_map_count)
 echo "  After manual drift: $DRIFTED"
 
@@ -45,7 +45,7 @@ PLAN=$(exec_in_pod cfgd --config /etc/cfgd/cfgd.yaml apply --dry-run --no-color 
 
 if assert_equals "$DRIFTED" "65530" && assert_contains "$PLAN" "vm.max_map_count"; then
     # Re-apply to fix drift
-    exec_in_pod cfgd --config /etc/cfgd/cfgd.yaml apply --yes --no-color > /dev/null 2>&1
+    exec_in_pod cfgd --config /etc/cfgd/cfgd.yaml apply --yes --no-color > /dev/null 2>&1 || true
     FIXED=$(exec_in_pod cat /proc/sys/vm/max_map_count)
     echo "  After re-apply: $FIXED"
     if assert_equals "$FIXED" "262144"; then
@@ -187,7 +187,7 @@ echo "  Key permissions after apply: $KEY_MODE"
 
 if assert_equals "$KEY_MODE" "600"; then
     # Now change permissions back and verify drift detection
-    exec_in_pod chmod 644 /tmp/cfgd-e2e-pki/test.key
+    exec_in_pod chmod 644 /tmp/cfgd-e2e-pki/test.key || true
     PLAN2=$(exec_in_pod cfgd --config /etc/cfgd/e2e-certs-cfgd.yaml apply --dry-run --no-color 2>&1) || true
     if assert_contains "$PLAN2" "cert" || assert_contains "$PLAN2" "changes"; then
         pass_test "T46"

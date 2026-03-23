@@ -41,13 +41,13 @@ DEVICE_ID="e2e-test-$(date +%s)"
 # T30: cfgd checkin succeeds
 # =================================================================
 begin_test "T30: cfgd checkin"
+RC=0
 OUTPUT=$(exec_in_pod cfgd \
     --config /etc/cfgd/cfgd.yaml \
     checkin \
     --server-url "$SERVER_URL" \
     --device-id "$DEVICE_ID" \
-    --no-color 2>&1)
-RC=$?
+    --no-color 2>&1) || RC=$?
 
 echo "  Checkin output:"
 echo "$OUTPUT" | sed 's/^/    /'
@@ -102,7 +102,7 @@ OUTPUT=$(exec_in_pod cfgd \
     checkin \
     --server-url "$SERVER_URL" \
     --device-id "$DEVICE_ID" \
-    --no-color 2>&1)
+    --no-color 2>&1) || true
 echo "  Checkin with drift output:"
 echo "$OUTPUT" | head -10 | sed 's/^/    /'
 
@@ -155,7 +155,7 @@ exec_in_pod cfgd \
     checkin \
     --server-url "$SERVER_URL" \
     --device-id "$DEVICE_ID" \
-    --no-color > /dev/null 2>&1
+    --no-color > /dev/null 2>&1 || true
 
 AFTER=$(exec_in_pod curl -sf "${SERVER_URL}/api/v1/devices/${DEVICE_ID}" 2>/dev/null \
     | grep -o '"lastCheckin":"[^"]*"' || echo "")
