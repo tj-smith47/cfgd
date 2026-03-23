@@ -1000,7 +1000,6 @@ async fn reconcile_config_policy(
             mc.status.as_ref(),
             &obj.spec.required_modules,
             &obj.spec.packages,
-            &obj.spec.package_versions,
             &obj.spec.settings,
         );
 
@@ -1216,10 +1215,8 @@ fn validate_policy_compliance(
     status: Option<&MachineConfigStatus>,
     required_modules: &[ModuleRef],
     packages: &[PackageRef],
-    package_versions: &BTreeMap<String, String>,
     settings: &BTreeMap<String, serde_json::Value>,
 ) -> bool {
-    // Check required modules are present in moduleRefs
     for module in required_modules {
         if !spec.module_refs.iter().any(|mr| mr.name == module.name) {
             return false;
@@ -1229,19 +1226,16 @@ fn validate_policy_compliance(
         if !spec.packages.iter().any(|p| p.name == pkg.name) {
             return false;
         }
-    }
-    for (pkg, req_str) in package_versions {
-        if !spec.packages.iter().any(|p| p.name == *pkg) {
-            return false;
-        }
-        let installed_versions = status.map(|s| &s.package_versions);
-        match installed_versions.and_then(|pv| pv.get(pkg)) {
-            Some(reported) => {
-                if !version_satisfies(reported, req_str) {
-                    return false;
+        if let Some(req_str) = &pkg.version {
+            let installed_versions = status.map(|s| &s.package_versions);
+            match installed_versions.and_then(|pv| pv.get(&pkg.name)) {
+                Some(reported) => {
+                    if !version_satisfies(reported, req_str) {
+                        return false;
+                    }
                 }
+                None => return false,
             }
-            None => return false,
         }
     }
     for (key, value) in settings {
@@ -1279,7 +1273,6 @@ struct MergedPolicyRequirements {
     packages: Vec<PackageRef>,
     modules: Vec<ModuleRef>,
     settings: BTreeMap<String, serde_json::Value>,
-    versions: BTreeMap<String, String>,
 }
 
 fn merge_policy_requirements(
@@ -1289,12 +1282,14 @@ fn merge_policy_requirements(
     let mut packages = cluster.packages.clone();
     let mut modules = cluster.required_modules.clone();
     let mut settings = BTreeMap::new();
-    let mut versions = BTreeMap::new();
 
-    // Collect union of all namespace-scoped policies as base
     for ns in namespace_policies {
         for pkg in &ns.packages {
-            if !packages.iter().any(|p| p.name == pkg.name) {
+            if let Some(existing) = packages.iter_mut().find(|p| p.name == pkg.name) {
+                if existing.version.is_none() {
+                    existing.version = pkg.version.clone();
+                }
+            } else {
                 packages.push(pkg.clone());
             }
         }
@@ -1303,20 +1298,23 @@ fn merge_policy_requirements(
                 modules.push(module.clone());
             }
         }
-        // Namespace settings as base (later policies override earlier for same key)
         settings.extend(ns.settings.clone());
-        versions.extend(ns.package_versions.clone());
     }
 
-    // Cluster overrides (cluster wins for settings and versions)
+    for cluster_pkg in &cluster.packages {
+        if let Some(ver) = &cluster_pkg.version {
+            if let Some(existing) = packages.iter_mut().find(|p| p.name == cluster_pkg.name) {
+                existing.version = Some(ver.clone());
+            }
+        }
+    }
+
     settings.extend(cluster.settings.clone());
-    versions.extend(cluster.package_versions.clone());
 
     MergedPolicyRequirements {
         packages,
         modules,
         settings,
-        versions,
     }
 }
 
@@ -1384,7 +1382,6 @@ async fn reconcile_cluster_config_policy(
                 mc.status.as_ref(),
                 &merged.modules,
                 &merged.packages,
-                &merged.versions,
                 &merged.settings,
             );
             if compliant {
@@ -2068,7 +2065,6 @@ mod tests {
             None,
             &[],
             &required,
-            &Default::default(),
             &Default::default()
         ));
     }
@@ -2095,7 +2091,6 @@ mod tests {
             None,
             &[],
             &required,
-            &Default::default(),
             &Default::default()
         ));
     }
@@ -2118,7 +2113,6 @@ mod tests {
             None,
             &[],
             &[],
-            &Default::default(),
             &policy_settings
         ));
 
@@ -2132,7 +2126,6 @@ mod tests {
             None,
             &[],
             &[],
-            &Default::default(),
             &wrong
         ));
     }
@@ -2150,7 +2143,6 @@ mod tests {
             None,
             &[],
             &[],
-            &Default::default(),
             &policy_settings
         ));
 
@@ -2161,7 +2153,6 @@ mod tests {
             None,
             &[],
             &[],
-            &Default::default(),
             &wrong
         ));
     }
@@ -2177,14 +2168,15 @@ mod tests {
         status
             .package_versions
             .insert("kubectl".to_string(), "1.28.3".to_string());
-        let mut reqs = BTreeMap::new();
-        reqs.insert("kubectl".to_string(), ">=1.28".to_string());
+        let policy_pkgs = vec![PackageRef {
+            name: "kubectl".to_string(),
+            version: Some(">=1.28".to_string()),
+        }];
         assert!(validate_policy_compliance(
             &spec,
             Some(&status),
             &[],
-            &[],
-            &reqs,
+            &policy_pkgs,
             &Default::default()
         ));
     }
@@ -2200,14 +2192,15 @@ mod tests {
         status
             .package_versions
             .insert("kubectl".to_string(), "1.27.0".to_string());
-        let mut reqs = BTreeMap::new();
-        reqs.insert("kubectl".to_string(), ">=1.28".to_string());
+        let policy_pkgs = vec![PackageRef {
+            name: "kubectl".to_string(),
+            version: Some(">=1.28".to_string()),
+        }];
         assert!(!validate_policy_compliance(
             &spec,
             Some(&status),
             &[],
-            &[],
-            &reqs,
+            &policy_pkgs,
             &Default::default()
         ));
     }
@@ -2219,28 +2212,30 @@ mod tests {
             name: "kubectl".to_string(),
             version: None,
         }];
-        let mut reqs = BTreeMap::new();
-        reqs.insert("kubectl".to_string(), ">=1.28".to_string());
+        let policy_pkgs = vec![PackageRef {
+            name: "kubectl".to_string(),
+            version: Some(">=1.28".to_string()),
+        }];
         assert!(!validate_policy_compliance(
             &spec,
             None,
             &[],
-            &[],
-            &reqs,
+            &policy_pkgs,
             &Default::default()
         ));
     }
 
     #[test]
     fn policy_version_enforcement_missing_package() {
-        let mut reqs = BTreeMap::new();
-        reqs.insert("kubectl".to_string(), ">=1.28".to_string());
+        let policy_pkgs = vec![PackageRef {
+            name: "kubectl".to_string(),
+            version: Some(">=1.28".to_string()),
+        }];
         assert!(!validate_policy_compliance(
             &mc_spec("h", "p"),
             None,
             &[],
-            &[],
-            &reqs,
+            &policy_pkgs,
             &Default::default()
         ));
     }
@@ -2273,7 +2268,6 @@ mod tests {
             None,
             &required_modules,
             &[],
-            &Default::default(),
             &Default::default()
         ));
     }
@@ -2300,7 +2294,6 @@ mod tests {
             None,
             &required_modules,
             &[],
-            &Default::default(),
             &Default::default()
         ));
     }
@@ -2312,7 +2305,6 @@ mod tests {
             None,
             &[],
             &[],
-            &Default::default(),
             &Default::default()
         ));
     }
@@ -2371,20 +2363,23 @@ mod tests {
 
     #[test]
     fn merge_policy_cluster_wins_versions() {
-        let mut cluster_versions = BTreeMap::new();
-        cluster_versions.insert("kubectl".to_string(), ">=1.29".to_string());
         let cluster = ClusterConfigPolicySpec {
-            package_versions: cluster_versions,
+            packages: vec![PackageRef {
+                name: "kubectl".to_string(),
+                version: Some(">=1.29".to_string()),
+            }],
             ..Default::default()
         };
-        let mut ns_versions = BTreeMap::new();
-        ns_versions.insert("kubectl".to_string(), ">=1.28".to_string());
         let ns = ConfigPolicySpec {
-            package_versions: ns_versions,
+            packages: vec![PackageRef {
+                name: "kubectl".to_string(),
+                version: Some(">=1.28".to_string()),
+            }],
             ..Default::default()
         };
         let merged = merge_policy_requirements(&cluster, &[&ns]);
-        assert_eq!(merged.versions["kubectl"], ">=1.29");
+        let kubectl_pkg = merged.packages.iter().find(|p| p.name == "kubectl").unwrap();
+        assert_eq!(kubectl_pkg.version.as_deref(), Some(">=1.29"));
     }
 
     #[test]

@@ -151,9 +151,6 @@ pub struct ConfigPolicySpec {
     pub debug_modules: Vec<ModuleRef>,
     #[serde(default)]
     pub packages: Vec<PackageRef>,
-    /// Version requirements keyed by package name (semver ranges, e.g. {"kubectl": ">=1.28"}).
-    #[serde(default)]
-    pub package_versions: BTreeMap<String, String>,
     #[serde(default)]
     pub settings: BTreeMap<String, serde_json::Value>,
     #[serde(default)]
@@ -261,8 +258,6 @@ pub struct ClusterConfigPolicySpec {
     pub debug_modules: Vec<ModuleRef>,
     #[serde(default)]
     pub packages: Vec<PackageRef>,
-    #[serde(default)]
-    pub package_versions: BTreeMap<String, String>,
     #[serde(default)]
     pub settings: BTreeMap<String, serde_json::Value>,
     #[serde(default)]
@@ -427,7 +422,6 @@ pub struct ModuleStatus {
 fn validate_policy_fields(
     packages: &[PackageRef],
     required_modules: &[ModuleRef],
-    package_versions: &BTreeMap<String, String>,
     settings: &BTreeMap<String, serde_json::Value>,
 ) -> Vec<String> {
     let mut errors = Vec::new();
@@ -435,20 +429,17 @@ fn validate_policy_fields(
         if pkg.name.is_empty() {
             errors.push(format!("spec.packages[{i}].name must not be empty"));
         }
+        if let Some(ver) = &pkg.version {
+            if VersionReq::parse(ver).is_err() {
+                errors.push(format!(
+                    "spec.packages[{i}].version '{ver}' is not a valid semver requirement"
+                ));
+            }
+        }
     }
     for (i, mr) in required_modules.iter().enumerate() {
         if mr.name.is_empty() {
             errors.push(format!("spec.requiredModules[{i}].name must not be empty"));
-        }
-    }
-    for (pkg, req_str) in package_versions {
-        if pkg.is_empty() {
-            errors.push("spec.packageVersions key must not be empty".to_string());
-        }
-        if VersionReq::parse(req_str).is_err() {
-            errors.push(format!(
-                "spec.packageVersions['{pkg}'] = '{req_str}' is not a valid semver requirement"
-            ));
         }
     }
     for key in settings.keys() {
@@ -521,7 +512,6 @@ impl ConfigPolicySpec {
         let errors = validate_policy_fields(
             &self.packages,
             &self.required_modules,
-            &self.package_versions,
             &self.settings,
         );
         if errors.is_empty() {
@@ -538,7 +528,6 @@ impl ClusterConfigPolicySpec {
         let errors = validate_policy_fields(
             &self.packages,
             &self.required_modules,
-            &self.package_versions,
             &self.settings,
         );
         if errors.is_empty() {
@@ -710,10 +699,11 @@ mod tests {
 
     #[test]
     fn cp_validate_rejects_invalid_version_req() {
-        let mut versions = BTreeMap::new();
-        versions.insert("kubectl".to_string(), "not valid".to_string());
         let spec = ConfigPolicySpec {
-            package_versions: versions,
+            packages: vec![PackageRef {
+                name: "kubectl".to_string(),
+                version: Some("not valid".to_string()),
+            }],
             ..Default::default()
         };
         assert!(spec.validate().is_err());
@@ -721,11 +711,17 @@ mod tests {
 
     #[test]
     fn cp_validate_accepts_valid_version_reqs() {
-        let mut versions = BTreeMap::new();
-        versions.insert("kubectl".to_string(), ">=1.28".to_string());
-        versions.insert("git".to_string(), "~2.40".to_string());
         let spec = ConfigPolicySpec {
-            package_versions: versions,
+            packages: vec![
+                PackageRef {
+                    name: "kubectl".to_string(),
+                    version: Some(">=1.28".to_string()),
+                },
+                PackageRef {
+                    name: "git".to_string(),
+                    version: Some("~2.40".to_string()),
+                },
+            ],
             ..Default::default()
         };
         assert!(spec.validate().is_ok());
@@ -789,10 +785,11 @@ mod tests {
 
     #[test]
     fn ccp_validate_rejects_invalid_version() {
-        let mut versions = BTreeMap::new();
-        versions.insert("kubectl".to_string(), "not valid".to_string());
         let spec = ClusterConfigPolicySpec {
-            package_versions: versions,
+            packages: vec![PackageRef {
+                name: "kubectl".to_string(),
+                version: Some("not valid".to_string()),
+            }],
             ..Default::default()
         };
         assert!(spec.validate().is_err());
