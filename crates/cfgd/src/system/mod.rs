@@ -1810,6 +1810,166 @@ impl SystemConfigurator for GsettingsConfigurator {
     }
 }
 
+/// KdeConfigConfigurator — reads/writes KDE Plasma settings via `kwriteconfig5`/`kwriteconfig6`.
+///
+/// Config format (three-level: file → group → key → value):
+/// ```yaml
+/// system:
+///   kdeConfig:
+///     kdeglobals:
+///       General:
+///         ColorScheme: BreezeDark
+///       KDE:
+///         LookAndFeelPackage: org.kde.breezedark.desktop
+///     kwinrc:
+///       Compositing:
+///         Backend: OpenGL
+/// ```
+pub struct KdeConfigConfigurator;
+
+/// Return the kwriteconfig command name (prefer v6, fallback to v5).
+fn kde_write_cmd() -> &'static str {
+    if cfgd_core::command_available("kwriteconfig6") {
+        "kwriteconfig6"
+    } else {
+        "kwriteconfig5"
+    }
+}
+
+/// Return the kreadconfig command name (prefer v6, fallback to v5).
+fn kde_read_cmd() -> &'static str {
+    if cfgd_core::command_available("kreadconfig6") {
+        "kreadconfig6"
+    } else {
+        "kreadconfig5"
+    }
+}
+
+fn read_kde_value(file: &str, group: &str, key: &str) -> String {
+    Command::new(kde_read_cmd())
+        .args(["--file", file, "--group", group, "--key", key])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .unwrap_or_default()
+}
+
+impl SystemConfigurator for KdeConfigConfigurator {
+    fn name(&self) -> &str {
+        "kdeConfig"
+    }
+
+    fn is_available(&self) -> bool {
+        cfgd_core::command_available("kwriteconfig6")
+            || cfgd_core::command_available("kwriteconfig5")
+    }
+
+    fn current_state(&self) -> Result<serde_yaml::Value> {
+        Ok(serde_yaml::Value::Mapping(serde_yaml::Mapping::new()))
+    }
+
+    fn diff(&self, desired: &serde_yaml::Value) -> Result<Vec<SystemDrift>> {
+        let files = match desired.as_mapping() {
+            Some(m) => m,
+            None => return Ok(Vec::new()),
+        };
+
+        let mut drifts = Vec::new();
+        for (file_key, groups) in files {
+            let file = match file_key.as_str() {
+                Some(f) => f,
+                None => continue,
+            };
+            let groups_map = match groups.as_mapping() {
+                Some(m) => m,
+                None => continue,
+            };
+            for (group_key, keys) in groups_map {
+                let group = match group_key.as_str() {
+                    Some(g) => g,
+                    None => continue,
+                };
+                let keys_map = match keys.as_mapping() {
+                    Some(m) => m,
+                    None => continue,
+                };
+                let prefix = format!("{}.{}", file, group);
+                drifts.extend(diff_yaml_mapping(
+                    keys_map,
+                    &prefix,
+                    yaml_value_to_string,
+                    |key_str| read_kde_value(file, group, key_str),
+                ));
+            }
+        }
+
+        Ok(drifts)
+    }
+
+    fn apply(&self, desired: &serde_yaml::Value, printer: &Printer) -> Result<()> {
+        let files = match desired.as_mapping() {
+            Some(m) => m,
+            None => return Ok(()),
+        };
+
+        let write_cmd = kde_write_cmd();
+
+        for (file_key, groups) in files {
+            let file = match file_key.as_str() {
+                Some(f) => f,
+                None => continue,
+            };
+            let groups_map = match groups.as_mapping() {
+                Some(m) => m,
+                None => continue,
+            };
+            for (group_key, keys) in groups_map {
+                let group = match group_key.as_str() {
+                    Some(g) => g,
+                    None => continue,
+                };
+                let keys_map = match keys.as_mapping() {
+                    Some(m) => m,
+                    None => continue,
+                };
+                for (key, value) in keys_map {
+                    let key_str = match key.as_str() {
+                        Some(k) => k,
+                        None => continue,
+                    };
+                    let val_str = yaml_value_to_string(value);
+
+                    printer.info(&format!(
+                        "{} --file {} --group {} --key {} {}",
+                        write_cmd, file, group, key_str, val_str
+                    ));
+
+                    let output = Command::new(write_cmd)
+                        .args([
+                            "--file", file, "--group", group, "--key", key_str, &val_str,
+                        ])
+                        .output()
+                        .map_err(cfgd_core::errors::CfgdError::Io)?;
+
+                    if !output.status.success() {
+                        printer.warning(&format!(
+                            "{} failed for {}.{}.{}: {}",
+                            write_cmd,
+                            file,
+                            group,
+                            key_str,
+                            stderr_string(&output)
+                        ));
+                    }
+                }
+            }
+        }
+
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2572,6 +2732,48 @@ HKEY_CURRENT_USER\\Environment\n\
     #[test]
     fn gsettings_current_state_is_empty_mapping() {
         let configurator = GsettingsConfigurator;
+        let state = configurator.current_state().unwrap();
+        assert!(state.as_mapping().unwrap().is_empty());
+    }
+
+    // --- KdeConfigConfigurator ---
+
+    #[test]
+    fn kde_configurator_name() {
+        assert_eq!(KdeConfigConfigurator.name(), "kdeConfig");
+    }
+
+    #[test]
+    fn kde_find_kwrite_cmd() {
+        let cmd = kde_write_cmd();
+        assert!(cmd == "kwriteconfig6" || cmd == "kwriteconfig5");
+    }
+
+    #[test]
+    fn kde_find_kread_cmd() {
+        let cmd = kde_read_cmd();
+        assert!(cmd == "kreadconfig6" || cmd == "kreadconfig5");
+    }
+
+    #[test]
+    fn kde_diff_empty_desired() {
+        let configurator = KdeConfigConfigurator;
+        let desired = serde_yaml::Value::Mapping(serde_yaml::Mapping::new());
+        let drifts = configurator.diff(&desired).unwrap();
+        assert!(drifts.is_empty());
+    }
+
+    #[test]
+    fn kde_diff_non_mapping() {
+        let configurator = KdeConfigConfigurator;
+        let desired = serde_yaml::Value::String("not a mapping".into());
+        let drifts = configurator.diff(&desired).unwrap();
+        assert!(drifts.is_empty());
+    }
+
+    #[test]
+    fn kde_current_state_is_empty_mapping() {
+        let configurator = KdeConfigConfigurator;
         let state = configurator.current_state().unwrap();
         assert!(state.as_mapping().unwrap().is_empty());
     }
