@@ -362,6 +362,20 @@ spec:
       caCerts:
         - /usr/local/share/ca-certificates/my-ca.crt
 
+    # Windows registry settings (Windows only)
+    # Keys are registry paths (e.g. HKCU\Software\...), values are name-value maps
+    windowsRegistry:
+      HKCU\Software\Example:
+        MyValue: hello
+        MyDword: 42
+
+    # Windows Service management (Windows only)
+    windowsServices:
+      - name: MyService              # required, string — service name
+        binaryPath: C:\svc\svc.exe  # required (for create), string — executable path
+        startType: Auto              # optional: Auto, Manual, Disabled (default: Auto)
+        state: running               # optional: running, stopped (default: running)
+
   # Secret file declarations — SOPS-encrypted files or external secret provider references.
   # optional, default: []
   secrets:
@@ -708,6 +722,9 @@ mod tests {
         assert!(schema.contains("chocolatey"));
         assert!(schema.contains("scoop"));
         assert!(schema.contains("custom"));
+        // Windows system configurators
+        assert!(schema.contains("windowsRegistry"));
+        assert!(schema.contains("windowsServices"));
         // FilesSpec fields
         assert!(schema.contains("managed"));
         assert!(schema.contains("permissions"));
