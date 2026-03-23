@@ -636,9 +636,20 @@ pub fn scan_system_settings() -> Result<SystemSettingsResult, CfgdError> {
     // Windows: scan well-known registry paths (analogous to `defaults domains` on macOS)
     if cfgd_core::command_available("reg") {
         let well_known_paths = [
+            // Desktop appearance & behavior
             r"HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced",
             r"HKCU\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize",
+            r"HKCU\Software\Microsoft\Windows\DWM",
             r"HKCU\Control Panel\Desktop",
+            // Input devices
+            r"HKCU\Control Panel\Mouse",
+            r"HKCU\Control Panel\Keyboard",
+            r"HKCU\Control Panel\Accessibility",
+            // Policies (group-policy-style user preferences)
+            r"HKCU\Software\Policies\Microsoft\Windows",
+            r"HKCU\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer",
+            r"HKCU\Software\Microsoft\Windows\CurrentVersion\Policies\System",
+            // Environment
             r"HKCU\Environment",
         ];
         for reg_path in &well_known_paths {
@@ -659,10 +670,9 @@ pub fn scan_system_settings() -> Result<SystemSettingsResult, CfgdError> {
                         let name = parts[0].trim();
                         let value = parts[2].trim();
                         if !name.is_empty() {
-                            result.windows_registry.insert(
-                                format!(r"{}\{}", reg_path, name),
-                                value.to_string(),
-                            );
+                            result
+                                .windows_registry
+                                .insert(format!(r"{}\{}", reg_path, name), value.to_string());
                         }
                     }
                 }
