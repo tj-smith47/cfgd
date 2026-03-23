@@ -70,15 +70,24 @@ done
 echo "Applying webhook TLS (cert-manager)..."
 kubectl apply -f "$SCRIPT_DIR/manifests/e2e-webhook-tls.yaml"
 
-# --- Step 8: Apply operator deployment ---
-echo "Applying operator deployment..."
-sed "s|REGISTRY_PLACEHOLDER|${REGISTRY}|g; s|IMAGE_PLACEHOLDER|${IMAGE_TAG}|g" \
-    "$SCRIPT_DIR/operator/manifests/operator-deployment.yaml" | kubectl apply -f -
-
-# --- Step 9: Apply device gateway deployment ---
-echo "Applying device gateway..."
-sed "s|REGISTRY_PLACEHOLDER|${REGISTRY}|g; s|IMAGE_PLACEHOLDER|${IMAGE_TAG}|g" \
-    "$SCRIPT_DIR/node/manifests/cfgd-server.yaml" | kubectl apply -f -
+# --- Step 8: Update operator image ---
+echo "Updating operator image..."
+# Use CFGD_DEPLOY_MANIFESTS if set (production deployments managed by ArgoCD);
+# otherwise apply the E2E manifests directly.
+if [ -n "${CFGD_DEPLOY_MANIFESTS:-}" ] && [ -d "$CFGD_DEPLOY_MANIFESTS" ]; then
+    echo "  Production deployments detected (managed by $CFGD_DEPLOY_MANIFESTS)"
+    echo "  Updating images via kubectl set image..."
+    kubectl set image deployment/cfgd-operator -n cfgd-system \
+        cfgd-operator="${REGISTRY}/cfgd-operator:${IMAGE_TAG}" 2>/dev/null || true
+    kubectl set image deployment/cfgd-server -n cfgd-system \
+        cfgd-operator="${REGISTRY}/cfgd-operator:${IMAGE_TAG}" 2>/dev/null || true
+else
+    echo "  Applying E2E manifests..."
+    sed "s|REGISTRY_PLACEHOLDER|${REGISTRY}|g; s|IMAGE_PLACEHOLDER|${IMAGE_TAG}|g" \
+        "$SCRIPT_DIR/operator/manifests/operator-deployment.yaml" | kubectl apply -f -
+    sed "s|REGISTRY_PLACEHOLDER|${REGISTRY}|g; s|IMAGE_PLACEHOLDER|${IMAGE_TAG}|g" \
+        "$SCRIPT_DIR/node/manifests/cfgd-server.yaml" | kubectl apply -f -
+fi
 
 # --- Step 10: Apply webhook configurations ---
 echo "Applying webhook configurations..."
