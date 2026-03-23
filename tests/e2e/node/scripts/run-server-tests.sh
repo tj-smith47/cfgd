@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # E2E tests for cfgd <-> device gateway integration.
-# Prereqs: kind cluster running, cfgd binary on node, device gateway deployed.
+# Prereqs: k3s cluster running, cfgd image available, device gateway deployed.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -9,41 +9,27 @@ FIXTURES="$SCRIPT_DIR/../fixtures"
 
 echo "=== cfgd Device Gateway Integration Tests ==="
 
-# --- Setup ---
-NODE="$(get_kind_node)"
+trap 'cleanup_e2e' EXIT
 
-# Ensure cfgd binary and fixtures are on the kind node
-install_binary_on_node "cfgd:e2e-test" "/usr/local/bin/cfgd"
-install_packages_on_node procps curl
+echo "Setting up test pod..."
+ensure_test_pod
 
-docker exec "$NODE" mkdir -p /etc/cfgd/profiles
-docker cp "$FIXTURES/configs/cfgd.yaml" "$NODE:/etc/cfgd/cfgd.yaml"
+echo "Copying test fixtures to test pod..."
+exec_in_pod mkdir -p /etc/cfgd/profiles
+cp_to_pod "$FIXTURES/configs/cfgd.yaml" /etc/cfgd/cfgd.yaml
 for f in "$FIXTURES/profiles/"*.yaml; do
-    docker cp "$f" "$NODE:/etc/cfgd/profiles/$(basename "$f")"
+    cp_to_pod "$f" "/etc/cfgd/profiles/$(basename "$f")"
 done
 
-# Determine device gateway cluster IP
-SERVER_IP=$(kubectl get svc cfgd-server -n "$CFGD_NAMESPACE" \
-    -o jsonpath='{.spec.clusterIP}' 2>/dev/null || echo "")
-
-if [ -z "$SERVER_IP" ]; then
-    echo "ERROR: device gateway service not found. Is it deployed?"
-    echo "Deploying now..."
-    kubectl apply -f "$SCRIPT_DIR/../manifests/cfgd-server.yaml" -n "$CFGD_NAMESPACE"
-    wait_for_deployment "$CFGD_NAMESPACE" "cfgd-server" 120
-    SERVER_IP=$(kubectl get svc cfgd-server -n "$CFGD_NAMESPACE" \
-        -o jsonpath='{.spec.clusterIP}')
-fi
-
-SERVER_URL="http://${SERVER_IP}:8080"
+SERVER_URL="http://cfgd-server.cfgd-system.svc.cluster.local:8080"
 echo "Device gateway URL: $SERVER_URL"
 
-# Verify device gateway is reachable from the kind node
-echo "Verifying device gateway reachability from kind node..."
-exec_on_node curl -sf "${SERVER_URL}/api/v1/devices" > /dev/null 2>&1 || {
-    echo "WARNING: device gateway not reachable from kind node. Waiting..."
+# Verify device gateway is reachable from the test pod
+echo "Verifying device gateway reachability from test pod..."
+exec_in_pod curl -sf "${SERVER_URL}/api/v1/devices" > /dev/null 2>&1 || {
+    echo "WARNING: device gateway not reachable from test pod. Waiting..."
     sleep 10
-    exec_on_node curl -sf "${SERVER_URL}/api/v1/devices" > /dev/null 2>&1 || {
+    exec_in_pod curl -sf "${SERVER_URL}/api/v1/devices" > /dev/null 2>&1 || {
         echo "ERROR: device gateway not reachable"
         exit 1
     }
@@ -55,7 +41,7 @@ DEVICE_ID="e2e-test-$(date +%s)"
 # T30: cfgd checkin succeeds
 # =================================================================
 begin_test "T30: cfgd checkin"
-OUTPUT=$(exec_on_node cfgd \
+OUTPUT=$(exec_in_pod cfgd \
     --config /etc/cfgd/cfgd.yaml \
     checkin \
     --server-url "$SERVER_URL" \
@@ -76,7 +62,7 @@ fi
 # T31: Device registered on server
 # =================================================================
 begin_test "T31: Device registered on device gateway"
-DEVICES=$(exec_on_node curl -sf "${SERVER_URL}/api/v1/devices" 2>/dev/null || echo "[]")
+DEVICES=$(exec_in_pod curl -sf "${SERVER_URL}/api/v1/devices" 2>/dev/null || echo "[]")
 echo "  Device gateway response (first 200 chars):"
 echo "$DEVICES" | head -c 200 | sed 's/^/    /'
 echo ""
@@ -91,7 +77,7 @@ fi
 # T32: Device status is healthy
 # =================================================================
 begin_test "T32: Device status is healthy"
-DEVICE=$(exec_on_node curl -sf "${SERVER_URL}/api/v1/devices/${DEVICE_ID}" 2>/dev/null || echo "{}")
+DEVICE=$(exec_in_pod curl -sf "${SERVER_URL}/api/v1/devices/${DEVICE_ID}" 2>/dev/null || echo "{}")
 echo "  Device details (first 300 chars):"
 echo "$DEVICE" | head -c 300 | sed 's/^/    /'
 echo ""
@@ -107,11 +93,11 @@ fi
 # =================================================================
 begin_test "T33: Drift reporting to device gateway"
 # Introduce drift on a sysctl value
-ORIG_MAX=$(exec_on_node cat /proc/sys/vm/max_map_count 2>/dev/null || echo "262144")
-exec_on_node sysctl -w vm.max_map_count=65530 > /dev/null 2>&1 || true
+ORIG_MAX=$(exec_in_pod cat /proc/sys/vm/max_map_count 2>/dev/null || echo "262144")
+exec_in_pod sysctl -w vm.max_map_count=65530 > /dev/null 2>&1 || true
 
 # Checkin again — should detect and report drift
-OUTPUT=$(exec_on_node cfgd \
+OUTPUT=$(exec_in_pod cfgd \
     --config /etc/cfgd/cfgd.yaml \
     checkin \
     --server-url "$SERVER_URL" \
@@ -121,13 +107,13 @@ echo "  Checkin with drift output:"
 echo "$OUTPUT" | head -10 | sed 's/^/    /'
 
 # Restore sysctl
-exec_on_node sysctl -w "vm.max_map_count=$ORIG_MAX" > /dev/null 2>&1 || true
+exec_in_pod sysctl -w "vm.max_map_count=$ORIG_MAX" > /dev/null 2>&1 || true
 
 if assert_contains "$OUTPUT" "drift"; then
     pass_test "T33"
 else
     # Drift may have been auto-fixed by a previous apply; check server anyway
-    DRIFT_EVENTS=$(exec_on_node curl -sf "${SERVER_URL}/api/v1/devices/${DEVICE_ID}/drift" 2>/dev/null || echo "[]")
+    DRIFT_EVENTS=$(exec_in_pod curl -sf "${SERVER_URL}/api/v1/devices/${DEVICE_ID}/drift" 2>/dev/null || echo "[]")
     echo "  Drift events from server:"
     echo "$DRIFT_EVENTS" | head -c 200 | sed 's/^/    /'
     echo ""
@@ -143,7 +129,7 @@ fi
 # T34: Server drift events list
 # =================================================================
 begin_test "T34: Device gateway has drift events"
-DRIFT_EVENTS=$(exec_on_node curl -sf "${SERVER_URL}/api/v1/devices/${DEVICE_ID}/drift" 2>/dev/null || echo "[]")
+DRIFT_EVENTS=$(exec_in_pod curl -sf "${SERVER_URL}/api/v1/devices/${DEVICE_ID}/drift" 2>/dev/null || echo "[]")
 echo "  Drift events:"
 echo "$DRIFT_EVENTS" | head -c 300 | sed 's/^/    /'
 echo ""
@@ -159,19 +145,19 @@ fi
 # T35: Second checkin updates last_checkin timestamp
 # =================================================================
 begin_test "T35: Checkin updates timestamp"
-BEFORE=$(exec_on_node curl -sf "${SERVER_URL}/api/v1/devices/${DEVICE_ID}" 2>/dev/null \
+BEFORE=$(exec_in_pod curl -sf "${SERVER_URL}/api/v1/devices/${DEVICE_ID}" 2>/dev/null \
     | grep -o '"lastCheckin":"[^"]*"' || echo "")
 
 sleep 2
 
-exec_on_node cfgd \
+exec_in_pod cfgd \
     --config /etc/cfgd/cfgd.yaml \
     checkin \
     --server-url "$SERVER_URL" \
     --device-id "$DEVICE_ID" \
     --no-color > /dev/null 2>&1
 
-AFTER=$(exec_on_node curl -sf "${SERVER_URL}/api/v1/devices/${DEVICE_ID}" 2>/dev/null \
+AFTER=$(exec_in_pod curl -sf "${SERVER_URL}/api/v1/devices/${DEVICE_ID}" 2>/dev/null \
     | grep -o '"lastCheckin":"[^"]*"' || echo "")
 
 echo "  Before: $BEFORE"

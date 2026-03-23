@@ -1,26 +1,25 @@
 #!/usr/bin/env bash
 # E2E drift detection and reconciliation tests for cfgd.
 # Tests sysctl drift, kernel module loading, seccomp profiles, and daemon auto-fix.
-# Prereqs: kind cluster running, cfgd binary and fixtures on node.
+# Prereqs: k3s cluster running, cfgd image available.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "$SCRIPT_DIR/../../common/helpers.sh"
 FIXTURES="$SCRIPT_DIR/../fixtures"
-CHART_DIR="$REPO_ROOT/chart/cfgd"
-VALUES_FILE="$SCRIPT_DIR/../values-test.yaml"
 
 echo "=== cfgd Drift & Reconciliation Tests ==="
 
-# --- Setup ---
-NODE="$(get_kind_node)"
-install_binary_on_node "cfgd:e2e-test" "/usr/local/bin/cfgd"
-install_packages_on_node procps kmod
+trap 'cleanup_e2e' EXIT
 
-docker exec "$NODE" mkdir -p /etc/cfgd/profiles
-docker cp "$FIXTURES/configs/cfgd.yaml" "$NODE:/etc/cfgd/cfgd.yaml"
+echo "Setting up test pod..."
+ensure_test_pod
+
+echo "Copying test fixtures to test pod..."
+exec_in_pod mkdir -p /etc/cfgd/profiles
+cp_to_pod "$FIXTURES/configs/cfgd.yaml" /etc/cfgd/cfgd.yaml
 for f in "$FIXTURES/profiles/"*.yaml; do
-    docker cp "$f" "$NODE:/etc/cfgd/profiles/$(basename "$f")"
+    cp_to_pod "$f" "/etc/cfgd/profiles/$(basename "$f")"
 done
 
 # =================================================================
@@ -28,26 +27,26 @@ done
 # =================================================================
 begin_test "T40: Sysctl set-verify-drift cycle"
 # Save original
-ORIG=$(exec_on_node cat /proc/sys/vm/max_map_count)
+ORIG=$(exec_in_pod cat /proc/sys/vm/max_map_count)
 echo "  Original vm.max_map_count: $ORIG"
 
 # Apply desired state
-exec_on_node cfgd --config /etc/cfgd/cfgd.yaml apply --yes --no-color > /dev/null 2>&1 || true
-APPLIED=$(exec_on_node cat /proc/sys/vm/max_map_count)
+exec_in_pod cfgd --config /etc/cfgd/cfgd.yaml apply --yes --no-color > /dev/null 2>&1 || true
+APPLIED=$(exec_in_pod cat /proc/sys/vm/max_map_count)
 echo "  After apply: $APPLIED"
 
 # Introduce drift
-exec_on_node sysctl -w vm.max_map_count=65530 > /dev/null 2>&1
-DRIFTED=$(exec_on_node cat /proc/sys/vm/max_map_count)
+exec_in_pod sysctl -w vm.max_map_count=65530 > /dev/null 2>&1
+DRIFTED=$(exec_in_pod cat /proc/sys/vm/max_map_count)
 echo "  After manual drift: $DRIFTED"
 
 # Detect drift
-PLAN=$(exec_on_node cfgd --config /etc/cfgd/cfgd.yaml apply --dry-run --no-color 2>&1) || true
+PLAN=$(exec_in_pod cfgd --config /etc/cfgd/cfgd.yaml apply --dry-run --no-color 2>&1) || true
 
 if assert_equals "$DRIFTED" "65530" && assert_contains "$PLAN" "vm.max_map_count"; then
     # Re-apply to fix drift
-    exec_on_node cfgd --config /etc/cfgd/cfgd.yaml apply --yes --no-color > /dev/null 2>&1
-    FIXED=$(exec_on_node cat /proc/sys/vm/max_map_count)
+    exec_in_pod cfgd --config /etc/cfgd/cfgd.yaml apply --yes --no-color > /dev/null 2>&1
+    FIXED=$(exec_in_pod cat /proc/sys/vm/max_map_count)
     echo "  After re-apply: $FIXED"
     if assert_equals "$FIXED" "262144"; then
         pass_test "T40"
@@ -62,8 +61,8 @@ fi
 # T41: Sysctl persistence file created
 # =================================================================
 begin_test "T41: Sysctl persistence file"
-if exec_on_node test -f /etc/sysctl.d/99-cfgd.conf; then
-    CONTENT=$(exec_on_node cat /etc/sysctl.d/99-cfgd.conf)
+if exec_in_pod test -f /etc/sysctl.d/99-cfgd.conf; then
+    CONTENT=$(exec_in_pod cat /etc/sysctl.d/99-cfgd.conf)
     echo "  /etc/sysctl.d/99-cfgd.conf:"
     echo "$CONTENT" | head -5 | sed 's/^/    /'
     if assert_contains "$CONTENT" "vm.max_map_count"; then
@@ -80,11 +79,11 @@ fi
 # =================================================================
 begin_test "T42: Kernel module loading"
 # Check if ip_vs is already loaded
-ALREADY_LOADED=$(exec_on_node bash -c 'cat /proc/modules | grep -c "^ip_vs "' 2>/dev/null || echo "0")
+ALREADY_LOADED=$(exec_in_pod bash -c 'cat /proc/modules | grep -c "^ip_vs "' 2>/dev/null || echo "0")
 
 if [ "$ALREADY_LOADED" -gt 0 ]; then
     echo "  ip_vs already loaded — verifying cfgd detects it as in-sync"
-    PLAN=$(exec_on_node cfgd --config /etc/cfgd/cfgd.yaml apply --dry-run --no-color 2>&1) || true
+    PLAN=$(exec_in_pod cfgd --config /etc/cfgd/cfgd.yaml apply --dry-run --no-color 2>&1) || true
     if echo "$PLAN" | grep -q "kernel-modules" && ! echo "$PLAN" | grep -q "ip_vs.*not loaded"; then
         pass_test "T42"
     else
@@ -92,8 +91,8 @@ if [ "$ALREADY_LOADED" -gt 0 ]; then
     fi
 else
     echo "  ip_vs not loaded — testing load via cfgd"
-    exec_on_node cfgd --config /etc/cfgd/cfgd.yaml apply --yes --no-color > /dev/null 2>&1 || true
-    LOADED=$(exec_on_node bash -c 'cat /proc/modules | grep -c "^ip_vs "' 2>/dev/null || echo "0")
+    exec_in_pod cfgd --config /etc/cfgd/cfgd.yaml apply --yes --no-color > /dev/null 2>&1 || true
+    LOADED=$(exec_in_pod bash -c 'cat /proc/modules | grep -c "^ip_vs "' 2>/dev/null || echo "0")
     if [ "$LOADED" -gt 0 ]; then
         pass_test "T42"
     else
@@ -105,8 +104,8 @@ fi
 # T43: Kernel module persistence file
 # =================================================================
 begin_test "T43: Kernel module persistence"
-if exec_on_node test -f /etc/modules-load.d/cfgd.conf; then
-    CONTENT=$(exec_on_node cat /etc/modules-load.d/cfgd.conf)
+if exec_in_pod test -f /etc/modules-load.d/cfgd.conf; then
+    CONTENT=$(exec_in_pod cat /etc/modules-load.d/cfgd.conf)
     echo "  /etc/modules-load.d/cfgd.conf:"
     echo "$CONTENT" | head -5 | sed 's/^/    /'
     pass_test "T43"
@@ -118,7 +117,7 @@ fi
 # T44: Seccomp profile write and verify
 # =================================================================
 begin_test "T44: Seccomp profile write"
-exec_on_node bash -c 'cat > /etc/cfgd/e2e-seccomp-cfgd.yaml << "INNEREOF"
+exec_in_pod bash -c 'cat > /etc/cfgd/e2e-seccomp-cfgd.yaml << "INNEREOF"
 apiVersion: cfgd.io/v1alpha1
 kind: Config
 metadata:
@@ -127,10 +126,10 @@ spec:
   profile: k8s-worker-seccomp
 INNEREOF'
 
-exec_on_node cfgd --config /etc/cfgd/e2e-seccomp-cfgd.yaml apply --yes --no-color > /dev/null 2>&1 || true
+exec_in_pod cfgd --config /etc/cfgd/e2e-seccomp-cfgd.yaml apply --yes --no-color > /dev/null 2>&1 || true
 
-if exec_on_node test -f /tmp/cfgd-e2e-seccomp/audit.json; then
-    CONTENT=$(exec_on_node cat /tmp/cfgd-e2e-seccomp/audit.json)
+if exec_in_pod test -f /tmp/cfgd-e2e-seccomp/audit.json; then
+    CONTENT=$(exec_in_pod cat /tmp/cfgd-e2e-seccomp/audit.json)
     if assert_contains "$CONTENT" "SCMP_ACT_LOG" && \
        assert_contains "$CONTENT" "SCMP_ARCH_X86_64"; then
         pass_test "T44"
@@ -146,9 +145,9 @@ fi
 # =================================================================
 begin_test "T45: Seccomp profile drift"
 # Modify the seccomp file
-exec_on_node bash -c 'echo "corrupted" > /tmp/cfgd-e2e-seccomp/audit.json'
+exec_in_pod bash -c 'echo "corrupted" > /tmp/cfgd-e2e-seccomp/audit.json'
 
-PLAN=$(exec_on_node cfgd --config /etc/cfgd/e2e-seccomp-cfgd.yaml apply --dry-run --no-color 2>&1) || true
+PLAN=$(exec_in_pod cfgd --config /etc/cfgd/e2e-seccomp-cfgd.yaml apply --dry-run --no-color 2>&1) || true
 echo "  Plan after seccomp corruption:"
 echo "$PLAN" | head -10 | sed 's/^/    /'
 
@@ -162,12 +161,12 @@ fi
 # T46: Certificate permission drift
 # =================================================================
 begin_test "T46: Certificate permission drift"
-exec_on_node mkdir -p /tmp/cfgd-e2e-pki
-exec_on_node bash -c 'echo "cert" > /tmp/cfgd-e2e-pki/test.crt'
-exec_on_node bash -c 'echo "key" > /tmp/cfgd-e2e-pki/test.key'
-exec_on_node chmod 644 /tmp/cfgd-e2e-pki/test.crt /tmp/cfgd-e2e-pki/test.key
+exec_in_pod mkdir -p /tmp/cfgd-e2e-pki
+exec_in_pod bash -c 'echo "cert" > /tmp/cfgd-e2e-pki/test.crt'
+exec_in_pod bash -c 'echo "key" > /tmp/cfgd-e2e-pki/test.key'
+exec_in_pod chmod 644 /tmp/cfgd-e2e-pki/test.crt /tmp/cfgd-e2e-pki/test.key
 
-exec_on_node bash -c 'cat > /etc/cfgd/e2e-certs-cfgd.yaml << "INNEREOF"
+exec_in_pod bash -c 'cat > /etc/cfgd/e2e-certs-cfgd.yaml << "INNEREOF"
 apiVersion: cfgd.io/v1alpha1
 kind: Config
 metadata:
@@ -176,20 +175,20 @@ spec:
   profile: k8s-worker-certs
 INNEREOF'
 
-PLAN=$(exec_on_node cfgd --config /etc/cfgd/e2e-certs-cfgd.yaml apply --dry-run --no-color 2>&1) || true
+PLAN=$(exec_in_pod cfgd --config /etc/cfgd/e2e-certs-cfgd.yaml apply --dry-run --no-color 2>&1) || true
 echo "  Plan before cert apply:"
 echo "$PLAN" | head -10 | sed 's/^/    /'
 
 # Apply to fix permissions
-exec_on_node cfgd --config /etc/cfgd/e2e-certs-cfgd.yaml apply --yes --no-color > /dev/null 2>&1 || true
+exec_in_pod cfgd --config /etc/cfgd/e2e-certs-cfgd.yaml apply --yes --no-color > /dev/null 2>&1 || true
 
-KEY_MODE=$(exec_on_node stat -c '%a' /tmp/cfgd-e2e-pki/test.key 2>/dev/null || echo "error")
+KEY_MODE=$(exec_in_pod stat -c '%a' /tmp/cfgd-e2e-pki/test.key 2>/dev/null || echo "error")
 echo "  Key permissions after apply: $KEY_MODE"
 
 if assert_equals "$KEY_MODE" "600"; then
     # Now change permissions back and verify drift detection
-    exec_on_node chmod 644 /tmp/cfgd-e2e-pki/test.key
-    PLAN2=$(exec_on_node cfgd --config /etc/cfgd/e2e-certs-cfgd.yaml apply --dry-run --no-color 2>&1) || true
+    exec_in_pod chmod 644 /tmp/cfgd-e2e-pki/test.key
+    PLAN2=$(exec_in_pod cfgd --config /etc/cfgd/e2e-certs-cfgd.yaml apply --dry-run --no-color 2>&1) || true
     if assert_contains "$PLAN2" "cert" || assert_contains "$PLAN2" "changes"; then
         pass_test "T46"
     else
@@ -205,10 +204,10 @@ fi
 begin_test "T50: Daemon auto-reconciliation"
 
 # Ensure desired state is applied first
-exec_on_node cfgd --config /etc/cfgd/cfgd.yaml apply --yes --no-color > /dev/null 2>&1 || true
+exec_in_pod cfgd --config /etc/cfgd/cfgd.yaml apply --yes --no-color > /dev/null 2>&1 || true
 
 # Create a config with a short daemon reconcile interval
-exec_on_node bash -c 'cat > /etc/cfgd/e2e-daemon-cfgd.yaml << "INNEREOF"
+exec_in_pod bash -c 'cat > /etc/cfgd/e2e-daemon-cfgd.yaml << "INNEREOF"
 apiVersion: cfgd.io/v1alpha1
 kind: Config
 metadata:
@@ -223,9 +222,9 @@ spec:
       driftPolicy: Auto
 INNEREOF'
 
-# Start daemon in background on the kind node
-exec_on_node bash -c 'nohup cfgd --config /etc/cfgd/e2e-daemon-cfgd.yaml daemon --no-color > /tmp/daemon.log 2>&1 &'
-DAEMON_PID=$(exec_on_node bash -c 'pgrep -f "cfgd.*daemon" || echo ""')
+# Start daemon in background in the test pod
+exec_in_pod bash -c 'nohup cfgd --config /etc/cfgd/e2e-daemon-cfgd.yaml daemon --no-color > /tmp/daemon.log 2>&1 &'
+DAEMON_PID=$(exec_in_pod bash -c 'pgrep -f "cfgd.*daemon" || echo ""')
 echo "  Daemon PID: $DAEMON_PID"
 
 if [ -z "$DAEMON_PID" ]; then
@@ -234,14 +233,14 @@ else
     sleep 3
 
     # Introduce drift
-    exec_on_node sysctl -w vm.max_map_count=65530 > /dev/null 2>&1 || true
+    exec_in_pod sysctl -w vm.max_map_count=65530 > /dev/null 2>&1 || true
     echo "  Introduced drift: vm.max_map_count=65530"
 
     # Wait for daemon to fix it (should happen within 10s with 5s interval)
     echo "  Waiting up to 15s for daemon to reconcile..."
     FIXED=false
     for i in $(seq 1 15); do
-        VAL=$(exec_on_node cat /proc/sys/vm/max_map_count 2>/dev/null || echo "error")
+        VAL=$(exec_in_pod cat /proc/sys/vm/max_map_count 2>/dev/null || echo "error")
         if [ "$VAL" = "262144" ]; then
             echo "  Reconciled after ${i}s: vm.max_map_count=$VAL"
             FIXED=true
@@ -251,28 +250,29 @@ else
     done
 
     # Kill daemon
-    exec_on_node kill "$DAEMON_PID" > /dev/null 2>&1 || true
+    exec_in_pod kill "$DAEMON_PID" > /dev/null 2>&1 || true
     sleep 1
 
     # Show daemon logs
     echo "  Daemon logs (last 15 lines):"
-    exec_on_node cat /tmp/daemon.log 2>/dev/null | tail -15 | sed 's/^/    /' || true
+    exec_in_pod cat /tmp/daemon.log 2>/dev/null | tail -15 | sed 's/^/    /' || true
 
     # Check if daemon detected and attempted to fix drift (sysctl writes
     # may fail in containers without sufficient privileges)
-    DAEMON_LOG=$(exec_on_node cat /tmp/daemon.log 2>/dev/null || echo "")
+    DAEMON_LOG=$(exec_in_pod cat /tmp/daemon.log 2>/dev/null || echo "")
     if $FIXED; then
         pass_test "T50"
     elif echo "$DAEMON_LOG" | grep -q "drift policy is Auto"; then
         pass_test "T50"  # daemon detected drift and attempted reconciliation
     else
-        FINAL=$(exec_on_node cat /proc/sys/vm/max_map_count 2>/dev/null || echo "error")
+        FINAL=$(exec_in_pod cat /proc/sys/vm/max_map_count 2>/dev/null || echo "error")
         fail_test "T50" "Daemon did not reconcile drift (final value: $FINAL)"
     fi
 fi
 
 # --- Cleanup ---
-exec_on_node rm -rf /tmp/cfgd-e2e-seccomp /tmp/cfgd-e2e-pki /tmp/daemon.log 2>/dev/null || true
+exec_in_pod rm -rf /tmp/cfgd-e2e-seccomp /tmp/cfgd-e2e-pki /tmp/daemon.log 2>/dev/null || true
+exec_in_pod rm -f /host-etc/sysctl.d/99-cfgd.conf /host-etc/modules-load.d/cfgd.conf 2>/dev/null || true
 
 # --- Summary ---
 print_summary "Drift & Reconciliation Tests"
