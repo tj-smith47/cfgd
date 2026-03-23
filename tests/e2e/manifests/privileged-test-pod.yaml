@@ -7,6 +7,8 @@ metadata:
     cfgd.io/e2e-run: RUN_PLACEHOLDER
 spec:
   restartPolicy: Never
+  imagePullSecrets:
+    - name: registry-credentials
   affinity:
     nodeAffinity:
       requiredDuringSchedulingIgnoredDuringExecution:

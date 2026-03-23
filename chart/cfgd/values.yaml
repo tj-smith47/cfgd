@@ -1,3 +1,7 @@
+# Global settings
+global:
+  imagePullSecrets: []
+
 # Operator configuration
 operator:
   enabled: true

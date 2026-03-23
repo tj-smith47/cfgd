@@ -66,6 +66,12 @@ create_e2e_namespace() {
     if ! kubectl get namespace "$E2E_NAMESPACE" > /dev/null 2>&1; then
         kubectl create namespace "$E2E_NAMESPACE"
         kubectl label namespace "$E2E_NAMESPACE" "$E2E_RUN_LABEL" --overwrite
+        # Copy registry credentials so pods in ephemeral namespace can pull images
+        if kubectl get secret registry-credentials -n cfgd-system > /dev/null 2>&1; then
+            kubectl get secret registry-credentials -n cfgd-system -o json \
+                | jq 'del(.metadata.namespace,.metadata.resourceVersion,.metadata.uid,.metadata.creationTimestamp)' \
+                | kubectl apply -n "$E2E_NAMESPACE" -f - 2>/dev/null || true
+        fi
     fi
 }
 

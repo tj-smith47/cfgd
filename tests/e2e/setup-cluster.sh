@@ -250,6 +250,7 @@ helm upgrade --install cfgd-csi "$REPO_ROOT/chart/cfgd" \
     --set csiDriver.image.pullPolicy=Always \
     --set "csiDriver.extraEnv[0].name=OCI_INSECURE_REGISTRIES" \
     --set "csiDriver.extraEnv[0].value=${REGISTRY}:5000" \
+    --set "global.imagePullSecrets[0].name=registry-credentials" \
     --wait --timeout=120s 2>&1 || {
         echo "WARN: CSI driver Helm install failed — full-stack CSI tests will be skipped"
     }

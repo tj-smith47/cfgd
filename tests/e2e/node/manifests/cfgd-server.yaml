@@ -50,6 +50,8 @@ spec:
         app: cfgd-server
     spec:
       serviceAccountName: cfgd-server
+      imagePullSecrets:
+        - name: registry-credentials
       containers:
         - name: cfgd-operator
           image: registry.jarvispro.io/cfgd-operator:IMAGE_PLACEHOLDER
