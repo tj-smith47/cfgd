@@ -250,7 +250,8 @@
         "nodeSelector": { "type": "object" },
         "tolerations": { "type": "array" },
         "registrar": { "type": "object" },
-        "extraEnv": { "type": "array", "description": "Extra environment variables for the CSI driver container" }
+        "extraEnv": { "type": "array", "description": "Extra environment variables for the CSI driver container" },
+        "imagePullSecrets": { "type": "array", "description": "Image pull secrets for CSI driver pods" }
       }
     },
     "mutatingWebhook": {
