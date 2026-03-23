@@ -18,7 +18,7 @@ spec:
                 operator: DoesNotExist
   containers:
     - name: cfgd
-      image: registry.jarvispro.io/cfgd:IMAGE_PLACEHOLDER
+      image: REGISTRY_PLACEHOLDER/cfgd:IMAGE_PLACEHOLDER
       command: ["sleep", "infinity"]
       securityContext:
         privileged: true

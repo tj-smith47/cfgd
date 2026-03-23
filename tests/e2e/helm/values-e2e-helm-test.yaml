@@ -6,8 +6,8 @@ operator:
 agent:
   enabled: true
   image:
-    repository: registry.jarvispro.io/cfgd
-    tag: ""  # overridden via --set at runtime
+    repository: ""  # overridden via --set agent.image.repository=$REGISTRY/cfgd at runtime
+    tag: ""  # overridden via --set agent.image.tag=$IMAGE_TAG at runtime
     pullPolicy: Always
   reconcileInterval: "10s"
   profile: "k8s-worker-minimal"

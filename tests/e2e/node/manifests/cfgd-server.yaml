@@ -54,7 +54,7 @@ spec:
         - name: registry-credentials
       containers:
         - name: cfgd-operator
-          image: registry.jarvispro.io/cfgd-operator:IMAGE_PLACEHOLDER
+          image: REGISTRY_PLACEHOLDER/cfgd-operator:IMAGE_PLACEHOLDER
           imagePullPolicy: Always
           ports:
             - containerPort: 8080

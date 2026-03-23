@@ -72,12 +72,12 @@ kubectl apply -f "$SCRIPT_DIR/manifests/e2e-webhook-tls.yaml"
 
 # --- Step 8: Apply operator deployment ---
 echo "Applying operator deployment..."
-sed "s|IMAGE_PLACEHOLDER|${IMAGE_TAG}|g" \
+sed "s|REGISTRY_PLACEHOLDER|${REGISTRY}|g; s|IMAGE_PLACEHOLDER|${IMAGE_TAG}|g" \
     "$SCRIPT_DIR/operator/manifests/operator-deployment.yaml" | kubectl apply -f -
 
 # --- Step 9: Apply device gateway deployment ---
 echo "Applying device gateway..."
-sed "s|IMAGE_PLACEHOLDER|${IMAGE_TAG}|g" \
+sed "s|REGISTRY_PLACEHOLDER|${REGISTRY}|g; s|IMAGE_PLACEHOLDER|${IMAGE_TAG}|g" \
     "$SCRIPT_DIR/node/manifests/cfgd-server.yaml" | kubectl apply -f -
 
 # --- Step 10: Apply webhook configurations ---

@@ -21,7 +21,7 @@ NC='\033[0m'
 
 # --- Pod helpers (replaces KIND node helpers) ---
 
-REGISTRY="${REGISTRY:-registry.jarvispro.io}"
+REGISTRY="${REGISTRY:?E2E_REGISTRY must be set (e.g. export REGISTRY=your.registry.io)}"
 IMAGE_TAG="${IMAGE_TAG:-e2e-$(git -C "$REPO_ROOT" rev-parse --short HEAD 2>/dev/null || echo latest)}"
 E2E_NAMESPACE="${E2E_NAMESPACE:-cfgd-e2e-${GITHUB_RUN_ID:-$(date +%s)-$$}}"
 E2E_RUN_ID="${GITHUB_RUN_ID:-local-$$}"
@@ -38,7 +38,7 @@ ensure_test_pod() {
     create_e2e_namespace
 
     # Substitute placeholders and apply (image first to avoid double-sub)
-    sed "s|IMAGE_PLACEHOLDER|${IMAGE_TAG}|g; s|RUN_PLACEHOLDER|${E2E_RUN_ID}|g" \
+    sed "s|REGISTRY_PLACEHOLDER|${REGISTRY}|g; s|IMAGE_PLACEHOLDER|${IMAGE_TAG}|g; s|RUN_PLACEHOLDER|${E2E_RUN_ID}|g" \
         "$manifest" | kubectl apply -n "$E2E_NAMESPACE" -f -
 
     echo "  Waiting for test pod $pod_name..."

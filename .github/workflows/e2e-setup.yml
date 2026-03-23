@@ -26,6 +26,6 @@ jobs:
       - name: Run setup
         env:
           IMAGE_TAG: ${{ steps.tags.outputs.tag }}
-          REGISTRY: registry.jarvispro.io
+          REGISTRY: ${{ vars.E2E_REGISTRY }}
           RUSTC_WRAPPER: sccache
         run: bash tests/e2e/setup-cluster.sh
