@@ -35,9 +35,12 @@ docker build -f "$REPO_ROOT/Dockerfile.operator" \
 docker build -f "$REPO_ROOT/Dockerfile.csi" \
     -t "${REGISTRY}/cfgd-csi:${IMAGE_TAG}" "$REPO_ROOT"
 
-echo "Pushing images to $REGISTRY..."
+echo "Tagging and pushing images to $REGISTRY..."
+# Tag operator image also as cfgd-server (same binary, production uses this name)
+docker tag "${REGISTRY}/cfgd-operator:${IMAGE_TAG}" "${REGISTRY}/cfgd-server:${IMAGE_TAG}"
 docker push "${REGISTRY}/cfgd:${IMAGE_TAG}"
 docker push "${REGISTRY}/cfgd-operator:${IMAGE_TAG}"
+docker push "${REGISTRY}/cfgd-server:${IMAGE_TAG}"
 docker push "${REGISTRY}/cfgd-csi:${IMAGE_TAG}"
 
 # --- Step 4: Ensure cfgd-system namespace ---
@@ -80,7 +83,7 @@ if [ -n "${CFGD_DEPLOY_MANIFESTS:-}" ] && [ -d "$CFGD_DEPLOY_MANIFESTS" ]; then
     kubectl set image deployment/cfgd-operator -n cfgd-system \
         cfgd-operator="${REGISTRY}/cfgd-operator:${IMAGE_TAG}" 2>/dev/null || true
     kubectl set image deployment/cfgd-server -n cfgd-system \
-        cfgd-operator="${REGISTRY}/cfgd-operator:${IMAGE_TAG}" 2>/dev/null || true
+        cfgd-server="${REGISTRY}/cfgd-server:${IMAGE_TAG}" 2>/dev/null || true
 else
     echo "  Applying E2E manifests..."
     sed "s|REGISTRY_PLACEHOLDER|${REGISTRY}|g; s|IMAGE_PLACEHOLDER|${IMAGE_TAG}|g" \
