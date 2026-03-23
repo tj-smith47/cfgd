@@ -65,6 +65,51 @@ system:
       enabled: true
 ```
 
+### `gsettings` (Linux only)
+
+Reads and writes [GNOME/GTK desktop settings](https://docs.gtk.org/gio/class.Settings.html) via the `gsettings` CLI. Covers GNOME, Cinnamon, MATE, Budgie, and Pantheon desktops. Each key is a gsettings schema name, values are key-value pairs to set.
+
+```yaml
+system:
+  gsettings:
+    org.gnome.desktop.interface:
+      color-scheme: prefer-dark
+      font-name: "Cantarell 11"
+    org.gnome.desktop.wm.preferences:
+      button-layout: "close,minimize,maximize:"
+```
+
+### `kdeConfig` (Linux only)
+
+Reads and writes [KDE Plasma settings](https://userbase.kde.org/KDE_System_Administration/Configuration_Files) via `kwriteconfig5`/`kwriteconfig6`. Each top-level key is a config file name, containing groups, each containing key-value pairs.
+
+```yaml
+system:
+  kdeConfig:
+    kdeglobals:
+      General:
+        ColorScheme: BreezeDark
+      KDE:
+        LookAndFeelPackage: org.kde.breezedark.desktop
+    kwinrc:
+      Compositing:
+        Backend: OpenGL
+```
+
+### `xfconf` (Linux only)
+
+Reads and writes [XFCE desktop settings](https://docs.xfce.org/xfce/xfconf/start) via `xfconf-query`. Each key is a channel name, values are property-path to value mappings.
+
+```yaml
+system:
+  xfconf:
+    xfwm4:
+      /general/theme: Default
+      /general/title_font: "Sans Bold 9"
+    xsettings:
+      /Net/ThemeName: Adwaita
+```
+
 ### `environment`
 
 Manages environment variables by writing them to shell profile files (e.g., `~/.profile`, `~/.zshenv`). On Windows, variables are written to the user environment via the registry (`HKCU\Environment`) using `setx`, and are available to new processes immediately after apply.

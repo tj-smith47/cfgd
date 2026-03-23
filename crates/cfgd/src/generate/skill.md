@@ -131,6 +131,9 @@ Platform-specific system settings discovered by `scan_system_settings`:
 - `macosDefaults`: macOS preference domain settings
 - `systemd`: systemd user units to enable
 - `launchAgents`: launchd plist configurations
+- `gsettings`: GNOME/GTK desktop settings (schemas and keys)
+- `kdeConfig`: KDE Plasma settings (files, groups, keys)
+- `xfconf`: XFCE desktop settings (channels and properties)
 
 Each entry is a key-value map specific to the system configurator.
 

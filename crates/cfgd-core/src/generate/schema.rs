@@ -325,6 +325,28 @@ spec:
         unitFile: systemd/myservice.service  # required, string — path to unit file
         enabled: true              # optional, bool
 
+    # GNOME/GTK desktop settings via gsettings (Linux only)
+    gsettings:
+      org.gnome.desktop.interface:
+        color-scheme: prefer-dark       # string — gsettings schema.key
+        font-name: "Cantarell 11"
+      org.gnome.desktop.wm.preferences:
+        button-layout: "close,minimize,maximize:"
+
+    # KDE Plasma settings via kwriteconfig (Linux only)
+    kdeConfig:
+      kdeglobals:                       # config file name
+        General:                        # group within file
+          ColorScheme: BreezeDark       # key: value
+        KDE:
+          LookAndFeelPackage: org.kde.breezedark.desktop
+
+    # XFCE desktop settings via xfconf-query (Linux only)
+    xfconf:
+      xfwm4:
+        /general/theme: Default         # channel.property: value
+        /general/title_font: "Sans Bold 9"
+
     # Shell environment file management (all platforms)
     environment:
       GOPATH: ~/go
@@ -723,6 +745,10 @@ mod tests {
         assert!(schema.contains("chocolatey"));
         assert!(schema.contains("scoop"));
         assert!(schema.contains("custom"));
+        // Linux desktop configurators
+        assert!(schema.contains("gsettings"));
+        assert!(schema.contains("kdeConfig"));
+        assert!(schema.contains("xfconf"));
         // Windows system configurators
         assert!(schema.contains("windowsRegistry"));
         assert!(schema.contains("windowsServices"));

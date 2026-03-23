@@ -488,6 +488,9 @@ Common configurators:
 |-----|----------|-------------|
 | `shell` | All | Default login shell path (e.g. `/bin/zsh`). |
 | `systemd` | Linux | systemd unit management. |
+| `gsettings` | Linux | GNOME/GTK desktop settings via gsettings. |
+| `kdeConfig` | Linux | KDE Plasma settings via kwriteconfig. |
+| `xfconf` | Linux | XFCE desktop settings via xfconf-query. |
 | `launchd` | macOS | launchd plist management. |
 | `environment` | All | System-level environment file management. |
 | `macosDefaults` | macOS | macOS `defaults write` settings. |

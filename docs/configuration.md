@@ -132,6 +132,16 @@ files:
 
 Files can be marked `private: true` to exclude them from git (added to `.gitignore`).
 
+## Linux
+
+On Linux, cfgd supports desktop environment-specific system configurators in addition to the cross-platform features:
+
+| Feature | Linux behavior |
+|---|---|
+| Desktop configurators | `gsettings` (GNOME/GTK), `kdeConfig` (KDE Plasma), `xfconf` (XFCE) — each active only when its CLI tool is installed |
+| System configurators | `systemdUnits`, `environment`; plus node-level configurators (`sysctl`, `kernelModules`, `containerd`, `kubelet`, `apparmor`, `seccomp`, `certificates`) |
+| Daemon service | Registered as a systemd user service; starts at login |
+
 ## Windows
 
 On Windows, cfgd supports the same configuration structure with these platform-specific behaviors:

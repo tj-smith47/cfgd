@@ -95,7 +95,7 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
         },
         ToolDefinition {
             name: "scan_system_settings".into(),
-            description: "Scan platform-specific system settings: macOS defaults domains, systemd user units, and LaunchAgents.".into(),
+            description: "Scan platform-specific system settings: macOS defaults domains, systemd user units, LaunchAgents, and gsettings schemas.".into(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "properties": {}

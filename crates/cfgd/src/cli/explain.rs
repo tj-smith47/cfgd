@@ -986,6 +986,27 @@ static SCHEMA_PROFILE: ResourceSchema = ResourceSchema {
                     children: &[],
                 },
                 SchemaField {
+                    name: "gsettings",
+                    type_desc: "map[string]map",
+                    required: false,
+                    description: "GNOME/GTK desktop settings by schema and key (Linux)",
+                    children: &[],
+                },
+                SchemaField {
+                    name: "kdeConfig",
+                    type_desc: "map[string]map[string]map",
+                    required: false,
+                    description: "KDE Plasma settings by file, group, and key (Linux)",
+                    children: &[],
+                },
+                SchemaField {
+                    name: "xfconf",
+                    type_desc: "map[string]map",
+                    required: false,
+                    description: "XFCE desktop settings by channel and property (Linux)",
+                    children: &[],
+                },
+                SchemaField {
                     name: "environment",
                     type_desc: "map[string]string",
                     required: false,

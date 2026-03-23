@@ -546,6 +546,7 @@ pub struct SystemSettingsResult {
     pub macos_defaults: Option<serde_yaml::Value>,
     pub systemd_units: Vec<String>,
     pub launch_agents: Vec<String>,
+    pub gsettings_schemas: Vec<String>,
 }
 
 /// Scan platform-specific system settings.
@@ -554,6 +555,7 @@ pub fn scan_system_settings() -> Result<SystemSettingsResult, CfgdError> {
         macos_defaults: None,
         systemd_units: vec![],
         launch_agents: vec![],
+        gsettings_schemas: vec![],
     };
 
     // macOS: run `defaults domains` and parse comma-separated list — don't export all, just list them
@@ -609,8 +611,25 @@ pub fn scan_system_settings() -> Result<SystemSettingsResult, CfgdError> {
         }
     }
 
+    // Linux: list gsettings schemas
+    if cfgd_core::command_available("gsettings")
+        && let Ok(output) = std::process::Command::new("gsettings")
+            .arg("list-schemas")
+            .output()
+        && output.status.success()
+    {
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        for line in stdout.lines() {
+            let schema = line.trim();
+            if !schema.is_empty() {
+                result.gsettings_schemas.push(schema.to_string());
+            }
+        }
+    }
+
     result.systemd_units.sort();
     result.launch_agents.sort();
+    result.gsettings_schemas.sort();
     Ok(result)
 }
 
@@ -1168,6 +1187,13 @@ mod tests {
         assert_eq!(
             result.launch_agents, sorted_agents,
             "launch_agents should be sorted"
+        );
+
+        let mut sorted_schemas = result.gsettings_schemas.clone();
+        sorted_schemas.sort();
+        assert_eq!(
+            result.gsettings_schemas, sorted_schemas,
+            "gsettings_schemas should be sorted"
         );
     }
 
