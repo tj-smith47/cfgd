@@ -108,6 +108,22 @@ fn find_profile_guid(settings: &serde_json::Value, name: &str) -> Option<String>
     None
 }
 
+/// Load and parse Windows Terminal settings.json.
+/// Returns `Ok(None)` if Windows Terminal is not installed.
+fn load_terminal_settings() -> Result<Option<(std::path::PathBuf, serde_json::Value)>> {
+    let path = match windows_terminal_settings_path() {
+        Some(p) => p,
+        None => return Ok(None),
+    };
+    let content = std::fs::read_to_string(&path).map_err(cfgd_core::errors::CfgdError::Io)?;
+    let settings: serde_json::Value = serde_json::from_str(&content).map_err(|e| {
+        cfgd_core::errors::CfgdError::Config(cfgd_core::errors::ConfigError::Invalid {
+            message: e.to_string(),
+        })
+    })?;
+    Ok(Some((path, settings)))
+}
+
 impl SystemConfigurator for ShellConfigurator {
     fn name(&self) -> &str {
         "shell"
@@ -119,19 +135,12 @@ impl SystemConfigurator for ShellConfigurator {
 
     fn current_state(&self) -> Result<serde_yaml::Value> {
         if cfg!(windows) {
-            // Read Windows Terminal settings.json for the default profile name
-            let path = match windows_terminal_settings_path() {
-                Some(p) => p,
-                None => return Ok(serde_yaml::Value::String(String::new())),
+            let name = match load_terminal_settings()? {
+                Some((_path, settings)) => {
+                    resolve_default_profile_name(&settings).unwrap_or_default()
+                }
+                None => String::new(),
             };
-            let content =
-                std::fs::read_to_string(&path).map_err(cfgd_core::errors::CfgdError::Io)?;
-            let settings: serde_json::Value = serde_json::from_str(&content).map_err(|e| {
-                cfgd_core::errors::CfgdError::Config(cfgd_core::errors::ConfigError::Invalid {
-                    message: e.to_string(),
-                })
-            })?;
-            let name = resolve_default_profile_name(&settings).unwrap_or_default();
             Ok(serde_yaml::Value::String(name))
         } else {
             let shell = std::env::var("SHELL").unwrap_or_default();
@@ -146,8 +155,10 @@ impl SystemConfigurator for ShellConfigurator {
         }
 
         if cfg!(windows) {
-            let path = match windows_terminal_settings_path() {
-                Some(p) => p,
+            let current = match load_terminal_settings()? {
+                Some((_path, settings)) => {
+                    resolve_default_profile_name(&settings).unwrap_or_default()
+                }
                 None => {
                     return Ok(vec![SystemDrift {
                         key: "default-shell".to_string(),
@@ -156,14 +167,6 @@ impl SystemConfigurator for ShellConfigurator {
                     }]);
                 }
             };
-            let content =
-                std::fs::read_to_string(&path).map_err(cfgd_core::errors::CfgdError::Io)?;
-            let settings: serde_json::Value = serde_json::from_str(&content).map_err(|e| {
-                cfgd_core::errors::CfgdError::Config(cfgd_core::errors::ConfigError::Invalid {
-                    message: e.to_string(),
-                })
-            })?;
-            let current = resolve_default_profile_name(&settings).unwrap_or_default();
             if current == desired_shell {
                 return Ok(Vec::new());
             }
@@ -192,20 +195,13 @@ impl SystemConfigurator for ShellConfigurator {
         }
 
         if cfg!(windows) {
-            let path = match windows_terminal_settings_path() {
-                Some(p) => p,
+            let (path, mut settings) = match load_terminal_settings()? {
+                Some(pair) => pair,
                 None => {
                     printer.warning("Windows Terminal not installed; cannot set default profile");
                     return Ok(());
                 }
             };
-            let content =
-                std::fs::read_to_string(&path).map_err(cfgd_core::errors::CfgdError::Io)?;
-            let mut settings: serde_json::Value = serde_json::from_str(&content).map_err(|e| {
-                cfgd_core::errors::CfgdError::Config(cfgd_core::errors::ConfigError::Invalid {
-                    message: e.to_string(),
-                })
-            })?;
 
             let guid = match find_profile_guid(&settings, desired_shell) {
                 Some(g) => g,
@@ -296,7 +292,7 @@ impl SystemConfigurator for MacosDefaultsConfigurator {
             drifts.extend(diff_yaml_mapping(
                 values,
                 domain,
-                yaml_value_to_defaults_string,
+                yaml_value_to_string,
                 |key_str| read_defaults_value(domain, key_str),
             ));
         }
@@ -366,7 +362,7 @@ fn read_defaults_value(domain: &str, key: &str) -> String {
         .unwrap_or_default()
 }
 
-fn yaml_value_to_defaults_string(value: &serde_yaml::Value) -> String {
+fn yaml_value_to_string(value: &serde_yaml::Value) -> String {
     match value {
         serde_yaml::Value::Bool(b) => {
             if *b {
@@ -1326,7 +1322,7 @@ impl SystemConfigurator for WindowsRegistryConfigurator {
             drifts.extend(diff_yaml_mapping(
                 values,
                 key_path,
-                yaml_value_to_defaults_string,
+                yaml_value_to_string,
                 |value_name| Self::read_reg_value(key_path, value_name).unwrap_or_default(),
             ));
         }
@@ -1354,7 +1350,7 @@ impl SystemConfigurator for WindowsRegistryConfigurator {
                     Some(n) => n,
                     None => continue,
                 };
-                let desired_str = yaml_value_to_defaults_string(desired_val);
+                let desired_str = yaml_value_to_string(desired_val);
                 Self::write_reg_value(key_path, name, &desired_str, printer)?;
                 printer.success(&format!("Set {}\\{} = {}", key_path, name, desired_str));
             }
@@ -1442,6 +1438,17 @@ impl WindowsServiceConfigurator {
         let start_type = parse_sc_start_type(&qc_stdout).unwrap_or_default();
 
         Some((state, start_type))
+    }
+}
+
+/// Map user-facing start type to sc.exe value.
+/// Returns `None` for unrecognized values.
+fn sc_start_type(user_value: &str) -> Option<&'static str> {
+    match user_value {
+        "auto" => Some("auto"),
+        "manual" => Some("demand"),
+        "disabled" => Some("disabled"),
+        _ => None,
     }
 }
 
@@ -1555,18 +1562,13 @@ impl SystemConfigurator for WindowsServiceConfigurator {
                     }
 
                     if let Some(ref st) = entry.start_type {
-                        let sc_start = match st.as_str() {
-                            "auto" => "auto",
-                            "manual" => "demand",
-                            "disabled" => "disabled",
-                            other => {
-                                printer.warning(&format!(
-                                    "Unknown start type '{}' for service {}, using 'demand'",
-                                    other, entry.name
-                                ));
-                                "demand"
-                            }
-                        };
+                        let sc_start = sc_start_type(st).unwrap_or_else(|| {
+                            printer.warning(&format!(
+                                "Unknown start type '{}' for service {}, using 'demand'",
+                                st, entry.name
+                            ));
+                            "demand"
+                        });
                         args.push("start=");
                         args.push(sc_start);
                     }
@@ -1590,33 +1592,20 @@ impl SystemConfigurator for WindowsServiceConfigurator {
                 }
             } else {
                 // Configure start type on existing service
-                if let Some(ref start_type) = entry.start_type {
-                    let sc_start = match start_type.as_str() {
-                        "auto" => "auto",
-                        "manual" => "demand",
-                        "disabled" => "disabled",
-                        other => {
-                            printer.warning(&format!(
-                                "Unknown start type '{}' for service {}, skipping",
-                                other, entry.name
-                            ));
-                            // Don't skip state control — only skip the config step
-                            ""
-                        }
-                    };
-                    if !sc_start.is_empty() {
-                        let output = Command::new("sc")
-                            .args(["config", &entry.name, "start=", sc_start])
-                            .output()
-                            .map_err(cfgd_core::errors::CfgdError::Io)?;
-                        if !output.status.success() {
-                            let stdout = String::from_utf8_lossy(&output.stdout);
-                            printer.warning(&format!(
-                                "Failed to set start type for {}: {}",
-                                entry.name,
-                                stdout.trim()
-                            ));
-                        }
+                if let Some(ref start_type) = entry.start_type
+                    && let Some(sc_start) = sc_start_type(start_type)
+                {
+                    let output = Command::new("sc")
+                        .args(["config", &entry.name, "start=", sc_start])
+                        .output()
+                        .map_err(cfgd_core::errors::CfgdError::Io)?;
+                    if !output.status.success() {
+                        let stdout = String::from_utf8_lossy(&output.stdout);
+                        printer.warning(&format!(
+                            "Failed to set start type for {}: {}",
+                            entry.name,
+                            stdout.trim()
+                        ));
                     }
                 }
             }
@@ -1749,21 +1738,21 @@ mod tests {
     }
 
     #[test]
-    fn yaml_value_to_defaults_string_conversion() {
+    fn yaml_value_to_string_conversion() {
         assert_eq!(
-            yaml_value_to_defaults_string(&serde_yaml::Value::Bool(true)),
+            yaml_value_to_string(&serde_yaml::Value::Bool(true)),
             "1"
         );
         assert_eq!(
-            yaml_value_to_defaults_string(&serde_yaml::Value::Bool(false)),
+            yaml_value_to_string(&serde_yaml::Value::Bool(false)),
             "0"
         );
         assert_eq!(
-            yaml_value_to_defaults_string(&serde_yaml::Value::Number(42.into())),
+            yaml_value_to_string(&serde_yaml::Value::Number(42.into())),
             "42"
         );
         assert_eq!(
-            yaml_value_to_defaults_string(&serde_yaml::Value::String("hello".into())),
+            yaml_value_to_string(&serde_yaml::Value::String("hello".into())),
             "hello"
         );
     }
@@ -1922,7 +1911,7 @@ HKEY_CURRENT_USER\\Environment\n\
             serde_yaml::Value::String("expected".into()),
         );
 
-        let drifts = diff_yaml_mapping(&desired, "", yaml_value_to_defaults_string, |_| {
+        let drifts = diff_yaml_mapping(&desired, "", yaml_value_to_string, |_| {
             "actual".to_string()
         });
         assert_eq!(drifts.len(), 1);
@@ -1939,7 +1928,7 @@ HKEY_CURRENT_USER\\Environment\n\
             serde_yaml::Value::String("same".into()),
         );
 
-        let drifts = diff_yaml_mapping(&desired, "", yaml_value_to_defaults_string, |_| {
+        let drifts = diff_yaml_mapping(&desired, "", yaml_value_to_string, |_| {
             "same".to_string()
         });
         assert!(drifts.is_empty());
@@ -1953,7 +1942,7 @@ HKEY_CURRENT_USER\\Environment\n\
             serde_yaml::Value::String("val".into()),
         );
 
-        let drifts = diff_yaml_mapping(&desired, "sysctl", yaml_value_to_defaults_string, |_| {
+        let drifts = diff_yaml_mapping(&desired, "sysctl", yaml_value_to_string, |_| {
             "other".to_string()
         });
         assert_eq!(drifts[0].key, "sysctl.setting");
@@ -1971,7 +1960,7 @@ HKEY_CURRENT_USER\\Environment\n\
             serde_yaml::Value::String("2".into()),
         );
 
-        let drifts = diff_yaml_mapping(&desired, "", yaml_value_to_defaults_string, |k| {
+        let drifts = diff_yaml_mapping(&desired, "", yaml_value_to_string, |k| {
             if k == "a" {
                 "1".to_string()
             } else {
@@ -1983,29 +1972,29 @@ HKEY_CURRENT_USER\\Environment\n\
         assert_eq!(drifts[0].key, "b");
     }
 
-    // --- yaml_value_to_defaults_string ---
+    // --- yaml_value_to_string ---
 
     #[test]
-    fn yaml_value_to_defaults_string_bool_converts_to_01() {
+    fn yaml_value_to_string_bool_converts_to_01() {
         // macos defaults uses "1"/"0" for bools, not "true"/"false"
         assert_eq!(
-            yaml_value_to_defaults_string(&serde_yaml::Value::Bool(true)),
+            yaml_value_to_string(&serde_yaml::Value::Bool(true)),
             "1"
         );
         assert_eq!(
-            yaml_value_to_defaults_string(&serde_yaml::Value::Bool(false)),
+            yaml_value_to_string(&serde_yaml::Value::Bool(false)),
             "0"
         );
     }
 
     #[test]
-    fn yaml_value_to_defaults_string_number_and_string() {
+    fn yaml_value_to_string_number_and_string() {
         assert_eq!(
-            yaml_value_to_defaults_string(&serde_yaml::Value::Number(42.into())),
+            yaml_value_to_string(&serde_yaml::Value::Number(42.into())),
             "42"
         );
         assert_eq!(
-            yaml_value_to_defaults_string(&serde_yaml::Value::String("hello".into())),
+            yaml_value_to_string(&serde_yaml::Value::String("hello".into())),
             "hello"
         );
     }
