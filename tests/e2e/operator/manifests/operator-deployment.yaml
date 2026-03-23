@@ -18,8 +18,8 @@ spec:
       serviceAccountName: cfgd-operator
       containers:
         - name: cfgd-operator
-          image: cfgd-operator:e2e-test
-          imagePullPolicy: Never
+          image: registry.jarvispro.io/cfgd-operator:IMAGE_PLACEHOLDER
+          imagePullPolicy: Always
           ports:
             - name: webhook
               containerPort: 9443

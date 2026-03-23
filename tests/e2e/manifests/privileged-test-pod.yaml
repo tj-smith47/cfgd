@@ -1,0 +1,40 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: cfgd-e2e-node-RUN_PLACEHOLDER
+  labels:
+    app: cfgd-e2e-node
+    cfgd.io/e2e-run: RUN_PLACEHOLDER
+spec:
+  restartPolicy: Never
+  affinity:
+    nodeAffinity:
+      requiredDuringSchedulingIgnoredDuringExecution:
+        nodeSelectorTerms:
+          - matchExpressions:
+              - key: node-role.kubernetes.io/control-plane
+                operator: DoesNotExist
+  containers:
+    - name: cfgd
+      image: registry.jarvispro.io/cfgd:IMAGE_PLACEHOLDER
+      command: ["sleep", "infinity"]
+      securityContext:
+        privileged: true
+        runAsUser: 0
+      volumeMounts:
+        - name: host-proc
+          mountPath: /host-proc
+        - name: host-sys
+          mountPath: /host-sys
+        - name: host-etc
+          mountPath: /host-etc
+  volumes:
+    - name: host-proc
+      hostPath:
+        path: /proc
+    - name: host-sys
+      hostPath:
+        path: /sys
+    - name: host-etc
+      hostPath:
+        path: /etc

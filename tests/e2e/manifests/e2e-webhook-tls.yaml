@@ -1,0 +1,23 @@
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: cfgd-e2e-selfsigned
+  namespace: cfgd-system
+spec:
+  selfSigned: {}
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: cfgd-webhook-cert
+  namespace: cfgd-system
+spec:
+  secretName: cfgd-webhook-certs
+  issuerRef:
+    name: cfgd-e2e-selfsigned
+    kind: Issuer
+  dnsNames:
+    - cfgd-operator.cfgd-system.svc
+    - cfgd-operator.cfgd-system.svc.cluster.local
+  duration: 8760h
+  renewBefore: 720h

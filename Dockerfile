@@ -15,7 +15,7 @@ RUN cargo build --release --bin cfgd
 FROM debian:bookworm-slim
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    ca-certificates git openssh-client \
+    ca-certificates git openssh-client curl \
     kmod apparmor-utils procps \
     && rm -rf /var/lib/apt/lists/*
 
