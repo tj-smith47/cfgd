@@ -37,6 +37,10 @@ cleanup_fullstack() {
     # Delete run-scoped cluster-scoped resources
     kubectl delete module "csi-test-mod-${E2E_RUN_ID}" --ignore-not-found 2>/dev/null || true
     kubectl delete module "debug-tools-${E2E_RUN_ID}" --ignore-not-found 2>/dev/null || true
+    # Clean up namespaced CRDs in cfgd-system (persistent namespace, not cascade-deleted)
+    for kind in machineconfig configpolicy driftalert; do
+        kubectl delete "$kind" -l "$E2E_RUN_LABEL" -n cfgd-system --ignore-not-found 2>/dev/null || true
+    done
     cleanup_e2e
 }
 trap 'cleanup_fullstack' EXIT

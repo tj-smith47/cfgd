@@ -5,6 +5,7 @@ on:
     branches: [master]
     paths:
       - "crates/**"
+      - "chart/cfgd/**"
       - "Dockerfile"
       - "Dockerfile.operator"
       - "Dockerfile.csi"
@@ -15,6 +16,7 @@ on:
     branches: [master]
     paths:
       - "crates/**"
+      - "chart/cfgd/**"
       - "Dockerfile"
       - "Dockerfile.operator"
       - "Dockerfile.csi"
