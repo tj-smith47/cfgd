@@ -70,9 +70,10 @@ metadata:
 spec:
   name: backend-policy
   requiredModules: [corp-vpn, corp-certs]
-  packages: [git-secrets, pre-commit]
-  packageVersions:
-    git-secrets: ">=1.3.0"
+  packages:
+    - name: git-secrets
+      version: ">=1.3.0"
+    - name: pre-commit
   settings:
     shell: /bin/zsh
   targetSelector:
@@ -85,8 +86,7 @@ spec:
 |---|---|---|
 | `name` | string | Policy name |
 | `requiredModules` | list of strings | Modules that all matching MachineConfigs must reference |
-| `packages` | list of strings | Required packages |
-| `packageVersions` | map | Required package version constraints |
+| `packages` | list of PackageRef | Required packages (each with `name` and optional `version` constraint) |
 | `settings` | map | Required system settings |
 | `targetSelector` | map | Label selector — policy applies to MachineConfigs with matching labels |
 

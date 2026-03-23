@@ -53,12 +53,6 @@ spec:
                 x-kubernetes-list-map-keys:
                 - name
                 x-kubernetes-list-type: map
-              packageVersions:
-                additionalProperties:
-                  type: string
-                default: {}
-                description: 'Version requirements keyed by package name (semver ranges, e.g. {"kubectl": ">=1.28"}).'
-                type: object
               packages:
                 default: []
                 items:

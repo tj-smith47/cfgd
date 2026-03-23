@@ -1302,10 +1302,10 @@ fn merge_policy_requirements(
     }
 
     for cluster_pkg in &cluster.packages {
-        if let Some(ver) = &cluster_pkg.version {
-            if let Some(existing) = packages.iter_mut().find(|p| p.name == cluster_pkg.name) {
-                existing.version = Some(ver.clone());
-            }
+        if let Some(ver) = &cluster_pkg.version
+            && let Some(existing) = packages.iter_mut().find(|p| p.name == cluster_pkg.name)
+        {
+            existing.version = Some(ver.clone());
         }
     }
 

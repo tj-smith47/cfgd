@@ -249,8 +249,7 @@ metadata:
 spec:
   packages:
     - name: vim
-  packageVersions:
-    vim: ">=9.0"
+      version: ">=9.0"
 EOF
 
 sleep 5
@@ -635,7 +634,7 @@ begin_test "T15: Validation webhooks — reject invalid specs"
 
 PASS=true
 
-# ClusterConfigPolicy with invalid semver in packageVersions
+# ClusterConfigPolicy with invalid semver in packages[].version
 RESULT_BAD_SEMVER=$(kubectl apply -f - 2>&1 <<EOF || true
 apiVersion: cfgd.io/v1alpha1
 kind: ClusterConfigPolicy
@@ -645,8 +644,9 @@ metadata:
     cfgd.io/e2e-run: "${E2E_RUN_ID}"
 spec:
   namespaceSelector: {}
-  packageVersions:
-    vim: "not-a-semver"
+  packages:
+    - name: vim
+      version: "not-a-semver"
 EOF
 )
 echo "  Bad semver result: $(echo "$RESULT_BAD_SEMVER" | tail -1)"

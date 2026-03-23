@@ -267,8 +267,7 @@ Owner references: `TeamConfig` (XR) → `MachineConfig` → `DriftAlert` cascade
 |---|---|---|---|
 | `spec.name` | `string` | Yes | Policy display name |
 | `spec.requiredModules` | `[]string` | No | Required module names |
-| `spec.packages` | `[]string` | No | Required packages |
-| `spec.packageVersions` | `map[string]string` | No | Semver version requirements |
+| `spec.packages` | `[]PackageRef` | No | Required packages (each with `name` and optional `version` constraint) |
 | `spec.settings` | `map[string]string` | No | Required system settings |
 | `spec.targetSelector` | `map[string]string` | No | Label-based target filter |
 
@@ -323,17 +322,15 @@ Cluster-scoped version of ConfigPolicy for org-wide mandates.
 | `spec.name` | `string` | Yes | Policy display name |
 | `spec.namespaceSelector` | `map[string]string` | No | Label selector for target namespaces |
 | `spec.requiredModules` | `[]string` | No | Required module names |
-| `spec.packages` | `[]string` | No | Required packages |
-| `spec.packageVersions` | `map[string]string` | No | Version requirements |
+| `spec.packages` | `[]PackageRef` | No | Required packages (each with `name` and optional `version` constraint) |
 | `spec.settings` | `map[string]string` | No | Required settings |
 | `spec.security.trustedRegistries` | `[]string` | No | Approved OCI registry prefixes |
 | `spec.security.allowUnsigned` | `bool` | No (default false) | Allow unsigned modules |
 
 **Merge semantics** with namespace-scoped ConfigPolicy:
-1. `packages` and `requiredModules`: union (both applied)
+1. `packages` and `requiredModules`: union (both applied); ClusterConfigPolicy version constraints override for the same package
 2. `settings`: ClusterConfigPolicy overrides ConfigPolicy (cluster wins)
-3. `packageVersions`: ClusterConfigPolicy overrides (cluster wins)
-4. `trustedRegistries`: ClusterConfigPolicy is canonical (ConfigPolicy cannot expand)
+3. `trustedRegistries`: ClusterConfigPolicy is canonical (ConfigPolicy cannot expand)
 
 ### 2.5 Module CRD (new, cluster-scoped)
 
@@ -926,10 +923,9 @@ MachineConfig `spec.hostname` + device `deviceId` form the binding. Device gatew
 ### 11.4 ClusterConfigPolicy Merge Semantics
 
 When both ClusterConfigPolicy and ConfigPolicy apply:
-1. `packages` and `requiredModules`: union
+1. `packages` and `requiredModules`: union; ClusterConfigPolicy version constraints override for the same package
 2. `settings`: ClusterConfigPolicy overrides (cluster wins)
-3. `packageVersions`: ClusterConfigPolicy overrides (cluster wins)
-4. `trustedRegistries`: ClusterConfigPolicy is canonical (namespace cannot expand)
+3. `trustedRegistries`: ClusterConfigPolicy is canonical (namespace cannot expand)
 
 ---
 

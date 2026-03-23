@@ -5,14 +5,31 @@ metadata:
 spec:
   group: cfgd.io
   names:
-    categories: []
+    categories:
+    - cfgd
     kind: MachineConfig
     plural: machineconfigs
-    shortNames: []
+    shortNames:
+    - mc
     singular: machineconfig
   scope: Namespaced
   versions:
-  - additionalPrinterColumns: []
+  - additionalPrinterColumns:
+    - jsonPath: .spec.hostname
+      name: Hostname
+      type: string
+    - jsonPath: .spec.profile
+      name: Profile
+      type: string
+    - jsonPath: .status.conditions[?(@.type=="Reconciled")].status
+      name: Reconciled
+      type: string
+    - jsonPath: .status.conditions[?(@.type=="DriftDetected")].status
+      name: Drift
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
     name: v1alpha1
     schema:
       openAPIV3Schema:
@@ -38,7 +55,13 @@ spec:
                   required:
                   - path
                   type: object
+                  x-kubernetes-validations:
+                  - message: each file must have content or source
+                    rule: has(self.content) || has(self.source)
                 type: array
+                x-kubernetes-list-map-keys:
+                - path
+                x-kubernetes-list-type: map
               hostname:
                 type: string
               moduleRefs:
@@ -55,28 +78,39 @@ spec:
                   - name
                   type: object
                 type: array
-              packageVersions:
-                additionalProperties:
-                  type: string
-                default: {}
-                description: 'Reported installed versions keyed by package name (e.g. {"kubectl": "1.28.3"}).'
-                type: object
+                x-kubernetes-list-map-keys:
+                - name
+                x-kubernetes-list-type: map
               packages:
                 default: []
                 items:
-                  type: string
+                  description: Reference to a package with optional version pin.
+                  properties:
+                    name:
+                      type: string
+                    version:
+                      nullable: true
+                      type: string
+                  required:
+                  - name
+                  type: object
                 type: array
+                x-kubernetes-list-map-keys:
+                - name
+                x-kubernetes-list-type: map
               profile:
                 type: string
               systemSettings:
-                additionalProperties:
-                  type: string
+                additionalProperties: true
                 default: {}
                 type: object
             required:
             - hostname
             - profile
             type: object
+            x-kubernetes-validations:
+            - message: hostname must not be empty
+              rule: self.hostname.size() > 0
           status:
             nullable: true
             properties:
@@ -88,6 +122,10 @@ spec:
                       type: string
                     message:
                       type: string
+                    observedGeneration:
+                      format: int64
+                      nullable: true
+                      type: integer
                     reason:
                       type: string
                     status:
@@ -102,9 +140,9 @@ spec:
                   - type
                   type: object
                 type: array
-              driftDetected:
-                default: false
-                type: boolean
+                x-kubernetes-list-map-keys:
+                - type
+                x-kubernetes-list-type: map
               lastReconciled:
                 nullable: true
                 type: string
@@ -112,6 +150,12 @@ spec:
                 format: int64
                 nullable: true
                 type: integer
+              packageVersions:
+                additionalProperties:
+                  type: string
+                default: {}
+                description: 'Reported installed versions keyed by package name (e.g. {"kubectl": "1.28.3"}).'
+                type: object
             type: object
         required:
         - spec
@@ -129,14 +173,28 @@ metadata:
 spec:
   group: cfgd.io
   names:
-    categories: []
+    categories:
+    - cfgd
     kind: ConfigPolicy
     plural: configpolicies
-    shortNames: []
+    shortNames:
+    - cpol
     singular: configpolicy
   scope: Namespaced
   versions:
-  - additionalPrinterColumns: []
+  - additionalPrinterColumns:
+    - jsonPath: .status.compliantCount
+      name: Compliant
+      type: integer
+    - jsonPath: .status.nonCompliantCount
+      name: NonCompliant
+      type: integer
+    - jsonPath: .status.conditions[?(@.type=="Enforced")].status
+      name: Enforced
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
     name: v1alpha1
     schema:
       openAPIV3Schema:
@@ -144,36 +202,101 @@ spec:
         properties:
           spec:
             properties:
-              name:
-                type: string
-              packageVersions:
-                additionalProperties:
-                  type: string
-                default: {}
-                description: 'Version requirements keyed by package name (semver ranges, e.g. {"kubectl": ">=1.28"}).'
-                type: object
+              debugModules:
+                default: []
+                description: Modules staged as debug-only (CSI volume without volumeMount on declared containers).
+                items:
+                  description: Reference to a module that should be installed on the machine.
+                  properties:
+                    name:
+                      type: string
+                    required:
+                      default: false
+                      type: boolean
+                  required:
+                  - name
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - name
+                x-kubernetes-list-type: map
               packages:
                 default: []
                 items:
-                  type: string
+                  description: Reference to a package with optional version pin.
+                  properties:
+                    name:
+                      type: string
+                    version:
+                      nullable: true
+                      type: string
+                  required:
+                  - name
+                  type: object
                 type: array
+                x-kubernetes-list-map-keys:
+                - name
+                x-kubernetes-list-type: map
               requiredModules:
                 default: []
                 items:
-                  type: string
+                  description: Reference to a module that should be installed on the machine.
+                  properties:
+                    name:
+                      type: string
+                    required:
+                      default: false
+                      type: boolean
+                  required:
+                  - name
+                  type: object
                 type: array
+                x-kubernetes-list-map-keys:
+                - name
+                x-kubernetes-list-type: map
               settings:
-                additionalProperties:
-                  type: string
+                additionalProperties: true
                 default: {}
                 type: object
               targetSelector:
-                additionalProperties:
-                  type: string
-                default: {}
+                default:
+                  matchExpressions: []
+                  matchLabels: {}
+                description: Kubernetes-style label selector with match_labels and match_expressions.
+                properties:
+                  matchExpressions:
+                    default: []
+                    items:
+                      description: A single requirement for label selector expressions.
+                      properties:
+                        key:
+                          type: string
+                        operator:
+                          enum:
+                          - In
+                          - NotIn
+                          - Exists
+                          - DoesNotExist
+                          type: string
+                        values:
+                          default: []
+                          items:
+                            type: string
+                          type: array
+                      required:
+                      - key
+                      - operator
+                      type: object
+                    type: array
+                    x-kubernetes-list-map-keys:
+                    - key
+                    x-kubernetes-list-type: map
+                  matchLabels:
+                    additionalProperties:
+                      type: string
+                    default: {}
+                    type: object
                 type: object
-            required:
-            - name
             type: object
           status:
             nullable: true
@@ -190,6 +313,10 @@ spec:
                       type: string
                     message:
                       type: string
+                    observedGeneration:
+                      format: int64
+                      nullable: true
+                      type: integer
                     reason:
                       type: string
                     status:
@@ -204,6 +331,9 @@ spec:
                   - type
                   type: object
                 type: array
+                x-kubernetes-list-map-keys:
+                - type
+                x-kubernetes-list-type: map
               nonCompliantCount:
                 format: uint32
                 minimum: 0.0
@@ -228,14 +358,28 @@ metadata:
 spec:
   group: cfgd.io
   names:
-    categories: []
+    categories:
+    - cfgd
     kind: DriftAlert
     plural: driftalerts
-    shortNames: []
+    shortNames:
+    - da
     singular: driftalert
   scope: Namespaced
   versions:
-  - additionalPrinterColumns: []
+  - additionalPrinterColumns:
+    - jsonPath: .spec.deviceId
+      name: Device
+      type: string
+    - jsonPath: .spec.severity
+      name: Severity
+      type: string
+    - jsonPath: .status.conditions[?(@.type=="Resolved")].status
+      name: Resolved
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
     name: v1alpha1
     schema:
       openAPIV3Schema:
@@ -261,14 +405,26 @@ spec:
                   - field
                   type: object
                 type: array
+                x-kubernetes-list-map-keys:
+                - field
+                x-kubernetes-list-type: map
               machineConfigRef:
-                type: string
+                description: Typed reference to a MachineConfig resource.
+                properties:
+                  name:
+                    type: string
+                  namespace:
+                    nullable: true
+                    type: string
+                required:
+                - name
+                type: object
               severity:
                 enum:
-                - low
-                - medium
-                - high
-                - critical
+                - Low
+                - Medium
+                - High
+                - Critical
                 type: string
             required:
             - deviceId
@@ -278,6 +434,35 @@ spec:
           status:
             nullable: true
             properties:
+              conditions:
+                default: []
+                items:
+                  properties:
+                    lastTransitionTime:
+                      type: string
+                    message:
+                      type: string
+                    observedGeneration:
+                      format: int64
+                      nullable: true
+                      type: integer
+                    reason:
+                      type: string
+                    status:
+                      type: string
+                    type:
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - type
+                x-kubernetes-list-type: map
               detectedAt:
                 nullable: true
                 type: string
@@ -291,6 +476,411 @@ spec:
         required:
         - spec
         title: DriftAlert
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: clusterconfigpolicies.cfgd.io
+spec:
+  group: cfgd.io
+  names:
+    categories:
+    - cfgd
+    kind: ClusterConfigPolicy
+    plural: clusterconfigpolicies
+    shortNames:
+    - ccpol
+    singular: clusterconfigpolicy
+  scope: Cluster
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .status.compliantCount
+      name: Compliant
+      type: integer
+    - jsonPath: .status.nonCompliantCount
+      name: NonCompliant
+      type: integer
+    - jsonPath: .status.conditions[?(@.type=="Enforced")].status
+      name: Enforced
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: Auto-generated derived type for ClusterConfigPolicySpec via `CustomResource`
+        properties:
+          spec:
+            properties:
+              debugModules:
+                default: []
+                description: Modules staged as debug-only across matching namespaces.
+                items:
+                  description: Reference to a module that should be installed on the machine.
+                  properties:
+                    name:
+                      type: string
+                    required:
+                      default: false
+                      type: boolean
+                  required:
+                  - name
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - name
+                x-kubernetes-list-type: map
+              namespaceSelector:
+                default:
+                  matchExpressions: []
+                  matchLabels: {}
+                description: Select which namespaces this cluster policy applies to.
+                properties:
+                  matchExpressions:
+                    default: []
+                    items:
+                      description: A single requirement for label selector expressions.
+                      properties:
+                        key:
+                          type: string
+                        operator:
+                          enum:
+                          - In
+                          - NotIn
+                          - Exists
+                          - DoesNotExist
+                          type: string
+                        values:
+                          default: []
+                          items:
+                            type: string
+                          type: array
+                      required:
+                      - key
+                      - operator
+                      type: object
+                    type: array
+                    x-kubernetes-list-map-keys:
+                    - key
+                    x-kubernetes-list-type: map
+                  matchLabels:
+                    additionalProperties:
+                      type: string
+                    default: {}
+                    type: object
+                type: object
+              packages:
+                default: []
+                items:
+                  description: Reference to a package with optional version pin.
+                  properties:
+                    name:
+                      type: string
+                    version:
+                      nullable: true
+                      type: string
+                  required:
+                  - name
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - name
+                x-kubernetes-list-type: map
+              requiredModules:
+                default: []
+                items:
+                  description: Reference to a module that should be installed on the machine.
+                  properties:
+                    name:
+                      type: string
+                    required:
+                      default: false
+                      type: boolean
+                  required:
+                  - name
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - name
+                x-kubernetes-list-type: map
+              security:
+                default:
+                  allowUnsigned: false
+                  trustedRegistries: []
+                properties:
+                  allowUnsigned:
+                    default: false
+                    type: boolean
+                  trustedRegistries:
+                    default: []
+                    items:
+                      type: string
+                    type: array
+                    x-kubernetes-list-type: set
+                type: object
+              settings:
+                additionalProperties: true
+                default: {}
+                type: object
+            type: object
+          status:
+            nullable: true
+            properties:
+              compliantCount:
+                format: uint32
+                minimum: 0.0
+                type: integer
+              conditions:
+                default: []
+                items:
+                  properties:
+                    lastTransitionTime:
+                      type: string
+                    message:
+                      type: string
+                    observedGeneration:
+                      format: int64
+                      nullable: true
+                      type: integer
+                    reason:
+                      type: string
+                    status:
+                      type: string
+                    type:
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - type
+                x-kubernetes-list-type: map
+              nonCompliantCount:
+                format: uint32
+                minimum: 0.0
+                type: integer
+            required:
+            - compliantCount
+            - nonCompliantCount
+            type: object
+        required:
+        - spec
+        title: ClusterConfigPolicy
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: modules.cfgd.io
+spec:
+  group: cfgd.io
+  names:
+    categories:
+    - cfgd
+    kind: Module
+    plural: modules
+    shortNames:
+    - mod
+    singular: module
+  scope: Cluster
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.ociArtifact
+      name: Artifact
+      type: string
+    - jsonPath: .status.verified
+      name: Verified
+      type: boolean
+    - jsonPath: .status.availablePlatforms
+      name: Platforms
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: Auto-generated derived type for ModuleSpec via `CustomResource`
+        properties:
+          spec:
+            properties:
+              depends:
+                default: []
+                items:
+                  type: string
+                type: array
+                x-kubernetes-list-type: set
+              env:
+                default: []
+                items:
+                  description: An environment variable set by a Module.
+                  properties:
+                    append:
+                      default: false
+                      type: boolean
+                    name:
+                      type: string
+                    value:
+                      type: string
+                  required:
+                  - name
+                  - value
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - name
+                x-kubernetes-list-type: map
+              files:
+                default: []
+                items:
+                  description: A file managed by a Module.
+                  properties:
+                    source:
+                      type: string
+                    target:
+                      type: string
+                  required:
+                  - source
+                  - target
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - source
+                x-kubernetes-list-type: map
+              mountPolicy:
+                default: Always
+                description: 'Controls how the module is mounted in pods. `Always` (default): CSI volume + volumeMount on all declared containers + env vars. `Debug`: CSI volume only — no volumeMount or env on declared containers. Only accessible via ephemeral debug containers (`kubectl cfgd debug`).'
+                enum:
+                - Always
+                - Debug
+                type: string
+              ociArtifact:
+                nullable: true
+                type: string
+              packages:
+                default: []
+                items:
+                  description: An entry in a Module's package list with optional per-platform overrides.
+                  properties:
+                    name:
+                      type: string
+                    platforms:
+                      additionalProperties:
+                        type: string
+                      description: 'Per-platform package name overrides (e.g. {"brew": "gnu-sed", "apt": "sed"}).'
+                      type: object
+                  required:
+                  - name
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - name
+                x-kubernetes-list-type: map
+              scripts:
+                default: {}
+                description: Scripts that run during module lifecycle.
+                properties:
+                  postApply:
+                    nullable: true
+                    type: string
+                type: object
+              signature:
+                description: Signature configuration for a Module's OCI artifact.
+                nullable: true
+                properties:
+                  cosign:
+                    description: Cosign configuration for OCI artifact signature verification.
+                    nullable: true
+                    properties:
+                      certificateIdentity:
+                        description: Certificate identity pattern for keyless verification (regex).
+                        nullable: true
+                        type: string
+                      certificateOidcIssuer:
+                        description: Certificate OIDC issuer pattern for keyless verification (regex).
+                        nullable: true
+                        type: string
+                      keyless:
+                        default: false
+                        description: Enable keyless verification via Fulcio/Rekor (OIDC identity-based).
+                        type: boolean
+                      publicKey:
+                        description: PEM-encoded public key for static key verification.
+                        nullable: true
+                        type: string
+                    type: object
+                type: object
+            type: object
+          status:
+            nullable: true
+            properties:
+              attestations:
+                description: Attestation types found on the artifact (e.g. "slsaprovenance").
+                items:
+                  type: string
+                type: array
+              availablePlatforms:
+                default: []
+                items:
+                  type: string
+                type: array
+              conditions:
+                default: []
+                items:
+                  properties:
+                    lastTransitionTime:
+                      type: string
+                    message:
+                      type: string
+                    observedGeneration:
+                      format: int64
+                      nullable: true
+                      type: integer
+                    reason:
+                      type: string
+                    status:
+                      type: string
+                    type:
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - type
+                x-kubernetes-list-type: map
+              resolvedArtifact:
+                nullable: true
+                type: string
+              signatureDigest:
+                description: Digest of the cosign signature (if verified).
+                nullable: true
+                type: string
+              verified:
+                default: false
+                type: boolean
+            type: object
+        required:
+        - spec
+        title: Module
         type: object
     served: true
     storage: true

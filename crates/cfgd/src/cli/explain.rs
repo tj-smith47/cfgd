@@ -1552,17 +1552,25 @@ static SCHEMA_CONFIGPOLICY: ResourceSchema = ResourceSchema {
         },
         SchemaField {
             name: "packages",
-            type_desc: "[]string",
+            type_desc: "[]PackageRef",
             required: false,
-            description: "Required packages",
-            children: &[],
-        },
-        SchemaField {
-            name: "packageVersions",
-            type_desc: "map[string]string",
-            required: false,
-            description: "Minimum version requirements by package (semver ranges)",
-            children: &[],
+            description: "Required packages (each entry has name and optional version constraint)",
+            children: &[
+                SchemaField {
+                    name: "name",
+                    type_desc: "string",
+                    required: true,
+                    description: "Package name",
+                    children: &[],
+                },
+                SchemaField {
+                    name: "version",
+                    type_desc: "string",
+                    required: false,
+                    description: "Semver version requirement (e.g. \">=1.28\", \"~2.40\")",
+                    children: &[],
+                },
+            ],
         },
         SchemaField {
             name: "settings",

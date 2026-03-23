@@ -429,12 +429,12 @@ fn validate_policy_fields(
         if pkg.name.is_empty() {
             errors.push(format!("spec.packages[{i}].name must not be empty"));
         }
-        if let Some(ver) = &pkg.version {
-            if VersionReq::parse(ver).is_err() {
-                errors.push(format!(
-                    "spec.packages[{i}].version '{ver}' is not a valid semver requirement"
-                ));
-            }
+        if let Some(ver) = &pkg.version
+            && VersionReq::parse(ver).is_err()
+        {
+            errors.push(format!(
+                "spec.packages[{i}].version '{ver}' is not a valid semver requirement"
+            ));
         }
     }
     for (i, mr) in required_modules.iter().enumerate() {

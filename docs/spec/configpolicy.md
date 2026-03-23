@@ -24,10 +24,8 @@ spec:
     - string
 
   packages:
-    - string
-
-  packageVersions:
-    package-name: semver-requirement
+    - name: string
+      version: semver-requirement  # optional
 
   settings:
     key: value
@@ -66,14 +64,13 @@ status:
 |-------|------|----------|---------|-------------|
 | `name` | string | Yes | | Human-readable policy name. Must not be empty. Used in status output and violation reports. |
 | `requiredModules` | list of string | No | `[]` | Module names that must be present in every matched `MachineConfig`. |
-| `packages` | list of string | No | `[]` | Package names that must be declared in every matched `MachineConfig`. Entries must not be empty strings. |
-| `packageVersions` | map | No | `{}` | Version requirements keyed by package name. Values are semver range expressions (e.g. `>=1.28`, `~2.40`). |
+| `packages` | list of PackageRef | No | `[]` | Required packages. Each entry has a `name` (required) and optional `version` constraint (semver range, e.g. `>=1.28`, `~2.40`). |
 | `settings` | map | No | `{}` | Key/value system settings that must be present in every matched `MachineConfig`'s `systemSettings`. Keys must not be empty. |
 | `targetSelector` | map | No | `{}` | Label selector applied to `MachineConfig` resources. Only matching resources are evaluated. An empty map matches all resources in the namespace. |
 
-#### packageVersions format
+#### packages[].version format
 
-Values are semver requirement strings parsed by the `semver` crate. Supported operators:
+Version constraints are semver requirement strings parsed by the `semver` crate. Supported operators:
 
 | Operator | Example | Meaning |
 |----------|---------|---------|
@@ -86,10 +83,13 @@ Values are semver requirement strings parsed by the `semver` crate. Supported op
 
 **Example:**
 ```yaml
-packageVersions:
-  kubectl: ">=1.28"
-  git: "~2.40"
-  terraform: ">=1.5, <2.0"
+packages:
+  - name: kubectl
+    version: ">=1.28"
+  - name: git
+    version: "~2.40"
+  - name: terraform
+    version: ">=1.5, <2.0"
 ```
 
 ---
@@ -135,11 +135,12 @@ spec:
     - kubelet
     - apparmor
   packages:
-    - socat
-    - conntrack
-  packageVersions:
-    kubectl: ">=1.28"
-    containerd: ">=1.7"
+    - name: socat
+    - name: conntrack
+    - name: kubectl
+      version: ">=1.28"
+    - name: containerd
+      version: ">=1.7"
   settings:
     net.ipv4.ip_forward: "1"
     net.bridge.bridge-nf-call-iptables: "1"

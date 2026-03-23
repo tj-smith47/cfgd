@@ -92,11 +92,6 @@ spec:
                     default: {}
                     type: object
                 type: object
-              packageVersions:
-                additionalProperties:
-                  type: string
-                default: {}
-                type: object
               packages:
                 default: []
                 items:

@@ -42,10 +42,9 @@ When both a ClusterConfigPolicy and a namespace-scoped ConfigPolicy apply to the
 
 | Field | Merge Rule |
 |---|---|
-| `packages` | Union -- both policies' packages are required |
+| `packages` | Union -- both policies' packages are required; ClusterConfigPolicy version constraints override namespace ConfigPolicy for the same package |
 | `requiredModules` | Union -- both policies' modules are required |
 | `settings` | Cluster wins -- ClusterConfigPolicy values override namespace ConfigPolicy |
-| `packageVersions` | Cluster wins -- ClusterConfigPolicy version requirements override |
 | `trustedRegistries` | Cluster is canonical -- namespace policies cannot expand the trusted list |
 
 ## Binding Teams to Namespaces
