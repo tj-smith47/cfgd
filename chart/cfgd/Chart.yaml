@@ -12,6 +12,7 @@ keywords:
   - crd
   - daemonset
 home: https://github.com/tj-smith47/cfgd
+icon: https://raw.githubusercontent.com/tj-smith47/cfgd/master/.github/gear.svg
 maintainers:
   - name: cfgd
     url: https://github.com/tj-smith47/cfgd
