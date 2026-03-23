@@ -114,9 +114,6 @@ spec:
               detectedAt:
                 nullable: true
                 type: string
-              resolved:
-                default: false
-                type: boolean
               resolvedAt:
                 nullable: true
                 type: string

@@ -208,8 +208,6 @@ pub struct DriftAlertStatus {
     pub detected_at: Option<String>,
     pub resolved_at: Option<String>,
     #[serde(default)]
-    pub resolved: bool,
-    #[serde(default)]
     pub conditions: Vec<Condition>,
 }
 

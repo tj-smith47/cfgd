@@ -31,7 +31,6 @@ spec:
 status:
   detectedAt: string
   resolvedAt: string
-  resolved: bool
 ```
 
 ---
@@ -100,7 +99,7 @@ Written by the operator when an alert is created or resolved. Do not set manuall
 |-------|------|-------------|
 | `detectedAt` | string (ISO 8601) | Timestamp when the drift was first detected and the alert was created. |
 | `resolvedAt` | string (ISO 8601) | Timestamp when the drift was corrected and the device returned to desired state. Absent until resolved. |
-| `resolved` | bool | `true` when the drift has been corrected. The operator patches this field when the next successful check-in reports full compliance. |
+| `conditions` | list | Standard Kubernetes conditions. The `Resolved` condition reflects current resolution state. |
 
 ---
 
@@ -125,5 +124,4 @@ spec:
       actual: "not found"
 status:
   detectedAt: "2026-03-19T14:30:00Z"
-  resolved: false
 ```

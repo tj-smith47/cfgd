@@ -293,7 +293,7 @@ Enhancement: Add `spec.security.trustedRegistries` for webhook enforcement (list
 
 **Spec fields**: `deviceId`, `machineConfigRef`, `driftDetails[]` (field, expected, actual), `severity` (enum: Low/Medium/High/Critical).
 
-**Status fields**: `detectedAt`, `resolvedAt`, `resolved`.
+**Status fields**: `detectedAt`, `resolvedAt`, `conditions`.
 
 Printer columns: `NAME DEVICE SEVERITY RESOLVED AGE`
 

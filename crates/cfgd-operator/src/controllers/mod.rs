@@ -693,7 +693,6 @@ async fn reconcile_drift_alert(
                     "status": DriftAlertStatus {
                         detected_at: obj.status.as_ref().and_then(|s| s.detected_at.clone()),
                         resolved_at: Some(now.clone()),
-                        resolved: true,
                         conditions: build_drift_alert_conditions(
                             &obj.spec.severity,
                             true,
@@ -819,7 +818,6 @@ async fn reconcile_drift_alert(
                     "status": DriftAlertStatus {
                         detected_at: Some(now.clone()),
                         resolved_at: None,
-                        resolved: false,
                         conditions: build_drift_alert_conditions(
                             &obj.spec.severity,
                             false,
