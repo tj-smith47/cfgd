@@ -15,7 +15,7 @@ system:
   shell: /bin/zsh
 ```
 
-On Windows, `shell` sets the Windows Terminal default profile by writing to the Windows Terminal `settings.json`. Use the profile GUID or a well-known name (`PowerShell`, `Command Prompt`, `Git Bash`).
+On Windows, `shell` sets the Windows Terminal default profile by writing to the Windows Terminal `settings.json`. Use the profile name as it appears in Windows Terminal settings.
 
 ```yaml
 system:
@@ -78,21 +78,16 @@ system:
 
 ### `windowsRegistry` (Windows only)
 
-Manages Windows Registry values. Each entry specifies a hive, key path, value name, data type, and data. Supports `REG_SZ`, `REG_EXPAND_SZ`, `REG_DWORD`, `REG_QWORD`, and `REG_MULTI_SZ`.
+Manages Windows Registry values using a mapping format. Each key is a full registry path (`HIVE\Key\Subkey`), and each value is a name-to-data mapping. The data type is inferred automatically: numeric values become `REG_DWORD`, strings become `REG_SZ`.
 
 ```yaml
 system:
   windowsRegistry:
-    - hive: HKCU
-      key: Software\MyApp
-      name: Theme
-      type: REG_SZ
-      data: dark
-    - hive: HKCU
-      key: Software\MyApp
-      name: MaxConnections
-      type: REG_DWORD
-      data: "8"
+    HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced:
+      HideFileExt: 0
+      ShowHiddenFiles: 1
+    HKCU\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize:
+      AppsUseLightTheme: 0
 ```
 
 ### `windowsServices` (Windows only)
@@ -104,7 +99,7 @@ system:
   windowsServices:
     - name: MyService
       displayName: My Background Service
-      binPath: C:\Program Files\MyApp\svc.exe
+      binaryPath: C:\Program Files\MyApp\svc.exe
       startType: auto
       state: running
     - name: LegacyService
@@ -112,7 +107,7 @@ system:
       state: stopped
 ```
 
-Supported `startType` values: `auto`, `demand`, `disabled`, `auto-delayed`. Supported `state` values: `running`, `stopped`.
+Supported `startType` values: `auto`, `manual`, `disabled`. Supported `state` values: `running`, `stopped`.
 
 ## Node Configurators
 

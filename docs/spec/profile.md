@@ -94,6 +94,15 @@ spec:
         - string
       remote: string
 
+    winget:
+      - string
+
+    chocolatey:
+      - string
+
+    scoop:
+      - string
+
     custom:
       - name: string
         check: string
@@ -115,6 +124,15 @@ spec:
 
   system:
     shell: string
+    windowsRegistry:
+      "HIVE\\Key\\Subkey":
+        ValueName: string | integer
+    windowsServices:
+      - name: string
+        displayName: string
+        binaryPath: string
+        startType: auto | manual | disabled
+        state: running | stopped
     # other configurator keys and values
 
   secrets:
@@ -251,6 +269,9 @@ already present. When multiple profiles are merged, package lists are unioned (n
 | `go` | list of string | No | `[]` | Go packages installed via `go install`. |
 | `snap` | object | No | | Snap packages (Ubuntu). See [spec.packages.snap](#specpackagessnap). |
 | `flatpak` | object | No | | Flatpak packages. See [spec.packages.flatpak](#specpackagesflatpak). |
+| `winget` | list of string | No | `[]` | winget packages (Windows). |
+| `chocolatey` | list of string | No | `[]` | Chocolatey packages (Windows). |
+| `scoop` | list of string | No | `[]` | Scoop packages (Windows). |
 | `custom` | list | No | `[]` | Custom package managers. See [spec.packages.custom[]](#specpackagescustom). |
 
 ---
@@ -477,6 +498,8 @@ Common configurators:
 | `apparmor` | Linux | AppArmor profile management. |
 | `seccomp` | Linux | seccomp filter deployment. |
 | `certificates` | All | CA certificate installation. |
+| `windowsRegistry` | Windows | Registry key/value management. |
+| `windowsServices` | Windows | Windows Service lifecycle management. |
 
 **Example:**
 ```yaml

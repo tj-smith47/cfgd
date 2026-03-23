@@ -109,11 +109,8 @@ spec:
         unitFile: systemd/myservice.service
         enabled: true
     windowsRegistry:
-      - hive: HKCU
-        key: Software\MyApp
-        name: Theme
-        type: REG_SZ
-        data: dark
+      HKCU\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize:
+        AppsUseLightTheme: 0
     windowsServices:
       - name: MyService
         startType: auto

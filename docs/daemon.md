@@ -187,7 +187,7 @@ The service is configured to start at login (macOS/Linux) or at system boot (Win
 
 ### Windows Service
 
-On Windows, `cfgd daemon install` registers cfgd as a Windows Service named `cfgd`. The service starts automatically on boot and restarts on failure. Logs are written to `%LOCALAPPDATA%\cfgd\daemon.log` and also to the Windows Event Log under the `cfgd` source.
+On Windows, `cfgd daemon install` registers cfgd as a Windows Service named `cfgd`. The service starts automatically on boot and restarts on failure. Logs are written to `%LOCALAPPDATA%\cfgd\daemon.log`.
 
 ```sh
 cfgd daemon install    # register and start the Windows Service
