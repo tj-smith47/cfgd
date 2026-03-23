@@ -35,10 +35,13 @@ docker build -f "$REPO_ROOT/Dockerfile.operator" \
 docker build -f "$REPO_ROOT/Dockerfile.csi" \
     -t "${REGISTRY}/cfgd-csi:${IMAGE_TAG}" "$REPO_ROOT"
 
-echo "Pushing images to $REGISTRY..."
-docker push "${REGISTRY}/cfgd:${IMAGE_TAG}"
-docker push "${REGISTRY}/cfgd-operator:${IMAGE_TAG}"
-docker push "${REGISTRY}/cfgd-csi:${IMAGE_TAG}"
+echo "Tagging and pushing images to $REGISTRY..."
+# Also tag as :latest so ArgoCD-managed deployments pick up the new code
+for img in cfgd cfgd-operator cfgd-csi; do
+    docker tag "${REGISTRY}/${img}:${IMAGE_TAG}" "${REGISTRY}/${img}:latest"
+    docker push "${REGISTRY}/${img}:${IMAGE_TAG}"
+    docker push "${REGISTRY}/${img}:latest"
+done
 
 # --- Step 4: Ensure cfgd-system namespace ---
 kubectl create namespace cfgd-system 2>/dev/null || true
@@ -76,11 +79,9 @@ echo "Updating operator image..."
 # otherwise apply the E2E manifests directly.
 if [ -n "${CFGD_DEPLOY_MANIFESTS:-}" ] && [ -d "$CFGD_DEPLOY_MANIFESTS" ]; then
     echo "  Production deployments detected (managed by $CFGD_DEPLOY_MANIFESTS)"
-    echo "  Updating images via kubectl set image..."
-    kubectl set image deployment/cfgd-operator -n cfgd-system \
-        cfgd-operator="${REGISTRY}/cfgd-operator:${IMAGE_TAG}" 2>/dev/null || true
-    kubectl set image deployment/cfgd-server -n cfgd-system \
-        cfgd-operator="${REGISTRY}/cfgd-operator:${IMAGE_TAG}" 2>/dev/null || true
+    echo "  Images pushed as :latest — restarting deployments to pick up new images..."
+    kubectl rollout restart deployment/cfgd-operator -n cfgd-system 2>/dev/null || true
+    kubectl rollout restart deployment/cfgd-server -n cfgd-system 2>/dev/null || true
 else
     echo "  Applying E2E manifests..."
     sed "s|REGISTRY_PLACEHOLDER|${REGISTRY}|g; s|IMAGE_PLACEHOLDER|${IMAGE_TAG}|g" \
