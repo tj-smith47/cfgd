@@ -21,10 +21,10 @@ kubectl cluster-info > /dev/null 2>&1 || {
     exit 1
 }
 
-# --- Step 2: Build binaries ---
-echo "Building binaries..."
+# --- Step 2: Build cfgd-gen-crds (other binaries built inside Dockerfiles) ---
+echo "Building cfgd-gen-crds..."
 cargo build --release --manifest-path "$REPO_ROOT/Cargo.toml" \
-    --bin cfgd --bin cfgd-operator --bin cfgd-csi --bin cfgd-gen-crds 2>&1 | tail -5
+    --bin cfgd-gen-crds 2>&1 | tail -5
 
 # --- Step 3: Build and push images ---
 echo "Building Docker images..."
@@ -49,7 +49,11 @@ kubectl apply -f "$SCRIPT_DIR/manifests/e2e-rbac.yaml"
 
 # --- Step 6: Generate and apply CRDs ---
 echo "Generating and applying CRDs..."
-CRD_YAML=$("$REPO_ROOT/target/release/cfgd-gen-crds" 2>/dev/null)
+CRD_YAML=$("$REPO_ROOT/target/release/cfgd-gen-crds")
+if [ -z "$CRD_YAML" ]; then
+    echo "ERROR: cfgd-gen-crds produced no output"
+    exit 1
+fi
 if [ "$RESET" = "--reset" ]; then
     echo "$CRD_YAML" | kubectl apply -f -
 else
@@ -246,12 +250,15 @@ helm upgrade --install cfgd-csi "$REPO_ROOT/chart/cfgd" \
     --set csiDriver.image.pullPolicy=Always \
     --set "csiDriver.extraEnv[0].name=OCI_INSECURE_REGISTRIES" \
     --set "csiDriver.extraEnv[0].value=${REGISTRY}:5000" \
-    --wait --timeout=120s 2>&1 || echo "WARN: CSI driver deployment failed (may be first run)"
+    --wait --timeout=120s 2>&1 || {
+        echo "WARN: CSI driver Helm install failed — full-stack CSI tests will be skipped"
+    }
 
 # --- Step 12: Wait for all components ---
 echo "Waiting for components..."
 wait_for_deployment cfgd-system cfgd-operator 120
 wait_for_deployment cfgd-system cfgd-server 120
+# CSI DaemonSet readiness is optional — full-stack tests gracefully skip if CSI isn't ready
 
 echo ""
 echo "=== E2E Setup Complete ==="
