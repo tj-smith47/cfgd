@@ -1962,6 +1962,120 @@ impl SystemConfigurator for KdeConfigConfigurator {
     }
 }
 
+/// XfconfConfigurator — reads/writes XFCE desktop settings via `xfconf-query`.
+///
+/// Config format (two-level: channel → property → value):
+/// ```yaml
+/// system:
+///   xfconf:
+///     xfwm4:
+///       /general/theme: Default
+///       /general/title_font: "Sans Bold 9"
+///     xsettings:
+///       /Net/ThemeName: Adwaita
+///       /Net/IconThemeName: elementary-xfce-dark
+/// ```
+pub struct XfconfConfigurator;
+
+fn read_xfconf_value(channel: &str, property: &str) -> String {
+    Command::new("xfconf-query")
+        .args(["-c", channel, "-p", property])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .unwrap_or_default()
+}
+
+impl SystemConfigurator for XfconfConfigurator {
+    fn name(&self) -> &str {
+        "xfconf"
+    }
+
+    fn is_available(&self) -> bool {
+        cfgd_core::command_available("xfconf-query")
+    }
+
+    fn current_state(&self) -> Result<serde_yaml::Value> {
+        Ok(serde_yaml::Value::Mapping(serde_yaml::Mapping::new()))
+    }
+
+    fn diff(&self, desired: &serde_yaml::Value) -> Result<Vec<SystemDrift>> {
+        let mapping = match desired.as_mapping() {
+            Some(m) => m,
+            None => return Ok(Vec::new()),
+        };
+
+        let mut drifts = Vec::new();
+        for (channel_key, channel_values) in mapping {
+            let channel = match channel_key.as_str() {
+                Some(c) => c,
+                None => continue,
+            };
+            let values = match channel_values.as_mapping() {
+                Some(m) => m,
+                None => continue,
+            };
+            drifts.extend(diff_yaml_mapping(
+                values,
+                channel,
+                yaml_value_to_native_bool_string,
+                |property| read_xfconf_value(channel, property),
+            ));
+        }
+
+        Ok(drifts)
+    }
+
+    fn apply(&self, desired: &serde_yaml::Value, printer: &Printer) -> Result<()> {
+        let mapping = match desired.as_mapping() {
+            Some(m) => m,
+            None => return Ok(()),
+        };
+
+        for (channel_key, channel_values) in mapping {
+            let channel = match channel_key.as_str() {
+                Some(c) => c,
+                None => continue,
+            };
+            let values = match channel_values.as_mapping() {
+                Some(m) => m,
+                None => continue,
+            };
+
+            for (key, desired_value) in values {
+                let property = match key.as_str() {
+                    Some(p) => p,
+                    None => continue,
+                };
+
+                let val_str = yaml_value_to_native_bool_string(desired_value);
+
+                printer.info(&format!(
+                    "xfconf-query -c {} -p {} -s {}",
+                    channel, property, val_str
+                ));
+
+                let output = Command::new("xfconf-query")
+                    .args(["-c", channel, "-p", property, "-s", &val_str])
+                    .output()
+                    .map_err(cfgd_core::errors::CfgdError::Io)?;
+
+                if !output.status.success() {
+                    printer.warning(&format!(
+                        "xfconf-query set failed for {}.{}: {}",
+                        channel,
+                        property,
+                        stderr_string(&output)
+                    ));
+                }
+            }
+        }
+
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2749,6 +2863,36 @@ HKEY_CURRENT_USER\\Environment\n\
     #[test]
     fn kde_current_state_is_empty_mapping() {
         let configurator = KdeConfigConfigurator;
+        let state = configurator.current_state().unwrap();
+        assert!(state.as_mapping().unwrap().is_empty());
+    }
+
+    // --- XfconfConfigurator ---
+
+    #[test]
+    fn xfconf_configurator_name() {
+        assert_eq!(XfconfConfigurator.name(), "xfconf");
+    }
+
+    #[test]
+    fn xfconf_diff_empty_desired() {
+        let configurator = XfconfConfigurator;
+        let desired = serde_yaml::Value::Mapping(serde_yaml::Mapping::new());
+        let drifts = configurator.diff(&desired).unwrap();
+        assert!(drifts.is_empty());
+    }
+
+    #[test]
+    fn xfconf_diff_non_mapping() {
+        let configurator = XfconfConfigurator;
+        let desired = serde_yaml::Value::String("not a mapping".into());
+        let drifts = configurator.diff(&desired).unwrap();
+        assert!(drifts.is_empty());
+    }
+
+    #[test]
+    fn xfconf_current_state_is_empty_mapping() {
+        let configurator = XfconfConfigurator;
         let state = configurator.current_state().unwrap();
         assert!(state.as_mapping().unwrap().is_empty());
     }
