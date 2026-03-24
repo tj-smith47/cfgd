@@ -42,6 +42,7 @@ jobs:
     timeout-minutes: 20
     env:
       IMAGE_TAG: ${{ needs.setup.outputs.image-tag }}
+      REGISTRY: ${{ vars.E2E_REGISTRY }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
