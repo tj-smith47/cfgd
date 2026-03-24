@@ -1,0 +1,158 @@
+name: E2E
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - "crates/**"
+      - "chart/cfgd/**"
+      - "Dockerfile"
+      - "Dockerfile.operator"
+      - "Dockerfile.csi"
+      - "tests/e2e/**"
+      - ".github/workflows/e2e.yml"
+      - ".github/workflows/e2e-setup.yml"
+  pull_request:
+    branches: [master]
+    paths:
+      - "crates/**"
+      - "chart/cfgd/**"
+      - "Dockerfile"
+      - "Dockerfile.operator"
+      - "Dockerfile.csi"
+      - "tests/e2e/**"
+      - ".github/workflows/e2e.yml"
+      - ".github/workflows/e2e-setup.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ---------- Shared setup: build images, apply CRDs, deploy operator ----------
+  setup:
+    uses: ./.github/workflows/e2e-setup.yml
+
+  # ---------- Node: binary tests ----------
+  binary-tests:
+    name: "Node – Binary Tests (T01–T11)"
+    runs-on: arc-cfgd
+    needs: [setup]
+    timeout-minutes: 15
+    env:
+      IMAGE_TAG: ${{ needs.setup.outputs.image-tag }}
+      REGISTRY: ${{ vars.E2E_REGISTRY }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run binary tests
+        run: bash tests/e2e/node/scripts/run-binary-tests.sh
+
+  # ---------- Node: Helm tests ----------
+  helm-tests:
+    name: "Node – Helm Tests (T20–T25)"
+    runs-on: arc-cfgd
+    needs: [setup]
+    timeout-minutes: 15
+    env:
+      IMAGE_TAG: ${{ needs.setup.outputs.image-tag }}
+      REGISTRY: ${{ vars.E2E_REGISTRY }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run Helm tests
+        run: bash tests/e2e/node/scripts/run-helm-tests.sh
+
+  # ---------- Node: server integration tests ----------
+  server-tests:
+    name: "Node – Server Tests (T30–T35)"
+    runs-on: arc-cfgd
+    needs: [setup]
+    timeout-minutes: 15
+    env:
+      IMAGE_TAG: ${{ needs.setup.outputs.image-tag }}
+      REGISTRY: ${{ vars.E2E_REGISTRY }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run server integration tests
+        run: bash tests/e2e/node/scripts/run-server-tests.sh
+
+  # ---------- Node: drift & reconciliation tests ----------
+  drift-tests:
+    name: "Node – Drift Tests (T40–T50)"
+    runs-on: arc-cfgd
+    needs: [setup]
+    timeout-minutes: 15
+    env:
+      IMAGE_TAG: ${{ needs.setup.outputs.image-tag }}
+      REGISTRY: ${{ vars.E2E_REGISTRY }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run drift & reconciliation tests
+        run: bash tests/e2e/node/scripts/run-drift-tests.sh
+
+  # ---------- Operator tests ----------
+  operator-tests:
+    name: "Operator Tests (T01–T18)"
+    runs-on: arc-cfgd
+    needs: [setup]
+    timeout-minutes: 20
+    env:
+      IMAGE_TAG: ${{ needs.setup.outputs.image-tag }}
+      REGISTRY: ${{ vars.E2E_REGISTRY }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Run operator tests
+        run: bash tests/e2e/operator/scripts/run-operator-tests.sh
+
+  # ---------- Full-stack tests ----------
+  full-stack-tests:
+    name: "Full-Stack Tests (T01–T16)"
+    runs-on: arc-cfgd
+    needs: [setup]
+    timeout-minutes: 25
+    env:
+      IMAGE_TAG: ${{ needs.setup.outputs.image-tag }}
+      REGISTRY: ${{ vars.E2E_REGISTRY }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Run full-stack tests
+        run: bash tests/e2e/full-stack/scripts/run-full-stack-tests.sh
+
+  # ---------- Summary ----------
+  e2e-summary:
+    name: "E2E Summary"
+    runs-on: ubuntu-latest
+    needs: [binary-tests, helm-tests, server-tests, drift-tests, operator-tests, full-stack-tests]
+    if: always()
+    steps:
+      - name: Check results
+        run: |
+          echo "=== cfgd E2E Results ==="
+          echo "Binary tests:      ${{ needs.binary-tests.result }}"
+          echo "Helm tests:        ${{ needs.helm-tests.result }}"
+          echo "Server tests:      ${{ needs.server-tests.result }}"
+          echo "Drift tests:       ${{ needs.drift-tests.result }}"
+          echo "Operator tests:    ${{ needs.operator-tests.result }}"
+          echo "Full-stack tests:  ${{ needs.full-stack-tests.result }}"
+
+          FAILED=false
+          for result in \
+            "${{ needs.binary-tests.result }}" \
+            "${{ needs.helm-tests.result }}" \
+            "${{ needs.server-tests.result }}" \
+            "${{ needs.drift-tests.result }}" \
+            "${{ needs.operator-tests.result }}" \
+            "${{ needs.full-stack-tests.result }}"; do
+            if [ "$result" != "success" ]; then
+              FAILED=true
+            fi
+          done
+
+          if [ "$FAILED" = "true" ]; then
+            echo "::error::One or more E2E test suites failed"
+            exit 1
+          fi
+
+          echo "All E2E test suites passed!"
