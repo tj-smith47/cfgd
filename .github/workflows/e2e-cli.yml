@@ -43,4 +43,5 @@ jobs:
         env:
           NO_COLOR: "1"
           EDITOR: "true"
+          REGISTRY: ${{ vars.E2E_REGISTRY }}
         run: bash tests/e2e/cli/scripts/run-exhaustive-tests.sh

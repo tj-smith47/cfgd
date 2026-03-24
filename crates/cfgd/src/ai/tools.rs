@@ -16,6 +16,10 @@ pub struct ToolCallResult {
     pub is_error: bool,
 }
 
+const ERR_NAME_REQUIRED: &str = "Error: 'name' parameter is required";
+const ERR_CONTENT_REQUIRED: &str = "Error: 'content' parameter is required";
+const DOC_KIND_DESC: &str = "Document kind: 'Module', 'Profile', or 'Config'";
+
 /// Execute a tool call by name, returning the result as a JSON string.
 pub fn dispatch_tool_call(
     name: &str,
@@ -205,7 +209,7 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
                 "properties": {
                     "kind": {
                         "type": "string",
-                        "description": "Document kind: 'Module', 'Profile', or 'Config'"
+                        "description": DOC_KIND_DESC
                     }
                 },
                 "required": ["kind"]
@@ -223,7 +227,7 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
                     },
                     "kind": {
                         "type": "string",
-                        "description": "Document kind: 'Module', 'Profile', or 'Config'"
+                        "description": DOC_KIND_DESC
                     }
                 },
                 "required": ["content", "kind"]
@@ -301,7 +305,7 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
                     },
                     "kind": {
                         "type": "string",
-                        "description": "Document kind: 'Module', 'Profile', or 'Config'"
+                        "description": DOC_KIND_DESC
                     },
                     "description": {
                         "type": "string",
@@ -408,7 +412,7 @@ fn dispatch_inspect_tool(input: &Value, home: &Path) -> ToolCallResult {
         Some(n) => n,
         None => {
             return ToolCallResult {
-                content: "Error: 'name' parameter is required".to_string(),
+                content: ERR_NAME_REQUIRED.to_string(),
                 is_error: true,
             };
         }
@@ -592,7 +596,7 @@ fn dispatch_validate_yaml(input: &Value) -> ToolCallResult {
         Some(c) => c,
         None => {
             return ToolCallResult {
-                content: "Error: 'content' parameter is required".to_string(),
+                content: ERR_CONTENT_REQUIRED.to_string(),
                 is_error: true,
             };
         }
@@ -627,7 +631,7 @@ fn dispatch_write_module_yaml(input: &Value, session: &mut GenerateSession) -> T
         Some(n) => n,
         None => {
             return ToolCallResult {
-                content: "Error: 'name' parameter is required".to_string(),
+                content: ERR_NAME_REQUIRED.to_string(),
                 is_error: true,
             };
         }
@@ -636,7 +640,7 @@ fn dispatch_write_module_yaml(input: &Value, session: &mut GenerateSession) -> T
         Some(c) => c,
         None => {
             return ToolCallResult {
-                content: "Error: 'content' parameter is required".to_string(),
+                content: ERR_CONTENT_REQUIRED.to_string(),
                 is_error: true,
             };
         }
@@ -658,7 +662,7 @@ fn dispatch_write_profile_yaml(input: &Value, session: &mut GenerateSession) -> 
         Some(n) => n,
         None => {
             return ToolCallResult {
-                content: "Error: 'name' parameter is required".to_string(),
+                content: ERR_NAME_REQUIRED.to_string(),
                 is_error: true,
             };
         }
@@ -667,7 +671,7 @@ fn dispatch_write_profile_yaml(input: &Value, session: &mut GenerateSession) -> 
         Some(c) => c,
         None => {
             return ToolCallResult {
-                content: "Error: 'content' parameter is required".to_string(),
+                content: ERR_CONTENT_REQUIRED.to_string(),
                 is_error: true,
             };
         }

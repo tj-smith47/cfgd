@@ -4,6 +4,8 @@ use serde::Serialize;
 
 use super::*;
 
+const NO_REGISTRIES_MSG: &str = "No module registries configured";
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct ModuleListEntry {
@@ -1549,7 +1551,7 @@ pub(super) fn cmd_module_search(cli: &Cli, printer: &Printer, query: &str) -> an
             return Ok(());
         }
         printer.header(&format!("Search Modules: {}", query));
-        printer.info("No module registries configured");
+        printer.info(NO_REGISTRIES_MSG);
         printer.info("Add a registry: cfgd module registry add <git-url>");
         return Ok(());
     }
@@ -1862,7 +1864,7 @@ pub(super) fn cmd_module_registry_remove(
             printer.info(&format!("Registry '{}' not found", name));
         }
     } else {
-        printer.info("No module registries configured");
+        printer.info(NO_REGISTRIES_MSG);
     }
 
     Ok(())
@@ -1974,7 +1976,7 @@ pub(super) fn cmd_module_registry_list(cli: &Cli, printer: &Printer) -> anyhow::
             return Ok(());
         }
         printer.header("Module Registries");
-        printer.info("No module registries configured");
+        printer.info(NO_REGISTRIES_MSG);
         printer.info("Add one: cfgd module registry add <git-url>");
         return Ok(());
     }

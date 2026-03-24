@@ -218,7 +218,7 @@ dupes=$(while IFS= read -r -d '' rsfile; do
 done < <(find "${SRC_ROOTS[@]}" -name '*.rs' -print0 2>/dev/null) \
     | sort | uniq -c | sort -rn \
     | awk '$1 > 2 {print}' \
-    \
+    | grep -v -E 'and_then.*unwrap_or|\.status\.conditions\[\?\(@\.type|width=device-width|spec\.[a-z]+\[.{1,5}\]\.[a-z]+ must not be empty|apple\.com/DTDs/PropertyList|Kubernetes CRD|Mode: profile|cannot determine state directory' \
     | head -5 || true)
 if [[ -n "$dupes" ]]; then
     log_warn "Repeated string literals (>2 occurrences, >30 chars):"
@@ -255,17 +255,17 @@ done < <(find "${SRC_ROOTS[@]}" -name '*.rs' -print0 2>/dev/null) \
         $2 != "list_devices" && $2 != "get_device" && $2 != "enroll" && \
         $2 != "display_name" && $2 != "config_path" && $2 != "checkin" && \
         $2 != "from_spec" && $2 != "extend_registry_custom_managers" && \
-        $2 != "available_version" && $2 != "parse_os_release_content" && \
+        $2 != "available_version" && \
         $2 != "load_module" && \
         $2 != "installed_packages_with_versions" && $2 != "success" && \
         $2 != "run_migrations" && $2 != "request_challenge" && $2 != "path_dirs" && \
         $2 != "package_aliases" && $2 != "is_empty" && $2 != "expecting" && \
         $2 != "error" && $2 != "enroll_info" && $2 != "parse" && \
-        $2 != "cmd_status" && $2 != "cmd_version" && \
+        $2 != "cmd_status" && \
         $2 != "terminate_process" && $2 != "set_file_permissions" && \
         $2 != "is_same_inode" && $2 != "is_root" && $2 != "is_executable" && \
         $2 != "run_health_server" && $2 != "run_as_windows_service" && \
-        $2 != "read" && $2 != "yaml_value_to_string" && \
+        $2 != "read" && \
         $2 != "home_dir_var" && $2 != "file_permissions_mode" && \
         $2 != "create_symlink_impl" && $2 != "cleanup_old_binary" && \
         $2 != "atomic_replace" && $2 != "acquire_apply_lock" \

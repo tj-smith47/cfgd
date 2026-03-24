@@ -28,6 +28,10 @@ const FIELD_MANAGER_OPERATOR: &str = "cfgd-operator";
 const FIELD_MANAGER_STATUS: &str = "cfgd-operator/status";
 const MACHINE_CONFIG_FINALIZER: &str = "cfgd.io/machine-config-cleanup";
 
+fn compliance_summary(compliant: u32, non_compliant: u32) -> String {
+    format!("{compliant} compliant, {non_compliant} non-compliant")
+}
+
 pub struct ControllerContext {
     pub client: Client,
     pub recorder: Recorder,
@@ -1093,7 +1097,7 @@ async fn reconcile_config_policy(
                     existing_conditions,
                     "Enforced", overall_status,
                     if non_compliant_count == 0 { "AllCompliant" } else { "NonCompliantTargets" },
-                    &format!("{} compliant, {} non-compliant", compliant_count, non_compliant_count),
+                    &compliance_summary(compliant_count, non_compliant_count),
                     &now, obj.meta().generation,
                 ),
             ],
@@ -1125,10 +1129,7 @@ async fn reconcile_config_policy(
         &Event {
             type_: EventType::Normal,
             reason: "Evaluated".into(),
-            note: Some(format!(
-                "{} compliant, {} non-compliant",
-                compliant_count, non_compliant_count
-            )),
+            note: Some(compliance_summary(compliant_count, non_compliant_count)),
             action: "Evaluate".into(),
             secondary: None,
         },
@@ -1430,7 +1431,7 @@ async fn reconcile_cluster_config_policy(
                     existing_conditions,
                     "Enforced", overall_status,
                     if non_compliant_count == 0 { "AllCompliant" } else { "NonCompliantTargets" },
-                    &format!("{} compliant, {} non-compliant", compliant_count, non_compliant_count),
+                    &compliance_summary(compliant_count, non_compliant_count),
                     &now, obj.meta().generation,
                 ),
             ],
@@ -1462,10 +1463,7 @@ async fn reconcile_cluster_config_policy(
         &Event {
             type_: EventType::Normal,
             reason: "Evaluated".into(),
-            note: Some(format!(
-                "{} compliant, {} non-compliant",
-                compliant_count, non_compliant_count
-            )),
+            note: Some(compliance_summary(compliant_count, non_compliant_count)),
             action: "Evaluate".into(),
             secondary: None,
         },
