@@ -43,6 +43,7 @@ jobs:
     env:
       IMAGE_TAG: ${{ needs.setup.outputs.image-tag }}
       REGISTRY: ${{ vars.E2E_REGISTRY }}
+      E2E_NAMESPACE: cfgd-e2e-${{ github.run_id }}-bin
     steps:
       - uses: actions/checkout@v4
       - name: Run binary tests
@@ -57,6 +58,7 @@ jobs:
     env:
       IMAGE_TAG: ${{ needs.setup.outputs.image-tag }}
       REGISTRY: ${{ vars.E2E_REGISTRY }}
+      E2E_NAMESPACE: cfgd-e2e-${{ github.run_id }}-helm
     steps:
       - uses: actions/checkout@v4
       - name: Run Helm tests
@@ -71,6 +73,7 @@ jobs:
     env:
       IMAGE_TAG: ${{ needs.setup.outputs.image-tag }}
       REGISTRY: ${{ vars.E2E_REGISTRY }}
+      E2E_NAMESPACE: cfgd-e2e-${{ github.run_id }}-srv
     steps:
       - uses: actions/checkout@v4
       - name: Run server integration tests
@@ -85,6 +88,7 @@ jobs:
     env:
       IMAGE_TAG: ${{ needs.setup.outputs.image-tag }}
       REGISTRY: ${{ vars.E2E_REGISTRY }}
+      E2E_NAMESPACE: cfgd-e2e-${{ github.run_id }}-drift
     steps:
       - uses: actions/checkout@v4
       - name: Run drift & reconciliation tests
@@ -99,6 +103,7 @@ jobs:
     env:
       IMAGE_TAG: ${{ needs.setup.outputs.image-tag }}
       REGISTRY: ${{ vars.E2E_REGISTRY }}
+      E2E_NAMESPACE: cfgd-e2e-${{ github.run_id }}-op
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -114,6 +119,7 @@ jobs:
     env:
       IMAGE_TAG: ${{ needs.setup.outputs.image-tag }}
       REGISTRY: ${{ vars.E2E_REGISTRY }}
+      E2E_NAMESPACE: cfgd-e2e-${{ github.run_id }}-full
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
