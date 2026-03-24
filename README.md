@@ -23,9 +23,9 @@ Declare your entire machine — packages, dotfiles, system settings, secrets —
 ---
 
 - [What is cfgd](#what-is-cfgd)
-- [Why cfgd exists](#why-cfgd-exists)
 - [How It Works](#how-it-works)
 - [Quick Start](#quick-start)
+- [Why cfgd exists](#why-cfgd-exists)
 - [Shareable Modules](#shareable-modules)
 - [How cfgd compares](#how-cfgd-compares)
 - [Features](#features)
@@ -37,22 +37,6 @@ Declare your entire machine — packages, dotfiles, system settings, secrets —
 ## What is cfgd
 
 Most dotfile managers track files. `cfgd` enables you to manage your entire machine. You declare packages, files, secrets, and system settings in version-controlled YAML. `cfgd` diffs what you want against what you have, builds a plan, and reconciles — continuously. If something drifts, it's detected and corrected.
-
-## Why cfgd exists
-
-I recently switched jobs, and spent the last week of my old job backing up scripts and dotfiles, parsing out company specific info, and composing a tarball to transfer. At the new job, I spent another few days getting my new machine reconfigured. Over time, I gradually discovering things I'd forgotten, as well as some things (e.g., System Settings) that I thought would have been nice to have included in the backup. This all felt very manual and incomplete, and I thought there needed to be a better way; I should just be able to clone a repo and have my entire workstation — packages, scripts, dotfiles, system settings - feel familiar again. And even better, to keep aspects of that feeling in sync betweeen my home and work laptops (parts of it, at least).
-
-Another inspiring aspect had to do with working in devcontainers. At my previous company I had set up custom scripts to inject dotfiles into the devcontainer so a user could replicate their dev environment inside the container once they shell in. At minimum, I wanted my full neovim editor setup available in any ephemeral container without having to modify the devcontainer config in every team's repository I worked in just to accommodate my personal preferences. I needed something that could bootstrap my config into any environment from the outside, regardless of which / whose repo I was working in. Plus, I had some coworkers in need of education about the superiority of vim-motions, and wanted a quick and easy way to share my exact setup, down to the alias 😉
-
-`cfgd` was architected by a platform / infrastructure engineer, and borrows from the best ideas across practices:
-
-- **Kubernetes** — declarative reconciliation loop, KRM resource model
-- **Terraform** — plan/apply workflow, state tracking, drift detection
-- **Puppet** — continuous enforcement via daemon, module ecosystem
-- **Nix** — reproducible machine state from a single source of truth
-- **Ansible** — YAML-driven config management, idempotent task execution
-- **Kustomize** — layered overrides and patches
-- **chezmoi** — dotfile management done right
 
 ## How It Works
 
@@ -98,9 +82,25 @@ source <(cfgd completions zsh)   # .zshrc
 cfgd completions fish | source   # config.fish
 ```
 
+## Why cfgd exists
+
+I recently switched jobs, and spent the last week of my old job backing up scripts and dotfiles, parsing out company specific info, and composing a tarball to transfer. At the new job, I spent another few days getting my new machine reconfigured. Over time, I gradually discovering things I'd forgotten, as well as some things (e.g., System Settings) that I thought would have been nice to have included in the backup. This all felt very manual and incomplete, and I thought there needed to be a better way; I should just be able to clone a repo and have my entire workstation — packages, scripts, dotfiles, system settings - feel familiar again. And even better, to keep aspects of that feeling in sync betweeen my home and work laptops (parts of it, at least).
+
+Another inspiring aspect had to do with working in devcontainers. At my previous company I had set up custom scripts to inject dotfiles into the devcontainer so a user could replicate their dev environment inside the container once they shell in. At minimum, I wanted my full neovim editor setup available in any ephemeral container without having to modify the devcontainer config in every team's repository I worked in just to accommodate my personal preferences. I needed something that could bootstrap my config into any environment from the outside, regardless of which / whose repo I was working in. Plus, I had some coworkers in need of education about the superiority of vim-motions, and wanted a quick and easy way to share my exact setup, down to the alias 😉
+
+`cfgd` was architected by a platform / infrastructure engineer, and borrows from the best ideas across practices:
+
+- **Kubernetes** — declarative reconciliation loop, KRM resource model
+- **Terraform** — plan/apply workflow, state tracking, drift detection
+- **Puppet** — continuous enforcement via daemon, module ecosystem
+- **Nix** — reproducible machine state from a single source of truth
+- **Ansible** — YAML-driven config management, idempotent task execution
+- **Kustomize** — layered overrides and patches
+- **chezmoi** — dotfile management done right
+
 ## Shareable Modules
 
-One module. Cross-platform. Shareable via git. Versioned. Install someone's complete dev environment — or share your own — in one command.
+This is my favorite feature; a single, packaged, works anywhere in no time at all config file for a tool.
 
 ```sh
 cfgd module create my-dev-env
@@ -170,12 +170,12 @@ Puppet is the closest philosophical match — declarative state, continuous enfo
 ## Features
 
 **For individuals:**
-- [15 package managers](docs/packages.md) — brew, apt, dnf, yum, pacman, apk, zypper, pkg, cargo, npm, pipx, snap, flatpak, nix, go (plus custom script-based managers)
-- [Tera templates](docs/templates.md) — render dotfiles with variables, OS detection, custom functions
-- [Secrets](docs/secrets.md) — SOPS/age encryption + 1Password, Bitwarden, HashiCorp Vault
-- [System configurators](docs/system-configurators.md) — shell, macOS defaults, systemd, launchd, sysctl, kubelet, containerd, apparmor, seccomp, certificates
 - [AI-guided generation](docs/ai-generate.md) — `cfgd generate` scans your system and builds profiles/modules interactively; MCP server for AI editor integration
 - [Daemon](docs/daemon.md) — file watching, drift detection, auto-sync, desktop/webhook notifications
+- [Secrets](docs/secrets.md) — SOPS/age encryption + 1Password, Bitwarden, HashiCorp Vault
+- [System configurators](docs/system-configurators.md) — shell, macOS defaults, systemd, launchd, sysctl, kubelet, containerd, apparmor, seccomp, certificates
+- [Tera templates](docs/templates.md) — render dotfiles with variables, OS detection, custom functions
+- [15 package managers](docs/packages.md) — brew, apt, dnf, yum, pacman, apk, zypper, pkg, cargo, npm, pipx, snap, flatpak, nix, go (plus custom script-based managers)
 
 **For teams and fleet:**
 - [Multi-source config](docs/sources.md) — subscribe to team baselines with policy tiers (locked/required/recommended/optional)
