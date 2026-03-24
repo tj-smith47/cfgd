@@ -9440,7 +9440,10 @@ spec:
             module: Some("dev-tools".to_string()),
             skip_scripts: false,
         };
-        assert_eq!(args.from.as_deref(), Some("https://github.com/example/config.git"));
+        assert_eq!(
+            args.from.as_deref(),
+            Some("https://github.com/example/config.git")
+        );
         assert_eq!(args.module.as_deref(), Some("dev-tools"));
     }
 
