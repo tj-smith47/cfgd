@@ -57,11 +57,10 @@ if [ -z "$CRD_YAML" ]; then
     echo "ERROR: cfgd-gen-crds produced no output"
     exit 1
 fi
-if [ "$RESET" = "--reset" ]; then
-    echo "$CRD_YAML" | kubectl apply -f -
-else
-    echo "$CRD_YAML" | kubectl diff -f - > /dev/null 2>&1 || echo "$CRD_YAML" | kubectl apply -f -
-fi
+# Use kubectl replace to ensure full CRD schema updates (kubectl apply can
+# fail to update nested schema fields due to 3-way merge conflicts).
+# Fall back to apply for the initial creation (replace fails if CRD doesn't exist).
+echo "$CRD_YAML" | kubectl replace -f - 2>/dev/null || echo "$CRD_YAML" | kubectl apply -f -
 
 # Wait for CRDs to be established
 for crd in machineconfigs.cfgd.io configpolicies.cfgd.io driftalerts.cfgd.io \
@@ -75,11 +74,16 @@ kubectl apply -f "$SCRIPT_DIR/manifests/e2e-webhook-tls.yaml"
 
 # --- Step 8: Update operator image ---
 echo "Updating operator image..."
-# Use CFGD_DEPLOY_MANIFESTS if set (production deployments managed by ArgoCD);
-# otherwise apply the E2E manifests directly.
-if [ -n "${CFGD_DEPLOY_MANIFESTS:-}" ] && [ -d "$CFGD_DEPLOY_MANIFESTS" ]; then
-    echo "  Production deployments detected (managed by $CFGD_DEPLOY_MANIFESTS)"
-    echo "  Images pushed as :latest — restarting deployments to pick up new images..."
+# Detect if deployments are managed by ArgoCD. If so, don't apply E2E manifests
+# directly — they'll be reverted by ArgoCD. Instead, restart to pick up :latest.
+ARGOCD_MANAGED=false
+if kubectl get deployment cfgd-operator -n cfgd-system \
+    -o jsonpath='{.metadata.annotations.argocd\.argoproj\.io/tracking-id}' 2>/dev/null | grep -q .; then
+    ARGOCD_MANAGED=true
+fi
+
+if [ "$ARGOCD_MANAGED" = "true" ] || { [ -n "${CFGD_DEPLOY_MANIFESTS:-}" ] && [ -d "$CFGD_DEPLOY_MANIFESTS" ]; }; then
+    echo "  Deployments managed by ArgoCD — restarting to pick up :latest images..."
     kubectl rollout restart deployment/cfgd-operator -n cfgd-system 2>/dev/null || true
     kubectl rollout restart deployment/cfgd-server -n cfgd-system 2>/dev/null || true
 else
@@ -261,6 +265,15 @@ helm upgrade --install cfgd-csi "$REPO_ROOT/chart/cfgd" \
     --set "csiDriver.extraEnv[0].name=OCI_INSECURE_REGISTRIES" \
     --set "csiDriver.extraEnv[0].value=${REGISTRY}:5000" \
     --set "csiDriver.imagePullSecrets[0].name=registry-credentials" \
+    --set "csiDriver.extraEnv[1].name=DOCKER_CONFIG" \
+    --set "csiDriver.extraEnv[1].value=/etc/cfgd/docker" \
+    --set "csiDriver.extraVolumes[0].name=docker-config" \
+    --set "csiDriver.extraVolumes[0].secret.secretName=registry-credentials" \
+    --set "csiDriver.extraVolumes[0].secret.items[0].key=.dockerconfigjson" \
+    --set "csiDriver.extraVolumes[0].secret.items[0].path=config.json" \
+    --set "csiDriver.extraVolumeMounts[0].name=docker-config" \
+    --set "csiDriver.extraVolumeMounts[0].mountPath=/etc/cfgd/docker" \
+    --set "csiDriver.extraVolumeMounts[0].readOnly=true" \
     --wait --timeout=120s 2>&1 || {
         echo "WARN: CSI driver Helm install failed — full-stack CSI tests will be skipped"
     }

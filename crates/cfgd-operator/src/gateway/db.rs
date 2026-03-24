@@ -199,7 +199,13 @@ const MIGRATIONS: &[&str] = &["CREATE TABLE IF NOT EXISTS devices (
     CREATE INDEX IF NOT EXISTS idx_checkin_events_timestamp ON checkin_events(timestamp);
     CREATE INDEX IF NOT EXISTS idx_user_public_keys_username ON user_public_keys(username);
     CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL);
-    INSERT INTO schema_version (version) VALUES (0);"];
+    INSERT INTO schema_version (version) VALUES (0);",
+    // Migration 1: add desired_config column for pre-existing databases.
+    // New databases already have this column from migration 0's CREATE TABLE,
+    // so the ALTER TABLE will produce a "duplicate column" error — which
+    // run_migrations tolerates for ADD COLUMN migrations.
+    "ALTER TABLE devices ADD COLUMN desired_config TEXT;",
+];
 
 pub struct ServerDb {
     pub(crate) conn: Connection,
@@ -230,8 +236,18 @@ impl ServerDb {
         for (i, migration) in MIGRATIONS.iter().enumerate() {
             if i >= current_version {
                 if let Err(e) = self.conn.execute_batch(migration) {
-                    let _ = self.conn.execute_batch("ROLLBACK");
-                    return Err(e.into());
+                    // Tolerate "duplicate column name" errors from ADD COLUMN
+                    // migrations that run against databases where the column
+                    // was already included in the original CREATE TABLE.
+                    let is_dup_column = matches!(
+                        &e,
+                        rusqlite::Error::SqliteFailure(_, Some(msg))
+                            if msg.contains("duplicate column name")
+                    );
+                    if !is_dup_column {
+                        let _ = self.conn.execute_batch("ROLLBACK");
+                        return Err(e.into());
+                    }
                 }
                 let new_version = (i + 1) as i64;
                 if let Err(e) = self.conn.execute(
@@ -1436,6 +1452,48 @@ mod tests {
     #[test]
     fn schema_version_is_set() {
         let db = test_db();
-        assert_eq!(db.schema_version(), 1);
+        assert_eq!(db.schema_version(), MIGRATIONS.len());
+    }
+
+    #[test]
+    fn migration_upgrades_v1_database() {
+        // Simulate a pre-migration-1 database: create tables without desired_config
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("upgrade-test.db");
+        let path_str = path.to_str().unwrap();
+
+        // Create the v1 schema manually (devices table without desired_config)
+        {
+            let conn = Connection::open(path_str).unwrap();
+            conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;").unwrap();
+            conn.execute_batch(
+                "CREATE TABLE devices (
+                    id TEXT PRIMARY KEY,
+                    hostname TEXT NOT NULL,
+                    os TEXT NOT NULL,
+                    arch TEXT NOT NULL,
+                    last_checkin TEXT NOT NULL,
+                    config_hash TEXT NOT NULL,
+                    status TEXT NOT NULL
+                );
+                CREATE TABLE schema_version (version INTEGER NOT NULL);
+                INSERT INTO schema_version (version) VALUES (1);",
+            )
+            .unwrap();
+            // Insert a device to verify data survives migration
+            conn.execute(
+                "INSERT INTO devices (id, hostname, os, arch, last_checkin, config_hash, status) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                params!["dev-1", "host-1", "linux", "amd64", "2026-01-01T00:00:00Z", "abc", "healthy"],
+            ).unwrap();
+        }
+
+        // Open with ServerDb — should run migration 1 and add desired_config
+        let db = ServerDb::open(path_str).unwrap();
+        assert_eq!(db.schema_version(), MIGRATIONS.len());
+
+        // Verify the device is still there and desired_config is queryable
+        let device = db.get_device("dev-1").unwrap();
+        assert_eq!(device.hostname, "host-1");
+        assert!(device.desired_config.is_none());
     }
 }

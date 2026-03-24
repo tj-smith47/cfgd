@@ -79,7 +79,7 @@ fi
 # =================================================================
 begin_test "T42: Kernel module loading"
 # Check if ip_vs is already loaded
-ALREADY_LOADED=$(exec_in_pod bash -c 'cat /proc/modules | grep -c "^ip_vs "' 2>/dev/null || echo "0")
+ALREADY_LOADED=$(exec_in_pod bash -c 'grep -c "^ip_vs " /proc/modules 2>/dev/null || echo 0' | tr -d '[:space:]')
 
 if [ "$ALREADY_LOADED" -gt 0 ]; then
     echo "  ip_vs already loaded — verifying cfgd detects it as in-sync"
@@ -92,7 +92,7 @@ if [ "$ALREADY_LOADED" -gt 0 ]; then
 else
     echo "  ip_vs not loaded — testing load via cfgd"
     exec_in_pod cfgd --config /etc/cfgd/cfgd.yaml apply --yes --no-color > /dev/null 2>&1 || true
-    LOADED=$(exec_in_pod bash -c 'cat /proc/modules | grep -c "^ip_vs "' 2>/dev/null || echo "0")
+    LOADED=$(exec_in_pod bash -c 'grep -c "^ip_vs " /proc/modules 2>/dev/null || echo 0' | tr -d '[:space:]')
     if [ "$LOADED" -gt 0 ]; then
         pass_test "T42"
     else

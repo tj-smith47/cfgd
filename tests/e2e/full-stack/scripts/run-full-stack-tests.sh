@@ -150,7 +150,7 @@ metadata:
   name: mc-${DEVICE_1}
   namespace: cfgd-system
   labels:
-    ${E2E_RUN_LABEL}
+    ${E2E_RUN_LABEL_YAML}
 spec:
   hostname: ${DEVICE_1}
   profile: k8s-worker-minimal
@@ -188,7 +188,7 @@ metadata:
   name: mc-${DEVICE_2}
   namespace: cfgd-system
   labels:
-    ${E2E_RUN_LABEL}
+    ${E2E_RUN_LABEL_YAML}
 spec:
   hostname: ${DEVICE_2}
   profile: k8s-worker-minimal
@@ -207,7 +207,7 @@ metadata:
   name: fleet-baseline-${E2E_RUN_ID}
   namespace: cfgd-system
   labels:
-    ${E2E_RUN_LABEL}
+    ${E2E_RUN_LABEL_YAML}
 spec:
   packages:
     - name: vim
@@ -276,7 +276,7 @@ metadata:
   name: drift-${DEVICE_1}
   namespace: cfgd-system
   labels:
-    ${E2E_RUN_LABEL}
+    ${E2E_RUN_LABEL_YAML}
 spec:
   deviceId: ${DEVICE_1}
   machineConfigRef:
@@ -383,7 +383,9 @@ if ! $CSI_AVAILABLE; then
     skip_test "T11" "CSI driver not ready"
 else
     # Verify CSI DaemonSet is ready
-    if ! wait_for_daemonset cfgd-system cfgd-csi 60; then
+    CSI_DS_NAME=$(kubectl get ds -n cfgd-system -l app.kubernetes.io/component=csi-driver \
+        -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo "cfgd-csi-csi")
+    if ! wait_for_daemonset cfgd-system "$CSI_DS_NAME" 60; then
         fail_test "T11" "CSI DaemonSet not ready"
     else
         # Push a test module to the registry (from host)

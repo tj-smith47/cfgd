@@ -264,6 +264,8 @@
         "tolerations": { "type": "array" },
         "registrar": { "type": "object" },
         "extraEnv": { "type": "array", "description": "Extra environment variables for the CSI driver container" },
+        "extraVolumes": { "type": "array", "description": "Extra volumes to add to CSI driver pods" },
+        "extraVolumeMounts": { "type": "array", "description": "Extra volume mounts to add to the CSI driver container" },
         "imagePullSecrets": { "type": "array", "description": "Image pull secrets for CSI driver pods" },
         "podAnnotations": { "type": "object", "description": "Annotations to add to CSI driver pods" },
         "podLabels": { "type": "object", "description": "Labels to add to CSI driver pods" },

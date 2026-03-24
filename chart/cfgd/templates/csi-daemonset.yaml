@@ -75,6 +75,9 @@ spec:
               mountPropagation: Bidirectional
             - name: cache
               mountPath: /var/lib/cfgd-csi/cache
+            {{- with .Values.csiDriver.extraVolumeMounts }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
         - name: node-driver-registrar
           image: "{{ .Values.csiDriver.registrar.image.repository }}:{{ .Values.csiDriver.registrar.image.tag }}"
           imagePullPolicy: IfNotPresent
@@ -122,4 +125,7 @@ spec:
           emptyDir:
             sizeLimit: {{ .Values.csiDriver.cache.maxSizeGi }}Gi
           {{- end }}
+        {{- with .Values.csiDriver.extraVolumes }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
 {{- end }}

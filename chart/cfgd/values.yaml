@@ -150,6 +150,8 @@ csiDriver:
   tolerations:
     - operator: Exists
   extraEnv: []
+  extraVolumes: []
+  extraVolumeMounts: []
   imagePullSecrets: []
   podAnnotations: {}
   podLabels: {}
