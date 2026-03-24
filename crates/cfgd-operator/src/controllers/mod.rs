@@ -2119,13 +2119,7 @@ mod tests {
             "key".to_string(),
             serde_json::Value::String("wrong".to_string()),
         );
-        assert!(!validate_policy_compliance(
-            &spec,
-            None,
-            &[],
-            &[],
-            &wrong
-        ));
+        assert!(!validate_policy_compliance(&spec, None, &[], &[], &wrong));
     }
 
     #[test]
@@ -2146,13 +2140,7 @@ mod tests {
 
         let mut wrong = BTreeMap::new();
         wrong.insert("enabled".to_string(), serde_json::json!(false));
-        assert!(!validate_policy_compliance(
-            &spec,
-            None,
-            &[],
-            &[],
-            &wrong
-        ));
+        assert!(!validate_policy_compliance(&spec, None, &[], &[], &wrong));
     }
 
     #[test]
@@ -2376,7 +2364,11 @@ mod tests {
             ..Default::default()
         };
         let merged = merge_policy_requirements(&cluster, &[&ns]);
-        let kubectl_pkg = merged.packages.iter().find(|p| p.name == "kubectl").unwrap();
+        let kubectl_pkg = merged
+            .packages
+            .iter()
+            .find(|p| p.name == "kubectl")
+            .unwrap();
         assert_eq!(kubectl_pkg.version.as_deref(), Some(">=1.29"));
     }
 

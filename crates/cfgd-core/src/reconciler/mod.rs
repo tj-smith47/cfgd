@@ -2180,13 +2180,6 @@ fn verify_env_file(
 const MODULE_SCRIPT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
 const ENV_FILE_HEADER: &str = "# managed by cfgd \u{2014} do not edit";
 
-/// Parse a duration string — delegates to `crate::parse_duration_str`, mapping
-/// the error into `CfgdError::Config`.
-fn parse_duration_str(s: &str) -> Result<std::time::Duration> {
-    crate::parse_duration_str(s)
-        .map_err(|e| crate::errors::CfgdError::Config(ConfigError::Invalid { message: e }))
-}
-
 /// Build environment variables injected into every script invocation.
 pub(crate) fn build_script_env(
     config_dir: &std::path::Path,
@@ -2236,7 +2229,8 @@ pub(crate) fn execute_script(
     let effective_timeout = match entry {
         ScriptEntry::Full {
             timeout: Some(t), ..
-        } => parse_duration_str(t)?,
+        } => crate::parse_duration_str(t)
+            .map_err(|e| crate::errors::CfgdError::Config(ConfigError::Invalid { message: e }))?,
         _ => default_timeout,
     };
 

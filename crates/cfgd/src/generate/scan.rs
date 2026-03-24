@@ -660,9 +660,7 @@ pub fn scan_system_settings() -> Result<SystemSettingsResult, CfgdError> {
             {
                 let stdout = String::from_utf8_lossy(&output.stdout);
                 for line in stdout.lines() {
-                    if let Some((name, _reg_type, value)) =
-                        crate::system::parse_reg_line(line)
-                    {
+                    if let Some((name, _reg_type, value)) = crate::system::parse_reg_line(line) {
                         result
                             .windows_registry
                             .insert(format!(r"{}\{}", reg_path, name), value.to_string());

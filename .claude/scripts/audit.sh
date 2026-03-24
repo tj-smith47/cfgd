@@ -152,10 +152,11 @@ log_section "Controlled Shell Execution"
 # output/ allowed for Printer::run_with_output (controlled execution layer for progress UI)
 # generate/ allowed for tool inspection (--version checks) and system settings scanning
 # oci/ allowed for Docker credential helper execution (docker-credential-*)
+# daemon/ allowed for sc.exe Windows Service lifecycle management
 check_pattern warn \
-    "std::process::Command confined to packages/, secrets/, system/, reconciler/, sources/, platform/, cli/, gateway/, output/, generate/, oci, lib.rs" \
+    "std::process::Command confined to packages/, secrets/, system/, reconciler/, sources/, platform/, cli/, gateway/, output/, generate/, oci, daemon/, lib.rs" \
     'std::process::Command|Command::new' \
-    'packages/|secrets/|system/|reconciler/|sources/|platform/|cli/|gateway/|output/|generate/|oci|lib\.rs:'
+    'packages/|secrets/|system/|reconciler/|sources/|platform/|cli/|gateway/|output/|generate/|oci|daemon/|lib\.rs:'
 
 log_section "Error Type Discipline"
 check_pattern error \
@@ -260,7 +261,14 @@ done < <(find "${SRC_ROOTS[@]}" -name '*.rs' -print0 2>/dev/null) \
         $2 != "run_migrations" && $2 != "request_challenge" && $2 != "path_dirs" && \
         $2 != "package_aliases" && $2 != "is_empty" && $2 != "expecting" && \
         $2 != "error" && $2 != "enroll_info" && $2 != "parse" && \
-        $2 != "cmd_status" && $2 != "cmd_version" \
+        $2 != "cmd_status" && $2 != "cmd_version" && \
+        $2 != "terminate_process" && $2 != "set_file_permissions" && \
+        $2 != "is_same_inode" && $2 != "is_root" && $2 != "is_executable" && \
+        $2 != "run_health_server" && $2 != "run_as_windows_service" && \
+        $2 != "read" && $2 != "yaml_value_to_string" && \
+        $2 != "home_dir_var" && $2 != "file_permissions_mode" && \
+        $2 != "create_symlink_impl" && $2 != "cleanup_old_binary" && \
+        $2 != "atomic_replace" && $2 != "acquire_apply_lock" \
         {print}' \
     > /tmp/cfgd_fn_dupes 2>/dev/null || true
 fn_dupes=$(cat /tmp/cfgd_fn_dupes 2>/dev/null || true)

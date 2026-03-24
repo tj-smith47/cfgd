@@ -1150,9 +1150,7 @@ fn find_toml_value(table: &toml::Table, key: &str) -> Option<String> {
                 }
             }
         }
-        if found
-            && let Some(val) = current.get(leaf)
-        {
+        if found && let Some(val) = current.get(leaf) {
             return Some(toml_value_to_string(val));
         }
     }
@@ -1203,7 +1201,11 @@ fn set_toml_value(table: &mut toml::Table, key: &str, value: &serde_yaml::Value)
         if !entry.is_table() {
             *entry = toml::Value::Table(toml::Table::new());
         }
-        current = entry.as_table_mut().expect("just ensured table");
+        // Safe: we just set it to a Table two lines above if it wasn't one
+        current = match entry.as_table_mut() {
+            Some(t) => t,
+            None => return, // unreachable after the assignment above
+        };
     }
     current.insert(leaf.to_string(), toml_val);
 }
@@ -1559,11 +1561,7 @@ SystemdCgroup = true
     #[test]
     fn set_toml_value_simple_key() {
         let mut table = toml::Table::new();
-        set_toml_value(
-            &mut table,
-            "version",
-            &serde_yaml::Value::Number(2.into()),
-        );
+        set_toml_value(&mut table, "version", &serde_yaml::Value::Number(2.into()));
         assert_eq!(table.get("version").unwrap().as_integer(), Some(2));
     }
 

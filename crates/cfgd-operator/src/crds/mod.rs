@@ -507,11 +507,7 @@ impl MachineConfigSpec {
 impl ConfigPolicySpec {
     /// Validate the spec, returning all validation errors found.
     pub fn validate(&self) -> Result<(), Vec<String>> {
-        let errors = validate_policy_fields(
-            &self.packages,
-            &self.required_modules,
-            &self.settings,
-        );
+        let errors = validate_policy_fields(&self.packages, &self.required_modules, &self.settings);
         if errors.is_empty() {
             Ok(())
         } else {
@@ -523,11 +519,7 @@ impl ConfigPolicySpec {
 impl ClusterConfigPolicySpec {
     /// Validate the spec, returning all validation errors found.
     pub fn validate(&self) -> Result<(), Vec<String>> {
-        let errors = validate_policy_fields(
-            &self.packages,
-            &self.required_modules,
-            &self.settings,
-        );
+        let errors = validate_policy_fields(&self.packages, &self.required_modules, &self.settings);
         if errors.is_empty() {
             Ok(())
         } else {

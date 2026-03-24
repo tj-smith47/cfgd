@@ -100,7 +100,9 @@ fn windows_terminal_settings_path() -> Option<std::path::PathBuf> {
     // Check paths in priority order: Store > Preview > non-Store
     let candidates = [
         base.join("Packages/Microsoft.WindowsTerminal_8wekyb3d8bbwe/LocalState/settings.json"),
-        base.join("Packages/Microsoft.WindowsTerminalPreview_8wekyb3d8bbwe/LocalState/settings.json"),
+        base.join(
+            "Packages/Microsoft.WindowsTerminalPreview_8wekyb3d8bbwe/LocalState/settings.json",
+        ),
         base.join("Microsoft/Windows Terminal/settings.json"),
     ];
 
@@ -674,7 +676,9 @@ impl SystemConfigurator for LaunchAgentConfigurator {
 
 fn launch_agent_plist_path(name: &str) -> std::path::PathBuf {
     let home = std::env::var("HOME").unwrap_or_else(|_| "~".to_string());
-    let home = cfgd_core::expand_tilde(Path::new(&home)).to_string_lossy().to_string();
+    let home = cfgd_core::expand_tilde(Path::new(&home))
+        .to_string_lossy()
+        .to_string();
     std::path::PathBuf::from(home)
         .join("Library/LaunchAgents")
         .join(format!("{}.plist", name))
@@ -872,7 +876,11 @@ impl EnvironmentConfigurator {
             output.push_str(CFGD_BLOCK_BEGIN);
             output.push('\n');
             for (key, value) in managed {
-                if value.contains(' ') || value.contains('#') || value.contains('$') || value.contains('"') {
+                if value.contains(' ')
+                    || value.contains('#')
+                    || value.contains('$')
+                    || value.contains('"')
+                {
                     let escaped = value.replace('\\', "\\\\").replace('"', "\\\"");
                     output.push_str(&format!("{}=\"{}\"\n", key, escaped));
                 } else {
@@ -917,13 +925,17 @@ impl EnvironmentConfigurator {
 
     fn macos_env_sh_path() -> std::path::PathBuf {
         let home = std::env::var("HOME").unwrap_or_else(|_| "~".to_string());
-        let home = cfgd_core::expand_tilde(Path::new(&home)).to_string_lossy().to_string();
+        let home = cfgd_core::expand_tilde(Path::new(&home))
+            .to_string_lossy()
+            .to_string();
         std::path::PathBuf::from(home).join(".config/cfgd/env.sh")
     }
 
     fn macos_plist_path() -> std::path::PathBuf {
         let home = std::env::var("HOME").unwrap_or_else(|_| "~".to_string());
-        let home = cfgd_core::expand_tilde(Path::new(&home)).to_string_lossy().to_string();
+        let home = cfgd_core::expand_tilde(Path::new(&home))
+            .to_string_lossy()
+            .to_string();
         std::path::PathBuf::from(home)
             .join("Library/LaunchAgents")
             .join(MACOS_LAUNCHD_PLIST_NAME)
@@ -1806,7 +1818,6 @@ fn strip_gsettings_quotes(s: &str) -> &str {
         .unwrap_or(s)
 }
 
-
 /// Convert a YAML value to string with native boolean representation (`true`/`false`).
 ///
 /// Unlike `yaml_value_to_string` (which converts bools to `"0"`/`"1"` for macOS `defaults`),
@@ -2198,7 +2209,14 @@ impl SystemConfigurator for XfconfConfigurator {
                     };
                     let create_output = Command::new("xfconf-query")
                         .args([
-                            "-c", channel, "-p", property, "--create", "-t", xfconf_type, "-s",
+                            "-c",
+                            channel,
+                            "-p",
+                            property,
+                            "--create",
+                            "-t",
+                            xfconf_type,
+                            "-s",
                             &val_str,
                         ])
                         .output()

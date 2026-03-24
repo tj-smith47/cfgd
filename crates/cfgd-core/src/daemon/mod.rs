@@ -413,13 +413,13 @@ pub async fn run_daemon(
     let reconcile_interval = daemon_cfg
         .reconcile
         .as_ref()
-        .map(|r| parse_duration_str(&r.interval))
+        .map(|r| parse_duration_or_default(&r.interval))
         .unwrap_or(Duration::from_secs(DEFAULT_RECONCILE_SECS));
 
     let sync_interval = daemon_cfg
         .sync
         .as_ref()
-        .map(|s| parse_duration_str(&s.interval))
+        .map(|s| parse_duration_or_default(&s.interval))
         .unwrap_or(Duration::from_secs(DEFAULT_SYNC_SECS));
 
     let auto_pull = daemon_cfg
@@ -495,7 +495,7 @@ pub async fn run_daemon(
                 auto_pull: true, // Sources are always pull-only
                 auto_push: false,
                 auto_apply: source_spec.sync.auto_apply,
-                interval: parse_duration_str(&source_spec.sync.interval),
+                interval: parse_duration_or_default(&source_spec.sync.interval),
                 last_synced: None,
                 require_signed_commits: require_signed,
                 allow_unsigned,
@@ -683,7 +683,7 @@ pub async fn run_daemon(
                 {
                     reconcile_tasks.push(ReconcileTask {
                         entity: mod_name.to_string(),
-                        interval: parse_duration_str(&eff.interval),
+                        interval: parse_duration_or_default(&eff.interval),
                         auto_apply: eff.auto_apply,
                         drift_policy: eff.drift_policy,
                         last_reconciled: None,
@@ -2639,7 +2639,7 @@ pub fn git_pull_sync(repo_path: &Path) -> std::result::Result<bool, String> {
 
 // --- Helpers ---
 
-pub fn parse_duration_str(s: &str) -> Duration {
+pub fn parse_duration_or_default(s: &str) -> Duration {
     crate::parse_duration_str(s).unwrap_or(Duration::from_secs(DEFAULT_RECONCILE_SECS))
 }
 
@@ -2649,35 +2649,35 @@ mod tests {
 
     #[test]
     fn parse_duration_seconds() {
-        assert_eq!(parse_duration_str("30s"), Duration::from_secs(30));
+        assert_eq!(parse_duration_or_default("30s"), Duration::from_secs(30));
     }
 
     #[test]
     fn parse_duration_minutes() {
-        assert_eq!(parse_duration_str("5m"), Duration::from_secs(300));
+        assert_eq!(parse_duration_or_default("5m"), Duration::from_secs(300));
     }
 
     #[test]
     fn parse_duration_hours() {
-        assert_eq!(parse_duration_str("1h"), Duration::from_secs(3600));
+        assert_eq!(parse_duration_or_default("1h"), Duration::from_secs(3600));
     }
 
     #[test]
     fn parse_duration_plain_number() {
-        assert_eq!(parse_duration_str("120"), Duration::from_secs(120));
+        assert_eq!(parse_duration_or_default("120"), Duration::from_secs(120));
     }
 
     #[test]
     fn parse_duration_invalid_falls_back() {
         assert_eq!(
-            parse_duration_str("invalid"),
+            parse_duration_or_default("invalid"),
             Duration::from_secs(DEFAULT_RECONCILE_SECS)
         );
     }
 
     #[test]
     fn parse_duration_with_whitespace() {
-        assert_eq!(parse_duration_str(" 10m "), Duration::from_secs(600));
+        assert_eq!(parse_duration_or_default(" 10m "), Duration::from_secs(600));
     }
 
     #[test]

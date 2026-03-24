@@ -128,7 +128,8 @@ pub struct EnrollmentChallenge {
     pub expires_at: String,
 }
 
-const MIGRATIONS: &[&str] = &["CREATE TABLE IF NOT EXISTS devices (
+const MIGRATIONS: &[&str] = &[
+    "CREATE TABLE IF NOT EXISTS devices (
         id TEXT PRIMARY KEY,
         hostname TEXT NOT NULL,
         os TEXT NOT NULL,
@@ -1465,7 +1466,8 @@ mod tests {
         // Create the v1 schema manually (devices table without desired_config)
         {
             let conn = Connection::open(path_str).unwrap();
-            conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;").unwrap();
+            conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;")
+                .unwrap();
             conn.execute_batch(
                 "CREATE TABLE devices (
                     id TEXT PRIMARY KEY,
