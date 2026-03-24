@@ -96,7 +96,7 @@ Another inspiring aspect had to do with working in devcontainers. At my previous
 - **Nix** — reproducible machine state from a single source of truth
 - **Ansible** — YAML-driven config management, idempotent task execution
 - **Kustomize** — layered overrides and patches
-- **chezmoi** — dotfile management done right
+- **chezmoi** — dotfile management
 
 ## Shareable Modules
 
