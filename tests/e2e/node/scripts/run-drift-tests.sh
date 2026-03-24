@@ -222,9 +222,10 @@ spec:
       driftPolicy: Auto
 INNEREOF'
 
-# Start daemon in background in the test pod
-exec_in_pod bash -c 'nohup cfgd --config /etc/cfgd/e2e-daemon-cfgd.yaml daemon --no-color > /tmp/daemon.log 2>&1 &'
-DAEMON_PID=$(exec_in_pod bash -c 'pgrep -f "cfgd.*daemon" || echo ""')
+# Start daemon in background (raise inotify limits for file watchers in container)
+exec_in_pod bash -c 'sysctl -w fs.inotify.max_user_instances=512 fs.inotify.max_user_watches=524288 > /dev/null 2>&1; nohup cfgd --config /etc/cfgd/e2e-daemon-cfgd.yaml daemon --no-color > /tmp/daemon.log 2>&1 &'
+# Use pgrep -x with the exact config path to avoid matching DaemonSet cfgd processes
+DAEMON_PID=$(exec_in_pod bash -c 'pgrep -f "cfgd.*e2e-daemon-cfgd" | head -1 || echo ""')
 echo "  Daemon PID: $DAEMON_PID"
 
 if [ -z "$DAEMON_PID" ]; then

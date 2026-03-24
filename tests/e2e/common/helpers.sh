@@ -26,8 +26,11 @@ IMAGE_TAG="${IMAGE_TAG:-e2e-$(git -C "$REPO_ROOT" rev-parse --short HEAD 2>/dev/
 E2E_NAMESPACE="${E2E_NAMESPACE:-cfgd-e2e-${GITHUB_RUN_ID:-$(date +%s)-$$}}"
 E2E_RUN_ID="${GITHUB_RUN_ID:-local-$$}"
 E2E_RUN_LABEL="cfgd.io/e2e-run=$E2E_RUN_ID"
-# YAML-friendly form for embedding in heredoc labels (key: "value" instead of key=value)
+# Job-specific label for cluster-scoped resources (prevents parallel job cleanup races)
+E2E_JOB_LABEL="cfgd.io/e2e-job=$E2E_NAMESPACE"
+# YAML-friendly forms for embedding in heredoc labels (key: "value" instead of key=value)
 E2E_RUN_LABEL_YAML="cfgd.io/e2e-run: \"$E2E_RUN_ID\""
+E2E_JOB_LABEL_YAML="cfgd.io/e2e-job: \"$E2E_NAMESPACE\""
 
 TEST_POD=""
 
@@ -91,9 +94,10 @@ cleanup_e2e() {
     # Delete ephemeral namespace (cascade deletes all namespaced resources)
     kubectl delete namespace "$E2E_NAMESPACE" --ignore-not-found --wait=false 2>/dev/null || true
 
-    # Delete cluster-scoped resources by run label
+    # Delete cluster-scoped resources by job-specific label (not run label,
+    # which is shared across parallel jobs and would nuke other jobs' resources)
     for kind in module clusterconfigpolicy; do
-        kubectl delete "$kind" -l "$E2E_RUN_LABEL" --ignore-not-found 2>/dev/null || true
+        kubectl delete "$kind" -l "$E2E_JOB_LABEL" --ignore-not-found 2>/dev/null || true
     done
 }
 

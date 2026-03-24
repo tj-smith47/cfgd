@@ -28,7 +28,7 @@ Declare your entire machine — packages, dotfiles, system settings, secrets —
 - [How cfgd compares](#how-cfgd-compares)
 - [Features](#features)
 - [Documentation](#documentation)
-- [Building from Source](#building-from-source)
+- [Distribution](#distribution)
 
 ---
 
@@ -201,12 +201,48 @@ Puppet is the closest philosophical match — declarative state, continuous enfo
 | [Bootstrap](docs/bootstrap.md) | `cfgd init` flow, apply options, install script |
 | [AI Generate](docs/ai-generate.md) | AI-guided config generation, MCP server setup |
 
-## Building from Source
+## Distribution
+
+In addition to publishing binaries to [GitHub Releases](https://github.com/tj-smith47/cfgd/releases) (Linux, macOS, Windows — x86_64 + aarch64), each release also publishes to:
+
+| Channel | Artifact |
+|---|---|
+| [Homebrew](https://github.com/tj-smith47/homebrew-tap) | `brew install tj-smith47/tap/cfgd` |
+| [crates.io](https://crates.io/crates/cfgd) | `cargo install cfgd` |
+| [GHCR](https://ghcr.io/tj-smith47) | Docker images: `cfgd`, `cfgd-operator`, `cfgd-csi` |
+| [Helm](chart/cfgd/) | `helm install cfgd oci://ghcr.io/tj-smith47/charts/cfgd` |
+| [Krew](manifests/krew/) | `kubectl krew install cfgd` — the [kubectl plugin](docs/operator.md) for debugging nodes, exec'ing into agent pods, and inspecting fleet status |
+| [OLM](ecosystem/olm/) | Operator bundle for OLM-managed clusters |
+| [Crossplane](function-cfgd/) | `function-cfgd` composition function for [team config distribution](docs/team-config.md) |
+
+**CI/CD integrations:**
+
+| Integration | Description |
+|---|---|
+| [cfgd Setup](ecosystem/github-actions/setup/) | GitHub Action — bootstrap a runner with a module from your config repo |
+| [cfgd Plan](ecosystem/github-actions/plan/) | GitHub Action — run `cfgd plan` on PRs, post the diff as a comment |
+| [GitLab CI](ecosystem/gitlab/) | Includable `.cfgd-ci.yml` template with `.cfgd-plan` and `.cfgd-apply` jobs |
+| [Tekton](ecosystem/tekton/) | `cfgd-apply` Task for Tekton Pipelines |
+
+```yaml
+# Example: set up your dev tools on a GitHub Actions runner
+- uses: tj-smith47/cfgd/ecosystem/github-action-setup@master
+  with:
+    source: git@github.com:you/machine-config.git
+    module: dev-tools
+```
+
+Modules can also be exported as [DevContainer Features](https://containers.dev/implementors/features/) for injection into devcontainers:
+
+```sh
+cfgd module export my-tool --format devcontainer
+```
+
+**Building from source:**
 
 ```sh
 git clone https://github.com/tj-smith47/cfgd.git && cd cfgd
 cargo build --release
-# binary at target/release/cfgd
 ```
 
 ## License

@@ -65,10 +65,11 @@ jobs:
         run: bash tests/e2e/node/scripts/run-helm-tests.sh
 
   # ---------- Node: server integration tests ----------
+  # Runs after binary-tests to avoid host sysctl races (single-node cluster)
   server-tests:
     name: "Node – Server Tests (T30–T35)"
     runs-on: arc-cfgd
-    needs: [setup]
+    needs: [setup, binary-tests]
     timeout-minutes: 15
     env:
       IMAGE_TAG: ${{ needs.setup.outputs.image-tag }}
@@ -80,10 +81,11 @@ jobs:
         run: bash tests/e2e/node/scripts/run-server-tests.sh
 
   # ---------- Node: drift & reconciliation tests ----------
+  # Runs after server-tests to avoid host sysctl races (single-node cluster)
   drift-tests:
     name: "Node – Drift Tests (T40–T50)"
     runs-on: arc-cfgd
-    needs: [setup]
+    needs: [setup, server-tests]
     timeout-minutes: 15
     env:
       IMAGE_TAG: ${{ needs.setup.outputs.image-tag }}

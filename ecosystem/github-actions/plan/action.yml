@@ -1,5 +1,5 @@
-name: cfgd Apply
-description: Run cfgd apply --dry-run and post the plan diff as a PR comment
+name: cfgd Plan
+description: Run cfgd plan and post the diff as a PR comment
 branding:
   icon: settings
   color: blue
@@ -14,7 +14,7 @@ inputs:
     required: false
     default: "latest"
   args:
-    description: Additional arguments to pass to cfgd apply
+    description: Additional arguments to pass to cfgd plan
     required: false
     default: ""
   comment:
@@ -39,18 +39,18 @@ runs:
           curl -fsSL https://raw.githubusercontent.com/tj-smith47/cfgd/master/install.sh | bash -s -- --version "$VERSION"
         fi
 
-    - name: Run cfgd apply --dry-run
+    - name: Run cfgd plan
       id: plan
       shell: bash
       run: |
         cd "${{ inputs.config-dir }}"
-        OUTPUT=$(cfgd apply --dry-run --yes --output json ${{ inputs.args }} 2>&1) || true
+        OUTPUT=$(cfgd plan --output json ${{ inputs.args }} 2>&1) || true
         echo "plan<<CFGD_EOF" >> "$GITHUB_OUTPUT"
         echo "$OUTPUT" >> "$GITHUB_OUTPUT"
         echo "CFGD_EOF" >> "$GITHUB_OUTPUT"
 
         # Also produce human-readable output
-        HUMAN=$(cfgd apply --dry-run --yes ${{ inputs.args }} 2>&1) || true
+        HUMAN=$(cfgd plan ${{ inputs.args }} 2>&1) || true
         echo "human<<CFGD_HUMAN_EOF" >> "$GITHUB_OUTPUT"
         echo "$HUMAN" >> "$GITHUB_OUTPUT"
         echo "CFGD_HUMAN_EOF" >> "$GITHUB_OUTPUT"

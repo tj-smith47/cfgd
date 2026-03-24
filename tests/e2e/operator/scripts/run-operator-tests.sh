@@ -22,8 +22,29 @@ kubectl get validatingwebhookconfiguration cfgd-validating-webhooks > /dev/null 
     exit 1
 }
 
+# Wrapper: apply YAML and fail the current test (not the whole script) on error.
+# Usage: apply_yaml "T03" <<'EOF' ... EOF
+apply_yaml() {
+    local test_id="$1"
+    local yaml
+    yaml=$(cat)
+    local output
+    if ! output=$(echo "$yaml" | kubectl apply -f - 2>&1); then
+        echo "  kubectl apply failed: $output"
+        fail_test "$test_id" "kubectl apply failed"
+        return 1
+    fi
+    return 0
+}
+
 # Set up ephemeral namespace for test resources
 create_e2e_namespace
+
+# Disable set -e for the test body — individual test failures are tracked by
+# fail_test/pass_test, and print_summary returns non-zero if any test failed.
+# This prevents a single webhook rejection or transient error from aborting all
+# remaining tests with no summary.
+set +e
 trap 'cleanup_e2e; for ns in "e2e-team-alpha-${E2E_RUN_ID}" "e2e-team-beta-${E2E_RUN_ID}" "e2e-inject-${E2E_RUN_ID}"; do kubectl delete namespace "$ns" --ignore-not-found --wait=false 2>/dev/null || true; done' EXIT
 
 # =================================================================
@@ -393,6 +414,7 @@ metadata:
   name: e2e-nettools-${E2E_RUN_ID}
   labels:
     cfgd.io/e2e-run: "${E2E_RUN_ID}"
+    ${E2E_JOB_LABEL_YAML}
 spec:
   packages:
     - name: netcat
@@ -453,6 +475,7 @@ metadata:
   name: e2e-bad-oci-${E2E_RUN_ID}
   labels:
     cfgd.io/e2e-run: "${E2E_RUN_ID}"
+    ${E2E_JOB_LABEL_YAML}
 spec:
   packages:
     - name: test
@@ -469,6 +492,7 @@ metadata:
   name: e2e-bad-pem-${E2E_RUN_ID}
   labels:
     cfgd.io/e2e-run: "${E2E_RUN_ID}"
+    ${E2E_JOB_LABEL_YAML}
 spec:
   packages:
     - name: test
@@ -488,6 +512,7 @@ metadata:
   name: e2e-empty-pkg-${E2E_RUN_ID}
   labels:
     cfgd.io/e2e-run: "${E2E_RUN_ID}"
+    ${E2E_JOB_LABEL_YAML}
 spec:
   packages:
     - name: ""
@@ -545,6 +570,7 @@ metadata:
   name: e2e-alpha-only-${E2E_RUN_ID}
   labels:
     cfgd.io/e2e-run: "${E2E_RUN_ID}"
+    ${E2E_JOB_LABEL_YAML}
 spec:
   namespaceSelector:
     matchLabels:
@@ -599,6 +625,7 @@ metadata:
   name: e2e-cluster-override-${E2E_RUN_ID}
   labels:
     cfgd.io/e2e-run: "${E2E_RUN_ID}"
+    ${E2E_JOB_LABEL_YAML}
 spec:
   namespaceSelector:
     matchLabels:
@@ -642,6 +669,7 @@ metadata:
   name: e2e-bad-semver-${E2E_RUN_ID}
   labels:
     cfgd.io/e2e-run: "${E2E_RUN_ID}"
+    ${E2E_JOB_LABEL_YAML}
 spec:
   namespaceSelector: {}
   packages:
@@ -718,6 +746,7 @@ metadata:
   name: e2e-inject-mod-${E2E_RUN_ID}
   labels:
     cfgd.io/e2e-run: "${E2E_RUN_ID}"
+    ${E2E_JOB_LABEL_YAML}
 spec:
   packages:
     - name: curl
@@ -793,6 +822,7 @@ metadata:
   name: e2e-debug-mod-${E2E_RUN_ID}
   labels:
     cfgd.io/e2e-run: "${E2E_RUN_ID}"
+    ${E2E_JOB_LABEL_YAML}
 spec:
   packages:
     - name: strace
@@ -923,6 +953,7 @@ metadata:
   name: e2e-oci-module-${E2E_RUN_ID}
   labels:
     cfgd.io/e2e-run: "${E2E_RUN_ID}"
+    ${E2E_JOB_LABEL_YAML}
 spec:
   packages: []
   ociArtifact: "${OCI_REF}"
@@ -940,4 +971,4 @@ else
 fi
 
 # --- Summary ---
-print_summary "Operator E2E Tests"
+print_summary "Operator E2E Tests" || exit 1

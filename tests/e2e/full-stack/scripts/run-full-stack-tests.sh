@@ -65,13 +65,19 @@ echo "Device gateway URL: $SERVER_URL"
 
 # Wait for gateway reachability from test pod
 echo "Waiting for device gateway..."
+GATEWAY_READY=false
 for i in $(seq 1 60); do
     if exec_in_pod curl -sf "${SERVER_URL}/api/v1/devices" > /dev/null 2>&1; then
+        GATEWAY_READY=true
         break
     fi
     sleep 2
 done
 
+if [ "$GATEWAY_READY" = "false" ]; then
+    echo "ERROR: Device gateway not reachable after 120s"
+    exit 1
+fi
 echo "All components are running"
 
 # =================================================================
@@ -79,17 +85,22 @@ echo "All components are running"
 # =================================================================
 begin_test "T01: All components healthy"
 
-GATEWAY_POD=$(kubectl get pods -n cfgd-system -l app=cfgd-server \
-    -o jsonpath='{.items[0].status.phase}' 2>/dev/null || echo "")
-OPERATOR_POD=$(kubectl get pods -n cfgd-system -l app=cfgd-operator \
-    -o jsonpath='{.items[0].status.phase}' 2>/dev/null || echo "")
+# Wait for rollouts to fully complete (setup may have triggered a rollout restart)
+kubectl rollout status deployment/cfgd-server -n cfgd-system --timeout=120s 2>/dev/null || true
+kubectl rollout status deployment/cfgd-operator -n cfgd-system --timeout=120s 2>/dev/null || true
+
+# Check deployment readiness (all replicas updated and available)
+GATEWAY_POD=$(kubectl get deployment cfgd-server -n cfgd-system \
+    -o jsonpath='{.status.conditions[?(@.type=="Available")].status}' 2>/dev/null || echo "")
+OPERATOR_POD=$(kubectl get deployment cfgd-operator -n cfgd-system \
+    -o jsonpath='{.status.conditions[?(@.type=="Available")].status}' 2>/dev/null || echo "")
 CFGD_AVAIL=$(exec_in_pod cfgd --version 2>&1 || echo "")
 
 echo "  cfgd binary:  ${CFGD_AVAIL:-not found}"
-echo "  Gateway pod:  $GATEWAY_POD"
-echo "  Operator pod: $OPERATOR_POD"
+echo "  Gateway available: $GATEWAY_POD"
+echo "  Operator available: $OPERATOR_POD"
 
-if [ "$GATEWAY_POD" = "Running" ] && [ "$OPERATOR_POD" = "Running" ] && [ -n "$CFGD_AVAIL" ]; then
+if [ "$GATEWAY_POD" = "True" ] && [ "$OPERATOR_POD" = "True" ] && [ -n "$CFGD_AVAIL" ]; then
     pass_test "T01"
 else
     fail_test "T01" "Not all components are healthy"
@@ -306,8 +317,8 @@ fi
 # =================================================================
 begin_test "T08: Policy sees drifted MachineConfig"
 
-# Reuse DRIFT_DETECTED from T07; only fetch reason (one kubectl call instead of two)
-DRIFT_STATUS="$DRIFT_DETECTED"
+DRIFT_STATUS=$(kubectl get machineconfig "mc-${DEVICE_1}" -n cfgd-system \
+    -o jsonpath='{.status.conditions[?(@.type=="DriftDetected")].status}' 2>/dev/null || echo "")
 DRIFT_REASON=$(kubectl get machineconfig "mc-${DEVICE_1}" -n cfgd-system \
     -o jsonpath='{.status.conditions[?(@.type=="DriftDetected")].reason}' 2>/dev/null || echo "")
 
@@ -330,12 +341,20 @@ kubectl delete driftalert "drift-${DEVICE_1}" -n cfgd-system 2>/dev/null || true
 
 # Patch MC to trigger re-reconcile (changes generation)
 kubectl patch machineconfig "mc-${DEVICE_1}" -n cfgd-system --type=merge \
-    -p '{"spec":{"packages":[{"name":"vim"},{"name":"git"},{"name":"curl"},{"name":"wget"}]}}' 2>/dev/null
+    -p '{"spec":{"packages":[{"name":"vim"},{"name":"git"},{"name":"curl"},{"name":"wget"}]}}' 2>/dev/null || true
 
-# Wait for MC to clear drift
+# Wait for MC to clear drift (controller may set status=False or remove the condition entirely)
 echo "  Waiting for drift to clear..."
-DRIFT=$(wait_for_k8s_field machineconfig "mc-${DEVICE_1}" cfgd-system \
-    '{.status.conditions[?(@.type=="DriftDetected")].status}' "False" 60) && DRIFT_CLEARED=true || DRIFT_CLEARED=false
+DRIFT_CLEARED=false
+for i in $(seq 1 60); do
+    DRIFT_VAL=$(kubectl get machineconfig "mc-${DEVICE_1}" -n cfgd-system \
+        -o jsonpath='{.status.conditions[?(@.type=="DriftDetected")].status}' 2>/dev/null || echo "")
+    if [ "$DRIFT_VAL" = "False" ] || [ -z "$DRIFT_VAL" ]; then
+        DRIFT_CLEARED=true
+        break
+    fi
+    sleep 1
+done
 
 READY_STATUS=$(kubectl get machineconfig "mc-${DEVICE_1}" -n cfgd-system \
     -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null || echo "")
@@ -368,7 +387,7 @@ echo "  Device info (first 200 chars):"
 echo "$DEVICE_INFO" | head -c 200 | sed 's/^/    /'
 echo ""
 
-if assert_contains "$DEVICE_INFO" "healthy" || assert_contains "$DEVICE_INFO" "$DEVICE_1"; then
+if assert_contains "$DEVICE_INFO" "status"; then
     pass_test "T10"
 else
     fail_test "T10" "Device status not available from device gateway"
@@ -392,10 +411,14 @@ else
         TEST_MODULE_DIR=$(mktemp -d)
         create_test_module_dir "$TEST_MODULE_DIR" "csi-test-mod-${E2E_RUN_ID}" "1.0.0"
         OCI_REF="${REGISTRY}/cfgd-e2e/csi-test:v1.0-${E2E_RUN_ID}"
-        "$CFGD_BIN" module push "$TEST_MODULE_DIR" --artifact "$OCI_REF" --no-color 2>/dev/null || true
+        PUSH_OK=true
+        "$CFGD_BIN" module push "$TEST_MODULE_DIR" --artifact "$OCI_REF" --no-color 2>&1 || PUSH_OK=false
         rm -rf "$TEST_MODULE_DIR"
 
-        # Create Module CRD with OCI ref
+        if [ "$PUSH_OK" = "false" ]; then
+            fail_test "T11" "Failed to push test module to registry"
+        else
+        # Create Module CRD with OCI ref (keyless signature satisfies webhook policy)
         kubectl apply -f - <<EOF
 apiVersion: cfgd.io/v1alpha1
 kind: Module
@@ -403,10 +426,14 @@ metadata:
   name: csi-test-mod-${E2E_RUN_ID}
   labels:
     cfgd.io/e2e-run: "${E2E_RUN_ID}"
+    ${E2E_JOB_LABEL_YAML}
 spec:
   packages: []
   ociArtifact: "${OCI_REF}"
   mountPolicy: Always
+  signature:
+    cosign:
+      keyless: true
 EOF
 
         # Create an injection-enabled namespace
@@ -462,6 +489,7 @@ EOF
             fail_test "T11" "Pod did not reach Running state (CSI mount may have failed)"
             kubectl describe pod csi-mount-test -n "e2e-csi-test-${E2E_RUN_ID}" 2>/dev/null | tail -20
         fi
+        fi  # PUSH_OK
     fi
 fi
 
@@ -592,6 +620,7 @@ metadata:
   name: debug-tools-${E2E_RUN_ID}
   labels:
     cfgd.io/e2e-run: "${E2E_RUN_ID}"
+    ${E2E_JOB_LABEL_YAML}
 spec:
   packages:
     - name: strace

@@ -436,6 +436,9 @@ pub struct Cli {
 
 #[derive(Parser)]
 pub struct ApplyArgs {
+    /// Clone config from a git URL before applying (same as cfgd init --from)
+    #[arg(long)]
+    pub from: Option<String>,
     /// Preview changes without applying
     #[arg(long)]
     pub dry_run: bool,
@@ -1987,6 +1990,17 @@ fn print_apply_result(
 }
 
 fn cmd_apply(cli: &Cli, printer: &Printer, args: &ApplyArgs) -> anyhow::Result<()> {
+    // --from: clone config from a git URL before applying (idempotent)
+    if let Some(url) = &args.from {
+        let target = cfgd_core::default_config_dir();
+        if !target.join("cfgd.yaml").exists() {
+            printer.info(&format!("Cloning config from {url}"));
+            std::fs::create_dir_all(&target)?;
+            cfgd_core::sources::git_clone_with_fallback(url, &target)
+                .map_err(|e| anyhow::anyhow!(e))?;
+        }
+    }
+
     let dry_run = args.dry_run;
     let phase = args.phase.as_deref();
     let yes = args.yes;
@@ -9399,6 +9413,7 @@ spec:
         let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
         let printer = test_printer();
         let args = ApplyArgs {
+            from: None,
             dry_run: true,
             phase: None,
             yes: true,
@@ -9413,12 +9428,30 @@ spec:
     }
 
     #[test]
+    fn cmd_apply_from_flag_parses() {
+        // Verify --from is accepted by the arg parser and wired through to ApplyArgs
+        let args = ApplyArgs {
+            from: Some("https://github.com/example/config.git".to_string()),
+            dry_run: true,
+            phase: None,
+            yes: true,
+            skip: vec![],
+            only: vec![],
+            module: Some("dev-tools".to_string()),
+            skip_scripts: false,
+        };
+        assert_eq!(args.from.as_deref(), Some("https://github.com/example/config.git"));
+        assert_eq!(args.module.as_deref(), Some("dev-tools"));
+    }
+
+    #[test]
     fn cmd_apply_dry_run_with_phase_filter() {
         let (config_dir, state_dir) = setup_test_env();
 
         let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
         let printer = test_printer();
         let args = ApplyArgs {
+            from: None,
             dry_run: true,
             phase: Some("packages".to_string()),
             yes: true,
@@ -9439,6 +9472,7 @@ spec:
         let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
         let printer = test_printer();
         let args = ApplyArgs {
+            from: None,
             dry_run: true,
             phase: Some("invalid-phase".to_string()),
             yes: true,
@@ -9460,6 +9494,7 @@ spec:
         let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
         let printer = test_printer();
         let args = ApplyArgs {
+            from: None,
             dry_run: true,
             phase: None,
             yes: true,
@@ -9480,6 +9515,7 @@ spec:
         let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
         let printer = test_printer();
         let args = ApplyArgs {
+            from: None,
             dry_run: true,
             phase: None,
             yes: true,
@@ -9510,6 +9546,7 @@ spec:
         let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
         let printer = test_printer();
         let args = ApplyArgs {
+            from: None,
             dry_run: false,
             phase: None,
             yes: true,
@@ -9542,6 +9579,7 @@ spec:
 
         // Apply first
         let args = ApplyArgs {
+            from: None,
             dry_run: false,
             phase: None,
             yes: true,
@@ -9575,6 +9613,7 @@ spec:
 
         // Apply
         let args = ApplyArgs {
+            from: None,
             dry_run: false,
             phase: None,
             yes: true,
@@ -9639,6 +9678,7 @@ spec:
         let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
         let printer = test_printer();
         let args = ApplyArgs {
+            from: None,
             dry_run: true,
             phase: None,
             yes: true,
@@ -9679,6 +9719,7 @@ spec:
         let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
         let printer = test_printer();
         let args = ApplyArgs {
+            from: None,
             dry_run: false,
             phase: None,
             yes: true,
@@ -9720,6 +9761,7 @@ spec:
         let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
         let printer = test_printer();
         let args = ApplyArgs {
+            from: None,
             dry_run: false,
             phase: None,
             yes: true,
@@ -9962,6 +10004,7 @@ spec:
 
         let cli = Cli {
             command: Command::Apply(ApplyArgs {
+                from: None,
                 dry_run: true,
                 phase: None,
                 yes: true,
@@ -10101,6 +10144,7 @@ spec:
         let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
         let printer = test_printer();
         let args = ApplyArgs {
+            from: None,
             dry_run: true,
             phase: None,
             yes: true,
@@ -10129,6 +10173,7 @@ spec:
         let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
         let printer = test_printer();
         let args = ApplyArgs {
+            from: None,
             dry_run: false,
             phase: None,
             yes: true,
@@ -10184,6 +10229,7 @@ spec:
 
         // Apply, then record a drift event manually
         let args = ApplyArgs {
+            from: None,
             dry_run: false,
             phase: None,
             yes: true,
@@ -10414,6 +10460,7 @@ spec:
             "post-scripts",
         ] {
             let args = ApplyArgs {
+                from: None,
                 dry_run: true,
                 phase: Some(phase.to_string()),
                 yes: true,
@@ -10445,6 +10492,7 @@ spec:
 
         // Apply
         let args = ApplyArgs {
+            from: None,
             dry_run: false,
             phase: None,
             yes: true,

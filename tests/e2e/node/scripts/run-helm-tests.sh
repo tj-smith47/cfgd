@@ -79,6 +79,11 @@ fi
 # T23: DaemonSet desired=ready
 # =================================================================
 begin_test "T23: DaemonSet desired equals ready"
+DS_NAME=$(kubectl get ds -n "$E2E_NAMESPACE" -l "app.kubernetes.io/name=cfgd" \
+    -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo "")
+if [ -n "$DS_NAME" ]; then
+    wait_for_daemonset "$E2E_NAMESPACE" "$DS_NAME" 60 || true
+fi
 DESIRED=$(kubectl get ds -n "$E2E_NAMESPACE" -l "app.kubernetes.io/name=cfgd" \
     -o jsonpath='{.items[0].status.desiredNumberScheduled}' 2>/dev/null || echo "0")
 READY=$(kubectl get ds -n "$E2E_NAMESPACE" -l "app.kubernetes.io/name=cfgd" \

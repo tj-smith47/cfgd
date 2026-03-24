@@ -24,16 +24,20 @@ done
 SERVER_URL="http://cfgd-server.cfgd-system.svc.cluster.local:8080"
 echo "Device gateway URL: $SERVER_URL"
 
-# Verify device gateway is reachable from the test pod
+# Verify device gateway is reachable from the test pod (retry up to 60s)
 echo "Verifying device gateway reachability from test pod..."
-exec_in_pod curl -sf "${SERVER_URL}/api/v1/devices" > /dev/null 2>&1 || {
-    echo "WARNING: device gateway not reachable from test pod. Waiting..."
-    sleep 10
-    exec_in_pod curl -sf "${SERVER_URL}/api/v1/devices" > /dev/null 2>&1 || {
-        echo "ERROR: device gateway not reachable"
-        exit 1
-    }
-}
+GATEWAY_READY=false
+for i in $(seq 1 30); do
+    if exec_in_pod curl -sf "${SERVER_URL}/api/v1/devices" > /dev/null 2>&1; then
+        GATEWAY_READY=true
+        break
+    fi
+    sleep 2
+done
+if [ "$GATEWAY_READY" = "false" ]; then
+    echo "ERROR: device gateway not reachable after 60s"
+    exit 1
+fi
 
 DEVICE_ID="e2e-test-$(date +%s)"
 
