@@ -476,6 +476,7 @@ mod tests {
     // ---------------------------------------------------------------------------
 
     #[test]
+    #[cfg(unix)]
     fn test_symlink_escape_blocked() {
         let (_home_dir, home) = make_home();
         let (_repo_dir, repo) = make_repo();
@@ -487,13 +488,7 @@ mod tests {
 
         // Create a symlink inside home pointing outside.
         let link = home.join("escape_link");
-        #[cfg(unix)]
         std::os::unix::fs::symlink(&secret_file, &link).unwrap();
-        #[cfg(not(unix))]
-        {
-            // On non-Unix, skip the symlink test.
-            return;
-        }
 
         let err = read_file(&link, &home, &repo).unwrap_err();
         let msg = err.to_string();

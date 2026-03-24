@@ -1198,6 +1198,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn permissions_set_correctly() {
         let dir = tempfile::tempdir().unwrap();
         let config_dir = dir.path();
@@ -1881,6 +1882,7 @@ mod tests {
     // --- check_permissions ---
 
     #[test]
+    #[cfg(unix)]
     fn check_permissions_drift_detected() {
         let dir = tempfile::tempdir().unwrap();
         let config_dir = dir.path();
@@ -1921,6 +1923,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn check_permissions_no_drift() {
         let dir = tempfile::tempdir().unwrap();
         let config_dir = dir.path();
@@ -1958,6 +1961,7 @@ mod tests {
     // --- set_permissions ---
 
     #[test]
+    #[cfg(unix)]
     fn set_permissions_changes_mode() {
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("test.txt");
