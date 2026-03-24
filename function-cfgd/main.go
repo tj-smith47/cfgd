@@ -14,6 +14,7 @@ func main() {
 	}
 	if err := fn.Serve(&Function{log: log},
 		fn.Listen(fn.DefaultNetwork, fn.DefaultAddress),
+		fn.MTLSCertificates(os.Getenv("TLS_SERVER_CERTS_DIR")),
 	); err != nil {
 		log.Info("Error serving function", "error", err)
 		os.Exit(1)
