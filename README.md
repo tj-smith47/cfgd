@@ -4,7 +4,7 @@
 
 # cfgd
 
-Declarative machine configuration via portable profiles and shareable modules. Written in Rust.
+Declare your entire machine — packages, dotfiles, system settings, secrets — with composable profiles and shareable, cross-platform modules.
 
 [![E2E – CLI](https://github.com/tj-smith47/cfgd/actions/workflows/e2e-cli.yml/badge.svg)](https://github.com/tj-smith47/cfgd/actions/workflows/e2e-cli.yml)
 [![E2E – Full Stack](https://github.com/tj-smith47/cfgd/actions/workflows/e2e-full-stack.yml/badge.svg)](https://github.com/tj-smith47/cfgd/actions/workflows/e2e-full-stack.yml)
@@ -36,7 +36,15 @@ Another inspiring aspect had to do with working in devcontainers. At my previous
 
 ## How It Works
 
-**Profiles** declare your machine's desired state — packages, files, system settings. They compose via inheritance, so you can layer `base -> work -> work-mac`. See [docs/profiles.md](docs/profiles.md).
+**Profiles** declare your machine's desired state — packages, files, system settings. They compose via inheritance — share a common base across machines, then specialize per context. See [docs/profiles.md](docs/profiles.md).
+
+```
+             base
+            ╱    ╲
+        work    personal
+       ╱    ╲
+  laptop    devcontainer
+```
 
 **Modules** are shareable, self-contained config packages. Install someone else's dev environment or publish your own. Cross-platform package resolution picks the right manager automatically. See [docs/modules.md](docs/modules.md).
 
@@ -124,15 +132,18 @@ See [docs/modules.md](docs/modules.md) for the full spec including git file sour
 
 ## How cfgd compares
 
-| | **cfgd** | [chezmoi](https://chezmoi.io) | [Nix Home Manager](https://nix-community.github.io/home-manager/) | [Ansible](https://docs.ansible.com/) |
-|---|---|---|---|---|
-| **Focus** | Full machine state | Dotfiles | Dotfiles + packages (Nix) | General automation |
-| **Packages** | **15 managers** | None | Nix only | Any (via tasks) |
-| **Drift detection** | **Continuous (daemon)** | Manual | On rebuild | Manual |
-| **Cross-platform resolution** | **Per-package manager mapping** | N/A | Nix-only | Per-task conditionals |
-| **Shareable modules** | **First-class** | Templates only | Flakes | Roles (Galaxy) |
-| **Team config** | **Policy tiers + Crossplane** | N/A | Flake inputs | N/A |
-| **Learning curve** | YAML + CLI | Go templates | Nix language | YAML + Jinja2 |
+| | **cfgd** | [chezmoi](https://chezmoi.io) | [Nix Home Manager](https://nix-community.github.io/home-manager/) | [Ansible](https://docs.ansible.com/) | [Puppet](https://www.puppet.com/) |
+|---|---|---|---|---|---|
+| **Focus** | Full machine state | Dotfiles | Dotfiles + packages (Nix) | General automation | Server/infra state |
+| **Packages** | **15 managers** | None | Nix only | Any (via tasks) | Any (via providers) |
+| **Drift detection** | **Continuous (daemon)** | Manual | On rebuild | Manual | Continuous (agent) |
+| **Cross-platform resolution** | **Per-package manager mapping** | N/A | Nix-only | Per-task conditionals | Per-OS Hiera data |
+| **Shareable modules** | **First-class** | Templates only | Flakes | Roles (Galaxy) | Forge (server-oriented) |
+| **Team config** | **Policy tiers + Crossplane** | N/A | Flake inputs | N/A | Puppet Enterprise |
+| **Infrastructure** | **Single binary, zero servers** | Single binary | Nix daemon | SSH (or AWX) | PuppetServer + PuppetDB + CA |
+| **Learning curve** | YAML + CLI | Go templates | Nix language | YAML + Jinja2 | Puppet DSL (Ruby) |
+
+Puppet is the closest philosophical match — declarative state, continuous enforcement, module ecosystem. If that model clicked for you but standing up a JVM server and writing a Ruby-era DSL to manage your dotfiles in 2026 doesn't, `cfgd` is what that idea looks like rebuilt from scratch for developer workstations.
 
 `cfgd` is a good fit when you want: one-liners for cross-platform machine bootstrapping, shareable dev environment modules, continuous reconciliation between machines or subscribed sources, or team config distribution with policy enforcement.
 
