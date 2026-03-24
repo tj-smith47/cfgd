@@ -74,9 +74,14 @@ else
 fi
 
 # =================================================================
-# T32: Device status is healthy
+# T32: Device status is healthy after apply + re-checkin
 # =================================================================
 begin_test "T32: Device status is healthy"
+# Apply to bring the node into compliance, then checkin again
+exec_in_pod cfgd --config /etc/cfgd/cfgd.yaml apply --yes --no-color > /dev/null 2>&1 || true
+exec_in_pod cfgd --config /etc/cfgd/cfgd.yaml checkin \
+    --server-url "$SERVER_URL" --device-id "$DEVICE_ID" --no-color > /dev/null 2>&1 || true
+
 DEVICE=$(exec_in_pod curl -sf "${SERVER_URL}/api/v1/devices/${DEVICE_ID}" 2>/dev/null || echo "{}")
 echo "  Device details (first 300 chars):"
 echo "$DEVICE" | head -c 300 | sed 's/^/    /'
