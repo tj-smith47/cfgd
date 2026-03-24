@@ -1656,7 +1656,26 @@ pub(super) fn known_manager_names() -> Vec<String> {
 /// - `<path>` without `:` → adopt in place: source=path, target=path
 /// - `<source>:<target>` → explicit mapping
 fn parse_file_spec(spec: &str) -> anyhow::Result<(PathBuf, PathBuf)> {
-    if let Some((source, target)) = spec.split_once(':') {
+    // On Windows, paths like C:\foo contain colons that are NOT source:target separators.
+    // A drive letter is a single ASCII letter followed by `:` and `\` or `/`.
+    // We skip the first colon if it's part of a drive letter prefix.
+    let split_pos = spec.char_indices().find_map(|(i, c)| {
+        if c == ':' {
+            // Skip if this colon is at position 1 and preceded by a single ASCII letter
+            // (i.e., a Windows drive letter like C: or D:)
+            if i == 1 && spec.as_bytes()[0].is_ascii_alphabetic() {
+                return None;
+            }
+            Some(i)
+        } else {
+            None
+        }
+    });
+
+    if let Some(pos) = split_pos {
+        let source = &spec[..pos];
+        let target = &spec[pos + 1..];
+        // Target may also start with a drive letter — handle C:\path after the separator
         if source.is_empty() {
             anyhow::bail!("empty source in file spec: {}", spec);
         }
@@ -8729,6 +8748,22 @@ spec:
     #[test]
     fn parse_file_spec_empty_target() {
         assert!(super::parse_file_spec("/tmp/a:").is_err());
+    }
+
+    #[test]
+    fn parse_file_spec_windows_drive_letter() {
+        // C:\Users\foo should NOT be split on the drive-letter colon
+        let (src, tgt) = super::parse_file_spec(r"C:\Users\foo").unwrap();
+        assert_eq!(src, PathBuf::from(r"C:\Users\foo"));
+        assert_eq!(tgt, PathBuf::from(r"C:\Users\foo"));
+    }
+
+    #[test]
+    fn parse_file_spec_windows_source_target() {
+        // source:target where both have drive letters
+        let (src, tgt) = super::parse_file_spec(r"/home/a:C:\Users\b").unwrap();
+        assert_eq!(src, PathBuf::from("/home/a"));
+        assert_eq!(tgt, PathBuf::from(r"C:\Users\b"));
     }
 
     // --- add_to_gitignore ---

@@ -21,6 +21,68 @@ kubectl cluster-info > /dev/null 2>&1 || {
     exit 1
 }
 
+# --- Step 1b: Ensure runner SA has E2E permissions ---
+# ARC runners use their pod's SA, which may not have CRD/node/Helm permissions.
+# Apply the e2e ClusterRole first, then bind the current identity to it.
+# Namespace must exist before the SA in e2e-rbac.yaml can be created.
+kubectl create namespace cfgd-system 2>/dev/null || true
+echo "Applying E2E ClusterRole..."
+kubectl apply -f "$SCRIPT_DIR/manifests/e2e-rbac.yaml"
+
+# Detect current identity and bind to cfgd-e2e ClusterRole if not already bound
+CURRENT_USER=$(kubectl auth whoami -o jsonpath='{.status.userInfo.username}' 2>/dev/null || echo "")
+if [ -n "$CURRENT_USER" ] && echo "$CURRENT_USER" | grep -q '^system:serviceaccount:'; then
+    RUNNER_NS=$(echo "$CURRENT_USER" | cut -d: -f3)
+    RUNNER_SA=$(echo "$CURRENT_USER" | cut -d: -f4)
+    echo "  Runner identity: $RUNNER_SA in $RUNNER_NS"
+
+    # Create a binding for the runner SA if it's not the cfgd-e2e SA
+    if [ "$RUNNER_SA" != "cfgd-e2e" ] || [ "$RUNNER_NS" != "cfgd-system" ]; then
+        BINDING_NAME="cfgd-e2e-runner-${RUNNER_SA}"
+        # Truncate to 63 chars for k8s name limit
+        BINDING_NAME="${BINDING_NAME:0:63}"
+        if kubectl apply -f - <<RUNNEREOF 2>/dev/null
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: ${BINDING_NAME}
+subjects:
+  - kind: ServiceAccount
+    name: ${RUNNER_SA}
+    namespace: ${RUNNER_NS}
+roleRef:
+  kind: ClusterRole
+  name: cfgd-e2e
+  apiGroup: rbac.authorization.k8s.io
+RUNNEREOF
+        then
+            echo "  Bound runner SA to cfgd-e2e ClusterRole"
+            sleep 2
+        else
+            echo "  WARN: Could not self-bind (RBAC escalation prevention)."
+            echo "  If CRD/node permissions fail, a cluster admin must run:"
+            echo "    kubectl create clusterrolebinding ${BINDING_NAME} \\"
+            echo "      --clusterrole=cfgd-e2e \\"
+            echo "      --serviceaccount=${RUNNER_NS}:${RUNNER_SA}"
+        fi
+    fi
+fi
+
+# Pre-flight: verify CRD management permissions
+if ! kubectl auth can-i create customresourcedefinitions --all-namespaces > /dev/null 2>&1; then
+    echo ""
+    echo "ERROR: Current identity cannot manage CRDs."
+    echo "  Identity: ${CURRENT_USER:-unknown}"
+    echo ""
+    echo "  A cluster admin must apply the runner binding once:"
+    echo "    kubectl apply -f tests/e2e/manifests/e2e-rbac.yaml"
+    echo "    kubectl create clusterrolebinding cfgd-e2e-runner \\"
+    echo "      --clusterrole=cfgd-e2e \\"
+    echo "      --serviceaccount=<runner-namespace>:<runner-sa-name>"
+    echo ""
+    exit 1
+fi
+
 # --- Step 2: Build cfgd-gen-crds (other binaries built inside Dockerfiles) ---
 echo "Building cfgd-gen-crds..."
 cargo build --release --manifest-path "$REPO_ROOT/Cargo.toml" \
@@ -43,12 +105,7 @@ for img in cfgd cfgd-operator cfgd-csi; do
     docker push "${REGISTRY}/${img}:latest"
 done
 
-# --- Step 4: Ensure cfgd-system namespace ---
-kubectl create namespace cfgd-system 2>/dev/null || true
-
-# --- Step 5: Apply RBAC ---
-echo "Applying E2E RBAC..."
-kubectl apply -f "$SCRIPT_DIR/manifests/e2e-rbac.yaml"
+# (Namespace and RBAC already created in Step 1b above)
 
 # --- Step 6: Generate and apply CRDs ---
 echo "Generating and applying CRDs..."

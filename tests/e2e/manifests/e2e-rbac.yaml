@@ -9,6 +9,10 @@ kind: ClusterRole
 metadata:
   name: cfgd-e2e
 rules:
+  # CRD management — required by setup-cluster.sh to install/update cfgd CRDs
+  - apiGroups: ["apiextensions.k8s.io"]
+    resources: ["customresourcedefinitions"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
   # cfgd.io CRDs — full access including status subresources
   - apiGroups: ["cfgd.io"]
     resources: ["*", "*/status"]
@@ -23,21 +27,25 @@ rules:
   - apiGroups: [""]
     resources: ["pods/exec", "pods/log", "pods/portforward"]
     verbs: ["create", "get"]
+  - apiGroups: [""]
+    resources: ["nodes"]
+    verbs: ["get", "list", "watch"]
+  # Apps — deployments and daemonsets (Helm creates these)
   - apiGroups: ["apps"]
     resources: ["deployments", "daemonsets"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
-  # RBAC
+  # RBAC — Helm chart creates ClusterRoles/Bindings for agent, operator, CSI
   - apiGroups: ["rbac.authorization.k8s.io"]
     resources: ["roles", "rolebindings", "clusterroles", "clusterrolebindings"]
-    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete", "bind", "escalate"]
   # Admission webhooks
   - apiGroups: ["admissionregistration.k8s.io"]
     resources: ["validatingwebhookconfigurations", "mutatingwebhookconfigurations"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
-  # Storage (read-only)
+  # Storage — CSI driver registration
   - apiGroups: ["storage.k8s.io"]
     resources: ["csidrivers", "csinodes"]
-    verbs: ["get", "list", "watch"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
   # Events
   - apiGroups: [""]
     resources: ["events"]
@@ -51,6 +59,7 @@ rules:
     resources: ["certificates", "issuers"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
 ---
+# Binding for the cfgd-e2e SA (used by test pods)
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
 metadata:

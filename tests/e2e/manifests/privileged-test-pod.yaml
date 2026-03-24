@@ -4,7 +4,7 @@ metadata:
   name: cfgd-e2e-node-RUN_PLACEHOLDER
   labels:
     app: cfgd-e2e-node
-    cfgd.io/e2e-run: RUN_PLACEHOLDER
+    cfgd.io/e2e-run: "RUN_PLACEHOLDER"
 spec:
   restartPolicy: Never
   imagePullSecrets:

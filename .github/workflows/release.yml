@@ -100,8 +100,12 @@ jobs:
         if: matrix.target == 'aarch64-pc-windows-msvc'
         run: rustup target add aarch64-pc-windows-msvc
 
-      - name: Install protoc (non-ARC runners)
-        if: ${{ !startsWith(matrix.os, 'arc-') }}
+      - name: Install protoc (macOS via Homebrew)
+        if: runner.os == 'macOS'
+        run: brew install protobuf
+
+      - name: Install protoc (Windows)
+        if: runner.os == 'Windows'
         uses: arduino/setup-protoc@v3
         with:
           version: "25.x"
