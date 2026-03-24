@@ -20,7 +20,7 @@ env:
 jobs:
   fmt:
     name: Format
-    runs-on: ubuntu-latest
+    runs-on: arc-cfgd
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -30,29 +30,25 @@ jobs:
 
   clippy:
     name: Clippy
-    runs-on: ubuntu-latest
+    runs-on: arc-cfgd
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
-      - uses: Swatinem/rust-cache@v2
-      - name: Install protoc
-        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
-      - run: cargo clippy -- -D warnings
+      - env:
+          RUSTC_WRAPPER: sccache
+        run: cargo clippy -- -D warnings
 
   test:
     name: Test
-    runs-on: ubuntu-latest
+    runs-on: arc-cfgd
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-      - name: Install protoc
-        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
-      - name: Install cargo-tarpaulin
-        run: cargo install cargo-tarpaulin
       - name: Run tests with coverage
+        env:
+          RUSTC_WRAPPER: sccache
         run: cargo tarpaulin --out xml --skip-clean
       - name: Update coverage badge
         if: github.ref == 'refs/heads/master'
@@ -83,7 +79,7 @@ jobs:
 
   audit:
     name: Code Audit
-    runs-on: ubuntu-latest
+    runs-on: arc-cfgd
     steps:
       - uses: actions/checkout@v4
       - run: bash .claude/scripts/audit.sh
