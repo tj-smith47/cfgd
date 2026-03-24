@@ -1,5 +1,5 @@
 # Ignore everything
-*
+**
 
 # Allow project structure
 !*/
@@ -22,8 +22,7 @@
 !examples/**
 
 # Docker and deployment
-!Dockerfile
-!Dockerfile.*
+!Dockerfil.*
 !chart/
 !chart/**
 !manifests/
@@ -52,9 +51,6 @@
 !.claude/skills/**
 !.claude/hooks/
 !.claude/hooks/**
-
-# Re-ignore specs (contain cluster-specific info)
-.claude/specs/
 
 # Tests
 !tests/
