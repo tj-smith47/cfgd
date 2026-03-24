@@ -79,7 +79,7 @@ jobs:
 
   audit:
     name: Code Audit
-    runs-on: arc-cfgd
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - run: bash .claude/scripts/audit.sh

@@ -97,7 +97,7 @@ jobs:
 
   e2e-summary:
     name: "E2E Summary"
-    runs-on: arc-cfgd
+    runs-on: ubuntu-latest
     needs: [binary-tests, helm-tests, server-tests, drift-tests]
     if: always()
     steps:

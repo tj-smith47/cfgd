@@ -24,7 +24,7 @@ permissions:
 
 jobs:
   auto-tag:
-    runs-on: arc-cfgd
+    runs-on: ubuntu-latest
     if: ${{ !contains(github.event.head_commit.message, '#none') }}
     steps:
       - name: Checkout
