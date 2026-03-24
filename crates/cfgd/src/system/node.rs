@@ -7,7 +7,9 @@ use cfgd_core::errors::{CfgdError, Result};
 use cfgd_core::output::Printer;
 use cfgd_core::providers::{SystemConfigurator, SystemDrift};
 
-use super::{diff_yaml_mapping, stderr_string, yaml_value_to_string, yaml_value_with_numeric_bools};
+use super::{
+    diff_yaml_mapping, stderr_string, yaml_value_to_string, yaml_value_with_numeric_bools,
+};
 
 // ---------------------------------------------------------------------------
 // SysctlConfigurator

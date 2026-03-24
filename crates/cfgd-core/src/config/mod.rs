@@ -2414,7 +2414,10 @@ VERSION_ID="12"
 ID=debian
 "#;
         let fields = crate::platform::parse_os_release_content(content);
-        assert_eq!(fields.get("ID").map(|v| v.to_lowercase()).as_deref(), Some("debian"));
+        assert_eq!(
+            fields.get("ID").map(|v| v.to_lowercase()).as_deref(),
+            Some("debian")
+        );
         assert_eq!(fields.get("VERSION_ID").map(|s| s.as_str()), Some("12"));
     }
 
@@ -2426,7 +2429,10 @@ ID=ubuntu
 VERSION_ID="22.04"
 "#;
         let fields = crate::platform::parse_os_release_content(content);
-        assert_eq!(fields.get("ID").map(|v| v.to_lowercase()).as_deref(), Some("ubuntu"));
+        assert_eq!(
+            fields.get("ID").map(|v| v.to_lowercase()).as_deref(),
+            Some("ubuntu")
+        );
         assert_eq!(fields.get("VERSION_ID").map(|s| s.as_str()), Some("22.04"));
     }
 

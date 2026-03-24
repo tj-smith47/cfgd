@@ -2319,8 +2319,14 @@ mod tests {
 
     #[test]
     fn yaml_value_with_numeric_bools_conversion() {
-        assert_eq!(yaml_value_with_numeric_bools(&serde_yaml::Value::Bool(true)), "1");
-        assert_eq!(yaml_value_with_numeric_bools(&serde_yaml::Value::Bool(false)), "0");
+        assert_eq!(
+            yaml_value_with_numeric_bools(&serde_yaml::Value::Bool(true)),
+            "1"
+        );
+        assert_eq!(
+            yaml_value_with_numeric_bools(&serde_yaml::Value::Bool(false)),
+            "0"
+        );
         assert_eq!(
             yaml_value_with_numeric_bools(&serde_yaml::Value::Number(42.into())),
             "42"
@@ -2485,8 +2491,9 @@ HKEY_CURRENT_USER\\Environment\n\
             serde_yaml::Value::String("expected".into()),
         );
 
-        let drifts =
-            diff_yaml_mapping(&desired, "", yaml_value_with_numeric_bools, |_| "actual".to_string());
+        let drifts = diff_yaml_mapping(&desired, "", yaml_value_with_numeric_bools, |_| {
+            "actual".to_string()
+        });
         assert_eq!(drifts.len(), 1);
         assert_eq!(drifts[0].key, "key1");
         assert_eq!(drifts[0].expected, "expected");
@@ -2501,7 +2508,9 @@ HKEY_CURRENT_USER\\Environment\n\
             serde_yaml::Value::String("same".into()),
         );
 
-        let drifts = diff_yaml_mapping(&desired, "", yaml_value_with_numeric_bools, |_| "same".to_string());
+        let drifts = diff_yaml_mapping(&desired, "", yaml_value_with_numeric_bools, |_| {
+            "same".to_string()
+        });
         assert!(drifts.is_empty());
     }
 
@@ -2548,8 +2557,14 @@ HKEY_CURRENT_USER\\Environment\n\
     #[test]
     fn yaml_value_with_numeric_bools_bool_converts_to_01() {
         // macos defaults uses "1"/"0" for bools, not "true"/"false"
-        assert_eq!(yaml_value_with_numeric_bools(&serde_yaml::Value::Bool(true)), "1");
-        assert_eq!(yaml_value_with_numeric_bools(&serde_yaml::Value::Bool(false)), "0");
+        assert_eq!(
+            yaml_value_with_numeric_bools(&serde_yaml::Value::Bool(true)),
+            "1"
+        );
+        assert_eq!(
+            yaml_value_with_numeric_bools(&serde_yaml::Value::Bool(false)),
+            "0"
+        );
     }
 
     #[test]
@@ -2974,10 +2989,7 @@ HKEY_CURRENT_USER\\Environment\n\
             "dark"
         );
         // Bools use true/false (not 0/1 like yaml_value_with_numeric_bools)
-        assert_eq!(
-            yaml_value_to_string(&serde_yaml::Value::Bool(true)),
-            "true"
-        );
+        assert_eq!(yaml_value_to_string(&serde_yaml::Value::Bool(true)), "true");
         assert_eq!(
             yaml_value_to_string(&serde_yaml::Value::Bool(false)),
             "false"
