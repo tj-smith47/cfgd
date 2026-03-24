@@ -134,11 +134,11 @@ check_pattern error \
 
 log_section "No Unwrap in Library Code"
 # Match .unwrap() but NOT .unwrap_or(), .unwrap_or_default(), .unwrap_or_else()
-# Exclude main.rs, lib.rs, and gen_crds.rs (binary entry points where expect is acceptable)
+# Exclude main.rs and gen_crds.rs (binary entry points where expect is acceptable)
 check_pattern error \
     "No .unwrap()/.expect() in library code" \
     '\.unwrap\(\)[^_]|\.unwrap\(\)$|\.expect\(' \
-    'main\.rs:|lib\.rs:|gen_crds\.rs:'
+    'main\.rs:|gen_crds\.rs:'
 
 log_section "Console/Indicatif Encapsulation"
 check_pattern error \
@@ -154,9 +154,9 @@ log_section "Controlled Shell Execution"
 # oci/ allowed for Docker credential helper execution (docker-credential-*)
 # daemon/ allowed for sc.exe Windows Service lifecycle management
 check_pattern warn \
-    "std::process::Command confined to packages/, secrets/, system/, reconciler/, sources/, platform/, cli/, gateway/, output/, generate/, oci, daemon/, lib.rs" \
+    "std::process::Command confined to packages/, secrets/, system/, reconciler/, sources/, platform/, cli/, gateway/, output/, generate/, oci, daemon/" \
     'std::process::Command|Command::new' \
-    'packages/|secrets/|system/|reconciler/|sources/|platform/|cli/|gateway/|output/|generate/|oci|daemon/|lib\.rs:'
+    'packages/|secrets/|system/|reconciler/|sources/|platform/|cli/|gateway/|output/|generate/|oci|daemon/'
 
 log_section "Error Type Discipline"
 check_pattern error \
@@ -218,7 +218,7 @@ dupes=$(while IFS= read -r -d '' rsfile; do
 done < <(find "${SRC_ROOTS[@]}" -name '*.rs' -print0 2>/dev/null) \
     | sort | uniq -c | sort -rn \
     | awk '$1 > 2 {print}' \
-    | grep -v -E 'and_then.*unwrap_or|\.into\(\), serde_yaml|git@github\.com:acme|cfgd-0\.2\.0-linux|width=device-width|apple\.com/DTDs/PropertyList|no installation method available|github\.com/user/(repo|module)|No module registries configured|Kubernetes CRD|\.status\.conditions\[\?\(@\.type|apiVersion: cfgd\.io|&input, &mut session|profile update --file|cfgd\.env|compliant, .* non-compliant|Mode: profile|/home/user/.config|\.github/workflows|parameter is required|Document kind:|cannot determine state directory|must not be empty' \
+    \
     | head -5 || true)
 if [[ -n "$dupes" ]]; then
     log_warn "Repeated string literals (>2 occurrences, >30 chars):"

@@ -1741,20 +1741,13 @@ pub fn match_platform_profile(
 }
 
 fn parse_os_release_file() -> (Option<String>, Option<String>) {
-    parse_os_release_content(&std::fs::read_to_string("/etc/os-release").unwrap_or_default())
-}
-
-fn parse_os_release_content(content: &str) -> (Option<String>, Option<String>) {
-    let mut id = None;
-    let mut version_id = None;
-    for line in content.lines() {
-        if let Some(val) = line.strip_prefix("ID=") {
-            id = Some(val.trim_matches('"').to_lowercase());
-        } else if let Some(val) = line.strip_prefix("VERSION_ID=") {
-            version_id = Some(val.trim_matches('"').to_string());
-        }
-    }
-    (id, version_id)
+    let fields = crate::platform::parse_os_release_content(
+        &std::fs::read_to_string("/etc/os-release").unwrap_or_default(),
+    );
+    (
+        fields.get("ID").map(|v| v.to_lowercase()),
+        fields.get("VERSION_ID").cloned(),
+    )
 }
 
 /// Get the list of profile names from a ConfigSource manifest.
@@ -2420,9 +2413,9 @@ NAME="Debian GNU/Linux"
 VERSION_ID="12"
 ID=debian
 "#;
-        let (id, version) = parse_os_release_content(content);
-        assert_eq!(id.as_deref(), Some("debian"));
-        assert_eq!(version.as_deref(), Some("12"));
+        let fields = crate::platform::parse_os_release_content(content);
+        assert_eq!(fields.get("ID").map(|v| v.to_lowercase()).as_deref(), Some("debian"));
+        assert_eq!(fields.get("VERSION_ID").map(|s| s.as_str()), Some("12"));
     }
 
     #[test]
@@ -2432,16 +2425,16 @@ VERSION="22.04.3 LTS (Jammy Jellyfish)"
 ID=ubuntu
 VERSION_ID="22.04"
 "#;
-        let (id, version) = parse_os_release_content(content);
-        assert_eq!(id.as_deref(), Some("ubuntu"));
-        assert_eq!(version.as_deref(), Some("22.04"));
+        let fields = crate::platform::parse_os_release_content(content);
+        assert_eq!(fields.get("ID").map(|v| v.to_lowercase()).as_deref(), Some("ubuntu"));
+        assert_eq!(fields.get("VERSION_ID").map(|s| s.as_str()), Some("22.04"));
     }
 
     #[test]
     fn parse_os_release_empty() {
-        let (id, version) = parse_os_release_content("");
-        assert!(id.is_none());
-        assert!(version.is_none());
+        let fields = crate::platform::parse_os_release_content("");
+        assert!(fields.get("ID").is_none());
+        assert!(fields.get("VERSION_ID").is_none());
     }
 
     #[test]

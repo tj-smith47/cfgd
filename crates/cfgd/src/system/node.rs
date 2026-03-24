@@ -7,7 +7,7 @@ use cfgd_core::errors::{CfgdError, Result};
 use cfgd_core::output::Printer;
 use cfgd_core::providers::{SystemConfigurator, SystemDrift};
 
-use super::{diff_yaml_mapping, stderr_string};
+use super::{diff_yaml_mapping, stderr_string, yaml_value_to_string, yaml_value_with_numeric_bools};
 
 // ---------------------------------------------------------------------------
 // SysctlConfigurator
@@ -114,7 +114,7 @@ impl SystemConfigurator for SysctlConfigurator {
         Ok(diff_yaml_mapping(
             mapping,
             "",
-            sysctl_yaml_value_to_string,
+            yaml_value_with_numeric_bools,
             |key_str| Self::read_sysctl(key_str).unwrap_or_else(|_| "<unreadable>".to_string()),
         ))
     }
@@ -132,7 +132,7 @@ impl SystemConfigurator for SysctlConfigurator {
                 Some(k) => k,
                 None => continue,
             };
-            let desired_val = sysctl_yaml_value_to_string(value);
+            let desired_val = yaml_value_with_numeric_bools(value);
 
             printer.info(&format!("sysctl -w {}={}", key_str, desired_val));
 
@@ -1117,23 +1117,6 @@ impl SystemConfigurator for CertificateConfigurator {
 // Helpers
 // ---------------------------------------------------------------------------
 
-fn yaml_value_to_string(value: &serde_yaml::Value) -> String {
-    match value {
-        serde_yaml::Value::Bool(b) => b.to_string(),
-        serde_yaml::Value::Number(n) => n.to_string(),
-        serde_yaml::Value::String(s) => s.clone(),
-        _ => format!("{:?}", value),
-    }
-}
-
-/// Sysctl-specific conversion: booleans map to "1"/"0" to match /proc/sys semantics.
-fn sysctl_yaml_value_to_string(value: &serde_yaml::Value) -> String {
-    match value {
-        serde_yaml::Value::Bool(b) => if *b { "1" } else { "0" }.to_string(),
-        _ => yaml_value_to_string(value),
-    }
-}
-
 fn find_toml_value(table: &toml::Table, key: &str) -> Option<String> {
     // First try dot-separated path lookup
     if key.contains('.') {
@@ -1486,28 +1469,28 @@ mod tests {
         assert!(drifts.is_empty());
     }
 
-    // --- sysctl_yaml_value_to_string ---
+    // --- yaml_value_with_numeric_bools ---
 
     #[test]
-    fn sysctl_yaml_value_to_string_bool_maps_to_01() {
+    fn yaml_value_with_numeric_bools_bool_maps_to_01() {
         assert_eq!(
-            sysctl_yaml_value_to_string(&serde_yaml::Value::Bool(true)),
+            yaml_value_with_numeric_bools(&serde_yaml::Value::Bool(true)),
             "1"
         );
         assert_eq!(
-            sysctl_yaml_value_to_string(&serde_yaml::Value::Bool(false)),
+            yaml_value_with_numeric_bools(&serde_yaml::Value::Bool(false)),
             "0"
         );
     }
 
     #[test]
-    fn sysctl_yaml_value_to_string_delegates_non_bool() {
+    fn yaml_value_with_numeric_bools_delegates_non_bool() {
         assert_eq!(
-            sysctl_yaml_value_to_string(&serde_yaml::Value::Number(262144.into())),
+            yaml_value_with_numeric_bools(&serde_yaml::Value::Number(262144.into())),
             "262144"
         );
         assert_eq!(
-            sysctl_yaml_value_to_string(&serde_yaml::Value::String("1".into())),
+            yaml_value_with_numeric_bools(&serde_yaml::Value::String("1".into())),
             "1"
         );
     }

@@ -274,7 +274,7 @@ fn distro_from_os_release_content(content: &str) -> (Distro, String) {
 
 /// Parse os-release file content into key-value pairs.
 /// Handles quoted and unquoted values.
-fn parse_os_release_content(content: &str) -> HashMap<String, String> {
+pub(crate) fn parse_os_release_content(content: &str) -> HashMap<String, String> {
     let mut fields = HashMap::new();
     for line in content.lines() {
         let line = line.trim();
