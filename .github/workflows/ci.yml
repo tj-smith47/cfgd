@@ -93,13 +93,11 @@ jobs:
       - run: bash .claude/scripts/audit.sh
 
   windows:
-    name: Windows Build
+    name: Windows Test
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: clippy, rustfmt
       - uses: Swatinem/rust-cache@v2
         with:
           key: windows
@@ -108,12 +106,6 @@ jobs:
         uses: arduino/setup-protoc@v3
         with:
           version: "25.x"
-
-      - name: Format check
-        run: cargo fmt --check -p cfgd-core -p cfgd
-
-      - name: Clippy
-        run: cargo clippy -p cfgd-core -p cfgd -- -D warnings
 
       - name: Test
         run: cargo test -p cfgd-core -p cfgd

@@ -4339,6 +4339,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn plan_env_module_alias_wins_on_conflict() {
         let profile_aliases = vec![crate::config::ShellAlias {
             name: "vim".into(),
@@ -5653,6 +5654,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn execute_script_injects_env_vars() {
         let printer = Printer::new(crate::output::Verbosity::Quiet);
         let entry = ScriptEntry::Simple("echo $MY_VAR".to_string());
@@ -5670,11 +5672,11 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn execute_script_runs_executable_file() {
         let dir = tempfile::tempdir().unwrap();
         let script_path = dir.path().join("test.sh");
         std::fs::write(&script_path, "#!/bin/sh\necho from_file\n").unwrap();
-        #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
             std::fs::set_permissions(&script_path, std::fs::Permissions::from_mode(0o755)).unwrap();

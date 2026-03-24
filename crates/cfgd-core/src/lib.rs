@@ -1206,6 +1206,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)] // Windows LockFileEx prevents reading lock file content while held
     fn acquire_apply_lock_works() {
         let dir = tempfile::tempdir().unwrap();
         let guard = acquire_apply_lock(dir.path()).unwrap();

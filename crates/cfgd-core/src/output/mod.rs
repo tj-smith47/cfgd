@@ -1175,6 +1175,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn run_with_output_captures_stderr() {
         let printer = Printer::new(Verbosity::Quiet);
         let output = printer
@@ -1190,6 +1191,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn run_with_output_reports_failure() {
         let printer = Printer::new(Verbosity::Quiet);
         let output = printer
@@ -1199,6 +1201,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn run_with_output_tracks_duration() {
         let printer = Printer::new(Verbosity::Quiet);
         let output = printer
