@@ -40,6 +40,7 @@ jobs:
       - uses: arduino/setup-protoc@v3
         with:
           version: "25.x"
+          repo-token: ${{ github.token }}
       - run: cargo clippy -- -D warnings
 
   test:
@@ -52,6 +53,7 @@ jobs:
       - uses: arduino/setup-protoc@v3
         with:
           version: "25.x"
+          repo-token: ${{ github.token }}
       - name: Install cargo-tarpaulin
         run: cargo install cargo-tarpaulin --locked
       - name: Run tests with coverage
