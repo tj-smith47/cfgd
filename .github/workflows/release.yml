@@ -12,6 +12,7 @@ on:
   # Also triggered by manual tag push (for RC releases)
   push:
     tags: ["v*"]
+  workflow_dispatch:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -26,7 +27,7 @@ env:
 
 jobs:
   prepare:
-    runs-on: arc-cfgd
+    runs-on: ubuntu-latest
     if: ${{ github.event_name == 'push' || github.event.workflow_run.conclusion == 'success' }}
     outputs:
       tag: ${{ steps.get-tag.outputs.tag }}
@@ -162,7 +163,7 @@ jobs:
 
   checksums:
     needs: [prepare, build]
-    runs-on: arc-cfgd
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4
         with:
@@ -182,7 +183,7 @@ jobs:
   changelog:
     needs: prepare
     if: ${{ needs.prepare.outputs.should_run == 'true' }}
-    runs-on: arc-cfgd
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
@@ -204,7 +205,7 @@ jobs:
 
   release:
     needs: [prepare, build, checksums, changelog]
-    runs-on: arc-cfgd
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4
         with:
@@ -350,7 +351,7 @@ jobs:
 
   krew-manifest:
     needs: [prepare, build, checksums]
-    runs-on: arc-cfgd
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
@@ -450,7 +451,7 @@ jobs:
 
   cargo-publish:
     needs: [prepare, release]
-    runs-on: arc-cfgd
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
@@ -470,7 +471,7 @@ jobs:
 
   olm-bundle:
     needs: [prepare, docker]
-    runs-on: arc-cfgd
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
@@ -498,7 +499,7 @@ jobs:
 
   homebrew:
     needs: [prepare, release]
-    runs-on: arc-cfgd
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4
         with:
