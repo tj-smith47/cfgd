@@ -1729,7 +1729,7 @@ fn merge_layers(layers: &[ProfileLayer]) -> MergedProfile {
                     .iter_mut()
                     .find(|m| m.target == managed.target)
                 {
-                    existing.source = managed.source.clone();
+                    *existing = managed.clone();
                 } else {
                     merged.files.managed.push(managed.clone());
                 }
