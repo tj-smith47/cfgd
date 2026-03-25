@@ -1079,6 +1079,8 @@ mod tests {
                         strategy: None,
                         private: false,
                         origin: None,
+                        encryption: None,
+                        permissions: None,
                     }],
                     ..Default::default()
                 },
@@ -1251,6 +1253,8 @@ mod tests {
                     strategy: None,
                     private: false,
                     origin: None,
+                    encryption: None,
+                    permissions: None,
                 }],
                 ..Default::default()
             }),
@@ -1275,6 +1279,8 @@ mod tests {
                     strategy: None,
                     private: false,
                     origin: None,
+                    encryption: None,
+                    permissions: None,
                 }],
                 ..Default::default()
             }),
@@ -1456,6 +1462,8 @@ mod tests {
                         strategy: None,
                         private: false,
                         origin: None,
+                        encryption: None,
+                        permissions: None,
                     }],
                     ..Default::default()
                 },
@@ -1480,6 +1488,8 @@ mod tests {
                         strategy: None,
                         private: false,
                         origin: None,
+                        encryption: None,
+                        permissions: None,
                     }],
                     ..Default::default()
                 },
@@ -1514,6 +1524,8 @@ mod tests {
                         strategy: None,
                         private: false,
                         origin: None,
+                        encryption: None,
+                        permissions: None,
                     }],
                     ..Default::default()
                 },
@@ -1537,6 +1549,8 @@ mod tests {
                         strategy: None,
                         private: false,
                         origin: None,
+                        encryption: None,
+                        permissions: None,
                     }],
                     ..Default::default()
                 },
@@ -1584,6 +1598,8 @@ mod tests {
                         strategy: None,
                         private: false,
                         origin: None,
+                        encryption: None,
+                        permissions: None,
                     }],
                     ..Default::default()
                 },
@@ -1607,6 +1623,8 @@ mod tests {
                         strategy: None,
                         private: false,
                         origin: None,
+                        encryption: None,
+                        permissions: None,
                     }],
                     ..Default::default()
                 },

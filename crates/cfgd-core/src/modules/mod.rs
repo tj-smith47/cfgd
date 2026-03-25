@@ -2021,6 +2021,7 @@ spec: {}
                     target: "/home/user/.config/nvim/".into(),
                     strategy: None,
                     private: false,
+                    encryption: None,
                 }],
                 ..Default::default()
             },
@@ -2706,6 +2707,7 @@ spec:
                     target: "~/.config/test/".into(),
                     strategy: None,
                     private: false,
+                    encryption: None,
                 }],
                 env: vec![],
                 aliases: vec![],
@@ -2743,6 +2745,7 @@ spec:
                     target: "~/.config/new/".into(),
                     strategy: None,
                     private: false,
+                    encryption: None,
                 }],
                 env: vec![],
                 aliases: vec![],

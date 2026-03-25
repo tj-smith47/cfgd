@@ -655,6 +655,9 @@ pub struct SourceConstraints {
     /// GPG or SSH signature. Subscribers can bypass with `security.allow-unsigned`.
     #[serde(default)]
     pub require_signed_commits: bool,
+    /// Encryption requirements imposed on files delivered by this source.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub encryption: Option<EncryptionConstraint>,
 }
 
 impl Default for SourceConstraints {
@@ -665,6 +668,7 @@ impl Default for SourceConstraints {
             allowed_target_paths: Vec::new(),
             allow_system_changes: false,
             require_signed_commits: false,
+            encryption: None,
         }
     }
 }
@@ -765,6 +769,9 @@ pub struct ModuleFileEntry {
     /// silently skipped on machines where it doesn't exist.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub private: bool,
+    /// Encryption settings for this module file.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub encryption: Option<EncryptionSpec>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -1168,6 +1175,42 @@ pub enum FileStrategy {
     Hardlink,
 }
 
+/// Controls when encryption is required for a managed file.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum EncryptionMode {
+    /// File must be encrypted when stored in the repository.
+    #[default]
+    InRepo,
+    /// File must always be encrypted, including at rest on disk.
+    Always,
+}
+
+/// Encryption settings for a managed file.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EncryptionSpec {
+    /// The encryption backend to use (e.g. "sops", "age").
+    pub backend: String,
+    /// When encryption must be enforced. Defaults to `InRepo`.
+    #[serde(default)]
+    pub mode: EncryptionMode,
+}
+
+/// Encryption constraint applied to files from a config source.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EncryptionConstraint {
+    /// Glob patterns or explicit paths that must be encrypted.
+    #[serde(default)]
+    pub required_targets: Vec<String>,
+    /// If set, restrict which backend is acceptable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub backend: Option<String>,
+    /// If set, restrict which encryption mode is acceptable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mode: Option<EncryptionMode>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ManagedFileSpec {
@@ -1184,6 +1227,12 @@ pub struct ManagedFileSpec {
     /// Used by the template sandbox to restrict variable access.
     #[serde(skip)]
     pub origin: Option<String>,
+    /// Encryption settings for this file.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub encryption: Option<EncryptionSpec>,
+    /// Unix permission bits (e.g. "600", "644") to apply after deployment.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub permissions: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1958,6 +2007,8 @@ spec:
                         strategy: None,
                         private: false,
                         origin: None,
+                        encryption: None,
+                        permissions: None,
                     }],
                     ..Default::default()
                 }),
@@ -1977,6 +2028,8 @@ spec:
                         strategy: None,
                         private: false,
                         origin: None,
+                        encryption: None,
+                        permissions: None,
                     }],
                     ..Default::default()
                 }),
@@ -2956,5 +3009,153 @@ onChange:
         assert!(spec.post_reconcile.is_empty());
         assert!(spec.on_drift.is_empty());
         assert!(spec.on_change.is_empty());
+    }
+
+    // --- Encryption types ---
+
+    #[test]
+    fn encryption_mode_default_is_in_repo() {
+        let mode = EncryptionMode::default();
+        assert_eq!(mode, EncryptionMode::InRepo);
+    }
+
+    #[test]
+    fn managed_file_spec_encryption_in_repo() {
+        let yaml = r#"
+source: dotfiles/.zshrc
+target: ~/.zshrc
+encryption:
+  backend: sops
+  mode: InRepo
+"#;
+        let spec: ManagedFileSpec = serde_yaml::from_str(yaml).unwrap();
+        let enc = spec.encryption.expect("encryption should be Some");
+        assert_eq!(enc.backend, "sops");
+        assert_eq!(enc.mode, EncryptionMode::InRepo);
+    }
+
+    #[test]
+    fn managed_file_spec_encryption_always() {
+        let yaml = r#"
+source: secrets/.env
+target: ~/.env
+encryption:
+  backend: age
+  mode: Always
+"#;
+        let spec: ManagedFileSpec = serde_yaml::from_str(yaml).unwrap();
+        let enc = spec.encryption.expect("encryption should be Some");
+        assert_eq!(enc.backend, "age");
+        assert_eq!(enc.mode, EncryptionMode::Always);
+    }
+
+    #[test]
+    fn managed_file_spec_no_encryption() {
+        let yaml = r#"
+source: dotfiles/.bashrc
+target: ~/.bashrc
+"#;
+        let spec: ManagedFileSpec = serde_yaml::from_str(yaml).unwrap();
+        assert!(spec.encryption.is_none());
+    }
+
+    #[test]
+    fn managed_file_spec_permissions() {
+        let yaml = r#"
+source: dotfiles/.ssh/config
+target: ~/.ssh/config
+permissions: "600"
+"#;
+        let spec: ManagedFileSpec = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(spec.permissions.as_deref(), Some("600"));
+    }
+
+    #[test]
+    fn managed_file_spec_permissions_absent() {
+        let yaml = r#"
+source: dotfiles/.vimrc
+target: ~/.vimrc
+"#;
+        let spec: ManagedFileSpec = serde_yaml::from_str(yaml).unwrap();
+        assert!(spec.permissions.is_none());
+    }
+
+    #[test]
+    fn source_constraints_encryption() {
+        let yaml = r#"
+noScripts: true
+noSecretsRead: true
+allowedTargetPaths: []
+allowSystemChanges: false
+requireSignedCommits: false
+encryption:
+  requiredTargets:
+    - "~/.ssh/*"
+    - "~/.gnupg/*"
+  backend: sops
+  mode: InRepo
+"#;
+        let sc: SourceConstraints = serde_yaml::from_str(yaml).unwrap();
+        let enc = sc.encryption.expect("encryption should be Some");
+        assert_eq!(enc.required_targets.len(), 2);
+        assert_eq!(enc.required_targets[0], "~/.ssh/*");
+        assert_eq!(enc.required_targets[1], "~/.gnupg/*");
+        assert_eq!(enc.backend.as_deref(), Some("sops"));
+        assert_eq!(enc.mode, Some(EncryptionMode::InRepo));
+    }
+
+    #[test]
+    fn source_constraints_no_encryption_defaults_none() {
+        let sc = SourceConstraints::default();
+        assert!(sc.encryption.is_none());
+    }
+
+    #[test]
+    fn source_constraints_encryption_required_targets_only() {
+        let yaml = r#"
+encryption:
+  requiredTargets:
+    - "~/.aws/credentials"
+"#;
+        let sc: SourceConstraints = serde_yaml::from_str(yaml).unwrap();
+        let enc = sc.encryption.expect("encryption should be Some");
+        assert_eq!(enc.required_targets.len(), 1);
+        assert!(enc.backend.is_none());
+        assert!(enc.mode.is_none());
+    }
+
+    #[test]
+    fn module_file_entry_with_encryption() {
+        let yaml = r#"
+source: files/.gitconfig
+target: ~/.gitconfig
+encryption:
+  backend: sops
+  mode: InRepo
+"#;
+        let entry: ModuleFileEntry = serde_yaml::from_str(yaml).unwrap();
+        let enc = entry.encryption.expect("encryption should be Some");
+        assert_eq!(enc.backend, "sops");
+        assert_eq!(enc.mode, EncryptionMode::InRepo);
+    }
+
+    #[test]
+    fn module_file_entry_no_encryption() {
+        let yaml = r#"
+source: files/.tmux.conf
+target: ~/.tmux.conf
+"#;
+        let entry: ModuleFileEntry = serde_yaml::from_str(yaml).unwrap();
+        assert!(entry.encryption.is_none());
+    }
+
+    #[test]
+    fn encryption_spec_mode_defaults_to_in_repo_when_omitted() {
+        let yaml = r#"
+backend: sops
+"#;
+        let spec: EncryptionSpec = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(spec.backend, "sops");
+        assert_eq!(spec.mode, EncryptionMode::InRepo);
     }
 }
