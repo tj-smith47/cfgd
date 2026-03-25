@@ -574,6 +574,7 @@ pub(super) fn cmd_module_create(
             target: target.display().to_string(),
             strategy: None,
             private: is_private,
+            encryption: None,
         })
         .collect();
     if is_private {
@@ -881,6 +882,7 @@ pub(super) fn cmd_module_update_local(
             target: target.display().to_string(),
             strategy: None,
             private: args.private,
+            encryption: None,
         });
         printer.success(&format!("Added file: {}", target.display()));
         changes += 1;

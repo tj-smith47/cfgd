@@ -513,6 +513,8 @@ pub(super) fn cmd_profile_create(
             strategy: None,
             private: is_private,
             origin: None,
+            encryption: None,
+            permissions: None,
         })
         .collect();
     if is_private {
@@ -852,6 +854,8 @@ pub(super) fn cmd_profile_update(
                     strategy: None,
                     private: args.private,
                     origin: None,
+                    encryption: None,
+                    permissions: None,
                 });
                 printer.success(&format!("Added file: {}", basename));
                 changes += 1;

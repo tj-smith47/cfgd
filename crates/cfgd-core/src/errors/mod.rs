@@ -101,6 +101,19 @@ pub enum FileError {
 
     #[error("path {path} escapes root directory {root}")]
     PathTraversal { path: PathBuf, root: PathBuf },
+
+    #[error(
+        "source file '{path}' must be encrypted with '{backend}' but appears to be unencrypted"
+    )]
+    NotEncrypted { path: PathBuf, backend: String },
+
+    #[error("unknown encryption backend '{backend}' — supported: sops, age")]
+    UnknownEncryptionBackend { backend: String },
+
+    #[error(
+        "encryption mode 'Always' is incompatible with strategy '{strategy}' for '{path}' — use Copy instead"
+    )]
+    EncryptionStrategyIncompatible { path: PathBuf, strategy: String },
 }
 
 #[derive(Debug, thiserror::Error)]

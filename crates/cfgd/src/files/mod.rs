@@ -7,7 +7,9 @@ use std::sync::Mutex;
 use similar::TextDiff;
 use tera::{Context, Tera};
 
-use cfgd_core::config::{EnvVar, FileStrategy, ManagedFileSpec, MergedProfile, ResolvedProfile};
+use cfgd_core::config::{
+    EncryptionMode, EnvVar, FileStrategy, ManagedFileSpec, MergedProfile, ResolvedProfile,
+};
 use cfgd_core::errors::{FileError, Result};
 use cfgd_core::expand_tilde;
 use cfgd_core::output::Printer;
@@ -142,6 +144,33 @@ impl CfgdFileManager {
                     continue;
                 }
                 return Err(FileError::SourceNotFound { path: source_path }.into());
+            }
+
+            // Validate encryption requirements before planning.
+            if let Some(enc) = &managed.encryption {
+                // Always mode is incompatible with Symlink/Hardlink strategies because
+                // those strategies expose the unencrypted source file on disk directly.
+                let effective = self.effective_strategy(&source_path, managed.strategy);
+                if enc.mode == EncryptionMode::Always
+                    && matches!(effective, FileStrategy::Symlink | FileStrategy::Hardlink)
+                {
+                    return Err(FileError::EncryptionStrategyIncompatible {
+                        path: source_path.clone(),
+                        strategy: format!("{:?}", effective),
+                    }
+                    .into());
+                }
+
+                // For InRepo (and Always) mode: the source file in the repo must be
+                // encrypted with the declared backend.
+                let encrypted = is_file_encrypted(&source_path, &enc.backend)?;
+                if !encrypted {
+                    return Err(FileError::NotEncrypted {
+                        path: source_path.clone(),
+                        backend: enc.backend.clone(),
+                    }
+                    .into());
+                }
             }
 
             let strategy = self.effective_strategy(&source_path, managed.strategy);
@@ -819,6 +848,56 @@ fn format_tera_error(err: &tera::Error) -> String {
     msg
 }
 
+/// Check whether a file is encrypted with the given backend.
+///
+/// - `"sops"`: parses the file as YAML or JSON and checks for a top-level `sops` key
+///   that contains both `mac` and `lastmodified` sub-keys, which SOPS always writes.
+///   This avoids false positives from files that merely mention "sops" in comments.
+/// - `"age"`: checks whether the file begins with the `age-encryption.org` magic header.
+/// - Any other backend: returns `FileError::UnknownEncryptionBackend`.
+pub(crate) fn is_file_encrypted(
+    path: &Path,
+    backend: &str,
+) -> std::result::Result<bool, FileError> {
+    let content = fs::read_to_string(path).map_err(|e| FileError::Io {
+        path: path.to_path_buf(),
+        source: e,
+    })?;
+
+    match backend {
+        "sops" => {
+            // Try YAML first, then JSON.  SOPS always injects a top-level `sops` map
+            // with at least the `mac` and `lastmodified` keys.
+            let value: Option<serde_yaml::Value> = serde_yaml::from_str(&content).ok();
+            if let Some(serde_yaml::Value::Mapping(map)) = value
+                && let Some(serde_yaml::Value::Mapping(sops)) =
+                    map.get(serde_yaml::Value::String("sops".to_string()))
+                && sops.contains_key(serde_yaml::Value::String("mac".to_string()))
+                && sops.contains_key(serde_yaml::Value::String("lastmodified".to_string()))
+            {
+                return Ok(true);
+            }
+            // Try JSON (SOPS can encrypt JSON files too)
+            let json_value: Option<serde_json::Value> = serde_json::from_str(&content).ok();
+            if let Some(serde_json::Value::Object(map)) = json_value
+                && let Some(serde_json::Value::Object(sops)) = map.get("sops")
+                && sops.contains_key("mac")
+                && sops.contains_key("lastmodified")
+            {
+                return Ok(true);
+            }
+            Ok(false)
+        }
+        "age" => {
+            // age encrypted files always start with the age-encryption.org header
+            Ok(content.starts_with("age-encryption.org"))
+        }
+        other => Err(FileError::UnknownEncryptionBackend {
+            backend: other.to_string(),
+        }),
+    }
+}
+
 /// Detect language from file extension for syntax highlighting.
 fn detect_language(path: &Path) -> String {
     path.extension()
@@ -874,8 +953,8 @@ mod tests {
     use std::os::unix::fs::PermissionsExt;
 
     use cfgd_core::config::{
-        EnvVar, FilesSpec, LayerPolicy, ManagedFileSpec, MergedProfile, ProfileLayer, ProfileSpec,
-        ResolvedProfile,
+        EncryptionMode, EncryptionSpec, EnvVar, FilesSpec, LayerPolicy, ManagedFileSpec,
+        MergedProfile, ProfileLayer, ProfileSpec, ResolvedProfile,
     };
     use cfgd_core::providers::FileManager as _;
 
@@ -955,6 +1034,8 @@ mod tests {
                     strategy: Some(FileStrategy::Copy),
                     private: false,
                     origin: None,
+                    encryption: None,
+                    permissions: None,
                 }],
                 permissions: HashMap::new(),
             },
@@ -992,6 +1073,8 @@ mod tests {
                     strategy: Some(FileStrategy::Copy),
                     private: false,
                     origin: None,
+                    encryption: None,
+                    permissions: None,
                 }],
                 permissions: HashMap::new(),
             },
@@ -1028,6 +1111,8 @@ mod tests {
                     strategy: Some(FileStrategy::Copy),
                     private: false,
                     origin: None,
+                    encryption: None,
+                    permissions: None,
                 }],
                 permissions: HashMap::new(),
             },
@@ -1078,6 +1163,8 @@ mod tests {
                     strategy: Some(FileStrategy::Copy),
                     private: false,
                     origin: None,
+                    encryption: None,
+                    permissions: None,
                 }],
                 permissions: HashMap::new(),
             },
@@ -1111,6 +1198,8 @@ mod tests {
                     strategy: Some(FileStrategy::Copy),
                     private: false,
                     origin: None,
+                    encryption: None,
+                    permissions: None,
                 }],
                 permissions: HashMap::new(),
             },
@@ -1147,6 +1236,8 @@ mod tests {
                     strategy: Some(FileStrategy::Copy),
                     private: false,
                     origin: None,
+                    encryption: None,
+                    permissions: None,
                 }],
                 permissions: HashMap::new(),
             },
@@ -1190,6 +1281,8 @@ mod tests {
                     strategy: Some(FileStrategy::Copy),
                     private: false,
                     origin: None,
+                    encryption: None,
+                    permissions: None,
                 }],
                 permissions: HashMap::new(),
             },
@@ -1230,6 +1323,8 @@ mod tests {
                     strategy: Some(FileStrategy::Copy),
                     private: false,
                     origin: None,
+                    encryption: None,
+                    permissions: None,
                 }],
                 permissions,
             },
@@ -1261,6 +1356,8 @@ mod tests {
                     strategy: Some(FileStrategy::Copy),
                     private: false,
                     origin: None,
+                    encryption: None,
+                    permissions: None,
                 }],
                 permissions: HashMap::new(),
             },
@@ -1293,6 +1390,8 @@ mod tests {
                     strategy: Some(FileStrategy::Copy),
                     private: false,
                     origin: None,
+                    encryption: None,
+                    permissions: None,
                 }],
                 permissions: HashMap::new(),
             },
@@ -1358,6 +1457,8 @@ mod tests {
                     strategy: Some(FileStrategy::Copy),
                     private: false,
                     origin: Some("acme-corp".to_string()),
+                    encryption: None,
+                    permissions: None,
                 }],
                 permissions: HashMap::new(),
             },
@@ -1411,6 +1512,8 @@ mod tests {
                     strategy: Some(FileStrategy::Copy),
                     private: false,
                     origin: Some("acme-corp".to_string()),
+                    encryption: None,
+                    permissions: None,
                 }],
                 permissions: HashMap::new(),
             },
@@ -1460,6 +1563,8 @@ mod tests {
                     strategy: Some(FileStrategy::Copy),
                     private: false,
                     origin: Some("acme-corp".to_string()),
+                    encryption: None,
+                    permissions: None,
                 }],
                 permissions: HashMap::new(),
             },
@@ -1498,6 +1603,8 @@ mod tests {
                     strategy: Some(FileStrategy::Symlink),
                     private: false,
                     origin: None,
+                    encryption: None,
+                    permissions: None,
                 }],
                 permissions: HashMap::new(),
             },
@@ -1543,6 +1650,8 @@ mod tests {
                     strategy: Some(FileStrategy::Symlink),
                     private: false,
                     origin: None,
+                    encryption: None,
+                    permissions: None,
                 }],
                 permissions: HashMap::new(),
             },
@@ -1586,6 +1695,8 @@ mod tests {
                     strategy: Some(FileStrategy::Hardlink),
                     private: false,
                     origin: None,
+                    encryption: None,
+                    permissions: None,
                 }],
                 permissions: HashMap::new(),
             },
@@ -1632,6 +1743,8 @@ mod tests {
                     strategy: Some(FileStrategy::Symlink),
                     private: false,
                     origin: None,
+                    encryption: None,
+                    permissions: None,
                 }],
                 permissions: HashMap::new(),
             },
@@ -1677,6 +1790,8 @@ mod tests {
                     strategy: None, // No per-file override
                     private: false,
                     origin: None,
+                    encryption: None,
+                    permissions: None,
                 }],
                 permissions: HashMap::new(),
             },
@@ -1712,6 +1827,8 @@ mod tests {
                     strategy: Some(FileStrategy::Copy),
                     private: true,
                     origin: None,
+                    encryption: None,
+                    permissions: None,
                 }],
                 permissions: HashMap::new(),
             },
@@ -1742,6 +1859,8 @@ mod tests {
                     strategy: Some(FileStrategy::Copy),
                     private: false,
                     origin: None,
+                    encryption: None,
+                    permissions: None,
                 }],
                 permissions: HashMap::new(),
             },
@@ -1790,6 +1909,8 @@ mod tests {
                     strategy: Some(FileStrategy::Copy),
                     private: false,
                     origin: None,
+                    encryption: None,
+                    permissions: None,
                 }],
                 permissions: HashMap::new(),
             },
@@ -1823,6 +1944,8 @@ mod tests {
                     strategy: Some(FileStrategy::Copy),
                     private: false,
                     origin: None,
+                    encryption: None,
+                    permissions: None,
                 }],
                 permissions: HashMap::new(),
             },
@@ -1854,6 +1977,8 @@ mod tests {
                     strategy: Some(FileStrategy::Copy),
                     private: false,
                     origin: None,
+                    encryption: None,
+                    permissions: None,
                 }],
                 permissions: HashMap::new(),
             },
@@ -1910,6 +2035,8 @@ mod tests {
             strategy: Some(FileStrategy::Copy),
             private: false,
             origin: None,
+            encryption: None,
+            permissions: None,
         };
 
         let resolved = make_resolved_profile(
@@ -1950,6 +2077,8 @@ mod tests {
             strategy: Some(FileStrategy::Copy),
             private: false,
             origin: None,
+            encryption: None,
+            permissions: None,
         };
 
         let resolved = make_resolved_profile(
@@ -2029,6 +2158,8 @@ mod tests {
                         strategy: Some(FileStrategy::Copy),
                         private: false,
                         origin: None,
+                        encryption: None,
+                        permissions: None,
                     },
                     ManagedFileSpec {
                         source: "files/b.txt".to_string(),
@@ -2036,6 +2167,8 @@ mod tests {
                         strategy: Some(FileStrategy::Copy),
                         private: false,
                         origin: None,
+                        encryption: None,
+                        permissions: None,
                     },
                 ],
                 permissions: HashMap::new(),
@@ -2072,6 +2205,8 @@ mod tests {
                     strategy: Some(FileStrategy::Copy),
                     private: false,
                     origin: None,
+                    encryption: None,
+                    permissions: None,
                 }],
                 permissions: HashMap::new(),
             },
@@ -2084,5 +2219,305 @@ mod tests {
         fm.apply(&actions, &printer).unwrap();
 
         assert_eq!(fs::read_to_string(&target).unwrap(), "updated content");
+    }
+
+    // --- encryption detection ---
+
+    #[test]
+    fn is_file_encrypted_detects_sops_yaml() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("secrets.yaml");
+        // A minimal SOPS-encrypted YAML file always has a top-level `sops` key
+        // with at least `mac` and `lastmodified` sub-keys.
+        fs::write(
+            &file,
+            r#"mysecret: ENC[AES256_GCM,data=abc,type=str]
+sops:
+    mac: ENC[AES256_GCM,data=xyz,type=str]
+    lastmodified: "2024-01-01T00:00:00Z"
+    version: 3.8.1
+"#,
+        )
+        .unwrap();
+        assert!(is_file_encrypted(&file, "sops").unwrap());
+    }
+
+    #[test]
+    fn is_file_encrypted_rejects_plaintext_yaml_for_sops() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("plain.yaml");
+        // A file that merely mentions sops in a comment must NOT be detected
+        // as encrypted — the check is structural, not textual.
+        fs::write(
+            &file,
+            r#"# managed by sops
+key: value
+other: data
+"#,
+        )
+        .unwrap();
+        assert!(!is_file_encrypted(&file, "sops").unwrap());
+    }
+
+    #[test]
+    fn is_file_encrypted_detects_age_header() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("secret.age");
+        // age-encrypted files begin with the age-encryption.org magic header.
+        fs::write(
+            &file,
+            "age-encryption.org/v1\n-> X25519 abc123\n--- abc\nbinarydata\n",
+        )
+        .unwrap();
+        assert!(is_file_encrypted(&file, "age").unwrap());
+    }
+
+    #[test]
+    fn is_file_encrypted_rejects_plaintext_for_age() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("plain.txt");
+        fs::write(&file, "this is not age encrypted\n").unwrap();
+        assert!(!is_file_encrypted(&file, "age").unwrap());
+    }
+
+    #[test]
+    fn is_file_encrypted_unknown_backend_returns_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("file.txt");
+        fs::write(&file, "content").unwrap();
+        let result = is_file_encrypted(&file, "gpg");
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(matches!(err, FileError::UnknownEncryptionBackend { .. }));
+        assert!(err.to_string().contains("gpg"));
+    }
+
+    // --- encryption validation in plan() ---
+
+    #[test]
+    fn plan_rejects_unencrypted_sops_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_dir = dir.path();
+
+        let files_dir = config_dir.join("files");
+        fs::create_dir_all(&files_dir).unwrap();
+        // Plaintext YAML — not SOPS encrypted
+        fs::write(files_dir.join("secret.yaml"), "password: hunter2\n").unwrap();
+
+        let target = config_dir.join("target").join("secret.yaml");
+
+        let resolved = make_resolved_profile(
+            vec![],
+            FilesSpec {
+                managed: vec![ManagedFileSpec {
+                    source: "files/secret.yaml".to_string(),
+                    target,
+                    strategy: Some(FileStrategy::Copy),
+                    private: false,
+                    origin: None,
+                    encryption: Some(EncryptionSpec {
+                        backend: "sops".to_string(),
+                        mode: EncryptionMode::InRepo,
+                    }),
+                    permissions: None,
+                }],
+                permissions: HashMap::new(),
+            },
+        );
+
+        let fm = CfgdFileManager::new(config_dir, &resolved).unwrap();
+        let result = fm.plan(&resolved.merged);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            err.to_string().contains("sops"),
+            "error should mention backend: {err}"
+        );
+    }
+
+    #[test]
+    fn plan_accepts_sops_encrypted_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_dir = dir.path();
+
+        let files_dir = config_dir.join("files");
+        fs::create_dir_all(&files_dir).unwrap();
+        // Minimal SOPS-encrypted YAML
+        fs::write(
+            files_dir.join("secret.yaml"),
+            "mysecret: ENC[AES256_GCM,data=abc,type=str]\nsops:\n    mac: ENC[AES256_GCM,data=xyz,type=str]\n    lastmodified: \"2024-01-01T00:00:00Z\"\n",
+        )
+        .unwrap();
+
+        let target = config_dir.join("target").join("secret.yaml");
+
+        let resolved = make_resolved_profile(
+            vec![],
+            FilesSpec {
+                managed: vec![ManagedFileSpec {
+                    source: "files/secret.yaml".to_string(),
+                    target,
+                    strategy: Some(FileStrategy::Copy),
+                    private: false,
+                    origin: None,
+                    encryption: Some(EncryptionSpec {
+                        backend: "sops".to_string(),
+                        mode: EncryptionMode::InRepo,
+                    }),
+                    permissions: None,
+                }],
+                permissions: HashMap::new(),
+            },
+        );
+
+        let fm = CfgdFileManager::new(config_dir, &resolved).unwrap();
+        let result = fm.plan(&resolved.merged);
+        assert!(
+            result.is_ok(),
+            "expected plan to succeed: {:?}",
+            result.err()
+        );
+    }
+
+    #[test]
+    fn plan_rejects_always_mode_with_symlink() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_dir = dir.path();
+
+        let files_dir = config_dir.join("files");
+        fs::create_dir_all(&files_dir).unwrap();
+        // SOPS-encrypted file content so encryption check passes first
+        fs::write(
+            files_dir.join("secret.yaml"),
+            "mysecret: ENC[AES256_GCM,data=abc,type=str]\nsops:\n    mac: ENC[AES256_GCM,data=xyz,type=str]\n    lastmodified: \"2024-01-01T00:00:00Z\"\n",
+        )
+        .unwrap();
+
+        let target = config_dir.join("target").join("secret.yaml");
+
+        let resolved = make_resolved_profile(
+            vec![],
+            FilesSpec {
+                managed: vec![ManagedFileSpec {
+                    source: "files/secret.yaml".to_string(),
+                    target,
+                    strategy: Some(FileStrategy::Symlink),
+                    private: false,
+                    origin: None,
+                    encryption: Some(EncryptionSpec {
+                        backend: "sops".to_string(),
+                        mode: EncryptionMode::Always,
+                    }),
+                    permissions: None,
+                }],
+                permissions: HashMap::new(),
+            },
+        );
+
+        let fm = CfgdFileManager::new(config_dir, &resolved).unwrap();
+        let result = fm.plan(&resolved.merged);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            err.to_string().contains("Always"),
+            "error should mention Always mode: {err}"
+        );
+        assert!(
+            err.to_string().contains("Symlink") || err.to_string().contains("symlink"),
+            "error should mention symlink: {err}"
+        );
+    }
+
+    #[test]
+    fn plan_rejects_always_mode_with_hardlink() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_dir = dir.path();
+
+        let files_dir = config_dir.join("files");
+        fs::create_dir_all(&files_dir).unwrap();
+        // SOPS-encrypted file content
+        fs::write(
+            files_dir.join("secret.yaml"),
+            "mysecret: ENC[AES256_GCM,data=abc,type=str]\nsops:\n    mac: ENC[AES256_GCM,data=xyz,type=str]\n    lastmodified: \"2024-01-01T00:00:00Z\"\n",
+        )
+        .unwrap();
+
+        let target = config_dir.join("target").join("secret.yaml");
+
+        let resolved = make_resolved_profile(
+            vec![],
+            FilesSpec {
+                managed: vec![ManagedFileSpec {
+                    source: "files/secret.yaml".to_string(),
+                    target,
+                    strategy: Some(FileStrategy::Hardlink),
+                    private: false,
+                    origin: None,
+                    encryption: Some(EncryptionSpec {
+                        backend: "sops".to_string(),
+                        mode: EncryptionMode::Always,
+                    }),
+                    permissions: None,
+                }],
+                permissions: HashMap::new(),
+            },
+        );
+
+        let fm = CfgdFileManager::new(config_dir, &resolved).unwrap();
+        let result = fm.plan(&resolved.merged);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            err.to_string().contains("Always"),
+            "error should mention Always mode: {err}"
+        );
+        assert!(
+            err.to_string().contains("Hardlink") || err.to_string().contains("hardlink"),
+            "error should mention hardlink: {err}"
+        );
+    }
+
+    #[test]
+    fn plan_accepts_always_mode_with_copy() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_dir = dir.path();
+
+        let files_dir = config_dir.join("files");
+        fs::create_dir_all(&files_dir).unwrap();
+        // SOPS-encrypted file
+        fs::write(
+            files_dir.join("secret.yaml"),
+            "mysecret: ENC[AES256_GCM,data=abc,type=str]\nsops:\n    mac: ENC[AES256_GCM,data=xyz,type=str]\n    lastmodified: \"2024-01-01T00:00:00Z\"\n",
+        )
+        .unwrap();
+
+        let target = config_dir.join("target").join("secret.yaml");
+
+        let resolved = make_resolved_profile(
+            vec![],
+            FilesSpec {
+                managed: vec![ManagedFileSpec {
+                    source: "files/secret.yaml".to_string(),
+                    target,
+                    strategy: Some(FileStrategy::Copy),
+                    private: false,
+                    origin: None,
+                    encryption: Some(EncryptionSpec {
+                        backend: "sops".to_string(),
+                        mode: EncryptionMode::Always,
+                    }),
+                    permissions: None,
+                }],
+                permissions: HashMap::new(),
+            },
+        );
+
+        let fm = CfgdFileManager::new(config_dir, &resolved).unwrap();
+        let result = fm.plan(&resolved.merged);
+        assert!(
+            result.is_ok(),
+            "expected plan to succeed: {:?}",
+            result.err()
+        );
     }
 }
