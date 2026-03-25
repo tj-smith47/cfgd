@@ -29,8 +29,11 @@ pub(super) fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result
     }
 
     // 1. Determine target directory
+    // When --from is used (cloning a config repo), default to the config dir
+    // rather than CWD — users typically run the installer from $HOME.
     let target_dir = match args.path {
         Some(p) => cfgd_core::expand_tilde(Path::new(p)),
+        None if args.from.is_some() => cfgd_core::default_config_dir(),
         None => std::env::current_dir()?,
     };
 

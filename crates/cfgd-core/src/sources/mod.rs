@@ -556,7 +556,15 @@ fn normalize_semver_pin(pin: &str) -> String {
 /// Clone a git repo with git2, falling back to the git CLI for SSH URLs.
 /// Returns Ok(()) on success, Err with description on failure.
 pub fn git_clone_with_fallback(url: &str, target: &Path) -> std::result::Result<(), String> {
-    match git2::Repository::clone(url, target) {
+    // Set up auth callbacks so git2 can use SSH keys and credential helpers
+    let mut callbacks = git2::RemoteCallbacks::new();
+    callbacks.credentials(crate::git_ssh_credentials);
+    let mut fetch_opts = git2::FetchOptions::new();
+    fetch_opts.remote_callbacks(callbacks);
+    let mut builder = git2::build::RepoBuilder::new();
+    builder.fetch_options(fetch_opts);
+
+    match builder.clone(url, target) {
         Ok(_) => Ok(()),
         Err(e) => {
             let status = std::process::Command::new("git")

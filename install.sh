@@ -176,7 +176,10 @@ download_and_install() {
         info "Verifying checksum..."
 
         local sha_cmd=""
-        if command_exists sha256sum; then
+        if [ "$(uname -s)" = "Darwin" ] && command_exists shasum; then
+            # Prefer native shasum on macOS — Homebrew sha256sum can behave differently
+            sha_cmd="shasum -a 256"
+        elif command_exists sha256sum; then
             sha_cmd="sha256sum"
         elif command_exists shasum; then
             sha_cmd="shasum -a 256"
