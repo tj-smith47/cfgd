@@ -408,7 +408,8 @@ impl CfgdFileManager {
             .files
             .permissions
             .get(&target_str)
-            .or_else(|| profile.files.permissions.get(&managed.source));
+            .or_else(|| profile.files.permissions.get(&managed.source))
+            .or(managed.permissions.as_ref());
 
         if let Some(mode_str) = mode_str {
             // On Windows, file permissions are not applicable (NTFS uses inherited ACLs).

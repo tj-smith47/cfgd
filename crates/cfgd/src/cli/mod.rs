@@ -1934,7 +1934,7 @@ fn build_registry_with_config_and_packages(
     if cfgd_core::command_available("gpg") {
         registry
             .system_configurators
-            .push(Box::new(crate::system::gpg_keys::GpgKeysConfigurator));
+            .push(Box::new(GpgKeysConfigurator));
     }
 
     // Git configurator — cross-platform, gated on git being available at runtime
@@ -3142,7 +3142,7 @@ fn collect_and_store_compliance_snapshot(
         .map(|c| c.scope.clone())
         .unwrap_or_default();
 
-    let sources: Vec<String> = Vec::new();
+    let sources: Vec<String> = cfg.spec.sources.iter().map(|s| s.name.clone()).collect();
 
     let snapshot = cfgd_core::compliance::collect_snapshot(
         profile_name,

@@ -46,6 +46,8 @@ pub struct ResolvedFile {
     pub is_git_source: bool,
     /// Per-file deployment strategy override (from module spec).
     pub strategy: Option<crate::config::FileStrategy>,
+    /// Encryption settings carried from the module file entry.
+    pub encryption: Option<crate::config::EncryptionSpec>,
 }
 
 /// A fully resolved module — ready for the reconciler.
@@ -770,6 +772,7 @@ pub fn resolve_module_files(module: &LoadedModule, cache_base: &Path) -> Result<
                 target: crate::expand_tilde(Path::new(&entry.target)),
                 is_git_source: true,
                 strategy: entry.strategy,
+                encryption: entry.encryption.clone(),
             });
         } else {
             // Local path — relative to module directory
@@ -779,6 +782,7 @@ pub fn resolve_module_files(module: &LoadedModule, cache_base: &Path) -> Result<
                 target: crate::expand_tilde(Path::new(&entry.target)),
                 is_git_source: false,
                 strategy: entry.strategy,
+                encryption: entry.encryption.clone(),
             });
         }
     }

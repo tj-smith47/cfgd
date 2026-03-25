@@ -5,6 +5,7 @@ mod node;
 pub use node::*;
 
 pub mod gpg_keys;
+pub use gpg_keys::GpgKeysConfigurator;
 pub mod ssh_keys;
 pub use ssh_keys::SshKeysConfigurator;
 pub mod git_config;
