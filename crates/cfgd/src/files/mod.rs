@@ -146,17 +146,18 @@ impl CfgdFileManager {
                 return Err(FileError::SourceNotFound { path: source_path }.into());
             }
 
+            let strategy = self.effective_strategy(&source_path, managed.strategy);
+
             // Validate encryption requirements before planning.
             if let Some(enc) = &managed.encryption {
                 // Always mode is incompatible with Symlink/Hardlink strategies because
                 // those strategies expose the unencrypted source file on disk directly.
-                let effective = self.effective_strategy(&source_path, managed.strategy);
                 if enc.mode == EncryptionMode::Always
-                    && matches!(effective, FileStrategy::Symlink | FileStrategy::Hardlink)
+                    && matches!(strategy, FileStrategy::Symlink | FileStrategy::Hardlink)
                 {
                     return Err(FileError::EncryptionStrategyIncompatible {
                         path: source_path.clone(),
-                        strategy: format!("{:?}", effective),
+                        strategy: format!("{:?}", strategy),
                     }
                     .into());
                 }
@@ -172,8 +173,6 @@ impl CfgdFileManager {
                     .into());
                 }
             }
-
-            let strategy = self.effective_strategy(&source_path, managed.strategy);
             let origin = managed
                 .origin
                 .clone()
@@ -859,13 +858,12 @@ pub(crate) fn is_file_encrypted(
     path: &Path,
     backend: &str,
 ) -> std::result::Result<bool, FileError> {
-    let content = fs::read_to_string(path).map_err(|e| FileError::Io {
-        path: path.to_path_buf(),
-        source: e,
-    })?;
-
     match backend {
         "sops" => {
+            let content = fs::read_to_string(path).map_err(|e| FileError::Io {
+                path: path.to_path_buf(),
+                source: e,
+            })?;
             // Try YAML first, then JSON.  SOPS always injects a top-level `sops` map
             // with at least the `mac` and `lastmodified` keys.
             let value: Option<serde_yaml::Value> = serde_yaml::from_str(&content).ok();
@@ -889,8 +887,13 @@ pub(crate) fn is_file_encrypted(
             Ok(false)
         }
         "age" => {
-            // age encrypted files always start with the age-encryption.org header
-            Ok(content.starts_with("age-encryption.org"))
+            // age encrypted files may contain binary data, so read as bytes
+            // to avoid UTF-8 errors.
+            let content = fs::read(path).map_err(|e| FileError::Io {
+                path: path.to_path_buf(),
+                source: e,
+            })?;
+            Ok(content.starts_with(b"age-encryption.org"))
         }
         other => Err(FileError::UnknownEncryptionBackend {
             backend: other.to_string(),

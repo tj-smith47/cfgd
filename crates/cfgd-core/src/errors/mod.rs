@@ -28,7 +28,7 @@ pub enum CfgdError {
     Source(#[from] SourceError),
 
     #[error("composition error: {0}")]
-    Composition(#[from] CompositionError),
+    Composition(Box<CompositionError>),
 
     #[error("upgrade error: {0}")]
     Upgrade(#[from] UpgradeError),
@@ -111,7 +111,7 @@ pub enum FileError {
     UnknownEncryptionBackend { backend: String },
 
     #[error(
-        "encryption mode 'Always' is incompatible with strategy '{strategy}' for '{path}' — use Copy instead"
+        "encryption mode 'Always' is incompatible with strategy '{strategy}' for '{path}' — use Copy or Template instead"
     )]
     EncryptionStrategyIncompatible { path: PathBuf, strategy: String },
 }
@@ -182,6 +182,12 @@ pub enum StateError {
 impl From<rusqlite::Error> for StateError {
     fn from(e: rusqlite::Error) -> Self {
         StateError::Database(e.to_string())
+    }
+}
+
+impl From<CompositionError> for CfgdError {
+    fn from(e: CompositionError) -> Self {
+        CfgdError::Composition(Box::new(e))
     }
 }
 
@@ -283,6 +289,17 @@ pub enum CompositionError {
         pattern: String,
         actual_backend: String,
         required_backend: String,
+    },
+
+    #[error(
+        "file '{path}' matches required-encryption target '{pattern}' in source '{source_name}' but uses mode '{actual_mode}' instead of required '{required_mode}'"
+    )]
+    EncryptionModeMismatch {
+        source_name: String,
+        path: String,
+        pattern: String,
+        actual_mode: String,
+        required_mode: String,
     },
 }
 

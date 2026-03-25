@@ -1188,7 +1188,7 @@ pub enum EncryptionMode {
 }
 
 /// Encryption settings for a managed file.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct EncryptionSpec {
     /// The encryption backend to use (e.g. "sops", "age").
@@ -1199,7 +1199,7 @@ pub struct EncryptionSpec {
 }
 
 /// Encryption constraint applied to files from a config source.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct EncryptionConstraint {
     /// Glob patterns or explicit paths that must be encrypted.
@@ -1252,7 +1252,7 @@ pub struct SecretSpec {
 /// Validate that each secret has at least one delivery target (`target` or `envs`).
 pub fn validate_secret_specs(specs: &[SecretSpec]) -> Result<()> {
     for spec in specs {
-        if spec.target.is_none() && spec.envs.is_none() {
+        if spec.target.is_none() && spec.envs.as_ref().is_none_or(|e| e.is_empty()) {
             return Err(ConfigError::Invalid {
                 message: format!(
                     "secret '{}' must have at least one of 'target' or 'envs'",

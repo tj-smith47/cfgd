@@ -8,6 +8,7 @@ use std::path::PathBuf;
 use crate::config::{
     ConfigSourcePolicy, EnvVar, LayerPolicy, MergedProfile, PackagesSpec, PolicyItems,
     ProfileLayer, ProfileSpec, ResolvedProfile, SourceConstraints, SourceSpec,
+    validate_secret_specs,
 };
 use crate::errors::{CompositionError, Result};
 use crate::{deep_merge_yaml, union_extend};
@@ -149,6 +150,9 @@ pub fn compose(local: &ResolvedProfile, sources: &[CompositionInput]) -> Result<
             merged_file.origin = Some(source.clone());
         }
     }
+
+    // Validate secrets from all sources (catches invalid specs from ConfigSources)
+    validate_secret_specs(&merged.secrets)?;
 
     Ok(CompositionResult {
         resolved: ResolvedProfile {
@@ -496,9 +500,21 @@ pub fn validate_constraints(
                             return Err(CompositionError::EncryptionBackendMismatch {
                                 source_name: source_name.to_string(),
                                 path: target_str.to_string(),
-                                pattern: matched_pattern,
+                                pattern: matched_pattern.clone(),
                                 actual_backend: enc_spec.backend.clone(),
                                 required_backend: required_backend.clone(),
+                            }
+                            .into());
+                        }
+                        if let Some(ref required_mode) = enc_constraint.mode
+                            && enc_spec.mode != *required_mode
+                        {
+                            return Err(CompositionError::EncryptionModeMismatch {
+                                source_name: source_name.to_string(),
+                                path: target_str.to_string(),
+                                pattern: matched_pattern,
+                                actual_mode: format!("{:?}", enc_spec.mode),
+                                required_mode: format!("{:?}", required_mode),
                             }
                             .into());
                         }
@@ -514,23 +530,7 @@ pub fn validate_constraints(
 /// Check if a path matches any of the allowed patterns.
 /// Supports glob patterns and prefix matching.
 fn path_matches_any(path: &str, allowed: &[String]) -> bool {
-    for pattern in allowed {
-        // Try glob matching first
-        if let Ok(glob_pattern) = glob::Pattern::new(pattern)
-            && glob_pattern.matches(path)
-        {
-            return true;
-        }
-        // Prefix matching (for directory patterns ending in /)
-        if pattern.ends_with('/') && path.starts_with(pattern) {
-            return true;
-        }
-        // Exact match
-        if path == pattern {
-            return true;
-        }
-    }
-    false
+    find_matching_pattern(path, allowed).is_some()
 }
 
 /// Return the first pattern from `patterns` that matches `path`, or `None`.
@@ -584,6 +584,7 @@ fn has_content(items: &PolicyItems) -> bool {
         || !items.system.is_empty()
         || !items.profiles.is_empty()
         || !items.modules.is_empty()
+        || !items.secrets.is_empty()
 }
 
 fn policy_items_to_spec(items: &PolicyItems) -> ProfileSpec {
@@ -601,6 +602,7 @@ fn policy_items_to_spec(items: &PolicyItems) -> ProfileSpec {
         aliases: items.aliases.clone(),
         system: items.system.clone(),
         modules: items.modules.clone(),
+        secrets: items.secrets.clone(),
         ..Default::default()
     }
 }
@@ -841,6 +843,21 @@ fn record_policy_conflicts(
                 "{} module {} <- {}",
                 resolution_type.label(),
                 module,
+                source_name
+            ),
+        });
+    }
+
+    // Record secret conflicts
+    for secret in &items.secrets {
+        conflicts.push(ConflictResolution {
+            resource_id: format!("secret:{}", secret.source),
+            resolution_type: resolution_type.clone(),
+            winning_source: source_name.to_string(),
+            details: format!(
+                "{} {} <- {}",
+                resolution_type.label(),
+                secret.source,
                 source_name
             ),
         });
