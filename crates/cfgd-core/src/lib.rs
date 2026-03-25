@@ -1,3 +1,4 @@
+pub mod compliance;
 pub mod composition;
 pub mod config;
 pub mod daemon;

@@ -158,6 +158,16 @@ const MIGRATIONS: &[&str] = &[
     CREATE INDEX IF NOT EXISTS idx_module_file_manifest_module ON module_file_manifest (module_name);",
     // Migration 3: Script output capture — store stdout/stderr from script actions
     "ALTER TABLE apply_journal ADD COLUMN script_output TEXT;",
+    // Migration 4: Compliance snapshots — periodic machine state snapshots
+    "CREATE TABLE IF NOT EXISTS compliance_snapshots (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        timestamp TEXT NOT NULL,
+        content_hash TEXT NOT NULL,
+        snapshot_json TEXT NOT NULL,
+        summary_compliant INTEGER NOT NULL,
+        summary_warning INTEGER NOT NULL,
+        summary_violation INTEGER NOT NULL
+    );",
 ];
 
 /// Apply status for a reconciliation run.
@@ -312,6 +322,16 @@ pub struct JournalEntry {
     pub started_at: String,
     pub completed_at: Option<String>,
     pub script_output: Option<String>,
+}
+
+/// A compliance snapshot summary row from the state store.
+#[derive(Debug, Clone, Serialize)]
+pub struct ComplianceHistoryRow {
+    pub id: i64,
+    pub timestamp: String,
+    pub compliant: i64,
+    pub warning: i64,
+    pub violation: i64,
 }
 
 /// A module file manifest entry — tracks which files a module deployed.
@@ -1309,6 +1329,127 @@ impl StateStore {
         )?;
         Ok(())
     }
+
+    // --- Compliance snapshot methods ---
+
+    /// Store a compliance snapshot. The caller provides the content hash
+    /// (typically `sha256_hex` of the serialized JSON).
+    pub fn store_compliance_snapshot(
+        &self,
+        snapshot: &crate::compliance::ComplianceSnapshot,
+        hash: &str,
+    ) -> Result<()> {
+        let json = serde_json::to_string(snapshot)
+            .map_err(|e| StateError::Database(format!("failed to serialize snapshot: {}", e)))?;
+        self.conn.execute(
+            "INSERT INTO compliance_snapshots (timestamp, content_hash, snapshot_json, summary_compliant, summary_warning, summary_violation)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![
+                snapshot.timestamp,
+                hash,
+                json,
+                snapshot.summary.compliant as i64,
+                snapshot.summary.warning as i64,
+                snapshot.summary.violation as i64,
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// Get the content hash of the most recently stored compliance snapshot.
+    pub fn latest_compliance_hash(&self) -> Result<Option<String>> {
+        let result = self.conn.query_row(
+            "SELECT content_hash FROM compliance_snapshots ORDER BY id DESC LIMIT 1",
+            [],
+            |row| row.get(0),
+        );
+
+        match result {
+            Ok(hash) => Ok(Some(hash)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(StateError::Database(e.to_string()).into()),
+        }
+    }
+
+    /// Get compliance snapshot history as summary rows.
+    /// If `since` is provided, only return snapshots after that ISO 8601 timestamp.
+    pub fn compliance_history(
+        &self,
+        since: Option<&str>,
+        limit: u32,
+    ) -> Result<Vec<ComplianceHistoryRow>> {
+        if let Some(since_ts) = since {
+            let mut stmt = self.conn.prepare(
+                "SELECT id, timestamp, summary_compliant, summary_warning, summary_violation
+                 FROM compliance_snapshots WHERE timestamp > ?1 ORDER BY id DESC LIMIT ?2",
+            )?;
+
+            let rows = stmt
+                .query_map(params![since_ts, limit], |row| {
+                    Ok(ComplianceHistoryRow {
+                        id: row.get(0)?,
+                        timestamp: row.get(1)?,
+                        compliant: row.get(2)?,
+                        warning: row.get(3)?,
+                        violation: row.get(4)?,
+                    })
+                })?
+                .collect::<std::result::Result<Vec<_>, _>>()?;
+            Ok(rows)
+        } else {
+            let mut stmt = self.conn.prepare(
+                "SELECT id, timestamp, summary_compliant, summary_warning, summary_violation
+                 FROM compliance_snapshots ORDER BY id DESC LIMIT ?1",
+            )?;
+
+            let rows = stmt
+                .query_map(params![limit], |row| {
+                    Ok(ComplianceHistoryRow {
+                        id: row.get(0)?,
+                        timestamp: row.get(1)?,
+                        compliant: row.get(2)?,
+                        warning: row.get(3)?,
+                        violation: row.get(4)?,
+                    })
+                })?
+                .collect::<std::result::Result<Vec<_>, _>>()?;
+            Ok(rows)
+        }
+    }
+
+    /// Retrieve a full compliance snapshot by ID.
+    pub fn get_compliance_snapshot(
+        &self,
+        id: i64,
+    ) -> Result<Option<crate::compliance::ComplianceSnapshot>> {
+        let result = self.conn.query_row(
+            "SELECT snapshot_json FROM compliance_snapshots WHERE id = ?1",
+            params![id],
+            |row| row.get::<_, String>(0),
+        );
+
+        match result {
+            Ok(json) => {
+                let snapshot: crate::compliance::ComplianceSnapshot = serde_json::from_str(&json)
+                    .map_err(|e| {
+                    StateError::Database(format!("failed to deserialize snapshot: {}", e))
+                })?;
+                Ok(Some(snapshot))
+            }
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(StateError::Database(e.to_string()).into()),
+        }
+    }
+
+    /// Remove compliance snapshots older than the given ISO 8601 timestamp.
+    /// Returns the number of rows deleted.
+    pub fn prune_compliance_snapshots(&self, before_timestamp: &str) -> Result<usize> {
+        let deleted = self.conn.execute(
+            "DELETE FROM compliance_snapshots WHERE timestamp < ?1",
+            params![before_timestamp],
+        )?;
+        Ok(deleted)
+    }
 }
 
 /// Compute SHA256 hash of a serializable plan for deduplication.
@@ -2112,9 +2253,157 @@ mod tests {
     }
 
     #[test]
-    fn schema_version_is_3_after_migration() {
+    fn schema_version_is_4_after_migration() {
         let store = StateStore::open_in_memory().unwrap();
         let version = store.schema_version();
-        assert_eq!(version, 3);
+        assert_eq!(version, 4);
+    }
+
+    // --- Compliance snapshot tests ---
+
+    fn make_test_snapshot() -> crate::compliance::ComplianceSnapshot {
+        crate::compliance::ComplianceSnapshot {
+            timestamp: crate::utc_now_iso8601(),
+            machine: crate::compliance::MachineInfo {
+                hostname: "test-host".into(),
+                os: "linux".into(),
+                arch: "x86_64".into(),
+            },
+            profile: "default".into(),
+            sources: vec!["local".into()],
+            checks: vec![
+                crate::compliance::ComplianceCheck {
+                    category: "file".into(),
+                    target: Some("/home/user/.zshrc".into()),
+                    status: crate::compliance::ComplianceStatus::Compliant,
+                    detail: Some("present".into()),
+                    ..Default::default()
+                },
+                crate::compliance::ComplianceCheck {
+                    category: "package".into(),
+                    name: Some("ripgrep".into()),
+                    status: crate::compliance::ComplianceStatus::Violation,
+                    detail: Some("not installed".into()),
+                    ..Default::default()
+                },
+                crate::compliance::ComplianceCheck {
+                    category: "system".into(),
+                    key: Some("shell".into()),
+                    status: crate::compliance::ComplianceStatus::Warning,
+                    detail: Some("no configurator".into()),
+                    ..Default::default()
+                },
+            ],
+            summary: crate::compliance::ComplianceSummary {
+                compliant: 1,
+                warning: 1,
+                violation: 1,
+            },
+        }
+    }
+
+    #[test]
+    fn compliance_snapshot_roundtrip() {
+        let store = StateStore::open_in_memory().unwrap();
+        let snapshot = make_test_snapshot();
+
+        let json = serde_json::to_string(&snapshot).unwrap();
+        let hash = crate::sha256_hex(json.as_bytes());
+
+        store.store_compliance_snapshot(&snapshot, &hash).unwrap();
+
+        // Retrieve by latest hash
+        let latest = store.latest_compliance_hash().unwrap().unwrap();
+        assert_eq!(latest, hash);
+
+        // Retrieve full snapshot by history
+        let history = store.compliance_history(None, 10).unwrap();
+        assert_eq!(history.len(), 1);
+        let row = &history[0];
+        assert_eq!(row.compliant, 1);
+        assert_eq!(row.warning, 1);
+        assert_eq!(row.violation, 1);
+
+        // Retrieve by ID
+        let retrieved = store.get_compliance_snapshot(row.id).unwrap().unwrap();
+        assert_eq!(retrieved.profile, "default");
+        assert_eq!(retrieved.checks.len(), 3);
+        assert_eq!(retrieved.summary.compliant, 1);
+    }
+
+    #[test]
+    fn compliance_latest_hash_empty() {
+        let store = StateStore::open_in_memory().unwrap();
+        assert!(store.latest_compliance_hash().unwrap().is_none());
+    }
+
+    #[test]
+    fn compliance_latest_hash_returns_most_recent() {
+        let store = StateStore::open_in_memory().unwrap();
+
+        let mut s1 = make_test_snapshot();
+        s1.timestamp = "2026-01-01T00:00:00Z".into();
+        store.store_compliance_snapshot(&s1, "hash1").unwrap();
+
+        let mut s2 = make_test_snapshot();
+        s2.timestamp = "2026-01-02T00:00:00Z".into();
+        store.store_compliance_snapshot(&s2, "hash2").unwrap();
+
+        let latest = store.latest_compliance_hash().unwrap().unwrap();
+        assert_eq!(latest, "hash2");
+    }
+
+    #[test]
+    fn compliance_prune_removes_old_snapshots() {
+        let store = StateStore::open_in_memory().unwrap();
+
+        let mut s1 = make_test_snapshot();
+        s1.timestamp = "2026-01-01T00:00:00Z".into();
+        store.store_compliance_snapshot(&s1, "hash1").unwrap();
+
+        let mut s2 = make_test_snapshot();
+        s2.timestamp = "2026-01-15T00:00:00Z".into();
+        store.store_compliance_snapshot(&s2, "hash2").unwrap();
+
+        let mut s3 = make_test_snapshot();
+        s3.timestamp = "2026-02-01T00:00:00Z".into();
+        store.store_compliance_snapshot(&s3, "hash3").unwrap();
+
+        // Prune everything before Feb
+        let deleted = store
+            .prune_compliance_snapshots("2026-02-01T00:00:00Z")
+            .unwrap();
+        assert_eq!(deleted, 2);
+
+        let history = store.compliance_history(None, 10).unwrap();
+        assert_eq!(history.len(), 1);
+    }
+
+    #[test]
+    fn compliance_history_with_since() {
+        let store = StateStore::open_in_memory().unwrap();
+
+        let mut s1 = make_test_snapshot();
+        s1.timestamp = "2026-01-01T00:00:00Z".into();
+        store.store_compliance_snapshot(&s1, "h1").unwrap();
+
+        let mut s2 = make_test_snapshot();
+        s2.timestamp = "2026-01-10T00:00:00Z".into();
+        store.store_compliance_snapshot(&s2, "h2").unwrap();
+
+        let mut s3 = make_test_snapshot();
+        s3.timestamp = "2026-01-20T00:00:00Z".into();
+        store.store_compliance_snapshot(&s3, "h3").unwrap();
+
+        let history = store
+            .compliance_history(Some("2026-01-05T00:00:00Z"), 10)
+            .unwrap();
+        assert_eq!(history.len(), 2);
+    }
+
+    #[test]
+    fn compliance_get_nonexistent() {
+        let store = StateStore::open_in_memory().unwrap();
+        assert!(store.get_compliance_snapshot(999).unwrap().is_none());
     }
 }

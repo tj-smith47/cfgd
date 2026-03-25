@@ -426,9 +426,7 @@ impl<'a> Reconciler<'a> {
         for module in modules {
             for (key, value) in &module.system {
                 crate::deep_merge_yaml(
-                    system
-                        .entry(key.clone())
-                        .or_insert(serde_yaml::Value::Null),
+                    system.entry(key.clone()).or_insert(serde_yaml::Value::Null),
                     value,
                 );
             }

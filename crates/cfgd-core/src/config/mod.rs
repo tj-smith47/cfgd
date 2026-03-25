@@ -1789,7 +1789,7 @@ pub fn desired_packages_for(manager_name: &str, profile: &MergedProfile) -> Vec<
     desired_packages_for_spec(manager_name, &profile.packages)
 }
 
-fn desired_packages_for_spec(manager_name: &str, packages: &PackagesSpec) -> Vec<String> {
+pub fn desired_packages_for_spec(manager_name: &str, packages: &PackagesSpec) -> Vec<String> {
     match manager_name {
         "brew" => packages
             .brew
@@ -3594,10 +3594,7 @@ spec:
         assert!(compliance.scope.watch_package_managers.is_empty());
         // export defaults
         assert_eq!(compliance.export.format, ComplianceFormat::Json);
-        assert_eq!(
-            compliance.export.path,
-            "~/.local/share/cfgd/compliance/"
-        );
+        assert_eq!(compliance.export.path, "~/.local/share/cfgd/compliance/");
     }
 
     #[test]
@@ -3662,10 +3659,7 @@ spec:
         assert!(compliance.scope.system);
         assert!(compliance.scope.secrets);
         assert_eq!(compliance.export.format, ComplianceFormat::Json);
-        assert_eq!(
-            compliance.export.path,
-            "~/.local/share/cfgd/compliance/"
-        );
+        assert_eq!(compliance.export.path, "~/.local/share/cfgd/compliance/");
     }
 
     #[test]
