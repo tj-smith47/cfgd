@@ -403,13 +403,14 @@ impl CfgdFileManager {
     ) -> Result<Option<FileAction>> {
         let target_str = target.display().to_string();
 
-        // Also check the source path as a key (relative path in permissions map)
-        let mode_str = profile
-            .files
+        // Per-file permissions take priority (intended for managed files).
+        // Global files.permissions map is a fallback (intended for unmanaged paths,
+        // but can also be used for managed files by target or source path).
+        let mode_str = managed
             .permissions
-            .get(&target_str)
-            .or_else(|| profile.files.permissions.get(&managed.source))
-            .or(managed.permissions.as_ref());
+            .as_ref()
+            .or_else(|| profile.files.permissions.get(&target_str))
+            .or_else(|| profile.files.permissions.get(&managed.source));
 
         if let Some(mode_str) = mode_str {
             // On Windows, file permissions are not applicable (NTFS uses inherited ACLs).
@@ -859,47 +860,7 @@ pub(crate) fn is_file_encrypted(
     path: &Path,
     backend: &str,
 ) -> std::result::Result<bool, FileError> {
-    match backend {
-        "sops" => {
-            let content = fs::read_to_string(path).map_err(|e| FileError::Io {
-                path: path.to_path_buf(),
-                source: e,
-            })?;
-            // Try YAML first, then JSON.  SOPS always injects a top-level `sops` map
-            // with at least the `mac` and `lastmodified` keys.
-            let value: Option<serde_yaml::Value> = serde_yaml::from_str(&content).ok();
-            if let Some(serde_yaml::Value::Mapping(map)) = value
-                && let Some(serde_yaml::Value::Mapping(sops)) =
-                    map.get(serde_yaml::Value::String("sops".to_string()))
-                && sops.contains_key(serde_yaml::Value::String("mac".to_string()))
-                && sops.contains_key(serde_yaml::Value::String("lastmodified".to_string()))
-            {
-                return Ok(true);
-            }
-            // Try JSON (SOPS can encrypt JSON files too)
-            let json_value: Option<serde_json::Value> = serde_json::from_str(&content).ok();
-            if let Some(serde_json::Value::Object(map)) = json_value
-                && let Some(serde_json::Value::Object(sops)) = map.get("sops")
-                && sops.contains_key("mac")
-                && sops.contains_key("lastmodified")
-            {
-                return Ok(true);
-            }
-            Ok(false)
-        }
-        "age" => {
-            // age encrypted files may contain binary data, so read as bytes
-            // to avoid UTF-8 errors.
-            let content = fs::read(path).map_err(|e| FileError::Io {
-                path: path.to_path_buf(),
-                source: e,
-            })?;
-            Ok(content.starts_with(b"age-encryption.org"))
-        }
-        other => Err(FileError::UnknownEncryptionBackend {
-            backend: other.to_string(),
-        }),
-    }
+    cfgd_core::is_file_encrypted(path, backend)
 }
 
 /// Detect language from file extension for syntax highlighting.

@@ -789,14 +789,76 @@ impl<'a> Reconciler<'a> {
                 }));
             }
 
-            // Files
+            // Files — validate encryption requirements before deploying
             if !module.files.is_empty() {
-                actions.push(Action::Module(ModuleAction {
-                    module_name: module.name.clone(),
-                    kind: ModuleActionKind::DeployFiles {
-                        files: module.files.clone(),
-                    },
-                }));
+                let mut encryption_ok = true;
+                for file in &module.files {
+                    if let Some(ref enc) = file.encryption {
+                        let strategy =
+                            file.strategy.unwrap_or(self.registry.default_file_strategy);
+                        if enc.mode == crate::config::EncryptionMode::Always
+                            && matches!(
+                                strategy,
+                                crate::config::FileStrategy::Symlink
+                                    | crate::config::FileStrategy::Hardlink
+                            )
+                        {
+                            actions.push(Action::Module(ModuleAction {
+                                module_name: module.name.clone(),
+                                kind: ModuleActionKind::Skip {
+                                    reason: format!(
+                                        "encryption mode Always incompatible with {:?} for {}",
+                                        strategy,
+                                        file.source.display()
+                                    ),
+                                },
+                            }));
+                            encryption_ok = false;
+                            break;
+                        }
+                        if file.source.exists() {
+                            match crate::is_file_encrypted(&file.source, &enc.backend) {
+                                Ok(true) => {}
+                                Ok(false) => {
+                                    actions.push(Action::Module(ModuleAction {
+                                        module_name: module.name.clone(),
+                                        kind: ModuleActionKind::Skip {
+                                            reason: format!(
+                                                "file {} requires encryption (backend: {}) but is not encrypted",
+                                                file.source.display(),
+                                                enc.backend
+                                            ),
+                                        },
+                                    }));
+                                    encryption_ok = false;
+                                    break;
+                                }
+                                Err(e) => {
+                                    actions.push(Action::Module(ModuleAction {
+                                        module_name: module.name.clone(),
+                                        kind: ModuleActionKind::Skip {
+                                            reason: format!(
+                                                "encryption check failed for {}: {}",
+                                                file.source.display(),
+                                                e
+                                            ),
+                                        },
+                                    }));
+                                    encryption_ok = false;
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+                if encryption_ok {
+                    actions.push(Action::Module(ModuleAction {
+                        module_name: module.name.clone(),
+                        kind: ModuleActionKind::DeployFiles {
+                            files: module.files.clone(),
+                        },
+                    }));
+                }
             }
 
             // Post-scripts for this module
