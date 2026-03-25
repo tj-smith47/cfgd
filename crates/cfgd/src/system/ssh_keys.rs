@@ -316,6 +316,7 @@ impl SystemConfigurator for SshKeysConfigurator {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
+#[cfg(unix)]
 mod tests {
     use super::*;
     use cfgd_core::output::Verbosity;
