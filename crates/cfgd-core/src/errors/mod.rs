@@ -264,6 +264,26 @@ pub enum CompositionError {
         resource: String,
         source_names: Vec<String>,
     },
+
+    #[error(
+        "file '{path}' matches required-encryption target '{pattern}' in source '{source_name}' but has no encryption block"
+    )]
+    EncryptionRequired {
+        source_name: String,
+        path: String,
+        pattern: String,
+    },
+
+    #[error(
+        "file '{path}' matches required-encryption target '{pattern}' in source '{source_name}' but uses backend '{actual_backend}' instead of required '{required_backend}'"
+    )]
+    EncryptionBackendMismatch {
+        source_name: String,
+        path: String,
+        pattern: String,
+        actual_backend: String,
+        required_backend: String,
+    },
 }
 
 #[derive(Debug, thiserror::Error)]

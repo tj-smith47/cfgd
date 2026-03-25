@@ -468,6 +468,46 @@ pub fn validate_constraints(
         }
     }
 
+    // Check encryption.requiredTargets: every file whose target matches a required-encryption
+    // glob must have an encryption block, and if the constraint specifies a backend, it must
+    // match the file's encryption backend.
+    if let Some(ref enc_constraint) = constraints.encryption
+        && !enc_constraint.required_targets.is_empty()
+        && let Some(ref files) = spec.files
+    {
+        for managed in &files.managed {
+            let target_str = managed.target.to_string_lossy();
+            if let Some(matched_pattern) =
+                find_matching_pattern(&target_str, &enc_constraint.required_targets)
+            {
+                match managed.encryption.as_ref() {
+                    None => {
+                        return Err(CompositionError::EncryptionRequired {
+                            source_name: source_name.to_string(),
+                            path: target_str.to_string(),
+                            pattern: matched_pattern,
+                        }
+                        .into());
+                    }
+                    Some(enc_spec) => {
+                        if let Some(ref required_backend) = enc_constraint.backend
+                            && enc_spec.backend != *required_backend
+                        {
+                            return Err(CompositionError::EncryptionBackendMismatch {
+                                source_name: source_name.to_string(),
+                                path: target_str.to_string(),
+                                pattern: matched_pattern,
+                                actual_backend: enc_spec.backend.clone(),
+                                required_backend: required_backend.clone(),
+                            }
+                            .into());
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     Ok(())
 }
 
@@ -491,6 +531,25 @@ fn path_matches_any(path: &str, allowed: &[String]) -> bool {
         }
     }
     false
+}
+
+/// Return the first pattern from `patterns` that matches `path`, or `None`.
+/// Uses the same matching logic as `path_matches_any`.
+fn find_matching_pattern(path: &str, patterns: &[String]) -> Option<String> {
+    for pattern in patterns {
+        if let Ok(glob_pattern) = glob::Pattern::new(pattern)
+            && glob_pattern.matches(path)
+        {
+            return Some(pattern.clone());
+        }
+        if pattern.ends_with('/') && path.starts_with(pattern.as_str()) {
+            return Some(pattern.clone());
+        }
+        if path == pattern {
+            return Some(pattern.clone());
+        }
+    }
+    None
 }
 
 /// Check if a subscriber is trying to override a locked resource.
@@ -1748,5 +1807,162 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(count_policy_tier_items(&items), 2);
+    }
+
+    // --- Encryption constraint tests ---
+
+    fn make_encryption_constraint(patterns: &[&str], backend: Option<&str>) -> SourceConstraints {
+        SourceConstraints {
+            encryption: Some(crate::config::EncryptionConstraint {
+                required_targets: patterns.iter().map(|s| s.to_string()).collect(),
+                backend: backend.map(|s| s.to_string()),
+                mode: None,
+            }),
+            ..Default::default()
+        }
+    }
+
+    fn make_file_spec_with_encryption(
+        target: &str,
+        backend: Option<&str>,
+    ) -> ProfileSpec {
+        ProfileSpec {
+            files: Some(FilesSpec {
+                managed: vec![ManagedFileSpec {
+                    source: "source/file".into(),
+                    target: target.into(),
+                    strategy: None,
+                    private: false,
+                    origin: None,
+                    encryption: backend.map(|b| crate::config::EncryptionSpec {
+                        backend: b.to_string(),
+                        mode: crate::config::EncryptionMode::InRepo,
+                    }),
+                    permissions: None,
+                }],
+                ..Default::default()
+            }),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn encryption_required_target_without_encryption_is_error() {
+        let constraints = make_encryption_constraint(&["~/.ssh/*"], None);
+        let spec = make_file_spec_with_encryption("~/.ssh/id_rsa", None);
+        let result = validate_constraints("corp", &constraints, &spec);
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(msg.contains("~/.ssh/id_rsa"), "msg: {msg}");
+        assert!(msg.contains("~/.ssh/*"), "msg: {msg}");
+        assert!(msg.contains("encryption"), "msg: {msg}");
+    }
+
+    #[test]
+    fn encryption_required_target_with_encryption_passes() {
+        let constraints = make_encryption_constraint(&["~/.ssh/*"], None);
+        let spec = make_file_spec_with_encryption("~/.ssh/id_rsa", Some("sops"));
+        assert!(validate_constraints("corp", &constraints, &spec).is_ok());
+    }
+
+    #[test]
+    fn encryption_non_matching_target_without_encryption_passes() {
+        let constraints = make_encryption_constraint(&["~/.ssh/*"], None);
+        // ~/.zshrc does not match ~/.ssh/* — no enforcement
+        let spec = make_file_spec_with_encryption("~/.zshrc", None);
+        assert!(validate_constraints("corp", &constraints, &spec).is_ok());
+    }
+
+    #[test]
+    fn encryption_empty_required_targets_no_enforcement() {
+        let constraints = SourceConstraints {
+            encryption: Some(crate::config::EncryptionConstraint {
+                required_targets: vec![],
+                backend: Some("sops".into()),
+                mode: None,
+            }),
+            ..Default::default()
+        };
+        // Even though a backend is specified, empty requiredTargets means no enforcement
+        let spec = make_file_spec_with_encryption("~/.ssh/id_rsa", None);
+        assert!(validate_constraints("corp", &constraints, &spec).is_ok());
+    }
+
+    #[test]
+    fn encryption_no_constraint_field_no_enforcement() {
+        let constraints = SourceConstraints::default();
+        // No encryption constraint at all
+        let spec = make_file_spec_with_encryption("~/.ssh/id_rsa", None);
+        assert!(validate_constraints("corp", &constraints, &spec).is_ok());
+    }
+
+    #[test]
+    fn encryption_wrong_backend_is_error() {
+        let constraints = make_encryption_constraint(&["~/.aws/*"], Some("sops"));
+        let spec = make_file_spec_with_encryption("~/.aws/credentials", Some("age"));
+        let result = validate_constraints("corp", &constraints, &spec);
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(msg.contains("~/.aws/credentials"), "msg: {msg}");
+        assert!(msg.contains("age"), "msg: {msg}");
+        assert!(msg.contains("sops"), "msg: {msg}");
+    }
+
+    #[test]
+    fn encryption_correct_backend_passes() {
+        let constraints = make_encryption_constraint(&["~/.aws/*"], Some("sops"));
+        let spec = make_file_spec_with_encryption("~/.aws/credentials", Some("sops"));
+        assert!(validate_constraints("corp", &constraints, &spec).is_ok());
+    }
+
+    #[test]
+    fn encryption_constraint_matches_exact_path() {
+        let constraints = make_encryption_constraint(&["~/.gnupg/secring.gpg"], None);
+        // Exact path match
+        let spec = make_file_spec_with_encryption("~/.gnupg/secring.gpg", None);
+        let result = validate_constraints("corp", &constraints, &spec);
+        assert!(result.is_err());
+        assert!(
+            result.unwrap_err().to_string().contains("~/.gnupg/secring.gpg")
+        );
+    }
+
+    #[test]
+    fn encryption_module_file_matching_required_target_without_encryption_is_error() {
+        // Module files come through as ProfileSpec files just like profile files;
+        // validate_constraints sees them the same way.
+        let constraints = make_encryption_constraint(&["~/.config/secrets/*"], None);
+        let spec = ProfileSpec {
+            files: Some(FilesSpec {
+                managed: vec![
+                    // First file does NOT match the pattern — OK
+                    ManagedFileSpec {
+                        source: "files/.zshrc".into(),
+                        target: "~/.zshrc".into(),
+                        strategy: None,
+                        private: false,
+                        origin: None,
+                        encryption: None,
+                        permissions: None,
+                    },
+                    // Second file MATCHES the pattern and has no encryption — error
+                    ManagedFileSpec {
+                        source: "files/api-key".into(),
+                        target: "~/.config/secrets/api-key".into(),
+                        strategy: None,
+                        private: false,
+                        origin: None,
+                        encryption: None,
+                        permissions: None,
+                    },
+                ],
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let result = validate_constraints("corp", &constraints, &spec);
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(msg.contains("~/.config/secrets/api-key"), "msg: {msg}");
     }
 }
