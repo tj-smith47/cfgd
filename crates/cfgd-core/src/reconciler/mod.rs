@@ -557,6 +557,13 @@ impl<'a> Reconciler<'a> {
             .unwrap_or(false);
 
         for secret in &profile.secrets {
+            // File-targeting actions only apply when a target path is set.
+            // Env-only secrets (target=None, envs=Some) are handled separately
+            // during env-file injection.
+            let Some(ref target) = secret.target else {
+                continue;
+            };
+
             // Check if it's a provider reference
             if let Some((provider_name, reference)) =
                 crate::providers::parse_secret_reference(&secret.source)
@@ -571,7 +578,7 @@ impl<'a> Reconciler<'a> {
                     actions.push(Action::Secret(SecretAction::Resolve {
                         provider: provider_name.to_string(),
                         reference: reference.to_string(),
-                        target: secret.target.clone(),
+                        target: target.clone(),
                         origin: "local".to_string(),
                     }));
                 } else {
@@ -592,7 +599,7 @@ impl<'a> Reconciler<'a> {
 
                 actions.push(Action::Secret(SecretAction::Decrypt {
                     source: PathBuf::from(&secret.source),
-                    target: secret.target.clone(),
+                    target: target.clone(),
                     backend: backend_name,
                     origin: "local".to_string(),
                 }));

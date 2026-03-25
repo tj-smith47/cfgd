@@ -384,12 +384,12 @@ fn merge_with_policy(
             );
         }
 
-        // Secrets: append, deduplicate by target
+        // Secrets: append, deduplicate by source
         for secret in &spec.secrets {
             if let Some(existing) = merged
                 .secrets
                 .iter_mut()
-                .find(|s| s.target == secret.target)
+                .find(|s| s.source == secret.source)
             {
                 *existing = secret.clone();
             } else {
@@ -1822,10 +1822,7 @@ mod tests {
         }
     }
 
-    fn make_file_spec_with_encryption(
-        target: &str,
-        backend: Option<&str>,
-    ) -> ProfileSpec {
+    fn make_file_spec_with_encryption(target: &str, backend: Option<&str>) -> ProfileSpec {
         ProfileSpec {
             files: Some(FilesSpec {
                 managed: vec![ManagedFileSpec {
@@ -1923,7 +1920,10 @@ mod tests {
         let result = validate_constraints("corp", &constraints, &spec);
         assert!(result.is_err());
         assert!(
-            result.unwrap_err().to_string().contains("~/.gnupg/secring.gpg")
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("~/.gnupg/secring.gpg")
         );
     }
 

@@ -120,7 +120,15 @@ pub(super) fn cmd_profile_show(
         printer.newline();
         printer.subheader("Secrets");
         for secret in &resolved.merged.secrets {
-            printer.key_value(&secret.source, &secret.target.display().to_string());
+            let value = match (&secret.target, &secret.envs) {
+                (Some(t), Some(envs)) => {
+                    format!("{} (envs: {})", t.display(), envs.join(", "))
+                }
+                (Some(t), None) => t.display().to_string(),
+                (None, Some(envs)) => format!("envs: {}", envs.join(", ")),
+                (None, None) => "(invalid)".to_string(),
+            };
+            printer.key_value(&secret.source, &value);
         }
     }
 
@@ -316,9 +324,10 @@ pub(super) fn parse_secret_spec(s: &str) -> anyhow::Result<config::SecretSpec> {
     }
     Ok(config::SecretSpec {
         source: source.to_string(),
-        target: PathBuf::from(target),
+        target: Some(PathBuf::from(target)),
         template: None,
         backend: None,
+        envs: None,
     })
 }
 
@@ -959,12 +968,16 @@ pub(super) fn cmd_profile_update(
     // Add secrets
     for secret_str in &add_secrets {
         let secret = parse_secret_spec(secret_str)?;
-        let target = cfgd_core::expand_tilde(&secret.target);
+        // parse_secret_spec always produces a target
+        let target = match secret.target.as_ref() {
+            Some(t) => cfgd_core::expand_tilde(t),
+            None => anyhow::bail!("secret parsed without target"),
+        };
         if doc
             .spec
             .secrets
             .iter()
-            .any(|s| cfgd_core::expand_tilde(&s.target) == target)
+            .any(|s| s.target.as_ref().map(|t| cfgd_core::expand_tilde(t)) == Some(target.clone()))
         {
             printer.warning(&format!(
                 "Secret targeting '{}' already exists",
@@ -985,9 +998,9 @@ pub(super) fn cmd_profile_update(
     for target_str in &remove_secrets {
         let target = cfgd_core::expand_tilde(&PathBuf::from(target_str));
         let before = doc.spec.secrets.len();
-        doc.spec
-            .secrets
-            .retain(|s| cfgd_core::expand_tilde(&s.target) != target);
+        doc.spec.secrets.retain(|s| {
+            s.target.as_ref().map(|t| cfgd_core::expand_tilde(t)) != Some(target.clone())
+        });
         if doc.spec.secrets.len() < before {
             printer.success(&format!("Removed secret: {}", target_str));
             changes += 1;
@@ -1253,9 +1266,10 @@ mod tests {
     fn parse_secret_spec_valid_simple() {
         let spec = parse_secret_spec("secrets/api-key.enc:~/.config/app/key").unwrap();
         assert_eq!(spec.source, "secrets/api-key.enc");
-        assert_eq!(spec.target, PathBuf::from("~/.config/app/key"));
+        assert_eq!(spec.target, Some(PathBuf::from("~/.config/app/key")));
         assert!(spec.template.is_none());
         assert!(spec.backend.is_none());
+        assert!(spec.envs.is_none());
     }
 
     #[test]
@@ -1263,7 +1277,7 @@ mod tests {
         // rsplit_once should split on the LAST colon, so op://vault/item stays together
         let spec = parse_secret_spec("op://vault/item:~/target").unwrap();
         assert_eq!(spec.source, "op://vault/item");
-        assert_eq!(spec.target, PathBuf::from("~/target"));
+        assert_eq!(spec.target, Some(PathBuf::from("~/target")));
     }
 
     #[test]

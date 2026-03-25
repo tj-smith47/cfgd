@@ -7839,9 +7839,10 @@ spec:
     fn parse_secret_spec_valid() {
         let spec = profile::parse_secret_spec("secrets/key.enc:~/.config/app/key").unwrap();
         assert_eq!(spec.source, "secrets/key.enc");
-        assert_eq!(spec.target, PathBuf::from("~/.config/app/key"));
+        assert_eq!(spec.target, Some(PathBuf::from("~/.config/app/key")));
         assert!(spec.template.is_none());
         assert!(spec.backend.is_none());
+        assert!(spec.envs.is_none());
     }
 
     #[test]
@@ -7849,14 +7850,14 @@ spec:
         // Provider URLs with :// must not be split on the scheme colon
         let spec = profile::parse_secret_spec("op://vault/item:~/.config/key").unwrap();
         assert_eq!(spec.source, "op://vault/item");
-        assert_eq!(spec.target, PathBuf::from("~/.config/key"));
+        assert_eq!(spec.target, Some(PathBuf::from("~/.config/key")));
     }
 
     #[test]
     fn parse_secret_spec_absolute_target() {
         let spec = profile::parse_secret_spec("secrets/db.enc:/etc/app/db.conf").unwrap();
         assert_eq!(spec.source, "secrets/db.enc");
-        assert_eq!(spec.target, PathBuf::from("/etc/app/db.conf"));
+        assert_eq!(spec.target, Some(PathBuf::from("/etc/app/db.conf")));
     }
 
     #[test]

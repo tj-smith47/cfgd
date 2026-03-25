@@ -638,6 +638,8 @@ pub struct PolicyItems {
     pub profiles: Vec<String>,
     #[serde(default)]
     pub modules: Vec<String>,
+    #[serde(default)]
+    pub secrets: Vec<SecretSpec>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1239,9 +1241,28 @@ pub struct ManagedFileSpec {
 #[serde(rename_all = "camelCase")]
 pub struct SecretSpec {
     pub source: String,
-    pub target: PathBuf,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target: Option<PathBuf>,
     pub template: Option<String>,
     pub backend: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub envs: Option<Vec<String>>,
+}
+
+/// Validate that each secret has at least one delivery target (`target` or `envs`).
+pub fn validate_secret_specs(specs: &[SecretSpec]) -> Result<()> {
+    for spec in specs {
+        if spec.target.is_none() && spec.envs.is_none() {
+            return Err(ConfigError::Invalid {
+                message: format!(
+                    "secret '{}' must have at least one of 'target' or 'envs'",
+                    spec.source
+                ),
+            }
+            .into());
+        }
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -1451,6 +1472,8 @@ pub fn resolve_profile(profile_name: &str, profiles_dir: &Path) -> Result<Resolv
 
     let merged = merge_layers(&layers);
 
+    validate_secret_specs(&merged.secrets)?;
+
     Ok(ResolvedProfile { layers, merged })
 }
 
@@ -1630,12 +1653,12 @@ fn merge_layers(layers: &[ProfileLayer]) -> MergedProfile {
             );
         }
 
-        // Secrets: append, deduplicate by target (later layer overrides)
+        // Secrets: append, deduplicate by source (later layer overrides)
         for secret in &spec.secrets {
             if let Some(existing) = merged
                 .secrets
                 .iter_mut()
-                .find(|s| s.target == secret.target)
+                .find(|s| s.source == secret.source)
             {
                 *existing = secret.clone();
             } else {
@@ -3157,5 +3180,122 @@ backend: sops
         let spec: EncryptionSpec = serde_yaml::from_str(yaml).unwrap();
         assert_eq!(spec.backend, "sops");
         assert_eq!(spec.mode, EncryptionMode::InRepo);
+    }
+
+    #[test]
+    fn secret_spec_with_envs_only() {
+        let yaml = r#"
+source: op://vault/item/password
+envs:
+  - DB_PASSWORD
+"#;
+        let spec: SecretSpec = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(spec.source, "op://vault/item/password");
+        assert!(spec.target.is_none());
+        assert_eq!(spec.envs.as_ref().unwrap(), &["DB_PASSWORD"]);
+    }
+
+    #[test]
+    fn secret_spec_with_target_and_envs() {
+        let yaml = r#"
+source: secrets/api-key.enc
+target: ~/.config/app/key
+envs:
+  - API_KEY
+"#;
+        let spec: SecretSpec = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(spec.source, "secrets/api-key.enc");
+        assert_eq!(
+            spec.target.unwrap(),
+            std::path::PathBuf::from("~/.config/app/key")
+        );
+        assert_eq!(spec.envs.as_ref().unwrap(), &["API_KEY"]);
+    }
+
+    #[test]
+    fn secret_spec_with_target_only() {
+        let yaml = r#"
+source: secrets/credentials.enc
+target: ~/.config/app/credentials
+"#;
+        let spec: SecretSpec = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(spec.source, "secrets/credentials.enc");
+        assert_eq!(
+            spec.target.unwrap(),
+            std::path::PathBuf::from("~/.config/app/credentials")
+        );
+        assert!(spec.envs.is_none());
+    }
+
+    #[test]
+    fn secret_spec_neither_target_nor_envs_fails_validation() {
+        let specs = vec![SecretSpec {
+            source: "secrets/orphan.enc".to_string(),
+            target: None,
+            template: None,
+            backend: None,
+            envs: None,
+        }];
+        let result = validate_secret_specs(&specs);
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("must have at least one of 'target' or 'envs'"),
+            "unexpected error: {}",
+            err_msg
+        );
+    }
+
+    #[test]
+    fn secret_spec_validation_passes_with_target() {
+        let specs = vec![SecretSpec {
+            source: "secrets/key.enc".to_string(),
+            target: Some(std::path::PathBuf::from("~/.ssh/key")),
+            template: None,
+            backend: None,
+            envs: None,
+        }];
+        assert!(validate_secret_specs(&specs).is_ok());
+    }
+
+    #[test]
+    fn secret_spec_validation_passes_with_envs() {
+        let specs = vec![SecretSpec {
+            source: "op://vault/item".to_string(),
+            target: None,
+            template: None,
+            backend: None,
+            envs: Some(vec!["SECRET_KEY".to_string()]),
+        }];
+        assert!(validate_secret_specs(&specs).is_ok());
+    }
+
+    #[test]
+    fn policy_items_with_secrets() {
+        let yaml = r#"
+secrets:
+  - source: op://vault/db/password
+    envs:
+      - DB_PASSWORD
+  - source: secrets/tls.enc
+    target: /etc/tls/cert.pem
+"#;
+        let items: PolicyItems = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(items.secrets.len(), 2);
+        assert_eq!(items.secrets[0].source, "op://vault/db/password");
+        assert!(items.secrets[0].target.is_none());
+        assert_eq!(items.secrets[0].envs.as_ref().unwrap(), &["DB_PASSWORD"]);
+        assert_eq!(items.secrets[1].source, "secrets/tls.enc");
+        assert_eq!(
+            items.secrets[1].target.as_ref().unwrap(),
+            &std::path::PathBuf::from("/etc/tls/cert.pem")
+        );
+        assert!(items.secrets[1].envs.is_none());
+    }
+
+    #[test]
+    fn policy_items_default_has_empty_secrets() {
+        let items = PolicyItems::default();
+        assert!(items.secrets.is_empty());
     }
 }
