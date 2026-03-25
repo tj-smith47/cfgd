@@ -508,6 +508,9 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
 
+      - name: Set Cargo.toml version to match tag
+        run: sed -i "s/^version = .*/version = \"${{ needs.prepare.outputs.version }}\"/" Cargo.toml
+
       - name: Publish cfgd-core to crates.io
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}

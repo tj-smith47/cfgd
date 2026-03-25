@@ -5,6 +5,10 @@ mod node;
 pub use node::*;
 
 pub mod gpg_keys;
+pub mod ssh_keys;
+pub use ssh_keys::SshKeysConfigurator;
+pub mod git_config;
+pub use git_config::GitConfigurator;
 
 use std::collections::BTreeMap;
 use std::path::Path;

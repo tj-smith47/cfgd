@@ -1890,11 +1890,23 @@ fn build_registry_with_config_and_packages(
             .push(Box::new(WindowsServiceConfigurator));
     }
 
+    // SSH key configurator — available unconditionally (ssh-keygen on all platforms)
+    registry
+        .system_configurators
+        .push(Box::new(SshKeysConfigurator));
+
     // GPG key configurator — available on any platform where gpg is installed
     if cfgd_core::command_available("gpg") {
         registry
             .system_configurators
             .push(Box::new(crate::system::gpg_keys::GpgKeysConfigurator));
+    }
+
+    // Git configurator — cross-platform, gated on git being available at runtime
+    if cfgd_core::command_available("git") {
+        registry
+            .system_configurators
+            .push(Box::new(GitConfigurator));
     }
 
     // Node/infrastructure system configurators (Linux-only, gated at compile time)

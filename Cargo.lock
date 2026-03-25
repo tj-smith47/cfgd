@@ -488,7 +488,7 @@ checksum = "613afe47fcd5fac7ccf1db93babcb082c5994d996f20b8b159f2ad1658eb5724"
 
 [[package]]
 name = "cfgd"
-version = "0.1.0"
+version = "0.2.2"
 dependencies = [
  "anyhow",
  "assert_cmd",
@@ -523,7 +523,7 @@ dependencies = [
 
 [[package]]
 name = "cfgd-core"
-version = "0.1.0"
+version = "0.2.2"
 dependencies = [
  "console",
  "directories",
@@ -561,7 +561,7 @@ dependencies = [
 
 [[package]]
 name = "cfgd-csi"
-version = "0.1.0"
+version = "0.2.2"
 dependencies = [
  "axum",
  "cfgd-core",
@@ -585,7 +585,7 @@ dependencies = [
 
 [[package]]
 name = "cfgd-operator"
-version = "0.1.0"
+version = "0.2.2"
 dependencies = [
  "anyhow",
  "axum",
