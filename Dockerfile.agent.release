@@ -1,0 +1,17 @@
+FROM debian:bookworm-slim
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates git openssh-client curl \
+    kmod apparmor-utils procps \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN adduser --disabled-password --gecos "" --uid 1000 cfgd
+
+ARG TARGETARCH
+COPY binaries/${TARGETARCH}/cfgd /usr/local/bin/cfgd
+
+USER cfgd
+WORKDIR /home/cfgd
+
+ENTRYPOINT ["cfgd"]
+CMD ["--help"]

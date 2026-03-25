@@ -22,7 +22,7 @@
 !examples/**
 
 # Docker and deployment
-!Dockerfil.*
+!Dockerfile*
 !chart/
 !chart/**
 !manifests/

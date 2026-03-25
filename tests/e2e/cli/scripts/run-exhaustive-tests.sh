@@ -1628,6 +1628,701 @@ if [ "$RC" -ne 0 ] || echo "$OUTPUT" | grep -qiE "conflict|duplicate|same target
 else fail_test "CONF01" "Duplicate targets not detected"; fi
 
 # ═════════════════════════════════════════════════════
+# SECTION 24: plan command
+# ═════════════════════════════════════════════════════
+
+begin_test "PL01: plan --help"
+run $C plan --help
+if assert_ok && assert_contains "$OUTPUT" "phase"; then
+    pass_test "PL01"
+else fail_test "PL01"; fi
+
+begin_test "PL02: plan (default)"
+run $C plan
+if assert_ok; then
+    pass_test "PL02"
+else fail_test "PL02"; fi
+
+begin_test "PL03: plan --phase files"
+run $C plan --phase files
+if assert_ok; then
+    pass_test "PL03"
+else fail_test "PL03"; fi
+
+begin_test "PL04: plan --phase packages"
+run $C plan --phase packages
+if assert_ok; then
+    pass_test "PL04"
+else fail_test "PL04"; fi
+
+begin_test "PL05: plan --phase system"
+run $C plan --phase system
+if assert_ok; then
+    pass_test "PL05"
+else fail_test "PL05"; fi
+
+begin_test "PL06: plan --phase env"
+run $C plan --phase env
+if assert_ok; then
+    pass_test "PL06"
+else fail_test "PL06"; fi
+
+begin_test "PL07: plan --phase secrets"
+run $C plan --phase secrets
+if assert_ok; then
+    pass_test "PL07"
+else fail_test "PL07"; fi
+
+begin_test "PL08: plan --skip files"
+run $C plan --skip files
+if assert_ok; then
+    pass_test "PL08"
+else fail_test "PL08"; fi
+
+begin_test "PL09: plan --only files"
+run $C plan --only files
+if assert_ok; then
+    pass_test "PL09"
+else fail_test "PL09"; fi
+
+begin_test "PL10: plan --module (nonexistent)"
+run $C plan --module nonexistent
+if [ "$RC" -eq 0 ] || [ "$RC" -eq 1 ]; then
+    pass_test "PL10"
+else fail_test "PL10" "exit $RC"; fi
+
+begin_test "PL11: plan --skip-scripts"
+run $C plan --skip-scripts
+if assert_ok; then
+    pass_test "PL11"
+else fail_test "PL11"; fi
+
+begin_test "PL12: plan --context reconcile"
+run $C plan --context reconcile
+if assert_ok; then
+    pass_test "PL12"
+else fail_test "PL12"; fi
+
+begin_test "PL13: plan --context apply (explicit default)"
+run $C plan --context apply
+if assert_ok; then
+    pass_test "PL13"
+else fail_test "PL13"; fi
+
+begin_test "PL14: plan --skip multiple"
+run $C plan --skip files --skip packages
+if assert_ok; then
+    pass_test "PL14"
+else fail_test "PL14"; fi
+
+begin_test "PL15: plan --only multiple"
+run $C plan --only files --only env
+if assert_ok; then
+    pass_test "PL15"
+else fail_test "PL15"; fi
+
+# ═════════════════════════════════════════════════════
+# SECTION 25: rollback command
+# ═════════════════════════════════════════════════════
+
+begin_test "RB01: rollback --help"
+run $C rollback 0 --help
+if assert_ok && assert_contains "$OUTPUT" "roll"; then
+    pass_test "RB01"
+else fail_test "RB01"; fi
+
+begin_test "RB02: rollback nonexistent apply ID"
+run $C rollback 999999 --yes
+if assert_fail; then
+    pass_test "RB02"
+else fail_test "RB02"; fi
+
+begin_test "RB03: rollback -y (short flag)"
+run $C rollback 999999 -y
+if assert_fail; then
+    pass_test "RB03"
+else fail_test "RB03"; fi
+
+begin_test "RB04: rollback valid apply ID"
+# Get the most recent apply ID from the log
+APPLY_ID=$("$CFGD" $C log -n 1 --output json 2>&1 | grep -oE '"id":\s*[0-9]+' | head -1 | grep -oE '[0-9]+' || echo "")
+if [ -z "$APPLY_ID" ]; then
+    APPLY_ID=$("$CFGD" $C log -n 1 2>&1 | grep -E '^[0-9]' | awk '{print $1}' | head -1 || echo "")
+fi
+if [ -n "$APPLY_ID" ]; then
+    run $C rollback "$APPLY_ID" --yes
+    # May succeed (restores files) or fail (no backups) — both are valid
+    if [ "$RC" -eq 0 ] || [ "$RC" -eq 1 ]; then
+        pass_test "RB04"
+    else fail_test "RB04" "exit $RC"; fi
+else
+    skip_test "RB04" "No apply ID found in log"
+fi
+
+# ═════════════════════════════════════════════════════
+# SECTION 26: output format flags
+# ═════════════════════════════════════════════════════
+
+begin_test "OF01: status --output json"
+run $C status --output json
+if assert_ok && assert_contains "$OUTPUT" "{"; then
+    pass_test "OF01"
+else fail_test "OF01"; fi
+
+begin_test "OF02: status --output yaml"
+run $C status --output yaml
+if assert_ok; then
+    pass_test "OF02"
+else fail_test "OF02"; fi
+
+begin_test "OF03: status --output wide"
+run $C status --output wide
+if assert_ok; then
+    pass_test "OF03"
+else fail_test "OF03"; fi
+
+begin_test "OF04: status --output table"
+run $C status --output table
+if assert_ok; then
+    pass_test "OF04"
+else fail_test "OF04"; fi
+
+begin_test "OF05: status --output name"
+run $C status --output name
+if assert_ok; then
+    pass_test "OF05"
+else fail_test "OF05"; fi
+
+begin_test "OF06: profile list --output json"
+run $C profile list --output json
+if assert_ok && assert_contains "$OUTPUT" "{"; then
+    pass_test "OF06"
+else fail_test "OF06"; fi
+
+begin_test "OF07: profile list --output yaml"
+run $C profile list --output yaml
+if assert_ok; then
+    pass_test "OF07"
+else fail_test "OF07"; fi
+
+begin_test "OF08: module list --output json"
+run $C module list --output json
+if assert_ok && assert_contains "$OUTPUT" "{"; then
+    pass_test "OF08"
+else fail_test "OF08"; fi
+
+begin_test "OF09: module list --output yaml"
+run $C module list --output yaml
+if assert_ok; then
+    pass_test "OF09"
+else fail_test "OF09"; fi
+
+begin_test "OF10: source list --output json"
+run $C source list --output json
+# May output [] (empty array) or [{...}] (populated) — both are valid JSON
+if assert_ok; then
+    pass_test "OF10"
+else fail_test "OF10"; fi
+
+begin_test "OF11: log --output json"
+run $C log --output json
+if assert_ok; then
+    pass_test "OF11"
+else fail_test "OF11"; fi
+
+begin_test "OF12: --output jsonpath=EXPR"
+run $C status --output 'jsonpath={.drift}'
+if assert_ok; then
+    pass_test "OF12"
+else fail_test "OF12"; fi
+
+begin_test "OF13: -o short flag"
+run $C status -o json
+if assert_ok && assert_contains "$OUTPUT" "{"; then
+    pass_test "OF13"
+else fail_test "OF13"; fi
+
+# ═════════════════════════════════════════════════════
+# SECTION 27: config get/set/unset
+# ═════════════════════════════════════════════════════
+
+begin_test "CF04: config get"
+run $C config get profile
+if assert_ok; then
+    pass_test "CF04"
+else fail_test "CF04"; fi
+
+begin_test "CF05: config set"
+run $C config set theme minimal
+if assert_ok; then
+    pass_test "CF05"
+else fail_test "CF05"; fi
+
+begin_test "CF06: config get (verify set)"
+run $C config get theme
+if assert_ok && assert_contains "$OUTPUT" "minimal"; then
+    pass_test "CF06"
+else fail_test "CF06"; fi
+
+begin_test "CF07: config unset"
+run $C config unset theme
+if assert_ok; then
+    pass_test "CF07"
+else fail_test "CF07"; fi
+
+begin_test "CF08: config get nonexistent key"
+run $C config get nonexistent.key.path
+if assert_fail; then
+    pass_test "CF08"
+else fail_test "CF08"; fi
+
+# ═════════════════════════════════════════════════════
+# SECTION 28: module export
+# ═════════════════════════════════════════════════════
+
+begin_test "MX01: module export --format devcontainer"
+EXPORT_DIR="$SCRATCH/export-test"
+mkdir -p "$EXPORT_DIR"
+run $C module export nvim --format devcontainer --dir "$EXPORT_DIR"
+if assert_ok; then
+    pass_test "MX01"
+else fail_test "MX01"; fi
+
+begin_test "MX02: module export nonexistent fails"
+run $C module export nonexistent --format devcontainer
+if assert_fail; then
+    pass_test "MX02"
+else fail_test "MX02"; fi
+
+# ═════════════════════════════════════════════════════
+# SECTION 29: module OCI (push/pull) — requires registry
+# ═════════════════════════════════════════════════════
+
+begin_test "OCI01: module push"
+OCI_DIR="$SCRATCH/oci-push-test"
+OCI_PUSH_OK=false
+mkdir -p "$OCI_DIR/bin"
+cat > "$OCI_DIR/module.yaml" << YAML
+apiVersion: cfgd.io/v1alpha1
+kind: Module
+metadata:
+  name: oci-cli-test
+spec:
+  packages: []
+  files:
+    - source: bin/hello.sh
+      target: bin/hello.sh
+YAML
+echo '#!/bin/sh' > "$OCI_DIR/bin/hello.sh"
+echo 'echo "hello from oci test"' >> "$OCI_DIR/bin/hello.sh"
+chmod +x "$OCI_DIR/bin/hello.sh"
+run $C module push "$OCI_DIR" --artifact "${REGISTRY}/cfgd-e2e/cli-oci-test:v1.0"
+if assert_ok; then
+    OCI_PUSH_OK=true
+    pass_test "OCI01"
+else fail_test "OCI01"; fi
+
+begin_test "OCI02: module pull"
+if [ "$OCI_PUSH_OK" = "true" ]; then
+    OCI_PULL_DIR="$SCRATCH/oci-pull-test"
+    mkdir -p "$OCI_PULL_DIR"
+    run $C module pull "${REGISTRY}/cfgd-e2e/cli-oci-test:v1.0" --dir "$OCI_PULL_DIR"
+    if assert_ok && [ -f "$OCI_PULL_DIR/module.yaml" ]; then
+        pass_test "OCI02"
+    else fail_test "OCI02"; fi
+else
+    skip_test "OCI02" "OCI01 push failed — no artifact to pull"
+fi
+
+begin_test "OCI03: module push --platform"
+if [ "$OCI_PUSH_OK" = "true" ]; then
+    run $C module push "$OCI_DIR" --artifact "${REGISTRY}/cfgd-e2e/cli-oci-platform:v1.0" --platform linux/amd64
+    if assert_ok; then
+        pass_test "OCI03"
+    else fail_test "OCI03"; fi
+else
+    skip_test "OCI03" "OCI01 push failed — registry unavailable"
+fi
+
+# ═════════════════════════════════════════════════════
+# SECTION 30: module keys
+# ═════════════════════════════════════════════════════
+
+begin_test "MK01: module keys list"
+run $C module keys list
+if [ "$RC" -eq 0 ] || [ "$RC" -eq 1 ]; then
+    pass_test "MK01"
+else fail_test "MK01" "exit $RC"; fi
+
+begin_test "MK02: module keys generate"
+if command -v cosign > /dev/null 2>&1; then
+    KEYS_DIR="$SCRATCH/keys-test"
+    mkdir -p "$KEYS_DIR"
+    run $C module keys generate --output "$KEYS_DIR"
+    if [ "$RC" -eq 0 ] || [ "$RC" -eq 1 ]; then
+        pass_test "MK02"
+    else fail_test "MK02" "exit $RC"; fi
+else
+    skip_test "MK02" "cosign not available"
+fi
+
+# ═════════════════════════════════════════════════════
+# SECTION 31: module build
+# ═════════════════════════════════════════════════════
+
+begin_test "MB01: module build --help"
+run $C module build --help
+if assert_ok && assert_contains "$OUTPUT" "base-image"; then
+    pass_test "MB01"
+else fail_test "MB01"; fi
+
+begin_test "MB02: module build (no docker — graceful fail)"
+BUILD_DIR="$SCRATCH/build-test"
+mkdir -p "$BUILD_DIR"
+cp "$OCI_DIR/module.yaml" "$BUILD_DIR/"
+mkdir -p "$BUILD_DIR/bin"
+cp "$OCI_DIR/bin/hello.sh" "$BUILD_DIR/bin/"
+# Build requires docker/podman; test that flag parsing works
+run $C module build "$BUILD_DIR" --target linux/amd64
+if [ "$RC" -eq 0 ] || [ "$RC" -eq 1 ]; then
+    pass_test "MB02"
+else fail_test "MB02" "exit $RC"; fi
+
+# ═════════════════════════════════════════════════════
+# SECTION 32: additional apply flags
+# ═════════════════════════════════════════════════════
+
+begin_test "A18: apply --skip-scripts"
+run $C apply --dry-run --skip-scripts
+if assert_ok; then
+    pass_test "A18"
+else fail_test "A18"; fi
+
+begin_test "A19: apply --from (local git repo)"
+A19_DST="$SCRATCH/apply-from-test"
+run $C apply --from "$ISRC" --dry-run --no-color --config "$A19_DST/cfgd.yaml" --state-dir "$SCRATCH/state-a19"
+if [ "$RC" -eq 0 ] || [ "$RC" -eq 1 ]; then
+    pass_test "A19"
+else fail_test "A19" "exit $RC"; fi
+
+# ═════════════════════════════════════════════════════
+# SECTION 33: additional init flags
+# ═════════════════════════════════════════════════════
+
+begin_test "I06: init --name"
+I06_DIR="$SCRATCH/init-name"
+run init "$I06_DIR" --from "$ISRC" --name my-custom-config --no-color
+if assert_ok && [ -f "$I06_DIR/cfgd.yaml" ]; then
+    pass_test "I06"
+else fail_test "I06"; fi
+
+begin_test "I07: init --apply-profile"
+I07_DIR="$SCRATCH/init-apply-profile"
+run init "$I07_DIR" --from "$ISRC" --apply-profile base --no-color
+if [ -f "$I07_DIR/cfgd.yaml" ]; then
+    pass_test "I07"
+else fail_test "I07"; fi
+
+# ═════════════════════════════════════════════════════
+# SECTION 34: status/diff/verify --module flag
+# ═════════════════════════════════════════════════════
+
+begin_test "S04: status --module"
+run $C status --module nvim
+if [ "$RC" -eq 0 ] || [ "$RC" -eq 1 ]; then
+    pass_test "S04"
+else fail_test "S04" "exit $RC"; fi
+
+begin_test "D02: diff --module"
+run $C diff --module nvim
+if [ "$RC" -eq 0 ] || [ "$RC" -eq 1 ]; then
+    pass_test "D02"
+else fail_test "D02" "exit $RC"; fi
+
+begin_test "V02: verify --module"
+run $C verify --module nvim
+if [ "$RC" -eq 0 ] || [ "$RC" -eq 1 ]; then
+    pass_test "V02"
+else fail_test "V02" "exit $RC"; fi
+
+# ═════════════════════════════════════════════════════
+# SECTION 35: log --show-output
+# ═════════════════════════════════════════════════════
+
+begin_test "L04: log --show-output <apply_id>"
+# --show-output takes an apply ID — get one from the log table (first column is the numeric ID)
+LOG_ID=$("$CFGD" $C log -n 1 --output json 2>&1 | grep -oE '"id":\s*[0-9]+' | head -1 | grep -oE '[0-9]+' || echo "")
+if [ -z "$LOG_ID" ]; then
+    # Fallback: parse table output — ID is the first number on the data line
+    LOG_ID=$("$CFGD" $C log -n 1 2>&1 | grep -E '^[0-9]' | awk '{print $1}' | head -1 || echo "")
+fi
+if [ -n "$LOG_ID" ]; then
+    run $C log --show-output "$LOG_ID"
+    if [ "$RC" -eq 0 ] || [ "$RC" -eq 1 ]; then
+        pass_test "L04"
+    else fail_test "L04" "exit $RC"; fi
+else
+    skip_test "L04" "No apply ID found in log"
+fi
+
+begin_test "L05: log --show-output invalid ID"
+run $C log --show-output 999999
+# Should handle gracefully (no entries for this ID)
+if [ "$RC" -eq 0 ] || [ "$RC" -eq 1 ]; then
+    pass_test "L05"
+else fail_test "L05" "exit $RC"; fi
+
+# ═════════════════════════════════════════════════════
+# SECTION 36: profile create additional flags
+# ═════════════════════════════════════════════════════
+
+begin_test "P41: profile create --alias"
+run $C profile create test-alias --alias ll="ls -la"
+if assert_ok; then
+    pass_test "P41"
+else fail_test "P41"; fi
+
+begin_test "P42: profile create --pre-reconcile --post-reconcile"
+run $C profile create test-reconcile --pre-reconcile "echo pre" --post-reconcile "echo post"
+if assert_ok; then
+    pass_test "P42"
+else fail_test "P42"; fi
+
+begin_test "P43: profile create --on-change --on-drift"
+run $C profile create test-onhook --on-change "echo changed" --on-drift "echo drifted"
+if assert_ok; then
+    pass_test "P43"
+else fail_test "P43"; fi
+
+begin_test "P44: profile update --alias (add)"
+run $C profile update --alias gs="git status"
+if assert_ok; then
+    pass_test "P44"
+else fail_test "P44"; fi
+
+begin_test "P45: profile update --alias (remove)"
+run $C profile update --alias -gs
+if assert_ok; then
+    pass_test "P45"
+else fail_test "P45"; fi
+
+begin_test "P46: profile update --pre-reconcile (add)"
+run $C profile update --pre-reconcile "echo pre-r"
+if assert_ok; then
+    pass_test "P46"
+else fail_test "P46"; fi
+
+begin_test "P47: profile update --pre-reconcile (remove)"
+run $C profile update --pre-reconcile "-echo pre-r"
+if assert_ok; then
+    pass_test "P47"
+else fail_test "P47"; fi
+
+begin_test "P48: profile update --post-reconcile (add)"
+run $C profile update --post-reconcile "echo post-r"
+if assert_ok; then
+    pass_test "P48"
+else fail_test "P48"; fi
+
+begin_test "P49: profile update --post-reconcile (remove)"
+run $C profile update --post-reconcile "-echo post-r"
+if assert_ok; then
+    pass_test "P49"
+else fail_test "P49"; fi
+
+begin_test "P50: profile update --on-change (add)"
+run $C profile update --on-change "echo chg"
+if assert_ok; then
+    pass_test "P50"
+else fail_test "P50"; fi
+
+begin_test "P51: profile update --on-change (remove)"
+run $C profile update --on-change "-echo chg"
+if assert_ok; then
+    pass_test "P51"
+else fail_test "P51"; fi
+
+begin_test "P52: profile update --on-drift (add)"
+run $C profile update --on-drift "echo dft"
+if assert_ok; then
+    pass_test "P52"
+else fail_test "P52"; fi
+
+begin_test "P53: profile update --on-drift (remove)"
+run $C profile update --on-drift "-echo dft"
+if assert_ok; then
+    pass_test "P53"
+else fail_test "P53"; fi
+
+begin_test "P54: profile edit (existing profile)"
+EDITOR=true run $C profile edit dev
+if [ "$RC" -eq 0 ] || [ "$RC" -eq 1 ]; then
+    pass_test "P54"
+else fail_test "P54" "exit $RC"; fi
+
+begin_test "P55: profile show <name>"
+run $C profile show base
+if assert_ok && assert_contains "$OUTPUT" "base"; then
+    pass_test "P55"
+else fail_test "P55"; fi
+
+begin_test "P56: profile ls (alias)"
+run $C profile ls
+if assert_ok && assert_contains "$OUTPUT" "base"; then
+    pass_test "P56"
+else fail_test "P56"; fi
+
+# ═════════════════════════════════════════════════════
+# SECTION 37: module create/update additional flags
+# ═════════════════════════════════════════════════════
+
+begin_test "M36: module create --env"
+run $C module create env-mod --env TEST_VAR=hello
+if assert_ok; then
+    pass_test "M36"
+else fail_test "M36"; fi
+
+begin_test "M37: module create --alias"
+run $C module create alias-mod --alias myalias="echo hi"
+if assert_ok; then
+    pass_test "M37"
+else fail_test "M37"; fi
+
+begin_test "M38: module update --env (add)"
+run $C module update nvim --env NVIM_VAR=test
+if assert_ok; then
+    pass_test "M38"
+else fail_test "M38"; fi
+
+begin_test "M39: module update --env (remove)"
+run $C module update nvim --env -NVIM_VAR
+if assert_ok; then
+    pass_test "M39"
+else fail_test "M39"; fi
+
+begin_test "M40: module update --alias (add)"
+run $C module update nvim --alias nv="nvim ."
+if assert_ok; then
+    pass_test "M40"
+else fail_test "M40"; fi
+
+begin_test "M41: module update --alias (remove)"
+run $C module update nvim --alias -nv
+if assert_ok; then
+    pass_test "M41"
+else fail_test "M41"; fi
+
+begin_test "M42: module show --show-values"
+run $C module show nvim --show-values
+if assert_ok; then
+    pass_test "M42"
+else fail_test "M42"; fi
+
+begin_test "M43: module delete --purge"
+# Create a module with a file, then delete with --purge
+touch "$TGT/.purge-test"
+run $C module create purge-mod --file "$TGT/.purge-test"
+if [ "$RC" -ne 0 ]; then
+    fail_test "M43" "module create failed (exit $RC)"
+else
+    run $C module delete purge-mod --yes --purge
+    if assert_ok; then
+        pass_test "M43"
+    else fail_test "M43"; fi
+fi
+
+begin_test "M44: module edit (existing module)"
+EDITOR=true run $C module edit nvim
+if [ "$RC" -eq 0 ] || [ "$RC" -eq 1 ]; then
+    pass_test "M44"
+else fail_test "M44" "exit $RC"; fi
+
+begin_test "M45: module ls (alias)"
+run $C module ls
+if assert_ok && assert_contains "$OUTPUT" "nvim"; then
+    pass_test "M45"
+else fail_test "M45"; fi
+
+begin_test "M46: module registry rename"
+run $C module registry add "$SOURCE_REPO" --name rename-src
+run $C module registry rename rename-src renamed-src
+if assert_ok; then
+    pass_test "M46"
+else fail_test "M46"; fi
+# cleanup
+"$CFGD" $C module registry remove renamed-src > /dev/null 2>&1 || true
+
+# ═════════════════════════════════════════════════════
+# SECTION 38: source additional flags
+# ═════════════════════════════════════════════════════
+
+begin_test "SRC25: source ls (alias)"
+run $C source ls
+if assert_ok; then
+    pass_test "SRC25"
+else fail_test "SRC25"; fi
+
+begin_test "SRC26: source edit"
+EDITOR=true run $C source edit
+if [ "$RC" -eq 0 ] || [ "$RC" -eq 1 ]; then
+    pass_test "SRC26"
+else fail_test "SRC26" "exit $RC"; fi
+
+# ═════════════════════════════════════════════════════
+# SECTION 39: decide reject subcommand
+# ═════════════════════════════════════════════════════
+
+begin_test "DEC06: decide reject --source"
+run $C decide reject --source nonexistent
+if [ "$RC" -eq 0 ] || [ "$RC" -eq 1 ]; then
+    pass_test "DEC06"
+else fail_test "DEC06" "exit $RC"; fi
+
+begin_test "DEC07: decide reject specific resource"
+run $C decide reject packages.brew.formulae
+if [ "$RC" -eq 0 ] || [ "$RC" -eq 1 ]; then
+    pass_test "DEC07"
+else fail_test "DEC07" "exit $RC"; fi
+
+# ═════════════════════════════════════════════════════
+# SECTION 40: checkin/enroll additional flags
+# ═════════════════════════════════════════════════════
+
+begin_test "CI03: checkin --api-key"
+run $C checkin --server-url http://localhost:9999 --api-key test-key
+if assert_fail; then
+    pass_test "CI03"
+else fail_test "CI03"; fi
+
+begin_test "CI04: checkin --device-id"
+run $C checkin --server-url http://localhost:9999 --device-id test-device
+if assert_fail; then
+    pass_test "CI04"
+else fail_test "CI04"; fi
+
+begin_test "CI05: checkin --api-key --device-id"
+run $C checkin --server-url http://localhost:9999 --api-key k --device-id d
+if assert_fail; then
+    pass_test "CI05"
+else fail_test "CI05"; fi
+
+begin_test "EN06: enroll --token"
+run $C enroll --server-url http://localhost:9999 --token test-bootstrap-token
+if assert_fail; then
+    pass_test "EN06"
+else fail_test "EN06"; fi
+
+# ═════════════════════════════════════════════════════
+# SECTION 41: explain additional types
+# ═════════════════════════════════════════════════════
+
+begin_test "E13: explain clusterconfigpolicy (not in schema — fails gracefully)"
+run $C explain clusterconfigpolicy
+if assert_fail && assert_contains "$OUTPUT" "Unknown resource type"; then
+    pass_test "E13"
+else fail_test "E13"; fi
+
+# ═════════════════════════════════════════════════════
 # SUMMARY
 # ═════════════════════════════════════════════════════
 
