@@ -3295,8 +3295,8 @@ fn cmd_compliance_diff(cli: &Cli, printer: &Printer, id1: i64, id2: i64) -> anyh
             if check1.status != check2.status {
                 changed.push(ComplianceCheckChange {
                     key: key.clone(),
-                    old_status: format!("{:?}", check1.status).to_lowercase(),
-                    new_status: format!("{:?}", check2.status).to_lowercase(),
+                    old_status: format!("{:?}", check1.status),
+                    new_status: format!("{:?}", check2.status),
                     detail: check2.detail.clone(),
                 });
             }
