@@ -732,6 +732,11 @@ pub struct ModuleSpec {
 
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scripts: Option<ScriptSpec>,
+
+    /// System configurator settings contributed by this module.
+    /// Deep-merged into the profile system map; module values override profile values at leaf level.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub system: HashMap<String, serde_yaml::Value>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -3297,5 +3302,128 @@ secrets:
     fn policy_items_default_has_empty_secrets() {
         let items = PolicyItems::default();
         assert!(items.secrets.is_empty());
+    }
+
+    #[test]
+    fn module_spec_system_field_deserializes() {
+        let yaml = r#"
+apiVersion: cfgd.io/v1alpha1
+kind: Module
+metadata:
+  name: git-setup
+spec:
+  system:
+    git:
+      user.name: Jane Doe
+      user.email: jane@example.com
+    sshKeys:
+      - path: ~/.ssh/id_ed25519.pub
+        comment: jane@example.com
+"#;
+        let doc: ModuleDocument = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(doc.spec.system.len(), 2);
+        assert!(doc.spec.system.contains_key("git"));
+        assert!(doc.spec.system.contains_key("sshKeys"));
+        let git_val = &doc.spec.system["git"];
+        assert_eq!(
+            git_val["user.name"],
+            serde_yaml::Value::String("Jane Doe".into())
+        );
+        assert_eq!(
+            git_val["user.email"],
+            serde_yaml::Value::String("jane@example.com".into())
+        );
+    }
+
+    #[test]
+    fn module_spec_system_defaults_to_empty() {
+        let yaml = r#"
+apiVersion: cfgd.io/v1alpha1
+kind: Module
+metadata:
+  name: nvim
+spec:
+  packages:
+    - name: neovim
+"#;
+        let doc: ModuleDocument = serde_yaml::from_str(yaml).unwrap();
+        assert!(doc.spec.system.is_empty());
+    }
+
+    #[test]
+    fn module_system_merges_into_profile_system() {
+        // Simulate what plan_system does: deep-merge module system over profile system.
+        let profile_yaml = r#"
+git:
+  user.name: Old Name
+  user.signingkey: ABC123
+"#;
+        let module_yaml = r#"
+git:
+  user.name: New Name
+  user.email: new@example.com
+"#;
+        let mut profile_system: HashMap<String, serde_yaml::Value> =
+            serde_yaml::from_str(profile_yaml).unwrap();
+        let module_system: HashMap<String, serde_yaml::Value> =
+            serde_yaml::from_str(module_yaml).unwrap();
+
+        // Apply module system on top of profile system (same logic as plan_system)
+        for (key, value) in &module_system {
+            crate::deep_merge_yaml(
+                profile_system
+                    .entry(key.clone())
+                    .or_insert(serde_yaml::Value::Null),
+                value,
+            );
+        }
+
+        let git = &profile_system["git"];
+        // Module overrides: user.name updated
+        assert_eq!(git["user.name"], serde_yaml::Value::String("New Name".into()));
+        // Module adds: user.email
+        assert_eq!(
+            git["user.email"],
+            serde_yaml::Value::String("new@example.com".into())
+        );
+        // Profile value preserved when module doesn't mention it
+        assert_eq!(
+            git["user.signingkey"],
+            serde_yaml::Value::String("ABC123".into())
+        );
+    }
+
+    #[test]
+    fn module_system_overrides_profile_on_conflict() {
+        let mut profile_system: HashMap<String, serde_yaml::Value> = {
+            let mut m = HashMap::new();
+            m.insert(
+                "git".to_string(),
+                serde_yaml::from_str("user.name: Profile Name").unwrap(),
+            );
+            m
+        };
+        let module_system: HashMap<String, serde_yaml::Value> = {
+            let mut m = HashMap::new();
+            m.insert(
+                "git".to_string(),
+                serde_yaml::from_str("user.name: Module Name").unwrap(),
+            );
+            m
+        };
+
+        for (key, value) in &module_system {
+            crate::deep_merge_yaml(
+                profile_system
+                    .entry(key.clone())
+                    .or_insert(serde_yaml::Value::Null),
+                value,
+            );
+        }
+
+        assert_eq!(
+            profile_system["git"]["user.name"],
+            serde_yaml::Value::String("Module Name".into())
+        );
     }
 }

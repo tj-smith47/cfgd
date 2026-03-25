@@ -90,6 +90,18 @@ spec:
     - name: vim                 # required, string — alias name
       command: nvim             # required, string — alias command
 
+  # System configurator settings contributed by this module.
+  # Deep-merged into the profile system map; module values override profile values at leaf level.
+  # Keys must match a registered system configurator (e.g. git, sshKeys, gpgKeys).
+  # optional, default: {}
+  system:
+    git:
+      user.name: Jane Doe
+      user.email: jane@example.com
+    sshKeys:
+      - path: ~/.ssh/id_ed25519.pub
+        comment: jane@example.com
+
   # Lifecycle scripts. Run after all packages and files are deployed.
   # optional
   scripts:
@@ -696,6 +708,7 @@ mod tests {
         assert!(schema.contains("files"));
         assert!(schema.contains("env"));
         assert!(schema.contains("aliases"));
+        assert!(schema.contains("system"));
         assert!(schema.contains("scripts"));
         // ModulePackageEntry fields
         assert!(schema.contains("minVersion"));

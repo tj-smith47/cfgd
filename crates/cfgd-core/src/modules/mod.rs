@@ -56,6 +56,9 @@ pub struct ResolvedModule {
     pub files: Vec<ResolvedFile>,
     pub env: Vec<EnvVar>,
     pub aliases: Vec<ShellAlias>,
+    /// System configurator settings declared by this module.
+    /// Deep-merged into the profile system map during reconciliation; module wins on conflict.
+    pub system: HashMap<String, serde_yaml::Value>,
     pub pre_apply_scripts: Vec<crate::config::ScriptEntry>,
     pub post_apply_scripts: Vec<crate::config::ScriptEntry>,
     pub pre_reconcile_scripts: Vec<crate::config::ScriptEntry>,
@@ -837,6 +840,7 @@ pub fn resolve_modules(
             files,
             env: module.spec.env.clone(),
             aliases: module.spec.aliases.clone(),
+            system: module.spec.system.clone(),
             pre_apply_scripts,
             post_apply_scripts,
             pre_reconcile_scripts,
@@ -2668,6 +2672,7 @@ spec:
                 env: vec![],
                 aliases: vec![],
                 scripts: None,
+                system: HashMap::new(),
             },
             dir: PathBuf::from("/fake"),
         };
@@ -2712,6 +2717,7 @@ spec:
                 env: vec![],
                 aliases: vec![],
                 scripts: None,
+                system: HashMap::new(),
             },
             dir: PathBuf::from("/fake"),
         };
@@ -2750,6 +2756,7 @@ spec:
                 env: vec![],
                 aliases: vec![],
                 scripts: None,
+                system: HashMap::new(),
             },
             dir: PathBuf::from("/fake"),
         };
@@ -2997,6 +3004,7 @@ spec:
                     post_apply: vec![crate::config::ScriptEntry::Simple("echo old".to_string())],
                     ..Default::default()
                 }),
+                system: HashMap::new(),
             },
             dir: PathBuf::from("/tmp"),
         };
@@ -3012,6 +3020,7 @@ spec:
                     post_apply: vec![crate::config::ScriptEntry::Simple("echo new".to_string())],
                     ..Default::default()
                 }),
+                system: HashMap::new(),
             },
             dir: PathBuf::from("/tmp"),
         };

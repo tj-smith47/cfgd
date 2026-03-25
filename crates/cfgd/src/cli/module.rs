@@ -642,6 +642,7 @@ pub(super) fn cmd_module_create(
             env: env_entries,
             aliases: alias_entries,
             scripts,
+            system: std::collections::HashMap::new(),
         },
     };
 

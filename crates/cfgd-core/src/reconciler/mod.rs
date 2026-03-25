@@ -329,7 +329,7 @@ impl<'a> Reconciler<'a> {
         });
 
         // Phase 4: System — runs after packages so required binaries exist
-        let system_actions = self.plan_system(&resolved.merged)?;
+        let system_actions = self.plan_system(&resolved.merged, &module_actions)?;
         phases.push(Phase {
             name: PhaseName::System,
             actions: system_actions,
@@ -415,11 +415,29 @@ impl<'a> Reconciler<'a> {
         Ok(())
     }
 
-    fn plan_system(&self, profile: &MergedProfile) -> Result<Vec<Action>> {
+    fn plan_system(
+        &self,
+        profile: &MergedProfile,
+        modules: &[ResolvedModule],
+    ) -> Result<Vec<Action>> {
+        // Build effective system map: start from profile, deep-merge each module in order.
+        // Module values override profile values at leaf level (consistent with env/aliases).
+        let mut system = profile.system.clone();
+        for module in modules {
+            for (key, value) in &module.system {
+                crate::deep_merge_yaml(
+                    system
+                        .entry(key.clone())
+                        .or_insert(serde_yaml::Value::Null),
+                    value,
+                );
+            }
+        }
+
         let mut actions = Vec::new();
 
         for configurator in self.registry.available_system_configurators() {
-            if let Some(desired) = profile.system.get(configurator.name()) {
+            if let Some(desired) = system.get(configurator.name()) {
                 let drifts = configurator.diff(desired)?;
                 for drift in drifts {
                     actions.push(Action::System(SystemAction::SetValue {
@@ -434,7 +452,7 @@ impl<'a> Reconciler<'a> {
         }
 
         // Check for system keys with no registered configurator
-        for key in profile.system.keys() {
+        for key in system.keys() {
             let has_configurator = self
                 .registry
                 .available_system_configurators()
@@ -3524,6 +3542,7 @@ mod tests {
             pre_reconcile_scripts: Vec::new(),
             post_reconcile_scripts: Vec::new(),
             on_change_scripts: Vec::new(),
+            system: HashMap::new(),
             depends: vec![],
             dir: PathBuf::from("."),
         }
@@ -3591,6 +3610,7 @@ mod tests {
             pre_reconcile_scripts: Vec::new(),
             post_reconcile_scripts: Vec::new(),
             on_change_scripts: Vec::new(),
+            system: HashMap::new(),
             depends: vec![],
             dir: PathBuf::from("."),
         }];
@@ -3645,6 +3665,7 @@ mod tests {
             pre_reconcile_scripts: Vec::new(),
             post_reconcile_scripts: Vec::new(),
             on_change_scripts: Vec::new(),
+            system: HashMap::new(),
             depends: vec![],
             dir: PathBuf::from("."),
         }];
@@ -3704,6 +3725,7 @@ mod tests {
                 pre_reconcile_scripts: Vec::new(),
                 post_reconcile_scripts: Vec::new(),
                 on_change_scripts: Vec::new(),
+                system: HashMap::new(),
                 depends: vec![],
                 dir: PathBuf::from("."),
             },
@@ -3724,6 +3746,7 @@ mod tests {
                 pre_reconcile_scripts: Vec::new(),
                 post_reconcile_scripts: Vec::new(),
                 on_change_scripts: Vec::new(),
+                system: HashMap::new(),
                 depends: vec!["node".to_string()],
                 dir: PathBuf::from("."),
             },
@@ -4075,6 +4098,7 @@ mod tests {
             pre_reconcile_scripts: Vec::new(),
             post_reconcile_scripts: Vec::new(),
             on_change_scripts: Vec::new(),
+            system: HashMap::new(),
             depends: vec![],
             dir: PathBuf::from("."),
         }];
@@ -4121,6 +4145,7 @@ mod tests {
             pre_reconcile_scripts: Vec::new(),
             post_reconcile_scripts: Vec::new(),
             on_change_scripts: Vec::new(),
+            system: HashMap::new(),
             depends: vec![],
             dir: PathBuf::from("."),
         }];
@@ -4241,6 +4266,7 @@ mod tests {
             pre_reconcile_scripts: Vec::new(),
             post_reconcile_scripts: Vec::new(),
             on_change_scripts: Vec::new(),
+            system: HashMap::new(),
             depends: vec![],
             dir: PathBuf::from("."),
         }];
@@ -4284,6 +4310,7 @@ mod tests {
             pre_reconcile_scripts: Vec::new(),
             post_reconcile_scripts: Vec::new(),
             on_change_scripts: Vec::new(),
+            system: HashMap::new(),
             depends: vec![],
             dir: PathBuf::from("."),
         }];
@@ -4324,6 +4351,7 @@ mod tests {
             pre_reconcile_scripts: Vec::new(),
             post_reconcile_scripts: Vec::new(),
             on_change_scripts: Vec::new(),
+            system: HashMap::new(),
             depends: vec![],
             dir: PathBuf::from("."),
         }];
@@ -4395,6 +4423,7 @@ mod tests {
             pre_reconcile_scripts: Vec::new(),
             post_reconcile_scripts: Vec::new(),
             on_change_scripts: Vec::new(),
+            system: HashMap::new(),
             depends: vec![],
             dir: PathBuf::from("."),
         }];
@@ -4505,6 +4534,7 @@ mod tests {
             pre_reconcile_scripts: Vec::new(),
             post_reconcile_scripts: Vec::new(),
             on_change_scripts: Vec::new(),
+            system: HashMap::new(),
             depends: vec![],
             dir: PathBuf::from("."),
         }];
