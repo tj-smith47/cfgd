@@ -11,6 +11,10 @@
 !Dockerfile
 !Dockerfile.*
 
+# Allow pre-built binaries (release Docker builds)
+!binaries/
+!binaries/**
+
 # Allow tests
 !tests/
 !tests/**
