@@ -4,6 +4,8 @@ mod node;
 #[cfg(unix)]
 pub use node::*;
 
+pub mod gpg_keys;
+
 use std::collections::BTreeMap;
 use std::path::Path;
 use std::process::Command;

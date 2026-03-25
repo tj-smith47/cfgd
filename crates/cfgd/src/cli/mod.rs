@@ -1890,6 +1890,13 @@ fn build_registry_with_config_and_packages(
             .push(Box::new(WindowsServiceConfigurator));
     }
 
+    // GPG key configurator — available on any platform where gpg is installed
+    if cfgd_core::command_available("gpg") {
+        registry
+            .system_configurators
+            .push(Box::new(crate::system::gpg_keys::GpgKeysConfigurator));
+    }
+
     // Node/infrastructure system configurators (Linux-only, gated at compile time)
     #[cfg(unix)]
     {
