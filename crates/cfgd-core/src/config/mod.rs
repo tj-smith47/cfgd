@@ -82,6 +82,10 @@ pub struct ConfigSpec {
     /// AI assistant configuration: provider, model, and API key env var.
     #[serde(default)]
     pub ai: Option<AiConfig>,
+
+    /// Compliance snapshot configuration.
+    #[serde(default)]
+    pub compliance: Option<ComplianceConfig>,
 }
 
 /// Build a minimal CfgdConfig for module-only operations that don't have cfgd.yaml.
@@ -677,6 +681,92 @@ impl Default for SourceConstraints {
 
 fn default_true() -> bool {
     true
+}
+
+// ---------------------------------------------------------------------------
+// Compliance configuration
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ComplianceConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "default_compliance_interval")]
+    pub interval: String,
+    #[serde(default = "default_compliance_retention")]
+    pub retention: String,
+    #[serde(default)]
+    pub scope: ComplianceScope,
+    #[serde(default)]
+    pub export: ComplianceExport,
+}
+
+fn default_compliance_interval() -> String {
+    "1h".into()
+}
+fn default_compliance_retention() -> String {
+    "30d".into()
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ComplianceScope {
+    #[serde(default = "default_true")]
+    pub files: bool,
+    #[serde(default = "default_true")]
+    pub packages: bool,
+    #[serde(default = "default_true")]
+    pub system: bool,
+    #[serde(default = "default_true")]
+    pub secrets: bool,
+    #[serde(default)]
+    pub watch_paths: Vec<String>,
+    #[serde(default)]
+    pub watch_package_managers: Vec<String>,
+}
+
+impl Default for ComplianceScope {
+    fn default() -> Self {
+        Self {
+            files: true,
+            packages: true,
+            system: true,
+            secrets: true,
+            watch_paths: Vec::new(),
+            watch_package_managers: Vec::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub enum ComplianceFormat {
+    #[default]
+    Json,
+    Yaml,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ComplianceExport {
+    #[serde(default)]
+    pub format: ComplianceFormat,
+    #[serde(default = "default_compliance_path")]
+    pub path: String,
+}
+
+fn default_compliance_path() -> String {
+    "~/.local/share/cfgd/compliance/".into()
+}
+
+impl Default for ComplianceExport {
+    fn default() -> Self {
+        Self {
+            format: ComplianceFormat::default(),
+            path: default_compliance_path(),
+        }
+    }
 }
 
 /// Parse a ConfigSource manifest from YAML content.
@@ -1372,6 +1462,7 @@ pub fn parse_config(contents: &str, path: &Path) -> Result<CfgdConfig> {
             security: raw.spec.security,
             aliases: raw.spec.aliases,
             ai: raw.spec.ai,
+            compliance: raw.spec.compliance,
         },
     })
 }
@@ -1411,6 +1502,8 @@ struct RawConfigSpec {
     aliases: HashMap<String, String>,
     #[serde(default)]
     ai: Option<AiConfig>,
+    #[serde(default)]
+    compliance: Option<ComplianceConfig>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -3380,7 +3473,10 @@ git:
 
         let git = &profile_system["git"];
         // Module overrides: user.name updated
-        assert_eq!(git["user.name"], serde_yaml::Value::String("New Name".into()));
+        assert_eq!(
+            git["user.name"],
+            serde_yaml::Value::String("New Name".into())
+        );
         // Module adds: user.email
         assert_eq!(
             git["user.email"],
@@ -3425,5 +3521,164 @@ git:
             profile_system["git"]["user.name"],
             serde_yaml::Value::String("Module Name".into())
         );
+    }
+
+    // ---------------------------------------------------------------------------
+    // ComplianceConfig tests
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn parse_full_compliance_config() {
+        let yaml = r#"
+apiVersion: cfgd.io/v1alpha1
+kind: Config
+metadata:
+  name: test
+spec:
+  compliance:
+    enabled: true
+    interval: 30m
+    retention: 90d
+    scope:
+      files: true
+      packages: false
+      system: true
+      secrets: false
+      watchPaths:
+        - /etc
+        - /usr/local
+      watchPackageManagers:
+        - brew
+        - apt
+    export:
+      format: yaml
+      path: /var/lib/cfgd/compliance/
+"#;
+        let config = parse_config(yaml, Path::new("cfgd.yaml")).unwrap();
+        let compliance = config.spec.compliance.as_ref().unwrap();
+        assert!(compliance.enabled);
+        assert_eq!(compliance.interval, "30m");
+        assert_eq!(compliance.retention, "90d");
+        assert!(compliance.scope.files);
+        assert!(!compliance.scope.packages);
+        assert!(compliance.scope.system);
+        assert!(!compliance.scope.secrets);
+        assert_eq!(compliance.scope.watch_paths, vec!["/etc", "/usr/local"]);
+        assert_eq!(compliance.scope.watch_package_managers, vec!["brew", "apt"]);
+        assert_eq!(compliance.export.format, ComplianceFormat::Yaml);
+        assert_eq!(compliance.export.path, "/var/lib/cfgd/compliance/");
+    }
+
+    #[test]
+    fn parse_compliance_defaults_from_enabled_only() {
+        let yaml = r#"
+apiVersion: cfgd.io/v1alpha1
+kind: Config
+metadata:
+  name: test
+spec:
+  compliance:
+    enabled: true
+"#;
+        let config = parse_config(yaml, Path::new("cfgd.yaml")).unwrap();
+        let compliance = config.spec.compliance.as_ref().unwrap();
+        assert!(compliance.enabled);
+        assert_eq!(compliance.interval, "1h");
+        assert_eq!(compliance.retention, "30d");
+        // scope bools default to true
+        assert!(compliance.scope.files);
+        assert!(compliance.scope.packages);
+        assert!(compliance.scope.system);
+        assert!(compliance.scope.secrets);
+        assert!(compliance.scope.watch_paths.is_empty());
+        assert!(compliance.scope.watch_package_managers.is_empty());
+        // export defaults
+        assert_eq!(compliance.export.format, ComplianceFormat::Json);
+        assert_eq!(
+            compliance.export.path,
+            "~/.local/share/cfgd/compliance/"
+        );
+    }
+
+    #[test]
+    fn parse_compliance_watch_paths_and_managers() {
+        let yaml = r#"
+apiVersion: cfgd.io/v1alpha1
+kind: Config
+metadata:
+  name: test
+spec:
+  compliance:
+    enabled: true
+    scope:
+      watchPaths:
+        - /home/user/.config
+      watchPackageManagers:
+        - cargo
+        - npm
+"#;
+        let config = parse_config(yaml, Path::new("cfgd.yaml")).unwrap();
+        let scope = &config.spec.compliance.as_ref().unwrap().scope;
+        assert_eq!(scope.watch_paths, vec!["/home/user/.config"]);
+        assert_eq!(scope.watch_package_managers, vec!["cargo", "npm"]);
+    }
+
+    #[test]
+    fn compliance_format_defaults_to_json() {
+        let export = ComplianceExport::default();
+        assert_eq!(export.format, ComplianceFormat::Json);
+    }
+
+    #[test]
+    fn parse_complete_cfgd_yaml_with_compliance() {
+        let yaml = r#"
+apiVersion: cfgd.io/v1alpha1
+kind: Config
+metadata:
+  name: workstation
+spec:
+  profile: default
+  compliance:
+    enabled: true
+    interval: 1h
+    retention: 30d
+    scope:
+      files: true
+      packages: true
+      system: true
+      secrets: true
+    export:
+      format: json
+      path: ~/.local/share/cfgd/compliance/
+"#;
+        let config = parse_config(yaml, Path::new("cfgd.yaml")).unwrap();
+        assert_eq!(config.spec.profile.as_deref(), Some("default"));
+        let compliance = config.spec.compliance.as_ref().unwrap();
+        assert!(compliance.enabled);
+        assert_eq!(compliance.interval, "1h");
+        assert_eq!(compliance.retention, "30d");
+        assert!(compliance.scope.files);
+        assert!(compliance.scope.packages);
+        assert!(compliance.scope.system);
+        assert!(compliance.scope.secrets);
+        assert_eq!(compliance.export.format, ComplianceFormat::Json);
+        assert_eq!(
+            compliance.export.path,
+            "~/.local/share/cfgd/compliance/"
+        );
+    }
+
+    #[test]
+    fn compliance_absent_when_not_specified() {
+        let yaml = r#"
+apiVersion: cfgd.io/v1alpha1
+kind: Config
+metadata:
+  name: test
+spec:
+  profile: default
+"#;
+        let config = parse_config(yaml, Path::new("cfgd.yaml")).unwrap();
+        assert!(config.spec.compliance.is_none());
     }
 }

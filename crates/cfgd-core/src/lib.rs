@@ -901,6 +901,11 @@ pub fn parse_duration_str(s: &str) -> Result<std::time::Duration, String> {
             .parse::<u64>()
             .map(|h| std::time::Duration::from_secs(h * 3600))
             .map_err(|_| format!("invalid timeout: {}", s))
+    } else if let Some(n) = s.strip_suffix('d') {
+        n.trim()
+            .parse::<u64>()
+            .map(|d| std::time::Duration::from_secs(d * 86400))
+            .map_err(|_| format!("invalid timeout: {}", s))
     } else {
         s.parse::<u64>()
             .map(std::time::Duration::from_secs)
@@ -943,6 +948,12 @@ mod tests {
     fn parse_duration_str_whitespace() {
         let d = parse_duration_str(" 10 s ").unwrap();
         assert_eq!(d, std::time::Duration::from_secs(10));
+    }
+
+    #[test]
+    fn parse_duration_str_days() {
+        let d = parse_duration_str("30d").unwrap();
+        assert_eq!(d, std::time::Duration::from_secs(30 * 86400));
     }
 
     #[test]
