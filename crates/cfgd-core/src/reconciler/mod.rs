@@ -650,6 +650,14 @@ impl<'a> Reconciler<'a> {
                     backend: backend_name,
                     origin: "local".to_string(),
                 }));
+
+                if has_envs {
+                    actions.push(Action::Secret(SecretAction::Skip {
+                        source: secret.source.clone(),
+                        reason: "env injection requires a secret provider reference; SOPS file targets cannot inject env vars".to_string(),
+                        origin: "local".to_string(),
+                    }));
+                }
             } else if secret.target.is_none() && has_envs && !has_backend {
                 // Env-only secret without a provider reference — SOPS can't resolve
                 // individual values for env injection
@@ -2147,6 +2155,10 @@ fn merge_module_env_aliases(
 }
 
 /// Verify env file and shell rc source line match expected state.
+// NOTE: Secret-backed env vars (from SecretSpec.envs) are not included in
+// verification because they require provider resolution. This means cfgd status
+// may report env file drift after secret envs are written. This will be addressed
+// when compliance snapshots track secret env metadata.
 fn verify_env(
     profile_env: &[crate::config::EnvVar],
     profile_aliases: &[crate::config::ShellAlias],
