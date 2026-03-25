@@ -259,6 +259,37 @@ All source tests use a local git repo created inline as the "remote."
 | AL01 | `add <path>` (alias for profile update --file) | File added to profile |
 | AL02 | `remove -<path>` (alias for profile update --file, user prefixes with -) | File removed from profile |
 
+### compliance (CO01–CO07)
+
+| ID | Command | Assertion |
+|---|---|---|
+| CO01 | `compliance` | Exit 0, prints summary table |
+| CO02 | `compliance -o json` | Valid JSON with `checks` and `summary` keys |
+| CO03 | `compliance export` | Writes snapshot file to configured export path |
+| CO04 | `compliance history` | Exit 0, empty table initially |
+| CO05 | `compliance history --since 1h` | Accepts duration flag |
+| CO06 | `compliance` then `compliance history` | History shows 1 entry after snapshot |
+| CO07 | `compliance diff 1 2` (nonexistent IDs) | Exit non-zero |
+
+### encryption enforcement (EE01–EE02)
+
+| ID | Command | Assertion |
+|---|---|---|
+| EE01 | `apply --dry-run` with SOPS-encrypted file + `encryption: { backend: sops }` | Plan succeeds |
+| EE02 | `apply --dry-run` with unencrypted file + `encryption: { backend: sops }` | Plan fails with encryption error |
+
+### system configurators — git (GC01)
+
+| ID | Command | Assertion |
+|---|---|---|
+| GC01 | `apply --dry-run` with `system.git` config | Plan shows git config drift (isolated via `GIT_CONFIG_GLOBAL`) |
+
+### secret env injection (SE01)
+
+| ID | Command | Assertion |
+|---|---|---|
+| SE01 | `apply --dry-run` with secret having `envs` but no provider available | Plan shows skip with reason |
+
 ### Behavioral Tests
 
 | ID | Test | Assertion |
@@ -284,4 +315,4 @@ docker run --rm cfgd-exhaustive
 bash tests/e2e/cli/scripts/run-exhaustive-tests.sh
 ```
 
-**Total: 201 test cases.**
+**Total: 212 test cases.**

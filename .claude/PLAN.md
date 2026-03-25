@@ -2,6 +2,21 @@
 
 Single source of truth for all incomplete work. Completed work is in [COMPLETED.md](COMPLETED.md). Design detail in [kubernetes-first-class.md](kubernetes-first-class.md).
 
+## E2E test coverage expansion
+
+The CLI E2E test plan is at [e2e-cli-test-plan.md](e2e-cli-test-plan.md) (moved from `tests/e2e/cli/`). Current baseline: 201 tests passing. The plan now includes 11 new test cases (CO01–CO07, EE01–EE02, GC01, SE01) for compliance-as-code features — total target: 212.
+
+Beyond CLI, E2E coverage is also needed for:
+
+- [ ] Implement the 11 new CLI E2E tests from [e2e-cli-test-plan.md](e2e-cli-test-plan.md) (compliance, encryption enforcement, git configurator, secret envs)
+- [ ] Node E2E: compliance snapshot via daemon — start daemon with `compliance.enabled: true`, verify snapshot file written to export path after interval
+- [ ] Operator E2E: compliance data in device checkin — enrolled device runs `cfgd compliance`, verify gateway receives snapshot summary in checkin payload
+- [ ] Full-stack E2E: end-to-end compliance flow — ConfigSource with `constraints.encryption.requiredTargets`, device subscribes, apply enforces encryption, compliance snapshot reflects policy compliance
+
+**Fixture notes:** Encryption tests need a SOPS-encrypted fixture (reuse existing age keypair). Git configurator tests use `GIT_CONFIG_GLOBAL` for isolation. SSH/GPG key generation excluded from E2E (side effects unsafe in shared CI — covered by unit tests with tempdir).
+
+---
+
 ## E2E test migration (KIND → k3s) — verification and CI
 
 The E2E test code migration is complete (all scripts, workflows, helpers, manifests rewritten). What remains is fixing infrastructure issues discovered during local verification, running all test suites to green, and pushing to CI.
