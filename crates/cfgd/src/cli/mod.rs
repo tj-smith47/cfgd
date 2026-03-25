@@ -436,7 +436,7 @@ pub struct Cli {
 
 #[derive(Parser)]
 pub struct ApplyArgs {
-    /// Clone config from a git URL before applying (same as cfgd init --from)
+    /// Config source: git URL to clone, or local path to an existing config directory
     #[arg(long)]
     pub from: Option<String>,
     /// Preview changes without applying
@@ -492,7 +492,7 @@ pub enum Command {
         #[arg(value_hint = clap::ValueHint::DirPath)]
         path: Option<String>,
 
-        /// Clone from a remote repository
+        /// Config source: git URL to clone, or local path to an existing config directory
         #[arg(long)]
         from: Option<String>,
 
@@ -2044,15 +2044,9 @@ fn print_apply_result(
 }
 
 fn cmd_apply(cli: &Cli, printer: &Printer, args: &ApplyArgs) -> anyhow::Result<()> {
-    // --from: clone config from a git URL before applying (idempotent)
-    if let Some(url) = &args.from {
-        let target = cfgd_core::default_config_dir();
-        if !target.join("cfgd.yaml").exists() {
-            printer.info(&format!("Cloning config from {url}"));
-            std::fs::create_dir_all(&target)?;
-            cfgd_core::sources::git_clone_with_fallback(url, &target)
-                .map_err(|e| anyhow::anyhow!(e))?;
-        }
+    // --from: clone from git URL or use local path as config directory
+    if let Some(from) = &args.from {
+        init::resolve_from(from, "master", printer)?;
     }
 
     let dry_run = args.dry_run;

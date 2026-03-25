@@ -29,12 +29,18 @@ pub(super) fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result
     }
 
     // 1. Determine target directory
-    // When --from is used (cloning a config repo), default to the config dir
-    // rather than CWD — users typically run the installer from $HOME.
-    let target_dir = match args.path {
-        Some(p) => cfgd_core::expand_tilde(Path::new(p)),
-        None if args.from.is_some() => cfgd_core::default_config_dir(),
-        None => std::env::current_dir()?,
+    let target_dir = if let Some(from) = args.from {
+        // --from: resolve URL (clone) or local path
+        let resolved = resolve_from(from, args.branch, printer)?;
+        // --path overrides the resolved target (clone destination)
+        args.path
+            .map(|p| cfgd_core::expand_tilde(Path::new(p)))
+            .unwrap_or(resolved)
+    } else {
+        match args.path {
+            Some(p) => cfgd_core::expand_tilde(Path::new(p)),
+            None => std::env::current_dir()?,
+        }
     };
 
     // 2. Create directory if it doesn't exist
@@ -49,7 +55,7 @@ pub(super) fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result
     }
 
     // 4. Clone or scaffold
-    if let Some(url) = args.from {
+    if let Some(url) = args.from.filter(|f| is_git_url(f)) {
         clone_into(&target_dir, url, args.branch, printer)?;
         // If --theme was specified and the cloned repo has a cfgd.yaml, set the theme
         if let Some(theme) = args.theme {
@@ -387,6 +393,44 @@ fn pick_profile(profiles_dir: &Path, printer: &Printer) -> anyhow::Result<String
         "Invalid selection '{}' — expected a number or profile name",
         input
     )
+}
+
+/// Returns true if the value looks like a git URL rather than a local path.
+pub(super) fn is_git_url(value: &str) -> bool {
+    value.starts_with("https://")
+        || value.starts_with("http://")
+        || value.starts_with("ssh://")
+        || value.starts_with("git://")
+        || value.starts_with("git@")
+        || value.ends_with(".git")
+}
+
+/// Resolve a --from value to a config directory path.
+/// If it's a git URL, clone to default_config_dir. If it's a local path, use it directly.
+pub(super) fn resolve_from(
+    from: &str,
+    branch: &str,
+    printer: &cfgd_core::output::Printer,
+) -> anyhow::Result<std::path::PathBuf> {
+    if is_git_url(from) {
+        let target = cfgd_core::default_config_dir();
+        if !target.join("cfgd.yaml").exists() {
+            std::fs::create_dir_all(&target)?;
+            clone_into(&target, from, branch, printer)?;
+        } else {
+            printer.info(&format!("Already initialized at {}", target.display()));
+        }
+        Ok(target)
+    } else {
+        let path = cfgd_core::expand_tilde(Path::new(from));
+        if !path.exists() {
+            anyhow::bail!("Path does not exist: {}", path.display());
+        }
+        if !path.join("cfgd.yaml").exists() {
+            anyhow::bail!("No cfgd.yaml found in {}", path.display());
+        }
+        Ok(path)
+    }
 }
 
 /// Clone a remote repo into the target directory.
@@ -1182,5 +1226,59 @@ mod tests {
         let printer = Printer::new(cfgd_core::output::Verbosity::Quiet);
         let result = pick_profile(&profiles_dir, &printer);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn is_git_url_detects_urls() {
+        assert!(is_git_url("https://github.com/user/repo"));
+        assert!(is_git_url("http://github.com/user/repo"));
+        assert!(is_git_url("git@github.com:user/repo.git"));
+        assert!(is_git_url("ssh://git@github.com/user/repo"));
+        assert!(is_git_url("git://github.com/user/repo"));
+        assert!(is_git_url("/some/local/path.git"));
+    }
+
+    #[test]
+    fn is_git_url_rejects_paths() {
+        assert!(!is_git_url("/home/user/config"));
+        assert!(!is_git_url("~/my-config"));
+        assert!(!is_git_url("./relative/path"));
+        assert!(!is_git_url("config"));
+    }
+
+    #[test]
+    fn resolve_from_local_path_with_config() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("cfgd.yaml"),
+            "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: test\nspec: {}\n",
+        )
+        .unwrap();
+
+        let printer = Printer::new(cfgd_core::output::Verbosity::Quiet);
+        let result = resolve_from(&dir.path().display().to_string(), "master", &printer);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), dir.path());
+    }
+
+    #[test]
+    fn resolve_from_local_path_missing_config_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        // No cfgd.yaml
+
+        let printer = Printer::new(cfgd_core::output::Verbosity::Quiet);
+        let result = resolve_from(&dir.path().display().to_string(), "master", &printer);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("No cfgd.yaml"));
+    }
+
+    #[test]
+    fn resolve_from_nonexistent_path_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        let nonexistent = dir.path().join("does-not-exist");
+        let printer = Printer::new(cfgd_core::output::Verbosity::Quiet);
+        let result = resolve_from(&nonexistent.display().to_string(), "master", &printer);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("does not exist"));
     }
 }

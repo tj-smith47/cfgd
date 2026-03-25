@@ -49,16 +49,17 @@ Initialize a new cfgd configuration repository.
 cfgd init                                          # interactive setup in current directory
 cfgd init ~/dotfiles                               # scaffold in specific directory
 cfgd init --from git@github.com:you/config.git     # clone and scaffold
-cfgd init --from <url> --branch dev                # specify branch
-cfgd init --from <url> --apply-profile work-mac    # clone, activate profile, apply
-cfgd init --from <url> --apply-module nvim         # clone, apply just one module
-cfgd init --from <url> --apply --yes --install-daemon  # full one-liner bootstrap
+cfgd init --from ~/existing/config                 # use local config directory
+cfgd init --from <source> --branch dev                # specify branch
+cfgd init --from <source> --apply-profile work-mac    # clone, activate profile, apply
+cfgd init --from <source> --apply-module nvim         # clone, apply just one module
+cfgd init --from <source> --apply --yes --install-daemon  # full one-liner bootstrap
 ```
 
 | Flag | Description |
 |---|---|
 | `[path]` | Target directory (default: current directory) |
-| `--from <url>` | Clone from a remote git repository |
+| `--from <url\|path>` | Config source: git URL to clone, or local path to existing config |
 | `--branch <name>` | Git branch (default: master) |
 | `--name <name>` | Config name in metadata (default: directory name) |
 | `--apply` | Apply configuration after scaffolding |

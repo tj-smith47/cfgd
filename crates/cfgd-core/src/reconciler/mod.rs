@@ -4741,6 +4741,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn plan_env_secret_envs_appear_in_generated_content() {
         let regular_env = vec![crate::config::EnvVar {
             name: "EDITOR".into(),
