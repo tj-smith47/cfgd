@@ -432,6 +432,8 @@ on the machine.
 | `target` | string | Yes | | Absolute destination path on the machine. Supports `~/` expansion. |
 | `strategy` | enum | No | Global `fileStrategy` | Deployment strategy for this file. Overrides the global default. See [FileStrategy values](#filestrategy-values). |
 | `private` | bool | No | `false` | When `true`, the source file is local-only: automatically added to `.gitignore` and silently skipped on machines where it does not exist. |
+| `permissions` | string | No | | Octal permission mode to enforce on the deployed target file (e.g. `"600"`). Distinct from `files.permissions`, which enforces permissions on paths not managed as file entries. |
+| `encryption` | object | No | | Encryption enforcement for this file. Has `backend` (`"sops"` or `"age"`) and `mode` (`InRepo` or `Always`). See [encryption fields](#managed-file-encryption-fields). |
 
 **Example:**
 ```yaml
@@ -457,6 +459,29 @@ files:
 | `Copy` | Copy source content to `target`. The target is an independent file; changes to source are not reflected until the next reconcile. |
 | `Template` | Render the source as a Tera template and write the output to `target`. Automatically selected for `.tera` source files. |
 | `Hardlink` | Create a hard link from `target` to source. Changes to either file are immediately visible in both. |
+
+#### Managed file encryption fields
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `encryption.backend` | string | Yes (when `encryption` present) | | Encryption backend: `"sops"` or `"age"`. Same values as `spec.secrets.backend` in `cfgd.yaml`. |
+| `encryption.mode` | enum | No | `InRepo` | `InRepo`: source must be encrypted in the repo, deployed decrypted. `Always`: encrypted in repo and encrypted at the target path. `Always` is incompatible with `strategy: Symlink` and `strategy: Hardlink`. |
+
+**Example:**
+```yaml
+files:
+  managed:
+    - source: ssh/config
+      target: ~/.ssh/config
+      permissions: "600"
+      encryption:
+        backend: sops
+        mode: InRepo
+
+    - source: shell/.zshrc
+      target: ~/.zshrc
+      # no encryption block = no enforcement
+```
 
 ---
 
@@ -503,6 +528,9 @@ Common configurators:
 | `certificates` | All | CA certificate installation. |
 | `windowsRegistry` | Windows | Registry key/value management. |
 | `windowsServices` | Windows | Windows Service lifecycle management. |
+| `sshKeys` | All | SSH key pair provisioning and permission enforcement. |
+| `gpgKeys` | All | GPG key provisioning and validity tracking. |
+| `git` | All | Global git configuration (`git config --global`). |
 
 **Example:**
 ```yaml
@@ -526,7 +554,8 @@ config repository in plaintext.
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
 | `source` | string | Yes | | Secret reference URI. Format depends on backend: SOPS file path, `1password://vault/item/field`, `bitwarden://item/field`, or `vault://path/key`. |
-| `target` | string | Yes | | Absolute path to write the decrypted secret. Supports `~/` expansion. |
+| `target` | string | No | | Absolute path to write the decrypted secret. Supports `~/` expansion. At least one of `target` or `envs` must be set. |
+| `envs` | list | No | | Environment variable names to inject with the resolved secret value. At least one of `target` or `envs` must be set. See [Environment variable injection from secrets](#environment-variable-injection-from-secrets). |
 | `template` | string | No | | Inline template string. When set, the secret value is injected into this template before writing to `target`. |
 | `backend` | string | No | | Override the secret backend for this entry. Defaults to `spec.secrets.backend` in `cfgd.yaml`. |
 
@@ -540,6 +569,34 @@ secrets:
     target: ~/.aws/credentials
     backend: sops
 ```
+
+#### Environment variable injection from secrets
+
+When `envs` is set, cfgd resolves the secret and writes the value to the managed shell environment file alongside regular `env:` entries. `target` and `envs` can both be set on the same entry — the secret is placed as a file and injected as an env var.
+
+```yaml
+secrets:
+  # Inject into the shell environment only
+  - source: 1password://Work/GitHub/token
+    envs:
+      - GITHUB_TOKEN
+
+  # Write to a file and inject as an env var
+  - source: vault://secret/data/api#key
+    target: ~/.config/api-key
+    envs:
+      - API_KEY
+
+  # Multiple env vars from one provider — use explicit field references
+  - source: vault://secret/data/aws#aws_access_key_id
+    envs:
+      - AWS_ACCESS_KEY_ID
+  - source: vault://secret/data/aws#aws_secret_access_key
+    envs:
+      - AWS_SECRET_ACCESS_KEY
+```
+
+When `envs` has multiple entries and the source resolves to a single value, all named env vars receive that value. The daemon refreshes secret-backed env vars on every reconcile cycle. Compliance snapshots record that the env var exists and its source — never the value.
 
 ---
 

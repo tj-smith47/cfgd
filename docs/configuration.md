@@ -74,6 +74,7 @@ spec:
 | `spec.theme` | no | `default` | Theme name (string) or object with `name` + `overrides` |
 | `spec.fileStrategy` | no | `Symlink` | `Symlink`, `Copy`, `Template`, or `Hardlink` (Windows: `Symlink` requires Developer Mode or elevation) |
 | `spec.aliases.<name>` | no | — | CLI command aliases (e.g. `add: "profile update --file"`) |
+| `spec.compliance` | no | — | Continuous compliance snapshot settings (see [spec/config.md](spec/config.md#speccompliance)) |
 
 All fields can be read and written programmatically via `cfgd config get <key>` and `cfgd config set <key> <value>`. See the [CLI reference](cli-reference.md) for details.
 

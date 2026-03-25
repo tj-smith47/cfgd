@@ -66,6 +66,40 @@ secrets:
     backend: age                           # per-file backend override
 ```
 
+## Environment Variable Injection
+
+Secrets can be injected directly into the shell environment without writing a file. Add an `envs` field to any secret entry with a list of environment variable names to populate. The daemon resolves the secret and writes the values to its managed shell env file alongside regular `env:` entries from your profile.
+
+```yaml
+secrets:
+  # Inject only into the shell environment
+  - source: 1password://Work/GitHub/token
+    envs:
+      - GITHUB_TOKEN
+
+  # Write to a file and also inject as an env var
+  - source: vault://secret/data/api#key
+    target: ~/.config/api-key
+    envs:
+      - API_KEY
+```
+
+At least one of `target` or `envs` must be set on each entry. When both are set, the secret is placed at the target path and exported as an env var. When `envs` lists multiple names and the source resolves to a single value, all named variables receive the same value.
+
+For secrets with multiple fields (e.g. a Vault path with separate access key and secret key), use one entry per field with an explicit fragment reference:
+
+```yaml
+secrets:
+  - source: vault://secret/data/aws#aws_access_key_id
+    envs:
+      - AWS_ACCESS_KEY_ID
+  - source: vault://secret/data/aws#aws_secret_access_key
+    envs:
+      - AWS_SECRET_ACCESS_KEY
+```
+
+The daemon refreshes secret-backed env vars on every reconcile cycle. Compliance snapshots record that the env var exists and its source — the value is never stored or logged.
+
 ## CLI Commands
 
 `cfgd secret init` sets up encryption for your config repo — generates an [age](https://age-encryption.org/) key pair and creates a `.sops.yaml` configuration file that tells SOPS which files to encrypt and with which key.

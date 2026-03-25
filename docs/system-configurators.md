@@ -154,6 +154,76 @@ system:
 
 Supported `startType` values: `auto`, `manual`, `disabled`. Supported `state` values: `running`, `stopped`.
 
+### `sshKeys`
+
+Provisions SSH key pairs and enforces their type and permissions. cfgd checks whether the key at `path` exists. If absent, it generates one via `ssh-keygen`. If present, it verifies the key type and permissions. The parent `~/.ssh` directory is created with `700` permissions if it does not exist.
+
+```yaml
+system:
+  sshKeys:
+    - name: default
+      type: ed25519
+      path: ~/.ssh/id_ed25519
+      comment: "jane@work.com"
+      passphrase: 1password://Work/SSH/passphrase  # optional secret ref
+      permissions: "600"
+```
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `name` | string | Yes | | Identifier for this key entry. |
+| `type` | enum | No | `ed25519` | Key algorithm: `ed25519` or `rsa`. |
+| `bits` | int | No | `4096` | RSA key size. Ignored for ed25519. |
+| `path` | string | No | `~/.ssh/id_<type>` | Path to the private key file. |
+| `comment` | string | No | | Key comment (typically an email address). |
+| `passphrase` | string | No | | Secret provider reference for the key passphrase. Plaintext passphrases are not supported. |
+| `permissions` | string | No | `"600"` | Private key file permissions. |
+
+Drift is detected when the key is missing, has the wrong type, or has incorrect permissions. Key type verification reads the public key file (`<path>.pub`) to avoid passphrase prompts during drift checks.
+
+### `gpgKeys`
+
+Provisions GPG keys and tracks their validity. cfgd matches on the primary UID email and usage capabilities. Revoked keys are ignored. If no matching valid key exists, cfgd generates one via `gpg --batch --gen-key`. An existing key that has expired is reported as drift.
+
+```yaml
+system:
+  gpgKeys:
+    - name: work-signing
+      type: ed25519
+      realName: "Jane Doe"
+      email: jane@work.com
+      expiry: 2y
+      usage: sign
+```
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `name` | string | Yes | | Identifier for this key entry. |
+| `type` | enum | No | `ed25519` | Key algorithm: `ed25519` or `rsa4096`. |
+| `realName` | string | Yes | | GPG uid real name. |
+| `email` | string | Yes | | GPG uid email address. Used for key matching. |
+| `expiry` | string | No | `2y` | GPG expiry notation (`0` = no expiry, `1y`, `2y`, etc.). |
+| `usage` | string | No | `sign` | Comma-separated key capabilities: `sign`, `encrypt`, `auth`, or combinations. |
+
+Key fingerprints are visible via `cfgd status`, making them easy to reference in `git` configurator settings.
+
+### `git`
+
+Manages global git configuration. Each key maps directly to `git config --global <key> <value>`. The configurator uses dotted key-value pairs (not nested YAML) to match git's internal model. Keys not declared by cfgd are not modified.
+
+```yaml
+system:
+  git:
+    user.name: "Jane Doe"
+    user.email: jane@work.com
+    user.signingKey: ~/.ssh/id_ed25519.pub
+    commit.gpgSign: true
+    gpg.format: ssh
+    init.defaultBranch: main
+```
+
+Drift is detected when any managed key has a value that differs from the declared value. cfgd reads current values via `git config --global --get <key>` and applies only the keys that differ.
+
 ## Node Configurators
 
 These are typically used when cfgd runs as a [DaemonSet](https://kubernetes.io/docs/concepts/workloads/controllers/daemonset/) on Kubernetes cluster nodes (see [operator.md](operator.md#daemonset-mode)). They manage low-level Linux system settings that affect how containers and the kubelet behave.

@@ -118,6 +118,23 @@ spec:
     provider: string
     model: string
     apiKeyEnv: string
+
+  compliance:
+    enabled: bool
+    interval: string
+    retention: string
+    scope:
+      files: bool
+      packages: bool
+      system: bool
+      secrets: bool
+      watchPaths:
+        - string
+      watchPackageManagers:
+        - string
+    export:
+      format: json | yaml
+      path: string
 ```
 
 ---
@@ -147,6 +164,7 @@ spec:
 | `aliases` | map | No | `{}` | CLI aliases: map of alias name to command string. |
 | `theme` | string or object | No | | Output theme name or detailed theme config. See [spec.theme](#spectheme). |
 | `ai` | object | No | | AI assistant configuration. See [spec.ai](#specai). |
+| `compliance` | object | No | | Continuous compliance snapshot settings. See [spec.compliance](#speccompliance). |
 
 ---
 
@@ -517,3 +535,48 @@ ai:
   model: claude-opus-4-5
   apiKeyEnv: ANTHROPIC_API_KEY
 ```
+
+---
+
+### spec.compliance
+
+Continuous compliance snapshot configuration. When enabled, the daemon captures machine state on its own interval (independent of the reconcile interval) and writes structured snapshot files. Snapshots are content-hashed — if nothing changed since the last snapshot, no new file is written.
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `enabled` | bool | No | `false` | Enable compliance snapshots. |
+| `interval` | duration | No | `1h` | How often to capture a snapshot. Duration string: `30s`, `5m`, `1h`. |
+| `retention` | duration | No | `720h` | How long to keep snapshots locally before the daemon deletes them. |
+| `scope.files` | bool | No | `true` | Include managed file state (existence, permissions, encryption status). |
+| `scope.packages` | bool | No | `true` | Include managed package state (installed version per manager). |
+| `scope.system` | bool | No | `true` | Include system configurator state (covers `sshKeys`, `gpgKeys`, `git`, and all other configurators). |
+| `scope.secrets` | bool | No | `true` | Include secret target existence and permissions. Secret values are never recorded. |
+| `scope.watchPaths` | list | No | `[]` | Additional unmanaged paths to audit for existence, permissions, and ownership. |
+| `scope.watchPackageManagers` | list | No | `[]` | Package managers from which to capture a full installed-package inventory. Runs in parallel across managers. |
+| `export.format` | enum | No | `json` | Snapshot output format: `json` or `yaml`. |
+| `export.path` | string | No | `~/.local/share/cfgd/compliance/` | Directory where snapshot files are written. |
+
+**Example:**
+```yaml
+compliance:
+  enabled: true
+  interval: 1h
+  retention: 720h
+  scope:
+    files: true
+    packages: true
+    system: true
+    secrets: true
+    watchPaths:
+      - ~/.ssh
+      - ~/.gnupg
+      - ~/.aws
+    watchPackageManagers:
+      - brew
+      - apt
+  export:
+    format: json
+    path: ~/.local/share/cfgd/compliance/
+```
+
+Snapshot summaries are included in device checkin payloads to the operator gateway. The fleet dashboard shows per-device compliance scores. Use `cfgd compliance` to run a snapshot on demand, `cfgd compliance history` to list past snapshots, and `cfgd compliance diff <id1> <id2>` to compare two snapshots.

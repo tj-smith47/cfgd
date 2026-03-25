@@ -80,6 +80,7 @@ spec:
 | `files` | list | No | `[]` | Files to deploy from the module directory to the machine. See [spec.files[]](#specfiles). |
 | `env` | list | No | `[]` | Environment variables to export. See [spec.env[]](#specenv). |
 | `aliases` | list | No | `[]` | Shell aliases to install. See [spec.aliases[]](#specaliases). |
+| `system` | map | No | `{}` | System configurator settings. Keys are configurator names, values are configurator-specific config. Same schema as profile `spec.system`. See [spec.system](#specsystem). |
 | `scripts` | object | No | | Lifecycle scripts. See [spec.scripts](#specscripts). |
 
 ---
@@ -235,6 +236,29 @@ aliases:
 
 ---
 
+### spec.system
+
+System configurator settings for this module. Keys map to configurator names; values are passed directly to the configurator. Follows the same schema as `spec.system` in profiles — see `docs/system-configurators.md` for the full list of available configurators.
+
+Module system values are deep-merged into the activating profile's system config during reconciliation. Module values win on conflict, consistent with other merge rules.
+
+Note: system configurator values do not support Tera template expansion. Use literal values in module system config. Dynamic values (such as email addresses) should be set via profile-level system config.
+
+**Example:**
+```yaml
+system:
+  sshKeys:
+    - name: corp
+      type: ed25519
+      comment: "jane@work.com"
+  git:
+    commit.gpgSign: true
+    gpg.format: ssh
+    user.signingKey: ~/.ssh/id_ed25519.pub
+```
+
+---
+
 ### spec.scripts
 
 Lifecycle scripts executed at different points during module apply and reconciliation. `onDrift` is not available at the module level (profile-level only).
@@ -335,6 +359,7 @@ merged spec using the following rules:
 | `files.managed` | Overlay by `target` — the module's entry for a given target replaces any profile entry for the same target. |
 | `env` | Override by name — module variable wins over profile variable of the same name. |
 | `aliases` | Override by name — same rule as `env`. |
+| `system` | Deep merge — module keys overwrite profile keys at the leaf level. |
 | `scripts` | Each hook list is appended after the profile's corresponding hook list. |
 
 ---
