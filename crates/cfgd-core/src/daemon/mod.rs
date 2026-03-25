@@ -1931,7 +1931,11 @@ fn handle_compliance_snapshot(
         ComplianceFormat::Json => "json",
         ComplianceFormat::Yaml => "yaml",
     };
-    let filename = format!("compliance-{}.{}", snapshot.timestamp.replace(':', "-"), ext);
+    let filename = format!(
+        "compliance-{}.{}",
+        snapshot.timestamp.replace(':', "-"),
+        ext
+    );
     let file_path = export_path.join(&filename);
 
     let content = match compliance_cfg.export.format {
@@ -3306,9 +3310,7 @@ mod tests {
 
         let json1 = serde_json::to_string_pretty(&snapshot1).unwrap();
         let hash1 = crate::sha256_hex(json1.as_bytes());
-        store
-            .store_compliance_snapshot(&snapshot1, &hash1)
-            .unwrap();
+        store.store_compliance_snapshot(&snapshot1, &hash1).unwrap();
 
         // Different snapshot with a violation
         let snapshot2 = crate::compliance::ComplianceSnapshot {
@@ -3340,9 +3342,7 @@ mod tests {
         let latest = store.latest_compliance_hash().unwrap();
         assert_ne!(latest.as_deref(), Some(hash2.as_str()));
 
-        store
-            .store_compliance_snapshot(&snapshot2, &hash2)
-            .unwrap();
+        store.store_compliance_snapshot(&snapshot2, &hash2).unwrap();
         let latest = store.latest_compliance_hash().unwrap();
         assert_eq!(latest.as_deref(), Some(hash2.as_str()));
 

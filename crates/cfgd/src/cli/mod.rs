@@ -3158,8 +3158,7 @@ fn cmd_compliance_snapshot(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
 
     // Store snapshot in state store
     let state = open_state_store(cli.state_dir.as_deref())?;
-    let json =
-        serde_json::to_string(&snapshot).map_err(|e| anyhow::anyhow!("serialize: {}", e))?;
+    let json = serde_json::to_string(&snapshot).map_err(|e| anyhow::anyhow!("serialize: {}", e))?;
     let hash = cfgd_core::sha256_hex(json.as_bytes());
     state.store_compliance_snapshot(&snapshot, &hash)?;
 
@@ -3179,12 +3178,8 @@ fn cmd_compliance_export(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
         .unwrap_or_else(|| cfg.active_profile().unwrap_or("default"));
 
     let compliance_cfg = cfg.spec.compliance.as_ref();
-    let scope = compliance_cfg
-        .map(|c| c.scope.clone())
-        .unwrap_or_default();
-    let export = compliance_cfg
-        .map(|c| c.export.clone())
-        .unwrap_or_default();
+    let scope = compliance_cfg.map(|c| c.scope.clone()).unwrap_or_default();
+    let export = compliance_cfg.map(|c| c.export.clone()).unwrap_or_default();
 
     let sources: Vec<String> = Vec::new();
 
@@ -3198,8 +3193,7 @@ fn cmd_compliance_export(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
 
     // Store in state
     let state = open_state_store(cli.state_dir.as_deref())?;
-    let json =
-        serde_json::to_string(&snapshot).map_err(|e| anyhow::anyhow!("serialize: {}", e))?;
+    let json = serde_json::to_string(&snapshot).map_err(|e| anyhow::anyhow!("serialize: {}", e))?;
     let hash = cfgd_core::sha256_hex(json.as_bytes());
     state.store_compliance_snapshot(&snapshot, &hash)?;
 
@@ -3226,28 +3220,25 @@ fn cmd_compliance_export(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
     let export_path = export_dir.join(&filename);
 
     let content = match export.format {
-        cfgd_core::config::ComplianceFormat::Json => {
-            serde_json::to_string_pretty(&snapshot)
-                .map_err(|e| anyhow::anyhow!("serialize: {}", e))?
-        }
+        cfgd_core::config::ComplianceFormat::Json => serde_json::to_string_pretty(&snapshot)
+            .map_err(|e| anyhow::anyhow!("serialize: {}", e))?,
         cfgd_core::config::ComplianceFormat::Yaml => {
             serde_yaml::to_string(&snapshot).map_err(|e| anyhow::anyhow!("serialize: {}", e))?
         }
     };
 
     cfgd_core::atomic_write_str(&export_path, &content)?;
-    printer.success(&format!("Compliance snapshot written to {}", export_path.display()));
+    printer.success(&format!(
+        "Compliance snapshot written to {}",
+        export_path.display()
+    ));
     print_compliance_summary(&snapshot, printer);
 
     Ok(())
 }
 
 /// Show compliance snapshot history.
-fn cmd_compliance_history(
-    cli: &Cli,
-    printer: &Printer,
-    since: Option<&str>,
-) -> anyhow::Result<()> {
+fn cmd_compliance_history(cli: &Cli, printer: &Printer, since: Option<&str>) -> anyhow::Result<()> {
     let state = open_state_store(cli.state_dir.as_deref())?;
 
     // Convert --since duration to an ISO 8601 timestamp cutoff.
@@ -3301,12 +3292,7 @@ fn cmd_compliance_history(
 }
 
 /// Show diff between two snapshots by ID.
-fn cmd_compliance_diff(
-    cli: &Cli,
-    printer: &Printer,
-    id1: i64,
-    id2: i64,
-) -> anyhow::Result<()> {
+fn cmd_compliance_diff(cli: &Cli, printer: &Printer, id1: i64, id2: i64) -> anyhow::Result<()> {
     let state = open_state_store(cli.state_dir.as_deref())?;
 
     let snap1 = state
@@ -3458,12 +3444,7 @@ fn print_compliance_summary(
         &by_category
             .iter()
             .map(|(cat, (c, w, v))| {
-                vec![
-                    cat.to_string(),
-                    c.to_string(),
-                    w.to_string(),
-                    v.to_string(),
-                ]
+                vec![cat.to_string(), c.to_string(), w.to_string(), v.to_string()]
             })
             .collect::<Vec<_>>(),
     );
@@ -3481,10 +3462,7 @@ fn print_compliance_summary(
             s.compliant, s.warning, s.violation
         ));
     } else {
-        printer.success(&format!(
-            "All {} check(s) compliant",
-            s.compliant
-        ));
+        printer.success(&format!("All {} check(s) compliant", s.compliant));
     }
 }
 
