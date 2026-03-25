@@ -184,7 +184,7 @@ download_and_install() {
 
         if [ -n "$sha_cmd" ]; then
             cd "$tmp_dir"
-            grep "$archive_name" "$checksum_name" | $sha_cmd -c --quiet 2>/dev/null || {
+            grep "  ${archive_name}$" "$checksum_name" | $sha_cmd -c >/dev/null 2>&1 || {
                 error "Checksum verification failed"
                 exit 1
             }
