@@ -80,6 +80,18 @@ impl SshKeysConfigurator {
                     message: format!("invalid sshKeys entry: {}", e),
                 })
             })?;
+            // Validate key type — only ed25519 and rsa are supported
+            match spec.key_type.as_str() {
+                "ed25519" | "rsa" => {}
+                other => {
+                    return Err(CfgdError::Config(cfgd_core::errors::ConfigError::Invalid {
+                        message: format!(
+                            "unsupported key type '{}' for SSH key '{}': only 'ed25519' and 'rsa' are supported",
+                            other, spec.name
+                        ),
+                    }));
+                }
+            }
             specs.push(spec);
         }
         Ok(specs)
@@ -165,7 +177,9 @@ impl SshKeysConfigurator {
         let output = cmd.output().map_err(CfgdError::Io)?;
 
         if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr).trim_end().to_string();
+            let stderr = String::from_utf8_lossy(&output.stderr)
+                .trim_end()
+                .to_string();
             return Err(CfgdError::Io(std::io::Error::other(format!(
                 "ssh-keygen failed for key '{}': {}",
                 spec.name, stderr
@@ -251,6 +265,14 @@ impl SystemConfigurator for SshKeysConfigurator {
 
         for spec in &specs {
             let path = spec.resolved_path();
+
+            // Warn about unsupported passphrase field
+            if spec.passphrase.is_some() {
+                printer.warning(&format!(
+                    "SSH key '{}': passphrase field is not yet supported; key will be generated without passphrase",
+                    spec.name
+                ));
+            }
 
             // Ensure parent directory exists with mode 700
             Self::ensure_ssh_dir(&path, printer)?;
@@ -369,7 +391,8 @@ mod tests {
     fn diff_detects_missing_key() {
         let tmp = TempDir::new().unwrap();
         let key_path = tmp.path().join("id_ed25519");
-        let desired = make_desired(&[("default", "ed25519", Some(&key_path.display().to_string()))]);
+        let desired =
+            make_desired(&[("default", "ed25519", Some(&key_path.display().to_string()))]);
 
         let c = SshKeysConfigurator;
         let drifts = c.diff(&desired).unwrap();
@@ -441,12 +464,44 @@ mod tests {
     }
 
     #[test]
+    fn diff_detects_type_mismatch() {
+        let tmp = TempDir::new().unwrap();
+        let ssh_dir = tmp.path().join(".ssh");
+        fs::create_dir_all(&ssh_dir).unwrap();
+        let key_path = ssh_dir.join("id_ed25519");
+
+        // Write a fake private key and an RSA public key header
+        fs::write(&key_path, b"FAKE PRIVATE KEY").unwrap();
+        let pub_path = ssh_dir.join("id_ed25519.pub");
+        fs::write(&pub_path, b"ssh-rsa AAAA fakekey comment\n").unwrap();
+        fs::set_permissions(&key_path, fs::Permissions::from_mode(0o600)).unwrap();
+
+        // Declare as ed25519 but the public key header is ssh-rsa
+        let desired =
+            make_desired_with_perms("default", "ed25519", &key_path.display().to_string(), "600");
+
+        let c = SshKeysConfigurator;
+        let drifts = c.diff(&desired).unwrap();
+
+        let type_drift = drifts.iter().find(|d| d.key.ends_with(".type"));
+        assert!(
+            type_drift.is_some(),
+            "expected a type drift entry, got {} drift entries",
+            drifts.len()
+        );
+        let td = type_drift.unwrap();
+        assert_eq!(td.expected, "ed25519");
+        assert_eq!(td.actual, "rsa");
+    }
+
+    #[test]
     fn apply_generates_key() {
         let tmp = TempDir::new().unwrap();
         let ssh_dir = tmp.path().join(".ssh");
         let key_path = ssh_dir.join("id_ed25519");
 
-        let desired = make_desired(&[("default", "ed25519", Some(&key_path.display().to_string()))]);
+        let desired =
+            make_desired(&[("default", "ed25519", Some(&key_path.display().to_string()))]);
 
         let printer = Printer::new(Verbosity::Quiet);
         let c = SshKeysConfigurator;
@@ -468,7 +523,8 @@ mod tests {
         // ssh_dir must not exist before apply
         assert!(!ssh_dir.exists());
 
-        let desired = make_desired(&[("default", "ed25519", Some(&key_path.display().to_string()))]);
+        let desired =
+            make_desired(&[("default", "ed25519", Some(&key_path.display().to_string()))]);
 
         let printer = Printer::new(Verbosity::Quiet);
         let c = SshKeysConfigurator;

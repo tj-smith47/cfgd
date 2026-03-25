@@ -4,6 +4,8 @@ use cfgd_core::errors::{CfgdError, Result};
 use cfgd_core::output::Printer;
 use cfgd_core::providers::{SystemConfigurator, SystemDrift};
 
+use crate::system::stderr_string;
+
 /// GitConfigurator — manages `git config --global` settings declaratively.
 ///
 /// Config keys are flat dotted strings that map 1:1 to git config keys:
@@ -132,10 +134,10 @@ impl SystemConfigurator for GitConfigurator {
                 .map_err(CfgdError::Io)?;
 
             if !output.status.success() {
-                let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
                 printer.warning(&format!(
                     "git config --global {} failed: {}",
-                    key_str, stderr
+                    key_str,
+                    stderr_string(&output)
                 ));
             }
         }
@@ -251,8 +253,7 @@ mod tests {
     #[test]
     fn test_diff_detects_missing_key() {
         with_temp_global_config(|_config_file| {
-            let desired: serde_yaml::Value =
-                serde_yaml::from_str("user.name: Jane Doe").unwrap();
+            let desired: serde_yaml::Value = serde_yaml::from_str("user.name: Jane Doe").unwrap();
             let drifts = GitConfigurator.diff(&desired).unwrap();
             assert_eq!(drifts.len(), 1);
             assert_eq!(drifts[0].key, "user.name");
@@ -266,8 +267,7 @@ mod tests {
         with_temp_global_config(|config_file| {
             git_config_set_file(config_file, "user.name", "Wrong Name");
 
-            let desired: serde_yaml::Value =
-                serde_yaml::from_str("user.name: Jane Doe").unwrap();
+            let desired: serde_yaml::Value = serde_yaml::from_str("user.name: Jane Doe").unwrap();
             let drifts = GitConfigurator.diff(&desired).unwrap();
             assert_eq!(drifts.len(), 1);
             assert_eq!(drifts[0].key, "user.name");
@@ -281,8 +281,7 @@ mod tests {
         with_temp_global_config(|config_file| {
             git_config_set_file(config_file, "user.name", "Jane Doe");
 
-            let desired: serde_yaml::Value =
-                serde_yaml::from_str("user.name: Jane Doe").unwrap();
+            let desired: serde_yaml::Value = serde_yaml::from_str("user.name: Jane Doe").unwrap();
             let drifts = GitConfigurator.diff(&desired).unwrap();
             assert!(drifts.is_empty());
         });
@@ -293,8 +292,7 @@ mod tests {
         with_temp_global_config(|config_file| {
             let desired: serde_yaml::Value =
                 serde_yaml::from_str("user.email: jane@work.com").unwrap();
-            let printer =
-                cfgd_core::output::Printer::new(cfgd_core::output::Verbosity::Normal);
+            let printer = cfgd_core::output::Printer::new(cfgd_core::output::Verbosity::Normal);
             GitConfigurator.apply(&desired, &printer).unwrap();
 
             let actual = git_config_get_file(config_file, "user.email");
@@ -305,10 +303,8 @@ mod tests {
     #[test]
     fn test_apply_handles_bool_value() {
         with_temp_global_config(|config_file| {
-            let desired: serde_yaml::Value =
-                serde_yaml::from_str("commit.gpgSign: true").unwrap();
-            let printer =
-                cfgd_core::output::Printer::new(cfgd_core::output::Verbosity::Normal);
+            let desired: serde_yaml::Value = serde_yaml::from_str("commit.gpgSign: true").unwrap();
+            let printer = cfgd_core::output::Printer::new(cfgd_core::output::Verbosity::Normal);
             GitConfigurator.apply(&desired, &printer).unwrap();
 
             let actual = git_config_get_file(config_file, "commit.gpgSign");

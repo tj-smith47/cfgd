@@ -220,16 +220,30 @@ fn required_capabilities(usage: &str) -> Vec<char> {
 }
 
 /// Query the keyring for keys matching `email`. Returns all non-revoked entries.
+///
+/// Exit code 2 from gpg means no keys matched — treated as an empty result.
+/// Any other non-zero exit code is an error.
 fn query_keys_for_email(email: &str) -> Result<Vec<KeyringEntry>> {
     let output = Command::new("gpg")
-        .args([
-            "--list-keys",
-            "--with-colons",
-            "--with-fingerprint",
-            email,
-        ])
+        .args(["--list-keys", "--with-colons", "--with-fingerprint", email])
         .output()
         .map_err(CfgdError::Io)?;
+
+    match output.status.code() {
+        Some(0) => {} // success — continue to parse
+        Some(2) | None => {
+            // exit 2 = no keys found (normal); None = terminated by signal (treat as empty)
+            return Ok(Vec::new());
+        }
+        Some(code) => {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(CfgdError::Io(std::io::Error::other(format!(
+                "gpg --list-keys failed (exit {}): {}",
+                code,
+                stderr.trim_end()
+            ))));
+        }
+    }
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     let all = parse_gpg_colon_output(&stdout);
@@ -243,9 +257,9 @@ fn query_keys_for_email(email: &str) -> Result<Vec<KeyringEntry>> {
 
 /// Build a GPG batch parameter file for key generation.
 pub(crate) fn build_param_file(spec: &GpgKeySpec) -> String {
-    let (key_type_line, extra_line) = match spec.key_type {
-        GpgKeyType::Ed25519 => ("Key-Type: eddsa\nKey-Curve: ed25519", ""),
-        GpgKeyType::Rsa4096 => ("Key-Type: rsa\nKey-Length: 4096", ""),
+    let key_type_line = match spec.key_type {
+        GpgKeyType::Ed25519 => "Key-Type: eddsa\nKey-Curve: ed25519",
+        GpgKeyType::Rsa4096 => "Key-Type: rsa\nKey-Length: 4096",
     };
 
     // Normalise usage into GPG usage string
@@ -257,13 +271,8 @@ pub(crate) fn build_param_file(spec: &GpgKeySpec) -> String {
         .join(" ");
 
     format!(
-        "%no-protection\n{}{}\nKey-Usage: {}\nName-Real: {}\nName-Email: {}\nExpire-Date: {}\n%commit\n",
-        key_type_line,
-        if extra_line.is_empty() { "" } else { extra_line },
-        gpg_usage,
-        spec.real_name,
-        spec.email,
-        spec.expiry,
+        "%no-protection\n{}\nKey-Usage: {}\nName-Real: {}\nName-Email: {}\nExpire-Date: {}\n%commit\n",
+        key_type_line, gpg_usage, spec.real_name, spec.email, spec.expiry,
     )
 }
 
@@ -273,14 +282,17 @@ pub(crate) fn build_param_file(spec: &GpgKeySpec) -> String {
 
 fn parse_key_spec(entry: &serde_yaml::Value) -> Option<GpgKeySpec> {
     let name = entry.get("name")?.as_str()?.to_string();
-    let type_str = entry.get("type").and_then(|v| v.as_str()).unwrap_or("ed25519");
+    let type_str = entry
+        .get("type")
+        .and_then(|v| v.as_str())
+        .unwrap_or("ed25519");
     let key_type = GpgKeyType::from_str(type_str)?;
     let real_name = entry.get("realName")?.as_str()?.to_string();
     let email = entry.get("email")?.as_str()?.to_string();
     let expiry = entry
         .get("expiry")
         .and_then(|v| v.as_str())
-        .unwrap_or("0")
+        .unwrap_or("2y")
         .to_string();
     let usage = entry
         .get("usage")
@@ -336,9 +348,7 @@ impl SystemConfigurator for GpgKeysConfigurator {
             // Find a key that matches the required capabilities
             let matching: Vec<&KeyringEntry> = keys
                 .iter()
-                .filter(|k| {
-                    req_caps.iter().all(|c| k.capabilities.contains(*c))
-                })
+                .filter(|k| req_caps.iter().all(|c| k.capabilities.contains(*c)))
                 .collect();
 
             if matching.is_empty() {
@@ -356,14 +366,12 @@ impl SystemConfigurator for GpgKeysConfigurator {
             // Check that at least one matching key is not expired
             let all_expired = matching.iter().all(|k| k.is_expired());
             if all_expired {
-                let fingerprints: Vec<&str> = matching.iter().map(|k| k.fingerprint.as_str()).collect();
+                let fingerprints: Vec<&str> =
+                    matching.iter().map(|k| k.fingerprint.as_str()).collect();
                 drifts.push(SystemDrift {
                     key: format!("gpgKeys.{}.expiry", spec.name),
                     expected: "key not expired".to_string(),
-                    actual: format!(
-                        "key(s) expired: {}",
-                        fingerprints.join(", ")
-                    ),
+                    actual: format!("key(s) expired: {}", fingerprints.join(", ")),
                 });
             }
             // If at least one valid key exists, no drift for this entry.
@@ -426,7 +434,10 @@ impl SystemConfigurator for GpgKeysConfigurator {
 
             // Write param file atomically to a temp location, pass to gpg
             let tmp_dir = std::env::temp_dir();
-            let param_path = tmp_dir.join(format!("cfgd-gpg-{}.params", cfgd_core::sha256_hex(spec.email.as_bytes())));
+            let param_path = tmp_dir.join(format!(
+                "cfgd-gpg-{}.params",
+                cfgd_core::sha256_hex(spec.email.as_bytes())
+            ));
             cfgd_core::atomic_write_str(&param_path, &param)?;
 
             let output = Command::new("gpg")
@@ -586,7 +597,10 @@ mod tests {
         assert!(param.contains("Key-Curve: ed25519"), "missing Key-Curve");
         assert!(param.contains("Key-Usage: sign"), "missing Key-Usage");
         assert!(param.contains("Name-Real: Jane Doe"), "missing Name-Real");
-        assert!(param.contains("Name-Email: jane@work.com"), "missing Name-Email");
+        assert!(
+            param.contains("Name-Email: jane@work.com"),
+            "missing Name-Email"
+        );
         assert!(param.contains("Expire-Date: 2y"), "missing Expire-Date");
         assert!(param.contains("%commit"), "missing %commit");
     }
@@ -603,7 +617,10 @@ mod tests {
         };
         let param = build_param_file(&spec);
         assert!(param.contains("Key-Type: rsa"), "missing Key-Type: rsa");
-        assert!(param.contains("Key-Length: 4096"), "missing Key-Length: 4096");
+        assert!(
+            param.contains("Key-Length: 4096"),
+            "missing Key-Length: 4096"
+        );
         assert!(!param.contains("ed25519"), "should not contain ed25519");
         assert!(param.contains("Key-Usage: encrypt"), "missing Key-Usage");
     }
@@ -619,7 +636,10 @@ mod tests {
             usage: "sign,encrypt".to_string(),
         };
         let param = build_param_file(&spec);
-        assert!(param.contains("Key-Usage: sign encrypt"), "multi-usage should be space-separated");
+        assert!(
+            param.contains("Key-Usage: sign encrypt"),
+            "multi-usage should be space-separated"
+        );
     }
 
     // --- parse_gpg_colon_output ---
@@ -748,7 +768,7 @@ email: alice@example.com
         .unwrap();
         let spec = parse_key_spec(&yaml).unwrap();
         assert_eq!(spec.key_type, GpgKeyType::Ed25519);
-        assert_eq!(spec.expiry, "0");
+        assert_eq!(spec.expiry, "2y");
         assert_eq!(spec.usage, "sign");
     }
 
