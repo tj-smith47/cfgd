@@ -166,18 +166,30 @@ Puppet is the closest philosophical match — declarative state, continuous enfo
 
 ## Features
 
-**For individuals:**
-- [AI-guided generation](docs/ai-generate.md) — `cfgd generate` scans your system and builds profiles/modules interactively; MCP server for AI editor integration
-- [Daemon](docs/daemon.md) — file watching, drift detection, auto-sync, desktop/webhook notifications
-- [Secrets](docs/secrets.md) — SOPS/age encryption + 1Password, Bitwarden, HashiCorp Vault
-- [System configurators](docs/system-configurators.md) — shell, macOS defaults, systemd, launchd, sysctl, kubelet, containerd, apparmor, seccomp, certificates
+**For developers:**
+- [One-command bootstrap](docs/bootstrap.md) — `cfgd init --from <repo> --apply` on a new machine, done
+- [AI-guided generation](docs/ai-generate.md) — `cfgd generate` scans your system and builds profiles/modules; MCP server for AI editor integration
+- [Shareable modules](docs/modules.md) — cross-platform dev environment packages with dependency resolution and registries
+- [15 package managers](docs/packages.md) — brew, apt, dnf, pacman, cargo, npm, pipx, snap, and more, with automatic platform-aware resolution
+- [Secrets](docs/secrets.md) — SOPS/age encryption + 1Password, Bitwarden, HashiCorp Vault; secret-backed environment variables
 - [Tera templates](docs/templates.md) — render dotfiles with variables, OS detection, custom functions
-- [15 package managers](docs/packages.md) — brew, apt, dnf, yum, pacman, apk, zypper, pkg, cargo, npm, pipx, snap, flatpak, nix, go (plus custom script-based managers)
+- [Continuous drift detection](docs/daemon.md) — daemon watches for changes, auto-syncs, notifies or auto-corrects
 
-**For teams and fleet:**
-- [Multi-source config](docs/sources.md) — subscribe to team baselines with policy tiers (locked/required/recommended/optional)
-- [Operator](docs/operator.md) — CRD-based machine management, admission webhook, device gateway, DaemonSet node agent
-- [Team Config](docs/team-config.md) — Crossplane-powered team config distribution
+**For platform & infrastructure engineers:**
+- [Multi-source config](docs/sources.md) — publish team baselines with policy tiers (locked/required/recommended/optional)
+- [Kubernetes operator](docs/operator.md) — CRDs for MachineConfig, ConfigPolicy, DriftAlert; admission webhook; device gateway with fleet dashboard
+- [Node configuration](docs/system-configurators.md) — sysctl, kernel modules, containerd, kubelet, AppArmor, seccomp, certificates
+- [CSI driver](docs/operator.md) — OCI-based module injection into pods via volumes
+- [Crossplane integration](docs/team-config.md) — TeamConfig XR for self-service team environment distribution
+- [kubectl plugin](docs/operator.md) — `kubectl cfgd debug/exec/inject/status` for node inspection
+
+**For security & compliance:**
+- [Compliance snapshots](docs/spec/config.md#speccompliance) — continuous machine state capture with JSON/YAML export for Vanta, Drata, or custom integrations
+- [Key provisioning](docs/system-configurators.md) — declarative SSH key generation, GPG key management, and git signing configuration
+- [Encryption enforcement](docs/spec/profile.md) — per-file encryption requirements with SOPS/age backend validation
+- [Policy enforcement](docs/sources.md) — locked files, required packages, encryption constraints on target paths
+- [Drift remediation](docs/daemon.md) — daemon detects and auto-corrects configuration drift with per-module policies
+- [Fleet visibility](docs/operator.md) — device gateway aggregates compliance scores across enrolled machines
 
 ## Documentation
 
