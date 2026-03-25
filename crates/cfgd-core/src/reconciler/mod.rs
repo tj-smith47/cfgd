@@ -794,8 +794,7 @@ impl<'a> Reconciler<'a> {
                 let mut encryption_ok = true;
                 for file in &module.files {
                     if let Some(ref enc) = file.encryption {
-                        let strategy =
-                            file.strategy.unwrap_or(self.registry.default_file_strategy);
+                        let strategy = file.strategy.unwrap_or(self.registry.default_file_strategy);
                         if enc.mode == crate::config::EncryptionMode::Always
                             && matches!(
                                 strategy,

@@ -456,7 +456,7 @@ fn collect_watch_path_checks(path_str: &str) -> Vec<ComplianceCheck> {
 
     if !path.exists() {
         return vec![ComplianceCheck {
-            category: "watch-path".into(),
+            category: "watchPath".into(),
             path: Some(path.display().to_string()),
             status: ComplianceStatus::Warning,
             detail: Some("path does not exist".into()),
@@ -468,7 +468,7 @@ fn collect_watch_path_checks(path_str: &str) -> Vec<ComplianceCheck> {
         Ok(m) => m,
         Err(e) => {
             return vec![ComplianceCheck {
-                category: "watch-path".into(),
+                category: "watchPath".into(),
                 path: Some(path.display().to_string()),
                 status: ComplianceStatus::Warning,
                 detail: Some(format!("cannot stat: {}", e)),
@@ -492,7 +492,7 @@ fn collect_watch_path_checks(path_str: &str) -> Vec<ComplianceCheck> {
     };
 
     vec![ComplianceCheck {
-        category: "watch-path".into(),
+        category: "watchPath".into(),
         path: Some(path.display().to_string()),
         status: ComplianceStatus::Compliant,
         detail: Some(detail),
