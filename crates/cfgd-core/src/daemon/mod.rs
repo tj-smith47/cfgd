@@ -16,8 +16,8 @@ use tokio::net::UnixListener;
 use tokio::sync::{Mutex, mpsc};
 
 use crate::config::{
-    self, AutoApplyPolicyConfig, CfgdConfig, MergedProfile, NotifyMethod, OriginType, PolicyAction,
-    ResolvedProfile,
+    self, AutoApplyPolicyConfig, CfgdConfig, ComplianceFormat, MergedProfile, NotifyMethod,
+    OriginType, PolicyAction, ResolvedProfile,
 };
 use crate::errors::{DaemonError, Result};
 use crate::output::{Printer, Verbosity};
@@ -456,6 +456,13 @@ pub async fn run_daemon(
     let notifier = Arc::new(Notifier::new(notify_method, webhook_url));
     let state = Arc::new(Mutex::new(DaemonState::new()));
 
+    // Parse compliance snapshot config
+    let compliance_config = cfg.spec.compliance.clone();
+    let compliance_interval = compliance_config
+        .as_ref()
+        .filter(|c| c.enabled)
+        .and_then(|c| crate::parse_duration_str(&c.interval).ok());
+
     // Build sync tasks for local config and each configured source
     let config_dir = config_path
         .parent()
@@ -567,6 +574,9 @@ pub async fn run_daemon(
         printer.success(&format!("Sync interval: {}s", sync_interval.as_secs()));
         printer.key_value("autoPull", &auto_pull.to_string());
         printer.key_value("autoPush", &auto_push.to_string());
+    }
+    if let Some(interval) = compliance_interval {
+        printer.success(&format!("Compliance interval: {}s", interval.as_secs()));
     }
     printer.info("Daemon running — press Ctrl+C to stop");
     printer.newline();
@@ -729,10 +739,16 @@ pub async fn run_daemon(
     let mut sync_timer = tokio::time::interval(shortest_sync);
     let mut version_check_timer = tokio::time::interval(crate::upgrade::version_check_interval());
 
+    // Compliance snapshot timer — only created when compliance is enabled
+    let mut compliance_timer = compliance_interval.map(tokio::time::interval);
+
     // Skip the first immediate tick
     reconcile_timer.tick().await;
     sync_timer.tick().await;
     version_check_timer.tick().await;
+    if let Some(ref mut timer) = compliance_timer {
+        timer.tick().await;
+    }
 
     loop {
         tokio::select! {
@@ -881,6 +897,26 @@ pub async fn run_daemon(
                 }).await.map_err(|e| DaemonError::WatchError {
                     message: format!("version check task failed: {}", e),
                 })?;
+            }
+
+            _ = async {
+                match compliance_timer.as_mut() {
+                    Some(timer) => timer.tick().await,
+                    None => std::future::pending().await,
+                }
+            } => {
+                tracing::debug!("compliance snapshot tick");
+                if let Some(ref cc) = compliance_config {
+                    let cp = config_path.clone();
+                    let po = profile_override.clone();
+                    let hk = Arc::clone(&hooks);
+                    let cc2 = cc.clone();
+                    tokio::task::spawn_blocking(move || {
+                        handle_compliance_snapshot(&cp, po.as_deref(), &*hk, &cc2);
+                    }).await.map_err(|e| DaemonError::WatchError {
+                        message: format!("compliance snapshot task failed: {}", e),
+                    })?;
+                }
             }
 
             _ = tokio::signal::ctrl_c() => {
@@ -1770,6 +1806,173 @@ fn handle_version_check(state: &Arc<Mutex<DaemonState>>, notifier: &Arc<Notifier
         }
         Err(e) => {
             tracing::warn!("version check failed: {}", e);
+        }
+    }
+}
+
+// --- Compliance Snapshot Handler ---
+
+fn handle_compliance_snapshot(
+    config_path: &Path,
+    profile_override: Option<&str>,
+    hooks: &dyn DaemonHooks,
+    compliance_cfg: &config::ComplianceConfig,
+) {
+    tracing::info!("running compliance snapshot");
+
+    let cfg = match config::load_config(config_path) {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::error!("compliance: config load failed: {}", e);
+            return;
+        }
+    };
+
+    let config_dir = config_path
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .to_path_buf();
+    let profiles_dir = config_dir.join("profiles");
+    let profile_name = match profile_override.or(cfg.spec.profile.as_deref()) {
+        Some(p) => p,
+        None => {
+            tracing::error!("compliance: no profile configured — skipping");
+            return;
+        }
+    };
+
+    let resolved = match config::resolve_profile(profile_name, &profiles_dir) {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::error!("compliance: profile resolution failed: {}", e);
+            return;
+        }
+    };
+
+    let mut registry = hooks.build_registry(&cfg);
+    hooks.extend_registry_custom_managers(&mut registry, &resolved.merged.packages);
+
+    let source_names: Vec<String> = std::iter::once("local".to_string())
+        .chain(cfg.spec.sources.iter().map(|s| s.name.clone()))
+        .collect();
+
+    let snapshot = match crate::compliance::collect_snapshot(
+        profile_name,
+        &resolved.merged,
+        &registry,
+        &compliance_cfg.scope,
+        &source_names,
+    ) {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::error!("compliance: snapshot collection failed: {}", e);
+            return;
+        }
+    };
+
+    // Serialize for hashing and storage
+    let json = match serde_json::to_string_pretty(&snapshot) {
+        Ok(j) => j,
+        Err(e) => {
+            tracing::error!("compliance: snapshot serialization failed: {}", e);
+            return;
+        }
+    };
+
+    let hash = crate::sha256_hex(json.as_bytes());
+
+    let store = match StateStore::open_default() {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::error!("compliance: state store error: {}", e);
+            return;
+        }
+    };
+
+    // Only store if state actually changed
+    let latest_hash = match store.latest_compliance_hash() {
+        Ok(h) => h,
+        Err(e) => {
+            tracing::warn!("compliance: failed to query latest hash: {}", e);
+            None
+        }
+    };
+
+    if latest_hash.as_deref() == Some(&hash) {
+        tracing::debug!("compliance: no state change, skipping snapshot");
+        return;
+    }
+
+    // Store the new snapshot
+    if let Err(e) = store.store_compliance_snapshot(&snapshot, &hash) {
+        tracing::error!("compliance: failed to store snapshot: {}", e);
+        return;
+    }
+
+    tracing::info!(
+        compliant = snapshot.summary.compliant,
+        warning = snapshot.summary.warning,
+        violation = snapshot.summary.violation,
+        "compliance snapshot stored"
+    );
+
+    // Export if configured
+    let export_path = crate::expand_tilde(Path::new(&compliance_cfg.export.path));
+    if let Err(e) = std::fs::create_dir_all(&export_path) {
+        tracing::error!(
+            "compliance: failed to create export directory {}: {}",
+            export_path.display(),
+            e
+        );
+        return;
+    }
+
+    let ext = match compliance_cfg.export.format {
+        ComplianceFormat::Json => "json",
+        ComplianceFormat::Yaml => "yaml",
+    };
+    let filename = format!("compliance-{}.{}", snapshot.timestamp.replace(':', "-"), ext);
+    let file_path = export_path.join(&filename);
+
+    let content = match compliance_cfg.export.format {
+        ComplianceFormat::Json => json,
+        ComplianceFormat::Yaml => match serde_yaml::to_string(&snapshot) {
+            Ok(y) => y,
+            Err(e) => {
+                tracing::error!("compliance: YAML serialization failed: {}", e);
+                return;
+            }
+        },
+    };
+
+    match crate::atomic_write_str(&file_path, &content) {
+        Ok(_) => {
+            tracing::info!("compliance snapshot exported to {}", file_path.display());
+        }
+        Err(e) => {
+            tracing::error!(
+                "compliance: failed to write export file {}: {}",
+                file_path.display(),
+                e
+            );
+        }
+    }
+
+    // Prune old snapshots based on retention
+    if let Ok(retention_dur) = crate::parse_duration_str(&compliance_cfg.retention) {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default();
+        let cutoff_secs = now.as_secs().saturating_sub(retention_dur.as_secs());
+        let cutoff_str = crate::unix_secs_to_iso8601(cutoff_secs);
+        match store.prune_compliance_snapshots(&cutoff_str) {
+            Ok(deleted) if deleted > 0 => {
+                tracing::info!("compliance: pruned {} old snapshot(s)", deleted);
+            }
+            Ok(_) => {}
+            Err(e) => {
+                tracing::warn!("compliance: failed to prune snapshots: {}", e);
+            }
         }
     }
 }
@@ -3036,5 +3239,150 @@ mod tests {
         let pending = store.pending_decisions().unwrap();
         assert!(pending.is_empty());
         assert!(!excluded.contains("packages.cargo.bat"));
+    }
+
+    // --- Compliance snapshot-on-change logic ---
+
+    #[test]
+    fn compliance_snapshot_skips_when_hash_unchanged() {
+        let store = StateStore::open_in_memory().unwrap();
+        let snapshot = crate::compliance::ComplianceSnapshot {
+            timestamp: crate::utc_now_iso8601(),
+            machine: crate::compliance::MachineInfo {
+                hostname: "test".into(),
+                os: "linux".into(),
+                arch: "x86_64".into(),
+            },
+            profile: "default".into(),
+            sources: vec!["local".into()],
+            checks: vec![crate::compliance::ComplianceCheck {
+                category: "file".into(),
+                status: crate::compliance::ComplianceStatus::Compliant,
+                detail: Some("present".into()),
+                ..Default::default()
+            }],
+            summary: crate::compliance::ComplianceSummary {
+                compliant: 1,
+                warning: 0,
+                violation: 0,
+            },
+        };
+
+        let json = serde_json::to_string_pretty(&snapshot).unwrap();
+        let hash = crate::sha256_hex(json.as_bytes());
+
+        // Store first snapshot
+        store.store_compliance_snapshot(&snapshot, &hash).unwrap();
+
+        // Latest hash should match — a second store would be skipped
+        let latest = store.latest_compliance_hash().unwrap();
+        assert_eq!(latest.as_deref(), Some(hash.as_str()));
+    }
+
+    #[test]
+    fn compliance_snapshot_stores_when_hash_changes() {
+        let store = StateStore::open_in_memory().unwrap();
+
+        let snapshot1 = crate::compliance::ComplianceSnapshot {
+            timestamp: "2026-01-01T00:00:00Z".into(),
+            machine: crate::compliance::MachineInfo {
+                hostname: "test".into(),
+                os: "linux".into(),
+                arch: "x86_64".into(),
+            },
+            profile: "default".into(),
+            sources: vec!["local".into()],
+            checks: vec![crate::compliance::ComplianceCheck {
+                category: "file".into(),
+                status: crate::compliance::ComplianceStatus::Compliant,
+                ..Default::default()
+            }],
+            summary: crate::compliance::ComplianceSummary {
+                compliant: 1,
+                warning: 0,
+                violation: 0,
+            },
+        };
+
+        let json1 = serde_json::to_string_pretty(&snapshot1).unwrap();
+        let hash1 = crate::sha256_hex(json1.as_bytes());
+        store
+            .store_compliance_snapshot(&snapshot1, &hash1)
+            .unwrap();
+
+        // Different snapshot with a violation
+        let snapshot2 = crate::compliance::ComplianceSnapshot {
+            timestamp: "2026-01-02T00:00:00Z".into(),
+            machine: crate::compliance::MachineInfo {
+                hostname: "test".into(),
+                os: "linux".into(),
+                arch: "x86_64".into(),
+            },
+            profile: "default".into(),
+            sources: vec!["local".into()],
+            checks: vec![crate::compliance::ComplianceCheck {
+                category: "package".into(),
+                status: crate::compliance::ComplianceStatus::Violation,
+                ..Default::default()
+            }],
+            summary: crate::compliance::ComplianceSummary {
+                compliant: 0,
+                warning: 0,
+                violation: 1,
+            },
+        };
+
+        let json2 = serde_json::to_string_pretty(&snapshot2).unwrap();
+        let hash2 = crate::sha256_hex(json2.as_bytes());
+
+        // Hashes differ — new snapshot should be stored
+        assert_ne!(hash1, hash2);
+        let latest = store.latest_compliance_hash().unwrap();
+        assert_ne!(latest.as_deref(), Some(hash2.as_str()));
+
+        store
+            .store_compliance_snapshot(&snapshot2, &hash2)
+            .unwrap();
+        let latest = store.latest_compliance_hash().unwrap();
+        assert_eq!(latest.as_deref(), Some(hash2.as_str()));
+
+        // Both snapshots stored
+        let history = store.compliance_history(None, 10).unwrap();
+        assert_eq!(history.len(), 2);
+    }
+
+    #[test]
+    fn compliance_timer_not_created_when_disabled() {
+        // When compliance is not enabled, compliance_interval should be None
+        let config = config::ComplianceConfig {
+            enabled: false,
+            interval: "1h".into(),
+            retention: "30d".into(),
+            scope: config::ComplianceScope::default(),
+            export: config::ComplianceExport::default(),
+        };
+
+        let interval = Some(&config)
+            .filter(|c| c.enabled)
+            .and_then(|c| crate::parse_duration_str(&c.interval).ok());
+
+        assert!(interval.is_none());
+    }
+
+    #[test]
+    fn compliance_timer_created_when_enabled() {
+        let config = config::ComplianceConfig {
+            enabled: true,
+            interval: "30m".into(),
+            retention: "7d".into(),
+            scope: config::ComplianceScope::default(),
+            export: config::ComplianceExport::default(),
+        };
+
+        let interval = Some(&config)
+            .filter(|c| c.enabled)
+            .and_then(|c| crate::parse_duration_str(&c.interval).ok());
+
+        assert_eq!(interval, Some(Duration::from_secs(30 * 60)));
     }
 }
