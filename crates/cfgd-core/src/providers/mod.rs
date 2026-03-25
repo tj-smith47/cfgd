@@ -221,6 +221,14 @@ pub enum SecretAction {
         target: PathBuf,
         origin: String,
     },
+    /// Resolve a secret and inject its value as environment variables into the
+    /// managed shell env file (`~/.cfgd.env`, `~/.cfgd-env.ps1`, fish conf.d).
+    ResolveEnv {
+        provider: String,
+        reference: String,
+        envs: Vec<String>,
+        origin: String,
+    },
     Skip {
         source: String,
         reason: String,

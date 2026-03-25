@@ -302,6 +302,8 @@ impl<'a> Reconciler<'a> {
             &resolved.merged.env,
             &resolved.merged.aliases,
             &module_actions,
+            &[], // Secret envs are not yet resolved at plan time; they are
+                 // injected during the apply phase after ResolveEnv actions run.
         );
         phases.push(Phase {
             name: PhaseName::Env,
@@ -456,9 +458,19 @@ impl<'a> Reconciler<'a> {
         profile_env: &[crate::config::EnvVar],
         profile_aliases: &[crate::config::ShellAlias],
         modules: &[ResolvedModule],
+        secret_envs: &[(String, String)],
     ) -> (Vec<Action>, Vec<String>) {
-        let (merged, merged_aliases) =
+        let (mut merged, merged_aliases) =
             merge_module_env_aliases(profile_env, profile_aliases, modules);
+
+        // Append secret-backed env vars after regular envs.
+        // These are resolved secret values injected into the env file.
+        for (name, value) in secret_envs {
+            merged.push(crate::config::EnvVar {
+                name: name.clone(),
+                value: value.clone(),
+            });
+        }
 
         if merged.is_empty() && merged_aliases.is_empty() {
             return (Vec::new(), Vec::new());
@@ -557,12 +569,7 @@ impl<'a> Reconciler<'a> {
             .unwrap_or(false);
 
         for secret in &profile.secrets {
-            // File-targeting actions only apply when a target path is set.
-            // Env-only secrets (target=None, envs=Some) are handled separately
-            // during env-file injection.
-            let Some(ref target) = secret.target else {
-                continue;
-            };
+            let has_envs = secret.envs.as_ref().is_some_and(|e| !e.is_empty());
 
             // Check if it's a provider reference
             if let Some((provider_name, reference)) =
@@ -575,12 +582,34 @@ impl<'a> Reconciler<'a> {
                     .any(|p| p.name() == provider_name && p.is_available());
 
                 if available {
-                    actions.push(Action::Secret(SecretAction::Resolve {
-                        provider: provider_name.to_string(),
-                        reference: reference.to_string(),
-                        target: target.clone(),
-                        origin: "local".to_string(),
-                    }));
+                    // File-targeting action when a target path is set
+                    if let Some(ref target) = secret.target {
+                        actions.push(Action::Secret(SecretAction::Resolve {
+                            provider: provider_name.to_string(),
+                            reference: reference.to_string(),
+                            target: target.clone(),
+                            origin: "local".to_string(),
+                        }));
+                    }
+
+                    // Env injection action when envs are specified
+                    if has_envs {
+                        actions.push(Action::Secret(SecretAction::ResolveEnv {
+                            provider: provider_name.to_string(),
+                            reference: reference.to_string(),
+                            envs: secret.envs.clone().unwrap_or_default(),
+                            origin: "local".to_string(),
+                        }));
+                    }
+
+                    // If neither target nor envs, skip (shouldn't happen due to validation)
+                    if secret.target.is_none() && !has_envs {
+                        actions.push(Action::Secret(SecretAction::Skip {
+                            source: secret.source.clone(),
+                            reason: "no target or envs specified".to_string(),
+                            origin: "local".to_string(),
+                        }));
+                    }
                 } else {
                     actions.push(Action::Secret(SecretAction::Skip {
                         source: secret.source.clone(),
@@ -588,8 +617,8 @@ impl<'a> Reconciler<'a> {
                         origin: "local".to_string(),
                     }));
                 }
-            } else if has_backend {
-                // SOPS/age encrypted file
+            } else if secret.target.is_some() && has_backend {
+                // SOPS/age encrypted file — only for file targets
                 let backend_name = secret
                     .backend
                     .as_deref()
@@ -599,11 +628,19 @@ impl<'a> Reconciler<'a> {
 
                 actions.push(Action::Secret(SecretAction::Decrypt {
                     source: PathBuf::from(&secret.source),
-                    target: target.clone(),
+                    target: secret.target.clone().unwrap_or_default(),
                     backend: backend_name,
                     origin: "local".to_string(),
                 }));
-            } else {
+            } else if secret.target.is_none() && has_envs && !has_backend {
+                // Env-only secret without a provider reference — SOPS can't resolve
+                // individual values for env injection
+                actions.push(Action::Secret(SecretAction::Skip {
+                    source: secret.source.clone(),
+                    reason: "env injection requires a secret provider reference (e.g. 1password://, vault://)".to_string(),
+                    origin: "local".to_string(),
+                }));
+            } else if !has_backend {
                 actions.push(Action::Secret(SecretAction::Skip {
                     source: secret.source.clone(),
                     reason: "no secret backend available".to_string(),
@@ -857,6 +894,7 @@ impl<'a> Reconciler<'a> {
 
         let mut results = Vec::new();
         let mut action_index: usize = 0;
+        let mut secret_env_collector: Vec<(String, String)> = Vec::new();
 
         for phase in &plan.phases {
             if let Some(filter) = phase_filter
@@ -909,6 +947,7 @@ impl<'a> Reconciler<'a> {
                     apply_id,
                     context,
                     module_actions,
+                    &mut secret_env_collector,
                 );
 
                 let (desc, success, error, should_abort) = match result {
@@ -985,6 +1024,42 @@ impl<'a> Reconciler<'a> {
                     return Err(crate::errors::CfgdError::Config(ConfigError::Invalid {
                         message: format!("pre-script failed, aborting apply: {}", desc),
                     }));
+                }
+            }
+        }
+
+        // --- Secret env injection: re-generate env files with resolved secret env vars ---
+        if !secret_env_collector.is_empty() {
+            let (env_actions, _) = Self::plan_env(
+                &resolved.merged.env,
+                &resolved.merged.aliases,
+                module_actions,
+                &secret_env_collector,
+            );
+            for env_action in &env_actions {
+                if let Action::Env(ea) = env_action {
+                    match Self::apply_env_action(ea, printer) {
+                        Ok(desc) => {
+                            let changed = !desc.contains(":skipped");
+                            results.push(ActionResult {
+                                phase: PhaseName::Secrets.as_str().to_string(),
+                                description: desc,
+                                success: true,
+                                error: None,
+                                changed,
+                            });
+                        }
+                        Err(e) => {
+                            printer.error(&format!("Failed to write secret env vars: {}", e));
+                            results.push(ActionResult {
+                                phase: PhaseName::Secrets.as_str().to_string(),
+                                description: "env:write:secret-envs".to_string(),
+                                success: false,
+                                error: Some(e.to_string()),
+                                changed: false,
+                            });
+                        }
+                    }
                 }
             }
         }
@@ -1250,6 +1325,7 @@ impl<'a> Reconciler<'a> {
         apply_id: i64,
         context: ReconcileContext,
         module_actions: &[ResolvedModule],
+        secret_env_collector: &mut Vec<(String, String)>,
     ) -> Result<(String, Option<String>)> {
         match action {
             Action::System(sys) => self
@@ -1260,7 +1336,7 @@ impl<'a> Reconciler<'a> {
                 .apply_file_action(file, &resolved.merged, config_dir, printer)
                 .map(|d| (d, None)),
             Action::Secret(secret) => self
-                .apply_secret_action(secret, config_dir, printer)
+                .apply_secret_action(secret, config_dir, printer, secret_env_collector)
                 .map(|d| (d, None)),
             Action::Script(script) => {
                 self.apply_script_action(script, resolved, config_dir, printer, context)
@@ -1445,6 +1521,7 @@ impl<'a> Reconciler<'a> {
         action: &SecretAction,
         config_dir: &std::path::Path,
         printer: &Printer,
+        secret_env_collector: &mut Vec<(String, String)>,
     ) -> Result<String> {
         match action {
             SecretAction::Decrypt {
@@ -1510,6 +1587,44 @@ impl<'a> Reconciler<'a> {
                     "secret:resolve:{}:{}",
                     provider,
                     target_path.display()
+                ))
+            }
+            SecretAction::ResolveEnv {
+                provider,
+                reference,
+                envs,
+                ..
+            } => {
+                let secret_provider = self
+                    .registry
+                    .secret_providers
+                    .iter()
+                    .find(|p| p.name() == provider)
+                    .ok_or_else(|| crate::errors::SecretError::ProviderNotAvailable {
+                        provider: provider.clone(),
+                        hint: format!("no provider '{}' registered", provider),
+                    })?;
+
+                let value = secret_provider.resolve(reference)?;
+
+                // Each secret source resolves to exactly ONE value.
+                // All env names in `envs` receive the same resolved value.
+                for env_name in envs {
+                    secret_env_collector.push((env_name.clone(), value.clone()));
+                }
+
+                printer.info(&format!(
+                    "Resolved {}://{} → env [{}]",
+                    provider,
+                    reference,
+                    envs.join(", ")
+                ));
+
+                Ok(format!(
+                    "secret:resolve-env:{}:{}:[{}]",
+                    provider,
+                    reference,
+                    envs.join(",")
                 ))
             }
             SecretAction::Skip { source, reason, .. } => {
@@ -2437,6 +2552,17 @@ pub fn format_action_description(action: &Action) -> String {
                 reference,
                 target.display()
             ),
+            SecretAction::ResolveEnv {
+                provider,
+                reference,
+                envs,
+                ..
+            } => format!(
+                "secret:resolve-env:{}:{}:[{}]",
+                provider,
+                reference,
+                envs.join(",")
+            ),
             SecretAction::Skip { source, .. } => format!("secret:skip:{}", source),
         },
         Action::System(sa) => match sa {
@@ -2785,6 +2911,19 @@ pub fn format_plan_items(phase: &Phase) -> Vec<String> {
                     provider,
                     reference,
                     target.display(),
+                    provenance_suffix(origin)
+                ),
+                SecretAction::ResolveEnv {
+                    provider,
+                    reference,
+                    envs,
+                    origin,
+                    ..
+                } => format!(
+                    "resolve {}://{} → env [{}]{}",
+                    provider,
+                    reference,
+                    envs.join(", "),
                     provenance_suffix(origin)
                 ),
                 SecretAction::Skip {
@@ -4232,7 +4371,7 @@ mod tests {
 
     #[test]
     fn plan_env_empty_when_no_env() {
-        let (actions, _warnings) = Reconciler::plan_env(&[], &[], &[]);
+        let (actions, _warnings) = Reconciler::plan_env(&[], &[], &[], &[]);
         assert!(actions.is_empty());
     }
 
@@ -4260,7 +4399,7 @@ mod tests {
             dir: PathBuf::from("."),
         }];
         // plan_env merges and generates actions — the merged env should have EDITOR=nvim
-        let (actions, _warnings) = Reconciler::plan_env(&profile_env, &[], &modules);
+        let (actions, _warnings) = Reconciler::plan_env(&profile_env, &[], &modules, &[]);
         // With non-empty env, there should be at least a WriteEnvFile action
         // (since ~/.cfgd.env won't exist in test env)
         let has_write = actions
@@ -4338,7 +4477,7 @@ mod tests {
             name: "vim".into(),
             command: "nvim".into(),
         }];
-        let (actions, _warnings) = Reconciler::plan_env(&[], &aliases, &[]);
+        let (actions, _warnings) = Reconciler::plan_env(&[], &aliases, &[], &[]);
         let has_write = actions
             .iter()
             .any(|a| matches!(a, Action::Env(EnvAction::WriteEnvFile { .. })));
@@ -4369,7 +4508,7 @@ mod tests {
             depends: vec![],
             dir: PathBuf::from("."),
         }];
-        let (actions, _warnings) = Reconciler::plan_env(&[], &profile_aliases, &modules);
+        let (actions, _warnings) = Reconciler::plan_env(&[], &profile_aliases, &modules, &[]);
         // Find the WriteEnvFile action and check it has "nvim" not "vi"
         for action in &actions {
             if let Action::Env(EnvAction::WriteEnvFile { content, .. }) = action {
@@ -4395,6 +4534,138 @@ mod tests {
         }];
         let content = super::generate_env_file_content(&[], &aliases);
         assert!(content.contains("alias greet=\"echo \\\"hello world\\\"\""));
+    }
+
+    // --- Secret env injection tests ---
+
+    struct MockSecretProvider {
+        provider_name: String,
+        value: String,
+    }
+
+    impl crate::providers::SecretProvider for MockSecretProvider {
+        fn name(&self) -> &str {
+            &self.provider_name
+        }
+        fn is_available(&self) -> bool {
+            true
+        }
+        fn resolve(&self, _reference: &str) -> Result<String> {
+            Ok(self.value.clone())
+        }
+    }
+
+    #[test]
+    fn plan_secrets_envs_only_produces_resolve_env() {
+        let state = StateStore::open_in_memory().unwrap();
+        let mut registry = ProviderRegistry::new();
+        registry.secret_providers.push(Box::new(MockSecretProvider {
+            provider_name: "vault".into(),
+            value: "secret-token".into(),
+        }));
+        let reconciler = Reconciler::new(&registry, &state);
+
+        let mut profile = MergedProfile::default();
+        profile.secrets.push(crate::config::SecretSpec {
+            source: "vault://secret/data/github#token".to_string(),
+            target: None,
+            template: None,
+            backend: None,
+            envs: Some(vec!["GITHUB_TOKEN".to_string()]),
+        });
+
+        let actions = reconciler.plan_secrets(&profile);
+        // Should produce exactly one ResolveEnv action
+        assert_eq!(actions.len(), 1);
+        match &actions[0] {
+            Action::Secret(SecretAction::ResolveEnv { provider, envs, .. }) => {
+                assert_eq!(provider, "vault");
+                assert_eq!(envs, &["GITHUB_TOKEN"]);
+            }
+            other => panic!("Expected ResolveEnv, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn plan_secrets_target_and_envs_produces_both_actions() {
+        let state = StateStore::open_in_memory().unwrap();
+        let mut registry = ProviderRegistry::new();
+        registry.secret_providers.push(Box::new(MockSecretProvider {
+            provider_name: "1password".into(),
+            value: "ghp_abc123".into(),
+        }));
+        let reconciler = Reconciler::new(&registry, &state);
+
+        let mut profile = MergedProfile::default();
+        profile.secrets.push(crate::config::SecretSpec {
+            source: "1password://Vault/GitHub/Token".to_string(),
+            target: Some(PathBuf::from("/tmp/github-token")),
+            template: None,
+            backend: None,
+            envs: Some(vec!["GITHUB_TOKEN".to_string()]),
+        });
+
+        let actions = reconciler.plan_secrets(&profile);
+        // Should produce both a Resolve and a ResolveEnv action
+        assert_eq!(actions.len(), 2);
+        assert!(
+            matches!(&actions[0], Action::Secret(SecretAction::Resolve { .. })),
+            "First action should be Resolve, got {:?}",
+            &actions[0]
+        );
+        assert!(
+            matches!(&actions[1], Action::Secret(SecretAction::ResolveEnv { .. })),
+            "Second action should be ResolveEnv, got {:?}",
+            &actions[1]
+        );
+    }
+
+    #[test]
+    fn plan_env_with_secret_envs_includes_them() {
+        let secret_envs = vec![
+            ("GITHUB_TOKEN".to_string(), "ghp_abc123".to_string()),
+            ("NPM_TOKEN".to_string(), "npm_xyz789".to_string()),
+        ];
+        let (actions, _warnings) = Reconciler::plan_env(&[], &[], &[], &secret_envs);
+        // With non-empty secret envs, there should be at least a WriteEnvFile action
+        let has_write = actions
+            .iter()
+            .any(|a| matches!(a, Action::Env(EnvAction::WriteEnvFile { .. })));
+        assert!(has_write, "Expected WriteEnvFile action for secret envs");
+    }
+
+    #[test]
+    fn plan_env_secret_envs_appear_in_generated_content() {
+        let regular_env = vec![crate::config::EnvVar {
+            name: "EDITOR".into(),
+            value: "nvim".into(),
+        }];
+        let secret_envs = vec![("GITHUB_TOKEN".to_string(), "ghp_abc123".to_string())];
+        let (actions, _warnings) = Reconciler::plan_env(&regular_env, &[], &[], &secret_envs);
+
+        // Find the WriteEnvFile action and check its content
+        for action in &actions {
+            if let Action::Env(EnvAction::WriteEnvFile { content, .. }) = action {
+                assert!(
+                    content.contains("export EDITOR=\"nvim\""),
+                    "Regular env should be present"
+                );
+                assert!(
+                    content.contains("export GITHUB_TOKEN=\"ghp_abc123\""),
+                    "Secret env should be present in content: {}",
+                    content
+                );
+                // Secret envs should appear after regular envs
+                let editor_pos = content.find("EDITOR").unwrap_or(0);
+                let token_pos = content.find("GITHUB_TOKEN").unwrap_or(0);
+                assert!(
+                    token_pos > editor_pos,
+                    "Secret env should appear after regular env"
+                );
+                return;
+            }
+        }
+        panic!("Expected WriteEnvFile action");
     }
 
     // --- Shell rc conflict detection tests ---

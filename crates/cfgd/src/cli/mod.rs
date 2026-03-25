@@ -2283,6 +2283,7 @@ fn action_type_str(action: &reconciler::Action) -> &'static str {
         reconciler::Action::Secret(sa) => match sa {
             SecretAction::Decrypt { .. } => "decrypt",
             SecretAction::Resolve { .. } => "resolve",
+            SecretAction::ResolveEnv { .. } => "resolve-env",
             SecretAction::Skip { .. } => "skip",
         },
         reconciler::Action::System(sa) => match sa {
@@ -6237,6 +6238,12 @@ fn action_path(phase: &PhaseName, action: &reconciler::Action) -> String {
                 reference,
                 ..
             } => format!("{}.{}.{}", prefix, provider, reference),
+            SecretAction::ResolveEnv {
+                provider,
+                reference,
+                envs,
+                ..
+            } => format!("{}.{}.{}:[{}]", prefix, provider, reference, envs.join(",")),
             SecretAction::Skip { source, .. } => {
                 format!("{}.{}", prefix, source)
             }

@@ -1420,6 +1420,9 @@ fn action_resource_info(action: &crate::reconciler::Action) -> (String, String) 
                 ("secret".to_string(), target.display().to_string())
             }
             SecretAction::Resolve { reference, .. } => ("secret".to_string(), reference.clone()),
+            SecretAction::ResolveEnv { envs, .. } => {
+                ("secret".to_string(), format!("env:[{}]", envs.join(",")))
+            }
             SecretAction::Skip { source, .. } => ("secret".to_string(), source.clone()),
         },
         Action::System(sa) => {
