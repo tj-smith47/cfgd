@@ -54,7 +54,6 @@ pub struct ComplianceCheck {
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "lowercase")]
 pub enum ComplianceStatus {
     #[default]
     Compliant,
@@ -508,8 +507,8 @@ mod tests {
         assert!(json.contains("\"timestamp\""));
         assert!(json.contains("\"machine\""));
         assert!(json.contains("\"test-host\""));
-        assert!(json.contains("\"compliant\""));
-        assert!(json.contains("\"violation\""));
+        assert!(json.contains("\"Compliant\""));
+        assert!(json.contains("\"Violation\""));
 
         // Roundtrip
         let parsed: ComplianceSnapshot = serde_json::from_str(&json).unwrap();

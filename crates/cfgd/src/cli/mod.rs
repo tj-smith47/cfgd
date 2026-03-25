@@ -3394,9 +3394,9 @@ fn cmd_compliance_diff(cli: &Cli, printer: &Printer, id1: i64, id2: i64) -> anyh
                 "  ~ {} ({} → {})",
                 change.key, change.old_status, change.new_status
             );
-            if change.new_status == "violation" {
+            if change.new_status == "Violation" {
                 printer.error(&msg);
-            } else if change.new_status == "warning" {
+            } else if change.new_status == "Warning" {
                 printer.warning(&msg);
             } else {
                 printer.success(&msg);

@@ -740,7 +740,6 @@ impl Default for ComplianceScope {
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "lowercase")]
 pub enum ComplianceFormat {
     #[default]
     Json,
@@ -3551,7 +3550,7 @@ spec:
         - brew
         - apt
     export:
-      format: yaml
+      format: Yaml
       path: /var/lib/cfgd/compliance/
 "#;
         let config = parse_config(yaml, Path::new("cfgd.yaml")).unwrap();
@@ -3645,7 +3644,7 @@ spec:
       system: true
       secrets: true
     export:
-      format: json
+      format: Json
       path: ~/.local/share/cfgd/compliance/
 "#;
         let config = parse_config(yaml, Path::new("cfgd.yaml")).unwrap();
