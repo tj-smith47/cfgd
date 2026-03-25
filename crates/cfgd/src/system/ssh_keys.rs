@@ -177,12 +177,10 @@ impl SshKeysConfigurator {
         let output = cmd.output().map_err(CfgdError::Io)?;
 
         if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr)
-                .trim_end()
-                .to_string();
             return Err(CfgdError::Io(std::io::Error::other(format!(
                 "ssh-keygen failed for key '{}': {}",
-                spec.name, stderr
+                spec.name,
+                crate::system::stderr_string(&output)
             ))));
         }
 

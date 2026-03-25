@@ -3119,8 +3119,12 @@ struct ComplianceCheckChange {
 // Compliance command handlers
 // ---------------------------------------------------------------------------
 
-/// Build a snapshot and print summary table; optionally store in state.
-fn cmd_compliance_snapshot(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
+/// Collect a compliance snapshot, hash it, and store in the state store.
+/// Shared setup used by both `cmd_compliance_snapshot` and `cmd_compliance_export`.
+fn collect_and_store_compliance_snapshot(
+    cli: &Cli,
+    printer: &Printer,
+) -> anyhow::Result<(CfgdConfig, cfgd_core::compliance::ComplianceSnapshot)> {
     let (cfg, mut resolved) = load_config_and_profile(cli, printer)?;
     let config_dir = config_dir(cli);
     packages::resolve_manifest_packages(&mut resolved.merged.packages, &config_dir)?;
@@ -3148,6 +3152,18 @@ fn cmd_compliance_snapshot(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
         &sources,
     )?;
 
+    let state = open_state_store(cli.state_dir.as_deref())?;
+    let json = serde_json::to_string(&snapshot).map_err(|e| anyhow::anyhow!("serialize: {}", e))?;
+    let hash = cfgd_core::sha256_hex(json.as_bytes());
+    state.store_compliance_snapshot(&snapshot, &hash)?;
+
+    Ok((cfg, snapshot))
+}
+
+/// Build a snapshot and print summary table; optionally store in state.
+fn cmd_compliance_snapshot(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
+    let (_cfg, snapshot) = collect_and_store_compliance_snapshot(cli, printer)?;
+
     if printer.is_structured() {
         printer.write_structured(&ComplianceSnapshotOutput {
             snapshot: snapshot.clone(),
@@ -3156,78 +3172,28 @@ fn cmd_compliance_snapshot(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
         print_compliance_summary(&snapshot, printer);
     }
 
-    // Store snapshot in state store
-    let state = open_state_store(cli.state_dir.as_deref())?;
-    let json = serde_json::to_string(&snapshot).map_err(|e| anyhow::anyhow!("serialize: {}", e))?;
-    let hash = cfgd_core::sha256_hex(json.as_bytes());
-    state.store_compliance_snapshot(&snapshot, &hash)?;
-
     Ok(())
 }
 
 /// Export snapshot to configured export path (or stdout if -o json).
 fn cmd_compliance_export(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
-    let (cfg, mut resolved) = load_config_and_profile(cli, printer)?;
-    let config_dir = config_dir(cli);
-    packages::resolve_manifest_packages(&mut resolved.merged.packages, &config_dir)?;
-    let registry = build_registry_with_profile(&resolved.merged.packages);
-
-    let profile_name = cli
-        .profile
-        .as_deref()
-        .unwrap_or_else(|| cfg.active_profile().unwrap_or("default"));
-
-    let compliance_cfg = cfg.spec.compliance.as_ref();
-    let scope = compliance_cfg.map(|c| c.scope.clone()).unwrap_or_default();
-    let export = compliance_cfg.map(|c| c.export.clone()).unwrap_or_default();
-
-    let sources: Vec<String> = Vec::new();
-
-    let snapshot = cfgd_core::compliance::collect_snapshot(
-        profile_name,
-        &resolved.merged,
-        &registry,
-        &scope,
-        &sources,
-    )?;
-
-    // Store in state
-    let state = open_state_store(cli.state_dir.as_deref())?;
-    let json = serde_json::to_string(&snapshot).map_err(|e| anyhow::anyhow!("serialize: {}", e))?;
-    let hash = cfgd_core::sha256_hex(json.as_bytes());
-    state.store_compliance_snapshot(&snapshot, &hash)?;
+    let (cfg, snapshot) = collect_and_store_compliance_snapshot(cli, printer)?;
 
     if printer.is_structured() {
-        // -o json → write JSON to stdout
         printer.write_structured(&ComplianceSnapshotOutput {
             snapshot: snapshot.clone(),
         });
         return Ok(());
     }
 
-    // Write to export path
-    let export_dir = cfgd_core::expand_tilde(std::path::Path::new(&export.path));
-    std::fs::create_dir_all(&export_dir)?;
-    let timestamp_safe = snapshot.timestamp.replace(':', "-");
-    let filename = match export.format {
-        cfgd_core::config::ComplianceFormat::Json => {
-            format!("compliance-{}.json", timestamp_safe)
-        }
-        cfgd_core::config::ComplianceFormat::Yaml => {
-            format!("compliance-{}.yaml", timestamp_safe)
-        }
-    };
-    let export_path = export_dir.join(&filename);
+    let export = cfg
+        .spec
+        .compliance
+        .as_ref()
+        .map(|c| c.export.clone())
+        .unwrap_or_default();
 
-    let content = match export.format {
-        cfgd_core::config::ComplianceFormat::Json => serde_json::to_string_pretty(&snapshot)
-            .map_err(|e| anyhow::anyhow!("serialize: {}", e))?,
-        cfgd_core::config::ComplianceFormat::Yaml => {
-            serde_yaml::to_string(&snapshot).map_err(|e| anyhow::anyhow!("serialize: {}", e))?
-        }
-    };
-
-    cfgd_core::atomic_write_str(&export_path, &content)?;
+    let export_path = cfgd_core::compliance::export_snapshot_to_file(&snapshot, &export)?;
     printer.success(&format!(
         "Compliance snapshot written to {}",
         export_path.display()

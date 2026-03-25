@@ -1,10 +1,10 @@
-// Compliance snapshot — types, collection logic, summary computation
+// Compliance snapshot — types, collection logic, summary computation, export
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use crate::config::{ComplianceScope, MergedProfile};
+use crate::config::{ComplianceExport, ComplianceFormat, ComplianceScope, MergedProfile};
 use crate::errors::Result;
 use crate::platform::Platform;
 use crate::providers::ProviderRegistry;
@@ -108,6 +108,12 @@ pub fn collect_snapshot(
     for watch_path in &scope.watch_paths {
         checks.extend(collect_watch_path_checks(watch_path));
     }
+    for manager_name in &scope.watch_package_managers {
+        checks.extend(collect_watched_package_manager_checks(
+            manager_name,
+            registry,
+        )?);
+    }
 
     let summary = compute_summary(&checks);
 
@@ -140,6 +146,42 @@ pub fn compute_summary(checks: &[ComplianceCheck]) -> ComplianceSummary {
         warning,
         violation,
     }
+}
+
+// ---------------------------------------------------------------------------
+// Export
+// ---------------------------------------------------------------------------
+
+/// Export a compliance snapshot to a file based on the export configuration.
+///
+/// Steps: expand tilde in path, create directory, build timestamped filename,
+/// serialize to JSON or YAML, and atomically write.
+///
+/// Returns the path of the written file.
+pub fn export_snapshot_to_file(
+    snapshot: &ComplianceSnapshot,
+    export: &ComplianceExport,
+) -> Result<PathBuf> {
+    let export_dir = crate::expand_tilde(Path::new(&export.path));
+    std::fs::create_dir_all(&export_dir)?;
+
+    let timestamp_safe = snapshot.timestamp.replace(':', "-");
+    let ext = match export.format {
+        ComplianceFormat::Json => "json",
+        ComplianceFormat::Yaml => "yaml",
+    };
+    let filename = format!("compliance-{}.{}", timestamp_safe, ext);
+    let file_path = export_dir.join(&filename);
+
+    let content = match export.format {
+        ComplianceFormat::Json => serde_json::to_string_pretty(snapshot)
+            .map_err(|e| std::io::Error::other(format!("JSON serialization failed: {}", e)))?,
+        ComplianceFormat::Yaml => serde_yaml::to_string(snapshot)
+            .map_err(|e| std::io::Error::other(format!("YAML serialization failed: {}", e)))?,
+    };
+
+    crate::atomic_write_str(&file_path, &content)?;
+    Ok(file_path)
 }
 
 // ---------------------------------------------------------------------------
@@ -456,6 +498,63 @@ fn collect_watch_path_checks(path_str: &str) -> Vec<ComplianceCheck> {
         detail: Some(detail),
         ..Default::default()
     }]
+}
+
+// ---------------------------------------------------------------------------
+// Watch package manager checks
+// ---------------------------------------------------------------------------
+
+/// Enumerate all installed packages from a named package manager.
+/// Each installed package is reported as a `watchPackage` category check,
+/// providing a full inventory of what is installed (not just managed packages).
+fn collect_watched_package_manager_checks(
+    manager_name: &str,
+    registry: &ProviderRegistry,
+) -> Result<Vec<ComplianceCheck>> {
+    let pm = registry
+        .available_package_managers()
+        .into_iter()
+        .find(|pm| pm.name() == manager_name);
+
+    let Some(pm) = pm else {
+        return Ok(vec![ComplianceCheck {
+            category: "watchPackage".into(),
+            manager: Some(manager_name.to_owned()),
+            status: ComplianceStatus::Warning,
+            detail: Some(format!("package manager '{}' not available", manager_name)),
+            ..Default::default()
+        }]);
+    };
+
+    let installed = match pm.installed_packages() {
+        Ok(set) => set,
+        Err(e) => {
+            return Ok(vec![ComplianceCheck {
+                category: "watchPackage".into(),
+                manager: Some(manager_name.to_owned()),
+                status: ComplianceStatus::Warning,
+                detail: Some(format!("cannot query {}: {}", manager_name, e)),
+                ..Default::default()
+            }]);
+        }
+    };
+
+    let mut checks: Vec<ComplianceCheck> = installed
+        .into_iter()
+        .map(|pkg| ComplianceCheck {
+            category: "watchPackage".into(),
+            name: Some(pkg),
+            manager: Some(manager_name.to_owned()),
+            status: ComplianceStatus::Compliant,
+            detail: Some("installed".into()),
+            ..Default::default()
+        })
+        .collect();
+
+    // Sort for deterministic output
+    checks.sort_by(|a, b| a.name.cmp(&b.name));
+
+    Ok(checks)
 }
 
 // ---------------------------------------------------------------------------
@@ -856,5 +955,149 @@ mod tests {
         let checks = collect_watch_path_checks("/tmp/cfgd-nonexistent-watch-12345");
         assert_eq!(checks.len(), 1);
         assert_eq!(checks[0].status, ComplianceStatus::Warning);
+    }
+
+    #[test]
+    fn watch_package_manager_not_available() {
+        let registry = ProviderRegistry::new();
+        let checks = collect_watched_package_manager_checks("nonexistent-pm", &registry).unwrap();
+        assert_eq!(checks.len(), 1);
+        assert_eq!(checks[0].category, "watchPackage");
+        assert_eq!(checks[0].status, ComplianceStatus::Warning);
+        assert!(
+            checks[0]
+                .detail
+                .as_deref()
+                .unwrap()
+                .contains("not available")
+        );
+    }
+
+    #[test]
+    fn watch_package_manager_returns_installed() {
+        use crate::providers::PackageManager;
+        use std::collections::HashSet;
+
+        struct MockPm;
+        impl PackageManager for MockPm {
+            fn name(&self) -> &str {
+                "mock"
+            }
+            fn is_available(&self) -> bool {
+                true
+            }
+            fn can_bootstrap(&self) -> bool {
+                false
+            }
+            fn bootstrap(&self, _printer: &crate::output::Printer) -> Result<()> {
+                Ok(())
+            }
+            fn installed_packages(&self) -> Result<HashSet<String>> {
+                let mut set = HashSet::new();
+                set.insert("ripgrep".into());
+                set.insert("fd".into());
+                Ok(set)
+            }
+            fn install(&self, _pkgs: &[String], _printer: &crate::output::Printer) -> Result<()> {
+                Ok(())
+            }
+            fn uninstall(&self, _pkgs: &[String], _printer: &crate::output::Printer) -> Result<()> {
+                Ok(())
+            }
+            fn update(&self, _printer: &crate::output::Printer) -> Result<()> {
+                Ok(())
+            }
+            fn available_version(&self, _package: &str) -> Result<Option<String>> {
+                Ok(None)
+            }
+        }
+
+        let mut registry = ProviderRegistry::new();
+        registry.package_managers.push(Box::new(MockPm));
+
+        let checks = collect_watched_package_manager_checks("mock", &registry).unwrap();
+        assert_eq!(checks.len(), 2);
+        assert!(checks.iter().all(|c| c.category == "watchPackage"));
+        assert!(
+            checks
+                .iter()
+                .all(|c| c.status == ComplianceStatus::Compliant)
+        );
+        assert!(checks.iter().all(|c| c.manager.as_deref() == Some("mock")));
+        // Sorted by name
+        assert_eq!(checks[0].name.as_deref(), Some("fd"));
+        assert_eq!(checks[1].name.as_deref(), Some("ripgrep"));
+    }
+
+    #[test]
+    fn export_snapshot_to_file_json() {
+        let dir = tempfile::tempdir().unwrap();
+        let export = ComplianceExport {
+            format: ComplianceFormat::Json,
+            path: dir.path().display().to_string(),
+        };
+        let snapshot = ComplianceSnapshot {
+            timestamp: "2026-03-25T12:00:00Z".into(),
+            machine: MachineInfo {
+                hostname: "test".into(),
+                os: "linux".into(),
+                arch: "x86_64".into(),
+            },
+            profile: "default".into(),
+            sources: vec![],
+            checks: vec![],
+            summary: ComplianceSummary {
+                compliant: 0,
+                warning: 0,
+                violation: 0,
+            },
+        };
+
+        let path = export_snapshot_to_file(&snapshot, &export).unwrap();
+        assert!(path.exists());
+        assert!(
+            path.file_name()
+                .unwrap()
+                .to_string_lossy()
+                .ends_with(".json")
+        );
+
+        let content = std::fs::read_to_string(&path).unwrap();
+        let parsed: ComplianceSnapshot = serde_json::from_str(&content).unwrap();
+        assert_eq!(parsed.profile, "default");
+    }
+
+    #[test]
+    fn export_snapshot_to_file_yaml() {
+        let dir = tempfile::tempdir().unwrap();
+        let export = ComplianceExport {
+            format: ComplianceFormat::Yaml,
+            path: dir.path().display().to_string(),
+        };
+        let snapshot = ComplianceSnapshot {
+            timestamp: "2026-03-25T12:00:00Z".into(),
+            machine: MachineInfo {
+                hostname: "test".into(),
+                os: "linux".into(),
+                arch: "x86_64".into(),
+            },
+            profile: "default".into(),
+            sources: vec![],
+            checks: vec![],
+            summary: ComplianceSummary {
+                compliant: 0,
+                warning: 0,
+                violation: 0,
+            },
+        };
+
+        let path = export_snapshot_to_file(&snapshot, &export).unwrap();
+        assert!(path.exists());
+        assert!(
+            path.file_name()
+                .unwrap()
+                .to_string_lossy()
+                .ends_with(".yaml")
+        );
     }
 }

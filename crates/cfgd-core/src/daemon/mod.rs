@@ -16,8 +16,8 @@ use tokio::net::UnixListener;
 use tokio::sync::{Mutex, mpsc};
 
 use crate::config::{
-    self, AutoApplyPolicyConfig, CfgdConfig, ComplianceFormat, MergedProfile, NotifyMethod,
-    OriginType, PolicyAction, ResolvedProfile,
+    self, AutoApplyPolicyConfig, CfgdConfig, MergedProfile, NotifyMethod, OriginType, PolicyAction,
+    ResolvedProfile,
 };
 use crate::errors::{DaemonError, Result};
 use crate::output::{Printer, Verbosity};
@@ -1917,48 +1917,13 @@ fn handle_compliance_snapshot(
     );
 
     // Export if configured
-    let export_path = crate::expand_tilde(Path::new(&compliance_cfg.export.path));
-    if let Err(e) = std::fs::create_dir_all(&export_path) {
-        tracing::error!(
-            "compliance: failed to create export directory {}: {}",
-            export_path.display(),
-            e
-        );
-        return;
-    }
-
-    let ext = match compliance_cfg.export.format {
-        ComplianceFormat::Json => "json",
-        ComplianceFormat::Yaml => "yaml",
-    };
-    let filename = format!(
-        "compliance-{}.{}",
-        snapshot.timestamp.replace(':', "-"),
-        ext
-    );
-    let file_path = export_path.join(&filename);
-
-    let content = match compliance_cfg.export.format {
-        ComplianceFormat::Json => json,
-        ComplianceFormat::Yaml => match serde_yaml::to_string(&snapshot) {
-            Ok(y) => y,
-            Err(e) => {
-                tracing::error!("compliance: YAML serialization failed: {}", e);
-                return;
-            }
-        },
-    };
-
-    match crate::atomic_write_str(&file_path, &content) {
-        Ok(_) => {
+    match crate::compliance::export_snapshot_to_file(&snapshot, &compliance_cfg.export) {
+        Ok(file_path) => {
             tracing::info!("compliance snapshot exported to {}", file_path.display());
         }
         Err(e) => {
-            tracing::error!(
-                "compliance: failed to write export file {}: {}",
-                file_path.display(),
-                e
-            );
+            tracing::error!("compliance: failed to export snapshot: {}", e);
+            return;
         }
     }
 

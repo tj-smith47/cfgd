@@ -236,11 +236,10 @@ fn query_keys_for_email(email: &str) -> Result<Vec<KeyringEntry>> {
             return Ok(Vec::new());
         }
         Some(code) => {
-            let stderr = String::from_utf8_lossy(&output.stderr);
             return Err(CfgdError::Io(std::io::Error::other(format!(
                 "gpg --list-keys failed (exit {}): {}",
                 code,
-                stderr.trim_end()
+                crate::system::stderr_string(&output)
             ))));
         }
     }
@@ -311,6 +310,31 @@ fn parse_key_spec(entry: &serde_yaml::Value) -> Option<GpgKeySpec> {
 }
 
 // ---------------------------------------------------------------------------
+// Shared key resolution helper
+// ---------------------------------------------------------------------------
+
+/// Parse a key spec from config, query the keyring for matching keys, and
+/// filter by required capabilities. Returns `None` if the entry cannot be parsed.
+fn resolve_matching_keys(
+    entry: &serde_yaml::Value,
+) -> Result<Option<(GpgKeySpec, Vec<KeyringEntry>)>> {
+    let spec = match parse_key_spec(entry) {
+        Some(s) => s,
+        None => return Ok(None),
+    };
+
+    let keys = query_keys_for_email(&spec.email)?;
+    let req_caps = required_capabilities(&spec.usage);
+
+    let matching: Vec<KeyringEntry> = keys
+        .into_iter()
+        .filter(|k| req_caps.iter().all(|c| k.capabilities.contains(*c)))
+        .collect();
+
+    Ok(Some((spec, matching)))
+}
+
+// ---------------------------------------------------------------------------
 // SystemConfigurator implementation
 // ---------------------------------------------------------------------------
 
@@ -337,19 +361,10 @@ impl SystemConfigurator for GpgKeysConfigurator {
         let mut drifts = Vec::new();
 
         for entry in entries {
-            let spec = match parse_key_spec(entry) {
-                Some(s) => s,
+            let (spec, matching) = match resolve_matching_keys(entry)? {
+                Some(pair) => pair,
                 None => continue,
             };
-
-            let keys = query_keys_for_email(&spec.email)?;
-            let req_caps = required_capabilities(&spec.usage);
-
-            // Find a key that matches the required capabilities
-            let matching: Vec<&KeyringEntry> = keys
-                .iter()
-                .filter(|k| req_caps.iter().all(|c| k.capabilities.contains(*c)))
-                .collect();
 
             if matching.is_empty() {
                 drifts.push(SystemDrift {
@@ -387,18 +402,10 @@ impl SystemConfigurator for GpgKeysConfigurator {
         };
 
         for entry in entries {
-            let spec = match parse_key_spec(entry) {
-                Some(s) => s,
+            let (spec, matching) = match resolve_matching_keys(entry)? {
+                Some(pair) => pair,
                 None => continue,
             };
-
-            let keys = query_keys_for_email(&spec.email)?;
-            let req_caps = required_capabilities(&spec.usage);
-
-            let matching: Vec<&KeyringEntry> = keys
-                .iter()
-                .filter(|k| req_caps.iter().all(|c| k.capabilities.contains(*c)))
-                .collect();
 
             let has_valid = matching.iter().any(|k| !k.is_expired());
 
@@ -449,20 +456,20 @@ impl SystemConfigurator for GpgKeysConfigurator {
             let _ = std::fs::remove_file(&param_path);
 
             if !output.status.success() {
-                let stderr = String::from_utf8_lossy(&output.stderr);
                 return Err(CfgdError::Io(std::io::Error::other(format!(
                     "gpg --batch --gen-key failed for {} <{}>: {}",
                     spec.real_name,
                     spec.email,
-                    stderr.trim_end()
+                    crate::system::stderr_string(&output)
                 ))));
             }
 
             // Read back the fingerprint for confirmation
             let keys_after = query_keys_for_email(&spec.email)?;
+            let post_caps = required_capabilities(&spec.usage);
             let new_key = keys_after
                 .iter()
-                .filter(|k| req_caps.iter().all(|c| k.capabilities.contains(*c)))
+                .filter(|k| post_caps.iter().all(|c| k.capabilities.contains(*c)))
                 .find(|k| !k.is_expired());
 
             if let Some(k) = new_key {
