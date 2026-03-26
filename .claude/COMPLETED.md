@@ -1086,3 +1086,48 @@ Three `SystemConfigurator` implementations for Linux desktop environment prefere
 - [x] Documentation: `system-configurators.md`, `configuration.md` Linux section, `spec/profile.md` table, `ai-generate.md`, `skill.md`, `generate-design.md`
 - [x] CLAUDE.md module map updated
 - [x] Doc prose kebab-case fixes (pre-apply → `preApply`, auto-apply → `autoApply`, etc.)
+
+---
+## E2E Test Migration (KIND → k3s)
+
+Full rewrite of E2E test infrastructure from KIND to k3s cluster with ARC runners.
+
+- [x] `tests/e2e/common/helpers.sh` rewritten (KIND helpers → kubectl pod/namespace/cleanup helpers)
+- [x] `tests/e2e/setup-cluster.sh` created (idempotent pre-flight: build, push, diff-and-apply)
+- [x] All 4 workflows rewritten (`e2e-cli.yml`, `e2e-node.yml`, `e2e-operator.yml`, `e2e-full-stack.yml`) — call reusable `e2e-setup.yml`, `runs-on: arc-cfgd`
+- [x] All test scripts migrated (`exec_on_node` → `exec_in_pod`, ephemeral namespaces, run-labeling, label-scoped cleanup)
+- [x] K8s manifests: RBAC, privileged test pod template, cert-manager webhook TLS, Helm test values
+- [x] KIND files deleted, Taskfile e2e targets added
+- [x] Production manifests updated (`/db/manifests/k3s/namespaces/cfgd-system/deployment.yaml` now uses `cfgd-operator` image with gateway env vars)
+- [x] CoreDNS fix on k3s nodes (systemd-resolved routes `cluster.local` to CoreDNS 10.43.0.10)
+- [x] Reflector annotated to replicate `registry-credentials` to all namespaces
+- [x] Gateway health check fix, all test suites passing, CI green
+
+---
+## E2E CLI Test Coverage Expansion
+
+11 new CLI E2E tests for compliance-as-code features, bringing baseline from 201 to 212.
+
+- [x] CO01–CO07: compliance snapshot, JSON output, export, history, history --since, history after snapshot, diff with bad IDs
+- [x] EE01–EE02: encryption enforcement — SOPS-encrypted file succeeds, unencrypted file with encryption required fails
+- [x] GC01: git system configurator drift detection (isolated via `GIT_CONFIG_GLOBAL`)
+- [x] SE01: secret env injection with unavailable provider shows skip
+
+---
+
+## E2E Test Coverage Expansion — Compliance Checkin & Source Encryption
+
+Feature implementation + E2E tests for compliance data in device checkin and source encryption constraint enforcement.
+
+**Feature: compliance_summary in device checkin**
+- [x] Added `compliance_summary` optional field to client `CheckinRequest` in `server_client.rs`
+- [x] Added matching field to server `CheckinRequest` in `gateway/api.rs`
+- [x] Wired `compliance::collect_snapshot()` into `cmd_checkin()` when compliance is enabled
+- [x] Added DB migration 2: `ALTER TABLE devices ADD COLUMN compliance_summary TEXT`
+- [x] Updated `register_device()` and `update_checkin()` to accept and store compliance_summary
+- [x] Updated `get_device()` and `list_devices_paginated()` to read compliance_summary column
+- [x] Compliance summary exposed in `GET /api/v1/devices/:id` response
+
+**E2E tests:**
+- [x] T36 (run-server-tests.sh): Checkin with compliance enabled, verify `GET /devices/:id` returns `complianceSummary` with `compliant`/`warning`/`violation` fields
+- [x] EC01–EC04 (run-exhaustive-tests.sh section 46): Source encryption constraints — source add, compliant apply succeeds, non-compliant apply fails, compliance JSON output includes checks

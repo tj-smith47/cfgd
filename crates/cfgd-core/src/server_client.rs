@@ -2,6 +2,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+use crate::compliance::ComplianceSummary;
 use crate::errors::{CfgdError, Result};
 use crate::output::Printer;
 use crate::providers::SystemDrift;
@@ -21,6 +22,8 @@ struct CheckinRequest {
     os: String,
     arch: String,
     config_hash: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    compliance_summary: Option<ComplianceSummary>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -192,8 +195,13 @@ impl ServerClient {
         ))
     }
 
-    /// Check in with the device gateway, reporting current config hash.
-    pub fn checkin(&self, config_hash: &str, printer: &Printer) -> Result<CheckinResponse> {
+    /// Check in with the device gateway, reporting current config hash and optional compliance summary.
+    pub fn checkin(
+        &self,
+        config_hash: &str,
+        compliance_summary: Option<ComplianceSummary>,
+        printer: &Printer,
+    ) -> Result<CheckinResponse> {
         let hostname = hostname::get()
             .map(|h| h.to_string_lossy().to_string())
             .unwrap_or_else(|_| "unknown".to_string());
@@ -204,6 +212,7 @@ impl ServerClient {
             os: std::env::consts::OS.to_string(),
             arch: std::env::consts::ARCH.to_string(),
             config_hash: config_hash.to_string(),
+            compliance_summary,
         };
 
         let body_json = serde_json::to_string(&body).map_err(|e| {
@@ -514,6 +523,41 @@ mod tests {
         assert_eq!(client.base_url, "https://cfgd.example.com");
         assert_eq!(client.api_key.as_deref(), Some("cfgd_dev_abc123"));
         assert_eq!(client.device_id, "dev-1");
+    }
+
+    #[test]
+    fn checkin_request_with_compliance_summary() {
+        let req = CheckinRequest {
+            device_id: "dev-1".into(),
+            hostname: "ws-1".into(),
+            os: "linux".into(),
+            arch: "x86_64".into(),
+            config_hash: "abc123".into(),
+            compliance_summary: Some(ComplianceSummary {
+                compliant: 10,
+                warning: 2,
+                violation: 1,
+            }),
+        };
+        let json = serde_json::to_string(&req).unwrap();
+        assert!(json.contains("\"complianceSummary\""));
+        assert!(json.contains("\"compliant\":10"));
+        assert!(json.contains("\"warning\":2"));
+        assert!(json.contains("\"violation\":1"));
+    }
+
+    #[test]
+    fn checkin_request_without_compliance_summary() {
+        let req = CheckinRequest {
+            device_id: "dev-1".into(),
+            hostname: "ws-1".into(),
+            os: "linux".into(),
+            arch: "x86_64".into(),
+            config_hash: "abc123".into(),
+            compliance_summary: None,
+        };
+        let json = serde_json::to_string(&req).unwrap();
+        assert!(!json.contains("complianceSummary"));
     }
 
     #[test]

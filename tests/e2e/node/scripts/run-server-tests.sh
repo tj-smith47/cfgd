@@ -178,5 +178,63 @@ else
     fail_test "T35" "Timestamp did not change between checkins"
 fi
 
+# =================================================================
+# T36: Compliance data in checkin
+# =================================================================
+begin_test "T36: Compliance data included in checkin"
+
+# Create a config with compliance enabled
+exec_in_pod bash -c 'cat > /etc/cfgd/e2e-compliance-checkin.yaml << '"'"'INNEREOF'"'"'
+apiVersion: cfgd.io/v1alpha1
+kind: Config
+metadata:
+  name: e2e-compliance-checkin
+spec:
+  profile: k8s-worker-minimal
+  compliance:
+    enabled: true
+    scope:
+      files: true
+      packages: false
+      system: true
+      secrets: false
+INNEREOF'
+
+# Copy profiles for this config (reuse existing profiles)
+exec_in_pod bash -c 'ls /etc/cfgd/profiles/*.yaml > /dev/null 2>&1' || \
+    cp_to_pod "$FIXTURES/profiles/k8s-worker-minimal.yaml" /etc/cfgd/profiles/k8s-worker-minimal.yaml 2>/dev/null || true
+
+COMPLIANCE_DEVICE_ID="e2e-compliance-$(date +%s)"
+
+RC=0
+OUTPUT=$(exec_in_pod cfgd \
+    --config /etc/cfgd/e2e-compliance-checkin.yaml \
+    checkin \
+    --server-url "$SERVER_URL" \
+    --device-id "$COMPLIANCE_DEVICE_ID" \
+    --no-color 2>&1) || RC=$?
+
+echo "  Compliance checkin output:"
+echo "$OUTPUT" | head -15 | sed 's/^/    /'
+
+# Verify the device now has complianceSummary in its API response
+sleep 1
+DEVICE_RESP=$(exec_in_pod curl -sf "${SERVER_URL}/api/v1/devices/${COMPLIANCE_DEVICE_ID}" 2>/dev/null || echo "{}")
+echo "  Device API response (first 400 chars):"
+echo "$DEVICE_RESP" | head -c 400 | sed 's/^/    /'
+echo ""
+
+if [ "$RC" -eq 0 ] \
+    && assert_contains "$DEVICE_RESP" "complianceSummary" \
+    && assert_contains "$DEVICE_RESP" "compliant" \
+    && assert_contains "$DEVICE_RESP" "violation"; then
+    pass_test "T36"
+else
+    fail_test "T36" "Compliance summary not found in device API response (exit: $RC)"
+fi
+
+# Cleanup the compliance config
+exec_in_pod rm -f /etc/cfgd/e2e-compliance-checkin.yaml 2>/dev/null || true
+
 # --- Summary ---
 print_summary "Device Gateway Integration Tests"

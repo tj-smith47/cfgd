@@ -68,6 +68,8 @@ pub struct CheckinRequest {
     pub os: String,
     pub arch: String,
     pub config_hash: String,
+    #[serde(default)]
+    pub compliance_summary: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Serialize)]
@@ -410,6 +412,7 @@ async fn enroll(
             &req.os,
             &req.arch,
             "pending-enrollment",
+            None,
         )?;
 
         // Generate a permanent device API key
@@ -754,6 +757,7 @@ async fn verify_enrollment(
         &challenge.os,
         &challenge.arch,
         "pending-enrollment",
+        None,
     )?;
 
     let device_api_key = generate_token("cfgd_dev");
@@ -1030,7 +1034,11 @@ async fn checkin(
 
     match &existing {
         Ok(_) => {
-            db.update_checkin(&req.device_id, &req.config_hash)?;
+            db.update_checkin(
+                &req.device_id,
+                &req.config_hash,
+                req.compliance_summary.as_ref(),
+            )?;
         }
         Err(_) => {
             db.register_device(
@@ -1039,6 +1047,7 @@ async fn checkin(
                 &req.os,
                 &req.arch,
                 &req.config_hash,
+                req.compliance_summary.as_ref(),
             )?;
         }
     }
@@ -1913,7 +1922,7 @@ mod tests {
     fn device_credential_create_and_validate() {
         let db = test_db();
         // Register device first (FK constraint)
-        db.register_device("dev-1", "ws-1", "linux", "x86_64", "hash1")
+        db.register_device("dev-1", "ws-1", "linux", "x86_64", "hash1", None)
             .expect("register failed");
 
         let api_key = generate_token("cfgd_dev");
@@ -1936,7 +1945,7 @@ mod tests {
     #[test]
     fn device_credential_revoke_blocks_validation() {
         let db = test_db();
-        db.register_device("dev-1", "ws-1", "linux", "x86_64", "hash1")
+        db.register_device("dev-1", "ws-1", "linux", "x86_64", "hash1", None)
             .expect("register failed");
 
         let api_key = generate_token("cfgd_dev");
@@ -1953,7 +1962,7 @@ mod tests {
     #[test]
     fn checkin_config_changed_detection() {
         let db = test_db();
-        db.register_device("dev-1", "ws-1", "linux", "x86_64", "hash-old")
+        db.register_device("dev-1", "ws-1", "linux", "x86_64", "hash-old", None)
             .expect("register failed");
 
         // Set a desired config so config_changed is meaningful
@@ -1973,11 +1982,11 @@ mod tests {
     #[test]
     fn fleet_status_aggregation_via_db() {
         let db = test_db();
-        db.register_device("d1", "host1", "linux", "x86_64", "h1")
+        db.register_device("d1", "host1", "linux", "x86_64", "h1", None)
             .expect("register");
-        db.register_device("d2", "host2", "linux", "x86_64", "h2")
+        db.register_device("d2", "host2", "linux", "x86_64", "h2", None)
             .expect("register");
-        db.register_device("d3", "host3", "darwin", "aarch64", "h3")
+        db.register_device("d3", "host3", "darwin", "aarch64", "h3", None)
             .expect("register");
 
         // Make d2 drifted
@@ -2089,7 +2098,7 @@ mod tests {
     #[test]
     fn drift_event_records_and_lists() {
         let db = test_db();
-        db.register_device("dev-1", "ws-1", "linux", "x86_64", "h1")
+        db.register_device("dev-1", "ws-1", "linux", "x86_64", "h1", None)
             .expect("register");
 
         let details = serde_json::to_string(&vec![DriftDetailInput {
@@ -2116,7 +2125,7 @@ mod tests {
     #[test]
     fn checkin_event_records_history() {
         let db = test_db();
-        db.register_device("dev-1", "ws-1", "linux", "x86_64", "h1")
+        db.register_device("dev-1", "ws-1", "linux", "x86_64", "h1", None)
             .expect("register");
 
         db.record_checkin("dev-1", "hash-a", false)
@@ -2136,7 +2145,7 @@ mod tests {
     #[test]
     fn fleet_events_include_checkins_and_drift() {
         let db = test_db();
-        db.register_device("dev-1", "ws-1", "linux", "x86_64", "h1")
+        db.register_device("dev-1", "ws-1", "linux", "x86_64", "h1", None)
             .expect("register");
 
         db.record_checkin("dev-1", "hash-a", false)
@@ -2155,7 +2164,7 @@ mod tests {
     #[test]
     fn device_config_set_and_retrieve() {
         let db = test_db();
-        db.register_device("dev-1", "ws-1", "linux", "x86_64", "h1")
+        db.register_device("dev-1", "ws-1", "linux", "x86_64", "h1", None)
             .expect("register");
 
         let config = serde_json::json!({

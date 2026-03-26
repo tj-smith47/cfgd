@@ -7125,7 +7125,7 @@ fn cmd_checkin(
     api_key: Option<&str>,
     device_id: Option<&str>,
 ) -> anyhow::Result<()> {
-    let (_cfg, resolved) = load_config_and_profile(cli, printer)?;
+    let (cfg, resolved) = load_config_and_profile(cli, printer)?;
     let registry = build_registry_with_profile(&resolved.merged.packages);
 
     // Try stored device credential first, fall back to explicit args
@@ -7158,9 +7158,41 @@ fn cmd_checkin(
         .map_err(|e| anyhow::anyhow!("failed to serialize system config: {}", e))?;
     let config_hash = cfgd_core::sha256_hex(config_yaml.as_bytes());
 
+    // Collect compliance summary if enabled
+    let compliance_summary = if let Some(ref compliance_cfg) = cfg.spec.compliance {
+        if compliance_cfg.enabled {
+            let profile_name = cfg.active_profile().unwrap_or("unknown");
+            match cfgd_core::compliance::collect_snapshot(
+                profile_name,
+                &resolved.merged,
+                &registry,
+                &compliance_cfg.scope,
+                &[],
+            ) {
+                Ok(snapshot) => {
+                    printer.info(&format!(
+                        "Compliance: {} compliant, {} warning, {} violation",
+                        snapshot.summary.compliant,
+                        snapshot.summary.warning,
+                        snapshot.summary.violation,
+                    ));
+                    Some(snapshot.summary)
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "Failed to collect compliance snapshot for checkin");
+                    None
+                }
+            }
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
     // Check in
     let resp = client
-        .checkin(&config_hash, printer)
+        .checkin(&config_hash, compliance_summary, printer)
         .map_err(|e| anyhow::anyhow!("{}", e))?;
     printer.key_value("Server status", &resp.status);
     printer.key_value("Config changed", &resp.config_changed.to_string());

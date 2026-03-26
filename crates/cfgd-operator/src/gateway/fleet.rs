@@ -50,9 +50,9 @@ mod tests {
     #[test]
     fn fleet_status_counts() {
         let db = ServerDb::open(":memory:").expect("open db");
-        db.register_device("d1", "host1", "linux", "x86_64", "h1")
+        db.register_device("d1", "host1", "linux", "x86_64", "h1", None)
             .expect("register");
-        db.register_device("d2", "host2", "linux", "x86_64", "h2")
+        db.register_device("d2", "host2", "linux", "x86_64", "h2", None)
             .expect("register");
         db.record_drift_event("d2", "something drifted")
             .expect("drift");

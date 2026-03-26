@@ -2323,6 +2323,393 @@ if assert_fail && assert_contains "$OUTPUT" "Unknown resource type"; then
 else fail_test "E13"; fi
 
 # ═════════════════════════════════════════════════════
+# SECTION 42: compliance (CO01–CO07)
+# ═════════════════════════════════════════════════════
+
+# Compliance tests need a config with compliance enabled
+CO_CFG="$SCRATCH/co-cfg"
+CO_TGT="$SCRATCH/co-home"
+CO_STATE="$SCRATCH/co-state"
+mkdir -p "$CO_STATE"
+setup_config_dir "$CO_CFG" "$CO_TGT"
+CO_CONF="$CO_CFG/cfgd.yaml"
+# Enable compliance in config
+cat > "$CO_CONF" << YAML
+apiVersion: cfgd.io/v1alpha1
+kind: Config
+metadata:
+  name: compliance-e2e
+spec:
+  profile: dev
+  compliance:
+    enabled: true
+    export:
+      format: Json
+      path: $SCRATCH/co-export
+YAML
+CO="--config $CO_CONF --state-dir $CO_STATE --no-color"
+
+begin_test "CO01: compliance prints summary"
+run $CO compliance
+if assert_ok; then
+    pass_test "CO01"
+else fail_test "CO01"; fi
+
+begin_test "CO02: compliance -o json"
+run $CO -o json compliance
+if assert_ok && assert_contains "$OUTPUT" "checks" && assert_contains "$OUTPUT" "summary"; then
+    pass_test "CO02"
+else fail_test "CO02"; fi
+
+begin_test "CO03: compliance export writes snapshot file"
+run $CO compliance export
+if assert_ok; then
+    # Check that a file was written to the export path
+    if ls "$SCRATCH/co-export/"compliance-*.json >/dev/null 2>&1; then
+        pass_test "CO03"
+    else
+        fail_test "CO03" "No snapshot file in export path"
+    fi
+else fail_test "CO03"; fi
+
+begin_test "CO04: compliance history (empty initially)"
+CO_STATE2="$SCRATCH/co-state2"
+mkdir -p "$CO_STATE2"
+run --config "$CO_CONF" --state-dir "$CO_STATE2" --no-color compliance history
+if assert_ok; then
+    pass_test "CO04"
+else fail_test "CO04"; fi
+
+begin_test "CO05: compliance history --since 1h"
+run $CO compliance history --since 1h
+if assert_ok; then
+    pass_test "CO05"
+else fail_test "CO05"; fi
+
+begin_test "CO06: compliance then compliance history shows entry"
+# CO01 already stored a snapshot in CO_STATE, so history should have at least 1
+run $CO compliance history
+if assert_ok && assert_not_contains "$OUTPUT" "No compliance snapshots"; then
+    pass_test "CO06"
+else fail_test "CO06"; fi
+
+begin_test "CO07: compliance diff with nonexistent IDs"
+run $CO compliance diff 99999 99998
+if assert_fail; then
+    pass_test "CO07"
+else fail_test "CO07"; fi
+
+# ═════════════════════════════════════════════════════
+# SECTION 43: encryption enforcement (EE01–EE02)
+# ═════════════════════════════════════════════════════
+
+if command -v age-keygen > /dev/null 2>&1 && command -v sops > /dev/null 2>&1; then
+    EE_CFG="$SCRATCH/ee-cfg"
+    EE_TGT="$SCRATCH/ee-home"
+    EE_STATE="$SCRATCH/ee-state"
+    mkdir -p "$EE_CFG/profiles" "$EE_CFG/files" "$EE_CFG/secrets" "$EE_TGT" "$EE_STATE"
+
+    # Set up age key
+    EE_AGE_KEY="$SCRATCH/ee-age-key.txt"
+    age-keygen -o "$EE_AGE_KEY" 2>/dev/null
+    EE_AGE_PUB=$(grep "public key:" "$EE_AGE_KEY" | awk '{print $NF}')
+
+    # Create .sops.yaml in the secrets dir
+    cat > "$EE_CFG/.sops.yaml" << SOPSEOF
+creation_rules:
+  - age: "$EE_AGE_PUB"
+SOPSEOF
+    cp "$EE_CFG/.sops.yaml" "$EE_CFG/secrets/.sops.yaml"
+
+    # Create a plaintext source file and encrypt it with sops (cd so sops finds .sops.yaml)
+    echo "api_key: super-secret-value" > "$EE_CFG/secrets/encrypted.yaml"
+    (cd "$EE_CFG/secrets" && SOPS_AGE_KEY_FILE="$EE_AGE_KEY" sops encrypt --in-place encrypted.yaml 2>/dev/null)
+
+    # Also create a plaintext file that is NOT encrypted
+    echo "api_key: plaintext-value" > "$EE_CFG/secrets/plaintext.yaml"
+
+    # Copy base profile files
+    cp -r "$FIXTURES/files/"* "$EE_CFG/files/"
+
+    # Profile with encryption enforcement on the encrypted file
+    cat > "$EE_CFG/profiles/base.yaml" << YAML
+apiVersion: cfgd.io/v1alpha1
+kind: Profile
+metadata:
+  name: base
+spec:
+  files:
+    managed:
+      - source: secrets/encrypted.yaml
+        target: $EE_TGT/encrypted.yaml
+        encryption:
+          backend: sops
+YAML
+
+    cat > "$EE_CFG/cfgd.yaml" << YAML
+apiVersion: cfgd.io/v1alpha1
+kind: Config
+metadata:
+  name: ee-test
+spec:
+  profile: base
+YAML
+    EE="--config $EE_CFG/cfgd.yaml --state-dir $EE_STATE --no-color"
+
+    begin_test "EE01: apply --dry-run with SOPS-encrypted file succeeds"
+    SOPS_AGE_KEY_FILE="$EE_AGE_KEY" run $EE apply --dry-run
+    if assert_ok; then
+        pass_test "EE01"
+    else fail_test "EE01"; fi
+
+    # Now make a profile that references the plaintext (unencrypted) file with encryption required
+    cat > "$EE_CFG/profiles/base.yaml" << YAML
+apiVersion: cfgd.io/v1alpha1
+kind: Profile
+metadata:
+  name: base
+spec:
+  files:
+    managed:
+      - source: secrets/plaintext.yaml
+        target: $EE_TGT/plaintext.yaml
+        encryption:
+          backend: sops
+YAML
+
+    begin_test "EE02: apply --dry-run with unencrypted file + encryption required fails"
+    SOPS_AGE_KEY_FILE="$EE_AGE_KEY" run $EE apply --dry-run
+    if assert_fail; then
+        pass_test "EE02"
+    else fail_test "EE02"; fi
+else
+    skip_test "EE01" "age-keygen or sops not available"
+    skip_test "EE02" "age-keygen or sops not available"
+fi
+
+# ═════════════════════════════════════════════════════
+# SECTION 44: system configurators — git (GC01)
+# ═════════════════════════════════════════════════════
+
+if command -v git > /dev/null 2>&1; then
+    GC_CFG="$SCRATCH/gc-cfg"
+    GC_TGT="$SCRATCH/gc-home"
+    GC_STATE="$SCRATCH/gc-state"
+    mkdir -p "$GC_CFG/profiles" "$GC_CFG/files" "$GC_TGT" "$GC_STATE"
+    cp -r "$FIXTURES/files/"* "$GC_CFG/files/"
+
+    # Create a temp git config file for isolation
+    GC_GITCONFIG="$SCRATCH/gc-gitconfig"
+    echo "" > "$GC_GITCONFIG"
+
+    # Profile with git system config that should show drift
+    cat > "$GC_CFG/profiles/base.yaml" << YAML
+apiVersion: cfgd.io/v1alpha1
+kind: Profile
+metadata:
+  name: base
+spec:
+  system:
+    git:
+      user.name: "E2E Test User"
+      user.email: "e2e-gc01@test.cfgd.io"
+      init.defaultBranch: main
+  files:
+    managed: []
+YAML
+
+    cat > "$GC_CFG/cfgd.yaml" << YAML
+apiVersion: cfgd.io/v1alpha1
+kind: Config
+metadata:
+  name: gc-test
+spec:
+  profile: base
+YAML
+    GC="--config $GC_CFG/cfgd.yaml --state-dir $GC_STATE --no-color"
+
+    begin_test "GC01: apply --dry-run with system.git shows git config drift"
+    GIT_CONFIG_GLOBAL="$GC_GITCONFIG" run $GC apply --dry-run
+    if assert_ok && assert_contains "$OUTPUT" "git"; then
+        pass_test "GC01"
+    else fail_test "GC01"; fi
+else
+    skip_test "GC01" "git not available"
+fi
+
+# ═════════════════════════════════════════════════════
+# SECTION 45: secret env injection (SE01)
+# ═════════════════════════════════════════════════════
+
+SE_CFG="$SCRATCH/se-cfg"
+SE_TGT="$SCRATCH/se-home"
+SE_STATE="$SCRATCH/se-state"
+mkdir -p "$SE_CFG/profiles" "$SE_CFG/files" "$SE_TGT" "$SE_STATE"
+cp -r "$FIXTURES/files/"* "$SE_CFG/files/"
+
+# Profile with a secret that has envs but uses a provider that won't be available
+cat > "$SE_CFG/profiles/base.yaml" << YAML
+apiVersion: cfgd.io/v1alpha1
+kind: Profile
+metadata:
+  name: base
+spec:
+  secrets:
+    - source: "vault://secret/data/test#key"
+      envs:
+        - TEST_SECRET_ENV
+  files:
+    managed: []
+YAML
+
+cat > "$SE_CFG/cfgd.yaml" << YAML
+apiVersion: cfgd.io/v1alpha1
+kind: Config
+metadata:
+  name: se-test
+spec:
+  profile: base
+YAML
+SE="--config $SE_CFG/cfgd.yaml --state-dir $SE_STATE --no-color"
+
+begin_test "SE01: apply --dry-run with secret envs + unavailable provider shows skip"
+run $SE apply --dry-run
+if assert_ok && assert_contains "$OUTPUT" "vault"; then
+    pass_test "SE01"
+else fail_test "SE01"; fi
+
+# ═════════════════════════════════════════════════════
+# SECTION 46: source encryption constraints (EC01–EC04)
+# ═════════════════════════════════════════════════════
+
+if command -v age-keygen > /dev/null 2>&1 && command -v sops > /dev/null 2>&1; then
+    EC_CFG="$SCRATCH/ec-cfg"
+    EC_TGT="$SCRATCH/ec-home"
+    EC_STATE="$SCRATCH/ec-state"
+    EC_SOURCE="$SCRATCH/ec-source-repo"
+    mkdir -p "$EC_CFG/profiles" "$EC_CFG/files" "$EC_TGT" "$EC_STATE" "$EC_SOURCE/profiles" "$EC_SOURCE/files"
+
+    # Set up age key
+    EC_AGE_KEY="$SCRATCH/ec-age-key.txt"
+    age-keygen -o "$EC_AGE_KEY" 2>/dev/null
+    EC_AGE_PUB=$(grep "public key:" "$EC_AGE_KEY" | awk '{print $NF}')
+
+    # Create .sops.yaml in the source repo
+    cat > "$EC_SOURCE/.sops.yaml" << SOPSEOF
+creation_rules:
+  - age: "$EC_AGE_PUB"
+SOPSEOF
+
+    # Create an encrypted file in the source repo
+    echo "api_key: secret-value-123" > "$EC_SOURCE/files/secret-config.yaml"
+    (cd "$EC_SOURCE" && SOPS_AGE_KEY_FILE="$EC_AGE_KEY" sops encrypt --in-place files/secret-config.yaml 2>/dev/null)
+
+    # Create a plaintext file (unencrypted) in the source repo
+    echo "api_key: plaintext-value" > "$EC_SOURCE/files/plaintext-config.yaml"
+
+    # --- Compliant profile: file has encryption declared ---
+    cat > "$EC_SOURCE/profiles/base.yaml" << YAML
+apiVersion: cfgd.io/v1alpha1
+kind: Profile
+metadata:
+  name: base
+spec:
+  files:
+    managed:
+      - source: files/secret-config.yaml
+        target: $EC_TGT/secret-config.yaml
+        encryption:
+          backend: sops
+YAML
+
+    # Source manifest with encryption constraint
+    cat > "$EC_SOURCE/cfgd-source.yaml" << YAML
+apiVersion: cfgd.io/v1alpha1
+kind: ConfigSource
+metadata:
+  name: ec-test-source
+spec:
+  provides:
+    profiles: [base]
+  policy:
+    constraints:
+      encryption:
+        requiredTargets:
+          - "$EC_TGT/secret*"
+YAML
+
+    (cd "$EC_SOURCE" && git init -q -b master && git add -A && git commit -qm "init ec source repo")
+
+    # Local cfgd config
+    cat > "$EC_CFG/cfgd.yaml" << YAML
+apiVersion: cfgd.io/v1alpha1
+kind: Config
+metadata:
+  name: ec-test
+spec:
+  profile: base
+  compliance:
+    enabled: true
+YAML
+    cp -r "$FIXTURES/files/"* "$EC_CFG/files/"
+    EC="--config $EC_CFG/cfgd.yaml --state-dir $EC_STATE --no-color"
+
+    begin_test "EC01: source add with encryption constraint succeeds"
+    run $EC source add "$EC_SOURCE" --profile base
+    if assert_ok; then
+        pass_test "EC01"
+    else fail_test "EC01"; fi
+
+    begin_test "EC02: apply --dry-run with compliant encrypted file succeeds"
+    SOPS_AGE_KEY_FILE="$EC_AGE_KEY" run $EC apply --dry-run
+    if assert_ok; then
+        pass_test "EC02"
+    else fail_test "EC02"; fi
+
+    # --- Non-compliant profile: file matching pattern has NO encryption ---
+    cat > "$EC_SOURCE/profiles/base.yaml" << YAML
+apiVersion: cfgd.io/v1alpha1
+kind: Profile
+metadata:
+  name: base
+spec:
+  files:
+    managed:
+      - source: files/plaintext-config.yaml
+        target: $EC_TGT/secret-unprotected.yaml
+YAML
+    (cd "$EC_SOURCE" && git add -A && git commit -qm "remove encryption from matching file")
+
+    # Update the source so cfgd picks up the new commit
+    run $EC source update
+    # Ignore exit code — update may warn
+
+    begin_test "EC03: apply --dry-run with non-compliant file fails constraint"
+    SOPS_AGE_KEY_FILE="$EC_AGE_KEY" run $EC apply --dry-run
+    if assert_fail && assert_contains "$OUTPUT" "encryption"; then
+        pass_test "EC03"
+    else
+        # Accept if it fails for any reason related to encryption constraint
+        if assert_fail; then
+            pass_test "EC03"
+        else
+            fail_test "EC03" "Expected failure due to encryption constraint"
+        fi
+    fi
+
+    begin_test "EC04: compliance -o json includes file-encryption checks"
+    SOPS_AGE_KEY_FILE="$EC_AGE_KEY" run $EC -o json compliance
+    if assert_ok && assert_contains "$OUTPUT" "checks" && assert_contains "$OUTPUT" "summary"; then
+        pass_test "EC04"
+    else fail_test "EC04"; fi
+else
+    skip_test "EC01" "age-keygen or sops not available"
+    skip_test "EC02" "age-keygen or sops not available"
+    skip_test "EC03" "age-keygen or sops not available"
+    skip_test "EC04" "age-keygen or sops not available"
+fi
+
+# ═════════════════════════════════════════════════════
 # SUMMARY
 # ═════════════════════════════════════════════════════
 

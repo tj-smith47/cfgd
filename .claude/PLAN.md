@@ -1,64 +1,22 @@
 # cfgd — Remaining Work
 
-Single source of truth for all incomplete work. Completed work is in [COMPLETED.md](COMPLETED.md). Design detail in [kubernetes-first-class.md](kubernetes-first-class.md).
+Single source of truth for all incomplete work. Completed work is in [COMPLETED.md](COMPLETED.md). Design detail in [kubernetes-first-class.md](kubernetes-first-class.md). Deferred future work in [future/](future/).
 
-## E2E test coverage expansion
+## Deep-dive completion audit
 
-The CLI E2E test plan is at [e2e-cli-test-plan.md](e2e-cli-test-plan.md) (moved from `tests/e2e/cli/`). Current baseline: 201 tests passing. The plan now includes 11 new test cases (CO01–CO07, EE01–EE02, GC01, SE01) for compliance-as-code features — total target: 212.
+**Next session task:** Independently and thoroughly validate that each plan listed below is actually done in full — not just "looks done." Deep-dive each one: read the plan's checklist items, then verify the implementation exists, is wired up from entry points, has tests, and has no gaps or bugs. Even if a plan's checkboxes are all checked in COMPLETED.md, verify against the actual codebase.
 
-Beyond CLI, E2E coverage is also needed for:
+Plans to audit (all under `.claude/plans/` unless noted):
 
-- [ ] Implement the 11 new CLI E2E tests from [e2e-cli-test-plan.md](e2e-cli-test-plan.md) (compliance, encryption enforcement, git configurator, secret envs)
-- [ ] Node E2E: compliance snapshot via daemon — start daemon with `compliance.enabled: true`, verify snapshot file written to export path after interval
-- [ ] Operator E2E: compliance data in device checkin — enrolled device runs `cfgd compliance`, verify gateway receives snapshot summary in checkin payload
-- [ ] Full-stack E2E: end-to-end compliance flow — ConfigSource with `constraints.encryption.requiredTargets`, device subscribes, apply enforces encryption, compliance snapshot reflects policy compliance
+1. **E2E Test Improvements** — `2026-03-25-e2e-test-improvements.md` — 7 tasks, 50+ subtasks. Verify every test ID exists in the actual test scripts and runs.
+2. **E2E Test Reorganization** — `2026-03-25-e2e-test-reorganization.md` — 25+ domain files target. Verify if sharding happened or if tests are still monolithic.
+3. **E2E K3s Migration** — `2026-03-23-e2e-k3s-migration.md` — 8 tasks. Verify setup-cluster.sh, helpers.sh, manifests, and CI workflows all reflect k3s (not KIND).
+4. **Windows Plan 1 (Foundations)** — `2026-03-22-windows-support-plan-1-foundations.md` — 10 tasks. Verify platform abstractions in lib.rs, daemon IPC, script execution, self-upgrade, CI job, release targets.
+5. **Windows Plan 2 (Features)** — `2026-03-22-windows-support-plan-2-features.md` — 10 tasks. Verify winget/chocolatey/scoop impls, PowerShell env, registry/service configurators, Windows daemon, docs, schema.
+6. **Helm Chart Fixes** — `2026-03-23-helm-chart-fixes.md` — 11 tasks. Verify CRD schema changes, PackageRef typing, chart values, validation logic.
+7. **Linux Desktop Configurators** — `2026-03-23-linux-desktop-configurators.md` — 3 tasks. Verify gsettings, kdeConfig, xfconf SystemConfigurator impls exist with tests.
+8. **Module Controller** — `kubernetes-first-class.md` section 3.5. Verify if implemented or still deferred (expected: deferred until OCI pipeline).
+9. **OCI Artifact Signing** — referenced in COMPLETED.md. Verify if sigstore-rs integrated or still deferred (expected: deferred to Phase C).
+10. **Phase 9 (Multi-source)** — `sources/` and `composition/` modules. Verify if multi-source orchestration works end-to-end or is still prep-only.
 
-**Fixture notes:** Encryption tests need a SOPS-encrypted fixture (reuse existing age keypair). Git configurator tests use `GIT_CONFIG_GLOBAL` for isolation. SSH/GPG key generation excluded from E2E (side effects unsafe in shared CI — covered by unit tests with tempdir).
-
----
-
-## E2E test migration (KIND → k3s) — verification and CI
-
-The E2E test code migration is complete (all scripts, workflows, helpers, manifests rewritten). What remains is fixing infrastructure issues discovered during local verification, running all test suites to green, and pushing to CI.
-
-**What's done:**
-- `tests/e2e/common/helpers.sh` rewritten (KIND helpers → kubectl pod/namespace/cleanup helpers)
-- `tests/e2e/setup-cluster.sh` created (idempotent pre-flight: build, push, diff-and-apply)
-- All 4 workflows rewritten (`e2e-cli.yml`, `e2e-node.yml`, `e2e-operator.yml`, `e2e-full-stack.yml`) — call reusable `e2e-setup.yml`, `runs-on: arc-cfgd`
-- All test scripts migrated (`exec_on_node` → `exec_in_pod`, ephemeral namespaces, run-labeling, label-scoped cleanup)
-- K8s manifests: RBAC, privileged test pod template, cert-manager webhook TLS, Helm test values
-- KIND files deleted, Taskfile e2e targets added
-- Production manifests updated (`/db/manifests/k3s/namespaces/cfgd-system/deployment.yaml` now uses `cfgd-operator` image with gateway env vars)
-- CoreDNS fix on k3s nodes (systemd-resolved routes `cluster.local` to CoreDNS 10.43.0.10)
-- Reflector annotated to replicate `registry-credentials` to all namespaces
-
-**What remains:**
-
-- [ ] Fix cfgd-server (gateway) health check 500 on the k3s cluster. The new `cfgd-operator:latest` image starts controllers + gateway but returns 500 on `/api/v1/devices`. The old `cfgd-server` binary (different image) works fine. Likely a DB schema mismatch — the gateway SQLite DB at `/data/cfgd-server.db` may have been created by the old binary's schema. The cfgd-operator may apply different migrations. Investigate the logs, possibly delete the PVC to start fresh, or run migrations.
-- [ ] Run node server tests (T30-T35) — blocked on gateway fix above
-- [ ] Run node drift tests (T40-T50)
-- [ ] Run operator tests (T01-T18)
-- [ ] Run full-stack tests (T01-T16)
-- [ ] Verify test counts match baselines: CLI 201, binary 11, helm 6, server 6, drift 7, operator 18, full-stack 16
-- [ ] Run `setup-cluster.sh` twice to verify idempotency
-- [ ] Push to master and verify all 4 E2E workflows pass on ARC runners
-- [ ] Verify README badges are green
-
-**Constraints:**
-- `REGISTRY` env var must be set (no hardcoded registry in code). Source `.env` for local runs.
-- `CFGD_DEPLOY_MANIFESTS` env var (also in `.env`) tells setup-cluster.sh to use rollout restarts instead of applying E2E manifests directly (ArgoCD manages production deployments).
-- Production manifests are in `/db/manifests/k3s/namespaces/cfgd-system/` — push to git, ArgoCD syncs. Never `kubectl set image` on ArgoCD-managed resources.
-- All cluster-scoped test resources must have `cfgd.io/e2e-run` labels. Cleanup uses label selectors, never `--all`.
-- Registry credentials replicated to all namespaces via Reflector (source: `jarvispro/registry-credentials`).
-- k3s nodes resolve `cluster.local` via CoreDNS (systemd-resolved drop-in at `/etc/systemd/resolved.conf.d/cluster-local.conf` on all 4 nodes).
-- Commit messages end with `#minor` for the final squash/push.
-
-**Tests already passing:** CLI (201/201), binary (11/11), helm (6/6).
-
----
-
-## Upstream Kubernetes work
-
-Deferred until after adoption. CRD versioning (v1alpha1→v1beta1 conversion webhook, dual-version serving, migration runbook) and 3 upstream KEPs (native moduleRef pod spec field, cfgdModule volume type, kubectl debug --module). Full plan in [plans/upstream-kubernetes.md](plans/upstream-kubernetes.md).
-
-- [ ] CRD versioning and upstream KEPs (see plan for details and trigger criteria)
+For each plan: read the plan file, then grep/read the actual implementation files it references. Report: fully done, partially done (with specific gaps), or not started.

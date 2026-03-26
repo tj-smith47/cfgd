@@ -45,6 +45,7 @@ pub struct Device {
     pub config_hash: String,
     pub status: DeviceStatus,
     pub desired_config: Option<serde_json::Value>,
+    pub compliance_summary: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -206,6 +207,8 @@ const MIGRATIONS: &[&str] = &[
     // so the ALTER TABLE will produce a "duplicate column" error — which
     // run_migrations tolerates for ADD COLUMN migrations.
     "ALTER TABLE devices ADD COLUMN desired_config TEXT;",
+    // Migration 2: add compliance_summary column to store last-reported compliance data.
+    "ALTER TABLE devices ADD COLUMN compliance_summary TEXT;",
 ];
 
 pub struct ServerDb {
@@ -298,18 +301,24 @@ impl ServerDb {
         os: &str,
         arch: &str,
         config_hash: &str,
+        compliance_summary: Option<&serde_json::Value>,
     ) -> Result<Device, GatewayError> {
         let now = cfgd_core::utc_now_iso8601();
+        let compliance_str = compliance_summary
+            .map(serde_json::to_string)
+            .transpose()
+            .map_err(|e| GatewayError::Internal(format!("failed to serialize compliance: {e}")))?;
         self.conn.execute(
-            "INSERT INTO devices (id, hostname, os, arch, last_checkin, config_hash, status)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+            "INSERT INTO devices (id, hostname, os, arch, last_checkin, config_hash, status, compliance_summary)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
              ON CONFLICT(id) DO UPDATE SET
                 hostname = excluded.hostname,
                 os = excluded.os,
                 arch = excluded.arch,
                 last_checkin = excluded.last_checkin,
                 config_hash = excluded.config_hash,
-                status = excluded.status",
+                status = excluded.status,
+                compliance_summary = excluded.compliance_summary",
             params![
                 id,
                 hostname,
@@ -317,17 +326,27 @@ impl ServerDb {
                 arch,
                 &now,
                 config_hash,
-                DeviceStatus::Healthy.as_str()
+                DeviceStatus::Healthy.as_str(),
+                compliance_str,
             ],
         )?;
         self.get_device(id)
     }
 
-    pub fn update_checkin(&self, id: &str, config_hash: &str) -> Result<(), GatewayError> {
+    pub fn update_checkin(
+        &self,
+        id: &str,
+        config_hash: &str,
+        compliance_summary: Option<&serde_json::Value>,
+    ) -> Result<(), GatewayError> {
         let now = cfgd_core::utc_now_iso8601();
+        let compliance_str = compliance_summary
+            .map(serde_json::to_string)
+            .transpose()
+            .map_err(|e| GatewayError::Internal(format!("failed to serialize compliance: {e}")))?;
         let rows = self.conn.execute(
-            "UPDATE devices SET last_checkin = ?1, config_hash = ?2, status = ?3 WHERE id = ?4",
-            params![&now, config_hash, DeviceStatus::Healthy.as_str(), id],
+            "UPDATE devices SET last_checkin = ?1, config_hash = ?2, status = ?3, compliance_summary = ?4 WHERE id = ?5",
+            params![&now, config_hash, DeviceStatus::Healthy.as_str(), compliance_str, id],
         )?;
         if rows == 0 {
             return Err(GatewayError::NotFound(format!("device not found: {id}")));
@@ -338,11 +357,14 @@ impl ServerDb {
     pub fn get_device(&self, id: &str) -> Result<Device, GatewayError> {
         self.conn
             .query_row(
-                "SELECT id, hostname, os, arch, last_checkin, config_hash, status, desired_config FROM devices WHERE id = ?1",
+                "SELECT id, hostname, os, arch, last_checkin, config_hash, status, desired_config, compliance_summary FROM devices WHERE id = ?1",
                 params![id],
                 |row| {
                     let config_str: Option<String> = row.get(7)?;
                     let desired_config = config_str
+                        .and_then(|s| serde_json::from_str(&s).ok());
+                    let compliance_str: Option<String> = row.get(8)?;
+                    let compliance_summary = compliance_str
                         .and_then(|s| serde_json::from_str(&s).ok());
                     let status_str: String = row.get(6)?;
                     Ok(Device {
@@ -354,6 +376,7 @@ impl ServerDb {
                         config_hash: row.get(5)?,
                         status: DeviceStatus::parse(&status_str),
                         desired_config,
+                        compliance_summary,
                     })
                 },
             )
@@ -392,12 +415,14 @@ impl ServerDb {
         offset: u32,
     ) -> Result<Vec<Device>, GatewayError> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, hostname, os, arch, last_checkin, config_hash, status, desired_config FROM devices ORDER BY hostname LIMIT ?1 OFFSET ?2",
+            "SELECT id, hostname, os, arch, last_checkin, config_hash, status, desired_config, compliance_summary FROM devices ORDER BY hostname LIMIT ?1 OFFSET ?2",
         )?;
         let devices = stmt
             .query_map(params![limit, offset], |row| {
                 let config_str: Option<String> = row.get(7)?;
                 let desired_config = config_str.and_then(|s| serde_json::from_str(&s).ok());
+                let compliance_str: Option<String> = row.get(8)?;
+                let compliance_summary = compliance_str.and_then(|s| serde_json::from_str(&s).ok());
                 let status_str: String = row.get(6)?;
                 Ok(Device {
                     id: row.get(0)?,
@@ -408,6 +433,7 @@ impl ServerDb {
                     config_hash: row.get(5)?,
                     status: DeviceStatus::parse(&status_str),
                     desired_config,
+                    compliance_summary,
                 })
             })?
             .collect::<Result<Vec<_>, _>>()?;
@@ -968,7 +994,7 @@ mod tests {
     fn register_and_get_device() {
         let db = test_db();
         let device = db
-            .register_device("dev-1", "workstation-1", "linux", "x86_64", "abc123")
+            .register_device("dev-1", "workstation-1", "linux", "x86_64", "abc123", None)
             .expect("register failed");
         assert_eq!(device.id, "dev-1");
         assert_eq!(device.hostname, "workstation-1");
@@ -989,9 +1015,10 @@ mod tests {
     #[test]
     fn update_checkin() {
         let db = test_db();
-        db.register_device("dev-1", "ws-1", "linux", "x86_64", "hash1")
+        db.register_device("dev-1", "ws-1", "linux", "x86_64", "hash1", None)
             .expect("register failed");
-        db.update_checkin("dev-1", "hash2").expect("update failed");
+        db.update_checkin("dev-1", "hash2", None)
+            .expect("update failed");
         let device = db.get_device("dev-1").expect("get failed");
         assert_eq!(device.config_hash, "hash2");
     }
@@ -999,14 +1026,14 @@ mod tests {
     #[test]
     fn update_checkin_not_found() {
         let db = test_db();
-        let result = db.update_checkin("nonexistent", "hash");
+        let result = db.update_checkin("nonexistent", "hash", None);
         assert!(result.is_err());
     }
 
     #[test]
     fn drift_events() {
         let db = test_db();
-        db.register_device("dev-1", "ws-1", "linux", "x86_64", "hash1")
+        db.register_device("dev-1", "ws-1", "linux", "x86_64", "hash1", None)
             .expect("register failed");
         let event = db
             .record_drift_event("dev-1", "package vim drifted")
@@ -1031,10 +1058,10 @@ mod tests {
     #[test]
     fn register_device_upsert() {
         let db = test_db();
-        db.register_device("dev-1", "ws-1", "linux", "x86_64", "hash1")
+        db.register_device("dev-1", "ws-1", "linux", "x86_64", "hash1", None)
             .expect("first register");
         let device = db
-            .register_device("dev-1", "ws-1-renamed", "linux", "x86_64", "hash2")
+            .register_device("dev-1", "ws-1-renamed", "linux", "x86_64", "hash2", None)
             .expect("second register");
         assert_eq!(device.hostname, "ws-1-renamed");
         assert_eq!(device.config_hash, "hash2");
@@ -1046,7 +1073,7 @@ mod tests {
     #[test]
     fn set_and_get_device_config() {
         let db = test_db();
-        db.register_device("dev-1", "ws-1", "linux", "x86_64", "hash1")
+        db.register_device("dev-1", "ws-1", "linux", "x86_64", "hash1", None)
             .expect("register failed");
 
         let config = serde_json::json!({"packages": ["vim", "git"]});
@@ -1068,7 +1095,7 @@ mod tests {
     #[test]
     fn record_and_list_checkin_events() {
         let db = test_db();
-        db.register_device("dev-1", "ws-1", "linux", "x86_64", "hash1")
+        db.register_device("dev-1", "ws-1", "linux", "x86_64", "hash1", None)
             .expect("register failed");
 
         let event = db
@@ -1098,7 +1125,7 @@ mod tests {
     #[test]
     fn fleet_events_combined() {
         let db = test_db();
-        db.register_device("dev-1", "ws-1", "linux", "x86_64", "hash1")
+        db.register_device("dev-1", "ws-1", "linux", "x86_64", "hash1", None)
             .expect("register failed");
 
         db.record_checkin("dev-1", "hash1", false)
@@ -1129,7 +1156,7 @@ mod tests {
     #[test]
     fn force_reconcile() {
         let db = test_db();
-        db.register_device("dev-1", "ws-1", "linux", "x86_64", "hash1")
+        db.register_device("dev-1", "ws-1", "linux", "x86_64", "hash1", None)
             .expect("register failed");
 
         db.set_force_reconcile("dev-1")
@@ -1144,6 +1171,40 @@ mod tests {
         let db = test_db();
         let result = db.set_force_reconcile("nonexistent");
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn compliance_summary_stored_on_register() {
+        let db = test_db();
+        let summary = serde_json::json!({"compliant": 5, "warning": 1, "violation": 0});
+        let device = db
+            .register_device("dev-c", "ws-c", "linux", "x86_64", "hash1", Some(&summary))
+            .expect("register failed");
+        assert_eq!(device.compliance_summary, Some(summary));
+    }
+
+    #[test]
+    fn compliance_summary_stored_on_checkin_update() {
+        let db = test_db();
+        db.register_device("dev-c2", "ws-c2", "linux", "x86_64", "hash1", None)
+            .expect("register failed");
+
+        let summary = serde_json::json!({"compliant": 10, "warning": 0, "violation": 2});
+        db.update_checkin("dev-c2", "hash2", Some(&summary))
+            .expect("update failed");
+
+        let device = db.get_device("dev-c2").expect("get failed");
+        assert_eq!(device.config_hash, "hash2");
+        assert_eq!(device.compliance_summary, Some(summary));
+    }
+
+    #[test]
+    fn compliance_summary_null_when_not_provided() {
+        let db = test_db();
+        let device = db
+            .register_device("dev-c3", "ws-c3", "linux", "x86_64", "hash1", None)
+            .expect("register failed");
+        assert!(device.compliance_summary.is_none());
     }
 
     // --- Bootstrap Token Tests ---

@@ -271,8 +271,88 @@ else
     fi
 fi
 
+# =================================================================
+# T51: Daemon compliance snapshot export
+# =================================================================
+begin_test "T51: Daemon compliance snapshot export"
+
+COMPLIANCE_EXPORT_DIR="/tmp/cfgd-e2e-compliance-export"
+
+# Create config with compliance enabled and short interval
+exec_in_pod bash -c "cat > /etc/cfgd/e2e-compliance-cfgd.yaml << 'INNEREOF'
+apiVersion: cfgd.io/v1alpha1
+kind: Config
+metadata:
+  name: e2e-compliance-test
+spec:
+  profile: k8s-worker-minimal
+  compliance:
+    enabled: true
+    interval: 3s
+    retention: 1h
+    export:
+      format: Json
+      path: EXPORT_DIR
+  daemon:
+    enabled: true
+    reconcile:
+      interval: 60s
+      autoApply: false
+INNEREOF"
+
+# Substitute the export path (can't use variable inside INNEREOF heredoc)
+exec_in_pod sed -i "s|EXPORT_DIR|$COMPLIANCE_EXPORT_DIR|" /etc/cfgd/e2e-compliance-cfgd.yaml
+
+# Clean any prior export files
+exec_in_pod rm -rf "$COMPLIANCE_EXPORT_DIR" 2>/dev/null || true
+exec_in_pod mkdir -p "$COMPLIANCE_EXPORT_DIR"
+
+# Start daemon in background
+exec_in_pod bash -c 'sysctl -w fs.inotify.max_user_instances=512 fs.inotify.max_user_watches=524288 > /dev/null 2>&1; nohup cfgd --config /etc/cfgd/e2e-compliance-cfgd.yaml daemon --no-color > /tmp/compliance-daemon.log 2>&1 &'
+DAEMON_PID=$(exec_in_pod bash -c 'pgrep -f "cfgd.*e2e-compliance-cfgd" | head -1 || echo ""')
+echo "  Daemon PID: $DAEMON_PID"
+
+if [ -z "$DAEMON_PID" ]; then
+    fail_test "T51" "Daemon did not start"
+else
+    # Wait for compliance snapshot file to appear (interval is 3s, allow up to 20s)
+    echo "  Waiting up to 20s for compliance snapshot file..."
+    FOUND=false
+    for i in $(seq 1 20); do
+        FILE_COUNT=$(exec_in_pod bash -c "ls $COMPLIANCE_EXPORT_DIR/compliance-*.json 2>/dev/null | wc -l" | tr -d '[:space:]')
+        if [ "$FILE_COUNT" -gt 0 ]; then
+            echo "  Snapshot file found after ${i}s"
+            FOUND=true
+            break
+        fi
+        sleep 1
+    done
+
+    # Kill daemon
+    exec_in_pod kill "$DAEMON_PID" > /dev/null 2>&1 || true
+    sleep 1
+
+    if $FOUND; then
+        # Validate the snapshot is valid JSON with expected keys
+        SNAPSHOT_FILE=$(exec_in_pod bash -c "ls $COMPLIANCE_EXPORT_DIR/compliance-*.json | head -1")
+        CONTENT=$(exec_in_pod cat "$SNAPSHOT_FILE" 2>/dev/null || echo "")
+
+        if assert_contains "$CONTENT" "checks" && assert_contains "$CONTENT" "summary"; then
+            pass_test "T51"
+        else
+            fail_test "T51" "Snapshot file missing expected keys"
+            echo "  Content (first 5 lines):"
+            echo "$CONTENT" | head -5 | sed 's/^/    /'
+        fi
+    else
+        fail_test "T51" "No compliance snapshot file after 20s"
+        echo "  Daemon logs (last 15 lines):"
+        exec_in_pod cat /tmp/compliance-daemon.log 2>/dev/null | tail -15 | sed 's/^/    /' || true
+    fi
+fi
+
 # --- Cleanup ---
-exec_in_pod rm -rf /tmp/cfgd-e2e-seccomp /tmp/cfgd-e2e-pki /tmp/daemon.log 2>/dev/null || true
+exec_in_pod rm -rf /tmp/cfgd-e2e-seccomp /tmp/cfgd-e2e-pki /tmp/daemon.log /tmp/compliance-daemon.log "$COMPLIANCE_EXPORT_DIR" 2>/dev/null || true
 exec_in_pod rm -f /host-etc/sysctl.d/99-cfgd.conf /host-etc/modules-load.d/cfgd.conf 2>/dev/null || true
 
 # --- Summary ---
