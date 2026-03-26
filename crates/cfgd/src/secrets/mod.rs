@@ -8,14 +8,20 @@ use cfgd_core::{command_available, default_config_dir};
 
 /// Extract trimmed stderr from a command output as a single owned String.
 fn stderr_string(output: &std::process::Output) -> String {
-    let lossy = String::from_utf8_lossy(&output.stderr);
-    lossy.trim().to_string()
+    cfgd_core::stderr_lossy_trimmed(output)
 }
 
 /// Extract trimmed stdout from a command output as a single owned String.
 fn stdout_string(output: &std::process::Output) -> String {
-    let lossy = String::from_utf8_lossy(&output.stdout);
-    lossy.trim().to_string()
+    cfgd_core::stdout_lossy_trimmed(output)
+}
+
+/// Extract the age public key from a key file's `# public key: age1...` comment.
+fn extract_age_recipient(content: &str) -> Option<String> {
+    content.lines().find_map(|line| {
+        line.strip_prefix("# public key: ")
+            .map(|pk| pk.trim().to_string())
+    })
 }
 
 // --- SOPS Backend (primary) ---
@@ -155,17 +161,12 @@ impl AgeBackend {
                 path: self.key_path.clone(),
             })?;
 
-        // age key files have a comment line with the public key: "# public key: age1..."
-        for line in content.lines() {
-            if let Some(pubkey) = line.strip_prefix("# public key: ") {
-                return Ok(pubkey.trim().to_string());
+        extract_age_recipient(&content).ok_or_else(|| {
+            SecretError::AgeKeyNotFound {
+                path: self.key_path.clone(),
             }
-        }
-
-        Err(SecretError::AgeKeyNotFound {
-            path: self.key_path.clone(),
-        }
-        .into())
+            .into()
+        })
     }
 }
 
@@ -291,7 +292,7 @@ impl SecretBackend for AgeBackend {
                 message: format!("failed to read edited file: {}", e),
             })?;
 
-        std::fs::write(path, &edited).map_err(|e| SecretError::EncryptionFailed {
+        cfgd_core::atomic_write_str(path, &edited).map_err(|e| SecretError::EncryptionFailed {
             path: path.to_path_buf(),
             message: format!("failed to write back: {}", e),
         })?;
@@ -613,17 +614,11 @@ pub fn init_age_key(config_dir: &Path) -> Result<PathBuf> {
                 message: format!("failed to read age key: {}", e),
             })?;
 
-        let mut recipient = String::new();
-        for line in key_content.lines() {
-            if let Some(pubkey) = line.strip_prefix("# public key: ") {
-                recipient = pubkey.trim().to_string();
-                break;
-            }
-        }
+        let recipient = extract_age_recipient(&key_content).unwrap_or_default();
 
         if !recipient.is_empty() {
             let sops_config = format!("creation_rules:\n  - age: '{}'\n", recipient);
-            std::fs::write(&sops_config_path, sops_config).map_err(|e| {
+            cfgd_core::atomic_write_str(&sops_config_path, &sops_config).map_err(|e| {
                 SecretError::EncryptionFailed {
                     path: sops_config_path,
                     message: format!("failed to write .sops.yaml: {}", e),

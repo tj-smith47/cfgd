@@ -140,6 +140,8 @@ Current shared items (keep this list updated when adding new ones):
 - `split_add_remove(values)` — split `&[String]` into (adds, removes); values starting with `-` are removals (strip prefix); powers unified `--thing` CLI flags
 - `parse_env_var(input)` — parse `KEY=VALUE` string into `EnvVar`; used by all CLI env flag parsing
 - `parse_alias(input)` — parse `name=command` string into `ShellAlias`; used by all CLI alias flag parsing
+- `stdout_lossy_trimmed(output)` — extract trimmed stdout from `Command` output as lossy UTF-8 string; use instead of inline `String::from_utf8_lossy` patterns
+- `stderr_lossy_trimmed(output)` — extract trimmed stderr from `Command` output as lossy UTF-8 string; use instead of inline `String::from_utf8_lossy` patterns
 - `sha256_hex(data)` — compute SHA256 hash of `&[u8]` and return as lowercase hex string; use instead of inline `Sha256::digest` patterns
 - `atomic_write(target, content)` — atomic file write via temp+rename; returns SHA256 hash; use instead of `fs::write()` in ALL production code
 - `atomic_write_str(target, content)` — string variant of `atomic_write`

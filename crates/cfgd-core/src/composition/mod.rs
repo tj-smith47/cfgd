@@ -607,15 +607,23 @@ fn policy_items_to_spec(items: &PolicyItems) -> ProfileSpec {
     }
 }
 
-fn merge_packages(target: &mut PackagesSpec, source: &PackagesSpec) {
+/// Merge packages from `source` into `target`, unioning lists and applying
+/// later-wins for scalar fields (file paths, remotes, custom manager commands).
+pub fn merge_packages(target: &mut PackagesSpec, source: &PackagesSpec) {
     if let Some(ref brew) = source.brew {
         let target_brew = target.brew.get_or_insert_with(Default::default);
+        if brew.file.is_some() {
+            target_brew.file = brew.file.clone();
+        }
         union_extend(&mut target_brew.taps, &brew.taps);
         union_extend(&mut target_brew.formulae, &brew.formulae);
         union_extend(&mut target_brew.casks, &brew.casks);
     }
     if let Some(ref apt) = source.apt {
         let target_apt = target.apt.get_or_insert_with(Default::default);
+        if apt.file.is_some() {
+            target_apt.file = apt.file.clone();
+        }
         union_extend(&mut target_apt.packages, &apt.packages);
     }
     if let Some(ref cargo) = source.cargo {
@@ -627,6 +635,9 @@ fn merge_packages(target: &mut PackagesSpec, source: &PackagesSpec) {
     }
     if let Some(ref npm) = source.npm {
         let target_npm = target.npm.get_or_insert_with(Default::default);
+        if npm.file.is_some() {
+            target_npm.file = npm.file.clone();
+        }
         union_extend(&mut target_npm.global, &npm.global);
     }
     union_extend(&mut target.pipx, &source.pipx);
@@ -653,6 +664,21 @@ fn merge_packages(target: &mut PackagesSpec, source: &PackagesSpec) {
     union_extend(&mut target.winget, &source.winget);
     union_extend(&mut target.chocolatey, &source.chocolatey);
     union_extend(&mut target.scoop, &source.scoop);
+    // Custom managers: merge by name, union packages
+    for custom in &source.custom {
+        if let Some(existing) = target.custom.iter_mut().find(|c| c.name == custom.name) {
+            existing.check = custom.check.clone();
+            existing.list_installed = custom.list_installed.clone();
+            existing.install = custom.install.clone();
+            existing.uninstall = custom.uninstall.clone();
+            if custom.update.is_some() {
+                existing.update = custom.update.clone();
+            }
+            union_extend(&mut existing.packages, &custom.packages);
+        } else {
+            target.custom.push(custom.clone());
+        }
+    }
 }
 
 /// Filter rejected items from recommended policy items.

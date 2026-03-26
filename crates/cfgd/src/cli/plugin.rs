@@ -89,8 +89,7 @@ pub fn plugin_main() -> anyhow::Result<()> {
         .init();
 
     if std::env::var_os("NO_COLOR").is_some() {
-        console::set_colors_enabled(false);
-        console::set_colors_enabled_stderr(false);
+        Printer::disable_colors();
     }
 
     let printer = Printer::with_format(

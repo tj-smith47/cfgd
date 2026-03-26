@@ -182,7 +182,7 @@ fn download_to_file(url: &str, dest: &Path) -> std::result::Result<(), UpgradeEr
             message: format!("read error: {}", e),
         })?;
 
-    fs::write(dest, &bytes).map_err(|e| UpgradeError::DownloadFailed {
+    crate::atomic_write(dest, &bytes).map_err(|e| UpgradeError::DownloadFailed {
         message: format!("write to {}: {}", dest.display(), e),
     })?;
 
@@ -509,7 +509,7 @@ fn write_version_cache(cache: &VersionCache) -> std::result::Result<(), UpgradeE
         message: format!("serialize cache: {}", e),
     })?;
 
-    fs::write(&path, json).map_err(|e| UpgradeError::InstallFailed {
+    crate::atomic_write_str(&path, &json).map_err(|e| UpgradeError::InstallFailed {
         message: format!("write cache: {}", e),
     })?;
 

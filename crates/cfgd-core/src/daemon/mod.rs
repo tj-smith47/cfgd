@@ -2814,7 +2814,7 @@ pub fn git_pull_sync(repo_path: &Path) -> std::result::Result<bool, String> {
 
 // --- Helpers ---
 
-pub fn parse_duration_or_default(s: &str) -> Duration {
+pub(crate) fn parse_duration_or_default(s: &str) -> Duration {
     crate::parse_duration_str(s).unwrap_or(Duration::from_secs(DEFAULT_RECONCILE_SECS))
 }
 

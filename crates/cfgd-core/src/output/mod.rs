@@ -511,6 +511,13 @@ impl Printer {
         Self::with_format(verbosity, theme_config, OutputFormat::Table)
     }
 
+    /// Disable color output globally. Wraps the `console` crate's color toggle
+    /// so that no other module needs to depend on `console` directly.
+    pub fn disable_colors() {
+        console::set_colors_enabled(false);
+        console::set_colors_enabled_stderr(false);
+    }
+
     pub fn with_format(
         verbosity: Verbosity,
         theme_config: Option<&ThemeConfig>,

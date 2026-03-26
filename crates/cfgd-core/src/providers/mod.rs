@@ -304,53 +304,88 @@ pub fn parse_secret_reference(source: &str) -> Option<(&str, &str)> {
     }
 }
 
+/// Configurable mock for `PackageManager`. Available to all test modules within cfgd-core.
+#[cfg(test)]
+pub(crate) struct StubPackageManager {
+    pub name: String,
+    pub available: bool,
+    pub installed: HashSet<String>,
+    pub versions: std::collections::HashMap<String, String>,
+}
+
+#[cfg(test)]
+impl StubPackageManager {
+    pub fn new(name: &str) -> Self {
+        Self {
+            name: name.to_string(),
+            available: true,
+            installed: HashSet::new(),
+            versions: std::collections::HashMap::new(),
+        }
+    }
+
+    pub fn unavailable(mut self) -> Self {
+        self.available = false;
+        self
+    }
+
+    pub fn with_installed(mut self, pkgs: &[&str]) -> Self {
+        for p in pkgs {
+            self.installed.insert((*p).to_string());
+        }
+        self
+    }
+
+    pub fn with_package(mut self, pkg: &str, ver: &str) -> Self {
+        self.versions.insert(pkg.to_string(), ver.to_string());
+        self
+    }
+}
+
+#[cfg(test)]
+impl PackageManager for StubPackageManager {
+    fn name(&self) -> &str {
+        &self.name
+    }
+    fn is_available(&self) -> bool {
+        self.available
+    }
+    fn can_bootstrap(&self) -> bool {
+        false
+    }
+    fn bootstrap(&self, _printer: &Printer) -> Result<()> {
+        Ok(())
+    }
+    fn installed_packages(&self) -> Result<HashSet<String>> {
+        Ok(self.installed.clone())
+    }
+    fn install(&self, _packages: &[String], _printer: &Printer) -> Result<()> {
+        Ok(())
+    }
+    fn uninstall(&self, _packages: &[String], _printer: &Printer) -> Result<()> {
+        Ok(())
+    }
+    fn update(&self, _printer: &Printer) -> Result<()> {
+        Ok(())
+    }
+    fn available_version(&self, package: &str) -> Result<Option<String>> {
+        Ok(self.versions.get(package).cloned())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    struct MockPackageManager {
-        available: bool,
-    }
-
-    impl PackageManager for MockPackageManager {
-        fn name(&self) -> &str {
-            "mock"
-        }
-        fn is_available(&self) -> bool {
-            self.available
-        }
-        fn can_bootstrap(&self) -> bool {
-            false
-        }
-        fn bootstrap(&self, _printer: &Printer) -> Result<()> {
-            Ok(())
-        }
-        fn installed_packages(&self) -> Result<HashSet<String>> {
-            Ok(HashSet::new())
-        }
-        fn install(&self, _packages: &[String], _printer: &Printer) -> Result<()> {
-            Ok(())
-        }
-        fn uninstall(&self, _packages: &[String], _printer: &Printer) -> Result<()> {
-            Ok(())
-        }
-        fn update(&self, _printer: &Printer) -> Result<()> {
-            Ok(())
-        }
-        fn available_version(&self, _package: &str) -> Result<Option<String>> {
-            Ok(None)
-        }
-    }
 
     #[test]
     fn registry_filters_available_managers() {
         let mut registry = ProviderRegistry::new();
         registry
             .package_managers
-            .push(Box::new(MockPackageManager { available: true }));
+            .push(Box::new(StubPackageManager::new("mock")));
         registry
             .package_managers
-            .push(Box::new(MockPackageManager { available: false }));
+            .push(Box::new(StubPackageManager::new("mock2").unavailable()));
 
         let available = registry.available_package_managers();
         assert_eq!(available.len(), 1);
@@ -368,14 +403,14 @@ mod tests {
 
     #[test]
     fn test_default_installed_packages_with_versions_empty() {
-        let mock = MockPackageManager { available: true };
+        let mock = StubPackageManager::new("mock");
         let pkgs = mock.installed_packages_with_versions().unwrap();
         assert!(pkgs.is_empty());
     }
 
     #[test]
     fn test_default_package_aliases_empty() {
-        let mock = MockPackageManager { available: true };
+        let mock = StubPackageManager::new("mock");
         let aliases = mock.package_aliases("fd").unwrap();
         assert!(aliases.is_empty());
     }

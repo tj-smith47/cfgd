@@ -1388,68 +1388,8 @@ pub fn diff_module_specs(old: &LoadedModule, new: &LoadedModule) -> Vec<String> 
 mod tests {
     use super::*;
 
-    use std::collections::HashSet;
-
     use crate::config::ModuleFileEntry;
-    use crate::output::Printer;
-
-    // --- Mock PackageManager for testing ---
-
-    struct MockManager {
-        name: String,
-        available: bool,
-        packages: HashMap<String, String>, // name → version
-    }
-
-    impl MockManager {
-        fn new(name: &str) -> Self {
-            Self {
-                name: name.to_string(),
-                available: true,
-                packages: HashMap::new(),
-            }
-        }
-
-        fn with_package(mut self, pkg: &str, version: &str) -> Self {
-            self.packages.insert(pkg.to_string(), version.to_string());
-            self
-        }
-
-        fn unavailable(mut self) -> Self {
-            self.available = false;
-            self
-        }
-    }
-
-    impl PackageManager for MockManager {
-        fn name(&self) -> &str {
-            &self.name
-        }
-        fn is_available(&self) -> bool {
-            self.available
-        }
-        fn can_bootstrap(&self) -> bool {
-            false
-        }
-        fn bootstrap(&self, _printer: &Printer) -> Result<()> {
-            Ok(())
-        }
-        fn installed_packages(&self) -> Result<HashSet<String>> {
-            Ok(HashSet::new())
-        }
-        fn install(&self, _packages: &[String], _printer: &Printer) -> Result<()> {
-            Ok(())
-        }
-        fn uninstall(&self, _packages: &[String], _printer: &Printer) -> Result<()> {
-            Ok(())
-        }
-        fn update(&self, _printer: &Printer) -> Result<()> {
-            Ok(())
-        }
-        fn available_version(&self, package: &str) -> Result<Option<String>> {
-            Ok(self.packages.get(package).cloned())
-        }
-    }
+    use crate::providers::StubPackageManager as MockManager;
 
     // --- Test helpers ---
 

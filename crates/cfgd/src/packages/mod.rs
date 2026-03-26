@@ -10,7 +10,7 @@ use cfgd_core::providers::{PackageAction, PackageManager};
 
 /// Extract stderr from command output as a lossy UTF-8 string.
 pub(crate) fn stderr_lossy(output: &Output) -> String {
-    String::from_utf8_lossy(&output.stderr).to_string()
+    cfgd_core::stderr_lossy_trimmed(output)
 }
 
 /// Run a command, mapping IO errors to PackageError::CommandFailed and non-zero
@@ -213,6 +213,53 @@ fn bootstrap_via_system_manager(
         message: format!("could not install {} via apt, dnf, or zypper", target_pkg),
     }
     .into())
+}
+
+/// Try to install packages via brew first, then fall back to system package managers.
+/// `brew_pkg` is the brew formula name, `apt_pkgs`/`dnf_pkgs` are the system package names.
+/// Returns `Ok(true)` if installed, `Ok(false)` if no method succeeded (caller should
+/// try alternative), or `Err` on command execution failure.
+fn bootstrap_via_brew_then_system(
+    printer: &Printer,
+    manager_name: &str,
+    brew_pkg: &str,
+    system_pkgs: &[&str],
+) -> Result<bool> {
+    if brew_available() {
+        let result = printer
+            .run_with_output(
+                brew_cmd().args(["install", brew_pkg]),
+                &format!("Installing {} via brew", brew_pkg),
+            )
+            .map_err(|e| PackageError::BootstrapFailed {
+                manager: manager_name.into(),
+                message: format!("brew install {} failed: {}", brew_pkg, e),
+            })?;
+        if result.status.success() {
+            return Ok(true);
+        }
+    }
+
+    for cmd_name in ["apt", "dnf"] {
+        if command_available(cmd_name) {
+            let mut args = vec![cmd_name, "install", "-y"];
+            args.extend(system_pkgs);
+            let result = printer
+                .run_with_output(
+                    Command::new("sudo").args(&args),
+                    &format!("Installing {} via {}", manager_name, cmd_name),
+                )
+                .map_err(|e| PackageError::BootstrapFailed {
+                    manager: manager_name.into(),
+                    message: format!("{} install failed: {}", cmd_name, e),
+                })?;
+            if result.status.success() {
+                return Ok(true);
+            }
+        }
+    }
+
+    Ok(false)
 }
 
 /// Strip trailing "-VERSION" from package names where version starts with a digit.
@@ -1384,50 +1431,8 @@ impl PackageManager for NpmManager {
     }
 
     fn bootstrap(&self, printer: &Printer) -> Result<()> {
-        // Try system package managers first, fall back to nvm
-        if brew_available() {
-            let result = printer
-                .run_with_output(
-                    brew_cmd().args(["install", "node"]),
-                    "Installing node via brew",
-                )
-                .map_err(|e| PackageError::BootstrapFailed {
-                    manager: "npm".into(),
-                    message: format!("brew install node failed: {}", e),
-                })?;
-            if result.status.success() {
-                return Ok(());
-            }
-        }
-
-        if command_available("apt") {
-            let result = printer
-                .run_with_output(
-                    Command::new("sudo").args(["apt", "install", "-y", "nodejs", "npm"]),
-                    "Installing nodejs via apt",
-                )
-                .map_err(|e| PackageError::BootstrapFailed {
-                    manager: "npm".into(),
-                    message: format!("apt install failed: {}", e),
-                })?;
-            if result.status.success() {
-                return Ok(());
-            }
-        }
-
-        if command_available("dnf") {
-            let result = printer
-                .run_with_output(
-                    Command::new("sudo").args(["dnf", "install", "-y", "nodejs", "npm"]),
-                    "Installing nodejs via dnf",
-                )
-                .map_err(|e| PackageError::BootstrapFailed {
-                    manager: "npm".into(),
-                    message: format!("dnf install failed: {}", e),
-                })?;
-            if result.status.success() {
-                return Ok(());
-            }
+        if bootstrap_via_brew_then_system(printer, "npm", "node", &["nodejs", "npm"])? {
+            return Ok(());
         }
 
         // Fall back to nvm
@@ -1633,50 +1638,8 @@ impl PackageManager for PipxManager {
     }
 
     fn bootstrap(&self, printer: &Printer) -> Result<()> {
-        // Try system package managers first, fall back to pip
-        if brew_available() {
-            let result = printer
-                .run_with_output(
-                    brew_cmd().args(["install", "pipx"]),
-                    "Installing pipx via brew",
-                )
-                .map_err(|e| PackageError::BootstrapFailed {
-                    manager: "pipx".into(),
-                    message: format!("brew install pipx failed: {}", e),
-                })?;
-            if result.status.success() {
-                return Ok(());
-            }
-        }
-
-        if command_available("apt") {
-            let result = printer
-                .run_with_output(
-                    Command::new("sudo").args(["apt", "install", "-y", "pipx"]),
-                    "Installing pipx via apt",
-                )
-                .map_err(|e| PackageError::BootstrapFailed {
-                    manager: "pipx".into(),
-                    message: format!("apt install failed: {}", e),
-                })?;
-            if result.status.success() {
-                return Ok(());
-            }
-        }
-
-        if command_available("dnf") {
-            let result = printer
-                .run_with_output(
-                    Command::new("sudo").args(["dnf", "install", "-y", "pipx"]),
-                    "Installing pipx via dnf",
-                )
-                .map_err(|e| PackageError::BootstrapFailed {
-                    manager: "pipx".into(),
-                    message: format!("dnf install failed: {}", e),
-                })?;
-            if result.status.success() {
-                return Ok(());
-            }
+        if bootstrap_via_brew_then_system(printer, "pipx", "pipx", &["pipx"])? {
+            return Ok(());
         }
 
         // Fall back to pip
@@ -2911,60 +2874,39 @@ pub fn custom_managers(
 // --- Package Reconciler ---
 
 /// Bootstrap method description for display in plan/doctor output.
+/// Detect which method will be used to bootstrap via brew→apt→dnf cascade.
+fn detect_brew_system_method(fallback: &'static str) -> &'static str {
+    if brew_available() {
+        "brew"
+    } else if command_available("apt") {
+        "apt"
+    } else if command_available("dnf") {
+        "dnf"
+    } else {
+        fallback
+    }
+}
+
+/// Detect which method will be used to bootstrap via apt→dnf→zypper cascade.
+fn detect_system_method() -> &'static str {
+    if command_available("apt") {
+        "apt"
+    } else if command_available("dnf") {
+        "dnf"
+    } else {
+        "zypper"
+    }
+}
+
 pub fn bootstrap_method(manager: &dyn PackageManager) -> &'static str {
     match manager.name() {
         "brew" => "homebrew installer",
         "cargo" => "rustup",
-        "npm" => {
-            if brew_available() {
-                "brew"
-            } else if command_available("apt") {
-                "apt"
-            } else if command_available("dnf") {
-                "dnf"
-            } else {
-                "nvm"
-            }
-        }
-        "pipx" => {
-            if brew_available() {
-                "brew"
-            } else if command_available("apt") {
-                "apt"
-            } else if command_available("dnf") {
-                "dnf"
-            } else {
-                "pip"
-            }
-        }
-        "snap" => {
-            if command_available("apt") {
-                "apt"
-            } else if command_available("dnf") {
-                "dnf"
-            } else {
-                "zypper"
-            }
-        }
-        "flatpak" => {
-            if command_available("apt") {
-                "apt"
-            } else if command_available("dnf") {
-                "dnf"
-            } else {
-                "zypper"
-            }
-        }
+        "npm" => detect_brew_system_method("nvm"),
+        "pipx" => detect_brew_system_method("pip"),
+        "go" => detect_brew_system_method("dnf"),
+        "snap" | "flatpak" => detect_system_method(),
         "nix" => "nix installer",
-        "go" => {
-            if brew_available() {
-                "brew"
-            } else if command_available("apt") {
-                "apt"
-            } else {
-                "dnf"
-            }
-        }
         _ => "system",
     }
 }

@@ -501,6 +501,16 @@ pub fn sha256_hex(data: &[u8]) -> String {
     format!("{:x}", sha2::Sha256::digest(data))
 }
 
+/// Extract stdout from a `Command` output as a trimmed, lossy UTF-8 string.
+pub fn stdout_lossy_trimmed(output: &std::process::Output) -> String {
+    String::from_utf8_lossy(&output.stdout).trim().to_string()
+}
+
+/// Extract stderr from a `Command` output as a trimmed, lossy UTF-8 string.
+pub fn stderr_lossy_trimmed(output: &std::process::Output) -> String {
+    String::from_utf8_lossy(&output.stderr).trim().to_string()
+}
+
 /// Atomically write content to a file using temp-file-then-rename.
 ///
 /// The temp file is created in the same directory as `target` to guarantee a

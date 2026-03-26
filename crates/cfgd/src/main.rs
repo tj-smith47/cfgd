@@ -67,8 +67,7 @@ fn main() -> anyhow::Result<()> {
 
     // Handle --no-color flag or NO_COLOR env var (https://no-color.org/)
     if cli.no_color || std::env::var_os("NO_COLOR").is_some() {
-        console::set_colors_enabled(false);
-        console::set_colors_enabled_stderr(false);
+        cfgd_core::output::Printer::disable_colors();
     }
 
     // Try loading config for theme settings; fall back to default theme if unavailable

@@ -32,6 +32,78 @@ fn compliance_summary(compliant: u32, non_compliant: u32) -> String {
     format!("{compliant} compliant, {non_compliant} non-compliant")
 }
 
+// ---------------------------------------------------------------------------
+// Shared metrics helpers (DRY for error_policy and reconcile success blocks)
+// ---------------------------------------------------------------------------
+
+fn record_error_and_requeue(
+    error: &OperatorError,
+    ctx: &ControllerContext,
+    controller: &str,
+) -> Action {
+    warn!(error = %error, controller = controller, "reconciliation error, requeuing");
+    ctx.metrics
+        .reconciliations_total
+        .get_or_create(&ReconcileLabels {
+            controller: controller.to_string(),
+            result: "error".to_string(),
+        })
+        .inc();
+    Action::requeue(std::time::Duration::from_secs(30))
+}
+
+fn record_reconcile_success(ctx: &ControllerContext, controller: &str, start: std::time::Instant) {
+    let labels = ReconcileLabels {
+        controller: controller.to_string(),
+        result: "success".to_string(),
+    };
+    ctx.metrics
+        .reconciliations_total
+        .get_or_create(&labels)
+        .inc();
+    ctx.metrics
+        .reconciliation_duration_seconds
+        .get_or_create(&labels)
+        .observe(start.elapsed().as_secs_f64());
+}
+
+type ReconcileResult<K> = Result<
+    (kube::runtime::reflector::ObjectRef<K>, Action),
+    kube::runtime::controller::Error<OperatorError, kube::runtime::watcher::Error>,
+>;
+
+fn log_reconcile<K: kube::Resource>(
+    type_name: &'static str,
+) -> impl Fn(ReconcileResult<K>) -> futures::future::Ready<()> {
+    move |result| {
+        match result {
+            Ok((obj_ref, _action)) => info!(name = %obj_ref.name, "{type_name} reconciled"),
+            Err(err) => warn!(error = %err, "{type_name} reconciliation error"),
+        }
+        futures::future::ready(())
+    }
+}
+
+fn record_reconcile_metrics(
+    ctx: &ControllerContext,
+    controller: &str,
+    result: &str,
+    start: std::time::Instant,
+) {
+    let labels = ReconcileLabels {
+        controller: controller.to_string(),
+        result: result.to_string(),
+    };
+    ctx.metrics
+        .reconciliations_total
+        .get_or_create(&labels)
+        .inc();
+    ctx.metrics
+        .reconciliation_duration_seconds
+        .get_or_create(&labels)
+        .observe(start.elapsed().as_secs_f64());
+}
+
 pub struct ControllerContext {
     pub client: Client,
     pub recorder: Recorder,
@@ -94,29 +166,11 @@ pub async fn run(client: Client, metrics: Metrics) -> Result<(), OperatorError> 
             WatcherConfig::default(),
         )
         .run(reconcile_machine_config, error_policy_mc, mc_ctx)
-        .for_each(|result| async move {
-            match result {
-                Ok((obj_ref, _action)) => {
-                    info!(name = %obj_ref.name, "MachineConfig reconciled");
-                }
-                Err(err) => {
-                    warn!(error = %err, "MachineConfig reconciliation error");
-                }
-            }
-        });
+        .for_each(log_reconcile::<MachineConfig>("MachineConfig"));
 
     let da_controller = Controller::new(alerts, WatcherConfig::default())
         .run(reconcile_drift_alert, error_policy_da, da_ctx)
-        .for_each(|result| async move {
-            match result {
-                Ok((obj_ref, _action)) => {
-                    info!(name = %obj_ref.name, "DriftAlert reconciled");
-                }
-                Err(err) => {
-                    warn!(error = %err, "DriftAlert reconciliation error");
-                }
-            }
-        });
+        .for_each(log_reconcile::<DriftAlert>("DriftAlert"));
 
     let cp_controller = Controller::new(policies, WatcherConfig::default())
         .watches(
@@ -129,42 +183,15 @@ pub async fn run(client: Client, metrics: Metrics) -> Result<(), OperatorError> 
             },
         )
         .run(reconcile_config_policy, error_policy_cp, cp_ctx)
-        .for_each(|result| async move {
-            match result {
-                Ok((obj_ref, _action)) => {
-                    info!(name = %obj_ref.name, "ConfigPolicy reconciled");
-                }
-                Err(err) => {
-                    warn!(error = %err, "ConfigPolicy reconciliation error");
-                }
-            }
-        });
+        .for_each(log_reconcile::<ConfigPolicy>("ConfigPolicy"));
 
     let ccp_controller = Controller::new(cluster_policies, WatcherConfig::default())
         .run(reconcile_cluster_config_policy, error_policy_ccp, ccp_ctx)
-        .for_each(|result| async move {
-            match result {
-                Ok((obj_ref, _action)) => {
-                    info!(name = %obj_ref.name, "ClusterConfigPolicy reconciled");
-                }
-                Err(err) => {
-                    warn!(error = %err, "ClusterConfigPolicy reconciliation error");
-                }
-            }
-        });
+        .for_each(log_reconcile::<ClusterConfigPolicy>("ClusterConfigPolicy"));
 
     let mod_controller = Controller::new(modules, WatcherConfig::default())
         .run(reconcile_module, error_policy_module, mod_ctx)
-        .for_each(|result| async move {
-            match result {
-                Ok((obj_ref, _action)) => {
-                    info!(name = %obj_ref.name, "Module reconciled");
-                }
-                Err(err) => {
-                    warn!(error = %err, "Module reconciliation error");
-                }
-            }
-        });
+        .for_each(log_reconcile::<Module>("Module"));
 
     tokio::join!(
         mc_controller,
@@ -308,6 +335,28 @@ async fn publish_event(
     }
 }
 
+async fn emit_event(
+    recorder: &Recorder,
+    obj_ref: &k8s_openapi::api::core::v1::ObjectReference,
+    event_type: EventType,
+    reason: &str,
+    note: String,
+    action: &str,
+) {
+    publish_event(
+        recorder,
+        &Event {
+            type_: event_type,
+            reason: reason.into(),
+            note: Some(note),
+            action: action.into(),
+            secondary: None,
+        },
+        obj_ref,
+    )
+    .await;
+}
+
 // ---------------------------------------------------------------------------
 // MachineConfig controller
 // ---------------------------------------------------------------------------
@@ -375,16 +424,13 @@ async fn reconcile_machine_config(
 
     if let Err(e) = validate_spec(&obj.spec) {
         let error_msg = e.to_string();
-        publish_event(
+        emit_event(
             &ctx.recorder,
-            &Event {
-                type_: EventType::Warning,
-                reason: "ReconcileError".into(),
-                note: Some(format!("Reconciliation failed for {}: {}", name, error_msg)),
-                action: "Reconcile".into(),
-                secondary: None,
-            },
             &obj.object_ref(&()),
+            EventType::Warning,
+            "ReconcileError",
+            format!("Reconciliation failed for {}: {}", name, error_msg),
+            "Reconcile",
         )
         .await;
         return Err(e);
@@ -502,16 +548,13 @@ async fn reconcile_machine_config(
         .await
     {
         let error_msg = format!("failed to update status for {name}: {e}");
-        publish_event(
+        emit_event(
             &ctx.recorder,
-            &Event {
-                type_: EventType::Warning,
-                reason: "ReconcileError".into(),
-                note: Some(format!("Reconciliation failed for {}: {}", name, error_msg)),
-                action: "Reconcile".into(),
-                secondary: None,
-            },
             &obj.object_ref(&()),
+            EventType::Warning,
+            "ReconcileError",
+            format!("Reconciliation failed for {}: {}", name, error_msg),
+            "Reconcile",
         )
         .await;
         return Err(OperatorError::Reconciliation(error_msg));
@@ -519,33 +562,24 @@ async fn reconcile_machine_config(
 
     info!(name = %name, "Status updated with last_reconciled timestamp");
 
-    publish_event(
+    emit_event(
         &ctx.recorder,
-        &Event {
-            type_: EventType::Normal,
-            reason: "Reconciled".into(),
-            note: Some(format!("MachineConfig {} reconciled successfully", name)),
-            action: "Reconcile".into(),
-            secondary: None,
-        },
         &obj.object_ref(&()),
+        EventType::Normal,
+        "Reconciled",
+        format!("MachineConfig {} reconciled successfully", name),
+        "Reconcile",
     )
     .await;
 
     if has_drift {
-        publish_event(
+        emit_event(
             &ctx.recorder,
-            &Event {
-                type_: EventType::Warning,
-                reason: "DriftDetected".into(),
-                note: Some(format!(
-                    "Drift detected on device for MachineConfig {}",
-                    name
-                )),
-                action: "DriftCheck".into(),
-                secondary: None,
-            },
             &obj.object_ref(&()),
+            EventType::Warning,
+            "DriftDetected",
+            format!("Drift detected on device for MachineConfig {}", name),
+            "DriftCheck",
         )
         .await;
 
@@ -558,18 +592,7 @@ async fn reconcile_machine_config(
             .inc();
     }
 
-    let labels = ReconcileLabels {
-        controller: "machine_config".to_string(),
-        result: "success".to_string(),
-    };
-    ctx.metrics
-        .reconciliations_total
-        .get_or_create(&labels)
-        .inc();
-    ctx.metrics
-        .reconciliation_duration_seconds
-        .get_or_create(&labels)
-        .observe(start.elapsed().as_secs_f64());
+    record_reconcile_success(&ctx, "machine_config", start);
 
     Ok(Action::requeue(std::time::Duration::from_secs(60)))
 }
@@ -588,15 +611,7 @@ fn error_policy_mc(
     error: &OperatorError,
     ctx: Arc<ControllerContext>,
 ) -> Action {
-    warn!(error = %error, "MachineConfig reconciliation error, requeuing");
-    ctx.metrics
-        .reconciliations_total
-        .get_or_create(&ReconcileLabels {
-            controller: "machine_config".to_string(),
-            result: "error".to_string(),
-        })
-        .inc();
-    Action::requeue(std::time::Duration::from_secs(30))
+    record_error_and_requeue(error, &ctx, "machine_config")
 }
 
 // ---------------------------------------------------------------------------
@@ -718,16 +733,13 @@ async fn reconcile_drift_alert(
                     warn!(name = %name, error = %e, "Failed to set Resolved condition on DriftAlert");
                 }
 
-                publish_event(
+                emit_event(
                     &ctx.recorder,
-                    &Event {
-                        type_: EventType::Normal,
-                        reason: "DriftResolved".into(),
-                        note: Some(format!("DriftAlert {} resolved", name)),
-                        action: "DriftCheck".into(),
-                        secondary: None,
-                    },
                     &obj.object_ref(&()),
+                    EventType::Normal,
+                    "DriftResolved",
+                    format!("DriftAlert {} resolved", name),
+                    "DriftCheck",
                 )
                 .await;
 
@@ -735,18 +747,7 @@ async fn reconcile_drift_alert(
                     warn!(name = %name, error = %e, "Failed to delete resolved DriftAlert");
                 }
 
-                let labels = ReconcileLabels {
-                    controller: "drift_alert".to_string(),
-                    result: "success".to_string(),
-                };
-                ctx.metrics
-                    .reconciliations_total
-                    .get_or_create(&labels)
-                    .inc();
-                ctx.metrics
-                    .reconciliation_duration_seconds
-                    .get_or_create(&labels)
-                    .observe(start.elapsed().as_secs_f64());
+                record_reconcile_success(&ctx, "drift_alert", start);
 
                 return Ok(Action::requeue(std::time::Duration::from_secs(60)));
             }
@@ -799,20 +800,17 @@ async fn reconcile_drift_alert(
                     "MachineConfig drift condition set"
                 );
 
-                publish_event(
+                emit_event(
                     &ctx.recorder,
-                    &Event {
-                        type_: EventType::Warning,
-                        reason: "DriftDetected".into(),
-                        note: Some(format!(
-                            "Drift detected from device {} — {} details",
-                            obj.spec.device_id,
-                            obj.spec.drift_details.len()
-                        )),
-                        action: "DriftCheck".into(),
-                        secondary: None,
-                    },
                     &mc.object_ref(&()),
+                    EventType::Warning,
+                    "DriftDetected",
+                    format!(
+                        "Drift detected from device {} — {} details",
+                        obj.spec.device_id,
+                        obj.spec.drift_details.len()
+                    ),
+                    "DriftCheck",
                 )
                 .await;
 
@@ -852,18 +850,7 @@ async fn reconcile_drift_alert(
                 "DriftAlert references non-existent MachineConfig"
             );
             // Record as error, not success (H6 fix)
-            let labels = ReconcileLabels {
-                controller: "drift_alert".to_string(),
-                result: "error".to_string(),
-            };
-            ctx.metrics
-                .reconciliations_total
-                .get_or_create(&labels)
-                .inc();
-            ctx.metrics
-                .reconciliation_duration_seconds
-                .get_or_create(&labels)
-                .observe(start.elapsed().as_secs_f64());
+            record_reconcile_metrics(&ctx, "drift_alert", "error", start);
             return Ok(Action::requeue(std::time::Duration::from_secs(60)));
         }
         Err(e) => {
@@ -873,18 +860,7 @@ async fn reconcile_drift_alert(
         }
     }
 
-    let labels = ReconcileLabels {
-        controller: "drift_alert".to_string(),
-        result: "success".to_string(),
-    };
-    ctx.metrics
-        .reconciliations_total
-        .get_or_create(&labels)
-        .inc();
-    ctx.metrics
-        .reconciliation_duration_seconds
-        .get_or_create(&labels)
-        .observe(start.elapsed().as_secs_f64());
+    record_reconcile_success(&ctx, "drift_alert", start);
 
     Ok(Action::requeue(std::time::Duration::from_secs(60)))
 }
@@ -951,15 +927,7 @@ fn error_policy_da(
     error: &OperatorError,
     ctx: Arc<ControllerContext>,
 ) -> Action {
-    warn!(error = %error, "DriftAlert reconciliation error, requeuing");
-    ctx.metrics
-        .reconciliations_total
-        .get_or_create(&ReconcileLabels {
-            controller: "drift_alert".to_string(),
-            result: "error".to_string(),
-        })
-        .inc();
-    Action::requeue(std::time::Duration::from_secs(30))
+    record_error_and_requeue(error, &ctx, "drift_alert")
 }
 
 // ---------------------------------------------------------------------------
@@ -988,15 +956,14 @@ async fn reconcile_config_policy(
         OperatorError::Reconciliation(format!("failed to list MachineConfigs: {e}"))
     })?;
 
-    let mut compliant_count: u32 = 0;
-    let mut non_compliant_count: u32 = 0;
+    // Filter MachineConfigs by target selector
+    let targeted_mcs: Vec<&MachineConfig> = mc_list
+        .iter()
+        .filter(|mc| matches_selector(mc.metadata.labels.as_ref(), &obj.spec.target_selector))
+        .collect();
 
-    for mc in &mc_list {
-        let mc_labels = mc.metadata.labels.as_ref();
-        if !matches_selector(mc_labels, &obj.spec.target_selector) {
-            continue;
-        }
-
+    // Update each targeted MachineConfig's Compliant condition
+    for mc in &targeted_mcs {
         let compliant = validate_policy_compliance(
             &mc.spec,
             mc.status.as_ref(),
@@ -1004,8 +971,6 @@ async fn reconcile_config_policy(
             &obj.spec.packages,
             &obj.spec.settings,
         );
-
-        // Update the MachineConfig's Compliant condition
         let mc_name = mc.name_any();
         let mc_existing_conditions = mc
             .status
@@ -1050,28 +1015,19 @@ async fn reconcile_config_policy(
         {
             warn!(name = %mc_name, error = %e, "Failed to update Compliant condition on MachineConfig");
         }
-
-        if compliant {
-            compliant_count += 1;
-        } else {
-            non_compliant_count += 1;
-            publish_event(
-                &ctx.recorder,
-                &Event {
-                    type_: EventType::Warning,
-                    reason: "PolicyViolation".into(),
-                    note: Some(format!(
-                        "MachineConfig {} violates policy {}",
-                        mc_name, name
-                    )),
-                    action: "PolicyEvaluate".into(),
-                    secondary: None,
-                },
-                &mc.object_ref(&()),
-            )
-            .await;
-        }
     }
+
+    // Evaluate compliance counts and emit violation events
+    let targeted_mc_refs: Vec<MachineConfig> = targeted_mcs.into_iter().cloned().collect();
+    let (compliant_count, non_compliant_count) = evaluate_policy_compliance(
+        &ctx,
+        &targeted_mc_refs,
+        &obj.spec.packages,
+        &obj.spec.required_modules,
+        &obj.spec.settings,
+        &name,
+    )
+    .await;
 
     let now = cfgd_core::utc_now_iso8601();
     let overall_status = if non_compliant_count == 0 {
@@ -1124,36 +1080,13 @@ async fn reconcile_config_policy(
         "ConfigPolicy status updated"
     );
 
-    publish_event(
-        &ctx.recorder,
-        &Event {
-            type_: EventType::Normal,
-            reason: "Evaluated".into(),
-            note: Some(compliance_summary(compliant_count, non_compliant_count)),
-            action: "Evaluate".into(),
-            secondary: None,
-        },
+    emit_policy_evaluation_events(
+        &ctx,
         &obj.object_ref(&()),
+        compliant_count,
+        non_compliant_count,
     )
     .await;
-
-    if non_compliant_count > 0 {
-        publish_event(
-            &ctx.recorder,
-            &Event {
-                type_: EventType::Warning,
-                reason: "NonCompliantTargets".into(),
-                note: Some(format!(
-                    "{} non-compliant MachineConfigs",
-                    non_compliant_count
-                )),
-                action: "Evaluate".into(),
-                secondary: None,
-            },
-            &obj.object_ref(&()),
-        )
-        .await;
-    }
 
     ctx.metrics
         .devices_compliant
@@ -1163,18 +1096,7 @@ async fn reconcile_config_policy(
         })
         .set(i64::from(compliant_count));
 
-    let labels = ReconcileLabels {
-        controller: "config_policy".to_string(),
-        result: "success".to_string(),
-    };
-    ctx.metrics
-        .reconciliations_total
-        .get_or_create(&labels)
-        .inc();
-    ctx.metrics
-        .reconciliation_duration_seconds
-        .get_or_create(&labels)
-        .observe(start.elapsed().as_secs_f64());
+    record_reconcile_success(&ctx, "config_policy", start);
 
     Ok(Action::requeue(std::time::Duration::from_secs(60)))
 }
@@ -1246,6 +1168,81 @@ fn validate_policy_compliance(
     true
 }
 
+// ---------------------------------------------------------------------------
+// Shared policy compliance evaluation helpers
+// ---------------------------------------------------------------------------
+
+/// Evaluate a set of MachineConfigs against policy requirements, emitting
+/// violation events for non-compliant targets. Returns (compliant, non-compliant) counts.
+async fn evaluate_policy_compliance(
+    ctx: &ControllerContext,
+    machine_configs: &[MachineConfig],
+    required_packages: &[PackageRef],
+    required_modules: &[ModuleRef],
+    required_settings: &BTreeMap<String, serde_json::Value>,
+    policy_name: &str,
+) -> (u32, u32) {
+    let mut compliant_count: u32 = 0;
+    let mut non_compliant_count: u32 = 0;
+
+    for mc in machine_configs {
+        let compliant = validate_policy_compliance(
+            &mc.spec,
+            mc.status.as_ref(),
+            required_modules,
+            required_packages,
+            required_settings,
+        );
+        if compliant {
+            compliant_count += 1;
+        } else {
+            non_compliant_count += 1;
+            let mc_name = mc.name_any();
+            emit_event(
+                &ctx.recorder,
+                &mc.object_ref(&()),
+                EventType::Warning,
+                "PolicyViolation",
+                format!("MachineConfig {} violates policy {}", mc_name, policy_name),
+                "PolicyEvaluate",
+            )
+            .await;
+        }
+    }
+
+    (compliant_count, non_compliant_count)
+}
+
+/// Emit standard post-evaluation events for a policy reconciler.
+async fn emit_policy_evaluation_events(
+    ctx: &ControllerContext,
+    obj_ref: &k8s_openapi::api::core::v1::ObjectReference,
+    compliant_count: u32,
+    non_compliant_count: u32,
+) {
+    emit_event(
+        &ctx.recorder,
+        obj_ref,
+        EventType::Normal,
+        "Evaluated",
+        compliance_summary(compliant_count, non_compliant_count),
+        "Evaluate",
+    )
+    .await;
+
+    if non_compliant_count > 0 {
+        emit_event(
+            &ctx.recorder,
+            obj_ref,
+            EventType::Warning,
+            "NonCompliantTargets",
+            format!("{} non-compliant MachineConfigs", non_compliant_count),
+            "Evaluate",
+        )
+        .await;
+    }
+}
+
 /// Error policy for ConfigPolicy reconciliation failures.
 /// kube-rs Controller applies exponential backoff internally.
 fn error_policy_cp(
@@ -1253,15 +1250,7 @@ fn error_policy_cp(
     error: &OperatorError,
     ctx: Arc<ControllerContext>,
 ) -> Action {
-    warn!(error = %error, "ConfigPolicy reconciliation error, requeuing");
-    ctx.metrics
-        .reconciliations_total
-        .get_or_create(&ReconcileLabels {
-            controller: "config_policy".to_string(),
-            result: "error".to_string(),
-        })
-        .inc();
-    Action::requeue(std::time::Duration::from_secs(30))
+    record_error_and_requeue(error, &ctx, "config_policy")
 }
 
 // ---------------------------------------------------------------------------
@@ -1375,36 +1364,17 @@ async fn reconcile_cluster_config_policy(
             cp_list.items.iter().map(|cp| &cp.spec).collect();
         let merged = merge_policy_requirements(&obj.spec, &ns_policy_specs);
 
-        for mc in &mc_list {
-            let compliant = validate_policy_compliance(
-                &mc.spec,
-                mc.status.as_ref(),
-                &merged.modules,
-                &merged.packages,
-                &merged.settings,
-            );
-            if compliant {
-                compliant_count += 1;
-            } else {
-                non_compliant_count += 1;
-                let mc_name = mc.name_any();
-                publish_event(
-                    &ctx.recorder,
-                    &Event {
-                        type_: EventType::Warning,
-                        reason: "PolicyViolation".into(),
-                        note: Some(format!(
-                            "MachineConfig {} violates policy {}",
-                            mc_name, name
-                        )),
-                        action: "PolicyEvaluate".into(),
-                        secondary: None,
-                    },
-                    &mc.object_ref(&()),
-                )
-                .await;
-            }
-        }
+        let (c, nc) = evaluate_policy_compliance(
+            &ctx,
+            &mc_list.items,
+            &merged.packages,
+            &merged.modules,
+            &merged.settings,
+            &name,
+        )
+        .await;
+        compliant_count += c;
+        non_compliant_count += nc;
     }
 
     let now = cfgd_core::utc_now_iso8601();
@@ -1458,36 +1428,13 @@ async fn reconcile_cluster_config_policy(
         "ClusterConfigPolicy status updated"
     );
 
-    publish_event(
-        &ctx.recorder,
-        &Event {
-            type_: EventType::Normal,
-            reason: "Evaluated".into(),
-            note: Some(compliance_summary(compliant_count, non_compliant_count)),
-            action: "Evaluate".into(),
-            secondary: None,
-        },
+    emit_policy_evaluation_events(
+        &ctx,
         &obj.object_ref(&()),
+        compliant_count,
+        non_compliant_count,
     )
     .await;
-
-    if non_compliant_count > 0 {
-        publish_event(
-            &ctx.recorder,
-            &Event {
-                type_: EventType::Warning,
-                reason: "NonCompliantTargets".into(),
-                note: Some(format!(
-                    "{} non-compliant MachineConfigs",
-                    non_compliant_count
-                )),
-                action: "Evaluate".into(),
-                secondary: None,
-            },
-            &obj.object_ref(&()),
-        )
-        .await;
-    }
 
     ctx.metrics
         .devices_compliant
@@ -1497,18 +1444,7 @@ async fn reconcile_cluster_config_policy(
         })
         .set(i64::from(compliant_count));
 
-    let labels = ReconcileLabels {
-        controller: "cluster_config_policy".to_string(),
-        result: "success".to_string(),
-    };
-    ctx.metrics
-        .reconciliations_total
-        .get_or_create(&labels)
-        .inc();
-    ctx.metrics
-        .reconciliation_duration_seconds
-        .get_or_create(&labels)
-        .observe(start.elapsed().as_secs_f64());
+    record_reconcile_success(&ctx, "cluster_config_policy", start);
 
     Ok(Action::requeue(std::time::Duration::from_secs(60)))
 }
@@ -1518,15 +1454,7 @@ fn error_policy_ccp(
     error: &OperatorError,
     ctx: Arc<ControllerContext>,
 ) -> Action {
-    warn!(error = %error, "ClusterConfigPolicy reconciliation error, requeuing");
-    ctx.metrics
-        .reconciliations_total
-        .get_or_create(&ReconcileLabels {
-            controller: "cluster_config_policy".to_string(),
-            result: "error".to_string(),
-        })
-        .inc();
-    Action::requeue(std::time::Duration::from_secs(30))
+    record_error_and_requeue(error, &ctx, "cluster_config_policy")
 }
 
 // ---------------------------------------------------------------------------
@@ -1615,45 +1543,28 @@ async fn reconcile_module(
     info!(name = %name, "Module status updated");
 
     // Emit availability event
-    publish_event(
+    emit_event(
         &ctx.recorder,
-        &Event {
-            type_: avail_event.0,
-            reason: avail_event.1.into(),
-            note: Some(avail_event.2),
-            action: "Reconcile".into(),
-            secondary: None,
-        },
         &obj.object_ref(&()),
+        avail_event.0,
+        avail_event.1,
+        avail_event.2,
+        "Reconcile",
     )
     .await;
 
     // Emit verification event
-    publish_event(
+    emit_event(
         &ctx.recorder,
-        &Event {
-            type_: ver.event.0,
-            reason: ver.event.1.into(),
-            note: Some(ver.event.2),
-            action: "Reconcile".into(),
-            secondary: None,
-        },
         &obj.object_ref(&()),
+        ver.event.0,
+        ver.event.1,
+        ver.event.2,
+        "Reconcile",
     )
     .await;
 
-    let labels = ReconcileLabels {
-        controller: "module".to_string(),
-        result: "success".to_string(),
-    };
-    ctx.metrics
-        .reconciliations_total
-        .get_or_create(&labels)
-        .inc();
-    ctx.metrics
-        .reconciliation_duration_seconds
-        .get_or_create(&labels)
-        .observe(start.elapsed().as_secs_f64());
+    record_reconcile_success(&ctx, "module", start);
 
     Ok(Action::requeue(std::time::Duration::from_secs(60)))
 }
@@ -1901,15 +1812,7 @@ fn error_policy_module(
     error: &OperatorError,
     ctx: Arc<ControllerContext>,
 ) -> Action {
-    warn!(error = %error, "Module reconciliation error, requeuing");
-    ctx.metrics
-        .reconciliations_total
-        .get_or_create(&ReconcileLabels {
-            controller: "module".to_string(),
-            result: "error".to_string(),
-        })
-        .inc();
-    Action::requeue(std::time::Duration::from_secs(30))
+    record_error_and_requeue(error, &ctx, "module")
 }
 
 // ---------------------------------------------------------------------------

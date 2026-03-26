@@ -1785,7 +1785,7 @@ fn add_to_gitignore(config_dir: &Path, path: &str) -> anyhow::Result<()> {
     }
     content.push_str(path);
     content.push('\n');
-    std::fs::write(&gitignore, content)?;
+    cfgd_core::atomic_write_str(&gitignore, &content)?;
     Ok(())
 }
 
@@ -4117,7 +4117,7 @@ fn cmd_source_create(
         source_name, source_version, source_description, profiles_yaml, modules_yaml,
     );
 
-    std::fs::write(&source_path, &yaml)?;
+    cfgd_core::atomic_write_str(&source_path, &yaml)?;
     printer.success(&format!(
         "Created cfgd-source.yaml at {}",
         source_path.display()
@@ -4174,7 +4174,7 @@ fn cmd_workflow_generate(cli: &Cli, printer: &Printer, force: bool) -> anyhow::R
     let yaml = generate_release_workflow_yaml(&module_names, &profile_names);
 
     std::fs::create_dir_all(&workflow_dir)?;
-    std::fs::write(&workflow_path, &yaml)?;
+    cfgd_core::atomic_write_str(&workflow_path, &yaml)?;
 
     printer.success(&format!(
         "Generated release workflow at {}",

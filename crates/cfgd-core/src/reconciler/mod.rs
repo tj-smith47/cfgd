@@ -3261,40 +3261,7 @@ mod tests {
     use crate::config::*;
     use crate::providers::PackageManager;
 
-    struct MockPackageManager {
-        name: String,
-        installed: HashSet<String>,
-    }
-
-    impl PackageManager for MockPackageManager {
-        fn name(&self) -> &str {
-            &self.name
-        }
-        fn is_available(&self) -> bool {
-            true
-        }
-        fn can_bootstrap(&self) -> bool {
-            false
-        }
-        fn bootstrap(&self, _printer: &Printer) -> Result<()> {
-            Ok(())
-        }
-        fn installed_packages(&self) -> Result<HashSet<String>> {
-            Ok(self.installed.clone())
-        }
-        fn install(&self, _packages: &[String], _printer: &Printer) -> Result<()> {
-            Ok(())
-        }
-        fn uninstall(&self, _packages: &[String], _printer: &Printer) -> Result<()> {
-            Ok(())
-        }
-        fn update(&self, _printer: &Printer) -> Result<()> {
-            Ok(())
-        }
-        fn available_version(&self, _package: &str) -> Result<Option<String>> {
-            Ok(None)
-        }
-    }
+    use crate::providers::StubPackageManager as MockPackageManager;
 
     fn make_empty_resolved() -> ResolvedProfile {
         ResolvedProfile {
@@ -3508,12 +3475,9 @@ mod tests {
         let state = StateStore::open_in_memory().unwrap();
         let mut registry = ProviderRegistry::new();
 
-        let mut installed = HashSet::new();
-        installed.insert("ripgrep".to_string());
-        registry.package_managers.push(Box::new(MockPackageManager {
-            name: "cargo".to_string(),
-            installed,
-        }));
+        registry.package_managers.push(Box::new(
+            MockPackageManager::new("cargo").with_installed(&["ripgrep"]),
+        ));
 
         let mut resolved = make_empty_resolved();
         resolved.merged.packages.cargo = Some(crate::config::CargoSpec {
@@ -3957,12 +3921,9 @@ mod tests {
         let state = StateStore::open_in_memory().unwrap();
         let mut registry = ProviderRegistry::new();
 
-        let mut installed = HashSet::new();
-        installed.insert("neovim".to_string());
-        registry.package_managers.push(Box::new(MockPackageManager {
-            name: "brew".to_string(),
-            installed,
-        }));
+        registry.package_managers.push(Box::new(
+            MockPackageManager::new("brew").with_installed(&["neovim"]),
+        ));
 
         let reconciler = Reconciler::new(&registry, &state);
         let resolved = make_empty_resolved();
@@ -4045,13 +4006,10 @@ mod tests {
         let state = StateStore::open_in_memory().unwrap();
         let mut registry = ProviderRegistry::new();
 
-        let mut installed = HashSet::new();
-        installed.insert("neovim".to_string());
         // ripgrep is NOT installed — should drift
-        registry.package_managers.push(Box::new(MockPackageManager {
-            name: "brew".to_string(),
-            installed,
-        }));
+        registry.package_managers.push(Box::new(
+            MockPackageManager::new("brew").with_installed(&["neovim"]),
+        ));
 
         let resolved = make_empty_resolved();
         let printer = Printer::new(crate::output::Verbosity::Quiet);
@@ -4114,13 +4072,9 @@ mod tests {
         let state = StateStore::open_in_memory().unwrap();
         let mut registry = ProviderRegistry::new();
 
-        let mut installed = HashSet::new();
-        installed.insert("neovim".to_string());
-        installed.insert("ripgrep".to_string());
-        registry.package_managers.push(Box::new(MockPackageManager {
-            name: "brew".to_string(),
-            installed,
-        }));
+        registry.package_managers.push(Box::new(
+            MockPackageManager::new("brew").with_installed(&["neovim", "ripgrep"]),
+        ));
 
         let resolved = make_empty_resolved();
         let printer = Printer::new(crate::output::Verbosity::Quiet);

@@ -975,45 +975,12 @@ mod tests {
 
     #[test]
     fn watch_package_manager_returns_installed() {
-        use crate::providers::PackageManager;
-        use std::collections::HashSet;
-
-        struct MockPm;
-        impl PackageManager for MockPm {
-            fn name(&self) -> &str {
-                "mock"
-            }
-            fn is_available(&self) -> bool {
-                true
-            }
-            fn can_bootstrap(&self) -> bool {
-                false
-            }
-            fn bootstrap(&self, _printer: &crate::output::Printer) -> Result<()> {
-                Ok(())
-            }
-            fn installed_packages(&self) -> Result<HashSet<String>> {
-                let mut set = HashSet::new();
-                set.insert("ripgrep".into());
-                set.insert("fd".into());
-                Ok(set)
-            }
-            fn install(&self, _pkgs: &[String], _printer: &crate::output::Printer) -> Result<()> {
-                Ok(())
-            }
-            fn uninstall(&self, _pkgs: &[String], _printer: &crate::output::Printer) -> Result<()> {
-                Ok(())
-            }
-            fn update(&self, _printer: &crate::output::Printer) -> Result<()> {
-                Ok(())
-            }
-            fn available_version(&self, _package: &str) -> Result<Option<String>> {
-                Ok(None)
-            }
-        }
+        use crate::providers::StubPackageManager;
 
         let mut registry = ProviderRegistry::new();
-        registry.package_managers.push(Box::new(MockPm));
+        registry.package_managers.push(Box::new(
+            StubPackageManager::new("mock").with_installed(&["ripgrep", "fd"]),
+        ));
 
         let checks = collect_watched_package_manager_checks("mock", &registry).unwrap();
         assert_eq!(checks.len(), 2);

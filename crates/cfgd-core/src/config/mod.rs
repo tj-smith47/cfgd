@@ -1637,87 +1637,9 @@ fn merge_layers(layers: &[ProfileLayer]) -> MergedProfile {
         // Aliases: later layer overrides earlier by name
         crate::merge_aliases(&mut merged.aliases, &spec.aliases);
 
-        // Packages: union
+        // Packages: union (delegated to composition::merge_packages)
         if let Some(ref pkgs) = spec.packages {
-            if let Some(ref brew) = pkgs.brew {
-                let merged_brew = merged.packages.brew.get_or_insert_with(BrewSpec::default);
-                if brew.file.is_some() {
-                    merged_brew.file = brew.file.clone();
-                }
-                union_extend(&mut merged_brew.taps, &brew.taps);
-                union_extend(&mut merged_brew.formulae, &brew.formulae);
-                union_extend(&mut merged_brew.casks, &brew.casks);
-            }
-            if let Some(ref apt) = pkgs.apt {
-                let apt_spec = merged.packages.apt.get_or_insert_with(AptSpec::default);
-                if apt.file.is_some() {
-                    apt_spec.file = apt.file.clone();
-                }
-                union_extend(&mut apt_spec.packages, &apt.packages);
-            }
-            if let Some(ref cargo) = pkgs.cargo {
-                let merged_cargo = merged.packages.cargo.get_or_insert_with(CargoSpec::default);
-                // Later file wins
-                if cargo.file.is_some() {
-                    merged_cargo.file = cargo.file.clone();
-                }
-                union_extend(&mut merged_cargo.packages, &cargo.packages);
-            }
-            if let Some(ref npm) = pkgs.npm {
-                let npm_spec = merged.packages.npm.get_or_insert_with(NpmSpec::default);
-                if npm.file.is_some() {
-                    npm_spec.file = npm.file.clone();
-                }
-                union_extend(&mut npm_spec.global, &npm.global);
-            }
-            union_extend(&mut merged.packages.pipx, &pkgs.pipx);
-            union_extend(&mut merged.packages.dnf, &pkgs.dnf);
-            union_extend(&mut merged.packages.apk, &pkgs.apk);
-            union_extend(&mut merged.packages.pacman, &pkgs.pacman);
-            union_extend(&mut merged.packages.zypper, &pkgs.zypper);
-            union_extend(&mut merged.packages.yum, &pkgs.yum);
-            union_extend(&mut merged.packages.pkg, &pkgs.pkg);
-            if let Some(ref snap) = pkgs.snap {
-                let merged_snap = merged.packages.snap.get_or_insert_with(SnapSpec::default);
-                union_extend(&mut merged_snap.packages, &snap.packages);
-                union_extend(&mut merged_snap.classic, &snap.classic);
-            }
-            if let Some(ref flatpak) = pkgs.flatpak {
-                let merged_flatpak = merged
-                    .packages
-                    .flatpak
-                    .get_or_insert_with(FlatpakSpec::default);
-                union_extend(&mut merged_flatpak.packages, &flatpak.packages);
-                if flatpak.remote.is_some() {
-                    merged_flatpak.remote = flatpak.remote.clone();
-                }
-            }
-            union_extend(&mut merged.packages.nix, &pkgs.nix);
-            union_extend(&mut merged.packages.go, &pkgs.go);
-            union_extend(&mut merged.packages.winget, &pkgs.winget);
-            union_extend(&mut merged.packages.chocolatey, &pkgs.chocolatey);
-            union_extend(&mut merged.packages.scoop, &pkgs.scoop);
-            // Custom managers: merge by name, union packages
-            for custom in &pkgs.custom {
-                if let Some(existing) = merged
-                    .packages
-                    .custom
-                    .iter_mut()
-                    .find(|c| c.name == custom.name)
-                {
-                    // Later layer's commands override, packages merge
-                    existing.check = custom.check.clone();
-                    existing.list_installed = custom.list_installed.clone();
-                    existing.install = custom.install.clone();
-                    existing.uninstall = custom.uninstall.clone();
-                    if custom.update.is_some() {
-                        existing.update = custom.update.clone();
-                    }
-                    union_extend(&mut existing.packages, &custom.packages);
-                } else {
-                    merged.packages.custom.push(custom.clone());
-                }
-            }
+            crate::composition::merge_packages(&mut merged.packages, pkgs);
         }
 
         // Files: overlay (later layer overrides earlier for same target)

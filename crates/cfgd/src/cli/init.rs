@@ -514,7 +514,7 @@ spec:
   # sources: []
 "#
     );
-    std::fs::write(dir.join("cfgd.yaml"), &content)?;
+    cfgd_core::atomic_write_str(&dir.join("cfgd.yaml"), &content)?;
     printer.success("Created cfgd.yaml");
 
     // .gitignore — ignore everything except cfgd-managed content
@@ -537,7 +537,7 @@ spec:
 !.github/
 !.github/**
 ";
-    std::fs::write(dir.join(".gitignore"), gitignore)?;
+    cfgd_core::atomic_write_str(&dir.join(".gitignore"), gitignore)?;
     printer.success("Created .gitignore");
 
     // README.md
@@ -560,7 +560,7 @@ cfgd apply
 - `cfgd.yaml` — config root (active profile, sources, theme)
 "#
     );
-    std::fs::write(dir.join("README.md"), &readme)?;
+    cfgd_core::atomic_write_str(&dir.join("README.md"), &readme)?;
     printer.success("Created README.md");
 
     // Workflow — generate a base workflow even with no modules/profiles yet.
@@ -568,7 +568,7 @@ cfgd apply
     let workflow_dir = dir.join(".github").join("workflows");
     std::fs::create_dir_all(&workflow_dir)?;
     let workflow = generate_release_workflow_yaml(&[], &[]);
-    std::fs::write(workflow_dir.join("cfgd-release.yml"), &workflow)?;
+    cfgd_core::atomic_write_str(&workflow_dir.join("cfgd-release.yml"), &workflow)?;
     printer.success("Created .github/workflows/cfgd-release.yml");
 
     Ok(())
@@ -588,7 +588,7 @@ pub(super) fn regenerate_workflow(config_dir: &Path, printer: &Printer) -> anyho
     std::fs::create_dir_all(&workflow_dir)?;
 
     let yaml = generate_release_workflow_yaml(&modules, &profiles);
-    std::fs::write(workflow_dir.join("cfgd-release.yml"), &yaml)?;
+    cfgd_core::atomic_write_str(&workflow_dir.join("cfgd-release.yml"), &yaml)?;
     printer.success("Generated .github/workflows/cfgd-release.yml");
 
     Ok(())
@@ -626,7 +626,7 @@ fn ensure_config_file(
         if cfg.spec.profile.as_deref() != Some(profile_name) {
             cfg.spec.profile = Some(profile_name.to_string());
             let yaml = serde_yaml::to_string(&cfg)?;
-            std::fs::write(config_path, &yaml)?;
+            cfgd_core::atomic_write_str(config_path, &yaml)?;
         }
         return Ok(());
     }
@@ -664,7 +664,7 @@ spec:
         name, profile_name, theme_value, origin_section
     );
 
-    std::fs::write(config_path, &config_content)?;
+    cfgd_core::atomic_write_str(config_path, &config_content)?;
     Ok(())
 }
 

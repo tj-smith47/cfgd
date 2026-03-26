@@ -26,7 +26,16 @@ use cfgd_core::providers::{SystemConfigurator, SystemDrift};
 
 /// Extract trimmed stderr from a process output as an owned String.
 pub(crate) fn stderr_string(output: &std::process::Output) -> String {
-    crate::packages::stderr_lossy(output).trim_end().to_string()
+    cfgd_core::stderr_lossy_trimmed(output)
+}
+
+/// Run a command and return its trimmed stdout, or empty string on failure.
+fn read_command_output(cmd: &mut Command) -> String {
+    cmd.output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .unwrap_or_default()
 }
 
 /// Diff a YAML mapping against actual values.
@@ -383,13 +392,7 @@ impl SystemConfigurator for MacosDefaultsConfigurator {
 }
 
 fn read_defaults_value(domain: &str, key: &str) -> String {
-    Command::new("defaults")
-        .args(["read", domain, key])
-        .output()
-        .ok()
-        .filter(|o| o.status.success())
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-        .unwrap_or_default()
+    read_command_output(Command::new("defaults").args(["read", domain, key]))
 }
 
 pub(crate) fn yaml_value_with_numeric_bools(value: &serde_yaml::Value) -> String {
@@ -931,20 +934,13 @@ impl EnvironmentConfigurator {
     // --- macOS ---
 
     fn macos_env_sh_path() -> std::path::PathBuf {
-        let home = std::env::var("HOME").unwrap_or_else(|_| "~".to_string());
-        let home = cfgd_core::expand_tilde(Path::new(&home))
-            .to_string_lossy()
-            .to_string();
-        std::path::PathBuf::from(home).join(".config/cfgd/env.sh")
+        cfgd_core::default_config_dir().join("env.sh")
     }
 
     fn macos_plist_path() -> std::path::PathBuf {
         let home = std::env::var("HOME").unwrap_or_else(|_| "~".to_string());
-        let home = cfgd_core::expand_tilde(Path::new(&home))
-            .to_string_lossy()
-            .to_string();
-        std::path::PathBuf::from(home)
-            .join("Library/LaunchAgents")
+        let home = cfgd_core::expand_tilde(Path::new(&home));
+        home.join("Library/LaunchAgents")
             .join(MACOS_LAUNCHD_PLIST_NAME)
     }
 
@@ -1839,16 +1835,8 @@ pub(crate) fn yaml_value_to_string(value: &serde_yaml::Value) -> String {
 }
 
 fn read_gsettings_value(schema: &str, key: &str) -> String {
-    Command::new("gsettings")
-        .args(["get", schema, key])
-        .output()
-        .ok()
-        .filter(|o| o.status.success())
-        .map(|o| {
-            let raw = String::from_utf8_lossy(&o.stdout).trim().to_string();
-            strip_gsettings_quotes(&raw).to_string()
-        })
-        .unwrap_or_default()
+    let raw = read_command_output(Command::new("gsettings").args(["get", schema, key]));
+    strip_gsettings_quotes(&raw).to_string()
 }
 
 impl SystemConfigurator for GsettingsConfigurator {
@@ -1976,13 +1964,9 @@ fn kde_read_cmd() -> &'static str {
 }
 
 fn read_kde_value(file: &str, group: &str, key: &str) -> String {
-    Command::new(kde_read_cmd())
-        .args(["--file", file, "--group", group, "--key", key])
-        .output()
-        .ok()
-        .filter(|o| o.status.success())
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-        .unwrap_or_default()
+    read_command_output(
+        Command::new(kde_read_cmd()).args(["--file", file, "--group", group, "--key", key]),
+    )
 }
 
 impl SystemConfigurator for KdeConfigConfigurator {
@@ -2124,13 +2108,7 @@ impl SystemConfigurator for KdeConfigConfigurator {
 pub struct XfconfConfigurator;
 
 fn read_xfconf_value(channel: &str, property: &str) -> String {
-    Command::new("xfconf-query")
-        .args(["-c", channel, "-p", property])
-        .output()
-        .ok()
-        .filter(|o| o.status.success())
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-        .unwrap_or_default()
+    read_command_output(Command::new("xfconf-query").args(["-c", channel, "-p", property]))
 }
 
 impl SystemConfigurator for XfconfConfigurator {
