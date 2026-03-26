@@ -341,12 +341,19 @@ kubectl delete driftalert e2e-drift-1 -n "$E2E_NAMESPACE" 2>/dev/null || true
 kubectl patch machineconfig e2e-workstation-1 -n "$E2E_NAMESPACE" --type=merge \
     -p '{"spec":{"packages":[{"name":"vim"},{"name":"git"},{"name":"curl"},{"name":"wget"}]}}' 2>/dev/null
 
-# Wait for MC to clear drift status (DriftDetected condition goes to False)
+# Wait for MC to clear drift status (DriftDetected=False or condition removed)
 echo "  Waiting for drift to clear..."
-DRIFT_COND=$(wait_for_k8s_field machineconfig e2e-workstation-1 "$E2E_NAMESPACE" \
-    '{.status.conditions[?(@.type=="DriftDetected")].status}' "False" 60) && DRIFT_CLEARED=true || DRIFT_CLEARED=false
-
-echo "  MC DriftDetected after cleanup: $DRIFT_COND"
+DRIFT_CLEARED=false
+for i in $(seq 1 30); do
+    DRIFT_COND=$(kubectl get machineconfig e2e-workstation-1 -n "$E2E_NAMESPACE" \
+        -o jsonpath='{.status.conditions[?(@.type=="DriftDetected")].status}' 2>/dev/null || echo "")
+    if [ "$DRIFT_COND" = "False" ] || [ -z "$DRIFT_COND" ]; then
+        echo "  MC DriftDetected after cleanup: ${DRIFT_COND:-removed} (after ${i}s)"
+        DRIFT_CLEARED=true
+        break
+    fi
+    sleep 1
+done
 
 if $DRIFT_CLEARED; then
     pass_test "T09"

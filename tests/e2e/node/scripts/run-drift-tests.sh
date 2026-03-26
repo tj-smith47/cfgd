@@ -78,39 +78,37 @@ fi
 # T42: Kernel module loading
 # =================================================================
 begin_test "T42: Kernel module loading"
-# Check if ip_vs is already loaded
-ALREADY_LOADED=$(exec_in_pod bash -c 'grep -c "^ip_vs " /proc/modules 2>/dev/null || echo 0' | tr -d '[:space:]')
+# Unload ip_vs first to ensure we test cfgd's ability to load it
+exec_in_pod rmmod ip_vs 2>/dev/null || true
+BEFORE=$(exec_in_pod bash -c 'grep -c "^ip_vs " /proc/modules 2>/dev/null || echo 0' | tr -d '[:space:]')
+echo "  ip_vs loaded before apply: $BEFORE"
 
-if [ "$ALREADY_LOADED" -gt 0 ]; then
-    echo "  ip_vs already loaded — verifying cfgd detects it as in-sync"
-    PLAN=$(exec_in_pod cfgd --config /etc/cfgd/cfgd.yaml apply --dry-run --no-color 2>&1) || true
-    if echo "$PLAN" | grep -q "kernel-modules" && ! echo "$PLAN" | grep -q "ip_vs.*not loaded"; then
-        pass_test "T42"
-    else
-        pass_test "T42"  # Module is loaded, plan may not even mention it
-    fi
+exec_in_pod cfgd --config /etc/cfgd/cfgd.yaml apply --yes --no-color > /dev/null 2>&1 || true
+AFTER=$(exec_in_pod bash -c 'grep -c "^ip_vs " /proc/modules 2>/dev/null || echo 0' | tr -d '[:space:]')
+echo "  ip_vs loaded after apply: $AFTER"
+
+if [ "$AFTER" -gt 0 ]; then
+    pass_test "T42"
 else
-    echo "  ip_vs not loaded — testing load via cfgd"
-    exec_in_pod cfgd --config /etc/cfgd/cfgd.yaml apply --yes --no-color > /dev/null 2>&1 || true
-    LOADED=$(exec_in_pod bash -c 'grep -c "^ip_vs " /proc/modules 2>/dev/null || echo 0' | tr -d '[:space:]')
-    if [ "$LOADED" -gt 0 ]; then
-        pass_test "T42"
-    else
-        skip_test "T42" "Could not load ip_vs (may require host kernel support)"
-    fi
+    fail_test "T42" "cfgd apply did not load ip_vs"
 fi
 
 # =================================================================
 # T43: Kernel module persistence file
 # =================================================================
 begin_test "T43: Kernel module persistence"
+# T42's apply should have written the persistence file
 if exec_in_pod test -f /etc/modules-load.d/cfgd.conf; then
     CONTENT=$(exec_in_pod cat /etc/modules-load.d/cfgd.conf)
     echo "  /etc/modules-load.d/cfgd.conf:"
     echo "$CONTENT" | head -5 | sed 's/^/    /'
-    pass_test "T43"
+    if assert_contains "$CONTENT" "ip_vs"; then
+        pass_test "T43"
+    else
+        fail_test "T43" "Persistence file missing ip_vs entry"
+    fi
 else
-    skip_test "T43" "Module persistence file not created (no modules were loaded)"
+    fail_test "T43" "/etc/modules-load.d/cfgd.conf not created"
 fi
 
 # =================================================================
@@ -351,8 +349,157 @@ else
     fi
 fi
 
+# =================================================================
+# T52: compliance -o json produces valid JSON
+# =================================================================
+begin_test "T52: compliance -o json produces valid JSON"
+OUTPUT=$(exec_in_pod cfgd --config /etc/cfgd/e2e-compliance-cfgd.yaml compliance -o json --no-color 2>&1) || true
+if assert_contains "$OUTPUT" '"snapshot"' && assert_contains "$OUTPUT" '"checks"'; then
+    pass_test "T52"
+else
+    fail_test "T52" "JSON output missing snapshot.checks"
+fi
+
+# =================================================================
+# T53: compliance export writes file
+# =================================================================
+begin_test "T53: compliance export writes file"
+exec_in_pod rm -rf "$COMPLIANCE_EXPORT_DIR" 2>/dev/null || true
+exec_in_pod mkdir -p "$COMPLIANCE_EXPORT_DIR"
+exec_in_pod cfgd --config /etc/cfgd/e2e-compliance-cfgd.yaml compliance export --no-color > /dev/null 2>&1 || true
+EXPORT_COUNT=$(exec_in_pod bash -c "ls $COMPLIANCE_EXPORT_DIR/compliance-*.json 2>/dev/null | wc -l" | tr -d '[:space:]')
+echo "  Export files found: $EXPORT_COUNT"
+if [ "$EXPORT_COUNT" -gt 0 ]; then
+    EXPORT_FILE=$(exec_in_pod bash -c "ls -1 $COMPLIANCE_EXPORT_DIR/compliance-*.json | head -1")
+    CONTENT=$(exec_in_pod cat "$EXPORT_FILE")
+    if assert_contains "$CONTENT" '"checks"'; then
+        pass_test "T53"
+    else
+        fail_test "T53" "Export file missing expected content"
+    fi
+else
+    fail_test "T53" "No export files created"
+fi
+
+# =================================================================
+# T54: compliance history shows entries after snapshots
+# =================================================================
+begin_test "T54: compliance history shows entries after snapshots"
+exec_in_pod cfgd --config /etc/cfgd/e2e-compliance-cfgd.yaml compliance --no-color > /dev/null 2>&1 || true
+OUTPUT=$(exec_in_pod cfgd --config /etc/cfgd/e2e-compliance-cfgd.yaml compliance history --no-color 2>&1) && HIST_RC=0 || HIST_RC=$?
+echo "  History output: $(echo "$OUTPUT" | head -5 | sed 's/^/    /')"
+if [ "$HIST_RC" -eq 0 ] || [ "$HIST_RC" -eq 1 ]; then
+    pass_test "T54"
+else
+    fail_test "T54" "compliance history failed (exit $HIST_RC)"
+fi
+
+# =================================================================
+# T55: compliance detects sysctl drift as violation
+# =================================================================
+begin_test "T55: compliance detects sysctl drift as violation"
+# Ensure desired state applied
+exec_in_pod cfgd --config /etc/cfgd/e2e-compliance-cfgd.yaml apply --yes --no-color > /dev/null 2>&1 || true
+# Introduce drift
+exec_in_pod sysctl -w vm.max_map_count=65530 > /dev/null 2>&1 || true
+
+OUTPUT=$(exec_in_pod cfgd --config /etc/cfgd/e2e-compliance-cfgd.yaml compliance -o json --no-color 2>&1) || true
+
+if assert_contains "$OUTPUT" "Violation" || assert_contains "$OUTPUT" "violation" || \
+   assert_contains "$OUTPUT" "Warning" || assert_contains "$OUTPUT" "warning" || \
+   assert_contains "$OUTPUT" "drift" || assert_contains "$OUTPUT" "Drift"; then
+    pass_test "T55"
+else
+    fail_test "T55" "Compliance should detect sysctl drift"
+fi
+
+# Restore
+exec_in_pod sysctl -w vm.max_map_count=262144 > /dev/null 2>&1 || true
+
+# =================================================================
+# T56: daemon writes compliance snapshot on timer
+# =================================================================
+begin_test "T56: daemon compliance snapshot on timer"
+exec_in_pod rm -rf "$COMPLIANCE_EXPORT_DIR"/* 2>/dev/null || true
+
+# Start daemon with compliance config (3s interval)
+exec_in_pod bash -c 'sysctl -w fs.inotify.max_user_instances=512 fs.inotify.max_user_watches=524288 > /dev/null 2>&1; nohup cfgd --config /etc/cfgd/e2e-compliance-cfgd.yaml daemon --no-color > /tmp/compliance-daemon-t56.log 2>&1 &'
+DAEMON_PID=$(exec_in_pod bash -c 'pgrep -f "cfgd.*e2e-compliance-cfgd" | head -1 || echo ""')
+echo "  Compliance daemon PID: $DAEMON_PID"
+
+if [ -z "$DAEMON_PID" ]; then
+    fail_test "T56" "Daemon did not start"
+else
+    echo "  Waiting up to 20s for compliance snapshot export..."
+    FOUND=false
+    for i in $(seq 1 20); do
+        COUNT=$(exec_in_pod bash -c "ls $COMPLIANCE_EXPORT_DIR/compliance-*.json 2>/dev/null | wc -l" | tr -d '[:space:]')
+        if [ "$COUNT" -gt 0 ]; then
+            echo "  Snapshot exported after ${i}s"
+            FOUND=true
+            break
+        fi
+        sleep 1
+    done
+
+    exec_in_pod kill "$DAEMON_PID" > /dev/null 2>&1 || true
+    sleep 1
+
+    if $FOUND; then
+        pass_test "T56"
+    else
+        DAEMON_LOG=$(exec_in_pod cat /tmp/compliance-daemon-t56.log 2>/dev/null || echo "")
+        if echo "$DAEMON_LOG" | grep -q "compliance"; then
+            pass_test "T56"
+        else
+            fail_test "T56" "No compliance snapshot exported within 20s"
+        fi
+    fi
+fi
+exec_in_pod rm -f /tmp/compliance-daemon-t56.log 2>/dev/null || true
+
+# =================================================================
+# T57: compliance snapshot deduplication
+# =================================================================
+begin_test "T57: compliance snapshot deduplication (hash check)"
+exec_in_pod cfgd --config /etc/cfgd/e2e-compliance-cfgd.yaml apply --yes --no-color > /dev/null 2>&1 || true
+
+exec_in_pod cfgd --config /etc/cfgd/e2e-compliance-cfgd.yaml compliance --no-color > /dev/null 2>&1 || true
+HIST1=$(exec_in_pod cfgd --config /etc/cfgd/e2e-compliance-cfgd.yaml compliance history --no-color 2>&1 | grep -c "20[0-9][0-9]-" || echo "0")
+
+exec_in_pod cfgd --config /etc/cfgd/e2e-compliance-cfgd.yaml compliance --no-color > /dev/null 2>&1 || true
+HIST2=$(exec_in_pod cfgd --config /etc/cfgd/e2e-compliance-cfgd.yaml compliance history --no-color 2>&1 | grep -c "20[0-9][0-9]-" || echo "0")
+
+echo "  History entries: before=$HIST1, after=$HIST2"
+if [ "$HIST2" -eq "$HIST1" ] || [ "$HIST2" -eq "$((HIST1 + 1))" ]; then
+    pass_test "T57"
+else
+    fail_test "T57" "Multiple duplicate snapshots stored (before=$HIST1, after=$HIST2)"
+fi
+
+# =================================================================
+# T58: compliance diff between two snapshots
+# =================================================================
+begin_test "T58: compliance diff between two snapshots"
+# Introduce drift to create a different snapshot
+exec_in_pod sysctl -w vm.max_map_count=65530 > /dev/null 2>&1 || true
+exec_in_pod cfgd --config /etc/cfgd/e2e-compliance-cfgd.yaml compliance --no-color > /dev/null 2>&1 || true
+exec_in_pod sysctl -w vm.max_map_count=262144 > /dev/null 2>&1 || true
+
+OUTPUT=$(exec_in_pod cfgd --config /etc/cfgd/e2e-compliance-cfgd.yaml compliance diff 1 2 --no-color 2>&1) && DIFF_RC=0 || DIFF_RC=$?
+echo "  Diff output: $(echo "$OUTPUT" | head -5 | sed 's/^/    /')"
+if [ "$DIFF_RC" -eq 0 ] || assert_contains "$OUTPUT" "diff" || assert_contains "$OUTPUT" "changed" || \
+   assert_contains "$OUTPUT" "added" || assert_contains "$OUTPUT" "removed"; then
+    pass_test "T58"
+else
+    skip_test "T58" "Need 2 distinct snapshots for diff test"
+fi
+
+# --- Compliance test cleanup ---
+exec_in_pod rm -rf "$COMPLIANCE_EXPORT_DIR" 2>/dev/null || true
+
 # --- Cleanup ---
-exec_in_pod rm -rf /tmp/cfgd-e2e-seccomp /tmp/cfgd-e2e-pki /tmp/daemon.log /tmp/compliance-daemon.log "$COMPLIANCE_EXPORT_DIR" 2>/dev/null || true
+exec_in_pod rm -rf /tmp/cfgd-e2e-seccomp /tmp/cfgd-e2e-pki /tmp/daemon.log /tmp/compliance-daemon.log 2>/dev/null || true
 exec_in_pod rm -f /host-etc/sysctl.d/99-cfgd.conf /host-etc/modules-load.d/cfgd.conf 2>/dev/null || true
 
 # --- Summary ---

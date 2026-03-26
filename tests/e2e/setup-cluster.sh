@@ -110,8 +110,19 @@ fi
 
 if [ "$ARGOCD_MANAGED" = "true" ] || { [ -n "${CFGD_DEPLOY_MANIFESTS:-}" ] && [ -d "$CFGD_DEPLOY_MANIFESTS" ]; }; then
     echo "  Deployments managed by ArgoCD — restarting to pick up :latest images..."
-    kubectl rollout restart deployment/cfgd-operator -n cfgd-system 2>/dev/null || true
-    kubectl rollout restart deployment/cfgd-server -n cfgd-system 2>/dev/null || true
+    # Scale down first to release RWO PVCs, then scale up with new image
+    for deploy in cfgd-operator cfgd-server; do
+        if kubectl get deployment "$deploy" -n cfgd-system > /dev/null 2>&1; then
+            kubectl rollout restart "deployment/$deploy" -n cfgd-system 2>/dev/null || true
+            # Wait for old pods to terminate (handles RWO PVC conflicts)
+            kubectl rollout status "deployment/$deploy" -n cfgd-system --timeout=120s 2>/dev/null || {
+                echo "  Rollout stuck for $deploy — deleting old pods to release PVC..."
+                kubectl delete pods -n cfgd-system -l "app=$deploy" --grace-period=5 --wait=false 2>/dev/null || true
+                sleep 5
+                kubectl rollout status "deployment/$deploy" -n cfgd-system --timeout=120s 2>/dev/null || true
+            }
+        fi
+    done
 else
     echo "  Applying E2E manifests..."
     sed "s|REGISTRY_PLACEHOLDER|${REGISTRY}|g; s|IMAGE_PLACEHOLDER|${IMAGE_TAG}|g" \

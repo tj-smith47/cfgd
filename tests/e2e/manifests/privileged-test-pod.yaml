@@ -30,6 +30,9 @@ spec:
           mountPath: /host-sys
         - name: host-etc
           mountPath: /host-etc
+        - name: host-lib-modules
+          mountPath: /lib/modules
+          readOnly: true
   volumes:
     - name: host-proc
       hostPath:
@@ -40,3 +43,6 @@ spec:
     - name: host-etc
       hostPath:
         path: /etc
+    - name: host-lib-modules
+      hostPath:
+        path: /lib/modules

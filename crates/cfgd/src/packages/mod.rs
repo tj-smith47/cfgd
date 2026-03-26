@@ -196,7 +196,7 @@ fn bootstrap_via_system_manager(
         if command_available(cmd_name) {
             let result = printer
                 .run_with_output(
-                    Command::new("sudo").args([cmd_name, "install", "-y", target_pkg]),
+                    sudo_cmd(cmd_name).args(["install", "-y", target_pkg]),
                     &format!("Installing {} via {}", target_pkg, cmd_name),
                 )
                 .map_err(|e| PackageError::BootstrapFailed {
@@ -242,11 +242,9 @@ fn bootstrap_via_brew_then_system(
 
     for cmd_name in ["apt", "dnf"] {
         if command_available(cmd_name) {
-            let mut args = vec![cmd_name, "install", "-y"];
-            args.extend(system_pkgs);
             let result = printer
                 .run_with_output(
-                    Command::new("sudo").args(&args),
+                    sudo_cmd(cmd_name).args(["install", "-y"]).args(system_pkgs),
                     &format!("Installing {} via {}", manager_name, cmd_name),
                 )
                 .map_err(|e| PackageError::BootstrapFailed {
@@ -706,9 +704,31 @@ pub struct SimpleManager {
     aliases_fn: Option<fn(&str) -> Vec<String>>,
 }
 
+/// Strip leading `"sudo"` from a command slice when already running as root.
+/// Returns the effective command slice (unchanged if not root or no sudo prefix).
+fn strip_sudo_if_root<'a>(cmd: &'a [&'a str]) -> &'a [&'a str] {
+    if cmd.first() == Some(&"sudo") && cfgd_core::is_root() {
+        &cmd[1..]
+    } else {
+        cmd
+    }
+}
+
+/// Build a Command that prepends `sudo` only when not already running as root.
+fn sudo_cmd(program: &str) -> Command {
+    if cfgd_core::is_root() {
+        Command::new(program)
+    } else {
+        let mut cmd = Command::new("sudo");
+        cmd.arg(program);
+        cmd
+    }
+}
+
 impl SimpleManager {
     fn display_cmd(&self, cmd_parts: &[&str], packages: &[String]) -> String {
-        let mut parts: Vec<&str> = cmd_parts.to_vec();
+        let effective = strip_sudo_if_root(cmd_parts);
+        let mut parts: Vec<&str> = effective.to_vec();
         for p in packages {
             parts.push(p);
         }
@@ -748,8 +768,9 @@ impl PackageManager for SimpleManager {
         if packages.is_empty() {
             return Ok(());
         }
+        let effective = strip_sudo_if_root(self.install_cmd);
         let label = self.display_cmd(self.install_cmd, packages);
-        let (prog, args) = self.install_cmd.split_first().unwrap_or((&"true", &[]));
+        let (prog, args) = effective.split_first().unwrap_or((&"true", &[]));
         run_pkg_cmd_live(
             printer,
             self.mgr_name,
@@ -764,8 +785,9 @@ impl PackageManager for SimpleManager {
         if packages.is_empty() {
             return Ok(());
         }
+        let effective = strip_sudo_if_root(self.uninstall_cmd);
         let label = self.display_cmd(self.uninstall_cmd, packages);
-        let (prog, args) = self.uninstall_cmd.split_first().unwrap_or((&"true", &[]));
+        let (prog, args) = effective.split_first().unwrap_or((&"true", &[]));
         run_pkg_cmd_live(
             printer,
             self.mgr_name,
@@ -780,8 +802,9 @@ impl PackageManager for SimpleManager {
         let Some(update_parts) = self.update_cmd else {
             return Ok(());
         };
+        let effective = strip_sudo_if_root(update_parts);
         let label = self.display_cmd(update_parts, &[]);
-        let (prog, args) = update_parts.split_first().unwrap_or((&"true", &[]));
+        let (prog, args) = effective.split_first().unwrap_or((&"true", &[]));
         if self.ignore_update_exit {
             // dnf/yum check-update returns 100 when updates are available
             let _ = printer
@@ -1834,7 +1857,7 @@ impl PackageManager for SnapManager {
             let result = run_pkg_cmd_live(
                 printer,
                 "snap",
-                Command::new("sudo").arg("snap").arg("install").arg(pkg),
+                sudo_cmd("snap").arg("install").arg(pkg),
                 &label,
                 "install",
             );
@@ -1845,7 +1868,7 @@ impl PackageManager for SnapManager {
                     run_pkg_cmd_live(
                         printer,
                         "snap",
-                        Command::new("sudo").args(["snap", "install", "--classic", pkg]),
+                        sudo_cmd("snap").args(["install", "--classic", pkg]),
                         &label,
                         "install",
                     )?;
@@ -1865,10 +1888,7 @@ impl PackageManager for SnapManager {
         run_pkg_cmd_live(
             printer,
             "snap",
-            Command::new("sudo")
-                .arg("snap")
-                .arg("remove")
-                .args(packages),
+            sudo_cmd("snap").arg("remove").args(packages),
             &label,
             "uninstall",
         )?;
@@ -1879,7 +1899,7 @@ impl PackageManager for SnapManager {
         run_pkg_cmd_live(
             printer,
             "snap",
-            Command::new("sudo").args(["snap", "refresh"]),
+            sudo_cmd("snap").arg("refresh"),
             "snap refresh",
             "update",
         )?;

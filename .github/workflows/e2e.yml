@@ -12,7 +12,6 @@ on:
       - "tests/e2e/**"
       - ".github/workflows/e2e.yml"
       - ".github/workflows/e2e-setup.yml"
-      - ".github/workflows/e2e-cli.yml"
   pull_request:
     branches: [master]
     paths:
@@ -24,7 +23,6 @@ on:
       - "tests/e2e/**"
       - ".github/workflows/e2e.yml"
       - ".github/workflows/e2e-setup.yml"
-      - ".github/workflows/e2e-cli.yml"
   workflow_dispatch:
 
 concurrency:

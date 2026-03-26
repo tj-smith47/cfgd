@@ -8,3 +8,5 @@ spec:
     sysctl:
       vm.max_map_count: "262144"
       net.ipv4.ip_forward: "1"
+    kernelModules:
+      - ip_vs

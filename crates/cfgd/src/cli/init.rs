@@ -28,9 +28,9 @@ pub(super) fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result
         return Ok(());
     }
 
-    // 1. Determine target directory
+    // 1. Determine target directory and whether --from did a fresh clone
+    let from_used = args.from.is_some();
     let target_dir = if let Some(from) = args.from {
-        // --from: clone git source or use local config path
         let explicit_path = args.path.map(|p| cfgd_core::expand_tilde(Path::new(p)));
         resolve_from(from, explicit_path.as_deref(), args.branch, printer)?
     } else {
@@ -46,7 +46,9 @@ pub(super) fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result
     }
 
     // 3. Check if already initialized
-    if target_dir.join("cfgd.yaml").exists() {
+    // When --from is used, resolve_from handles the "already initialized" case
+    // and the clone creates cfgd.yaml — skip this check so we reach the apply step
+    if target_dir.join("cfgd.yaml").exists() && !from_used {
         printer.info(&format!("Already initialized at {}", target_dir.display()));
         return Ok(());
     }

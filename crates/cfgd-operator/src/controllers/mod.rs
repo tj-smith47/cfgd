@@ -8,6 +8,7 @@ use kube::runtime::Controller;
 use kube::runtime::controller::Action;
 use kube::runtime::events::{Event, EventType, Recorder, Reporter};
 use kube::runtime::watcher::Config as WatcherConfig;
+use kube::runtime::reflector::ObjectRef;
 use kube::{Client, Resource, ResourceExt};
 use tracing::{debug, info, warn};
 
@@ -172,14 +173,21 @@ pub async fn run(client: Client, metrics: Metrics) -> Result<(), OperatorError> 
         .run(reconcile_drift_alert, error_policy_da, da_ctx)
         .for_each(log_reconcile::<DriftAlert>("DriftAlert"));
 
-    let cp_controller = Controller::new(policies, WatcherConfig::default())
+    let cp_builder = Controller::new(policies, WatcherConfig::default());
+    let cp_store = cp_builder.store();
+    let cp_controller = cp_builder
         .watches(
             Api::<MachineConfig>::all(client.clone()),
             WatcherConfig::default(),
-            |mc| {
+            move |mc| {
                 // When a MachineConfig changes, requeue all ConfigPolicies in its namespace
-                mc.namespace()
-                    .map(|ns| kube::runtime::reflector::ObjectRef::new("").within(&ns))
+                let ns = mc.namespace().unwrap_or_default();
+                cp_store
+                    .state()
+                    .into_iter()
+                    .filter(move |cp| cp.namespace().as_deref() == Some(ns.as_str()))
+                    .map(|cp| ObjectRef::from_obj(&*cp))
+                    .collect::<Vec<_>>()
             },
         )
         .run(reconcile_config_policy, error_policy_cp, cp_ctx)
@@ -456,10 +464,13 @@ async fn reconcile_machine_config(
     // Check if any DriftAlerts exist for this MachineConfig
     let has_drift = has_active_drift_alerts(&ctx.client, &namespace, &name).await;
 
-    // Skip if we've already observed this generation and there's no drift
+    // Skip if we've already observed this generation, no drift, and condition already reflects that
     let generation_unchanged =
         current_generation.is_some() && current_generation == observed_generation;
-    if generation_unchanged && !has_drift {
+    let had_drift = existing_conditions
+        .iter()
+        .any(|c| c.condition_type == "DriftDetected" && c.status == "True");
+    if generation_unchanged && !has_drift && !had_drift {
         info!(name = %name, "Already reconciled this generation, skipping");
         return Ok(Action::requeue(std::time::Duration::from_secs(60)));
     }

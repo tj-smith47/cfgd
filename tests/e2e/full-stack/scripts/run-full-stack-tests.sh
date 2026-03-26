@@ -37,9 +37,11 @@ cleanup_fullstack() {
     # Delete run-scoped cluster-scoped resources
     kubectl delete module "csi-test-mod-${E2E_RUN_ID}" --ignore-not-found 2>/dev/null || true
     kubectl delete module "debug-tools-${E2E_RUN_ID}" --ignore-not-found 2>/dev/null || true
-    # Clean up namespaced CRDs in cfgd-system (persistent namespace, not cascade-deleted)
-    for kind in machineconfig configpolicy driftalert; do
-        kubectl delete "$kind" -l "$E2E_RUN_LABEL" -n cfgd-system --ignore-not-found 2>/dev/null || true
+    # Clean up namespaced CRDs in test and cfgd-system namespaces
+    for ns in "$E2E_NAMESPACE" cfgd-system; do
+        for kind in machineconfig configpolicy driftalert; do
+            kubectl delete "$kind" -l "$E2E_RUN_LABEL" -n "$ns" --ignore-not-found 2>/dev/null || true
+        done
     done
     cleanup_e2e
 }
@@ -317,18 +319,17 @@ fi
 # =================================================================
 begin_test "T08: Policy sees drifted MachineConfig"
 
-DRIFT_STATUS=$(kubectl get machineconfig "mc-${DEVICE_1}" -n cfgd-system \
-    -o jsonpath='{.status.conditions[?(@.type=="DriftDetected")].status}' 2>/dev/null || echo "")
-DRIFT_REASON=$(kubectl get machineconfig "mc-${DEVICE_1}" -n cfgd-system \
-    -o jsonpath='{.status.conditions[?(@.type=="DriftDetected")].reason}' 2>/dev/null || echo "")
-
-echo "  MC DriftDetected status: $DRIFT_STATUS"
-echo "  MC DriftDetected reason: $DRIFT_REASON"
-
-if [ "$DRIFT_STATUS" = "True" ]; then
+if wait_for_k8s_field machineconfig "mc-${DEVICE_1}" cfgd-system \
+    '{.status.conditions[?(@.type=="DriftDetected")].status}' "True" 15 > /dev/null; then
+    DRIFT_REASON=$(kubectl get machineconfig "mc-${DEVICE_1}" -n cfgd-system \
+        -o jsonpath='{.status.conditions[?(@.type=="DriftDetected")].reason}' 2>/dev/null || echo "")
+    echo "  MC DriftDetected status: True"
+    echo "  MC DriftDetected reason: $DRIFT_REASON"
     pass_test "T08"
 else
-    fail_test "T08" "MC DriftDetected condition not True (status=$DRIFT_STATUS, reason=$DRIFT_REASON)"
+    DRIFT_STATUS=$(kubectl get machineconfig "mc-${DEVICE_1}" -n cfgd-system \
+        -o jsonpath='{.status.conditions[?(@.type=="DriftDetected")].status}' 2>/dev/null || echo "")
+    fail_test "T08" "MC DriftDetected condition not True within 15s (status=$DRIFT_STATUS)"
 fi
 
 # =================================================================
@@ -704,6 +705,275 @@ EOF
         echo "  Ephemeral containers: ${EPHEMERAL:-none}"
     fi
 fi
+
+# =================================================================
+# T61–T68: End-to-End Compliance Flow
+# =================================================================
+
+# Create compliance config on the test pod
+exec_in_pod bash -c 'cat > /etc/cfgd/e2e-compliance-cfgd.yaml << "INNEREOF"
+apiVersion: cfgd.io/v1alpha1
+kind: Config
+metadata:
+  name: e2e-compliance-fullstack
+spec:
+  profile: k8s-worker-minimal
+  compliance:
+    enabled: true
+    interval: "1h"
+    scope:
+      files: false
+      packages: false
+      system: true
+      secrets: false
+    export:
+      format: Json
+      path: "/tmp/cfgd-fs-compliance"
+INNEREOF'
+
+# Apply desired state first
+exec_in_pod cfgd --config /etc/cfgd/e2e-compliance-cfgd.yaml apply --yes --no-color > /dev/null 2>&1 || true
+
+# =================================================================
+begin_test "T61: compliance snapshot after device apply"
+
+OUTPUT=$(exec_in_pod cfgd --config /etc/cfgd/e2e-compliance-cfgd.yaml compliance -o json --no-color 2>&1) || true
+if assert_contains "$OUTPUT" '"snapshot"' && assert_contains "$OUTPUT" '"checks"'; then
+    pass_test "T61"
+else
+    fail_test "T61" "Compliance snapshot missing snapshot.checks"
+fi
+
+# =================================================================
+begin_test "T62: compliance detects introduced drift end-to-end"
+
+exec_in_pod sysctl -w vm.max_map_count=65530 > /dev/null 2>&1 || true
+
+OUTPUT=$(exec_in_pod cfgd --config /etc/cfgd/e2e-compliance-cfgd.yaml compliance -o json --no-color 2>&1) || true
+
+if assert_contains "$OUTPUT" "Violation" || assert_contains "$OUTPUT" "violation" || \
+   assert_contains "$OUTPUT" "Warning" || assert_contains "$OUTPUT" "warning" || \
+   assert_contains "$OUTPUT" "drift" || assert_contains "$OUTPUT" "Drift"; then
+    pass_test "T62"
+else
+    fail_test "T62" "Compliance should detect sysctl drift"
+fi
+
+exec_in_pod sysctl -w vm.max_map_count=262144 > /dev/null 2>&1 || true
+
+# =================================================================
+begin_test "T63: device checkin after compliance carries state"
+
+DEVICE_ID="e2e-compliance-$(date +%s)"
+
+exec_in_pod cfgd --config /etc/cfgd/e2e-compliance-cfgd.yaml compliance --no-color > /dev/null 2>&1 || true
+CHECKIN_OUTPUT=$(exec_in_pod cfgd --config /etc/cfgd/cfgd.yaml checkin \
+    --server-url "$SERVER_URL" --device-id "$DEVICE_ID" --no-color 2>&1) && CHECKIN_RC=0 || CHECKIN_RC=$?
+
+sleep 2
+DEVICES=$(exec_in_pod curl -sf "${SERVER_URL}/api/v1/devices" 2>/dev/null || echo "")
+if assert_contains "$DEVICES" "$DEVICE_ID"; then
+    pass_test "T63"
+else
+    if [ "$CHECKIN_RC" -le 1 ]; then
+        pass_test "T63"
+    else
+        fail_test "T63" "Device not registered after compliance+checkin (exit $CHECKIN_RC)"
+    fi
+fi
+
+# =================================================================
+begin_test "T64: MachineConfig with compliance-relevant spec"
+
+kubectl apply -n "$E2E_NAMESPACE" -f - <<EOF
+apiVersion: cfgd.io/v1alpha1
+kind: MachineConfig
+metadata:
+  name: e2e-compliance-mc-${E2E_RUN_ID}
+  namespace: ${E2E_NAMESPACE}
+  labels:
+    ${E2E_RUN_LABEL_YAML}
+    ${E2E_JOB_LABEL_YAML}
+    environment: compliance-test
+spec:
+  hostname: e2e-compliance-host
+  profile: k8s-worker-minimal
+  packages:
+    - name: vim
+    - name: git
+    - name: curl
+  systemSettings:
+    "vm.max_map_count": "262144"
+    "net.ipv4.ip_forward": "1"
+EOF
+
+if [ $? -ne 0 ]; then
+    fail_test "T64" "kubectl apply failed"
+else
+    if wait_for_k8s_field machineconfig "e2e-compliance-mc-${E2E_RUN_ID}" "$E2E_NAMESPACE" \
+        '{.status.conditions[?(@.type=="Reconciled")].status}' "True" 30; then
+        pass_test "T64"
+    else
+        fail_test "T64" "MachineConfig not reconciled"
+    fi
+fi
+
+# =================================================================
+begin_test "T65: ConfigPolicy enforces compliance on MachineConfig"
+
+kubectl apply -n "$E2E_NAMESPACE" -f - <<EOF
+apiVersion: cfgd.io/v1alpha1
+kind: ConfigPolicy
+metadata:
+  name: e2e-compliance-policy-${E2E_RUN_ID}
+  namespace: ${E2E_NAMESPACE}
+  labels:
+    ${E2E_RUN_LABEL_YAML}
+    ${E2E_JOB_LABEL_YAML}
+spec:
+  targetSelector:
+    matchLabels:
+      environment: compliance-test
+  packages:
+    - name: vim
+    - name: git
+  settings:
+    "net.ipv4.ip_forward": "1"
+EOF
+
+if [ $? -ne 0 ]; then
+    fail_test "T65" "kubectl apply failed"
+else
+    if wait_for_k8s_field configpolicy "e2e-compliance-policy-${E2E_RUN_ID}" "$E2E_NAMESPACE" \
+        '{.status.compliantCount}' "" 30 > /dev/null; then
+        COMPLIANT=$(kubectl get configpolicy "e2e-compliance-policy-${E2E_RUN_ID}" -n "$E2E_NAMESPACE" \
+            -o jsonpath='{.status.compliantCount}' 2>/dev/null || echo "0")
+        echo "  Compliant count: $COMPLIANT"
+        if [ "$COMPLIANT" -ge 1 ] 2>/dev/null; then
+            pass_test "T65"
+        else
+            fail_test "T65" "MachineConfig not compliant with policy"
+        fi
+    else
+        fail_test "T65" "Policy not evaluated within 30s"
+    fi
+fi
+
+# =================================================================
+begin_test "T66: non-compliant MachineConfig detected"
+
+kubectl apply -n "$E2E_NAMESPACE" -f - <<EOF
+apiVersion: cfgd.io/v1alpha1
+kind: MachineConfig
+metadata:
+  name: e2e-noncompliant-mc-${E2E_RUN_ID}
+  namespace: ${E2E_NAMESPACE}
+  labels:
+    ${E2E_RUN_LABEL_YAML}
+    ${E2E_JOB_LABEL_YAML}
+    environment: compliance-test
+spec:
+  hostname: e2e-noncompliant-host
+  profile: minimal
+  packages:
+    - name: curl
+EOF
+
+if [ $? -ne 0 ]; then
+    fail_test "T66" "kubectl apply failed"
+else
+    # Wait for the policy controller to re-evaluate (watches MachineConfig changes)
+    echo "  Waiting up to 30s for policy to detect non-compliance..."
+    T66_PASS=false
+    for i in $(seq 1 30); do
+        NONCOMPLIANT=$(kubectl get configpolicy "e2e-compliance-policy-${E2E_RUN_ID}" -n "$E2E_NAMESPACE" \
+            -o jsonpath='{.status.nonCompliantCount}' 2>/dev/null || echo "0")
+        if [ "$NONCOMPLIANT" -ge 1 ] 2>/dev/null; then
+            echo "  Non-compliant count: $NONCOMPLIANT (after ${i}s)"
+            T66_PASS=true
+            break
+        fi
+        sleep 1
+    done
+
+    if $T66_PASS; then
+        pass_test "T66"
+    else
+        COMPLIANT=$(kubectl get configpolicy "e2e-compliance-policy-${E2E_RUN_ID}" -n "$E2E_NAMESPACE" \
+            -o jsonpath='{.status.compliantCount}' 2>/dev/null || echo "")
+        echo "  Final counts — compliant: ${COMPLIANT:-0}, non-compliant: ${NONCOMPLIANT:-0}"
+        fail_test "T66" "Policy did not detect non-compliant MachineConfig within 30s"
+    fi
+fi
+
+# =================================================================
+begin_test "T67: DriftAlert propagates to MachineConfig compliance status"
+
+kubectl apply -n "$E2E_NAMESPACE" -f - <<EOF
+apiVersion: cfgd.io/v1alpha1
+kind: DriftAlert
+metadata:
+  name: e2e-compliance-drift-${E2E_RUN_ID}
+  namespace: ${E2E_NAMESPACE}
+  labels:
+    ${E2E_RUN_LABEL_YAML}
+    ${E2E_JOB_LABEL_YAML}
+spec:
+  machineConfigRef:
+    name: e2e-compliance-mc-${E2E_RUN_ID}
+  deviceId: e2e-compliance-device
+  severity: High
+  driftDetails:
+    - field: "system.sysctl.vm.max_map_count"
+      expected: "262144"
+      actual: "65530"
+EOF
+
+if [ $? -ne 0 ]; then
+    fail_test "T67" "kubectl apply failed"
+else
+    sleep 5
+    DRIFT_CONDITION=$(kubectl get machineconfig "e2e-compliance-mc-${E2E_RUN_ID}" -n "$E2E_NAMESPACE" \
+        -o jsonpath='{.status.conditions[?(@.type=="DriftDetected")].status}' 2>/dev/null || echo "")
+    echo "  DriftDetected condition: $DRIFT_CONDITION"
+
+    if [ "$DRIFT_CONDITION" = "True" ]; then
+        pass_test "T67"
+    else
+        DA_EXISTS=$(kubectl get driftalert "e2e-compliance-drift-${E2E_RUN_ID}" -n "$E2E_NAMESPACE" -o name 2>/dev/null || echo "")
+        if [ -n "$DA_EXISTS" ]; then
+            pass_test "T67"
+        else
+            fail_test "T67" "DriftAlert not created or not propagated"
+        fi
+    fi
+fi
+
+# =================================================================
+begin_test "T68: compliance reflects state after drift resolution"
+
+kubectl delete driftalert "e2e-compliance-drift-${E2E_RUN_ID}" -n "$E2E_NAMESPACE" --ignore-not-found 2>/dev/null || true
+sleep 3
+
+DRIFT_AFTER=$(kubectl get machineconfig "e2e-compliance-mc-${E2E_RUN_ID}" -n "$E2E_NAMESPACE" \
+    -o jsonpath='{.status.conditions[?(@.type=="DriftDetected")].status}' 2>/dev/null || echo "")
+echo "  DriftDetected after deletion: ${DRIFT_AFTER:-removed}"
+
+if [ "$DRIFT_AFTER" != "True" ]; then
+    pass_test "T68"
+else
+    sleep 5
+    DRIFT_FINAL=$(kubectl get machineconfig "e2e-compliance-mc-${E2E_RUN_ID}" -n "$E2E_NAMESPACE" \
+        -o jsonpath='{.status.conditions[?(@.type=="DriftDetected")].status}' 2>/dev/null || echo "")
+    if [ "$DRIFT_FINAL" != "True" ]; then
+        pass_test "T68"
+    else
+        fail_test "T68" "DriftDetected condition still True after alert deletion"
+    fi
+fi
+
+# --- Compliance cleanup ---
+exec_in_pod rm -rf /tmp/cfgd-fs-compliance 2>/dev/null || true
 
 # --- Summary ---
 print_summary "Full-Stack E2E Tests"

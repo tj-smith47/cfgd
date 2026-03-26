@@ -107,5 +107,11 @@ jobs:
         with:
           version: "25.x"
 
+      - name: Format check
+        run: cargo fmt -p cfgd-core -p cfgd -- --check
+
+      - name: Clippy
+        run: cargo clippy -p cfgd-core -p cfgd -- -D warnings
+
       - name: Test
         run: cargo test -p cfgd-core -p cfgd
