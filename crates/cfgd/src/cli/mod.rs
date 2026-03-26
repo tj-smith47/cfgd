@@ -2044,9 +2044,9 @@ fn print_apply_result(
 }
 
 fn cmd_apply(cli: &Cli, printer: &Printer, args: &ApplyArgs) -> anyhow::Result<()> {
-    // --from: clone from git URL or use local path as config directory
+    // --from: clone from git source or use local path as config directory
     if let Some(from) = &args.from {
-        init::resolve_from(from, "master", printer)?;
+        init::resolve_from(from, None, "master", printer)?;
     }
 
     let dry_run = args.dry_run;

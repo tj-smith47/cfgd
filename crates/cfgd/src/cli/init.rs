@@ -30,12 +30,9 @@ pub(super) fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result
 
     // 1. Determine target directory
     let target_dir = if let Some(from) = args.from {
-        // --from: resolve URL (clone) or local path
-        let resolved = resolve_from(from, args.branch, printer)?;
-        // --path overrides the resolved target (clone destination)
-        args.path
-            .map(|p| cfgd_core::expand_tilde(Path::new(p)))
-            .unwrap_or(resolved)
+        // --from: clone git source or use local config path
+        let explicit_path = args.path.map(|p| cfgd_core::expand_tilde(Path::new(p)));
+        resolve_from(from, explicit_path.as_deref(), args.branch, printer)?
     } else {
         match args.path {
             Some(p) => cfgd_core::expand_tilde(Path::new(p)),
@@ -55,7 +52,7 @@ pub(super) fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result
     }
 
     // 4. Clone or scaffold
-    if let Some(url) = args.from.filter(|f| is_git_url(f)) {
+    if let Some(url) = args.from.filter(|f| is_git_source(f)) {
         clone_into(&target_dir, url, args.branch, printer)?;
         // If --theme was specified and the cloned repo has a cfgd.yaml, set the theme
         if let Some(theme) = args.theme {
@@ -395,32 +392,43 @@ fn pick_profile(profiles_dir: &Path, printer: &Printer) -> anyhow::Result<String
     )
 }
 
-/// Returns true if the value looks like a git URL rather than a local path.
-pub(super) fn is_git_url(value: &str) -> bool {
-    value.starts_with("https://")
+/// Returns true if the value is a clonable git source (URL or local git repo).
+pub(super) fn is_git_source(value: &str) -> bool {
+    // Remote URLs
+    if value.starts_with("https://")
         || value.starts_with("http://")
         || value.starts_with("ssh://")
         || value.starts_with("git://")
         || value.starts_with("git@")
         || value.ends_with(".git")
+    {
+        return true;
+    }
+    // Local git repos
+    let path = cfgd_core::expand_tilde(Path::new(value));
+    path.join(".git").exists()
 }
 
 /// Resolve a --from value to a config directory path.
-/// If it's a git URL, clone to default_config_dir. If it's a local path, use it directly.
+/// Git sources (URLs or local repos) are cloned to the target dir.
+/// Plain local paths are used directly (must contain cfgd.yaml).
 pub(super) fn resolve_from(
     from: &str,
+    target: Option<&Path>,
     branch: &str,
     printer: &cfgd_core::output::Printer,
 ) -> anyhow::Result<std::path::PathBuf> {
-    if is_git_url(from) {
-        let target = cfgd_core::default_config_dir();
-        if !target.join("cfgd.yaml").exists() {
-            std::fs::create_dir_all(&target)?;
-            clone_into(&target, from, branch, printer)?;
+    if is_git_source(from) {
+        let dest = target
+            .map(|p| p.to_path_buf())
+            .unwrap_or_else(cfgd_core::default_config_dir);
+        if !dest.join("cfgd.yaml").exists() {
+            std::fs::create_dir_all(&dest)?;
+            clone_into(&dest, from, branch, printer)?;
         } else {
-            printer.info(&format!("Already initialized at {}", target.display()));
+            printer.info(&format!("Already initialized at {}", dest.display()));
         }
-        Ok(target)
+        Ok(dest)
     } else {
         let path = cfgd_core::expand_tilde(Path::new(from));
         if !path.exists() {
@@ -1229,21 +1237,28 @@ mod tests {
     }
 
     #[test]
-    fn is_git_url_detects_urls() {
-        assert!(is_git_url("https://github.com/user/repo"));
-        assert!(is_git_url("http://github.com/user/repo"));
-        assert!(is_git_url("git@github.com:user/repo.git"));
-        assert!(is_git_url("ssh://git@github.com/user/repo"));
-        assert!(is_git_url("git://github.com/user/repo"));
-        assert!(is_git_url("/some/local/path.git"));
+    fn is_git_source_detects_urls() {
+        assert!(is_git_source("https://github.com/user/repo"));
+        assert!(is_git_source("http://github.com/user/repo"));
+        assert!(is_git_source("git@github.com:user/repo.git"));
+        assert!(is_git_source("ssh://git@github.com/user/repo"));
+        assert!(is_git_source("git://github.com/user/repo"));
+        assert!(is_git_source("/some/local/path.git"));
     }
 
     #[test]
-    fn is_git_url_rejects_paths() {
-        assert!(!is_git_url("/home/user/config"));
-        assert!(!is_git_url("~/my-config"));
-        assert!(!is_git_url("./relative/path"));
-        assert!(!is_git_url("config"));
+    fn is_git_source_detects_local_git_repo() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join(".git")).unwrap();
+        assert!(is_git_source(&dir.path().display().to_string()));
+    }
+
+    #[test]
+    fn is_git_source_rejects_plain_paths() {
+        assert!(!is_git_source("/home/user/config"));
+        assert!(!is_git_source("~/my-config"));
+        assert!(!is_git_source("./relative/path"));
+        assert!(!is_git_source("config"));
     }
 
     #[test]
@@ -1256,7 +1271,7 @@ mod tests {
         .unwrap();
 
         let printer = Printer::new(cfgd_core::output::Verbosity::Quiet);
-        let result = resolve_from(&dir.path().display().to_string(), "master", &printer);
+        let result = resolve_from(&dir.path().display().to_string(), None, "master", &printer);
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), dir.path());
     }
@@ -1267,7 +1282,7 @@ mod tests {
         // No cfgd.yaml
 
         let printer = Printer::new(cfgd_core::output::Verbosity::Quiet);
-        let result = resolve_from(&dir.path().display().to_string(), "master", &printer);
+        let result = resolve_from(&dir.path().display().to_string(), None, "master", &printer);
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("No cfgd.yaml"));
     }
@@ -1277,7 +1292,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let nonexistent = dir.path().join("does-not-exist");
         let printer = Printer::new(cfgd_core::output::Verbosity::Quiet);
-        let result = resolve_from(&nonexistent.display().to_string(), "master", &printer);
+        let result = resolve_from(&nonexistent.display().to_string(), None, "master", &printer);
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("does not exist"));
     }
