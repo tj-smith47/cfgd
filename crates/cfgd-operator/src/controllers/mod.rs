@@ -7,8 +7,8 @@ use kube::api::{Api, ListParams, Patch, PatchParams};
 use kube::runtime::Controller;
 use kube::runtime::controller::Action;
 use kube::runtime::events::{Event, EventType, Recorder, Reporter};
-use kube::runtime::watcher::Config as WatcherConfig;
 use kube::runtime::reflector::ObjectRef;
+use kube::runtime::watcher::Config as WatcherConfig;
 use kube::{Client, Resource, ResourceExt};
 use tracing::{debug, info, warn};
 

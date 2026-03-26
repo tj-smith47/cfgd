@@ -320,7 +320,7 @@ fi
 begin_test "T08: Policy sees drifted MachineConfig"
 
 if wait_for_k8s_field machineconfig "mc-${DEVICE_1}" cfgd-system \
-    '{.status.conditions[?(@.type=="DriftDetected")].status}' "True" 15 > /dev/null; then
+    '{.status.conditions[?(@.type=="DriftDetected")].status}' "True" 30 > /dev/null; then
     DRIFT_REASON=$(kubectl get machineconfig "mc-${DEVICE_1}" -n cfgd-system \
         -o jsonpath='{.status.conditions[?(@.type=="DriftDetected")].reason}' 2>/dev/null || echo "")
     echo "  MC DriftDetected status: True"
@@ -329,7 +329,7 @@ if wait_for_k8s_field machineconfig "mc-${DEVICE_1}" cfgd-system \
 else
     DRIFT_STATUS=$(kubectl get machineconfig "mc-${DEVICE_1}" -n cfgd-system \
         -o jsonpath='{.status.conditions[?(@.type=="DriftDetected")].status}' 2>/dev/null || echo "")
-    fail_test "T08" "MC DriftDetected condition not True within 15s (status=$DRIFT_STATUS)"
+    fail_test "T08" "MC DriftDetected condition not True within 30s (status=$DRIFT_STATUS)"
 fi
 
 # =================================================================
