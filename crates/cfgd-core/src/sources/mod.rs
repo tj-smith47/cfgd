@@ -556,33 +556,38 @@ fn normalize_semver_pin(pin: &str) -> String {
 /// Clone a git repo with git2, falling back to the git CLI for SSH URLs.
 /// Returns Ok(()) on success, Err with description on failure.
 pub fn git_clone_with_fallback(url: &str, target: &Path) -> std::result::Result<(), String> {
-    // Set up auth callbacks so git2 can use SSH keys and credential helpers
-    let mut callbacks = git2::RemoteCallbacks::new();
-    callbacks.credentials(crate::git_ssh_credentials);
+    // Try git CLI first — it respects the user's credential helpers (gh auth,
+    // osxkeychain, etc.) and handles SSH agent passphrase prompts correctly.
+    // libgit2 can hang on macOS when credential helpers or SSH keys need interaction.
+    let cli_status = std::process::Command::new("git")
+        .args(["clone", url, &target.display().to_string()])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status();
+
+    match cli_status {
+        Ok(s) if s.success() => return Ok(()),
+        _ => {
+            // Clean up partial clone before libgit2 retry
+            let _ = std::fs::remove_dir_all(target);
+            let _ = std::fs::create_dir_all(target);
+        }
+    }
+
+    // Fall back to libgit2 with SSH credential callbacks
     let mut fetch_opts = git2::FetchOptions::new();
-    fetch_opts.remote_callbacks(callbacks);
+    if url.starts_with("git@") || url.starts_with("ssh://") {
+        let mut callbacks = git2::RemoteCallbacks::new();
+        callbacks.credentials(crate::git_ssh_credentials);
+        fetch_opts.remote_callbacks(callbacks);
+    }
     let mut builder = git2::build::RepoBuilder::new();
     builder.fetch_options(fetch_opts);
 
-    match builder.clone(url, target) {
-        Ok(_) => Ok(()),
-        Err(e) => {
-            let status = std::process::Command::new("git")
-                .args(["clone", url, &target.display().to_string()])
-                .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::null())
-                .status();
-
-            match status {
-                Ok(s) if s.success() => Ok(()),
-                Ok(_) => Err(format!("Failed to clone {}: {}", url, e)),
-                Err(cli_err) => Err(format!(
-                    "Failed to clone {}: {} (git cli: {})",
-                    url, e, cli_err
-                )),
-            }
-        }
-    }
+    builder
+        .clone(url, target)
+        .map(|_| ())
+        .map_err(|e| format!("Failed to clone {}: {}", url, e))
 }
 
 #[cfg(test)]

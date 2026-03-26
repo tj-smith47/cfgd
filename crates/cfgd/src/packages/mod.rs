@@ -192,7 +192,7 @@ fn bootstrap_via_system_manager(
     target_pkg: &str,
     manager_name: &str,
 ) -> Result<()> {
-    for cmd_name in ["apt", "dnf", "zypper"] {
+    for cmd_name in ["apt-get", "dnf", "zypper"] {
         if command_available(cmd_name) {
             let result = printer
                 .run_with_output(
@@ -240,7 +240,7 @@ fn bootstrap_via_brew_then_system(
         }
     }
 
-    for cmd_name in ["apt", "dnf"] {
+    for cmd_name in ["apt-get", "dnf"] {
         if command_available(cmd_name) {
             let result = printer
                 .run_with_output(
@@ -1117,9 +1117,9 @@ fn apt_manager() -> SimpleManager {
     SimpleManager {
         mgr_name: "apt",
         list_cmd: &["dpkg-query", "-W", "-f", "${Package}\n"],
-        install_cmd: &["sudo", "apt", "install", "-y"],
-        uninstall_cmd: &["sudo", "apt", "remove", "-y"],
-        update_cmd: Some(&["sudo", "apt", "update"]),
+        install_cmd: &["sudo", "apt-get", "install", "-y"],
+        uninstall_cmd: &["sudo", "apt-get", "remove", "-y"],
+        update_cmd: Some(&["sudo", "apt-get", "update"]),
         ignore_update_exit: false,
         parse_list: parse_simple_lines,
         query_version: query_version_apt,
