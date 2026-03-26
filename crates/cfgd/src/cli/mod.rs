@@ -5649,6 +5649,8 @@ fn cmd_source_add(cli: &Cli, printer: &Printer, args: &SourceAddArgs) -> anyhow:
     // Interactive priority prompt (when --priority not specified on command line)
     let resolved_priority = if let Some(p) = priority {
         p
+    } else if args.yes {
+        500
     } else {
         printer.newline();
         let input = printer.prompt_text("Set priority", "500")?;

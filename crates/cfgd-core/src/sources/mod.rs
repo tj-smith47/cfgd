@@ -192,21 +192,49 @@ impl SourceManager {
         Ok(())
     }
 
-    /// Clone a new source repo.
+    /// Clone a new source repo. Tries git CLI first (respects system credential
+    /// helpers and SSH config), falls back to libgit2.
     fn clone_source(&self, spec: &SourceSpec, source_dir: &Path, printer: &Printer) -> Result<()> {
         printer.info(&format!(
             "Cloning source '{}' from {}...",
             spec.name, spec.origin.url
         ));
 
-        std::fs::create_dir_all(source_dir).map_err(|e| SourceError::CacheError {
-            message: format!("cannot create cache dir: {}", e),
-        })?;
+        // Ensure parent dir exists but not source_dir itself (git clone creates it)
+        if let Some(parent) = source_dir.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| SourceError::CacheError {
+                message: format!("cannot create cache dir: {}", e),
+            })?;
+        }
+
+        // Try git CLI first
+        let cli_ok = std::process::Command::new("git")
+            .args([
+                "clone",
+                "--branch",
+                &spec.origin.branch,
+                &spec.origin.url,
+                &source_dir.display().to_string(),
+            ])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+
+        if cli_ok {
+            return Ok(());
+        }
+
+        // Clean up partial clone before libgit2 retry
+        let _ = std::fs::remove_dir_all(source_dir);
 
         let mut fo = FetchOptions::new();
-        let mut callbacks = RemoteCallbacks::new();
-        callbacks.credentials(crate::git_ssh_credentials);
-        fo.remote_callbacks(callbacks);
+        if spec.origin.url.starts_with("git@") || spec.origin.url.starts_with("ssh://") {
+            let mut callbacks = RemoteCallbacks::new();
+            callbacks.credentials(crate::git_ssh_credentials);
+            fo.remote_callbacks(callbacks);
+        }
 
         let mut builder = git2::build::RepoBuilder::new();
         builder.fetch_options(fo);

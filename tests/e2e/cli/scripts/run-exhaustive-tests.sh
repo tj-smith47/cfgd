@@ -2655,10 +2655,15 @@ YAML
     EC="--config $EC_CFG/cfgd.yaml --state-dir $EC_STATE --no-color"
 
     begin_test "EC01: source add with encryption constraint succeeds"
-    run $EC source add "$EC_SOURCE" --profile base
+    run $EC source add "$EC_SOURCE" --profile base --yes
     if assert_ok; then
         pass_test "EC01"
     else fail_test "EC01"; fi
+
+    # Copy source profile and files to local config so apply can resolve them
+    cp "$EC_SOURCE/profiles/base.yaml" "$EC_CFG/profiles/base.yaml"
+    cp "$EC_SOURCE/files/secret-config.yaml" "$EC_CFG/files/secret-config.yaml"
+    cp "$EC_SOURCE/.sops.yaml" "$EC_CFG/.sops.yaml"
 
     begin_test "EC02: apply --dry-run with compliant encrypted file succeeds"
     SOPS_AGE_KEY_FILE="$EC_AGE_KEY" run $EC apply --dry-run
