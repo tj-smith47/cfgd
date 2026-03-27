@@ -496,4 +496,130 @@ else
     skip_test "EC04" "age-keygen or sops not available"
 fi
 
+# ═════════════════════════════════════════════════════
+# SECTION 47: error paths (ERR07–ERR13)
+# ═════════════════════════════════════════════════════
+
+begin_test "ERR07: circular module dependency detected gracefully"
+ERR07_CFG="$SCRATCH/err07-cfg"
+ERR07_TGT="$SCRATCH/err07-home"
+ERR07_STATE="$SCRATCH/err07-state"
+mkdir -p "$ERR07_CFG/profiles" "$ERR07_CFG/files" "$ERR07_CFG/modules/mod-a" "$ERR07_CFG/modules/mod-b" "$ERR07_TGT" "$ERR07_STATE"
+cp -r "$FIXTURES/files/"* "$ERR07_CFG/files/"
+cat > "$ERR07_CFG/modules/mod-a/module.yaml" << YAML
+apiVersion: cfgd.io/v1alpha1
+kind: Module
+metadata:
+  name: mod-a
+spec:
+  depends:
+    - mod-b
+  packages: []
+  files: []
+YAML
+cat > "$ERR07_CFG/modules/mod-b/module.yaml" << YAML
+apiVersion: cfgd.io/v1alpha1
+kind: Module
+metadata:
+  name: mod-b
+spec:
+  depends:
+    - mod-a
+  packages: []
+  files: []
+YAML
+cat > "$ERR07_CFG/profiles/base.yaml" << YAML
+apiVersion: cfgd.io/v1alpha1
+kind: Profile
+metadata:
+  name: base
+spec:
+  modules:
+    - mod-a
+    - mod-b
+  files:
+    managed: []
+YAML
+cat > "$ERR07_CFG/cfgd.yaml" << YAML
+apiVersion: cfgd.io/v1alpha1
+kind: Config
+metadata:
+  name: err07-test
+spec:
+  profile: base
+YAML
+run --config "$ERR07_CFG/cfgd.yaml" --state-dir "$ERR07_STATE" --no-color apply --dry-run
+if assert_fail && echo "$OUTPUT" | grep -qiE "cycle|circular"; then
+    pass_test "ERR07"
+else fail_test "ERR07" "Expected cycle/circular error"; fi
+
+begin_test "ERR08: missing file source gives clear error"
+ERR08_CFG="$SCRATCH/err08-cfg"
+ERR08_TGT="$SCRATCH/err08-home"
+ERR08_STATE="$SCRATCH/err08-state"
+mkdir -p "$ERR08_CFG/profiles" "$ERR08_CFG/files" "$ERR08_TGT" "$ERR08_STATE"
+cp -r "$FIXTURES/files/"* "$ERR08_CFG/files/"
+cat > "$ERR08_CFG/profiles/base.yaml" << YAML
+apiVersion: cfgd.io/v1alpha1
+kind: Profile
+metadata:
+  name: base
+spec:
+  files:
+    managed:
+      - source: files/this-file-does-not-exist.txt
+        target: $ERR08_TGT/.missing
+YAML
+cat > "$ERR08_CFG/cfgd.yaml" << YAML
+apiVersion: cfgd.io/v1alpha1
+kind: Config
+metadata:
+  name: err08-test
+spec:
+  profile: base
+YAML
+run --config "$ERR08_CFG/cfgd.yaml" --state-dir "$ERR08_STATE" --no-color apply --dry-run
+if assert_fail || echo "$OUTPUT" | grep -qiE "not found|no such file|does not exist|missing"; then
+    pass_test "ERR08"
+else fail_test "ERR08" "Expected clear missing-file error"; fi
+
+begin_test "ERR09: empty profile name rejected"
+run $C profile create ""
+if assert_fail && echo "$OUTPUT" | grep -qiE "empty|invalid|cannot"; then
+    pass_test "ERR09"
+else
+    # clap may reject before our validation — any failure is acceptable
+    if assert_fail; then
+        pass_test "ERR09"
+    else
+        fail_test "ERR09" "Expected rejection for empty profile name"
+    fi
+fi
+
+begin_test "ERR10: path traversal in module file rejected"
+run $C module create err10-mod --file "../../../etc/passwd:$TGT/.traversal-test"
+if assert_fail || echo "$OUTPUT" | grep -qiE "traversal|invalid|denied|outside|not found|error"; then
+    pass_test "ERR10"
+else fail_test "ERR10" "Expected path traversal rejection"; fi
+# Clean up module if it was partially created
+rm -rf "$CFG/modules/err10-mod"
+
+begin_test "ERR11: unreachable source URL fails with timeout or error"
+run $C source add "https://192.0.2.1/nonexistent.git" --yes
+if assert_fail; then
+    pass_test "ERR11"
+else fail_test "ERR11" "Expected failure for unreachable URL"; fi
+
+begin_test "ERR12: profile update nonexistent profile fails"
+run $C profile update nonexistent-profile-xyz --package brew:vim
+if assert_fail; then
+    pass_test "ERR12"
+else fail_test "ERR12" "Expected failure for nonexistent profile"; fi
+
+begin_test "ERR13: --skip and --only combined does not crash"
+run $C apply --dry-run --skip files --only packages
+if [ "$RC" -le 1 ]; then
+    pass_test "ERR13"
+else fail_test "ERR13" "Unexpected crash (exit $RC)"; fi
+
 print_summary "Behavioral"
