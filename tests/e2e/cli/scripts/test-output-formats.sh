@@ -52,7 +52,8 @@ else fail_test "OF07"; fi
 
 begin_test "OF08: module list --output json"
 run $C module list --output json
-if assert_ok && assert_contains "$OUTPUT" "{"; then
+# May output [] (empty array) or [{...}] (populated) — both are valid JSON
+if assert_ok && (assert_contains "$OUTPUT" "[" || assert_contains "$OUTPUT" "{"); then
     pass_test "OF08"
 else fail_test "OF08"; fi
 
