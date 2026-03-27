@@ -77,8 +77,11 @@ pub(super) fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result
         scaffold(&target_dir, args.name, args.theme, printer)?;
     }
 
-    // 5. Generate release workflow based on what's present
-    regenerate_workflow(&target_dir, printer)?;
+    // 5. Generate release workflow — only for scaffolded repos, not cloned ones.
+    // Cloned repos already have their own workflows; writing into them dirties the tree.
+    if !from_used {
+        regenerate_workflow(&target_dir, printer)?;
+    }
 
     // 6. Git init if not already a repo
     if !target_dir.join(".git").exists() {
@@ -197,10 +200,9 @@ pub(super) fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result
                 let platform = cfgd_core::platform::Platform::detect();
                 let mgr_map = super::managers_map(&registry);
                 let cache_base = modules::default_module_cache_dir()?;
-                // Validate --apply-module names exist
+                // Validate --apply-module names exist (load once, check all)
+                let all_modules = modules::load_all_modules(&target_dir, &cache_base)?;
                 for m in args.apply_modules {
-                    let cache_base = modules::default_module_cache_dir()?;
-                    let all_modules = modules::load_all_modules(&target_dir, &cache_base)?;
                     let resolved_name = modules::resolve_profile_module_name(m);
                     if !all_modules.contains_key(resolved_name) {
                         anyhow::bail!("Module '{}' not found in {}", m, target_dir.display());
@@ -252,20 +254,7 @@ pub(super) fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result
 
     // 8. Install daemon if requested
     if args.install_daemon {
-        #[cfg(unix)]
-        {
-            let config_path = target_dir.join("cfgd.yaml");
-            let cfg = config::load_config(&config_path)?;
-            let profile = cfg.spec.profile.as_deref();
-            match cfgd_core::daemon::install_service(&config_path, profile) {
-                Ok(()) => printer.success("Daemon service installed"),
-                Err(e) => {
-                    printer.warning(&format!("Could not install daemon: {}", e));
-                    printer.info("Install later with: cfgd daemon install");
-                }
-            }
-        }
-        #[cfg(windows)]
+        #[cfg(any(unix, windows))]
         {
             let config_path = target_dir.join("cfgd.yaml");
             let cfg = config::load_config(&config_path)?;
@@ -273,6 +262,7 @@ pub(super) fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result
             match cfgd_core::daemon::install_service(&config_path, profile) {
                 Ok(()) => {
                     printer.success("Daemon service installed");
+                    #[cfg(windows)]
                     printer.info("The service will start automatically on boot");
                 }
                 Err(e) => {
@@ -462,10 +452,17 @@ fn clone_into(target_dir: &Path, url: &str, branch: &str, printer: &Printer) -> 
 
     printer.success(&format!("Cloned to {}", target_dir.display()));
 
-    // Checkout branch if not main
-    if branch != "master" {
-        let repo = git2::Repository::open(target_dir)
-            .map_err(|e| anyhow::anyhow!("Failed to open cloned repo: {}", e))?;
+    // Checkout the requested branch if HEAD isn't already on it.
+    // git clone checks out the remote's default branch; if the user asked for
+    // a different one we need to switch.
+    let repo = git2::Repository::open(target_dir)
+        .map_err(|e| anyhow::anyhow!("Failed to open cloned repo: {}", e))?;
+    let current_branch = repo
+        .head()
+        .ok()
+        .and_then(|h| h.shorthand().map(String::from))
+        .unwrap_or_default();
+    if current_branch != branch {
         let remote_branch = format!("origin/{}", branch);
         let obj = repo
             .revparse_single(&remote_branch)

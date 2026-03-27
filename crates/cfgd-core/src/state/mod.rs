@@ -173,9 +173,14 @@ const MIGRATIONS: &[&str] = &[
 /// Apply status for a reconciliation run.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub enum ApplyStatus {
+    /// Apply completed with all actions successful.
     Success,
+    /// Apply completed but some actions failed.
     Partial,
+    /// Apply failed entirely.
     Failed,
+    /// Apply is currently in progress (not yet finished).
+    InProgress,
 }
 
 impl ApplyStatus {
@@ -184,6 +189,7 @@ impl ApplyStatus {
             ApplyStatus::Success => "success",
             ApplyStatus::Partial => "partial",
             ApplyStatus::Failed => "failed",
+            ApplyStatus::InProgress => "in_progress",
         }
     }
 
@@ -191,6 +197,7 @@ impl ApplyStatus {
         match s {
             "success" => ApplyStatus::Success,
             "partial" => ApplyStatus::Partial,
+            "in_progress" => ApplyStatus::InProgress,
             "failed" => ApplyStatus::Failed,
             _ => ApplyStatus::Failed,
         }

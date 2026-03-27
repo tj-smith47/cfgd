@@ -971,12 +971,9 @@ impl<'a> Reconciler<'a> {
             .last()
             .map(|l| l.profile_name.as_str())
             .unwrap_or("unknown");
-        let apply_id = self.state.record_apply(
-            profile_name,
-            &plan_hash,
-            ApplyStatus::Success, // will be updated at the end
-            None,
-        )?;
+        let apply_id =
+            self.state
+                .record_apply(profile_name, &plan_hash, ApplyStatus::InProgress, None)?;
 
         let mut results = Vec::new();
         let mut action_index: usize = 0;

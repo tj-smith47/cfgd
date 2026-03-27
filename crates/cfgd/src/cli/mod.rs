@@ -2061,6 +2061,9 @@ fn print_apply_result(
                 result.failed()
             ));
         }
+        cfgd_core::state::ApplyStatus::InProgress => {
+            printer.warning("Apply still in progress (unexpected state)");
+        }
     }
     result.status.clone()
 }
@@ -2123,7 +2126,7 @@ fn cmd_apply(cli: &Cli, printer: &Printer, args: &ApplyArgs) -> anyhow::Result<(
 
     // Compose with sources if configured
     let (source_env, source_commits) = if !cfg.spec.sources.is_empty() {
-        let composition_result = compose_with_sources(cli, &resolved, printer)?;
+        let composition_result = compose_with_sources(cli, &cfg, &resolved, printer)?;
         let se = composition_result.source_env;
         let sc = composition_result.source_commits;
         ((Some(composition_result.resolved), se), sc)
@@ -2579,7 +2582,7 @@ fn cmd_plan(cli: &Cli, printer: &Printer, args: &PlanArgs) -> anyhow::Result<()>
 
     // Compose with sources if configured
     let source_env = if !cfg.spec.sources.is_empty() {
-        let composition_result = compose_with_sources(cli, &resolved, printer)?;
+        let composition_result = compose_with_sources(cli, &cfg, &resolved, printer)?;
         let se = composition_result.source_env;
         (Some(composition_result.resolved), se)
     } else {
@@ -2736,6 +2739,7 @@ fn cmd_status(cli: &Cli, printer: &Printer, module_filter: Option<&str>) -> anyh
                 cfgd_core::state::ApplyStatus::Success => "success",
                 cfgd_core::state::ApplyStatus::Partial => "partial",
                 cfgd_core::state::ApplyStatus::Failed => "failed",
+                cfgd_core::state::ApplyStatus::InProgress => "in_progress",
             },
         );
         if let Some(ref summary) = last.summary {
@@ -2963,6 +2967,7 @@ fn cmd_log(
                         cfgd_core::state::ApplyStatus::Success => "success".to_string(),
                         cfgd_core::state::ApplyStatus::Partial => "partial".to_string(),
                         cfgd_core::state::ApplyStatus::Failed => "failed".to_string(),
+                        cfgd_core::state::ApplyStatus::InProgress => "in_progress".to_string(),
                     },
                     record.summary.clone().unwrap_or_else(|| "-".to_string()),
                 ]
@@ -7009,12 +7014,10 @@ fn set_nested_yaml_value(
 /// Compose sources with local profile for plan generation.
 fn compose_with_sources(
     cli: &Cli,
+    cfg: &config::CfgdConfig,
     local_resolved: &ResolvedProfile,
     printer: &Printer,
 ) -> anyhow::Result<composition::CompositionResult> {
-    let config_path = cli.config.clone();
-    let cfg = config::load_config(&config_path)?;
-
     if cfg.spec.sources.is_empty() {
         // No sources, return local profile as-is
         return Ok(composition::CompositionResult {
