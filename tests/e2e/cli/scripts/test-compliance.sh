@@ -106,9 +106,10 @@ if assert_ok; then
     # Remove a managed file to simulate drift
     rm -f "$CO08_TGT/.zshrc"
     run $CO08 compliance
-    if assert_ok && assert_contains "$OUTPUT" "Violation"; then
+    # Summary line should show non-zero violation count (e.g. "1 violation")
+    if assert_ok && assert_contains "$OUTPUT" "Summary:" && assert_contains "$OUTPUT" "violation"; then
         pass_test "CO08"
-    else fail_test "CO08" "Expected Violation after removing managed file"; fi
+    else fail_test "CO08" "Expected non-zero violation in summary after removing managed file"; fi
 else fail_test "CO08" "Apply failed"; fi
 
 begin_test "CO09: compliance after restore shows compliant"
@@ -116,9 +117,10 @@ begin_test "CO09: compliance after restore shows compliant"
 run $CO08 apply --yes
 if assert_ok; then
     run $CO08 compliance
-    if assert_ok && assert_not_contains "$OUTPUT" "Violation"; then
+    # All-compliant message: "All N check(s) compliant"
+    if assert_ok && assert_contains "$OUTPUT" "check(s) compliant"; then
         pass_test "CO09"
-    else fail_test "CO09" "Expected no Violation after restore"; fi
+    else fail_test "CO09" "Expected all-compliant after restore"; fi
 else fail_test "CO09" "Apply failed"; fi
 
 begin_test "CO10: compliance export JSON format is valid"
