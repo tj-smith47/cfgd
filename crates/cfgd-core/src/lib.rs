@@ -99,6 +99,25 @@ pub fn union_extend(target: &mut Vec<String>, source: &[String]) {
     }
 }
 
+/// Prepare a `git` CLI command with SSH hang protection.
+///
+/// Sets `GIT_TERMINAL_PROMPT=0` to prevent interactive prompts and, for SSH URLs,
+/// sets `GIT_SSH_COMMAND` with `BatchMode=yes` and `StrictHostKeyChecking=accept-new`
+/// to prevent hangs in non-interactive contexts (piped install scripts, daemons).
+pub fn git_cmd_safe(url: Option<&str>) -> std::process::Command {
+    let mut cmd = std::process::Command::new("git");
+    cmd.env("GIT_TERMINAL_PROMPT", "0")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped());
+    if url.is_some_and(|u| u.starts_with("git@") || u.starts_with("ssh://")) {
+        cmd.env(
+            "GIT_SSH_COMMAND",
+            "ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new",
+        );
+    }
+    cmd
+}
+
 /// Default config directory: `~/.config/cfgd/` (XDG_CONFIG_HOME/cfgd on Linux).
 pub fn default_config_dir() -> std::path::PathBuf {
     directories::BaseDirs::new()

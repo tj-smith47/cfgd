@@ -1949,24 +1949,42 @@ fn handle_compliance_snapshot(
 fn git_pull(repo_path: &Path) -> std::result::Result<bool, String> {
     let repo = git2::Repository::open(repo_path).map_err(|e| format!("open repo: {}", e))?;
 
-    let mut remote = repo
-        .find_remote("origin")
-        .map_err(|e| format!("find remote: {}", e))?;
-
-    // Fetch
-    let mut fetch_opts = git2::FetchOptions::new();
-    let mut callbacks = git2::RemoteCallbacks::new();
-    callbacks.credentials(crate::git_ssh_credentials);
-    fetch_opts.remote_callbacks(callbacks);
-
     let head = repo.head().map_err(|e| format!("get HEAD: {}", e))?;
     let branch_name = head
         .shorthand()
         .ok_or_else(|| "cannot determine branch name".to_string())?;
 
-    remote
-        .fetch(&[branch_name], Some(&mut fetch_opts), None)
-        .map_err(|e| format!("fetch: {}", e))?;
+    // Try git CLI first with SSH hang protection.
+    let remote_url = repo
+        .find_remote("origin")
+        .ok()
+        .and_then(|r| r.url().map(String::from));
+    let mut fetch_cmd = crate::git_cmd_safe(remote_url.as_deref());
+    fetch_cmd.args([
+        "-C",
+        &repo_path.display().to_string(),
+        "fetch",
+        "origin",
+        branch_name,
+    ]);
+    let cli_ok = fetch_cmd
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false);
+
+    if !cli_ok {
+        // Fall back to libgit2
+        let mut remote = repo
+            .find_remote("origin")
+            .map_err(|e| format!("find remote: {}", e))?;
+        let mut fetch_opts = git2::FetchOptions::new();
+        let mut callbacks = git2::RemoteCallbacks::new();
+        callbacks.credentials(crate::git_ssh_credentials);
+        fetch_opts.remote_callbacks(callbacks);
+        remote
+            .fetch(&[branch_name], Some(&mut fetch_opts), None)
+            .map_err(|e| format!("fetch: {}", e))?;
+    }
 
     // Check if we need to fast-forward
     let fetch_head = repo

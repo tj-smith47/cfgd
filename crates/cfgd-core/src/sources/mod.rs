@@ -207,26 +207,15 @@ impl SourceManager {
             })?;
         }
 
-        // Try git CLI first — set GIT_TERMINAL_PROMPT=0 and BatchMode for SSH
-        // to prevent hangs when run non-interactively (piped install scripts).
-        let mut clone_cmd = std::process::Command::new("git");
-        clone_cmd
-            .args([
-                "clone",
-                "--branch",
-                &spec.origin.branch,
-                &spec.origin.url,
-                &source_dir.display().to_string(),
-            ])
-            .env("GIT_TERMINAL_PROMPT", "0")
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::piped());
-        if spec.origin.url.starts_with("git@") || spec.origin.url.starts_with("ssh://") {
-            clone_cmd.env(
-                "GIT_SSH_COMMAND",
-                "ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new",
-            );
-        }
+        // Try git CLI first with SSH hang protection.
+        let mut clone_cmd = crate::git_cmd_safe(Some(&spec.origin.url));
+        clone_cmd.args([
+            "clone",
+            "--branch",
+            &spec.origin.branch,
+            &spec.origin.url,
+            &source_dir.display().to_string(),
+        ]);
         let cli_ok = clone_cmd
             .output()
             .map(|o| o.status.success())
@@ -594,23 +583,9 @@ fn normalize_semver_pin(pin: &str) -> String {
 /// Clone a git repo with git2, falling back to the git CLI for SSH URLs.
 /// Returns Ok(()) on success, Err with description on failure.
 pub fn git_clone_with_fallback(url: &str, target: &Path) -> std::result::Result<(), String> {
-    // Try git CLI first — it respects the user's credential helpers (gh auth,
-    // osxkeychain, etc.) and handles SSH agent forwarding.
-    // Set GIT_TERMINAL_PROMPT=0 to prevent git from hanging on any interactive prompt.
-    // For SSH URLs, use BatchMode=yes and StrictHostKeyChecking=accept-new so SSH
-    // uses the agent without prompting for host keys or passphrases (prevents hangs
-    // when run inside a piped install script where stdin isn't a terminal).
-    let mut cmd = std::process::Command::new("git");
-    cmd.args(["clone", url, &target.display().to_string()])
-        .env("GIT_TERMINAL_PROMPT", "0")
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::piped());
-    if url.starts_with("git@") || url.starts_with("ssh://") {
-        cmd.env(
-            "GIT_SSH_COMMAND",
-            "ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new",
-        );
-    }
+    // Try git CLI first with SSH hang protection.
+    let mut cmd = crate::git_cmd_safe(Some(url));
+    cmd.args(["clone", url, &target.display().to_string()]);
     let cli_result = cmd.output();
 
     match cli_result {
