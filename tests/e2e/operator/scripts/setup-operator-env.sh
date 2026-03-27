@@ -44,4 +44,4 @@ create_e2e_namespace
 # This prevents a single webhook rejection or transient error from aborting all
 # remaining tests with no summary.
 set +e
-trap 'cleanup_e2e; for ns in "e2e-team-alpha-${E2E_RUN_ID}" "e2e-team-beta-${E2E_RUN_ID}" "e2e-inject-${E2E_RUN_ID}"; do kubectl delete namespace "$ns" --ignore-not-found --wait=false 2>/dev/null || true; done' EXIT
+trap 'cleanup_e2e; for ns in "e2e-team-alpha-${E2E_RUN_ID}" "e2e-team-beta-${E2E_RUN_ID}" "e2e-inject-${E2E_RUN_ID}" "e2e-ns-a-${E2E_RUN_ID}" "e2e-ns-b-${E2E_RUN_ID}"; do kubectl delete namespace "$ns" --ignore-not-found --wait=false 2>/dev/null || true; done' EXIT
