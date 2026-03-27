@@ -251,16 +251,17 @@ metadata:
     ${E2E_RUN_LABEL_YAML}
     ${E2E_JOB_LABEL_YAML}
 spec:
+  hostname: ""
   profile: test
   packages: []
   systemSettings: {}
 EOF
 )
 echo "  Result: $(echo "$RESULT" | tail -1)"
-if assert_rejected "$RESULT" "Missing hostname"; then
+if assert_rejected "$RESULT" "Empty hostname"; then
     pass_test "OP-WH-04"
 else
-    fail_test "OP-WH-04" "MachineConfig without hostname was not rejected"
+    fail_test "OP-WH-04" "MachineConfig with empty hostname was not rejected"
 fi
 kubectl delete machineconfig "e2e-no-host-${E2E_RUN_ID}" -n "$E2E_NAMESPACE" 2>/dev/null || true
 
@@ -414,7 +415,9 @@ metadata:
     ${E2E_RUN_LABEL_YAML}
     ${E2E_JOB_LABEL_YAML}
 spec:
-  deviceId: device-001
+  deviceId: some-device
+  machineConfigRef:
+    name: ""
   severity: Medium
   driftDetails:
     - field: packages
@@ -423,10 +426,10 @@ spec:
 EOF
 )
 echo "  Result: $(echo "$RESULT" | tail -1)"
-if assert_rejected "$RESULT" "Missing machineConfigRef"; then
+if assert_rejected "$RESULT" "Empty machineConfigRef name"; then
     pass_test "OP-WH-09"
 else
-    fail_test "OP-WH-09" "DriftAlert without machineConfigRef was not rejected"
+    fail_test "OP-WH-09" "DriftAlert with empty machineConfigRef name was not rejected"
 fi
 kubectl delete driftalert "e2e-no-mcref-${E2E_RUN_ID}" -n "$E2E_NAMESPACE" 2>/dev/null || true
 
@@ -587,9 +590,9 @@ fi
 kubectl delete module "e2e-valid-mod-${E2E_RUN_ID}" 2>/dev/null || true
 
 # =================================================================
-# OP-WH-15: Mutation webhook — defaults injected on MachineConfig
+# OP-WH-15: MachineConfig serde defaults on minimal spec
 # =================================================================
-begin_test "OP-WH-15: Mutation webhook — defaults injected on MachineConfig"
+begin_test "OP-WH-15: MachineConfig serde defaults on minimal spec"
 
 # Create a minimal MachineConfig with only required fields
 kubectl apply -n "$E2E_NAMESPACE" -f - 2>&1 <<EOF || true
