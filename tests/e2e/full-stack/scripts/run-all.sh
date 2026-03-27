@@ -11,5 +11,6 @@ source "$SCRIPT_DIR/test-drift-lifecycle.sh"
 source "$SCRIPT_DIR/test-csi.sh"
 source "$SCRIPT_DIR/test-kubectl-plugin.sh"
 source "$SCRIPT_DIR/test-debug.sh"
+source "$SCRIPT_DIR/test-helm.sh"
 
 print_summary "Full-Stack Tests"
