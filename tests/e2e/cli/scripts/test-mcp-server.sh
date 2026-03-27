@@ -24,6 +24,8 @@ mcp_send() {
     MCP_RC=0
 }
 
+INIT_REQ='{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"e2e-test","version":"1.0"}}}'
+
 # --- MCP01: mcp-server --help ---
 
 begin_test "MCP01: mcp-server --help"
@@ -35,7 +37,6 @@ else fail_test "MCP01"; fi
 # --- MCP02: MCP server initialize ---
 
 begin_test "MCP02: MCP server initialize"
-INIT_REQ='{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"e2e-test","version":"1.0"}}}'
 mcp_send "$INIT_REQ"
 if [ "$MCP_RC" -eq 0 ] \
     && echo "$MCP_OUTPUT" | grep -q '"protocolVersion"' \
@@ -49,7 +50,6 @@ fi
 # --- MCP03: MCP server tools/list ---
 
 begin_test "MCP03: MCP server tools/list"
-INIT_REQ='{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"e2e-test","version":"1.0"}}}'
 TOOLS_REQ='{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}'
 mcp_send "${INIT_REQ}
 ${TOOLS_REQ}"
@@ -64,7 +64,6 @@ fi
 # --- MCP04: MCP server resources/list ---
 
 begin_test "MCP04: MCP server resources/list"
-INIT_REQ='{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"e2e-test","version":"1.0"}}}'
 RES_REQ='{"jsonrpc":"2.0","id":2,"method":"resources/list","params":{}}'
 mcp_send "${INIT_REQ}
 ${RES_REQ}"
@@ -79,7 +78,6 @@ fi
 # --- MCP05: MCP server prompts/list ---
 
 begin_test "MCP05: MCP server prompts/list"
-INIT_REQ='{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"e2e-test","version":"1.0"}}}'
 PROMPTS_REQ='{"jsonrpc":"2.0","id":2,"method":"prompts/list","params":{}}'
 mcp_send "${INIT_REQ}
 ${PROMPTS_REQ}"
@@ -93,27 +91,15 @@ fi
 
 # --- MCP06: MCP server invalid request ---
 
-begin_test "MCP06: MCP server invalid request (malformed JSON)"
-INIT_REQ='{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"e2e-test","version":"1.0"}}}'
-BAD_REQ='this is not valid json at all'
-# Server should return a parse error response, not crash
-MALFORMED_INPUT="${INIT_REQ}
+begin_test "MCP06: MCP server invalid request"
+BAD_REQ='{"not valid json at all'
+mcp_send "${INIT_REQ}
 ${BAD_REQ}"
-local_rc=0
-MALFORMED_OUTPUT=$(echo "$MALFORMED_INPUT" | timeout 10 "$CFGD" $C mcp-server 2>/dev/null) || local_rc=$?
-# Accept exit 0 (clean EOF) or 124 (timeout killed it, which is fine)
-if [ "$local_rc" -eq 0 ] || [ "$local_rc" -eq 124 ]; then
-    # Server didn't crash — check that we got a parse error response
-    if echo "$MALFORMED_OUTPUT" | grep -q '"Parse error"' \
-        || echo "$MALFORMED_OUTPUT" | grep -q -- '-32700'; then
-        pass_test "MCP06"
-    else
-        # Server survived without crashing, even if it didn't return -32700.
-        # The important thing is it didn't segfault or panic.
-        pass_test "MCP06"
-    fi
+if echo "$MCP_OUTPUT" | grep -q '"Parse error"' \
+    || echo "$MCP_OUTPUT" | grep -q -- '-32700'; then
+    pass_test "MCP06"
 else
-    fail_test "MCP06" "server crashed with exit code $local_rc on malformed input"
+    fail_test "MCP06" "server did not return parse error (-32700)"
 fi
 
 print_summary "MCP Server"
