@@ -192,12 +192,13 @@ spec:
     - source: "nonexistent-provider://some/ref"
       target: $SEC09_TGT/test-secret
 YAML
-run --config "$SEC09_CFG/cfgd.yaml" --state-dir "$SEC09_STATE" --no-color apply --dry-run
-if assert_ok && assert_contains "$OUTPUT" "no secret backend"; then
+# Unknown provider scheme is not recognized by parse_secret_reference, so the
+# reconciler treats it as a SOPS file path.  During apply the decrypt attempt
+# must fail (file does not exist), producing a non-zero exit.
+run --config "$SEC09_CFG/cfgd.yaml" --state-dir "$SEC09_STATE" --no-color apply --yes
+if assert_fail; then
     pass_test "SEC09"
-elif assert_fail; then
-    pass_test "SEC09"
-else fail_test "SEC09"; fi
+else fail_test "SEC09" "expected non-zero exit for unknown backend"; fi
 
 begin_test "SEC10: 1Password full flow (gated)"
 if [ -z "${OP_SERVICE_ACCOUNT_TOKEN:-}" ]; then
