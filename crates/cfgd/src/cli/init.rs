@@ -54,8 +54,12 @@ pub(super) fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result
     }
 
     // 4. Clone or scaffold
+    // When --from is a git source, resolve_from already cloned it above.
+    // Only clone here if resolve_from didn't handle it (non-git --from or no --from).
     if let Some(url) = args.from.filter(|f| is_git_source(f)) {
-        clone_into(&target_dir, url, args.branch, printer)?;
+        if !target_dir.join(".git").exists() {
+            clone_into(&target_dir, url, args.branch, printer)?;
+        }
         // If --theme was specified and the cloned repo has a cfgd.yaml, set the theme
         if let Some(theme) = args.theme {
             let config_path = target_dir.join("cfgd.yaml");
@@ -445,14 +449,9 @@ pub(super) fn resolve_from(
 
 /// Clone a remote repo into the target directory.
 fn clone_into(target_dir: &Path, url: &str, branch: &str, printer: &Printer) -> anyhow::Result<()> {
-    // If target already has .git, pull instead
+    // If target already has .git, it's already cloned — nothing to do.
     if target_dir.join(".git").exists() {
-        printer.info("Repository already exists, pulling latest...");
-        match cfgd_core::daemon::git_pull_sync(target_dir) {
-            Ok(true) => printer.success("Pulled new changes"),
-            Ok(false) => printer.success("Already up to date"),
-            Err(e) => printer.warning(&format!("Pull failed: {} — continuing", e)),
-        }
+        printer.info("Repository already exists, skipping clone");
         return Ok(());
     }
 

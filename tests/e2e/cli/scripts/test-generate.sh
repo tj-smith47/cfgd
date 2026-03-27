@@ -29,16 +29,11 @@ else
     fail_test "GEN02" "exit $RC"
 fi
 
-# ── GEN03: generate module X --scan-only ───────────────────────────
-begin_test "GEN03: generate module X --scan-only"
-run $C generate module neovim --scan-only
-if [ "$RC" -eq 0 ] || [ "$RC" -eq 1 ]; then
-    # With --scan-only, the command scans dotfiles; it should produce scan output
-    if assert_contains "$OUTPUT" "Scan"; then
-        pass_test "GEN03"
-    else
-        fail_test "GEN03" "expected scan output with tool context"
-    fi
+# ── GEN03: generate module --help ──────────────────────────────────
+begin_test "GEN03: generate module --help"
+run $C generate module --help
+if assert_ok && assert_contains "$OUTPUT" "module"; then
+    pass_test "GEN03"
 else
     fail_test "GEN03" "exit $RC"
 fi

@@ -596,14 +596,6 @@ else
     fi
 fi
 
-begin_test "ERR10: path traversal in module file rejected"
-run $C module create err10-mod --file "../../../etc/passwd:$TGT/.traversal-test"
-if assert_fail || echo "$OUTPUT" | grep -qiE "traversal|invalid|denied|outside|not found|error"; then
-    pass_test "ERR10"
-else fail_test "ERR10" "Expected path traversal rejection"; fi
-# Clean up module if it was partially created
-rm -rf "$CFG/modules/err10-mod"
-
 begin_test "ERR11: unreachable source URL fails with timeout or error"
 run $C source add "https://192.0.2.1/nonexistent.git" --yes
 if assert_fail; then

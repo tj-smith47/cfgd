@@ -557,9 +557,10 @@ impl<'a> Reconciler<'a> {
             detect_rc_env_conflicts(&rc_path, &merged, &merged_aliases)
         };
 
-        // Fish shell: generate separate file if fish config dir exists (all platforms)
+        // Fish shell: only generate fish env if fish is the user's shell
         let fish_conf_d = crate::expand_tilde(std::path::Path::new("~/.config/fish/conf.d"));
-        if fish_conf_d.exists() {
+        let current_shell = std::env::var("SHELL").unwrap_or_default();
+        if current_shell.contains("fish") && fish_conf_d.exists() {
             let fish_path = fish_conf_d.join("cfgd-env.fish");
             let fish_content = generate_fish_env_content(&merged, &merged_aliases);
             let existing_fish = std::fs::read_to_string(&fish_path).unwrap_or_default();
@@ -2318,9 +2319,10 @@ fn verify_env(
         }
     }
 
-    // Check fish env file if fish conf.d exists (both platforms)
+    // Check fish env file only if fish is the user's shell
     let fish_conf_d = expand_tilde(std::path::Path::new("~/.config/fish/conf.d"));
-    if fish_conf_d.exists() {
+    let verify_shell = std::env::var("SHELL").unwrap_or_default();
+    if verify_shell.contains("fish") && fish_conf_d.exists() {
         let fish_path = fish_conf_d.join("cfgd-env.fish");
         let expected_fish = generate_fish_env_content(&merged, &merged_aliases);
         verify_env_file(&fish_path, &expected_fish, state, results);

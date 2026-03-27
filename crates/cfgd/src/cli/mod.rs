@@ -1737,12 +1737,34 @@ fn copy_files_to_dir(
     file_specs: &[String],
     repo_dir: &Path,
 ) -> anyhow::Result<Vec<(String, PathBuf)>> {
+    let home = cfgd_core::expand_tilde(std::path::Path::new("~"));
     let mut results = Vec::new();
     for spec in file_specs {
         let (source, target) = parse_file_spec(spec)?;
         if !source.exists() {
             anyhow::bail!("File not found: {}", source.display());
         }
+
+        // Reject sources in system directories to prevent path traversal attacks.
+        // module create --file copies the source then replaces it with a symlink,
+        // so importing /etc/passwd would delete it and replace with a symlink.
+        let canonical_source = source
+            .canonicalize()
+            .unwrap_or_else(|_| source.to_path_buf());
+        let forbidden_prefixes: &[&str] = &[
+            "/etc", "/usr", "/bin", "/sbin", "/var", "/boot", "/sys", "/proc", "/lib", "/lib64",
+            "/dev", "/snap",
+        ];
+        for prefix in forbidden_prefixes {
+            if canonical_source.starts_with(prefix) {
+                anyhow::bail!(
+                    "Refusing to import '{}': source is in system directory {}",
+                    source.display(),
+                    prefix
+                );
+            }
+        }
+
         std::fs::create_dir_all(repo_dir)?;
         let file_name = source
             .file_name()
@@ -1753,7 +1775,8 @@ fn copy_files_to_dir(
         } else {
             std::fs::copy(&source, &dest)?;
         }
-        // Symlink back from source location to repo copy
+        // Symlink back from source location to repo copy so the user's
+        // dotfile now points into the cfgd-managed directory.
         if source.exists() && !source.is_symlink() {
             if source.is_dir() {
                 std::fs::remove_dir_all(&source)?;
