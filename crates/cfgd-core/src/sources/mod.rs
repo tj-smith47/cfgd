@@ -207,8 +207,10 @@ impl SourceManager {
             })?;
         }
 
-        // Try git CLI first
-        let cli_ok = std::process::Command::new("git")
+        // Try git CLI first — set GIT_TERMINAL_PROMPT=0 and BatchMode for SSH
+        // to prevent hangs when run non-interactively (piped install scripts).
+        let mut clone_cmd = std::process::Command::new("git");
+        clone_cmd
             .args([
                 "clone",
                 "--branch",
@@ -216,10 +218,18 @@ impl SourceManager {
                 &spec.origin.url,
                 &source_dir.display().to_string(),
             ])
+            .env("GIT_TERMINAL_PROMPT", "0")
             .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status()
-            .map(|s| s.success())
+            .stderr(std::process::Stdio::piped());
+        if spec.origin.url.starts_with("git@") || spec.origin.url.starts_with("ssh://") {
+            clone_cmd.env(
+                "GIT_SSH_COMMAND",
+                "ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new",
+            );
+        }
+        let cli_ok = clone_cmd
+            .output()
+            .map(|o| o.status.success())
             .unwrap_or(false);
 
         if cli_ok {
@@ -585,18 +595,39 @@ fn normalize_semver_pin(pin: &str) -> String {
 /// Returns Ok(()) on success, Err with description on failure.
 pub fn git_clone_with_fallback(url: &str, target: &Path) -> std::result::Result<(), String> {
     // Try git CLI first — it respects the user's credential helpers (gh auth,
-    // osxkeychain, etc.) and handles SSH agent passphrase prompts correctly.
-    // libgit2 can hang on macOS when credential helpers or SSH keys need interaction.
-    let cli_status = std::process::Command::new("git")
-        .args(["clone", url, &target.display().to_string()])
+    // osxkeychain, etc.) and handles SSH agent forwarding.
+    // Set GIT_TERMINAL_PROMPT=0 to prevent git from hanging on any interactive prompt.
+    // For SSH URLs, use BatchMode=yes and StrictHostKeyChecking=accept-new so SSH
+    // uses the agent without prompting for host keys or passphrases (prevents hangs
+    // when run inside a piped install script where stdin isn't a terminal).
+    let mut cmd = std::process::Command::new("git");
+    cmd.args(["clone", url, &target.display().to_string()])
+        .env("GIT_TERMINAL_PROMPT", "0")
         .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status();
+        .stderr(std::process::Stdio::piped());
+    if url.starts_with("git@") || url.starts_with("ssh://") {
+        cmd.env(
+            "GIT_SSH_COMMAND",
+            "ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new",
+        );
+    }
+    let cli_result = cmd.output();
 
-    match cli_status {
-        Ok(s) if s.success() => return Ok(()),
-        _ => {
+    match cli_result {
+        Ok(output) if output.status.success() => return Ok(()),
+        Ok(output) => {
+            tracing::debug!(
+                "git clone CLI failed (exit {}): {}",
+                output.status.code().unwrap_or(-1),
+                crate::stderr_lossy_trimmed(&output),
+            );
             // Clean up partial clone before libgit2 retry
+            let _ = std::fs::remove_dir_all(target);
+            let _ = std::fs::create_dir_all(target);
+        }
+        Err(e) => {
+            tracing::debug!("git CLI not available: {}", e);
+            // Clean up and fall through to libgit2
             let _ = std::fs::remove_dir_all(target);
             let _ = std::fs::create_dir_all(target);
         }
