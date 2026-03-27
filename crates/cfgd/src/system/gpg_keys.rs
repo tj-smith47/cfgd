@@ -239,7 +239,7 @@ fn query_keys_for_email(email: &str) -> Result<Vec<KeyringEntry>> {
             return Err(CfgdError::Io(std::io::Error::other(format!(
                 "gpg --list-keys failed (exit {}): {}",
                 code,
-                crate::system::stderr_string(&output)
+                cfgd_core::stderr_lossy_trimmed(&output)
             ))));
         }
     }
@@ -460,7 +460,7 @@ impl SystemConfigurator for GpgKeysConfigurator {
                     "gpg --batch --gen-key failed for {} <{}>: {}",
                     spec.real_name,
                     spec.email,
-                    crate::system::stderr_string(&output)
+                    cfgd_core::stderr_lossy_trimmed(&output)
                 ))));
             }
 

@@ -24,11 +24,6 @@ use cfgd_core::providers::{SystemConfigurator, SystemDrift};
 // Shared helpers used by both mod.rs and node.rs configurators
 // ---------------------------------------------------------------------------
 
-/// Extract trimmed stderr from a process output as an owned String.
-pub(crate) fn stderr_string(output: &std::process::Output) -> String {
-    cfgd_core::stderr_lossy_trimmed(output)
-}
-
 /// Run a command and return its trimmed stdout, or empty string on failure.
 fn read_command_output(cmd: &mut Command) -> String {
     cmd.output()
@@ -78,6 +73,40 @@ pub(crate) fn diff_yaml_mapping(
     }
 
     drifts
+}
+
+/// Diff a two-level nested YAML mapping (e.g. gsettings schema→key, xfconf channel→property).
+///
+/// Iterates the outer mapping to get a prefix string, then delegates each inner
+/// mapping to `diff_yaml_mapping` with a reader closure that receives `(prefix, key)`.
+pub(crate) fn diff_nested_mapping(
+    desired: &serde_yaml::Value,
+    get_actual: impl Fn(&str, &str) -> String,
+) -> Result<Vec<SystemDrift>> {
+    let mapping = match desired.as_mapping() {
+        Some(m) => m,
+        None => return Ok(Vec::new()),
+    };
+
+    let mut drifts = Vec::new();
+    for (outer_key, inner_values) in mapping {
+        let prefix = match outer_key.as_str() {
+            Some(s) => s,
+            None => continue,
+        };
+        let values = match inner_values.as_mapping() {
+            Some(m) => m,
+            None => continue,
+        };
+        drifts.extend(diff_yaml_mapping(
+            values,
+            prefix,
+            yaml_value_to_string,
+            |key| get_actual(prefix, key),
+        ));
+    }
+
+    Ok(drifts)
 }
 
 /// Parse a single line of `reg query` output into `(name, reg_type, value)`.
@@ -287,7 +316,7 @@ impl SystemConfigurator for ShellConfigurator {
             if !output.status.success() {
                 printer.warning(&format!(
                     "chsh failed (may require password): {}",
-                    stderr_string(&output)
+                    cfgd_core::stderr_lossy_trimmed(&output)
                 ));
             }
 
@@ -381,7 +410,7 @@ impl SystemConfigurator for MacosDefaultsConfigurator {
                         "defaults write failed for {}.{}: {}",
                         domain,
                         key_str,
-                        stderr_string(&output)
+                        cfgd_core::stderr_lossy_trimmed(&output)
                     ));
                 }
             }
@@ -559,7 +588,7 @@ impl SystemConfigurator for SystemdUnitConfigurator {
                     "systemctl {} {} failed: {}",
                     action,
                     name,
-                    stderr_string(&output)
+                    cfgd_core::stderr_lossy_trimmed(&output)
                 ));
             }
         }
@@ -675,7 +704,7 @@ impl SystemConfigurator for LaunchAgentConfigurator {
                 printer.warning(&format!(
                     "launchctl load failed for {}: {}",
                     name,
-                    stderr_string(&output)
+                    cfgd_core::stderr_lossy_trimmed(&output)
                 ));
             }
         }
@@ -1040,7 +1069,7 @@ impl EnvironmentConfigurator {
                     printer.warning(&format!(
                         "launchctl setenv {} failed: {}",
                         key,
-                        stderr_string(&output)
+                        cfgd_core::stderr_lossy_trimmed(&output)
                     ));
                 }
                 Err(e) => {
@@ -1334,7 +1363,7 @@ impl WindowsRegistryConfigurator {
                 "reg add failed for {}\\{}: {}",
                 key_path,
                 value_name,
-                stderr_string(&output)
+                cfgd_core::stderr_lossy_trimmed(&output)
             ));
         }
         Ok(())
@@ -1853,30 +1882,7 @@ impl SystemConfigurator for GsettingsConfigurator {
     }
 
     fn diff(&self, desired: &serde_yaml::Value) -> Result<Vec<SystemDrift>> {
-        let mapping = match desired.as_mapping() {
-            Some(m) => m,
-            None => return Ok(Vec::new()),
-        };
-
-        let mut drifts = Vec::new();
-        for (schema_key, schema_values) in mapping {
-            let schema = match schema_key.as_str() {
-                Some(s) => s,
-                None => continue,
-            };
-            let values = match schema_values.as_mapping() {
-                Some(m) => m,
-                None => continue,
-            };
-            drifts.extend(diff_yaml_mapping(
-                values,
-                schema,
-                yaml_value_to_string,
-                |key_str| read_gsettings_value(schema, key_str),
-            ));
-        }
-
-        Ok(drifts)
+        diff_nested_mapping(desired, read_gsettings_value)
     }
 
     fn apply(&self, desired: &serde_yaml::Value, printer: &Printer) -> Result<()> {
@@ -1918,7 +1924,7 @@ impl SystemConfigurator for GsettingsConfigurator {
                         "gsettings set failed for {}.{}: {}",
                         schema,
                         key_str,
-                        stderr_string(&output)
+                        cfgd_core::stderr_lossy_trimmed(&output)
                     ));
                 }
             }
@@ -2081,7 +2087,7 @@ impl SystemConfigurator for KdeConfigConfigurator {
                             file,
                             group,
                             key_str,
-                            stderr_string(&output)
+                            cfgd_core::stderr_lossy_trimmed(&output)
                         ));
                     }
                 }
@@ -2125,30 +2131,7 @@ impl SystemConfigurator for XfconfConfigurator {
     }
 
     fn diff(&self, desired: &serde_yaml::Value) -> Result<Vec<SystemDrift>> {
-        let mapping = match desired.as_mapping() {
-            Some(m) => m,
-            None => return Ok(Vec::new()),
-        };
-
-        let mut drifts = Vec::new();
-        for (channel_key, channel_values) in mapping {
-            let channel = match channel_key.as_str() {
-                Some(c) => c,
-                None => continue,
-            };
-            let values = match channel_values.as_mapping() {
-                Some(m) => m,
-                None => continue,
-            };
-            drifts.extend(diff_yaml_mapping(
-                values,
-                channel,
-                yaml_value_to_string,
-                |property| read_xfconf_value(channel, property),
-            ));
-        }
-
-        Ok(drifts)
+        diff_nested_mapping(desired, read_xfconf_value)
     }
 
     fn apply(&self, desired: &serde_yaml::Value, printer: &Printer) -> Result<()> {
@@ -2212,7 +2195,7 @@ impl SystemConfigurator for XfconfConfigurator {
                             "xfconf-query set failed for {}.{}: {}",
                             channel,
                             property,
-                            stderr_string(&create_output)
+                            cfgd_core::stderr_lossy_trimmed(&create_output)
                         ));
                     }
                 }

@@ -7,9 +7,7 @@ use cfgd_core::errors::{CfgdError, Result};
 use cfgd_core::output::Printer;
 use cfgd_core::providers::{SystemConfigurator, SystemDrift};
 
-use super::{
-    diff_yaml_mapping, stderr_string, yaml_value_to_string, yaml_value_with_numeric_bools,
-};
+use super::{diff_yaml_mapping, yaml_value_to_string, yaml_value_with_numeric_bools};
 
 // ---------------------------------------------------------------------------
 // SysctlConfigurator
@@ -66,7 +64,7 @@ impl SysctlConfigurator {
                 "sysctl -w {}={} failed: {}",
                 key,
                 value,
-                stderr_string(&output)
+                cfgd_core::stderr_lossy_trimmed(&output)
             ))));
         }
         Ok(())
@@ -202,7 +200,7 @@ impl KernelModuleConfigurator {
             return Err(CfgdError::Io(std::io::Error::other(format!(
                 "modprobe {} failed: {}",
                 module,
-                stderr_string(&output)
+                cfgd_core::stderr_lossy_trimmed(&output)
             ))));
         }
         Ok(())
@@ -364,7 +362,7 @@ impl ContainerdConfigurator {
         if !output.status.success() {
             return Err(CfgdError::Io(std::io::Error::other(format!(
                 "systemctl restart containerd failed: {}",
-                stderr_string(&output)
+                cfgd_core::stderr_lossy_trimmed(&output)
             ))));
         }
         Ok(())
@@ -526,7 +524,7 @@ impl KubeletConfigurator {
         if !output.status.success() {
             return Err(CfgdError::Io(std::io::Error::other(format!(
                 "systemctl restart kubelet failed: {}",
-                stderr_string(&output)
+                cfgd_core::stderr_lossy_trimmed(&output)
             ))));
         }
         Ok(())
@@ -710,7 +708,7 @@ impl AppArmorConfigurator {
             return Err(CfgdError::Io(std::io::Error::other(format!(
                 "apparmor_parser -r {} failed: {}",
                 path.display(),
-                stderr_string(&output)
+                cfgd_core::stderr_lossy_trimmed(&output)
             ))));
         }
         Ok(())

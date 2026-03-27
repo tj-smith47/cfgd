@@ -6,14 +6,30 @@ use cfgd_core::errors::{Result, SecretError};
 use cfgd_core::providers::{SecretBackend, SecretProvider, parse_secret_reference};
 use cfgd_core::{command_available, default_config_dir};
 
-/// Extract trimmed stderr from a command output as a single owned String.
-fn stderr_string(output: &std::process::Output) -> String {
-    cfgd_core::stderr_lossy_trimmed(output)
-}
-
-/// Extract trimmed stdout from a command output as a single owned String.
-fn stdout_string(output: &std::process::Output) -> String {
-    cfgd_core::stdout_lossy_trimmed(output)
+/// Run a secret provider CLI command, mapping errors to SecretError variants.
+fn run_provider_cmd(
+    cmd: &mut std::process::Command,
+    provider: &str,
+    hint: &str,
+    reference: &str,
+) -> Result<String> {
+    let output = cmd
+        .output()
+        .map_err(|_| SecretError::ProviderNotAvailable {
+            provider: provider.to_string(),
+            hint: hint.to_string(),
+        })?;
+    if !output.status.success() {
+        return Err(SecretError::UnresolvableRef {
+            reference: format!(
+                "{}: {}",
+                reference,
+                cfgd_core::stderr_lossy_trimmed(&output)
+            ),
+        }
+        .into());
+    }
+    Ok(cfgd_core::stdout_lossy_trimmed(&output))
 }
 
 /// Extract the age public key from a key file's `# public key: age1...` comment.
@@ -87,7 +103,7 @@ impl SecretBackend for SopsBackend {
         if !output.status.success() {
             return Err(SecretError::EncryptionFailed {
                 path: path.to_path_buf(),
-                message: stderr_string(&output),
+                message: cfgd_core::stderr_lossy_trimmed(&output),
             }
             .into());
         }
@@ -106,7 +122,7 @@ impl SecretBackend for SopsBackend {
         if !output.status.success() {
             return Err(SecretError::DecryptionFailed {
                 path: path.to_path_buf(),
-                message: stderr_string(&output),
+                message: cfgd_core::stderr_lossy_trimmed(&output),
             }
             .into());
         }
@@ -203,7 +219,7 @@ impl SecretBackend for AgeBackend {
         if !output.status.success() {
             return Err(SecretError::EncryptionFailed {
                 path: path.to_path_buf(),
-                message: stderr_string(&output),
+                message: cfgd_core::stderr_lossy_trimmed(&output),
             }
             .into());
         }
@@ -232,7 +248,7 @@ impl SecretBackend for AgeBackend {
         if !output.status.success() {
             return Err(SecretError::DecryptionFailed {
                 path: path.to_path_buf(),
-                message: stderr_string(&output),
+                message: cfgd_core::stderr_lossy_trimmed(&output),
             }
             .into());
         }
@@ -327,23 +343,12 @@ impl SecretProvider for OnePasswordProvider {
             format!("op://{}", reference)
         };
 
-        let output = std::process::Command::new("op")
-            .arg("read")
-            .arg(&op_ref)
-            .output()
-            .map_err(|_| SecretError::ProviderNotAvailable {
-                provider: "1password".to_string(),
-                hint: "install the 1Password CLI: https://developer.1password.com/docs/cli/get-started/".to_string(),
-            })?;
-
-        if !output.status.success() {
-            return Err(SecretError::UnresolvableRef {
-                reference: format!("{}: {}", reference, stderr_string(&output)),
-            }
-            .into());
-        }
-
-        Ok(stdout_string(&output))
+        run_provider_cmd(
+            std::process::Command::new("op").arg("read").arg(&op_ref),
+            "1password",
+            "install the 1Password CLI: https://developer.1password.com/docs/cli/get-started/",
+            reference,
+        )
     }
 }
 
@@ -370,24 +375,15 @@ impl SecretProvider for BitwardenProvider {
             reference
         };
 
-        let output = std::process::Command::new("bw")
-            .arg("get")
-            .arg("password")
-            .arg(item_name)
-            .output()
-            .map_err(|_| SecretError::ProviderNotAvailable {
-                provider: "bitwarden".to_string(),
-                hint: "install the Bitwarden CLI: https://bitwarden.com/help/cli/".to_string(),
-            })?;
-
-        if !output.status.success() {
-            return Err(SecretError::UnresolvableRef {
-                reference: format!("{}: {}", reference, stderr_string(&output)),
-            }
-            .into());
-        }
-
-        Ok(stdout_string(&output))
+        run_provider_cmd(
+            std::process::Command::new("bw")
+                .arg("get")
+                .arg("password")
+                .arg(item_name),
+            "bitwarden",
+            "install the Bitwarden CLI: https://bitwarden.com/help/cli/",
+            reference,
+        )
     }
 }
 
@@ -423,22 +419,12 @@ impl SecretProvider for LastPassProvider {
         }
         cmd.arg(item);
 
-        let output = cmd
-            .output()
-            .map_err(|_| SecretError::ProviderNotAvailable {
-                provider: "lastpass".to_string(),
-                hint: "install the LastPass CLI: https://github.com/lastpass/lastpass-cli"
-                    .to_string(),
-            })?;
-
-        if !output.status.success() {
-            return Err(SecretError::UnresolvableRef {
-                reference: format!("{}: {}", reference, stderr_string(&output)),
-            }
-            .into());
-        }
-
-        Ok(stdout_string(&output))
+        run_provider_cmd(
+            &mut cmd,
+            "lastpass",
+            "install the LastPass CLI: https://github.com/lastpass/lastpass-cli",
+            reference,
+        )
     }
 }
 
@@ -463,27 +449,17 @@ impl SecretProvider for VaultProvider {
             (reference, "value")
         };
 
-        let output = std::process::Command::new("vault")
-            .arg("kv")
-            .arg("get")
-            .arg("-field")
-            .arg(field)
-            .arg(path)
-            .output()
-            .map_err(|_| SecretError::ProviderNotAvailable {
-                provider: "vault".to_string(),
-                hint: "install the Vault CLI: https://developer.hashicorp.com/vault/install"
-                    .to_string(),
-            })?;
-
-        if !output.status.success() {
-            return Err(SecretError::UnresolvableRef {
-                reference: format!("{}: {}", reference, stderr_string(&output)),
-            }
-            .into());
-        }
-
-        Ok(stdout_string(&output))
+        run_provider_cmd(
+            std::process::Command::new("vault")
+                .arg("kv")
+                .arg("get")
+                .arg("-field")
+                .arg(field)
+                .arg(path),
+            "vault",
+            "install the Vault CLI: https://developer.hashicorp.com/vault/install",
+            reference,
+        )
     }
 }
 
@@ -590,7 +566,10 @@ pub fn init_age_key(config_dir: &Path) -> Result<PathBuf> {
         if !output.status.success() {
             return Err(SecretError::EncryptionFailed {
                 path: key_path,
-                message: format!("age-keygen failed: {}", stderr_string(&output)),
+                message: format!(
+                    "age-keygen failed: {}",
+                    cfgd_core::stderr_lossy_trimmed(&output)
+                ),
             }
             .into());
         }
@@ -648,7 +627,9 @@ pub fn check_secrets_health(
     let sops_output = std::process::Command::new("sops").arg("--version").output();
 
     let (sops_available, sops_version) = match sops_output {
-        Ok(output) if output.status.success() => (true, Some(stdout_string(&output))),
+        Ok(output) if output.status.success() => {
+            (true, Some(cfgd_core::stdout_lossy_trimmed(&output)))
+        }
         _ => (false, None),
     };
 

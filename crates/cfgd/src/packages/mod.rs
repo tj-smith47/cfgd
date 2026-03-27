@@ -8,11 +8,6 @@ use cfgd_core::errors::{PackageError, Result};
 use cfgd_core::output::{CommandOutput, Printer};
 use cfgd_core::providers::{PackageAction, PackageManager};
 
-/// Extract stderr from command output as a lossy UTF-8 string.
-pub(crate) fn stderr_lossy(output: &Output) -> String {
-    cfgd_core::stderr_lossy_trimmed(output)
-}
-
 /// Run a command, mapping IO errors to PackageError::CommandFailed and non-zero
 /// exit to the appropriate PackageError variant based on `error_kind`.
 /// `error_kind` should be one of: "install", "uninstall", "list", "update".
@@ -47,7 +42,7 @@ fn run_pkg_cmd_prefixed(
         source: e,
     })?;
     if !output.status.success() {
-        let stderr = stderr_lossy(&output);
+        let stderr = cfgd_core::stderr_lossy_trimmed(&output);
         let message = match msg_prefix {
             Some(prefix) if !prefix.is_empty() => format!("{}: {}", prefix, stderr),
             _ => stderr,
@@ -5129,7 +5124,7 @@ custom:
             stdout: vec![],
             stderr: b"error message".to_vec(),
         };
-        assert_eq!(stderr_lossy(&output), "error message");
+        assert_eq!(cfgd_core::stderr_lossy_trimmed(&output), "error message");
     }
 
     // --- installed_packages_with_versions parse tests ---

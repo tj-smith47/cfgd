@@ -2245,28 +2245,21 @@ pub(super) fn cmd_module_push(
     Ok(())
 }
 
-fn detect_git_remote() -> Option<String> {
-    let output = std::process::Command::new("git")
-        .args(["remote", "get-url", "origin"])
-        .output()
-        .ok()?;
+fn git_output(args: &[&str]) -> Option<String> {
+    let output = std::process::Command::new("git").args(args).output().ok()?;
     if output.status.success() {
-        Some(String::from_utf8_lossy(&output.stdout).trim().to_string())
+        Some(cfgd_core::stdout_lossy_trimmed(&output))
     } else {
         None
     }
 }
 
+fn detect_git_remote() -> Option<String> {
+    git_output(&["remote", "get-url", "origin"])
+}
+
 fn detect_git_head() -> Option<String> {
-    let output = std::process::Command::new("git")
-        .args(["rev-parse", "HEAD"])
-        .output()
-        .ok()?;
-    if output.status.success() {
-        Some(String::from_utf8_lossy(&output.stdout).trim().to_string())
-    } else {
-        None
-    }
+    git_output(&["rev-parse", "HEAD"])
 }
 
 async fn apply_module_crd(

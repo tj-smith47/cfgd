@@ -180,7 +180,7 @@ impl SshKeysConfigurator {
             return Err(CfgdError::Io(std::io::Error::other(format!(
                 "ssh-keygen failed for key '{}': {}",
                 spec.name,
-                crate::system::stderr_string(&output)
+                cfgd_core::stderr_lossy_trimmed(&output)
             ))));
         }
 

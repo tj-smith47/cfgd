@@ -4,8 +4,6 @@ use cfgd_core::errors::{CfgdError, Result};
 use cfgd_core::output::Printer;
 use cfgd_core::providers::{SystemConfigurator, SystemDrift};
 
-use crate::system::stderr_string;
-
 /// GitConfigurator — manages `git config --global` settings declaratively.
 ///
 /// Config keys are flat dotted strings that map 1:1 to git config keys:
@@ -137,7 +135,7 @@ impl SystemConfigurator for GitConfigurator {
                 printer.warning(&format!(
                     "git config --global {} failed: {}",
                     key_str,
-                    stderr_string(&output)
+                    cfgd_core::stderr_lossy_trimmed(&output)
                 ));
             }
         }
