@@ -2,6 +2,7 @@
 # Shared setup for operator E2E tests.
 # Sourced by run-all.sh BEFORE domain test files.
 # Sets up: helpers, infrastructure verification, namespace, cleanup trap, apply_yaml().
+set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/../../common/helpers.sh"
