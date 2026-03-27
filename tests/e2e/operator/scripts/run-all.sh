@@ -12,5 +12,6 @@ source "$SCRIPT_DIR/test-module.sh"
 source "$SCRIPT_DIR/test-clusterconfigpolicy.sh"
 source "$SCRIPT_DIR/test-webhooks.sh"
 source "$SCRIPT_DIR/test-oci.sh"
+source "$SCRIPT_DIR/test-lifecycle.sh"
 
 print_summary "Operator Tests"
