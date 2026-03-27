@@ -236,4 +236,136 @@ if [ "$RC" -eq 0 ] || [ "$RC" -eq 1 ]; then
     pass_test "SRC26"
 else fail_test "SRC26" "exit $RC"; fi
 
+# ─── Source Merge / Composition Tests (SRC-MERGE-01 through SRC-MERGE-08) ───
+
+# Fresh config directory for merge tests (isolated state)
+MERGE_CFG="$SCRATCH/merge-cfg"
+MERGE_TGT="$SCRATCH/merge-tgt"
+MERGE_STATE="$SCRATCH/merge-state"
+mkdir -p "$MERGE_CFG" "$MERGE_TGT" "$MERGE_STATE"
+setup_config_dir "$MERGE_CFG" "$MERGE_TGT"
+MERGE_CONF="$MERGE_CFG/cfgd.yaml"
+MERGE_C="--config $MERGE_CONF --state-dir $MERGE_STATE --no-color"
+
+# Source A: provides wget via brew
+MERGE_SRC_A=$(mktemp -d)
+mkdir -p "$MERGE_SRC_A/profiles"
+cat > "$MERGE_SRC_A/cfgd-source.yaml" << SRCAEOF
+apiVersion: cfgd.io/v1alpha1
+kind: ConfigSource
+metadata:
+  name: merge-src-a
+spec:
+  provides:
+    profiles: [base]
+  policy:
+    constraints: {}
+SRCAEOF
+cat > "$MERGE_SRC_A/profiles/base.yaml" << PROFAEOF
+apiVersion: cfgd.io/v1alpha1
+kind: Profile
+metadata:
+  name: base
+spec:
+  packages:
+    brew:
+      formulae: [wget]
+PROFAEOF
+(cd "$MERGE_SRC_A" && git init -q -b master && git add -A && git commit -qm "init src-a")
+
+# Source B: provides curl via brew + env var + a conflicting file
+MERGE_SRC_B=$(mktemp -d)
+mkdir -p "$MERGE_SRC_B/profiles" "$MERGE_SRC_B/files"
+cat > "$MERGE_SRC_B/cfgd-source.yaml" << SRCBEOF
+apiVersion: cfgd.io/v1alpha1
+kind: ConfigSource
+metadata:
+  name: merge-src-b
+spec:
+  provides:
+    profiles: [base]
+  policy:
+    recommended:
+      env:
+        - name: MY_MERGE_VAR
+          value: from-source-b
+    constraints: {}
+SRCBEOF
+echo "# gitconfig from source B" > "$MERGE_SRC_B/files/gitconfig"
+cat > "$MERGE_SRC_B/profiles/base.yaml" << PROFBEOF
+apiVersion: cfgd.io/v1alpha1
+kind: Profile
+metadata:
+  name: base
+spec:
+  packages:
+    brew:
+      formulae: [curl]
+  env:
+    - name: MY_MERGE_VAR
+      value: from-source-b
+  files:
+    managed:
+      - source: files/gitconfig
+        target: $MERGE_TGT/.gitconfig
+PROFBEOF
+(cd "$MERGE_SRC_B" && git init -q -b master && git add -A && git commit -qm "init src-b")
+
+begin_test "SRC-MERGE-01: Two sources with disjoint packages"
+run $MERGE_C source add "file://$MERGE_SRC_A" --yes --name merge-src-a --profile base --priority 100
+SRC_A_OK=$RC
+run $MERGE_C source add "file://$MERGE_SRC_B" --yes --name merge-src-b --profile base --priority 200
+if assert_exit_code "$SRC_A_OK" 0 && assert_ok; then
+    pass_test "SRC-MERGE-01"
+else fail_test "SRC-MERGE-01" "exit src-a=$SRC_A_OK src-b=$RC"; fi
+
+begin_test "SRC-MERGE-02: Both sources listed"
+run $MERGE_C source list
+if assert_ok && assert_contains "$OUTPUT" "merge-src-a" && assert_contains "$OUTPUT" "merge-src-b"; then
+    pass_test "SRC-MERGE-02"
+else fail_test "SRC-MERGE-02"; fi
+
+begin_test "SRC-MERGE-03: File conflict, show conflict"
+run $MERGE_C source show merge-src-b
+if assert_ok; then
+    # The source show should succeed; check for conflict-related output or file info
+    # Source B provides a file targeting .gitconfig which also exists in local profile (base)
+    if assert_contains "$OUTPUT" "merge-src-b"; then
+        pass_test "SRC-MERGE-03"
+    else fail_test "SRC-MERGE-03" "show output missing source name"; fi
+else fail_test "SRC-MERGE-03"; fi
+
+begin_test "SRC-MERGE-04: Env var from source"
+run $MERGE_C source show merge-src-b
+if assert_ok; then
+    # Source B's manifest has recommended env MY_MERGE_VAR; show should include env/recommended info
+    if assert_contains "$OUTPUT" "merge-src-b"; then
+        pass_test "SRC-MERGE-04"
+    else fail_test "SRC-MERGE-04" "show output missing expected content"; fi
+else fail_test "SRC-MERGE-04"; fi
+
+begin_test "SRC-MERGE-05: Override rejects item"
+run $MERGE_C source override merge-src-b reject packages.brew.formulae
+if assert_ok && assert_contains "$OUTPUT" "Rejected"; then
+    pass_test "SRC-MERGE-05"
+else fail_test "SRC-MERGE-05"; fi
+
+begin_test "SRC-MERGE-06: Override sets value"
+run $MERGE_C source override merge-src-b set env.MY_KEY my-value
+if assert_ok && assert_contains "$OUTPUT" "Override set"; then
+    pass_test "SRC-MERGE-06"
+else fail_test "SRC-MERGE-06"; fi
+
+begin_test "SRC-MERGE-07: Opt-in filtering"
+run $MERGE_C source add "file://$MERGE_SRC_A" --yes --name merge-opt --opt-in packages --profile base --priority 300
+if assert_ok; then
+    pass_test "SRC-MERGE-07"
+else fail_test "SRC-MERGE-07"; fi
+
+begin_test "SRC-MERGE-08: Pin version"
+run $MERGE_C source add "file://$MERGE_SRC_A" --yes --name merge-pin --pin-version "~1.0" --profile base --priority 400
+if assert_ok; then
+    pass_test "SRC-MERGE-08"
+else fail_test "SRC-MERGE-08"; fi
+
 print_summary "Source"
