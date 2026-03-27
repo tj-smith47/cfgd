@@ -112,6 +112,21 @@ jobs:
       - name: Run full-stack tests
         run: bash tests/e2e/full-stack/scripts/run-all.sh
 
+  # ---------- Crossplane tests ----------
+  crossplane-tests:
+    name: "Crossplane Tests"
+    runs-on: arc-cfgd
+    needs: [setup]
+    timeout-minutes: 20
+    env:
+      IMAGE_TAG: ${{ needs.setup.outputs.image-tag }}
+      REGISTRY: ${{ vars.E2E_REGISTRY }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Run Crossplane tests
+        run: bash tests/e2e/crossplane/scripts/run-crossplane-tests.sh
+
   # ---------- CLI: exhaustive native tests (no k8s needed) ----------
   cli-tests:
     name: "Exhaustive CLI (Native)"
@@ -133,7 +148,7 @@ jobs:
   e2e-summary:
     name: "E2E Summary"
     runs-on: ubuntu-latest
-    needs: [node-tests, helm-tests, server-tests, operator-tests, full-stack-tests, cli-tests]
+    needs: [node-tests, helm-tests, server-tests, operator-tests, full-stack-tests, crossplane-tests, cli-tests]
     if: always()
     steps:
       - name: Check results
@@ -144,6 +159,7 @@ jobs:
           echo "Server tests:      ${{ needs.server-tests.result }}"
           echo "Operator tests:    ${{ needs.operator-tests.result }}"
           echo "Full-stack tests:  ${{ needs.full-stack-tests.result }}"
+          echo "Crossplane tests:  ${{ needs.crossplane-tests.result }}"
           echo "CLI tests:         ${{ needs.cli-tests.result }}"
 
           FAILED=false
@@ -153,6 +169,7 @@ jobs:
             "${{ needs.server-tests.result }}" \
             "${{ needs.operator-tests.result }}" \
             "${{ needs.full-stack-tests.result }}" \
+            "${{ needs.crossplane-tests.result }}" \
             "${{ needs.cli-tests.result }}"; do
             if [ "$result" != "success" ]; then
               FAILED=true

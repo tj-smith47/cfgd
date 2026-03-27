@@ -94,6 +94,7 @@ tasks:
       - task: e2e:node
       - task: e2e:operator
       - task: e2e:full-stack
+      - task: e2e:crossplane
 
   e2e:cli:
     desc: Run CLI exhaustive E2E tests
@@ -116,6 +117,11 @@ tasks:
     desc: Run full-stack E2E tests
     cmds:
       - bash tests/e2e/full-stack/scripts/run-all.sh
+
+  e2e:crossplane:
+    desc: Run Crossplane E2E tests
+    cmds:
+      - bash tests/e2e/crossplane/scripts/run-crossplane-tests.sh
 
   # --- Clean ---
 

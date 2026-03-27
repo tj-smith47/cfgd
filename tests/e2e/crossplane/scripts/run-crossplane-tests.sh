@@ -13,14 +13,14 @@ CROSSPLANE_DIR="$REPO_ROOT/manifests/crossplane"
 echo "=== Crossplane E2E Tests ==="
 
 # =================================================================
-# T-XP01: Install Crossplane
+# XP-01: Install Crossplane
 # =================================================================
-begin_test "T-XP01: Crossplane installation"
+begin_test "XP-01: Crossplane installation"
 helm repo add crossplane-stable https://charts.crossplane.io/stable
 helm install crossplane crossplane-stable/crossplane \
     --namespace crossplane-system --create-namespace --wait --timeout 120s
 wait_for_deployment crossplane-system crossplane 120
-pass_test "T-XP01"
+pass_test "XP-01"
 
 # --- Setup: Install cfgd CRDs ---
 echo "Generating and installing cfgd CRDs..."
@@ -48,9 +48,9 @@ for i in $(seq 1 30); do
 done
 
 # =================================================================
-# T-XP02: Create TeamConfig with 2 members
+# XP-02: Create TeamConfig with 2 members
 # =================================================================
-begin_test "T-XP02: TeamConfig generates MachineConfigs"
+begin_test "XP-02: TeamConfig generates MachineConfigs"
 kubectl apply -f "$MANIFESTS_DIR/teamconfig-sample.yaml"
 
 MC_COUNT=""
@@ -65,15 +65,15 @@ done
 echo "  MachineConfig count: ${MC_COUNT:-0}"
 
 if [ "${MC_COUNT:-0}" -ge 2 ]; then
-    pass_test "T-XP02"
+    pass_test "XP-02"
 else
-    fail_test "T-XP02" "Expected >=2 MachineConfigs, got ${MC_COUNT:-0}"
+    fail_test "XP-02" "Expected >=2 MachineConfigs, got ${MC_COUNT:-0}"
 fi
 
 # =================================================================
-# T-XP03: Verify ConfigPolicy created
+# XP-03: Verify ConfigPolicy created
 # =================================================================
-begin_test "T-XP03: TeamConfig generates ConfigPolicy"
+begin_test "XP-03: TeamConfig generates ConfigPolicy"
 
 CP_COUNT=""
 for i in $(seq 1 15); do
@@ -87,15 +87,15 @@ done
 echo "  ConfigPolicy count: ${CP_COUNT:-0}"
 
 if [ "${CP_COUNT:-0}" -ge 1 ]; then
-    pass_test "T-XP03"
+    pass_test "XP-03"
 else
-    fail_test "T-XP03" "Expected >=1 ConfigPolicy, got ${CP_COUNT:-0}"
+    fail_test "XP-03" "Expected >=1 ConfigPolicy, got ${CP_COUNT:-0}"
 fi
 
 # =================================================================
-# T-XP04: Add a member — new MachineConfig appears
+# XP-04: Add a member — new MachineConfig appears
 # =================================================================
-begin_test "T-XP04: Member addition creates MachineConfig"
+begin_test "XP-04: Member addition creates MachineConfig"
 
 kubectl apply -f - <<'EOF'
 apiVersion: cfgd.io/v1alpha1
@@ -134,15 +134,15 @@ done
 echo "  MachineConfig count after adding member: ${MC_COUNT:-0}"
 
 if [ "${MC_COUNT:-0}" -ge 3 ]; then
-    pass_test "T-XP04"
+    pass_test "XP-04"
 else
-    fail_test "T-XP04" "Expected >=3 MachineConfigs after adding member, got ${MC_COUNT:-0}"
+    fail_test "XP-04" "Expected >=3 MachineConfigs after adding member, got ${MC_COUNT:-0}"
 fi
 
 # =================================================================
-# T-XP05: Remove a member — MachineConfig garbage-collected
+# XP-05: Remove a member — MachineConfig garbage-collected
 # =================================================================
-begin_test "T-XP05: Member removal garbage-collects MachineConfig"
+begin_test "XP-05: Member removal garbage-collects MachineConfig"
 
 kubectl apply -f - <<'EOF'
 apiVersion: cfgd.io/v1alpha1
@@ -179,9 +179,9 @@ done
 echo "  MachineConfig count after removing member: ${MC_COUNT:-0}"
 
 if [ "${MC_COUNT:-0}" -eq 2 ]; then
-    pass_test "T-XP05"
+    pass_test "XP-05"
 else
-    fail_test "T-XP05" "Expected 2 MachineConfigs after removing member, got ${MC_COUNT:-0}"
+    fail_test "XP-05" "Expected 2 MachineConfigs after removing member, got ${MC_COUNT:-0}"
 fi
 
 # --- Cleanup ---
