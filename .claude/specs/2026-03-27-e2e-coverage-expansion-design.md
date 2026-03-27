@@ -6,7 +6,7 @@
 
 ## Current State
 
-394 E2E tests across 5 suites:
+395 E2E tests across 5 suites:
 - **CLI:** 307 tests, 30 domain files — comprehensive command/flag coverage
 - **Node:** 40 tests, 7 domain files — binary, sysctl, kernel modules, seccomp, certs, daemon
 - **Operator:** 18 tests, 8 domain files — CRDs, basic webhooks, OCI
@@ -20,7 +20,7 @@ Infrastructure is solid: k3s cluster, deterministic image tags, label-scoped cle
 Organized into three risk tiers by "likelihood of silent breakage x blast radius."
 
 ### Tier 1 — High Risk / Zero Coverage
-- Gateway HTTP API (20 endpoints, no dedicated tests)
+- Gateway HTTP API (full REST API + SSE + admin, no dedicated tests)
 - Webhook admission (5 endpoints, only 3 basic tests)
 - CSI driver edge cases (only 2 happy-path tests)
 - Multi-namespace policy evaluation (never tested across namespace boundaries)
@@ -66,21 +66,23 @@ Pattern: check env var at test start, `skip_test` with clear message if unset. C
 
 ---
 
-## Tier 1: High Risk / Zero Coverage (46 new tests)
+## Tier 1: High Risk / Zero Coverage (56 new tests)
 
 ### 1.1 Gateway HTTP API — New Suite
 
 **Location:** `tests/e2e/gateway/scripts/`
 **Infrastructure:** Dedicated ephemeral namespace, gateway deployment via Helm chart values, port-forward for HTTP access, curl-based assertions.
-**CI:** New `gateway-tests` job in `e2e.yml`, depends on `setup`, 20 min timeout.
+**CI:** New `gateway-tests` job in `e2e.yml`, depends on `setup`, 25 min timeout.
+**Prerequisites:** Gateway deployment must have in-cluster RBAC to create DriftAlert CRDs (for GW-08).
 **Files:**
-- `setup-gateway-env.sh` — namespace, deploy gateway, port-forward, bootstrap token
+- `setup-gateway-env.sh` — namespace, deploy gateway, port-forward, bootstrap token generation
 - `test-health.sh` — GW-01
-- `test-enrollment.sh` — GW-02 through GW-06, GW-19, GW-20
+- `test-enrollment.sh` — GW-02 through GW-06
 - `test-checkin.sh` — GW-07 through GW-10, GW-18
-- `test-api.sh` — GW-11 through GW-13, GW-16, GW-17
-- `test-streaming.sh` — GW-14
-- `test-dashboard.sh` — GW-15
+- `test-api.sh` — GW-11 through GW-14, GW-19, GW-20
+- `test-admin.sh` — GW-15 through GW-17, GW-25 through GW-30
+- `test-streaming.sh` — GW-21
+- `test-dashboard.sh` — GW-22
 - `run-all.sh` — sources all domain files
 
 | ID | Test | Assertion |
@@ -88,23 +90,33 @@ Pattern: check env var at test start, `skip_test` with clear message if unset. C
 | GW-01 | Health endpoints | `/healthz` and `/readyz` return 200 |
 | GW-02 | Token-based enrollment | `POST /api/v1/enroll` with valid bootstrap token returns 200, API key in response |
 | GW-03 | Enrollment with invalid token | Returns 401 or 403 |
-| GW-04 | Enrollment with SSH key signature | Signs challenge with ssh-keygen, enrollment succeeds |
-| GW-05 | Enrollment with GPG key signature | Signs challenge with gpg, enrollment succeeds |
+| GW-04 | Enrollment with SSH key signature | `POST /api/v1/enroll/challenge` then sign + submit → enrollment succeeds |
+| GW-05 | Enrollment with GPG key signature | Challenge-response with gpg signing → enrollment succeeds |
 | GW-06 | Duplicate enrollment rejection | Second enroll with same device returns conflict |
 | GW-07 | Device checkin (happy path) | `POST /api/v1/checkin` with valid API key returns 200, device status updated |
-| GW-08 | Checkin with drift report | Drift details in payload → DriftAlert CRD created in cluster |
+| GW-08 | Checkin with drift report | Drift details in payload → DriftAlert CRD created in cluster (requires gateway RBAC) |
 | GW-09 | Checkin with compliance data | Compliance snapshot in payload → stored, queryable via API |
 | GW-10 | Checkin with invalid API key | Returns 401 |
 | GW-11 | Device list API | `GET /api/v1/devices` returns enrolled devices as JSON array |
 | GW-12 | Device detail API | `GET /api/v1/devices/:id` returns device with lastCheckin timestamp |
 | GW-13 | Drift events API | `GET /api/v1/drift` returns drift events for enrolled device |
-| GW-14 | SSE event stream | Connect to `/api/v1/events/stream`, trigger checkin, receive event within 10s |
-| GW-15 | Web dashboard loads | `GET /` returns 200 with HTML containing device inventory elements |
-| GW-16 | Admin device removal | `DELETE /api/v1/admin/devices/:id` removes device, subsequent GET returns 404 |
-| GW-17 | Fleet status aggregation | Multiple enrolled devices → `/api/v1/fleet/status` returns aggregate counts |
+| GW-14 | Fleet events API | `GET /api/v1/events` returns paginated fleet event list |
+| GW-15 | Admin credential revocation | `DELETE /api/v1/admin/devices/{id}/credential` → device's API key invalidated, next checkin returns 401 |
+| GW-16 | Admin credential revoke + re-enroll | Revoke credential → device re-enrolls with new key → new API key works, old returns 401 |
+| GW-17 | Fleet status via device list | Enroll multiple devices → `GET /api/v1/devices` returns all, count matches enrolled total |
 | GW-18 | Checkin updates MachineConfig status | Enrolled device checks in → MachineConfig conditions updated via operator |
-| GW-19 | Enrollment credential rotation | Re-enroll with new key → old API key returns 401 |
-| GW-20 | Auth boundary | Unauthenticated requests to `/api/v1/devices` return 401 |
+| GW-19 | Set device config | `PUT /api/v1/devices/{id}/config` → config stored, returned in device detail |
+| GW-20 | Force reconcile | `POST /api/v1/devices/{id}/reconcile` → 200, device reconcile triggered |
+| GW-21 | SSE event stream | Connect to `/api/v1/events/stream`, trigger checkin, receive event within 10s |
+| GW-22 | Web dashboard loads | `GET /` returns 200 with HTML containing device inventory elements |
+| GW-23 | Enrollment info | `GET /api/v1/enroll/info` returns enrollment requirements |
+| GW-24 | Auth boundary | Unauthenticated requests to `/api/v1/devices` return 401 |
+| GW-25 | Admin token create | `POST /api/v1/admin/tokens` → bootstrap token created, returned |
+| GW-26 | Admin token list | `GET /api/v1/admin/tokens` → lists created tokens |
+| GW-27 | Admin token delete | `DELETE /api/v1/admin/tokens/{id}` → token removed, enrollment with deleted token fails |
+| GW-28 | Admin user key add | `POST /api/v1/admin/users/{username}/keys` → SSH/GPG key registered |
+| GW-29 | Admin user key list | `GET /api/v1/admin/users/{username}/keys` → lists registered keys |
+| GW-30 | Admin user key delete | `DELETE /api/v1/admin/users/{username}/keys/{id}` → key removed, enrollment with deleted key fails |
 
 ### 1.2 Webhook Admission — Expand Operator Suite
 
@@ -132,11 +144,11 @@ Pattern: check env var at test start, `skip_test` with clear message if unset. C
 | ID | Test | Assertion |
 |---|---|---|
 | FS-CSI-03 | Multi-module volume mount | Pod with 2 module volumes → both mounted, contents correct |
-| FS-CSI-04 | Module cache hit | Mount same module twice → second uses cache (verify via metrics counter) |
+| FS-CSI-04 | Module cache hit | Mount same module twice → second uses cache (verify via `cfgd_csi_cache_hits_total` metric) |
 | FS-CSI-05 | Invalid module reference | Volume referencing nonexistent module → pod Pending with Warning event |
 | FS-CSI-06 | Module update propagation | Update Module CRD → new pod gets updated content |
-| FS-CSI-07 | CSI driver metrics | `/metrics` endpoint returns `csi_operations_total` counters |
-| FS-CSI-08 | CSI identity probe | gRPC Probe() returns ready (via health endpoint) |
+| FS-CSI-07 | CSI driver metrics | `/metrics` endpoint returns `cfgd_csi_volume_publish_total` and `cfgd_csi_cache_size_bytes` counters |
+| FS-CSI-08 | CSI pod readiness | CSI DaemonSet pod passes readiness probe (use `kubectl get pod` readiness condition as proxy for gRPC Probe) |
 | FS-CSI-09 | Volume unmount cleanup | Delete pod → volume unmounted cleanly, no orphan mounts |
 | FS-CSI-10 | ReadOnly volume enforcement | Mount with readOnly=true → writes inside container fail |
 
@@ -163,7 +175,7 @@ Pattern: check env var at test start, `skip_test` with clear message if unset. C
 
 | ID | Test | Assertion |
 |---|---|---|
-| OP-LC-01 | Operator metrics endpoint | `/metrics` returns Prometheus text with `reconcile_total` counters |
+| OP-LC-01 | Operator metrics endpoint | `/metrics` returns Prometheus text with `cfgd_operator_reconciliations_total` counters |
 | OP-LC-02 | Leader election lease | Lease object exists in cfgd-system with holder identity matching operator pod |
 | OP-LC-03 | Graceful shutdown | Delete operator pod → new pod acquires lease, reconciliation resumes |
 | OP-LC-04 | MachineConfig reconcile loop | Create MachineConfig → Reconciled condition set within 30s |
@@ -183,7 +195,7 @@ Requires: in-cluster registry (already available at `registry.jarvispro.io`), co
 | OCI-E2E-01 | Push → Module CRD → CSI mount | cfgd module push → Module CRD created → pod mounts via CSI → content matches pushed module |
 | OCI-E2E-02 | Signed artifact verification | Push with --sign → Module CRD with signature → CSI verifies before mount |
 | OCI-E2E-03 | Unsigned artifact rejected | Module CRD with requireSignature → unsigned artifact → pod mount fails with event |
-| OCI-E2E-04 | Multi-platform artifact | Push --platform linux/amd64,linux/arm64 → CSI selects correct platform |
+| OCI-E2E-04 | Multi-platform artifact | Push --platform linux/amd64,linux/arm64 → Module CRD shows both platforms in status. Note: on single-arch CI cluster, only verifies push + CRD metadata, not runtime platform selection |
 | OCI-E2E-05 | Artifact digest pinning | Module CRD references digest → CSI pulls exact version |
 | OCI-E2E-06 | Registry auth flow | Push to registry → Module CRD → CSI uses imagePullSecrets to pull |
 
@@ -228,12 +240,14 @@ All tests use local git repos as source fixtures.
 
 Uses dedicated namespace per test to avoid interfering with persistent operator deployment.
 
+Note: The existing `tests/e2e/node/scripts/test-helm.sh` (T20–T25) tests the Helm agent DaemonSet deployment. These full-stack Helm tests cover the complete chart: operator + CSI + gateway toggle combinations. Different scope, no overlap.
+
 | ID | Test | Assertion |
 |---|---|---|
 | FS-HELM-01 | Fresh install with defaults | helm install → operator + CSI daemonset running, CRDs present |
-| FS-HELM-02 | Install with gateway enabled | --set gateway.enabled=true → gateway deployment + service exist |
-| FS-HELM-03 | Install with gateway disabled | --set gateway.enabled=false → no gateway resources |
-| FS-HELM-04 | Install with CSI disabled | --set csi.enabled=false → no CSI daemonset |
+| FS-HELM-02 | Install with gateway enabled | --set deviceGateway.enabled=true → gateway deployment + service exist |
+| FS-HELM-03 | Install with gateway disabled | --set deviceGateway.enabled=false → no gateway resources |
+| FS-HELM-04 | Install with CSI disabled | --set csiDriver.enabled=false → no CSI daemonset |
 | FS-HELM-05 | Upgrade preserves CRDs | helm upgrade with new values → existing CRD instances survive |
 | FS-HELM-06 | Values override propagation | Custom replica count, resources → reflected in deployment spec |
 | FS-HELM-07 | Helm template validation | helm template → valid YAML for all value combinations |
@@ -241,7 +255,7 @@ Uses dedicated namespace per test to avoid interfering with persistent operator 
 
 ---
 
-## Tier 3: Low Risk / Thin Coverage (53 new tests)
+## Tier 3: Low Risk / Thin Coverage (54 new tests)
 
 ### 3.1 Crossplane Depth — Expand Crossplane Suite
 
@@ -302,7 +316,8 @@ Uses dedicated namespace per test to avoid interfering with persistent operator 
 | MCP02 | MCP server initialize | Send JSON-RPC initialize on stdin → valid response on stdout |
 | MCP03 | MCP server tools/list | Returns expected tool names |
 | MCP04 | MCP server resources/list | Returns config/profile/module resources |
-| MCP05 | MCP server invalid request | Malformed JSON-RPC → error response, server stays alive |
+| MCP05 | MCP server prompts/list | Returns available prompt templates |
+| MCP06 | MCP server invalid request | Malformed JSON-RPC → error response, server stays alive |
 
 ### 3.5 Error Paths & Edge Cases
 
@@ -310,13 +325,13 @@ Uses dedicated namespace per test to avoid interfering with persistent operator 
 
 | ID | Test | Assertion |
 |---|---|---|
-| ERR06 | Circular module dependency | Graceful error message, not infinite loop or stack overflow |
-| ERR07 | Missing file source | Referenced file doesn't exist → clear error per file, process continues |
-| ERR08 | Invalid template syntax | Tera error → message includes file path and line number |
-| ERR09 | Reserved profile name | Create with reserved name → rejected with explanation |
-| ERR10 | Path traversal in module file | `../../../etc/passwd` → rejected by validation |
-| ERR11 | Unreachable source URL | source add with bad URL → timeout error, no hang |
-| ERR12 | --skip and --only combined | Both flags → verify behavior matches documentation |
+| ERR07 | Circular module dependency | Graceful error message, not infinite loop or stack overflow |
+| ERR08 | Missing file source | Referenced file doesn't exist → clear error per file, process continues |
+| ERR09 | Invalid template syntax | Tera error → message includes file path and line number |
+| ERR10 | Reserved profile name | Create with reserved name → rejected with explanation |
+| ERR11 | Path traversal in module file | `../../../etc/passwd` → rejected by validation |
+| ERR12 | Unreachable source URL | source add with bad URL → timeout error, no hang |
+| ERR13 | --skip and --only combined | Both flags → verify behavior matches documentation |
 
 **Node errors — Location:** `tests/e2e/node/scripts/test-apply.sh` (append)
 
@@ -358,7 +373,7 @@ Added to `.github/workflows/e2e.yml`:
 - **Job name:** `gateway-tests`
 - **Depends on:** `setup`
 - **Runner:** `arc-cfgd`
-- **Timeout:** 20 minutes
+- **Timeout:** 25 minutes
 - **Script:** `tests/e2e/gateway/scripts/run-all.sh`
 
 ### Updated CI Jobs
@@ -388,13 +403,13 @@ fi
 
 | Tier | New Tests | Cumulative |
 |---|---|---|
-| Tier 1 (high risk) | 46 | 440 |
-| Tier 2 (medium risk) | 39 | 479 |
-| Tier 3 (low risk) | 53 | 532 |
-| **Total** | **138** | **532** |
+| Tier 1 (high risk) | 56 | 451 |
+| Tier 2 (medium risk) | 39 | 490 |
+| Tier 3 (low risk) | 54 | 544 |
+| **Total** | **149** | **544** |
 
 New files:
-- `tests/e2e/gateway/` — entire new suite (setup, 6 domain files, runner)
+- `tests/e2e/gateway/` — entire new suite (setup, 8 domain files, runner)
 - `tests/e2e/operator/scripts/test-lifecycle.sh` — new domain file
 - `tests/e2e/full-stack/scripts/test-oci-e2e.sh` — new domain file
 - `tests/e2e/full-stack/scripts/test-helm.sh` — new domain file
