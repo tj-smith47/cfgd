@@ -136,7 +136,7 @@ else
     fail_test "OP-ERR-01" "ModulesResolved condition not set to False for nonexistent moduleRef"
 fi
 
-kubectl delete machineconfig "e2e-bad-moduleref-${E2E_RUN_ID}" -n "$E2E_NAMESPACE" 2>/dev/null || true
+kubectl delete machineconfig "e2e-bad-moduleref-${E2E_RUN_ID}" -n "$E2E_NAMESPACE" --ignore-not-found 2>/dev/null || true
 
 # =================================================================
 # OP-ERR-02: ConfigPolicy with impossible selector
@@ -196,7 +196,7 @@ else
     fail_test "OP-ERR-02" "ConfigPolicy status was not updated by controller"
 fi
 
-kubectl delete configpolicy "e2e-impossible-selector-${E2E_RUN_ID}" -n "$E2E_NAMESPACE" 2>/dev/null || true
+kubectl delete configpolicy "e2e-impossible-selector-${E2E_RUN_ID}" -n "$E2E_NAMESPACE" --ignore-not-found 2>/dev/null || true
 
 # =================================================================
 # OP-ERR-03: DriftAlert for deleted MachineConfig
@@ -254,7 +254,7 @@ sleep 5
 # Remove finalizers first in case controller added them
 kubectl patch machineconfig "e2e-ephemeral-mc-${E2E_RUN_ID}" -n "$E2E_NAMESPACE" \
     --type=json -p='[{"op":"replace","path":"/metadata/finalizers","value":[]}]' 2>/dev/null || true
-kubectl delete machineconfig "e2e-ephemeral-mc-${E2E_RUN_ID}" -n "$E2E_NAMESPACE" --wait=false 2>/dev/null || true
+kubectl delete machineconfig "e2e-ephemeral-mc-${E2E_RUN_ID}" -n "$E2E_NAMESPACE" --wait=false --ignore-not-found 2>/dev/null || true
 
 # Wait for MC to actually be gone
 for i in $(seq 1 30); do
@@ -286,8 +286,8 @@ else
     fail_test "OP-ERR-03" "Operator pod is not Running after DriftAlert orphan scenario (status: ${OPERATOR_STATUS})"
 fi
 
-kubectl delete driftalert "e2e-orphan-drift-${E2E_RUN_ID}" -n "$E2E_NAMESPACE" 2>/dev/null || true
-kubectl delete machineconfig "e2e-ephemeral-mc-${E2E_RUN_ID}" -n "$E2E_NAMESPACE" 2>/dev/null || true
+kubectl delete driftalert "e2e-orphan-drift-${E2E_RUN_ID}" -n "$E2E_NAMESPACE" --ignore-not-found 2>/dev/null || true
+kubectl delete machineconfig "e2e-ephemeral-mc-${E2E_RUN_ID}" -n "$E2E_NAMESPACE" --ignore-not-found 2>/dev/null || true
 
 # =================================================================
 # OP-ERR-04: Rapid create/delete — no reconcile panic
@@ -316,7 +316,7 @@ spec:
     - name: vim
   systemSettings: {}
 EOF
-    kubectl delete machineconfig "e2e-rapid-${E2E_RUN_ID}-${i}" -n "$E2E_NAMESPACE" --wait=false 2>/dev/null || true
+    kubectl delete machineconfig "e2e-rapid-${E2E_RUN_ID}-${i}" -n "$E2E_NAMESPACE" --wait=false --ignore-not-found 2>/dev/null || true
 done
 
 # Give the controller time to process the events
@@ -347,5 +347,5 @@ fi
 
 # Clean up any stragglers
 for i in $(seq 1 5); do
-    kubectl delete machineconfig "e2e-rapid-${E2E_RUN_ID}-${i}" -n "$E2E_NAMESPACE" 2>/dev/null || true
+    kubectl delete machineconfig "e2e-rapid-${E2E_RUN_ID}-${i}" -n "$E2E_NAMESPACE" --ignore-not-found 2>/dev/null || true
 done

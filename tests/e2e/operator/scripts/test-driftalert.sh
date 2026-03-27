@@ -49,7 +49,7 @@ fi
 begin_test "OP-DA-02: DriftAlert cleanup"
 
 # Delete the drift alert
-kubectl delete driftalert e2e-drift-1 -n "$E2E_NAMESPACE" 2>/dev/null || true
+kubectl delete driftalert e2e-drift-1 -n "$E2E_NAMESPACE" --ignore-not-found 2>/dev/null || true
 
 # Update MC spec to bump generation and trigger re-reconcile (clear drift flag)
 kubectl patch machineconfig e2e-workstation-1 -n "$E2E_NAMESPACE" --type=merge \

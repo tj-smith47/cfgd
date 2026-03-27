@@ -21,9 +21,10 @@ if assert_ok; then
 else fail_test "SEC02"; fi
 
 if command -v age-keygen > /dev/null 2>&1 && command -v sops > /dev/null 2>&1; then
-    # cfgd's sops backend uses ~/.config/cfgd/age-key.txt by default.
-    # Generate key there and use its public key for .sops.yaml
-    CFGD_DEFAULT_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/cfgd"
+    # Generate age key in scratch dir and point cfgd to it via XDG_CONFIG_HOME
+    # so we never write to the user's real ~/.config/cfgd/
+    export XDG_CONFIG_HOME="$SCRATCH/.config"
+    CFGD_DEFAULT_DIR="$XDG_CONFIG_HOME/cfgd"
     mkdir -p "$CFGD_DEFAULT_DIR"
     CFGD_AGE_KEY="$CFGD_DEFAULT_DIR/age-key.txt"
     if [ ! -f "$CFGD_AGE_KEY" ]; then

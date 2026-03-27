@@ -75,9 +75,9 @@ else
 fi
 
 # Clean up
-kubectl delete clusterconfigpolicy "e2e-bad-semver-${E2E_RUN_ID}" 2>/dev/null || true
-kubectl delete driftalert e2e-bad-drift -n "$E2E_NAMESPACE" 2>/dev/null || true
-kubectl delete machineconfig e2e-bad-mc -n "$E2E_NAMESPACE" 2>/dev/null || true
+kubectl delete clusterconfigpolicy "e2e-bad-semver-${E2E_RUN_ID}" --ignore-not-found 2>/dev/null || true
+kubectl delete driftalert e2e-bad-drift -n "$E2E_NAMESPACE" --ignore-not-found 2>/dev/null || true
+kubectl delete machineconfig e2e-bad-mc -n "$E2E_NAMESPACE" --ignore-not-found 2>/dev/null || true
 
 # =================================================================
 # OP-WH-02: Mutating webhook — pod injection with CSI volumes
@@ -263,7 +263,7 @@ if assert_rejected "$RESULT" "Empty hostname"; then
 else
     fail_test "OP-WH-04" "MachineConfig with empty hostname was not rejected"
 fi
-kubectl delete machineconfig "e2e-no-host-${E2E_RUN_ID}" -n "$E2E_NAMESPACE" 2>/dev/null || true
+kubectl delete machineconfig "e2e-no-host-${E2E_RUN_ID}" -n "$E2E_NAMESPACE" --ignore-not-found 2>/dev/null || true
 
 # =================================================================
 # OP-WH-05: MachineConfig — invalid moduleRef format rejected
@@ -295,7 +295,7 @@ if assert_rejected "$RESULT" "Invalid moduleRef (empty name)"; then
 else
     fail_test "OP-WH-05" "MachineConfig with empty moduleRef name was not rejected"
 fi
-kubectl delete machineconfig "e2e-bad-modref-${E2E_RUN_ID}" -n "$E2E_NAMESPACE" 2>/dev/null || true
+kubectl delete machineconfig "e2e-bad-modref-${E2E_RUN_ID}" -n "$E2E_NAMESPACE" --ignore-not-found 2>/dev/null || true
 
 # =================================================================
 # OP-WH-06: MachineConfig — valid spec accepted
@@ -328,7 +328,7 @@ if echo "$RESULT" | grep -qE "created|configured|unchanged"; then
 else
     fail_test "OP-WH-06" "Valid MachineConfig was not accepted: $RESULT"
 fi
-kubectl delete machineconfig "e2e-valid-mc-${E2E_RUN_ID}" -n "$E2E_NAMESPACE" 2>/dev/null || true
+kubectl delete machineconfig "e2e-valid-mc-${E2E_RUN_ID}" -n "$E2E_NAMESPACE" --ignore-not-found 2>/dev/null || true
 
 # =================================================================
 # OP-WH-07: ConfigPolicy — empty targetSelector accepted
@@ -365,7 +365,7 @@ else
         fail_test "OP-WH-07" "Unexpected result for empty targetSelector: $RESULT"
     fi
 fi
-kubectl delete configpolicy "e2e-empty-sel-${E2E_RUN_ID}" -n "$E2E_NAMESPACE" 2>/dev/null || true
+kubectl delete configpolicy "e2e-empty-sel-${E2E_RUN_ID}" -n "$E2E_NAMESPACE" --ignore-not-found 2>/dev/null || true
 
 # =================================================================
 # OP-WH-08: ConfigPolicy — valid spec accepted
@@ -398,7 +398,7 @@ if echo "$RESULT" | grep -qE "created|configured|unchanged"; then
 else
     fail_test "OP-WH-08" "Valid ConfigPolicy was not accepted: $RESULT"
 fi
-kubectl delete configpolicy "e2e-valid-cp-${E2E_RUN_ID}" -n "$E2E_NAMESPACE" 2>/dev/null || true
+kubectl delete configpolicy "e2e-valid-cp-${E2E_RUN_ID}" -n "$E2E_NAMESPACE" --ignore-not-found 2>/dev/null || true
 
 # =================================================================
 # OP-WH-09: DriftAlert — missing machineConfigRef rejected
@@ -431,7 +431,7 @@ if assert_rejected "$RESULT" "Empty machineConfigRef name"; then
 else
     fail_test "OP-WH-09" "DriftAlert with empty machineConfigRef name was not rejected"
 fi
-kubectl delete driftalert "e2e-no-mcref-${E2E_RUN_ID}" -n "$E2E_NAMESPACE" 2>/dev/null || true
+kubectl delete driftalert "e2e-no-mcref-${E2E_RUN_ID}" -n "$E2E_NAMESPACE" --ignore-not-found 2>/dev/null || true
 
 # =================================================================
 # OP-WH-10: DriftAlert — valid spec accepted
@@ -464,7 +464,7 @@ if echo "$RESULT" | grep -qE "created|configured|unchanged"; then
 else
     fail_test "OP-WH-10" "Valid DriftAlert was not accepted: $RESULT"
 fi
-kubectl delete driftalert "e2e-valid-da-${E2E_RUN_ID}" -n "$E2E_NAMESPACE" 2>/dev/null || true
+kubectl delete driftalert "e2e-valid-da-${E2E_RUN_ID}" -n "$E2E_NAMESPACE" --ignore-not-found 2>/dev/null || true
 
 # =================================================================
 # OP-WH-11: ClusterConfigPolicy — invalid namespaceSelector + invalid semver rejected
@@ -497,7 +497,7 @@ if assert_rejected "$RESULT" "Invalid namespaceSelector + invalid semver"; then
 else
     fail_test "OP-WH-11" "ClusterConfigPolicy with invalid fields was not rejected"
 fi
-kubectl delete clusterconfigpolicy "e2e-bad-ccp-${E2E_RUN_ID}" 2>/dev/null || true
+kubectl delete clusterconfigpolicy "e2e-bad-ccp-${E2E_RUN_ID}" --ignore-not-found 2>/dev/null || true
 
 # =================================================================
 # OP-WH-12: ClusterConfigPolicy — valid spec accepted
@@ -529,7 +529,7 @@ if echo "$RESULT" | grep -qE "created|configured|unchanged"; then
 else
     fail_test "OP-WH-12" "Valid ClusterConfigPolicy was not accepted: $RESULT"
 fi
-kubectl delete clusterconfigpolicy "e2e-valid-ccp-${E2E_RUN_ID}" 2>/dev/null || true
+kubectl delete clusterconfigpolicy "e2e-valid-ccp-${E2E_RUN_ID}" --ignore-not-found 2>/dev/null || true
 
 # =================================================================
 # OP-WH-13: Module — invalid OCI reference format rejected
@@ -557,7 +557,7 @@ if assert_rejected "$RESULT" "Invalid OCI reference"; then
 else
     fail_test "OP-WH-13" "Module with invalid OCI reference was not rejected"
 fi
-kubectl delete module "e2e-bad-oci-${E2E_RUN_ID}" 2>/dev/null || true
+kubectl delete module "e2e-bad-oci-${E2E_RUN_ID}" --ignore-not-found 2>/dev/null || true
 
 # =================================================================
 # OP-WH-14: Module — valid spec accepted
@@ -587,7 +587,7 @@ if echo "$RESULT" | grep -qE "created|configured|unchanged"; then
 else
     fail_test "OP-WH-14" "Valid Module was not accepted: $RESULT"
 fi
-kubectl delete module "e2e-valid-mod-${E2E_RUN_ID}" 2>/dev/null || true
+kubectl delete module "e2e-valid-mod-${E2E_RUN_ID}" --ignore-not-found 2>/dev/null || true
 
 # =================================================================
 # OP-WH-15: MachineConfig serde defaults on minimal spec
@@ -655,4 +655,4 @@ if $PASS; then
 else
     fail_test "OP-WH-15" "Stored MachineConfig does not have expected defaults"
 fi
-kubectl delete machineconfig "e2e-defaults-mc-${E2E_RUN_ID}" -n "$E2E_NAMESPACE" 2>/dev/null || true
+kubectl delete machineconfig "e2e-defaults-mc-${E2E_RUN_ID}" -n "$E2E_NAMESPACE" --ignore-not-found 2>/dev/null || true

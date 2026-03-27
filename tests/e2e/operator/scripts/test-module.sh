@@ -133,4 +133,4 @@ else
 fi
 
 # Clean up any resources that might have been created
-kubectl delete module "e2e-bad-oci-${E2E_RUN_ID}" "e2e-bad-pem-${E2E_RUN_ID}" "e2e-empty-pkg-${E2E_RUN_ID}" 2>/dev/null || true
+kubectl delete module "e2e-bad-oci-${E2E_RUN_ID}" "e2e-bad-pem-${E2E_RUN_ID}" "e2e-empty-pkg-${E2E_RUN_ID}" --ignore-not-found 2>/dev/null || true

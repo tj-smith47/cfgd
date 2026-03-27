@@ -187,9 +187,9 @@ fi
 # --- Cleanup from XP-01..XP-05 ---
 echo ""
 echo "Cleaning up XP-01..XP-05 resources before depth tests..."
-kubectl delete teamconfig test-team 2>/dev/null || true
-kubectl delete mc --all -A 2>/dev/null || true
-kubectl delete cpol --all -A 2>/dev/null || true
+kubectl delete teamconfig test-team --ignore-not-found 2>/dev/null || true
+kubectl delete mc -l "cfgd.io/e2e=true" --ignore-not-found -A 2>/dev/null || true
+kubectl delete cpol -l "cfgd.io/e2e=true" --ignore-not-found -A 2>/dev/null || true
 sleep 5
 
 # =================================================================
@@ -313,7 +313,7 @@ else
 fi
 
 # Cleanup XP-07/XP-08
-kubectl delete teamconfig policy-team -n "$XP07_NS" 2>/dev/null || true
+kubectl delete teamconfig policy-team -n "$XP07_NS" --ignore-not-found 2>/dev/null || true
 kubectl delete namespace "$XP07_NS" --ignore-not-found --wait=false 2>/dev/null || true
 
 # =================================================================
@@ -358,9 +358,9 @@ else
     fail_test "XP-09" "Expected 3 MachineConfigs reflecting 3 members, got ${MC_COUNT:-0}"
 fi
 
-kubectl delete teamconfig status-team 2>/dev/null || true
+kubectl delete teamconfig status-team --ignore-not-found 2>/dev/null || true
 sleep 5
-kubectl delete mc --all -A 2>/dev/null || true
+kubectl delete mc -l "cfgd.io/e2e=true" --ignore-not-found -A 2>/dev/null || true
 
 # =================================================================
 # XP-10: MachineConfig inherits team profile
@@ -405,9 +405,9 @@ else
     fi
 fi
 
-kubectl delete teamconfig profile-team 2>/dev/null || true
+kubectl delete teamconfig profile-team --ignore-not-found 2>/dev/null || true
 sleep 5
-kubectl delete mc --all -A 2>/dev/null || true
+kubectl delete mc -l "cfgd.io/e2e=true" --ignore-not-found -A 2>/dev/null || true
 
 # =================================================================
 # XP-11: Duplicate member name rejected
@@ -450,9 +450,9 @@ else
     fail_test "XP-11" "Expected rejection or dedup, got ${DUP_MC_COUNT:-0} MachineConfigs"
 fi
 
-kubectl delete teamconfig dup-team 2>/dev/null || true
+kubectl delete teamconfig dup-team --ignore-not-found 2>/dev/null || true
 sleep 5
-kubectl delete mc --all -A 2>/dev/null || true
+kubectl delete mc -l "cfgd.io/e2e=true" --ignore-not-found -A 2>/dev/null || true
 
 # =================================================================
 # XP-12: TeamConfig deletion cascades
@@ -578,8 +578,8 @@ else
 fi
 
 # Cleanup XP-13
-kubectl delete teamconfig team-alpha -n "$XP13_NS_A" 2>/dev/null || true
-kubectl delete teamconfig team-beta -n "$XP13_NS_B" 2>/dev/null || true
+kubectl delete teamconfig team-alpha -n "$XP13_NS_A" --ignore-not-found 2>/dev/null || true
+kubectl delete teamconfig team-beta -n "$XP13_NS_B" --ignore-not-found 2>/dev/null || true
 kubectl delete namespace "$XP13_NS_A" --ignore-not-found --wait=false 2>/dev/null || true
 kubectl delete namespace "$XP13_NS_B" --ignore-not-found --wait=false 2>/dev/null || true
 
@@ -623,8 +623,11 @@ fi
 # --- Final cleanup ---
 echo ""
 echo "Cleaning up test resources..."
-kubectl delete mc --all -A 2>/dev/null || true
-kubectl delete cpol --all -A 2>/dev/null || true
+# Only delete resources created by THIS test run (not all cluster-wide!)
+for ns in "$XP07_NS" "$XP09_NS" "$XP10_NS" "$XP11_NS" "$XP12_NS" "$XP13_NS_A" "$XP13_NS_B" "crossplane-e2e-${E2E_RUN_ID:-local}"; do
+    kubectl delete namespace "$ns" --ignore-not-found --wait=false 2>/dev/null || true
+done
+kubectl delete teamconfig -l "cfgd.io/e2e=true" --ignore-not-found -A 2>/dev/null || true
 
 # --- Summary ---
 print_summary "Crossplane E2E Tests"

@@ -375,7 +375,7 @@ begin_test "OP-NS-06: Namespace deletion cleanup"
 NS06_BEFORE_TOTAL=$NS05_TOTAL
 
 # Delete ns-a — its MachineConfig should be garbage-collected
-kubectl delete namespace "$NS_A" --wait=false 2>/dev/null || true
+kubectl delete namespace "$NS_A" --wait=false --ignore-not-found 2>/dev/null || true
 
 echo "  Waiting for namespace $NS_A deletion to propagate..."
 # Wait for the namespace to actually be gone

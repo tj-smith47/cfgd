@@ -36,10 +36,11 @@ CALLER="$(basename "${BASH_SOURCE[1]}" .sh)"
 SCRATCH="$CLI_SCRATCH/$CALLER"
 mkdir -p "$SCRATCH"
 
-# Git identity
-if ! git config user.name >/dev/null 2>&1; then
-    git config --global user.name "cfgd-test"
-    git config --global user.email "test@cfgd.io"
+# Git identity — use isolated config so tests never modify user's global gitconfig
+export GIT_CONFIG_GLOBAL="$CLI_SCRATCH/.gitconfig"
+if [ ! -f "$GIT_CONFIG_GLOBAL" ]; then
+    git config --file "$GIT_CONFIG_GLOBAL" user.name "cfgd-test"
+    git config --file "$GIT_CONFIG_GLOBAL" user.email "test@cfgd.io"
 fi
 
 # --- Helpers ---

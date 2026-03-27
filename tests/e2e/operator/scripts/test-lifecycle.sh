@@ -316,7 +316,7 @@ fi
 # --- Clean up lifecycle test resources ---
 echo ""
 echo "Cleaning up lifecycle test resources..."
-kubectl delete machineconfig "e2e-lc-mc-${E2E_RUN_ID}" -n "$E2E_NAMESPACE" 2>/dev/null || true
-kubectl delete configpolicy "e2e-lc-policy-${E2E_RUN_ID}" -n "$E2E_NAMESPACE" 2>/dev/null || true
-kubectl delete driftalert "e2e-lc-drift-${E2E_RUN_ID}" -n "$E2E_NAMESPACE" 2>/dev/null || true
-kubectl delete module "e2e-lc-module-${E2E_RUN_ID}" 2>/dev/null || true
+kubectl delete machineconfig "e2e-lc-mc-${E2E_RUN_ID}" -n "$E2E_NAMESPACE" --ignore-not-found 2>/dev/null || true
+kubectl delete configpolicy "e2e-lc-policy-${E2E_RUN_ID}" -n "$E2E_NAMESPACE" --ignore-not-found 2>/dev/null || true
+kubectl delete driftalert "e2e-lc-drift-${E2E_RUN_ID}" -n "$E2E_NAMESPACE" --ignore-not-found 2>/dev/null || true
+kubectl delete module "e2e-lc-module-${E2E_RUN_ID}" --ignore-not-found 2>/dev/null || true

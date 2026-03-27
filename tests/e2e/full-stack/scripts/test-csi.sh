@@ -113,7 +113,7 @@ if ! $CSI_AVAILABLE; then
     skip_test "FS-CSI-02" "CSI driver not ready"
 else
     # Delete the pod
-    kubectl delete pod csi-mount-test -n "e2e-csi-test-${E2E_RUN_ID}" --grace-period=5 2>/dev/null || true
+    kubectl delete pod csi-mount-test -n "e2e-csi-test-${E2E_RUN_ID}" --grace-period=5 --ignore-not-found 2>/dev/null || true
 
     # Wait for pod to be deleted
     echo "  Waiting for pod deletion..."
@@ -568,7 +568,7 @@ EOF
         echo "  Mount before delete: $([ -n "$PRE_MOUNT" ] && echo 'present' || echo 'absent')"
 
         # Delete the pod
-        kubectl delete pod csi-unmount-test -n "$CSI09_NS" --grace-period=5 2>/dev/null || true
+        kubectl delete pod csi-unmount-test -n "$CSI09_NS" --grace-period=5 --ignore-not-found 2>/dev/null || true
 
         # Wait for pod to be gone
         echo "  Waiting for pod deletion..."

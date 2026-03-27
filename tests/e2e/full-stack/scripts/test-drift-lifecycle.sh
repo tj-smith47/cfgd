@@ -97,7 +97,7 @@ fi
 begin_test "FS-DRIFT-04: Drift resolution lifecycle"
 
 # Delete DriftAlert
-kubectl delete driftalert "drift-${DEVICE_1}" -n cfgd-system 2>/dev/null || true
+kubectl delete driftalert "drift-${DEVICE_1}" -n cfgd-system --ignore-not-found 2>/dev/null || true
 
 # Patch MC to trigger re-reconcile (changes generation)
 kubectl patch machineconfig "mc-${DEVICE_1}" -n cfgd-system --type=merge \

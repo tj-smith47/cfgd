@@ -117,7 +117,7 @@ if [ "$ARGOCD_MANAGED" = "true" ] || { [ -n "${CFGD_DEPLOY_MANIFESTS:-}" ] && [ 
             # Wait for old pods to terminate (handles RWO PVC conflicts)
             kubectl rollout status "deployment/$deploy" -n cfgd-system --timeout=120s 2>/dev/null || {
                 echo "  Rollout stuck for $deploy — deleting old pods to release PVC..."
-                kubectl delete pods -n cfgd-system -l "app=$deploy" --grace-period=5 --wait=false 2>/dev/null || true
+                kubectl delete pods -n cfgd-system -l "app=$deploy" --ignore-not-found --grace-period=5 --wait=false 2>/dev/null || true
                 sleep 5
                 kubectl rollout status "deployment/$deploy" -n cfgd-system --timeout=120s 2>/dev/null || true
             }

@@ -1737,7 +1737,6 @@ fn copy_files_to_dir(
     file_specs: &[String],
     repo_dir: &Path,
 ) -> anyhow::Result<Vec<(String, PathBuf)>> {
-    let home = cfgd_core::expand_tilde(std::path::Path::new("~"));
     let mut results = Vec::new();
     for spec in file_specs {
         let (source, target) = parse_file_spec(spec)?;

@@ -173,6 +173,6 @@ fi
 # --- Clean up resources from MachineConfig + ConfigPolicy tests ---
 echo ""
 echo "Cleaning up MachineConfig/ConfigPolicy/DriftAlert resources..."
-kubectl delete machineconfig e2e-workstation-1 e2e-workstation-2 -n "$E2E_NAMESPACE" 2>/dev/null || true
-kubectl delete configpolicy e2e-security-baseline e2e-version-policy e2e-selector-policy -n "$E2E_NAMESPACE" 2>/dev/null || true
-kubectl delete driftalert e2e-drift-1 -n "$E2E_NAMESPACE" 2>/dev/null || true
+kubectl delete machineconfig e2e-workstation-1 e2e-workstation-2 -n "$E2E_NAMESPACE" --ignore-not-found 2>/dev/null || true
+kubectl delete configpolicy e2e-security-baseline e2e-version-policy e2e-selector-policy -n "$E2E_NAMESPACE" --ignore-not-found 2>/dev/null || true
+kubectl delete driftalert e2e-drift-1 -n "$E2E_NAMESPACE" --ignore-not-found 2>/dev/null || true
