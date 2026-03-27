@@ -8,6 +8,8 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/../../common/helpers.sh"
 
+command -v jq >/dev/null 2>&1 || { echo "ERROR: jq is required for gateway tests"; exit 1; }
+
 echo "=== cfgd Gateway E2E Tests ==="
 
 # --- Verify gateway deployment is running ---
@@ -42,7 +44,7 @@ fi
 
 # --- Create bootstrap token for enrollment tests ---
 BOOTSTRAP_TOKEN=""
-GW_DEVICE_ID="e2e-gateway-device-$$"
+GW_DEVICE_ID="e2e-device-${E2E_RUN_ID}"
 
 if [ -n "$ADMIN_KEY" ]; then
     TOKEN_RESPONSE=$(curl -sf -X POST "$GW_URL/api/v1/admin/tokens" \
@@ -70,4 +72,7 @@ fi
 # --- Export environment for domain test files ---
 export GW_URL GW_PORT PF_PID ADMIN_KEY BOOTSTRAP_TOKEN GW_DEVICE_ID
 
-echo "Setup complete: GW_URL=$GW_URL GW_PORT=$GW_PORT GW_DEVICE_ID=$GW_DEVICE_ID"
+echo "Gateway URL: $GW_URL"
+echo "Bootstrap token available: $([ -n "$BOOTSTRAP_TOKEN" ] && echo yes || echo no)"
+echo "Admin key available: $([ -n "$ADMIN_KEY" ] && echo yes || echo no)"
+echo "Device ID: $GW_DEVICE_ID"
