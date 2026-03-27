@@ -378,7 +378,7 @@ begin_test "MK02: module keys generate"
 if command -v cosign > /dev/null 2>&1; then
     KEYS_DIR="$SCRATCH/keys-test"
     mkdir -p "$KEYS_DIR"
-    run $C module keys generate --output "$KEYS_DIR"
+    run $C module keys generate --dir "$KEYS_DIR"
     if [ "$RC" -eq 0 ] || [ "$RC" -eq 1 ]; then
         pass_test "MK02"
     else fail_test "MK02" "exit $RC"; fi

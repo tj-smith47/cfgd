@@ -1301,7 +1301,7 @@ pub enum ModuleKeysCommand {
     Generate {
         /// Output directory for the key pair (default: current directory)
         #[arg(long, short)]
-        output: Option<String>,
+        dir: Option<String>,
     },
     /// List known signing keys
     #[command(alias = "ls")]
@@ -1504,8 +1504,8 @@ pub fn execute(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
                 key.as_deref(),
             ),
             ModuleCommand::Keys { command } => match command {
-                ModuleKeysCommand::Generate { output } => {
-                    module::cmd_module_keys_generate(printer, output.as_deref())
+                ModuleKeysCommand::Generate { dir } => {
+                    module::cmd_module_keys_generate(printer, dir.as_deref())
                 }
                 ModuleKeysCommand::List => module::cmd_module_keys_list(printer),
                 ModuleKeysCommand::Rotate { dir, artifacts } => {

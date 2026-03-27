@@ -135,6 +135,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+      - name: Install cosign
+        run: |
+          curl -fsSL -o /usr/local/bin/cosign \
+            https://github.com/sigstore/cosign/releases/download/v2.4.3/cosign-linux-amd64
+          chmod +x /usr/local/bin/cosign
       - name: Build cfgd
         run: cargo build --release --bin cfgd
       - name: Run exhaustive tests

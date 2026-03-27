@@ -19,6 +19,11 @@ RUN curl -fsSL -o /usr/local/bin/sops \
     https://github.com/getsops/sops/releases/download/v3.9.4/sops-v3.9.4.linux.amd64 \
     && chmod +x /usr/local/bin/sops
 
+# Install cosign (for module key signing tests)
+RUN curl -fsSL -o /usr/local/bin/cosign \
+    https://github.com/sigstore/cosign/releases/download/v2.4.3/cosign-linux-amd64 \
+    && chmod +x /usr/local/bin/cosign
+
 COPY --from=builder /src/target/release/cfgd /usr/local/bin/cfgd
 COPY tests/e2e/ /tests/e2e/
 
