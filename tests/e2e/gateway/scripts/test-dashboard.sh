@@ -6,11 +6,15 @@
 # =================================================================
 begin_test "GW-22: Web dashboard loads"
 
-# The web dashboard is behind web_auth_middleware, which checks for CFGD_API_KEY
-# via query param (?key=...) or the same Bearer token.
+# The web dashboard is behind web_auth_middleware, which accepts:
+#   1. Authorization: Bearer header
+#   2. cfgd_session cookie
+#   3. ?token= query param (returns 303 redirect with Set-Cookie)
+# Use Bearer header for direct 200 response.
 if [ -n "$ADMIN_KEY" ]; then
     GW22_CODE=$(curl -s -o /tmp/gw22-body.txt -w "%{http_code}" \
-        "$GW_URL/?key=$ADMIN_KEY" 2>/dev/null || echo "000")
+        "$GW_URL/" \
+        -H "Authorization: Bearer $ADMIN_KEY" 2>/dev/null || echo "000")
 else
     GW22_CODE=$(curl -s -o /tmp/gw22-body.txt -w "%{http_code}" \
         "$GW_URL/" 2>/dev/null || echo "000")
