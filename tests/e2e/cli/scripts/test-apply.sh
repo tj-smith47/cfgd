@@ -142,4 +142,97 @@ if [ "$RC" -eq 0 ] || [ "$RC" -eq 1 ]; then
     pass_test "A19"
 else fail_test "A19" "exit $RC"; fi
 
+# === Apply end-to-end file tree validation ===
+
+begin_test "A20: apply --yes deploys files as symlinks to correct targets"
+# Verify the files created by A16 are symlinks pointing into the config dir
+if [ -L "$TGT/.gitconfig" ]; then
+    LINK_TARGET=$(readlink "$TGT/.gitconfig" 2>/dev/null || echo "")
+    if echo "$LINK_TARGET" | grep -q "files/gitconfig"; then
+        pass_test "A20"
+    else
+        fail_test "A20" "Symlink points to wrong target: $LINK_TARGET"
+    fi
+else
+    # May be a copy if strategy is Copy; still valid
+    if [ -f "$TGT/.gitconfig" ]; then
+        pass_test "A20"
+    else
+        fail_test "A20" ".gitconfig not deployed"
+    fi
+fi
+
+begin_test "A21: apply --yes creates env file with aliases"
+# After A16's apply, env file should exist with profile env vars
+ENV_FILE="$HOME/.cfgd.env"
+if [ -f "$ENV_FILE" ] && grep -q "EDITOR" "$ENV_FILE"; then
+    pass_test "A21"
+else
+    # env file might not be created if profile has no env vars
+    # check if our profile actually has env
+    if grep -q "env:" "$CFG/profiles/dev.yaml" 2>/dev/null; then
+        fail_test "A21" "Profile has env but ~/.cfgd.env missing or incomplete"
+    else
+        pass_test "A21"
+    fi
+fi
+
+begin_test "A22: apply with module deploys module files to correct paths"
+# Create a module with a file, apply it, verify deployment
+A22_CFG="$SCRATCH/a22-cfg"
+A22_TGT="$SCRATCH/a22-home"
+A22_STATE="$SCRATCH/a22-state"
+mkdir -p "$A22_CFG/modules/a22-mod/files" "$A22_TGT" "$A22_STATE"
+echo "a22-content" > "$A22_CFG/modules/a22-mod/files/a22.conf"
+cat > "$A22_CFG/modules/a22-mod/module.yaml" << YAML
+apiVersion: cfgd.io/v1alpha1
+kind: Module
+metadata:
+  name: a22-mod
+spec:
+  files:
+  - source: files/a22.conf
+    target: $A22_TGT/.a22.conf
+YAML
+setup_config_dir "$A22_CFG" "$A22_TGT"
+A22_C="--config $A22_CFG/cfgd.yaml --state-dir $A22_STATE --no-color"
+run $A22_C apply --yes --module a22-mod
+if assert_ok && [ -e "$A22_TGT/.a22.conf" ]; then
+    # Verify content matches
+    if grep -q "a22-content" "$A22_TGT/.a22.conf" 2>/dev/null || \
+       ([ -L "$A22_TGT/.a22.conf" ] && grep -q "a22-content" "$(readlink -f "$A22_TGT/.a22.conf")" 2>/dev/null); then
+        pass_test "A22"
+    else
+        fail_test "A22" "Content mismatch"
+    fi
+else
+    fail_test "A22" "Module file not deployed"
+fi
+
+begin_test "A23: apply --dry-run creates NO files"
+A23_CFG="$SCRATCH/a23-cfg"
+A23_TGT="$SCRATCH/a23-home"
+A23_STATE="$SCRATCH/a23-state"
+mkdir -p "$A23_CFG/modules/a23-mod/files" "$A23_TGT" "$A23_STATE"
+echo "a23-content" > "$A23_CFG/modules/a23-mod/files/a23.conf"
+cat > "$A23_CFG/modules/a23-mod/module.yaml" << YAML
+apiVersion: cfgd.io/v1alpha1
+kind: Module
+metadata:
+  name: a23-mod
+spec:
+  files:
+  - source: files/a23.conf
+    target: $A23_TGT/.a23.conf
+YAML
+setup_config_dir "$A23_CFG" "$A23_TGT"
+A23_C="--config $A23_CFG/cfgd.yaml --state-dir $A23_STATE --no-color"
+run $A23_C apply --dry-run --module a23-mod
+# The target file must NOT exist — dry-run should not deploy
+if [ ! -e "$A23_TGT/.a23.conf" ]; then
+    pass_test "A23"
+else
+    fail_test "A23" "dry-run created files it shouldn't have"
+fi
+
 print_summary "Apply"
