@@ -29,4 +29,4 @@ WORKDIR /tests
 ENV NO_COLOR=1
 ENV EDITOR=true
 
-ENTRYPOINT ["bash", "/tests/e2e/cli/scripts/run-exhaustive-tests.sh"]
+ENTRYPOINT ["bash", "/tests/e2e/cli/scripts/run-all.sh"]
