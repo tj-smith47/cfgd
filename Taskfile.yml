@@ -95,6 +95,7 @@ tasks:
       - task: e2e:operator
       - task: e2e:full-stack
       - task: e2e:crossplane
+      - task: e2e:gateway
 
   e2e:cli:
     desc: Run CLI exhaustive E2E tests
@@ -122,6 +123,11 @@ tasks:
     desc: Run Crossplane E2E tests
     cmds:
       - bash tests/e2e/crossplane/scripts/run-crossplane-tests.sh
+
+  e2e:gateway:
+    desc: Run gateway E2E tests
+    cmds:
+      - bash tests/e2e/gateway/scripts/run-all.sh
 
   # --- Clean ---
 

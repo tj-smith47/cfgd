@@ -189,7 +189,7 @@ spec:
     managed:
       - source: files/rb07-file
         target: $RB07_TGT/rb07-file
-        strategy: symlink
+        strategy: Symlink
 YAML
 cat > "$RB07_CFG/cfgd.yaml" << YAML
 apiVersion: cfgd.io/v1alpha1
