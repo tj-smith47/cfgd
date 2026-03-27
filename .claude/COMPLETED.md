@@ -4,6 +4,19 @@ Reference for the original design rationale and acceptance criteria of shipped f
 
 ---
 
+## E2E Test Reorganization
+
+Split monolithic E2E test scripts into 51 per-domain files across 4 suites. Plan: `plans/2026-03-25-e2e-test-reorganization.md`.
+
+- CLI: 30 domain files (307 tests), standalone subprocess model
+- Node: 7 domain files (27 tests), sourced single-process model
+- Operator: 8 domain files (18 tests), sourced single-process model
+- Full-Stack: 6 domain files (24 tests), sourced single-process model
+- CI: binary-tests + drift-tests merged into node-tests; all script paths updated
+- Test IDs globally unique: G/I/A/S/D/L/V/DR/P/M/SRC/E/CF/CMP/SEC/DEC/DM/SY/PU/UP/WF/CI/EN/PL/RB/OF/CO/ERR/INH/TPL/DRIFT/CONF/EE/GC/SE/EC (CLI), BIN/SYSCTL/KMOD/SECCOMP/CERT/DAEMON (node), OP-CRD/MC/CP/DA/MOD/CCP/WH/OCI (operator), FS-HEALTH/FLEET/DRIFT/CSI/PLUGIN/DEBUG (full-stack)
+
+---
+
 ## Windows Support — Plan 1: Platform Foundations
 
 Cross-platform abstractions making cfgd-core and cfgd compile and work on Windows. Full design in [specs/2026-03-22-windows-support-design.md](specs/2026-03-22-windows-support-design.md).

@@ -311,8 +311,11 @@ All source tests use a local git repo created inline as the "remote."
 docker build -t cfgd-exhaustive -f tests/e2e/cli/Dockerfile .
 docker run --rm cfgd-exhaustive
 
-# Native (requires cfgd built + sops + age)
-bash tests/e2e/cli/scripts/run-exhaustive-tests.sh
+# Native — all tests
+bash tests/e2e/cli/scripts/run-all.sh
+
+# Native — single domain
+bash tests/e2e/cli/scripts/test-profile.sh
 ```
 
-**Total: 212 test cases.**
+**Total: 307 test cases across 30 domain files.**
