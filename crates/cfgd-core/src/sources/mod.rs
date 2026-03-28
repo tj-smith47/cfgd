@@ -224,6 +224,7 @@ impl SourceManager {
                 &source_dir.display().to_string(),
             ],
             "clone",
+            Some(spec.origin.ssh_strict_host_key_checking),
         ) {
             return Ok(());
         }
@@ -411,6 +412,7 @@ impl SourceManager {
                 url: url.to_string(),
                 branch: "master".to_string(),
                 auth: None,
+                ssh_strict_host_key_checking: Default::default(),
             },
             subscription: crate::config::SubscriptionSpec {
                 profile: profile.map(|s| s.to_string()),
@@ -590,7 +592,7 @@ fn normalize_semver_pin(pin: &str) -> String {
 /// Returns Ok(()) on success, Err with description on failure.
 pub fn git_clone_with_fallback(url: &str, target: &Path) -> std::result::Result<(), String> {
     // Try git CLI first with SSH hang protection.
-    let mut cmd = crate::git_cmd_safe(Some(url));
+    let mut cmd = crate::git_cmd_safe(Some(url), None);
     cmd.args(["clone", url, &target.display().to_string()]);
     let cli_result = crate::command_output_with_timeout(&mut cmd, crate::GIT_NETWORK_TIMEOUT);
 

@@ -4517,7 +4517,7 @@ fn cmd_secret_decrypt(cli: &Cli, printer: &Printer, file: &Path) -> anyhow::Resu
 
     let backend = get_secret_backend(cli, file)?;
     let decrypted = backend.decrypt_file(file)?;
-    printer.info(&decrypted);
+    printer.info(secrecy::ExposeSecret::expose_secret(&decrypted));
 
     Ok(())
 }

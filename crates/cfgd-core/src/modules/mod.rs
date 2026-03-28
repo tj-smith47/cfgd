@@ -702,6 +702,7 @@ fn clone_repo(dest: &Path, git_src: &GitSource, module_name: &str) -> Result<()>
         Some(&git_src.repo_url),
         &["clone", &git_src.repo_url, &dest.display().to_string()],
         "clone",
+        None,
     ) {
         return Ok(());
     }
@@ -733,6 +734,7 @@ fn fetch_existing_repo(repo_path: &Path, git_src: &GitSource, module_name: &str)
         Some(&git_src.repo_url),
         &["-C", &repo_path.display().to_string(), "fetch", "origin"],
         "fetch",
+        None,
     ) {
         return Ok(());
     }

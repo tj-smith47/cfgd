@@ -133,8 +133,8 @@ Current shared items (keep this list updated when adding new ones):
 - `set_file_permissions(path, mode)` — set Unix mode bits; no-op on Windows. Use instead of direct `PermissionsExt`
 - `is_executable(path, metadata) -> bool` — Unix checks executable bit; Windows checks file extension (`.exe`, `.cmd`, `.bat`, `.ps1`, `.com`)
 - `is_same_inode(a, b) -> bool` — check if two paths refer to the same file (same inode+dev on Unix, same file index+volume on Windows); use instead of inline `MetadataExt::ino()` comparisons
-- `git_cmd_safe(url)` — build a `Command` for git with `GIT_TERMINAL_PROMPT=0` and `BatchMode=yes` for SSH URLs; low-level builder, prefer `try_git_cmd` for the common try-CLI-then-fallback pattern
-- `try_git_cmd(url, args, label)` — run a git CLI command via `git_cmd_safe`, return `true` on success, log stderr via `tracing::debug` on failure; use before every git2 network operation as CLI-first fallback to prevent SSH hangs
+- `git_cmd_safe(url, ssh_policy)` — build a `Command` for git with `GIT_TERMINAL_PROMPT=0` and configurable `StrictHostKeyChecking` for SSH URLs; `ssh_policy: Option<SshHostKeyPolicy>` (None = accept-new default); low-level builder, prefer `try_git_cmd` for the common try-CLI-then-fallback pattern
+- `try_git_cmd(url, args, label, ssh_policy)` — run a git CLI command via `git_cmd_safe`, return `true` on success, log stderr via `tracing::debug` on failure; use before every git2 network operation as CLI-first fallback to prevent SSH hangs
 - `git_ssh_credentials(url, username, allowed)` — git2 credential callback (SSH agent/keys + HTTPS credential helper)
 - `parse_loose_version(s)` — parse "1.28" → semver Version(1.28.0); handles 1-part, 2-part, and 3-part versions
 - `version_satisfies(version, requirement)` — check version against semver range (uses `parse_loose_version`)

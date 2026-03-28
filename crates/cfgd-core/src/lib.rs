@@ -102,17 +102,28 @@ pub fn union_extend(target: &mut Vec<String>, source: &[String]) {
 /// Prepare a `git` CLI command with SSH hang protection.
 ///
 /// Sets `GIT_TERMINAL_PROMPT=0` to prevent interactive prompts and, for SSH URLs,
-/// sets `GIT_SSH_COMMAND` with `BatchMode=yes` and `StrictHostKeyChecking=accept-new`
+/// sets `GIT_SSH_COMMAND` with `BatchMode=yes` and configurable `StrictHostKeyChecking`
 /// to prevent hangs in non-interactive contexts (piped install scripts, daemons).
-pub fn git_cmd_safe(url: Option<&str>) -> std::process::Command {
+///
+/// The `ssh_policy` parameter controls the `StrictHostKeyChecking` value:
+/// - `None` uses the default (`accept-new`)
+/// - `Some(policy)` uses the specified policy
+pub fn git_cmd_safe(
+    url: Option<&str>,
+    ssh_policy: Option<config::SshHostKeyPolicy>,
+) -> std::process::Command {
     let mut cmd = std::process::Command::new("git");
     cmd.env("GIT_TERMINAL_PROMPT", "0")
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::piped());
     if url.is_some_and(|u| u.starts_with("git@") || u.starts_with("ssh://")) {
+        let policy = ssh_policy.unwrap_or_default();
         cmd.env(
             "GIT_SSH_COMMAND",
-            "ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new",
+            format!(
+                "ssh -o BatchMode=yes -o StrictHostKeyChecking={}",
+                policy.as_ssh_option()
+            ),
         );
     }
     cmd
@@ -120,8 +131,13 @@ pub fn git_cmd_safe(url: Option<&str>) -> std::process::Command {
 
 /// Try a git CLI command via [`git_cmd_safe`], returning `true` on success.
 /// On failure, logs the stderr via `tracing::debug` and returns `false`.
-pub fn try_git_cmd(url: Option<&str>, args: &[&str], label: &str) -> bool {
-    let mut cmd = git_cmd_safe(url);
+pub fn try_git_cmd(
+    url: Option<&str>,
+    args: &[&str],
+    label: &str,
+    ssh_policy: Option<config::SshHostKeyPolicy>,
+) -> bool {
+    let mut cmd = git_cmd_safe(url, ssh_policy);
     cmd.args(args);
     match command_output_with_timeout(&mut cmd, GIT_NETWORK_TIMEOUT) {
         Ok(output) if output.status.success() => true,

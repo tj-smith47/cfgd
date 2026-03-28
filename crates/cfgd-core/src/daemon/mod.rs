@@ -745,6 +745,18 @@ pub async fn run_daemon(
     // Compliance snapshot timer — only created when compliance is enabled
     let mut compliance_timer = compliance_interval.map(tokio::time::interval);
 
+    // Unix: set up SIGHUP handler for config reload.
+    // On Windows, SIGHUP doesn't exist — recv_sighup() pends forever.
+    #[cfg(unix)]
+    let mut sighup_signal =
+        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::hangup()).map_err(|e| {
+            DaemonError::WatchError {
+                message: format!("failed to register SIGHUP handler: {}", e),
+            }
+        })?;
+    #[cfg(not(unix))]
+    let mut sighup_signal = ();
+
     // Skip the first immediate tick
     reconcile_timer.tick().await;
     sync_timer.tick().await;
@@ -919,6 +931,42 @@ pub async fn run_daemon(
                     }).await.map_err(|e| DaemonError::WatchError {
                         message: format!("compliance snapshot task failed: {}", e),
                     })?;
+                }
+            }
+
+            // Unix: reload config on SIGHUP (kill -HUP <pid>).
+            // On Windows, this branch never fires (recv_sighup pends forever).
+            _ = recv_sighup(&mut sighup_signal) => {
+                tracing::info!("received SIGHUP — reloading configuration");
+                printer.info("Reloading configuration (SIGHUP)...");
+                match config::load_config(&config_path) {
+                    Ok(new_cfg) => {
+                        // Update reconcile/sync timer intervals from new config.
+                        // Note: full config reload (modules, packages, etc.) requires
+                        // a daemon restart. SIGHUP only hot-reloads timer intervals.
+                        let mut changed = Vec::new();
+                        if let Some(ref rc) = new_cfg.spec.daemon.as_ref().and_then(|d| d.reconcile.clone()) {
+                            let new_interval = parse_duration_or_default(&rc.interval);
+                            reconcile_timer = tokio::time::interval(new_interval);
+                            reconcile_timer.tick().await; // skip first immediate tick
+                            changed.push(format!("reconcile={:?}", new_interval));
+                        }
+                        if let Some(ref sc) = new_cfg.spec.daemon.as_ref().and_then(|d| d.sync.clone()) {
+                            let new_interval = parse_duration_or_default(&sc.interval);
+                            sync_timer = tokio::time::interval(new_interval);
+                            sync_timer.tick().await;
+                            changed.push(format!("sync={:?}", new_interval));
+                        }
+                        if changed.is_empty() {
+                            printer.info("Config validated; no timer changes detected");
+                        } else {
+                            printer.success(&format!("Timer intervals reloaded: {}", changed.join(", ")));
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!("config reload failed, keeping current config: {}", e);
+                        printer.warning(&format!("Config reload failed: {}", e));
+                    }
                 }
             }
 
@@ -1968,6 +2016,7 @@ fn git_pull(repo_path: &Path) -> std::result::Result<bool, String> {
         remote_url.as_deref(),
         &["-C", repo_dir, "fetch", "origin", branch_name],
         "fetch",
+        None,
     );
 
     if !cli_ok {
@@ -2091,6 +2140,7 @@ fn git_auto_commit_push(repo_path: &Path) -> std::result::Result<bool, String> {
         remote_url.as_deref(),
         &["-C", repo_dir, "push", "origin", branch_name],
         "push",
+        None,
     );
 
     if !cli_ok {
@@ -2853,6 +2903,18 @@ pub(crate) fn parse_duration_or_default(s: &str) -> Duration {
     crate::parse_duration_str(s).unwrap_or(Duration::from_secs(DEFAULT_RECONCILE_SECS))
 }
 
+/// Receive a SIGHUP signal on Unix. On non-Unix platforms, pends forever.
+#[cfg(unix)]
+async fn recv_sighup(signal: &mut tokio::signal::unix::Signal) {
+    signal.recv().await;
+}
+
+/// Receive a SIGHUP signal on Unix. On non-Unix platforms, pends forever.
+#[cfg(not(unix))]
+async fn recv_sighup(_signal: &mut ()) {
+    std::future::pending::<()>().await;
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3022,6 +3084,7 @@ mod tests {
                     url: "https://github.com/test/repo.git".into(),
                     branch: "master".into(),
                     auth: None,
+                    ssh_strict_host_key_checking: Default::default(),
                 }],
                 daemon: None,
                 secrets: None,
@@ -3054,6 +3117,7 @@ mod tests {
                     url: "https://cfgd.example.com".into(),
                     branch: "master".into(),
                     auth: None,
+                    ssh_strict_host_key_checking: Default::default(),
                 }],
                 daemon: None,
                 secrets: None,

@@ -40,6 +40,9 @@ notify-rust = "4"
 # Async runtime
 tokio = { version = "1", features = ["full"] }
 
+# Secret memory zeroization
+secrecy = "0.10"
+
 # Hashing
 sha2 = "0.10"
 

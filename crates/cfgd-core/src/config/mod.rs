@@ -289,6 +289,34 @@ pub struct OriginSpec {
     #[serde(default = "default_branch")]
     pub branch: String,
     pub auth: Option<String>,
+    /// SSH `StrictHostKeyChecking` policy for git operations.
+    /// `AcceptNew` (default): accept first-seen keys, reject changed keys.
+    /// `Yes`: require keys to already exist in known_hosts (high-security).
+    /// `No`: accept any key (insecure, not recommended).
+    #[serde(default)]
+    pub ssh_strict_host_key_checking: SshHostKeyPolicy,
+}
+
+/// SSH `StrictHostKeyChecking` policy for git operations over SSH.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum SshHostKeyPolicy {
+    /// Accept first-seen keys, reject changed keys (safe default for automation).
+    #[default]
+    AcceptNew,
+    /// Require keys to already exist in known_hosts (high-security environments).
+    Yes,
+    /// Accept any key without verification (insecure, not recommended).
+    No,
+}
+
+impl SshHostKeyPolicy {
+    pub fn as_ssh_option(&self) -> &'static str {
+        match self {
+            SshHostKeyPolicy::AcceptNew => "accept-new",
+            SshHostKeyPolicy::Yes => "yes",
+            SshHostKeyPolicy::No => "no",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -611,18 +639,58 @@ pub struct ConfigSourcePolicy {
     pub constraints: SourceConstraints,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct EnvVar {
     pub name: String,
     pub value: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+impl<'de> Deserialize<'de> for EnvVar {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct Raw {
+            name: String,
+            value: String,
+        }
+        let raw = Raw::deserialize(deserializer)?;
+        crate::validate_env_var_name(&raw.name).map_err(serde::de::Error::custom)?;
+        Ok(EnvVar {
+            name: raw.name,
+            value: raw.value,
+        })
+    }
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct ShellAlias {
     pub name: String,
     pub command: String,
+}
+
+impl<'de> Deserialize<'de> for ShellAlias {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct Raw {
+            name: String,
+            command: String,
+        }
+        let raw = Raw::deserialize(deserializer)?;
+        crate::validate_alias_name(&raw.name).map_err(serde::de::Error::custom)?;
+        Ok(ShellAlias {
+            name: raw.name,
+            command: raw.command,
+        })
+    }
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -768,8 +836,42 @@ impl Default for ComplianceExport {
     }
 }
 
+/// Maximum number of YAML anchors (`&name`) allowed in a single document.
+/// Prevents billion-laughs-style anchor/alias expansion attacks (CVE-2019-11253).
+const MAX_YAML_ANCHORS: usize = 256;
+
+/// Pre-parse check for YAML anchor/alias bomb attacks.
+/// Counts anchor definitions (`&name`) and rejects documents exceeding the limit.
+fn check_yaml_anchor_limit(contents: &str, context: &Path) -> Result<()> {
+    // Count lines containing YAML anchor definitions (& followed by an identifier).
+    // This is a conservative heuristic — it may count `&` in strings, but that's
+    // acceptable since legitimate configs rarely have hundreds of anchors.
+    let anchor_count = contents
+        .as_bytes()
+        .windows(2)
+        .filter(|w| {
+            w[0] == b'&'
+                && (w[1].is_ascii_alphanumeric() || w[1] == b'_')
+        })
+        .count();
+
+    if anchor_count > MAX_YAML_ANCHORS {
+        return Err(ConfigError::Invalid {
+            message: format!(
+                "{}: too many YAML anchors ({}, max {}) — possible anchor/alias bomb",
+                context.display(),
+                anchor_count,
+                MAX_YAML_ANCHORS
+            ),
+        }
+        .into());
+    }
+    Ok(())
+}
+
 /// Parse a ConfigSource manifest from YAML content.
 pub fn parse_config_source(contents: &str) -> Result<ConfigSourceDocument> {
+    check_yaml_anchor_limit(contents, Path::new("ConfigSource"))?;
     let doc: ConfigSourceDocument = serde_yaml::from_str(contents).map_err(ConfigError::from)?;
 
     if doc.kind != "ConfigSource" {
@@ -878,6 +980,15 @@ pub enum ScriptEntry {
         run: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         timeout: Option<String>,
+        /// Kill the script if it produces no stdout/stderr output for this duration.
+        /// Prevents scripts from silently hanging on unresponsive resources.
+        /// Format: "30s", "2m", etc. If unset, no idle timeout is enforced.
+        #[serde(
+            default,
+            skip_serializing_if = "Option::is_none",
+            rename = "idleTimeout"
+        )]
+        idle_timeout: Option<String>,
         #[serde(
             default,
             skip_serializing_if = "Option::is_none",
@@ -947,6 +1058,7 @@ pub struct ModuleRegistryEntry {
 
 /// Parse a Module document from YAML content.
 pub fn parse_module(contents: &str) -> Result<ModuleDocument> {
+    check_yaml_anchor_limit(contents, Path::new("Module"))?;
     let doc: ModuleDocument = serde_yaml::from_str(contents).map_err(ConfigError::from)?;
 
     if doc.kind != "Module" {
@@ -1449,6 +1561,10 @@ pub fn load_config(path: &Path) -> Result<CfgdConfig> {
 pub fn parse_config(contents: &str, path: &Path) -> Result<CfgdConfig> {
     let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("yaml");
 
+    if ext != "toml" {
+        check_yaml_anchor_limit(contents, path)?;
+    }
+
     let raw: RawCfgdConfig = match ext {
         "toml" => toml::from_str(contents).map_err(ConfigError::from)?,
         _ => serde_yaml::from_str(contents).map_err(ConfigError::from)?,
@@ -1541,6 +1657,7 @@ pub fn load_profile(path: &Path) -> Result<ProfileDocument> {
         message: format!("failed to read {}: {}", path.display(), e),
     })?;
 
+    check_yaml_anchor_limit(&contents, path)?;
     let doc: ProfileDocument = serde_yaml::from_str(&contents).map_err(ConfigError::from)?;
     Ok(doc)
 }
@@ -3021,6 +3138,7 @@ continueOnError: true
                 run,
                 timeout,
                 continue_on_error,
+                ..
             } => {
                 assert_eq!(run, "scripts/check.sh");
                 assert_eq!(timeout, Some("30s".to_string()));
@@ -3611,5 +3729,79 @@ spec:
 "#;
         let config = parse_config(yaml, Path::new("cfgd.yaml")).unwrap();
         assert!(config.spec.compliance.is_none());
+    }
+
+    #[test]
+    fn yaml_anchor_limit_rejects_bomb() {
+        // Generate a YAML document with excessive anchors
+        let mut yaml = String::from("apiVersion: cfgd.io/v1alpha1\nkind: Config\n");
+        for i in 0..300 {
+            yaml.push_str(&format!("key{}: &anchor{} value{}\n", i, i, i));
+        }
+        let result = parse_config(&yaml, std::path::Path::new("bomb.yaml"));
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("too many YAML anchors"));
+    }
+
+    #[test]
+    fn yaml_anchor_limit_accepts_normal_config() {
+        // A normal config with a few anchors should be fine
+        let yaml = r#"
+apiVersion: cfgd.io/v1alpha1
+kind: Config
+metadata:
+  name: test
+spec:
+  profile: default
+"#;
+        let result = parse_config(yaml, std::path::Path::new("cfgd.yaml"));
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn env_var_rejects_invalid_name_at_deserialization() {
+        let yaml = r#"
+name: "MY_VAR; rm -rf /"
+value: "safe"
+"#;
+        let result: std::result::Result<EnvVar, _> = serde_yaml::from_str(yaml);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("invalid env var name"));
+    }
+
+    #[test]
+    fn env_var_accepts_valid_name_at_deserialization() {
+        let yaml = r#"
+name: "MY_VAR_123"
+value: "hello"
+"#;
+        let ev: EnvVar = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(ev.name, "MY_VAR_123");
+        assert_eq!(ev.value, "hello");
+    }
+
+    #[test]
+    fn alias_rejects_invalid_name_at_deserialization() {
+        let yaml = r#"
+name: "my alias; evil"
+command: "ls -la"
+"#;
+        let result: std::result::Result<ShellAlias, _> = serde_yaml::from_str(yaml);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("invalid alias name"));
+    }
+
+    #[test]
+    fn alias_accepts_valid_name_at_deserialization() {
+        let yaml = r#"
+name: "ll"
+command: "ls -la"
+"#;
+        let alias: ShellAlias = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(alias.name, "ll");
+        assert_eq!(alias.command, "ls -la");
     }
 }

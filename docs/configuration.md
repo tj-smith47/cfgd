@@ -64,6 +64,7 @@ spec:
 | `spec.origin.type` | no | — | `Git` or `Server` |
 | `spec.origin.url` | no | — | Repository URL |
 | `spec.origin.branch` | no | `master` | Git branch |
+| `spec.origin.sshStrictHostKeyChecking` | no | `AcceptNew` | SSH host key policy: `AcceptNew` (accept first-seen), `Yes` (require known_hosts), `No` (insecure) |
 | `spec.daemon.reconcile.interval` | no | `5m` | Drift check interval (e.g. `1m`, `5m`, `1h`) |
 | `spec.daemon.reconcile.onChange` | no | `false` | Reconcile immediately on file change |
 | `spec.daemon.reconcile.patches` | no | `[]` | Per-module/profile reconcile overrides (see [daemon.md](daemon.md#reconcile-patches)) |

@@ -2,17 +2,20 @@
 
 use std::path::{Path, PathBuf};
 
+use secrecy::{ExposeSecret, SecretString};
+
 use cfgd_core::errors::{Result, SecretError};
 use cfgd_core::providers::{SecretBackend, SecretProvider, parse_secret_reference};
 use cfgd_core::{command_available, default_config_dir};
 
 /// Run a secret provider CLI command, mapping errors to SecretError variants.
+/// Returns the output wrapped in `SecretString` for automatic zeroization on drop.
 fn run_provider_cmd(
     cmd: &mut std::process::Command,
     provider: &str,
     hint: &str,
     reference: &str,
-) -> Result<String> {
+) -> Result<SecretString> {
     let output = cmd
         .output()
         .map_err(|_| SecretError::ProviderNotAvailable {
@@ -29,7 +32,7 @@ fn run_provider_cmd(
         }
         .into());
     }
-    Ok(cfgd_core::stdout_lossy_trimmed(&output))
+    Ok(SecretString::from(cfgd_core::stdout_lossy_trimmed(&output)))
 }
 
 /// Extract the age public key from a key file's `# public key: age1...` comment.
@@ -111,7 +114,7 @@ impl SecretBackend for SopsBackend {
         Ok(())
     }
 
-    fn decrypt_file(&self, path: &Path) -> Result<String> {
+    fn decrypt_file(&self, path: &Path) -> Result<SecretString> {
         let output = self
             .sops_command()
             .arg("--decrypt")
@@ -127,13 +130,13 @@ impl SecretBackend for SopsBackend {
             .into());
         }
 
-        String::from_utf8(output.stdout).map_err(|e| {
+        let s = String::from_utf8(output.stdout).map_err(|e| {
             SecretError::DecryptionFailed {
                 path: path.to_path_buf(),
                 message: format!("invalid UTF-8 in decrypted output: {}", e),
             }
-            .into()
-        })
+        })?;
+        Ok(SecretString::from(s))
     }
 
     fn edit_file(&self, path: &Path) -> Result<()> {
@@ -233,7 +236,7 @@ impl SecretBackend for AgeBackend {
         Ok(())
     }
 
-    fn decrypt_file(&self, path: &Path) -> Result<String> {
+    fn decrypt_file(&self, path: &Path) -> Result<SecretString> {
         let output = std::process::Command::new("age")
             .arg("--decrypt")
             .arg("--identity")
@@ -253,13 +256,13 @@ impl SecretBackend for AgeBackend {
             .into());
         }
 
-        String::from_utf8(output.stdout).map_err(|e| {
+        let s = String::from_utf8(output.stdout).map_err(|e| {
             SecretError::DecryptionFailed {
                 path: path.to_path_buf(),
                 message: format!("invalid UTF-8 in decrypted output: {}", e),
             }
-            .into()
-        })
+        })?;
+        Ok(SecretString::from(s))
     }
 
     fn edit_file(&self, path: &Path) -> Result<()> {
@@ -276,7 +279,8 @@ impl SecretBackend for AgeBackend {
                 .unwrap_or_else(|| std::ffi::OsStr::new("secret")),
         );
 
-        std::fs::write(&temp_file, &decrypted).map_err(|e| SecretError::DecryptionFailed {
+        std::fs::write(&temp_file, decrypted.expose_secret().as_bytes())
+            .map_err(|e| SecretError::DecryptionFailed {
             path: path.to_path_buf(),
             message: format!("failed to write temp file: {}", e),
         })?;
@@ -347,7 +351,7 @@ impl SecretProvider for OnePasswordProvider {
         command_available("op")
     }
 
-    fn resolve(&self, reference: &str) -> Result<String> {
+    fn resolve(&self, reference: &str) -> Result<SecretString> {
         // reference format: "op://Vault/Item/Field" or legacy "Vault/Item/Field"
         let op_ref = if reference.starts_with("op://") {
             reference.to_string()
@@ -377,7 +381,7 @@ impl SecretProvider for BitwardenProvider {
         command_available("bw")
     }
 
-    fn resolve(&self, reference: &str) -> Result<String> {
+    fn resolve(&self, reference: &str) -> Result<SecretString> {
         // reference format: "folder/item" or "folder/item/field"
         // Use `bw get` to retrieve the item
         let parts: Vec<&str> = reference.splitn(3, '/').collect();
@@ -412,7 +416,7 @@ impl SecretProvider for LastPassProvider {
         command_available("lpass")
     }
 
-    fn resolve(&self, reference: &str) -> Result<String> {
+    fn resolve(&self, reference: &str) -> Result<SecretString> {
         // reference format: "folder/item/field" or "item/field" or just "item"
         // Uses `lpass show --field <field> <item>` or `lpass show --password <item>`
         let parts: Vec<&str> = reference.rsplitn(2, '/').collect();
@@ -453,7 +457,7 @@ impl SecretProvider for VaultProvider {
         command_available("vault")
     }
 
-    fn resolve(&self, reference: &str) -> Result<String> {
+    fn resolve(&self, reference: &str) -> Result<SecretString> {
         // reference format: "secret/path#field"
         let (path, field) = if let Some(idx) = reference.rfind('#') {
             (&reference[..idx], &reference[idx + 1..])
@@ -479,6 +483,10 @@ impl SecretProvider for VaultProvider {
 
 /// Resolve `${secret:ref}` placeholders in a string using available secret providers.
 /// Returns the string with all secret references resolved.
+///
+/// Note: The returned `String` contains embedded secret material that will NOT be
+/// zeroized on drop. This is intentional — the result is a mixed-content template
+/// (e.g. `"password=s3cr3t"`) destined for file writes, not a pure secret.
 pub fn resolve_secret_refs(
     input: &str,
     providers: &[&dyn SecretProvider],
@@ -498,9 +506,10 @@ pub fn resolve_secret_refs(
 
         let ref_str = &result[start + 9..end]; // skip "${secret:"
         let resolved = resolve_single_ref(ref_str, providers, backend, config_dir)?;
+        let plaintext = resolved.expose_secret();
 
-        result.replace_range(start..=end, &resolved);
-        search_from = start + resolved.len();
+        result.replace_range(start..=end, plaintext);
+        search_from = start + plaintext.len();
     }
 
     Ok(result)
@@ -511,7 +520,7 @@ fn resolve_single_ref(
     providers: &[&dyn SecretProvider],
     backend: Option<&dyn SecretBackend>,
     config_dir: &Path,
-) -> Result<String> {
+) -> Result<SecretString> {
     // Check if it's a provider reference
     if let Some((provider_name, ref_path)) = parse_secret_reference(reference) {
         for provider in providers {
@@ -805,8 +814,8 @@ mod tests {
         fn encrypt_file(&self, _path: &Path) -> Result<()> {
             Ok(())
         }
-        fn decrypt_file(&self, _path: &Path) -> Result<String> {
-            Ok("decrypted-value".to_string())
+        fn decrypt_file(&self, _path: &Path) -> Result<SecretString> {
+            Ok(SecretString::from("decrypted-value".to_string()))
         }
         fn edit_file(&self, _path: &Path) -> Result<()> {
             Ok(())
@@ -861,8 +870,8 @@ mod tests {
         fn is_available(&self) -> bool {
             true
         }
-        fn resolve(&self, _reference: &str) -> Result<String> {
-            Ok(self.value.clone())
+        fn resolve(&self, _reference: &str) -> Result<SecretString> {
+            Ok(SecretString::from(self.value.clone()))
         }
     }
 

@@ -143,17 +143,17 @@ spec:
 
   scripts:
     preApply:
-      - string | { run: string, timeout: string, continueOnError: bool }
+      - string | { run: string, timeout: string, idleTimeout: string, continueOnError: bool }
     postApply:
-      - string | { run: string, timeout: string, continueOnError: bool }
+      - string | { run: string, timeout: string, idleTimeout: string, continueOnError: bool }
     preReconcile:
-      - string | { run: string, timeout: string, continueOnError: bool }
+      - string | { run: string, timeout: string, idleTimeout: string, continueOnError: bool }
     postReconcile:
-      - string | { run: string, timeout: string, continueOnError: bool }
+      - string | { run: string, timeout: string, idleTimeout: string, continueOnError: bool }
     onDrift:
-      - string | { run: string, timeout: string, continueOnError: bool }
+      - string | { run: string, timeout: string, idleTimeout: string, continueOnError: bool }
     onChange:
-      - string | { run: string, timeout: string, continueOnError: bool }
+      - string | { run: string, timeout: string, idleTimeout: string, continueOnError: bool }
 ```
 
 ---
@@ -602,7 +602,7 @@ When `envs` has multiple entries and the source resolves to a single value, all 
 
 ### spec.scripts
 
-Lifecycle scripts run at different points during apply and reconciliation. Scripts are executed in the order listed. Each entry can be a simple string (command or file path) or an object with `run`, `timeout`, and `continueOnError` fields.
+Lifecycle scripts run at different points during apply and reconciliation. Scripts are executed in the order listed. Each entry can be a simple string (command or file path) or an object with `run`, `timeout`, `idleTimeout`, and `continueOnError` fields.
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
@@ -629,7 +629,7 @@ scripts:
       timeout: 60s
 ```
 
-Default timeouts: 5 minutes for profile scripts, 2 minutes for module scripts. Default `continueOnError`: `false` for pre-hooks, `true` for post-hooks and event hooks.
+Default timeouts: 5 minutes for profile scripts, 2 minutes for module scripts. `idleTimeout` kills scripts that produce no stdout/stderr output for the specified duration (e.g. `30s`, `2m`), preventing silent hangs. Default `continueOnError`: `false` for pre-hooks, `true` for post-hooks and event hooks.
 
 Paths are relative to the config root directory. If the path resolves to an existing file, it is executed directly (the OS uses the shebang to select the interpreter). If not, it is passed through `sh -c`.
 

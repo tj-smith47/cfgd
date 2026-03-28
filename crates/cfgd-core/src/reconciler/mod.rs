@@ -2,6 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::str::FromStr;
 
+use secrecy::ExposeSecret;
 use serde::Serialize;
 
 use crate::config::{MergedProfile, ResolvedProfile, ScriptEntry, ScriptSpec};
@@ -1648,7 +1649,7 @@ impl<'a> Reconciler<'a> {
                 let decrypted = backend.decrypt_file(&source_path)?;
 
                 let target_path = expand_tilde(target);
-                crate::atomic_write(&target_path, decrypted.as_bytes())?;
+                crate::atomic_write(&target_path, decrypted.expose_secret().as_bytes())?;
 
                 printer.info(&format!(
                     "Decrypted {} → {}",
@@ -1677,7 +1678,7 @@ impl<'a> Reconciler<'a> {
                 let value = secret_provider.resolve(reference)?;
 
                 let target_path = expand_tilde(target);
-                crate::atomic_write(&target_path, value.as_bytes())?;
+                crate::atomic_write(&target_path, value.expose_secret().as_bytes())?;
 
                 printer.info(&format!(
                     "Resolved {}://{} → {}",
@@ -1712,8 +1713,10 @@ impl<'a> Reconciler<'a> {
 
                 // Each secret source resolves to exactly ONE value.
                 // All env names in `envs` receive the same resolved value.
+                // Expose the secret at the boundary where we need the plaintext for env injection.
+                let plaintext = value.expose_secret().to_string();
                 for env_name in envs {
-                    secret_env_collector.push((env_name.clone(), value.clone()));
+                    secret_env_collector.push((env_name.clone(), plaintext.clone()));
                 }
 
                 printer.info(&format!(
@@ -2479,6 +2482,15 @@ pub(crate) fn execute_script(
             .map_err(|e| crate::errors::CfgdError::Config(ConfigError::Invalid { message: e }))?,
         _ => default_timeout,
     };
+    let idle_timeout = match entry {
+        ScriptEntry::Full {
+            idle_timeout: Some(t),
+            ..
+        } => Some(crate::parse_duration_str(t).map_err(|e| {
+            crate::errors::CfgdError::Config(ConfigError::Invalid { message: e })
+        })?),
+        _ => None,
+    };
 
     let resolved = if std::path::Path::new(run_str).is_relative() {
         working_dir.join(run_str)
@@ -2504,6 +2516,11 @@ pub(crate) fn execute_script(
         }
         let mut c = std::process::Command::new(&resolved);
         c.current_dir(working_dir);
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::CommandExt;
+            c.process_group(0);
+        }
         c
     } else {
         // Inline command — pass through sh -c on Unix, cmd.exe /C on Windows
@@ -2540,25 +2557,80 @@ pub(crate) fn execute_script(
 
     let mut child = cmd.spawn()?;
 
+    // Drain stdout/stderr in reader threads. If idle_timeout is configured,
+    // track the last time output was received so we can kill idle scripts.
+    let last_output = std::sync::Arc::new(std::sync::Mutex::new(std::time::Instant::now()));
+    let stdout_buf = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+    let stderr_buf = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+
+    let stdout_handle = {
+        let pipe = child.stdout.take();
+        let buf = std::sync::Arc::clone(&stdout_buf);
+        let ts = std::sync::Arc::clone(&last_output);
+        std::thread::spawn(move || {
+            if let Some(pipe) = pipe {
+                let reader = std::io::BufReader::new(pipe);
+                for line in std::io::BufRead::lines(reader) {
+                    match line {
+                        Ok(l) => {
+                            *ts.lock().unwrap_or_else(|e| e.into_inner()) =
+                                std::time::Instant::now();
+                            let mut b = buf.lock().unwrap_or_else(|e| e.into_inner());
+                            if !b.is_empty() {
+                                b.push('\n');
+                            }
+                            b.push_str(&l);
+                        }
+                        Err(_) => break,
+                    }
+                }
+            }
+        })
+    };
+
+    let stderr_handle = {
+        let pipe = child.stderr.take();
+        let buf = std::sync::Arc::clone(&stderr_buf);
+        let ts = std::sync::Arc::clone(&last_output);
+        std::thread::spawn(move || {
+            if let Some(pipe) = pipe {
+                let reader = std::io::BufReader::new(pipe);
+                for line in std::io::BufRead::lines(reader) {
+                    match line {
+                        Ok(l) => {
+                            *ts.lock().unwrap_or_else(|e| e.into_inner()) =
+                                std::time::Instant::now();
+                            let mut b = buf.lock().unwrap_or_else(|e| e.into_inner());
+                            if !b.is_empty() {
+                                b.push('\n');
+                            }
+                            b.push_str(&l);
+                        }
+                        Err(_) => break,
+                    }
+                }
+            }
+        })
+    };
+
     let start = std::time::Instant::now();
     loop {
         match child.try_wait()? {
             Some(status) => {
-                let stdout = child.stdout.take().map(|mut s| {
-                    let mut buf = String::new();
-                    std::io::Read::read_to_string(&mut s, &mut buf).ok();
-                    buf
-                });
-                let stderr = child.stderr.take().map(|mut s| {
-                    let mut buf = String::new();
-                    std::io::Read::read_to_string(&mut s, &mut buf).ok();
-                    buf
-                });
+                // Wait for reader threads to finish draining
+                let _ = stdout_handle.join();
+                let _ = stderr_handle.join();
 
-                let captured = combine_script_output(
-                    stdout.as_deref().unwrap_or(""),
-                    stderr.as_deref().unwrap_or(""),
-                );
+                let stdout_str = std::sync::Arc::try_unwrap(stdout_buf)
+                    .ok()
+                    .and_then(|m| m.into_inner().ok())
+                    .unwrap_or_default();
+                let stderr_str = std::sync::Arc::try_unwrap(stderr_buf)
+                    .ok()
+                    .and_then(|m| m.into_inner().ok())
+                    .unwrap_or_default();
+
+                let captured = combine_script_output(&stdout_str, &stderr_str);
 
                 if !status.success() {
                     let exit_code = status.code().unwrap_or(-1);
@@ -2575,29 +2647,44 @@ pub(crate) fn execute_script(
                 return Ok((label, true, captured));
             }
             None => {
-                if start.elapsed() > effective_timeout {
-                    // Timeout — kill entire process group then force kill
-                    #[cfg(unix)]
-                    {
-                        // Kill process group (negative PID = group)
-                        unsafe {
-                            libc::kill(-(child.id() as i32), libc::SIGTERM);
-                        }
+                let elapsed = start.elapsed();
+                let mut kill_reason = None;
+                // Check absolute timeout
+                if elapsed > effective_timeout {
+                    kill_reason = Some(("timed out", effective_timeout));
+                }
+                // Check idle timeout (no output for N seconds)
+                if kill_reason.is_none()
+                    && let Some(idle_dur) = idle_timeout
+                {
+                    let last = *last_output
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner());
+                    if last.elapsed() > idle_dur {
+                        kill_reason = Some(("idle (no output)", idle_dur));
                     }
-                    #[cfg(not(unix))]
-                    {
-                        crate::terminate_process(child.id());
-                    }
-                    // Wait briefly for graceful shutdown
-                    std::thread::sleep(std::time::Duration::from_secs(5));
-                    // Force kill if still running
-                    let _ = child.kill();
-                    let _ = child.wait();
+                }
+                if let Some((reason, duration)) = kill_reason {
+                    kill_script_child(&mut child);
+                    // Join reader threads so we capture partial output
+                    let _ = stdout_handle.join();
+                    let _ = stderr_handle.join();
+                    let stdout_str = std::sync::Arc::try_unwrap(stdout_buf)
+                        .ok()
+                        .and_then(|m| m.into_inner().ok())
+                        .unwrap_or_default();
+                    let stderr_str = std::sync::Arc::try_unwrap(stderr_buf)
+                        .ok()
+                        .and_then(|m| m.into_inner().ok())
+                        .unwrap_or_default();
+                    let captured = combine_script_output(&stdout_str, &stderr_str);
                     return Err(crate::errors::CfgdError::Config(ConfigError::Invalid {
                         message: format!(
-                            "script '{}' timed out after {}s",
+                            "script '{}' {} after {}s\n{}",
                             run_str,
-                            effective_timeout.as_secs()
+                            reason,
+                            duration.as_secs(),
+                            captured.as_deref().unwrap_or("")
                         ),
                     }));
                 }
@@ -2605,6 +2692,23 @@ pub(crate) fn execute_script(
             }
         }
     }
+}
+
+/// Kill a script's process group (SIGTERM + grace period + SIGKILL).
+fn kill_script_child(child: &mut std::process::Child) {
+    #[cfg(unix)]
+    {
+        unsafe {
+            libc::kill(-(child.id() as i32), libc::SIGTERM);
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        crate::terminate_process(child.id());
+    }
+    std::thread::sleep(std::time::Duration::from_secs(5));
+    let _ = child.kill();
+    let _ = child.wait();
 }
 
 /// Default `continue_on_error` behavior per script phase.
@@ -4717,8 +4821,8 @@ mod tests {
         fn is_available(&self) -> bool {
             true
         }
-        fn resolve(&self, _reference: &str) -> Result<String> {
-            Ok(self.value.clone())
+        fn resolve(&self, _reference: &str) -> Result<secrecy::SecretString> {
+            Ok(secrecy::SecretString::from(self.value.clone()))
         }
     }
 
@@ -5857,6 +5961,7 @@ mod tests {
         let entry = ScriptEntry::Full {
             run: "echo test".to_string(),
             timeout: None,
+            idle_timeout: None,
             continue_on_error: Some(true),
         };
         // Should be true even for pre-apply (which defaults to false)
@@ -5868,6 +5973,7 @@ mod tests {
         let entry_false = ScriptEntry::Full {
             run: "echo test".to_string(),
             timeout: None,
+            idle_timeout: None,
             continue_on_error: Some(false),
         };
         // Should be false even for post-apply (which defaults to true)
@@ -5892,6 +5998,7 @@ mod tests {
         let full_no_override = ScriptEntry::Full {
             run: "echo test".to_string(),
             timeout: None,
+            idle_timeout: None,
             continue_on_error: None,
         };
         assert!(!super::effective_continue_on_error(
@@ -5964,6 +6071,7 @@ mod tests {
         resolved.merged.scripts.pre_apply = vec![ScriptEntry::Full {
             run: "scripts/check.sh".to_string(),
             timeout: Some("10s".to_string()),
+            idle_timeout: None,
             continue_on_error: Some(true),
         }];
 
@@ -5989,6 +6097,7 @@ mod tests {
                     run,
                     timeout,
                     continue_on_error,
+                    ..
                 } => {
                     assert_eq!(run, "scripts/check.sh");
                     assert_eq!(timeout.as_deref(), Some("10s"));
@@ -6086,6 +6195,7 @@ mod tests {
         let entry = ScriptEntry::Full {
             run: "echo fast".to_string(),
             timeout: Some("5s".to_string()),
+            idle_timeout: None,
             continue_on_error: None,
         };
         let dir = tempfile::tempdir().unwrap();
@@ -6165,6 +6275,33 @@ mod tests {
         assert!(
             err.contains("not executable"),
             "should say not executable: {err}"
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn execute_script_idle_timeout_kills_idle_process() {
+        let printer = Printer::new(crate::output::Verbosity::Quiet);
+        // Script prints once then sleeps forever — idle timeout should kill it
+        let entry = ScriptEntry::Full {
+            run: "echo started; sleep 60".to_string(),
+            timeout: Some("30s".to_string()),
+            idle_timeout: Some("1s".to_string()),
+            continue_on_error: None,
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let result = super::execute_script(
+            &entry,
+            dir.path(),
+            &[],
+            std::time::Duration::from_secs(30),
+            &printer,
+        );
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("idle (no output)"),
+            "should mention idle timeout: {err}"
         );
     }
 }

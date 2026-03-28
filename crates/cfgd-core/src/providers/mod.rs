@@ -3,6 +3,7 @@
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
+use secrecy::SecretString;
 use serde::{Deserialize, Serialize};
 
 use crate::errors::Result;
@@ -193,7 +194,7 @@ pub trait SecretBackend: Send + Sync {
     fn name(&self) -> &str;
     fn is_available(&self) -> bool;
     fn encrypt_file(&self, path: &Path) -> Result<()>;
-    fn decrypt_file(&self, path: &Path) -> Result<String>;
+    fn decrypt_file(&self, path: &Path) -> Result<SecretString>;
     fn edit_file(&self, path: &Path) -> Result<()>;
 }
 
@@ -202,7 +203,7 @@ pub trait SecretBackend: Send + Sync {
 pub trait SecretProvider: Send + Sync {
     fn name(&self) -> &str;
     fn is_available(&self) -> bool;
-    fn resolve(&self, reference: &str) -> Result<String>;
+    fn resolve(&self, reference: &str) -> Result<SecretString>;
 }
 
 // --- SecretAction ---
