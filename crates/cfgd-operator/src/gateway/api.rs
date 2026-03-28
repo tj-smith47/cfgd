@@ -840,7 +840,7 @@ fn verify_ssh_signature(
     let tmp_dir = match tempfile::tempdir() {
         Ok(d) => d,
         Err(e) => {
-            tracing::error!("failed to create temp dir for SSH verification: {}", e);
+            tracing::error!(error = %e, "failed to create temp dir for SSH verification");
             return false;
         }
     };
@@ -850,11 +850,11 @@ fn verify_ssh_signature(
     let signers_path = tmp_dir.path().join("allowed_signers");
 
     if let Err(e) = std::fs::write(&data_path, nonce) {
-        tracing::error!("failed to write challenge data for SSH verification: {}", e);
+        tracing::error!(error = %e, "failed to write challenge data for SSH verification");
         return false;
     }
     if let Err(e) = std::fs::write(&sig_path, signature_pem) {
-        tracing::error!("failed to write signature file for SSH verification: {}", e);
+        tracing::error!(error = %e, "failed to write signature file for SSH verification");
         return false;
     }
 
@@ -870,7 +870,7 @@ fn verify_ssh_signature(
         let data_file = match std::fs::File::open(&data_path) {
             Ok(f) => f,
             Err(e) => {
-                tracing::error!("failed to open challenge data file: {}", e);
+                tracing::error!(error = %e, "failed to open challenge data file");
                 return false;
             }
         };
@@ -909,7 +909,7 @@ fn verify_ssh_signature(
                 );
             }
             Err(e) => {
-                tracing::warn!("ssh-keygen failed: {} — is OpenSSH installed?", e);
+                tracing::warn!(error = %e, "ssh-keygen failed — is OpenSSH installed?");
                 continue;
             }
         }
@@ -927,7 +927,7 @@ fn verify_gpg_signature(
     let tmp_dir = match tempfile::tempdir() {
         Ok(d) => d,
         Err(e) => {
-            tracing::error!("failed to create temp dir for GPG verification: {}", e);
+            tracing::error!(error = %e, "failed to create temp dir for GPG verification");
             return false;
         }
     };
@@ -1007,7 +1007,7 @@ fn verify_gpg_signature(
                 );
             }
             Err(e) => {
-                tracing::warn!("gpg failed: {} — is GPG installed?", e);
+                tracing::warn!(error = %e, "gpg failed — is GPG installed?");
                 return false;
             }
         }
@@ -1330,14 +1330,14 @@ async fn create_drift_alert_crd(
                 tracing::info!(
                     name = %created.name_any(),
                     device_id = %device_id,
-                    "DriftAlert CRD created in Kubernetes"
+                    "driftAlert CRD created in Kubernetes"
                 );
                 return Ok(());
             }
             Err(kube::Error::Api(ref resp)) if resp.code == 409 => {
                 tracing::debug!(
                     name = %alert_name,
-                    "DriftAlert already exists, skipping creation"
+                    "driftAlert already exists, skipping creation"
                 );
                 return Ok(());
             }
@@ -1347,7 +1347,7 @@ async fn create_drift_alert_crd(
                     attempt = attempt + 1,
                     max_retries = MAX_RETRIES,
                     error = %e,
-                    "Failed to create DriftAlert CRD, retrying"
+                    "failed to create DriftAlert CRD, retrying"
                 );
                 last_err = Some(e);
             }
@@ -1358,8 +1358,8 @@ async fn create_drift_alert_crd(
         tracing::error!(
             device_id = %device_id,
             error = %e,
-            "Failed to create DriftAlert CRD after {} attempts — drift recorded in database only",
-            MAX_RETRIES
+            attempts = MAX_RETRIES,
+            "failed to create DriftAlert CRD after all attempts — drift recorded in database only"
         );
     }
 
@@ -1383,7 +1383,7 @@ async fn find_machine_config_for_device(client: &kube::Client, hostname: &str) -
             format!("{}-mc", hostname)
         }
         Err(e) => {
-            tracing::warn!("Failed to list MachineConfigs for device lookup: {}", e);
+            tracing::warn!(error = %e, "failed to list MachineConfigs for device lookup");
             format!("{}-mc", hostname)
         }
     }

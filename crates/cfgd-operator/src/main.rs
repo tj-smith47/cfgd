@@ -31,7 +31,7 @@ async fn main() -> Result<()> {
 
     init_tracing();
 
-    tracing::info!("Starting cfgd-operator");
+    tracing::info!("starting cfgd-operator");
     log_crd_info();
 
     let client = Client::try_default().await?;
@@ -46,7 +46,7 @@ async fn main() -> Result<()> {
         let hs = health_state.clone();
         async move {
             if let Err(e) = health::run_probe_server(health_port, hs).await {
-                tracing::error!(error = %e, "Health server failed");
+                tracing::error!(error = %e, "health server failed");
             }
         }
     });
@@ -64,7 +64,7 @@ async fn main() -> Result<()> {
         let reg = registry.clone();
         async move {
             if let Err(e) = metrics::run_metrics_server(metrics_port, reg).await {
-                tracing::error!(error = %e, "Metrics server failed");
+                tracing::error!(error = %e, "metrics server failed");
             }
         }
     });
@@ -77,7 +77,7 @@ async fn main() -> Result<()> {
         .unwrap_or(9443);
 
     if Path::new(&cert_dir).join("tls.crt").exists() {
-        tracing::info!(cert_dir = %cert_dir, port = webhook_port, "Starting webhook server");
+        tracing::info!(cert_dir = %cert_dir, port = webhook_port, "starting webhook server");
         let webhook_metrics = metrics.clone();
         let webhook_client = client.clone();
         tokio::spawn(async move {
@@ -89,13 +89,13 @@ async fn main() -> Result<()> {
             )
             .await
             {
-                tracing::error!(error = %e, "Webhook server failed");
+                tracing::error!(error = %e, "webhook server failed");
             }
         });
     } else {
         tracing::info!(
             cert_dir = %cert_dir,
-            "Webhook certs not found, webhook server disabled"
+            "webhook certs not found, webhook server disabled"
         );
     }
 
@@ -114,7 +114,7 @@ async fn main() -> Result<()> {
             tracing::info!(
                 namespace = %namespace,
                 identity = %identity,
-                "Leader election enabled"
+                "leader election enabled"
             );
 
             let le = leader::LeaderElection::new(client.clone(), namespace, identity);
@@ -137,39 +137,39 @@ async fn main() -> Result<()> {
     tokio::select! {
         result = operator_future => {
             if let Err(e) = result {
-                tracing::error!(error = %e, "Operator exited with error");
+                tracing::error!(error = %e, "operator exited with error");
                 return Err(e);
             }
         },
         result = &mut health_handle => {
             if let Err(e) = result {
-                tracing::error!(error = %e, "Health server task panicked");
+                tracing::error!(error = %e, "health server task panicked");
             }
         },
         result = &mut metrics_handle => {
             if let Err(e) = result {
-                tracing::error!(error = %e, "Metrics server task panicked");
+                tracing::error!(error = %e, "metrics server task panicked");
             }
         },
         _ = shutdown_signal() => {
-            tracing::info!("Draining in-flight reconciliations (2s grace)...");
+            tracing::info!("draining in-flight reconciliations (2s grace)...");
             tokio::time::sleep(std::time::Duration::from_secs(2)).await;
             if let Some(provider) = OTEL_PROVIDER.get()
                 && let Err(e) = provider.shutdown()
             {
                 tracing::warn!(error = %e, "OpenTelemetry tracer provider shutdown failed");
             }
-            tracing::info!("Shutdown complete");
+            tracing::info!("shutdown complete");
         },
         _ = shutdown.cancelled() => {
-            tracing::info!("Draining in-flight reconciliations (2s grace)...");
+            tracing::info!("draining in-flight reconciliations (2s grace)...");
             tokio::time::sleep(std::time::Duration::from_secs(2)).await;
             if let Some(provider) = OTEL_PROVIDER.get()
                 && let Err(e) = provider.shutdown()
             {
                 tracing::warn!(error = %e, "OpenTelemetry tracer provider shutdown failed");
             }
-            tracing::info!("Shutdown complete");
+            tracing::info!("shutdown complete");
         },
     }
 
@@ -202,7 +202,7 @@ async fn run_operator(client: Client, metrics: metrics::Metrics) -> Result<()> {
             metrics: Some(metrics.clone()),
         };
 
-        tracing::info!("Device gateway enabled");
+        tracing::info!("device gateway enabled");
 
         // Spawn controllers with retry — if they fail, retry after delay
         tokio::spawn(async move {
@@ -210,7 +210,7 @@ async fn run_operator(client: Client, metrics: metrics::Metrics) -> Result<()> {
                 match controllers::run(client.clone(), metrics.clone()).await {
                     Ok(()) => break,
                     Err(e) => {
-                        tracing::error!(error = %e, "Controllers failed — retrying in 5s");
+                        tracing::error!(error = %e, "controllers failed — retrying in 5s");
                         tokio::time::sleep(std::time::Duration::from_secs(5)).await;
                     }
                 }
@@ -234,8 +234,8 @@ async fn shutdown_signal() {
         .expect("failed to install SIGTERM handler");
 
     tokio::select! {
-        _ = ctrl_c => tracing::info!("Received SIGINT, initiating graceful shutdown"),
-        _ = sigterm.recv() => tracing::info!("Received SIGTERM, initiating graceful shutdown"),
+        _ = ctrl_c => tracing::info!("received SIGINT, initiating graceful shutdown"),
+        _ = sigterm.recv() => tracing::info!("received SIGTERM, initiating graceful shutdown"),
     }
 }
 
@@ -301,22 +301,22 @@ fn log_crd_info() {
 
     tracing::info!(
         crd = %MachineConfig::crd_name(),
-        "Registered CRD: MachineConfig"
+        "registered CRD: MachineConfig"
     );
     tracing::info!(
         crd = %ConfigPolicy::crd_name(),
-        "Registered CRD: ConfigPolicy"
+        "registered CRD: ConfigPolicy"
     );
     tracing::info!(
         crd = %DriftAlert::crd_name(),
-        "Registered CRD: DriftAlert"
+        "registered CRD: DriftAlert"
     );
     tracing::info!(
         crd = %ClusterConfigPolicy::crd_name(),
-        "Registered CRD: ClusterConfigPolicy"
+        "registered CRD: ClusterConfigPolicy"
     );
     tracing::info!(
         crd = %Module::crd_name(),
-        "Registered CRD: Module"
+        "registered CRD: Module"
     );
 }

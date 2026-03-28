@@ -109,16 +109,17 @@ async fn node_get_capabilities() {
         .await
         .unwrap()
         .into_inner();
-    assert_eq!(resp.capabilities.len(), 1);
-    match &resp.capabilities[0].r#type {
-        Some(node_service_capability::Type::Rpc(rpc)) => {
-            assert_eq!(
-                rpc.r#type,
-                node_service_capability::rpc::Type::StageUnstageVolume as i32
-            );
-        }
-        other => panic!("unexpected: {other:?}"),
-    }
+    assert_eq!(resp.capabilities.len(), 2);
+    let rpc_types: Vec<i32> = resp
+        .capabilities
+        .iter()
+        .filter_map(|c| match &c.r#type {
+            Some(node_service_capability::Type::Rpc(rpc)) => Some(rpc.r#type),
+            _ => None,
+        })
+        .collect();
+    assert!(rpc_types.contains(&(node_service_capability::rpc::Type::StageUnstageVolume as i32)));
+    assert!(rpc_types.contains(&(node_service_capability::rpc::Type::GetVolumeStats as i32)));
 }
 
 #[tokio::test]

@@ -1218,7 +1218,7 @@ impl SystemConfigurator for EnvironmentConfigurator {
                     printer.info("Add to your shell rc: . ~/.config/cfgd/env.sh");
                 }
                 Err(e) => {
-                    printer.warning(&format!("Could not write env.sh: {}", e));
+                    printer.warning(&format!("Failed to write env.sh: {}", e));
                 }
             }
 
@@ -1228,7 +1228,7 @@ impl SystemConfigurator for EnvironmentConfigurator {
                     printer.success(&format!("Updated {}", Self::macos_plist_path().display()));
                 }
                 Err(e) => {
-                    printer.warning(&format!("Could not write launchd plist: {}", e));
+                    printer.warning(&format!("Failed to write launchd plist: {}", e));
                 }
             }
 
@@ -1242,7 +1242,7 @@ impl SystemConfigurator for EnvironmentConfigurator {
                 }
                 Err(e) => {
                     printer.warning(&format!(
-                        "Could not update {} (may need root): {}",
+                        "Failed to update {} (may need root): {}",
                         LINUX_ETC_ENVIRONMENT, e
                     ));
                 }
@@ -1255,7 +1255,7 @@ impl SystemConfigurator for EnvironmentConfigurator {
                 }
                 Err(e) => {
                     printer.warning(&format!(
-                        "Could not update {} (may need root): {}",
+                        "Failed to update {} (may need root): {}",
                         LINUX_PROFILE_D, e
                     ));
                 }

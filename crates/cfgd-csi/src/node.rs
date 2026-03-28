@@ -14,7 +14,8 @@ use crate::csi::v1::{
     NodeGetVolumeStatsRequest, NodeGetVolumeStatsResponse, NodePublishVolumeRequest,
     NodePublishVolumeResponse, NodeServiceCapability, NodeStageVolumeRequest,
     NodeStageVolumeResponse, NodeUnpublishVolumeRequest, NodeUnpublishVolumeResponse,
-    NodeUnstageVolumeRequest, NodeUnstageVolumeResponse, node_service_capability,
+    NodeUnstageVolumeRequest, NodeUnstageVolumeResponse, VolumeUsage, node_service_capability,
+    volume_usage,
 };
 use crate::metrics::{CsiMetrics, ModuleLabels, PublishLabels, PullLabels};
 
@@ -241,9 +242,50 @@ impl Node for CfgdNode {
 
     async fn node_get_volume_stats(
         &self,
-        _request: Request<NodeGetVolumeStatsRequest>,
+        request: Request<NodeGetVolumeStatsRequest>,
     ) -> Result<Response<NodeGetVolumeStatsResponse>, Status> {
-        Err(Status::unimplemented("NodeGetVolumeStats not supported"))
+        let req = request.into_inner();
+        require_volume_id(&req.volume_id)?;
+
+        let volume_path = &req.volume_path;
+        if volume_path.is_empty() {
+            return Err(Status::invalid_argument("volume_path is required"));
+        }
+
+        let path = Path::new(volume_path);
+        if !path.exists() {
+            return Err(Status::not_found(format!(
+                "volume path does not exist: {volume_path}"
+            )));
+        }
+
+        let (bytes, inodes) = walk_volume_stats(path);
+
+        tracing::debug!(
+            volume_id = req.volume_id,
+            volume_path = volume_path,
+            bytes = bytes,
+            inodes = inodes,
+            "volume stats"
+        );
+
+        Ok(Response::new(NodeGetVolumeStatsResponse {
+            usage: vec![
+                VolumeUsage {
+                    total: bytes as i64,
+                    used: bytes as i64,
+                    available: 0,
+                    unit: volume_usage::Unit::Bytes as i32,
+                },
+                VolumeUsage {
+                    total: inodes as i64,
+                    used: inodes as i64,
+                    available: 0,
+                    unit: volume_usage::Unit::Inodes as i32,
+                },
+            ],
+            volume_condition: None,
+        }))
     }
 
     async fn node_expand_volume(
@@ -259,13 +301,22 @@ impl Node for CfgdNode {
     ) -> Result<Response<NodeGetCapabilitiesResponse>, Status> {
         tracing::debug!("NodeGetCapabilities called");
         Ok(Response::new(NodeGetCapabilitiesResponse {
-            capabilities: vec![NodeServiceCapability {
-                r#type: Some(node_service_capability::Type::Rpc(
-                    node_service_capability::Rpc {
-                        r#type: node_service_capability::rpc::Type::StageUnstageVolume.into(),
-                    },
-                )),
-            }],
+            capabilities: vec![
+                NodeServiceCapability {
+                    r#type: Some(node_service_capability::Type::Rpc(
+                        node_service_capability::Rpc {
+                            r#type: node_service_capability::rpc::Type::StageUnstageVolume.into(),
+                        },
+                    )),
+                },
+                NodeServiceCapability {
+                    r#type: Some(node_service_capability::Type::Rpc(
+                        node_service_capability::Rpc {
+                            r#type: node_service_capability::rpc::Type::GetVolumeStats.into(),
+                        },
+                    )),
+                },
+            ],
         }))
     }
 
@@ -377,6 +428,40 @@ fn unmount(_target: &Path) -> Result<(), Status> {
     Ok(())
 }
 
+/// Recursively walk a directory, returning (total_bytes, total_inodes).
+/// Uses symlink_metadata to avoid following symlinks (prevents infinite loops).
+fn walk_volume_stats(path: &Path) -> (u64, u64) {
+    let mut bytes = 0u64;
+    let mut inodes = 0u64;
+
+    fn walk(path: &Path, bytes: &mut u64, inodes: &mut u64) {
+        let entries = match std::fs::read_dir(path) {
+            Ok(rd) => rd,
+            Err(_) => return,
+        };
+        for entry in entries.flatten() {
+            *inodes += 1;
+            let p = entry.path();
+            let Ok(meta) = p.symlink_metadata() else {
+                continue;
+            };
+            if meta.is_symlink() {
+                // Count the symlink inode but don't follow it
+                *bytes = bytes.saturating_add(meta.len());
+            } else if meta.is_dir() {
+                walk(&p, bytes, inodes);
+            } else {
+                *bytes = bytes.saturating_add(meta.len());
+            }
+        }
+    }
+
+    // Count the root directory itself
+    inodes += 1;
+    walk(path, &mut bytes, &mut inodes);
+    (bytes, inodes)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -392,7 +477,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn node_get_capabilities_returns_stage_unstage() {
+    async fn node_get_capabilities_returns_expected() {
         let dir = tempfile::tempdir().unwrap();
         let node = test_node(test_cache(dir.path()));
         let resp = node
@@ -400,16 +485,19 @@ mod tests {
             .await
             .unwrap();
         let caps = resp.into_inner().capabilities;
-        assert_eq!(caps.len(), 1);
-        match &caps[0].r#type {
-            Some(node_service_capability::Type::Rpc(rpc)) => {
-                assert_eq!(
-                    rpc.r#type,
-                    node_service_capability::rpc::Type::StageUnstageVolume as i32
-                );
-            }
-            other => panic!("unexpected capability type: {other:?}"),
-        }
+        assert_eq!(caps.len(), 2);
+
+        let rpc_types: Vec<i32> = caps
+            .iter()
+            .filter_map(|c| match &c.r#type {
+                Some(node_service_capability::Type::Rpc(rpc)) => Some(rpc.r#type),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            rpc_types.contains(&(node_service_capability::rpc::Type::StageUnstageVolume as i32))
+        );
+        assert!(rpc_types.contains(&(node_service_capability::rpc::Type::GetVolumeStats as i32)));
     }
 
     #[tokio::test]
@@ -612,18 +700,89 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn node_get_volume_stats_unimplemented() {
+    async fn node_get_volume_stats_returns_usage() {
+        let dir = tempfile::tempdir().unwrap();
+        let node = test_node(test_cache(dir.path()));
+
+        // Create a fake volume directory with some content
+        let vol_dir = dir.path().join("vol-content");
+        std::fs::create_dir_all(&vol_dir).unwrap();
+        std::fs::write(vol_dir.join("file1.txt"), "hello").unwrap();
+        std::fs::write(vol_dir.join("file2.txt"), "world!").unwrap();
+
+        let req = NodeGetVolumeStatsRequest {
+            volume_id: "vol-1".to_string(),
+            volume_path: vol_dir.to_str().unwrap().to_string(),
+            ..Default::default()
+        };
+        let resp = node.node_get_volume_stats(Request::new(req)).await.unwrap();
+        let usage = resp.into_inner().usage;
+        assert_eq!(usage.len(), 2);
+
+        // Bytes entry
+        let bytes_entry = usage
+            .iter()
+            .find(|u| u.unit == volume_usage::Unit::Bytes as i32)
+            .unwrap();
+        assert_eq!(bytes_entry.used, 11); // "hello" (5) + "world!" (6)
+        assert_eq!(bytes_entry.total, 11);
+        assert_eq!(bytes_entry.available, 0);
+
+        // Inodes entry
+        let inodes_entry = usage
+            .iter()
+            .find(|u| u.unit == volume_usage::Unit::Inodes as i32)
+            .unwrap();
+        assert_eq!(inodes_entry.used, 3); // root dir + 2 files
+        assert_eq!(inodes_entry.total, 3);
+    }
+
+    #[tokio::test]
+    async fn node_get_volume_stats_missing_volume_id() {
         let dir = tempfile::tempdir().unwrap();
         let node = test_node(test_cache(dir.path()));
         let req = NodeGetVolumeStatsRequest {
-            volume_id: "vol-1".to_string(),
+            volume_id: String::new(),
+            volume_path: "/tmp".to_string(),
             ..Default::default()
         };
         let err = node
             .node_get_volume_stats(Request::new(req))
             .await
             .unwrap_err();
-        assert_eq!(err.code(), tonic::Code::Unimplemented);
+        assert_eq!(err.code(), tonic::Code::InvalidArgument);
+    }
+
+    #[tokio::test]
+    async fn node_get_volume_stats_missing_volume_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let node = test_node(test_cache(dir.path()));
+        let req = NodeGetVolumeStatsRequest {
+            volume_id: "vol-1".to_string(),
+            volume_path: String::new(),
+            ..Default::default()
+        };
+        let err = node
+            .node_get_volume_stats(Request::new(req))
+            .await
+            .unwrap_err();
+        assert_eq!(err.code(), tonic::Code::InvalidArgument);
+    }
+
+    #[tokio::test]
+    async fn node_get_volume_stats_nonexistent_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let node = test_node(test_cache(dir.path()));
+        let req = NodeGetVolumeStatsRequest {
+            volume_id: "vol-1".to_string(),
+            volume_path: "/nonexistent/cfgd-test-path".to_string(),
+            ..Default::default()
+        };
+        let err = node
+            .node_get_volume_stats(Request::new(req))
+            .await
+            .unwrap_err();
+        assert_eq!(err.code(), tonic::Code::NotFound);
     }
 
     #[tokio::test]

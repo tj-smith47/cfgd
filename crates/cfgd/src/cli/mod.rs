@@ -5750,7 +5750,7 @@ fn cmd_source_add(cli: &Cli, printer: &Printer, args: &SourceAddArgs) -> anyhow:
                     }
                 }
                 Err(e) => {
-                    printer.warning(&format!("Could not preview conflicts: {}", e));
+                    printer.warning(&format!("Failed to preview conflicts: {}", e));
                 }
             }
         }
@@ -5984,7 +5984,7 @@ fn cmd_source_show(cli: &Cli, printer: &Printer, name: &str) -> anyhow::Result<(
     mgr.set_allow_unsigned(cfg.spec.security.as_ref().is_some_and(|s| s.allow_unsigned));
     // Populate the manager from the cached source on disk
     if let Err(e) = mgr.load_source(source_spec, printer) {
-        printer.warning(&format!("Could not load source manifest: {}", e));
+        printer.warning(&format!("Failed to load source manifest: {}", e));
     }
     if let Some(cached) = mgr.get(name) {
         printer.newline();

@@ -49,7 +49,7 @@ pub async fn run_probe_server(port: u16, state: HealthState) -> Result<(), Opera
         .await
         .map_err(|e| OperatorError::Health(format!("bind {addr}: {e}")))?;
 
-    tracing::info!(%addr, "Health probe server listening");
+    tracing::info!(%addr, "health probe server listening");
     axum::serve(listener, app)
         .await
         .map_err(|e| OperatorError::Health(format!("serve: {e}")))?;

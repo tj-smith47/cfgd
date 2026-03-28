@@ -83,13 +83,13 @@ pub async fn run_webhook_server(
         .await
         .map_err(|e| OperatorError::Webhook(format!("failed to bind {addr}: {e}")))?;
 
-    info!(addr = %addr, "Webhook server listening");
+    info!(addr = %addr, "webhook server listening");
 
     loop {
         let (stream, peer_addr) = match listener.accept().await {
             Ok(conn) => conn,
             Err(e) => {
-                warn!(error = %e, "Failed to accept TCP connection");
+                warn!(error = %e, "failed to accept TCP connection");
                 continue;
             }
         };
@@ -558,7 +558,7 @@ fn build_injection_patches(
         } else {
             warn!(
                 module = name,
-                "Module CRD has no ociArtifact — CSI driver will use fallback registry"
+                "module CRD has no ociArtifact — CSI driver will use fallback registry"
             );
         }
         patches.push(json_patch::PatchOperation::Add(json_patch::AddOperation {
@@ -756,7 +756,7 @@ async fn handle_mutate_pods(
                 resolved.push((name.clone(), version.clone(), spec));
             }
             Err(e) => {
-                warn!(module = name, error = %e, "Module CRD not found, skipping injection");
+                warn!(module = name, error = %e, "module CRD not found, skipping injection");
             }
         }
     }

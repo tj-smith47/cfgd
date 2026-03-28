@@ -87,7 +87,7 @@ pub(super) fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result
     if !target_dir.join(".git").exists() {
         match git2::Repository::init(&target_dir) {
             Ok(_) => printer.success("Initialized git repository"),
-            Err(e) => printer.warning(&format!("Could not init git repo: {}", e)),
+            Err(e) => printer.warning(&format!("Failed to init git repo: {}", e)),
         }
     }
 
@@ -266,7 +266,7 @@ pub(super) fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result
                     printer.info("The service will start automatically on boot");
                 }
                 Err(e) => {
-                    printer.warning(&format!("Could not install daemon: {}", e));
+                    printer.warning(&format!("Failed to install daemon: {}", e));
                     printer.info("Install later with: cfgd daemon install");
                 }
             }

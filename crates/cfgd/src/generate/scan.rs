@@ -532,7 +532,7 @@ pub fn scan_installed_packages(
             }
             Err(e) => {
                 // Log but don't fail — some managers may not be usable
-                tracing::warn!("Failed to list packages from {}: {}", manager.name(), e);
+                tracing::warn!("failed to list packages from {}: {}", manager.name(), e);
             }
         }
     }
@@ -581,7 +581,7 @@ pub fn scan_system_settings() -> Result<SystemSettingsResult, CfgdError> {
             .map(|s| s.to_string())
             .collect();
         result.macos_defaults = serde_yaml::to_value(domains).map(Some).unwrap_or_else(|e| {
-            tracing::warn!("Failed to serialize macOS domains list: {e}");
+            tracing::warn!("failed to serialize macOS domains list: {e}");
             None
         });
     }

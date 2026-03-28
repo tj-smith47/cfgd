@@ -479,7 +479,7 @@ impl SystemConfigurator for GpgKeysConfigurator {
                 ));
             } else {
                 printer.warning(&format!(
-                    "gpgKeys: key generated for {} <{}> but fingerprint could not be confirmed",
+                    "gpgKeys: key generated for {} <{}> but failed to confirm fingerprint",
                     spec.real_name, spec.email
                 ));
             }

@@ -30,7 +30,7 @@ pub async fn start_gateway(config: GatewayConfig) -> Result<(), Box<dyn std::err
         .map_err(|e| -> Box<dyn std::error::Error> { Box::new(e) })?;
 
     if std::env::var("CFGD_API_KEY").is_ok() {
-        tracing::info!("Device gateway: API key authentication enabled");
+        tracing::info!("device gateway: API key authentication enabled");
     } else {
         tracing::warn!(
             "CFGD_API_KEY is not set — admin API access is disabled. Set CFGD_API_KEY to enable admin operations."
@@ -42,7 +42,7 @@ pub async fn start_gateway(config: GatewayConfig) -> Result<(), Box<dyn std::err
 
     let (event_tx, _) = tokio::sync::broadcast::channel(256);
     let enrollment_method = api::EnrollmentMethod::from_env();
-    tracing::info!(method = ?enrollment_method, "Device gateway: enrollment method configured");
+    tracing::info!(method = ?enrollment_method, "device gateway: enrollment method configured");
 
     let state = AppState {
         db: Arc::new(tokio::sync::Mutex::new(db)),
@@ -79,7 +79,7 @@ pub async fn start_gateway(config: GatewayConfig) -> Result<(), Box<dyn std::err
         .with_state(state);
 
     let addr = SocketAddr::from(([0, 0, 0, 0], config.port));
-    tracing::info!(%addr, db_path = %config.db_path, "Device gateway starting");
+    tracing::info!(%addr, db_path = %config.db_path, "device gateway starting");
 
     let listener = tokio::net::TcpListener::bind(addr).await?;
     let result = axum::serve(listener, app).await;

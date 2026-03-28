@@ -159,7 +159,7 @@ pub async fn run_metrics_server(
         .await
         .map_err(|e| OperatorError::Metrics(format!("bind {addr}: {e}")))?;
 
-    tracing::info!(%addr, "Metrics server listening");
+    tracing::info!(%addr, "metrics server listening");
     axum::serve(listener, app)
         .await
         .map_err(|e| OperatorError::Metrics(format!("serve: {e}")))?;

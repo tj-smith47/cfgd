@@ -155,11 +155,9 @@ pub async fn run(client: Client, metrics: Metrics) -> Result<(), OperatorError> 
     let ccp_ctx = Arc::clone(&ctx);
     let mod_ctx = Arc::clone(&ctx);
 
-    info!("Starting MachineConfig controller");
-    info!("Starting DriftAlert controller");
-    info!("Starting ConfigPolicy controller");
-    info!("Starting ClusterConfigPolicy controller");
-    info!("Starting Module controller");
+    info!(
+        "starting controllers: MachineConfig, DriftAlert, ConfigPolicy, ClusterConfigPolicy, Module"
+    );
 
     let mc_controller = Controller::new(machines, WatcherConfig::default())
         .owns(
@@ -339,7 +337,7 @@ async fn publish_event(
     obj_ref: &k8s_openapi::api::core::v1::ObjectReference,
 ) {
     if let Err(e) = recorder.publish(event, obj_ref).await {
-        debug!(error = %e, "Failed to publish event (best-effort)");
+        debug!(error = %e, "failed to publish event (best-effort)");
     }
 }
 
@@ -383,7 +381,7 @@ async fn reconcile_machine_config(
     let has_finalizer = finalizers.iter().any(|f| f == MACHINE_CONFIG_FINALIZER);
 
     if obj.metadata.deletion_timestamp.is_some() && has_finalizer {
-        info!(name = %name, "MachineConfig being deleted, running cleanup");
+        info!(name = %name, "machineConfig being deleted, running cleanup");
         let updated: Vec<&str> = finalizers
             .iter()
             .filter(|f| f.as_str() != MACHINE_CONFIG_FINALIZER)
@@ -427,7 +425,7 @@ async fn reconcile_machine_config(
             .map_err(|e| {
                 OperatorError::Reconciliation(format!("failed to add finalizer to {name}: {e}"))
             })?;
-        info!(name = %name, "Added finalizer to MachineConfig");
+        info!(name = %name, "added finalizer to MachineConfig");
     }
 
     if let Err(e) = validate_spec(&obj.spec) {
@@ -451,7 +449,7 @@ async fn reconcile_machine_config(
         profile = %obj.spec.profile,
         packages = obj.spec.packages.len(),
         files = obj.spec.files.len(),
-        "Reconciling MachineConfig"
+        "reconciling MachineConfig"
     );
 
     let current_generation = obj.meta().generation;
@@ -471,7 +469,7 @@ async fn reconcile_machine_config(
         .iter()
         .any(|c| c.condition_type == "DriftDetected" && c.status == "True");
     if generation_unchanged && !has_drift && !had_drift {
-        info!(name = %name, "Already reconciled this generation, skipping");
+        info!(name = %name, "already reconciled this generation, skipping");
         return Ok(Action::requeue(std::time::Duration::from_secs(60)));
     }
 
@@ -571,7 +569,7 @@ async fn reconcile_machine_config(
         return Err(OperatorError::Reconciliation(error_msg));
     }
 
-    info!(name = %name, "Status updated with last_reconciled timestamp");
+    info!(name = %name, "status updated with last_reconciled timestamp");
 
     emit_event(
         &ctx.recorder,
@@ -650,7 +648,7 @@ async fn reconcile_drift_alert(
         device_id = %obj.spec.device_id,
         severity = ?obj.spec.severity,
         details_count = obj.spec.drift_details.len(),
-        "Reconciling DriftAlert"
+        "reconciling DriftAlert"
     );
 
     let machines: Api<MachineConfig> = namespaced_api(&ctx.client, mc_namespace)?;
@@ -700,7 +698,7 @@ async fn reconcile_drift_alert(
                             "failed to set owner reference on DriftAlert {name}: {e}"
                         ))
                     })?;
-                info!(name = %name, machine_config = %mc.name_any(), "Set owner reference on DriftAlert");
+                info!(name = %name, machine_config = %mc.name_any(), "set owner reference on DriftAlert");
             }
 
             // Check if a DriftDetected condition already exists
@@ -741,7 +739,7 @@ async fn reconcile_drift_alert(
                     )
                     .await
                 {
-                    warn!(name = %name, error = %e, "Failed to set Resolved condition on DriftAlert");
+                    warn!(name = %name, error = %e, "failed to set Resolved condition on DriftAlert");
                 }
 
                 emit_event(
@@ -755,7 +753,7 @@ async fn reconcile_drift_alert(
                 .await;
 
                 if let Err(e) = alerts.delete(&name, &Default::default()).await {
-                    warn!(name = %name, error = %e, "Failed to delete resolved DriftAlert");
+                    warn!(name = %name, error = %e, "failed to delete resolved DriftAlert");
                 }
 
                 record_reconcile_success(&ctx, "drift_alert", start);
@@ -808,7 +806,7 @@ async fn reconcile_drift_alert(
 
                 info!(
                     machine_config = %mc_name,
-                    "MachineConfig drift condition set"
+                    "machineConfig drift condition set"
                 );
 
                 emit_event(
@@ -858,7 +856,7 @@ async fn reconcile_drift_alert(
         Err(kube::Error::Api(resp)) if resp.code == 404 => {
             warn!(
                 machine_config = %mc_name,
-                "DriftAlert references non-existent MachineConfig"
+                "driftAlert references non-existent MachineConfig"
             );
             // Record as error, not success (H6 fix)
             record_reconcile_metrics(&ctx, "drift_alert", "error", start);
@@ -892,7 +890,7 @@ async fn has_active_drift_alerts(client: &Client, namespace: &str, mc_name: &str
             .iter()
             .any(|da| da.spec.machine_config_ref.name == mc_name),
         Err(e) => {
-            warn!(error = %e, mc_name = %mc_name, "Failed to list DriftAlerts for drift check");
+            warn!(error = %e, mc_name = %mc_name, "failed to list DriftAlerts for drift check");
             false
         }
     }
@@ -909,7 +907,7 @@ async fn cleanup_drift_alerts(client: &Client, namespace: &str, mc_name: &str) {
     let list = match alerts.list(&ListParams::default()).await {
         Ok(l) => l,
         Err(e) => {
-            warn!(error = %e, "Failed to list DriftAlerts for cleanup");
+            warn!(error = %e, "failed to list DriftAlerts for cleanup");
             return;
         }
     };
@@ -923,10 +921,10 @@ async fn cleanup_drift_alerts(client: &Client, namespace: &str, mc_name: &str) {
             warn!(
                 name = %alert_name,
                 error = %e,
-                "Failed to delete resolved DriftAlert"
+                "failed to delete resolved DriftAlert"
             );
         } else {
-            info!(name = %alert_name, "Deleted resolved DriftAlert");
+            info!(name = %alert_name, "deleted resolved DriftAlert");
         }
     }
 }
@@ -958,7 +956,7 @@ async fn reconcile_config_policy(
         required_modules = obj.spec.required_modules.len(),
         packages = obj.spec.packages.len(),
         settings = obj.spec.settings.len(),
-        "Reconciling ConfigPolicy"
+        "reconciling ConfigPolicy"
     );
 
     let machines: Api<MachineConfig> = namespaced_api(&ctx.client, &namespace)?;
@@ -1024,7 +1022,7 @@ async fn reconcile_config_policy(
             )
             .await
         {
-            warn!(name = %mc_name, error = %e, "Failed to update Compliant condition on MachineConfig");
+            warn!(name = %mc_name, error = %e, "failed to update Compliant condition on MachineConfig");
         }
     }
 
@@ -1088,7 +1086,7 @@ async fn reconcile_config_policy(
         name = %name,
         compliant = compliant_count,
         non_compliant = non_compliant_count,
-        "ConfigPolicy status updated"
+        "configPolicy status updated"
     );
 
     emit_policy_evaluation_events(
@@ -1329,7 +1327,7 @@ async fn reconcile_cluster_config_policy(
         required_modules = obj.spec.required_modules.len(),
         packages = obj.spec.packages.len(),
         settings = obj.spec.settings.len(),
-        "Reconciling ClusterConfigPolicy"
+        "reconciling ClusterConfigPolicy"
     );
 
     // List all namespaces, filtering by namespace_selector if non-empty
@@ -1436,7 +1434,7 @@ async fn reconcile_cluster_config_policy(
         name = %name,
         compliant = compliant_count,
         non_compliant = non_compliant_count,
-        "ClusterConfigPolicy status updated"
+        "clusterConfigPolicy status updated"
     );
 
     emit_policy_evaluation_events(
@@ -1484,7 +1482,7 @@ async fn reconcile_module(
         oci_artifact = ?obj.spec.oci_artifact,
         has_signature = obj.spec.signature.is_some(),
         packages = obj.spec.packages.len(),
-        "Reconciling Module"
+        "reconciling Module"
     );
 
     let current_generation = obj.meta().generation;
@@ -1551,7 +1549,7 @@ async fn reconcile_module(
             OperatorError::Reconciliation(format!("failed to update Module status for {name}: {e}"))
         })?;
 
-    info!(name = %name, "Module status updated");
+    info!(name = %name, "module status updated");
 
     // Emit availability event
     emit_event(
@@ -1625,7 +1623,7 @@ async fn evaluate_module_availability<'a>(
     let ccp_list = match ccp_api.list(&ListParams::default()).await {
         Ok(list) => list,
         Err(e) => {
-            warn!(error = %e, "Failed to list ClusterConfigPolicies for Module validation");
+            warn!(error = %e, "failed to list ClusterConfigPolicies for Module validation");
             // If we can't list policies, allow the module (fail-open for availability)
             return (
                 "True",
@@ -1848,7 +1846,7 @@ async fn resolve_module_refs(
     let module_list = match modules_api.list(&ListParams::default()).await {
         Ok(list) => list,
         Err(e) => {
-            warn!(error = %e, "Failed to list Modules for moduleRef resolution");
+            warn!(error = %e, "failed to list Modules for moduleRef resolution");
             return (
                 "Unknown",
                 "ResolutionError",

@@ -206,16 +206,16 @@ impl Notifier {
             .appname("cfgd")
             .show()
         {
-            Ok(_) => tracing::debug!("desktop notification sent: {}", title),
+            Ok(_) => tracing::debug!(title = %title, "desktop notification sent"),
             Err(e) => {
-                tracing::warn!("desktop notification failed: {}, falling back to stdout", e);
+                tracing::warn!(error = %e, "desktop notification failed, falling back to stdout");
                 self.notify_stdout(title, message);
             }
         }
     }
 
     fn notify_stdout(&self, title: &str, message: &str) {
-        tracing::info!("[{}] {}", title, message);
+        tracing::info!(title = %title, message = %message, "notification");
     }
 
     fn notify_webhook(&self, title: &str, message: &str) {
@@ -243,8 +243,8 @@ impl Notifier {
                 .set("Content-Type", "application/json")
                 .send_string(&body)
             {
-                Ok(_) => tracing::debug!("webhook notification sent to {}", url),
-                Err(e) => tracing::warn!("webhook notification failed: {}", e),
+                Ok(_) => tracing::debug!(url = %url, "webhook notification sent"),
+                Err(e) => tracing::warn!(error = %e, "webhook notification failed"),
             }
         });
     }
@@ -292,7 +292,7 @@ fn server_checkin(server_url: &str, resolved: &ResolvedProfile) -> bool {
     let device_id = match generate_device_id() {
         Ok(id) => id,
         Err(e) => {
-            tracing::warn!("server check-in: {}", e);
+            tracing::warn!(error = %e, "server check-in failed");
             return false;
         }
     };
@@ -300,7 +300,7 @@ fn server_checkin(server_url: &str, resolved: &ResolvedProfile) -> bool {
     let host = match hostname::get() {
         Ok(h) => h.to_string_lossy().to_string(),
         Err(e) => {
-            tracing::warn!("server check-in: failed to get hostname: {}", e);
+            tracing::warn!(error = %e, "server check-in: failed to get hostname");
             return false;
         }
     };
@@ -308,7 +308,7 @@ fn server_checkin(server_url: &str, resolved: &ResolvedProfile) -> bool {
     let config_hash = match compute_config_hash(resolved) {
         Ok(h) => h,
         Err(e) => {
-            tracing::warn!("server check-in: {}", e);
+            tracing::warn!(error = %e, "server check-in failed");
             return false;
         }
     };
@@ -326,7 +326,7 @@ fn server_checkin(server_url: &str, resolved: &ResolvedProfile) -> bool {
     let body = match serde_json::to_string(&payload) {
         Ok(b) => b,
         Err(e) => {
-            tracing::warn!("server check-in: failed to serialize payload: {}", e);
+            tracing::warn!(error = %e, "server check-in: failed to serialize payload");
             return false;
         }
     };
@@ -354,21 +354,21 @@ fn server_checkin(server_url: &str, resolved: &ResolvedProfile) -> bool {
                     }
                     Err(e) => {
                         tracing::warn!(
-                            "server check-in: failed to parse response (status {}): {}",
-                            status,
-                            e
+                            status = status,
+                            error = %e,
+                            "server check-in: failed to parse response"
                         );
                         false
                     }
                 },
                 Err(e) => {
-                    tracing::warn!("server check-in: failed to read response body: {}", e);
+                    tracing::warn!(error = %e, "server check-in: failed to read response body");
                     false
                 }
             }
         }
         Err(e) => {
-            tracing::warn!("server check-in failed: {}", e);
+            tracing::warn!(error = %e, "server check-in failed");
             false
         }
     }
@@ -564,23 +564,24 @@ pub async fn run_daemon(
     let ipc_path = DEFAULT_IPC_PATH.to_string();
     let health_handle = tokio::spawn(async move {
         if let Err(e) = run_health_server(&ipc_path, health_state).await {
-            tracing::error!("health server error: {}", e);
+            tracing::error!(error = %e, "health server error");
         }
     });
 
-    printer.success(&format!("Health endpoint: {}", DEFAULT_IPC_PATH));
-    printer.success(&format!(
-        "Reconcile interval: {}s",
-        reconcile_interval.as_secs()
-    ));
+    let mut intervals = vec![format!("reconcile={}s", reconcile_interval.as_secs())];
     if auto_pull || auto_push {
-        printer.success(&format!("Sync interval: {}s", sync_interval.as_secs()));
-        printer.key_value("autoPull", &auto_pull.to_string());
-        printer.key_value("autoPush", &auto_push.to_string());
+        intervals.push(format!(
+            "sync={}s (pull={}, push={})",
+            sync_interval.as_secs(),
+            auto_pull,
+            auto_push
+        ));
     }
     if let Some(interval) = compliance_interval {
-        printer.success(&format!("Compliance interval: {}s", interval.as_secs()));
+        intervals.push(format!("compliance={}s", interval.as_secs()));
     }
+    printer.success(&format!("Health: {}", DEFAULT_IPC_PATH));
+    printer.success(&format!("Intervals: {}", intervals.join(", ")));
     printer.info("Daemon running — press Ctrl+C to stop");
     printer.newline();
 
@@ -619,17 +620,17 @@ pub async fn run_daemon(
                                 "startup: found pending server config — first reconcile will apply it"
                             );
                             if let Err(e) = crate::state::clear_pending_server_config() {
-                                tracing::warn!("startup: failed to clear pending server config: {}", e);
+                                tracing::warn!(error = %e, "startup: failed to clear pending server config");
                             }
                         }
                         Ok(None) => {}
                         Err(e) => {
-                            tracing::warn!("startup: failed to load pending server config: {}", e);
+                            tracing::warn!(error = %e, "startup: failed to load pending server config");
                         }
                     }
                 }
                 Err(e) => {
-                    tracing::warn!("startup check-in: failed to resolve profile: {}", e);
+                    tracing::warn!(error = %e, "startup check-in: failed to resolve profile");
                 }
             }
         })
@@ -672,11 +673,11 @@ pub async fn run_daemon(
             let key = (format!("{:?}", patch.kind), patch.name.clone());
             if let Some(prev) = seen_patches.insert(key, i) {
                 tracing::warn!(
-                    "duplicate reconcile patch for {:?} {:?} at positions {} and {} — last wins",
-                    patch.kind,
-                    patch.name.as_deref().unwrap_or("(all)"),
-                    prev,
-                    i
+                    kind = ?patch.kind,
+                    name = %patch.name.as_deref().unwrap_or("(all)"),
+                    prev_position = prev,
+                    position = i,
+                    "duplicate reconcile patch — last wins"
                 );
             }
         }
@@ -775,7 +776,7 @@ pub async fn run_daemon(
                 }
                 last_change.insert(path.clone(), now);
 
-                tracing::info!("file changed: {}", path.display());
+                tracing::info!(path = %path.display(), "file changed");
 
                 // Record drift
                 let drift_recorded = record_file_drift(&path);
@@ -811,7 +812,7 @@ pub async fn run_daemon(
             }
 
             _ = reconcile_timer.tick() => {
-                tracing::debug!("reconcile tick");
+                tracing::trace!("reconcile tick");
                 let now = Instant::now();
 
                 // Check each reconcile task — only run if its interval has elapsed
@@ -863,12 +864,12 @@ pub async fn run_daemon(
                 // If the default task didn't run this tick but a module task did,
                 // that's expected — module tasks can have shorter intervals.
                 if !ran_default {
-                    tracing::debug!("default reconcile task not due this tick");
+                    tracing::trace!("default reconcile task not due this tick");
                 }
             }
 
             _ = sync_timer.tick() => {
-                tracing::debug!("sync tick");
+                tracing::trace!("sync tick");
                 let now = Instant::now();
                 for task in &mut sync_tasks {
                     // Skip if this source was synced recently (per-source interval)
@@ -892,7 +893,7 @@ pub async fn run_daemon(
                         if changed && !auto_apply {
                             tracing::info!(
                                 source = %source_name,
-                                "Changes detected but auto-apply is disabled — run 'cfgd sync' interactively"
+                                "changes detected but auto-apply is disabled — run 'cfgd sync' interactively"
                             );
                         }
                     }).await.map_err(|e| DaemonError::WatchError {
@@ -902,7 +903,7 @@ pub async fn run_daemon(
             }
 
             _ = version_check_timer.tick() => {
-                tracing::debug!("version check tick");
+                tracing::trace!("version check tick");
                 let st = Arc::clone(&state);
                 let nt = Arc::clone(&notifier);
                 tokio::task::spawn_blocking(move || {
@@ -918,7 +919,7 @@ pub async fn run_daemon(
                     None => std::future::pending().await,
                 }
             } => {
-                tracing::debug!("compliance snapshot tick");
+                tracing::trace!("compliance snapshot tick");
                 if let Some(ref cc) = compliance_config {
                     let cp = config_path.clone();
                     let po = profile_override.clone();
@@ -935,7 +936,6 @@ pub async fn run_daemon(
             // Unix: reload config on SIGHUP (kill -HUP <pid>).
             // On Windows, this branch never fires (recv_sighup pends forever).
             _ = recv_sighup(&mut sighup_signal) => {
-                tracing::info!("received SIGHUP — reloading configuration");
                 printer.info("Reloading configuration (SIGHUP)...");
                 match config::load_config(&config_path) {
                     Ok(new_cfg) => {
@@ -962,14 +962,12 @@ pub async fn run_daemon(
                         }
                     }
                     Err(e) => {
-                        tracing::warn!("config reload failed, keeping current config: {}", e);
                         printer.warning(&format!("Config reload failed: {}", e));
                     }
                 }
             }
 
             _ = tokio::signal::ctrl_c() => {
-                tracing::info!("received shutdown signal");
                 printer.newline();
                 printer.info("Shutting down daemon...");
                 break;
@@ -1013,7 +1011,7 @@ fn setup_file_watcher(
                                     tracing::debug!("file watcher channel full — event coalesced");
                                 }
                                 Err(e) => {
-                                    tracing::warn!("file watcher event dropped: {}", e);
+                                    tracing::warn!(error = %e, "file watcher event dropped");
                                 }
                             }
                         }
@@ -1030,14 +1028,14 @@ fn setup_file_watcher(
     for path in managed_paths {
         if path.exists() {
             if let Err(e) = watcher.watch(path, RecursiveMode::NonRecursive) {
-                tracing::warn!("cannot watch {}: {}", path.display(), e);
+                tracing::warn!(path = %path.display(), error = %e, "cannot watch path");
             }
         } else if let Some(parent) = path.parent() {
             // Watch parent directory so we detect file creation
             if parent.exists()
                 && let Err(e) = watcher.watch(parent, RecursiveMode::NonRecursive)
             {
-                tracing::warn!("cannot watch {}: {}", parent.display(), e);
+                tracing::warn!(path = %parent.display(), error = %e, "cannot watch path");
             }
         }
     }
@@ -1046,7 +1044,7 @@ fn setup_file_watcher(
     if config_dir.exists()
         && let Err(e) = watcher.watch(config_dir, RecursiveMode::Recursive)
     {
-        tracing::warn!("cannot watch config dir {}: {}", config_dir.display(), e);
+        tracing::warn!(path = %config_dir.display(), error = %e, "cannot watch config dir");
     }
 
     Ok(watcher)
@@ -1060,7 +1058,7 @@ fn discover_managed_paths(
     let cfg = match config::load_config(config_path) {
         Ok(c) => c,
         Err(e) => {
-            tracing::warn!("cannot load config for file discovery: {}", e);
+            tracing::warn!(error = %e, "cannot load config for file discovery");
             return Vec::new();
         }
     };
@@ -1077,7 +1075,7 @@ fn discover_managed_paths(
     let resolved = match config::resolve_profile(profile_name, &profiles_dir) {
         Ok(r) => r,
         Err(e) => {
-            tracing::warn!("cannot resolve profile for file discovery: {}", e);
+            tracing::warn!(error = %e, "cannot resolve profile for file discovery");
             return Vec::new();
         }
     };
@@ -1108,7 +1106,7 @@ fn handle_reconcile(
     let state_dir = match crate::state::default_state_dir() {
         Ok(d) => d,
         Err(e) => {
-            tracing::error!("reconcile: cannot determine state directory: {}", e);
+            tracing::error!(error = %e, "reconcile: cannot determine state directory");
             return;
         }
     };
@@ -1117,11 +1115,11 @@ fn handle_reconcile(
         Err(crate::errors::CfgdError::State(crate::errors::StateError::ApplyLockHeld {
             ref holder,
         })) => {
-            tracing::debug!("reconcile: skipping — apply lock held by {}", holder);
+            tracing::debug!(holder = %holder, "reconcile: skipping — apply lock held");
             return;
         }
         Err(e) => {
-            tracing::warn!("reconcile: cannot acquire apply lock: {}", e);
+            tracing::warn!(error = %e, "reconcile: cannot acquire apply lock");
             return;
         }
     };
@@ -1129,7 +1127,7 @@ fn handle_reconcile(
     let cfg = match config::load_config(config_path) {
         Ok(c) => c,
         Err(e) => {
-            tracing::error!("reconcile: config load failed: {}", e);
+            tracing::error!(error = %e, "reconcile: config load failed");
             return;
         }
     };
@@ -1150,7 +1148,7 @@ fn handle_reconcile(
     let resolved = match config::resolve_profile(profile_name, &profiles_dir) {
         Ok(r) => r,
         Err(e) => {
-            tracing::error!("reconcile: profile resolution failed: {}", e);
+            tracing::error!(error = %e, "reconcile: profile resolution failed");
             return;
         }
     };
@@ -1161,7 +1159,7 @@ fn handle_reconcile(
     let store = match StateStore::open_default() {
         Ok(s) => s,
         Err(e) => {
-            tracing::error!("reconcile: state store error: {}", e);
+            tracing::error!(error = %e, "reconcile: state store error");
             return;
         }
     };
@@ -1206,9 +1204,9 @@ fn handle_reconcile(
                     && let Err(e) = store.resolve_decisions_for_source(&decision.source, "rejected")
                 {
                     tracing::warn!(
-                        "failed to auto-reject decisions for removed source {}: {}",
-                        decision.source,
-                        e
+                        source = %decision.source,
+                        error = %e,
+                        "failed to auto-reject decisions for removed source"
                     );
                 }
             }
@@ -1225,7 +1223,7 @@ fn handle_reconcile(
     let pkg_actions = match hooks.plan_packages(&resolved.merged, &available_managers) {
         Ok(a) => a,
         Err(e) => {
-            tracing::error!("reconcile: package planning failed: {}", e);
+            tracing::error!(error = %e, "reconcile: package planning failed");
             return;
         }
     };
@@ -1233,7 +1231,7 @@ fn handle_reconcile(
     let file_actions = match hooks.plan_files(&config_dir, &resolved) {
         Ok(a) => a,
         Err(e) => {
-            tracing::error!("reconcile: file planning failed: {}", e);
+            tracing::error!(error = %e, "reconcile: file planning failed");
             return;
         }
     };
@@ -1257,7 +1255,7 @@ fn handle_reconcile(
         ) {
             Ok(m) => m,
             Err(e) => {
-                tracing::warn!("reconcile: module resolution failed: {}", e);
+                tracing::warn!(error = %e, "reconcile: module resolution failed");
                 Vec::new()
             }
         }
@@ -1274,7 +1272,7 @@ fn handle_reconcile(
     ) {
         Ok(p) => p,
         Err(e) => {
-            tracing::error!("reconcile: plan generation failed: {}", e);
+            tracing::error!(error = %e, "reconcile: plan generation failed");
             return;
         }
     };
@@ -1308,9 +1306,9 @@ fn handle_reconcile(
     });
 
     if effective_total == 0 {
-        tracing::info!("reconcile: no drift detected");
+        tracing::debug!("reconcile: no drift detected");
     } else {
-        tracing::info!("reconcile: {} action(s) needed", effective_total);
+        tracing::info!(actions = effective_total, "reconcile: drift detected");
 
         // Record drift events
         for phase in &plan.phases {
@@ -1323,7 +1321,7 @@ fn handle_reconcile(
                 if let Err(e) =
                     store.record_drift(&rtype, &rid, None, Some("drift detected"), "local")
                 {
-                    tracing::warn!("failed to record drift: {}", e);
+                    tracing::warn!(error = %e, "failed to record drift");
                 }
             }
         }
@@ -1331,7 +1329,7 @@ fn handle_reconcile(
         // Execute onDrift scripts from resolved profile
         if !resolved.merged.scripts.on_drift.is_empty() {
             let scripts = &resolved.merged.scripts;
-            tracing::info!("running {} onDrift script(s)", scripts.on_drift.len());
+            tracing::info!(count = scripts.on_drift.len(), "running onDrift script(s)");
             let script_env = crate::reconciler::build_script_env(
                 &config_dir,
                 profile_name,
@@ -1352,10 +1350,10 @@ fn handle_reconcile(
                     &printer,
                 ) {
                     Ok((desc, _, _)) => {
-                        tracing::info!("onDrift script completed: {}", desc);
+                        tracing::info!(script = %desc, "onDrift script completed");
                     }
                     Err(e) => {
-                        tracing::error!("onDrift script failed: {}", e);
+                        tracing::error!(error = %e, "onDrift script failed");
                     }
                 }
             }
@@ -1382,8 +1380,8 @@ fn handle_reconcile(
         match drift_policy {
             config::DriftPolicy::Auto => {
                 tracing::info!(
-                    "drift policy is Auto — applying {} action(s)",
-                    effective_total
+                    actions = effective_total,
+                    "drift policy is Auto — applying actions"
                 );
                 let printer = Printer::new(Verbosity::Quiet);
                 match reconciler.apply(
@@ -1400,9 +1398,9 @@ fn handle_reconcile(
                         let succeeded = result.succeeded();
                         let failed = result.failed();
                         tracing::info!(
-                            "auto-apply complete: {} succeeded, {} failed",
-                            succeeded,
-                            failed
+                            succeeded = succeeded,
+                            failed = failed,
+                            "auto-apply complete"
                         );
                         if failed > 0 && notify_on_drift {
                             notifier.notify(
@@ -1420,7 +1418,7 @@ fn handle_reconcile(
                         }
                     }
                     Err(e) => {
-                        tracing::error!("auto-apply failed: {}", e);
+                        tracing::error!(error = %e, "auto-apply failed");
                         if notify_on_drift {
                             notifier.notify(
                                 "cfgd: auto-apply failed",
@@ -1465,12 +1463,12 @@ fn handle_reconcile(
                 "consumed pending server config — next reconcile will pick up changes"
             );
             if let Err(e) = crate::state::clear_pending_server_config() {
-                tracing::warn!("failed to clear pending server config: {}", e);
+                tracing::warn!(error = %e, "failed to clear pending server config");
             }
         }
         Ok(None) => {}
         Err(e) => {
-            tracing::warn!("failed to load pending server config: {}", e);
+            tracing::warn!(error = %e, "failed to load pending server config");
         }
     }
 }
@@ -1690,7 +1688,7 @@ fn process_source_decisions(
                 if let Err(e) =
                     store.upsert_pending_decision(source_name, resource, tier, "install", &summary)
                 {
-                    tracing::warn!("failed to record pending decision: {}", e);
+                    tracing::warn!(error = %e, "failed to record pending decision");
                 } else {
                     new_pending_count += 1;
                 }
@@ -1720,7 +1718,7 @@ fn process_source_decisions(
 
     // Update the stored hash
     if let Err(e) = store.set_source_config_hash(source_name, &current_hash) {
-        tracing::warn!("failed to store source config hash: {}", e);
+        tracing::warn!(error = %e, "failed to store source config hash");
     }
 
     // Return resources that are pending and should be excluded from the plan
@@ -1774,9 +1772,9 @@ fn handle_sync(
                     && let Err(e) = crate::sources::verify_head_signature(source_name, repo_path)
                 {
                     tracing::error!(
-                        "sync: signature verification failed after pull for '{}': {}",
-                        source_name,
-                        e
+                        source = %source_name,
+                        error = %e,
+                        "sync: signature verification failed after pull"
                     );
                     // Don't treat this as "changes" — the content is untrusted
                     return false;
@@ -1785,7 +1783,7 @@ fn handle_sync(
                 changes = true;
             }
             Ok(false) => tracing::debug!("sync: already up to date"),
-            Err(e) => tracing::warn!("sync: pull failed: {}", e),
+            Err(e) => tracing::warn!(error = %e, "sync: pull failed"),
         }
     }
 
@@ -1793,7 +1791,7 @@ fn handle_sync(
         match git_auto_commit_push(repo_path) {
             Ok(true) => tracing::info!("sync: pushed local changes to remote"),
             Ok(false) => tracing::debug!("sync: nothing to push"),
-            Err(e) => tracing::warn!("sync: push failed: {}", e),
+            Err(e) => tracing::warn!(error = %e, "sync: push failed"),
         }
     }
 
@@ -1861,7 +1859,7 @@ fn handle_version_check(state: &Arc<Mutex<DaemonState>>, notifier: &Arc<Notifier
             }
         }
         Err(e) => {
-            tracing::warn!("version check failed: {}", e);
+            tracing::warn!(error = %e, "version check failed");
         }
     }
 }
@@ -1879,7 +1877,7 @@ fn handle_compliance_snapshot(
     let cfg = match config::load_config(config_path) {
         Ok(c) => c,
         Err(e) => {
-            tracing::error!("compliance: config load failed: {}", e);
+            tracing::error!(error = %e, "compliance: config load failed");
             return;
         }
     };
@@ -1900,7 +1898,7 @@ fn handle_compliance_snapshot(
     let resolved = match config::resolve_profile(profile_name, &profiles_dir) {
         Ok(r) => r,
         Err(e) => {
-            tracing::error!("compliance: profile resolution failed: {}", e);
+            tracing::error!(error = %e, "compliance: profile resolution failed");
             return;
         }
     };
@@ -1921,7 +1919,7 @@ fn handle_compliance_snapshot(
     ) {
         Ok(s) => s,
         Err(e) => {
-            tracing::error!("compliance: snapshot collection failed: {}", e);
+            tracing::error!(error = %e, "compliance: snapshot collection failed");
             return;
         }
     };
@@ -1930,7 +1928,7 @@ fn handle_compliance_snapshot(
     let json = match serde_json::to_string_pretty(&snapshot) {
         Ok(j) => j,
         Err(e) => {
-            tracing::error!("compliance: snapshot serialization failed: {}", e);
+            tracing::error!(error = %e, "compliance: snapshot serialization failed");
             return;
         }
     };
@@ -1940,7 +1938,7 @@ fn handle_compliance_snapshot(
     let store = match StateStore::open_default() {
         Ok(s) => s,
         Err(e) => {
-            tracing::error!("compliance: state store error: {}", e);
+            tracing::error!(error = %e, "compliance: state store error");
             return;
         }
     };
@@ -1949,7 +1947,7 @@ fn handle_compliance_snapshot(
     let latest_hash = match store.latest_compliance_hash() {
         Ok(h) => h,
         Err(e) => {
-            tracing::warn!("compliance: failed to query latest hash: {}", e);
+            tracing::warn!(error = %e, "compliance: failed to query latest hash");
             None
         }
     };
@@ -1961,7 +1959,7 @@ fn handle_compliance_snapshot(
 
     // Store the new snapshot
     if let Err(e) = store.store_compliance_snapshot(&snapshot, &hash) {
-        tracing::error!("compliance: failed to store snapshot: {}", e);
+        tracing::error!(error = %e, "compliance: failed to store snapshot");
         return;
     }
 
@@ -1975,10 +1973,10 @@ fn handle_compliance_snapshot(
     // Export if configured
     match crate::compliance::export_snapshot_to_file(&snapshot, &compliance_cfg.export) {
         Ok(file_path) => {
-            tracing::info!("compliance snapshot exported to {}", file_path.display());
+            tracing::info!(path = %file_path.display(), "compliance snapshot exported");
         }
         Err(e) => {
-            tracing::error!("compliance: failed to export snapshot: {}", e);
+            tracing::error!(error = %e, "compliance: failed to export snapshot");
             return;
         }
     }
@@ -1992,11 +1990,11 @@ fn handle_compliance_snapshot(
         let cutoff_str = crate::unix_secs_to_iso8601(cutoff_secs);
         match store.prune_compliance_snapshots(&cutoff_str) {
             Ok(deleted) if deleted > 0 => {
-                tracing::info!("compliance: pruned {} old snapshot(s)", deleted);
+                tracing::info!(deleted = deleted, "compliance: pruned old snapshots");
             }
             Ok(_) => {}
             Err(e) => {
-                tracing::warn!("compliance: failed to prune snapshots: {}", e);
+                tracing::warn!(error = %e, "compliance: failed to prune snapshots");
             }
         }
     }
@@ -2186,7 +2184,7 @@ async fn run_health_server(ipc_path: &str, state: Arc<Mutex<DaemonState>>) -> Re
         let state = Arc::clone(&state);
         tokio::spawn(async move {
             if let Err(e) = handle_health_connection(stream, state).await {
-                tracing::debug!("health connection error: {}", e);
+                tracing::debug!(error = %e, "health connection error");
             }
         });
     }
@@ -2222,7 +2220,7 @@ async fn run_health_server(ipc_path: &str, state: Arc<Mutex<DaemonState>>) -> Re
         let state = Arc::clone(&state);
         tokio::spawn(async move {
             if let Err(e) = handle_health_connection(connected, state).await {
-                tracing::debug!("health connection error: {}", e);
+                tracing::debug!(error = %e, "health connection error");
             }
         });
     }
@@ -2319,7 +2317,7 @@ fn record_file_drift(path: &Path) -> bool {
     let store = match StateStore::open_default() {
         Ok(s) => s,
         Err(e) => {
-            tracing::warn!("cannot open state store for drift recording: {}", e);
+            tracing::warn!(error = %e, "cannot open state store for drift recording");
             return false;
         }
     };
@@ -2333,7 +2331,7 @@ fn record_file_drift(path: &Path) -> bool {
     ) {
         Ok(_) => true,
         Err(e) => {
-            tracing::warn!("failed to record drift: {}", e);
+            tracing::warn!(error = %e, "failed to record drift");
             false
         }
     }
@@ -2430,7 +2428,7 @@ fn install_windows_service(binary: &Path, config_path: &Path, profile: Option<&s
         ])
         .output()
     {
-        tracing::warn!("failed to set Windows Service description: {e}");
+        tracing::warn!(error = %e, "failed to set Windows Service description");
     }
 
     // Start the service
@@ -2438,7 +2436,7 @@ fn install_windows_service(binary: &Path, config_path: &Path, profile: Option<&s
         .args(["start", "cfgd"])
         .output()
     {
-        tracing::warn!("failed to start Windows Service: {e}");
+        tracing::warn!(error = %e, "failed to start Windows Service");
     }
 
     tracing::info!("installed Windows Service: cfgd");
@@ -2453,7 +2451,7 @@ fn uninstall_windows_service() -> Result<()> {
         .args(["stop", "cfgd"])
         .output()
     {
-        tracing::debug!("sc.exe stop (pre-uninstall): {e}");
+        tracing::debug!(error = %e, "sc.exe stop (pre-uninstall)");
     }
 
     let output = std::process::Command::new("sc.exe")
@@ -2506,7 +2504,7 @@ pub fn run_as_windows_service(_hooks: Arc<dyn DaemonHooks>) -> Result<()> {
 #[cfg(windows)]
 extern "system" fn ffi_service_main(_argc: u32, _argv: *mut *mut u16) {
     if let Err(e) = windows_service_main() {
-        tracing::error!("Windows Service main failed: {}", e);
+        tracing::error!(error = %e, "windows service main failed");
     }
 }
 
@@ -2601,7 +2599,7 @@ fn windows_service_main() -> std::result::Result<(), Box<dyn std::error::Error>>
     // Spawn the daemon loop on the runtime
     rt.spawn(async move {
         if let Err(e) = run_daemon(config_path, profile_override, printer, hooks).await {
-            tracing::error!("Daemon error: {}", e);
+            tracing::error!(error = %e, "daemon error");
         }
     });
 
@@ -2703,7 +2701,7 @@ fn install_launchd_service(binary: &Path, config_path: &Path, profile: Option<&s
         }
     })?;
 
-    tracing::info!("installed launchd service: {}", plist_path.display());
+    tracing::info!(path = %plist_path.display(), "installed launchd service");
     Ok(())
 }
 
@@ -2718,7 +2716,7 @@ fn uninstall_launchd_service() -> Result<()> {
         std::fs::remove_file(&plist_path).map_err(|e| DaemonError::ServiceInstallFailed {
             message: format!("remove plist: {}", e),
         })?;
-        tracing::info!("removed launchd service: {}", plist_path.display());
+        tracing::info!(path = %plist_path.display(), "removed launchd service");
     }
 
     Ok(())
@@ -2769,7 +2767,7 @@ WantedBy=default.target"#
         message: format!("write unit file: {}", e),
     })?;
 
-    tracing::info!("installed systemd user service: {}", unit_path.display());
+    tracing::info!(path = %unit_path.display(), "installed systemd user service");
     Ok(())
 }
 
@@ -2782,7 +2780,7 @@ fn uninstall_systemd_service() -> Result<()> {
         std::fs::remove_file(&unit_path).map_err(|e| DaemonError::ServiceInstallFailed {
             message: format!("remove unit file: {}", e),
         })?;
-        tracing::info!("removed systemd user service: {}", unit_path.display());
+        tracing::info!(path = %unit_path.display(), "removed systemd user service");
     }
 
     Ok(())

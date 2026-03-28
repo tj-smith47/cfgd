@@ -8,6 +8,101 @@ use cfgd_core::errors::{PackageError, Result};
 use cfgd_core::output::{CommandOutput, Printer};
 use cfgd_core::providers::{PackageAction, PackageManager};
 
+/// Important post-install messages extracted from package manager output.
+struct PostInstallNote {
+    manager: String,
+    message: String,
+}
+
+/// Extract caveats/warnings from package manager output.
+fn extract_caveats(manager: &str, output: &CommandOutput) -> Vec<PostInstallNote> {
+    let combined = format!("{}\n{}", output.stdout, output.stderr);
+    let mut notes = Vec::new();
+
+    match manager {
+        "brew" | "brew-cask" => {
+            // Homebrew prints "==> Caveats" followed by caveat text until next "==> " or end
+            let mut in_caveats = false;
+            let mut caveat_lines = Vec::new();
+            for line in combined.lines() {
+                if line.starts_with("==> Caveats") {
+                    in_caveats = true;
+                    caveat_lines.clear();
+                    continue;
+                }
+                if in_caveats {
+                    if line.starts_with("==> ") {
+                        if !caveat_lines.is_empty() {
+                            notes.push(PostInstallNote {
+                                manager: manager.to_string(),
+                                message: caveat_lines.join("\n").trim().to_string(),
+                            });
+                        }
+                        in_caveats = false;
+                    } else {
+                        caveat_lines.push(line.to_string());
+                    }
+                }
+            }
+            if in_caveats && !caveat_lines.is_empty() {
+                notes.push(PostInstallNote {
+                    manager: manager.to_string(),
+                    message: caveat_lines.join("\n").trim().to_string(),
+                });
+            }
+        }
+        "npm" | "pnpm" => {
+            for line in combined.lines() {
+                let trimmed = line.trim();
+                if trimmed.starts_with("npm warn") || trimmed.starts_with("npm WARN") {
+                    notes.push(PostInstallNote {
+                        manager: manager.to_string(),
+                        message: trimmed.to_string(),
+                    });
+                }
+            }
+        }
+        "pip" | "pipx" => {
+            for line in combined.lines() {
+                let trimmed = line.trim();
+                if trimmed.starts_with("WARNING:") {
+                    notes.push(PostInstallNote {
+                        manager: manager.to_string(),
+                        message: trimmed.to_string(),
+                    });
+                }
+            }
+        }
+        _ => {
+            // Generic: capture any line containing warning/caveat/note from stderr
+            for line in output.stderr.lines() {
+                let trimmed = line.trim();
+                let lower = trimmed.to_lowercase();
+                if lower.contains("warning:") || lower.contains("caveat") || lower.contains("note:")
+                {
+                    notes.push(PostInstallNote {
+                        manager: manager.to_string(),
+                        message: trimmed.to_string(),
+                    });
+                }
+            }
+        }
+    }
+    notes
+}
+
+/// Print collected post-install notes to the user.
+fn print_caveats(printer: &Printer, notes: &[PostInstallNote]) {
+    if notes.is_empty() {
+        return;
+    }
+    printer.newline();
+    printer.subheader("Post-install notes");
+    for note in notes {
+        printer.warning(&format!("[{}] {}", note.manager, note.message));
+    }
+}
+
 /// Run a command, mapping IO errors to PackageError::CommandFailed and non-zero
 /// exit to the appropriate PackageError variant based on `error_kind`.
 /// `error_kind` should be one of: "install", "uninstall", "list", "update".
@@ -110,6 +205,11 @@ fn run_pkg_cmd_live(
                 message: format!("exit code {}", code),
             },
         });
+    }
+    // Extract and print any post-install caveats
+    if error_kind == "install" {
+        let notes = extract_caveats(manager, &output);
+        print_caveats(printer, &notes);
     }
     Ok(output)
 }
@@ -224,7 +324,7 @@ fn bootstrap_via_system_manager(
     }
     Err(PackageError::BootstrapFailed {
         manager: manager_name.into(),
-        message: format!("could not install {} via apt, dnf, or zypper", target_pkg),
+        message: format!("failed to install {} via apt, dnf, or zypper", target_pkg),
     }
     .into())
 }
@@ -375,6 +475,7 @@ impl PackageManager for BrewTapManager {
     }
 
     fn update(&self, _printer: &Printer) -> Result<()> {
+        // Taps are repository references, not versioned packages; nothing to update
         Ok(())
     }
 
@@ -440,6 +541,7 @@ impl PackageManager for BrewCaskManager {
     }
 
     fn update(&self, _printer: &Printer) -> Result<()> {
+        // Cask updates are handled by `brew upgrade`; no separate cask update command
         Ok(())
     }
 

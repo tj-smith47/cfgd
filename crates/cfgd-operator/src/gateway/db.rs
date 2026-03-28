@@ -976,7 +976,7 @@ impl ServerDb {
                 drift = drift_deleted,
                 checkin = checkin_deleted,
                 max_age_days,
-                "Cleaned up old events"
+                "cleaned up old events"
             );
         }
         Ok(total)

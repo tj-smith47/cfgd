@@ -142,19 +142,19 @@ impl LeaderElection {
         loop {
             match self.try_acquire().await {
                 Ok(true) => {
-                    tracing::info!(identity = %self.identity, "Leader election won");
+                    tracing::info!(identity = %self.identity, "leader election won");
                     break;
                 }
                 Ok(false) => {
                     tracing::info!(
                         identity = %self.identity,
-                        "Not the leader, retrying in {}s",
+                        "not the leader, retrying in {}s",
                         self.retry_period_secs
                     );
                     tokio::time::sleep(Duration::from_secs(self.retry_period_secs)).await;
                 }
                 Err(e) => {
-                    tracing::warn!(error = %e, "Leader election attempt failed, retrying");
+                    tracing::warn!(error = %e, "leader election attempt failed, retrying");
                     tokio::time::sleep(Duration::from_secs(self.retry_period_secs)).await;
                 }
             }
@@ -189,12 +189,12 @@ impl LeaderElection {
                 tokio::time::sleep(renew_interval).await;
                 match renewal.try_acquire().await {
                     Ok(true) => {
-                        tracing::debug!("Leader lease renewed");
+                        tracing::debug!("leader lease renewed");
                         consecutive_failures = 0;
                     }
                     Ok(false) => {
                         tracing::error!(
-                            "Lost leader lease — another instance took over, shutting down"
+                            "lost leader lease — another instance took over, shutting down"
                         );
                         renewal_shutdown.cancel();
                         return;
@@ -204,10 +204,10 @@ impl LeaderElection {
                         tracing::warn!(
                             error = %e,
                             consecutive = consecutive_failures,
-                            "Leader lease renewal failed"
+                            "leader lease renewal failed"
                         );
                         if consecutive_failures >= max_failures {
-                            tracing::error!("Too many consecutive renewal failures, shutting down");
+                            tracing::error!("too many consecutive renewal failures, shutting down");
                             renewal_shutdown.cancel();
                             return;
                         }

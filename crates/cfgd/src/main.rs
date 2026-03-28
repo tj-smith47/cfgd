@@ -11,9 +11,7 @@ mod secrets;
 mod system;
 
 fn main() -> anyhow::Result<()> {
-    if let Err(e) = rustls::crypto::ring::default_provider().install_default() {
-        eprintln!("rustls CryptoProvider already installed: {e:?}");
-    }
+    let _ = rustls::crypto::ring::default_provider().install_default();
 
     // Clean up old binary from Windows upgrade rename-dance (no-op on Unix)
     cfgd_core::upgrade::cleanup_old_binary();
