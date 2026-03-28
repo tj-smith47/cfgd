@@ -473,6 +473,12 @@ impl MachineConfigSpec {
             if file.path.is_empty() {
                 errors.push(format!("spec.files[{i}].path must not be empty"));
             }
+            if file.path.contains("..") {
+                errors.push(format!(
+                    "spec.files[{i}].path '{}' must not contain path traversal (..)",
+                    file.path
+                ));
+            }
             if file.content.is_none() && file.source.is_none() {
                 errors.push(format!(
                     "spec.files[{i}] ('{}') must have either content or source",

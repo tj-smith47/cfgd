@@ -2750,6 +2750,10 @@ fn generate_env_file_content(
 ) -> String {
     let mut lines = vec![ENV_FILE_HEADER.to_string()];
     for ev in env {
+        if crate::validate_env_var_name(&ev.name).is_err() {
+            tracing::warn!("skipping env var with unsafe name: {}", ev.name);
+            continue;
+        }
         if ev.value.contains('$') {
             // Unquoted so shell expansion works (e.g. $PATH)
             lines.push(format!("export {}={}", ev.name, ev.value));
@@ -2762,6 +2766,10 @@ fn generate_env_file_content(
         }
     }
     for alias in aliases {
+        if crate::validate_alias_name(&alias.name).is_err() {
+            tracing::warn!("skipping alias with unsafe name: {}", alias.name);
+            continue;
+        }
         lines.push(format!(
             "alias {}=\"{}\"",
             alias.name,
@@ -2779,6 +2787,10 @@ fn generate_fish_env_content(
 ) -> String {
     let mut lines = vec![ENV_FILE_HEADER.to_string()];
     for ev in env {
+        if crate::validate_env_var_name(&ev.name).is_err() {
+            tracing::warn!("skipping env var with unsafe name: {}", ev.name);
+            continue;
+        }
         if ev.name == "PATH" {
             // Fish uses space-separated list for PATH, not colon-separated
             let parts: Vec<&str> = ev.value.split(':').collect();
@@ -2788,6 +2800,10 @@ fn generate_fish_env_content(
         }
     }
     for alias in aliases {
+        if crate::validate_alias_name(&alias.name).is_err() {
+            tracing::warn!("skipping alias with unsafe name: {}", alias.name);
+            continue;
+        }
         lines.push(format!("abbr -a {} {}", alias.name, alias.command));
     }
     lines.push(String::new());
@@ -2801,6 +2817,10 @@ fn generate_powershell_env_content(
 ) -> String {
     let mut lines = vec![ENV_FILE_HEADER.to_string()];
     for ev in env {
+        if crate::validate_env_var_name(&ev.name).is_err() {
+            tracing::warn!("skipping env var with unsafe name: {}", ev.name);
+            continue;
+        }
         if ev.value.contains("$env:") {
             // Value references other env vars — don't quote
             lines.push(format!("$env:{} = {}", ev.name, ev.value));
@@ -2813,6 +2833,10 @@ fn generate_powershell_env_content(
         }
     }
     for alias in aliases {
+        if crate::validate_alias_name(&alias.name).is_err() {
+            tracing::warn!("skipping alias with unsafe name: {}", alias.name);
+            continue;
+        }
         if alias.command.split_whitespace().count() == 1 {
             // Simple alias — use Set-Alias
             lines.push(format!(

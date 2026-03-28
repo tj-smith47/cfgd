@@ -928,8 +928,9 @@ pub async fn run_daemon(
         }
     }
 
-    // Cleanup
+    // Shutdown health server
     health_handle.abort();
+    let _ = health_handle.await;
     // Unix: remove socket file. Windows: named pipes are kernel objects, no cleanup needed.
     #[cfg(unix)]
     {
@@ -2364,18 +2365,24 @@ fn install_windows_service(binary: &Path, config_path: &Path, profile: Option<&s
     }
 
     // Set service description
-    let _ = std::process::Command::new("sc.exe")
+    if let Err(e) = std::process::Command::new("sc.exe")
         .args([
             "description",
             "cfgd",
             "Declarative machine configuration management daemon",
         ])
-        .output();
+        .output()
+    {
+        tracing::warn!("failed to set Windows Service description: {e}");
+    }
 
     // Start the service
-    let _ = std::process::Command::new("sc.exe")
+    if let Err(e) = std::process::Command::new("sc.exe")
         .args(["start", "cfgd"])
-        .output();
+        .output()
+    {
+        tracing::warn!("failed to start Windows Service: {e}");
+    }
 
     tracing::info!("installed Windows Service: cfgd");
     Ok(())
@@ -2384,10 +2391,13 @@ fn install_windows_service(binary: &Path, config_path: &Path, profile: Option<&s
 /// Uninstall cfgd Windows Service via sc.exe.
 #[cfg(windows)]
 fn uninstall_windows_service() -> Result<()> {
-    // Stop service first (ignore errors if not running)
-    let _ = std::process::Command::new("sc.exe")
+    // Stop service first (best-effort — may not be running)
+    if let Err(e) = std::process::Command::new("sc.exe")
         .args(["stop", "cfgd"])
-        .output();
+        .output()
+    {
+        tracing::debug!("sc.exe stop (pre-uninstall): {e}");
+    }
 
     let output = std::process::Command::new("sc.exe")
         .args(["delete", "cfgd"])

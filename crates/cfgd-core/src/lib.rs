@@ -532,10 +532,51 @@ pub fn parse_env_var(input: &str) -> std::result::Result<config::EnvVar, String>
     let (key, value) = input
         .split_once('=')
         .ok_or_else(|| format!("invalid env var '{}' — expected KEY=VALUE", input))?;
+    validate_env_var_name(key)?;
     Ok(config::EnvVar {
         name: key.to_string(),
         value: value.to_string(),
     })
+}
+
+/// Validate that an environment variable name is safe for shell interpolation.
+/// Accepts names matching `[A-Za-z_][A-Za-z0-9_]*`.
+pub fn validate_env_var_name(name: &str) -> std::result::Result<(), String> {
+    if name.is_empty() {
+        return Err("environment variable name must not be empty".to_string());
+    }
+    let first = name.as_bytes()[0];
+    if !first.is_ascii_alphabetic() && first != b'_' {
+        return Err(format!(
+            "invalid env var name '{}' — must start with a letter or underscore",
+            name
+        ));
+    }
+    if !name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_') {
+        return Err(format!(
+            "invalid env var name '{}' — must contain only letters, digits, and underscores",
+            name
+        ));
+    }
+    Ok(())
+}
+
+/// Validate that a shell alias name is safe for shell interpolation.
+/// Accepts names matching `[A-Za-z0-9_.-]+`.
+pub fn validate_alias_name(name: &str) -> std::result::Result<(), String> {
+    if name.is_empty() {
+        return Err("alias name must not be empty".to_string());
+    }
+    if !name
+        .bytes()
+        .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-' || b == b'.')
+    {
+        return Err(format!(
+            "invalid alias name '{}' — must contain only letters, digits, underscores, hyphens, and dots",
+            name
+        ));
+    }
+    Ok(())
 }
 
 /// Merge shell aliases by name: later entries override earlier ones with the same name.
@@ -573,6 +614,7 @@ pub fn parse_alias(input: &str) -> std::result::Result<config::ShellAlias, Strin
     let (name, command) = input
         .split_once('=')
         .ok_or_else(|| format!("invalid alias '{}' — expected name=command", input))?;
+    validate_alias_name(name)?;
     Ok(config::ShellAlias {
         name: name.to_string(),
         command: command.to_string(),
@@ -1858,5 +1900,56 @@ mod tests {
         // Other modules get kind-wide
         let eff2 = resolve_effective_reconcile("other", &["default"], &cfg);
         assert_eq!(eff2.interval, "30s");
+    }
+
+    #[test]
+    fn validate_env_var_name_accepts_valid() {
+        assert!(validate_env_var_name("PATH").is_ok());
+        assert!(validate_env_var_name("_PRIVATE").is_ok());
+        assert!(validate_env_var_name("MY_VAR_123").is_ok());
+        assert!(validate_env_var_name("a").is_ok());
+    }
+
+    #[test]
+    fn validate_env_var_name_rejects_invalid() {
+        assert!(validate_env_var_name("").is_err());
+        assert!(validate_env_var_name("1STARTS_WITH_DIGIT").is_err());
+        assert!(validate_env_var_name("HAS SPACE").is_err());
+        assert!(validate_env_var_name("HAS;SEMI").is_err());
+        assert!(validate_env_var_name("HAS$DOLLAR").is_err());
+        assert!(validate_env_var_name("HAS-DASH").is_err());
+        assert!(validate_env_var_name("a=b").is_err());
+    }
+
+    #[test]
+    fn validate_alias_name_accepts_valid() {
+        assert!(validate_alias_name("ls").is_ok());
+        assert!(validate_alias_name("my-alias").is_ok());
+        assert!(validate_alias_name("my.alias").is_ok());
+        assert!(validate_alias_name("my_alias_123").is_ok());
+    }
+
+    #[test]
+    fn validate_alias_name_rejects_invalid() {
+        assert!(validate_alias_name("").is_err());
+        assert!(validate_alias_name("has space").is_err());
+        assert!(validate_alias_name("has;semi").is_err());
+        assert!(validate_alias_name("has$dollar").is_err());
+        assert!(validate_alias_name("a=b").is_err());
+        assert!(validate_alias_name("has/slash").is_err());
+    }
+
+    #[test]
+    fn parse_env_var_validates_name() {
+        assert!(parse_env_var("VALID=value").is_ok());
+        assert!(parse_env_var("1BAD=value").is_err());
+        assert!(parse_env_var("BAD;NAME=value").is_err());
+    }
+
+    #[test]
+    fn parse_alias_validates_name() {
+        assert!(parse_alias("valid=ls -la").is_ok());
+        assert!(parse_alias("my-alias=git status").is_ok());
+        assert!(parse_alias("bad;name=cmd").is_err());
     }
 }

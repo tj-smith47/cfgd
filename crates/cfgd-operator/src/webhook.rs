@@ -546,7 +546,7 @@ fn build_injection_patches(
     for (name, version, spec) in modules {
         let safe_name = cfgd_core::sanitize_k8s_name(name);
         let vol_name = format!("cfgd-module-{safe_name}");
-        let mount_path = format!("/cfgd-modules/{name}");
+        let mount_path = format!("/cfgd-modules/{safe_name}");
 
         // Add CSI volume
         let mut vol_attrs = serde_json::json!({

@@ -170,6 +170,22 @@ pub fn load_module(module_dir: &Path) -> Result<LoadedModule> {
         return Err(ModuleError::NotFound { name }.into());
     }
 
+    // Reject excessively large module files to prevent memory exhaustion
+    const MAX_MODULE_SIZE: u64 = 10 * 1024 * 1024; // 10 MB
+    if let Ok(meta) = std::fs::metadata(&module_yaml)
+        && meta.len() > MAX_MODULE_SIZE
+    {
+        return Err(ModuleError::InvalidSpec {
+            name: module_yaml.display().to_string(),
+            message: format!(
+                "module file too large ({} bytes, max {})",
+                meta.len(),
+                MAX_MODULE_SIZE
+            ),
+        }
+        .into());
+    }
+
     let contents = std::fs::read_to_string(&module_yaml).map_err(|e| ConfigError::Invalid {
         message: format!("cannot read module file {}: {e}", module_yaml.display()),
     })?;

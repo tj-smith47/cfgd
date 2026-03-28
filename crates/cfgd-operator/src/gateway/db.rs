@@ -219,6 +219,7 @@ impl ServerDb {
     pub fn open(path: &str) -> Result<Self, GatewayError> {
         let conn = Connection::open(path)?;
         conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;")?;
+        conn.busy_timeout(std::time::Duration::from_secs(5))?;
         let db = Self { conn };
         db.run_migrations()?;
         Ok(db)

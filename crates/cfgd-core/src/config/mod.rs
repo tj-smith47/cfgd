@@ -1422,6 +1422,22 @@ pub fn load_config(path: &Path) -> Result<CfgdConfig> {
         .into());
     }
 
+    // Reject excessively large config files to prevent memory exhaustion (YAML bomb defense)
+    const MAX_CONFIG_SIZE: u64 = 50 * 1024 * 1024; // 50 MB
+    if let Ok(meta) = std::fs::metadata(path)
+        && meta.len() > MAX_CONFIG_SIZE
+    {
+        return Err(ConfigError::Invalid {
+            message: format!(
+                "{} is too large ({} bytes, max {})",
+                path.display(),
+                meta.len(),
+                MAX_CONFIG_SIZE
+            ),
+        }
+        .into());
+    }
+
     let contents = std::fs::read_to_string(path).map_err(|e| ConfigError::Invalid {
         message: format!("failed to read {}: {}", path.display(), e),
     })?;

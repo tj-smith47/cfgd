@@ -372,6 +372,7 @@ impl StateStore {
     pub fn open(path: &Path) -> Result<Self> {
         let conn = Connection::open(path)?;
         conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;")?;
+        conn.busy_timeout(std::time::Duration::from_secs(5))?;
 
         let mut store = Self { conn };
         store.run_migrations()?;
@@ -1507,11 +1508,11 @@ pub fn load_pending_server_config() -> Result<Option<serde_json::Value>> {
 pub fn clear_pending_server_config() -> Result<()> {
     let dir = default_state_dir()?;
     let path = dir.join(PENDING_CONFIG_FILENAME);
-    if path.exists() {
-        std::fs::remove_file(&path)
-            .map_err(|_| StateError::DirectoryNotWritable { path: path.clone() })?;
+    match std::fs::remove_file(&path) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(_) => Err(StateError::DirectoryNotWritable { path }.into()),
     }
-    Ok(())
 }
 
 #[cfg(test)]

@@ -571,7 +571,9 @@ impl SystemConfigurator for SystemdUnitConfigurator {
                 }
 
                 // Reload systemd
-                let _ = Command::new("systemctl").arg("daemon-reload").output();
+                if let Err(e) = Command::new("systemctl").arg("daemon-reload").output() {
+                    tracing::warn!("systemctl daemon-reload failed: {e}");
+                }
             }
 
             // Enable/disable
@@ -690,10 +692,13 @@ impl SystemConfigurator for LaunchAgentConfigurator {
 
             cfgd_core::atomic_write_str(&plist_path, &plist_content)?;
 
-            // Load the agent
-            let _ = Command::new("launchctl")
+            // Unload existing agent (best-effort — may not be loaded yet)
+            if let Err(e) = Command::new("launchctl")
                 .args(["unload", &plist_path.display().to_string()])
-                .output();
+                .output()
+            {
+                tracing::debug!("launchctl unload (pre-load cleanup): {e}");
+            }
 
             let output = Command::new("launchctl")
                 .args(["load", &plist_path.display().to_string()])
@@ -1009,9 +1014,12 @@ impl EnvironmentConfigurator {
 
         if managed.is_empty() {
             // Unload and remove
-            let _ = Command::new("launchctl")
+            if let Err(e) = Command::new("launchctl")
                 .args(["unload", &plist_path.to_string_lossy()])
-                .output();
+                .output()
+            {
+                tracing::debug!("launchctl unload (cleanup): {e}");
+            }
             let _ = std::fs::remove_file(&plist_path);
             return Ok(());
         }

@@ -290,7 +290,11 @@ impl SecretBackend for AgeBackend {
         })?;
 
         let editor = std::env::var("EDITOR").unwrap_or_else(|_| "vi".to_string());
-        let status = std::process::Command::new(&editor)
+        let mut parts = editor.split_whitespace();
+        let editor_cmd = parts.next().unwrap_or("vi");
+        let editor_args: Vec<&str> = parts.collect();
+        let status = std::process::Command::new(editor_cmd)
+            .args(&editor_args)
             .arg(&temp_file)
             .stdin(std::process::Stdio::inherit())
             .stdout(std::process::Stdio::inherit())

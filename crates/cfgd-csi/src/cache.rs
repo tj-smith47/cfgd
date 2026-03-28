@@ -56,7 +56,9 @@ impl Cache {
         }
 
         // Mark complete and set access time
-        let _ = std::fs::write(tmp_dir.join(COMPLETE_SENTINEL), "");
+        if let Err(e) = cfgd_core::atomic_write_str(&tmp_dir.join(COMPLETE_SENTINEL), "") {
+            tracing::warn!("failed to write cache sentinel: {e}");
+        }
         touch_atime(&tmp_dir);
 
         // Ensure parent dir exists for the final path

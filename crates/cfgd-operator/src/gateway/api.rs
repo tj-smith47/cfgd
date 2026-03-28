@@ -305,9 +305,8 @@ async fn auth_middleware(
             return Ok(next.run(request).await);
         }
     } else {
-        // CFGD_API_KEY not set — allow all requests as admin (backwards compatible)
-        request.extensions_mut().insert(AuthContext::Admin);
-        return Ok(next.run(request).await);
+        // CFGD_API_KEY not set — reject admin operations (require explicit key)
+        tracing::debug!("CFGD_API_KEY not set — admin API access is disabled");
     }
 
     // Check per-device API key — scope the lock tightly so it's released before
