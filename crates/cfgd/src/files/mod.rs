@@ -20,6 +20,13 @@ pub(crate) fn is_tera_template(path: &Path) -> bool {
     path.extension().and_then(|e| e.to_str()) == Some("tera")
 }
 
+/// Insert system facts (__os, __arch, __hostname) into a Tera template context.
+fn insert_system_facts(ctx: &mut Context) {
+    ctx.insert("__os", &std::env::consts::OS);
+    ctx.insert("__arch", &std::env::consts::ARCH);
+    ctx.insert("__hostname", &cfgd_core::hostname_string());
+}
+
 /// Concrete FileManager implementation for cfgd.
 /// Manages files declared in profiles: copy, template, diff, permissions.
 pub struct CfgdFileManager {
@@ -50,15 +57,7 @@ impl CfgdFileManager {
             context.insert(&ev.name, &ev.value);
         }
 
-        // System facts as custom values
-        context.insert("__os", &std::env::consts::OS);
-        context.insert("__arch", &std::env::consts::ARCH);
-        context.insert(
-            "__hostname",
-            &hostname::get()
-                .map(|h| h.to_string_lossy().to_string())
-                .unwrap_or_default(),
-        );
+        insert_system_facts(&mut context);
 
         // Empty sources map for templates — populated by set_source_env() when
         // multi-source composition is active.
@@ -85,15 +84,7 @@ impl CfgdFileManager {
             for ev in env {
                 ctx.insert(&ev.name, &ev.value);
             }
-            // System facts are always available
-            ctx.insert("__os", &std::env::consts::OS);
-            ctx.insert("__arch", &std::env::consts::ARCH);
-            ctx.insert(
-                "__hostname",
-                &hostname::get()
-                    .map(|h| h.to_string_lossy().to_string())
-                    .unwrap_or_default(),
-            );
+            insert_system_facts(&mut ctx);
             self.source_contexts.insert(source_name.clone(), ctx);
         }
     }
@@ -467,29 +458,24 @@ impl CfgdFileManager {
 
     /// Resolve a source path relative to the config directory.
     fn resolve_source_path(&self, source: &str) -> std::result::Result<PathBuf, FileError> {
-        let path = PathBuf::from(source);
-        if path.is_absolute() {
-            Ok(path)
-        } else {
-            let resolved = self.config_dir.join(source);
-            // Validate the resolved path doesn't escape the config directory via ../
-            if cfgd_core::validate_no_traversal(&resolved).is_err() {
-                return Err(FileError::PathTraversal {
-                    path: resolved,
+        let resolved = cfgd_core::resolve_relative_path(
+            &PathBuf::from(source),
+            &self.config_dir,
+        )
+        .map_err(|_| FileError::PathTraversal {
+            path: self.config_dir.join(source),
+            root: self.config_dir.clone(),
+        })?;
+        // If the path exists, do a full canonicalization check
+        if resolved.exists() {
+            cfgd_core::validate_path_within(&resolved, &self.config_dir).map_err(|_| {
+                FileError::PathTraversal {
+                    path: resolved.clone(),
                     root: self.config_dir.clone(),
-                });
-            }
-            // If the path exists, do a full canonicalization check
-            if resolved.exists() {
-                cfgd_core::validate_path_within(&resolved, &self.config_dir).map_err(|_| {
-                    FileError::PathTraversal {
-                        path: resolved.clone(),
-                        root: self.config_dir.clone(),
-                    }
-                })?;
-            }
-            Ok(resolved)
+                }
+            })?;
         }
+        Ok(resolved)
     }
 }
 
@@ -883,10 +869,7 @@ fn register_custom_functions(tera: &mut Tera) {
     tera.register_function(
         "hostname",
         |_args: &HashMap<String, tera::Value>| -> tera::Result<tera::Value> {
-            let name = hostname::get()
-                .map(|h| h.to_string_lossy().to_string())
-                .unwrap_or_default();
-            Ok(tera::Value::String(name))
+            Ok(tera::Value::String(cfgd_core::hostname_string()))
         },
     );
 

@@ -126,6 +126,8 @@ Current shared items (keep this list updated when adding new ones):
 - `default_config_dir()` — cross-platform config directory (`~/.config/cfgd` on Unix, `AppData\Roaming\cfgd` on Windows via `directories` crate)
 - `command_available(cmd)` — check if a CLI command exists on PATH
 - `expand_tilde(path)` — expand `~/...` or `~\...` to home directory; uses `HOME` on Unix, `USERPROFILE` (then `HOME`) on Windows
+- `hostname_string()` — get system hostname as `String`; returns `"unknown"` on failure. Use instead of inline `hostname::get()` patterns
+- `resolve_relative_path(path, base)` — resolve a path relative to a base directory with traversal validation; absolute paths returned as-is, relative paths joined and checked for `..` via `validate_no_traversal`
 - `create_symlink(source, target)` — cross-platform symlink creation; Windows uses `symlink_file`/`symlink_dir`, errors with Developer Mode guidance on permission failure
 - `file_permissions_mode(metadata) -> Option<u32>` — Unix mode bits (`mode() & 0o777`); returns `None` on Windows (NTFS uses inherited ACLs)
 - `set_file_permissions(path, mode)` — set Unix mode bits; no-op on Windows. Use instead of direct `PermissionsExt`

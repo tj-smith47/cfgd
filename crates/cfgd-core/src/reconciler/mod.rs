@@ -1637,11 +1637,13 @@ impl<'a> Reconciler<'a> {
                     .as_ref()
                     .ok_or(crate::errors::SecretError::SopsNotFound)?;
 
-                let source_path = if source.is_absolute() {
-                    source.clone()
-                } else {
-                    config_dir.join(source)
-                };
+                let source_path =
+                    crate::resolve_relative_path(source, config_dir).map_err(|_| {
+                        crate::errors::SecretError::DecryptionFailed {
+                            path: config_dir.join(source),
+                            message: "source path contains traversal".to_string(),
+                        }
+                    })?;
 
                 let decrypted = backend.decrypt_file(&source_path)?;
 

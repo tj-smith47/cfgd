@@ -281,6 +281,14 @@ impl SecretBackend for AgeBackend {
             message: format!("failed to write temp file: {}", e),
         })?;
 
+        // Restrict permissions on decrypted secret (owner-only)
+        cfgd_core::set_file_permissions(&temp_file, 0o600).map_err(|e| {
+            SecretError::DecryptionFailed {
+                path: path.to_path_buf(),
+                message: format!("failed to set temp file permissions: {}", e),
+            }
+        })?;
+
         let editor = std::env::var("EDITOR").unwrap_or_else(|_| "vi".to_string());
         let status = std::process::Command::new(&editor)
             .arg(&temp_file)
@@ -523,11 +531,13 @@ fn resolve_single_ref(
 
     // Otherwise treat as a SOPS-encrypted file path
     if let Some(be) = backend {
-        let path = if Path::new(reference).is_absolute() {
-            PathBuf::from(reference)
-        } else {
-            config_dir.join(reference)
-        };
+        let path =
+            cfgd_core::resolve_relative_path(Path::new(reference), config_dir).map_err(|_| {
+                SecretError::DecryptionFailed {
+                    path: config_dir.join(reference),
+                    message: "secret reference contains path traversal".to_string(),
+                }
+            })?;
 
         if path.exists() {
             return be.decrypt_file(&path);

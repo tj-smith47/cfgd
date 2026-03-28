@@ -85,6 +85,12 @@ impl SourceManager {
 
     /// Load a single source — clone or fetch, parse manifest, check version.
     pub fn load_source(&mut self, spec: &SourceSpec, printer: &Printer) -> Result<()> {
+        crate::validate_no_traversal(std::path::Path::new(&spec.name)).map_err(|e| {
+            SourceError::GitError {
+                name: spec.name.clone(),
+                message: format!("invalid source name: {e}"),
+            }
+        })?;
         let source_dir = self.cache_dir.join(&spec.name);
 
         if source_dir.exists() {

@@ -202,9 +202,7 @@ impl ServerClient {
         compliance_summary: Option<ComplianceSummary>,
         printer: &Printer,
     ) -> Result<CheckinResponse> {
-        let hostname = hostname::get()
-            .map(|h| h.to_string_lossy().to_string())
-            .unwrap_or_else(|_| "unknown".to_string());
+        let hostname = crate::hostname_string();
 
         let body = CheckinRequest {
             device_id: self.device_id.clone(),
@@ -283,9 +281,7 @@ impl ServerClient {
     /// Enroll this device with the device gateway using a bootstrap token.
     /// Returns the enrollment response including the permanent device API key.
     pub fn enroll(&self, bootstrap_token: &str, printer: &Printer) -> Result<EnrollResponse> {
-        let hostname = hostname::get()
-            .map(|h| h.to_string_lossy().to_string())
-            .unwrap_or_else(|_| "unknown".to_string());
+        let hostname = crate::hostname_string();
 
         let body = EnrollRequest {
             token: bootstrap_token.to_string(),
@@ -350,9 +346,7 @@ impl ServerClient {
         username: &str,
         printer: &Printer,
     ) -> Result<ChallengeResponse> {
-        let hostname = hostname::get()
-            .map(|h| h.to_string_lossy().to_string())
-            .unwrap_or_else(|_| "unknown".to_string());
+        let hostname = crate::hostname_string();
 
         let body = ChallengeRequest {
             username: username.to_string(),

@@ -81,9 +81,7 @@ pub fn collect_snapshot(
     sources: &[String],
 ) -> Result<ComplianceSnapshot> {
     let platform = Platform::detect();
-    let hostname = hostname::get()
-        .map(|h| h.to_string_lossy().into_owned())
-        .unwrap_or_else(|_| "unknown".into());
+    let hostname = crate::hostname_string();
 
     let machine = MachineInfo {
         hostname,

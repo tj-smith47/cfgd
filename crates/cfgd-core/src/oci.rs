@@ -679,6 +679,13 @@ fn add_dir_to_tar<W: std::io::Write>(
         let entry = entry.map_err(|e| OciError::ArchiveError {
             message: format!("directory entry error: {e}"),
         })?;
+        let file_type = entry.file_type().map_err(|e| OciError::ArchiveError {
+            message: format!("file type error: {e}"),
+        })?;
+        // Skip symlinks — prevents including content from outside the module directory
+        if file_type.is_symlink() {
+            continue;
+        }
         let path = entry.path();
         let relative = path
             .strip_prefix(root)
@@ -686,7 +693,7 @@ fn add_dir_to_tar<W: std::io::Write>(
                 message: format!("path prefix error: {e}"),
             })?;
 
-        if path.is_dir() {
+        if file_type.is_dir() {
             archive
                 .append_dir(relative, &path)
                 .map_err(|e| OciError::ArchiveError {

@@ -211,6 +211,30 @@ fn home_dir_var() -> Option<String> {
         .ok()
 }
 
+/// Get the system hostname as a String. Returns "unknown" on failure.
+pub fn hostname_string() -> String {
+    hostname::get()
+        .map(|h| h.to_string_lossy().to_string())
+        .unwrap_or_else(|_| "unknown".to_string())
+}
+
+/// Resolve a relative path against a base directory with traversal validation.
+/// Absolute paths are returned as-is. Relative paths are joined to `base` and
+/// validated with `validate_no_traversal`. Returns `Err` if the relative path
+/// contains `..` components.
+pub fn resolve_relative_path(
+    path: &std::path::Path,
+    base: &std::path::Path,
+) -> std::result::Result<std::path::PathBuf, String> {
+    if path.is_absolute() {
+        Ok(path.to_path_buf())
+    } else {
+        let joined = base.join(path);
+        validate_no_traversal(&joined)?;
+        Ok(joined)
+    }
+}
+
 /// Create a symbolic link. On Unix, uses `std::os::unix::fs::symlink`.
 /// On Windows, uses `symlink_file` or `symlink_dir` based on the source type.
 /// If symlink creation fails on Windows due to insufficient privileges,
@@ -443,6 +467,7 @@ pub fn git_ssh_credentials(
 }
 
 /// Recursively copy a directory from source to target.
+/// Skips symlinks to prevent symlink-following attacks and infinite loops.
 pub fn copy_dir_recursive(
     src: &std::path::Path,
     dst: &std::path::Path,
@@ -450,8 +475,13 @@ pub fn copy_dir_recursive(
     std::fs::create_dir_all(dst)?;
     for entry in std::fs::read_dir(src)? {
         let entry = entry?;
+        let file_type = entry.file_type()?;
+        // Skip symlinks — prevents following links outside the source tree
+        if file_type.is_symlink() {
+            continue;
+        }
         let dst_path = dst.join(entry.file_name());
-        if entry.file_type()?.is_dir() {
+        if file_type.is_dir() {
             copy_dir_recursive(&entry.path(), &dst_path)?;
         } else {
             std::fs::copy(entry.path(), &dst_path)?;

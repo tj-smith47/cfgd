@@ -603,6 +603,28 @@ pub fn default_module_cache_dir() -> Result<PathBuf> {
     Ok(base.cache_dir().join("cfgd").join("modules"))
 }
 
+/// Resolve optional subdir within a cache directory with traversal validation.
+fn resolve_subdir(
+    base: PathBuf,
+    subdir: &Option<String>,
+    module: &str,
+    url: &str,
+) -> Result<PathBuf> {
+    match subdir {
+        Some(sub) => {
+            crate::validate_no_traversal(std::path::Path::new(sub)).map_err(|_| {
+                ModuleError::GitFetchFailed {
+                    module: module.to_string(),
+                    url: url.to_string(),
+                    message: format!("subdir contains path traversal: {sub}"),
+                }
+            })?;
+            Ok(base.join(sub))
+        }
+        None => Ok(base),
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Git clone / fetch operations
 // ---------------------------------------------------------------------------
@@ -626,11 +648,7 @@ pub fn fetch_git_source(
 
     checkout_ref(&cache_dir, git_src, module_name)?;
 
-    // Return the path, accounting for subdir
-    match &git_src.subdir {
-        Some(sub) => Ok(cache_dir.join(sub)),
-        None => Ok(cache_dir),
-    }
+    resolve_subdir(cache_dir, &git_src.subdir, module_name, &git_src.repo_url)
 }
 
 /// Open a git2 repo with a consistent error mapping.
@@ -802,7 +820,17 @@ pub fn resolve_module_files(module: &LoadedModule, cache_base: &Path) -> Result<
             });
         } else {
             // Local path — relative to module directory
-            let source = module.dir.join(&entry.source);
+            let rel = std::path::Path::new(&entry.source);
+            crate::validate_no_traversal(rel).map_err(|_| {
+                ModuleError::InvalidSpec {
+                    name: module.name.clone(),
+                    message: format!(
+                        "file source contains path traversal: {}",
+                        entry.source
+                    ),
+                }
+            })?;
+            let source = module.dir.join(rel);
             resolved.push(ResolvedFile {
                 source,
                 target: crate::expand_tilde(Path::new(&entry.target)),
@@ -1043,10 +1071,12 @@ pub fn get_head_commit_sha(repo_path: &Path) -> Result<String> {
 /// Verify the integrity of a locked remote module against its lockfile entry.
 pub fn verify_lockfile_integrity(lock_entry: &ModuleLockEntry, cache_base: &Path) -> Result<()> {
     let git_src = parse_git_source(&lock_entry.url)?;
-    let local_path = match &lock_entry.subdir {
-        Some(sub) => git_cache_dir(cache_base, &git_src.repo_url).join(sub),
-        None => git_cache_dir(cache_base, &git_src.repo_url),
-    };
+    let local_path = resolve_subdir(
+        git_cache_dir(cache_base, &git_src.repo_url),
+        &lock_entry.subdir,
+        &lock_entry.name,
+        &lock_entry.url,
+    )?;
 
     if !local_path.exists() {
         return Err(ModuleError::GitFetchFailed {

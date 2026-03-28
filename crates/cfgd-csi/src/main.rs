@@ -33,9 +33,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .unwrap_or(5_368_709_120);
     let metrics_port: u16 = env_or("METRICS_PORT", "9090").parse().unwrap_or(9090);
 
-    let node_id = hostname::get()
-        .map(|h| h.to_string_lossy().to_string())
-        .unwrap_or_else(|_| "unknown".to_string());
+    let node_id = cfgd_core::hostname_string();
 
     tracing::info!(
         socket = %socket_path,

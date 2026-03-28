@@ -5518,9 +5518,7 @@ fn cmd_pull(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
 }
 
 fn default_device_id() -> String {
-    hostname::get()
-        .map(|h| h.to_string_lossy().to_string())
-        .unwrap_or_else(|_| "unknown".to_string())
+    cfgd_core::hostname_string()
 }
 
 // --- Source management commands (Phase 9) ---
