@@ -210,13 +210,34 @@ pub fn resolve_dependency_order(
     requested: &[String],
     all_modules: &HashMap<String, LoadedModule>,
 ) -> Result<Vec<String>> {
+    // Safety limits to prevent DoS from malicious module graphs
+    const MAX_MODULES: usize = 500;
+    const MAX_DEPENDENCY_DEPTH: usize = 50;
+
     // Collect the full set of modules we need (requested + transitive deps)
     let mut needed: HashSet<String> = HashSet::new();
-    let mut queue: VecDeque<String> = requested.iter().cloned().collect();
+    let mut queue: VecDeque<(String, usize)> = requested.iter().map(|r| (r.clone(), 0)).collect();
 
-    while let Some(name) = queue.pop_front() {
+    while let Some((name, depth)) = queue.pop_front() {
         if needed.contains(&name) {
             continue;
+        }
+
+        if depth > MAX_DEPENDENCY_DEPTH {
+            return Err(ModuleError::DependencyCycle {
+                chain: vec![format!(
+                    "dependency depth exceeds {} (at '{}')",
+                    MAX_DEPENDENCY_DEPTH, name
+                )],
+            }
+            .into());
+        }
+
+        if needed.len() >= MAX_MODULES {
+            return Err(ModuleError::DependencyCycle {
+                chain: vec![format!("total module count exceeds {} limit", MAX_MODULES)],
+            }
+            .into());
         }
 
         let module = all_modules
@@ -234,7 +255,7 @@ pub fn resolve_dependency_order(
                 .into());
             }
             if !needed.contains(dep) {
-                queue.push_back(dep.clone());
+                queue.push_back((dep.clone(), depth + 1));
             }
         }
     }
@@ -291,8 +312,12 @@ pub fn resolve_dependency_order(
     }
 
     if order.len() != needed.len() {
-        // Cycle detected — find the cycle members
-        let in_cycle: Vec<String> = needed.into_iter().filter(|n| !order.contains(n)).collect();
+        // Cycle detected — find the cycle members (use HashSet for O(1) lookup)
+        let ordered: HashSet<&str> = order.iter().map(|s| s.as_str()).collect();
+        let in_cycle: Vec<String> = needed
+            .into_iter()
+            .filter(|n| !ordered.contains(n.as_str()))
+            .collect();
         return Err(ModuleError::DependencyCycle { chain: in_cycle }.into());
     }
 
@@ -839,16 +864,27 @@ pub fn resolve_module_files(module: &LoadedModule, cache_base: &Path) -> Result<
         } else {
             // Local path — relative to module directory
             let rel = std::path::Path::new(&entry.source);
-            crate::validate_no_traversal(rel).map_err(|_| {
-                ModuleError::InvalidSpec {
+            crate::validate_no_traversal(rel).map_err(|_| ModuleError::InvalidSpec {
+                name: module.name.clone(),
+                message: format!("file source contains path traversal: {}", entry.source),
+            })?;
+            let source = module.dir.join(rel);
+            // Verify the resolved path stays within the module directory
+            // (prevents symlink-based escape from module boundary)
+            if source.exists()
+                && let (Ok(canonical_src), Ok(canonical_dir)) =
+                    (source.canonicalize(), module.dir.canonicalize())
+                && !canonical_src.starts_with(&canonical_dir)
+            {
+                return Err(ModuleError::InvalidSpec {
                     name: module.name.clone(),
                     message: format!(
-                        "file source contains path traversal: {}",
+                        "file source '{}' resolves outside module directory",
                         entry.source
                     ),
                 }
-            })?;
-            let source = module.dir.join(rel);
+                .into());
+            }
             resolved.push(ResolvedFile {
                 source,
                 target: crate::expand_tilde(Path::new(&entry.target)),

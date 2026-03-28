@@ -169,25 +169,24 @@ pub fn command_output_with_timeout(
     cmd: &mut std::process::Command,
     timeout: std::time::Duration,
 ) -> std::io::Result<std::process::Output> {
-    let mut child = cmd.spawn()?;
-    let start = std::time::Instant::now();
-    loop {
-        match child.try_wait() {
-            Ok(Some(_status)) => return child.wait_with_output(),
-            Ok(None) => {
-                if start.elapsed() >= timeout {
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    return Err(std::io::Error::new(
-                        std::io::ErrorKind::TimedOut,
-                        format!("command timed out after {}s", timeout.as_secs()),
-                    ));
-                }
-                std::thread::sleep(std::time::Duration::from_millis(50));
-            }
-            Err(e) => return Err(e),
+    use std::sync::mpsc;
+
+    let child = cmd.spawn()?;
+    let id = child.id();
+    let (tx, rx) = mpsc::channel();
+
+    // Spawn a watchdog thread that kills the child after timeout
+    std::thread::spawn(move || {
+        if rx.recv_timeout(timeout).is_err() {
+            // Timeout expired — kill the process
+            terminate_process(id);
         }
-    }
+    });
+
+    let result = child.wait_with_output();
+    // Signal the watchdog to stop (if the process finished before timeout)
+    let _ = tx.send(());
+    result
 }
 
 /// Default config directory: `~/.config/cfgd/` (XDG_CONFIG_HOME/cfgd on Linux).
@@ -323,9 +322,8 @@ pub fn set_file_permissions(_path: &std::path::Path, _mode: u32) -> std::io::Res
 /// Unix: checks the executable bit in mode.
 /// Windows: checks file extension against known executable types.
 #[cfg(unix)]
-pub fn is_executable(path: &std::path::Path, metadata: &std::fs::Metadata) -> bool {
+pub fn is_executable(_path: &std::path::Path, metadata: &std::fs::Metadata) -> bool {
     use std::os::unix::fs::PermissionsExt;
-    let _ = path;
     metadata.permissions().mode() & 0o111 != 0
 }
 
@@ -375,9 +373,9 @@ pub fn is_same_inode(a: &std::path::Path, b: &std::path::Path) -> bool {
 /// Unix: sends SIGTERM. Windows: calls TerminateProcess.
 #[cfg(unix)]
 pub fn terminate_process(pid: u32) {
-    unsafe {
-        libc::kill(pid as libc::pid_t, libc::SIGTERM);
-    }
+    use nix::sys::signal::{Signal, kill};
+    use nix::unistd::Pid;
+    let _ = kill(Pid::from_raw(pid as i32), Signal::SIGTERM);
 }
 
 #[cfg(windows)]
@@ -397,7 +395,8 @@ pub fn terminate_process(pid: u32) {
 /// Unix: checks euid == 0. Windows: checks IsUserAnAdmin().
 #[cfg(unix)]
 pub fn is_root() -> bool {
-    unsafe { libc::geteuid() == 0 }
+    use nix::unistd::geteuid;
+    geteuid().is_root()
 }
 
 #[cfg(windows)]
@@ -534,10 +533,16 @@ pub fn command_available(cmd: &str) -> bool {
 /// Merge env vars by name: later entries override earlier ones with the same name.
 /// Used by config layer merging, composition, and reconciler module merge.
 pub fn merge_env(base: &mut Vec<config::EnvVar>, updates: &[config::EnvVar]) {
+    let mut index: std::collections::HashMap<String, usize> = base
+        .iter()
+        .enumerate()
+        .map(|(i, e)| (e.name.clone(), i))
+        .collect();
     for ev in updates {
-        if let Some(pos) = base.iter().position(|e| e.name == ev.name) {
+        if let Some(&pos) = index.get(&ev.name) {
             base[pos] = ev.clone();
         } else {
+            index.insert(ev.name.clone(), base.len());
             base.push(ev.clone());
         }
     }
@@ -598,10 +603,16 @@ pub fn validate_alias_name(name: &str) -> std::result::Result<(), String> {
 /// Merge shell aliases by name: later entries override earlier ones with the same name.
 /// Same semantics as `merge_env`.
 pub fn merge_aliases(base: &mut Vec<config::ShellAlias>, updates: &[config::ShellAlias]) {
+    let mut index: std::collections::HashMap<String, usize> = base
+        .iter()
+        .enumerate()
+        .map(|(i, a)| (a.name.clone(), i))
+        .collect();
     for alias in updates {
-        if let Some(pos) = base.iter().position(|a| a.name == alias.name) {
+        if let Some(&pos) = index.get(&alias.name) {
             base[pos] = alias.clone();
         } else {
+            index.insert(alias.name.clone(), base.len());
             base.push(alias.clone());
         }
     }
@@ -822,26 +833,64 @@ pub fn sanitize_k8s_name(name: &str) -> String {
 
 /// Uses single quotes for values containing shell metacharacters (`$`, backtick,
 /// `\`, `"`). Single quotes within the value are escaped via `'\''`.
+/// Single-pass scan: returns double-quoted string when no metacharacters are present
+/// (zero intermediate allocations in the common case).
 pub fn shell_escape_value(value: &str) -> String {
-    if value.contains('$')
-        || value.contains('`')
-        || value.contains('\\')
-        || value.contains('"')
-        || value.contains('\'')
+    if !value
+        .bytes()
+        .any(|b| matches!(b, b'$' | b'`' | b'\\' | b'"' | b'\''))
     {
-        format!("'{}'", value.replace('\'', "'\\''"))
-    } else {
-        format!("\"{}\"", value)
+        return format!("\"{}\"", value);
     }
+    // Single-quote strategy: only `'` needs escaping inside single quotes
+    if !value.contains('\'') {
+        return format!("'{}'", value);
+    }
+    // Value contains both metacharacters and single quotes — break-out escaping
+    let mut out = String::with_capacity(value.len() + 8);
+    out.push('\'');
+    for c in value.chars() {
+        if c == '\'' {
+            out.push_str("'\\''");
+        } else {
+            out.push(c);
+        }
+    }
+    out.push('\'');
+    out
 }
 
-/// Escape a string for safe inclusion in XML/plist content.
+/// Escape a value for use inside bash/zsh double quotes (single pass).
+/// Escapes `\`, `"`, `` ` ``, and `!` — the four characters with special
+/// meaning inside double-quoted strings.
+pub fn escape_double_quoted(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + s.len() / 8);
+    for c in s.chars() {
+        match c {
+            '\\' | '"' | '`' | '!' => {
+                out.push('\\');
+                out.push(c);
+            }
+            _ => out.push(c),
+        }
+    }
+    out
+}
+
+/// Escape a string for safe inclusion in XML/plist content (single pass).
 pub fn xml_escape(s: &str) -> String {
-    s.replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('"', "&quot;")
-        .replace('\'', "&apos;")
+    let mut out = String::with_capacity(s.len() + s.len() / 8);
+    for c in s.chars() {
+        match c {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '"' => out.push_str("&quot;"),
+            '\'' => out.push_str("&apos;"),
+            _ => out.push(c),
+        }
+    }
+    out
 }
 
 /// Acquire an exclusive apply lock via `flock()`.
@@ -850,10 +899,32 @@ pub fn xml_escape(s: &str) -> String {
 /// `LOCK_EX | LOCK_NB` — returns `StateError::ApplyLockHeld` if another
 /// process holds the lock. The lock is released automatically when the guard
 /// is dropped.
+/// Platform-specific lock file type.
+/// Unix: `nix::fcntl::Flock` (safe RAII flock, unlocks on drop).
+/// Windows: plain `File` (LockFileEx releases on handle close).
+#[cfg(unix)]
+type LockFile = nix::fcntl::Flock<std::fs::File>;
+#[cfg(windows)]
+type LockFile = std::fs::File;
+
+/// RAII guard that releases the apply lock when dropped.
+#[derive(Debug)]
+pub struct ApplyLockGuard {
+    _file: LockFile,
+    _path: std::path::PathBuf,
+}
+
+impl Drop for ApplyLockGuard {
+    fn drop(&mut self) {
+        // Clear the PID so stale reads aren't confusing.
+        // Lock is released when LockFile is dropped.
+        let _ = self._file.set_len(0);
+    }
+}
+
 #[cfg(unix)]
 pub fn acquire_apply_lock(state_dir: &std::path::Path) -> errors::Result<ApplyLockGuard> {
     use std::io::Write;
-    use std::os::unix::io::AsRawFd;
 
     std::fs::create_dir_all(state_dir)?;
     let lock_path = state_dir.join("apply.lock");
@@ -865,46 +936,27 @@ pub fn acquire_apply_lock(state_dir: &std::path::Path) -> errors::Result<ApplyLo
         .write(true)
         .open(&lock_path)?;
 
-    let fd = file.as_raw_fd();
-    let result = unsafe { libc::flock(fd, libc::LOCK_EX | libc::LOCK_NB) };
-    if result != 0 {
-        let err = std::io::Error::last_os_error();
-        if err.raw_os_error() == Some(libc::EWOULDBLOCK) {
-            let holder = std::fs::read_to_string(&lock_path).unwrap_or_default();
-            return Err(errors::StateError::ApplyLockHeld {
-                holder: format!("pid {}", holder.trim()),
+    let mut locked = nix::fcntl::Flock::lock(file, nix::fcntl::FlockArg::LockExclusiveNonblock)
+        .map_err(|(_file, errno)| {
+            if errno == nix::errno::Errno::EWOULDBLOCK {
+                let holder = std::fs::read_to_string(&lock_path).unwrap_or_default();
+                errors::CfgdError::from(errors::StateError::ApplyLockHeld {
+                    holder: format!("pid {}", holder.trim()),
+                })
+            } else {
+                errors::CfgdError::from(std::io::Error::from(errno))
             }
-            .into());
-        }
-        return Err(err.into());
-    }
+        })?;
 
     // Write our PID to the lock file
-    let mut f = file;
-    f.set_len(0)?;
-    write!(f, "{}", std::process::id())?;
-    f.sync_all()?;
+    locked.set_len(0)?;
+    write!(locked, "{}", std::process::id())?;
+    locked.sync_all()?;
 
     Ok(ApplyLockGuard {
-        _file: f,
+        _file: locked,
         _path: lock_path,
     })
-}
-
-/// RAII guard that releases the apply lock when dropped.
-/// Both Unix (flock) and Windows (LockFileEx) release on file handle close.
-#[derive(Debug)]
-pub struct ApplyLockGuard {
-    _file: std::fs::File,
-    _path: std::path::PathBuf,
-}
-
-impl Drop for ApplyLockGuard {
-    fn drop(&mut self) {
-        // Lock is released when the file handle is closed (on drop).
-        // Clear the PID so stale reads aren't confusing.
-        let _ = self._file.set_len(0);
-    }
 }
 
 /// Acquire an exclusive apply lock via `LockFileEx`.
@@ -1060,31 +1112,19 @@ fn overlay_reconcile_patch(base: &mut EffectiveReconcile, patch: &config::Reconc
 /// Returns an error description on invalid input.
 pub fn parse_duration_str(s: &str) -> Result<std::time::Duration, String> {
     let s = s.trim();
-    if let Some(n) = s.strip_suffix('s') {
-        n.trim()
-            .parse::<u64>()
-            .map(std::time::Duration::from_secs)
-            .map_err(|_| format!("invalid timeout: {}", s))
-    } else if let Some(n) = s.strip_suffix('m') {
-        n.trim()
-            .parse::<u64>()
-            .map(|m| std::time::Duration::from_secs(m * 60))
-            .map_err(|_| format!("invalid timeout: {}", s))
-    } else if let Some(n) = s.strip_suffix('h') {
-        n.trim()
-            .parse::<u64>()
-            .map(|h| std::time::Duration::from_secs(h * 3600))
-            .map_err(|_| format!("invalid timeout: {}", s))
-    } else if let Some(n) = s.strip_suffix('d') {
-        n.trim()
-            .parse::<u64>()
-            .map(|d| std::time::Duration::from_secs(d * 86400))
-            .map_err(|_| format!("invalid timeout: {}", s))
-    } else {
-        s.parse::<u64>()
-            .map(std::time::Duration::from_secs)
-            .map_err(|_| format!("invalid timeout '{}': use 30s, 5m, or 1h", s))
+    const SUFFIXES: &[(char, u64)] = &[('s', 1), ('m', 60), ('h', 3600), ('d', 86400)];
+    for &(suffix, multiplier) in SUFFIXES {
+        if let Some(n) = s.strip_suffix(suffix) {
+            return n
+                .trim()
+                .parse::<u64>()
+                .map(|v| std::time::Duration::from_secs(v * multiplier))
+                .map_err(|_| format!("invalid timeout: {}", s));
+        }
     }
+    s.parse::<u64>()
+        .map(std::time::Duration::from_secs)
+        .map_err(|_| format!("invalid timeout '{}': use 30s, 5m, or 1h", s))
 }
 
 /// Default timeout for profile-level scripts (5 minutes).

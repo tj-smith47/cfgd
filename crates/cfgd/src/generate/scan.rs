@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::LazyLock;
 
 use serde::{Deserialize, Serialize};
 
@@ -48,6 +49,8 @@ pub struct ScannedExport {
 /// Returns a map from dotfile name/path suffix → tool name.
 /// Keys are matched against the entry's filename (for home-level dotfiles) or
 /// the relative path under `~/.config/` (for XDG entries).
+static TOOL_MAP: LazyLock<HashMap<&'static str, &'static str>> = LazyLock::new(build_tool_map);
+
 fn build_tool_map() -> HashMap<&'static str, &'static str> {
     let mut m = HashMap::new();
 
@@ -179,7 +182,7 @@ const HOME_SKIP: &[&str] = &[
 /// Scan `home` for dotfiles and XDG config entries, annotating each with a
 /// best-guess tool name.
 pub fn scan_dotfiles(home: &Path) -> Result<Vec<DotfileEntry>, CfgdError> {
-    let tool_map = build_tool_map();
+    let tool_map = &*TOOL_MAP;
     let mut entries: Vec<DotfileEntry> = Vec::new();
 
     // 1. Home-level dotfiles (names starting with `.`)

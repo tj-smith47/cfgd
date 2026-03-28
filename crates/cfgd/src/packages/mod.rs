@@ -43,13 +43,12 @@ fn run_pkg_cmd_prefixed(
     // Ensure stdout/stderr are captured for timeout-based execution
     cmd.stdout(std::process::Stdio::piped());
     cmd.stderr(std::process::Stdio::piped());
-    let output =
-        cfgd_core::command_output_with_timeout(cmd, PKG_CMD_TIMEOUT).map_err(|e| {
-            PackageError::CommandFailed {
-                manager: manager.into(),
-                source: e,
-            }
-        })?;
+    let output = cfgd_core::command_output_with_timeout(cmd, PKG_CMD_TIMEOUT).map_err(|e| {
+        PackageError::CommandFailed {
+            manager: manager.into(),
+            source: e,
+        }
+    })?;
     if !output.status.success() {
         let stderr = cfgd_core::stderr_lossy_trimmed(&output);
         let message = match msg_prefix {
@@ -130,22 +129,28 @@ fn brew_available() -> bool {
 /// immediately without requiring a new shell session.
 /// Add brew's directories to the current process PATH so subsequent commands
 /// (including post-apply scripts) can find brew-installed binaries.
-fn update_path_for_brew() {
+/// Build a PATH string that includes brew's bin directories.
+fn path_with_brew() -> Option<String> {
     let brew = BrewManager;
     let dirs = brew.path_dirs();
     if dirs.is_empty() {
-        return;
+        return None;
     }
 
     if let Ok(current_path) = std::env::var("PATH")
         && !current_path.contains(&dirs[0])
     {
         let prefix = dirs.join(":");
-        // SAFETY: bootstrap runs single-threaded before any concurrent work.
-        unsafe {
-            std::env::set_var("PATH", format!("{}:{}", prefix, current_path));
-        }
+        return Some(format!("{}:{}", prefix, current_path));
     }
+    None
+}
+
+/// The brew-augmented PATH, cached at first call.
+fn brew_path() -> Option<&'static str> {
+    use std::sync::OnceLock;
+    static BREW_PATH: OnceLock<Option<String>> = OnceLock::new();
+    BREW_PATH.get_or_init(path_with_brew).as_deref()
 }
 
 /// Build a Command for brew, handling linuxbrew paths.
@@ -170,7 +175,12 @@ fn brew_cmd() -> Command {
             return Command::new(LINUXBREW_PATH);
         }
     }
-    Command::new("brew")
+    let mut cmd = Command::new("brew");
+    // Augment PATH for brew lookups without modifying the global environment
+    if let Some(augmented_path) = brew_path() {
+        cmd.env("PATH", augmented_path);
+    }
+    cmd
 }
 
 /// Detect the user who owns the brew installation.
@@ -181,7 +191,7 @@ fn brew_owner() -> Option<String> {
         .stderr(std::process::Stdio::null())
         .output()
         .ok()?;
-    let owner = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    let owner = cfgd_core::stdout_lossy_trimmed(&output);
     if owner.is_empty() || owner == "root" {
         None
     } else {
@@ -521,7 +531,7 @@ impl PackageManager for BrewManager {
                 .into());
             }
 
-            update_path_for_brew();
+            // PATH for brew commands will be augmented via brew_cmd()
         } else {
             let result = printer
                 .run_with_output(
@@ -543,7 +553,7 @@ impl PackageManager for BrewManager {
                 .into());
             }
 
-            update_path_for_brew();
+            // PATH for brew commands will be augmented via brew_cmd()
         }
 
         Ok(())
@@ -1571,7 +1581,7 @@ impl PackageManager for NpmManager {
         if !output.status.success() {
             return Ok(None);
         }
-        let version = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        let version = cfgd_core::stdout_lossy_trimmed(&output);
         if version.is_empty() {
             Ok(None)
         } else {

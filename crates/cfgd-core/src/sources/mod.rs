@@ -214,10 +214,16 @@ impl SourceManager {
         }
 
         // Try git CLI first with SSH hang protection.
+        // --depth=1: only fetch latest commit (limits repo size for DoS protection)
+        // --no-recurse-submodules: prevent malicious submodule URLs (SSRF, credential theft)
+        // --single-branch: only fetch the target branch
         if crate::try_git_cmd(
             Some(&spec.origin.url),
             &[
                 "clone",
+                "--depth=1",
+                "--single-branch",
+                "--no-recurse-submodules",
                 "--branch",
                 &spec.origin.branch,
                 &spec.origin.url,
@@ -226,6 +232,8 @@ impl SourceManager {
             "clone",
             Some(spec.origin.ssh_strict_host_key_checking),
         ) {
+            // Restrict cloned directory to owner-only access
+            let _ = crate::set_file_permissions(source_dir, 0o700);
             return Ok(());
         }
 
@@ -239,6 +247,8 @@ impl SourceManager {
             fo.remote_callbacks(callbacks);
         }
 
+        // Shallow clone with depth 1, disable submodule init
+        fo.depth(1);
         let mut builder = git2::build::RepoBuilder::new();
         builder.fetch_options(fo);
         builder.branch(&spec.origin.branch);
@@ -249,6 +259,9 @@ impl SourceManager {
                 name: spec.name.clone(),
                 message: e.to_string(),
             })?;
+
+        // Restrict cloned directory to owner-only access
+        let _ = crate::set_file_permissions(source_dir, 0o700);
 
         Ok(())
     }
@@ -593,7 +606,13 @@ fn normalize_semver_pin(pin: &str) -> String {
 pub fn git_clone_with_fallback(url: &str, target: &Path) -> std::result::Result<(), String> {
     // Try git CLI first with SSH hang protection.
     let mut cmd = crate::git_cmd_safe(Some(url), None);
-    cmd.args(["clone", url, &target.display().to_string()]);
+    cmd.args([
+        "clone",
+        "--depth=1",
+        "--no-recurse-submodules",
+        url,
+        &target.display().to_string(),
+    ]);
     let cli_result = crate::command_output_with_timeout(&mut cmd, crate::GIT_NETWORK_TIMEOUT);
 
     match cli_result {
@@ -618,6 +637,7 @@ pub fn git_clone_with_fallback(url: &str, target: &Path) -> std::result::Result<
 
     // Fall back to libgit2 with SSH credential callbacks
     let mut fetch_opts = git2::FetchOptions::new();
+    fetch_opts.depth(1);
     if url.starts_with("git@") || url.starts_with("ssh://") {
         let mut callbacks = git2::RemoteCallbacks::new();
         callbacks.credentials(crate::git_ssh_credentials);

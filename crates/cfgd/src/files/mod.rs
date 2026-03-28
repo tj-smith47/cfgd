@@ -349,8 +349,8 @@ impl CfgdFileManager {
                 message: format_tera_error(&e),
             })?;
 
-        // Register custom functions
-        register_custom_functions(&mut tera);
+        // Register custom functions (source templates get a restricted env() that blocks access)
+        register_custom_functions(&mut tera, source_origin.is_some());
 
         // Use source-restricted context if this file came from a source
         let ctx = match source_origin {
@@ -458,11 +458,8 @@ impl CfgdFileManager {
 
     /// Resolve a source path relative to the config directory.
     fn resolve_source_path(&self, source: &str) -> std::result::Result<PathBuf, FileError> {
-        let resolved = cfgd_core::resolve_relative_path(
-            &PathBuf::from(source),
-            &self.config_dir,
-        )
-        .map_err(|_| FileError::PathTraversal {
+        let resolved = cfgd_core::resolve_relative_path(&PathBuf::from(source), &self.config_dir)
+            .map_err(|_| FileError::PathTraversal {
             path: self.config_dir.join(source),
             root: self.config_dir.clone(),
         })?;
@@ -858,7 +855,7 @@ fn detect_language(path: &Path) -> String {
 }
 
 /// Register custom Tera functions: os(), hostname(), arch(), env(name).
-fn register_custom_functions(tera: &mut Tera) {
+fn register_custom_functions(tera: &mut Tera, is_source_template: bool) {
     tera.register_function(
         "os",
         |_args: &HashMap<String, tera::Value>| -> tera::Result<tera::Value> {
@@ -880,17 +877,30 @@ fn register_custom_functions(tera: &mut Tera) {
         },
     );
 
-    tera.register_function(
-        "env",
-        |args: &HashMap<String, tera::Value>| -> tera::Result<tera::Value> {
-            let name = args
-                .get("name")
-                .and_then(|v| v.as_str())
-                .ok_or_else(|| tera::Error::msg("env() requires a 'name' argument"))?;
-            let value = std::env::var(name).unwrap_or_default();
-            Ok(tera::Value::String(value))
-        },
-    );
+    if is_source_template {
+        // Source templates are sandboxed: env() is blocked to prevent exfiltration
+        // of sensitive environment variables (API keys, credentials, etc.)
+        tera.register_function(
+            "env",
+            |_args: &HashMap<String, tera::Value>| -> tera::Result<tera::Value> {
+                Err(tera::Error::msg(
+                    "env() is not available in source templates (sandbox restriction)",
+                ))
+            },
+        );
+    } else {
+        tera.register_function(
+            "env",
+            |args: &HashMap<String, tera::Value>| -> tera::Result<tera::Value> {
+                let name = args
+                    .get("name")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| tera::Error::msg("env() requires a 'name' argument"))?;
+                let value = std::env::var(name).unwrap_or_default();
+                Ok(tera::Value::String(value))
+            },
+        );
+    }
 }
 
 #[cfg(test)]

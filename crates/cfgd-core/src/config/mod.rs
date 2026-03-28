@@ -288,6 +288,7 @@ pub struct OriginSpec {
     pub url: String,
     #[serde(default = "default_branch")]
     pub branch: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub auth: Option<String>,
     /// SSH `StrictHostKeyChecking` policy for git operations.
     /// `AcceptNew` (default): accept first-seen keys, reject changed keys.
@@ -458,6 +459,7 @@ pub struct NotifyConfig {
     pub drift: bool,
     #[serde(default)]
     pub method: NotifyMethod,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub webhook_url: Option<String>,
 }
 
@@ -474,6 +476,7 @@ pub enum NotifyMethod {
 pub struct SecretsConfig {
     #[serde(default = "default_secrets_backend")]
     pub backend: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sops: Option<SopsConfig>,
     #[serde(default)]
     pub integrations: Vec<SecretIntegration>,
@@ -486,6 +489,7 @@ fn default_secrets_backend() -> String {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SopsConfig {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub age_key: Option<PathBuf>,
 }
 
@@ -513,6 +517,7 @@ pub struct SourceSpec {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SubscriptionSpec {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub profile: Option<String>,
     #[serde(default = "default_source_priority")]
     pub priority: u32,
@@ -550,6 +555,7 @@ pub struct SourceSyncSpec {
     pub interval: String,
     #[serde(default)]
     pub auto_apply: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pin_version: Option<String>,
 }
 
@@ -849,10 +855,7 @@ fn check_yaml_anchor_limit(contents: &str, context: &Path) -> Result<()> {
     let anchor_count = contents
         .as_bytes()
         .windows(2)
-        .filter(|w| {
-            w[0] == b'&'
-                && (w[1].is_ascii_alphanumeric() || w[1] == b'_')
-        })
+        .filter(|w| w[0] == b'&' && (w[1].is_ascii_alphanumeric() || w[1] == b'_'))
         .count();
 
     if anchor_count > MAX_YAML_ANCHORS {
@@ -1449,7 +1452,9 @@ pub struct SecretSpec {
     pub source: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub target: Option<PathBuf>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub template: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub backend: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub envs: Option<Vec<String>>,
@@ -2667,8 +2672,8 @@ VERSION_ID="22.04"
     #[test]
     fn parse_os_release_empty() {
         let fields = crate::platform::parse_os_release_content("");
-        assert!(fields.get("ID").is_none());
-        assert!(fields.get("VERSION_ID").is_none());
+        assert!(!fields.contains_key("ID"));
+        assert!(!fields.contains_key("VERSION_ID"));
     }
 
     #[test]
@@ -3740,10 +3745,12 @@ spec:
         }
         let result = parse_config(&yaml, std::path::Path::new("bomb.yaml"));
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("too many YAML anchors"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("too many YAML anchors")
+        );
     }
 
     #[test]
@@ -3769,7 +3776,12 @@ value: "safe"
 "#;
         let result: std::result::Result<EnvVar, _> = serde_yaml::from_str(yaml);
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("invalid env var name"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("invalid env var name")
+        );
     }
 
     #[test]
@@ -3791,7 +3803,12 @@ command: "ls -la"
 "#;
         let result: std::result::Result<ShellAlias, _> = serde_yaml::from_str(yaml);
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("invalid alias name"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("invalid alias name")
+        );
     }
 
     #[test]

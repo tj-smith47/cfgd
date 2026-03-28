@@ -720,11 +720,35 @@ pub fn extract_tar_gz(data: &[u8], output_dir: &Path) -> Result<(), OciError> {
         message: format!("cannot create output directory: {e}"),
     })?;
 
-    archive
-        .unpack(output_dir)
+    // Extract entries individually to validate against symlink attacks.
+    // The tar crate rejects `..` and absolute paths by default (since 0.4.26),
+    // but symlinks can still point outside the output directory.
+    let canonical_output = output_dir
+        .canonicalize()
         .map_err(|e| OciError::ArchiveError {
-            message: format!("tar extraction failed: {e}"),
+            message: format!("cannot canonicalize output directory: {e}"),
         })?;
+
+    for entry in archive.entries().map_err(|e| OciError::ArchiveError {
+        message: format!("tar iteration failed: {e}"),
+    })? {
+        let mut entry = entry.map_err(|e| OciError::ArchiveError {
+            message: format!("tar entry read failed: {e}"),
+        })?;
+
+        // Skip symlinks — prevents symlink-based path traversal
+        if entry.header().entry_type().is_symlink() || entry.header().entry_type().is_hard_link() {
+            let path = entry.path().unwrap_or_default();
+            tracing::warn!(path = %path.display(), "skipping symlink/hardlink in OCI archive");
+            continue;
+        }
+
+        entry
+            .unpack_in(&canonical_output)
+            .map_err(|e| OciError::ArchiveError {
+                message: format!("tar entry extraction failed: {e}"),
+            })?;
+    }
 
     Ok(())
 }
@@ -1508,10 +1532,19 @@ pub fn pull_module(
         digest: format!("{}: {e}", layer.digest),
     })?;
 
-    // Read blob data
+    // Read blob data (cap at 512 MB to prevent OOM from malicious manifests)
+    const MAX_BLOB_SIZE: u64 = 512 * 1024 * 1024;
+    if layer.size > MAX_BLOB_SIZE {
+        return Err(OciError::RequestFailed {
+            message: format!(
+                "layer size {} exceeds maximum allowed size ({} bytes)",
+                layer.size, MAX_BLOB_SIZE
+            ),
+        });
+    }
     let mut blob_data = Vec::with_capacity(layer.size as usize);
     resp.into_reader()
-        .take(layer.size + 1024) // small buffer for safety
+        .take(MAX_BLOB_SIZE + 1024)
         .read_to_end(&mut blob_data)?;
 
     // Verify digest

@@ -748,11 +748,9 @@ pub async fn run_daemon(
     // Unix: set up SIGHUP handler for config reload.
     // On Windows, SIGHUP doesn't exist — recv_sighup() pends forever.
     #[cfg(unix)]
-    let mut sighup_signal =
-        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::hangup()).map_err(|e| {
-            DaemonError::WatchError {
-                message: format!("failed to register SIGHUP handler: {}", e),
-            }
+    let mut sighup_signal = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::hangup())
+        .map_err(|e| DaemonError::WatchError {
+            message: format!("failed to register SIGHUP handler: {}", e),
         })?;
     #[cfg(not(unix))]
     let mut sighup_signal = ();
@@ -1009,8 +1007,14 @@ fn setup_file_watcher(
                 match event.kind {
                     EventKind::Modify(_) | EventKind::Create(_) | EventKind::Remove(_) => {
                         for path in event.paths {
-                            if let Err(e) = sender.blocking_send(path) {
-                                tracing::warn!("file watcher event dropped: {}", e);
+                            match sender.try_send(path) {
+                                Ok(()) => {}
+                                Err(mpsc::error::TrySendError::Full(_)) => {
+                                    tracing::debug!("file watcher channel full — event coalesced");
+                                }
+                                Err(e) => {
+                                    tracing::warn!("file watcher event dropped: {}", e);
+                                }
                             }
                         }
                     }

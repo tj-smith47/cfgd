@@ -81,11 +81,14 @@ tempfile = "3"
 flate2 = "1"
 tar = "0.4"
 
-# Unix signals (daemon restart)
 libc = "0.2"
 
 # Zip extraction (upgrade on Windows)
 zip = { version = "2", default-features = false, features = ["deflate"] }
+
+[target.'cfg(unix)'.dependencies]
+# Safe wrappers over libc for signals, process control, file locking
+nix = { version = "0.29", features = ["signal", "fs", "process", "user"] }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.59", features = [

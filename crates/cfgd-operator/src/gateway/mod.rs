@@ -55,7 +55,7 @@ pub async fn start_gateway(config: GatewayConfig) -> Result<(), Box<dyn std::err
     // Periodic event cleanup — runs daily to prevent unbounded DB growth
     let cleanup_state = state.db.clone();
     let retention_days = config.retention_days;
-    tokio::spawn(async move {
+    let cleanup_handle = tokio::spawn(async move {
         let mut interval = tokio::time::interval(std::time::Duration::from_secs(86400));
         interval.tick().await; // skip immediate first tick (cleanup already ran above)
         loop {
@@ -82,7 +82,11 @@ pub async fn start_gateway(config: GatewayConfig) -> Result<(), Box<dyn std::err
     tracing::info!(%addr, db_path = %config.db_path, "Device gateway starting");
 
     let listener = tokio::net::TcpListener::bind(addr).await?;
-    axum::serve(listener, app).await?;
+    let result = axum::serve(listener, app).await;
 
+    // Abort background task on server exit
+    cleanup_handle.abort();
+
+    result?;
     Ok(())
 }

@@ -457,6 +457,10 @@ pub fn save_credential(cred: &DeviceCredential) -> Result<PathBuf> {
                 format!("failed to create credential directory: {}", e),
             ))
         })?;
+        // Restrict parent directory to owner-only access — even if the credential file
+        // briefly has permissive permissions during atomic_write, the directory ACL
+        // prevents other users from accessing it.
+        crate::set_file_permissions(parent, 0o700)?;
     }
     let json = serde_json::to_string_pretty(cred).map_err(|e| {
         CfgdError::Io(std::io::Error::other(format!(

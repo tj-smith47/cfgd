@@ -145,9 +145,32 @@ impl Node for CfgdNode {
 
         let target = Path::new(target_path);
 
-        // Idempotent: if already mounted, return success
+        // Idempotent: if already mounted as read-only, return success
         if is_mountpoint(target) {
-            tracing::debug!(target = target_path, "already mounted, returning success");
+            if is_readonly_mount(target) {
+                tracing::debug!(
+                    target = target_path,
+                    "already mounted read-only, returning success"
+                );
+                return Ok(Response::new(NodePublishVolumeResponse {}));
+            }
+            // Mounted but not read-only — attempt remount
+            tracing::warn!(
+                target = target_path,
+                "mount exists but is not read-only, attempting remount"
+            );
+            #[cfg(target_os = "linux")]
+            {
+                use nix::mount::{MsFlags, mount};
+                mount(
+                    None::<&str>,
+                    target,
+                    None::<&str>,
+                    MsFlags::MS_REMOUNT | MsFlags::MS_BIND | MsFlags::MS_RDONLY,
+                    None::<&str>,
+                )
+                .map_err(|e| Status::internal(format!("read-only remount failed: {e}")))?;
+            }
             return Ok(Response::new(NodePublishVolumeResponse {}));
         }
 
@@ -178,6 +201,10 @@ impl Node for CfgdNode {
                 result: result_str.to_string(),
             })
             .inc();
+        if result.is_err() {
+            // Clean up the target directory we created if mount failed
+            let _ = std::fs::remove_dir(target);
+        }
         result?;
 
         Ok(Response::new(NodePublishVolumeResponse {}))
@@ -205,7 +232,9 @@ impl Node for CfgdNode {
         unmount(target)?;
 
         // CSI spec: SP MUST delete the file or directory it created at this path
-        let _ = std::fs::remove_dir(target);
+        if let Err(e) = std::fs::remove_dir(target) {
+            tracing::warn!(target = %target.display(), error = %e, "failed to remove target directory after unmount");
+        }
 
         Ok(Response::new(NodeUnpublishVolumeResponse {}))
     }
@@ -261,7 +290,10 @@ fn is_mountpoint(path: &Path) -> bool {
         let Ok(path_meta) = std::fs::metadata(path) else {
             return false;
         };
-        let Ok(parent_meta) = std::fs::metadata(path.join("..")) else {
+        let Some(parent) = path.parent() else {
+            return true; // root is always a mountpoint
+        };
+        let Ok(parent_meta) = std::fs::metadata(parent) else {
             return false;
         };
         path_meta.dev() != parent_meta.dev()
@@ -271,6 +303,20 @@ fn is_mountpoint(path: &Path) -> bool {
         let _ = path;
         false
     }
+}
+
+/// Check if a path is mounted read-only using the statvfs syscall.
+#[cfg(target_os = "linux")]
+fn is_readonly_mount(path: &Path) -> bool {
+    use nix::sys::statvfs::{FsFlags, statvfs};
+    statvfs(path)
+        .map(|stat| stat.flags().contains(FsFlags::ST_RDONLY))
+        .unwrap_or(false)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn is_readonly_mount(_path: &Path) -> bool {
+    false
 }
 
 /// Bind mount `source` to `target` as read-only.
@@ -290,14 +336,17 @@ fn bind_mount_readonly(source: &Path, target: &Path) -> Result<(), Status> {
     )
     .map_err(|e| Status::internal(format!("bind mount failed: {e}")))?;
 
-    mount(
+    if let Err(e) = mount(
         None::<&str>,
         target,
         None::<&str>,
         MsFlags::MS_REMOUNT | MsFlags::MS_BIND | MsFlags::MS_RDONLY,
         None::<&str>,
-    )
-    .map_err(|e| Status::internal(format!("read-only remount failed: {e}")))?;
+    ) {
+        // Clean up the bind mount if remount fails
+        let _ = nix::mount::umount2(target, nix::mount::MntFlags::MNT_DETACH);
+        return Err(Status::internal(format!("read-only remount failed: {e}")));
+    }
 
     Ok(())
 }

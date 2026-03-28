@@ -1759,7 +1759,7 @@ impl<'a> Reconciler<'a> {
                 let env_vars =
                     build_script_env(config_dir, profile_name, context, phase, false, None, None);
 
-                let (desc, changed, captured) = execute_script(
+                let (_desc, _changed, captured) = execute_script(
                     entry,
                     config_dir,
                     &env_vars,
@@ -1768,8 +1768,6 @@ impl<'a> Reconciler<'a> {
                 )?;
 
                 let phase_name = phase.display_name();
-
-                let _ = (desc, changed); // description from execute_script is for display
                 Ok((
                     format!("script:{}:{}", phase_name, entry.run_str()),
                     captured,
@@ -2482,15 +2480,16 @@ pub(crate) fn execute_script(
             .map_err(|e| crate::errors::CfgdError::Config(ConfigError::Invalid { message: e }))?,
         _ => default_timeout,
     };
-    let idle_timeout = match entry {
-        ScriptEntry::Full {
-            idle_timeout: Some(t),
-            ..
-        } => Some(crate::parse_duration_str(t).map_err(|e| {
-            crate::errors::CfgdError::Config(ConfigError::Invalid { message: e })
-        })?),
-        _ => None,
-    };
+    let idle_timeout =
+        match entry {
+            ScriptEntry::Full {
+                idle_timeout: Some(t),
+                ..
+            } => Some(crate::parse_duration_str(t).map_err(|e| {
+                crate::errors::CfgdError::Config(ConfigError::Invalid { message: e })
+            })?),
+            _ => None,
+        };
 
     let resolved = if std::path::Path::new(run_str).is_relative() {
         working_dir.join(run_str)
@@ -2657,9 +2656,7 @@ pub(crate) fn execute_script(
                 if kill_reason.is_none()
                     && let Some(idle_dur) = idle_timeout
                 {
-                    let last = *last_output
-                        .lock()
-                        .unwrap_or_else(|e| e.into_inner());
+                    let last = *last_output.lock().unwrap_or_else(|e| e.into_inner());
                     if last.elapsed() > idle_dur {
                         kill_reason = Some(("idle (no output)", idle_dur));
                     }
@@ -2698,9 +2695,10 @@ pub(crate) fn execute_script(
 fn kill_script_child(child: &mut std::process::Child) {
     #[cfg(unix)]
     {
-        unsafe {
-            libc::kill(-(child.id() as i32), libc::SIGTERM);
-        }
+        use nix::sys::signal::{Signal, kill};
+        use nix::unistd::Pid;
+        // Negative PID targets the entire process group
+        let _ = kill(Pid::from_raw(-(child.id() as i32)), Signal::SIGTERM);
     }
     #[cfg(not(unix))]
     {
@@ -2872,27 +2870,11 @@ fn generate_env_file_content(
             tracing::warn!("skipping env var with unsafe name: {}", ev.name);
             continue;
         }
-        if ev.value.contains('$') {
-            // Double-quote to allow $VAR expansion while preventing other injection.
-            // Escape the four double-quote-special characters: " \ ` !
-            let escaped = ev
-                .value
-                .replace('\\', "\\\\")
-                .replace('"', "\\\"")
-                .replace('`', "\\`")
-                .replace('!', "\\!");
-            lines.push(format!("export {}=\"{}\"", ev.name, escaped));
-        } else {
-            lines.push(format!(
-                "export {}=\"{}\"",
-                ev.name,
-                ev.value
-                    .replace('\\', "\\\\")
-                    .replace('"', "\\\"")
-                    .replace('`', "\\`")
-                    .replace('!', "\\!")
-            ));
-        }
+        lines.push(format!(
+            "export {}=\"{}\"",
+            ev.name,
+            crate::escape_double_quoted(&ev.value)
+        ));
     }
     for alias in aliases {
         if crate::validate_alias_name(&alias.name).is_err() {
@@ -2902,11 +2884,7 @@ fn generate_env_file_content(
         lines.push(format!(
             "alias {}=\"{}\"",
             alias.name,
-            alias.command
-                .replace('\\', "\\\\")
-                .replace('"', "\\\"")
-                .replace('`', "\\`")
-                .replace('!', "\\!")
+            crate::escape_double_quoted(&alias.command)
         ));
     }
     lines.push(String::new()); // trailing newline

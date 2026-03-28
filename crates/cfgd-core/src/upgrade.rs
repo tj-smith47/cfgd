@@ -174,40 +174,38 @@ fn download_to_file(url: &str, dest: &Path) -> std::result::Result<(), UpgradeEr
             message: format!("{}", e),
         })?;
 
-    let mut reader = response.into_reader();
-    let mut bytes = Vec::new();
-    reader
-        .read_to_end(&mut bytes)
-        .map_err(|e| UpgradeError::DownloadFailed {
-            message: format!("read error: {}", e),
+    // Stream directly to a temp file (avoids buffering entire binary in memory)
+    let parent = dest.parent().unwrap_or(std::path::Path::new("."));
+    let mut tmp =
+        tempfile::NamedTempFile::new_in(parent).map_err(|e| UpgradeError::DownloadFailed {
+            message: format!("create temp file: {}", e),
         })?;
 
-    crate::atomic_write(dest, &bytes).map_err(|e| UpgradeError::DownloadFailed {
-        message: format!("write to {}: {}", dest.display(), e),
+    const MAX_DOWNLOAD_SIZE: u64 = 256 * 1024 * 1024;
+    let mut reader = response.into_reader().take(MAX_DOWNLOAD_SIZE);
+    std::io::copy(&mut reader, &mut tmp).map_err(|e| UpgradeError::DownloadFailed {
+        message: format!("stream to disk: {}", e),
     })?;
+
+    tmp.persist(dest)
+        .map_err(|e| UpgradeError::DownloadFailed {
+            message: format!("rename to {}: {}", dest.display(), e.error),
+        })?;
 
     Ok(())
 }
 
 /// Parse a checksums.txt file into a map of filename -> hex SHA256.
 fn parse_checksums(content: &str) -> HashMap<String, String> {
-    let mut map = HashMap::new();
-    for line in content.lines() {
-        let line = line.trim();
-        if line.is_empty() {
-            continue;
-        }
-        // Format: "<hash>  <filename>" or "<hash> <filename>"
-        let parts: Vec<&str> = line.splitn(2, |c: char| c.is_whitespace()).collect();
-        if parts.len() == 2 {
-            let hash = parts[0].trim().to_lowercase();
-            let filename = parts[1].trim();
-            if !filename.is_empty() {
-                map.insert(filename.to_string(), hash);
-            }
-        }
-    }
-    map
+    content
+        .lines()
+        .filter_map(|line| {
+            let mut parts = line.split_whitespace();
+            let hash = parts.next()?;
+            let filename = parts.next()?;
+            Some((filename.to_string(), hash.to_lowercase()))
+        })
+        .collect()
 }
 
 /// Compute the SHA256 hex digest of a file.
@@ -263,7 +261,10 @@ pub fn download_and_install(release: &ReleaseInfo, asset: &ReleaseAsset) -> Resu
             .into());
         }
     } else {
-        tracing::warn!("no checksums asset found in release — skipping verification");
+        return Err(UpgradeError::ChecksumMismatch {
+            file: asset.name.clone(),
+        }
+        .into());
     }
 
     // Extract the archive

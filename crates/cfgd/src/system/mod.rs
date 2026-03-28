@@ -29,7 +29,7 @@ fn read_command_output(cmd: &mut Command) -> String {
     cmd.output()
         .ok()
         .filter(|o| o.status.success())
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .map(|o| cfgd_core::stdout_lossy_trimmed(&o))
         .unwrap_or_default()
 }
 

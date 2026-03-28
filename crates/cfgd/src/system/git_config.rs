@@ -45,7 +45,7 @@ fn git_config_get(key: &str) -> Option<String> {
         .output()
         .ok()
         .filter(|o| o.status.success())
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .map(|o| cfgd_core::stdout_lossy_trimmed(&o))
 }
 
 /// Convert a YAML value to the string git config expects.
@@ -195,7 +195,7 @@ mod tests {
             .output()
             .ok()
             .filter(|o| o.status.success())
-            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+            .map(|o| cfgd_core::stdout_lossy_trimmed(&o))
     }
 
     // ---------------------------------------------------------------------------

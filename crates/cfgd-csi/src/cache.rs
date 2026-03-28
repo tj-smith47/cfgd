@@ -219,14 +219,14 @@ fn dir_size_excluding_markers(path: &Path) -> u64 {
         for entry in entries.flatten() {
             let p = entry.path();
             if p.is_dir() {
-                total += dir_size_excluding_markers(&p);
+                total = total.saturating_add(dir_size_excluding_markers(&p));
             } else {
                 let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
                 if name == LAST_ACCESS_FILE || name == COMPLETE_SENTINEL {
                     continue;
                 }
                 if let Ok(meta) = p.metadata() {
-                    total += meta.len();
+                    total = total.saturating_add(meta.len());
                 }
             }
         }
@@ -241,9 +241,9 @@ fn dir_size(path: &Path) -> u64 {
         for entry in entries.flatten() {
             let p = entry.path();
             if p.is_dir() {
-                total += dir_size(&p);
+                total = total.saturating_add(dir_size(&p));
             } else if let Ok(meta) = p.metadata() {
-                total += meta.len();
+                total = total.saturating_add(meta.len());
             }
         }
     }

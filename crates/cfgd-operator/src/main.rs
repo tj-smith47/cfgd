@@ -42,7 +42,7 @@ async fn main() -> Result<()> {
         .parse()
         .unwrap_or(8081);
 
-    tokio::spawn({
+    let mut health_handle = tokio::spawn({
         let hs = health_state.clone();
         async move {
             if let Err(e) = health::run_probe_server(health_port, hs).await {
@@ -60,7 +60,7 @@ async fn main() -> Result<()> {
         .parse()
         .unwrap_or(8443);
 
-    tokio::spawn({
+    let mut metrics_handle = tokio::spawn({
         let reg = registry.clone();
         async move {
             if let Err(e) = metrics::run_metrics_server(metrics_port, reg).await {
@@ -141,6 +141,16 @@ async fn main() -> Result<()> {
                 return Err(e);
             }
         },
+        result = &mut health_handle => {
+            if let Err(e) = result {
+                tracing::error!(error = %e, "Health server task panicked");
+            }
+        },
+        result = &mut metrics_handle => {
+            if let Err(e) = result {
+                tracing::error!(error = %e, "Metrics server task panicked");
+            }
+        },
         _ = shutdown_signal() => {
             tracing::info!("Draining in-flight reconciliations (2s grace)...");
             tokio::time::sleep(std::time::Duration::from_secs(2)).await;
@@ -162,6 +172,10 @@ async fn main() -> Result<()> {
             tracing::info!("Shutdown complete");
         },
     }
+
+    // Abort remaining spawned tasks on exit
+    health_handle.abort();
+    metrics_handle.abort();
 
     Ok(())
 }

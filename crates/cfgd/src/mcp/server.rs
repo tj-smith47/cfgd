@@ -84,9 +84,19 @@ impl McpServer {
         let stdout = io::stdout();
         let mut stdout = stdout.lock();
 
-        for line in stdin.lock().lines() {
+        // Cap individual JSON-RPC messages at 10 MB to prevent DoS via memory exhaustion
+        const MAX_LINE_BYTES: usize = 10 * 1024 * 1024;
+        let reader = stdin.lock();
+        for line in reader.lines() {
             let line = line?;
             if line.trim().is_empty() {
+                continue;
+            }
+            if line.len() > MAX_LINE_BYTES {
+                let resp = JsonRpcResponse::error(None, -32600, "request too large".to_string());
+                serde_json::to_writer(&mut stdout, &resp)?;
+                writeln!(stdout)?;
+                stdout.flush()?;
                 continue;
             }
 

@@ -130,11 +130,9 @@ impl SecretBackend for SopsBackend {
             .into());
         }
 
-        let s = String::from_utf8(output.stdout).map_err(|e| {
-            SecretError::DecryptionFailed {
-                path: path.to_path_buf(),
-                message: format!("invalid UTF-8 in decrypted output: {}", e),
-            }
+        let s = String::from_utf8(output.stdout).map_err(|e| SecretError::DecryptionFailed {
+            path: path.to_path_buf(),
+            message: format!("invalid UTF-8 in decrypted output: {}", e),
         })?;
         Ok(SecretString::from(s))
     }
@@ -256,11 +254,9 @@ impl SecretBackend for AgeBackend {
             .into());
         }
 
-        let s = String::from_utf8(output.stdout).map_err(|e| {
-            SecretError::DecryptionFailed {
-                path: path.to_path_buf(),
-                message: format!("invalid UTF-8 in decrypted output: {}", e),
-            }
+        let s = String::from_utf8(output.stdout).map_err(|e| SecretError::DecryptionFailed {
+            path: path.to_path_buf(),
+            message: format!("invalid UTF-8 in decrypted output: {}", e),
         })?;
         Ok(SecretString::from(s))
     }
@@ -279,10 +275,11 @@ impl SecretBackend for AgeBackend {
                 .unwrap_or_else(|| std::ffi::OsStr::new("secret")),
         );
 
-        std::fs::write(&temp_file, decrypted.expose_secret().as_bytes())
-            .map_err(|e| SecretError::DecryptionFailed {
-            path: path.to_path_buf(),
-            message: format!("failed to write temp file: {}", e),
+        std::fs::write(&temp_file, decrypted.expose_secret().as_bytes()).map_err(|e| {
+            SecretError::DecryptionFailed {
+                path: path.to_path_buf(),
+                message: format!("failed to write temp file: {}", e),
+            }
         })?;
 
         // Restrict permissions on decrypted secret (owner-only)

@@ -9,6 +9,7 @@ use axum::routing::{delete, get, post, put};
 use axum::{Extension, Json, Router};
 use futures::stream::Stream;
 use serde::{Deserialize, Serialize};
+use subtle::ConstantTimeEq;
 use tokio_stream::StreamExt;
 use tokio_stream::wrappers::BroadcastStream;
 
@@ -282,6 +283,7 @@ pub(crate) fn extract_bearer_token(headers: &HeaderMap) -> Option<String> {
         .get("authorization")
         .and_then(|v| v.to_str().ok())
         .and_then(|v| v.strip_prefix("Bearer "))
+        .filter(|t| !t.is_empty())
         .map(str::to_string)
 }
 
@@ -296,10 +298,13 @@ async fn auth_middleware(
 ) -> Result<axum::response::Response, GatewayError> {
     let bearer_token = extract_bearer_token(&headers);
 
-    // Check admin key first
+    // Check admin key first (constant-time comparison to prevent timing attacks)
     if let Ok(expected_key) = std::env::var("CFGD_API_KEY") {
         if let Some(ref token) = bearer_token
-            && hash_token(token) == hash_token(&expected_key)
+            && hash_token(token)
+                .as_bytes()
+                .ct_eq(hash_token(&expected_key).as_bytes())
+                .into()
         {
             request.extensions_mut().insert(AuthContext::Admin);
             return Ok(next.run(request).await);
@@ -337,7 +342,11 @@ async fn admin_auth_middleware(
 ) -> Result<axum::response::Response, GatewayError> {
     if let Ok(expected_key) = std::env::var("CFGD_API_KEY") {
         match extract_bearer_token(&headers) {
-            Some(token) if hash_token(&token) == hash_token(&expected_key) => {}
+            Some(token)
+                if hash_token(&token)
+                    .as_bytes()
+                    .ct_eq(hash_token(&expected_key).as_bytes())
+                    .into() => {}
             _ => return Err(GatewayError::Unauthorized),
         }
     } else {
@@ -738,12 +747,23 @@ async fn verify_enrollment(
         )));
     }
 
-    // Verify signature against each matching key until one succeeds
-    let verified = match req.key_type.as_str() {
-        "ssh" => verify_ssh_signature(&challenge.nonce, &req.signature, &matching_keys),
-        "gpg" => verify_gpg_signature(&challenge.nonce, &req.signature, &matching_keys),
-        _ => unreachable!(),
-    };
+    // Verify signature against each matching key until one succeeds.
+    // Verification involves blocking I/O (temp files + subprocess) — run off the async runtime.
+    let nonce = challenge.nonce.clone();
+    let signature = req.signature.clone();
+    let key_type = req.key_type.clone();
+    let owned_keys: Vec<super::db::UserPublicKey> =
+        matching_keys.iter().map(|k| (*k).clone()).collect();
+    let verified = tokio::task::spawn_blocking(move || {
+        let key_refs: Vec<_> = owned_keys.iter().collect();
+        match key_type.as_str() {
+            "ssh" => verify_ssh_signature(&nonce, &signature, &key_refs),
+            "gpg" => verify_gpg_signature(&nonce, &signature, &key_refs),
+            _ => false,
+        }
+    })
+    .await
+    .unwrap_or(false);
 
     if !verified {
         return Err(GatewayError::Unauthorized);
@@ -1475,7 +1495,7 @@ mod tests {
     fn extract_bearer_token_empty_value() {
         let mut headers = HeaderMap::new();
         headers.insert("authorization", "Bearer ".parse().unwrap());
-        assert_eq!(extract_bearer_token(&headers), Some(String::new()));
+        assert_eq!(extract_bearer_token(&headers), None);
     }
 
     #[test]
