@@ -2509,8 +2509,12 @@ pub(crate) fn execute_script(
         // Inline command — pass through sh -c on Unix, cmd.exe /C on Windows
         #[cfg(unix)]
         let c = {
+            use std::os::unix::process::CommandExt;
             let mut c = std::process::Command::new("sh");
-            c.arg("-c").arg(run_str).current_dir(working_dir);
+            c.arg("-c")
+                .arg(run_str)
+                .current_dir(working_dir)
+                .process_group(0); // New process group so we can kill all children
             c
         };
         #[cfg(windows)]
@@ -2572,8 +2576,18 @@ pub(crate) fn execute_script(
             }
             None => {
                 if start.elapsed() > effective_timeout {
-                    // Timeout — terminate process then force kill
-                    crate::terminate_process(child.id());
+                    // Timeout — kill entire process group then force kill
+                    #[cfg(unix)]
+                    {
+                        // Kill process group (negative PID = group)
+                        unsafe {
+                            libc::kill(-(child.id() as i32), libc::SIGTERM);
+                        }
+                    }
+                    #[cfg(not(unix))]
+                    {
+                        crate::terminate_process(child.id());
+                    }
                     // Wait briefly for graceful shutdown
                     std::thread::sleep(std::time::Duration::from_secs(5));
                     // Force kill if still running
@@ -2755,13 +2769,24 @@ fn generate_env_file_content(
             continue;
         }
         if ev.value.contains('$') {
-            // Unquoted so shell expansion works (e.g. $PATH)
-            lines.push(format!("export {}={}", ev.name, ev.value));
+            // Double-quote to allow $VAR expansion while preventing other injection.
+            // Escape the four double-quote-special characters: " \ ` !
+            let escaped = ev
+                .value
+                .replace('\\', "\\\\")
+                .replace('"', "\\\"")
+                .replace('`', "\\`")
+                .replace('!', "\\!");
+            lines.push(format!("export {}=\"{}\"", ev.name, escaped));
         } else {
             lines.push(format!(
                 "export {}=\"{}\"",
                 ev.name,
-                ev.value.replace('"', "\\\"")
+                ev.value
+                    .replace('\\', "\\\\")
+                    .replace('"', "\\\"")
+                    .replace('`', "\\`")
+                    .replace('!', "\\!")
             ));
         }
     }
@@ -2773,7 +2798,11 @@ fn generate_env_file_content(
         lines.push(format!(
             "alias {}=\"{}\"",
             alias.name,
-            alias.command.replace('"', "\\\"")
+            alias.command
+                .replace('\\', "\\\\")
+                .replace('"', "\\\"")
+                .replace('`', "\\`")
+                .replace('!', "\\!")
         ));
     }
     lines.push(String::new()); // trailing newline
@@ -2792,11 +2821,21 @@ fn generate_fish_env_content(
             continue;
         }
         if ev.name == "PATH" {
-            // Fish uses space-separated list for PATH, not colon-separated
-            let parts: Vec<&str> = ev.value.split(':').collect();
+            // Fish uses space-separated list for PATH, not colon-separated.
+            // Each part is single-quoted to prevent expansion.
+            let parts: Vec<String> = ev
+                .value
+                .split(':')
+                .map(|p| format!("'{}'", p.replace('\'', "\\'")))
+                .collect();
             lines.push(format!("set -gx PATH {}", parts.join(" ")));
         } else {
-            lines.push(format!("set -gx {} {}", ev.name, ev.value));
+            // Single-quote to prevent fish command substitution via ()
+            lines.push(format!(
+                "set -gx {} '{}'",
+                ev.name,
+                ev.value.replace('\'', "\\'")
+            ));
         }
     }
     for alias in aliases {
@@ -2804,7 +2843,11 @@ fn generate_fish_env_content(
             tracing::warn!("skipping alias with unsafe name: {}", alias.name);
             continue;
         }
-        lines.push(format!("abbr -a {} {}", alias.name, alias.command));
+        lines.push(format!(
+            "abbr -a {} '{}'",
+            alias.name,
+            alias.command.replace('\'', "\\'")
+        ));
     }
     lines.push(String::new());
     lines.join("\n")
@@ -2822,13 +2865,18 @@ fn generate_powershell_env_content(
             continue;
         }
         if ev.value.contains("$env:") {
-            // Value references other env vars — don't quote
-            lines.push(format!("$env:{} = {}", ev.name, ev.value));
-        } else {
+            // Value references other env vars — double-quote with PS escaping
             lines.push(format!(
                 "$env:{} = \"{}\"",
                 ev.name,
                 ev.value.replace('"', "`\"")
+            ));
+        } else {
+            // Single-quote prevents all PS interpolation
+            lines.push(format!(
+                "$env:{} = '{}'",
+                ev.name,
+                ev.value.replace('\'', "''")
             ));
         }
     }
@@ -4464,8 +4512,8 @@ mod tests {
         let content = super::generate_env_file_content(&env, &[]);
         assert!(content.starts_with("# managed by cfgd"));
         assert!(content.contains("export EDITOR=\"nvim\""));
-        // PATH contains $, so unquoted
-        assert!(content.contains("export PATH=/usr/local/bin:$PATH"));
+        // PATH contains $, so double-quoted to allow expansion
+        assert!(content.contains("export PATH=\"/usr/local/bin:$PATH\""));
     }
 
     #[test]
@@ -4482,8 +4530,8 @@ mod tests {
         ];
         let content = super::generate_fish_env_content(&env, &[]);
         assert!(content.starts_with("# managed by cfgd"));
-        assert!(content.contains("set -gx EDITOR nvim"));
-        assert!(content.contains("set -gx PATH /usr/local/bin /home/user/.cargo/bin $PATH"));
+        assert!(content.contains("set -gx EDITOR 'nvim'"));
+        assert!(content.contains("set -gx PATH '/usr/local/bin' '/home/user/.cargo/bin' '$PATH'"));
     }
 
     #[test]
@@ -4585,8 +4633,8 @@ mod tests {
             command: "nvim".into(),
         }];
         let content = super::generate_fish_env_content(&env, &aliases);
-        assert!(content.contains("set -gx EDITOR nvim"));
-        assert!(content.contains("abbr -a vim nvim"));
+        assert!(content.contains("set -gx EDITOR 'nvim'"));
+        assert!(content.contains("abbr -a vim 'nvim'"));
     }
 
     #[test]
@@ -4916,9 +4964,9 @@ mod tests {
         ];
         let content = super::generate_powershell_env_content(&env, &[]);
         assert!(content.starts_with("# managed by cfgd"));
-        assert!(content.contains(r#"$env:EDITOR = "code""#));
-        // PATH references $env: so should not be quoted
-        assert!(content.contains(r"$env:PATH = C:\Users\user\.cargo\bin;$env:PATH"));
+        assert!(content.contains("$env:EDITOR = 'code'"));
+        // PATH references $env: so double-quoted to allow expansion
+        assert!(content.contains(r#"$env:PATH = "C:\Users\user\.cargo\bin;$env:PATH""#));
     }
 
     #[test]
@@ -4946,7 +4994,8 @@ mod tests {
             value: r#"say "hello""#.into(),
         }];
         let content = super::generate_powershell_env_content(&env, &[]);
-        assert!(content.contains("$env:GREETING = \"say `\"hello`\"\""));
+        // No $env: reference, so single-quoted (PS single quotes don't need escaping except ')
+        assert!(content.contains("$env:GREETING = 'say \"hello\"'"));
     }
 
     #[test]

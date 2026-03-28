@@ -234,9 +234,12 @@ impl Notifier {
         let url = url.clone();
         let body = payload.to_string();
 
-        // Run webhook POST in a separate thread to avoid blocking the async runtime
-        std::thread::spawn(move || {
-            match ureq::post(&url)
+        // Run webhook POST via spawn_blocking (uses tokio's bounded threadpool)
+        tokio::task::spawn_blocking(move || {
+            match ureq::AgentBuilder::new()
+                .timeout(std::time::Duration::from_secs(10))
+                .build()
+                .post(&url)
                 .set("Content-Type", "application/json")
                 .send_string(&body)
             {

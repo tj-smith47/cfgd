@@ -209,12 +209,21 @@ fn read_command_output(cmd: &str, args: &[&str]) -> Result<String, std::io::Erro
     let output = std::process::Command::new(cmd)
         .args(args)
         .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
         .output()?;
     if output.status.success() {
         Ok(crate::stdout_lossy_trimmed(&output))
     } else {
-        Err(std::io::Error::other("command failed"))
+        let stderr = crate::stderr_lossy_trimmed(&output);
+        Err(std::io::Error::other(format!(
+            "{} failed: {}",
+            cmd,
+            if stderr.is_empty() {
+                format!("exit code {}", output.status.code().unwrap_or(-1))
+            } else {
+                stderr
+            }
+        )))
     }
 }
 

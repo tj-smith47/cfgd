@@ -31,16 +31,25 @@ fn run_pkg_cmd_msg(
     run_pkg_cmd_prefixed(manager, cmd, error_kind, Some(msg_prefix))
 }
 
+/// Timeout for package manager operations (10 minutes — installs can be slow).
+const PKG_CMD_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(600);
+
 fn run_pkg_cmd_prefixed(
     manager: &str,
     cmd: &mut Command,
     error_kind: &str,
     msg_prefix: Option<&str>,
 ) -> std::result::Result<Output, PackageError> {
-    let output = cmd.output().map_err(|e| PackageError::CommandFailed {
-        manager: manager.into(),
-        source: e,
-    })?;
+    // Ensure stdout/stderr are captured for timeout-based execution
+    cmd.stdout(std::process::Stdio::piped());
+    cmd.stderr(std::process::Stdio::piped());
+    let output =
+        cfgd_core::command_output_with_timeout(cmd, PKG_CMD_TIMEOUT).map_err(|e| {
+            PackageError::CommandFailed {
+                manager: manager.into(),
+                source: e,
+            }
+        })?;
     if !output.status.success() {
         let stderr = cfgd_core::stderr_lossy_trimmed(&output);
         let message = match msg_prefix {

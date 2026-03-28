@@ -121,6 +121,8 @@ pub struct DeviceCredential {
 
 const MAX_RETRIES: u32 = 3;
 const INITIAL_BACKOFF_MS: u64 = 500;
+/// Timeout for API calls (checkin, drift reports, enrollment) — short because these are small JSON payloads.
+const API_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
 impl ServerClient {
     pub fn new(base_url: &str, api_key: Option<&str>, device_id: &str) -> Self {
@@ -131,11 +133,16 @@ impl ServerClient {
         }
     }
 
+    fn agent(&self) -> ureq::Agent {
+        ureq::AgentBuilder::new().timeout(API_TIMEOUT).build()
+    }
+
     fn build_request(&self, method: &str, path: &str) -> ureq::Request {
         let url = format!("{}{}", self.base_url, path);
+        let agent = self.agent();
         let mut req = match method {
-            "POST" => ureq::post(&url),
-            _ => ureq::get(&url),
+            "POST" => agent.post(&url),
+            _ => agent.get(&url),
         };
 
         if let Some(ref key) = self.api_key {
