@@ -212,7 +212,7 @@ fn read_command_output(cmd: &str, args: &[&str]) -> Result<String, std::io::Erro
         .stderr(std::process::Stdio::null())
         .output()?;
     if output.status.success() {
-        Ok(String::from_utf8_lossy(&output.stdout).to_string())
+        Ok(crate::stdout_lossy_trimmed(&output))
     } else {
         Err(std::io::Error::other("command failed"))
     }

@@ -53,3 +53,4 @@ fi
 
 # Clean up health port-forward
 kill "$HEALTH_PF_PID" 2>/dev/null || true
+wait "$HEALTH_PF_PID" 2>/dev/null || true

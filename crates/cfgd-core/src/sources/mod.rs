@@ -208,20 +208,17 @@ impl SourceManager {
         }
 
         // Try git CLI first with SSH hang protection.
-        let mut clone_cmd = crate::git_cmd_safe(Some(&spec.origin.url));
-        clone_cmd.args([
+        if crate::try_git_cmd(
+            Some(&spec.origin.url),
+            &[
+                "clone",
+                "--branch",
+                &spec.origin.branch,
+                &spec.origin.url,
+                &source_dir.display().to_string(),
+            ],
             "clone",
-            "--branch",
-            &spec.origin.branch,
-            &spec.origin.url,
-            &source_dir.display().to_string(),
-        ]);
-        let cli_ok = clone_cmd
-            .output()
-            .map(|o| o.status.success())
-            .unwrap_or(false);
-
-        if cli_ok {
+        ) {
             return Ok(());
         }
 
@@ -494,19 +491,18 @@ pub fn verify_head_signature(name: &str, repo_dir: &Path) -> Result<()> {
         })?;
 
     if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
         return Err(SourceError::SignatureVerificationFailed {
             name: name.to_string(),
             message: format!(
                 "git log failed (exit {}): {}",
                 output.status.code().unwrap_or(-1),
-                stderr.trim()
+                crate::stderr_lossy_trimmed(&output)
             ),
         }
         .into());
     }
 
-    let status = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    let status = crate::stdout_lossy_trimmed(&output);
 
     match status.as_str() {
         // G = good valid signature, U = good signature with unknown validity (untrusted key)
@@ -586,7 +582,7 @@ pub fn git_clone_with_fallback(url: &str, target: &Path) -> std::result::Result<
     // Try git CLI first with SSH hang protection.
     let mut cmd = crate::git_cmd_safe(Some(url));
     cmd.args(["clone", url, &target.display().to_string()]);
-    let cli_result = cmd.output();
+    let cli_result = crate::command_output_with_timeout(&mut cmd, crate::GIT_NETWORK_TIMEOUT);
 
     match cli_result {
         Ok(output) if output.status.success() => return Ok(()),

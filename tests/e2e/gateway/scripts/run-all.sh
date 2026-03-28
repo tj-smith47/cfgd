@@ -4,8 +4,10 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "$SCRIPT_DIR/setup-gateway-env.sh"
 
-# Cleanup trap: kill port-forward and delete ephemeral namespace
-trap 'kill "$PF_PID" 2>/dev/null || true; cleanup_e2e' EXIT
+export GW_SCRATCH=$(mktemp -d)
+
+# Cleanup trap: kill port-forward, delete ephemeral namespace, remove scratch
+trap 'kill "$PF_PID" 2>/dev/null || true; rm -rf "$GW_SCRATCH"; cleanup_e2e' EXIT
 
 # Disable set -e for the test body — individual test failures are tracked by
 # fail_test/pass_test, and print_summary returns non-zero if any test failed.

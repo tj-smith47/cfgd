@@ -323,7 +323,22 @@ fn resolve_from_credential_helper(helper_name: &str, registry: &str) -> Option<R
             if let Some(ref mut stdin) = child.stdin {
                 stdin.write_all(registry.as_bytes()).ok();
             }
-            child.wait_with_output().ok()
+            drop(child.stdin.take()); // Close stdin so helper can proceed
+            let start = std::time::Instant::now();
+            let timeout = std::time::Duration::from_secs(10);
+            loop {
+                match child.try_wait() {
+                    Ok(Some(_)) => return child.wait_with_output().ok(),
+                    Ok(None) if start.elapsed() >= timeout => {
+                        let _ = child.kill();
+                        let _ = child.wait();
+                        tracing::debug!("credential helper {helper_bin} timed out");
+                        return None;
+                    }
+                    Ok(None) => std::thread::sleep(std::time::Duration::from_millis(50)),
+                    Err(_) => return None,
+                }
+            }
         })?;
 
     if !output.status.success() {
@@ -725,7 +740,9 @@ pub fn push_module(
 ) -> Result<String, OciError> {
     let oci_ref = OciReference::parse(artifact_ref)?;
     let auth = RegistryAuth::resolve(&oci_ref.registry);
-    let agent = ureq::Agent::new();
+    let agent = ureq::AgentBuilder::new()
+        .timeout(std::time::Duration::from_secs(300))
+        .build();
     let (digest, _size) = push_module_inner(&agent, dir, &oci_ref, auth.as_ref(), platform)?;
     Ok(digest)
 }
@@ -894,7 +911,9 @@ pub fn push_module_multiplatform(
 ) -> Result<String, OciError> {
     let oci_ref = OciReference::parse(artifact_ref)?;
     let auth = RegistryAuth::resolve(&oci_ref.registry);
-    let agent = ureq::Agent::new();
+    let agent = ureq::AgentBuilder::new()
+        .timeout(std::time::Duration::from_secs(300))
+        .build();
 
     let mut platform_manifests = Vec::new();
 
@@ -1096,9 +1115,11 @@ pub fn build_module(
     })?;
 
     if !build_output.status.success() {
-        let stderr = String::from_utf8_lossy(&build_output.stderr);
         return Err(OciError::BuildError {
-            message: format!("{runtime} build failed:\n{stderr}"),
+            message: format!(
+                "{runtime} build failed:\n{}",
+                crate::stderr_lossy_trimmed(&build_output)
+            ),
         });
     }
 
@@ -1118,7 +1139,7 @@ pub fn build_module(
         return Err(OciError::BuildError {
             message: format!(
                 "container create failed: {}",
-                String::from_utf8_lossy(&create_output.stderr)
+                crate::stderr_lossy_trimmed(&create_output)
             ),
         });
     }
@@ -1147,7 +1168,7 @@ pub fn build_module(
         return Err(OciError::BuildError {
             message: format!(
                 "container cp failed: {}",
-                String::from_utf8_lossy(&cp_output.stderr)
+                crate::stderr_lossy_trimmed(&cp_output)
             ),
         });
     }
@@ -1189,9 +1210,11 @@ pub fn sign_artifact(artifact_ref: &str, key_path: Option<&str>) -> Result<(), O
     })?;
 
     if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
         return Err(OciError::SigningError {
-            message: format!("cosign sign failed: {stderr}"),
+            message: format!(
+                "cosign sign failed: {}",
+                crate::stderr_lossy_trimmed(&output)
+            ),
         });
     }
 
@@ -1256,10 +1279,12 @@ pub fn verify_signature(artifact_ref: &str, opts: &VerifyOptions<'_>) -> Result<
     })?;
 
     if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
         return Err(OciError::VerificationFailed {
             reference: artifact_ref.to_string(),
-            message: format!("cosign verify failed: {stderr}"),
+            message: format!(
+                "cosign verify failed: {}",
+                crate::stderr_lossy_trimmed(&output)
+            ),
         });
     }
 
@@ -1346,9 +1371,11 @@ pub fn attach_attestation(
     })?;
 
     if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
         return Err(OciError::AttestationError {
-            message: format!("cosign attest failed: {stderr}"),
+            message: format!(
+                "cosign attest failed: {}",
+                crate::stderr_lossy_trimmed(&output)
+            ),
         });
     }
 
@@ -1380,9 +1407,11 @@ pub fn verify_attestation(
     })?;
 
     if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
         return Err(OciError::AttestationError {
-            message: format!("attestation verification failed: {stderr}"),
+            message: format!(
+                "attestation verification failed: {}",
+                crate::stderr_lossy_trimmed(&output)
+            ),
         });
     }
 
@@ -1405,7 +1434,9 @@ pub fn pull_module(
 ) -> Result<(), OciError> {
     let oci_ref = OciReference::parse(artifact_ref)?;
     let auth = RegistryAuth::resolve(&oci_ref.registry);
-    let agent = ureq::Agent::new();
+    let agent = ureq::AgentBuilder::new()
+        .timeout(std::time::Duration::from_secs(300))
+        .build();
 
     // If signature required, check for cosign signature tag
     if require_signature {

@@ -118,6 +118,62 @@ pub fn git_cmd_safe(url: Option<&str>) -> std::process::Command {
     cmd
 }
 
+/// Try a git CLI command via [`git_cmd_safe`], returning `true` on success.
+/// On failure, logs the stderr via `tracing::debug` and returns `false`.
+pub fn try_git_cmd(url: Option<&str>, args: &[&str], label: &str) -> bool {
+    let mut cmd = git_cmd_safe(url);
+    cmd.args(args);
+    match command_output_with_timeout(&mut cmd, GIT_NETWORK_TIMEOUT) {
+        Ok(output) if output.status.success() => true,
+        Ok(output) => {
+            tracing::debug!(
+                "git {} CLI failed (exit {}): {}",
+                label,
+                output.status.code().unwrap_or(-1),
+                stderr_lossy_trimmed(&output),
+            );
+            false
+        }
+        Err(e) => {
+            tracing::debug!("git {} CLI unavailable: {e}", label);
+            false
+        }
+    }
+}
+
+/// Default timeout for external commands (2 minutes).
+pub const COMMAND_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
+
+/// Default timeout for git network operations (5 minutes).
+pub const GIT_NETWORK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
+
+/// Run a [`Command`] with a timeout, killing the process if it exceeds the limit.
+/// Returns `Err` if spawn fails or the process is killed due to timeout.
+pub fn command_output_with_timeout(
+    cmd: &mut std::process::Command,
+    timeout: std::time::Duration,
+) -> std::io::Result<std::process::Output> {
+    let mut child = cmd.spawn()?;
+    let start = std::time::Instant::now();
+    loop {
+        match child.try_wait() {
+            Ok(Some(_status)) => return child.wait_with_output(),
+            Ok(None) => {
+                if start.elapsed() >= timeout {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::TimedOut,
+                        format!("command timed out after {}s", timeout.as_secs()),
+                    ));
+                }
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+            Err(e) => return Err(e),
+        }
+    }
+}
+
 /// Default config directory: `~/.config/cfgd/` (XDG_CONFIG_HOME/cfgd on Linux).
 pub fn default_config_dir() -> std::path::PathBuf {
     directories::BaseDirs::new()

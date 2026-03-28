@@ -663,6 +663,22 @@ fn clone_repo(dest: &Path, git_src: &GitSource, module_name: &str) -> Result<()>
         })?;
     }
 
+    // Try git CLI first with SSH hang protection.
+    if crate::try_git_cmd(
+        Some(&git_src.repo_url),
+        &["clone", &git_src.repo_url, &dest.display().to_string()],
+        "clone",
+    ) {
+        return Ok(());
+    }
+
+    // Clean up partial clone before libgit2 retry.
+    let _ = std::fs::remove_dir_all(dest);
+    if let Some(parent) = dest.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+
+    // Fall back to libgit2.
     let mut builder = git2::build::RepoBuilder::new();
     builder.fetch_options(git_fetch_options());
 
@@ -678,6 +694,16 @@ fn clone_repo(dest: &Path, git_src: &GitSource, module_name: &str) -> Result<()>
 }
 
 fn fetch_existing_repo(repo_path: &Path, git_src: &GitSource, module_name: &str) -> Result<()> {
+    // Try git CLI first with SSH hang protection.
+    if crate::try_git_cmd(
+        Some(&git_src.repo_url),
+        &["-C", &repo_path.display().to_string(), "fetch", "origin"],
+        "fetch",
+    ) {
+        return Ok(());
+    }
+
+    // Fall back to libgit2.
     let repo = open_repo(repo_path, module_name, &git_src.repo_url)?;
 
     let mut remote = repo

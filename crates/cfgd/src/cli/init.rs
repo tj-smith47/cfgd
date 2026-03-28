@@ -851,25 +851,27 @@ fn finish_enrollment(
 
 fn detect_ssh_key(printer: &Printer) -> Option<String> {
     // Try SSH agent first
-    if let Ok(output) = std::process::Command::new("ssh-add").arg("-l").output()
+    if cfgd_core::command_available("ssh-add")
+        && let Ok(output) = cfgd_core::command_output_with_timeout(
+            std::process::Command::new("ssh-add").arg("-l"),
+            std::time::Duration::from_secs(5),
+        )
         && output.status.success()
     {
         let stdout = String::from_utf8_lossy(&output.stdout);
         if let Some(line) = stdout.lines().next()
             && !line.contains("no identities")
         {
-            let home = std::env::var("HOME").unwrap_or_default();
+            let ssh_dir = cfgd_core::expand_tilde(Path::new("~/.ssh"));
             for key_name in &["id_ed25519", "id_rsa", "id_ecdsa"] {
-                let pub_path = Path::new(&home)
-                    .join(".ssh")
-                    .join(format!("{key_name}.pub"));
+                let pub_path = ssh_dir.join(format!("{key_name}.pub"));
                 if pub_path.exists() {
                     printer.info(&format!("Using SSH key from agent: {}", pub_path.display()));
                     return Some(pub_path.to_string_lossy().to_string());
                 }
             }
             for key_name in &["id_ed25519", "id_rsa", "id_ecdsa"] {
-                let key_path = Path::new(&home).join(".ssh").join(key_name);
+                let key_path = ssh_dir.join(key_name);
                 if key_path.exists() {
                     printer.info(&format!("Using SSH key: {}", key_path.display()));
                     return Some(key_path.to_string_lossy().to_string());
@@ -879,16 +881,14 @@ fn detect_ssh_key(printer: &Printer) -> Option<String> {
     }
 
     // Fall back to on-disk keys
-    let home = std::env::var("HOME").unwrap_or_default();
+    let ssh_dir = cfgd_core::expand_tilde(Path::new("~/.ssh"));
     for key_name in &["id_ed25519", "id_rsa", "id_ecdsa"] {
-        let pub_path = Path::new(&home)
-            .join(".ssh")
-            .join(format!("{key_name}.pub"));
+        let pub_path = ssh_dir.join(format!("{key_name}.pub"));
         if pub_path.exists() {
             printer.info(&format!("Using SSH key: {}", pub_path.display()));
             return Some(pub_path.to_string_lossy().to_string());
         }
-        let key_path = Path::new(&home).join(".ssh").join(key_name);
+        let key_path = ssh_dir.join(key_name);
         if key_path.exists() {
             printer.info(&format!("Using SSH key: {}", key_path.display()));
             return Some(key_path.to_string_lossy().to_string());
@@ -899,6 +899,10 @@ fn detect_ssh_key(printer: &Printer) -> Option<String> {
 }
 
 fn sign_with_ssh(nonce: &str, key_path: &str) -> anyhow::Result<String> {
+    if !cfgd_core::command_available("ssh-keygen") {
+        anyhow::bail!("ssh-keygen not found — is OpenSSH installed?");
+    }
+
     let tmp_dir = tempfile::tempdir()?;
     let data_path = tmp_dir.path().join("challenge.txt");
     let sig_path = tmp_dir.path().join("challenge.txt.sig");
@@ -931,6 +935,10 @@ fn sign_with_ssh(nonce: &str, key_path: &str) -> anyhow::Result<String> {
 }
 
 fn sign_with_gpg(nonce: &str, gpg_key_id: &str) -> anyhow::Result<String> {
+    if !cfgd_core::command_available("gpg") {
+        anyhow::bail!("gpg not found — is GnuPG installed?");
+    }
+
     let tmp_dir = tempfile::tempdir()?;
     let data_path = tmp_dir.path().join("challenge.txt");
     let sig_path = tmp_dir.path().join("challenge.txt.asc");

@@ -563,7 +563,7 @@ impl<'a> Reconciler<'a> {
         if current_shell.contains("fish") && fish_conf_d.exists() {
             let fish_path = fish_conf_d.join("cfgd-env.fish");
             let fish_content = generate_fish_env_content(&merged, &merged_aliases);
-            let existing_fish = std::fs::read_to_string(&fish_path).unwrap_or_default();
+            let existing_fish = std::fs::read_to_string(&fish_path).unwrap_or_default(); // OK: file may not exist yet
             if existing_fish != fish_content {
                 actions.push(Action::Env(EnvAction::WriteEnvFile {
                     path: fish_path,
@@ -1035,10 +1035,12 @@ impl<'a> Reconciler<'a> {
 
                 let (desc, success, error, should_abort) = match result {
                     Ok((desc, script_output)) => {
-                        if let Some(jid) = journal_id {
-                            let _ =
+                        if let Some(jid) = journal_id
+                            && let Err(e) =
                                 self.state
-                                    .journal_complete(jid, None, script_output.as_deref());
+                                    .journal_complete(jid, None, script_output.as_deref())
+                        {
+                            tracing::warn!("failed to record journal completion: {e}");
                         }
                         (desc, true, None, false)
                     }
@@ -1074,8 +1076,10 @@ impl<'a> Reconciler<'a> {
                                 e
                             ));
                         }
-                        if let Some(jid) = journal_id {
-                            let _ = self.state.journal_fail(jid, &e.to_string());
+                        if let Some(jid) = journal_id
+                            && let Err(je) = self.state.journal_fail(jid, &e.to_string())
+                        {
+                            tracing::warn!("failed to record journal failure: {je}");
                         }
                         (desc, false, Some(e.to_string()), !continue_on_err)
                     }
@@ -1442,7 +1446,14 @@ impl<'a> Reconciler<'a> {
     fn apply_env_action(action: &EnvAction, printer: &Printer) -> Result<String> {
         match action {
             EnvAction::WriteEnvFile { path, content } => {
-                let existing = std::fs::read_to_string(path).unwrap_or_default();
+                let existing = match std::fs::read_to_string(path) {
+                    Ok(s) => s,
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+                    Err(e) => {
+                        tracing::warn!("cannot read {}: {e}", path.display());
+                        String::new()
+                    }
+                };
                 if existing == *content {
                     return Ok(format!("env:write:{}:skipped", path.display()));
                 }
@@ -1451,7 +1462,14 @@ impl<'a> Reconciler<'a> {
                 Ok(format!("env:write:{}", path.display()))
             }
             EnvAction::InjectSourceLine { rc_path, line } => {
-                let existing = std::fs::read_to_string(rc_path).unwrap_or_default();
+                let existing = match std::fs::read_to_string(rc_path) {
+                    Ok(s) => s,
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+                    Err(e) => {
+                        tracing::warn!("cannot read {}: {e}", rc_path.display());
+                        String::new()
+                    }
+                };
                 if existing.contains(line) {
                     // Already injected
                     return Ok(format!("env:inject:{}:skipped", rc_path.display()));
@@ -1834,8 +1852,19 @@ impl<'a> Reconciler<'a> {
                                 if !path_dirs.is_empty() {
                                     let env_path =
                                         expand_tilde(std::path::Path::new("~/.cfgd.env"));
-                                    let existing =
-                                        std::fs::read_to_string(&env_path).unwrap_or_default();
+                                    let existing = match std::fs::read_to_string(&env_path) {
+                                        Ok(s) => s,
+                                        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                                            String::new()
+                                        }
+                                        Err(e) => {
+                                            tracing::warn!(
+                                                "cannot read {}: {e}",
+                                                env_path.display()
+                                            );
+                                            String::new()
+                                        }
+                                    };
                                     let new_dirs: Vec<&str> = path_dirs
                                         .iter()
                                         .filter(|d| !existing.contains(d.as_str()))
@@ -1929,8 +1958,13 @@ impl<'a> Reconciler<'a> {
 
                     // Record in module file manifest
                     let hash = if target.exists() && !target.is_symlink() {
-                        let bytes = std::fs::read(&target).unwrap_or_default();
-                        crate::sha256_hex(&bytes)
+                        match std::fs::read(&target) {
+                            Ok(bytes) => crate::sha256_hex(&bytes),
+                            Err(e) => {
+                                tracing::warn!("cannot read {} for hashing: {e}", target.display());
+                                String::new()
+                            }
+                        }
                     } else {
                         String::new()
                     };

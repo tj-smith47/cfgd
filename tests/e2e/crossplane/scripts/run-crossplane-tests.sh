@@ -489,7 +489,7 @@ done
 echo "  MachineConfigs before deletion: ${MC_COUNT:-0}"
 
 # Now delete the TeamConfig
-kubectl delete teamconfig cascade-team --timeout=60s
+kubectl delete teamconfig cascade-team --ignore-not-found --timeout=60s
 
 # Wait for cascade — composed resources should be garbage-collected
 MC_REMAINING=""

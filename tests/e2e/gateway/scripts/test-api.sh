@@ -36,11 +36,11 @@ else
         GW11_AUTH="$(gw_device_auth_header)"
     fi
 
-    GW11_HTTP_CODE=$(curl -s -o /tmp/gw11-body.json -w "%{http_code}" \
+    GW11_HTTP_CODE=$(curl -s -o $GW_SCRATCH/gw11-body.json -w "%{http_code}" \
         -H "$GW11_AUTH" \
         "$GW_URL/api/v1/devices" 2>/dev/null || echo "000")
-    GW11_BODY=$(cat /tmp/gw11-body.json 2>/dev/null || echo "")
-    rm -f /tmp/gw11-body.json
+    GW11_BODY=$(cat $GW_SCRATCH/gw11-body.json 2>/dev/null || echo "")
+    rm -f $GW_SCRATCH/gw11-body.json
 
     echo "  HTTP status: $GW11_HTTP_CODE"
     echo "  Body (first 300 chars): $(echo "$GW11_BODY" | head -c 300)"
@@ -79,11 +79,11 @@ else
         GW12_AUTH="$(gw_device_auth_header)"
     fi
 
-    GW12_HTTP_CODE=$(curl -s -o /tmp/gw12-body.json -w "%{http_code}" \
+    GW12_HTTP_CODE=$(curl -s -o $GW_SCRATCH/gw12-body.json -w "%{http_code}" \
         -H "$GW12_AUTH" \
         "$GW_URL/api/v1/devices/${GW_DEVICE_ID}" 2>/dev/null || echo "000")
-    GW12_BODY=$(cat /tmp/gw12-body.json 2>/dev/null || echo "")
-    rm -f /tmp/gw12-body.json
+    GW12_BODY=$(cat $GW_SCRATCH/gw12-body.json 2>/dev/null || echo "")
+    rm -f $GW_SCRATCH/gw12-body.json
 
     echo "  HTTP status: $GW12_HTTP_CODE"
     echo "  Body (first 300 chars): $(echo "$GW12_BODY" | head -c 300)"
@@ -119,11 +119,11 @@ else
         GW13_AUTH="$(gw_device_auth_header)"
     fi
 
-    GW13_HTTP_CODE=$(curl -s -o /tmp/gw13-body.json -w "%{http_code}" \
+    GW13_HTTP_CODE=$(curl -s -o $GW_SCRATCH/gw13-body.json -w "%{http_code}" \
         -H "$GW13_AUTH" \
         "$GW_URL/api/v1/devices/${GW_DEVICE_ID}/drift" 2>/dev/null || echo "000")
-    GW13_BODY=$(cat /tmp/gw13-body.json 2>/dev/null || echo "")
-    rm -f /tmp/gw13-body.json
+    GW13_BODY=$(cat $GW_SCRATCH/gw13-body.json 2>/dev/null || echo "")
+    rm -f $GW_SCRATCH/gw13-body.json
 
     echo "  HTTP status: $GW13_HTTP_CODE"
     echo "  Body (first 300 chars): $(echo "$GW13_BODY" | head -c 300)"
@@ -157,11 +157,11 @@ else
         GW14_AUTH="$(gw_device_auth_header)"
     fi
 
-    GW14_HTTP_CODE=$(curl -s -o /tmp/gw14-body.json -w "%{http_code}" \
+    GW14_HTTP_CODE=$(curl -s -o $GW_SCRATCH/gw14-body.json -w "%{http_code}" \
         -H "$GW14_AUTH" \
         "$GW_URL/api/v1/events" 2>/dev/null || echo "000")
-    GW14_BODY=$(cat /tmp/gw14-body.json 2>/dev/null || echo "")
-    rm -f /tmp/gw14-body.json
+    GW14_BODY=$(cat $GW_SCRATCH/gw14-body.json 2>/dev/null || echo "")
+    rm -f $GW_SCRATCH/gw14-body.json
 
     echo "  HTTP status: $GW14_HTTP_CODE"
     echo "  Body (first 300 chars): $(echo "$GW14_BODY" | head -c 300)"
@@ -191,13 +191,13 @@ if [ -z "${ADMIN_KEY:-}" ]; then
 elif [ -z "${GW_DEVICE_ID:-}" ]; then
     skip_test "GW-19" "No GW_DEVICE_ID available"
 else
-    GW19_HTTP_CODE=$(curl -s -o /tmp/gw19-body.txt -w "%{http_code}" \
+    GW19_HTTP_CODE=$(curl -s -o $GW_SCRATCH/gw19-body.txt -w "%{http_code}" \
         -X PUT "$GW_URL/api/v1/devices/${GW_DEVICE_ID}/config" \
         -H "Content-Type: application/json" \
         -H "$(gw_admin_auth_header)" \
         -d '{"config":{"packages":["curl","jq"],"env":{"E2E_TEST":"true"}}}' 2>/dev/null || echo "000")
-    GW19_BODY=$(cat /tmp/gw19-body.txt 2>/dev/null || echo "")
-    rm -f /tmp/gw19-body.txt
+    GW19_BODY=$(cat $GW_SCRATCH/gw19-body.txt 2>/dev/null || echo "")
+    rm -f $GW_SCRATCH/gw19-body.txt
 
     echo "  HTTP status: $GW19_HTTP_CODE"
     if [ -n "$GW19_BODY" ]; then
@@ -224,12 +224,12 @@ if [ -z "${ADMIN_KEY:-}" ]; then
 elif [ -z "${GW_DEVICE_ID:-}" ]; then
     skip_test "GW-20" "No GW_DEVICE_ID available"
 else
-    GW20_HTTP_CODE=$(curl -s -o /tmp/gw20-body.txt -w "%{http_code}" \
+    GW20_HTTP_CODE=$(curl -s -o $GW_SCRATCH/gw20-body.txt -w "%{http_code}" \
         -X POST "$GW_URL/api/v1/devices/${GW_DEVICE_ID}/reconcile" \
         -H "Content-Type: application/json" \
         -H "$(gw_admin_auth_header)" 2>/dev/null || echo "000")
-    GW20_BODY=$(cat /tmp/gw20-body.txt 2>/dev/null || echo "")
-    rm -f /tmp/gw20-body.txt
+    GW20_BODY=$(cat $GW_SCRATCH/gw20-body.txt 2>/dev/null || echo "")
+    rm -f $GW_SCRATCH/gw20-body.txt
 
     echo "  HTTP status: $GW20_HTTP_CODE"
     if [ -n "$GW20_BODY" ]; then

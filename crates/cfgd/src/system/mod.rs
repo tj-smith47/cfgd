@@ -714,11 +714,7 @@ impl SystemConfigurator for LaunchAgentConfigurator {
 }
 
 fn launch_agent_plist_path(name: &str) -> std::path::PathBuf {
-    let home = std::env::var("HOME").unwrap_or_else(|_| "~".to_string());
-    let home = cfgd_core::expand_tilde(Path::new(&home))
-        .to_string_lossy()
-        .to_string();
-    std::path::PathBuf::from(home)
+    cfgd_core::expand_tilde(Path::new("~"))
         .join("Library/LaunchAgents")
         .join(format!("{}.plist", name))
 }
@@ -967,8 +963,7 @@ impl EnvironmentConfigurator {
     }
 
     fn macos_plist_path() -> std::path::PathBuf {
-        let home = std::env::var("HOME").unwrap_or_else(|_| "~".to_string());
-        let home = cfgd_core::expand_tilde(Path::new(&home));
+        let home = cfgd_core::expand_tilde(Path::new("~"));
         home.join("Library/LaunchAgents")
             .join(MACOS_LAUNCHD_PLIST_NAME)
     }

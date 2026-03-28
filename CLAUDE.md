@@ -131,6 +131,8 @@ Current shared items (keep this list updated when adding new ones):
 - `set_file_permissions(path, mode)` — set Unix mode bits; no-op on Windows. Use instead of direct `PermissionsExt`
 - `is_executable(path, metadata) -> bool` — Unix checks executable bit; Windows checks file extension (`.exe`, `.cmd`, `.bat`, `.ps1`, `.com`)
 - `is_same_inode(a, b) -> bool` — check if two paths refer to the same file (same inode+dev on Unix, same file index+volume on Windows); use instead of inline `MetadataExt::ino()` comparisons
+- `git_cmd_safe(url)` — build a `Command` for git with `GIT_TERMINAL_PROMPT=0` and `BatchMode=yes` for SSH URLs; low-level builder, prefer `try_git_cmd` for the common try-CLI-then-fallback pattern
+- `try_git_cmd(url, args, label)` — run a git CLI command via `git_cmd_safe`, return `true` on success, log stderr via `tracing::debug` on failure; use before every git2 network operation as CLI-first fallback to prevent SSH hangs
 - `git_ssh_credentials(url, username, allowed)` — git2 credential callback (SSH agent/keys + HTTPS credential helper)
 - `parse_loose_version(s)` — parse "1.28" → semver Version(1.28.0); handles 1-part, 2-part, and 3-part versions
 - `version_satisfies(version, requirement)` — check version against semver range (uses `parse_loose_version`)
@@ -159,6 +161,9 @@ Current shared items (keep this list updated when adding new ones):
 - `sanitize_k8s_name(name)` — sanitize a string for Kubernetes RFC 1123 DNS label rules
 - `parse_duration_str(s)` — parse "30s", "5m", "1h", or plain seconds into `Duration`; returns `Result<Duration, String>`
 - `PROFILE_SCRIPT_TIMEOUT` — default timeout for profile-level scripts (5 minutes); use instead of hardcoded `Duration::from_secs(300)`
+- `COMMAND_TIMEOUT` — default timeout for external commands (2 minutes)
+- `GIT_NETWORK_TIMEOUT` — default timeout for git network operations (5 minutes)
+- `command_output_with_timeout(cmd, timeout)` — run a `Command` with a timeout, killing the process if exceeded; use for any external command that could hang
 - `terminate_process(pid)` — send SIGTERM (Unix) or TerminateProcess (Windows) to a process by PID; cross-platform, ungated
 - `is_root()` — check if the current process runs with elevated privileges: euid==0 (Unix) or IsUserAnAdmin() (Windows)
 - `cleanup_old_binary()` — remove `.exe.old` left by the Windows rename-dance self-upgrade; no-op on Unix. Called from `main.rs` on startup (lives in `upgrade.rs`, not `lib.rs`)

@@ -61,11 +61,11 @@ fi
 begin_test "GW-03: Enrollment with invalid token rejects"
 
 INVALID_DEVICE_ID="e2e-invalid-token-device-$$"
-GW03_HTTP_CODE=$(curl -s -o /tmp/gw03-body.txt -w "%{http_code}" -X POST "$GW_URL/api/v1/enroll" \
+GW03_HTTP_CODE=$(curl -s -o $GW_SCRATCH/gw03-body.txt -w "%{http_code}" -X POST "$GW_URL/api/v1/enroll" \
     -H "Content-Type: application/json" \
     -d "{\"token\":\"cfgd_bs_totally_invalid_token_value\",\"deviceId\":\"${INVALID_DEVICE_ID}\",\"hostname\":\"e2e-invalid\",\"os\":\"linux\",\"arch\":\"x86_64\"}" 2>/dev/null || echo "000")
-GW03_BODY=$(cat /tmp/gw03-body.txt 2>/dev/null || echo "")
-rm -f /tmp/gw03-body.txt
+GW03_BODY=$(cat $GW_SCRATCH/gw03-body.txt 2>/dev/null || echo "")
+rm -f $GW_SCRATCH/gw03-body.txt
 
 echo "  HTTP status: $GW03_HTTP_CODE"
 echo "  Body: $GW03_BODY"
@@ -107,7 +107,7 @@ else
 
     # Step 2: Register public key via admin API
     if [ "$GW04_PASS" = "true" ]; then
-        GW04_ADDKEY_CODE=$(curl -s -o /tmp/gw04-addkey.txt -w "%{http_code}" \
+        GW04_ADDKEY_CODE=$(curl -s -o $GW_SCRATCH/gw04-addkey.txt -w "%{http_code}" \
             -X POST "$GW_URL/api/v1/admin/users/$GW04_USERNAME/keys" \
             -H "Content-Type: application/json" \
             -H "$(gw_admin_auth_header)" \
@@ -115,21 +115,21 @@ else
         echo "  Register key: HTTP $GW04_ADDKEY_CODE"
 
         if [ "$GW04_ADDKEY_CODE" != "201" ]; then
-            echo "  Body: $(cat /tmp/gw04-addkey.txt 2>/dev/null)"
+            echo "  Body: $(cat $GW_SCRATCH/gw04-addkey.txt 2>/dev/null)"
             fail_test "GW-04" "Failed to register SSH key (HTTP $GW04_ADDKEY_CODE)"
             GW04_PASS=false
         fi
-        rm -f /tmp/gw04-addkey.txt
+        rm -f $GW_SCRATCH/gw04-addkey.txt
     fi
 
     # Step 3: Request enrollment challenge
     if [ "$GW04_PASS" = "true" ]; then
-        GW04_CHALLENGE_CODE=$(curl -s -o /tmp/gw04-challenge.txt -w "%{http_code}" \
+        GW04_CHALLENGE_CODE=$(curl -s -o $GW_SCRATCH/gw04-challenge.txt -w "%{http_code}" \
             -X POST "$GW_URL/api/v1/enroll/challenge" \
             -H "Content-Type: application/json" \
             -d "{\"username\":\"$GW04_USERNAME\",\"deviceId\":\"$GW04_DEVICE_ID\",\"hostname\":\"e2e-ssh-host\",\"os\":\"linux\",\"arch\":\"x86_64\"}" 2>/dev/null || echo "000")
-        GW04_CHALLENGE_BODY=$(cat /tmp/gw04-challenge.txt 2>/dev/null || echo "")
-        rm -f /tmp/gw04-challenge.txt
+        GW04_CHALLENGE_BODY=$(cat $GW_SCRATCH/gw04-challenge.txt 2>/dev/null || echo "")
+        rm -f $GW_SCRATCH/gw04-challenge.txt
 
         echo "  Challenge request: HTTP $GW04_CHALLENGE_CODE"
 
@@ -169,12 +169,12 @@ else
 
     # Step 5: Verify enrollment
     if [ "$GW04_PASS" = "true" ]; then
-        GW04_VERIFY_CODE=$(curl -s -o /tmp/gw04-verify.txt -w "%{http_code}" \
+        GW04_VERIFY_CODE=$(curl -s -o $GW_SCRATCH/gw04-verify.txt -w "%{http_code}" \
             -X POST "$GW_URL/api/v1/enroll/verify" \
             -H "Content-Type: application/json" \
             -d "{\"challengeId\":\"$GW04_CHALLENGE_ID\",\"signature\":$(echo "$GW04_SIGNATURE" | jq -Rs .),\"keyType\":\"ssh\"}" 2>/dev/null || echo "000")
-        GW04_VERIFY_BODY=$(cat /tmp/gw04-verify.txt 2>/dev/null || echo "")
-        rm -f /tmp/gw04-verify.txt
+        GW04_VERIFY_BODY=$(cat $GW_SCRATCH/gw04-verify.txt 2>/dev/null || echo "")
+        rm -f $GW_SCRATCH/gw04-verify.txt
 
         echo "  Verify: HTTP $GW04_VERIFY_CODE"
 
@@ -224,7 +224,7 @@ else
 
     # Step 2: Register public key via admin API
     if [ "$GW05_PASS" = "true" ]; then
-        GW05_ADDKEY_CODE=$(curl -s -o /tmp/gw05-addkey.txt -w "%{http_code}" \
+        GW05_ADDKEY_CODE=$(curl -s -o $GW_SCRATCH/gw05-addkey.txt -w "%{http_code}" \
             -X POST "$GW_URL/api/v1/admin/users/$GW05_USERNAME/keys" \
             -H "Content-Type: application/json" \
             -H "$(gw_admin_auth_header)" \
@@ -232,21 +232,21 @@ else
         echo "  Register key: HTTP $GW05_ADDKEY_CODE"
 
         if [ "$GW05_ADDKEY_CODE" != "201" ]; then
-            echo "  Body: $(cat /tmp/gw05-addkey.txt 2>/dev/null)"
+            echo "  Body: $(cat $GW_SCRATCH/gw05-addkey.txt 2>/dev/null)"
             fail_test "GW-05" "Failed to register GPG key (HTTP $GW05_ADDKEY_CODE)"
             GW05_PASS=false
         fi
-        rm -f /tmp/gw05-addkey.txt
+        rm -f $GW_SCRATCH/gw05-addkey.txt
     fi
 
     # Step 3: Request enrollment challenge
     if [ "$GW05_PASS" = "true" ]; then
-        GW05_CHALLENGE_CODE=$(curl -s -o /tmp/gw05-challenge.txt -w "%{http_code}" \
+        GW05_CHALLENGE_CODE=$(curl -s -o $GW_SCRATCH/gw05-challenge.txt -w "%{http_code}" \
             -X POST "$GW_URL/api/v1/enroll/challenge" \
             -H "Content-Type: application/json" \
             -d "{\"username\":\"$GW05_USERNAME\",\"deviceId\":\"$GW05_DEVICE_ID\",\"hostname\":\"e2e-gpg-host\",\"os\":\"linux\",\"arch\":\"x86_64\"}" 2>/dev/null || echo "000")
-        GW05_CHALLENGE_BODY=$(cat /tmp/gw05-challenge.txt 2>/dev/null || echo "")
-        rm -f /tmp/gw05-challenge.txt
+        GW05_CHALLENGE_BODY=$(cat $GW_SCRATCH/gw05-challenge.txt 2>/dev/null || echo "")
+        rm -f $GW_SCRATCH/gw05-challenge.txt
 
         echo "  Challenge request: HTTP $GW05_CHALLENGE_CODE"
 
@@ -288,12 +288,12 @@ else
 
     # Step 5: Verify enrollment
     if [ "$GW05_PASS" = "true" ]; then
-        GW05_VERIFY_CODE=$(curl -s -o /tmp/gw05-verify.txt -w "%{http_code}" \
+        GW05_VERIFY_CODE=$(curl -s -o $GW_SCRATCH/gw05-verify.txt -w "%{http_code}" \
             -X POST "$GW_URL/api/v1/enroll/verify" \
             -H "Content-Type: application/json" \
             -d "{\"challengeId\":\"$GW05_CHALLENGE_ID\",\"signature\":$(echo "$GW05_SIGNATURE" | jq -Rs .),\"keyType\":\"gpg\"}" 2>/dev/null || echo "000")
-        GW05_VERIFY_BODY=$(cat /tmp/gw05-verify.txt 2>/dev/null || echo "")
-        rm -f /tmp/gw05-verify.txt
+        GW05_VERIFY_BODY=$(cat $GW_SCRATCH/gw05-verify.txt 2>/dev/null || echo "")
+        rm -f $GW_SCRATCH/gw05-verify.txt
 
         echo "  Verify: HTTP $GW05_VERIFY_CODE"
 
@@ -320,11 +320,11 @@ if [ -z "$BOOTSTRAP_TOKEN" ]; then
 else
     # The bootstrap token from setup was consumed during GW-02.
     # Re-using the same consumed token should fail.
-    GW06_HTTP_CODE=$(curl -s -o /tmp/gw06-body.txt -w "%{http_code}" -X POST "$GW_URL/api/v1/enroll" \
+    GW06_HTTP_CODE=$(curl -s -o $GW_SCRATCH/gw06-body.txt -w "%{http_code}" -X POST "$GW_URL/api/v1/enroll" \
         -H "Content-Type: application/json" \
         -d "{\"token\":\"${BOOTSTRAP_TOKEN}\",\"deviceId\":\"${GW_DEVICE_ID}\",\"hostname\":\"e2e-host-dup-${E2E_RUN_ID}\",\"os\":\"linux\",\"arch\":\"x86_64\"}" 2>/dev/null || echo "000")
-    GW06_BODY=$(cat /tmp/gw06-body.txt 2>/dev/null || echo "")
-    rm -f /tmp/gw06-body.txt
+    GW06_BODY=$(cat $GW_SCRATCH/gw06-body.txt 2>/dev/null || echo "")
+    rm -f $GW_SCRATCH/gw06-body.txt
 
     echo "  Consumed-token re-enrollment: HTTP $GW06_HTTP_CODE"
     echo "  Body: $GW06_BODY"
@@ -337,11 +337,11 @@ else
             # Also try with a fresh token for the same device ID to test device-level dedup
             GW06_FRESH_TOKEN=$(gw_create_bootstrap_token "e2e-dup-user")
             if [ -n "$GW06_FRESH_TOKEN" ]; then
-                GW06_FRESH_CODE=$(curl -s -o /tmp/gw06-fresh.txt -w "%{http_code}" -X POST "$GW_URL/api/v1/enroll" \
+                GW06_FRESH_CODE=$(curl -s -o $GW_SCRATCH/gw06-fresh.txt -w "%{http_code}" -X POST "$GW_URL/api/v1/enroll" \
                     -H "Content-Type: application/json" \
                     -d "{\"token\":\"${GW06_FRESH_TOKEN}\",\"deviceId\":\"${GW_DEVICE_ID}\",\"hostname\":\"e2e-host-dup2-${E2E_RUN_ID}\",\"os\":\"linux\",\"arch\":\"x86_64\"}" 2>/dev/null || echo "000")
-                GW06_FRESH_BODY=$(cat /tmp/gw06-fresh.txt 2>/dev/null || echo "")
-                rm -f /tmp/gw06-fresh.txt
+                GW06_FRESH_BODY=$(cat $GW_SCRATCH/gw06-fresh.txt 2>/dev/null || echo "")
+                rm -f $GW_SCRATCH/gw06-fresh.txt
 
                 echo "  Fresh-token same-device re-enrollment: HTTP $GW06_FRESH_CODE"
                 echo "  Body (first 200 chars): $(echo "$GW06_FRESH_BODY" | head -c 200)"

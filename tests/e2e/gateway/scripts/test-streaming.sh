@@ -17,7 +17,7 @@ fi
 # =================================================================
 begin_test "GW-21: SSE event stream"
 
-GW21_TMPFILE=$(mktemp /tmp/gw21-sse.XXXXXX)
+GW21_TMPFILE=$(mktemp "$GW_SCRATCH/gw21-sse.XXXXXX")
 GW21_PASS=true
 
 # Step 1: Start curl SSE listener in background.

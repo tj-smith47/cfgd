@@ -1959,18 +1959,12 @@ fn git_pull(repo_path: &Path) -> std::result::Result<bool, String> {
         .find_remote("origin")
         .ok()
         .and_then(|r| r.url().map(String::from));
-    let mut fetch_cmd = crate::git_cmd_safe(remote_url.as_deref());
-    fetch_cmd.args([
-        "-C",
-        &repo_path.display().to_string(),
+    let repo_dir = &repo_path.display().to_string();
+    let cli_ok = crate::try_git_cmd(
+        remote_url.as_deref(),
+        &["-C", repo_dir, "fetch", "origin", branch_name],
         "fetch",
-        "origin",
-        branch_name,
-    ]);
-    let cli_ok = fetch_cmd
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false);
+    );
 
     if !cli_ok {
         // Fall back to libgit2
@@ -2077,25 +2071,40 @@ fn git_auto_commit_push(repo_path: &Path) -> std::result::Result<bool, String> {
     )
     .map_err(|e| format!("commit: {}", e))?;
 
-    // Push
-    let mut remote = repo
-        .find_remote("origin")
-        .map_err(|e| format!("find remote: {}", e))?;
-
+    // Push — try git CLI first with SSH hang protection.
     let head = repo.head().map_err(|e| format!("get HEAD: {}", e))?;
     let branch_name = head
         .shorthand()
         .ok_or_else(|| "cannot determine branch name".to_string())?;
 
-    let mut push_opts = git2::PushOptions::new();
-    let mut callbacks = git2::RemoteCallbacks::new();
-    callbacks.credentials(crate::git_ssh_credentials);
-    push_opts.remote_callbacks(callbacks);
+    let remote_url = repo
+        .find_remote("origin")
+        .ok()
+        .and_then(|r| r.url().map(String::from));
 
-    let refspec = format!("refs/heads/{}:refs/heads/{}", branch_name, branch_name);
-    remote
-        .push(&[&refspec], Some(&mut push_opts))
-        .map_err(|e| format!("push: {}", e))?;
+    let repo_dir = &repo_path.display().to_string();
+    let cli_ok = crate::try_git_cmd(
+        remote_url.as_deref(),
+        &["-C", repo_dir, "push", "origin", branch_name],
+        "push",
+    );
+
+    if !cli_ok {
+        // Fall back to libgit2.
+        let mut remote = repo
+            .find_remote("origin")
+            .map_err(|e| format!("find remote: {}", e))?;
+
+        let mut push_opts = git2::PushOptions::new();
+        let mut callbacks = git2::RemoteCallbacks::new();
+        callbacks.credentials(crate::git_ssh_credentials);
+        push_opts.remote_callbacks(callbacks);
+
+        let refspec = format!("refs/heads/{}:refs/heads/{}", branch_name, branch_name);
+        remote
+            .push(&[&refspec], Some(&mut push_opts))
+            .map_err(|e| format!("push: {}", e))?;
+    }
 
     Ok(true)
 }
@@ -2345,9 +2354,11 @@ fn install_windows_service(binary: &Path, config_path: &Path, profile: Option<&s
         })?;
 
     if !output.status.success() {
-        let stdout = String::from_utf8_lossy(&output.stdout);
         return Err(DaemonError::ServiceInstallFailed {
-            message: format!("sc.exe create failed: {}", stdout.trim()),
+            message: format!(
+                "sc.exe create failed: {}",
+                crate::stdout_lossy_trimmed(&output)
+            ),
         }
         .into());
     }
@@ -2386,9 +2397,11 @@ fn uninstall_windows_service() -> Result<()> {
         })?;
 
     if !output.status.success() {
-        let stdout = String::from_utf8_lossy(&output.stdout);
         return Err(DaemonError::ServiceInstallFailed {
-            message: format!("sc.exe delete failed: {}", stdout.trim()),
+            message: format!(
+                "sc.exe delete failed: {}",
+                crate::stdout_lossy_trimmed(&output)
+            ),
         }
         .into());
     }
@@ -2568,10 +2581,8 @@ fn windows_service_main() -> std::result::Result<(), Box<dyn std::error::Error>>
 
 #[cfg(unix)]
 fn install_launchd_service(binary: &Path, config_path: &Path, profile: Option<&str>) -> Result<()> {
-    let home = std::env::var("HOME").map_err(|_| DaemonError::ServiceInstallFailed {
-        message: "HOME not set".to_string(),
-    })?;
-    let plist_dir = PathBuf::from(&home).join(LAUNCHD_AGENTS_DIR);
+    let home = crate::expand_tilde(Path::new("~"));
+    let plist_dir = home.join(LAUNCHD_AGENTS_DIR);
     std::fs::create_dir_all(&plist_dir).map_err(|e| DaemonError::ServiceInstallFailed {
         message: format!("create LaunchAgents dir: {}", e),
     })?;
@@ -2594,6 +2605,7 @@ fn install_launchd_service(binary: &Path, config_path: &Path, profile: Option<&s
 
     let args_xml = args.join("\n            ");
     let label = LAUNCHD_LABEL;
+    let home_display = home.display();
 
     let plist = format!(
         r#"<?xml version="1.0" encoding="UTF-8"?>
@@ -2611,9 +2623,9 @@ fn install_launchd_service(binary: &Path, config_path: &Path, profile: Option<&s
     <key>KeepAlive</key>
     <true/>
     <key>StandardOutPath</key>
-    <string>{home}/Library/Logs/cfgd.log</string>
+    <string>{home_display}/Library/Logs/cfgd.log</string>
     <key>StandardErrorPath</key>
-    <string>{home}/Library/Logs/cfgd.err</string>
+    <string>{home_display}/Library/Logs/cfgd.err</string>
 </dict>
 </plist>"#
     );
@@ -2630,10 +2642,8 @@ fn install_launchd_service(binary: &Path, config_path: &Path, profile: Option<&s
 
 #[cfg(unix)]
 fn uninstall_launchd_service() -> Result<()> {
-    let home = std::env::var("HOME").map_err(|_| DaemonError::ServiceInstallFailed {
-        message: "HOME not set".to_string(),
-    })?;
-    let plist_path = PathBuf::from(&home)
+    let home = crate::expand_tilde(Path::new("~"));
+    let plist_path = home
         .join(LAUNCHD_AGENTS_DIR)
         .join(format!("{}.plist", LAUNCHD_LABEL));
 
@@ -2649,10 +2659,8 @@ fn uninstall_launchd_service() -> Result<()> {
 
 #[cfg(unix)]
 fn install_systemd_service(binary: &Path, config_path: &Path, profile: Option<&str>) -> Result<()> {
-    let home = std::env::var("HOME").map_err(|_| DaemonError::ServiceInstallFailed {
-        message: "HOME not set".to_string(),
-    })?;
-    let unit_dir = PathBuf::from(&home).join(SYSTEMD_USER_DIR);
+    let home = crate::expand_tilde(Path::new("~"));
+    let unit_dir = home.join(SYSTEMD_USER_DIR);
     std::fs::create_dir_all(&unit_dir).map_err(|e| DaemonError::ServiceInstallFailed {
         message: format!("create systemd user dir: {}", e),
     })?;
@@ -2700,12 +2708,8 @@ WantedBy=default.target"#
 
 #[cfg(unix)]
 fn uninstall_systemd_service() -> Result<()> {
-    let home = std::env::var("HOME").map_err(|_| DaemonError::ServiceInstallFailed {
-        message: "HOME not set".to_string(),
-    })?;
-    let unit_path = PathBuf::from(&home)
-        .join(SYSTEMD_USER_DIR)
-        .join("cfgd.service");
+    let home = crate::expand_tilde(Path::new("~"));
+    let unit_path = home.join(SYSTEMD_USER_DIR).join("cfgd.service");
 
     if unit_path.exists() {
         std::fs::remove_file(&unit_path).map_err(|e| DaemonError::ServiceInstallFailed {

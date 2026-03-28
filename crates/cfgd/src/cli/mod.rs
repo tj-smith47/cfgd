@@ -6727,8 +6727,8 @@ fn is_unmanaged_file(target: &Path, config_dir: &Path, state: &StateStore) -> bo
             return false;
         }
         // Also check ~/.cache/cfgd/modules/ for module symlinks
-        if let Ok(home) = std::env::var("HOME") {
-            let module_cache = PathBuf::from(home).join(".cache/cfgd/modules");
+        {
+            let module_cache = cfgd_core::expand_tilde(Path::new("~/.cache/cfgd/modules"));
             if link_target.starts_with(&module_cache) {
                 return false;
             }

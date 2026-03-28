@@ -12,15 +12,15 @@ begin_test "GW-22: Web dashboard loads"
 #   3. ?token= query param (returns 303 redirect with Set-Cookie)
 # Use Bearer header for direct 200 response.
 if [ -n "$ADMIN_KEY" ]; then
-    GW22_CODE=$(curl -s -o /tmp/gw22-body.txt -w "%{http_code}" \
+    GW22_CODE=$(curl -s -o $GW_SCRATCH/gw22-body.txt -w "%{http_code}" \
         "$GW_URL/" \
         -H "Authorization: Bearer $ADMIN_KEY" 2>/dev/null || echo "000")
 else
-    GW22_CODE=$(curl -s -o /tmp/gw22-body.txt -w "%{http_code}" \
+    GW22_CODE=$(curl -s -o $GW_SCRATCH/gw22-body.txt -w "%{http_code}" \
         "$GW_URL/" 2>/dev/null || echo "000")
 fi
-GW22_BODY=$(cat /tmp/gw22-body.txt 2>/dev/null || echo "")
-rm -f /tmp/gw22-body.txt
+GW22_BODY=$(cat $GW_SCRATCH/gw22-body.txt 2>/dev/null || echo "")
+rm -f $GW_SCRATCH/gw22-body.txt
 
 echo "  GET /: HTTP $GW22_CODE"
 
@@ -43,9 +43,9 @@ case "$GW22_CODE" in
         ;;
     401)
         # Bearer may not have worked — try ?token= query param (returns 303 with Set-Cookie)
-        GW22_TOKEN_CODE=$(curl -s -o /tmp/gw22-token.txt -w "%{http_code}" \
+        GW22_TOKEN_CODE=$(curl -s -o $GW_SCRATCH/gw22-token.txt -w "%{http_code}" \
             "$GW_URL/?token=$ADMIN_KEY" 2>/dev/null || echo "000")
-        rm -f /tmp/gw22-token.txt
+        rm -f $GW_SCRATCH/gw22-token.txt
 
         echo "  Retry with ?token= param: HTTP $GW22_TOKEN_CODE"
 
@@ -66,10 +66,10 @@ esac
 # =================================================================
 begin_test "GW-23: Enrollment info"
 
-GW23_CODE=$(curl -s -o /tmp/gw23-body.txt -w "%{http_code}" \
+GW23_CODE=$(curl -s -o $GW_SCRATCH/gw23-body.txt -w "%{http_code}" \
     "$GW_URL/api/v1/enroll/info" 2>/dev/null || echo "000")
-GW23_BODY=$(cat /tmp/gw23-body.txt 2>/dev/null || echo "")
-rm -f /tmp/gw23-body.txt
+GW23_BODY=$(cat $GW_SCRATCH/gw23-body.txt 2>/dev/null || echo "")
+rm -f $GW_SCRATCH/gw23-body.txt
 
 echo "  GET /api/v1/enroll/info: HTTP $GW23_CODE"
 echo "  Body: $GW23_BODY"

@@ -2263,11 +2263,11 @@ impl PackageManager for GoInstallManager {
     }
 
     fn installed_packages(&self) -> Result<HashSet<String>> {
-        // Scan $GOPATH/bin (or $HOME/go/bin) for installed binaries
+        // Scan $GOPATH/bin (or ~/go/bin) for installed binaries
         let gopath = std::env::var("GOPATH").ok().unwrap_or_else(|| {
-            std::env::var("HOME")
-                .map(|h| format!("{}/go", h))
-                .unwrap_or_default()
+            cfgd_core::expand_tilde(std::path::Path::new("~/go"))
+                .to_string_lossy()
+                .to_string()
         });
 
         let bin_dir = std::path::PathBuf::from(&gopath).join("bin");
@@ -2307,9 +2307,9 @@ impl PackageManager for GoInstallManager {
     fn uninstall(&self, packages: &[String], printer: &Printer) -> Result<()> {
         // Go has no uninstall command; remove binaries from $GOPATH/bin
         let gopath = std::env::var("GOPATH").ok().unwrap_or_else(|| {
-            std::env::var("HOME")
-                .map(|h| format!("{}/go", h))
-                .unwrap_or_default()
+            cfgd_core::expand_tilde(std::path::Path::new("~/go"))
+                .to_string_lossy()
+                .to_string()
         });
 
         let bin_dir = std::path::PathBuf::from(&gopath).join("bin");

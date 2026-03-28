@@ -248,7 +248,7 @@ MERGE_CONF="$MERGE_CFG/cfgd.yaml"
 MERGE_C="--config $MERGE_CONF --state-dir $MERGE_STATE --no-color"
 
 # Source A: provides wget via brew
-MERGE_SRC_A=$(mktemp -d)
+MERGE_SRC_A=$(mktemp -d "$SCRATCH/merge-src-a.XXXXXX")
 mkdir -p "$MERGE_SRC_A/profiles"
 cat > "$MERGE_SRC_A/cfgd-source.yaml" << SRCAEOF
 apiVersion: cfgd.io/v1alpha1
@@ -274,7 +274,7 @@ PROFAEOF
 (cd "$MERGE_SRC_A" && git init -q -b master && git add -A && git commit -qm "init src-a")
 
 # Source B: provides curl via brew + env var + a conflicting file
-MERGE_SRC_B=$(mktemp -d)
+MERGE_SRC_B=$(mktemp -d "$SCRATCH/merge-src-b.XXXXXX")
 mkdir -p "$MERGE_SRC_B/profiles" "$MERGE_SRC_B/files"
 cat > "$MERGE_SRC_B/cfgd-source.yaml" << SRCBEOF
 apiVersion: cfgd.io/v1alpha1

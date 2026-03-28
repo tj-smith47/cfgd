@@ -70,7 +70,7 @@ if [ -z "$OLD_POD" ]; then
     fail_test "OP-LC-03" "No operator pod found"
 else
     # Delete the pod
-    kubectl delete pod "$OLD_POD" -n cfgd-system --wait=false 2>/dev/null
+    kubectl delete pod "$OLD_POD" -n cfgd-system --wait=false --ignore-not-found 2>/dev/null
 
     # Wait for the deployment to become available again
     echo "  Waiting for operator deployment to recover..."

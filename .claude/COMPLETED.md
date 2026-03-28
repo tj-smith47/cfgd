@@ -4,6 +4,57 @@ Reference for the original design rationale and acceptance criteria of shipped f
 
 ---
 
+## Codebase-Wide Robustness Audit
+
+Full sweep of all `.rs` files in `crates/`, all `.sh` files in `tests/e2e/`, and all `.yaml` in `chart/` for 8 categories of robustness issues. Key fixes:
+
+**Category 1 — Shared Techniques Applied Everywhere:**
+- SSH safety: `try_git_cmd()` helper extracted; all git2 network operations (clone, fetch, push) in modules, sources, and daemon now try git CLI first with SSH hang protection
+- Process output: `stdout_lossy_trimmed`/`stderr_lossy_trimmed` applied to core library code (oci, sources, daemon, platform)
+- Command availability: `command_available()` checks added for ssh-add, ssh-keygen, gpg in init.rs
+- Platform safety: All `std::env::var("HOME")` replaced with `expand_tilde("~")` for cross-platform support (daemon, system, packages, cli, generate)
+
+**Category 2 — Silent Failures Fixed:**
+- Journal complete/fail errors now logged via `tracing::warn` instead of silently discarded
+- File read errors in env actions now distinguish NotFound (expected) from other errors (logged)
+- Module file hash read errors now logged instead of silently defaulting to empty hash
+
+**Category 3 — Timeouts Added:**
+- `command_output_with_timeout()` helper added to lib.rs with poll-based timeout
+- `GIT_NETWORK_TIMEOUT` (5 min) applied to all git CLI operations via `try_git_cmd`
+- `git_clone_with_fallback` uses timeout for CLI attempt
+- OCI credential helper spawn has 10s timeout
+- OCI ureq agents have explicit 300s timeout
+- `ssh-add -l` call has 5s timeout
+
+**Category 4 — Platform Safety:**
+- All `std::env::var("HOME")` calls replaced with cross-platform `expand_tilde`
+- Verified all `#[cfg(unix)]` blocks have corresponding `#[cfg(windows)]` handling
+- All `std::os::unix::*` imports properly gated
+
+**Category 5 — Concurrency Safety:**
+- All `unsafe { std::env::set_var(...) }` blocks verified to have documented safety invariants
+- No `static mut` or global mutable state found
+- No unguarded env mutations
+
+**Category 6 — State Consistency:**
+- Apply status race already fixed in prior commit (InProgress before actions, update after)
+- Rollback and file deploy patterns reviewed
+
+**Category 7 — Config Schema Integrity:**
+- All 9 serde enums verified: PascalCase variants (default) match YAML examples
+- All 26+ structs use `rename_all = "camelCase"` correctly
+- No kebab-case or snake_case serde attributes found
+- All Optional/required field handling verified against user YAML expectations
+
+**Category 8 — Test Safety (E2E):**
+- All hardcoded `/tmp/gwNN-*.txt` paths (60+ occurrences) replaced with `$GW_SCRATCH/` across all gateway test files
+- `$GW_SCRATCH` created in `run-all.sh` with cleanup trap
+- Missing `--ignore-not-found` added to kubectl delete in crossplane and operator tests
+- `mktemp -d` leaks in test-source.sh now use `$SCRATCH` subdirectories
+- `/tmp/source-target` in setup-cli-env.sh replaced with `$CLI_SCRATCH/source-target`
+- Port-forward cleanup: `wait` added after `kill` in test-health.sh
+
 ## E2E Test Reorganization
 
 Split monolithic E2E test scripts into 51 per-domain files across 4 suites. Plan: `plans/2026-03-25-e2e-test-reorganization.md`.

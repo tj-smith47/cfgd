@@ -34,14 +34,14 @@ begin_test "GW-08: Checkin with drift report"
 if [ -z "${DEVICE_API_KEY:-}" ]; then
     skip_test "GW-08" "No device enrolled (GW-02 may have failed)"
 else
-    GW08_HTTP_CODE=$(curl -s -o /tmp/gw08-body.txt -w "%{http_code}" \
+    GW08_HTTP_CODE=$(curl -s -o $GW_SCRATCH/gw08-body.txt -w "%{http_code}" \
         -X POST "${GW_URL}/api/v1/devices/${GW_DEVICE_ID}/drift" \
         -H "Authorization: Bearer ${DEVICE_API_KEY}" \
         -H "Content-Type: application/json" \
         -d '{"details":[{"field":"packages.curl","expected":"8.5.0","actual":"8.4.0"}]}' \
         2>/dev/null || echo "000")
-    GW08_BODY=$(cat /tmp/gw08-body.txt 2>/dev/null || echo "")
-    rm -f /tmp/gw08-body.txt
+    GW08_BODY=$(cat $GW_SCRATCH/gw08-body.txt 2>/dev/null || echo "")
+    rm -f $GW_SCRATCH/gw08-body.txt
 
     echo "  HTTP status: $GW08_HTTP_CODE"
     echo "  Body (first 300 chars):"
@@ -64,14 +64,14 @@ if [ -z "${DEVICE_API_KEY:-}" ]; then
     skip_test "GW-09" "No device enrolled (GW-02 may have failed)"
 else
     GW09_COMPLIANCE='{"compliant":true,"totalChecks":5,"passedChecks":5,"failedChecks":0}'
-    GW09_CHECKIN_CODE=$(curl -s -o /tmp/gw09-checkin.txt -w "%{http_code}" \
+    GW09_CHECKIN_CODE=$(curl -s -o $GW_SCRATCH/gw09-checkin.txt -w "%{http_code}" \
         -X POST "${GW_URL}/api/v1/checkin" \
         -H "Authorization: Bearer ${DEVICE_API_KEY}" \
         -H "Content-Type: application/json" \
         -d "{\"deviceId\":\"${GW_DEVICE_ID}\",\"hostname\":\"e2e-host-${E2E_RUN_ID}\",\"os\":\"linux\",\"arch\":\"x86_64\",\"configHash\":\"sha256:e2e-compliance-${E2E_RUN_ID}\",\"complianceSummary\":${GW09_COMPLIANCE}}" \
         2>/dev/null || echo "000")
-    GW09_CHECKIN_BODY=$(cat /tmp/gw09-checkin.txt 2>/dev/null || echo "")
-    rm -f /tmp/gw09-checkin.txt
+    GW09_CHECKIN_BODY=$(cat $GW_SCRATCH/gw09-checkin.txt 2>/dev/null || echo "")
+    rm -f $GW_SCRATCH/gw09-checkin.txt
 
     echo "  Checkin HTTP status: $GW09_CHECKIN_CODE"
 
@@ -80,12 +80,12 @@ else
         fail_test "GW-09" "Checkin with compliance data failed (HTTP $GW09_CHECKIN_CODE)"
     else
         # GET the device and verify compliance data is stored
-        GW09_DEVICE_CODE=$(curl -s -o /tmp/gw09-device.txt -w "%{http_code}" \
+        GW09_DEVICE_CODE=$(curl -s -o $GW_SCRATCH/gw09-device.txt -w "%{http_code}" \
             -X GET "${GW_URL}/api/v1/devices/${GW_DEVICE_ID}" \
             -H "Authorization: Bearer ${DEVICE_API_KEY}" \
             2>/dev/null || echo "000")
-        GW09_DEVICE_BODY=$(cat /tmp/gw09-device.txt 2>/dev/null || echo "")
-        rm -f /tmp/gw09-device.txt
+        GW09_DEVICE_BODY=$(cat $GW_SCRATCH/gw09-device.txt 2>/dev/null || echo "")
+        rm -f $GW_SCRATCH/gw09-device.txt
 
         echo "  GET device HTTP status: $GW09_DEVICE_CODE"
         echo "  Device body (first 500 chars):"
@@ -111,14 +111,14 @@ fi
 # =================================================================
 begin_test "GW-10: Checkin with invalid API key"
 
-GW10_HTTP_CODE=$(curl -s -o /tmp/gw10-body.txt -w "%{http_code}" \
+GW10_HTTP_CODE=$(curl -s -o $GW_SCRATCH/gw10-body.txt -w "%{http_code}" \
     -X POST "${GW_URL}/api/v1/checkin" \
     -H "Authorization: Bearer cfgd_dk_totally_invalid_key_value" \
     -H "Content-Type: application/json" \
     -d "{\"deviceId\":\"${GW_DEVICE_ID}\",\"hostname\":\"e2e-host-invalid\",\"os\":\"linux\",\"arch\":\"x86_64\",\"configHash\":\"sha256:invalid\"}" \
     2>/dev/null || echo "000")
-GW10_BODY=$(cat /tmp/gw10-body.txt 2>/dev/null || echo "")
-rm -f /tmp/gw10-body.txt
+GW10_BODY=$(cat $GW_SCRATCH/gw10-body.txt 2>/dev/null || echo "")
+rm -f $GW_SCRATCH/gw10-body.txt
 
 echo "  HTTP status: $GW10_HTTP_CODE"
 echo "  Body: $GW10_BODY"
@@ -172,14 +172,14 @@ EOF
         fail_test "GW-18" "Failed to create MachineConfig CRD"
     else
         # Checkin for this device
-        GW18_CHECKIN_CODE=$(curl -s -o /tmp/gw18-checkin.txt -w "%{http_code}" \
+        GW18_CHECKIN_CODE=$(curl -s -o $GW_SCRATCH/gw18-checkin.txt -w "%{http_code}" \
             -X POST "${GW_URL}/api/v1/checkin" \
             -H "Authorization: Bearer ${DEVICE_API_KEY}" \
             -H "Content-Type: application/json" \
             -d "{\"deviceId\":\"${GW_DEVICE_ID}\",\"hostname\":\"e2e-host-${E2E_RUN_ID}\",\"os\":\"linux\",\"arch\":\"x86_64\",\"configHash\":\"sha256:e2e-mc-test-${E2E_RUN_ID}\"}" \
             2>/dev/null || echo "000")
-        GW18_CHECKIN_BODY=$(cat /tmp/gw18-checkin.txt 2>/dev/null || echo "")
-        rm -f /tmp/gw18-checkin.txt
+        GW18_CHECKIN_BODY=$(cat $GW_SCRATCH/gw18-checkin.txt 2>/dev/null || echo "")
+        rm -f $GW_SCRATCH/gw18-checkin.txt
 
         echo "  Checkin HTTP status: $GW18_CHECKIN_CODE"
 

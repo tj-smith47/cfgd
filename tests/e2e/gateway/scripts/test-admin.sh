@@ -96,10 +96,10 @@ fi
 # =================================================================
 begin_test "GW-26: Admin token list"
 
-GW26_CODE=$(curl -s -o /tmp/gw26-body.txt -w "%{http_code}" "$GW_URL/api/v1/admin/tokens" \
+GW26_CODE=$(curl -s -o $GW_SCRATCH/gw26-body.txt -w "%{http_code}" "$GW_URL/api/v1/admin/tokens" \
     -H "$(gw_admin_auth_header)" 2>/dev/null || echo "000")
-GW26_BODY=$(cat /tmp/gw26-body.txt 2>/dev/null || echo "")
-rm -f /tmp/gw26-body.txt
+GW26_BODY=$(cat $GW_SCRATCH/gw26-body.txt 2>/dev/null || echo "")
+rm -f $GW_SCRATCH/gw26-body.txt
 
 echo "  GET /api/v1/admin/tokens: HTTP $GW26_CODE"
 
@@ -161,14 +161,14 @@ fi
 begin_test "GW-28: Admin user key add"
 
 GW28_USERNAME="e2e-keyuser-${E2E_RUN_ID}"
-GW28_CODE=$(curl -s -o /tmp/gw28-body.txt -w "%{http_code}" \
+GW28_CODE=$(curl -s -o $GW_SCRATCH/gw28-body.txt -w "%{http_code}" \
     -X POST "$GW_URL/api/v1/admin/users/$GW28_USERNAME/keys" \
     -H "Content-Type: application/json" \
     -H "$(gw_admin_auth_header)" \
     -d '{"keyType":"ssh","publicKey":"ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGw28test e2e-test","fingerprint":"SHA256:e2eTestFingerprint28","label":"gw28-test"}' \
     2>/dev/null || echo "000")
-GW28_BODY=$(cat /tmp/gw28-body.txt 2>/dev/null || echo "")
-rm -f /tmp/gw28-body.txt
+GW28_BODY=$(cat $GW_SCRATCH/gw28-body.txt 2>/dev/null || echo "")
+rm -f $GW_SCRATCH/gw28-body.txt
 
 echo "  POST /api/v1/admin/users/$GW28_USERNAME/keys: HTTP $GW28_CODE"
 
@@ -189,11 +189,11 @@ fi
 # =================================================================
 begin_test "GW-29: Admin user key list"
 
-GW29_CODE=$(curl -s -o /tmp/gw29-body.txt -w "%{http_code}" \
+GW29_CODE=$(curl -s -o $GW_SCRATCH/gw29-body.txt -w "%{http_code}" \
     "$GW_URL/api/v1/admin/users/$GW28_USERNAME/keys" \
     -H "$(gw_admin_auth_header)" 2>/dev/null || echo "000")
-GW29_BODY=$(cat /tmp/gw29-body.txt 2>/dev/null || echo "")
-rm -f /tmp/gw29-body.txt
+GW29_BODY=$(cat $GW_SCRATCH/gw29-body.txt 2>/dev/null || echo "")
+rm -f $GW_SCRATCH/gw29-body.txt
 
 echo "  GET /api/v1/admin/users/$GW28_USERNAME/keys: HTTP $GW29_CODE"
 
@@ -383,11 +383,11 @@ fi
 # =================================================================
 begin_test "GW-17: Fleet status via device list"
 
-GW17_CODE=$(curl -s -o /tmp/gw17-body.txt -w "%{http_code}" \
+GW17_CODE=$(curl -s -o $GW_SCRATCH/gw17-body.txt -w "%{http_code}" \
     "$GW_URL/api/v1/devices" \
     -H "$(gw_admin_auth_header)" 2>/dev/null || echo "000")
-GW17_BODY=$(cat /tmp/gw17-body.txt 2>/dev/null || echo "")
-rm -f /tmp/gw17-body.txt
+GW17_BODY=$(cat $GW_SCRATCH/gw17-body.txt 2>/dev/null || echo "")
+rm -f $GW_SCRATCH/gw17-body.txt
 
 echo "  GET /api/v1/devices: HTTP $GW17_CODE"
 
