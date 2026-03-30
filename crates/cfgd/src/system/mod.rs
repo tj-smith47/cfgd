@@ -2557,7 +2557,7 @@ HKEY_CURRENT_USER\\Environment\n\
         let plist =
             generate_launch_agent_plist("com.example.test", "/usr/bin/test", &["--key=a&b"], false);
         // Should contain XML-escaped ampersand
-        assert!(plist.contains("&amp;") || plist.contains("--key=a&b"));
+        assert!(plist.contains("&amp;"), "ampersand must be XML-escaped in plist");
     }
 
     #[test]
@@ -3064,5 +3064,423 @@ HKEY_CURRENT_USER\\Environment\n\
         let configurator = XfconfConfigurator;
         let state = configurator.current_state().unwrap();
         assert!(state.as_mapping().unwrap().is_empty());
+    }
+
+    // --- diff_yaml_mapping edge cases ---
+
+    #[test]
+    fn diff_yaml_mapping_empty_desired_produces_no_drifts() {
+        let desired = serde_yaml::Mapping::new();
+        let drifts = diff_yaml_mapping(&desired, "", yaml_value_to_string, |_| {
+            "anything".to_string()
+        });
+        assert!(drifts.is_empty());
+    }
+
+    #[test]
+    fn diff_yaml_mapping_key_missing_from_actual() {
+        // When get_actual returns "" for a key that desired has a value for,
+        // it should be reported as drift.
+        let mut desired = serde_yaml::Mapping::new();
+        desired.insert(
+            serde_yaml::Value::String("new_key".into()),
+            serde_yaml::Value::String("desired_value".into()),
+        );
+
+        let drifts = diff_yaml_mapping(&desired, "", yaml_value_to_string, |_| String::new());
+        assert_eq!(drifts.len(), 1);
+        assert_eq!(drifts[0].key, "new_key");
+        assert_eq!(drifts[0].expected, "desired_value");
+        assert_eq!(drifts[0].actual, "");
+    }
+
+    #[test]
+    fn diff_yaml_mapping_null_value_in_desired() {
+        let mut desired = serde_yaml::Mapping::new();
+        desired.insert(
+            serde_yaml::Value::String("null_key".into()),
+            serde_yaml::Value::Null,
+        );
+
+        // yaml_value_to_string formats Null via Debug
+        let drifts = diff_yaml_mapping(&desired, "", yaml_value_to_string, |_| String::new());
+        assert_eq!(drifts.len(), 1);
+        assert_eq!(drifts[0].key, "null_key");
+        // The Null value is formatted via the Debug fallback
+        assert!(!drifts[0].expected.is_empty());
+    }
+
+    #[test]
+    fn diff_yaml_mapping_non_string_keys_are_skipped() {
+        let mut desired = serde_yaml::Mapping::new();
+        // Insert a numeric key — should be skipped
+        desired.insert(
+            serde_yaml::Value::Number(42.into()),
+            serde_yaml::Value::String("value".into()),
+        );
+        // Insert a valid string key
+        desired.insert(
+            serde_yaml::Value::String("valid".into()),
+            serde_yaml::Value::String("expected".into()),
+        );
+
+        let drifts = diff_yaml_mapping(&desired, "", yaml_value_to_string, |_| {
+            "different".to_string()
+        });
+        // Only the string key should produce drift; numeric key is skipped
+        assert_eq!(drifts.len(), 1);
+        assert_eq!(drifts[0].key, "valid");
+    }
+
+    #[test]
+    fn diff_yaml_mapping_empty_prefix_no_dot() {
+        let mut desired = serde_yaml::Mapping::new();
+        desired.insert(
+            serde_yaml::Value::String("key".into()),
+            serde_yaml::Value::String("a".into()),
+        );
+
+        let drifts = diff_yaml_mapping(&desired, "", yaml_value_to_string, |_| "b".to_string());
+        assert_eq!(drifts[0].key, "key"); // No leading dot
+    }
+
+    #[test]
+    fn diff_yaml_mapping_all_values_match() {
+        let mut desired = serde_yaml::Mapping::new();
+        desired.insert(
+            serde_yaml::Value::String("x".into()),
+            serde_yaml::Value::String("1".into()),
+        );
+        desired.insert(
+            serde_yaml::Value::String("y".into()),
+            serde_yaml::Value::String("2".into()),
+        );
+
+        let drifts = diff_yaml_mapping(&desired, "ns", yaml_value_to_string, |k| {
+            match k {
+                "x" => "1",
+                "y" => "2",
+                _ => "",
+            }
+            .to_string()
+        });
+        assert!(drifts.is_empty());
+    }
+
+    #[test]
+    fn diff_yaml_mapping_bool_value_via_yaml_value_to_string() {
+        let mut desired = serde_yaml::Mapping::new();
+        desired.insert(
+            serde_yaml::Value::String("flag".into()),
+            serde_yaml::Value::Bool(true),
+        );
+
+        // yaml_value_to_string converts bools to "true"/"false"
+        let drifts = diff_yaml_mapping(&desired, "", yaml_value_to_string, |_| {
+            "false".to_string()
+        });
+        assert_eq!(drifts.len(), 1);
+        assert_eq!(drifts[0].expected, "true");
+        assert_eq!(drifts[0].actual, "false");
+    }
+
+    #[test]
+    fn diff_yaml_mapping_bool_value_via_numeric_bools() {
+        let mut desired = serde_yaml::Mapping::new();
+        desired.insert(
+            serde_yaml::Value::String("flag".into()),
+            serde_yaml::Value::Bool(true),
+        );
+
+        // yaml_value_with_numeric_bools converts true→"1", false→"0"
+        let drifts =
+            diff_yaml_mapping(&desired, "", yaml_value_with_numeric_bools, |_| "0".to_string());
+        assert_eq!(drifts.len(), 1);
+        assert_eq!(drifts[0].expected, "1");
+        assert_eq!(drifts[0].actual, "0");
+    }
+
+    // --- diff_nested_mapping edge cases ---
+
+    #[test]
+    fn diff_nested_mapping_non_mapping_desired_returns_empty() {
+        let desired = serde_yaml::Value::String("not a mapping".into());
+        let drifts = diff_nested_mapping(&desired, |_, _| String::new()).unwrap();
+        assert!(drifts.is_empty());
+    }
+
+    #[test]
+    fn diff_nested_mapping_null_desired_returns_empty() {
+        let desired = serde_yaml::Value::Null;
+        let drifts = diff_nested_mapping(&desired, |_, _| String::new()).unwrap();
+        assert!(drifts.is_empty());
+    }
+
+    #[test]
+    fn diff_nested_mapping_empty_outer_mapping() {
+        let desired = serde_yaml::Value::Mapping(serde_yaml::Mapping::new());
+        let drifts = diff_nested_mapping(&desired, |_, _| String::new()).unwrap();
+        assert!(drifts.is_empty());
+    }
+
+    #[test]
+    fn diff_nested_mapping_inner_not_mapping_is_skipped() {
+        // Outer key is valid, but inner value is a string instead of a mapping
+        let mut outer = serde_yaml::Mapping::new();
+        outer.insert(
+            serde_yaml::Value::String("schema".into()),
+            serde_yaml::Value::String("not a mapping".into()),
+        );
+        let desired = serde_yaml::Value::Mapping(outer);
+
+        let drifts = diff_nested_mapping(&desired, |_, _| String::new()).unwrap();
+        assert!(drifts.is_empty());
+    }
+
+    #[test]
+    fn diff_nested_mapping_non_string_outer_key_is_skipped() {
+        let mut outer = serde_yaml::Mapping::new();
+        let mut inner = serde_yaml::Mapping::new();
+        inner.insert(
+            serde_yaml::Value::String("key".into()),
+            serde_yaml::Value::String("val".into()),
+        );
+        // Numeric outer key — should be skipped
+        outer.insert(
+            serde_yaml::Value::Number(99.into()),
+            serde_yaml::Value::Mapping(inner),
+        );
+        let desired = serde_yaml::Value::Mapping(outer);
+
+        let drifts = diff_nested_mapping(&desired, |_, _| String::new()).unwrap();
+        assert!(drifts.is_empty());
+    }
+
+    #[test]
+    fn diff_nested_mapping_detects_drift_with_prefix() {
+        let mut inner = serde_yaml::Mapping::new();
+        inner.insert(
+            serde_yaml::Value::String("color-scheme".into()),
+            serde_yaml::Value::String("prefer-dark".into()),
+        );
+        let mut outer = serde_yaml::Mapping::new();
+        outer.insert(
+            serde_yaml::Value::String("org.gnome.desktop.interface".into()),
+            serde_yaml::Value::Mapping(inner),
+        );
+        let desired = serde_yaml::Value::Mapping(outer);
+
+        let drifts = diff_nested_mapping(&desired, |_schema, _key| "prefer-light".to_string())
+            .unwrap();
+        assert_eq!(drifts.len(), 1);
+        assert_eq!(
+            drifts[0].key,
+            "org.gnome.desktop.interface.color-scheme"
+        );
+        assert_eq!(drifts[0].expected, "prefer-dark");
+        assert_eq!(drifts[0].actual, "prefer-light");
+    }
+
+    #[test]
+    fn diff_nested_mapping_no_drift_when_matching() {
+        let mut inner = serde_yaml::Mapping::new();
+        inner.insert(
+            serde_yaml::Value::String("key1".into()),
+            serde_yaml::Value::String("val1".into()),
+        );
+        let mut outer = serde_yaml::Mapping::new();
+        outer.insert(
+            serde_yaml::Value::String("prefix".into()),
+            serde_yaml::Value::Mapping(inner),
+        );
+        let desired = serde_yaml::Value::Mapping(outer);
+
+        let drifts =
+            diff_nested_mapping(&desired, |_prefix, _key| "val1".to_string()).unwrap();
+        assert!(drifts.is_empty());
+    }
+
+    #[test]
+    fn diff_nested_mapping_multiple_schemas_and_keys() {
+        let yaml: serde_yaml::Value = serde_yaml::from_str(
+            r#"
+org.gnome.desktop.interface:
+  color-scheme: prefer-dark
+  font-name: "Cantarell 11"
+org.gnome.desktop.wm.preferences:
+  button-layout: close,minimize,maximize
+"#,
+        )
+        .unwrap();
+
+        let drifts = diff_nested_mapping(&yaml, |schema, key| {
+            // Return matching value for one key, mismatched for the rest
+            if schema == "org.gnome.desktop.interface" && key == "font-name" {
+                "Cantarell 11".to_string()
+            } else {
+                "wrong".to_string()
+            }
+        })
+        .unwrap();
+
+        // font-name matches, so only color-scheme and button-layout should drift
+        assert_eq!(drifts.len(), 2);
+        let keys: Vec<&str> = drifts.iter().map(|d| d.key.as_str()).collect();
+        assert!(keys.contains(&"org.gnome.desktop.interface.color-scheme"));
+        assert!(keys.contains(&"org.gnome.desktop.wm.preferences.button-layout"));
+    }
+
+    #[test]
+    fn diff_nested_mapping_passes_outer_key_to_get_actual() {
+        // Verify that the get_actual closure receives the correct (prefix, key) arguments
+        let mut inner = serde_yaml::Mapping::new();
+        inner.insert(
+            serde_yaml::Value::String("prop".into()),
+            serde_yaml::Value::String("desired".into()),
+        );
+        let mut outer = serde_yaml::Mapping::new();
+        outer.insert(
+            serde_yaml::Value::String("channel".into()),
+            serde_yaml::Value::Mapping(inner),
+        );
+        let desired = serde_yaml::Value::Mapping(outer);
+
+        let drifts = diff_nested_mapping(&desired, |prefix, key| {
+            // Echo back the arguments so we can verify they were correct
+            format!("{}:{}", prefix, key)
+        })
+        .unwrap();
+
+        assert_eq!(drifts.len(), 1);
+        assert_eq!(drifts[0].actual, "channel:prop");
+    }
+
+    // --- Platform availability ---
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn macos_defaults_not_available_on_linux() {
+        let md = MacosDefaultsConfigurator;
+        assert!(!md.is_available());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn launch_agents_not_available_on_linux() {
+        let la = LaunchAgentConfigurator;
+        assert!(!la.is_available());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn windows_registry_not_available_on_linux() {
+        let wrc = WindowsRegistryConfigurator;
+        assert!(!wrc.is_available());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn windows_services_not_available_on_linux() {
+        let wsc = WindowsServiceConfigurator;
+        assert!(!wsc.is_available());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn shell_configurator_available_on_linux() {
+        let sc = ShellConfigurator;
+        assert!(sc.is_available());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn environment_configurator_available_on_linux() {
+        let ec = EnvironmentConfigurator;
+        assert!(ec.is_available());
+    }
+
+    #[test]
+    fn gsettings_availability_depends_on_command() {
+        let gc = GsettingsConfigurator;
+        // is_available should match whether gsettings is on PATH
+        let expected = cfgd_core::command_available("gsettings");
+        assert_eq!(gc.is_available(), expected);
+    }
+
+    #[test]
+    fn kde_availability_depends_on_command() {
+        let kc = KdeConfigConfigurator;
+        let expected = cfgd_core::command_available("kwriteconfig6")
+            || cfgd_core::command_available("kwriteconfig5");
+        assert_eq!(kc.is_available(), expected);
+    }
+
+    #[test]
+    fn xfconf_availability_depends_on_command() {
+        let xc = XfconfConfigurator;
+        let expected = cfgd_core::command_available("xfconf-query");
+        assert_eq!(xc.is_available(), expected);
+    }
+
+    // --- parse_reg_line edge cases ---
+
+    #[test]
+    fn parse_reg_line_typical_entry() {
+        let line = "    MyValue    REG_SZ    hello world";
+        let result = parse_reg_line(line);
+        assert_eq!(result, Some(("MyValue", "REG_SZ", "hello world")));
+    }
+
+    #[test]
+    fn parse_reg_line_empty_string() {
+        assert_eq!(parse_reg_line(""), None);
+    }
+
+    #[test]
+    fn parse_reg_line_whitespace_only() {
+        assert_eq!(parse_reg_line("   "), None);
+    }
+
+    #[test]
+    fn parse_reg_line_hkey_header_line() {
+        assert_eq!(
+            parse_reg_line("HKEY_CURRENT_USER\\Software\\Test"),
+            None
+        );
+    }
+
+    #[test]
+    fn parse_reg_line_dword_value() {
+        let line = "    Timeout    REG_DWORD    0xff";
+        let result = parse_reg_line(line);
+        assert_eq!(result, Some(("Timeout", "REG_DWORD", "0xff")));
+    }
+
+    #[test]
+    fn parse_reg_line_fewer_than_three_parts() {
+        // A line without proper 4-space separators
+        let line = "just some text";
+        assert_eq!(parse_reg_line(line), None);
+    }
+
+    // --- yaml_value_to_string edge cases ---
+
+    #[test]
+    fn yaml_value_to_string_null() {
+        let result = yaml_value_to_string(&serde_yaml::Value::Null);
+        // Null goes through the Debug fallback
+        assert!(!result.is_empty());
+    }
+
+    #[test]
+    fn yaml_value_to_string_sequence() {
+        let seq = serde_yaml::Value::Sequence(vec![
+            serde_yaml::Value::String("a".into()),
+            serde_yaml::Value::String("b".into()),
+        ]);
+        let result = yaml_value_to_string(&seq);
+        // Sequences go through the Debug fallback
+        assert!(result.contains("a"));
+        assert!(result.contains("b"));
     }
 }
