@@ -2478,4 +2478,393 @@ other: data
             result.err()
         );
     }
+
+    // --- is_tera_template edge cases ---
+
+    #[test]
+    fn is_tera_template_double_extension() {
+        // .yaml.tera should be detected as a template (extension is "tera")
+        assert!(is_tera_template(Path::new("config.yaml.tera")));
+        assert!(is_tera_template(Path::new("/some/path/deep.nested.tera")));
+    }
+
+    #[test]
+    fn is_tera_template_case_sensitive() {
+        // .TERA and .Tera should NOT match (extension check is case-sensitive)
+        assert!(!is_tera_template(Path::new("config.TERA")));
+        assert!(!is_tera_template(Path::new("config.Tera")));
+        assert!(!is_tera_template(Path::new("config.TeRa")));
+    }
+
+    #[test]
+    fn is_tera_template_j2_not_detected() {
+        // Jinja2 templates (.j2) are not recognized as Tera templates
+        assert!(!is_tera_template(Path::new("config.j2")));
+        assert!(!is_tera_template(Path::new("config.yaml.j2")));
+    }
+
+    #[test]
+    fn is_tera_template_dotfile_named_tera() {
+        // ".tera" is a hidden file with no extension (stem="tera", ext=None)
+        assert!(!is_tera_template(Path::new(".tera")));
+    }
+
+    #[test]
+    fn is_tera_template_no_extension() {
+        assert!(!is_tera_template(Path::new("Makefile")));
+        assert!(!is_tera_template(Path::new("/usr/local/bin/cfgd")));
+    }
+
+    #[test]
+    fn is_tera_template_tera_in_directory_not_file() {
+        // "tera" in the directory path should not affect the result
+        assert!(!is_tera_template(Path::new("/templates/tera/config.txt")));
+    }
+
+    // --- effective_strategy unit tests ---
+
+    #[test]
+    fn effective_strategy_template_forces_copy_over_symlink() {
+        let dir = tempfile::tempdir().unwrap();
+        let resolved = make_resolved_profile(vec![], FilesSpec::default());
+        let fm = CfgdFileManager::new(dir.path(), &resolved).unwrap();
+
+        let result = fm.effective_strategy(Path::new("config.yaml.tera"), Some(FileStrategy::Symlink));
+        assert_eq!(result, FileStrategy::Copy);
+    }
+
+    #[test]
+    fn effective_strategy_template_forces_copy_over_hardlink() {
+        let dir = tempfile::tempdir().unwrap();
+        let resolved = make_resolved_profile(vec![], FilesSpec::default());
+        let fm = CfgdFileManager::new(dir.path(), &resolved).unwrap();
+
+        let result = fm.effective_strategy(Path::new("app.conf.tera"), Some(FileStrategy::Hardlink));
+        assert_eq!(result, FileStrategy::Copy);
+    }
+
+    #[test]
+    fn effective_strategy_template_forces_copy_even_with_none() {
+        let dir = tempfile::tempdir().unwrap();
+        let resolved = make_resolved_profile(vec![], FilesSpec::default());
+        let fm = CfgdFileManager::new(dir.path(), &resolved).unwrap();
+
+        let result = fm.effective_strategy(Path::new("file.tera"), None);
+        assert_eq!(result, FileStrategy::Copy);
+    }
+
+    #[test]
+    fn effective_strategy_non_template_uses_per_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let resolved = make_resolved_profile(vec![], FilesSpec::default());
+        let mut fm = CfgdFileManager::new(dir.path(), &resolved).unwrap();
+        fm.set_global_strategy(FileStrategy::Copy);
+
+        // Per-file Symlink should override global Copy
+        let result = fm.effective_strategy(Path::new("config.txt"), Some(FileStrategy::Symlink));
+        assert_eq!(result, FileStrategy::Symlink);
+    }
+
+    #[test]
+    fn effective_strategy_non_template_no_override_uses_global() {
+        let dir = tempfile::tempdir().unwrap();
+        let resolved = make_resolved_profile(vec![], FilesSpec::default());
+        let mut fm = CfgdFileManager::new(dir.path(), &resolved).unwrap();
+        fm.set_global_strategy(FileStrategy::Hardlink);
+
+        let result = fm.effective_strategy(Path::new("plain.txt"), None);
+        assert_eq!(result, FileStrategy::Hardlink);
+    }
+
+    #[test]
+    fn effective_strategy_default_global_is_symlink() {
+        // FileStrategy::default() is Symlink; verify effective_strategy
+        // returns Symlink when no per-file override and global is default.
+        let dir = tempfile::tempdir().unwrap();
+        let resolved = make_resolved_profile(vec![], FilesSpec::default());
+        let fm = CfgdFileManager::new(dir.path(), &resolved).unwrap();
+
+        let result = fm.effective_strategy(Path::new("normal.conf"), None);
+        assert_eq!(result, FileStrategy::Symlink);
+    }
+
+    // --- render_template_for_display additional tests ---
+
+    #[test]
+    fn render_template_for_display_with_system_facts() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_dir = dir.path();
+
+        let files_dir = config_dir.join("files");
+        fs::create_dir_all(&files_dir).unwrap();
+        let tpl = files_dir.join("sysinfo.txt.tera");
+        fs::write(&tpl, "os={{ __os }} arch={{ __arch }}").unwrap();
+
+        let resolved = make_resolved_profile(vec![], FilesSpec::default());
+        let fm = CfgdFileManager::new(config_dir, &resolved).unwrap();
+
+        let rendered = fm.render_template_for_display(&tpl).unwrap();
+        assert!(
+            rendered.contains(std::env::consts::OS),
+            "rendered should contain OS: {rendered}"
+        );
+        assert!(
+            rendered.contains(std::env::consts::ARCH),
+            "rendered should contain ARCH: {rendered}"
+        );
+    }
+
+    #[test]
+    fn render_template_for_display_undefined_var_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_dir = dir.path();
+
+        let files_dir = config_dir.join("files");
+        fs::create_dir_all(&files_dir).unwrap();
+        let tpl = files_dir.join("bad_ref.txt.tera");
+        fs::write(&tpl, "value={{ nonexistent_variable }}").unwrap();
+
+        let resolved = make_resolved_profile(vec![], FilesSpec::default());
+        let fm = CfgdFileManager::new(config_dir, &resolved).unwrap();
+
+        let result = fm.render_template_for_display(&tpl);
+        assert!(result.is_err(), "undefined variable should cause an error");
+    }
+
+    #[test]
+    fn render_template_for_display_with_custom_functions() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_dir = dir.path();
+
+        let files_dir = config_dir.join("files");
+        fs::create_dir_all(&files_dir).unwrap();
+        let tpl = files_dir.join("funcs.txt.tera");
+        fs::write(
+            &tpl,
+            "os={{ os() }} arch={{ arch() }} host={{ hostname() }}",
+        )
+        .unwrap();
+
+        let resolved = make_resolved_profile(vec![], FilesSpec::default());
+        let fm = CfgdFileManager::new(config_dir, &resolved).unwrap();
+
+        let rendered = fm.render_template_for_display(&tpl).unwrap();
+        assert!(rendered.contains(&format!("os={}", std::env::consts::OS)));
+        assert!(rendered.contains(&format!("arch={}", std::env::consts::ARCH)));
+        // hostname() should return something (at least "unknown")
+        assert!(rendered.contains("host="));
+    }
+
+    #[test]
+    fn render_template_for_display_env_function_reads_real_env() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_dir = dir.path();
+
+        let files_dir = config_dir.join("files");
+        fs::create_dir_all(&files_dir).unwrap();
+        let tpl = files_dir.join("envfn.txt.tera");
+        fs::write(&tpl, "val={{ env(name=\"CFGD_TEST_RENDER_VAR\") }}").unwrap();
+
+        // SAFETY: test environment
+        unsafe { std::env::set_var("CFGD_TEST_RENDER_VAR", "render_test_value") };
+
+        let resolved = make_resolved_profile(vec![], FilesSpec::default());
+        let fm = CfgdFileManager::new(config_dir, &resolved).unwrap();
+
+        let rendered = fm.render_template_for_display(&tpl).unwrap();
+        assert_eq!(rendered, "val=render_test_value");
+
+        unsafe { std::env::remove_var("CFGD_TEST_RENDER_VAR") };
+    }
+
+    #[test]
+    fn render_template_for_display_multiline_and_whitespace() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_dir = dir.path();
+
+        let files_dir = config_dir.join("files");
+        fs::create_dir_all(&files_dir).unwrap();
+        let tpl = files_dir.join("multi.txt.tera");
+        fs::write(
+            &tpl,
+            "line1={{ greeting }}\n  line2={{ greeting }}\n\nline4=end",
+        )
+        .unwrap();
+
+        let env = vec![EnvVar {
+            name: "greeting".into(),
+            value: "hi".into(),
+        }];
+        let resolved = make_resolved_profile(env, FilesSpec::default());
+        let fm = CfgdFileManager::new(config_dir, &resolved).unwrap();
+
+        let rendered = fm.render_template_for_display(&tpl).unwrap();
+        assert_eq!(rendered, "line1=hi\n  line2=hi\n\nline4=end");
+    }
+
+    // --- detect_language edge cases ---
+
+    #[test]
+    fn detect_language_tera_double_extension() {
+        // For a .yaml.tera file, extension is "tera" not "yaml"
+        assert_eq!(detect_language(Path::new("config.yaml.tera")), "tera");
+    }
+
+    #[test]
+    fn detect_language_hidden_file_no_extension() {
+        // Hidden files like .bashrc have no extension; detect_language returns "txt"
+        assert_eq!(detect_language(Path::new(".bashrc")), "txt");
+    }
+
+    // --- source_env template env() sandbox ---
+
+    #[test]
+    fn source_template_env_function_blocked() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_dir = dir.path();
+
+        // Create a source template that tries to use env() function
+        let files_dir = config_dir.join("files");
+        fs::create_dir_all(&files_dir).unwrap();
+        fs::write(
+            files_dir.join("exfil.txt.tera"),
+            "stolen={{ env(name=\"HOME\") }}",
+        )
+        .unwrap();
+
+        let target = config_dir.join("target").join("exfil.txt");
+
+        let resolved = make_resolved_profile(
+            vec![],
+            FilesSpec {
+                managed: vec![ManagedFileSpec {
+                    source: "files/exfil.txt.tera".to_string(),
+                    target,
+                    strategy: Some(FileStrategy::Copy),
+                    private: false,
+                    origin: Some("untrusted-source".to_string()),
+                    encryption: None,
+                    permissions: None,
+                }],
+                permissions: HashMap::new(),
+            },
+        );
+
+        let mut fm = CfgdFileManager::new(config_dir, &resolved).unwrap();
+
+        let mut source_vars: HashMap<String, Vec<EnvVar>> = HashMap::new();
+        source_vars.insert("untrusted-source".to_string(), vec![]);
+        fm.set_source_env(&source_vars);
+
+        let result = fm.plan(&resolved.merged);
+        assert!(
+            result.is_err(),
+            "source template should not be able to call env()"
+        );
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("sandbox") || err.contains("not available"),
+            "error should mention sandbox restriction: {err}"
+        );
+    }
+
+    // --- encryption: InRepo mode with symlink is allowed ---
+
+    #[test]
+    fn plan_allows_inrepo_mode_with_symlink() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_dir = dir.path();
+
+        let files_dir = config_dir.join("files");
+        fs::create_dir_all(&files_dir).unwrap();
+        // SOPS-encrypted file
+        fs::write(
+            files_dir.join("secret.yaml"),
+            "mysecret: ENC[AES256_GCM,data=abc,type=str]\nsops:\n    mac: ENC[AES256_GCM,data=xyz,type=str]\n    lastmodified: \"2024-01-01T00:00:00Z\"\n",
+        )
+        .unwrap();
+
+        let target = config_dir.join("target").join("secret.yaml");
+
+        let resolved = make_resolved_profile(
+            vec![],
+            FilesSpec {
+                managed: vec![ManagedFileSpec {
+                    source: "files/secret.yaml".to_string(),
+                    target,
+                    // InRepo + Symlink should be allowed (only Always blocks symlinks)
+                    strategy: Some(FileStrategy::Symlink),
+                    private: false,
+                    origin: None,
+                    encryption: Some(EncryptionSpec {
+                        backend: "sops".to_string(),
+                        mode: EncryptionMode::InRepo,
+                    }),
+                    permissions: None,
+                }],
+                permissions: HashMap::new(),
+            },
+        );
+
+        let fm = CfgdFileManager::new(config_dir, &resolved).unwrap();
+        let result = fm.plan(&resolved.merged);
+        assert!(
+            result.is_ok(),
+            "InRepo + Symlink should be allowed: {:?}",
+            result.err()
+        );
+    }
+
+    // --- global strategy with templates ---
+
+    #[test]
+    fn global_symlink_strategy_overridden_for_template() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_dir = dir.path();
+
+        let files_dir = config_dir.join("files");
+        fs::create_dir_all(&files_dir).unwrap();
+        fs::write(files_dir.join("app.conf.tera"), "port={{ port }}").unwrap();
+
+        let target = config_dir.join("output").join("app.conf");
+
+        let env = vec![EnvVar {
+            name: "port".into(),
+            value: "8080".into(),
+        }];
+
+        let resolved = make_resolved_profile(
+            env,
+            FilesSpec {
+                managed: vec![ManagedFileSpec {
+                    source: "files/app.conf.tera".to_string(),
+                    target: target.clone(),
+                    strategy: None, // No per-file override
+                    private: false,
+                    origin: None,
+                    encryption: None,
+                    permissions: None,
+                }],
+                permissions: HashMap::new(),
+            },
+        );
+
+        let mut fm = CfgdFileManager::new(config_dir, &resolved).unwrap();
+        // Global is Symlink, but template should force Copy
+        fm.set_global_strategy(FileStrategy::Symlink);
+
+        let actions = fm.plan(&resolved.merged).unwrap();
+        assert_eq!(actions.len(), 1);
+        assert!(
+            matches!(
+                &actions[0],
+                FileAction::Create {
+                    strategy: FileStrategy::Copy,
+                    ..
+                }
+            ),
+            "template file should use Copy even when global is Symlink: {:?}",
+            actions[0]
+        );
+    }
 }
