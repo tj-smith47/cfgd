@@ -3009,7 +3009,7 @@ mod tests {
     }
 
     #[test]
-    fn source_status_serializes() {
+    fn source_status_round_trips() {
         let status = SourceStatus {
             name: "local".to_string(),
             last_sync: Some("2026-01-01T00:00:00Z".to_string()),
@@ -3018,8 +3018,18 @@ mod tests {
             status: "active".to_string(),
         };
         let json = serde_json::to_string(&status).unwrap();
-        assert!(json.contains("local"));
-        assert!(json.contains("driftCount"));
+        let parsed: SourceStatus = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.name, "local");
+        assert_eq!(
+            parsed.last_sync.as_deref(),
+            Some("2026-01-01T00:00:00Z")
+        );
+        assert!(parsed.last_reconcile.is_none());
+        assert_eq!(parsed.drift_count, 3);
+        assert_eq!(parsed.status, "active");
+        // Verify camelCase renaming
+        assert!(json.contains("\"driftCount\":3"));
+        assert!(json.contains("\"lastSync\":"));
     }
 
     #[test]
@@ -3169,7 +3179,7 @@ mod tests {
     }
 
     #[test]
-    fn checkin_payload_serializes() {
+    fn checkin_payload_round_trips() {
         let payload = CheckinPayload {
             device_id: "abc123".into(),
             hostname: "test-host".into(),
@@ -3178,9 +3188,14 @@ mod tests {
             config_hash: "deadbeef".into(),
         };
         let json = serde_json::to_string(&payload).unwrap();
-        assert!(json.contains("device_id"));
-        assert!(json.contains("abc123"));
-        assert!(json.contains("config_hash"));
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed["device_id"], "abc123");
+        assert_eq!(parsed["hostname"], "test-host");
+        assert_eq!(parsed["os"], "linux");
+        assert_eq!(parsed["arch"], "x86_64");
+        assert_eq!(parsed["config_hash"], "deadbeef");
+        // Exactly 5 fields
+        assert_eq!(parsed.as_object().unwrap().len(), 5);
     }
 
     #[test]
@@ -3457,9 +3472,10 @@ mod tests {
             export: config::ComplianceExport::default(),
         };
 
-        let interval = Some(&config)
-            .filter(|c| c.enabled)
-            .and_then(|c| crate::parse_duration_str(&c.interval).ok());
+        let interval = config
+            .enabled
+            .then(|| crate::parse_duration_str(&config.interval).ok())
+            .flatten();
 
         assert!(interval.is_none());
     }
@@ -3474,10 +3490,756 @@ mod tests {
             export: config::ComplianceExport::default(),
         };
 
-        let interval = Some(&config)
-            .filter(|c| c.enabled)
-            .and_then(|c| crate::parse_duration_str(&c.interval).ok());
+        let interval = config
+            .enabled
+            .then(|| crate::parse_duration_str(&config.interval).ok())
+            .flatten();
 
         assert_eq!(interval, Some(Duration::from_secs(30 * 60)));
+    }
+
+    #[test]
+    fn compliance_timer_invalid_interval_when_enabled() {
+        let config = config::ComplianceConfig {
+            enabled: true,
+            interval: "garbage".into(),
+            retention: "7d".into(),
+            scope: config::ComplianceScope::default(),
+            export: config::ComplianceExport::default(),
+        };
+
+        let interval = config
+            .enabled
+            .then(|| crate::parse_duration_str(&config.interval).ok())
+            .flatten();
+
+        // Enabled but unparseable interval -> None (no timer)
+        assert!(interval.is_none());
+    }
+
+    // --- compute_config_hash: different profiles produce different hashes ---
+
+    #[test]
+    fn compute_config_hash_differs_for_different_packages() {
+        use crate::config::{
+            CargoSpec, LayerPolicy, MergedProfile, PackagesSpec, ProfileLayer, ProfileSpec,
+            ResolvedProfile,
+        };
+
+        let resolved_a = ResolvedProfile {
+            layers: vec![ProfileLayer {
+                source: "local".into(),
+                profile_name: "a".into(),
+                priority: 1000,
+                policy: LayerPolicy::Local,
+                spec: ProfileSpec::default(),
+            }],
+            merged: MergedProfile {
+                packages: PackagesSpec {
+                    cargo: Some(CargoSpec {
+                        file: None,
+                        packages: vec!["bat".into()],
+                    }),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        };
+
+        let resolved_b = ResolvedProfile {
+            layers: vec![ProfileLayer {
+                source: "local".into(),
+                profile_name: "b".into(),
+                priority: 1000,
+                policy: LayerPolicy::Local,
+                spec: ProfileSpec::default(),
+            }],
+            merged: MergedProfile {
+                packages: PackagesSpec {
+                    cargo: Some(CargoSpec {
+                        file: None,
+                        packages: vec!["ripgrep".into()],
+                    }),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        };
+
+        let hash_a = compute_config_hash(&resolved_a).unwrap();
+        let hash_b = compute_config_hash(&resolved_b).unwrap();
+        assert_ne!(hash_a, hash_b);
+    }
+
+    // --- hash_resources edge cases ---
+
+    #[test]
+    fn hash_resources_empty_set() {
+        let empty: HashSet<String> = HashSet::new();
+        let hash = hash_resources(&empty);
+        // Should produce a valid hash (SHA256 of empty string)
+        assert_eq!(hash.len(), 64);
+    }
+
+    #[test]
+    fn hash_resources_single_element() {
+        let set: HashSet<String> = HashSet::from_iter(["packages.brew.ripgrep".to_string()]);
+        let hash = hash_resources(&set);
+        assert_eq!(hash.len(), 64);
+        // Compare against known SHA256 of "packages.brew.ripgrep\n"
+        let expected = crate::sha256_hex(b"packages.brew.ripgrep\n");
+        assert_eq!(hash, expected);
+    }
+
+    // --- DaemonState::to_response field validation ---
+
+    #[test]
+    fn daemon_state_to_response_propagates_fields() {
+        let mut state = DaemonState::new();
+        state.last_reconcile = Some("2026-03-30T12:00:00Z".to_string());
+        state.last_sync = Some("2026-03-30T12:01:00Z".to_string());
+        state.drift_count = 5;
+        state.update_available = Some("2.0.0".to_string());
+
+        let response = state.to_response();
+        assert!(response.running);
+        assert_eq!(
+            response.last_reconcile.as_deref(),
+            Some("2026-03-30T12:00:00Z")
+        );
+        assert_eq!(
+            response.last_sync.as_deref(),
+            Some("2026-03-30T12:01:00Z")
+        );
+        assert_eq!(response.drift_count, 5);
+        assert_eq!(
+            response.update_available.as_deref(),
+            Some("2.0.0")
+        );
+        assert_eq!(response.sources.len(), 1);
+        assert_eq!(response.sources[0].name, "local");
+    }
+
+    // --- DaemonStatusResponse with module_reconcile and update_available ---
+
+    #[test]
+    fn daemon_status_response_with_modules_round_trips() {
+        let response = DaemonStatusResponse {
+            running: true,
+            pid: 42,
+            uptime_secs: 100,
+            last_reconcile: None,
+            last_sync: None,
+            drift_count: 2,
+            sources: vec![],
+            update_available: Some("1.5.0".to_string()),
+            module_reconcile: vec![
+                ModuleReconcileStatus {
+                    name: "security-baseline".to_string(),
+                    interval: "60s".to_string(),
+                    auto_apply: true,
+                    drift_policy: "Auto".to_string(),
+                    last_reconcile: Some("2026-03-30T00:00:00Z".to_string()),
+                },
+                ModuleReconcileStatus {
+                    name: "dev-tools".to_string(),
+                    interval: "300s".to_string(),
+                    auto_apply: false,
+                    drift_policy: "NotifyOnly".to_string(),
+                    last_reconcile: None,
+                },
+            ],
+        };
+
+        let json = serde_json::to_string(&response).unwrap();
+        let parsed: DaemonStatusResponse = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.pid, 42);
+        assert_eq!(parsed.drift_count, 2);
+        assert_eq!(parsed.update_available.as_deref(), Some("1.5.0"));
+        assert_eq!(parsed.module_reconcile.len(), 2);
+        assert_eq!(parsed.module_reconcile[0].name, "security-baseline");
+        assert!(parsed.module_reconcile[0].auto_apply);
+        assert_eq!(parsed.module_reconcile[1].name, "dev-tools");
+        assert!(!parsed.module_reconcile[1].auto_apply);
+        assert!(parsed.module_reconcile[1].last_reconcile.is_none());
+    }
+
+    #[test]
+    fn daemon_status_response_skips_empty_module_reconcile() {
+        let response = DaemonStatusResponse {
+            running: true,
+            pid: 1,
+            uptime_secs: 0,
+            last_reconcile: None,
+            last_sync: None,
+            drift_count: 0,
+            sources: vec![],
+            update_available: None,
+            module_reconcile: vec![],
+        };
+
+        let json = serde_json::to_string(&response).unwrap();
+        // module_reconcile has skip_serializing_if = "Vec::is_empty"
+        assert!(!json.contains("moduleReconcile"));
+        // update_available has skip_serializing_if = "Option::is_none"
+        assert!(!json.contains("updateAvailable"));
+    }
+
+    // --- action_resource_info tests ---
+
+    #[test]
+    fn action_resource_info_file_create() {
+        use crate::reconciler::Action;
+
+        let action = Action::File(crate::providers::FileAction::Create {
+            source: PathBuf::from("/src/.zshrc"),
+            target: PathBuf::from("/home/user/.zshrc"),
+            origin: "local".into(),
+            strategy: crate::config::FileStrategy::default(),
+            source_hash: None,
+        });
+        let (rtype, rid) = action_resource_info(&action);
+        assert_eq!(rtype, "file");
+        assert_eq!(rid, "/home/user/.zshrc");
+    }
+
+    #[test]
+    fn action_resource_info_file_update() {
+        use crate::reconciler::Action;
+
+        let action = Action::File(crate::providers::FileAction::Update {
+            source: PathBuf::from("/src/.zshrc"),
+            target: PathBuf::from("/home/user/.zshrc"),
+            diff: "--- a\n+++ b".into(),
+            origin: "local".into(),
+            strategy: crate::config::FileStrategy::default(),
+            source_hash: None,
+        });
+        let (rtype, rid) = action_resource_info(&action);
+        assert_eq!(rtype, "file");
+        assert_eq!(rid, "/home/user/.zshrc");
+    }
+
+    #[test]
+    fn action_resource_info_file_delete() {
+        use crate::reconciler::Action;
+
+        let action = Action::File(crate::providers::FileAction::Delete {
+            target: PathBuf::from("/tmp/gone"),
+            origin: "local".into(),
+        });
+        let (rtype, rid) = action_resource_info(&action);
+        assert_eq!(rtype, "file");
+        assert_eq!(rid, "/tmp/gone");
+    }
+
+    #[test]
+    fn action_resource_info_file_set_permissions() {
+        use crate::reconciler::Action;
+
+        let action = Action::File(crate::providers::FileAction::SetPermissions {
+            target: PathBuf::from("/home/user/.ssh/config"),
+            mode: 0o600,
+            origin: "local".into(),
+        });
+        let (rtype, rid) = action_resource_info(&action);
+        assert_eq!(rtype, "file");
+        assert_eq!(rid, "/home/user/.ssh/config");
+    }
+
+    #[test]
+    fn action_resource_info_file_skip() {
+        use crate::reconciler::Action;
+
+        let action = Action::File(crate::providers::FileAction::Skip {
+            target: PathBuf::from("/etc/skipped"),
+            reason: "not needed".into(),
+            origin: "local".into(),
+        });
+        let (rtype, rid) = action_resource_info(&action);
+        assert_eq!(rtype, "file");
+        assert_eq!(rid, "/etc/skipped");
+    }
+
+    #[test]
+    fn action_resource_info_package_bootstrap() {
+        use crate::reconciler::Action;
+
+        let action = Action::Package(crate::providers::PackageAction::Bootstrap {
+            manager: "brew".into(),
+            method: "curl".into(),
+            origin: "local".into(),
+        });
+        let (rtype, rid) = action_resource_info(&action);
+        assert_eq!(rtype, "package");
+        assert_eq!(rid, "brew:bootstrap");
+    }
+
+    #[test]
+    fn action_resource_info_package_install() {
+        use crate::reconciler::Action;
+
+        let action = Action::Package(crate::providers::PackageAction::Install {
+            manager: "apt".into(),
+            packages: vec!["curl".into(), "wget".into()],
+            origin: "local".into(),
+        });
+        let (rtype, rid) = action_resource_info(&action);
+        assert_eq!(rtype, "package");
+        assert_eq!(rid, "apt:curl,wget");
+    }
+
+    #[test]
+    fn action_resource_info_package_uninstall() {
+        use crate::reconciler::Action;
+
+        let action = Action::Package(crate::providers::PackageAction::Uninstall {
+            manager: "npm".into(),
+            packages: vec!["typescript".into()],
+            origin: "local".into(),
+        });
+        let (rtype, rid) = action_resource_info(&action);
+        assert_eq!(rtype, "package");
+        assert_eq!(rid, "npm:typescript");
+    }
+
+    #[test]
+    fn action_resource_info_package_skip() {
+        use crate::reconciler::Action;
+
+        let action = Action::Package(crate::providers::PackageAction::Skip {
+            manager: "cargo".into(),
+            reason: "not available".into(),
+            origin: "local".into(),
+        });
+        let (rtype, rid) = action_resource_info(&action);
+        assert_eq!(rtype, "package");
+        assert_eq!(rid, "cargo");
+    }
+
+    #[test]
+    fn action_resource_info_secret_decrypt() {
+        use crate::reconciler::Action;
+
+        let action = Action::Secret(crate::providers::SecretAction::Decrypt {
+            source: PathBuf::from("/secrets/api.enc"),
+            target: PathBuf::from("/home/user/.api_key"),
+            backend: "age".into(),
+            origin: "local".into(),
+        });
+        let (rtype, rid) = action_resource_info(&action);
+        assert_eq!(rtype, "secret");
+        assert_eq!(rid, "/home/user/.api_key");
+    }
+
+    #[test]
+    fn action_resource_info_secret_resolve() {
+        use crate::reconciler::Action;
+
+        let action = Action::Secret(crate::providers::SecretAction::Resolve {
+            provider: "1password".into(),
+            reference: "op://vault/item/field".into(),
+            target: PathBuf::from("/tmp/secret"),
+            origin: "local".into(),
+        });
+        let (rtype, rid) = action_resource_info(&action);
+        assert_eq!(rtype, "secret");
+        assert_eq!(rid, "op://vault/item/field");
+    }
+
+    #[test]
+    fn action_resource_info_secret_resolve_env() {
+        use crate::reconciler::Action;
+
+        let action = Action::Secret(crate::providers::SecretAction::ResolveEnv {
+            provider: "vault".into(),
+            reference: "secret/data/app".into(),
+            envs: vec!["API_KEY".into(), "DB_PASS".into()],
+            origin: "local".into(),
+        });
+        let (rtype, rid) = action_resource_info(&action);
+        assert_eq!(rtype, "secret");
+        assert_eq!(rid, "env:[API_KEY,DB_PASS]");
+    }
+
+    #[test]
+    fn action_resource_info_secret_skip() {
+        use crate::reconciler::Action;
+
+        let action = Action::Secret(crate::providers::SecretAction::Skip {
+            source: "bitwarden".into(),
+            reason: "not configured".into(),
+            origin: "local".into(),
+        });
+        let (rtype, rid) = action_resource_info(&action);
+        assert_eq!(rtype, "secret");
+        assert_eq!(rid, "bitwarden");
+    }
+
+    #[test]
+    fn action_resource_info_system_set_value() {
+        use crate::reconciler::{Action, SystemAction};
+
+        let action = Action::System(SystemAction::SetValue {
+            configurator: "sysctl".into(),
+            key: "vm.swappiness".into(),
+            desired: "10".into(),
+            current: "60".into(),
+            origin: "local".into(),
+        });
+        let (rtype, rid) = action_resource_info(&action);
+        assert_eq!(rtype, "system");
+        assert_eq!(rid, "sysctl:vm.swappiness");
+    }
+
+    #[test]
+    fn action_resource_info_system_skip() {
+        use crate::reconciler::{Action, SystemAction};
+
+        let action = Action::System(SystemAction::Skip {
+            configurator: "gsettings".into(),
+            reason: "not on GNOME".into(),
+            origin: "local".into(),
+        });
+        let (rtype, rid) = action_resource_info(&action);
+        assert_eq!(rtype, "system");
+        assert_eq!(rid, "gsettings");
+    }
+
+    #[test]
+    fn action_resource_info_script_run() {
+        use crate::reconciler::{Action, ScriptAction, ScriptPhase};
+
+        let action = Action::Script(ScriptAction::Run {
+            entry: crate::config::ScriptEntry::Simple("echo hello".into()),
+            phase: ScriptPhase::PreApply,
+            origin: "local".into(),
+        });
+        let (rtype, rid) = action_resource_info(&action);
+        assert_eq!(rtype, "script");
+        assert_eq!(rid, "echo hello");
+    }
+
+    #[test]
+    fn action_resource_info_module() {
+        use crate::reconciler::{Action, ModuleAction, ModuleActionKind};
+
+        let action = Action::Module(ModuleAction {
+            module_name: "security-baseline".into(),
+            kind: ModuleActionKind::InstallPackages {
+                resolved: vec![],
+            },
+        });
+        let (rtype, rid) = action_resource_info(&action);
+        assert_eq!(rtype, "module");
+        assert_eq!(rid, "security-baseline");
+    }
+
+    #[test]
+    fn action_resource_info_env_write() {
+        use crate::reconciler::{Action, EnvAction};
+
+        let action = Action::Env(EnvAction::WriteEnvFile {
+            path: PathBuf::from("/home/user/.cfgd.env"),
+            content: "export FOO=bar".into(),
+        });
+        let (rtype, rid) = action_resource_info(&action);
+        assert_eq!(rtype, "env");
+        assert_eq!(rid, "/home/user/.cfgd.env");
+    }
+
+    #[test]
+    fn action_resource_info_env_inject() {
+        use crate::reconciler::{Action, EnvAction};
+
+        let action = Action::Env(EnvAction::InjectSourceLine {
+            rc_path: PathBuf::from("/home/user/.bashrc"),
+            line: "source ~/.cfgd.env".into(),
+        });
+        let (rtype, rid) = action_resource_info(&action);
+        assert_eq!(rtype, "env-rc");
+        assert_eq!(rid, "/home/user/.bashrc");
+    }
+
+    // --- extract_source_resources with more package managers ---
+
+    #[test]
+    fn extract_source_resources_apt_dnf_pipx_npm() {
+        use crate::config::{AptSpec, MergedProfile, NpmSpec, PackagesSpec};
+
+        let merged = MergedProfile {
+            packages: PackagesSpec {
+                apt: Some(AptSpec {
+                    file: None,
+                    packages: vec!["git".into(), "tmux".into()],
+                }),
+                dnf: vec!["vim".into()],
+                pipx: vec!["black".into()],
+                npm: Some(NpmSpec {
+                    file: None,
+                    global: vec!["prettier".into()],
+                }),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        let resources = extract_source_resources(&merged);
+        assert!(resources.contains("packages.apt.git"));
+        assert!(resources.contains("packages.apt.tmux"));
+        assert!(resources.contains("packages.dnf.vim"));
+        assert!(resources.contains("packages.pipx.black"));
+        assert!(resources.contains("packages.npm.prettier"));
+        assert_eq!(resources.len(), 5);
+    }
+
+    #[test]
+    fn extract_source_resources_system_keys() {
+        use crate::config::MergedProfile;
+
+        let mut merged = MergedProfile::default();
+        merged
+            .system
+            .insert("sysctl".into(), serde_yaml::Value::Null);
+        merged
+            .system
+            .insert("kernelModules".into(), serde_yaml::Value::Null);
+
+        let resources = extract_source_resources(&merged);
+        assert!(resources.contains("system.sysctl"));
+        assert!(resources.contains("system.kernelModules"));
+        assert_eq!(resources.len(), 2);
+    }
+
+    #[test]
+    fn extract_source_resources_empty_profile() {
+        let merged = crate::config::MergedProfile::default();
+        let resources = extract_source_resources(&merged);
+        assert!(resources.is_empty());
+    }
+
+    // --- Config change detection: process_source_decisions second call ---
+
+    #[test]
+    fn process_source_decisions_no_change_on_second_call() {
+        use crate::config::{CargoSpec, PackagesSpec};
+        let store = StateStore::open_in_memory().unwrap();
+        let notifier = Notifier::new(NotifyMethod::Stdout, None);
+        let policy = AutoApplyPolicyConfig {
+            new_recommended: crate::config::PolicyAction::Accept,
+            ..Default::default()
+        };
+
+        let merged = MergedProfile {
+            packages: PackagesSpec {
+                cargo: Some(CargoSpec {
+                    file: None,
+                    packages: vec!["bat".into()],
+                }),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        // First call: stores the hash
+        let _ = process_source_decisions(&store, "acme", &merged, &policy, &notifier);
+
+        // Second call with same profile: hash matches, no new decisions
+        let excluded = process_source_decisions(&store, "acme", &merged, &policy, &notifier);
+
+        // No pending decisions since policy is Accept
+        let pending = store.pending_decisions().unwrap();
+        assert!(pending.is_empty());
+        assert!(excluded.is_empty());
+    }
+
+    #[test]
+    fn process_source_decisions_detects_new_items_on_change() {
+        use crate::config::{CargoSpec, PackagesSpec};
+        let store = StateStore::open_in_memory().unwrap();
+        let notifier = Notifier::new(NotifyMethod::Stdout, None);
+        let policy = AutoApplyPolicyConfig::default(); // Notify by default
+
+        // First call with one package
+        let merged1 = MergedProfile {
+            packages: PackagesSpec {
+                cargo: Some(CargoSpec {
+                    file: None,
+                    packages: vec!["bat".into()],
+                }),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let _ = process_source_decisions(&store, "acme", &merged1, &policy, &notifier);
+        // Clear pending decisions from first run
+        let first_pending = store.pending_decisions().unwrap();
+        for d in &first_pending {
+            let _ = store.resolve_decisions_for_source(&d.source, "accepted");
+        }
+
+        // Second call with an additional package
+        let merged2 = MergedProfile {
+            packages: PackagesSpec {
+                cargo: Some(CargoSpec {
+                    file: None,
+                    packages: vec!["bat".into(), "ripgrep".into()],
+                }),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let excluded = process_source_decisions(&store, "acme", &merged2, &policy, &notifier);
+
+        // Should have a pending decision for ripgrep (new item)
+        let pending = store.pending_decisions().unwrap();
+        assert!(!pending.is_empty());
+        let resource_names: Vec<&str> = pending.iter().map(|d| d.resource.as_str()).collect();
+        assert!(resource_names.contains(&"packages.cargo.ripgrep"));
+        assert!(excluded.contains("packages.cargo.ripgrep"));
+    }
+
+    // --- infer_item_tier: "policy" keyword ---
+
+    #[test]
+    fn infer_item_tier_detects_policy_keyword() {
+        assert_eq!(infer_item_tier("files.policy-definitions.yaml"), "locked");
+        assert_eq!(infer_item_tier("system.security-policy"), "locked");
+    }
+
+    // --- ModuleReconcileStatus serialization ---
+
+    #[test]
+    fn module_reconcile_status_round_trips() {
+        let status = ModuleReconcileStatus {
+            name: "dev-tools".into(),
+            interval: "120s".into(),
+            auto_apply: false,
+            drift_policy: "NotifyOnly".into(),
+            last_reconcile: None,
+        };
+        let json = serde_json::to_string(&status).unwrap();
+        let parsed: ModuleReconcileStatus = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.name, "dev-tools");
+        assert_eq!(parsed.interval, "120s");
+        assert!(!parsed.auto_apply);
+        assert_eq!(parsed.drift_policy, "NotifyOnly");
+        assert!(parsed.last_reconcile.is_none());
+        // Verify camelCase
+        assert!(json.contains("\"autoApply\""));
+        assert!(json.contains("\"driftPolicy\""));
+        assert!(json.contains("\"lastReconcile\""));
+    }
+
+    // --- Notifier construction ---
+
+    #[test]
+    fn notifier_webhook_without_url_does_not_panic() {
+        let notifier = Notifier::new(NotifyMethod::Webhook, None);
+        // This should log a warning but not panic
+        notifier.notify("test", "no url configured");
+    }
+
+    // --- find_server_url with multiple origins ---
+
+    #[test]
+    fn find_server_url_picks_server_among_multiple_origins() {
+        use crate::config::*;
+        let config = CfgdConfig {
+            api_version: crate::API_VERSION.into(),
+            kind: "Config".into(),
+            metadata: ConfigMetadata {
+                name: "test".into(),
+            },
+            spec: ConfigSpec {
+                profile: Some("default".into()),
+                origin: vec![
+                    OriginSpec {
+                        origin_type: OriginType::Git,
+                        url: "https://github.com/test/repo.git".into(),
+                        branch: "main".into(),
+                        auth: None,
+                        ssh_strict_host_key_checking: Default::default(),
+                    },
+                    OriginSpec {
+                        origin_type: OriginType::Server,
+                        url: "https://fleet.example.com".into(),
+                        branch: "main".into(),
+                        auth: None,
+                        ssh_strict_host_key_checking: Default::default(),
+                    },
+                ],
+                daemon: None,
+                secrets: None,
+                sources: vec![],
+                theme: None,
+                modules: None,
+                security: None,
+                aliases: std::collections::HashMap::new(),
+                file_strategy: crate::config::FileStrategy::default(),
+                ai: None,
+                compliance: None,
+            },
+        };
+        assert_eq!(
+            find_server_url(&config),
+            Some("https://fleet.example.com".to_string())
+        );
+    }
+
+    #[test]
+    fn find_server_url_returns_none_for_empty_origins() {
+        use crate::config::*;
+        let config = CfgdConfig {
+            api_version: crate::API_VERSION.into(),
+            kind: "Config".into(),
+            metadata: ConfigMetadata {
+                name: "test".into(),
+            },
+            spec: ConfigSpec {
+                profile: Some("default".into()),
+                origin: vec![],
+                daemon: None,
+                secrets: None,
+                sources: vec![],
+                theme: None,
+                modules: None,
+                security: None,
+                aliases: std::collections::HashMap::new(),
+                file_strategy: crate::config::FileStrategy::default(),
+                ai: None,
+                compliance: None,
+            },
+        };
+        assert!(find_server_url(&config).is_none());
+    }
+
+    // --- CheckinServerResponse deserialization edge cases ---
+
+    #[test]
+    fn checkin_response_with_config_payload() {
+        let json = r#"{"status":"ok","config_changed":true,"config":{"packages":["git"]}}"#;
+        let resp: CheckinServerResponse = serde_json::from_str(json).unwrap();
+        assert!(resp.config_changed);
+        assert!(resp._config.is_some());
+    }
+
+    #[test]
+    fn checkin_response_no_change() {
+        let json = r#"{"status":"ok","config_changed":false,"config":null}"#;
+        let resp: CheckinServerResponse = serde_json::from_str(json).unwrap();
+        assert!(!resp.config_changed);
+    }
+
+    // --- parse_duration_or_default: zero values ---
+
+    #[test]
+    fn parse_duration_zero_seconds() {
+        assert_eq!(parse_duration_or_default("0s"), Duration::from_secs(0));
+    }
+
+    #[test]
+    fn parse_duration_zero_plain() {
+        assert_eq!(parse_duration_or_default("0"), Duration::from_secs(0));
     }
 }
