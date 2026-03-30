@@ -18,15 +18,11 @@ fi
 # ── GEN02: generate --scan-only ────────────────────────────────────
 begin_test "GEN02: generate --scan-only"
 run $C generate --scan-only
-if [ "$RC" -eq 0 ] || [ "$RC" -eq 1 ]; then
-    # Scan-only should not call any AI API; verify scan-related output
-    if assert_contains "$OUTPUT" "Scan"; then
-        pass_test "GEN02"
-    else
-        fail_test "GEN02" "expected scan output"
-    fi
+# Scan-only should not call any AI API; verify scan-related output
+if assert_ok && assert_contains "$OUTPUT" "Scan"; then
+    pass_test "GEN02"
 else
-    fail_test "GEN02" "exit $RC"
+    fail_test "GEN02" "expected exit 0 with scan output"
 fi
 
 # ── GEN03: generate module --help ──────────────────────────────────

@@ -1053,7 +1053,8 @@ mod tests {
     fn update_checkin_not_found() {
         let db = test_db();
         let result = db.update_checkin("nonexistent", "hash", None);
-        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(matches!(err, GatewayError::NotFound(_)), "expected NotFound, got: {err}");
     }
 
     #[test]
@@ -1078,7 +1079,8 @@ mod tests {
     fn drift_event_for_nonexistent_device() {
         let db = test_db();
         let result = db.record_drift_event("nonexistent", "details");
-        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(matches!(err, GatewayError::NotFound(_)), "expected NotFound, got: {err}");
     }
 
     #[test]
@@ -1115,7 +1117,8 @@ mod tests {
         let db = test_db();
         let config = serde_json::json!({"packages": []});
         let result = db.set_device_config("nonexistent", &config);
-        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(matches!(err, GatewayError::NotFound(_)), "expected NotFound, got: {err}");
     }
 
     #[test]
@@ -1145,7 +1148,8 @@ mod tests {
     fn list_checkin_events_nonexistent_device() {
         let db = test_db();
         let result = db.list_checkin_events("nonexistent");
-        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(matches!(err, GatewayError::NotFound(_)), "expected NotFound, got: {err}");
     }
 
     #[test]
@@ -1196,7 +1200,8 @@ mod tests {
     fn force_reconcile_not_found() {
         let db = test_db();
         let result = db.set_force_reconcile("nonexistent");
-        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(matches!(err, GatewayError::NotFound(_)), "expected NotFound, got: {err}");
     }
 
     #[test]
@@ -1280,7 +1285,9 @@ mod tests {
             .expect("create failed");
 
         let result = db.validate_and_consume_bootstrap_token("hash_expired", "dev-1");
-        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(matches!(err, GatewayError::InvalidRequest(_)), "expected InvalidRequest, got: {err}");
+        assert!(err.to_string().contains("expired"), "expected 'expired' in message, got: {err}");
     }
 
     #[test]
@@ -1295,14 +1302,17 @@ mod tests {
 
         // Second consume should fail — token already used
         let result = db.validate_and_consume_bootstrap_token("hash_used", "dev-2");
-        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(matches!(err, GatewayError::InvalidRequest(_)), "expected InvalidRequest, got: {err}");
+        assert!(err.to_string().contains("already been used"), "expected 'already been used' in message, got: {err}");
     }
 
     #[test]
     fn consume_nonexistent_token_fails() {
         let db = test_db();
         let result = db.validate_and_consume_bootstrap_token("no_such_hash", "dev-1");
-        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(matches!(err, GatewayError::Unauthorized), "expected Unauthorized, got: {err}");
     }
 
     #[test]
@@ -1338,7 +1348,8 @@ mod tests {
     fn delete_nonexistent_token_fails() {
         let db = test_db();
         let result = db.delete_bootstrap_token("no-such-id");
-        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(matches!(err, GatewayError::NotFound(_)), "expected NotFound, got: {err}");
     }
 
     // --- Device Credential Tests ---
@@ -1363,7 +1374,8 @@ mod tests {
     fn validate_nonexistent_credential_fails() {
         let db = test_db();
         let result = db.validate_device_credential("no_such_hash");
-        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(matches!(err, GatewayError::Unauthorized), "expected Unauthorized, got: {err}");
     }
 
     #[test]
@@ -1375,7 +1387,8 @@ mod tests {
         db.revoke_device_credential("dev-1").expect("revoke failed");
 
         let result = db.validate_device_credential("keyhash_rev");
-        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(matches!(err, GatewayError::Unauthorized), "expected Unauthorized, got: {err}");
     }
 
     #[test]
@@ -1389,7 +1402,8 @@ mod tests {
 
         // Old key should no longer work
         let result = db.validate_device_credential("key_old");
-        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(matches!(err, GatewayError::Unauthorized), "expected Unauthorized, got: {err}");
 
         // New key should work
         let cred = db
@@ -1403,7 +1417,8 @@ mod tests {
     fn revoke_nonexistent_credential_fails() {
         let db = test_db();
         let result = db.revoke_device_credential("no-such-device");
-        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(matches!(err, GatewayError::NotFound(_)), "expected NotFound, got: {err}");
     }
 
     // --- User Public Key Tests ---
@@ -1463,7 +1478,8 @@ mod tests {
     fn delete_nonexistent_public_key_fails() {
         let db = test_db();
         let result = db.delete_user_public_key("no-such-id");
-        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(matches!(err, GatewayError::NotFound(_)), "expected NotFound, got: {err}");
     }
 
     // --- Enrollment Challenge Tests ---
@@ -1511,7 +1527,9 @@ mod tests {
             .expect("first consume ok");
 
         let result = db.consume_enrollment_challenge(&challenge.id);
-        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(matches!(err, GatewayError::InvalidRequest(_)), "expected InvalidRequest, got: {err}");
+        assert!(err.to_string().contains("already been used"), "expected 'already been used' in message, got: {err}");
     }
 
     #[test]
@@ -1527,14 +1545,17 @@ mod tests {
         ).expect("insert failed");
 
         let result = db.consume_enrollment_challenge(&id);
-        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(matches!(err, GatewayError::InvalidRequest(_)), "expected InvalidRequest, got: {err}");
+        assert!(err.to_string().contains("expired"), "expected 'expired' in message, got: {err}");
     }
 
     #[test]
     fn consume_nonexistent_challenge_fails() {
         let db = test_db();
         let result = db.consume_enrollment_challenge("no-such-id");
-        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(matches!(err, GatewayError::NotFound(_)), "expected NotFound, got: {err}");
     }
 
     #[test]

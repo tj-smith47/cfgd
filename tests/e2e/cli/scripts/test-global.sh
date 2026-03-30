@@ -22,40 +22,39 @@ else fail_test "G02"; fi
 
 begin_test "G03: --verbose flag accepted"
 run $C status --verbose
-# Just verify it doesn't crash — verbose may produce extra output or not
-if [ "$RC" -eq 0 ] || [ "$RC" -eq 1 ]; then
+if assert_ok; then
     pass_test "G03"
 else fail_test "G03" "exit $RC"; fi
 
 begin_test "G04: -v short flag"
 run $C status -v
-if [ "$RC" -eq 0 ] || [ "$RC" -eq 1 ]; then
+if assert_ok; then
     pass_test "G04"
 else fail_test "G04" "exit $RC"; fi
 
 begin_test "G05: --quiet flag accepted"
 run $C status --quiet
-if [ "$RC" -eq 0 ] || [ "$RC" -eq 1 ]; then
+if assert_ok; then
     pass_test "G05"
 else fail_test "G05" "exit $RC"; fi
 
 begin_test "G06: -q short flag"
 run $C status -q
-if [ "$RC" -eq 0 ] || [ "$RC" -eq 1 ]; then
+if assert_ok; then
     pass_test "G06"
 else fail_test "G06" "exit $RC"; fi
 
 begin_test "G07: --no-color flag"
 run --config "$CONF" --no-color status
-if [ "$RC" -eq 0 ] || [ "$RC" -eq 1 ]; then
+if assert_ok; then
     pass_test "G07"
-else fail_test "G07"; fi
+else fail_test "G07" "exit $RC"; fi
 
 begin_test "G08: --profile override"
 run $C --profile base status
-if [ "$RC" -eq 0 ] || [ "$RC" -eq 1 ]; then
+if assert_ok; then
     pass_test "G08"
-else fail_test "G08"; fi
+else fail_test "G08" "exit $RC"; fi
 
 begin_test "G09: --config with bad path fails"
 run --config /nonexistent/cfgd.yaml status

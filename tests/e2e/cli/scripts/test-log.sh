@@ -38,18 +38,18 @@ if [ -z "$LOG_ID" ]; then
 fi
 if [ -n "$LOG_ID" ]; then
     run $C log --show-output "$LOG_ID"
-    if [ "$RC" -eq 0 ] || [ "$RC" -eq 1 ]; then
+    if assert_ok; then
         pass_test "L04"
-    else fail_test "L04" "exit $RC"; fi
+    else fail_test "L04"; fi
 else
     skip_test "L04" "No apply ID found in log"
 fi
 
 begin_test "L05: log --show-output invalid ID"
 run $C log --show-output 999999
-# Should handle gracefully (no entries for this ID)
-if [ "$RC" -eq 0 ] || [ "$RC" -eq 1 ]; then
+# Invalid ID should fail (entry not found)
+if assert_fail; then
     pass_test "L05"
-else fail_test "L05" "exit $RC"; fi
+else fail_test "L05" "expected non-zero exit for invalid ID"; fi
 
 print_summary "Log"

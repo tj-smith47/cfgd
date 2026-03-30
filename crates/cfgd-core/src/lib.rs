@@ -1386,6 +1386,12 @@ mod tests {
         let meta = std::fs::metadata(&file).unwrap();
         let mode = file_permissions_mode(&meta);
         assert!(mode.is_some());
+        let bits = mode.unwrap();
+        assert!(bits & 0o777 > 0, "mode bits should be non-zero");
+        assert!(
+            bits & 0o400 != 0,
+            "owner read bit should be set on a newly created file"
+        );
     }
 
     #[cfg(unix)]
@@ -1674,26 +1680,6 @@ mod tests {
     }
 
     #[test]
-    fn merge_aliases_overrides_by_name() {
-        let mut base = vec![config::ShellAlias {
-            name: "ll".into(),
-            command: "ls -l".into(),
-        }];
-        let updates = vec![config::ShellAlias {
-            name: "ll".into(),
-            command: "ls -la".into(),
-        }];
-        merge_aliases(&mut base, &updates);
-        assert_eq!(base.len(), 1);
-        assert_eq!(base[0].command, "ls -la");
-    }
-
-    #[test]
-    fn shell_escape_value_safe_string() {
-        assert_eq!(shell_escape_value("hello"), "\"hello\"");
-    }
-
-    #[test]
     fn shell_escape_value_metacharacters() {
         let escaped = shell_escape_value("it's a $test");
         // Should single-quote when metacharacters present
@@ -1706,11 +1692,6 @@ mod tests {
             xml_escape("a&b<c>d\"e'f"),
             "a&amp;b&lt;c&gt;d&quot;e&apos;f"
         );
-    }
-
-    #[test]
-    fn xml_escape_no_special_chars() {
-        assert_eq!(xml_escape("hello world"), "hello world");
     }
 
     #[test]
@@ -1747,8 +1728,8 @@ mod tests {
     #[test]
     fn expand_tilde_with_home() {
         let result = expand_tilde(std::path::Path::new("~/test"));
-        assert!(!result.to_string_lossy().contains('~'));
-        assert!(result.to_string_lossy().ends_with("/test"));
+        let expected = std::path::PathBuf::from(std::env::var("HOME").unwrap()).join("test");
+        assert_eq!(result, expected);
     }
 
     #[test]

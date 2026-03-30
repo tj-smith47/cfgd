@@ -10,8 +10,8 @@ echo "=== cfgd sync tests ==="
 
 begin_test "SY01: sync"
 run $C sync
-if [ "$RC" -eq 0 ] || [ "$RC" -eq 1 ]; then
+if assert_ok; then
     pass_test "SY01"
-else fail_test "SY01" "exit $RC"; fi
+else fail_test "SY01"; fi
 
 print_summary "Sync"

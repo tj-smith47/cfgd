@@ -182,47 +182,51 @@ else fail_test "M28"; fi
 
 begin_test "M29: module upgrade (no remote — should fail gracefully)"
 run $C module upgrade nvim --yes
-# No remote source for local module, should handle gracefully
-if [ "$RC" -eq 0 ] || [ "$RC" -eq 1 ]; then
+# No remote source for local module — expected to fail
+if assert_fail; then
     pass_test "M29"
-else fail_test "M29" "exit $RC"; fi
+else fail_test "M29" "expected failure for local-only module"; fi
 
-begin_test "M30: module upgrade --ref"
+begin_test "M30: module upgrade --ref (no remote)"
 run $C module upgrade nvim --ref main --yes
-if [ "$RC" -eq 0 ] || [ "$RC" -eq 1 ]; then
+# No remote source — expected to fail
+if assert_fail; then
     pass_test "M30"
-else fail_test "M30" "exit $RC"; fi
+else fail_test "M30" "expected failure for local-only module"; fi
 
-begin_test "M31: module upgrade --allow-unsigned"
+begin_test "M31: module upgrade --allow-unsigned (no remote)"
 run $C module upgrade nvim --allow-unsigned --yes
-if [ "$RC" -eq 0 ] || [ "$RC" -eq 1 ]; then
+# No remote source — expected to fail
+if assert_fail; then
     pass_test "M31"
-else fail_test "M31" "exit $RC"; fi
+else fail_test "M31" "expected failure for local-only module"; fi
 
-begin_test "M32: module search"
+begin_test "M32: module search (no registry configured)"
 run $C module search neovim
-# May fail without registry, but should not crash
-if [ "$RC" -eq 0 ] || [ "$RC" -eq 1 ]; then
+# No registry configured — skip if search unavailable
+if [ "$RC" -eq 0 ]; then
     pass_test "M32"
-else fail_test "M32" "exit $RC"; fi
+else
+    skip_test "M32" "module search requires a configured registry"
+fi
 
 begin_test "M33: module registry list"
 run $C module registry list
-if [ "$RC" -eq 0 ] || [ "$RC" -eq 1 ]; then
+if assert_ok; then
     pass_test "M33"
-else fail_test "M33" "exit $RC"; fi
+else fail_test "M33"; fi
 
 begin_test "M34: module registry add"
 run $C module registry add "$SOURCE_REPO" --name test-registry
-if [ "$RC" -eq 0 ] || [ "$RC" -eq 1 ]; then
+if assert_ok; then
     pass_test "M34"
-else fail_test "M34" "exit $RC"; fi
+else fail_test "M34"; fi
 
 begin_test "M35: module registry remove"
 run $C module registry remove test-registry
-if [ "$RC" -eq 0 ] || [ "$RC" -eq 1 ]; then
+if assert_ok; then
     pass_test "M35"
-else fail_test "M35" "exit $RC"; fi
+else fail_test "M35"; fi
 
 # SECTION 37: module create/update additional flags
 
@@ -283,9 +287,9 @@ fi
 
 begin_test "M44: module edit (existing module)"
 EDITOR=true run $C module edit nvim
-if [ "$RC" -eq 0 ] || [ "$RC" -eq 1 ]; then
+if assert_ok; then
     pass_test "M44"
-else fail_test "M44" "exit $RC"; fi
+else fail_test "M44"; fi
 
 begin_test "M45: module ls (alias)"
 run $C module ls
@@ -370,9 +374,9 @@ fi
 
 begin_test "MK01: module keys list"
 run $C module keys list
-if [ "$RC" -eq 0 ] || [ "$RC" -eq 1 ]; then
+if assert_ok; then
     pass_test "MK01"
-else fail_test "MK01" "exit $RC"; fi
+else fail_test "MK01"; fi
 
 begin_test "MK02: module keys generate"
 if command -v cosign > /dev/null 2>&1; then
@@ -380,9 +384,9 @@ if command -v cosign > /dev/null 2>&1; then
     mkdir -p "$KEYS_DIR"
     # COSIGN_PASSWORD suppresses the interactive password prompt
     COSIGN_PASSWORD="" run $C module keys generate --dir "$KEYS_DIR"
-    if [ "$RC" -eq 0 ] || [ "$RC" -eq 1 ]; then
+    if assert_ok; then
         pass_test "MK02"
-    else fail_test "MK02" "exit $RC"; fi
+    else fail_test "MK02"; fi
 else
     fail_test "MK02" "cosign not installed"
 fi
@@ -395,16 +399,18 @@ if assert_ok && assert_contains "$OUTPUT" "base-image"; then
     pass_test "MB01"
 else fail_test "MB01"; fi
 
-begin_test "MB02: module build (no docker — graceful fail)"
+begin_test "MB02: module build (requires docker/podman)"
 BUILD_DIR="$SCRATCH/build-test"
 mkdir -p "$BUILD_DIR"
 cp "$OCI_DIR/module.yaml" "$BUILD_DIR/"
 mkdir -p "$BUILD_DIR/bin"
 cp "$OCI_DIR/bin/hello.sh" "$BUILD_DIR/bin/"
-# Build requires docker/podman; test that flag parsing works
+# Build requires docker/podman — skip if unavailable
 run $C module build "$BUILD_DIR" --target linux/amd64
-if [ "$RC" -eq 0 ] || [ "$RC" -eq 1 ]; then
+if [ "$RC" -eq 0 ]; then
     pass_test "MB02"
-else fail_test "MB02" "exit $RC"; fi
+else
+    skip_test "MB02" "module build requires docker/podman"
+fi
 
 print_summary "Module"

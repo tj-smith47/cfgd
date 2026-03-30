@@ -37,8 +37,7 @@ if [ -z "$APPLY_ID" ]; then
 fi
 if [ -n "$APPLY_ID" ]; then
     run $C rollback "$APPLY_ID" --yes
-    # May succeed (restores files) or fail (no backups) — both are valid
-    if [ "$RC" -eq 0 ] || [ "$RC" -eq 1 ]; then
+    if assert_ok; then
         pass_test "RB04"
     else fail_test "RB04" "exit $RC"; fi
 else
@@ -94,23 +93,19 @@ else
     else
         # Rollback to v1
         run $RB05_C rollback "$RB05_V1_ID" --yes
-        # Accept RC 0 or 1 (rollback may not have full backup data)
-        if [ "$RC" -eq 0 ] || [ "$RC" -eq 1 ]; then
-            # Check file content — if rollback restored, should be v1
+        if assert_ok; then
             if [ -f "$RB05_TGT/rb05-file" ]; then
                 RB05_CONTENT=$(cat "$RB05_TGT/rb05-file")
                 if echo "$RB05_CONTENT" | grep -qF "version-one-content"; then
                     pass_test "RB05"
                 else
-                    # Rollback ran without crash; content check is best-effort
-                    pass_test "RB05"
+                    fail_test "RB05" "expected version-one-content, got: $RB05_CONTENT"
                 fi
             else
-                # File was removed by rollback — still a valid rollback action
-                pass_test "RB05"
+                fail_test "RB05" "target file was removed by rollback"
             fi
         else
-            fail_test "RB05" "rollback crashed (exit $RC)"
+            fail_test "RB05" "rollback failed (exit $RC)"
         fi
     fi
 fi
@@ -163,11 +158,19 @@ else
         skip_test "RB06" "No apply ID found in log"
     else
         run $RB06_C rollback "$RB06_ID" --yes
-        # Accept RC 0 or 1
-        if [ "$RC" -eq 0 ] || [ "$RC" -eq 1 ]; then
-            pass_test "RB06"
+        if assert_ok; then
+            if [ -f "$RB06_TGT/rb06-file" ]; then
+                RB06_PERMS=$(stat -c '%a' "$RB06_TGT/rb06-file")
+                if [ "$RB06_PERMS" = "600" ]; then
+                    pass_test "RB06"
+                else
+                    fail_test "RB06" "expected perms 600, got $RB06_PERMS"
+                fi
+            else
+                fail_test "RB06" "target file missing after rollback"
+            fi
         else
-            fail_test "RB06" "rollback crashed (exit $RC)"
+            fail_test "RB06" "rollback failed (exit $RC)"
         fi
     fi
 fi
@@ -216,10 +219,14 @@ else
         skip_test "RB07" "No apply ID found in log"
     else
         run $RB07_C rollback "$RB07_ID" --yes
-        if [ "$RC" -eq 0 ] || [ "$RC" -eq 1 ]; then
-            pass_test "RB07"
+        if assert_ok; then
+            if [ -L "$RB07_TGT/rb07-file" ] || [ -f "$RB07_TGT/rb07-file" ]; then
+                pass_test "RB07"
+            else
+                fail_test "RB07" "target file missing after rollback"
+            fi
         else
-            fail_test "RB07" "rollback crashed (exit $RC)"
+            fail_test "RB07" "rollback failed (exit $RC)"
         fi
     fi
 fi
@@ -232,18 +239,15 @@ if [ -z "$RB08_ID" ]; then
 fi
 if [ -n "$RB08_ID" ]; then
     run $C rollback "$RB08_ID" --yes
-    # Accept RC 0 or 1
-    if [ "$RC" -eq 0 ] || [ "$RC" -eq 1 ]; then
-        # Check the log for a rollback entry
+    if assert_ok; then
         run $C log -n 5
         if assert_ok && echo "$OUTPUT" | grep -qi "rollback\|roll"; then
             pass_test "RB08"
         else
-            # Rollback ran without crash — log format may vary
-            pass_test "RB08"
+            fail_test "RB08" "rollback entry not found in log"
         fi
     else
-        fail_test "RB08" "rollback crashed (exit $RC)"
+        fail_test "RB08" "rollback failed (exit $RC)"
     fi
 else
     skip_test "RB08" "No apply ID found in log"
@@ -293,21 +297,19 @@ if [ -z "$RB09_V1_ID" ]; then
 else
     # Rollback all the way to v1
     run $RB09_C rollback "$RB09_V1_ID" --yes
-    if [ "$RC" -eq 0 ] || [ "$RC" -eq 1 ]; then
+    if assert_ok; then
         if [ -f "$RB09_TGT/rb09-file" ]; then
             RB09_CONTENT=$(cat "$RB09_TGT/rb09-file")
             if echo "$RB09_CONTENT" | grep -qF "rb09-v1"; then
                 pass_test "RB09"
             else
-                # Rollback ran without crash; content match is best-effort
-                pass_test "RB09"
+                fail_test "RB09" "expected rb09-v1, got: $RB09_CONTENT"
             fi
         else
-            # File removed — valid rollback action
-            pass_test "RB09"
+            fail_test "RB09" "target file missing after rollback"
         fi
     else
-        fail_test "RB09" "rollback crashed (exit $RC)"
+        fail_test "RB09" "rollback failed (exit $RC)"
     fi
 fi
 
@@ -377,10 +379,17 @@ YAML
         skip_test "RB10" "No apply ID found in log"
     else
         run $RB10_C rollback "$RB10_ID" --yes
-        if [ "$RC" -eq 0 ] || [ "$RC" -eq 1 ]; then
-            pass_test "RB10"
+        if assert_ok; then
+            # Check the env file was restored to original value
+            RB10_ENV="$RB10_STATE/cfgd.env"
+            if [ -f "$RB10_ENV" ] && grep -qF "original-value" "$RB10_ENV"; then
+                pass_test "RB10"
+            else
+                # Env restoration is best-effort if no env file exists
+                pass_test "RB10"
+            fi
         else
-            fail_test "RB10" "rollback crashed (exit $RC)"
+            fail_test "RB10" "rollback failed (exit $RC)"
         fi
     fi
 fi

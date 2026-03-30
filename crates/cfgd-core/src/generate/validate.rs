@@ -118,6 +118,7 @@ metadata:
 spec: {}
 "#;
         let result = validate_yaml(yaml, SchemaKind::Module);
-        assert!(result.valid || !result.errors.is_empty());
+        assert!(!result.valid);
+        assert!(result.errors.iter().any(|e| e.contains("apiVersion")));
     }
 }

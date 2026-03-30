@@ -31,8 +31,9 @@ else fail_test "S03"; fi
 
 begin_test "S04: status --module"
 run $C status --module nvim
-if [ "$RC" -eq 0 ] || [ "$RC" -eq 1 ]; then
+# Module filter with no matching module should still succeed (empty status)
+if assert_ok; then
     pass_test "S04"
-else fail_test "S04" "exit $RC"; fi
+else fail_test "S04"; fi
 
 print_summary "Status"

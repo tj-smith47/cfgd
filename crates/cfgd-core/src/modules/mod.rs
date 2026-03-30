@@ -3082,4 +3082,44 @@ spec:
         assert!(changes.iter().any(|c| c.contains("+ postApply script")));
         assert!(changes.iter().any(|c| c.contains("- postApply script")));
     }
+
+    #[test]
+    fn dependency_order_self_dependency_detected() {
+        let modules = make_modules(&[("a", &["a"])]);
+        let result = resolve_dependency_order(&["a".into()], &modules);
+        assert!(
+            result.is_err(),
+            "self-dependency should be detected as a cycle"
+        );
+    }
+
+    #[test]
+    fn resolve_package_deny_excludes_manager() {
+        let brew = MockManager::new("brew").with_package("ripgrep", "14.1.0");
+        let managers = make_manager_map(&[("brew", &brew)]);
+        let platform = macos_platform();
+
+        let entry = ModulePackageEntry {
+            name: "ripgrep".into(),
+            min_version: None,
+            prefer: vec![],
+            aliases: HashMap::new(),
+            script: None,
+            deny: vec!["brew".into()],
+            platforms: vec![],
+        };
+
+        let result = resolve_package(&entry, "test", &platform, &managers);
+        // brew is the only/native manager on macOS but is denied, so resolution should fail
+        assert!(result.is_err(), "denied manager should not be selected");
+    }
+
+    #[test]
+    fn load_lockfile_malformed_yaml_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        let lockfile_path = dir.path().join("modules.lock");
+        std::fs::write(&lockfile_path, "{{{{not valid yaml").unwrap();
+        let result = load_lockfile(dir.path());
+        assert!(result.is_err());
+    }
 }

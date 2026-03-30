@@ -232,9 +232,9 @@ else fail_test "SRC25"; fi
 
 begin_test "SRC26: source edit"
 EDITOR=true run $C source edit
-if [ "$RC" -eq 0 ] || [ "$RC" -eq 1 ]; then
+if assert_ok; then
     pass_test "SRC26"
-else fail_test "SRC26" "exit $RC"; fi
+else fail_test "SRC26"; fi
 
 # ─── Source Merge / Composition Tests (SRC-MERGE-01 through SRC-MERGE-08) ───
 

@@ -219,13 +219,3 @@ impl LeaderElection {
         on_started().await
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn leader_lease_name() {
-        assert_eq!(LEASE_NAME, "cfgd-operator-leader");
-    }
-}

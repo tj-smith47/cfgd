@@ -336,9 +336,9 @@ else fail_test "P53"; fi
 
 begin_test "P54: profile edit (existing profile)"
 EDITOR=true run $C profile edit dev
-if [ "$RC" -eq 0 ] || [ "$RC" -eq 1 ]; then
+if assert_ok; then
     pass_test "P54"
-else fail_test "P54" "exit $RC"; fi
+else fail_test "P54"; fi
 
 begin_test "P55: profile show <name>"
 run $C profile show base

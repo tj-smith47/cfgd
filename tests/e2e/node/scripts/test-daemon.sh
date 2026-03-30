@@ -196,7 +196,7 @@ begin_test "DAEMON-05: compliance history shows entries after snapshots"
 exec_in_pod cfgd --config /etc/cfgd/e2e-compliance-cfgd.yaml compliance --no-color > /dev/null 2>&1 || true
 OUTPUT=$(exec_in_pod cfgd --config /etc/cfgd/e2e-compliance-cfgd.yaml compliance history --no-color 2>&1) && HIST_RC=0 || HIST_RC=$?
 echo "  History output: $(echo "$OUTPUT" | head -5 | sed 's/^/    /')"
-if [ "$HIST_RC" -eq 0 ] || [ "$HIST_RC" -eq 1 ]; then
+if [ "$HIST_RC" -eq 0 ]; then
     pass_test "DAEMON-05"
 else
     fail_test "DAEMON-05" "compliance history failed (exit $HIST_RC)"

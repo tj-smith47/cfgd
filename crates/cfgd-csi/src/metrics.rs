@@ -75,12 +75,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn metrics_register_without_panic() {
-        let mut registry = Registry::default();
-        let _metrics = CsiMetrics::new(&mut registry);
-    }
-
-    #[test]
     fn metrics_encode_produces_output() {
         let mut registry = Registry::default();
         let metrics = CsiMetrics::new(&mut registry);

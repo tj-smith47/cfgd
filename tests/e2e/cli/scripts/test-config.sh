@@ -23,9 +23,9 @@ else fail_test "CF02"; fi
 # config edit requires $EDITOR interaction, tested via EDITOR=true
 begin_test "CF03: config edit (EDITOR=true)"
 EDITOR=true run $C config edit
-if [ "$RC" -eq 0 ] || [ "$RC" -eq 1 ]; then
+if assert_ok; then
     pass_test "CF03"
-else fail_test "CF03" "exit $RC"; fi
+else fail_test "CF03"; fi
 
 # SECTION 27: config get/set/unset
 

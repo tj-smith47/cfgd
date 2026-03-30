@@ -19,8 +19,8 @@ else fail_test "V01"; fi
 
 begin_test "V02: verify --module"
 run $C verify --module nvim
-if [ "$RC" -eq 0 ] || [ "$RC" -eq 1 ]; then
+if assert_ok; then
     pass_test "V02"
-else fail_test "V02" "exit $RC"; fi
+else fail_test "V02"; fi
 
 print_summary "Verify"

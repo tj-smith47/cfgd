@@ -9459,13 +9459,17 @@ spec:
         std::fs::write(&config_path, TEST_CONFIG_YAML).unwrap();
 
         let cli = Cli {
-            config: config_path,
+            config: config_path.clone(),
             ..test_cli(dir.path())
         };
         let printer = test_printer();
 
         let result = super::cmd_config_get(&cli, &printer, "profile");
         assert!(result.is_ok());
+
+        // Verify the config file actually contains the expected profile
+        let contents = std::fs::read_to_string(&config_path).unwrap();
+        assert!(contents.contains("profile: default"));
     }
 
     #[test]
@@ -9515,6 +9519,10 @@ spec:
 
         let result = super::cmd_config_unset(&cli, &printer, "profile");
         assert!(result.is_ok());
+
+        // Verify the key was actually removed from the config file
+        let contents = std::fs::read_to_string(&config_path).unwrap();
+        assert!(!contents.contains("profile:"), "profile key should be removed from config");
     }
 
     #[test]
@@ -9748,8 +9756,7 @@ spec:
     #[test]
     fn builtin_aliases_returns_map() {
         let aliases = super::builtin_aliases();
-        // Currently empty — but verify it returns a HashMap without panicking
-        assert!(aliases.is_empty() || !aliases.is_empty());
+        assert!(aliases.is_empty());
     }
 
     // --- cmd_doctor basic ---
@@ -9810,6 +9817,10 @@ spec:
 
         let result = super::cmd_status(&cli, &printer, None);
         assert!(result.is_ok());
+
+        // Verify the state store has no last_apply record
+        let state = StateStore::open(&state_dir.path().join("cfgd.db")).unwrap();
+        assert!(state.last_apply().unwrap().is_none());
     }
 
     #[test]
@@ -9872,6 +9883,10 @@ spec:
 
         let result = super::cmd_log(&printer, 10, None, Some(state_dir.path()));
         assert!(result.is_ok());
+
+        // Verify the state store has no apply history
+        let state = StateStore::open(&state_dir.path().join("cfgd.db")).unwrap();
+        assert!(state.history(10).unwrap().is_empty());
     }
 
     #[test]
@@ -9897,7 +9912,10 @@ spec:
 
     #[test]
     fn cmd_apply_from_flag_parses() {
-        // Verify --from is accepted by the arg parser and wired through to ApplyArgs
+        let (config_dir, state_dir) = setup_test_env();
+
+        let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
+        let printer = test_printer();
         let args = ApplyArgs {
             from: Some("https://github.com/example/config.git".to_string()),
             dry_run: true,
@@ -9908,11 +9926,10 @@ spec:
             module: Some("dev-tools".to_string()),
             skip_scripts: false,
         };
-        assert_eq!(
-            args.from.as_deref(),
-            Some("https://github.com/example/config.git")
-        );
-        assert_eq!(args.module.as_deref(), Some("dev-tools"));
+
+        // cmd_apply should attempt to resolve the --from URL (and fail since it's unreachable)
+        let result = super::cmd_apply(&cli, &printer, &args);
+        assert!(result.is_err(), "--from with unreachable URL should fail");
     }
 
     #[test]
@@ -10064,6 +10081,11 @@ spec:
         // Status should show last apply
         let result = super::cmd_status(&cli, &printer, None);
         assert!(result.is_ok());
+
+        // Empty profile has no actions, so apply returns early ("Nothing to do")
+        // and no apply record is created — verify the state store reflects this
+        let state = StateStore::open(&state_dir.path().join("cfgd.db")).unwrap();
+        assert!(state.last_apply().unwrap().is_none());
     }
 
     #[test]
@@ -10098,6 +10120,11 @@ spec:
         // Log should show one entry
         let result = super::cmd_log(&printer, 10, None, Some(state_dir.path()));
         assert!(result.is_ok());
+
+        // Empty profile has no actions, so apply returns early ("Nothing to do")
+        // and no history record is created — verify the state store reflects this
+        let state = StateStore::open(&state_dir.path().join("cfgd.db")).unwrap();
+        assert!(state.history(10).unwrap().is_empty());
     }
 
     #[test]
@@ -10108,6 +10135,7 @@ spec:
         let printer = test_printer();
 
         let result = super::cmd_verify(&cli, &printer, None);
+        // Empty profile correctly returns Ok with no actions to verify
         assert!(result.is_ok());
     }
 
@@ -10119,6 +10147,7 @@ spec:
         let printer = test_printer();
 
         let result = super::cmd_diff(&cli, &printer, None);
+        // Empty profile correctly returns Ok with no actions to diff
         assert!(result.is_ok());
     }
 
@@ -10725,6 +10754,10 @@ spec:
 
         // Status should show the drift
         assert!(super::cmd_status(&cli, &printer, None).is_ok());
+
+        // Verify drift events exist in state
+        let events = state.unresolved_drift().unwrap();
+        assert!(!events.is_empty());
     }
 
     // --- Source command tests ---

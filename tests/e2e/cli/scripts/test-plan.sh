@@ -64,9 +64,10 @@ else fail_test "PL09"; fi
 
 begin_test "PL10: plan --module (nonexistent)"
 run $C plan --module nonexistent
-if [ "$RC" -eq 0 ] || [ "$RC" -eq 1 ]; then
+# Nonexistent module filter should produce empty plan and succeed
+if assert_ok; then
     pass_test "PL10"
-else fail_test "PL10" "exit $RC"; fi
+else fail_test "PL10"; fi
 
 begin_test "PL11: plan --skip-scripts"
 run $C plan --skip-scripts

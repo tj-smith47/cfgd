@@ -88,10 +88,10 @@ else fail_test "A13"; fi
 
 begin_test "A14: apply --module (nonexistent module)"
 run $C apply --dry-run --module nonexistent
-# Should gracefully handle missing module
-if [ "$RC" -eq 0 ] || [ "$RC" -eq 1 ]; then
+# Should gracefully handle missing module (empty plan, exit 0)
+if assert_ok; then
     pass_test "A14"
-else fail_test "A14" "exit $RC"; fi
+else fail_test "A14"; fi
 
 begin_test "A15: apply --dry-run --yes (both flags)"
 run $C apply --dry-run --yes
@@ -138,9 +138,9 @@ YAML
 (cd "$ISRC" && git init -q && git add -A && git commit -qm "init") 2>/dev/null || true
 A19_DST="$SCRATCH/apply-from-test"
 run $C apply --from "$ISRC" --dry-run --no-color --config "$A19_DST/cfgd.yaml" --state-dir "$SCRATCH/state-a19"
-if [ "$RC" -eq 0 ] || [ "$RC" -eq 1 ]; then
+if assert_ok; then
     pass_test "A19"
-else fail_test "A19" "exit $RC"; fi
+else fail_test "A19"; fi
 
 # === Apply end-to-end file tree validation ===
 

@@ -43,7 +43,7 @@ echo "  Cleanup complete"
 
 # --- Step 1: Verify cluster access ---
 echo "Verifying cluster access..."
-kubectl cluster-info > /dev/null 2>&1 || {
+kubectl cluster-info >/dev/null 2>&1 || {
     echo "ERROR: Cannot reach Kubernetes cluster. Check KUBECONFIG."
     exit 1
 }
@@ -60,7 +60,7 @@ for check in \
     "create clusterroles" \
     "get nodes" \
     "create csidrivers"; do
-    if ! kubectl auth can-i $check --all-namespaces > /dev/null 2>&1; then
+    if ! kubectl auth can-i $check --all-namespaces >/dev/null 2>&1; then
         echo "  MISSING: $check"
         PREFLIGHT_OK=false
     fi
@@ -106,6 +106,16 @@ done
 docker tag "${REGISTRY}/function-cfgd:${IMAGE_TAG}" "${REGISTRY}/function-cfgd:latest"
 docker push "${REGISTRY}/function-cfgd:${IMAGE_TAG}"
 docker push "${REGISTRY}/function-cfgd:latest"
+
+# Ensure crossplane
+if ! which crossplane &>/dev/null; then
+    curl -sL https://raw.githubusercontent.com/crossplane/crossplane/main/install.sh | sh
+    test -f kubectl-crossplane && mv kubectl-crossplane /usr/local/bin/crossplane
+    test -f crossplane && mv crossplane /usr/local/bin/
+    echo "Installed crossplane:"
+    crossplane version
+fi
+
 echo "Building function-cfgd xpkg..."
 crossplane xpkg build \
     --package-root="$REPO_ROOT/function-cfgd/package" \
@@ -140,7 +150,7 @@ echo "$CRD_YAML" | kubectl replace -f - 2>/dev/null || echo "$CRD_YAML" | kubect
 
 # Wait for CRDs to be established
 for crd in machineconfigs.cfgd.io configpolicies.cfgd.io driftalerts.cfgd.io \
-           modules.cfgd.io clusterconfigpolicies.cfgd.io; do
+    modules.cfgd.io clusterconfigpolicies.cfgd.io; do
     kubectl wait --for=condition=established "crd/$crd" --timeout=30s 2>/dev/null || true
 done
 
@@ -162,7 +172,7 @@ if [ "$ARGOCD_MANAGED" = "true" ] || { [ -n "${CFGD_DEPLOY_MANIFESTS:-}" ] && [ 
     echo "  Deployments managed by ArgoCD — restarting to pick up :latest images..."
 
     for deploy in cfgd-operator cfgd-server; do
-        if kubectl get deployment "$deploy" -n cfgd-system > /dev/null 2>&1; then
+        if kubectl get deployment "$deploy" -n cfgd-system >/dev/null 2>&1; then
             kubectl rollout restart "deployment/$deploy" -n cfgd-system 2>/dev/null || true
             # Wait for old pods to terminate (handles RWO PVC conflicts)
             kubectl rollout status "deployment/$deploy" -n cfgd-system --timeout=120s 2>/dev/null || {
@@ -204,7 +214,7 @@ export CA_BUNDLE
 # Generate webhook configs using the CA bundle
 WEBHOOK_FILE=$(mktemp /tmp/cfgd-e2e-webhooks.XXXXXX.yaml)
 trap "rm -f '$WEBHOOK_FILE'" EXIT
-cat > "$WEBHOOK_FILE" <<WEBHOOKEOF
+cat >"$WEBHOOK_FILE" <<WEBHOOKEOF
 apiVersion: v1
 kind: Service
 metadata:
@@ -362,8 +372,8 @@ helm upgrade --install cfgd-csi "$REPO_ROOT/chart/cfgd" \
     --set "csiDriver.extraVolumeMounts[0].mountPath=/etc/cfgd/docker" \
     --set "csiDriver.extraVolumeMounts[0].readOnly=true" \
     --wait --timeout=120s 2>&1 || {
-        echo "WARN: CSI driver Helm install failed — full-stack CSI tests will be skipped"
-    }
+    echo "WARN: CSI driver Helm install failed — full-stack CSI tests will be skipped"
+}
 
 # --- Step 12: Wait for all components ---
 echo "Waiting for components..."
@@ -379,7 +389,7 @@ GW_API_KEY=$(kubectl get deployment cfgd-server -n cfgd-system \
     -o jsonpath='{.spec.template.spec.containers[0].env[?(@.name=="CFGD_API_KEY")].value}' 2>/dev/null || echo "")
 if [ -n "$GW_API_KEY" ]; then
     # Port-forward to gateway, reset, then clean up
-    kubectl port-forward -n cfgd-system svc/cfgd-server 18099:8080 > /dev/null 2>&1 &
+    kubectl port-forward -n cfgd-system svc/cfgd-server 18099:8080 >/dev/null 2>&1 &
     PF_PID=$!
     sleep 2
     RESET_RESP=$(curl -sf -X POST "http://localhost:18099/api/v1/admin/reset" \

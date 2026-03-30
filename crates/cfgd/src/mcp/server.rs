@@ -421,22 +421,6 @@ mod tests {
     }
 
     #[test]
-    fn test_handle_tools_list() {
-        let tmp = tempfile::TempDir::new().unwrap();
-        let mut server = McpServer::new(tmp.path().to_path_buf(), tmp.path().to_path_buf());
-        let req = JsonRpcRequest {
-            jsonrpc: "2.0".into(),
-            id: Some(serde_json::json!(2)),
-            method: "tools/list".into(),
-            params: serde_json::json!({}),
-        };
-        let resp = server.handle_request(&req);
-        assert!(resp.error.is_none());
-        let result = resp.result.unwrap();
-        assert!(result["tools"].is_array());
-    }
-
-    #[test]
     fn test_handle_tools_call_missing_name() {
         let tmp = tempfile::TempDir::new().unwrap();
         let mut server = McpServer::new(tmp.path().to_path_buf(), tmp.path().to_path_buf());
@@ -471,6 +455,8 @@ mod tests {
     fn test_handle_tools_call_detect_platform() {
         let tmp = tempfile::TempDir::new().unwrap();
         let mut server = McpServer::new(tmp.path().to_path_buf(), tmp.path().to_path_buf());
+
+        // Without cfgd_ prefix
         let req = JsonRpcRequest {
             jsonrpc: "2.0".into(),
             id: Some(serde_json::json!(5)),
@@ -487,6 +473,18 @@ mod tests {
                 .unwrap()
                 .contains("os")
         );
+
+        // With cfgd_ prefix
+        let req = JsonRpcRequest {
+            jsonrpc: "2.0".into(),
+            id: Some(serde_json::json!(6)),
+            method: "tools/call".into(),
+            params: serde_json::json!({"name": "cfgd_detect_platform", "arguments": {}}),
+        };
+        let resp = server.handle_request(&req);
+        assert!(resp.error.is_none());
+        let result = resp.result.unwrap();
+        assert!(!result["isError"].as_bool().unwrap());
     }
 
     #[test]
@@ -621,25 +619,6 @@ mod tests {
     }
 
     #[test]
-    fn test_mcp_full_initialize_handshake() {
-        let tmp = tempfile::TempDir::new().unwrap();
-        let mut server = McpServer::new(tmp.path().to_path_buf(), tmp.path().to_path_buf());
-
-        let req = JsonRpcRequest {
-            jsonrpc: "2.0".into(),
-            id: Some(serde_json::json!(1)),
-            method: "initialize".into(),
-            params: serde_json::json!({"protocolVersion": "2024-11-05", "capabilities": {}}),
-        };
-        let resp = server.handle_request(&req);
-        let result = resp.result.unwrap();
-        assert_eq!(result["protocolVersion"], "2024-11-05");
-        assert!(result["capabilities"]["tools"].is_object());
-        assert!(result["capabilities"]["resources"].is_object());
-        assert!(result["capabilities"]["prompts"].is_object());
-    }
-
-    #[test]
     fn test_mcp_tools_list_returns_all_tools() {
         let tmp = tempfile::TempDir::new().unwrap();
         let mut server = McpServer::new(tmp.path().to_path_buf(), tmp.path().to_path_buf());
@@ -661,22 +640,6 @@ mod tests {
                 tool["name"]
             );
         }
-    }
-
-    #[test]
-    fn test_mcp_tools_call_detect_platform() {
-        let tmp = tempfile::TempDir::new().unwrap();
-        let mut server = McpServer::new(tmp.path().to_path_buf(), tmp.path().to_path_buf());
-
-        let req = JsonRpcRequest {
-            jsonrpc: "2.0".into(),
-            id: Some(serde_json::json!(3)),
-            method: "tools/call".into(),
-            params: serde_json::json!({"name": "cfgd_detect_platform", "arguments": {}}),
-        };
-        let resp = server.handle_request(&req);
-        let result = resp.result.unwrap();
-        assert!(result["content"][0]["text"].as_str().is_some());
     }
 
     #[test]
@@ -759,39 +722,6 @@ mod tests {
 
         // Verify file exists
         assert!(tmp.path().join("modules/test/module.yaml").exists());
-    }
-
-    #[test]
-    fn test_full_roundtrip_initialize_and_tools_list() {
-        let tmp = tempfile::TempDir::new().unwrap();
-        let mut server = McpServer::new(tmp.path().to_path_buf(), tmp.path().to_path_buf());
-
-        // Initialize
-        let init_req = JsonRpcRequest {
-            jsonrpc: "2.0".into(),
-            id: Some(serde_json::json!(1)),
-            method: "initialize".into(),
-            params: serde_json::json!({
-                "protocolVersion": "2024-11-05",
-                "capabilities": {},
-                "clientInfo": {"name": "test", "version": "0.1.0"}
-            }),
-        };
-        let init_resp = server.handle_request(&init_req);
-        assert!(init_resp.error.is_none());
-
-        // The initialized notification (no id) would be handled by handle_notification in run()
-
-        // tools/list
-        let list_req = JsonRpcRequest {
-            jsonrpc: "2.0".into(),
-            id: Some(serde_json::json!(2)),
-            method: "tools/list".into(),
-            params: serde_json::json!({}),
-        };
-        let list_resp = server.handle_request(&list_req);
-        assert!(list_resp.error.is_none());
-        assert!(list_resp.result.unwrap()["tools"].is_array());
     }
 
     #[test]

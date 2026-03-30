@@ -65,9 +65,9 @@ fi
 begin_test "SEC05: secret edit (EDITOR=true)"
 if [ -f "$CFG/secrets/plaintext.yaml" ]; then
     EDITOR=true run $C secret edit "$CFG/secrets/plaintext.yaml"
-    if [ "$RC" -eq 0 ] || [ "$RC" -eq 1 ]; then
+    if assert_ok; then
         pass_test "SEC05"
-    else fail_test "SEC05" "exit $RC"; fi
+    else fail_test "SEC05"; fi
 else
     skip_test "SEC05" "No encrypted file"
 fi

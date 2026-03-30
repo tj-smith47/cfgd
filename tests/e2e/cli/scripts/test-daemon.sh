@@ -16,22 +16,27 @@ else fail_test "DM01"; fi
 
 begin_test "DM02: daemon status"
 run $C daemon status
-# Daemon not running, should report that
-if [ "$RC" -eq 0 ] || [ "$RC" -eq 1 ]; then
+# Daemon not running, status should still succeed (reports not-running)
+if assert_ok; then
     pass_test "DM02"
-else fail_test "DM02" "exit $RC"; fi
+else fail_test "DM02"; fi
 
 begin_test "DM03: daemon install"
 run $C daemon install
-# May succeed or fail depending on systemd/launchd availability
-if [ "$RC" -eq 0 ] || [ "$RC" -eq 1 ]; then
+# Requires systemd/launchd — skip if unavailable
+if assert_ok; then
     pass_test "DM03"
-else fail_test "DM03" "exit $RC"; fi
+else
+    skip_test "DM03" "daemon install not available (no init system)"
+fi
 
 begin_test "DM04: daemon uninstall"
 run $C daemon uninstall
-if [ "$RC" -eq 0 ] || [ "$RC" -eq 1 ]; then
+# Requires systemd/launchd — skip if unavailable
+if assert_ok; then
     pass_test "DM04"
-else fail_test "DM04" "exit $RC"; fi
+else
+    skip_test "DM04" "daemon uninstall not available (no init system)"
+fi
 
 print_summary "Daemon"

@@ -1090,6 +1090,7 @@ mod tests {
     #[test]
     fn printer_respects_quiet_verbosity() {
         let printer = Printer::new(Verbosity::Quiet);
+        assert_eq!(printer.verbosity(), Verbosity::Quiet);
         printer.header("test");
         printer.success("test");
         printer.warning("test");
@@ -1099,6 +1100,8 @@ mod tests {
 
     #[test]
     fn printer_error_always_prints() {
+        // Errors go to stderr which can't easily be captured in unit tests,
+        // so we verify it doesn't panic when called at Quiet verbosity.
         let printer = Printer::new(Verbosity::Quiet);
         printer.error("this is an error");
     }
@@ -1130,11 +1133,16 @@ mod tests {
 
     #[test]
     fn named_presets_exist() {
-        let _ = Theme::from_preset("default");
-        let _ = Theme::from_preset("dracula");
-        let _ = Theme::from_preset("solarized-dark");
-        let _ = Theme::from_preset("solarized-light");
-        let _ = Theme::from_preset("minimal");
+        let default = Theme::from_preset("default");
+        let dracula = Theme::from_preset("dracula");
+        let solarized_dark = Theme::from_preset("solarized-dark");
+        let solarized_light = Theme::from_preset("solarized-light");
+        let minimal = Theme::from_preset("minimal");
+        // Presets should produce distinct themes
+        assert_ne!(default.icon_success, minimal.icon_success);
+        assert_ne!(dracula.icon_success, minimal.icon_success);
+        assert_ne!(solarized_dark.icon_success, minimal.icon_success);
+        assert_ne!(solarized_light.icon_success, minimal.icon_success);
     }
 
     #[test]
@@ -1361,97 +1369,43 @@ mod tests {
         );
     }
 
-    // --- Printer method coverage ---
-
+    // Smoke test: verify all printer methods execute without panic
     #[test]
-    fn printer_subheader_no_panic() {
+    fn printer_methods_smoke_test() {
         let printer = Printer::new(Verbosity::Quiet);
         printer.subheader("Test Section");
-    }
-
-    #[test]
-    fn printer_newline_no_panic() {
-        let printer = Printer::new(Verbosity::Quiet);
         printer.newline();
-    }
+        printer.stdout_line("output line");
 
-    #[test]
-    fn printer_table_no_panic() {
-        let printer = Printer::new(Verbosity::Quiet);
+        // Table with data and empty
         let rows = vec![
             vec!["a".to_string(), "b".to_string()],
             vec!["c".to_string(), "d".to_string()],
         ];
         printer.table(&["Col1", "Col2"], &rows);
-    }
+        let empty_rows: Vec<Vec<String>> = vec![];
+        printer.table(&["Col1"], &empty_rows);
 
-    #[test]
-    fn printer_table_empty() {
-        let printer = Printer::new(Verbosity::Quiet);
-        let rows: Vec<Vec<String>> = vec![];
-        printer.table(&["Col1"], &rows);
-    }
-
-    #[test]
-    fn printer_plan_phase_no_panic() {
-        let printer = Printer::new(Verbosity::Quiet);
+        // Plan phase with items and empty
         printer.plan_phase("Packages", &["install brew: curl".to_string()]);
-    }
-
-    #[test]
-    fn printer_plan_phase_empty() {
-        let printer = Printer::new(Verbosity::Quiet);
         printer.plan_phase("Files", &[]);
-    }
 
-    #[test]
-    fn printer_diff_no_panic() {
-        let printer = Printer::new(Verbosity::Quiet);
+        // Diff with changes and identical
         printer.diff("old content\nline2", "new content\nline2");
-    }
-
-    #[test]
-    fn printer_diff_identical() {
-        let printer = Printer::new(Verbosity::Quiet);
         printer.diff("same", "same");
-    }
 
-    #[test]
-    fn printer_syntax_highlight_no_panic() {
-        let printer = Printer::new(Verbosity::Quiet);
+        // Syntax highlighting with known and unknown language
         printer.syntax_highlight("fn main() {}", "rs");
-    }
-
-    #[test]
-    fn printer_syntax_highlight_unknown_lang() {
-        let printer = Printer::new(Verbosity::Quiet);
         printer.syntax_highlight("some text", "unknown_lang_xyz");
-    }
 
-    #[test]
-    fn printer_stdout_line_no_panic() {
-        let printer = Printer::new(Verbosity::Quiet);
-        printer.stdout_line("output line");
+        // write_structured in non-structured mode
+        let data = serde_json::json!({"key": "value"});
+        printer.write_structured(&data);
     }
 
     #[test]
     fn printer_is_structured_false_by_default() {
         let printer = Printer::new(Verbosity::Normal);
         assert!(!printer.is_structured());
-    }
-
-    #[test]
-    fn printer_write_structured_no_panic() {
-        let printer = Printer::new(Verbosity::Quiet);
-        let data = serde_json::json!({"key": "value"});
-        printer.write_structured(&data);
-    }
-
-    #[test]
-    fn run_with_output_spawn_error_returns_err() {
-        let printer = Printer::new(Verbosity::Quiet);
-        let mut cmd = std::process::Command::new("nonexistent-command-12345");
-        let result = printer.run_with_output(&mut cmd, "test");
-        assert!(result.is_err());
     }
 }

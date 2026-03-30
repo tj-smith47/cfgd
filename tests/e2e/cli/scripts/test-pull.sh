@@ -10,8 +10,8 @@ echo "=== cfgd pull tests ==="
 
 begin_test "PU01: pull"
 run $C pull
-if [ "$RC" -eq 0 ] || [ "$RC" -eq 1 ]; then
+if assert_ok; then
     pass_test "PU01"
-else fail_test "PU01" "exit $RC"; fi
+else fail_test "PU01"; fi
 
 print_summary "Pull"
