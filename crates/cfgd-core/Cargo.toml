@@ -102,5 +102,9 @@ windows-sys = { version = "0.59", features = [
 ] }
 windows-service = "0.7"
 
+[features]
+test-helpers = []
+
 [dev-dependencies]
 tempfile = "3"
+serial_test = "3"
