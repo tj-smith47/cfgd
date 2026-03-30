@@ -921,4 +921,114 @@ spec:
         mgr.set_allow_unsigned(true);
         assert!(mgr.allow_unsigned);
     }
+
+    #[test]
+    fn verify_head_signature_fails_on_unsigned_repo() {
+        // Create a git repo with an unsigned commit using git2 directly
+        let tmp = tempfile::tempdir().unwrap();
+        let repo_dir = tmp.path().join("repo");
+        std::fs::create_dir_all(&repo_dir).unwrap();
+
+        let repo = git2::Repository::init(&repo_dir).unwrap();
+        let sig = git2::Signature::now("Test", "test@example.com").unwrap();
+
+        // Create a file and commit it
+        std::fs::write(repo_dir.join("README"), "test\n").unwrap();
+        let mut index = repo.index().unwrap();
+        index.add_path(std::path::Path::new("README")).unwrap();
+        index.write().unwrap();
+        let tree_id = index.write_tree().unwrap();
+        let tree = repo.find_tree(tree_id).unwrap();
+        repo.commit(Some("HEAD"), &sig, &sig, "unsigned commit", &tree, &[])
+            .unwrap();
+
+        // The public function verify_head_signature should fail on unsigned commits
+        let result = verify_head_signature("test-source", &repo_dir);
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("not signed") || err_msg.contains("signature"),
+            "expected signature-related error, got: {}",
+            err_msg
+        );
+    }
+
+    #[test]
+    fn source_profiles_dir_nonexistent_source() {
+        let dir = tempfile::tempdir().unwrap();
+        let mgr = SourceManager::new(dir.path());
+
+        let result = mgr.source_profiles_dir("nonexistent");
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("not found"),
+            "expected 'not found' error, got: {}",
+            err_msg
+        );
+    }
+
+    #[test]
+    fn source_files_dir_nonexistent_source() {
+        let dir = tempfile::tempdir().unwrap();
+        let mgr = SourceManager::new(dir.path());
+
+        let result = mgr.source_files_dir("nonexistent");
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("not found"),
+            "expected 'not found' error, got: {}",
+            err_msg
+        );
+    }
+
+    #[test]
+    fn remove_source_success() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut mgr = SourceManager::new(dir.path());
+
+        // Create a fake cached source directory on disk
+        let source_path = dir.path().join("test-source");
+        std::fs::create_dir_all(&source_path).unwrap();
+        std::fs::write(source_path.join("marker.txt"), "exists").unwrap();
+        assert!(source_path.exists());
+
+        // Manually insert a CachedSource into the manager's internal map
+        let cached = CachedSource {
+            name: "test-source".to_string(),
+            origin_url: "https://example.com/config.git".to_string(),
+            origin_branch: "main".to_string(),
+            local_path: source_path.clone(),
+            manifest: crate::config::ConfigSourceDocument {
+                api_version: crate::API_VERSION.into(),
+                kind: "ConfigSource".into(),
+                metadata: crate::config::ConfigSourceMetadata {
+                    name: "test-source".into(),
+                    version: Some("1.0.0".into()),
+                    description: None,
+                },
+                spec: crate::config::ConfigSourceSpec {
+                    provides: Default::default(),
+                    policy: Default::default(),
+                },
+            },
+            last_commit: None,
+            last_fetched: None,
+        };
+        mgr.sources.insert("test-source".to_string(), cached);
+
+        // Verify the source is present
+        assert!(mgr.get("test-source").is_some());
+
+        // Remove the source
+        let result = mgr.remove_source("test-source");
+        assert!(result.is_ok());
+
+        // Verify it was removed from the map
+        assert!(mgr.get("test-source").is_none());
+
+        // Verify the directory was removed from disk
+        assert!(!source_path.exists());
+    }
 }
