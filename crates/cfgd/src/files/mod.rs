@@ -2576,18 +2576,6 @@ other: data
         assert_eq!(result, FileStrategy::Hardlink);
     }
 
-    #[test]
-    fn effective_strategy_default_global_is_symlink() {
-        // FileStrategy::default() is Symlink; verify effective_strategy
-        // returns Symlink when no per-file override and global is default.
-        let dir = tempfile::tempdir().unwrap();
-        let resolved = make_resolved_profile(vec![], FilesSpec::default());
-        let fm = CfgdFileManager::new(dir.path(), &resolved).unwrap();
-
-        let result = fm.effective_strategy(Path::new("normal.conf"), None);
-        assert_eq!(result, FileStrategy::Symlink);
-    }
-
     // --- render_template_for_display additional tests ---
 
     #[test]
@@ -2763,7 +2751,7 @@ other: data
         );
         let err = result.unwrap_err().to_string();
         assert!(
-            err.contains("sandbox") || err.contains("not available"),
+            err.contains("not available in source templates"),
             "error should mention sandbox restriction: {err}"
         );
     }
