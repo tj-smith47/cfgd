@@ -3578,7 +3578,7 @@ mod tests {
         let empty: HashSet<String> = HashSet::new();
         let hash = hash_resources(&empty);
         // Should produce a valid hash (SHA256 of empty string)
-        assert_eq!(hash.len(), 64);
+        assert_eq!(hash, crate::sha256_hex(b""));
     }
 
     #[test]
@@ -3680,9 +3680,9 @@ mod tests {
 
         let json = serde_json::to_string(&response).unwrap();
         // module_reconcile has skip_serializing_if = "Vec::is_empty"
-        assert!(!json.contains("moduleReconcile"));
+        assert!(!json.contains("\"moduleReconcile\""));
         // update_available has skip_serializing_if = "Option::is_none"
-        assert!(!json.contains("updateAvailable"));
+        assert!(!json.contains("\"updateAvailable\""));
     }
 
     // --- action_resource_info tests ---

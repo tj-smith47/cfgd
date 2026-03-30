@@ -1403,6 +1403,7 @@ async fn find_machine_config_for_device(client: &kube::Client, hostname: &str) -
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serial_test::serial;
 
     #[test]
     fn hash_token_deterministic() {
@@ -1898,6 +1899,7 @@ mod tests {
     // --- EnrollmentMethod::from_env ---
 
     #[test]
+    #[serial]
     fn enrollment_method_defaults_to_token() {
         // Clear the env var so from_env returns the default
         // SAFETY: test-only; single-threaded test runner for this module
@@ -1907,6 +1909,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn enrollment_method_key_from_env() {
         // SAFETY: test-only; single-threaded test runner for this module
         unsafe { std::env::set_var("CFGD_ENROLLMENT_METHOD", "key") };
@@ -1916,6 +1919,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn enrollment_method_unknown_falls_back_to_token() {
         // SAFETY: test-only; single-threaded test runner for this module
         unsafe { std::env::set_var("CFGD_ENROLLMENT_METHOD", "magic") };
