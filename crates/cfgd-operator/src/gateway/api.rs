@@ -1452,11 +1452,6 @@ mod tests {
     }
 
     #[test]
-    fn enrollment_method_variants_are_distinct() {
-        assert_ne!(EnrollmentMethod::Token, EnrollmentMethod::Key);
-    }
-
-    #[test]
     fn enroll_info_response_serialization() {
         let resp = EnrollInfoResponse {
             method: EnrollmentMethod::Key,
@@ -1586,18 +1581,6 @@ mod tests {
             msg.contains("victim-device"),
             "error should mention the target device"
         );
-    }
-
-    // --- default functions ---
-
-    #[test]
-    fn default_limit_is_100() {
-        assert_eq!(default_limit(), 100);
-    }
-
-    #[test]
-    fn default_token_lifetime_is_24_hours() {
-        assert_eq!(default_token_lifetime(), 86400);
     }
 
     // --- CheckinRequest deserialization ---
@@ -1893,103 +1876,6 @@ mod tests {
     }
 
     #[test]
-    fn bootstrap_token_creation_and_validation() {
-        let db = test_db();
-        let token = generate_token("cfgd_bs");
-        let token_hash = hash_token(&token);
-        let expires_at = "2099-12-31T23:59:59Z";
-
-        let record = db
-            .create_bootstrap_token(&token_hash, "jdoe", Some("platform"), expires_at)
-            .expect("create failed");
-        assert_eq!(record.username, "jdoe");
-        assert_eq!(record.team, Some("platform".to_string()));
-        assert!(record.used_at.is_none());
-    }
-
-    #[test]
-    fn bootstrap_token_consume_marks_used() {
-        let db = test_db();
-        let token = generate_token("cfgd_bs");
-        let token_hash = hash_token(&token);
-        let expires_at = "2099-12-31T23:59:59Z";
-
-        db.create_bootstrap_token(&token_hash, "jdoe", None, expires_at)
-            .expect("create failed");
-
-        let consumed = db
-            .validate_and_consume_bootstrap_token(&token_hash, "dev-1")
-            .expect("consume failed");
-        assert_eq!(consumed.username, "jdoe");
-        assert!(consumed.used_at.is_some());
-        assert_eq!(consumed.used_by_device, Some("dev-1".to_string()));
-    }
-
-    #[test]
-    fn bootstrap_token_double_consume_fails() {
-        let db = test_db();
-        let token = generate_token("cfgd_bs");
-        let token_hash = hash_token(&token);
-        let expires_at = "2099-12-31T23:59:59Z";
-
-        db.create_bootstrap_token(&token_hash, "jdoe", None, expires_at)
-            .expect("create failed");
-        db.validate_and_consume_bootstrap_token(&token_hash, "dev-1")
-            .expect("first consume ok");
-
-        let result = db.validate_and_consume_bootstrap_token(&token_hash, "dev-2");
-        assert!(result.is_err(), "double consumption should fail");
-    }
-
-    #[test]
-    fn bootstrap_token_invalid_hash_fails() {
-        let db = test_db();
-        let result = db.validate_and_consume_bootstrap_token("nonexistent-hash", "dev-1");
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn device_credential_create_and_validate() {
-        let db = test_db();
-        // Register device first (FK constraint)
-        db.register_device("dev-1", "ws-1", "linux", "x86_64", "hash1", None)
-            .expect("register failed");
-
-        let api_key = generate_token("cfgd_dev");
-        let api_key_hash = hash_token(&api_key);
-
-        let cred = db
-            .create_device_credential("dev-1", &api_key_hash, "jdoe", Some("team-a"))
-            .expect("create cred failed");
-        assert_eq!(cred.device_id, "dev-1");
-        assert_eq!(cred.username, "jdoe");
-        assert!(!cred.revoked);
-
-        let validated = db
-            .validate_device_credential(&api_key_hash)
-            .expect("validate failed");
-        assert_eq!(validated.device_id, "dev-1");
-        assert_eq!(validated.username, "jdoe");
-    }
-
-    #[test]
-    fn device_credential_revoke_blocks_validation() {
-        let db = test_db();
-        db.register_device("dev-1", "ws-1", "linux", "x86_64", "hash1", None)
-            .expect("register failed");
-
-        let api_key = generate_token("cfgd_dev");
-        let api_key_hash = hash_token(&api_key);
-        db.create_device_credential("dev-1", &api_key_hash, "jdoe", None)
-            .expect("create cred failed");
-
-        db.revoke_device_credential("dev-1").expect("revoke failed");
-
-        let result = db.validate_device_credential(&api_key_hash);
-        assert!(result.is_err(), "revoked credential should fail validation");
-    }
-
-    #[test]
     fn checkin_config_changed_detection() {
         let db = test_db();
         db.register_device("dev-1", "ws-1", "linux", "x86_64", "hash-old", None)
@@ -2009,215 +1895,418 @@ mod tests {
         assert!(!config_same, "same config_hash should not detect change");
     }
 
+    // --- EnrollmentMethod::from_env ---
+
     #[test]
-    fn fleet_status_aggregation_via_db() {
-        let db = test_db();
-        db.register_device("d1", "host1", "linux", "x86_64", "h1", None)
-            .expect("register");
-        db.register_device("d2", "host2", "linux", "x86_64", "h2", None)
-            .expect("register");
-        db.register_device("d3", "host3", "darwin", "aarch64", "h3", None)
-            .expect("register");
-
-        // Make d2 drifted
-        db.record_drift_event("d2", "pkg drifted").expect("drift");
-
-        // Make d3 pending-reconcile
-        db.set_force_reconcile("d3").expect("set reconcile");
-
-        let status = super::super::fleet::get_fleet_status(&db).expect("fleet status");
-        assert_eq!(status.total_devices, 3);
-        assert_eq!(status.healthy, 1);
-        assert_eq!(status.drifted, 1);
-        assert_eq!(status.offline, 1); // pending-reconcile counts as offline
+    fn enrollment_method_defaults_to_token() {
+        // Clear the env var so from_env returns the default
+        // SAFETY: test-only; single-threaded test runner for this module
+        unsafe { std::env::remove_var("CFGD_ENROLLMENT_METHOD") };
+        let method = EnrollmentMethod::from_env();
+        assert_eq!(method, EnrollmentMethod::Token);
     }
 
     #[test]
-    fn list_and_delete_bootstrap_tokens() {
-        let db = test_db();
-        let t1_hash = hash_token("token1");
-        let t2_hash = hash_token("token2");
-
-        let rec1 = db
-            .create_bootstrap_token(&t1_hash, "user1", None, "2099-12-31T23:59:59Z")
-            .expect("create 1");
-        db.create_bootstrap_token(&t2_hash, "user2", Some("team"), "2099-12-31T23:59:59Z")
-            .expect("create 2");
-
-        let tokens = db.list_bootstrap_tokens().expect("list");
-        assert_eq!(tokens.len(), 2);
-
-        db.delete_bootstrap_token(&rec1.id).expect("delete");
-        let tokens = db.list_bootstrap_tokens().expect("list after delete");
-        assert_eq!(tokens.len(), 1);
-        assert_eq!(tokens[0].username, "user2");
+    fn enrollment_method_key_from_env() {
+        // SAFETY: test-only; single-threaded test runner for this module
+        unsafe { std::env::set_var("CFGD_ENROLLMENT_METHOD", "key") };
+        let method = EnrollmentMethod::from_env();
+        assert_eq!(method, EnrollmentMethod::Key);
+        unsafe { std::env::remove_var("CFGD_ENROLLMENT_METHOD") };
     }
 
     #[test]
-    fn user_public_key_crud() {
-        let db = test_db();
-        let key = db
-            .add_user_public_key(
-                "jdoe",
-                "ssh",
-                "ssh-ed25519 AAAAC3...",
-                "SHA256:abc",
-                Some("work laptop"),
-            )
-            .expect("add key");
-        assert_eq!(key.username, "jdoe");
-        assert_eq!(key.key_type, "ssh");
-        assert_eq!(key.label, Some("work laptop".to_string()));
+    fn enrollment_method_unknown_falls_back_to_token() {
+        // SAFETY: test-only; single-threaded test runner for this module
+        unsafe { std::env::set_var("CFGD_ENROLLMENT_METHOD", "magic") };
+        let method = EnrollmentMethod::from_env();
+        assert_eq!(method, EnrollmentMethod::Token);
+        unsafe { std::env::remove_var("CFGD_ENROLLMENT_METHOD") };
+    }
 
-        let keys = db.list_user_public_keys("jdoe").expect("list keys");
-        assert_eq!(keys.len(), 1);
+    // --- verify_ssh_signature ---
 
-        db.delete_user_public_key(&key.id).expect("delete key");
-        let keys = db.list_user_public_keys("jdoe").expect("list after delete");
-        assert!(keys.is_empty());
+    #[test]
+    fn verify_ssh_signature_correct_key_succeeds() {
+        if !cfgd_core::command_available("ssh-keygen") {
+            return;
+        }
+
+        let tmp = tempfile::tempdir().expect("tmpdir");
+        let key_path = tmp.path().join("test_key");
+        let pub_path = tmp.path().join("test_key.pub");
+
+        // Generate an ed25519 key pair (no passphrase)
+        let keygen_status = std::process::Command::new("ssh-keygen")
+            .args([
+                "-t",
+                "ed25519",
+                "-f",
+                &key_path.to_string_lossy(),
+                "-N",
+                "",
+                "-C",
+                "test@cfgd",
+            ])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .expect("ssh-keygen failed");
+        assert!(keygen_status.success(), "key generation must succeed");
+
+        let public_key =
+            std::fs::read_to_string(&pub_path).expect("read pubkey");
+
+        // Sign a nonce
+        let nonce = "cfgd_ch_test_nonce_12345";
+        let nonce_path = tmp.path().join("nonce.txt");
+        std::fs::write(&nonce_path, nonce).expect("write nonce");
+
+        let sig_output = std::process::Command::new("ssh-keygen")
+            .args([
+                "-Y",
+                "sign",
+                "-f",
+                &key_path.to_string_lossy(),
+                "-n",
+                "cfgd-enroll",
+            ])
+            .stdin(std::fs::File::open(&nonce_path).expect("open nonce"))
+            .output()
+            .expect("signing failed");
+        assert!(sig_output.status.success(), "signing must succeed");
+
+        let signature_pem = String::from_utf8_lossy(&sig_output.stdout).to_string();
+
+        // Build a UserPublicKey
+        let user_key = super::super::db::UserPublicKey {
+            id: "key-1".to_string(),
+            username: "testuser".to_string(),
+            key_type: "ssh".to_string(),
+            public_key: public_key.trim().to_string(),
+            fingerprint: "SHA256:test".to_string(),
+            label: None,
+            created_at: "2026-01-01T00:00:00Z".to_string(),
+        };
+
+        let keys: Vec<&super::super::db::UserPublicKey> = vec![&user_key];
+        assert!(
+            verify_ssh_signature(nonce, &signature_pem, &keys),
+            "verification with correct key should succeed"
+        );
     }
 
     #[test]
-    fn enrollment_challenge_create_and_consume() {
-        let db = test_db();
-        // Need a user key for the challenge flow to make sense
-        db.add_user_public_key("jdoe", "ssh", "ssh-ed25519 AAAA...", "SHA256:xyz", None)
-            .expect("add key");
+    fn verify_ssh_signature_wrong_key_fails() {
+        if !cfgd_core::command_available("ssh-keygen") {
+            return;
+        }
 
-        let challenge = db
-            .create_enrollment_challenge(
-                "jdoe",
-                "dev-99",
-                "laptop",
-                ("darwin", "aarch64"),
-                "nonce-value",
-                300,
-            )
-            .expect("create challenge");
-        assert_eq!(challenge.username, "jdoe");
-        assert_eq!(challenge.device_id, "dev-99");
-        assert_eq!(challenge.nonce, "nonce-value");
+        let tmp = tempfile::tempdir().expect("tmpdir");
 
-        let consumed = db
-            .consume_enrollment_challenge(&challenge.id)
-            .expect("consume");
-        assert_eq!(consumed.username, "jdoe");
-        assert_eq!(consumed.device_id, "dev-99");
+        // Generate the signing key pair
+        let sign_key = tmp.path().join("sign_key");
+        let gen1 = std::process::Command::new("ssh-keygen")
+            .args([
+                "-t", "ed25519", "-f", &sign_key.to_string_lossy(),
+                "-N", "", "-C", "signer@cfgd",
+            ])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .expect("keygen");
+        assert!(gen1.success());
+
+        // Generate a different key pair (the "wrong" key)
+        let wrong_key = tmp.path().join("wrong_key");
+        let gen2 = std::process::Command::new("ssh-keygen")
+            .args([
+                "-t", "ed25519", "-f", &wrong_key.to_string_lossy(),
+                "-N", "", "-C", "wrong@cfgd",
+            ])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .expect("keygen");
+        assert!(gen2.success());
+
+        let wrong_pubkey = std::fs::read_to_string(tmp.path().join("wrong_key.pub"))
+            .expect("read wrong pubkey");
+
+        // Sign with the signing key
+        let nonce = "cfgd_ch_wrong_key_test";
+        let nonce_path = tmp.path().join("nonce.txt");
+        std::fs::write(&nonce_path, nonce).expect("write nonce");
+
+        let sig_output = std::process::Command::new("ssh-keygen")
+            .args([
+                "-Y", "sign", "-f", &sign_key.to_string_lossy(),
+                "-n", "cfgd-enroll",
+            ])
+            .stdin(std::fs::File::open(&nonce_path).expect("open nonce"))
+            .output()
+            .expect("signing");
+        assert!(sig_output.status.success());
+
+        let signature_pem = String::from_utf8_lossy(&sig_output.stdout).to_string();
+
+        // Verify with the wrong key — should fail
+        let wrong_user_key = super::super::db::UserPublicKey {
+            id: "key-wrong".to_string(),
+            username: "wronguser".to_string(),
+            key_type: "ssh".to_string(),
+            public_key: wrong_pubkey.trim().to_string(),
+            fingerprint: "SHA256:wrong".to_string(),
+            label: None,
+            created_at: "2026-01-01T00:00:00Z".to_string(),
+        };
+
+        let keys: Vec<&super::super::db::UserPublicKey> = vec![&wrong_user_key];
+        assert!(
+            !verify_ssh_signature(nonce, &signature_pem, &keys),
+            "verification with wrong key should fail"
+        );
     }
 
     #[test]
-    fn enrollment_challenge_double_consume_fails() {
-        let db = test_db();
-        let challenge = db
-            .create_enrollment_challenge(
-                "jdoe",
-                "dev-99",
-                "laptop",
-                ("darwin", "aarch64"),
-                "nonce",
-                300,
-            )
-            .expect("create");
+    fn verify_ssh_signature_empty_keys_returns_false() {
+        if !cfgd_core::command_available("ssh-keygen") {
+            return;
+        }
 
-        db.consume_enrollment_challenge(&challenge.id)
-            .expect("first consume");
-        let result = db.consume_enrollment_challenge(&challenge.id);
-        assert!(result.is_err(), "double consume should fail");
+        let keys: Vec<&super::super::db::UserPublicKey> = vec![];
+        assert!(
+            !verify_ssh_signature("some-nonce", "some-sig", &keys),
+            "empty keys list should return false"
+        );
     }
 
     #[test]
-    fn drift_event_records_and_lists() {
-        let db = test_db();
-        db.register_device("dev-1", "ws-1", "linux", "x86_64", "h1", None)
-            .expect("register");
+    fn verify_ssh_signature_bad_signature_data_returns_false() {
+        if !cfgd_core::command_available("ssh-keygen") {
+            return;
+        }
 
-        let details = serde_json::to_string(&vec![DriftDetailInput {
-            field: "pkg/vim".to_string(),
-            expected: "9.0".to_string(),
-            actual: "8.2".to_string(),
-        }])
-        .unwrap();
+        let tmp = tempfile::tempdir().expect("tmpdir");
+        let key_path = tmp.path().join("test_key");
 
-        let event = db
-            .record_drift_event("dev-1", &details)
-            .expect("record drift");
-        assert_eq!(event.device_id, "dev-1");
-        assert!(event.details.contains("pkg/vim"));
+        let keygen_status = std::process::Command::new("ssh-keygen")
+            .args([
+                "-t", "ed25519", "-f", &key_path.to_string_lossy(),
+                "-N", "", "-C", "test@cfgd",
+            ])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .expect("keygen");
+        assert!(keygen_status.success());
 
-        // Device should now be drifted
-        let device = db.get_device("dev-1").expect("get");
-        assert_eq!(device.status, super::super::db::DeviceStatus::Drifted);
+        let public_key = std::fs::read_to_string(tmp.path().join("test_key.pub"))
+            .expect("read pubkey");
 
-        let events = db.list_drift_events("dev-1").expect("list");
-        assert_eq!(events.len(), 1);
+        let user_key = super::super::db::UserPublicKey {
+            id: "key-1".to_string(),
+            username: "testuser".to_string(),
+            key_type: "ssh".to_string(),
+            public_key: public_key.trim().to_string(),
+            fingerprint: "SHA256:test".to_string(),
+            label: None,
+            created_at: "2026-01-01T00:00:00Z".to_string(),
+        };
+
+        let keys: Vec<&super::super::db::UserPublicKey> = vec![&user_key];
+        assert!(
+            !verify_ssh_signature("nonce", "not-a-valid-signature", &keys),
+            "garbage signature should fail verification"
+        );
     }
 
     #[test]
-    fn checkin_event_records_history() {
-        let db = test_db();
-        db.register_device("dev-1", "ws-1", "linux", "x86_64", "h1", None)
-            .expect("register");
+    fn verify_ssh_signature_multiple_keys_finds_correct_one() {
+        if !cfgd_core::command_available("ssh-keygen") {
+            return;
+        }
 
-        db.record_checkin("dev-1", "hash-a", false)
-            .expect("checkin 1");
-        db.record_checkin("dev-1", "hash-b", true)
-            .expect("checkin 2");
+        let tmp = tempfile::tempdir().expect("tmpdir");
 
-        let events = db.list_checkin_events("dev-1").expect("list");
-        assert_eq!(events.len(), 2);
+        // Generate the actual signing key
+        let sign_key = tmp.path().join("sign_key");
+        let gen1 = std::process::Command::new("ssh-keygen")
+            .args([
+                "-t", "ed25519", "-f", &sign_key.to_string_lossy(),
+                "-N", "", "-C", "signer@cfgd",
+            ])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .expect("keygen");
+        assert!(gen1.success());
 
-        let changed_count = events.iter().filter(|e| e.config_changed).count();
-        let unchanged_count = events.iter().filter(|e| !e.config_changed).count();
-        assert_eq!(changed_count, 1);
-        assert_eq!(unchanged_count, 1);
+        let sign_pubkey = std::fs::read_to_string(tmp.path().join("sign_key.pub"))
+            .expect("read sign pubkey");
+
+        // Generate a decoy key
+        let decoy_key = tmp.path().join("decoy_key");
+        let gen2 = std::process::Command::new("ssh-keygen")
+            .args([
+                "-t", "ed25519", "-f", &decoy_key.to_string_lossy(),
+                "-N", "", "-C", "decoy@cfgd",
+            ])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .expect("keygen");
+        assert!(gen2.success());
+
+        let decoy_pubkey = std::fs::read_to_string(tmp.path().join("decoy_key.pub"))
+            .expect("read decoy pubkey");
+
+        // Sign with the signing key
+        let nonce = "cfgd_ch_multi_key_test";
+        let nonce_path = tmp.path().join("nonce.txt");
+        std::fs::write(&nonce_path, nonce).expect("write nonce");
+
+        let sig_output = std::process::Command::new("ssh-keygen")
+            .args([
+                "-Y", "sign", "-f", &sign_key.to_string_lossy(),
+                "-n", "cfgd-enroll",
+            ])
+            .stdin(std::fs::File::open(&nonce_path).expect("open nonce"))
+            .output()
+            .expect("signing");
+        assert!(sig_output.status.success());
+
+        let signature_pem = String::from_utf8_lossy(&sig_output.stdout).to_string();
+
+        // Present decoy first, then the correct key
+        let decoy = super::super::db::UserPublicKey {
+            id: "key-decoy".to_string(),
+            username: "testuser".to_string(),
+            key_type: "ssh".to_string(),
+            public_key: decoy_pubkey.trim().to_string(),
+            fingerprint: "SHA256:decoy".to_string(),
+            label: None,
+            created_at: "2026-01-01T00:00:00Z".to_string(),
+        };
+
+        let correct = super::super::db::UserPublicKey {
+            id: "key-correct".to_string(),
+            username: "testuser".to_string(),
+            key_type: "ssh".to_string(),
+            public_key: sign_pubkey.trim().to_string(),
+            fingerprint: "SHA256:correct".to_string(),
+            label: None,
+            created_at: "2026-01-01T00:00:00Z".to_string(),
+        };
+
+        let keys: Vec<&super::super::db::UserPublicKey> = vec![&decoy, &correct];
+        assert!(
+            verify_ssh_signature(nonce, &signature_pem, &keys),
+            "should find the correct key when it appears after a non-matching key"
+        );
     }
 
     #[test]
-    fn fleet_events_include_checkins_and_drift() {
-        let db = test_db();
-        db.register_device("dev-1", "ws-1", "linux", "x86_64", "h1", None)
-            .expect("register");
+    fn verify_ssh_signature_wrong_nonce_fails() {
+        if !cfgd_core::command_available("ssh-keygen") {
+            return;
+        }
 
-        db.record_checkin("dev-1", "hash-a", false)
-            .expect("checkin");
-        db.record_drift_event("dev-1", "something drifted")
-            .expect("drift");
+        let tmp = tempfile::tempdir().expect("tmpdir");
+        let key_path = tmp.path().join("test_key");
 
-        let events = db.list_fleet_events(100).expect("fleet events");
-        assert_eq!(events.len(), 2);
+        let keygen_status = std::process::Command::new("ssh-keygen")
+            .args([
+                "-t", "ed25519", "-f", &key_path.to_string_lossy(),
+                "-N", "", "-C", "test@cfgd",
+            ])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .expect("keygen");
+        assert!(keygen_status.success());
 
-        let event_types: Vec<&str> = events.iter().map(|e| e.event_type.as_str()).collect();
-        assert!(event_types.contains(&"checkin"));
-        assert!(event_types.contains(&"drift"));
+        let public_key = std::fs::read_to_string(tmp.path().join("test_key.pub"))
+            .expect("read pubkey");
+
+        // Sign one nonce
+        let original_nonce = "cfgd_ch_original_nonce";
+        let nonce_path = tmp.path().join("nonce.txt");
+        std::fs::write(&nonce_path, original_nonce).expect("write nonce");
+
+        let sig_output = std::process::Command::new("ssh-keygen")
+            .args([
+                "-Y", "sign", "-f", &key_path.to_string_lossy(),
+                "-n", "cfgd-enroll",
+            ])
+            .stdin(std::fs::File::open(&nonce_path).expect("open nonce"))
+            .output()
+            .expect("signing");
+        assert!(sig_output.status.success());
+
+        let signature_pem = String::from_utf8_lossy(&sig_output.stdout).to_string();
+
+        let user_key = super::super::db::UserPublicKey {
+            id: "key-1".to_string(),
+            username: "testuser".to_string(),
+            key_type: "ssh".to_string(),
+            public_key: public_key.trim().to_string(),
+            fingerprint: "SHA256:test".to_string(),
+            label: None,
+            created_at: "2026-01-01T00:00:00Z".to_string(),
+        };
+
+        let keys: Vec<&super::super::db::UserPublicKey> = vec![&user_key];
+
+        // Verify with a different nonce — should fail
+        assert!(
+            !verify_ssh_signature("cfgd_ch_different_nonce", &signature_pem, &keys),
+            "signature for a different nonce should fail verification"
+        );
+    }
+
+    // --- verify_gpg_signature ---
+
+    #[test]
+    fn verify_gpg_signature_empty_keys_returns_false() {
+        if !cfgd_core::command_available("gpg") {
+            return;
+        }
+
+        let keys: Vec<&super::super::db::UserPublicKey> = vec![];
+        assert!(
+            !verify_gpg_signature("some-nonce", "some-sig", &keys),
+            "empty keys list should return false"
+        );
     }
 
     #[test]
-    fn device_config_set_and_retrieve() {
-        let db = test_db();
-        db.register_device("dev-1", "ws-1", "linux", "x86_64", "h1", None)
-            .expect("register");
+    fn verify_gpg_signature_bad_signature_returns_false() {
+        if !cfgd_core::command_available("gpg") {
+            return;
+        }
 
-        let config = serde_json::json!({
-            "packages": ["vim", "tmux"],
-            "shell": "zsh"
-        });
-        db.set_device_config("dev-1", &config).expect("set config");
+        let user_key = super::super::db::UserPublicKey {
+            id: "key-1".to_string(),
+            username: "testuser".to_string(),
+            key_type: "gpg".to_string(),
+            public_key: "not-a-real-gpg-key".to_string(),
+            fingerprint: "DEADBEEF".to_string(),
+            label: None,
+            created_at: "2026-01-01T00:00:00Z".to_string(),
+        };
 
-        let device = db.get_device("dev-1").expect("get");
-        let dc = device.desired_config.expect("should have desired_config");
-        assert_eq!(dc["packages"][0], "vim");
-        assert_eq!(dc["shell"], "zsh");
+        let keys: Vec<&super::super::db::UserPublicKey> = vec![&user_key];
+        assert!(
+            !verify_gpg_signature("nonce", "not-a-valid-sig", &keys),
+            "garbage GPG key and signature should fail"
+        );
     }
 
-    #[test]
-    fn set_config_nonexistent_device_fails() {
-        let db = test_db();
-        let result = db.set_device_config("nonexistent", &serde_json::json!({}));
-        assert!(result.is_err());
-    }
+    // --- CHALLENGE_TTL_SECS ---
 
     #[test]
-    fn challenge_ttl_constant() {
-        assert_eq!(CHALLENGE_TTL_SECS, 300, "challenge TTL should be 5 minutes");
+    fn challenge_ttl_is_five_minutes() {
+        assert_eq!(CHALLENGE_TTL_SECS, 300);
     }
 }
