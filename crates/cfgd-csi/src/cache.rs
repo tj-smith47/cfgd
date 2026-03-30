@@ -369,4 +369,123 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         assert!(!is_complete(dir.path()));
     }
+
+    #[test]
+    fn cache_eviction_removes_multiple_oldest_until_under_limit() {
+        let dir = tempfile::tempdir().unwrap();
+        // Each entry has 200 bytes of content; capacity allows only ~1 entry
+        let cache = make_cache(dir.path(), 250);
+
+        populate_entry(dir.path(), "mod-a", "v1", 200, 1000);
+        populate_entry(dir.path(), "mod-b", "v1", 200, 2000);
+        populate_entry(dir.path(), "mod-c", "v1", 200, 3000);
+        populate_entry(dir.path(), "mod-d", "v1", 200, 4000);
+
+        // 4 entries x 200 = 800 bytes, capacity is 250
+        assert!(cache.current_size_bytes() >= 800);
+
+        cache.evict_lru().unwrap();
+
+        // Oldest entries should be evicted; newest should survive
+        assert!(
+            !dir.path().join("mod-a").join("v1").exists(),
+            "oldest entry should be evicted"
+        );
+        assert!(
+            !dir.path().join("mod-b").join("v1").exists(),
+            "second oldest should be evicted"
+        );
+        assert!(
+            !dir.path().join("mod-c").join("v1").exists(),
+            "third oldest should be evicted"
+        );
+        assert!(
+            dir.path().join("mod-d").join("v1").exists(),
+            "newest entry should survive"
+        );
+
+        // After eviction, size should be at or below capacity
+        assert!(cache.current_size_bytes() <= 250);
+    }
+
+    #[test]
+    fn cache_eviction_multiple_versions_of_same_module() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = make_cache(dir.path(), 350);
+
+        populate_entry(dir.path(), "nettools", "1.0", 200, 1000);
+        populate_entry(dir.path(), "nettools", "2.0", 200, 5000);
+
+        // 400 bytes, capacity 350 — oldest version should be evicted
+        cache.evict_lru().unwrap();
+
+        assert!(
+            !dir.path().join("nettools").join("1.0").exists(),
+            "older version should be evicted"
+        );
+        assert!(
+            dir.path().join("nettools").join("2.0").exists(),
+            "newer version should survive"
+        );
+    }
+
+    #[test]
+    fn list_entries_skips_temp_dirs() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = make_cache(dir.path(), 1024 * 1024);
+
+        populate_entry(dir.path(), "real-mod", "v1", 100, 5000);
+
+        // Create a temp dir that should be skipped during listing
+        let tmp_dir = dir.path().join(".tmp-real-mod-v2-12345");
+        std::fs::create_dir_all(&tmp_dir).unwrap();
+        std::fs::write(tmp_dir.join("data.txt"), "partial").unwrap();
+
+        let entries = cache.list_entries().unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].0, dir.path().join("real-mod").join("v1"));
+    }
+
+    #[test]
+    fn read_atime_returns_zero_for_missing_file() {
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(read_atime(dir.path()), 0);
+    }
+
+    #[test]
+    fn touch_atime_writes_timestamp() {
+        let dir = tempfile::tempdir().unwrap();
+        touch_atime(dir.path());
+
+        let atime = read_atime(dir.path());
+        // Should be a recent unix timestamp (after 2020)
+        assert!(atime > 1_577_836_800);
+    }
+
+    #[test]
+    fn cache_size_zero_for_empty() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = make_cache(dir.path(), 1024);
+        assert_eq!(cache.current_size_bytes(), 0);
+    }
+
+    #[test]
+    fn cache_get_updates_access_time() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = make_cache(dir.path(), 1024 * 1024);
+        populate_entry(dir.path(), "mymod", "1.0", 100, 1000);
+
+        // Access time should be 1000 initially
+        let atime_before = read_atime(&dir.path().join("mymod").join("1.0"));
+        assert_eq!(atime_before, 1000);
+
+        // get() should update the access time
+        cache.get("mymod", "1.0").unwrap();
+
+        let atime_after = read_atime(&dir.path().join("mymod").join("1.0"));
+        assert!(
+            atime_after > 1000,
+            "access time should be updated after get()"
+        );
+    }
 }

@@ -6,7 +6,8 @@ use cfgd_csi::csi::v1::identity_server::IdentityServer;
 use cfgd_csi::csi::v1::node_server::NodeServer;
 use cfgd_csi::csi::v1::{
     GetPluginCapabilitiesRequest, GetPluginInfoRequest, NodeGetCapabilitiesRequest,
-    NodeGetInfoRequest, NodePublishVolumeRequest, ProbeRequest, node_service_capability,
+    NodeGetInfoRequest, NodeGetVolumeStatsRequest, NodePublishVolumeRequest,
+    NodeUnpublishVolumeRequest, ProbeRequest, node_service_capability, volume_usage,
 };
 use cfgd_csi::identity::CfgdIdentity;
 use cfgd_csi::metrics::CsiMetrics;
@@ -153,4 +154,149 @@ async fn node_publish_volume_missing_module_returns_invalid_argument() {
         .unwrap_err();
     assert_eq!(err.code(), tonic::Code::InvalidArgument);
     assert!(err.message().contains("module"));
+}
+
+#[tokio::test]
+async fn node_unpublish_volume_nonexistent_target_succeeds() {
+    let tmp = tempfile::tempdir().unwrap();
+    let channel = start_server(&tmp).await;
+    let mut client = cfgd_csi::csi::v1::node_client::NodeClient::new(channel);
+
+    // Unpublishing a path that was never mounted should succeed (CSI idempotency)
+    let target = tmp.path().join("never-mounted");
+    let resp = client
+        .node_unpublish_volume(NodeUnpublishVolumeRequest {
+            volume_id: "vol-1".to_string(),
+            target_path: target.to_str().unwrap().to_string(),
+        })
+        .await;
+    assert!(resp.is_ok());
+}
+
+#[tokio::test]
+async fn node_unpublish_volume_empty_dir_cleans_up() {
+    let tmp = tempfile::tempdir().unwrap();
+    let channel = start_server(&tmp).await;
+    let mut client = cfgd_csi::csi::v1::node_client::NodeClient::new(channel);
+
+    let target = tmp.path().join("empty-mount-target");
+    std::fs::create_dir_all(&target).unwrap();
+    assert!(target.exists());
+
+    let resp = client
+        .node_unpublish_volume(NodeUnpublishVolumeRequest {
+            volume_id: "vol-1".to_string(),
+            target_path: target.to_str().unwrap().to_string(),
+        })
+        .await;
+    assert!(resp.is_ok());
+    assert!(
+        !target.exists(),
+        "target should be removed after unpublish"
+    );
+}
+
+#[tokio::test]
+async fn node_unpublish_volume_missing_volume_id() {
+    let tmp = tempfile::tempdir().unwrap();
+    let channel = start_server(&tmp).await;
+    let mut client = cfgd_csi::csi::v1::node_client::NodeClient::new(channel);
+
+    let err = client
+        .node_unpublish_volume(NodeUnpublishVolumeRequest {
+            volume_id: String::new(),
+            target_path: "/tmp/target".to_string(),
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(err.code(), tonic::Code::InvalidArgument);
+}
+
+#[tokio::test]
+async fn node_unpublish_volume_missing_target_path() {
+    let tmp = tempfile::tempdir().unwrap();
+    let channel = start_server(&tmp).await;
+    let mut client = cfgd_csi::csi::v1::node_client::NodeClient::new(channel);
+
+    let err = client
+        .node_unpublish_volume(NodeUnpublishVolumeRequest {
+            volume_id: "vol-1".to_string(),
+            target_path: String::new(),
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(err.code(), tonic::Code::InvalidArgument);
+}
+
+#[tokio::test]
+async fn node_get_volume_stats_via_grpc() {
+    let tmp = tempfile::tempdir().unwrap();
+    let channel = start_server(&tmp).await;
+    let mut client = cfgd_csi::csi::v1::node_client::NodeClient::new(channel);
+
+    // Create a directory with known content
+    let vol_dir = tmp.path().join("stats-vol");
+    std::fs::create_dir_all(&vol_dir).unwrap();
+    std::fs::write(vol_dir.join("a.txt"), "hello").unwrap(); // 5 bytes
+    std::fs::write(vol_dir.join("b.txt"), "world!").unwrap(); // 6 bytes
+
+    let resp = client
+        .node_get_volume_stats(NodeGetVolumeStatsRequest {
+            volume_id: "vol-stats".to_string(),
+            volume_path: vol_dir.to_str().unwrap().to_string(),
+            ..Default::default()
+        })
+        .await
+        .unwrap()
+        .into_inner();
+
+    assert_eq!(resp.usage.len(), 2);
+
+    let bytes_entry = resp
+        .usage
+        .iter()
+        .find(|u| u.unit == volume_usage::Unit::Bytes as i32)
+        .unwrap();
+    assert_eq!(bytes_entry.used, 11);
+
+    let inodes_entry = resp
+        .usage
+        .iter()
+        .find(|u| u.unit == volume_usage::Unit::Inodes as i32)
+        .unwrap();
+    assert_eq!(inodes_entry.used, 3); // root dir + 2 files
+}
+
+#[tokio::test]
+async fn node_get_volume_stats_nonexistent_path() {
+    let tmp = tempfile::tempdir().unwrap();
+    let channel = start_server(&tmp).await;
+    let mut client = cfgd_csi::csi::v1::node_client::NodeClient::new(channel);
+
+    let err = client
+        .node_get_volume_stats(NodeGetVolumeStatsRequest {
+            volume_id: "vol-1".to_string(),
+            volume_path: "/nonexistent/cfgd-grpc-test".to_string(),
+            ..Default::default()
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(err.code(), tonic::Code::NotFound);
+}
+
+#[tokio::test]
+async fn node_get_volume_stats_missing_volume_id() {
+    let tmp = tempfile::tempdir().unwrap();
+    let channel = start_server(&tmp).await;
+    let mut client = cfgd_csi::csi::v1::node_client::NodeClient::new(channel);
+
+    let err = client
+        .node_get_volume_stats(NodeGetVolumeStatsRequest {
+            volume_id: String::new(),
+            volume_path: "/tmp".to_string(),
+            ..Default::default()
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(err.code(), tonic::Code::InvalidArgument);
 }
