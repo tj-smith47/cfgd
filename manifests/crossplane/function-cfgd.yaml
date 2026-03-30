@@ -3,4 +3,6 @@ kind: Function
 metadata:
   name: function-cfgd
 spec:
-  package: ghcr.io/tj-smith47/function-cfgd:v0.1.0
+  # Override with your registry: kubectl set image ... or edit this field.
+  # The xpkg must be built via: crossplane xpkg build --package-root=function-cfgd/package --embed-runtime-image=<runtime>
+  package: registry.jarvispro.io/function-cfgd:latest

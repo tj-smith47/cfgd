@@ -756,6 +756,18 @@ pub async fn run_daemon(
     #[cfg(not(unix))]
     let mut sighup_signal = ();
 
+    // Unix: set up SIGTERM handler for graceful shutdown.
+    // On Windows, shutdown is handled via the Windows Service control manager.
+    #[cfg(unix)]
+    let mut sigterm_signal =
+        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()).map_err(|e| {
+            DaemonError::WatchError {
+                message: format!("failed to register SIGTERM handler: {}", e),
+            }
+        })?;
+    #[cfg(not(unix))]
+    let mut sigterm_signal = ();
+
     // Skip the first immediate tick
     reconcile_timer.tick().await;
     sync_timer.tick().await;
@@ -965,6 +977,11 @@ pub async fn run_daemon(
                         printer.warning(&format!("Config reload failed: {}", e));
                     }
                 }
+            }
+
+            _ = recv_sigterm(&mut sigterm_signal) => {
+                printer.info("Received SIGTERM, shutting down daemon...");
+                break;
             }
 
             _ = tokio::signal::ctrl_c() => {
@@ -2914,6 +2931,18 @@ async fn recv_sighup(signal: &mut tokio::signal::unix::Signal) {
 /// Receive a SIGHUP signal on Unix. On non-Unix platforms, pends forever.
 #[cfg(not(unix))]
 async fn recv_sighup(_signal: &mut ()) {
+    std::future::pending::<()>().await;
+}
+
+/// Receive a SIGTERM signal on Unix. On non-Unix platforms, pends forever.
+#[cfg(unix)]
+async fn recv_sigterm(signal: &mut tokio::signal::unix::Signal) {
+    signal.recv().await;
+}
+
+/// Receive a SIGTERM signal on Unix. On non-Unix platforms, pends forever.
+#[cfg(not(unix))]
+async fn recv_sigterm(_signal: &mut ()) {
     std::future::pending::<()>().await;
 }
 

@@ -73,13 +73,16 @@ KUBECTL_CFGD="/tmp/kubectl-cfgd"
 ln -sf "$CFGD_BIN" "$KUBECTL_CFGD"
 
 SERVER_URL="http://cfgd-server.cfgd-system.svc.cluster.local:8080"
+GW_API_KEY="${CFGD_E2E_API_KEY:-cfgd-e2e-admin-key}"
+export GW_API_KEY
+HEALTH_URL="http://cfgd-server.cfgd-system.svc.cluster.local:8081"
 echo "Device gateway URL: $SERVER_URL"
 
-# Wait for gateway reachability from test pod
+# Wait for gateway reachability from test pod (use health endpoint — API requires auth)
 echo "Waiting for device gateway..."
 GATEWAY_READY=false
 for i in $(seq 1 60); do
-    if exec_in_pod curl -sf "${SERVER_URL}/api/v1/devices" > /dev/null 2>&1; then
+    if exec_in_pod curl -sf "${HEALTH_URL}/readyz" > /dev/null 2>&1; then
         GATEWAY_READY=true
         break
     fi

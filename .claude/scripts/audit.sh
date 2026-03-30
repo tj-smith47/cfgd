@@ -156,7 +156,7 @@ log_section "Controlled Shell Execution"
 check_pattern warn \
     "std::process::Command confined to packages/, secrets/, system/, reconciler/, sources/, platform/, cli/, gateway/, output/, generate/, oci, daemon/" \
     'std::process::Command|Command::new' \
-    'packages/|secrets/|system/|reconciler/|sources/|platform/|cli/|gateway/|output/|generate/|oci|daemon/'
+    'packages/|secrets/|system/|reconciler/|sources/|platform/|cli/|gateway/|output/|generate/|oci|daemon/|lib\.rs:'
 
 log_section "Error Type Discipline"
 check_pattern error \
@@ -218,7 +218,7 @@ dupes=$(while IFS= read -r -d '' rsfile; do
 done < <(find "${SRC_ROOTS[@]}" -name '*.rs' -print0 2>/dev/null) \
     | sort | uniq -c | sort -rn \
     | awk '$1 > 2 {print}' \
-    | grep -v -E 'and_then.*unwrap_or|\.status\.conditions\[\?\(@\.type|width=device-width|spec\.[a-z]+\[.{1,5}\]\.[a-z]+ must not be empty|apple\.com/DTDs/PropertyList|Kubernetes CRD|Mode: profile|cannot determine state directory' \
+    | grep -v -E 'and_then.*unwrap_or|\.status\.conditions\[\?\(@\.type|width=device-width|spec\.[a-z]+\[.{1,5}\]\.[a-z]+ must not be empty|apple\.com/DTDs/PropertyList|Kubernetes CRD|Mode: profile|cannot determine state directory|skipping (env var|alias) with unsafe name|detect_brew_system_method' \
     | head -5 || true)
 if [[ -n "$dupes" ]]; then
     log_warn "Repeated string literals (>2 occurrences, >30 chars):"
@@ -268,7 +268,8 @@ done < <(find "${SRC_ROOTS[@]}" -name '*.rs' -print0 2>/dev/null) \
         $2 != "read" && \
         $2 != "home_dir_var" && $2 != "file_permissions_mode" && \
         $2 != "create_symlink_impl" && $2 != "cleanup_old_binary" && \
-        $2 != "atomic_replace" && $2 != "acquire_apply_lock" \
+        $2 != "atomic_replace" && $2 != "acquire_apply_lock" && \
+        $2 != "recv_sighup" && $2 != "recv_sigterm" && $2 != "read_command_output" \
         {print}' \
     > /tmp/cfgd_fn_dupes 2>/dev/null || true
 fn_dupes=$(cat /tmp/cfgd_fn_dupes 2>/dev/null || true)

@@ -2462,10 +2462,17 @@ pub(super) fn cmd_module_keys_generate(
     let dir = output_dir.unwrap_or(".");
     std::fs::create_dir_all(dir)?;
 
+    // If COSIGN_PASSWORD is set, cosign reads it from the env and doesn't prompt.
+    // Use null stdin in that case so it never blocks waiting for terminal input.
+    let stdin_cfg = if std::env::var("COSIGN_PASSWORD").is_ok() {
+        std::process::Stdio::null()
+    } else {
+        std::process::Stdio::inherit()
+    };
     let status = std::process::Command::new("cosign")
         .args(["generate-key-pair"])
         .current_dir(dir)
-        .stdin(std::process::Stdio::inherit())
+        .stdin(stdin_cfg)
         .stdout(std::process::Stdio::inherit())
         .stderr(std::process::Stdio::inherit())
         .status()

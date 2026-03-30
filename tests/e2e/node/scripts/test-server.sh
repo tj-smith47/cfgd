@@ -22,13 +22,16 @@ for f in "$FIXTURES/profiles/"*.yaml; do
 done
 
 SERVER_URL="http://cfgd-server.cfgd-system.svc.cluster.local:8080"
+HEALTH_URL="http://cfgd-server.cfgd-system.svc.cluster.local:8081"
+# Admin API key must match CFGD_API_KEY on the server deployment
+GW_API_KEY="${CFGD_E2E_API_KEY:-cfgd-e2e-admin-key}"
 echo "Device gateway URL: $SERVER_URL"
 
-# Verify device gateway is reachable from the test pod (retry up to 60s)
+# Verify device gateway is reachable from the test pod (use health endpoint — API requires auth)
 echo "Verifying device gateway reachability from test pod..."
 GATEWAY_READY=false
 for i in $(seq 1 30); do
-    if exec_in_pod curl -sf "${SERVER_URL}/api/v1/devices" > /dev/null 2>&1; then
+    if exec_in_pod curl -sf "${HEALTH_URL}/readyz" > /dev/null 2>&1; then
         GATEWAY_READY=true
         break
     fi
@@ -50,6 +53,7 @@ OUTPUT=$(exec_in_pod cfgd \
     --config /etc/cfgd/cfgd.yaml \
     checkin \
     --server-url "$SERVER_URL" \
+    --api-key "$GW_API_KEY" \
     --device-id "$DEVICE_ID" \
     --no-color 2>&1) || RC=$?
 
@@ -66,7 +70,7 @@ fi
 # T31: Device registered on server
 # =================================================================
 begin_test "T31: Device registered on device gateway"
-DEVICES=$(exec_in_pod curl -sf "${SERVER_URL}/api/v1/devices" 2>/dev/null || echo "[]")
+DEVICES=$(exec_in_pod curl -sf -H "Authorization: Bearer $GW_API_KEY" "${SERVER_URL}/api/v1/devices" 2>/dev/null || echo "[]")
 echo "  Device gateway response (first 200 chars):"
 echo "$DEVICES" | head -c 200 | sed 's/^/    /'
 echo ""
@@ -84,9 +88,9 @@ begin_test "T32: Device status is healthy"
 # Apply to bring the node into compliance, then checkin again
 exec_in_pod cfgd --config /etc/cfgd/cfgd.yaml apply --yes --no-color > /dev/null 2>&1 || true
 exec_in_pod cfgd --config /etc/cfgd/cfgd.yaml checkin \
-    --server-url "$SERVER_URL" --device-id "$DEVICE_ID" --no-color > /dev/null 2>&1 || true
+    --server-url "$SERVER_URL" --api-key "$GW_API_KEY" --device-id "$DEVICE_ID" --no-color > /dev/null 2>&1 || true
 
-DEVICE=$(exec_in_pod curl -sf "${SERVER_URL}/api/v1/devices/${DEVICE_ID}" 2>/dev/null || echo "{}")
+DEVICE=$(exec_in_pod curl -sf -H "Authorization: Bearer $GW_API_KEY" "${SERVER_URL}/api/v1/devices/${DEVICE_ID}" 2>/dev/null || echo "{}")
 echo "  Device details (first 300 chars):"
 echo "$DEVICE" | head -c 300 | sed 's/^/    /'
 echo ""
@@ -110,6 +114,7 @@ OUTPUT=$(exec_in_pod cfgd \
     --config /etc/cfgd/cfgd.yaml \
     checkin \
     --server-url "$SERVER_URL" \
+    --api-key "$GW_API_KEY" \
     --device-id "$DEVICE_ID" \
     --no-color 2>&1) || true
 echo "  Checkin with drift output:"
@@ -122,7 +127,7 @@ if assert_contains "$OUTPUT" "drift"; then
     pass_test "T33"
 else
     # Drift may have been auto-fixed by a previous apply; check server anyway
-    DRIFT_EVENTS=$(exec_in_pod curl -sf "${SERVER_URL}/api/v1/devices/${DEVICE_ID}/drift" 2>/dev/null || echo "[]")
+    DRIFT_EVENTS=$(exec_in_pod curl -sf -H "Authorization: Bearer $GW_API_KEY" "${SERVER_URL}/api/v1/devices/${DEVICE_ID}/drift" 2>/dev/null || echo "[]")
     echo "  Drift events from server:"
     echo "$DRIFT_EVENTS" | head -c 200 | sed 's/^/    /'
     echo ""
@@ -138,7 +143,7 @@ fi
 # T34: Server drift events list
 # =================================================================
 begin_test "T34: Device gateway has drift events"
-DRIFT_EVENTS=$(exec_in_pod curl -sf "${SERVER_URL}/api/v1/devices/${DEVICE_ID}/drift" 2>/dev/null || echo "[]")
+DRIFT_EVENTS=$(exec_in_pod curl -sf -H "Authorization: Bearer $GW_API_KEY" "${SERVER_URL}/api/v1/devices/${DEVICE_ID}/drift" 2>/dev/null || echo "[]")
 echo "  Drift events:"
 echo "$DRIFT_EVENTS" | head -c 300 | sed 's/^/    /'
 echo ""
@@ -154,7 +159,7 @@ fi
 # T35: Second checkin updates last_checkin timestamp
 # =================================================================
 begin_test "T35: Checkin updates timestamp"
-BEFORE=$(exec_in_pod curl -sf "${SERVER_URL}/api/v1/devices/${DEVICE_ID}" 2>/dev/null \
+BEFORE=$(exec_in_pod curl -sf -H "Authorization: Bearer $GW_API_KEY" "${SERVER_URL}/api/v1/devices/${DEVICE_ID}" 2>/dev/null \
     | grep -o '"lastCheckin":"[^"]*"' || echo "")
 
 sleep 2
@@ -163,10 +168,11 @@ exec_in_pod cfgd \
     --config /etc/cfgd/cfgd.yaml \
     checkin \
     --server-url "$SERVER_URL" \
+    --api-key "$GW_API_KEY" \
     --device-id "$DEVICE_ID" \
     --no-color > /dev/null 2>&1 || true
 
-AFTER=$(exec_in_pod curl -sf "${SERVER_URL}/api/v1/devices/${DEVICE_ID}" 2>/dev/null \
+AFTER=$(exec_in_pod curl -sf -H "Authorization: Bearer $GW_API_KEY" "${SERVER_URL}/api/v1/devices/${DEVICE_ID}" 2>/dev/null \
     | grep -o '"lastCheckin":"[^"]*"' || echo "")
 
 echo "  Before: $BEFORE"
@@ -211,6 +217,7 @@ OUTPUT=$(exec_in_pod cfgd \
     --config /etc/cfgd/e2e-compliance-checkin.yaml \
     checkin \
     --server-url "$SERVER_URL" \
+    --api-key "$GW_API_KEY" \
     --device-id "$COMPLIANCE_DEVICE_ID" \
     --no-color 2>&1) || RC=$?
 
@@ -219,7 +226,7 @@ echo "$OUTPUT" | head -15 | sed 's/^/    /'
 
 # Verify the device now has complianceSummary in its API response
 sleep 1
-DEVICE_RESP=$(exec_in_pod curl -sf "${SERVER_URL}/api/v1/devices/${COMPLIANCE_DEVICE_ID}" 2>/dev/null || echo "{}")
+DEVICE_RESP=$(exec_in_pod curl -sf -H "Authorization: Bearer $GW_API_KEY" "${SERVER_URL}/api/v1/devices/${COMPLIANCE_DEVICE_ID}" 2>/dev/null || echo "{}")
 echo "  Device API response (first 400 chars):"
 echo "$DEVICE_RESP" | head -c 400 | sed 's/^/    /'
 echo ""

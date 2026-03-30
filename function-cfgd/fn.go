@@ -124,7 +124,7 @@ func (f *Function) RunFunction(_ context.Context, req *fnv1.RunFunctionRequest) 
 			mcSpec["moduleRefs"] = buildModuleRefs(allModuleNames, requiredModules)
 		}
 		if len(allPackages) > 0 {
-			mcSpec["packages"] = toInterfaceSlice(allPackages)
+			mcSpec["packages"] = packageNameObjects(allPackages)
 		}
 		if len(allFiles) > 0 {
 			mcSpec["files"] = allFiles
@@ -179,16 +179,17 @@ func generateConfigPolicy(
 	})
 
 	cpSpec := map[string]interface{}{
-		"name": fmt.Sprintf("%s-%s", team, tier),
 		"targetSelector": map[string]interface{}{
-			"cfgd.io/team": team,
+			"matchLabels": map[string]interface{}{
+				"cfgd.io/team": team,
+			},
 		},
 	}
 	if len(requiredModules) > 0 {
-		cpSpec["requiredModules"] = toInterfaceSlice(requiredModules)
+		cpSpec["requiredModules"] = packageNameObjects(requiredModules)
 	}
 	if len(pkgs) > 0 {
-		cpSpec["packages"] = toInterfaceSlice(pkgs)
+		cpSpec["packages"] = packageNameObjects(pkgs)
 	}
 	if len(settings) > 0 {
 		cpSpec["settings"] = settings
@@ -412,6 +413,16 @@ func unionStrings(slices ...[]string) []string {
 				result = append(result, item)
 			}
 		}
+	}
+	return result
+}
+
+// packageNameObjects converts a list of package name strings into
+// []interface{}{{"name": "X"}, ...} to match the MachineConfig CRD schema.
+func packageNameObjects(names []string) []interface{} {
+	result := make([]interface{}, len(names))
+	for i, name := range names {
+		result[i] = map[string]interface{}{"name": name}
 	}
 	return result
 }

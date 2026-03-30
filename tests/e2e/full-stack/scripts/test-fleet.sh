@@ -14,11 +14,12 @@ OUTPUT=$(exec_in_pod cfgd \
     --config /etc/cfgd/cfgd.yaml \
     checkin \
     --server-url "$SERVER_URL" \
+    --api-key "$GW_API_KEY" \
     --device-id "$DEVICE_1" \
     --no-color 2>&1) || true
 echo "  Checkin output: $OUTPUT"
 
-DEVICES=$(exec_in_pod curl -sf "${SERVER_URL}/api/v1/devices" 2>/dev/null || echo "[]")
+DEVICES=$(exec_in_pod curl -sf -H "Authorization: Bearer $GW_API_KEY" "${SERVER_URL}/api/v1/devices" 2>/dev/null || echo "[]")
 
 if assert_contains "$DEVICES" "$DEVICE_1"; then
     pass_test "FS-FLEET-01"
@@ -36,10 +37,11 @@ OUTPUT=$(exec_in_pod cfgd \
     --config /etc/cfgd/cfgd.yaml \
     checkin \
     --server-url "$SERVER_URL" \
+    --api-key "$GW_API_KEY" \
     --device-id "$DEVICE_2" \
     --no-color 2>&1) || true
 
-DEVICES=$(exec_in_pod curl -sf "${SERVER_URL}/api/v1/devices" 2>/dev/null || echo "[]")
+DEVICES=$(exec_in_pod curl -sf -H "Authorization: Bearer $GW_API_KEY" "${SERVER_URL}/api/v1/devices" 2>/dev/null || echo "[]")
 
 if assert_contains "$DEVICES" "$DEVICE_1" && assert_contains "$DEVICES" "$DEVICE_2"; then
     pass_test "FS-FLEET-02"

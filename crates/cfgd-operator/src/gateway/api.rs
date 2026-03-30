@@ -248,6 +248,7 @@ pub fn router(state: SharedState) -> Router<SharedState> {
             "/api/v1/admin/users/{username}/keys/{id}",
             delete(delete_user_key),
         )
+        .route("/api/v1/admin/reset", post(admin_reset))
         .route_layer(middleware::from_fn(admin_auth_middleware));
 
     // Enrollment endpoints — no pre-auth, validated in handlers
@@ -643,6 +644,16 @@ async fn delete_user_key(
     tracing::info!(username = %username, key_id = %id, "public key deleted");
 
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// Reset all gateway data (admin-only). Wipes devices, events, tokens, credentials.
+async fn admin_reset(State(state): State<SharedState>) -> Result<impl IntoResponse, GatewayError> {
+    let db = state.db.lock().await;
+    let deleted = db.reset_data()?;
+    Ok(Json(serde_json::json!({
+        "status": "ok",
+        "rowsDeleted": deleted
+    })))
 }
 
 /// Request an enrollment challenge (key mode only).

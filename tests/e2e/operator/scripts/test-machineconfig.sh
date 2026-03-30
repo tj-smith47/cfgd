@@ -124,7 +124,7 @@ echo "  ModulesResolved status: ${MODULES_RESOLVED:-not set}"
 echo "  ModulesResolved reason: ${MODULES_REASON:-not set}"
 
 # Verify the operator pod is not crash-looping
-OPERATOR_STATUS=$(kubectl get pods -n cfgd-system -l app.kubernetes.io/name=cfgd-operator \
+OPERATOR_STATUS=$(kubectl get pods -n cfgd-system -l app=cfgd-operator \
     -o jsonpath='{.items[0].status.phase}' 2>/dev/null || echo "")
 echo "  Operator pod status: ${OPERATOR_STATUS:-unknown}"
 
@@ -269,9 +269,9 @@ done
 # the operator does not crash.
 sleep 5
 
-OPERATOR_STATUS=$(kubectl get pods -n cfgd-system -l app.kubernetes.io/name=cfgd-operator \
+OPERATOR_STATUS=$(kubectl get pods -n cfgd-system -l app=cfgd-operator \
     -o jsonpath='{.items[0].status.phase}' 2>/dev/null || echo "")
-OPERATOR_RESTARTS=$(kubectl get pods -n cfgd-system -l app.kubernetes.io/name=cfgd-operator \
+OPERATOR_RESTARTS=$(kubectl get pods -n cfgd-system -l app=cfgd-operator \
     -o jsonpath='{.items[0].status.containerStatuses[0].restartCount}' 2>/dev/null || echo "0")
 
 echo "  Operator pod status: ${OPERATOR_STATUS:-unknown}, restarts: ${OPERATOR_RESTARTS:-0}"
@@ -295,7 +295,7 @@ kubectl delete machineconfig "e2e-ephemeral-mc-${E2E_RUN_ID}" -n "$E2E_NAMESPACE
 begin_test "OP-ERR-04: Rapid create/delete — no reconcile panic"
 
 # Record operator restart count before the test
-RESTARTS_BEFORE=$(kubectl get pods -n cfgd-system -l app.kubernetes.io/name=cfgd-operator \
+RESTARTS_BEFORE=$(kubectl get pods -n cfgd-system -l app=cfgd-operator \
     -o jsonpath='{.items[0].status.containerStatuses[0].restartCount}' 2>/dev/null || echo "0")
 
 # Create and immediately delete a MachineConfig to race the controller
@@ -322,9 +322,9 @@ done
 # Give the controller time to process the events
 sleep 10
 
-OPERATOR_STATUS=$(kubectl get pods -n cfgd-system -l app.kubernetes.io/name=cfgd-operator \
+OPERATOR_STATUS=$(kubectl get pods -n cfgd-system -l app=cfgd-operator \
     -o jsonpath='{.items[0].status.phase}' 2>/dev/null || echo "")
-RESTARTS_AFTER=$(kubectl get pods -n cfgd-system -l app.kubernetes.io/name=cfgd-operator \
+RESTARTS_AFTER=$(kubectl get pods -n cfgd-system -l app=cfgd-operator \
     -o jsonpath='{.items[0].status.containerStatuses[0].restartCount}' 2>/dev/null || echo "0")
 
 echo "  Operator pod status: ${OPERATOR_STATUS:-unknown}"
@@ -334,7 +334,7 @@ if [ "$OPERATOR_STATUS" = "Running" ] && [ "${RESTARTS_AFTER:-0}" -eq "${RESTART
     pass_test "OP-ERR-04"
 elif [ "$OPERATOR_STATUS" = "Running" ]; then
     # Running but with extra restarts — still acceptable if no crash loop
-    CRASH_LOOP=$(kubectl get pods -n cfgd-system -l app.kubernetes.io/name=cfgd-operator \
+    CRASH_LOOP=$(kubectl get pods -n cfgd-system -l app=cfgd-operator \
         -o jsonpath='{.items[0].status.containerStatuses[0].state.waiting.reason}' 2>/dev/null || echo "")
     if [ "$CRASH_LOOP" = "CrashLoopBackOff" ]; then
         fail_test "OP-ERR-04" "Operator entered CrashLoopBackOff after rapid create/delete"

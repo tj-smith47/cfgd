@@ -23,12 +23,14 @@ create_e2e_namespace
 
 # --- Port-forward to gateway ---
 GW_PORT=18080
+GW_HEALTH_PORT=18081
 echo "Port-forwarding to gateway on localhost:$GW_PORT..."
 PF_PID=$(port_forward cfgd-system cfgd-server "$GW_PORT" 8080)
+PF_HEALTH_PID=$(port_forward cfgd-system cfgd-server "$GW_HEALTH_PORT" 8081)
 GW_URL="http://localhost:$GW_PORT"
 
-# Wait for gateway to be reachable via port-forward
-wait_for_url "$GW_URL/api/v1/devices" 30
+# Wait for gateway to be reachable via port-forward (use health endpoint — API requires auth)
+wait_for_url "http://localhost:$GW_HEALTH_PORT/readyz" 30
 
 echo "Gateway reachable at $GW_URL"
 
@@ -70,7 +72,7 @@ else
 fi
 
 # --- Export environment for domain test files ---
-export GW_URL GW_PORT PF_PID ADMIN_KEY BOOTSTRAP_TOKEN GW_DEVICE_ID
+export GW_URL GW_PORT GW_HEALTH_PORT PF_PID PF_HEALTH_PID ADMIN_KEY BOOTSTRAP_TOKEN GW_DEVICE_ID
 
 echo "Gateway URL: $GW_URL"
 echo "Bootstrap token available: $([ -n "$BOOTSTRAP_TOKEN" ] && echo yes || echo no)"

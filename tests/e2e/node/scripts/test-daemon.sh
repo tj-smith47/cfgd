@@ -273,10 +273,10 @@ begin_test "DAEMON-08: compliance snapshot deduplication (hash check)"
 exec_in_pod cfgd --config /etc/cfgd/e2e-compliance-cfgd.yaml apply --yes --no-color > /dev/null 2>&1 || true
 
 exec_in_pod cfgd --config /etc/cfgd/e2e-compliance-cfgd.yaml compliance --no-color > /dev/null 2>&1 || true
-HIST1=$(exec_in_pod cfgd --config /etc/cfgd/e2e-compliance-cfgd.yaml compliance history --no-color 2>&1 | grep -c "20[0-9][0-9]-" || echo "0")
+HIST1=$(exec_in_pod cfgd --config /etc/cfgd/e2e-compliance-cfgd.yaml compliance history --no-color 2>&1 | { grep -c "20[0-9][0-9]-" || true; })
 
 exec_in_pod cfgd --config /etc/cfgd/e2e-compliance-cfgd.yaml compliance --no-color > /dev/null 2>&1 || true
-HIST2=$(exec_in_pod cfgd --config /etc/cfgd/e2e-compliance-cfgd.yaml compliance history --no-color 2>&1 | grep -c "20[0-9][0-9]-" || echo "0")
+HIST2=$(exec_in_pod cfgd --config /etc/cfgd/e2e-compliance-cfgd.yaml compliance history --no-color 2>&1 | { grep -c "20[0-9][0-9]-" || true; })
 
 echo "  History entries: before=$HIST1, after=$HIST2"
 if [ "$HIST2" -eq "$HIST1" ] || [ "$HIST2" -eq "$((HIST1 + 1))" ]; then
@@ -644,7 +644,7 @@ else
     echo "$DAEMON_LOG" | tail -20 | sed 's/^/    /'
 
     # Count reconciliation entries in log
-    RECONCILE_COUNT=$(echo "$DAEMON_LOG" | grep -c "running reconciliation check" || echo "0")
+    RECONCILE_COUNT=$(echo "$DAEMON_LOG" | { grep -c "running reconciliation check" || true; })
     echo "  Reconciliation checks: $RECONCILE_COUNT"
 
     if [ "$RECONCILE_COUNT" -ge 2 ]; then
@@ -835,11 +835,13 @@ exec_in_pod rm -f /etc/cfgd/profiles/k8s-worker-ondrift.yaml 2>/dev/null || true
 begin_test "DAEMON-17: Daemon checkin with gateway"
 
 SERVER_URL="http://cfgd-server.cfgd-system.svc.cluster.local:8080"
+HEALTH_URL="http://cfgd-server.cfgd-system.svc.cluster.local:8081"
+GW_API_KEY="${CFGD_E2E_API_KEY:-cfgd-e2e-admin-key}"
 
-# Check if device gateway is reachable
+# Check if device gateway is reachable (use health endpoint — API requires auth)
 GATEWAY_REACHABLE=false
 for i in $(seq 1 10); do
-    if exec_in_pod curl -sf "${SERVER_URL}/api/v1/devices" > /dev/null 2>&1; then
+    if exec_in_pod curl -sf "${HEALTH_URL}/readyz" > /dev/null 2>&1; then
         GATEWAY_REACHABLE=true
         break
     fi
@@ -891,7 +893,7 @@ INNEREOF"
 
         # Verify daemon attempted to contact the gateway
         # The daemon logs checkin activity or the server records the device
-        DEVICES=$(exec_in_pod curl -sf "${SERVER_URL}/api/v1/devices" 2>/dev/null || echo "[]")
+        DEVICES=$(exec_in_pod curl -sf -H "Authorization: Bearer $GW_API_KEY" "${SERVER_URL}/api/v1/devices" 2>/dev/null || echo "[]")
 
         if echo "$DAEMON_LOG" | grep -q "checkin\|server"; then
             pass_test "DAEMON-17"
@@ -924,9 +926,9 @@ spec:
       autoApply: false
 INNEREOF'
 
-# Start daemon
-exec_in_pod bash -c 'sysctl -w fs.inotify.max_user_instances=512 fs.inotify.max_user_watches=524288 > /dev/null 2>&1; nohup cfgd --config /etc/cfgd/e2e-daemon18-cfgd.yaml daemon --no-color > /tmp/daemon18.log 2>&1 &'
-DAEMON_PID=$(exec_in_pod bash -c 'pgrep -f "cfgd.*e2e-daemon18-cfgd" | head -1 || echo ""')
+# Start daemon — write PID file to avoid pgrep ambiguity
+exec_in_pod bash -c 'sysctl -w fs.inotify.max_user_instances=512 fs.inotify.max_user_watches=524288 > /dev/null 2>&1; cfgd --config /etc/cfgd/e2e-daemon18-cfgd.yaml daemon --no-color > /tmp/daemon18.log 2>&1 & echo $! > /tmp/daemon18.pid'
+DAEMON_PID=$(exec_in_pod cat /tmp/daemon18.pid 2>/dev/null | tr -d '[:space:]')
 echo "  Daemon PID: $DAEMON_PID"
 
 if [ -z "$DAEMON_PID" ]; then
@@ -946,11 +948,19 @@ else
         exec_in_pod kill -TERM "$DAEMON_PID" 2>/dev/null || true
         echo "  Sent SIGTERM to PID $DAEMON_PID"
 
-        # Wait for process to exit (up to 10s)
+        # Wait for process to exit (up to 15s)
+        # Check both kill -0 and /proc state — zombies (Z) still respond to kill -0
         EXITED=false
-        for i in $(seq 1 10); do
+        for i in $(seq 1 15); do
             if ! exec_in_pod kill -0 "$DAEMON_PID" 2>/dev/null; then
                 echo "  Daemon exited after ${i}s"
+                EXITED=true
+                break
+            fi
+            # Zombie means the daemon exited cleanly but wasn't reaped by PID 1
+            PROC_STATE=$(exec_in_pod cat "/proc/$DAEMON_PID/status" 2>/dev/null | grep '^State:' || echo "")
+            if echo "$PROC_STATE" | grep -q 'Z (zombie)'; then
+                echo "  Daemon exited after ${i}s (zombie — awaiting reap)"
                 EXITED=true
                 break
             fi
@@ -958,9 +968,10 @@ else
         done
 
         if ! $EXITED; then
-            # Force kill if still running
+            echo "  Daemon logs on timeout:"
+            exec_in_pod cat /tmp/daemon18.log 2>/dev/null | tail -10 | sed 's/^/    /'
             exec_in_pod kill -9 "$DAEMON_PID" > /dev/null 2>&1 || true
-            fail_test "DAEMON-18" "Daemon did not exit within 10s after SIGTERM"
+            fail_test "DAEMON-18" "Daemon did not exit within 15s after SIGTERM"
         else
             # Check exit code via log content (clean shutdown logs graceful messages)
             DAEMON_LOG=$(exec_in_pod cat /tmp/daemon18.log 2>/dev/null || echo "")

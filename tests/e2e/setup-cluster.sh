@@ -14,6 +14,33 @@ echo "=== cfgd E2E Setup ==="
 echo "Registry: $REGISTRY"
 echo "Image tag: $IMAGE_TAG"
 
+# --- Step 0: Clean up stale E2E resources from previous runs ---
+echo "Cleaning up stale E2E resources..."
+
+# Kill stale port-forwards from previous gateway/server test runs
+pkill -f "kubectl.*port-forward.*cfgd" 2>/dev/null || true
+
+# Delete stale E2E namespaces (cfgd-e2e-* but not cfgd-system)
+for ns in $(kubectl get ns -o name 2>/dev/null | grep 'namespace/cfgd-e2e' | sed 's|namespace/||'); do
+    echo "  Deleting stale namespace: $ns"
+    kubectl delete namespace "$ns" --ignore-not-found --wait=false 2>/dev/null || true
+done
+
+# Delete stale Helm test ClusterRoles/ClusterRoleBindings
+for res in clusterrole clusterrolebinding; do
+    for name in $(kubectl get "$res" -o name 2>/dev/null | grep 'cfgd-test' | sed "s|${res}/||" | sed "s|${res}.rbac.authorization.k8s.io/||"); do
+        echo "  Deleting stale $res: $name"
+        kubectl delete "$res" "$name" --ignore-not-found 2>/dev/null || true
+    done
+done
+
+# Delete stale cluster-scoped CRD instances labeled with old E2E runs
+for kind in machineconfig configpolicy driftalert clusterconfigpolicy module; do
+    kubectl delete "$kind" -l cfgd.io/e2e-run --all-namespaces --ignore-not-found 2>/dev/null || true
+done
+
+echo "  Cleanup complete"
+
 # --- Step 1: Verify cluster access ---
 echo "Verifying cluster access..."
 kubectl cluster-info > /dev/null 2>&1 || {
@@ -65,6 +92,7 @@ docker build -f "$REPO_ROOT/Dockerfile.operator" \
     -t "${REGISTRY}/cfgd-operator:${IMAGE_TAG}" "$REPO_ROOT"
 docker build -f "$REPO_ROOT/Dockerfile.csi" \
     -t "${REGISTRY}/cfgd-csi:${IMAGE_TAG}" "$REPO_ROOT"
+docker build -t "${REGISTRY}/function-cfgd:${IMAGE_TAG}" "$REPO_ROOT/function-cfgd"
 
 echo "Tagging and pushing images to $REGISTRY..."
 # Also tag as :latest so ArgoCD-managed deployments pick up the new code
@@ -73,6 +101,28 @@ for img in cfgd cfgd-operator cfgd-csi; do
     docker push "${REGISTRY}/${img}:${IMAGE_TAG}"
     docker push "${REGISTRY}/${img}:latest"
 done
+
+# Build and push function-cfgd as a Crossplane xpkg (package + embedded runtime)
+docker tag "${REGISTRY}/function-cfgd:${IMAGE_TAG}" "${REGISTRY}/function-cfgd:latest"
+docker push "${REGISTRY}/function-cfgd:${IMAGE_TAG}"
+docker push "${REGISTRY}/function-cfgd:latest"
+echo "Building function-cfgd xpkg..."
+crossplane xpkg build \
+    --package-root="$REPO_ROOT/function-cfgd/package" \
+    --embed-runtime-image="${REGISTRY}/function-cfgd:${IMAGE_TAG}" \
+    -o /tmp/function-cfgd.xpkg
+crossplane xpkg push "${REGISTRY}/function-cfgd:${IMAGE_TAG}" -f /tmp/function-cfgd.xpkg
+crossplane xpkg push "${REGISTRY}/function-cfgd:latest" -f /tmp/function-cfgd.xpkg
+
+# Restart the function-cfgd deployment so it picks up the new embedded runtime image.
+# The xpkg push doesn't trigger a redeploy when the tag is unchanged.
+FUNC_DEPLOY=$(kubectl get deployment -n crossplane-system -l pkg.crossplane.io/function=function-cfgd \
+    -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo "")
+if [ -n "$FUNC_DEPLOY" ]; then
+    echo "  Restarting function-cfgd deployment ($FUNC_DEPLOY)..."
+    kubectl rollout restart "deployment/$FUNC_DEPLOY" -n crossplane-system 2>/dev/null || true
+    kubectl rollout status "deployment/$FUNC_DEPLOY" -n crossplane-system --timeout=60s 2>/dev/null || true
+fi
 
 # (Namespace and RBAC already created in Step 1b above)
 
@@ -110,7 +160,7 @@ fi
 
 if [ "$ARGOCD_MANAGED" = "true" ] || { [ -n "${CFGD_DEPLOY_MANIFESTS:-}" ] && [ -d "$CFGD_DEPLOY_MANIFESTS" ]; }; then
     echo "  Deployments managed by ArgoCD — restarting to pick up :latest images..."
-    # Scale down first to release RWO PVCs, then scale up with new image
+
     for deploy in cfgd-operator cfgd-server; do
         if kubectl get deployment "$deploy" -n cfgd-system > /dev/null 2>&1; then
             kubectl rollout restart "deployment/$deploy" -n cfgd-system 2>/dev/null || true
@@ -320,6 +370,28 @@ echo "Waiting for components..."
 wait_for_deployment cfgd-system cfgd-operator 120
 wait_for_deployment cfgd-system cfgd-server 120
 # CSI DaemonSet readiness is optional — full-stack tests gracefully skip if CSI isn't ready
+
+# --- Step 13: Reset gateway DB for clean E2E state ---
+# Call the admin reset endpoint to wipe stale device/event data from prior runs.
+# This is safe: the endpoint is behind admin auth and only deletes data rows,
+# not the SQLite file (avoids Longhorn volume corruption from rm -f on live DB).
+GW_API_KEY=$(kubectl get deployment cfgd-server -n cfgd-system \
+    -o jsonpath='{.spec.template.spec.containers[0].env[?(@.name=="CFGD_API_KEY")].value}' 2>/dev/null || echo "")
+if [ -n "$GW_API_KEY" ]; then
+    # Port-forward to gateway, reset, then clean up
+    kubectl port-forward -n cfgd-system svc/cfgd-server 18099:8080 > /dev/null 2>&1 &
+    PF_PID=$!
+    sleep 2
+    RESET_RESP=$(curl -sf -X POST "http://localhost:18099/api/v1/admin/reset" \
+        -H "Authorization: Bearer $GW_API_KEY" 2>/dev/null || echo "")
+    kill "$PF_PID" 2>/dev/null || true
+    wait "$PF_PID" 2>/dev/null || true
+    if [ -n "$RESET_RESP" ]; then
+        echo "  Gateway DB reset: $RESET_RESP"
+    else
+        echo "  WARN: Gateway DB reset failed (endpoint may not exist yet)"
+    fi
+fi
 
 echo ""
 echo "=== E2E Setup Complete ==="

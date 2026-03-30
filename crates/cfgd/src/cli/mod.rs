@@ -5075,9 +5075,11 @@ fn cmd_daemon(cli: &Cli, printer: &Printer, command: Option<&DaemonCommand>) -> 
     let hooks: std::sync::Arc<dyn cfgd_core::daemon::DaemonHooks> =
         std::sync::Arc::new(WorkstationDaemonHooks);
     let rt = tokio::runtime::Runtime::new()?;
-    rt.block_on(async {
+    let result = rt.block_on(async {
         cfgd_core::daemon::run_daemon(config_path, profile_override, printer, hooks).await
-    })?;
+    });
+    rt.shutdown_timeout(std::time::Duration::from_secs(2));
+    result?;
 
     Ok(())
 }

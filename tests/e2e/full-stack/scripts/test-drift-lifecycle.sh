@@ -18,12 +18,14 @@ OUTPUT=$(exec_in_pod cfgd \
     --config /etc/cfgd/cfgd.yaml \
     checkin \
     --server-url "$SERVER_URL" \
+    --api-key "$GW_API_KEY" \
     --device-id "$DEVICE_1" \
     --no-color 2>&1) || true
 echo "  Checkin with drift: $OUTPUT" | head -5
 
 # Check device gateway for drift events
 DRIFT_EVENTS=$(exec_in_pod curl -sf \
+    -H "Authorization: Bearer $GW_API_KEY" \
     "${SERVER_URL}/api/v1/devices/${DEVICE_1}/drift" 2>/dev/null || echo "[]")
 echo "  Drift events: $(echo "$DRIFT_EVENTS" | head -c 200)"
 
@@ -139,10 +141,11 @@ exec_in_pod cfgd \
     --config /etc/cfgd/cfgd.yaml \
     checkin \
     --server-url "$SERVER_URL" \
+    --api-key "$GW_API_KEY" \
     --device-id "$DEVICE_1" \
     --no-color > /dev/null 2>&1 || true
 
-DEVICE_INFO=$(exec_in_pod curl -sf "${SERVER_URL}/api/v1/devices/${DEVICE_1}" 2>/dev/null || echo "{}")
+DEVICE_INFO=$(exec_in_pod curl -sf -H "Authorization: Bearer $GW_API_KEY" "${SERVER_URL}/api/v1/devices/${DEVICE_1}" 2>/dev/null || echo "{}")
 echo "  Device info (first 200 chars):"
 echo "$DEVICE_INFO" | head -c 200 | sed 's/^/    /'
 echo ""
@@ -218,10 +221,10 @@ DEVICE_ID="e2e-compliance-$(date +%s)"
 
 exec_in_pod cfgd --config /etc/cfgd/e2e-compliance-cfgd.yaml compliance --no-color > /dev/null 2>&1 || true
 CHECKIN_OUTPUT=$(exec_in_pod cfgd --config /etc/cfgd/cfgd.yaml checkin \
-    --server-url "$SERVER_URL" --device-id "$DEVICE_ID" --no-color 2>&1) && CHECKIN_RC=0 || CHECKIN_RC=$?
+    --server-url "$SERVER_URL" --api-key "$GW_API_KEY" --device-id "$DEVICE_ID" --no-color 2>&1) && CHECKIN_RC=0 || CHECKIN_RC=$?
 
 sleep 2
-DEVICES=$(exec_in_pod curl -sf "${SERVER_URL}/api/v1/devices" 2>/dev/null || echo "")
+DEVICES=$(exec_in_pod curl -sf -H "Authorization: Bearer $GW_API_KEY" "${SERVER_URL}/api/v1/devices" 2>/dev/null || echo "")
 if assert_contains "$DEVICES" "$DEVICE_ID"; then
     pass_test "FS-DRIFT-08"
 else

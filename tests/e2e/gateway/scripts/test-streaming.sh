@@ -81,7 +81,7 @@ else
     GW21_CHECK_CODE=$(curl -s -o /dev/null -w "%{http_code}" --max-time 3 \
         "$GW_URL/api/v1/events/stream" \
         -H "$(gw_admin_auth_header)" \
-        -H "Accept: text/event-stream" 2>/dev/null || echo "000")
+        -H "Accept: text/event-stream" 2>/dev/null) || true
     echo "  SSE endpoint HTTP check: $GW21_CHECK_CODE"
 
     if [ "$GW21_CHECK_CODE" = "200" ]; then

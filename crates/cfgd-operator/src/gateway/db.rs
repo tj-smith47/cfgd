@@ -981,6 +981,31 @@ impl ServerDb {
         }
         Ok(total)
     }
+
+    /// Delete all data from every table except `schema_version`.
+    /// Used by the admin reset endpoint so E2E runs start with a clean DB
+    /// without destroying the SQLite file (avoids Longhorn volume corruption).
+    pub fn reset_data(&self) -> Result<usize, GatewayError> {
+        // Order matters: child tables with FK references first.
+        let tables = [
+            "enrollment_challenges",
+            "device_credentials",
+            "drift_events",
+            "checkin_events",
+            "bootstrap_tokens",
+            "user_public_keys",
+            "devices",
+        ];
+        let mut total = 0usize;
+        for table in &tables {
+            let deleted = self.conn.execute(&format!("DELETE FROM {table}"), [])?;
+            total += deleted;
+        }
+        if total > 0 {
+            tracing::info!(rows_deleted = total, "admin reset: all data wiped");
+        }
+        Ok(total)
+    }
 }
 
 #[cfg(test)]

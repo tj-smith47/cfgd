@@ -12,10 +12,29 @@ func main() {
 	if err != nil {
 		os.Exit(1)
 	}
-	if err := fn.Serve(&Function{log: log},
+
+	// The DeploymentRuntimeConfig may pass --insecure to skip mTLS.
+	insecure := false
+	for _, arg := range os.Args[1:] {
+		if arg == "--insecure" {
+			insecure = true
+		}
+	}
+
+	opts := []fn.ServeOption{
 		fn.Listen(fn.DefaultNetwork, fn.DefaultAddress),
-		fn.MTLSCertificates(os.Getenv("TLS_SERVER_CERTS_DIR")),
-	); err != nil {
+	}
+	if insecure {
+		opts = append(opts, fn.Insecure(true))
+	} else {
+		certDir := os.Getenv("TLS_SERVER_CERTS_DIR")
+		if certDir == "" {
+			certDir = "/tls/server" // Crossplane's standard mount path
+		}
+		opts = append(opts, fn.MTLSCertificates(certDir))
+	}
+
+	if err := fn.Serve(&Function{log: log}, opts...); err != nil {
 		log.Info("Error serving function", "error", err)
 		os.Exit(1)
 	}

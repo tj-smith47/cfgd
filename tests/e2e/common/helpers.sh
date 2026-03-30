@@ -165,7 +165,7 @@ port_forward() {
     local remote_port="${4:-$local_port}"
 
     kubectl port-forward -n "$namespace" "svc/$service" \
-        "$local_port:$remote_port" &
+        "$local_port:$remote_port" > /dev/null 2>&1 &
     local pid=$!
     sleep 2  # let port-forward establish
     echo "$pid"

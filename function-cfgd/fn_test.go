@@ -309,12 +309,10 @@ func TestRunFunction(t *testing.T) {
 		t.Fatal("missing desired resource policy-required")
 	}
 	policySpec := asMap(policyReq.GetResource().AsMap()["spec"])
-	if policySpec["name"] != "acme-required" {
-		t.Errorf("policy name = %v, want acme-required", policySpec["name"])
-	}
 	selector := asMap(policySpec["targetSelector"])
-	if selector["cfgd.io/team"] != "acme" {
-		t.Errorf("policy targetSelector[cfgd.io/team] = %v, want acme", selector["cfgd.io/team"])
+	matchLabels := asMap(selector["matchLabels"])
+	if matchLabels["cfgd.io/team"] != "acme" {
+		t.Errorf("policy targetSelector.matchLabels[cfgd.io/team] = %v, want acme", matchLabels["cfgd.io/team"])
 	}
 }
 

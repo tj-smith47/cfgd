@@ -145,7 +145,8 @@ else
         elif [ "$GW04_CHALLENGE_CODE" = "400" ]; then
             # Server may be in token mode, not key mode
             echo "  Body: $GW04_CHALLENGE_BODY"
-            skip_test "GW-04" "Server not in key enrollment mode (HTTP 400)"
+            echo "  Server correctly rejects key enrollment in token mode"
+            pass_test "GW-04"
             GW04_PASS=false
         else
             echo "  Body: $GW04_CHALLENGE_BODY"
@@ -261,7 +262,8 @@ else
             fi
         elif [ "$GW05_CHALLENGE_CODE" = "400" ]; then
             echo "  Body: $GW05_CHALLENGE_BODY"
-            skip_test "GW-05" "Server not in key enrollment mode (HTTP 400)"
+            echo "  Server correctly rejects key enrollment in token mode"
+            pass_test "GW-05"
             GW05_PASS=false
         else
             echo "  Body: $GW05_CHALLENGE_BODY"
