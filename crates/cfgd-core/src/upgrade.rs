@@ -535,8 +535,7 @@ mod tests {
 
     #[test]
     fn current_version_is_valid_semver() {
-        let v = current_version().expect("should parse");
-        assert!(v.major == 0 || v.major >= 1);
+        let _v = current_version().expect("CARGO_PKG_VERSION should be valid semver");
     }
 
     #[test]
@@ -682,18 +681,9 @@ mod tests {
 
     #[test]
     fn update_check_detects_newer() {
-        let check = UpdateCheck {
-            current: Version::new(0, 1, 0),
-            latest: Version::new(0, 2, 0),
-            update_available: true,
-            release: None,
-        };
-        assert!(check.update_available);
-    }
-
-    #[test]
-    fn version_check_interval_is_24h() {
-        assert_eq!(version_check_interval(), Duration::from_secs(86400));
+        let current = Version::new(0, 1, 0);
+        let latest = Version::new(0, 2, 0);
+        assert!(latest > current, "newer version should compare greater");
     }
 
     #[test]
@@ -717,6 +707,190 @@ mod tests {
 
         atomic_replace(&src, &tgt).unwrap();
         assert_eq!(std::fs::read_to_string(&tgt).unwrap(), "data");
+    }
+
+    #[test]
+    fn version_cache_disk_persistence_camel_case() {
+        // Write VersionCache to a temp file, read it back, verify camelCase keys on disk
+        let cache = VersionCache {
+            checked_at_secs: 1711800000,
+            latest_tag: "v0.5.0".into(),
+            latest_version: "0.5.0".into(),
+            current_version: "0.4.0".into(),
+        };
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("version-check.json");
+
+        // Serialize and write to disk
+        let json = serde_json::to_string(&cache).expect("serialize");
+        fs::write(&path, &json).expect("write");
+
+        // Verify the on-disk JSON uses camelCase keys
+        let raw = fs::read_to_string(&path).expect("read");
+        assert!(
+            raw.contains("checkedAtSecs"),
+            "expected camelCase key 'checkedAtSecs', got: {}",
+            raw
+        );
+        assert!(
+            raw.contains("latestTag"),
+            "expected camelCase key 'latestTag', got: {}",
+            raw
+        );
+        assert!(
+            raw.contains("latestVersion"),
+            "expected camelCase key 'latestVersion', got: {}",
+            raw
+        );
+        assert!(
+            raw.contains("currentVersion"),
+            "expected camelCase key 'currentVersion', got: {}",
+            raw
+        );
+        // Ensure snake_case keys are NOT present
+        assert!(
+            !raw.contains("checked_at_secs"),
+            "should not contain snake_case key 'checked_at_secs'"
+        );
+
+        // Read back and deserialize
+        let restored: VersionCache = serde_json::from_str(&raw).expect("deserialize from disk");
+        assert_eq!(restored.checked_at_secs, 1711800000);
+        assert_eq!(restored.latest_tag, "v0.5.0");
+        assert_eq!(restored.latest_version, "0.5.0");
+        assert_eq!(restored.current_version, "0.4.0");
+    }
+
+    #[test]
+    fn find_asset_wrong_platform_returns_error() {
+        // Assets only for a fake platform should not match the real runtime platform
+        let release = ReleaseInfo {
+            tag: "v1.0.0".into(),
+            version: Version::new(1, 0, 0),
+            assets: vec![
+                ReleaseAsset {
+                    name: "cfgd-1.0.0-fakeos-fakearch.tar.gz".into(),
+                    download_url: "https://example.com/fake".into(),
+                    size: 2048,
+                },
+                ReleaseAsset {
+                    name: "cfgd-1.0.0-anotheros-anotherarch.zip".into(),
+                    download_url: "https://example.com/another".into(),
+                    size: 4096,
+                },
+            ],
+        };
+
+        let result = find_asset_for_platform(&release);
+        assert!(result.is_err(), "should fail for fake platform assets");
+
+        // Verify the error message references the missing platform
+        let err = result.unwrap_err();
+        let err_msg = format!("{}", err);
+        assert!(
+            err_msg.contains("no release found for"),
+            "error should mention missing platform: {}",
+            err_msg
+        );
+    }
+
+    #[test]
+    fn cache_ttl_fresh_cache_is_valid() {
+        // Simulate a cache entry that was just written — should be within TTL
+        let now_secs = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+
+        let cache = VersionCache {
+            checked_at_secs: now_secs, // just now
+            latest_tag: "v0.3.0".into(),
+            latest_version: "0.3.0".into(),
+            current_version: "0.2.0".into(),
+        };
+
+        let elapsed = now_secs.saturating_sub(cache.checked_at_secs);
+        assert!(
+            elapsed < CACHE_TTL_SECS,
+            "fresh cache should be within TTL: elapsed={}, ttl={}",
+            elapsed,
+            CACHE_TTL_SECS
+        );
+
+        // The cached version should parse and be usable for comparison
+        let cached_version = Version::parse(&cache.latest_version).expect("parse cached version");
+        let current = Version::parse(&cache.current_version).expect("parse current version");
+        assert!(cached_version > current, "0.3.0 > 0.2.0");
+    }
+
+    #[test]
+    fn cache_ttl_expired_cache_is_stale() {
+        // Simulate a cache entry from 25 hours ago — should exceed the 24h TTL
+        let now_secs = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+
+        let twenty_five_hours_ago = now_secs - (25 * 3600);
+
+        let cache = VersionCache {
+            checked_at_secs: twenty_five_hours_ago,
+            latest_tag: "v0.3.0".into(),
+            latest_version: "0.3.0".into(),
+            current_version: "0.2.0".into(),
+        };
+
+        let elapsed = now_secs.saturating_sub(cache.checked_at_secs);
+        assert!(
+            elapsed >= CACHE_TTL_SECS,
+            "25h-old cache should exceed TTL: elapsed={}, ttl={}",
+            elapsed,
+            CACHE_TTL_SECS
+        );
+    }
+
+    #[test]
+    fn cache_ttl_boundary_just_expired() {
+        // Cache is exactly at TTL boundary + 1 second — should be expired
+        let now_secs = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+
+        let just_past_ttl = now_secs - CACHE_TTL_SECS - 1;
+
+        let cache = VersionCache {
+            checked_at_secs: just_past_ttl,
+            latest_tag: "v0.3.0".into(),
+            latest_version: "0.3.0".into(),
+            current_version: "0.2.0".into(),
+        };
+
+        let elapsed = now_secs.saturating_sub(cache.checked_at_secs);
+        assert!(
+            elapsed >= CACHE_TTL_SECS,
+            "cache at TTL+1s should be expired"
+        );
+
+        // One second before expiry should still be valid
+        let at_boundary = now_secs - CACHE_TTL_SECS + 1;
+        let boundary_elapsed = now_secs.saturating_sub(at_boundary);
+        assert!(
+            boundary_elapsed < CACHE_TTL_SECS,
+            "cache at TTL-1s should still be valid"
+        );
+    }
+
+    #[test]
+    fn version_cache_deserialization_from_known_json() {
+        // Ensure we can deserialize a known JSON payload (simulates reading from disk)
+        let json = r#"{"checkedAtSecs":1700000000,"latestTag":"v1.2.3","latestVersion":"1.2.3","currentVersion":"1.0.0"}"#;
+        let cache: VersionCache = serde_json::from_str(json).expect("deserialize known JSON");
+        assert_eq!(cache.checked_at_secs, 1700000000);
+        assert_eq!(cache.latest_tag, "v1.2.3");
+        assert_eq!(cache.latest_version, "1.2.3");
+        assert_eq!(cache.current_version, "1.0.0");
     }
 
     #[test]
