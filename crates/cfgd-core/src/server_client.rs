@@ -712,6 +712,58 @@ mod tests {
     }
 
     #[test]
+    fn server_client_no_api_key() {
+        let client = ServerClient::new("https://example.com", None, "dev-1");
+        assert_eq!(client.base_url, "https://example.com");
+        assert!(client.api_key.is_none());
+        assert_eq!(client.device_id, "dev-1");
+    }
+
+    #[test]
+    fn load_credential_from_malformed_json() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("bad-credential.json");
+        std::fs::write(&path, "{ this is not valid json!!!").unwrap();
+
+        let result = load_credential_from(&path);
+        assert!(result.is_err());
+        let err_msg = format!("{}", result.unwrap_err());
+        assert!(
+            err_msg.contains("invalid device credential file"),
+            "unexpected error message: {}",
+            err_msg
+        );
+    }
+
+    #[test]
+    fn load_credential_from_nested_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let nested = dir.path().join("a").join("b").join("c");
+        std::fs::create_dir_all(&nested).unwrap();
+        let path = nested.join("device-credential.json");
+
+        let cred = DeviceCredential {
+            server_url: "https://nested.example.com".to_string(),
+            device_id: "nested-dev".to_string(),
+            api_key: "cfgd_dev_nested".to_string(),
+            username: "deepuser".to_string(),
+            team: Some("team-deep".to_string()),
+            enrolled_at: "2026-03-30T00:00:00Z".to_string(),
+        };
+
+        let json = serde_json::to_string_pretty(&cred).unwrap();
+        std::fs::write(&path, &json).unwrap();
+
+        let loaded = load_credential_from(&path).unwrap().unwrap();
+        assert_eq!(loaded.server_url, "https://nested.example.com");
+        assert_eq!(loaded.device_id, "nested-dev");
+        assert_eq!(loaded.api_key, "cfgd_dev_nested");
+        assert_eq!(loaded.username, "deepuser");
+        assert_eq!(loaded.team.as_deref(), Some("team-deep"));
+        assert_eq!(loaded.enrolled_at, "2026-03-30T00:00:00Z");
+    }
+
+    #[test]
     fn credential_file_permissions() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("cred.json");
