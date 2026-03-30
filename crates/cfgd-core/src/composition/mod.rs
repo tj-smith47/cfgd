@@ -1970,6 +1970,634 @@ mod tests {
         );
     }
 
+    // --- Determinism: full merged output comparison ---
+
+    #[test]
+    fn compose_is_deterministic_full_output() {
+        let local = make_local_profile();
+        let input1 = make_source_input("acme", 500);
+        let input2 = make_source_input("acme", 500);
+
+        let result1 = compose(&local, &[input1]).unwrap();
+        let result2 = compose(&local, &[input2]).unwrap();
+
+        // Serialize both merged profiles and compare the full output
+        let yaml1 = serde_yaml::to_string(&result1.resolved.merged).unwrap();
+        let yaml2 = serde_yaml::to_string(&result2.resolved.merged).unwrap();
+        assert_eq!(yaml1, yaml2, "Full merged output must be identical across runs");
+
+        // Also check conflict counts and types match
+        assert_eq!(result1.conflicts.len(), result2.conflicts.len());
+        for (c1, c2) in result1.conflicts.iter().zip(result2.conflicts.iter()) {
+            assert_eq!(c1.resource_id, c2.resource_id);
+            assert_eq!(c1.resolution_type, c2.resolution_type);
+            assert_eq!(c1.winning_source, c2.winning_source);
+        }
+    }
+
+    #[test]
+    fn compose_deterministic_with_multiple_sources() {
+        let local = make_local_profile();
+        // Run twice with same sources in same order
+        let mk = || {
+            vec![
+                CompositionInput {
+                    source_name: "alpha".into(),
+                    priority: 300,
+                    policy: ConfigSourcePolicy {
+                        recommended: PolicyItems {
+                            packages: Some(PackagesSpec {
+                                brew: Some(BrewSpec {
+                                    formulae: vec!["ripgrep".into(), "fd".into()],
+                                    ..Default::default()
+                                }),
+                                ..Default::default()
+                            }),
+                            env: vec![EnvVar {
+                                name: "PAGER".into(),
+                                value: "less".into(),
+                            }],
+                            ..Default::default()
+                        },
+                        ..Default::default()
+                    },
+                    constraints: Default::default(),
+                    layers: vec![],
+                    subscription: SubscriptionConfig {
+                        accept_recommended: true,
+                        ..Default::default()
+                    },
+                },
+                CompositionInput {
+                    source_name: "beta".into(),
+                    priority: 700,
+                    policy: ConfigSourcePolicy {
+                        recommended: PolicyItems {
+                            packages: Some(PackagesSpec {
+                                brew: Some(BrewSpec {
+                                    formulae: vec!["jq".into()],
+                                    ..Default::default()
+                                }),
+                                ..Default::default()
+                            }),
+                            env: vec![EnvVar {
+                                name: "PAGER".into(),
+                                value: "bat".into(),
+                            }],
+                            ..Default::default()
+                        },
+                        ..Default::default()
+                    },
+                    constraints: Default::default(),
+                    layers: vec![],
+                    subscription: SubscriptionConfig {
+                        accept_recommended: true,
+                        ..Default::default()
+                    },
+                },
+            ]
+        };
+
+        let r1 = compose(&local, &mk()).unwrap();
+        let r2 = compose(&local, &mk()).unwrap();
+        let yaml1 = serde_yaml::to_string(&r1.resolved.merged).unwrap();
+        let yaml2 = serde_yaml::to_string(&r2.resolved.merged).unwrap();
+        assert_eq!(yaml1, yaml2);
+    }
+
+    // --- Conflict resolution: env var priority ---
+
+    #[test]
+    fn higher_priority_source_wins_env_var() {
+        let local = ResolvedProfile {
+            layers: vec![ProfileLayer {
+                source: "local".into(),
+                profile_name: "default".into(),
+                priority: 1000,
+                policy: LayerPolicy::Local,
+                spec: ProfileSpec::default(),
+            }],
+            merged: MergedProfile::default(),
+        };
+        let low = CompositionInput {
+            source_name: "low".into(),
+            priority: 200,
+            policy: ConfigSourcePolicy {
+                recommended: PolicyItems {
+                    env: vec![EnvVar {
+                        name: "THEME".into(),
+                        value: "solarized".into(),
+                    }],
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            constraints: Default::default(),
+            layers: vec![],
+            subscription: SubscriptionConfig {
+                accept_recommended: true,
+                ..Default::default()
+            },
+        };
+        let high = CompositionInput {
+            source_name: "high".into(),
+            priority: 800,
+            policy: ConfigSourcePolicy {
+                recommended: PolicyItems {
+                    env: vec![EnvVar {
+                        name: "THEME".into(),
+                        value: "dracula".into(),
+                    }],
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            constraints: Default::default(),
+            layers: vec![],
+            subscription: SubscriptionConfig {
+                accept_recommended: true,
+                ..Default::default()
+            },
+        };
+
+        let result = compose(&local, &[low, high]).unwrap();
+        let theme = result
+            .resolved
+            .merged
+            .env
+            .iter()
+            .find(|e| e.name == "THEME")
+            .expect("THEME env var must exist");
+        // Higher priority (800) source processed after lower (200), so it overwrites
+        assert_eq!(theme.value, "dracula");
+    }
+
+    #[test]
+    fn local_env_wins_over_source_env_at_same_name() {
+        let local = ResolvedProfile {
+            layers: vec![ProfileLayer {
+                source: "local".into(),
+                profile_name: "default".into(),
+                priority: 1000,
+                policy: LayerPolicy::Local,
+                spec: ProfileSpec {
+                    env: vec![EnvVar {
+                        name: "EDITOR".into(),
+                        value: "nvim".into(),
+                    }],
+                    ..Default::default()
+                },
+            }],
+            merged: MergedProfile {
+                env: vec![EnvVar {
+                    name: "EDITOR".into(),
+                    value: "nvim".into(),
+                }],
+                ..Default::default()
+            },
+        };
+        let source = CompositionInput {
+            source_name: "corp".into(),
+            priority: 500,
+            policy: ConfigSourcePolicy {
+                recommended: PolicyItems {
+                    env: vec![EnvVar {
+                        name: "EDITOR".into(),
+                        value: "code --wait".into(),
+                    }],
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            constraints: Default::default(),
+            layers: vec![],
+            subscription: SubscriptionConfig {
+                accept_recommended: true,
+                ..Default::default()
+            },
+        };
+
+        let result = compose(&local, &[source]).unwrap();
+        let editor = result
+            .resolved
+            .merged
+            .env
+            .iter()
+            .find(|e| e.name == "EDITOR")
+            .expect("EDITOR env var must exist");
+        // Local priority 1000 > source priority 500
+        assert_eq!(editor.value, "nvim");
+    }
+
+    // --- Conflict resolution: files with different content ---
+
+    #[test]
+    fn higher_priority_source_wins_file_content() {
+        let local = ResolvedProfile {
+            layers: vec![ProfileLayer {
+                source: "local".into(),
+                profile_name: "default".into(),
+                priority: 1000,
+                policy: LayerPolicy::Local,
+                spec: ProfileSpec::default(),
+            }],
+            merged: MergedProfile::default(),
+        };
+        let low = CompositionInput {
+            source_name: "low-src".into(),
+            priority: 200,
+            policy: ConfigSourcePolicy {
+                recommended: PolicyItems {
+                    files: vec![ManagedFileSpec {
+                        source: "low/gitconfig".into(),
+                        target: "~/.gitconfig".into(),
+                        strategy: None,
+                        private: false,
+                        origin: None,
+                        encryption: None,
+                        permissions: None,
+                    }],
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            constraints: Default::default(),
+            layers: vec![],
+            subscription: SubscriptionConfig {
+                accept_recommended: true,
+                ..Default::default()
+            },
+        };
+        let high = CompositionInput {
+            source_name: "high-src".into(),
+            priority: 800,
+            policy: ConfigSourcePolicy {
+                recommended: PolicyItems {
+                    files: vec![ManagedFileSpec {
+                        source: "high/gitconfig".into(),
+                        target: "~/.gitconfig".into(),
+                        strategy: None,
+                        private: false,
+                        origin: None,
+                        encryption: None,
+                        permissions: None,
+                    }],
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            constraints: Default::default(),
+            layers: vec![],
+            subscription: SubscriptionConfig {
+                accept_recommended: true,
+                ..Default::default()
+            },
+        };
+
+        let result = compose(&local, &[low, high]).unwrap();
+        let file = result
+            .resolved
+            .merged
+            .files
+            .managed
+            .iter()
+            .find(|f| f.target.to_string_lossy().contains("gitconfig"))
+            .expect("gitconfig file must exist in merged output");
+        // Higher priority source's file content wins
+        assert_eq!(file.source, "high/gitconfig");
+    }
+
+    // --- Merging with an empty source ---
+
+    #[test]
+    fn merging_with_empty_source_does_not_affect_result() {
+        let local = make_local_profile();
+        let result_no_sources = compose(&local, &[]).unwrap();
+
+        let empty_source = CompositionInput {
+            source_name: "empty".into(),
+            priority: 500,
+            policy: ConfigSourcePolicy::default(),
+            constraints: Default::default(),
+            layers: vec![],
+            subscription: SubscriptionConfig::default(),
+        };
+        let result_with_empty = compose(&local, &[empty_source]).unwrap();
+
+        let yaml_without = serde_yaml::to_string(&result_no_sources.resolved.merged).unwrap();
+        let yaml_with = serde_yaml::to_string(&result_with_empty.resolved.merged).unwrap();
+        assert_eq!(
+            yaml_without, yaml_with,
+            "Empty source must not change the merged output"
+        );
+    }
+
+    // --- Edge case: single source ---
+
+    #[test]
+    fn single_source_merges_correctly() {
+        let local = ResolvedProfile {
+            layers: vec![ProfileLayer {
+                source: "local".into(),
+                profile_name: "default".into(),
+                priority: 1000,
+                policy: LayerPolicy::Local,
+                spec: ProfileSpec {
+                    packages: Some(PackagesSpec {
+                        brew: Some(BrewSpec {
+                            formulae: vec!["git".into()],
+                            ..Default::default()
+                        }),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                },
+            }],
+            merged: MergedProfile {
+                packages: PackagesSpec {
+                    brew: Some(BrewSpec {
+                        formulae: vec!["git".into()],
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        };
+        let source = CompositionInput {
+            source_name: "tools".into(),
+            priority: 500,
+            policy: ConfigSourcePolicy {
+                recommended: PolicyItems {
+                    packages: Some(PackagesSpec {
+                        brew: Some(BrewSpec {
+                            formulae: vec!["fzf".into()],
+                            ..Default::default()
+                        }),
+                        ..Default::default()
+                    }),
+                    env: vec![EnvVar {
+                        name: "FZF_DEFAULT_OPTS".into(),
+                        value: "--height 40%".into(),
+                    }],
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            constraints: Default::default(),
+            layers: vec![],
+            subscription: SubscriptionConfig {
+                accept_recommended: true,
+                ..Default::default()
+            },
+        };
+
+        let result = compose(&local, &[source]).unwrap();
+        let brew = result.resolved.merged.packages.brew.as_ref().unwrap();
+        assert!(brew.formulae.contains(&"git".to_string()));
+        assert!(brew.formulae.contains(&"fzf".to_string()));
+        assert!(
+            result
+                .resolved
+                .merged
+                .env
+                .iter()
+                .any(|e| e.name == "FZF_DEFAULT_OPTS")
+        );
+    }
+
+    // --- Edge case: overlapping packages across sources ---
+
+    #[test]
+    fn overlapping_packages_are_unioned_not_duplicated() {
+        let local = ResolvedProfile {
+            layers: vec![ProfileLayer {
+                source: "local".into(),
+                profile_name: "default".into(),
+                priority: 1000,
+                policy: LayerPolicy::Local,
+                spec: ProfileSpec {
+                    packages: Some(PackagesSpec {
+                        brew: Some(BrewSpec {
+                            formulae: vec!["git".into(), "curl".into()],
+                            ..Default::default()
+                        }),
+                        pipx: vec!["black".into()],
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                },
+            }],
+            merged: MergedProfile {
+                packages: PackagesSpec {
+                    brew: Some(BrewSpec {
+                        formulae: vec!["git".into(), "curl".into()],
+                        ..Default::default()
+                    }),
+                    pipx: vec!["black".into()],
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        };
+        let source_a = CompositionInput {
+            source_name: "alpha".into(),
+            priority: 300,
+            policy: ConfigSourcePolicy {
+                recommended: PolicyItems {
+                    packages: Some(PackagesSpec {
+                        brew: Some(BrewSpec {
+                            formulae: vec!["git".into(), "ripgrep".into()],
+                            ..Default::default()
+                        }),
+                        pipx: vec!["ruff".into(), "black".into()],
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            constraints: Default::default(),
+            layers: vec![],
+            subscription: SubscriptionConfig {
+                accept_recommended: true,
+                ..Default::default()
+            },
+        };
+        let source_b = CompositionInput {
+            source_name: "beta".into(),
+            priority: 700,
+            policy: ConfigSourcePolicy {
+                recommended: PolicyItems {
+                    packages: Some(PackagesSpec {
+                        brew: Some(BrewSpec {
+                            formulae: vec!["ripgrep".into(), "jq".into()],
+                            ..Default::default()
+                        }),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            constraints: Default::default(),
+            layers: vec![],
+            subscription: SubscriptionConfig {
+                accept_recommended: true,
+                ..Default::default()
+            },
+        };
+
+        let result = compose(&local, &[source_a, source_b]).unwrap();
+        let brew = result.resolved.merged.packages.brew.as_ref().unwrap();
+
+        // All unique formulae present
+        assert!(brew.formulae.contains(&"git".to_string()));
+        assert!(brew.formulae.contains(&"curl".to_string()));
+        assert!(brew.formulae.contains(&"ripgrep".to_string()));
+        assert!(brew.formulae.contains(&"jq".to_string()));
+
+        // No duplicates: count occurrences of "git" and "ripgrep"
+        assert_eq!(
+            brew.formulae.iter().filter(|f| *f == "git").count(),
+            1,
+            "git must appear exactly once"
+        );
+        assert_eq!(
+            brew.formulae.iter().filter(|f| *f == "ripgrep").count(),
+            1,
+            "ripgrep must appear exactly once"
+        );
+
+        // pipx: black should not be duplicated
+        let pipx = &result.resolved.merged.packages.pipx;
+        assert!(pipx.contains(&"black".to_string()));
+        assert!(pipx.contains(&"ruff".to_string()));
+        assert_eq!(
+            pipx.iter().filter(|p| *p == "black").count(),
+            1,
+            "black must appear exactly once"
+        );
+    }
+
+    // --- Edge case: source_env populated correctly ---
+
+    #[test]
+    fn source_env_tracks_per_source_env_vars() {
+        let local = make_local_profile();
+        let source = CompositionInput {
+            source_name: "corp".into(),
+            priority: 500,
+            policy: ConfigSourcePolicy {
+                recommended: PolicyItems {
+                    env: vec![EnvVar {
+                        name: "CORP_VAR".into(),
+                        value: "corp-value".into(),
+                    }],
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            constraints: Default::default(),
+            layers: vec![ProfileLayer {
+                source: "corp".into(),
+                profile_name: "corp/base".into(),
+                priority: 500,
+                policy: LayerPolicy::Recommended,
+                spec: ProfileSpec {
+                    env: vec![EnvVar {
+                        name: "LAYER_VAR".into(),
+                        value: "from-layer".into(),
+                    }],
+                    ..Default::default()
+                },
+            }],
+            subscription: SubscriptionConfig {
+                accept_recommended: true,
+                ..Default::default()
+            },
+        };
+
+        let result = compose(&local, &[source]).unwrap();
+        let corp_env = result.source_env.get("corp").expect("corp env must exist");
+        // source_env is built from input.layers (not policy), so it should contain LAYER_VAR
+        assert!(corp_env.iter().any(|e| e.name == "LAYER_VAR"));
+    }
+
+    // --- Edge case: compose with empty local profile ---
+
+    #[test]
+    fn compose_with_empty_local_and_no_sources() {
+        let local = ResolvedProfile {
+            layers: vec![],
+            merged: MergedProfile::default(),
+        };
+        let result = compose(&local, &[]).unwrap();
+        assert!(result.resolved.merged.env.is_empty());
+        assert!(result.resolved.merged.modules.is_empty());
+        assert!(result.resolved.merged.files.managed.is_empty());
+        assert!(result.conflicts.is_empty());
+    }
+
+    // --- Edge case: aliases with same name across priorities ---
+
+    #[test]
+    fn higher_priority_source_wins_alias() {
+        let local = ResolvedProfile {
+            layers: vec![ProfileLayer {
+                source: "local".into(),
+                profile_name: "default".into(),
+                priority: 1000,
+                policy: LayerPolicy::Local,
+                spec: ProfileSpec {
+                    aliases: vec![ShellAlias {
+                        name: "ll".into(),
+                        command: "ls -la".into(),
+                    }],
+                    ..Default::default()
+                },
+            }],
+            merged: MergedProfile {
+                aliases: vec![ShellAlias {
+                    name: "ll".into(),
+                    command: "ls -la".into(),
+                }],
+                ..Default::default()
+            },
+        };
+        let source = CompositionInput {
+            source_name: "corp".into(),
+            priority: 500,
+            policy: ConfigSourcePolicy {
+                recommended: PolicyItems {
+                    aliases: vec![ShellAlias {
+                        name: "ll".into(),
+                        command: "exa -la".into(),
+                    }],
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            constraints: Default::default(),
+            layers: vec![],
+            subscription: SubscriptionConfig {
+                accept_recommended: true,
+                ..Default::default()
+            },
+        };
+
+        let result = compose(&local, &[source]).unwrap();
+        let ll = result
+            .resolved
+            .merged
+            .aliases
+            .iter()
+            .find(|a| a.name == "ll")
+            .expect("ll alias must exist");
+        // Local (priority 1000) processed after source (500), so local wins
+        assert_eq!(ll.command, "ls -la");
+    }
+
     #[test]
     fn encryption_module_file_matching_required_target_without_encryption_is_error() {
         // Module files come through as ProfileSpec files just like profile files;
