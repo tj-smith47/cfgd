@@ -3797,6 +3797,21 @@ mod tests {
 
         add_package("dnf", "gcc", &mut packages).unwrap();
         assert_eq!(packages.dnf, vec!["gcc"]);
+
+        add_package("brew-tap", "homebrew/core", &mut packages).unwrap();
+        assert_eq!(
+            packages.brew.as_ref().unwrap().taps,
+            vec!["homebrew/core"]
+        );
+
+        add_package("winget", "Microsoft.VisualStudioCode", &mut packages).unwrap();
+        assert_eq!(packages.winget, vec!["Microsoft.VisualStudioCode"]);
+
+        add_package("chocolatey", "nodejs", &mut packages).unwrap();
+        assert_eq!(packages.chocolatey, vec!["nodejs"]);
+
+        add_package("scoop", "7zip", &mut packages).unwrap();
+        assert_eq!(packages.scoop, vec!["7zip"]);
     }
 
     #[test]
@@ -3820,8 +3835,53 @@ mod tests {
         assert!(removed);
         assert_eq!(packages.cargo.as_ref().unwrap().packages, vec!["ripgrep"]);
 
+        // Not-found returns false
         let removed = remove_package("cargo", "nonexistent", &mut packages).unwrap();
         assert!(!removed);
+
+        // brew formulae
+        add_package("brew", "curl", &mut packages).unwrap();
+        assert!(remove_package("brew", "curl", &mut packages).unwrap());
+        assert!(packages.brew.as_ref().unwrap().formulae.is_empty());
+
+        // brew-tap
+        add_package("brew-tap", "homebrew/core", &mut packages).unwrap();
+        assert!(remove_package("brew-tap", "homebrew/core", &mut packages).unwrap());
+
+        // brew-cask
+        add_package("brew-cask", "firefox", &mut packages).unwrap();
+        assert!(remove_package("brew-cask", "firefox", &mut packages).unwrap());
+
+        // apt
+        add_package("apt", "git", &mut packages).unwrap();
+        assert!(remove_package("apt", "git", &mut packages).unwrap());
+
+        // npm
+        add_package("npm", "ts", &mut packages).unwrap();
+        assert!(remove_package("npm", "ts", &mut packages).unwrap());
+
+        // pipx
+        add_package("pipx", "black", &mut packages).unwrap();
+        assert!(remove_package("pipx", "black", &mut packages).unwrap());
+
+        // dnf
+        add_package("dnf", "vim", &mut packages).unwrap();
+        assert!(remove_package("dnf", "vim", &mut packages).unwrap());
+
+        // winget
+        add_package("winget", "Git.Git", &mut packages).unwrap();
+        assert!(remove_package("winget", "Git.Git", &mut packages).unwrap());
+        assert!(packages.winget.is_empty());
+
+        // chocolatey
+        add_package("chocolatey", "python", &mut packages).unwrap();
+        assert!(remove_package("chocolatey", "python", &mut packages).unwrap());
+        assert!(packages.chocolatey.is_empty());
+
+        // scoop
+        add_package("scoop", "ripgrep", &mut packages).unwrap();
+        assert!(remove_package("scoop", "ripgrep", &mut packages).unwrap());
+        assert!(packages.scoop.is_empty());
     }
 
     #[test]
@@ -4760,285 +4820,6 @@ custom:
         assert!(result.contains("nginx"));
     }
 
-    // --- add_package (all managers) ---
-
-    #[test]
-    fn add_package_brew() {
-        let mut spec = PackagesSpec::default();
-        add_package("brew", "curl", &mut spec).unwrap();
-        assert_eq!(spec.brew.unwrap().formulae, vec!["curl"]);
-    }
-
-    #[test]
-    fn add_package_brew_tap() {
-        let mut spec = PackagesSpec::default();
-        add_package("brew-tap", "homebrew/core", &mut spec).unwrap();
-        assert_eq!(spec.brew.unwrap().taps, vec!["homebrew/core"]);
-    }
-
-    #[test]
-    fn add_package_brew_cask() {
-        let mut spec = PackagesSpec::default();
-        add_package("brew-cask", "firefox", &mut spec).unwrap();
-        assert_eq!(spec.brew.unwrap().casks, vec!["firefox"]);
-    }
-
-    #[test]
-    fn add_package_apt() {
-        let mut spec = PackagesSpec::default();
-        add_package("apt", "git", &mut spec).unwrap();
-        assert_eq!(spec.apt.unwrap().packages, vec!["git"]);
-    }
-
-    #[test]
-    fn add_package_cargo() {
-        let mut spec = PackagesSpec::default();
-        add_package("cargo", "ripgrep", &mut spec).unwrap();
-        assert_eq!(spec.cargo.unwrap().packages, vec!["ripgrep"]);
-    }
-
-    #[test]
-    fn add_package_npm() {
-        let mut spec = PackagesSpec::default();
-        add_package("npm", "typescript", &mut spec).unwrap();
-        assert_eq!(spec.npm.unwrap().global, vec!["typescript"]);
-    }
-
-    #[test]
-    fn add_package_pipx() {
-        let mut spec = PackagesSpec::default();
-        add_package("pipx", "black", &mut spec).unwrap();
-        assert_eq!(spec.pipx, vec!["black"]);
-    }
-
-    #[test]
-    fn add_package_dnf() {
-        let mut spec = PackagesSpec::default();
-        add_package("dnf", "vim", &mut spec).unwrap();
-        assert_eq!(spec.dnf, vec!["vim"]);
-    }
-
-    #[test]
-    fn add_package_apk() {
-        let mut spec = PackagesSpec::default();
-        add_package("apk", "curl", &mut spec).unwrap();
-        assert_eq!(spec.apk, vec!["curl"]);
-    }
-
-    #[test]
-    fn add_package_pacman() {
-        let mut spec = PackagesSpec::default();
-        add_package("pacman", "base-devel", &mut spec).unwrap();
-        assert_eq!(spec.pacman, vec!["base-devel"]);
-    }
-
-    #[test]
-    fn add_package_zypper() {
-        let mut spec = PackagesSpec::default();
-        add_package("zypper", "gcc", &mut spec).unwrap();
-        assert_eq!(spec.zypper, vec!["gcc"]);
-    }
-
-    #[test]
-    fn add_package_yum() {
-        let mut spec = PackagesSpec::default();
-        add_package("yum", "wget", &mut spec).unwrap();
-        assert_eq!(spec.yum, vec!["wget"]);
-    }
-
-    #[test]
-    fn add_package_pkg() {
-        let mut spec = PackagesSpec::default();
-        add_package("pkg", "nginx", &mut spec).unwrap();
-        assert_eq!(spec.pkg, vec!["nginx"]);
-    }
-
-    #[test]
-    fn add_package_snap() {
-        let mut spec = PackagesSpec::default();
-        add_package("snap", "core", &mut spec).unwrap();
-        assert_eq!(spec.snap.unwrap().packages, vec!["core"]);
-    }
-
-    #[test]
-    fn add_package_flatpak() {
-        let mut spec = PackagesSpec::default();
-        add_package("flatpak", "org.gnome.Calculator", &mut spec).unwrap();
-        assert_eq!(spec.flatpak.unwrap().packages, vec!["org.gnome.Calculator"]);
-    }
-
-    #[test]
-    fn add_package_nix() {
-        let mut spec = PackagesSpec::default();
-        add_package("nix", "nixpkgs.hello", &mut spec).unwrap();
-        assert_eq!(spec.nix, vec!["nixpkgs.hello"]);
-    }
-
-    #[test]
-    fn add_package_go() {
-        let mut spec = PackagesSpec::default();
-        add_package("go", "golang.org/x/tools/gopls@latest", &mut spec).unwrap();
-        assert_eq!(spec.go, vec!["golang.org/x/tools/gopls@latest"]);
-    }
-
-    #[test]
-    fn add_package_winget() {
-        let mut spec = PackagesSpec::default();
-        add_package("winget", "Microsoft.VisualStudioCode", &mut spec).unwrap();
-        assert_eq!(spec.winget, vec!["Microsoft.VisualStudioCode"]);
-    }
-
-    #[test]
-    fn add_package_chocolatey() {
-        let mut spec = PackagesSpec::default();
-        add_package("chocolatey", "nodejs", &mut spec).unwrap();
-        assert_eq!(spec.chocolatey, vec!["nodejs"]);
-    }
-
-    #[test]
-    fn add_package_scoop() {
-        let mut spec = PackagesSpec::default();
-        add_package("scoop", "7zip", &mut spec).unwrap();
-        assert_eq!(spec.scoop, vec!["7zip"]);
-    }
-
-    #[test]
-    fn add_package_unknown_manager_returns_error() {
-        let mut spec = PackagesSpec::default();
-        assert!(add_package("nonexistent", "pkg", &mut spec).is_err());
-    }
-
-    #[test]
-    fn add_package_no_duplicate() {
-        let mut spec = PackagesSpec::default();
-        add_package("pipx", "black", &mut spec).unwrap();
-        add_package("pipx", "black", &mut spec).unwrap();
-        assert_eq!(spec.pipx.len(), 1);
-    }
-
-    // --- remove_package ---
-
-    #[test]
-    fn remove_package_brew() {
-        let mut spec = PackagesSpec::default();
-        add_package("brew", "curl", &mut spec).unwrap();
-        assert!(remove_package("brew", "curl", &mut spec).unwrap());
-        assert!(spec.brew.unwrap().formulae.is_empty());
-    }
-
-    #[test]
-    fn remove_package_brew_tap() {
-        let mut spec = PackagesSpec::default();
-        add_package("brew-tap", "homebrew/core", &mut spec).unwrap();
-        assert!(remove_package("brew-tap", "homebrew/core", &mut spec).unwrap());
-    }
-
-    #[test]
-    fn remove_package_brew_cask() {
-        let mut spec = PackagesSpec::default();
-        add_package("brew-cask", "firefox", &mut spec).unwrap();
-        assert!(remove_package("brew-cask", "firefox", &mut spec).unwrap());
-    }
-
-    #[test]
-    fn remove_package_apt() {
-        let mut spec = PackagesSpec::default();
-        add_package("apt", "git", &mut spec).unwrap();
-        assert!(remove_package("apt", "git", &mut spec).unwrap());
-    }
-
-    #[test]
-    fn remove_package_cargo() {
-        let mut spec = PackagesSpec::default();
-        add_package("cargo", "rg", &mut spec).unwrap();
-        assert!(remove_package("cargo", "rg", &mut spec).unwrap());
-    }
-
-    #[test]
-    fn remove_package_npm() {
-        let mut spec = PackagesSpec::default();
-        add_package("npm", "ts", &mut spec).unwrap();
-        assert!(remove_package("npm", "ts", &mut spec).unwrap());
-    }
-
-    #[test]
-    fn remove_package_pipx() {
-        let mut spec = PackagesSpec::default();
-        add_package("pipx", "black", &mut spec).unwrap();
-        assert!(remove_package("pipx", "black", &mut spec).unwrap());
-    }
-
-    #[test]
-    fn remove_package_dnf() {
-        let mut spec = PackagesSpec::default();
-        add_package("dnf", "vim", &mut spec).unwrap();
-        assert!(remove_package("dnf", "vim", &mut spec).unwrap());
-    }
-
-    #[test]
-    fn remove_package_snap() {
-        let mut spec = PackagesSpec::default();
-        add_package("snap", "core", &mut spec).unwrap();
-        assert!(remove_package("snap", "core", &mut spec).unwrap());
-    }
-
-    #[test]
-    fn remove_package_flatpak() {
-        let mut spec = PackagesSpec::default();
-        add_package("flatpak", "app", &mut spec).unwrap();
-        assert!(remove_package("flatpak", "app", &mut spec).unwrap());
-    }
-
-    #[test]
-    fn remove_package_nix() {
-        let mut spec = PackagesSpec::default();
-        add_package("nix", "hello", &mut spec).unwrap();
-        assert!(remove_package("nix", "hello", &mut spec).unwrap());
-    }
-
-    #[test]
-    fn remove_package_go() {
-        let mut spec = PackagesSpec::default();
-        add_package("go", "gopls", &mut spec).unwrap();
-        assert!(remove_package("go", "gopls", &mut spec).unwrap());
-    }
-
-    #[test]
-    fn remove_package_winget() {
-        let mut spec = PackagesSpec::default();
-        add_package("winget", "Git.Git", &mut spec).unwrap();
-        assert!(remove_package("winget", "Git.Git", &mut spec).unwrap());
-        assert!(spec.winget.is_empty());
-    }
-
-    #[test]
-    fn remove_package_chocolatey() {
-        let mut spec = PackagesSpec::default();
-        add_package("chocolatey", "python", &mut spec).unwrap();
-        assert!(remove_package("chocolatey", "python", &mut spec).unwrap());
-        assert!(spec.chocolatey.is_empty());
-    }
-
-    #[test]
-    fn remove_package_scoop() {
-        let mut spec = PackagesSpec::default();
-        add_package("scoop", "ripgrep", &mut spec).unwrap();
-        assert!(remove_package("scoop", "ripgrep", &mut spec).unwrap());
-        assert!(spec.scoop.is_empty());
-    }
-
-    #[test]
-    fn remove_package_not_found() {
-        let mut spec = PackagesSpec::default();
-        assert!(!remove_package("pipx", "nope", &mut spec).unwrap());
-    }
-
-    #[test]
-    fn remove_package_unknown_manager_returns_error() {
-        let mut spec = PackagesSpec::default();
-        assert!(remove_package("nonexistent", "pkg", &mut spec).is_err());
-    }
-
     // --- apply_packages ---
 
     #[test]
@@ -5096,63 +4877,6 @@ custom:
         apply_packages(&actions, &[], &printer).unwrap();
     }
 
-    // --- format_package_actions ---
-
-    #[test]
-    fn format_package_actions_install() {
-        let actions = vec![PackageAction::Install {
-            manager: "brew".into(),
-            packages: vec!["curl".into(), "wget".into()],
-            origin: "local".into(),
-        }];
-        let formatted = format_package_actions(&actions);
-        assert_eq!(formatted.len(), 1);
-        assert!(formatted[0].contains("install via brew"));
-        assert!(formatted[0].contains("curl"));
-    }
-
-    #[test]
-    fn format_package_actions_bootstrap() {
-        let actions = vec![PackageAction::Bootstrap {
-            manager: "cargo".into(),
-            method: "rustup".into(),
-            origin: "local".into(),
-        }];
-        let formatted = format_package_actions(&actions);
-        assert!(formatted[0].contains("bootstrap cargo via rustup"));
-    }
-
-    #[test]
-    fn format_package_actions_skip() {
-        let actions = vec![PackageAction::Skip {
-            manager: "snap".into(),
-            reason: "unavailable".into(),
-            origin: "local".into(),
-        }];
-        let formatted = format_package_actions(&actions);
-        assert!(formatted[0].contains("skip snap"));
-    }
-
-    // --- plan with bootstrap ---
-
-    #[test]
-    fn plan_bootstrap_unavailable_bootstrappable() {
-        let mock = MockPackageManager::new("cargo", false, vec![]).with_bootstrap();
-        let profile = test_profile(PackagesSpec {
-            cargo: Some(cfgd_core::config::CargoSpec {
-                file: None,
-                packages: vec!["bat".into()],
-            }),
-            ..Default::default()
-        });
-        let managers: Vec<&dyn PackageManager> = vec![&mock];
-        let actions = plan_packages(&profile, &managers).unwrap();
-
-        assert_eq!(actions.len(), 2);
-        assert!(matches!(&actions[0], PackageAction::Bootstrap { .. }));
-        assert!(matches!(&actions[1], PackageAction::Install { .. }));
-    }
-
     #[test]
     fn plan_skip_unavailable_no_bootstrap() {
         let mock = MockPackageManager::new("snap", false, vec![]);
@@ -5168,20 +4892,6 @@ custom:
 
         assert_eq!(actions.len(), 1);
         assert!(matches!(&actions[0], PackageAction::Skip { .. }));
-    }
-
-    // --- all_package_managers ---
-
-    #[test]
-    fn all_package_managers_returns_nonempty() {
-        let managers = all_package_managers();
-        assert!(!managers.is_empty());
-        // Should contain at least brew, apt, cargo, npm, pipx
-        let names: Vec<&str> = managers.iter().map(|m| m.name()).collect();
-        assert!(names.contains(&"brew"));
-        assert!(names.contains(&"cargo"));
-        assert!(names.contains(&"npm"));
-        assert!(names.contains(&"pipx"));
     }
 
     // --- resolve_manifest_packages ---
@@ -5621,5 +5331,319 @@ custom:
         let pacman = pacman_manager();
         let aliases = pacman.package_aliases("fd").unwrap();
         assert!(aliases.is_empty());
+    }
+
+    // --- parse_dnf_yum_lines edge cases ---
+
+    #[test]
+    fn parse_dnf_yum_lines_empty_input() {
+        let result = parse_dnf_yum_lines("", &["Installed", "Last"]);
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn parse_dnf_yum_lines_only_headers() {
+        let input = "Installed Packages\nLast metadata expiration check\n";
+        let result = parse_dnf_yum_lines(input, &["Installed", "Last"]);
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn parse_dnf_yum_lines_strips_arch_from_real_output() {
+        // Realistic dnf list installed output
+        let input = "\
+Installed Packages\n\
+bash.x86_64                     5.2.15-3.fc39        @anaconda\n\
+coreutils.x86_64                9.3-4.fc39           @anaconda\n\
+glibc.i686                      2.38-11.fc39         @updates\n\
+kernel.x86_64                   6.5.6-300.fc39       @updates\n\
+Last metadata expiration check: 0:42:17 ago\n";
+        let result = parse_dnf_yum_lines(input, &["Installed", "Last"]);
+        assert_eq!(result.len(), 4);
+        assert!(result.contains("bash"));
+        assert!(result.contains("coreutils"));
+        assert!(result.contains("glibc"));
+        assert!(result.contains("kernel"));
+        // Arch suffixes should be stripped
+        assert!(!result.contains("bash.x86_64"));
+        assert!(!result.contains("glibc.i686"));
+    }
+
+    #[test]
+    fn parse_dnf_yum_lines_noarch_packages() {
+        let input = "python3-pip.noarch              22.3.1-3.fc39      @fedora\n\
+                     tzdata.noarch                   2023c-1.fc39       @updates\n";
+        let result = parse_dnf_yum_lines(input, &[]);
+        assert!(result.contains("python3-pip"));
+        assert!(result.contains("tzdata"));
+    }
+
+    #[test]
+    fn parse_dnf_yum_lines_blank_lines_ignored() {
+        let input = "\n\ncurl.x86_64  8.0  @base\n\n\n";
+        let result = parse_dnf_yum_lines(input, &[]);
+        assert_eq!(result.len(), 1);
+        assert!(result.contains("curl"));
+    }
+
+    #[test]
+    fn parse_yum_lines_with_loaded_plugins() {
+        // yum output has "Loaded plugins:" header
+        let input = "Loaded plugins: fastestmirror, langpacks\n\
+                     Installed Packages\n\
+                     vim-enhanced.x86_64    8.2.4328-1.el8    @appstream\n\
+                     wget.x86_64            1.21.1-7.el8      @baseos\n";
+        let result = parse_yum_lines(input);
+        assert_eq!(result.len(), 2);
+        assert!(result.contains("vim-enhanced"));
+        assert!(result.contains("wget"));
+    }
+
+    // --- parse_winget_list edge cases ---
+
+    #[test]
+    fn parse_winget_list_wide_columns() {
+        // Winget output with wider column spacing
+        let output = "\
+Name                              Id                                   Version       Available Source\n\
+---------------------------------------------------------------------------------------------------\n\
+Microsoft Visual Studio Code      Microsoft.VisualStudioCode           1.85.1        1.86.0    winget\n\
+Windows Terminal                   Microsoft.WindowsTerminal            1.18.3181.0             winget\n";
+        let packages = parse_winget_list(output);
+        assert!(packages.contains("Microsoft.VisualStudioCode"));
+        assert!(packages.contains("Microsoft.WindowsTerminal"));
+        assert_eq!(packages.len(), 2);
+    }
+
+    #[test]
+    fn parse_winget_list_equals_separator() {
+        // Some winget versions use === separator
+        let output = "\
+Name       Id          Version\n\
+============================\n\
+Git        Git.Git     2.43.0\n";
+        let packages = parse_winget_list(output);
+        assert!(packages.contains("Git.Git"));
+    }
+
+    #[test]
+    fn parse_winget_list_trailing_blank_lines() {
+        let output = "\
+Name       Id          Version\n\
+-------------------------------\n\
+Git        Git.Git     2.43.0\n\
+\n\
+\n";
+        let packages = parse_winget_list(output);
+        assert_eq!(packages.len(), 1);
+        assert!(packages.contains("Git.Git"));
+    }
+
+    // --- parse_choco_list edge cases ---
+
+    #[test]
+    fn chocolatey_parse_list_empty() {
+        let packages = parse_choco_list("");
+        assert!(packages.is_empty());
+    }
+
+    #[test]
+    fn chocolatey_parse_list_single_package() {
+        let output = "Chocolatey v2.2.2\n\
+                      git 2.43.0\n\
+                      1 package installed.";
+        let packages = parse_choco_list(output);
+        assert_eq!(packages.len(), 1);
+        assert!(packages.contains("git"));
+    }
+
+    #[test]
+    fn chocolatey_parse_list_with_cr_endings() {
+        // Windows CRLF line endings
+        let output = "Chocolatey v2.2.2\r\nnodejs 21.4.0\r\npython 3.12.1\r\n2 packages installed.\r\n";
+        let packages = parse_choco_list(output);
+        assert!(packages.contains("nodejs"));
+        assert!(packages.contains("python"));
+        assert_eq!(packages.len(), 2);
+    }
+
+    #[test]
+    fn chocolatey_parse_list_only_header_and_footer() {
+        let output = "Chocolatey v2.2.2\n\
+                      0 packages installed.";
+        let packages = parse_choco_list(output);
+        assert!(packages.is_empty());
+    }
+
+    #[test]
+    fn chocolatey_parse_list_line_without_version_skipped() {
+        // Lines without a space (no version) are skipped since split_once returns None
+        let output = "Chocolatey v2.2.2\n\
+                      malformed_no_space\n\
+                      git 2.43.0\n\
+                      1 package installed.";
+        let packages = parse_choco_list(output);
+        assert_eq!(packages.len(), 1);
+        assert!(packages.contains("git"));
+    }
+
+    // --- parse_scoop_list edge cases ---
+
+    #[test]
+    fn scoop_parse_list_empty() {
+        let packages = parse_scoop_list("");
+        assert!(packages.is_empty());
+    }
+
+    #[test]
+    fn scoop_parse_list_no_separator() {
+        // Without the ---- separator line, nothing is parsed
+        let output = "Installed apps:\n\nName  Version  Source\n7zip  23.01    main\n";
+        let packages = parse_scoop_list(output);
+        assert!(packages.is_empty());
+    }
+
+    #[test]
+    fn scoop_parse_list_only_separator() {
+        let output = "----\n";
+        let packages = parse_scoop_list(output);
+        assert!(packages.is_empty());
+    }
+
+    #[test]
+    fn scoop_parse_list_blank_lines_after_separator() {
+        let output = "Name   Version  Source\n\
+                      ----   -------  ------\n\
+                      \n\
+                      7zip   23.01    main\n\
+                      \n\
+                      fd     9.0.0   main\n";
+        let packages = parse_scoop_list(output);
+        assert_eq!(packages.len(), 2);
+        assert!(packages.contains("7zip"));
+        assert!(packages.contains("fd"));
+    }
+
+    // --- bootstrap_method tests ---
+
+    #[test]
+    fn bootstrap_method_brew_returns_homebrew_installer() {
+        let mock = MockPackageManager::new("brew", false, vec![]);
+        let method = bootstrap_method(&mock);
+        assert_eq!(method, "homebrew installer");
+    }
+
+    #[test]
+    fn bootstrap_method_cargo_returns_rustup() {
+        let mock = MockPackageManager::new("cargo", false, vec![]);
+        let method = bootstrap_method(&mock);
+        assert_eq!(method, "rustup");
+    }
+
+    #[test]
+    fn bootstrap_method_nix_returns_nix_installer() {
+        let mock = MockPackageManager::new("nix", false, vec![]);
+        let method = bootstrap_method(&mock);
+        assert_eq!(method, "nix installer");
+    }
+
+    #[test]
+    fn bootstrap_method_unknown_returns_system() {
+        let mock = MockPackageManager::new("unknown-pm", false, vec![]);
+        let method = bootstrap_method(&mock);
+        assert_eq!(method, "system");
+    }
+
+    #[test]
+    fn detect_system_method_returns_valid_manager() {
+        // detect_system_method cascades apt → dnf → zypper
+        let method = detect_system_method();
+        assert!(
+            method == "apt" || method == "dnf" || method == "zypper",
+            "expected apt, dnf, or zypper, got: {}",
+            method
+        );
+    }
+
+    #[test]
+    fn detect_brew_system_method_returns_valid_manager() {
+        // detect_brew_system_method cascades brew → apt → dnf → fallback
+        let method = detect_brew_system_method("pip");
+        assert!(
+            method == "brew" || method == "apt" || method == "dnf" || method == "pip",
+            "expected brew, apt, dnf, or pip, got: {}",
+            method
+        );
+    }
+
+    // --- extract_caveats tests ---
+
+    fn test_cmd_output(stdout: &str, stderr: &str) -> CommandOutput {
+        CommandOutput {
+            stdout: stdout.to_string(),
+            stderr: stderr.to_string(),
+            status: std::process::ExitStatus::default(),
+            duration: std::time::Duration::from_secs(0),
+        }
+    }
+
+    #[test]
+    fn extract_caveats_brew_section() {
+        let output = test_cmd_output(
+            "==> Installing ripgrep\n==> Caveats\nAdd to PATH: /opt/homebrew/bin\nRestart terminal.\n==> Summary\nDone.",
+            "",
+        );
+        let notes = extract_caveats("brew", &output);
+        assert_eq!(notes.len(), 1);
+        assert!(notes[0].message.contains("Add to PATH"));
+        assert!(notes[0].message.contains("Restart terminal."));
+    }
+
+    #[test]
+    fn extract_caveats_brew_no_caveats() {
+        let output = test_cmd_output(
+            "==> Installing ripgrep\n==> Summary\nDone.",
+            "",
+        );
+        let notes = extract_caveats("brew", &output);
+        assert!(notes.is_empty());
+    }
+
+    #[test]
+    fn extract_caveats_npm_warnings() {
+        let output = test_cmd_output(
+            "",
+            "npm warn deprecated foo@1.0\nnpm WARN peer dep missing\n",
+        );
+        let notes = extract_caveats("npm", &output);
+        assert_eq!(notes.len(), 2);
+    }
+
+    #[test]
+    fn extract_caveats_pip_warnings() {
+        let output = test_cmd_output(
+            "WARNING: pip is out of date\nInstalled black\n",
+            "",
+        );
+        let notes = extract_caveats("pip", &output);
+        assert_eq!(notes.len(), 1);
+        assert!(notes[0].message.contains("pip is out of date"));
+    }
+
+    #[test]
+    fn extract_caveats_generic_manager() {
+        let output = test_cmd_output(
+            "",
+            "warning: package foo replaced bar\nnote: restart required\n",
+        );
+        let notes = extract_caveats("pacman", &output);
+        assert_eq!(notes.len(), 2);
+    }
+
+    #[test]
+    fn extract_caveats_empty_output() {
+        let output = test_cmd_output("", "");
+        let notes = extract_caveats("brew", &output);
+        assert!(notes.is_empty());
     }
 }
