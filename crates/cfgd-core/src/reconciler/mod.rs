@@ -3706,6 +3706,11 @@ mod tests {
         };
         let hash = plan.to_hash_string();
         assert!(!hash.is_empty());
+        assert_eq!(
+            hash,
+            plan.to_hash_string(),
+            "plan hash must be deterministic"
+        );
     }
 
     #[test]
@@ -6281,5 +6286,638 @@ mod tests {
             err.contains("idle (no output)"),
             "should mention idle timeout: {err}"
         );
+    }
+
+    // --- Rollback tests ---
+
+    #[test]
+    fn rollback_restores_file_content() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("config.txt");
+
+        // Write original content
+        std::fs::write(&target, "original content").unwrap();
+
+        // Capture file state as backup
+        let file_state = crate::capture_file_state(&target).unwrap().unwrap();
+
+        // Set up state store with an apply + journal + backup
+        let state = StateStore::open_in_memory().unwrap();
+        let apply_id = state
+            .record_apply("test", "hash1", ApplyStatus::Success, None)
+            .unwrap();
+
+        // Store file backup
+        let resource_id = format!("file:update:{}", target.display());
+        state
+            .store_file_backup(apply_id, &resource_id, &file_state)
+            .unwrap();
+
+        // Record journal entry for the file action
+        let journal_id = state
+            .journal_begin(apply_id, 0, "files", "file", &resource_id, None)
+            .unwrap();
+        state.journal_complete(journal_id, None, None).unwrap();
+
+        // Overwrite the file with new content (simulating a successful apply)
+        std::fs::write(&target, "new content after apply").unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&target).unwrap(),
+            "new content after apply"
+        );
+
+        // Roll back
+        let registry = ProviderRegistry::new();
+        let reconciler = Reconciler::new(&registry, &state);
+        let printer = Printer::new(crate::output::Verbosity::Quiet);
+        let rollback_result = reconciler.rollback_apply(apply_id, &printer).unwrap();
+
+        assert_eq!(rollback_result.files_restored, 1);
+        assert_eq!(rollback_result.files_removed, 0);
+        assert!(rollback_result.non_file_actions.is_empty());
+
+        // Verify original content is restored
+        let restored = std::fs::read_to_string(&target).unwrap();
+        assert_eq!(restored, "original content");
+    }
+
+    #[test]
+    fn rollback_removes_newly_created_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("new_file.txt");
+
+        // File does not exist yet — simulate a "create" action with no backup
+        let state = StateStore::open_in_memory().unwrap();
+        let apply_id = state
+            .record_apply("test", "hash1", ApplyStatus::Success, None)
+            .unwrap();
+
+        let resource_id = format!("file:create:{}", target.display());
+        let journal_id = state
+            .journal_begin(apply_id, 0, "files", "file", &resource_id, None)
+            .unwrap();
+        state.journal_complete(journal_id, None, None).unwrap();
+
+        // Create the file (simulating the apply having created it)
+        std::fs::write(&target, "newly created").unwrap();
+        assert!(target.exists());
+
+        // Roll back — file should be removed since there's no backup
+        let registry = ProviderRegistry::new();
+        let reconciler = Reconciler::new(&registry, &state);
+        let printer = Printer::new(crate::output::Verbosity::Quiet);
+        let rollback_result = reconciler.rollback_apply(apply_id, &printer).unwrap();
+
+        assert_eq!(rollback_result.files_restored, 0);
+        assert_eq!(rollback_result.files_removed, 1);
+        assert!(!target.exists());
+    }
+
+    #[test]
+    fn rollback_lists_non_file_actions() {
+        let state = StateStore::open_in_memory().unwrap();
+        let apply_id = state
+            .record_apply("test", "hash1", ApplyStatus::Success, None)
+            .unwrap();
+
+        // Record a package action (non-file) in the journal
+        let journal_id = state
+            .journal_begin(
+                apply_id,
+                0,
+                "packages",
+                "package",
+                "package:brew:install:ripgrep",
+                None,
+            )
+            .unwrap();
+        state.journal_complete(journal_id, None, None).unwrap();
+
+        let registry = ProviderRegistry::new();
+        let reconciler = Reconciler::new(&registry, &state);
+        let printer = Printer::new(crate::output::Verbosity::Quiet);
+        let rollback_result = reconciler.rollback_apply(apply_id, &printer).unwrap();
+
+        assert_eq!(rollback_result.files_restored, 0);
+        assert_eq!(rollback_result.files_removed, 0);
+        assert_eq!(rollback_result.non_file_actions.len(), 1);
+        assert!(rollback_result.non_file_actions[0].contains("ripgrep"));
+    }
+
+    #[test]
+    fn rollback_records_new_apply_entry() {
+        let state = StateStore::open_in_memory().unwrap();
+        let apply_id = state
+            .record_apply("test", "hash1", ApplyStatus::Success, None)
+            .unwrap();
+
+        let registry = ProviderRegistry::new();
+        let reconciler = Reconciler::new(&registry, &state);
+        let printer = Printer::new(crate::output::Verbosity::Quiet);
+        reconciler.rollback_apply(apply_id, &printer).unwrap();
+
+        // The rollback should have created a new apply entry
+        let last = state.last_apply().unwrap().unwrap();
+        assert_eq!(last.profile, "rollback");
+        assert!(last.id > apply_id);
+    }
+
+    // --- Partial apply tests ---
+
+    /// A package manager that always fails on install.
+    struct FailingPackageManager {
+        name: String,
+    }
+
+    impl FailingPackageManager {
+        fn new(name: &str) -> Self {
+            Self {
+                name: name.to_string(),
+            }
+        }
+    }
+
+    impl PackageManager for FailingPackageManager {
+        fn name(&self) -> &str {
+            &self.name
+        }
+        fn is_available(&self) -> bool {
+            true
+        }
+        fn can_bootstrap(&self) -> bool {
+            false
+        }
+        fn bootstrap(&self, _printer: &Printer) -> Result<()> {
+            Ok(())
+        }
+        fn installed_packages(&self) -> Result<HashSet<String>> {
+            Ok(HashSet::new())
+        }
+        fn install(&self, _packages: &[String], _printer: &Printer) -> Result<()> {
+            Err(crate::errors::PackageError::InstallFailed {
+                manager: self.name.clone(),
+                message: "simulated install failure".to_string(),
+            }
+            .into())
+        }
+        fn uninstall(&self, _packages: &[String], _printer: &Printer) -> Result<()> {
+            Ok(())
+        }
+        fn update(&self, _printer: &Printer) -> Result<()> {
+            Ok(())
+        }
+        fn available_version(&self, _package: &str) -> Result<Option<String>> {
+            Ok(None)
+        }
+    }
+
+    #[test]
+    fn apply_partial_when_some_actions_fail() {
+        let state = StateStore::open_in_memory().unwrap();
+        let mut registry = ProviderRegistry::new();
+
+        // One working manager, one failing
+        registry
+            .package_managers
+            .push(Box::new(TrackingPackageManager::new("brew")));
+        registry
+            .package_managers
+            .push(Box::new(FailingPackageManager::new("apt")));
+
+        let reconciler = Reconciler::new(&registry, &state);
+        let resolved = make_empty_resolved();
+
+        let pkg_actions = vec![
+            PackageAction::Install {
+                manager: "brew".to_string(),
+                packages: vec!["jq".to_string()],
+                origin: "local".to_string(),
+            },
+            PackageAction::Install {
+                manager: "apt".to_string(),
+                packages: vec!["curl".to_string()],
+                origin: "local".to_string(),
+            },
+        ];
+
+        let plan = reconciler
+            .plan(
+                &resolved,
+                Vec::new(),
+                pkg_actions,
+                Vec::new(),
+                ReconcileContext::Apply,
+            )
+            .unwrap();
+
+        let printer = Printer::new(crate::output::Verbosity::Quiet);
+        let result = reconciler
+            .apply(
+                &plan,
+                &resolved,
+                Path::new("."),
+                &printer,
+                None,
+                &[],
+                ReconcileContext::Apply,
+                false,
+            )
+            .unwrap();
+
+        assert_eq!(result.status, ApplyStatus::Partial);
+        assert_eq!(result.succeeded(), 1);
+        assert_eq!(result.failed(), 1);
+
+        // Verify state store records partial status
+        let last = state.last_apply().unwrap().unwrap();
+        assert_eq!(last.status, ApplyStatus::Partial);
+    }
+
+    #[test]
+    fn apply_failed_when_all_actions_fail() {
+        let state = StateStore::open_in_memory().unwrap();
+        let mut registry = ProviderRegistry::new();
+
+        registry
+            .package_managers
+            .push(Box::new(FailingPackageManager::new("apt")));
+
+        let reconciler = Reconciler::new(&registry, &state);
+        let resolved = make_empty_resolved();
+
+        let pkg_actions = vec![PackageAction::Install {
+            manager: "apt".to_string(),
+            packages: vec!["curl".to_string()],
+            origin: "local".to_string(),
+        }];
+
+        let plan = reconciler
+            .plan(
+                &resolved,
+                Vec::new(),
+                pkg_actions,
+                Vec::new(),
+                ReconcileContext::Apply,
+            )
+            .unwrap();
+
+        let printer = Printer::new(crate::output::Verbosity::Quiet);
+        let result = reconciler
+            .apply(
+                &plan,
+                &resolved,
+                Path::new("."),
+                &printer,
+                None,
+                &[],
+                ReconcileContext::Apply,
+                false,
+            )
+            .unwrap();
+
+        assert_eq!(result.status, ApplyStatus::Failed);
+        assert_eq!(result.succeeded(), 0);
+        assert_eq!(result.failed(), 1);
+        assert!(result.action_results[0].error.is_some());
+
+        let last = state.last_apply().unwrap().unwrap();
+        assert_eq!(last.status, ApplyStatus::Failed);
+    }
+
+    // --- continueOnError script tests ---
+
+    #[test]
+    #[cfg(unix)]
+    fn apply_continue_on_error_post_script_continues() {
+        // A post-apply script with continueOnError=true should not abort the apply
+        let state = StateStore::open_in_memory().unwrap();
+        let mut registry = ProviderRegistry::new();
+        registry
+            .package_managers
+            .push(Box::new(TrackingPackageManager::new("brew")));
+
+        let reconciler = Reconciler::new(&registry, &state);
+        let mut resolved = make_empty_resolved();
+
+        // Post-apply script that fails but has continueOnError=true
+        resolved.merged.scripts.post_apply = vec![ScriptEntry::Full {
+            run: "exit 42".to_string(),
+            timeout: Some("5s".to_string()),
+            idle_timeout: None,
+            continue_on_error: Some(true),
+        }];
+
+        let pkg_actions = vec![PackageAction::Install {
+            manager: "brew".to_string(),
+            packages: vec!["jq".to_string()],
+            origin: "local".to_string(),
+        }];
+
+        let plan = reconciler
+            .plan(
+                &resolved,
+                Vec::new(),
+                pkg_actions,
+                Vec::new(),
+                ReconcileContext::Apply,
+            )
+            .unwrap();
+
+        let printer = Printer::new(crate::output::Verbosity::Quiet);
+        let result = reconciler
+            .apply(
+                &plan,
+                &resolved,
+                Path::new("."),
+                &printer,
+                None,
+                &[],
+                ReconcileContext::Apply,
+                false,
+            )
+            .unwrap();
+
+        // Package install succeeded, post-script failed but continued
+        assert_eq!(result.status, ApplyStatus::Partial);
+        assert_eq!(result.succeeded(), 1); // package install
+        assert_eq!(result.failed(), 1); // failed post-script
+
+        // Verify the failed action is the script
+        let failed = result
+            .action_results
+            .iter()
+            .find(|r| !r.success)
+            .unwrap();
+        assert!(
+            failed.description.contains("exit 42"),
+            "failed action should be the script: {}",
+            failed.description
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn apply_continue_on_error_false_pre_script_aborts() {
+        // A pre-apply script with continueOnError=false should abort the entire apply
+        let state = StateStore::open_in_memory().unwrap();
+        let registry = ProviderRegistry::new();
+        let reconciler = Reconciler::new(&registry, &state);
+
+        let mut resolved = make_empty_resolved();
+        resolved.merged.scripts.pre_apply = vec![ScriptEntry::Full {
+            run: "exit 1".to_string(),
+            timeout: Some("5s".to_string()),
+            idle_timeout: None,
+            continue_on_error: Some(false),
+        }];
+
+        let plan = reconciler
+            .plan(
+                &resolved,
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                ReconcileContext::Apply,
+            )
+            .unwrap();
+
+        let printer = Printer::new(crate::output::Verbosity::Quiet);
+        let result = reconciler.apply(
+            &plan,
+            &resolved,
+            Path::new("."),
+            &printer,
+            None,
+            &[],
+            ReconcileContext::Apply,
+            false,
+        );
+
+        // Pre-script failure with continueOnError=false should return an error
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("pre-script failed"),
+            "should mention pre-script failure: {err}"
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn apply_continue_on_error_default_post_script_continues() {
+        // Post-apply scripts default to continueOnError=true (no explicit flag)
+        let state = StateStore::open_in_memory().unwrap();
+        let registry = ProviderRegistry::new();
+        let reconciler = Reconciler::new(&registry, &state);
+
+        let mut resolved = make_empty_resolved();
+        // Simple entry — no explicit continueOnError, defaults to true for post phase
+        resolved.merged.scripts.post_apply =
+            vec![ScriptEntry::Simple("exit 1".to_string())];
+
+        let plan = reconciler
+            .plan(
+                &resolved,
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                ReconcileContext::Apply,
+            )
+            .unwrap();
+
+        let printer = Printer::new(crate::output::Verbosity::Quiet);
+        let result = reconciler
+            .apply(
+                &plan,
+                &resolved,
+                Path::new("."),
+                &printer,
+                None,
+                &[],
+                ReconcileContext::Apply,
+                false,
+            )
+            .unwrap();
+
+        // Post-script fails but default continueOnError=true means we get a result
+        assert_eq!(result.status, ApplyStatus::Failed);
+        assert_eq!(result.failed(), 1);
+    }
+
+    // --- onChange script execution tests ---
+
+    #[test]
+    #[cfg(unix)]
+    fn apply_on_change_script_runs_when_changes_occur() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("source.txt");
+        let target = dir.path().join("target.txt");
+        let marker = dir.path().join("on_change_marker");
+
+        std::fs::write(&source, "hello").unwrap();
+
+        let state = StateStore::open_in_memory().unwrap();
+        let mut registry = ProviderRegistry::new();
+        registry.default_file_strategy = crate::config::FileStrategy::Copy;
+
+        let reconciler = Reconciler::new(&registry, &state);
+        let mut resolved = make_empty_resolved();
+
+        // Set up an onChange script that creates a marker file
+        resolved.merged.scripts.on_change =
+            vec![ScriptEntry::Simple(format!("touch {}", marker.display()))];
+
+        let file_actions = vec![FileAction::Create {
+            source: source.clone(),
+            target: target.clone(),
+            origin: "local".to_string(),
+            strategy: crate::config::FileStrategy::Copy,
+            source_hash: None,
+        }];
+
+        let plan = reconciler
+            .plan(
+                &resolved,
+                file_actions,
+                Vec::new(),
+                Vec::new(),
+                ReconcileContext::Apply,
+            )
+            .unwrap();
+
+        let printer = Printer::new(crate::output::Verbosity::Quiet);
+        let result = reconciler
+            .apply(
+                &plan,
+                &resolved,
+                dir.path(),
+                &printer,
+                None,
+                &[],
+                ReconcileContext::Apply,
+                false,
+            )
+            .unwrap();
+
+        assert_eq!(result.status, ApplyStatus::Success);
+
+        // The file action should have triggered the onChange script
+        assert!(
+            marker.exists(),
+            "onChange marker file should exist, proving the onChange script ran"
+        );
+
+        // The file should have been deployed
+        assert!(target.exists());
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "hello");
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn apply_on_change_script_does_not_run_when_no_changes() {
+        let dir = tempfile::tempdir().unwrap();
+        let marker = dir.path().join("on_change_marker_noop");
+
+        let state = StateStore::open_in_memory().unwrap();
+        let registry = ProviderRegistry::new();
+        let reconciler = Reconciler::new(&registry, &state);
+
+        let mut resolved = make_empty_resolved();
+        resolved.merged.scripts.on_change =
+            vec![ScriptEntry::Simple(format!("touch {}", marker.display()))];
+
+        // Empty plan — no file changes, no package changes
+        let plan = reconciler
+            .plan(
+                &resolved,
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                ReconcileContext::Apply,
+            )
+            .unwrap();
+
+        let printer = Printer::new(crate::output::Verbosity::Quiet);
+        let result = reconciler
+            .apply(
+                &plan,
+                &resolved,
+                dir.path(),
+                &printer,
+                None,
+                &[],
+                ReconcileContext::Apply,
+                false,
+            )
+            .unwrap();
+
+        assert_eq!(result.status, ApplyStatus::Success);
+        // No changes occurred, so onChange should NOT have run
+        assert!(
+            !marker.exists(),
+            "onChange marker should NOT exist when no changes occurred"
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn apply_on_change_skipped_when_skip_scripts_true() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("source.txt");
+        let target = dir.path().join("target.txt");
+        let marker = dir.path().join("on_change_marker_skip");
+
+        std::fs::write(&source, "data").unwrap();
+
+        let state = StateStore::open_in_memory().unwrap();
+        let mut registry = ProviderRegistry::new();
+        registry.default_file_strategy = crate::config::FileStrategy::Copy;
+
+        let reconciler = Reconciler::new(&registry, &state);
+        let mut resolved = make_empty_resolved();
+        resolved.merged.scripts.on_change =
+            vec![ScriptEntry::Simple(format!("touch {}", marker.display()))];
+
+        let file_actions = vec![FileAction::Create {
+            source: source.clone(),
+            target: target.clone(),
+            origin: "local".to_string(),
+            strategy: crate::config::FileStrategy::Copy,
+            source_hash: None,
+        }];
+
+        let plan = reconciler
+            .plan(
+                &resolved,
+                file_actions,
+                Vec::new(),
+                Vec::new(),
+                ReconcileContext::Apply,
+            )
+            .unwrap();
+
+        let printer = Printer::new(crate::output::Verbosity::Quiet);
+        // skip_scripts = true
+        let result = reconciler
+            .apply(
+                &plan,
+                &resolved,
+                dir.path(),
+                &printer,
+                None,
+                &[],
+                ReconcileContext::Apply,
+                true, // skip_scripts
+            )
+            .unwrap();
+
+        assert_eq!(result.status, ApplyStatus::Success);
+        // onChange should NOT have run because skip_scripts=true
+        assert!(
+            !marker.exists(),
+            "onChange should be skipped when skip_scripts=true"
+        );
+        // But the file action should still have been applied
+        assert!(target.exists());
     }
 }
