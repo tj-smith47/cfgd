@@ -40,6 +40,7 @@ fn extract_age_recipient(content: &str) -> Option<String> {
     content.lines().find_map(|line| {
         line.strip_prefix("# public key: ")
             .map(|pk| pk.trim().to_string())
+            .filter(|pk| !pk.is_empty())
     })
 }
 
@@ -1002,11 +1003,11 @@ AGE-SECRET-KEY-1STUFF\n";
 
     #[test]
     fn extract_age_recipient_only_prefix_no_key() {
-        // The prefix is present but no key follows — returns empty string
+        // The prefix is present but no key follows — empty key is rejected
         let content = "# public key: \n";
         assert_eq!(
             extract_age_recipient(content),
-            Some(String::new())
+            None
         );
     }
 
