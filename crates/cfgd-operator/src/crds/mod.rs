@@ -453,10 +453,10 @@ impl MachineConfigSpec {
     pub fn validate(&self) -> Result<(), Vec<String>> {
         let mut errors = Vec::new();
 
-        if self.hostname.is_empty() {
+        if self.hostname.trim().is_empty() {
             errors.push("spec.hostname must not be empty".to_string());
         }
-        if self.profile.is_empty() {
+        if self.profile.trim().is_empty() {
             errors.push("spec.profile must not be empty".to_string());
         }
         for (i, m) in self.module_refs.iter().enumerate() {

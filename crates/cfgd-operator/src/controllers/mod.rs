@@ -1906,14 +1906,6 @@ mod tests {
     }
 
     #[test]
-    fn chrono_now_produces_rfc3339() {
-        let now = cfgd_core::utc_now_iso8601();
-        assert!(now.ends_with('Z'));
-        assert!(now.contains('T'));
-        assert_eq!(now.len(), 20); // "YYYY-MM-DDTHH:MM:SSZ"
-    }
-
-    #[test]
     fn matches_selector_empty_matches_all() {
         assert!(matches_selector(None, &LabelSelector::default()));
     }
@@ -2203,11 +2195,6 @@ mod tests {
             &[],
             &Default::default()
         ));
-    }
-
-    #[test]
-    fn finalizer_name_constant() {
-        assert_eq!(MACHINE_CONFIG_FINALIZER, "cfgd.io/machine-config-cleanup");
     }
 
     #[test]
@@ -2580,6 +2567,174 @@ mod tests {
         assert_eq!(
             result.signature_digest.unwrap(),
             "keyless:user@example.com@https://accounts.google.com"
+        );
+    }
+
+    #[test]
+    fn compliance_summary_formats_counts() {
+        assert_eq!(compliance_summary(0, 0), "0 compliant, 0 non-compliant");
+        assert_eq!(compliance_summary(5, 3), "5 compliant, 3 non-compliant");
+        assert_eq!(
+            compliance_summary(100, 0),
+            "100 compliant, 0 non-compliant"
+        );
+        assert_eq!(
+            compliance_summary(0, 42),
+            "0 compliant, 42 non-compliant"
+        );
+    }
+
+    #[test]
+    fn find_condition_status_returns_matching() {
+        let conditions = vec![
+            Condition {
+                condition_type: "Reconciled".to_string(),
+                status: "True".to_string(),
+                reason: "ReconcileSuccess".to_string(),
+                message: "all good".to_string(),
+                last_transition_time: "2024-01-01T00:00:00Z".to_string(),
+                observed_generation: Some(1),
+            },
+            Condition {
+                condition_type: "DriftDetected".to_string(),
+                status: "False".to_string(),
+                reason: "NoDrift".to_string(),
+                message: "no drift".to_string(),
+                last_transition_time: "2024-01-02T00:00:00Z".to_string(),
+                observed_generation: Some(2),
+            },
+        ];
+        assert_eq!(
+            find_condition_status(&conditions, "Reconciled"),
+            Some("True".to_string())
+        );
+        assert_eq!(
+            find_condition_status(&conditions, "DriftDetected"),
+            Some("False".to_string())
+        );
+        assert_eq!(find_condition_status(&conditions, "NonExistent"), None);
+        assert_eq!(find_condition_status(&[], "Reconciled"), None);
+    }
+
+    #[test]
+    fn find_condition_transition_time_returns_matching() {
+        let conditions = vec![
+            Condition {
+                condition_type: "Reconciled".to_string(),
+                status: "True".to_string(),
+                reason: "ReconcileSuccess".to_string(),
+                message: "all good".to_string(),
+                last_transition_time: "2024-01-01T00:00:00Z".to_string(),
+                observed_generation: Some(1),
+            },
+            Condition {
+                condition_type: "DriftDetected".to_string(),
+                status: "False".to_string(),
+                reason: "NoDrift".to_string(),
+                message: "no drift".to_string(),
+                last_transition_time: "2024-06-15T12:00:00Z".to_string(),
+                observed_generation: None,
+            },
+        ];
+        assert_eq!(
+            find_condition_transition_time(&conditions, "Reconciled"),
+            Some("2024-01-01T00:00:00Z".to_string())
+        );
+        assert_eq!(
+            find_condition_transition_time(&conditions, "DriftDetected"),
+            Some("2024-06-15T12:00:00Z".to_string())
+        );
+        assert_eq!(
+            find_condition_transition_time(&conditions, "NonExistent"),
+            None
+        );
+        assert_eq!(find_condition_transition_time(&[], "Reconciled"), None);
+    }
+
+    #[test]
+    fn matches_selector_combined_labels_and_expressions() {
+        let mut labels = BTreeMap::new();
+        labels.insert("team".to_string(), "platform".to_string());
+        labels.insert("env".to_string(), "prod".to_string());
+        labels.insert("tier".to_string(), "backend".to_string());
+
+        // Selector requires match_labels AND match_expressions (AND semantics)
+        let selector = LabelSelector {
+            match_labels: {
+                let mut m = BTreeMap::new();
+                m.insert("team".to_string(), "platform".to_string());
+                m
+            },
+            match_expressions: vec![
+                LabelSelectorRequirement {
+                    key: "env".to_string(),
+                    operator: SelectorOperator::In,
+                    values: vec!["prod".to_string(), "staging".to_string()],
+                },
+                LabelSelectorRequirement {
+                    key: "tier".to_string(),
+                    operator: SelectorOperator::Exists,
+                    values: vec![],
+                },
+            ],
+        };
+
+        // All conditions met
+        assert!(matches_selector(Some(&labels), &selector));
+
+        // Fails if match_labels don't match
+        let mut wrong_team = labels.clone();
+        wrong_team.insert("team".to_string(), "security".to_string());
+        assert!(!matches_selector(Some(&wrong_team), &selector));
+
+        // Fails if expression doesn't match (env not in allowed set)
+        let mut wrong_env = labels.clone();
+        wrong_env.insert("env".to_string(), "dev".to_string());
+        assert!(!matches_selector(Some(&wrong_env), &selector));
+
+        // Fails if required Exists label is missing
+        let mut no_tier = labels.clone();
+        no_tier.remove("tier");
+        assert!(!matches_selector(Some(&no_tier), &selector));
+    }
+
+    #[test]
+    fn matches_selector_not_in_rejects_matching_value() {
+        let mut labels = BTreeMap::new();
+        labels.insert("env".to_string(), "prod".to_string());
+
+        let selector = LabelSelector {
+            match_labels: BTreeMap::new(),
+            match_expressions: vec![LabelSelectorRequirement {
+                key: "env".to_string(),
+                operator: SelectorOperator::NotIn,
+                values: vec!["prod".to_string(), "staging".to_string()],
+            }],
+        };
+
+        // Label value IS in the exclusion list — should be rejected
+        assert!(!matches_selector(Some(&labels), &selector));
+    }
+
+    #[test]
+    fn validate_spec_empty_profile_errors() {
+        let result = validate_spec(&mc_spec("valid-host", ""));
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("profile"),
+            "error should mention profile: {err_msg}"
+        );
+    }
+
+    #[test]
+    fn validate_spec_whitespace_hostname_errors() {
+        let result = validate_spec(&mc_spec("   ", "default"));
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("hostname"),
+            "error should mention hostname: {err_msg}"
         );
     }
 }
