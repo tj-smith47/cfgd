@@ -152,9 +152,9 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - name: Install cosign
         run: |
-          curl -fsSL -o /usr/local/bin/cosign \
+          sudo curl -fsSL -o /usr/local/bin/cosign \
             https://github.com/sigstore/cosign/releases/download/v2.4.3/cosign-linux-amd64
-          chmod +x /usr/local/bin/cosign
+          sudo chmod +x /usr/local/bin/cosign
       - name: Build cfgd
         run: cargo build --release --bin cfgd
       - name: Run exhaustive tests
@@ -168,7 +168,17 @@ jobs:
   e2e-summary:
     name: "E2E Summary"
     runs-on: ubuntu-latest
-    needs: [node-tests, helm-tests, server-tests, operator-tests, full-stack-tests, crossplane-tests, gateway-tests, cli-tests]
+    needs:
+      [
+        node-tests,
+        helm-tests,
+        server-tests,
+        operator-tests,
+        full-stack-tests,
+        crossplane-tests,
+        gateway-tests,
+        cli-tests,
+      ]
     if: always()
     steps:
       - name: Check results

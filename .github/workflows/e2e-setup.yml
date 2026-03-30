@@ -23,6 +23,9 @@ jobs:
         id: tags
         run: echo "tag=e2e-$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
 
+      - name: Setup Crossplane CLI
+        uses: crossplane-contrib/setup-crossplane-action@main
+
       - name: Run setup
         env:
           IMAGE_TAG: ${{ steps.tags.outputs.tag }}
