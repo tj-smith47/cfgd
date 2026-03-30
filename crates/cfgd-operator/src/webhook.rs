@@ -1379,6 +1379,66 @@ mod tests {
         assert_eq!(mount_count, 1, "only Always module should get volumeMount");
     }
 
+    #[test]
+    fn load_certs_missing_file_errors() {
+        let result = load_certs(Path::new("/nonexistent/path/tls.crt"));
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("failed to open cert file"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn load_private_key_missing_file_errors() {
+        let result = load_private_key(Path::new("/nonexistent/path/tls.key"));
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("failed to open key file"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn load_certs_empty_file_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        let cert_path = dir.path().join("empty.crt");
+        std::fs::write(&cert_path, "").unwrap();
+        let result = load_certs(&cert_path);
+        // An empty PEM file yields zero certs (no error from parser, but empty vec)
+        assert!(result.is_ok());
+        assert!(result.unwrap().is_empty());
+    }
+
+    #[test]
+    fn parse_module_annotation_colon_only() {
+        let result = parse_module_annotations(":");
+        assert!(
+            result.is_empty(),
+            "bare colon should produce no results: {result:?}"
+        );
+    }
+
+    #[test]
+    fn parse_module_annotation_trailing_comma() {
+        let result = parse_module_annotations("mod-a:1.0,mod-b:2.0,");
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0].0, "mod-a");
+        assert_eq!(result[1].0, "mod-b");
+    }
+
+    #[test]
+    fn parse_module_annotation_duplicate_names() {
+        let result = parse_module_annotations("mod-a:1.0,mod-a:2.0,mod-b:1.0");
+        // No dedup — all entries are returned
+        assert_eq!(result.len(), 3);
+        assert_eq!(result[0], ("mod-a".to_string(), "1.0".to_string()));
+        assert_eq!(result[1], ("mod-a".to_string(), "2.0".to_string()));
+        assert_eq!(result[2], ("mod-b".to_string(), "1.0".to_string()));
+    }
+
     fn test_metrics() -> Metrics {
         let mut registry = prometheus_client::registry::Registry::default();
         Metrics::new(&mut registry)
