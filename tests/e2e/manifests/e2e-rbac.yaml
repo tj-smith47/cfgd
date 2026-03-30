@@ -30,9 +30,13 @@ rules:
   - apiGroups: [""]
     resources: ["nodes"]
     verbs: ["get", "list", "watch"]
-  # Apps — deployments and daemonsets (Helm creates these)
+  # Apps — deployments, daemonsets, replicasets (Helm creates these; rollout checks need replicasets)
   - apiGroups: ["apps"]
-    resources: ["deployments", "daemonsets"]
+    resources: ["deployments", "daemonsets", "replicasets"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # Persistent volume claims — gateway chart provisions PVCs
+  - apiGroups: [""]
+    resources: ["persistentvolumeclaims"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
   # RBAC — Helm chart creates ClusterRoles/Bindings for agent, operator, CSI
   - apiGroups: ["rbac.authorization.k8s.io"]

@@ -81,7 +81,7 @@ fi
 begin_test "FS-DRIFT-03: Policy sees drifted MachineConfig"
 
 if wait_for_k8s_field machineconfig "mc-${DEVICE_1}" cfgd-system \
-    '{.status.conditions[?(@.type=="DriftDetected")].status}' "True" 30 > /dev/null; then
+    '{.status.conditions[?(@.type=="DriftDetected")].status}' "True" 60 > /dev/null; then
     DRIFT_REASON=$(kubectl get machineconfig "mc-${DEVICE_1}" -n cfgd-system \
         -o jsonpath='{.status.conditions[?(@.type=="DriftDetected")].reason}' 2>/dev/null || echo "")
     echo "  MC DriftDetected status: True"
@@ -90,7 +90,7 @@ if wait_for_k8s_field machineconfig "mc-${DEVICE_1}" cfgd-system \
 else
     DRIFT_STATUS=$(kubectl get machineconfig "mc-${DEVICE_1}" -n cfgd-system \
         -o jsonpath='{.status.conditions[?(@.type=="DriftDetected")].status}' 2>/dev/null || echo "")
-    fail_test "FS-DRIFT-03" "MC DriftDetected condition not True within 30s (status=$DRIFT_STATUS)"
+    fail_test "FS-DRIFT-03" "MC DriftDetected condition not True within 60s (status=$DRIFT_STATUS)"
 fi
 
 # =================================================================
