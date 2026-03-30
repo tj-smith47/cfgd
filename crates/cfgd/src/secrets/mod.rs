@@ -954,4 +954,205 @@ mod tests {
         // Default age key path should be set even if file doesn't exist
         assert!(health.age_key_path.is_some());
     }
+
+    // --- extract_age_recipient tests ---
+
+    #[test]
+    fn extract_age_recipient_valid_content() {
+        let content = "# created: 2024-01-01\n# public key: age1abc123def456\nAGE-SECRET-KEY-1DEADBEEF\n";
+        assert_eq!(
+            extract_age_recipient(content),
+            Some("age1abc123def456".to_string())
+        );
+    }
+
+    #[test]
+    fn extract_age_recipient_missing_public_key_line() {
+        let content = "# created: 2024-01-01\nAGE-SECRET-KEY-1DEADBEEF\n";
+        assert_eq!(extract_age_recipient(content), None);
+    }
+
+    #[test]
+    fn extract_age_recipient_empty_content() {
+        assert_eq!(extract_age_recipient(""), None);
+    }
+
+    #[test]
+    fn extract_age_recipient_multiple_comment_lines() {
+        let content = "\
+# this is a comment
+# another comment
+# yet another
+# public key: age1xyz789
+AGE-SECRET-KEY-1STUFF\n";
+        assert_eq!(
+            extract_age_recipient(content),
+            Some("age1xyz789".to_string())
+        );
+    }
+
+    #[test]
+    fn extract_age_recipient_trailing_whitespace_trimmed() {
+        let content = "# public key: age1trailing   \n";
+        assert_eq!(
+            extract_age_recipient(content),
+            Some("age1trailing".to_string())
+        );
+    }
+
+    #[test]
+    fn extract_age_recipient_only_prefix_no_key() {
+        // The prefix is present but no key follows — returns empty string
+        let content = "# public key: \n";
+        assert_eq!(
+            extract_age_recipient(content),
+            Some(String::new())
+        );
+    }
+
+    // --- resolve_secret_refs edge case tests ---
+
+    #[test]
+    fn resolve_secret_refs_unclosed_marker_passes_through() {
+        // Unclosed ${secret: without closing } — the loop breaks and returns input as-is
+        let result =
+            resolve_secret_refs("value=${secret:oops_no_close", &[], None, Path::new(".")).unwrap();
+        assert_eq!(result, "value=${secret:oops_no_close");
+    }
+
+    #[test]
+    fn resolve_secret_refs_multiple_markers_with_provider() {
+        use cfgd_core::test_helpers::MockSecretProvider;
+
+        let provider = MockSecretProvider::new("vault").with_resolve_result("v1");
+        let providers: Vec<&dyn SecretProvider> = vec![&provider];
+
+        let result = resolve_secret_refs(
+            "a=${secret:vault://p1} b=${secret:vault://p2} c=${secret:vault://p3}",
+            &providers,
+            None,
+            Path::new("."),
+        )
+        .unwrap();
+        assert_eq!(result, "a=v1 b=v1 c=v1");
+
+        // All three references should have been resolved
+        let calls = provider.resolve_calls.lock().unwrap();
+        assert_eq!(calls.len(), 3);
+        assert_eq!(calls[0], "p1");
+        assert_eq!(calls[1], "p2");
+        assert_eq!(calls[2], "p3");
+    }
+
+    #[test]
+    fn resolve_secret_refs_mixed_provider_and_file() {
+        use cfgd_core::test_helpers::{MockSecretBackend, MockSecretProvider};
+
+        let dir = tempfile::tempdir().unwrap();
+        let secret_file = dir.path().join("creds.enc");
+        std::fs::write(&secret_file, "encrypted").unwrap();
+
+        let provider = MockSecretProvider::new("1password").with_resolve_result("op-secret");
+        let backend = MockSecretBackend::new("sops").with_decrypt_result("file-secret");
+        let providers: Vec<&dyn SecretProvider> = vec![&provider];
+
+        let result = resolve_secret_refs(
+            "pw=${secret:1password://v/i/f} db=${secret:creds.enc}",
+            &providers,
+            Some(&backend),
+            dir.path(),
+        )
+        .unwrap();
+        assert_eq!(result, "pw=op-secret db=file-secret");
+    }
+
+    #[test]
+    fn resolve_secret_refs_unavailable_provider_errors() {
+        use cfgd_core::test_helpers::MockSecretProvider;
+
+        let provider = MockSecretProvider::new("vault").unavailable();
+        let providers: Vec<&dyn SecretProvider> = vec![&provider];
+
+        let result = resolve_secret_refs(
+            "x=${secret:vault://path}",
+            &providers,
+            None,
+            Path::new("."),
+        );
+        assert!(result.is_err());
+        let err = format!("{}", result.unwrap_err());
+        assert!(err.contains("vault"), "error should mention provider: {err}");
+    }
+
+    #[test]
+    fn resolve_secret_refs_unknown_provider_errors() {
+        // No providers registered at all, but reference uses a provider scheme
+        let result = resolve_secret_refs(
+            "x=${secret:unknown://something}",
+            &[],
+            None,
+            Path::new("."),
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn resolve_secret_refs_file_ref_path_traversal_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        let backend = MockBackend;
+
+        let result = resolve_secret_refs(
+            "x=${secret:../../etc/shadow}",
+            &[],
+            Some(&backend),
+            dir.path(),
+        );
+        assert!(result.is_err());
+        let err = format!("{}", result.unwrap_err());
+        assert!(
+            err.contains("traversal"),
+            "error should mention traversal: {err}"
+        );
+    }
+
+    #[test]
+    fn resolve_secret_refs_empty_input() {
+        let result = resolve_secret_refs("", &[], None, Path::new(".")).unwrap();
+        assert_eq!(result, "");
+    }
+
+    #[test]
+    fn resolve_secret_refs_marker_at_boundaries() {
+        let dir = tempfile::tempdir().unwrap();
+        let f = dir.path().join("s.enc");
+        std::fs::write(&f, "data").unwrap();
+
+        let backend = MockBackend;
+        // Marker at the very start and very end of the string
+        let result = resolve_secret_refs(
+            "${secret:s.enc}",
+            &[],
+            Some(&backend),
+            dir.path(),
+        )
+        .unwrap();
+        assert_eq!(result, "decrypted-value");
+    }
+
+    #[test]
+    fn resolve_secret_refs_adjacent_markers() {
+        let dir = tempfile::tempdir().unwrap();
+        let f = dir.path().join("a.enc");
+        std::fs::write(&f, "data").unwrap();
+
+        let backend = MockBackend;
+        let result = resolve_secret_refs(
+            "${secret:a.enc}${secret:a.enc}",
+            &[],
+            Some(&backend),
+            dir.path(),
+        )
+        .unwrap();
+        assert_eq!(result, "decrypted-valuedecrypted-value");
+    }
 }
