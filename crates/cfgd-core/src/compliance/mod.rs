@@ -1067,4 +1067,305 @@ mod tests {
                 .ends_with(".yaml")
         );
     }
+
+    // -----------------------------------------------------------------------
+    // collect_package_checks
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn collect_package_checks_installed_package_compliant() {
+        use crate::config::MergedProfile;
+        use crate::providers::StubPackageManager;
+
+        let mut profile = MergedProfile::default();
+        // Use pipx (Vec<String>) which is simpler to construct
+        profile.packages.pipx = vec!["ripgrep".into()];
+
+        let mut registry = ProviderRegistry::new();
+        registry.package_managers.push(Box::new(
+            StubPackageManager::new("pipx").with_installed(&["ripgrep"]),
+        ));
+
+        let checks = collect_package_checks(&profile, &registry).unwrap();
+        assert_eq!(checks.len(), 1);
+        assert_eq!(checks[0].status, ComplianceStatus::Compliant);
+        assert_eq!(checks[0].name.as_deref(), Some("ripgrep"));
+        assert_eq!(checks[0].manager.as_deref(), Some("pipx"));
+    }
+
+    #[test]
+    fn collect_package_checks_missing_package_violation() {
+        use crate::config::MergedProfile;
+        use crate::providers::StubPackageManager;
+
+        let mut profile = MergedProfile::default();
+        profile.packages.pipx = vec!["missing-pkg".into()];
+
+        let mut registry = ProviderRegistry::new();
+        registry
+            .package_managers
+            .push(Box::new(StubPackageManager::new("pipx").with_installed(&[])));
+
+        let checks = collect_package_checks(&profile, &registry).unwrap();
+        assert_eq!(checks.len(), 1);
+        assert_eq!(checks[0].status, ComplianceStatus::Violation);
+        assert!(checks[0].detail.as_deref().unwrap().contains("not installed"));
+    }
+
+    #[test]
+    fn collect_package_checks_empty_desired_skips_manager() {
+        use crate::config::MergedProfile;
+        use crate::providers::StubPackageManager;
+
+        let profile = MergedProfile::default();
+        let mut registry = ProviderRegistry::new();
+        registry.package_managers.push(Box::new(
+            StubPackageManager::new("pipx").with_installed(&["curl"]),
+        ));
+
+        let checks = collect_package_checks(&profile, &registry).unwrap();
+        assert!(checks.is_empty(), "no desired packages = no checks");
+    }
+
+    #[test]
+    fn collect_package_checks_multiple_managers() {
+        use crate::config::MergedProfile;
+        use crate::providers::StubPackageManager;
+
+        let mut profile = MergedProfile::default();
+        profile.packages.pipx = vec!["ripgrep".into()];
+        profile.packages.dnf = vec!["fd-find".into()];
+
+        let mut registry = ProviderRegistry::new();
+        registry.package_managers.push(Box::new(
+            StubPackageManager::new("pipx").with_installed(&["ripgrep"]),
+        ));
+        registry.package_managers.push(Box::new(
+            StubPackageManager::new("dnf").with_installed(&[]),
+        ));
+
+        let checks = collect_package_checks(&profile, &registry).unwrap();
+        assert_eq!(checks.len(), 2);
+        let pipx_check = checks.iter().find(|c| c.manager.as_deref() == Some("pipx")).unwrap();
+        assert_eq!(pipx_check.status, ComplianceStatus::Compliant);
+        let dnf_check = checks.iter().find(|c| c.manager.as_deref() == Some("dnf")).unwrap();
+        assert_eq!(dnf_check.status, ComplianceStatus::Violation);
+    }
+
+    // -----------------------------------------------------------------------
+    // collect_system_checks
+    // -----------------------------------------------------------------------
+
+    // Inline mock for system configurator tests (test_helpers is feature-gated)
+    struct InlineSystemMock {
+        configurator_name: String,
+        // Store as tuples to avoid Clone requirement on SystemDrift
+        drift_tuples: Vec<(String, String, String)>,
+        should_fail: bool,
+    }
+    impl crate::providers::SystemConfigurator for InlineSystemMock {
+        fn name(&self) -> &str { &self.configurator_name }
+        fn is_available(&self) -> bool { true }
+        fn current_state(&self) -> crate::errors::Result<serde_yaml::Value> {
+            Ok(serde_yaml::Value::Mapping(serde_yaml::Mapping::new()))
+        }
+        fn diff(&self, _desired: &serde_yaml::Value) -> crate::errors::Result<Vec<crate::providers::SystemDrift>> {
+            if self.should_fail {
+                Err(crate::errors::CfgdError::Io(std::io::Error::other("mock diff failure")))
+            } else {
+                Ok(self.drift_tuples.iter().map(|(k, e, a)| crate::providers::SystemDrift {
+                    key: k.clone(), expected: e.clone(), actual: a.clone(),
+                }).collect())
+            }
+        }
+        fn apply(&self, _desired: &serde_yaml::Value, _printer: &crate::output::Printer) -> crate::errors::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn collect_system_checks_no_drift_compliant() {
+        use crate::config::MergedProfile;
+
+        let mut profile = MergedProfile::default();
+        profile.system.insert(
+            "mock".to_string(),
+            serde_yaml::Value::Mapping(serde_yaml::Mapping::new()),
+        );
+
+        let mut registry = ProviderRegistry::new();
+        registry.system_configurators.push(Box::new(InlineSystemMock {
+            configurator_name: "mock".to_string(),
+            drift_tuples: vec![],
+            should_fail: false,
+        }));
+
+        let checks = collect_system_checks(&profile, &registry).unwrap();
+        assert_eq!(checks.len(), 1);
+        assert_eq!(checks[0].status, ComplianceStatus::Compliant);
+    }
+
+    #[test]
+    fn collect_system_checks_with_drift_violation() {
+        use crate::config::MergedProfile;
+        let mut profile = MergedProfile::default();
+        profile.system.insert(
+            "mock".to_string(),
+            serde_yaml::Value::String("desired".into()),
+        );
+
+        let mut registry = ProviderRegistry::new();
+        registry.system_configurators.push(Box::new(InlineSystemMock {
+            configurator_name: "mock".to_string(),
+            drift_tuples: vec![("net.ipv4.ip_forward".into(), "1".into(), "0".into())],
+            should_fail: false,
+        }));
+
+        let checks = collect_system_checks(&profile, &registry).unwrap();
+        assert_eq!(checks.len(), 1);
+        assert_eq!(checks[0].status, ComplianceStatus::Violation);
+        assert!(checks[0].detail.as_deref().unwrap().contains("expected 1"));
+        assert!(checks[0].detail.as_deref().unwrap().contains("actual 0"));
+    }
+
+    #[test]
+    fn collect_system_checks_missing_configurator_warning() {
+        use crate::config::MergedProfile;
+
+        let mut profile = MergedProfile::default();
+        profile.system.insert(
+            "nonexistent".to_string(),
+            serde_yaml::Value::Mapping(serde_yaml::Mapping::new()),
+        );
+
+        let registry = ProviderRegistry::new();
+        let checks = collect_system_checks(&profile, &registry).unwrap();
+        assert_eq!(checks.len(), 1);
+        assert_eq!(checks[0].status, ComplianceStatus::Warning);
+        assert!(checks[0]
+            .detail
+            .as_deref()
+            .unwrap()
+            .contains("no configurator"));
+    }
+
+    #[test]
+    fn collect_system_checks_diff_error_warning() {
+        use crate::config::MergedProfile;
+
+        let mut profile = MergedProfile::default();
+        profile.system.insert(
+            "mock".to_string(),
+            serde_yaml::Value::String("desired".into()),
+        );
+
+        let mut registry = ProviderRegistry::new();
+        registry.system_configurators.push(Box::new(InlineSystemMock {
+            configurator_name: "mock".to_string(),
+            drift_tuples: vec![],
+            should_fail: true,
+        }));
+
+        let checks = collect_system_checks(&profile, &registry).unwrap();
+        assert_eq!(checks.len(), 1);
+        assert_eq!(checks[0].status, ComplianceStatus::Warning);
+        assert!(checks[0].detail.as_deref().unwrap().contains("diff failed"));
+    }
+
+    #[test]
+    fn collect_system_checks_multiple_drifts_multiple_violations() {
+        use crate::config::MergedProfile;
+        let mut profile = MergedProfile::default();
+        profile.system.insert(
+            "mock".to_string(),
+            serde_yaml::Value::String("desired".into()),
+        );
+
+        let mut registry = ProviderRegistry::new();
+        registry.system_configurators.push(Box::new(InlineSystemMock {
+            configurator_name: "mock".to_string(),
+            drift_tuples: vec![
+                ("a".into(), "1".into(), "0".into()),
+                ("b".into(), "true".into(), "false".into()),
+            ],
+            should_fail: false,
+        }));
+
+        let checks = collect_system_checks(&profile, &registry).unwrap();
+        assert_eq!(checks.len(), 2);
+        assert!(checks.iter().all(|c| c.status == ComplianceStatus::Violation));
+    }
+
+    #[test]
+    fn watch_path_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let checks = collect_watch_path_checks(&dir.path().to_string_lossy());
+        assert_eq!(checks.len(), 1);
+        assert_eq!(checks[0].status, ComplianceStatus::Compliant);
+        assert!(checks[0].detail.as_deref().unwrap().contains("directory"));
+    }
+
+    #[test]
+    fn export_snapshot_creates_parent_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        let nested = dir.path().join("deep/nested/dir");
+        let export = ComplianceExport {
+            format: ComplianceFormat::Json,
+            path: nested.display().to_string(),
+        };
+        let snapshot = ComplianceSnapshot {
+            timestamp: "2026-03-25T12:00:00Z".into(),
+            machine: MachineInfo {
+                hostname: "test".into(),
+                os: "linux".into(),
+                arch: "x86_64".into(),
+            },
+            profile: "default".into(),
+            sources: vec![],
+            checks: vec![],
+            summary: ComplianceSummary {
+                compliant: 0,
+                warning: 0,
+                violation: 0,
+            },
+        };
+
+        let path = export_snapshot_to_file(&snapshot, &export).unwrap();
+        assert!(path.exists());
+        assert!(nested.exists());
+    }
+
+    #[test]
+    fn compute_summary_all_statuses() {
+        let checks = vec![
+            ComplianceCheck {
+                status: ComplianceStatus::Compliant,
+                ..Default::default()
+            },
+            ComplianceCheck {
+                status: ComplianceStatus::Compliant,
+                ..Default::default()
+            },
+            ComplianceCheck {
+                status: ComplianceStatus::Warning,
+                ..Default::default()
+            },
+            ComplianceCheck {
+                status: ComplianceStatus::Violation,
+                ..Default::default()
+            },
+            ComplianceCheck {
+                status: ComplianceStatus::Violation,
+                ..Default::default()
+            },
+            ComplianceCheck {
+                status: ComplianceStatus::Violation,
+                ..Default::default()
+            },
+        ];
+        let summary = compute_summary(&checks);
+        assert_eq!(summary.compliant, 2);
+        assert_eq!(summary.warning, 1);
+        assert_eq!(summary.violation, 3);
+    }
 }
