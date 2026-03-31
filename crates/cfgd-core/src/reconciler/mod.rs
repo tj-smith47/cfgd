@@ -3019,9 +3019,7 @@ fn restore_file_from_backup(
     }
 
     // Empty content, not symlink, not oversized — file didn't exist before
-    if bk.content.is_empty() && !bk.was_symlink && !bk.oversized
-        && target.exists()
-    {
+    if bk.content.is_empty() && !bk.was_symlink && !bk.oversized && target.exists() {
         if let Err(e) = std::fs::remove_file(target) {
             printer.warning(&format!(
                 "rollback: failed to remove {}: {}",

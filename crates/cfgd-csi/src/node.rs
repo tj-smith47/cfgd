@@ -414,8 +414,11 @@ fn unmount(target: &Path) -> Result<(), Status> {
 
     match umount2(target, MntFlags::MNT_DETACH) {
         Ok(()) => Ok(()),
-        Err(nix::errno::Errno::EINVAL) | Err(nix::errno::Errno::ENOENT) => {
-            // Not mounted or doesn't exist — idempotent success
+        Err(nix::errno::Errno::EINVAL)
+        | Err(nix::errno::Errno::ENOENT)
+        | Err(nix::errno::Errno::EPERM) => {
+            // EINVAL = not mounted, ENOENT = doesn't exist, EPERM = not a mount point
+            // (non-root gets EPERM instead of EINVAL) — all idempotent success
             Ok(())
         }
         Err(e) => Err(Status::internal(format!("unmount failed: {e}"))),
