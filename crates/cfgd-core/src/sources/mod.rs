@@ -984,6 +984,256 @@ spec:
     }
 
     #[test]
+    fn normalize_semver_pin_whitespace() {
+        assert_eq!(normalize_semver_pin("  ~2  "), "^2.0.0");
+        assert_eq!(normalize_semver_pin(" ^3.1 "), "^3.1.0");
+    }
+
+    #[test]
+    fn normalize_semver_pin_plain_version() {
+        // No prefix — passed through as-is
+        assert_eq!(normalize_semver_pin("2.1.0"), "2.1.0");
+        assert_eq!(normalize_semver_pin(">=1.0.0"), ">=1.0.0");
+    }
+
+    #[test]
+    fn check_version_pin_no_manifest_version_uses_zero() {
+        let dir = tempfile::tempdir().unwrap();
+        let mgr = SourceManager::new(dir.path());
+
+        let manifest = ConfigSourceDocument {
+            api_version: crate::API_VERSION.into(),
+            kind: "ConfigSource".into(),
+            metadata: crate::config::ConfigSourceMetadata {
+                name: "test".into(),
+                version: None, // No version — defaults to 0.0.0
+                description: None,
+            },
+            spec: crate::config::ConfigSourceSpec {
+                provides: Default::default(),
+                policy: Default::default(),
+            },
+        };
+
+        // ~0 matches 0.0.0
+        assert!(mgr.check_version_pin("test", &manifest, "~0").is_ok());
+        // ~1 does NOT match 0.0.0
+        assert!(mgr.check_version_pin("test", &manifest, "~1").is_err());
+    }
+
+    #[test]
+    fn check_version_pin_invalid_semver_in_manifest() {
+        let dir = tempfile::tempdir().unwrap();
+        let mgr = SourceManager::new(dir.path());
+
+        let manifest = ConfigSourceDocument {
+            api_version: crate::API_VERSION.into(),
+            kind: "ConfigSource".into(),
+            metadata: crate::config::ConfigSourceMetadata {
+                name: "test".into(),
+                version: Some("not-a-version".into()),
+                description: None,
+            },
+            spec: crate::config::ConfigSourceSpec {
+                provides: Default::default(),
+                policy: Default::default(),
+            },
+        };
+
+        let result = mgr.check_version_pin("test", &manifest, "~1");
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("semver") || err.contains("invalid"),
+            "expected semver error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn check_version_pin_invalid_pin_format() {
+        let dir = tempfile::tempdir().unwrap();
+        let mgr = SourceManager::new(dir.path());
+
+        let manifest = ConfigSourceDocument {
+            api_version: crate::API_VERSION.into(),
+            kind: "ConfigSource".into(),
+            metadata: crate::config::ConfigSourceMetadata {
+                name: "test".into(),
+                version: Some("1.0.0".into()),
+                description: None,
+            },
+            spec: crate::config::ConfigSourceSpec {
+                provides: Default::default(),
+                policy: Default::default(),
+            },
+        };
+
+        let result = mgr.check_version_pin("test", &manifest, "not-a-pin");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn read_manifest_no_profiles_is_error() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join(SOURCE_MANIFEST_FILE),
+            r#"
+apiVersion: cfgd.io/v1alpha1
+kind: ConfigSource
+metadata:
+  name: empty-source
+spec:
+  provides:
+    profiles: []
+  policy: {}
+"#,
+        )
+        .unwrap();
+
+        let result = read_manifest("empty-source", dir.path());
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("no profiles") || err.contains("NoProfiles"),
+            "expected no-profiles error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn detect_source_manifest_no_profiles_is_error() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join(SOURCE_MANIFEST_FILE),
+            r#"
+apiVersion: cfgd.io/v1alpha1
+kind: ConfigSource
+metadata:
+  name: empty-profiles
+spec:
+  provides:
+    profiles: []
+  policy: {}
+"#,
+        )
+        .unwrap();
+
+        // detect_source_manifest delegates to read_manifest which should fail
+        let result = detect_source_manifest(dir.path());
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn load_source_profile_nonexistent_source() {
+        let dir = tempfile::tempdir().unwrap();
+        let mgr = SourceManager::new(dir.path());
+
+        let result = mgr.load_source_profile("nonexistent", "default");
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("not found"),
+            "expected 'not found' error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn default_cache_dir_returns_path() {
+        // This test may fail in environments without a home directory,
+        // but in normal test environments it should work.
+        let result = SourceManager::default_cache_dir();
+        assert!(result.is_ok());
+        let path = result.unwrap();
+        assert!(path.to_string_lossy().contains("cfgd"));
+        assert!(path.to_string_lossy().contains("sources"));
+    }
+
+    #[test]
+    fn build_source_spec_defaults() {
+        let spec = SourceManager::build_source_spec("test", "https://example.com/config.git", None);
+        assert_eq!(spec.origin.branch, "master");
+        assert_eq!(spec.origin.url, "https://example.com/config.git");
+        assert!(spec.origin.auth.is_none());
+        assert!(spec.subscription.profile.is_none());
+        // Default sync interval
+        assert_eq!(spec.sync.interval, "1h");
+        assert!(spec.sync.pin_version.is_none());
+    }
+
+    #[test]
+    fn subscription_config_from_spec() {
+        let spec = crate::config::SourceSpec {
+            name: "test".into(),
+            origin: crate::config::OriginSpec {
+                origin_type: OriginType::Git,
+                url: "https://example.com".into(),
+                branch: "main".into(),
+                auth: None,
+                ssh_strict_host_key_checking: Default::default(),
+            },
+            subscription: crate::config::SubscriptionSpec {
+                profile: Some("backend".into()),
+                priority: 500,
+                accept_recommended: true,
+                opt_in: vec!["extra".into()],
+                overrides: serde_yaml::Value::Null,
+                reject: serde_yaml::Value::Null,
+            },
+            sync: Default::default(),
+        };
+
+        let config = crate::composition::SubscriptionConfig::from_spec(&spec);
+        assert!(config.accept_recommended);
+        assert_eq!(config.opt_in, vec!["extra".to_string()]);
+    }
+
+    #[test]
+    fn version_pin_tilde_two_part() {
+        // ~2.1 should match 2.1.x but not 2.2.0
+        let pin = normalize_semver_pin("~2.1");
+        let req = VersionReq::parse(&pin).unwrap();
+        assert!(req.matches(&Version::new(2, 1, 0)));
+        assert!(req.matches(&Version::new(2, 1, 9)));
+        assert!(!req.matches(&Version::new(2, 2, 0)));
+    }
+
+    #[test]
+    fn version_pin_caret_matches_minor_bumps() {
+        let pin = normalize_semver_pin("^3");
+        let req = VersionReq::parse(&pin).unwrap();
+        assert!(req.matches(&Version::new(3, 0, 0)));
+        assert!(req.matches(&Version::new(3, 9, 0)));
+        assert!(!req.matches(&Version::new(4, 0, 0)));
+    }
+
+    #[test]
+    fn load_source_rejects_traversal_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut mgr = SourceManager::new(dir.path());
+        let printer = crate::output::Printer::new(crate::output::Verbosity::Quiet);
+
+        let spec = crate::config::SourceSpec {
+            name: "../evil".into(),
+            origin: crate::config::OriginSpec {
+                origin_type: OriginType::Git,
+                url: "https://example.com/config.git".into(),
+                branch: "main".into(),
+                auth: None,
+                ssh_strict_host_key_checking: Default::default(),
+            },
+            subscription: Default::default(),
+            sync: Default::default(),
+        };
+
+        let result = mgr.load_source(&spec, &printer);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("invalid source name") || err.contains("traversal"),
+            "expected traversal error, got: {err}"
+        );
+    }
+
+    #[test]
     fn remove_source_success() {
         let dir = tempfile::tempdir().unwrap();
         let mut mgr = SourceManager::new(dir.path());

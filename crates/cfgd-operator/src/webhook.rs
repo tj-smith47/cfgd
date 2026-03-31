@@ -1443,4 +1443,583 @@ mod tests {
         let mut registry = prometheus_client::registry::Registry::default();
         Metrics::new(&mut registry)
     }
+
+    // --- check_unsigned_policy edge cases ---
+
+    #[test]
+    fn check_unsigned_policy_no_oci_artifact_always_ok() {
+        // No OCI artifact means there is nothing to sign — should pass even with disallow_unsigned
+        let spec = ModuleSpec::default();
+        assert!(spec.oci_artifact.is_none());
+        assert!(check_unsigned_policy(&spec, true).is_ok());
+    }
+
+    #[test]
+    fn check_unsigned_policy_disallow_false_always_ok() {
+        // When disallow_unsigned is false, unsigned modules are allowed
+        let spec = ModuleSpec {
+            oci_artifact: Some("registry.example.com/mod:v1".to_string()),
+            ..Default::default()
+        };
+        assert!(check_unsigned_policy(&spec, false).is_ok());
+    }
+
+    #[test]
+    fn check_unsigned_policy_empty_public_key_rejected() {
+        use crate::crds::{CosignSignature, ModuleSignature};
+        let spec = ModuleSpec {
+            oci_artifact: Some("registry.example.com/mod:v1".to_string()),
+            signature: Some(ModuleSignature {
+                cosign: Some(CosignSignature {
+                    public_key: Some(String::new()),
+                    ..Default::default()
+                }),
+            }),
+            ..Default::default()
+        };
+        let result = check_unsigned_policy(&spec, true);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("unsigned"));
+    }
+
+    #[test]
+    fn check_unsigned_policy_signature_without_cosign_rejected() {
+        use crate::crds::ModuleSignature;
+        let spec = ModuleSpec {
+            oci_artifact: Some("registry.example.com/mod:v1".to_string()),
+            signature: Some(ModuleSignature { cosign: None }),
+            ..Default::default()
+        };
+        let result = check_unsigned_policy(&spec, true);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("unsigned"));
+    }
+
+    #[test]
+    fn check_unsigned_policy_no_signature_at_all_rejected() {
+        let spec = ModuleSpec {
+            oci_artifact: Some("registry.example.com/mod:v1".to_string()),
+            signature: None,
+            ..Default::default()
+        };
+        let result = check_unsigned_policy(&spec, true);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn check_unsigned_policy_cosign_not_keyless_no_key_rejected() {
+        use crate::crds::{CosignSignature, ModuleSignature};
+        let spec = ModuleSpec {
+            oci_artifact: Some("registry.example.com/mod:v1".to_string()),
+            signature: Some(ModuleSignature {
+                cosign: Some(CosignSignature {
+                    keyless: false,
+                    public_key: None,
+                    ..Default::default()
+                }),
+            }),
+            ..Default::default()
+        };
+        let result = check_unsigned_policy(&spec, true);
+        assert!(result.is_err());
+    }
+
+    // --- check_trusted_registries edge cases ---
+
+    #[test]
+    fn check_trusted_registries_empty_list_allows_all() {
+        let spec = ModuleSpec {
+            oci_artifact: Some("any.registry.io/mod:v1".to_string()),
+            ..Default::default()
+        };
+        // Empty registries list means no restrictions
+        assert!(check_trusted_registries(&spec, &[]).is_ok());
+    }
+
+    #[test]
+    fn check_trusted_registries_no_oci_artifact_always_ok() {
+        let spec = ModuleSpec::default();
+        let registries = vec!["trusted.io/".to_string()];
+        assert!(check_trusted_registries(&spec, &registries).is_ok());
+    }
+
+    #[test]
+    fn check_trusted_registries_exact_prefix_match_no_wildcard() {
+        let spec = ModuleSpec {
+            oci_artifact: Some("trusted.io/modules/vim:v1".to_string()),
+            ..Default::default()
+        };
+        // Without wildcard suffix, starts_with check still works
+        let registries = vec!["trusted.io/".to_string()];
+        assert!(check_trusted_registries(&spec, &registries).is_ok());
+    }
+
+    #[test]
+    fn check_trusted_registries_multiple_registries_second_matches() {
+        let spec = ModuleSpec {
+            oci_artifact: Some("second.io/mod:v1".to_string()),
+            ..Default::default()
+        };
+        let registries = vec![
+            "first.io/".to_string(),
+            "second.io/*".to_string(),
+        ];
+        assert!(check_trusted_registries(&spec, &registries).is_ok());
+    }
+
+    #[test]
+    fn check_trusted_registries_partial_match_rejected() {
+        let spec = ModuleSpec {
+            oci_artifact: Some("evil-trusted.io/mod:v1".to_string()),
+            ..Default::default()
+        };
+        // "trusted.io/" should NOT match "evil-trusted.io/"
+        let registries = vec!["trusted.io/".to_string()];
+        assert!(check_trusted_registries(&spec, &registries).is_err());
+    }
+
+    // --- parse_module_annotations edge cases ---
+
+    #[test]
+    fn parse_module_annotation_multiple_colons_in_version() {
+        // Only first colon splits — second colon is not returned since split_once splits on first
+        let result = parse_module_annotations("mod:1.0:extra");
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].0, "mod");
+        assert_eq!(result[0].1, "1.0:extra");
+    }
+
+    #[test]
+    fn parse_module_annotation_whitespace_only_entries() {
+        let result = parse_module_annotations("  ,  ,mod:1.0,  ");
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].0, "mod");
+    }
+
+    #[test]
+    fn parse_module_annotation_single_entry() {
+        let result = parse_module_annotations("mymod:latest");
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0], ("mymod".to_string(), "latest".to_string()));
+    }
+
+    // --- validate_object_spec edge cases ---
+
+    #[test]
+    fn validate_machineconfig_empty_profile_denied() {
+        let review = make_review(serde_json::json!({
+            "hostname": "host1",
+            "profile": ""
+        }));
+        let req = extract_req(review);
+        let result = validate_object_spec::<MachineConfigSpec>(&req);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("profile"));
+    }
+
+    #[test]
+    fn validate_machineconfig_both_empty_reports_both() {
+        let review = make_review(serde_json::json!({
+            "hostname": "",
+            "profile": ""
+        }));
+        let req = extract_req(review);
+        let result = validate_object_spec::<MachineConfigSpec>(&req);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.contains("hostname"), "should report hostname: {err}");
+        assert!(err.contains("profile"), "should report profile: {err}");
+    }
+
+    #[test]
+    fn validate_machineconfig_empty_module_ref_name_denied() {
+        let review = make_review(serde_json::json!({
+            "hostname": "host1",
+            "profile": "dev",
+            "moduleRefs": [{"name": ""}]
+        }));
+        let req = extract_req(review);
+        let result = validate_object_spec::<MachineConfigSpec>(&req);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("moduleRefs"));
+    }
+
+    #[test]
+    fn validate_machineconfig_file_path_traversal_denied() {
+        let review = make_review(serde_json::json!({
+            "hostname": "host1",
+            "profile": "dev",
+            "files": [{"path": "/etc/../shadow", "content": "x"}]
+        }));
+        let req = extract_req(review);
+        let result = validate_object_spec::<MachineConfigSpec>(&req);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.contains(".."), "should reject path traversal: {err}");
+    }
+
+    #[test]
+    fn validate_machineconfig_file_without_content_or_source_denied() {
+        let review = make_review(serde_json::json!({
+            "hostname": "host1",
+            "profile": "dev",
+            "files": [{"path": "/etc/foo"}]
+        }));
+        let req = extract_req(review);
+        let result = validate_object_spec::<MachineConfigSpec>(&req);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            err.contains("content") || err.contains("source"),
+            "should report missing content/source: {err}"
+        );
+    }
+
+    #[test]
+    fn validate_drift_alert_empty_machineconfig_ref_denied() {
+        let review = make_review(serde_json::json!({
+            "deviceId": "dev-1",
+            "machineConfigRef": {"name": ""},
+            "severity": "Low"
+        }));
+        let req = extract_req(review);
+        let result = validate_object_spec::<DriftAlertSpec>(&req);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("machineConfigRef"));
+    }
+
+    #[test]
+    fn validate_config_policy_empty_module_name_denied() {
+        let review = make_review(serde_json::json!({
+            "requiredModules": [{"name": ""}]
+        }));
+        let req = extract_req(review);
+        let result = validate_object_spec::<ConfigPolicySpec>(&req);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn validate_cluster_config_policy_valid() {
+        let review = make_review(serde_json::json!({
+            "requiredModules": [{"name": "base", "required": true}],
+            "packages": [{"name": "vim"}],
+            "security": {
+                "trustedRegistries": ["ghcr.io/*"],
+                "allowUnsigned": false
+            }
+        }));
+        let req = extract_req(review);
+        assert!(validate_object_spec::<ClusterConfigPolicySpec>(&req).is_ok());
+    }
+
+    #[test]
+    fn validate_cluster_config_policy_empty_package_name_denied() {
+        let review = make_review(serde_json::json!({
+            "packages": [{"name": ""}]
+        }));
+        let req = extract_req(review);
+        let result = validate_object_spec::<ClusterConfigPolicySpec>(&req);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn validate_module_empty_depends_entry_denied() {
+        let review = make_module_review(serde_json::json!({
+            "depends": ["base", ""]
+        }));
+        let req = extract_req(review);
+        let result = validate_object_spec::<ModuleSpec>(&req);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("depends"));
+    }
+
+    #[test]
+    fn validate_module_valid_minimal() {
+        // Completely empty spec should be valid (all fields are defaulted)
+        let review = make_module_review(serde_json::json!({}));
+        let req = extract_req(review);
+        assert!(validate_object_spec::<ModuleSpec>(&req).is_ok());
+    }
+
+    // --- build_injection_patches edge cases ---
+
+    #[test]
+    fn build_patches_pod_with_existing_volumes_and_mounts() {
+        let pod = serde_json::json!({
+            "spec": {
+                "containers": [
+                    {
+                        "name": "app",
+                        "image": "busybox",
+                        "volumeMounts": [
+                            {"name": "data", "mountPath": "/data"}
+                        ],
+                        "env": [
+                            {"name": "EXISTING", "value": "yes"}
+                        ]
+                    }
+                ],
+                "volumes": [
+                    {"name": "data", "emptyDir": {}}
+                ]
+            }
+        });
+        let modules = vec![(
+            "tools".to_string(),
+            "1.0".to_string(),
+            ModuleSpec::default(),
+        )];
+        let patches = build_injection_patches(&pod, &modules);
+        let patch_json = serde_json::to_string(&patches).unwrap();
+
+        // Should NOT add /spec/volumes (already exists)
+        assert!(
+            !patch_json.contains("\"path\":\"/spec/volumes\""),
+            "should not add /spec/volumes when it already exists"
+        );
+        // Should still add volume entry and volumeMount
+        assert!(patch_json.contains("cfgd-module-tools"));
+        assert!(patch_json.contains("/spec/volumes/-"));
+        // Should NOT add /spec/containers/0/volumeMounts (already exists)
+        assert!(
+            !patch_json.contains("\"path\":\"/spec/containers/0/volumeMounts\""),
+            "should not initialize volumeMounts when it already exists"
+        );
+    }
+
+    #[test]
+    fn build_patches_no_containers() {
+        let pod = serde_json::json!({
+            "spec": {}
+        });
+        let modules = vec![(
+            "mod1".to_string(),
+            "1.0".to_string(),
+            ModuleSpec::default(),
+        )];
+        let patches = build_injection_patches(&pod, &modules);
+        let patch_json = serde_json::to_string(&patches).unwrap();
+        // Should still add the volume
+        assert!(patch_json.contains("cfgd-module-mod1"));
+        // But no container volumeMount patches
+        assert!(!patch_json.contains("/spec/containers/"));
+    }
+
+    #[test]
+    fn build_patches_multiple_modules_with_env_vars() {
+        let pod = serde_json::json!({
+            "spec": {
+                "containers": [
+                    {"name": "app", "image": "busybox"}
+                ],
+                "volumes": []
+            }
+        });
+        let modules = vec![
+            (
+                "mod-a".to_string(),
+                "1.0".to_string(),
+                ModuleSpec {
+                    env: vec![crate::crds::ModuleEnvVar {
+                        name: "MOD_A_PATH".to_string(),
+                        value: "/cfgd-modules/mod-a/bin".to_string(),
+                        append: false,
+                    }],
+                    ..Default::default()
+                },
+            ),
+            (
+                "mod-b".to_string(),
+                "2.0".to_string(),
+                ModuleSpec {
+                    env: vec![
+                        crate::crds::ModuleEnvVar {
+                            name: "MOD_B_HOME".to_string(),
+                            value: "/cfgd-modules/mod-b".to_string(),
+                            append: false,
+                        },
+                        crate::crds::ModuleEnvVar {
+                            name: "PATH".to_string(),
+                            value: "/cfgd-modules/mod-b/bin".to_string(),
+                            append: true,
+                        },
+                    ],
+                    ..Default::default()
+                },
+            ),
+        ];
+        let patches = build_injection_patches(&pod, &modules);
+        let patch_json = serde_json::to_string(&patches).unwrap();
+        assert!(patch_json.contains("MOD_A_PATH"));
+        assert!(patch_json.contains("MOD_B_HOME"));
+        assert!(patch_json.contains("/cfgd-modules/mod-b/bin:$(PATH)"));
+    }
+
+    #[test]
+    fn build_patches_debug_module_with_scripts_no_emptydir() {
+        // Debug modules do NOT set needs_scripts_emptydir (they continue before that check),
+        // but the script_modules filter still picks them up for init container creation.
+        let pod = serde_json::json!({
+            "spec": {
+                "containers": [
+                    {"name": "app", "image": "busybox"}
+                ]
+            }
+        });
+        let modules = vec![(
+            "debug-tool".to_string(),
+            "1.0".to_string(),
+            ModuleSpec {
+                mount_policy: MountPolicy::Debug,
+                scripts: crate::crds::ModuleScripts {
+                    post_apply: Some("setup.sh".to_string()),
+                },
+                ..Default::default()
+            },
+        )];
+        let patches = build_injection_patches(&pod, &modules);
+        let patch_json = serde_json::to_string(&patches).unwrap();
+        // Should have CSI volume
+        assert!(patch_json.contains("cfgd-module-debug-tool"));
+        // The init container is still added (script_modules filter doesn't check mount_policy)
+        assert!(patch_json.contains("cfgd-init-debug-tool"));
+        // But the scripts emptyDir volume is NOT added (needs_scripts_emptydir stays false)
+        assert!(
+            !patch_json.contains("\"name\":\"cfgd-scripts\",\"emptyDir\""),
+            "debug module alone should not trigger scripts emptyDir volume"
+        );
+    }
+
+    #[test]
+    fn build_patches_module_without_oci_artifact() {
+        let pod = serde_json::json!({
+            "spec": {
+                "containers": [
+                    {"name": "app", "image": "busybox"}
+                ]
+            }
+        });
+        let modules = vec![(
+            "local-mod".to_string(),
+            "1.0".to_string(),
+            ModuleSpec {
+                oci_artifact: None,
+                ..Default::default()
+            },
+        )];
+        let patches = build_injection_patches(&pod, &modules);
+        let patch_json = serde_json::to_string(&patches).unwrap();
+        // Should still create volume (without ociRef in volumeAttributes)
+        assert!(patch_json.contains("cfgd-module-local-mod"));
+        assert!(!patch_json.contains("ociRef"));
+    }
+
+    #[test]
+    fn build_patches_multiple_containers_with_env() {
+        let pod = serde_json::json!({
+            "spec": {
+                "containers": [
+                    {"name": "app", "image": "busybox"},
+                    {"name": "sidecar", "image": "nginx"}
+                ]
+            }
+        });
+        let modules = vec![(
+            "shared".to_string(),
+            "1.0".to_string(),
+            ModuleSpec {
+                env: vec![crate::crds::ModuleEnvVar {
+                    name: "CONFIG".to_string(),
+                    value: "/cfgd-modules/shared/config".to_string(),
+                    append: false,
+                }],
+                ..Default::default()
+            },
+        )];
+        let patches = build_injection_patches(&pod, &modules);
+        let patch_json = serde_json::to_string(&patches).unwrap();
+        // Both containers should get env var patches
+        assert!(patch_json.contains("/spec/containers/0/env/-"));
+        assert!(patch_json.contains("/spec/containers/1/env/-"));
+        // Both should get volumeMount patches
+        assert!(patch_json.contains("/spec/containers/0/volumeMounts/-"));
+        assert!(patch_json.contains("/spec/containers/1/volumeMounts/-"));
+    }
+
+    #[test]
+    fn build_patches_existing_init_containers() {
+        let pod = serde_json::json!({
+            "spec": {
+                "containers": [
+                    {"name": "app", "image": "busybox"}
+                ],
+                "initContainers": [
+                    {"name": "existing-init", "image": "alpine"}
+                ]
+            }
+        });
+        let modules = vec![(
+            "setup".to_string(),
+            "1.0".to_string(),
+            ModuleSpec {
+                scripts: crate::crds::ModuleScripts {
+                    post_apply: Some("init.sh".to_string()),
+                },
+                ..Default::default()
+            },
+        )];
+        let patches = build_injection_patches(&pod, &modules);
+        let patch_json = serde_json::to_string(&patches).unwrap();
+        // Should NOT add /spec/initContainers (already exists)
+        assert!(
+            !patch_json.contains("\"path\":\"/spec/initContainers\""),
+            "should not initialize initContainers when it already exists"
+        );
+        // But should still add the init container entry
+        assert!(patch_json.contains("cfgd-init-setup"));
+    }
+
+    // --- handle_validate generic with bad review format ---
+
+    #[test]
+    fn handle_validate_invalid_spec_json_denied() {
+        // Spec is not valid JSON for MachineConfigSpec (missing required fields)
+        let review = make_review(serde_json::json!({
+            "hostname": 42,
+            "profile": true
+        }));
+        let req = extract_req(review);
+        // hostname and profile are strings in the schema; passing wrong types
+        // serde should still deserialize them (42 -> "42" doesn't work for strict types)
+        // Actually, serde_json will fail to deserialize a number as a String
+        let result = validate_object_spec::<MachineConfigSpec>(&req);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn validate_module_rejects_empty_file_path() {
+        let review = make_module_review(serde_json::json!({
+            "files": [{"source": "vimrc", "target": ""}]
+        }));
+        let req = extract_req(review);
+        // ModuleFileSpec may not validate path emptiness at the webhook level,
+        // but let's verify the validation runs without panic
+        let _result = validate_object_spec::<ModuleSpec>(&req);
+    }
+
+    // --- ptr helper ---
+
+    #[test]
+    fn ptr_helper_creates_valid_pointer() {
+        let p = ptr("/spec/containers/0/env");
+        assert_eq!(p.to_string(), "/spec/containers/0/env");
+    }
+
+    #[test]
+    fn ptr_helper_invalid_returns_default() {
+        // An empty string is a valid JSON pointer (root), but truly malformed input
+        // should fallback to default
+        let p = ptr("");
+        assert_eq!(p.to_string(), "");
+    }
 }

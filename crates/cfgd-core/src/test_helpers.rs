@@ -317,8 +317,7 @@ impl SystemConfigurator for MockSystemConfigurator {
     ) -> crate::errors::Result<()> {
         self.apply_calls.lock().unwrap().push(desired.clone());
         if *self.fail_apply.lock().unwrap() {
-            return Err(CfgdError::Io(std::io::Error::new(
-                std::io::ErrorKind::Other,
+            return Err(CfgdError::Io(std::io::Error::other(
                 "mock system apply failure",
             )));
         }

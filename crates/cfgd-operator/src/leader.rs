@@ -219,3 +219,135 @@ impl LeaderElection {
         on_started().await
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serial_test::serial;
+
+    // SAFETY: env var mutations are serialized via #[serial]
+    unsafe fn set_env(key: &str, val: &str) {
+        std::env::set_var(key, val);
+    }
+    unsafe fn remove_env(key: &str) {
+        std::env::remove_var(key);
+    }
+
+    #[test]
+    #[serial]
+    fn parse_duration_secs_with_suffix() {
+        unsafe { set_env("TEST_LEADER_DUR_1", "30s") };
+        assert_eq!(parse_duration_secs("TEST_LEADER_DUR_1", 10), 30);
+        unsafe { remove_env("TEST_LEADER_DUR_1") };
+    }
+
+    #[test]
+    #[serial]
+    fn parse_duration_secs_without_suffix() {
+        unsafe { set_env("TEST_LEADER_DUR_2", "45") };
+        assert_eq!(parse_duration_secs("TEST_LEADER_DUR_2", 10), 45);
+        unsafe { remove_env("TEST_LEADER_DUR_2") };
+    }
+
+    #[test]
+    #[serial]
+    fn parse_duration_secs_invalid_returns_default() {
+        unsafe { set_env("TEST_LEADER_DUR_3", "not-a-number") };
+        assert_eq!(parse_duration_secs("TEST_LEADER_DUR_3", 15), 15);
+        unsafe { remove_env("TEST_LEADER_DUR_3") };
+    }
+
+    #[test]
+    #[serial]
+    fn parse_duration_secs_missing_env_returns_default() {
+        unsafe { remove_env("TEST_LEADER_DUR_MISSING") };
+        assert_eq!(parse_duration_secs("TEST_LEADER_DUR_MISSING", 20), 20);
+    }
+
+    #[test]
+    #[serial]
+    fn parse_duration_secs_empty_string_returns_default() {
+        unsafe { set_env("TEST_LEADER_DUR_4", "") };
+        assert_eq!(parse_duration_secs("TEST_LEADER_DUR_4", 25), 25);
+        unsafe { remove_env("TEST_LEADER_DUR_4") };
+    }
+
+    #[test]
+    #[serial]
+    fn parse_duration_secs_zero() {
+        unsafe { set_env("TEST_LEADER_DUR_5", "0s") };
+        assert_eq!(parse_duration_secs("TEST_LEADER_DUR_5", 10), 0);
+        unsafe { remove_env("TEST_LEADER_DUR_5") };
+    }
+
+    #[test]
+    #[serial]
+    fn parse_duration_secs_zero_without_suffix() {
+        unsafe { set_env("TEST_LEADER_DUR_6", "0") };
+        assert_eq!(parse_duration_secs("TEST_LEADER_DUR_6", 10), 0);
+        unsafe { remove_env("TEST_LEADER_DUR_6") };
+    }
+
+    #[test]
+    #[serial]
+    fn parse_duration_secs_large_value() {
+        unsafe { set_env("TEST_LEADER_DUR_7", "3600s") };
+        assert_eq!(parse_duration_secs("TEST_LEADER_DUR_7", 10), 3600);
+        unsafe { remove_env("TEST_LEADER_DUR_7") };
+    }
+
+    #[test]
+    fn lease_name_constant() {
+        assert_eq!(LEASE_NAME, "cfgd-operator-leader");
+    }
+
+    #[test]
+    fn field_manager_constant() {
+        assert_eq!(FIELD_MANAGER, "cfgd-operator");
+    }
+
+    #[test]
+    fn renewal_interval_is_half_renew_deadline_clamped_to_one() {
+        // Normal case: 10 / 2 = 5
+        assert_eq!(
+            Duration::from_secs(std::cmp::max(1, 10u64 / 2)),
+            Duration::from_secs(5)
+        );
+        // Edge: renew_deadline=1 -> 1/2=0, clamped to 1
+        assert_eq!(
+            Duration::from_secs(std::cmp::max(1, 1u64 / 2)),
+            Duration::from_secs(1)
+        );
+        // Edge: renew_deadline=0 -> 0/2=0, clamped to 1
+        assert_eq!(
+            Duration::from_secs(std::cmp::max(1, 0u64 / 2)),
+            Duration::from_secs(1)
+        );
+        // renew_deadline=3 -> 3/2=1 (integer division), stays 1
+        assert_eq!(
+            Duration::from_secs(std::cmp::max(1, 3u64 / 2)),
+            Duration::from_secs(1)
+        );
+    }
+
+    #[test]
+    fn max_failures_calculation() {
+        // lease_duration=15, retry_period=2 -> 15/2=7
+        let lease_duration: i32 = 15;
+        let retry_period: u64 = 2;
+        let max_failures = (lease_duration as u64) / std::cmp::max(1, retry_period);
+        assert_eq!(max_failures, 7);
+
+        // lease_duration=15, retry_period=0 -> 15/max(1,0)=15/1=15
+        let max_failures_zero_retry = (lease_duration as u64) / std::cmp::max(1, 0u64);
+        assert_eq!(max_failures_zero_retry, 15);
+
+        // lease_duration=15, retry_period=15 -> 15/15=1
+        let max_failures_equal = (lease_duration as u64) / std::cmp::max(1, 15u64);
+        assert_eq!(max_failures_equal, 1);
+
+        // lease_duration=15, retry_period=20 -> 15/20=0 (integer division)
+        let max_failures_large_retry = (lease_duration as u64) / std::cmp::max(1, 20u64);
+        assert_eq!(max_failures_large_retry, 0);
+    }
+}

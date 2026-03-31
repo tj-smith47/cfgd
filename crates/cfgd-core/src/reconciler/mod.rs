@@ -6859,6 +6859,852 @@ mod tests {
         );
     }
 
+    // --- Pure function / decision logic tests to cover uncovered lines ---
+
+    #[test]
+    fn parse_resource_from_description_three_parts() {
+        let (rtype, rid) = super::parse_resource_from_description("file:create:/home/user/.config");
+        assert_eq!(rtype, "file");
+        assert_eq!(rid, "/home/user/.config");
+    }
+
+    #[test]
+    fn parse_resource_from_description_two_parts() {
+        let (rtype, rid) = super::parse_resource_from_description("system:skip");
+        assert_eq!(rtype, "system");
+        assert_eq!(rid, "skip");
+    }
+
+    #[test]
+    fn parse_resource_from_description_one_part() {
+        let (rtype, rid) = super::parse_resource_from_description("unknown-action");
+        assert_eq!(rtype, "unknown");
+        assert_eq!(rid, "unknown-action");
+    }
+
+    #[test]
+    fn parse_resource_preserves_colons_in_resource_id() {
+        let (rtype, rid) =
+            super::parse_resource_from_description("secret:resolve:vault:path/to/secret");
+        assert_eq!(rtype, "secret");
+        assert_eq!(rid, "vault:path/to/secret");
+    }
+
+    #[test]
+    fn provenance_suffix_local_is_empty() {
+        assert_eq!(super::provenance_suffix("local"), "");
+        assert_eq!(super::provenance_suffix(""), "");
+    }
+
+    #[test]
+    fn provenance_suffix_non_local() {
+        assert_eq!(super::provenance_suffix("acme"), " <- acme");
+        assert_eq!(super::provenance_suffix("corp/source"), " <- corp/source");
+    }
+
+    #[test]
+    fn action_target_path_file_create() {
+        let target = PathBuf::from("/home/user/.zshrc");
+        let action = Action::File(FileAction::Create {
+            source: PathBuf::from("/src"),
+            target: target.clone(),
+            origin: "local".into(),
+            strategy: crate::config::FileStrategy::Copy,
+            source_hash: None,
+        });
+        assert_eq!(super::action_target_path(&action), Some(target));
+    }
+
+    #[test]
+    fn action_target_path_file_update() {
+        let target = PathBuf::from("/home/user/.bashrc");
+        let action = Action::File(FileAction::Update {
+            source: PathBuf::from("/src"),
+            target: target.clone(),
+            diff: String::new(),
+            origin: "local".into(),
+            strategy: crate::config::FileStrategy::Copy,
+            source_hash: None,
+        });
+        assert_eq!(super::action_target_path(&action), Some(target));
+    }
+
+    #[test]
+    fn action_target_path_file_delete() {
+        let target = PathBuf::from("/home/user/.old");
+        let action = Action::File(FileAction::Delete {
+            target: target.clone(),
+            origin: "local".into(),
+        });
+        assert_eq!(super::action_target_path(&action), Some(target));
+    }
+
+    #[test]
+    fn action_target_path_env_write() {
+        let path = PathBuf::from("/home/user/.cfgd.env");
+        let action = Action::Env(EnvAction::WriteEnvFile {
+            path: path.clone(),
+            content: "test".into(),
+        });
+        assert_eq!(super::action_target_path(&action), Some(path));
+    }
+
+    #[test]
+    fn action_target_path_package_returns_none() {
+        let action = Action::Package(PackageAction::Install {
+            manager: "brew".into(),
+            packages: vec!["jq".into()],
+            origin: "local".into(),
+        });
+        assert!(super::action_target_path(&action).is_none());
+    }
+
+    #[test]
+    fn action_target_path_module_returns_none() {
+        let action = Action::Module(ModuleAction {
+            module_name: "test".into(),
+            kind: ModuleActionKind::Skip {
+                reason: "n/a".into(),
+            },
+        });
+        assert!(super::action_target_path(&action).is_none());
+    }
+
+    #[test]
+    fn action_target_path_env_inject_returns_none() {
+        let action = Action::Env(EnvAction::InjectSourceLine {
+            rc_path: PathBuf::from("/home/user/.bashrc"),
+            line: "source ~/.cfgd.env".into(),
+        });
+        assert!(super::action_target_path(&action).is_none());
+    }
+
+    #[test]
+    fn phase_name_from_str_unknown_returns_error() {
+        let result = PhaseName::from_str("unknown-phase");
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err(), "unknown phase: unknown-phase");
+    }
+
+    #[test]
+    fn script_phase_display_name_all_variants() {
+        assert_eq!(ScriptPhase::PreApply.display_name(), "preApply");
+        assert_eq!(ScriptPhase::PostApply.display_name(), "postApply");
+        assert_eq!(ScriptPhase::PreReconcile.display_name(), "preReconcile");
+        assert_eq!(ScriptPhase::PostReconcile.display_name(), "postReconcile");
+        assert_eq!(ScriptPhase::OnDrift.display_name(), "onDrift");
+        assert_eq!(ScriptPhase::OnChange.display_name(), "onChange");
+    }
+
+    #[test]
+    fn format_action_description_secret_decrypt() {
+        let action = Action::Secret(SecretAction::Decrypt {
+            source: PathBuf::from("secrets/token.enc"),
+            target: PathBuf::from("/home/user/.token"),
+            backend: "sops".into(),
+            origin: "local".into(),
+        });
+        let desc = format_action_description(&action);
+        assert!(desc.starts_with("secret:decrypt:"));
+        assert!(desc.contains("sops"));
+        assert!(desc.contains(".token"));
+    }
+
+    #[test]
+    fn format_action_description_secret_resolve_env() {
+        let action = Action::Secret(SecretAction::ResolveEnv {
+            provider: "vault".into(),
+            reference: "secret/data/gh#token".into(),
+            envs: vec!["GH_TOKEN".into(), "GITHUB_TOKEN".into()],
+            origin: "local".into(),
+        });
+        let desc = format_action_description(&action);
+        assert!(desc.contains("secret:resolve-env:vault"));
+        assert!(desc.contains("GH_TOKEN,GITHUB_TOKEN"));
+    }
+
+    #[test]
+    fn format_action_description_secret_skip() {
+        let action = Action::Secret(SecretAction::Skip {
+            source: "vault://test".into(),
+            reason: "no backend".into(),
+            origin: "local".into(),
+        });
+        let desc = format_action_description(&action);
+        assert_eq!(desc, "secret:skip:vault://test");
+    }
+
+    #[test]
+    fn format_action_description_system_set_value() {
+        let action = Action::System(SystemAction::SetValue {
+            configurator: "sysctl".into(),
+            key: "net.ipv4.ip_forward".into(),
+            desired: "1".into(),
+            current: "0".into(),
+            origin: "local".into(),
+        });
+        let desc = format_action_description(&action);
+        assert_eq!(desc, "system:sysctl.net.ipv4.ip_forward");
+    }
+
+    #[test]
+    fn format_action_description_system_skip() {
+        let action = Action::System(SystemAction::Skip {
+            configurator: "custom".into(),
+            reason: "no configurator".into(),
+            origin: "local".into(),
+        });
+        let desc = format_action_description(&action);
+        assert_eq!(desc, "system:custom:skip");
+    }
+
+    #[test]
+    fn format_action_description_env_write_and_inject() {
+        let write = Action::Env(EnvAction::WriteEnvFile {
+            path: PathBuf::from("/home/user/.cfgd.env"),
+            content: "content".into(),
+        });
+        assert!(format_action_description(&write).starts_with("env:write:"));
+
+        let inject = Action::Env(EnvAction::InjectSourceLine {
+            rc_path: PathBuf::from("/home/user/.bashrc"),
+            line: "source ~/.cfgd.env".into(),
+        });
+        assert!(format_action_description(&inject).starts_with("env:inject:"));
+    }
+
+    #[test]
+    fn format_action_description_module_deploy_files() {
+        let action = Action::Module(ModuleAction {
+            module_name: "nvim".into(),
+            kind: ModuleActionKind::DeployFiles {
+                files: vec![
+                    crate::modules::ResolvedFile {
+                        source: PathBuf::from("/src/a"),
+                        target: PathBuf::from("/dst/a"),
+                        is_git_source: false,
+                        strategy: None,
+                        encryption: None,
+                    },
+                    crate::modules::ResolvedFile {
+                        source: PathBuf::from("/src/b"),
+                        target: PathBuf::from("/dst/b"),
+                        is_git_source: false,
+                        strategy: None,
+                        encryption: None,
+                    },
+                ],
+            },
+        });
+        let desc = format_action_description(&action);
+        assert_eq!(desc, "module:nvim:files:2");
+    }
+
+    #[test]
+    fn format_action_description_module_skip() {
+        let action = Action::Module(ModuleAction {
+            module_name: "broken".into(),
+            kind: ModuleActionKind::Skip {
+                reason: "dependency unmet".into(),
+            },
+        });
+        assert_eq!(format_action_description(&action), "module:broken:skip");
+    }
+
+    #[test]
+    fn format_action_description_module_run_script() {
+        let action = Action::Module(ModuleAction {
+            module_name: "nvim".into(),
+            kind: ModuleActionKind::RunScript {
+                script: ScriptEntry::Simple("setup.sh".into()),
+                phase: ScriptPhase::PostApply,
+            },
+        });
+        assert_eq!(format_action_description(&action), "module:nvim:script");
+    }
+
+    #[test]
+    fn plan_to_hash_string_empty_plan_is_empty() {
+        let plan = Plan {
+            phases: vec![],
+            warnings: vec![],
+        };
+        assert_eq!(plan.to_hash_string(), "");
+    }
+
+    #[test]
+    fn plan_to_hash_string_multiple_phases() {
+        let plan = Plan {
+            phases: vec![
+                Phase {
+                    name: PhaseName::Packages,
+                    actions: vec![Action::Package(PackageAction::Install {
+                        manager: "brew".into(),
+                        packages: vec!["jq".into()],
+                        origin: "local".into(),
+                    })],
+                },
+                Phase {
+                    name: PhaseName::Files,
+                    actions: vec![Action::File(FileAction::Create {
+                        source: PathBuf::from("/src"),
+                        target: PathBuf::from("/dst"),
+                        origin: "local".into(),
+                        strategy: crate::config::FileStrategy::Copy,
+                        source_hash: None,
+                    })],
+                },
+            ],
+            warnings: vec![],
+        };
+        let hash = plan.to_hash_string();
+        assert!(hash.contains('|'));
+        assert!(hash.contains("jq"));
+    }
+
+    #[test]
+    fn plan_total_actions_sums_across_phases() {
+        let plan = Plan {
+            phases: vec![
+                Phase {
+                    name: PhaseName::Packages,
+                    actions: vec![
+                        Action::Package(PackageAction::Install {
+                            manager: "brew".into(),
+                            packages: vec!["a".into()],
+                            origin: "local".into(),
+                        }),
+                        Action::Package(PackageAction::Install {
+                            manager: "brew".into(),
+                            packages: vec!["b".into()],
+                            origin: "local".into(),
+                        }),
+                    ],
+                },
+                Phase {
+                    name: PhaseName::Files,
+                    actions: vec![Action::File(FileAction::Skip {
+                        target: PathBuf::from("/x"),
+                        reason: "n/a".into(),
+                        origin: "local".into(),
+                    })],
+                },
+            ],
+            warnings: vec![],
+        };
+        assert_eq!(plan.total_actions(), 3);
+        assert!(!plan.is_empty());
+    }
+
+    #[test]
+    fn plan_secrets_sops_file_target() {
+        use crate::providers::SecretBackend;
+
+        struct MockSopsBackend;
+        impl SecretBackend for MockSopsBackend {
+            fn name(&self) -> &str {
+                "sops"
+            }
+            fn is_available(&self) -> bool {
+                true
+            }
+            fn encrypt_file(&self, _path: &std::path::Path) -> Result<()> {
+                Ok(())
+            }
+            fn decrypt_file(&self, _path: &std::path::Path) -> Result<secrecy::SecretString> {
+                Ok(secrecy::SecretString::from("decrypted"))
+            }
+            fn edit_file(&self, _path: &std::path::Path) -> Result<()> {
+                Ok(())
+            }
+        }
+
+        let state = StateStore::open_in_memory().unwrap();
+        let mut registry = ProviderRegistry::new();
+        registry.secret_backend = Some(Box::new(MockSopsBackend));
+        let reconciler = Reconciler::new(&registry, &state);
+
+        let mut profile = MergedProfile::default();
+        profile.secrets.push(crate::config::SecretSpec {
+            source: "secrets/token.enc".to_string(),
+            target: Some(PathBuf::from("/home/user/.token")),
+            template: None,
+            backend: None,
+            envs: None,
+        });
+
+        let actions = reconciler.plan_secrets(&profile);
+        assert_eq!(actions.len(), 1);
+        match &actions[0] {
+            Action::Secret(SecretAction::Decrypt {
+                backend, target, ..
+            }) => {
+                assert_eq!(backend, "sops");
+                assert_eq!(*target, PathBuf::from("/home/user/.token"));
+            }
+            other => panic!("Expected Decrypt, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn plan_secrets_no_backend_skips() {
+        let state = StateStore::open_in_memory().unwrap();
+        let registry = ProviderRegistry::new(); // no backend, no providers
+        let reconciler = Reconciler::new(&registry, &state);
+
+        let mut profile = MergedProfile::default();
+        profile.secrets.push(crate::config::SecretSpec {
+            source: "secrets/token.enc".to_string(),
+            target: Some(PathBuf::from("/home/user/.token")),
+            template: None,
+            backend: None,
+            envs: None,
+        });
+
+        let actions = reconciler.plan_secrets(&profile);
+        assert_eq!(actions.len(), 1);
+        match &actions[0] {
+            Action::Secret(SecretAction::Skip { reason, .. }) => {
+                assert!(
+                    reason.contains("no secret backend"),
+                    "expected no-backend skip, got: {reason}"
+                );
+            }
+            other => panic!("Expected Skip, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn plan_secrets_envs_only_without_provider_skips() {
+        let state = StateStore::open_in_memory().unwrap();
+        let registry = ProviderRegistry::new(); // no providers, no backend
+        let reconciler = Reconciler::new(&registry, &state);
+
+        let mut profile = MergedProfile::default();
+        profile.secrets.push(crate::config::SecretSpec {
+            source: "plain-source".to_string(),
+            target: None,
+            template: None,
+            backend: None,
+            envs: Some(vec!["MY_SECRET".to_string()]),
+        });
+
+        let actions = reconciler.plan_secrets(&profile);
+        assert_eq!(actions.len(), 1);
+        match &actions[0] {
+            Action::Secret(SecretAction::Skip { reason, .. }) => {
+                assert!(
+                    reason.contains("secret provider reference"),
+                    "expected env-needs-provider skip, got: {reason}"
+                );
+            }
+            other => panic!("Expected Skip, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn plan_secrets_provider_not_available_skips() {
+        let state = StateStore::open_in_memory().unwrap();
+        let registry = ProviderRegistry::new(); // no providers registered
+        let reconciler = Reconciler::new(&registry, &state);
+
+        let mut profile = MergedProfile::default();
+        profile.secrets.push(crate::config::SecretSpec {
+            source: "vault://secret/data/test#key".to_string(),
+            target: Some(PathBuf::from("/tmp/test")),
+            template: None,
+            backend: None,
+            envs: None,
+        });
+
+        let actions = reconciler.plan_secrets(&profile);
+        assert_eq!(actions.len(), 1);
+        match &actions[0] {
+            Action::Secret(SecretAction::Skip { reason, .. }) => {
+                assert!(
+                    reason.contains("not available"),
+                    "expected provider-unavailable skip, got: {reason}"
+                );
+            }
+            other => panic!("Expected Skip, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn plan_secrets_sops_with_envs_generates_skip_for_envs() {
+        use crate::providers::SecretBackend;
+
+        struct MockSopsBackend;
+        impl SecretBackend for MockSopsBackend {
+            fn name(&self) -> &str {
+                "sops"
+            }
+            fn is_available(&self) -> bool {
+                true
+            }
+            fn encrypt_file(&self, _path: &std::path::Path) -> Result<()> {
+                Ok(())
+            }
+            fn decrypt_file(&self, _path: &std::path::Path) -> Result<secrecy::SecretString> {
+                Ok(secrecy::SecretString::from("decrypted"))
+            }
+            fn edit_file(&self, _path: &std::path::Path) -> Result<()> {
+                Ok(())
+            }
+        }
+
+        let state = StateStore::open_in_memory().unwrap();
+        let mut registry = ProviderRegistry::new();
+        registry.secret_backend = Some(Box::new(MockSopsBackend));
+        let reconciler = Reconciler::new(&registry, &state);
+
+        let mut profile = MergedProfile::default();
+        profile.secrets.push(crate::config::SecretSpec {
+            source: "secrets/token.enc".to_string(),
+            target: Some(PathBuf::from("/home/user/.token")),
+            template: None,
+            backend: None,
+            envs: Some(vec!["TOKEN".to_string()]),
+        });
+
+        let actions = reconciler.plan_secrets(&profile);
+        // Should produce a Decrypt action for the file target AND a Skip for env injection
+        assert_eq!(actions.len(), 2);
+        assert!(matches!(
+            &actions[0],
+            Action::Secret(SecretAction::Decrypt { .. })
+        ));
+        match &actions[1] {
+            Action::Secret(SecretAction::Skip { reason, .. }) => {
+                assert!(
+                    reason.contains("SOPS file targets cannot inject env vars"),
+                    "got: {reason}"
+                );
+            }
+            other => panic!("Expected Skip for SOPS env injection, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn plan_secrets_provider_no_target_no_envs_skips() {
+        let state = StateStore::open_in_memory().unwrap();
+        let mut registry = ProviderRegistry::new();
+        registry.secret_providers.push(Box::new(MockSecretProvider {
+            provider_name: "vault".into(),
+            value: "secret".into(),
+        }));
+        let reconciler = Reconciler::new(&registry, &state);
+
+        let mut profile = MergedProfile::default();
+        profile.secrets.push(crate::config::SecretSpec {
+            source: "vault://secret/data/test#key".to_string(),
+            target: None,
+            template: None,
+            backend: None,
+            envs: None,
+        });
+
+        let actions = reconciler.plan_secrets(&profile);
+        assert_eq!(actions.len(), 1);
+        match &actions[0] {
+            Action::Secret(SecretAction::Skip { reason, .. }) => {
+                assert!(
+                    reason.contains("no target or envs"),
+                    "got: {reason}"
+                );
+            }
+            other => panic!("Expected Skip for no-target/no-envs, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn plan_modules_reconcile_context_uses_pre_post_reconcile() {
+        let state = StateStore::open_in_memory().unwrap();
+        let registry = ProviderRegistry::new();
+        let reconciler = Reconciler::new(&registry, &state);
+
+        let modules = vec![ResolvedModule {
+            name: "test".to_string(),
+            packages: vec![],
+            files: vec![],
+            env: vec![],
+            aliases: vec![],
+            pre_apply_scripts: vec![ScriptEntry::Simple("pre-apply.sh".into())],
+            post_apply_scripts: vec![ScriptEntry::Simple("post-apply.sh".into())],
+            pre_reconcile_scripts: vec![ScriptEntry::Simple("pre-reconcile.sh".into())],
+            post_reconcile_scripts: vec![ScriptEntry::Simple("post-reconcile.sh".into())],
+            on_change_scripts: vec![],
+            system: HashMap::new(),
+            depends: vec![],
+            dir: PathBuf::from("."),
+        }];
+
+        // Reconcile context should use pre/post reconcile scripts, not apply scripts
+        let actions = reconciler.plan_modules(&modules, ReconcileContext::Reconcile);
+        assert_eq!(actions.len(), 2); // pre-reconcile + post-reconcile
+
+        // First action should be pre-reconcile
+        match &actions[0] {
+            Action::Module(ma) => match &ma.kind {
+                ModuleActionKind::RunScript { script, phase } => {
+                    assert_eq!(script.run_str(), "pre-reconcile.sh");
+                    assert_eq!(*phase, ScriptPhase::PreReconcile);
+                }
+                _ => panic!("expected RunScript"),
+            },
+            _ => panic!("expected Module action"),
+        }
+
+        // Second action should be post-reconcile
+        match &actions[1] {
+            Action::Module(ma) => match &ma.kind {
+                ModuleActionKind::RunScript { script, phase } => {
+                    assert_eq!(script.run_str(), "post-reconcile.sh");
+                    assert_eq!(*phase, ScriptPhase::PostReconcile);
+                }
+                _ => panic!("expected RunScript"),
+            },
+            _ => panic!("expected Module action"),
+        }
+    }
+
+    #[test]
+    fn format_plan_items_all_action_types() {
+        let phase = Phase {
+            name: PhaseName::System,
+            actions: vec![
+                Action::System(SystemAction::SetValue {
+                    configurator: "sysctl".into(),
+                    key: "net.ipv4.ip_forward".into(),
+                    desired: "1".into(),
+                    current: "0".into(),
+                    origin: "local".into(),
+                }),
+                Action::System(SystemAction::Skip {
+                    configurator: "custom".into(),
+                    reason: "no configurator".into(),
+                    origin: "local".into(),
+                }),
+            ],
+        };
+        let items = format_plan_items(&phase);
+        assert_eq!(items.len(), 2);
+        assert!(items[0].contains("set sysctl.net.ipv4.ip_forward"));
+        assert!(items[0].contains("0 \u{2192} 1"));
+        assert!(items[1].contains("skip custom: no configurator"));
+    }
+
+    #[test]
+    fn format_plan_items_secret_actions() {
+        let phase = Phase {
+            name: PhaseName::Secrets,
+            actions: vec![
+                Action::Secret(SecretAction::Decrypt {
+                    source: PathBuf::from("secret.enc"),
+                    target: PathBuf::from("/out/secret"),
+                    backend: "sops".into(),
+                    origin: "corp".into(),
+                }),
+                Action::Secret(SecretAction::Resolve {
+                    provider: "vault".into(),
+                    reference: "secret/gh#token".into(),
+                    target: PathBuf::from("/tmp/token"),
+                    origin: "local".into(),
+                }),
+                Action::Secret(SecretAction::ResolveEnv {
+                    provider: "1password".into(),
+                    reference: "Vault/Secret".into(),
+                    envs: vec!["TOKEN".into()],
+                    origin: "local".into(),
+                }),
+                Action::Secret(SecretAction::Skip {
+                    source: "missing".into(),
+                    reason: "not available".into(),
+                    origin: "local".into(),
+                }),
+            ],
+        };
+        let items = format_plan_items(&phase);
+        assert_eq!(items.len(), 4);
+        assert!(items[0].contains("decrypt"));
+        assert!(items[0].contains("<- corp"));
+        assert!(items[1].contains("resolve vault://"));
+        assert!(items[2].contains("resolve 1password://"));
+        assert!(items[2].contains("env [TOKEN]"));
+        assert!(items[3].contains("skip missing"));
+    }
+
+    #[test]
+    fn format_plan_items_env_actions() {
+        let phase = Phase {
+            name: PhaseName::Env,
+            actions: vec![
+                Action::Env(EnvAction::WriteEnvFile {
+                    path: PathBuf::from("/home/user/.cfgd.env"),
+                    content: "content".into(),
+                }),
+                Action::Env(EnvAction::InjectSourceLine {
+                    rc_path: PathBuf::from("/home/user/.bashrc"),
+                    line: "source ~/.cfgd.env".into(),
+                }),
+            ],
+        };
+        let items = format_plan_items(&phase);
+        assert_eq!(items.len(), 2);
+        assert!(items[0].contains("write"));
+        assert!(items[0].contains(".cfgd.env"));
+        assert!(items[1].contains("inject source line"));
+        assert!(items[1].contains(".bashrc"));
+    }
+
+    #[test]
+    fn format_plan_items_script_action_with_provenance() {
+        let phase = Phase {
+            name: PhaseName::PreScripts,
+            actions: vec![Action::Script(ScriptAction::Run {
+                entry: ScriptEntry::Simple("setup.sh".into()),
+                phase: ScriptPhase::PreApply,
+                origin: "corp-source".into(),
+            })],
+        };
+        let items = format_plan_items(&phase);
+        assert_eq!(items.len(), 1);
+        assert!(items[0].contains("run preApply script: setup.sh"));
+        assert!(items[0].contains("<- corp-source"));
+    }
+
+    #[test]
+    fn format_module_action_item_deploy_truncates_many_files() {
+        let files: Vec<crate::modules::ResolvedFile> = (0..5)
+            .map(|i| crate::modules::ResolvedFile {
+                source: PathBuf::from(format!("/src/{i}")),
+                target: PathBuf::from(format!("/dst/{i}")),
+                is_git_source: false,
+                strategy: None,
+                encryption: None,
+            })
+            .collect();
+        let action = ModuleAction {
+            module_name: "big".into(),
+            kind: ModuleActionKind::DeployFiles { files },
+        };
+        let item = super::format_module_action_item(&action);
+        assert!(item.contains("[big]"));
+        assert!(item.contains("5 files"));
+    }
+
+    #[test]
+    fn detect_file_conflicts_skip_and_delete_actions_ignored() {
+        let file_actions = vec![
+            FileAction::Skip {
+                target: PathBuf::from("/target/a"),
+                reason: "unchanged".into(),
+                origin: "local".into(),
+            },
+            FileAction::Delete {
+                target: PathBuf::from("/target/b"),
+                origin: "local".into(),
+            },
+        ];
+        // Skip and Delete actions should not participate in conflict detection
+        let result = Reconciler::detect_file_conflicts(&file_actions, &[]);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn content_hash_if_exists_returns_none_for_missing() {
+        let hash = super::content_hash_if_exists(Path::new("/nonexistent/file"));
+        assert!(hash.is_none());
+    }
+
+    #[test]
+    fn content_hash_if_exists_returns_hash_for_existing() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("test.txt");
+        std::fs::write(&file, "hello").unwrap();
+        let hash = super::content_hash_if_exists(&file);
+        assert!(hash.is_some());
+        // Same content should give same hash
+        let hash2 = super::content_hash_if_exists(&file);
+        assert_eq!(hash, hash2);
+    }
+
+    #[test]
+    fn merge_module_env_aliases_merges_correctly() {
+        let profile_env = vec![crate::config::EnvVar {
+            name: "A".into(),
+            value: "1".into(),
+        }];
+        let profile_aliases = vec![crate::config::ShellAlias {
+            name: "g".into(),
+            command: "git".into(),
+        }];
+        let modules = vec![ResolvedModule {
+            name: "mod1".into(),
+            packages: vec![],
+            files: vec![],
+            env: vec![
+                crate::config::EnvVar {
+                    name: "A".into(),
+                    value: "2".into(),
+                },
+                crate::config::EnvVar {
+                    name: "B".into(),
+                    value: "3".into(),
+                },
+            ],
+            aliases: vec![crate::config::ShellAlias {
+                name: "g".into(),
+                command: "git status".into(),
+            }],
+            post_apply_scripts: vec![],
+            pre_apply_scripts: vec![],
+            pre_reconcile_scripts: vec![],
+            post_reconcile_scripts: vec![],
+            on_change_scripts: vec![],
+            system: HashMap::new(),
+            depends: vec![],
+            dir: PathBuf::from("."),
+        }];
+
+        let (env, aliases) = super::merge_module_env_aliases(&profile_env, &profile_aliases, &modules);
+        // Module overrides profile: A=2 (module wins), B=3 (new)
+        assert_eq!(env.len(), 2);
+        assert_eq!(env.iter().find(|e| e.name == "A").unwrap().value, "2");
+        assert_eq!(env.iter().find(|e| e.name == "B").unwrap().value, "3");
+        // Module overrides alias: g="git status" (module wins)
+        assert_eq!(aliases.len(), 1);
+        assert_eq!(aliases[0].command, "git status");
+    }
+
+    #[test]
+    fn generate_powershell_env_escapes_single_quotes() {
+        let env = vec![crate::config::EnvVar {
+            name: "MSG".into(),
+            value: "it's a test".into(),
+        }];
+        let content = super::generate_powershell_env_content(&env, &[]);
+        // Single quotes in values are doubled in PS
+        assert!(content.contains("$env:MSG = 'it''s a test'"));
+    }
+
+    #[test]
+    fn generate_fish_env_escapes_single_quotes() {
+        let env = vec![crate::config::EnvVar {
+            name: "MSG".into(),
+            value: "it's a test".into(),
+        }];
+        let content = super::generate_fish_env_content(&env, &[]);
+        assert!(content.contains("set -gx MSG 'it\\'s a test'"));
+    }
+
+    #[test]
+    fn reconcile_context_equality() {
+        assert_eq!(ReconcileContext::Apply, ReconcileContext::Apply);
+        assert_eq!(ReconcileContext::Reconcile, ReconcileContext::Reconcile);
+        assert_ne!(ReconcileContext::Apply, ReconcileContext::Reconcile);
+    }
+
     #[test]
     #[cfg(unix)]
     fn apply_on_change_skipped_when_skip_scripts_true() {

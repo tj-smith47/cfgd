@@ -3122,4 +3122,183 @@ spec:
         let result = load_lockfile(dir.path());
         assert!(result.is_err());
     }
+
+    // -----------------------------------------------------------------------
+    // extract_registry_name
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn extract_registry_name_https_github() {
+        assert_eq!(
+            extract_registry_name("https://github.com/myorg/cfgd-registry"),
+            Some("myorg".to_string())
+        );
+    }
+
+    #[test]
+    fn extract_registry_name_https_github_with_git_suffix() {
+        assert_eq!(
+            extract_registry_name("https://github.com/acme/modules.git"),
+            Some("acme".to_string())
+        );
+    }
+
+    #[test]
+    fn extract_registry_name_ssh_github() {
+        assert_eq!(
+            extract_registry_name("git@github.com:myorg/cfgd-registry.git"),
+            Some("myorg".to_string())
+        );
+    }
+
+    #[test]
+    fn extract_registry_name_http_github() {
+        assert_eq!(
+            extract_registry_name("http://github.com/testorg/repo"),
+            Some("testorg".to_string())
+        );
+    }
+
+    #[test]
+    fn extract_registry_name_non_github_returns_none() {
+        assert_eq!(
+            extract_registry_name("https://gitlab.com/org/repo"),
+            None
+        );
+    }
+
+    #[test]
+    fn extract_registry_name_empty_returns_none() {
+        assert_eq!(extract_registry_name(""), None);
+    }
+
+    // -----------------------------------------------------------------------
+    // diff_module_specs
+    // -----------------------------------------------------------------------
+
+    fn make_loaded_module(name: &str, spec: crate::config::ModuleSpec) -> LoadedModule {
+        LoadedModule {
+            name: name.to_string(),
+            spec,
+            dir: PathBuf::from("/fake"),
+        }
+    }
+
+    #[test]
+    fn diff_module_specs_no_changes_default() {
+        let spec = crate::config::ModuleSpec::default();
+        let old = make_loaded_module("test", spec.clone());
+        let new = make_loaded_module("test", spec);
+        let changes = diff_module_specs(&old, &new);
+        assert_eq!(changes, vec!["(no spec changes)".to_string()]);
+    }
+
+    #[test]
+    fn diff_module_specs_added_dependency() {
+        let old = make_loaded_module("test", crate::config::ModuleSpec::default());
+        let mut new_spec = crate::config::ModuleSpec::default();
+        new_spec.depends = vec!["core".to_string()];
+        let new = make_loaded_module("test", new_spec);
+        let changes = diff_module_specs(&old, &new);
+        assert!(changes.iter().any(|c| c.contains("+ dependency: core")));
+    }
+
+    #[test]
+    fn diff_module_specs_removed_dependency() {
+        let mut old_spec = crate::config::ModuleSpec::default();
+        old_spec.depends = vec!["core".to_string()];
+        let old = make_loaded_module("test", old_spec);
+        let new = make_loaded_module("test", crate::config::ModuleSpec::default());
+        let changes = diff_module_specs(&old, &new);
+        assert!(changes.iter().any(|c| c.contains("- dependency: core")));
+    }
+
+    #[test]
+    fn diff_module_specs_added_package() {
+        let old = make_loaded_module("test", crate::config::ModuleSpec::default());
+        let mut new_spec = crate::config::ModuleSpec::default();
+        new_spec.packages = vec![crate::config::ModulePackageEntry {
+            name: "ripgrep".to_string(),
+            ..Default::default()
+        }];
+        let new = make_loaded_module("test", new_spec);
+        let changes = diff_module_specs(&old, &new);
+        assert!(changes.iter().any(|c| c.contains("+ package: ripgrep")));
+    }
+
+    #[test]
+    fn diff_module_specs_removed_package() {
+        let mut old_spec = crate::config::ModuleSpec::default();
+        old_spec.packages = vec![crate::config::ModulePackageEntry {
+            name: "vim".to_string(),
+            ..Default::default()
+        }];
+        let old = make_loaded_module("test", old_spec);
+        let new = make_loaded_module("test", crate::config::ModuleSpec::default());
+        let changes = diff_module_specs(&old, &new);
+        assert!(changes.iter().any(|c| c.contains("- package: vim")));
+    }
+
+    #[test]
+    fn diff_module_specs_package_version_change() {
+        let mut old_spec = crate::config::ModuleSpec::default();
+        old_spec.packages = vec![crate::config::ModulePackageEntry {
+            name: "kubectl".to_string(),
+            min_version: Some("1.28".to_string()),
+            ..Default::default()
+        }];
+        let old = make_loaded_module("test", old_spec);
+
+        let mut new_spec = crate::config::ModuleSpec::default();
+        new_spec.packages = vec![crate::config::ModulePackageEntry {
+            name: "kubectl".to_string(),
+            min_version: Some("1.30".to_string()),
+            ..Default::default()
+        }];
+        let new = make_loaded_module("test", new_spec);
+        let changes = diff_module_specs(&old, &new);
+        assert!(changes
+            .iter()
+            .any(|c| c.contains("kubectl") && c.contains("1.28") && c.contains("1.30")));
+    }
+
+    #[test]
+    fn diff_module_specs_added_file() {
+        let old = make_loaded_module("test", crate::config::ModuleSpec::default());
+        let mut new_spec = crate::config::ModuleSpec::default();
+        new_spec.files = vec![crate::config::ModuleFileEntry {
+            source: "zshrc".to_string(),
+            target: "~/.zshrc".to_string(),
+            strategy: None,
+            private: false,
+            encryption: None,
+        }];
+        let new = make_loaded_module("test", new_spec);
+        let changes = diff_module_specs(&old, &new);
+        assert!(changes
+            .iter()
+            .any(|c| c.contains("+ file target: ~/.zshrc")));
+    }
+
+    #[test]
+    fn diff_module_specs_multiple_changes() {
+        let mut old_spec = crate::config::ModuleSpec::default();
+        old_spec.depends = vec!["base".to_string()];
+        old_spec.packages = vec![crate::config::ModulePackageEntry {
+            name: "vim".to_string(),
+            ..Default::default()
+        }];
+        let old = make_loaded_module("test", old_spec);
+
+        let mut new_spec = crate::config::ModuleSpec::default();
+        new_spec.depends = vec!["core".to_string()];
+        new_spec.packages = vec![crate::config::ModulePackageEntry {
+            name: "neovim".to_string(),
+            ..Default::default()
+        }];
+        let new = make_loaded_module("test", new_spec);
+        let changes = diff_module_specs(&old, &new);
+        // Should have: +dep core, -dep base, +pkg neovim, -pkg vim
+        assert!(changes.len() >= 4, "expected at least 4 changes, got {changes:?}");
+    }
 }

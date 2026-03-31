@@ -2855,4 +2855,230 @@ other: data
             actions[0]
         );
     }
+
+    // --- Encryption + strategy validation tests ---
+
+    #[test]
+    fn plan_rejects_encryption_always_with_symlink_strategy() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_dir = dir.path();
+
+        let files_dir = config_dir.join("files");
+        fs::create_dir_all(&files_dir).unwrap();
+        // Create a SOPS-encrypted YAML file so is_file_encrypted succeeds
+        fs::write(
+            files_dir.join("secret.yaml"),
+            "data: encrypted\nsops:\n  mac: abc123\n  lastmodified: \"2025-01-01\"\n",
+        )
+        .unwrap();
+
+        let target = config_dir.join("target").join("secret.yaml");
+
+        let resolved = make_resolved_profile(
+            vec![],
+            FilesSpec {
+                managed: vec![ManagedFileSpec {
+                    source: "files/secret.yaml".to_string(),
+                    target,
+                    strategy: Some(FileStrategy::Symlink),
+                    private: false,
+                    origin: None,
+                    encryption: Some(EncryptionSpec {
+                        backend: "sops".to_string(),
+                        mode: EncryptionMode::Always,
+                    }),
+                    permissions: None,
+                }],
+                permissions: HashMap::new(),
+            },
+        );
+
+        let fm = CfgdFileManager::new(config_dir, &resolved).unwrap();
+        let result = fm.plan(&resolved.merged);
+        assert!(result.is_err(), "Always + Symlink should be rejected");
+        let err_msg = format!("{}", result.unwrap_err());
+        assert!(
+            err_msg.contains("incompatible") || err_msg.contains("Symlink"),
+            "error should mention incompatible strategy: {err_msg}"
+        );
+    }
+
+    #[test]
+    fn plan_rejects_encryption_always_with_hardlink_strategy() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_dir = dir.path();
+
+        let files_dir = config_dir.join("files");
+        fs::create_dir_all(&files_dir).unwrap();
+        fs::write(
+            files_dir.join("secret.yaml"),
+            "data: encrypted\nsops:\n  mac: abc123\n  lastmodified: \"2025-01-01\"\n",
+        )
+        .unwrap();
+
+        let target = config_dir.join("target").join("secret.yaml");
+
+        let resolved = make_resolved_profile(
+            vec![],
+            FilesSpec {
+                managed: vec![ManagedFileSpec {
+                    source: "files/secret.yaml".to_string(),
+                    target,
+                    strategy: Some(FileStrategy::Hardlink),
+                    private: false,
+                    origin: None,
+                    encryption: Some(EncryptionSpec {
+                        backend: "sops".to_string(),
+                        mode: EncryptionMode::Always,
+                    }),
+                    permissions: None,
+                }],
+                permissions: HashMap::new(),
+            },
+        );
+
+        let fm = CfgdFileManager::new(config_dir, &resolved).unwrap();
+        let result = fm.plan(&resolved.merged);
+        assert!(result.is_err(), "Always + Hardlink should be rejected");
+        let err_msg = format!("{}", result.unwrap_err());
+        assert!(
+            err_msg.contains("incompatible") || err_msg.contains("Hardlink"),
+            "error should mention incompatible strategy: {err_msg}"
+        );
+    }
+
+    #[test]
+    fn plan_allows_encryption_always_with_copy_strategy() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_dir = dir.path();
+
+        let files_dir = config_dir.join("files");
+        fs::create_dir_all(&files_dir).unwrap();
+        // Create a SOPS-encrypted YAML file
+        fs::write(
+            files_dir.join("secret.yaml"),
+            "data: encrypted\nsops:\n  mac: abc123\n  lastmodified: \"2025-01-01\"\n",
+        )
+        .unwrap();
+
+        let target = config_dir.join("target").join("secret.yaml");
+
+        let resolved = make_resolved_profile(
+            vec![],
+            FilesSpec {
+                managed: vec![ManagedFileSpec {
+                    source: "files/secret.yaml".to_string(),
+                    target,
+                    strategy: Some(FileStrategy::Copy),
+                    private: false,
+                    origin: None,
+                    encryption: Some(EncryptionSpec {
+                        backend: "sops".to_string(),
+                        mode: EncryptionMode::Always,
+                    }),
+                    permissions: None,
+                }],
+                permissions: HashMap::new(),
+            },
+        );
+
+        let fm = CfgdFileManager::new(config_dir, &resolved).unwrap();
+        // Should NOT fail on the encryption+strategy check (Always + Copy is ok).
+        // It will proceed to the content comparison phase.
+        let result = fm.plan(&resolved.merged);
+        assert!(
+            result.is_ok(),
+            "Always + Copy should be allowed, got: {:?}",
+            result.err()
+        );
+    }
+
+    #[test]
+    fn plan_allows_encryption_inrepo_with_symlink_strategy() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_dir = dir.path();
+
+        let files_dir = config_dir.join("files");
+        fs::create_dir_all(&files_dir).unwrap();
+        // Create a SOPS-encrypted YAML file
+        fs::write(
+            files_dir.join("secret.yaml"),
+            "data: encrypted\nsops:\n  mac: abc123\n  lastmodified: \"2025-01-01\"\n",
+        )
+        .unwrap();
+
+        let target = config_dir.join("target").join("secret.yaml");
+
+        let resolved = make_resolved_profile(
+            vec![],
+            FilesSpec {
+                managed: vec![ManagedFileSpec {
+                    source: "files/secret.yaml".to_string(),
+                    target,
+                    strategy: Some(FileStrategy::Symlink),
+                    private: false,
+                    origin: None,
+                    encryption: Some(EncryptionSpec {
+                        backend: "sops".to_string(),
+                        mode: EncryptionMode::InRepo,
+                    }),
+                    permissions: None,
+                }],
+                permissions: HashMap::new(),
+            },
+        );
+
+        let fm = CfgdFileManager::new(config_dir, &resolved).unwrap();
+        // InRepo + Symlink is allowed (only Always mode is incompatible with symlinks).
+        let result = fm.plan(&resolved.merged);
+        assert!(
+            result.is_ok(),
+            "InRepo + Symlink should be allowed, got: {:?}",
+            result.err()
+        );
+    }
+
+    #[test]
+    fn plan_rejects_unencrypted_file_when_encryption_required() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_dir = dir.path();
+
+        let files_dir = config_dir.join("files");
+        fs::create_dir_all(&files_dir).unwrap();
+        // Create a plaintext file — NOT encrypted
+        fs::write(files_dir.join("plain.yaml"), "key: value\n").unwrap();
+
+        let target = config_dir.join("target").join("plain.yaml");
+
+        let resolved = make_resolved_profile(
+            vec![],
+            FilesSpec {
+                managed: vec![ManagedFileSpec {
+                    source: "files/plain.yaml".to_string(),
+                    target,
+                    strategy: Some(FileStrategy::Copy),
+                    private: false,
+                    origin: None,
+                    encryption: Some(EncryptionSpec {
+                        backend: "sops".to_string(),
+                        mode: EncryptionMode::InRepo,
+                    }),
+                    permissions: None,
+                }],
+                permissions: HashMap::new(),
+            },
+        );
+
+        let fm = CfgdFileManager::new(config_dir, &resolved).unwrap();
+        let result = fm.plan(&resolved.merged);
+        assert!(
+            result.is_err(),
+            "plaintext file with encryption required should be rejected"
+        );
+        let err_msg = format!("{}", result.unwrap_err());
+        assert!(
+            err_msg.contains("not encrypted") || err_msg.contains("encrypted"),
+            "error should mention encryption: {err_msg}"
+        );
+    }
 }

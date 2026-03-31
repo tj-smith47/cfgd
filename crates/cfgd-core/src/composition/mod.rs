@@ -2598,6 +2598,1004 @@ mod tests {
         assert_eq!(ll.command, "ls -la");
     }
 
+    // --- Additional coverage tests ---
+
+    #[test]
+    fn has_content_all_empty() {
+        let items = PolicyItems::default();
+        assert!(!has_content(&items));
+    }
+
+    #[test]
+    fn has_content_with_packages() {
+        let items = PolicyItems {
+            packages: Some(PackagesSpec::default()),
+            ..Default::default()
+        };
+        assert!(has_content(&items));
+    }
+
+    #[test]
+    fn has_content_with_env() {
+        let items = PolicyItems {
+            env: vec![EnvVar {
+                name: "A".into(),
+                value: "1".into(),
+            }],
+            ..Default::default()
+        };
+        assert!(has_content(&items));
+    }
+
+    #[test]
+    fn has_content_with_aliases() {
+        let items = PolicyItems {
+            aliases: vec![ShellAlias {
+                name: "g".into(),
+                command: "git".into(),
+            }],
+            ..Default::default()
+        };
+        assert!(has_content(&items));
+    }
+
+    #[test]
+    fn has_content_with_secrets() {
+        let items = PolicyItems {
+            secrets: vec![crate::config::SecretSpec {
+                source: "vault://test".into(),
+                target: None,
+                template: None,
+                backend: None,
+                envs: None,
+            }],
+            ..Default::default()
+        };
+        assert!(has_content(&items));
+    }
+
+    #[test]
+    fn has_content_with_system() {
+        let items = PolicyItems {
+            system: std::collections::HashMap::from([(
+                "shell".into(),
+                serde_yaml::Value::String("/bin/zsh".into()),
+            )]),
+            ..Default::default()
+        };
+        assert!(has_content(&items));
+    }
+
+    #[test]
+    fn has_content_with_profiles() {
+        let items = PolicyItems {
+            profiles: vec!["base".into()],
+            ..Default::default()
+        };
+        assert!(has_content(&items));
+    }
+
+    #[test]
+    fn policy_items_to_spec_converts_all_fields() {
+        let items = PolicyItems {
+            packages: Some(PackagesSpec {
+                brew: Some(BrewSpec {
+                    formulae: vec!["git".into()],
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
+            files: vec![ManagedFileSpec {
+                source: "f.yaml".into(),
+                target: "~/.config/f.yaml".into(),
+                strategy: None,
+                private: false,
+                origin: None,
+                encryption: None,
+                permissions: None,
+            }],
+            env: vec![EnvVar {
+                name: "A".into(),
+                value: "1".into(),
+            }],
+            aliases: vec![ShellAlias {
+                name: "g".into(),
+                command: "git".into(),
+            }],
+            modules: vec!["nvim".into()],
+            secrets: vec![crate::config::SecretSpec {
+                source: "vault://test".into(),
+                target: None,
+                template: None,
+                backend: None,
+                envs: None,
+            }],
+            ..Default::default()
+        };
+
+        let spec = policy_items_to_spec(&items);
+        assert!(spec.packages.is_some());
+        assert!(spec.files.is_some());
+        assert_eq!(spec.files.unwrap().managed.len(), 1);
+        assert_eq!(spec.env.len(), 1);
+        assert_eq!(spec.aliases.len(), 1);
+        assert_eq!(spec.modules.len(), 1);
+        assert_eq!(spec.secrets.len(), 1);
+    }
+
+    #[test]
+    fn policy_items_to_spec_empty_files_means_no_files_spec() {
+        let items = PolicyItems {
+            files: vec![],
+            ..Default::default()
+        };
+        let spec = policy_items_to_spec(&items);
+        assert!(spec.files.is_none());
+    }
+
+    #[test]
+    fn check_locked_violations_no_conflict() {
+        let locked = PolicyItems::default();
+        let merged = MergedProfile::default();
+        assert!(check_locked_violations("src", &locked, &merged).is_ok());
+    }
+
+    #[test]
+    fn check_locked_violations_detects_override() {
+        let locked = PolicyItems {
+            files: vec![ManagedFileSpec {
+                source: "corp/policy.yaml".into(),
+                target: "~/.config/policy.yaml".into(),
+                strategy: None,
+                private: false,
+                origin: None,
+                encryption: None,
+                permissions: None,
+            }],
+            ..Default::default()
+        };
+        let mut merged = MergedProfile::default();
+        merged.files.managed.push(ManagedFileSpec {
+            source: "local/override.yaml".into(), // different source
+            target: "~/.config/policy.yaml".into(), // same target
+            strategy: None,
+            private: false,
+            origin: None,
+            encryption: None,
+            permissions: None,
+        });
+        let result = check_locked_violations("corp", &locked, &merged);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("locked"));
+        assert!(err.contains("policy.yaml"));
+    }
+
+    #[test]
+    fn check_locked_violations_same_source_is_ok() {
+        let locked = PolicyItems {
+            files: vec![ManagedFileSpec {
+                source: "corp/policy.yaml".into(),
+                target: "~/.config/policy.yaml".into(),
+                strategy: None,
+                private: false,
+                origin: None,
+                encryption: None,
+                permissions: None,
+            }],
+            ..Default::default()
+        };
+        let mut merged = MergedProfile::default();
+        merged.files.managed.push(ManagedFileSpec {
+            source: "corp/policy.yaml".into(), // same source
+            target: "~/.config/policy.yaml".into(),
+            strategy: None,
+            private: false,
+            origin: None,
+            encryption: None,
+            permissions: None,
+        });
+        assert!(check_locked_violations("corp", &locked, &merged).is_ok());
+    }
+
+    #[test]
+    fn detect_permission_changes_new_source() {
+        let old: Vec<CompositionInput> = vec![];
+        let new = vec![CompositionInput {
+            source_name: "new-src".into(),
+            priority: 500,
+            policy: ConfigSourcePolicy::default(),
+            constraints: Default::default(),
+            layers: vec![],
+            subscription: SubscriptionConfig::default(),
+        }];
+        let changes = detect_permission_changes(&old, &new);
+        assert_eq!(changes.len(), 1);
+        assert_eq!(changes[0].source, "new-src");
+        assert!(changes[0].description.contains("New source"));
+    }
+
+    #[test]
+    fn detect_permission_changes_locked_items_increased() {
+        let old = vec![CompositionInput {
+            source_name: "corp".into(),
+            priority: 500,
+            policy: ConfigSourcePolicy {
+                locked: PolicyItems::default(), // 0 locked items
+                ..Default::default()
+            },
+            constraints: Default::default(),
+            layers: vec![],
+            subscription: SubscriptionConfig::default(),
+        }];
+        let new = vec![CompositionInput {
+            source_name: "corp".into(),
+            priority: 500,
+            policy: ConfigSourcePolicy {
+                locked: PolicyItems {
+                    files: vec![ManagedFileSpec {
+                        source: "new-lock.yaml".into(),
+                        target: "~/.lock".into(),
+                        strategy: None,
+                        private: false,
+                        origin: None,
+                        encryption: None,
+                        permissions: None,
+                    }],
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            constraints: Default::default(),
+            layers: vec![],
+            subscription: SubscriptionConfig::default(),
+        }];
+        let changes = detect_permission_changes(&old, &new);
+        assert!(changes.iter().any(|c| c.description.contains("Locked items increased")));
+    }
+
+    #[test]
+    fn detect_permission_changes_scripts_enabled() {
+        let old = vec![CompositionInput {
+            source_name: "corp".into(),
+            priority: 500,
+            policy: ConfigSourcePolicy::default(),
+            constraints: crate::config::SourceConstraints {
+                no_scripts: true,
+                ..Default::default()
+            },
+            layers: vec![],
+            subscription: SubscriptionConfig::default(),
+        }];
+        let new = vec![CompositionInput {
+            source_name: "corp".into(),
+            priority: 500,
+            policy: ConfigSourcePolicy::default(),
+            constraints: crate::config::SourceConstraints {
+                no_scripts: false,
+                ..Default::default()
+            },
+            layers: vec![],
+            subscription: SubscriptionConfig::default(),
+        }];
+        let changes = detect_permission_changes(&old, &new);
+        assert!(changes.iter().any(|c| c.description.contains("Scripts have been enabled")));
+    }
+
+    #[test]
+    fn detect_permission_changes_paths_expanded() {
+        let old = vec![CompositionInput {
+            source_name: "corp".into(),
+            priority: 500,
+            policy: ConfigSourcePolicy::default(),
+            constraints: crate::config::SourceConstraints {
+                allowed_target_paths: vec!["~/.config/corp/".into()],
+                ..Default::default()
+            },
+            layers: vec![],
+            subscription: SubscriptionConfig::default(),
+        }];
+        let new = vec![CompositionInput {
+            source_name: "corp".into(),
+            priority: 500,
+            policy: ConfigSourcePolicy::default(),
+            constraints: crate::config::SourceConstraints {
+                allowed_target_paths: vec!["~/.config/corp/".into(), "~/.config/extra/".into()],
+                ..Default::default()
+            },
+            layers: vec![],
+            subscription: SubscriptionConfig::default(),
+        }];
+        let changes = detect_permission_changes(&old, &new);
+        assert!(changes.iter().any(|c| c.description.contains("target paths expanded")));
+    }
+
+    #[test]
+    fn detect_permission_changes_no_changes() {
+        let mk = || CompositionInput {
+            source_name: "corp".into(),
+            priority: 500,
+            policy: ConfigSourcePolicy::default(),
+            constraints: Default::default(),
+            layers: vec![],
+            subscription: SubscriptionConfig::default(),
+        };
+        // Same old and new - no changes
+        let changes = detect_permission_changes(&[mk()], &[mk()]);
+        assert!(changes.is_empty());
+    }
+
+    #[test]
+    fn count_policy_tier_items_comprehensive() {
+        let items = PolicyItems {
+            packages: Some(PackagesSpec {
+                brew: Some(BrewSpec {
+                    formulae: vec!["a".into(), "b".into()],
+                    casks: vec!["c".into()],
+                    taps: vec!["t".into()],
+                    ..Default::default()
+                }),
+                apt: Some(crate::config::AptSpec {
+                    file: None,
+                    packages: vec!["d".into()],
+                }),
+                cargo: Some(crate::config::CargoSpec {
+                    file: None,
+                    packages: vec!["e".into()],
+                }),
+                pipx: vec!["f".into()],
+                dnf: vec!["g".into()],
+                npm: Some(crate::config::NpmSpec {
+                    file: None,
+                    global: vec!["h".into()],
+                }),
+                ..Default::default()
+            }),
+            files: vec![ManagedFileSpec {
+                source: "s".into(),
+                target: "t".into(),
+                strategy: None,
+                private: false,
+                origin: None,
+                encryption: None,
+                permissions: None,
+            }],
+            env: vec![EnvVar {
+                name: "A".into(),
+                value: "1".into(),
+            }],
+            aliases: vec![ShellAlias {
+                name: "g".into(),
+                command: "git".into(),
+            }],
+            system: HashMap::from([("shell".into(), serde_yaml::Value::Null)]),
+            modules: vec!["mod1".into(), "mod2".into()],
+            ..Default::default()
+        };
+        // brew: 2 formulae + 1 cask + 1 tap = 4
+        // apt: 1, cargo: 1, pipx: 1, dnf: 1, npm: 1 = 5
+        // files: 1, env: 1, aliases: 1, system: 1, modules: 2
+        assert_eq!(count_policy_tier_items(&items), 4 + 5 + 1 + 1 + 1 + 1 + 2);
+    }
+
+    #[test]
+    fn filter_rejected_removes_env() {
+        let recommended = PolicyItems {
+            env: vec![
+                EnvVar {
+                    name: "EDITOR".into(),
+                    value: "code".into(),
+                },
+                EnvVar {
+                    name: "PAGER".into(),
+                    value: "less".into(),
+                },
+            ],
+            ..Default::default()
+        };
+        let reject: serde_yaml::Value = serde_yaml::from_str("env:\n  EDITOR: ~").unwrap();
+        let filtered = filter_rejected(&recommended, &reject);
+        assert_eq!(filtered.env.len(), 1);
+        assert_eq!(filtered.env[0].name, "PAGER");
+    }
+
+    #[test]
+    fn filter_rejected_removes_aliases() {
+        let recommended = PolicyItems {
+            aliases: vec![
+                ShellAlias {
+                    name: "vim".into(),
+                    command: "nvim".into(),
+                },
+                ShellAlias {
+                    name: "ll".into(),
+                    command: "ls -la".into(),
+                },
+            ],
+            ..Default::default()
+        };
+        let reject: serde_yaml::Value = serde_yaml::from_str("aliases:\n  vim: ~").unwrap();
+        let filtered = filter_rejected(&recommended, &reject);
+        assert_eq!(filtered.aliases.len(), 1);
+        assert_eq!(filtered.aliases[0].name, "ll");
+    }
+
+    #[test]
+    fn filter_rejected_removes_modules() {
+        let recommended = PolicyItems {
+            modules: vec!["nvim".into(), "tmux".into(), "rust".into()],
+            ..Default::default()
+        };
+        let reject: serde_yaml::Value =
+            serde_yaml::from_str("modules:\n  - tmux\n  - rust").unwrap();
+        let filtered = filter_rejected(&recommended, &reject);
+        assert_eq!(filtered.modules, vec!["nvim".to_string()]);
+    }
+
+    #[test]
+    fn filter_rejected_removes_apt_packages() {
+        let recommended = PolicyItems {
+            packages: Some(PackagesSpec {
+                apt: Some(crate::config::AptSpec {
+                    file: None,
+                    packages: vec!["curl".into(), "wget".into()],
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let reject: serde_yaml::Value =
+            serde_yaml::from_str("packages:\n  apt:\n    packages:\n      - curl").unwrap();
+        let filtered = filter_rejected(&recommended, &reject);
+        let apt = filtered.packages.unwrap().apt.unwrap();
+        assert_eq!(apt.packages, vec!["wget".to_string()]);
+    }
+
+    #[test]
+    fn filter_rejected_removes_pipx_packages() {
+        let recommended = PolicyItems {
+            packages: Some(PackagesSpec {
+                pipx: vec!["black".into(), "ruff".into()],
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let reject: serde_yaml::Value =
+            serde_yaml::from_str("packages:\n  pipx:\n    - black").unwrap();
+        let filtered = filter_rejected(&recommended, &reject);
+        assert_eq!(filtered.packages.unwrap().pipx, vec!["ruff".to_string()]);
+    }
+
+    #[test]
+    fn merge_packages_snap_and_flatpak() {
+        let mut target = PackagesSpec::default();
+        let source = PackagesSpec {
+            snap: Some(crate::config::SnapSpec {
+                packages: vec!["firefox".into()],
+                classic: vec!["code".into()],
+            }),
+            flatpak: Some(crate::config::FlatpakSpec {
+                packages: vec!["org.gimp.GIMP".into()],
+                remote: Some("flathub".into()),
+            }),
+            ..Default::default()
+        };
+        merge_packages(&mut target, &source);
+        let snap = target.snap.unwrap();
+        assert_eq!(snap.packages, vec!["firefox".to_string()]);
+        assert_eq!(snap.classic, vec!["code".to_string()]);
+        let flatpak = target.flatpak.unwrap();
+        assert_eq!(flatpak.packages, vec!["org.gimp.GIMP".to_string()]);
+        assert_eq!(flatpak.remote, Some("flathub".to_string()));
+    }
+
+    #[test]
+    fn merge_packages_nix_go_winget() {
+        let mut target = PackagesSpec {
+            nix: vec!["existing".into()],
+            ..Default::default()
+        };
+        let source = PackagesSpec {
+            nix: vec!["new-nix".into(), "existing".into()],
+            go: vec!["gopls".into()],
+            winget: vec!["Git.Git".into()],
+            chocolatey: vec!["cmake".into()],
+            scoop: vec!["gcc".into()],
+            ..Default::default()
+        };
+        merge_packages(&mut target, &source);
+        assert!(target.nix.contains(&"existing".to_string()));
+        assert!(target.nix.contains(&"new-nix".to_string()));
+        // No duplicates
+        assert_eq!(target.nix.iter().filter(|n| *n == "existing").count(), 1);
+        assert_eq!(target.go, vec!["gopls".to_string()]);
+        assert_eq!(target.winget, vec!["Git.Git".to_string()]);
+        assert_eq!(target.chocolatey, vec!["cmake".to_string()]);
+        assert_eq!(target.scoop, vec!["gcc".to_string()]);
+    }
+
+    #[test]
+    fn merge_packages_custom_managers() {
+        let mut target = PackagesSpec {
+            custom: vec![crate::config::CustomManagerSpec {
+                name: "mise".into(),
+                check: "mise --version".into(),
+                list_installed: "mise list".into(),
+                install: "mise install {package}".into(),
+                uninstall: "mise remove {package}".into(),
+                update: None,
+                packages: vec!["node".into()],
+            }],
+            ..Default::default()
+        };
+        let source = PackagesSpec {
+            custom: vec![crate::config::CustomManagerSpec {
+                name: "mise".into(),
+                check: "mise --version".into(),
+                list_installed: "mise list".into(),
+                install: "mise install {package}".into(),
+                uninstall: "mise remove {package}".into(),
+                update: Some("mise upgrade {package}".into()),
+                packages: vec!["python".into(), "node".into()],
+            }],
+            ..Default::default()
+        };
+        merge_packages(&mut target, &source);
+        assert_eq!(target.custom.len(), 1);
+        let mise = &target.custom[0];
+        assert!(mise.packages.contains(&"node".to_string()));
+        assert!(mise.packages.contains(&"python".to_string()));
+        // No duplicate "node"
+        assert_eq!(mise.packages.iter().filter(|p| *p == "node").count(), 1);
+        // update was merged from source
+        assert!(mise.update.is_some());
+    }
+
+    #[test]
+    fn compose_scripts_appended_in_order() {
+        let local = ResolvedProfile {
+            layers: vec![ProfileLayer {
+                source: "local".into(),
+                profile_name: "default".into(),
+                priority: 1000,
+                policy: LayerPolicy::Local,
+                spec: ProfileSpec {
+                    scripts: Some(ScriptSpec {
+                        pre_apply: vec![ScriptEntry::Simple("local-pre.sh".into())],
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                },
+            }],
+            merged: MergedProfile {
+                scripts: ScriptSpec {
+                    pre_apply: vec![ScriptEntry::Simple("local-pre.sh".into())],
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        };
+        let source = CompositionInput {
+            source_name: "corp".into(),
+            priority: 500,
+            policy: ConfigSourcePolicy {
+                recommended: PolicyItems {
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            constraints: Default::default(),
+            layers: vec![ProfileLayer {
+                source: "corp".into(),
+                profile_name: "corp/base".into(),
+                priority: 500,
+                policy: LayerPolicy::Recommended,
+                spec: ProfileSpec {
+                    scripts: Some(ScriptSpec {
+                        pre_apply: vec![ScriptEntry::Simple("corp-pre.sh".into())],
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                },
+            }],
+            subscription: SubscriptionConfig {
+                accept_recommended: true,
+                ..Default::default()
+            },
+        };
+
+        let result = compose(&local, &[source]).unwrap();
+        let scripts = &result.resolved.merged.scripts.pre_apply;
+        assert_eq!(scripts.len(), 2);
+        // corp processed first (lower priority), then local
+        assert_eq!(scripts[0].run_str(), "corp-pre.sh");
+        assert_eq!(scripts[1].run_str(), "local-pre.sh");
+    }
+
+    #[test]
+    fn compose_secrets_deduplicated_by_source() {
+        let local = ResolvedProfile {
+            layers: vec![ProfileLayer {
+                source: "local".into(),
+                profile_name: "default".into(),
+                priority: 1000,
+                policy: LayerPolicy::Local,
+                spec: ProfileSpec {
+                    secrets: vec![crate::config::SecretSpec {
+                        source: "vault://secret/data/token".into(),
+                        target: Some("/tmp/token".into()),
+                        template: None,
+                        backend: None,
+                        envs: None,
+                    }],
+                    ..Default::default()
+                },
+            }],
+            merged: MergedProfile {
+                secrets: vec![crate::config::SecretSpec {
+                    source: "vault://secret/data/token".into(),
+                    target: Some("/tmp/token".into()),
+                    template: None,
+                    backend: None,
+                    envs: None,
+                }],
+                ..Default::default()
+            },
+        };
+        let source = CompositionInput {
+            source_name: "corp".into(),
+            priority: 500,
+            policy: ConfigSourcePolicy::default(),
+            constraints: Default::default(),
+            layers: vec![ProfileLayer {
+                source: "corp".into(),
+                profile_name: "corp/base".into(),
+                priority: 500,
+                policy: LayerPolicy::Recommended,
+                spec: ProfileSpec {
+                    secrets: vec![crate::config::SecretSpec {
+                        source: "vault://secret/data/token".into(),
+                        target: Some("/tmp/token-corp".into()),
+                        template: None,
+                        backend: None,
+                        envs: None,
+                    }],
+                    ..Default::default()
+                },
+            }],
+            subscription: SubscriptionConfig {
+                accept_recommended: true,
+                ..Default::default()
+            },
+        };
+
+        let result = compose(&local, &[source]).unwrap();
+        // Same source key — should be deduplicated (local wins, later layer)
+        let secrets = &result.resolved.merged.secrets;
+        let vault_secrets: Vec<_> = secrets
+            .iter()
+            .filter(|s| s.source.contains("vault://secret/data/token"))
+            .collect();
+        assert_eq!(vault_secrets.len(), 1, "secrets with same source should deduplicate");
+        // Local (higher priority, processed last) should win
+        assert_eq!(vault_secrets[0].target, Some("/tmp/token".into()));
+    }
+
+    #[test]
+    fn compose_system_deep_merges() {
+        let local = ResolvedProfile {
+            layers: vec![ProfileLayer {
+                source: "local".into(),
+                profile_name: "default".into(),
+                priority: 1000,
+                policy: LayerPolicy::Local,
+                spec: ProfileSpec {
+                    system: HashMap::from([(
+                        "shell".into(),
+                        serde_yaml::Value::String("/bin/zsh".into()),
+                    )]),
+                    ..Default::default()
+                },
+            }],
+            merged: MergedProfile {
+                system: HashMap::from([(
+                    "shell".into(),
+                    serde_yaml::Value::String("/bin/zsh".into()),
+                )]),
+                ..Default::default()
+            },
+        };
+        let source = CompositionInput {
+            source_name: "corp".into(),
+            priority: 500,
+            policy: ConfigSourcePolicy::default(),
+            constraints: crate::config::SourceConstraints {
+                allow_system_changes: true,
+                ..Default::default()
+            },
+            layers: vec![ProfileLayer {
+                source: "corp".into(),
+                profile_name: "corp/base".into(),
+                priority: 500,
+                policy: LayerPolicy::Recommended,
+                spec: ProfileSpec {
+                    system: HashMap::from([(
+                        "sysctl".into(),
+                        serde_yaml::Value::String("value".into()),
+                    )]),
+                    ..Default::default()
+                },
+            }],
+            subscription: SubscriptionConfig {
+                accept_recommended: true,
+                ..Default::default()
+            },
+        };
+
+        let result = compose(&local, &[source]).unwrap();
+        assert!(result.resolved.merged.system.contains_key("shell"));
+        assert!(result.resolved.merged.system.contains_key("sysctl"));
+    }
+
+    #[test]
+    fn validate_constraints_encryption_mode_mismatch() {
+        let constraints = crate::config::SourceConstraints {
+            encryption: Some(crate::config::EncryptionConstraint {
+                required_targets: vec!["~/.ssh/*".into()],
+                backend: None,
+                mode: Some(crate::config::EncryptionMode::Always),
+            }),
+            ..Default::default()
+        };
+        // File has InRepo mode but constraint requires Always
+        let spec = ProfileSpec {
+            files: Some(FilesSpec {
+                managed: vec![ManagedFileSpec {
+                    source: "key".into(),
+                    target: "~/.ssh/id_rsa".into(),
+                    strategy: None,
+                    private: false,
+                    origin: None,
+                    encryption: Some(crate::config::EncryptionSpec {
+                        backend: "sops".into(),
+                        mode: crate::config::EncryptionMode::InRepo,
+                    }),
+                    permissions: None,
+                }],
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let result = validate_constraints("corp", &constraints, &spec);
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(msg.contains("mode"), "expected mode mismatch error, got: {msg}");
+    }
+
+    #[test]
+    fn check_locked_violations_empty_locked_files() {
+        // Locked items with no files but other content should not trigger violations
+        let locked = PolicyItems {
+            modules: vec!["corp-vpn".into()],
+            ..Default::default()
+        };
+        let mut merged = MergedProfile::default();
+        merged.modules = vec!["corp-vpn".into()];
+        // No file conflict — locked only has modules, not files
+        assert!(check_locked_violations("corp", &locked, &merged).is_ok());
+    }
+
+    #[test]
+    fn compose_file_origins_tagged_for_source_files() {
+        let local = ResolvedProfile {
+            layers: vec![ProfileLayer {
+                source: "local".into(),
+                profile_name: "default".into(),
+                priority: 1000,
+                policy: LayerPolicy::Local,
+                spec: ProfileSpec::default(),
+            }],
+            merged: MergedProfile::default(),
+        };
+        let source = CompositionInput {
+            source_name: "corp".into(),
+            priority: 500,
+            policy: ConfigSourcePolicy::default(),
+            constraints: Default::default(),
+            layers: vec![ProfileLayer {
+                source: "corp".into(),
+                profile_name: "corp/base".into(),
+                priority: 500,
+                policy: LayerPolicy::Recommended,
+                spec: ProfileSpec {
+                    files: Some(FilesSpec {
+                        managed: vec![ManagedFileSpec {
+                            source: "corp/tool.conf".into(),
+                            target: "~/.config/tool.conf".into(),
+                            strategy: None,
+                            private: false,
+                            origin: None,
+                            encryption: None,
+                            permissions: None,
+                        }],
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                },
+            }],
+            subscription: SubscriptionConfig {
+                accept_recommended: true,
+                ..Default::default()
+            },
+        };
+
+        let result = compose(&local, &[source]).unwrap();
+        let file = result
+            .resolved
+            .merged
+            .files
+            .managed
+            .iter()
+            .find(|f| f.target.to_string_lossy().contains("tool.conf"))
+            .unwrap();
+        // File origin should be tagged with source name
+        assert_eq!(file.origin, Some("corp".to_string()));
+    }
+
+    #[test]
+    fn record_rejections_with_modules() {
+        let recommended = PolicyItems::default();
+        let reject: serde_yaml::Value =
+            serde_yaml::from_str("modules:\n  - bad-mod\n  - other-mod").unwrap();
+        let mut conflicts = Vec::new();
+        record_rejections("corp", &recommended, &reject, &mut conflicts);
+        assert_eq!(conflicts.len(), 2);
+        assert!(conflicts
+            .iter()
+            .all(|c| c.resolution_type == ResolutionType::Rejected));
+        assert!(conflicts.iter().any(|c| c.resource_id == "module:bad-mod"));
+        assert!(conflicts
+            .iter()
+            .any(|c| c.resource_id == "module:other-mod"));
+    }
+
+    #[test]
+    fn record_rejections_null_does_nothing() {
+        let recommended = PolicyItems::default();
+        let mut conflicts = Vec::new();
+        record_rejections("corp", &recommended, &serde_yaml::Value::Null, &mut conflicts);
+        assert!(conflicts.is_empty());
+    }
+
+    #[test]
+    fn record_policy_conflicts_secrets_and_aliases() {
+        let items = PolicyItems {
+            aliases: vec![ShellAlias {
+                name: "g".into(),
+                command: "git".into(),
+            }],
+            secrets: vec![crate::config::SecretSpec {
+                source: "vault://test".into(),
+                target: None,
+                template: None,
+                backend: None,
+                envs: None,
+            }],
+            ..Default::default()
+        };
+        let mut conflicts = Vec::new();
+        record_policy_conflicts("corp", &items, ResolutionType::Required, &mut conflicts);
+        assert_eq!(conflicts.len(), 2);
+        assert!(conflicts.iter().any(|c| c.resource_id == "alias:g"));
+        assert!(conflicts
+            .iter()
+            .any(|c| c.resource_id == "secret:vault://test"));
+    }
+
+    #[test]
+    fn collect_package_names_all_managers() {
+        let pkgs = PackagesSpec {
+            brew: Some(BrewSpec {
+                formulae: vec!["git".into()],
+                casks: vec!["firefox".into()],
+                ..Default::default()
+            }),
+            apt: Some(crate::config::AptSpec {
+                file: None,
+                packages: vec!["curl".into()],
+            }),
+            cargo: Some(crate::config::CargoSpec {
+                file: None,
+                packages: vec!["bat".into()],
+            }),
+            npm: Some(crate::config::NpmSpec {
+                file: None,
+                global: vec!["prettier".into()],
+            }),
+            pipx: vec!["black".into()],
+            dnf: vec!["vim".into()],
+            ..Default::default()
+        };
+        let names = collect_package_names(&pkgs);
+        assert_eq!(names.len(), 7);
+        assert!(names.iter().any(|n| n.contains("git") && n.contains("brew")));
+        assert!(names.iter().any(|n| n.contains("firefox") && n.contains("brew cask")));
+        assert!(names.iter().any(|n| n.contains("curl") && n.contains("apt")));
+        assert!(names.iter().any(|n| n.contains("bat") && n.contains("cargo")));
+        assert!(names.iter().any(|n| n.contains("prettier") && n.contains("npm")));
+        assert!(names.iter().any(|n| n.contains("black") && n.contains("pipx")));
+        assert!(names.iter().any(|n| n.contains("vim") && n.contains("dnf")));
+    }
+
+    #[test]
+    fn build_source_layers_optional_opt_in() {
+        let input = CompositionInput {
+            source_name: "corp".into(),
+            priority: 500,
+            policy: ConfigSourcePolicy {
+                optional: PolicyItems {
+                    profiles: vec!["extra".into()],
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            constraints: Default::default(),
+            layers: vec![ProfileLayer {
+                source: "corp".into(),
+                profile_name: "extra".into(),
+                priority: 500,
+                policy: LayerPolicy::Optional,
+                spec: ProfileSpec {
+                    env: vec![EnvVar {
+                        name: "EXTRA".into(),
+                        value: "yes".into(),
+                    }],
+                    ..Default::default()
+                },
+            }],
+            subscription: SubscriptionConfig {
+                accept_recommended: false,
+                opt_in: vec!["extra".into()],
+                ..Default::default()
+            },
+        };
+        let mut conflicts = Vec::new();
+        let layers = build_source_layers(&input, &mut conflicts).unwrap();
+        // Should include the "extra" layer via opt-in
+        assert!(
+            layers.iter().any(|l| l.profile_name == "extra"),
+            "opt-in profile should be included"
+        );
+    }
+
+    #[test]
+    fn resolution_type_labels() {
+        assert_eq!(ResolutionType::Locked.label(), "LOCKED");
+        assert_eq!(ResolutionType::Required.label(), "REQUIRED");
+        assert_eq!(ResolutionType::Override.label(), "OVERRIDE");
+        assert_eq!(ResolutionType::Rejected.label(), "REJECTED");
+        assert_eq!(ResolutionType::Default.label(), "DEFAULT");
+    }
+
+    #[test]
+    fn find_matching_pattern_prefix() {
+        let result = find_matching_pattern(
+            "~/.config/corp/deep/nested/file.yaml",
+            &["~/.config/corp/".into()],
+        );
+        assert!(result.is_some());
+        assert_eq!(result.unwrap(), "~/.config/corp/");
+    }
+
+    #[test]
+    fn find_matching_pattern_no_match() {
+        let result = find_matching_pattern(
+            "/etc/sudoers",
+            &["~/.config/*".into(), "~/.local/*".into()],
+        );
+        assert!(result.is_none());
+    }
+
     #[test]
     fn encryption_module_file_matching_required_target_without_encryption_is_error() {
         // Module files come through as ProfileSpec files just like profile files;

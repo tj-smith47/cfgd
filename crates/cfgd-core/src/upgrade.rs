@@ -924,4 +924,182 @@ mod tests {
         let extracted = std::fs::read_to_string(dest.join("test.txt")).unwrap();
         assert_eq!(extracted, "hello from tarball");
     }
+
+    #[test]
+    fn download_and_install_checksum_mismatch_detection() {
+        // Create a fake tarball
+        let dir = tempfile::tempdir().unwrap();
+        let tar_dir = dir.path().join("tar_src");
+        std::fs::create_dir_all(&tar_dir).unwrap();
+        std::fs::write(tar_dir.join("cfgd"), b"#!/bin/sh\necho fake binary").unwrap();
+
+        let tarball_path = dir.path().join("cfgd-test.tar.gz");
+        {
+            let tar_file = std::fs::File::create(&tarball_path).unwrap();
+            let enc =
+                flate2::write::GzEncoder::new(tar_file, flate2::Compression::default());
+            let mut tar_builder = tar::Builder::new(enc);
+            tar_builder.append_dir_all(".", &tar_dir).unwrap();
+            tar_builder.finish().unwrap();
+        }
+
+        // Create a checksums file with WRONG hash
+        let checksums = "deadbeef00000000000000000000000000000000000000000000000000000000  cfgd-test.tar.gz\n";
+        let parsed = parse_checksums(checksums);
+        assert_eq!(
+            parsed.get("cfgd-test.tar.gz").unwrap(),
+            "deadbeef00000000000000000000000000000000000000000000000000000000"
+        );
+
+        // The actual hash of the tarball should NOT match the fake hash
+        let actual_hash = sha256_file(&tarball_path).unwrap();
+        assert_ne!(
+            actual_hash,
+            "deadbeef00000000000000000000000000000000000000000000000000000000",
+            "real hash should differ from fake"
+        );
+    }
+
+    #[test]
+    fn version_cache_disk_persistence() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = VersionCache {
+            checked_at_secs: 1711234567,
+            latest_tag: "v1.2.3".into(),
+            latest_version: "1.2.3".into(),
+            current_version: "1.0.0".into(),
+        };
+        let json = serde_json::to_string(&cache).unwrap();
+        let path = dir.path().join("version-cache.json");
+        std::fs::write(&path, &json).unwrap();
+
+        let content = std::fs::read_to_string(&path).unwrap();
+        let restored: VersionCache = serde_json::from_str(&content).unwrap();
+        assert_eq!(restored.checked_at_secs, 1711234567);
+        assert_eq!(restored.latest_tag, "v1.2.3");
+        assert_eq!(restored.latest_version, "1.2.3");
+        assert_eq!(restored.current_version, "1.0.0");
+
+        // Verify camelCase serialization
+        assert!(json.contains("checkedAtSecs"));
+        assert!(json.contains("latestTag"));
+    }
+
+    #[test]
+    fn find_asset_multiple_platforms_picks_current() {
+        let os = std::env::consts::OS;
+        let arch = std::env::consts::ARCH;
+        let archive_os = if os == "macos" { "darwin" } else { os };
+        #[cfg(unix)]
+        let suffix = ".tar.gz";
+        #[cfg(windows)]
+        let suffix = ".zip";
+
+        let release = ReleaseInfo {
+            tag: "v0.5.0".into(),
+            version: Version::new(0, 5, 0),
+            assets: vec![
+                ReleaseAsset {
+                    name: format!("cfgd-0.5.0-{}-{}{}", archive_os, arch, suffix),
+                    download_url: "https://example.com/current".into(),
+                    size: 5000,
+                },
+                ReleaseAsset {
+                    name: "cfgd-0.5.0-freebsd-riscv64.tar.gz".into(),
+                    download_url: "https://example.com/other".into(),
+                    size: 4000,
+                },
+            ],
+        };
+        let result = find_asset_for_platform(&release);
+        assert!(result.is_ok());
+        let asset = result.unwrap();
+        assert_eq!(asset.download_url, "https://example.com/current");
+    }
+
+    #[test]
+    fn find_asset_no_matching_platform() {
+        let release = ReleaseInfo {
+            tag: "v0.5.0".into(),
+            version: Version::new(0, 5, 0),
+            assets: vec![ReleaseAsset {
+                name: "cfgd-0.5.0-mips-unknown-linux.tar.gz".into(),
+                download_url: "https://example.com/mips".into(),
+                size: 3000,
+            }],
+        };
+        let result = find_asset_for_platform(&release);
+        // Unless we're running on mips, this should fail
+        if std::env::consts::ARCH != "mips" {
+            assert!(result.is_err());
+        }
+    }
+
+    #[test]
+    fn parse_checksums_with_multiple_entries() {
+        let content = "abc123  file1.tar.gz\ndef456  file2.tar.gz\n";
+        let parsed = parse_checksums(content);
+        assert_eq!(parsed.get("file1.tar.gz").unwrap(), "abc123");
+        assert_eq!(parsed.get("file2.tar.gz").unwrap(), "def456");
+    }
+
+    #[test]
+    fn parse_checksums_ignores_malformed_lines() {
+        let content = "abc123  good.tar.gz\nbadline\n  \nabc456  another.tar.gz\n";
+        let parsed = parse_checksums(content);
+        assert_eq!(parsed.len(), 2);
+        assert_eq!(parsed.get("good.tar.gz").unwrap(), "abc123");
+        assert_eq!(parsed.get("another.tar.gz").unwrap(), "abc456");
+    }
+
+    #[test]
+    fn parse_checksums_normalizes_to_lowercase() {
+        let content = "ABCDEF123456  mixed-case.tar.gz\n";
+        let parsed = parse_checksums(content);
+        assert_eq!(parsed.get("mixed-case.tar.gz").unwrap(), "abcdef123456");
+    }
+
+    #[test]
+    fn find_checksums_asset_finds_by_suffix() {
+        let release = ReleaseInfo {
+            tag: "v0.5.0".into(),
+            version: Version::new(0, 5, 0),
+            assets: vec![
+                ReleaseAsset {
+                    name: "cfgd-0.5.0-linux-x86_64.tar.gz".into(),
+                    download_url: "https://example.com/binary".into(),
+                    size: 5000,
+                },
+                ReleaseAsset {
+                    name: "cfgd-0.5.0-checksums.txt".into(),
+                    download_url: "https://example.com/checksums".into(),
+                    size: 256,
+                },
+            ],
+        };
+        let asset = find_checksums_asset(&release);
+        assert!(asset.is_some());
+        assert_eq!(asset.unwrap().name, "cfgd-0.5.0-checksums.txt");
+    }
+
+    #[test]
+    fn find_checksums_asset_none_when_missing() {
+        let release = ReleaseInfo {
+            tag: "v0.5.0".into(),
+            version: Version::new(0, 5, 0),
+            assets: vec![ReleaseAsset {
+                name: "cfgd-0.5.0-linux-x86_64.tar.gz".into(),
+                download_url: "https://example.com/binary".into(),
+                size: 5000,
+            }],
+        };
+        let asset = find_checksums_asset(&release);
+        assert!(asset.is_none());
+    }
+
+    #[test]
+    fn version_check_interval_matches_cache_ttl() {
+        let interval = version_check_interval();
+        assert_eq!(interval, Duration::from_secs(CACHE_TTL_SECS));
+    }
 }

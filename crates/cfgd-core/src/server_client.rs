@@ -788,4 +788,204 @@ mod tests {
             assert_eq!(meta.permissions().mode() & 0o777, 0o600);
         }
     }
+
+    // --- mockito-based HTTP integration tests ---
+
+    #[test]
+    fn checkin_sends_correct_payload_and_parses_response() {
+        let mut server = mockito::Server::new();
+        let mock = server
+            .mock("POST", "/api/v1/checkin")
+            .match_header("content-type", "application/json")
+            .match_header("authorization", "Bearer test-key")
+            .with_status(200)
+            .with_body(r#"{"status":"ok","configChanged":false}"#)
+            .create();
+
+        let client = ServerClient::new(&server.url(), Some("test-key"), "dev-1");
+        let printer = Printer::new(crate::output::Verbosity::Quiet);
+        let result = client.checkin("hash123", None, &printer);
+
+        assert!(result.is_ok());
+        let resp = result.unwrap();
+        assert_eq!(resp.status, "ok");
+        assert!(!resp.config_changed);
+        mock.assert();
+    }
+
+    #[test]
+    fn checkin_with_compliance_summary() {
+        let mut server = mockito::Server::new();
+        let mock = server
+            .mock("POST", "/api/v1/checkin")
+            .with_status(200)
+            .with_body(r#"{"status":"ok","configChanged":true}"#)
+            .create();
+
+        let client = ServerClient::new(&server.url(), Some("key"), "dev-1");
+        let printer = Printer::new(crate::output::Verbosity::Quiet);
+        let summary = ComplianceSummary {
+            compliant: 5,
+            warning: 1,
+            violation: 0,
+        };
+        let result = client.checkin("hash", Some(summary), &printer);
+        assert!(result.is_ok());
+        assert!(result.unwrap().config_changed);
+        mock.assert();
+    }
+
+    #[test]
+    fn report_drift_sends_drift_details() {
+        let mut server = mockito::Server::new();
+        let mock = server
+            .mock("POST", "/api/v1/devices/dev-1/drift")
+            .match_header("authorization", "Bearer key-1")
+            .with_status(200)
+            .with_body("{}")
+            .create();
+
+        let client = ServerClient::new(&server.url(), Some("key-1"), "dev-1");
+        let printer = Printer::new(crate::output::Verbosity::Quiet);
+        let drift = SystemDrift {
+            key: "some.key".into(),
+            expected: "foo".into(),
+            actual: "bar".into(),
+        };
+        let result = client.report_drift(&[drift], &printer);
+        assert!(result.is_ok());
+        mock.assert();
+    }
+
+    #[test]
+    fn enroll_sends_bootstrap_token() {
+        let mut server = mockito::Server::new();
+        let mock = server
+            .mock("POST", "/api/v1/enroll")
+            .with_status(200)
+            .with_body(
+                r#"{"status":"enrolled","deviceId":"new-dev","apiKey":"new-key","username":"user1"}"#,
+            )
+            .create();
+
+        let client = ServerClient::new(&server.url(), None, "dev-1");
+        let printer = Printer::new(crate::output::Verbosity::Quiet);
+        let result = client.enroll("bootstrap-token-123", &printer);
+        assert!(result.is_ok());
+        let resp = result.unwrap();
+        assert_eq!(resp.device_id, "new-dev");
+        assert_eq!(resp.api_key, "new-key");
+        assert_eq!(resp.username, "user1");
+        mock.assert();
+    }
+
+    #[test]
+    fn request_challenge_sends_username() {
+        let mut server = mockito::Server::new();
+        let mock = server
+            .mock("POST", "/api/v1/enroll/challenge")
+            .with_status(200)
+            .with_body(
+                r#"{"challengeId":"ch-1","nonce":"sign-this","expiresAt":"2026-01-01T00:00:00Z"}"#,
+            )
+            .create();
+
+        let client = ServerClient::new(&server.url(), None, "dev-1");
+        let printer = Printer::new(crate::output::Verbosity::Quiet);
+        let result = client.request_challenge("testuser", &printer);
+        assert!(result.is_ok());
+        let resp = result.unwrap();
+        assert_eq!(resp.challenge_id, "ch-1");
+        assert_eq!(resp.nonce, "sign-this");
+        mock.assert();
+    }
+
+    #[test]
+    fn submit_verification_returns_enroll_response() {
+        let mut server = mockito::Server::new();
+        let mock = server
+            .mock("POST", "/api/v1/enroll/verify")
+            .with_status(200)
+            .with_body(
+                r#"{"status":"verified","deviceId":"verified-dev","apiKey":"verified-key","username":"user1"}"#,
+            )
+            .create();
+
+        let client = ServerClient::new(&server.url(), None, "dev-1");
+        let printer = Printer::new(crate::output::Verbosity::Quiet);
+        let result = client.submit_verification("ch-1", "sig-data", "ssh-ed25519", &printer);
+        assert!(result.is_ok());
+        let resp = result.unwrap();
+        assert_eq!(resp.device_id, "verified-dev");
+        assert_eq!(resp.api_key, "verified-key");
+        mock.assert();
+    }
+
+    #[test]
+    fn enroll_info_returns_enrollment_details() {
+        let mut server = mockito::Server::new();
+        let mock = server
+            .mock("GET", "/api/v1/enroll/info")
+            .with_status(200)
+            .with_body(r#"{"method":"key"}"#)
+            .create();
+
+        let client = ServerClient::new(&server.url(), None, "dev-1");
+        let result = client.enroll_info();
+        assert!(result.is_ok());
+        let resp = result.unwrap();
+        assert_eq!(resp.method, "key");
+        mock.assert();
+    }
+
+    #[test]
+    fn checkin_server_error_returns_error() {
+        let mut server = mockito::Server::new();
+        let mock = server
+            .mock("POST", "/api/v1/checkin")
+            .with_status(500)
+            .with_body("internal error")
+            .expect_at_least(2)
+            .create();
+
+        let client = ServerClient::new(&server.url(), Some("key"), "dev-1");
+        let printer = Printer::new(crate::output::Verbosity::Quiet);
+        let result = client.checkin("hash", None, &printer);
+        assert!(result.is_err());
+        mock.assert();
+    }
+
+    #[test]
+    fn checkin_client_error_does_not_retry() {
+        let mut server = mockito::Server::new();
+        let mock = server
+            .mock("POST", "/api/v1/checkin")
+            .with_status(401)
+            .with_body("unauthorized")
+            .expect(1)
+            .create();
+
+        let client = ServerClient::new(&server.url(), Some("bad-key"), "dev-1");
+        let printer = Printer::new(crate::output::Verbosity::Quiet);
+        let result = client.checkin("hash", None, &printer);
+        assert!(result.is_err());
+        mock.assert();
+    }
+
+    #[test]
+    fn checkin_no_api_key_omits_auth_header() {
+        let mut server = mockito::Server::new();
+        let mock = server
+            .mock("POST", "/api/v1/checkin")
+            .match_header("authorization", mockito::Matcher::Missing)
+            .with_status(200)
+            .with_body(r#"{"status":"ok","configChanged":false}"#)
+            .create();
+
+        let client = ServerClient::new(&server.url(), None, "dev-1");
+        let printer = Printer::new(crate::output::Verbosity::Quiet);
+        let result = client.checkin("hash", None, &printer);
+        assert!(result.is_ok());
+        mock.assert();
+    }
 }

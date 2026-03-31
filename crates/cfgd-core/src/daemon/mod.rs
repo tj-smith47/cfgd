@@ -4242,4 +4242,1123 @@ mod tests {
     fn parse_duration_zero_plain() {
         assert_eq!(parse_duration_or_default("0"), Duration::from_secs(0));
     }
+
+    // --- compute_config_hash with empty packages ---
+
+    #[test]
+    fn compute_config_hash_with_empty_packages() {
+        use crate::config::{
+            LayerPolicy, MergedProfile, PackagesSpec, ProfileLayer, ProfileSpec, ResolvedProfile,
+        };
+
+        let resolved = ResolvedProfile {
+            layers: vec![ProfileLayer {
+                source: "local".into(),
+                profile_name: "empty".into(),
+                priority: 1000,
+                policy: LayerPolicy::Local,
+                spec: ProfileSpec::default(),
+            }],
+            merged: MergedProfile {
+                packages: PackagesSpec::default(),
+                ..Default::default()
+            },
+        };
+
+        let hash1 = compute_config_hash(&resolved).unwrap();
+        let hash2 = compute_config_hash(&resolved).unwrap();
+        assert_eq!(hash1, hash2, "hash should be deterministic");
+        assert_eq!(hash1.len(), 64, "hash should be a valid SHA256 hex string");
+    }
+
+    // --- extract_source_resources: brew taps are not included, casks are ---
+
+    #[test]
+    fn extract_source_resources_brew_casks_only() {
+        use crate::config::{BrewSpec, MergedProfile, PackagesSpec};
+
+        let merged = MergedProfile {
+            packages: PackagesSpec {
+                brew: Some(BrewSpec {
+                    formulae: vec![],
+                    casks: vec!["iterm2".into(), "visual-studio-code".into()],
+                    taps: vec!["homebrew/cask".into()],
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        let resources = extract_source_resources(&merged);
+        assert!(
+            resources.contains("packages.brew.iterm2"),
+            "casks should appear as brew resources"
+        );
+        assert!(
+            resources.contains("packages.brew.visual-studio-code"),
+            "casks should appear as brew resources"
+        );
+        // Taps are not tracked as individual resources
+        assert!(
+            !resources.contains("packages.brew.homebrew/cask"),
+            "taps should not appear as resources"
+        );
+        assert_eq!(resources.len(), 2);
+    }
+
+    #[test]
+    fn extract_source_resources_cargo_packages_only() {
+        use crate::config::{CargoSpec, MergedProfile, PackagesSpec};
+
+        let merged = MergedProfile {
+            packages: PackagesSpec {
+                cargo: Some(CargoSpec {
+                    file: Some("Cargo.toml".into()),
+                    packages: vec!["cargo-watch".into(), "cargo-expand".into()],
+                }),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        let resources = extract_source_resources(&merged);
+        assert!(resources.contains("packages.cargo.cargo-watch"));
+        assert!(resources.contains("packages.cargo.cargo-expand"));
+        assert_eq!(resources.len(), 2);
+    }
+
+    #[test]
+    fn extract_source_resources_npm_globals() {
+        use crate::config::{MergedProfile, NpmSpec, PackagesSpec};
+
+        let merged = MergedProfile {
+            packages: PackagesSpec {
+                npm: Some(NpmSpec {
+                    file: None,
+                    global: vec!["typescript".into(), "eslint".into()],
+                }),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        let resources = extract_source_resources(&merged);
+        assert!(resources.contains("packages.npm.typescript"));
+        assert!(resources.contains("packages.npm.eslint"));
+        assert_eq!(resources.len(), 2);
+    }
+
+    // --- process_source_decisions with Reject policy ---
+
+    #[test]
+    fn process_source_decisions_reject_policy_silently_skips() {
+        use crate::config::{CargoSpec, PackagesSpec};
+        let store = StateStore::open_in_memory().unwrap();
+        let notifier = Notifier::new(NotifyMethod::Stdout, None);
+        let policy = AutoApplyPolicyConfig {
+            new_recommended: PolicyAction::Reject,
+            ..Default::default()
+        };
+
+        let merged = MergedProfile {
+            packages: PackagesSpec {
+                cargo: Some(CargoSpec {
+                    file: None,
+                    packages: vec!["bat".into()],
+                }),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        let excluded = process_source_decisions(&store, "acme", &merged, &policy, &notifier);
+
+        // Reject policy: no pending decisions, items pass through silently
+        let pending = store.pending_decisions().unwrap();
+        assert!(
+            pending.is_empty(),
+            "reject policy should not create pending decisions"
+        );
+        assert!(
+            excluded.is_empty(),
+            "reject policy does not create pending records so nothing is excluded"
+        );
+    }
+
+    // --- find_server_url with duplicate server origins picks first ---
+
+    #[test]
+    fn find_server_url_picks_first_server_among_duplicates() {
+        use crate::config::*;
+        let config = CfgdConfig {
+            api_version: crate::API_VERSION.into(),
+            kind: "Config".into(),
+            metadata: ConfigMetadata {
+                name: "test".into(),
+            },
+            spec: ConfigSpec {
+                profile: Some("default".into()),
+                origin: vec![
+                    OriginSpec {
+                        origin_type: OriginType::Server,
+                        url: "https://first-server.example.com".into(),
+                        branch: "main".into(),
+                        auth: None,
+                        ssh_strict_host_key_checking: Default::default(),
+                    },
+                    OriginSpec {
+                        origin_type: OriginType::Server,
+                        url: "https://second-server.example.com".into(),
+                        branch: "main".into(),
+                        auth: None,
+                        ssh_strict_host_key_checking: Default::default(),
+                    },
+                ],
+                daemon: None,
+                secrets: None,
+                sources: vec![],
+                theme: None,
+                modules: None,
+                security: None,
+                aliases: std::collections::HashMap::new(),
+                file_strategy: crate::config::FileStrategy::default(),
+                ai: None,
+                compliance: None,
+            },
+        };
+        assert_eq!(
+            find_server_url(&config),
+            Some("https://first-server.example.com".to_string()),
+            "should return the first server origin when multiple exist"
+        );
+    }
+
+    // --- compute_config_hash: empty vs non-empty produces different hashes ---
+
+    #[test]
+    fn compute_config_hash_empty_vs_nonempty_differ() {
+        use crate::config::{
+            CargoSpec, LayerPolicy, MergedProfile, PackagesSpec, ProfileLayer, ProfileSpec,
+            ResolvedProfile,
+        };
+
+        let empty_resolved = ResolvedProfile {
+            layers: vec![ProfileLayer {
+                source: "local".into(),
+                profile_name: "empty".into(),
+                priority: 1000,
+                policy: LayerPolicy::Local,
+                spec: ProfileSpec::default(),
+            }],
+            merged: MergedProfile {
+                packages: PackagesSpec::default(),
+                ..Default::default()
+            },
+        };
+
+        let nonempty_resolved = ResolvedProfile {
+            layers: vec![ProfileLayer {
+                source: "local".into(),
+                profile_name: "nonempty".into(),
+                priority: 1000,
+                policy: LayerPolicy::Local,
+                spec: ProfileSpec::default(),
+            }],
+            merged: MergedProfile {
+                packages: PackagesSpec {
+                    cargo: Some(CargoSpec {
+                        file: None,
+                        packages: vec!["bat".into()],
+                    }),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        };
+
+        let hash_empty = compute_config_hash(&empty_resolved).unwrap();
+        let hash_nonempty = compute_config_hash(&nonempty_resolved).unwrap();
+        assert_ne!(
+            hash_empty, hash_nonempty,
+            "empty and non-empty packages should produce different hashes"
+        );
+    }
+
+    // --- process_source_decisions with Ignore policy ---
+
+    #[test]
+    fn process_source_decisions_ignore_policy_no_pending_no_excluded() {
+        use crate::config::{CargoSpec, PackagesSpec};
+        let store = StateStore::open_in_memory().unwrap();
+        let notifier = Notifier::new(NotifyMethod::Stdout, None);
+        let policy = AutoApplyPolicyConfig {
+            new_recommended: PolicyAction::Ignore,
+            ..Default::default()
+        };
+
+        let merged = MergedProfile {
+            packages: PackagesSpec {
+                cargo: Some(CargoSpec {
+                    file: None,
+                    packages: vec!["bat".into()],
+                }),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        let excluded = process_source_decisions(&store, "acme", &merged, &policy, &notifier);
+
+        // Ignore policy: silently skipped, no pending decisions, nothing excluded
+        let pending = store.pending_decisions().unwrap();
+        assert!(pending.is_empty(), "ignore policy should not create pending decisions");
+        assert!(
+            excluded.is_empty(),
+            "ignore policy does not create pending records so nothing is excluded"
+        );
+    }
+
+    // --- Notifier construction variants ---
+
+    #[test]
+    fn notifier_desktop_mode_does_not_panic() {
+        // Desktop notification may fail in CI but should not panic
+        let notifier = Notifier::new(NotifyMethod::Desktop, None);
+        notifier.notify("test title", "test body");
+    }
+
+    #[tokio::test]
+    async fn notifier_webhook_with_url_does_not_panic() {
+        // Webhook to a nonexistent URL: should log error but not panic
+        let notifier = Notifier::new(
+            NotifyMethod::Webhook,
+            Some("http://127.0.0.1:1/nonexistent".to_string()),
+        );
+        notifier.notify("test", "message to invalid webhook");
+    }
+
+    #[test]
+    fn notifier_stdout_writes_info() {
+        // Verify stdout notifier runs the tracing::info path
+        let notifier = Notifier::new(NotifyMethod::Stdout, None);
+        notifier.notify("drift event", "file /etc/foo changed");
+    }
+
+    // --- DaemonState: multiple sources ---
+
+    #[test]
+    fn daemon_state_with_multiple_sources() {
+        let mut state = DaemonState::new();
+        state.sources.push(SourceStatus {
+            name: "acme-corp".to_string(),
+            last_sync: Some("2026-03-30T10:00:00Z".to_string()),
+            last_reconcile: None,
+            drift_count: 2,
+            status: "active".to_string(),
+        });
+        state.sources.push(SourceStatus {
+            name: "team-tools".to_string(),
+            last_sync: None,
+            last_reconcile: Some("2026-03-30T11:00:00Z".to_string()),
+            drift_count: 0,
+            status: "error".to_string(),
+        });
+
+        let response = state.to_response();
+        assert_eq!(response.sources.len(), 3); // local + acme-corp + team-tools
+        assert_eq!(response.sources[1].name, "acme-corp");
+        assert_eq!(response.sources[1].drift_count, 2);
+        assert_eq!(response.sources[2].name, "team-tools");
+        assert_eq!(response.sources[2].status, "error");
+    }
+
+    // --- DaemonState: drift counting ---
+
+    #[test]
+    fn daemon_state_drift_increments_propagate_to_response() {
+        let mut state = DaemonState::new();
+        state.drift_count = 10;
+        if let Some(source) = state.sources.first_mut() {
+            source.drift_count = 7;
+        }
+
+        let response = state.to_response();
+        assert_eq!(response.drift_count, 10);
+        assert_eq!(response.sources[0].drift_count, 7);
+    }
+
+    // --- DaemonState: module_last_reconcile tracking ---
+
+    #[test]
+    fn daemon_state_module_last_reconcile_tracking() {
+        let mut state = DaemonState::new();
+        state
+            .module_last_reconcile
+            .insert("security-baseline".to_string(), "2026-03-30T12:00:00Z".to_string());
+        state
+            .module_last_reconcile
+            .insert("dev-tools".to_string(), "2026-03-30T12:05:00Z".to_string());
+
+        assert_eq!(state.module_last_reconcile.len(), 2);
+        assert_eq!(
+            state.module_last_reconcile.get("security-baseline").unwrap(),
+            "2026-03-30T12:00:00Z"
+        );
+        assert_eq!(
+            state.module_last_reconcile.get("dev-tools").unwrap(),
+            "2026-03-30T12:05:00Z"
+        );
+
+        // to_response does not currently populate module_reconcile (empty vec)
+        let response = state.to_response();
+        assert!(response.module_reconcile.is_empty());
+    }
+
+    // --- DaemonStatusResponse: update_available serialization ---
+
+    #[test]
+    fn daemon_status_response_update_available_present() {
+        let response = DaemonStatusResponse {
+            running: true,
+            pid: 99,
+            uptime_secs: 600,
+            last_reconcile: None,
+            last_sync: None,
+            drift_count: 0,
+            sources: vec![],
+            update_available: Some("3.0.0".to_string()),
+            module_reconcile: vec![],
+        };
+
+        let json = serde_json::to_string(&response).unwrap();
+        assert!(json.contains("\"updateAvailable\":\"3.0.0\""));
+        let parsed: DaemonStatusResponse = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.update_available.as_deref(), Some("3.0.0"));
+    }
+
+    // --- SyncTask construction ---
+
+    #[test]
+    fn sync_task_local_defaults() {
+        let task = SyncTask {
+            source_name: "local".to_string(),
+            repo_path: PathBuf::from("/home/user/.config/cfgd"),
+            auto_pull: false,
+            auto_push: false,
+            auto_apply: true,
+            interval: Duration::from_secs(DEFAULT_SYNC_SECS),
+            last_synced: None,
+            require_signed_commits: false,
+            allow_unsigned: false,
+        };
+
+        assert_eq!(task.source_name, "local");
+        assert!(task.auto_apply);
+        assert!(!task.auto_pull);
+        assert!(!task.auto_push);
+        assert!(task.last_synced.is_none());
+        assert_eq!(task.interval.as_secs(), 300);
+    }
+
+    #[test]
+    fn sync_task_source_with_signing() {
+        let task = SyncTask {
+            source_name: "acme-corp".to_string(),
+            repo_path: PathBuf::from("/tmp/sources/acme-corp"),
+            auto_pull: true,
+            auto_push: false,
+            auto_apply: false,
+            interval: Duration::from_secs(600),
+            last_synced: Some(Instant::now()),
+            require_signed_commits: true,
+            allow_unsigned: false,
+        };
+
+        assert_eq!(task.source_name, "acme-corp");
+        assert!(task.auto_pull);
+        assert!(!task.auto_push);
+        assert!(!task.auto_apply);
+        assert!(task.require_signed_commits);
+        assert!(!task.allow_unsigned);
+        assert!(task.last_synced.is_some());
+    }
+
+    #[test]
+    fn sync_task_allow_unsigned_overrides_require_signed() {
+        let task = SyncTask {
+            source_name: "relaxed".to_string(),
+            repo_path: PathBuf::from("/tmp/sources/relaxed"),
+            auto_pull: true,
+            auto_push: false,
+            auto_apply: true,
+            interval: Duration::from_secs(300),
+            last_synced: None,
+            require_signed_commits: true,
+            allow_unsigned: true,
+        };
+
+        // Both flags can be set; the consumer decides precedence
+        assert!(task.require_signed_commits);
+        assert!(task.allow_unsigned);
+    }
+
+    // --- ReconcileTask construction ---
+
+    #[test]
+    fn reconcile_task_default() {
+        let task = ReconcileTask {
+            entity: "__default__".to_string(),
+            interval: Duration::from_secs(DEFAULT_RECONCILE_SECS),
+            auto_apply: false,
+            drift_policy: config::DriftPolicy::default(),
+            last_reconciled: None,
+        };
+
+        assert_eq!(task.entity, "__default__");
+        assert_eq!(task.interval.as_secs(), 300);
+        assert!(!task.auto_apply);
+        assert!(task.last_reconciled.is_none());
+    }
+
+    #[test]
+    fn reconcile_task_per_module() {
+        let task = ReconcileTask {
+            entity: "security-baseline".to_string(),
+            interval: Duration::from_secs(60),
+            auto_apply: true,
+            drift_policy: config::DriftPolicy::Auto,
+            last_reconciled: Some(Instant::now()),
+        };
+
+        assert_eq!(task.entity, "security-baseline");
+        assert_eq!(task.interval.as_secs(), 60);
+        assert!(task.auto_apply);
+        assert!(task.last_reconciled.is_some());
+    }
+
+    // --- pending_resource_paths ---
+
+    #[test]
+    fn pending_resource_paths_empty_store() {
+        let store = StateStore::open_in_memory().unwrap();
+        let paths = pending_resource_paths(&store);
+        assert!(paths.is_empty());
+    }
+
+    #[test]
+    fn pending_resource_paths_with_decisions() {
+        let store = StateStore::open_in_memory().unwrap();
+        store
+            .upsert_pending_decision(
+                "acme",
+                "packages.cargo.bat",
+                "recommended",
+                "install",
+                "recommended packages.cargo.bat (from acme)",
+            )
+            .unwrap();
+        store
+            .upsert_pending_decision(
+                "acme",
+                "env.EDITOR",
+                "recommended",
+                "install",
+                "recommended env.EDITOR (from acme)",
+            )
+            .unwrap();
+
+        let paths = pending_resource_paths(&store);
+        assert_eq!(paths.len(), 2);
+        assert!(paths.contains("packages.cargo.bat"));
+        assert!(paths.contains("env.EDITOR"));
+    }
+
+    // --- infer_item_tier: more coverage ---
+
+    #[test]
+    fn infer_item_tier_locked_keyword() {
+        assert_eq!(infer_item_tier("files.locked-module-config.yaml"), "locked");
+    }
+
+    #[test]
+    fn infer_item_tier_security_in_system() {
+        assert_eq!(infer_item_tier("system.security-baseline"), "locked");
+    }
+
+    #[test]
+    fn infer_item_tier_normal_package() {
+        assert_eq!(infer_item_tier("packages.brew.curl"), "recommended");
+    }
+
+    #[test]
+    fn infer_item_tier_normal_env_var() {
+        assert_eq!(infer_item_tier("env.GOPATH"), "recommended");
+    }
+
+    #[test]
+    fn infer_item_tier_normal_file() {
+        assert_eq!(infer_item_tier("files./home/user/.zshrc"), "recommended");
+    }
+
+    // --- extract_source_resources: aliases not included (not tracked) ---
+
+    #[test]
+    fn extract_source_resources_aliases_not_tracked() {
+        use crate::config::{MergedProfile, ShellAlias};
+
+        let merged = MergedProfile {
+            aliases: vec![
+                ShellAlias {
+                    name: "ll".into(),
+                    command: "ls -la".into(),
+                },
+                ShellAlias {
+                    name: "gp".into(),
+                    command: "git push".into(),
+                },
+            ],
+            ..Default::default()
+        };
+
+        let resources = extract_source_resources(&merged);
+        // Aliases are not tracked as individual resources
+        assert!(
+            resources.is_empty(),
+            "aliases should not be tracked as source resources"
+        );
+    }
+
+    // --- extract_source_resources: mixed profile with everything ---
+
+    #[test]
+    fn extract_source_resources_full_profile() {
+        use crate::config::{
+            AptSpec, BrewSpec, CargoSpec, EnvVar, FilesSpec, ManagedFileSpec, MergedProfile,
+            NpmSpec, PackagesSpec,
+        };
+
+        let mut system = std::collections::HashMap::new();
+        system.insert("sysctl".into(), serde_yaml::Value::Null);
+
+        let merged = MergedProfile {
+            packages: PackagesSpec {
+                brew: Some(BrewSpec {
+                    formulae: vec!["ripgrep".into()],
+                    casks: vec!["firefox".into()],
+                    ..Default::default()
+                }),
+                apt: Some(AptSpec {
+                    file: None,
+                    packages: vec!["curl".into()],
+                }),
+                cargo: Some(CargoSpec {
+                    file: None,
+                    packages: vec!["bat".into()],
+                }),
+                pipx: vec!["black".into()],
+                dnf: vec!["vim".into()],
+                npm: Some(NpmSpec {
+                    file: None,
+                    global: vec!["typescript".into()],
+                }),
+                ..Default::default()
+            },
+            files: FilesSpec {
+                managed: vec![ManagedFileSpec {
+                    source: "dotfiles/.zshrc".into(),
+                    target: PathBuf::from("/home/user/.zshrc"),
+                    strategy: None,
+                    private: false,
+                    origin: None,
+                    encryption: None,
+                    permissions: None,
+                }],
+                ..Default::default()
+            },
+            env: vec![
+                EnvVar {
+                    name: "EDITOR".into(),
+                    value: "vim".into(),
+                },
+                EnvVar {
+                    name: "GOPATH".into(),
+                    value: "/home/user/go".into(),
+                },
+            ],
+            system,
+            ..Default::default()
+        };
+
+        let resources = extract_source_resources(&merged);
+        // Verify all expected resources are present
+        assert!(resources.contains("packages.brew.ripgrep"));
+        assert!(resources.contains("packages.brew.firefox"));
+        assert!(resources.contains("packages.apt.curl"));
+        assert!(resources.contains("packages.cargo.bat"));
+        assert!(resources.contains("packages.pipx.black"));
+        assert!(resources.contains("packages.dnf.vim"));
+        assert!(resources.contains("packages.npm.typescript"));
+        assert!(resources.contains("files./home/user/.zshrc"));
+        assert!(resources.contains("env.EDITOR"));
+        assert!(resources.contains("env.GOPATH"));
+        assert!(resources.contains("system.sysctl"));
+        // Total: 1 formula + 1 cask + 1 apt + 1 cargo + 1 pipx + 1 dnf + 1 npm + 1 file + 2 env + 1 system
+        assert_eq!(resources.len(), 11);
+    }
+
+    // --- process_source_decisions: locked_conflict policy ---
+
+    #[test]
+    fn process_source_decisions_locked_item_notify_policy() {
+        let store = StateStore::open_in_memory().unwrap();
+        let notifier = Notifier::new(NotifyMethod::Stdout, None);
+        let policy = AutoApplyPolicyConfig {
+            new_recommended: PolicyAction::Accept,
+            locked_conflict: PolicyAction::Notify,
+            ..Default::default()
+        };
+
+        // Use a file with "security" in the name to trigger the locked tier
+        let mut system = std::collections::HashMap::new();
+        system.insert("security-baseline".into(), serde_yaml::Value::Null);
+
+        let merged = MergedProfile {
+            system,
+            ..Default::default()
+        };
+
+        let excluded = process_source_decisions(&store, "corp", &merged, &policy, &notifier);
+
+        // The "system.security-baseline" item should be inferred as "locked" tier
+        // and with locked_conflict = Notify, it should create a pending decision
+        let pending = store.pending_decisions().unwrap();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].resource, "system.security-baseline");
+        assert!(excluded.contains("system.security-baseline"));
+    }
+
+    // --- process_source_decisions: multiple sources ---
+
+    #[test]
+    fn process_source_decisions_different_sources_independent() {
+        use crate::config::{CargoSpec, PackagesSpec};
+        let store = StateStore::open_in_memory().unwrap();
+        let notifier = Notifier::new(NotifyMethod::Stdout, None);
+        let policy = AutoApplyPolicyConfig {
+            new_recommended: PolicyAction::Accept,
+            ..Default::default()
+        };
+
+        let merged_a = MergedProfile {
+            packages: PackagesSpec {
+                cargo: Some(CargoSpec {
+                    file: None,
+                    packages: vec!["bat".into()],
+                }),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        let merged_b = MergedProfile {
+            packages: PackagesSpec {
+                cargo: Some(CargoSpec {
+                    file: None,
+                    packages: vec!["ripgrep".into()],
+                }),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        let excluded_a = process_source_decisions(&store, "source-a", &merged_a, &policy, &notifier);
+        let excluded_b = process_source_decisions(&store, "source-b", &merged_b, &policy, &notifier);
+
+        // Accept policy: both sources processed, nothing excluded
+        assert!(excluded_a.is_empty());
+        assert!(excluded_b.is_empty());
+    }
+
+    // --- process_source_decisions: items removed from source ---
+
+    #[test]
+    fn process_source_decisions_removed_items_update_hash() {
+        use crate::config::{CargoSpec, PackagesSpec};
+        let store = StateStore::open_in_memory().unwrap();
+        let notifier = Notifier::new(NotifyMethod::Stdout, None);
+        let policy = AutoApplyPolicyConfig {
+            new_recommended: PolicyAction::Accept,
+            ..Default::default()
+        };
+
+        // First call: bat + ripgrep
+        let merged1 = MergedProfile {
+            packages: PackagesSpec {
+                cargo: Some(CargoSpec {
+                    file: None,
+                    packages: vec!["bat".into(), "ripgrep".into()],
+                }),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let _ = process_source_decisions(&store, "acme", &merged1, &policy, &notifier);
+
+        // Second call: only bat (ripgrep removed from source)
+        let merged2 = MergedProfile {
+            packages: PackagesSpec {
+                cargo: Some(CargoSpec {
+                    file: None,
+                    packages: vec!["bat".into()],
+                }),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let excluded = process_source_decisions(&store, "acme", &merged2, &policy, &notifier);
+
+        // Hash changed, but Accept policy means no pending decisions
+        let pending = store.pending_decisions().unwrap();
+        assert!(pending.is_empty());
+        assert!(excluded.is_empty());
+    }
+
+    // --- SourceStatus: field defaults ---
+
+    #[test]
+    fn source_status_defaults() {
+        let status = SourceStatus {
+            name: "test".to_string(),
+            last_sync: None,
+            last_reconcile: None,
+            drift_count: 0,
+            status: "active".to_string(),
+        };
+
+        assert!(status.last_sync.is_none());
+        assert!(status.last_reconcile.is_none());
+        assert_eq!(status.drift_count, 0);
+    }
+
+    // --- SourceStatus: all fields populated ---
+
+    #[test]
+    fn source_status_all_fields_populated() {
+        let status = SourceStatus {
+            name: "corp-source".to_string(),
+            last_sync: Some("2026-03-30T10:00:00Z".to_string()),
+            last_reconcile: Some("2026-03-30T10:05:00Z".to_string()),
+            drift_count: 15,
+            status: "error".to_string(),
+        };
+
+        let json = serde_json::to_string(&status).unwrap();
+        let parsed: SourceStatus = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.name, "corp-source");
+        assert_eq!(parsed.last_sync.as_deref(), Some("2026-03-30T10:00:00Z"));
+        assert_eq!(
+            parsed.last_reconcile.as_deref(),
+            Some("2026-03-30T10:05:00Z")
+        );
+        assert_eq!(parsed.drift_count, 15);
+        assert_eq!(parsed.status, "error");
+    }
+
+    // --- DaemonStatusResponse deserialization from external JSON ---
+
+    #[test]
+    fn daemon_status_response_deserializes_from_minimal_json() {
+        let json = r#"{
+            "running": false,
+            "pid": 0,
+            "uptimeSecs": 0,
+            "lastReconcile": null,
+            "lastSync": null,
+            "driftCount": 0,
+            "sources": []
+        }"#;
+
+        let parsed: DaemonStatusResponse = serde_json::from_str(json).unwrap();
+        assert!(!parsed.running);
+        assert_eq!(parsed.pid, 0);
+        assert!(parsed.module_reconcile.is_empty());
+        assert!(parsed.update_available.is_none());
+    }
+
+    // --- CheckinPayload: field coverage ---
+
+    #[test]
+    fn checkin_payload_serializes_all_fields() {
+        let payload = CheckinPayload {
+            device_id: "sha256hex".into(),
+            hostname: "myhost.local".into(),
+            os: "linux".into(),
+            arch: "aarch64".into(),
+            config_hash: "abcd1234".into(),
+        };
+
+        let json = serde_json::to_string(&payload).unwrap();
+        assert!(json.contains("\"device_id\""));
+        assert!(json.contains("\"hostname\""));
+        assert!(json.contains("\"os\""));
+        assert!(json.contains("\"arch\""));
+        assert!(json.contains("\"config_hash\""));
+        assert!(json.contains("aarch64"));
+    }
+
+    // --- parse_duration_or_default: edge cases ---
+
+    #[test]
+    fn parse_duration_large_seconds() {
+        assert_eq!(
+            parse_duration_or_default("86400s"),
+            Duration::from_secs(86400)
+        );
+    }
+
+    #[test]
+    fn parse_duration_large_hours() {
+        assert_eq!(
+            parse_duration_or_default("24h"),
+            Duration::from_secs(86400)
+        );
+    }
+
+    #[test]
+    fn parse_duration_empty_string_falls_back() {
+        assert_eq!(
+            parse_duration_or_default(""),
+            Duration::from_secs(DEFAULT_RECONCILE_SECS)
+        );
+    }
+
+    // --- hash_resources: ordering does not matter ---
+
+    #[test]
+    fn hash_resources_large_set_deterministic() {
+        let set1: HashSet<String> = (0..100).map(|i| format!("packages.brew.pkg{}", i)).collect();
+        let set2: HashSet<String> = (0..100)
+            .rev()
+            .map(|i| format!("packages.brew.pkg{}", i))
+            .collect();
+
+        assert_eq!(hash_resources(&set1), hash_resources(&set2));
+    }
+
+    // --- ModuleReconcileStatus: camelCase field names ---
+
+    #[test]
+    fn module_reconcile_status_camel_case_fields() {
+        let status = ModuleReconcileStatus {
+            name: "test".into(),
+            interval: "60s".into(),
+            auto_apply: true,
+            drift_policy: "Auto".into(),
+            last_reconcile: Some("2026-01-01T00:00:00Z".into()),
+        };
+
+        let json = serde_json::to_string(&status).unwrap();
+        assert!(json.contains("\"autoApply\""));
+        assert!(json.contains("\"driftPolicy\""));
+        assert!(json.contains("\"lastReconcile\""));
+        // Should NOT contain snake_case
+        assert!(!json.contains("\"auto_apply\""));
+        assert!(!json.contains("\"drift_policy\""));
+        assert!(!json.contains("\"last_reconcile\""));
+    }
+
+    // --- DaemonStatusResponse: uptime_secs is camelCase in JSON ---
+
+    #[test]
+    fn daemon_status_response_camel_case_uptime() {
+        let response = DaemonStatusResponse {
+            running: true,
+            pid: 1,
+            uptime_secs: 42,
+            last_reconcile: None,
+            last_sync: None,
+            drift_count: 0,
+            sources: vec![],
+            update_available: None,
+            module_reconcile: vec![],
+        };
+
+        let json = serde_json::to_string(&response).unwrap();
+        assert!(json.contains("\"uptimeSecs\""));
+        assert!(json.contains("\"driftCount\""));
+        assert!(!json.contains("\"uptime_secs\""));
+        assert!(!json.contains("\"drift_count\""));
+    }
+
+    // --- process_source_decisions: mixed policies per tier ---
+
+    #[test]
+    fn process_source_decisions_mixed_tiers_accept_recommended_notify_locked() {
+        use crate::config::{CargoSpec, PackagesSpec};
+
+        let store = StateStore::open_in_memory().unwrap();
+        let notifier = Notifier::new(NotifyMethod::Stdout, None);
+        let policy = AutoApplyPolicyConfig {
+            new_recommended: PolicyAction::Accept,
+            new_optional: PolicyAction::Ignore,
+            locked_conflict: PolicyAction::Notify,
+        };
+
+        // Mix of recommended (cargo packages) and locked (security system setting)
+        let mut system = std::collections::HashMap::new();
+        system.insert("security-policy".into(), serde_yaml::Value::Null);
+
+        let merged = MergedProfile {
+            packages: PackagesSpec {
+                cargo: Some(CargoSpec {
+                    file: None,
+                    packages: vec!["bat".into()],
+                }),
+                ..Default::default()
+            },
+            system,
+            ..Default::default()
+        };
+
+        let excluded = process_source_decisions(&store, "corp", &merged, &policy, &notifier);
+
+        let pending = store.pending_decisions().unwrap();
+        // Only the locked item should be pending (security-policy)
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].resource, "system.security-policy");
+        // bat should not be excluded (Accept policy for recommended)
+        assert!(!excluded.contains("packages.cargo.bat"));
+        // security-policy should be excluded (pending)
+        assert!(excluded.contains("system.security-policy"));
+    }
+
+    // --- generate_device_id: always hex ---
+
+    #[test]
+    fn generate_device_id_hex_format() {
+        let id = generate_device_id().unwrap();
+        // Should be lowercase hex only
+        assert!(
+            id.chars().all(|c| c.is_ascii_hexdigit()),
+            "device ID should be hex: {}",
+            id
+        );
+    }
+
+    // --- extract_source_resources: multiple files ---
+
+    #[test]
+    fn extract_source_resources_multiple_files() {
+        use crate::config::{FilesSpec, ManagedFileSpec, MergedProfile};
+
+        let merged = MergedProfile {
+            files: FilesSpec {
+                managed: vec![
+                    ManagedFileSpec {
+                        source: "dotfiles/.zshrc".into(),
+                        target: PathBuf::from("/home/user/.zshrc"),
+                        strategy: None,
+                        private: false,
+                        origin: None,
+                        encryption: None,
+                        permissions: None,
+                    },
+                    ManagedFileSpec {
+                        source: "dotfiles/.vimrc".into(),
+                        target: PathBuf::from("/home/user/.vimrc"),
+                        strategy: None,
+                        private: false,
+                        origin: None,
+                        encryption: None,
+                        permissions: None,
+                    },
+                    ManagedFileSpec {
+                        source: "dotfiles/.gitconfig".into(),
+                        target: PathBuf::from("/home/user/.gitconfig"),
+                        strategy: None,
+                        private: true,
+                        origin: None,
+                        encryption: None,
+                        permissions: None,
+                    },
+                ],
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        let resources = extract_source_resources(&merged);
+        assert_eq!(resources.len(), 3);
+        assert!(resources.contains("files./home/user/.zshrc"));
+        assert!(resources.contains("files./home/user/.vimrc"));
+        assert!(resources.contains("files./home/user/.gitconfig"));
+    }
+
+    // --- extract_source_resources: multiple env vars ---
+
+    #[test]
+    fn extract_source_resources_multiple_env_vars() {
+        use crate::config::{EnvVar, MergedProfile};
+
+        let merged = MergedProfile {
+            env: vec![
+                EnvVar {
+                    name: "PATH".into(),
+                    value: "/usr/local/bin:$PATH".into(),
+                },
+                EnvVar {
+                    name: "EDITOR".into(),
+                    value: "nvim".into(),
+                },
+                EnvVar {
+                    name: "GOPATH".into(),
+                    value: "/home/user/go".into(),
+                },
+            ],
+            ..Default::default()
+        };
+
+        let resources = extract_source_resources(&merged);
+        assert_eq!(resources.len(), 3);
+        assert!(resources.contains("env.PATH"));
+        assert!(resources.contains("env.EDITOR"));
+        assert!(resources.contains("env.GOPATH"));
+    }
+
+    // --- extract_source_resources: multiple system keys ---
+
+    #[test]
+    fn extract_source_resources_multiple_system_keys() {
+        use crate::config::MergedProfile;
+
+        let mut system = std::collections::HashMap::new();
+        system.insert("sysctl".into(), serde_yaml::Value::Null);
+        system.insert("kernelModules".into(), serde_yaml::Value::Null);
+        system.insert("apparmor".into(), serde_yaml::Value::Null);
+
+        let merged = MergedProfile {
+            system,
+            ..Default::default()
+        };
+
+        let resources = extract_source_resources(&merged);
+        assert_eq!(resources.len(), 3);
+        assert!(resources.contains("system.sysctl"));
+        assert!(resources.contains("system.kernelModules"));
+        assert!(resources.contains("system.apparmor"));
+    }
+
+    // --- DaemonState: uptime increases ---
+
+    #[test]
+    fn daemon_state_uptime_increases() {
+        let state = DaemonState::new();
+        // Small sleep to ensure non-zero uptime
+        std::thread::sleep(Duration::from_millis(10));
+        let response = state.to_response();
+        // Uptime should be at least 0 (could be 0 if resolution is 1s)
+        // The key assertion is that it doesn't panic
+        assert!(response.uptime_secs < 10);
+    }
 }

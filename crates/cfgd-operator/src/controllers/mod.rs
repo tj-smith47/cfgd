@@ -2737,4 +2737,480 @@ mod tests {
             "error should mention hostname: {err_msg}"
         );
     }
+
+    // -----------------------------------------------------------------------
+    // evaluate_module_verification edge cases
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn module_verification_keyless_with_public_key_prefers_keyless() {
+        // When both keyless=true AND public_key are set, keyless wins (early return)
+        let sig = ModuleSignature {
+            cosign: Some(crate::crds::CosignSignature {
+                keyless: true,
+                public_key: Some(TEST_PEM_KEY.to_string()),
+                certificate_identity: Some("ci@example.com".to_string()),
+                certificate_oidc_issuer: Some("https://issuer.example.com".to_string()),
+            }),
+        };
+        let result = evaluate_module_verification(&Some(sig));
+        assert_eq!(result.status, "True");
+        assert_eq!(result.reason, "SignatureConfigured");
+        // Should return keyless identity, not PEM fingerprint
+        let digest = result.signature_digest.unwrap();
+        assert!(
+            digest.starts_with("keyless:"),
+            "should use keyless path, got: {digest}"
+        );
+        assert!(digest.contains("ci@example.com"));
+    }
+
+    #[test]
+    fn module_verification_keyless_without_identity_uses_wildcard() {
+        let sig = ModuleSignature {
+            cosign: Some(crate::crds::CosignSignature {
+                keyless: true,
+                certificate_identity: None,
+                certificate_oidc_issuer: None,
+                ..Default::default()
+            }),
+        };
+        let result = evaluate_module_verification(&Some(sig));
+        assert_eq!(result.status, "True");
+        assert_eq!(result.signature_digest.as_deref(), Some("keyless:*@*"));
+    }
+
+    #[test]
+    fn module_verification_static_key_no_public_key() {
+        // cosign present, keyless=false, public_key=None → should be NotSigned or Invalid
+        let sig = ModuleSignature {
+            cosign: Some(crate::crds::CosignSignature {
+                keyless: false,
+                public_key: None,
+                ..Default::default()
+            }),
+        };
+        let result = evaluate_module_verification(&Some(sig));
+        assert_eq!(result.status, "False");
+    }
+
+    // -----------------------------------------------------------------------
+    // merge_policy_requirements — 3+ namespace policies
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn merge_policy_three_namespace_policies_with_version_conflict() {
+        let cluster = ClusterConfigPolicySpec {
+            packages: vec![PackageRef {
+                name: "kubectl".to_string(),
+                version: Some(">=1.30".to_string()),
+            }],
+            ..Default::default()
+        };
+        let ns1 = ConfigPolicySpec {
+            packages: vec![
+                PackageRef {
+                    name: "kubectl".to_string(),
+                    version: Some(">=1.28".to_string()),
+                },
+                PackageRef {
+                    name: "git".to_string(),
+                    version: None,
+                },
+            ],
+            ..Default::default()
+        };
+        let ns2 = ConfigPolicySpec {
+            packages: vec![
+                PackageRef {
+                    name: "curl".to_string(),
+                    version: Some(">=8.0".to_string()),
+                },
+                PackageRef {
+                    name: "git".to_string(),
+                    version: Some(">=2.40".to_string()),
+                },
+            ],
+            ..Default::default()
+        };
+        let ns3 = ConfigPolicySpec {
+            packages: vec![PackageRef {
+                name: "jq".to_string(),
+                version: None,
+            }],
+            ..Default::default()
+        };
+        let merged = merge_policy_requirements(&cluster, &[&ns1, &ns2, &ns3]);
+
+        // Cluster kubectl >=1.30 should win over ns1's >=1.28
+        let kubectl = merged.packages.iter().find(|p| p.name == "kubectl").unwrap();
+        assert_eq!(kubectl.version.as_deref(), Some(">=1.30"));
+
+        // git: cluster has no git, ns1 adds it with None, ns2 tries to add but finds
+        // existing with None version → ns2's version fills in
+        let git = merged.packages.iter().find(|p| p.name == "git").unwrap();
+        assert_eq!(git.version.as_deref(), Some(">=2.40"));
+
+        // curl from ns2, jq from ns3
+        assert!(merged.packages.iter().any(|p| p.name == "curl"));
+        assert!(merged.packages.iter().any(|p| p.name == "jq"));
+
+        // Total unique packages: kubectl, git, curl, jq
+        assert_eq!(merged.packages.len(), 4);
+    }
+
+    #[test]
+    fn merge_policy_namespace_settings_later_overwrites_earlier() {
+        let cluster = ClusterConfigPolicySpec::default();
+        let ns1 = ConfigPolicySpec {
+            settings: {
+                let mut s = BTreeMap::new();
+                s.insert("key".to_string(), serde_json::json!("ns1-value"));
+                s.insert("shared".to_string(), serde_json::json!("from-ns1"));
+                s
+            },
+            ..Default::default()
+        };
+        let ns2 = ConfigPolicySpec {
+            settings: {
+                let mut s = BTreeMap::new();
+                s.insert("shared".to_string(), serde_json::json!("from-ns2"));
+                s
+            },
+            ..Default::default()
+        };
+        let merged = merge_policy_requirements(&cluster, &[&ns1, &ns2]);
+        // ns2 overwrites ns1 for "shared"
+        assert_eq!(merged.settings["shared"], serde_json::json!("from-ns2"));
+        // ns1-only key preserved
+        assert_eq!(merged.settings["key"], serde_json::json!("ns1-value"));
+    }
+
+    #[test]
+    fn merge_policy_cluster_settings_override_namespace() {
+        let cluster = ClusterConfigPolicySpec {
+            settings: {
+                let mut s = BTreeMap::new();
+                s.insert("key".to_string(), serde_json::json!("cluster-wins"));
+                s
+            },
+            ..Default::default()
+        };
+        let ns = ConfigPolicySpec {
+            settings: {
+                let mut s = BTreeMap::new();
+                s.insert("key".to_string(), serde_json::json!("ns-loses"));
+                s.insert("ns-only".to_string(), serde_json::json!("kept"));
+                s
+            },
+            ..Default::default()
+        };
+        let merged = merge_policy_requirements(&cluster, &[&ns]);
+        // Cluster settings extend AFTER namespace → cluster wins
+        assert_eq!(merged.settings["key"], serde_json::json!("cluster-wins"));
+        assert_eq!(merged.settings["ns-only"], serde_json::json!("kept"));
+    }
+
+    #[test]
+    fn merge_policy_three_namespace_module_dedup() {
+        let cluster = ClusterConfigPolicySpec {
+            required_modules: vec![ModuleRef {
+                name: "corp-vpn".to_string(),
+                required: true,
+            }],
+            ..Default::default()
+        };
+        let ns1 = ConfigPolicySpec {
+            required_modules: vec![
+                ModuleRef {
+                    name: "corp-vpn".to_string(),
+                    required: true,
+                },
+                ModuleRef {
+                    name: "corp-certs".to_string(),
+                    required: true,
+                },
+            ],
+            ..Default::default()
+        };
+        let ns2 = ConfigPolicySpec {
+            required_modules: vec![ModuleRef {
+                name: "corp-certs".to_string(),
+                required: true,
+            }],
+            ..Default::default()
+        };
+        let merged = merge_policy_requirements(&cluster, &[&ns1, &ns2]);
+        // Should dedup: corp-vpn (from cluster), corp-certs (from ns1, ns2 skipped)
+        assert_eq!(merged.modules.len(), 2);
+    }
+
+    // -----------------------------------------------------------------------
+    // validate_policy_compliance — nested JSON settings
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn policy_compliance_nested_json_settings() {
+        let mut policy_settings = BTreeMap::new();
+        policy_settings.insert(
+            "network".to_string(),
+            serde_json::json!({"dns": {"servers": ["8.8.8.8", "1.1.1.1"]}}),
+        );
+
+        let mut spec = mc_spec("h", "p");
+        spec.system_settings.insert(
+            "network".to_string(),
+            serde_json::json!({"dns": {"servers": ["8.8.8.8", "1.1.1.1"]}}),
+        );
+        assert!(validate_policy_compliance(
+            &spec,
+            None,
+            &[],
+            &[],
+            &policy_settings
+        ));
+    }
+
+    #[test]
+    fn policy_compliance_nested_json_mismatch() {
+        let mut policy_settings = BTreeMap::new();
+        policy_settings.insert(
+            "network".to_string(),
+            serde_json::json!({"dns": {"servers": ["8.8.8.8"]}}),
+        );
+
+        let mut spec = mc_spec("h", "p");
+        spec.system_settings.insert(
+            "network".to_string(),
+            serde_json::json!({"dns": {"servers": ["1.1.1.1"]}}),
+        );
+        assert!(
+            !validate_policy_compliance(&spec, None, &[], &[], &policy_settings),
+            "nested JSON with different values should not match"
+        );
+    }
+
+    #[test]
+    fn policy_compliance_numeric_settings() {
+        let mut policy_settings = BTreeMap::new();
+        policy_settings.insert("max_retries".to_string(), serde_json::json!(3));
+
+        let mut spec = mc_spec("h", "p");
+        spec.system_settings
+            .insert("max_retries".to_string(), serde_json::json!(3));
+        assert!(validate_policy_compliance(
+            &spec,
+            None,
+            &[],
+            &[],
+            &policy_settings
+        ));
+
+        // Different numeric value
+        let mut wrong = BTreeMap::new();
+        wrong.insert("max_retries".to_string(), serde_json::json!(5));
+        assert!(!validate_policy_compliance(&spec, None, &[], &[], &wrong));
+    }
+
+    #[test]
+    fn policy_compliance_null_setting() {
+        let mut policy_settings = BTreeMap::new();
+        policy_settings.insert("opt_out".to_string(), serde_json::Value::Null);
+
+        let mut spec = mc_spec("h", "p");
+        spec.system_settings
+            .insert("opt_out".to_string(), serde_json::Value::Null);
+        assert!(validate_policy_compliance(
+            &spec,
+            None,
+            &[],
+            &[],
+            &policy_settings
+        ));
+    }
+
+    #[test]
+    fn policy_compliance_array_setting() {
+        let mut policy_settings = BTreeMap::new();
+        policy_settings.insert(
+            "tags".to_string(),
+            serde_json::json!(["production", "critical"]),
+        );
+
+        let mut spec = mc_spec("h", "p");
+        spec.system_settings.insert(
+            "tags".to_string(),
+            serde_json::json!(["production", "critical"]),
+        );
+        assert!(validate_policy_compliance(
+            &spec,
+            None,
+            &[],
+            &[],
+            &policy_settings
+        ));
+
+        // Different order — JSON arrays are order-sensitive
+        spec.system_settings.insert(
+            "tags".to_string(),
+            serde_json::json!(["critical", "production"]),
+        );
+        assert!(
+            !validate_policy_compliance(&spec, None, &[], &[], &policy_settings),
+            "array order matters in JSON equality"
+        );
+    }
+
+    #[test]
+    fn policy_compliance_missing_setting_key() {
+        let mut policy_settings = BTreeMap::new();
+        policy_settings.insert("required_key".to_string(), serde_json::json!("value"));
+
+        let spec = mc_spec("h", "p");
+        // spec has no system_settings → should fail
+        assert!(!validate_policy_compliance(
+            &spec,
+            None,
+            &[],
+            &[],
+            &policy_settings
+        ));
+    }
+
+    // -----------------------------------------------------------------------
+    // build_condition — new condition (not in existing list)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn build_condition_new_type_uses_provided_transition_time() {
+        let existing = vec![Condition {
+            condition_type: "Reconciled".to_string(),
+            status: "True".to_string(),
+            reason: "ReconcileSuccess".to_string(),
+            message: "ok".to_string(),
+            last_transition_time: "2024-01-01T00:00:00Z".to_string(),
+            observed_generation: Some(1),
+        }];
+        // Build a NEW condition type not in existing
+        let c = build_condition(
+            &existing,
+            "DriftDetected",
+            "True",
+            "DriftActive",
+            "drift found",
+            "2024-06-01T00:00:00Z",
+            Some(2),
+        );
+        // New type → uses the provided transition time
+        assert_eq!(c.last_transition_time, "2024-06-01T00:00:00Z");
+        assert_eq!(c.condition_type, "DriftDetected");
+        assert_eq!(c.observed_generation, Some(2));
+    }
+
+    #[test]
+    fn build_drift_alert_conditions_critical_severity() {
+        let conditions = build_drift_alert_conditions(
+            &DriftSeverity::Critical,
+            false,
+            "dev-1",
+            5,
+            "2024-01-01T00:00:00Z",
+            Some(3),
+        );
+        assert_eq!(conditions.len(), 3);
+        // Acknowledged (not yet)
+        assert_eq!(conditions[0].condition_type, "Acknowledged");
+        assert_eq!(conditions[0].status, "False");
+        // Not resolved
+        assert_eq!(conditions[1].condition_type, "Resolved");
+        assert_eq!(conditions[1].status, "False");
+        assert!(conditions[1].message.contains("dev-1"));
+        assert!(conditions[1].message.contains("5 detail(s)"));
+        // Critical is escalated
+        assert_eq!(conditions[2].condition_type, "Escalated");
+        assert_eq!(conditions[2].status, "True");
+    }
+
+    #[test]
+    fn matches_selector_in_with_empty_values_rejects() {
+        let mut labels = BTreeMap::new();
+        labels.insert("env".to_string(), "prod".to_string());
+        let selector = LabelSelector {
+            match_labels: Default::default(),
+            match_expressions: vec![LabelSelectorRequirement {
+                key: "env".to_string(),
+                operator: SelectorOperator::In,
+                values: vec![], // empty values list
+            }],
+        };
+        // In with empty values → no value can match → should reject
+        assert!(!matches_selector(Some(&labels), &selector));
+    }
+
+    #[test]
+    fn matches_selector_not_in_with_empty_values_accepts() {
+        let mut labels = BTreeMap::new();
+        labels.insert("env".to_string(), "prod".to_string());
+        let selector = LabelSelector {
+            match_labels: Default::default(),
+            match_expressions: vec![LabelSelectorRequirement {
+                key: "env".to_string(),
+                operator: SelectorOperator::NotIn,
+                values: vec![], // empty exclusion list
+            }],
+        };
+        // NotIn with empty values → nothing excluded → should accept
+        assert!(matches_selector(Some(&labels), &selector));
+    }
+
+    #[test]
+    fn matches_selector_does_not_exist_with_present_label_rejects() {
+        let mut labels = BTreeMap::new();
+        labels.insert("restricted".to_string(), "true".to_string());
+        let selector = LabelSelector {
+            match_labels: Default::default(),
+            match_expressions: vec![LabelSelectorRequirement {
+                key: "restricted".to_string(),
+                operator: SelectorOperator::DoesNotExist,
+                values: vec![],
+            }],
+        };
+        assert!(
+            !matches_selector(Some(&labels), &selector),
+            "DoesNotExist should reject when label is present"
+        );
+    }
+
+    #[test]
+    fn matches_selector_exists_with_missing_label_rejects() {
+        let labels = BTreeMap::new();
+        let selector = LabelSelector {
+            match_labels: Default::default(),
+            match_expressions: vec![LabelSelectorRequirement {
+                key: "required-label".to_string(),
+                operator: SelectorOperator::Exists,
+                values: vec![],
+            }],
+        };
+        assert!(
+            !matches_selector(Some(&labels), &selector),
+            "Exists should reject when label is absent"
+        );
+    }
+
+    #[test]
+    fn matches_selector_none_labels_with_match_labels_rejects() {
+        let selector = LabelSelector {
+            match_labels: {
+                let mut m = BTreeMap::new();
+                m.insert("team".to_string(), "platform".to_string());
+                m
+            },
+            match_expressions: vec![],
+        };
+        assert!(
+            !matches_selector(None, &selector),
+            "None labels with non-empty match_labels should reject"
+        );
+    }
 }

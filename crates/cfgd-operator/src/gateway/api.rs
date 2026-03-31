@@ -2313,4 +2313,1450 @@ mod tests {
     fn challenge_ttl_is_five_minutes() {
         assert_eq!(CHALLENGE_TTL_SECS, 300);
     }
+
+    // --- Async handler tests ---
+
+    fn test_state() -> SharedState {
+        let db = super::super::db::ServerDb::open(":memory:").expect("open in-memory db");
+        let (event_tx, _) = tokio::sync::broadcast::channel(16);
+        AppState {
+            db: Arc::new(tokio::sync::Mutex::new(db)),
+            kube_client: None,
+            event_tx,
+            enrollment_method: EnrollmentMethod::Token,
+            metrics: None,
+        }
+    }
+
+    fn test_state_key_enrollment() -> SharedState {
+        let db = super::super::db::ServerDb::open(":memory:").expect("open in-memory db");
+        let (event_tx, _) = tokio::sync::broadcast::channel(16);
+        AppState {
+            db: Arc::new(tokio::sync::Mutex::new(db)),
+            kube_client: None,
+            event_tx,
+            enrollment_method: EnrollmentMethod::Key,
+            metrics: None,
+        }
+    }
+
+    // --- enroll_info ---
+
+    #[tokio::test]
+    async fn enroll_info_returns_token_method() {
+        let state = test_state();
+        let result = enroll_info(State(state)).await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn enroll_info_returns_key_method() {
+        let state = test_state_key_enrollment();
+        let result = enroll_info(State(state)).await;
+        assert!(result.is_ok());
+    }
+
+    // --- enroll ---
+
+    #[tokio::test]
+    async fn enroll_rejects_empty_device_id() {
+        let state = test_state();
+        let req = EnrollRequest {
+            token: "cfgd_bs_some_token".to_string(),
+            device_id: "".to_string(),
+            hostname: "ws-1".to_string(),
+            os: "linux".to_string(),
+            arch: "x86_64".to_string(),
+        };
+        let result = enroll(State(state), Json(req)).await;
+        let Err(err) = result else {
+            panic!("expected error");
+        };
+        assert!(matches!(err, GatewayError::InvalidRequest(ref msg) if msg.contains("device_id")));
+    }
+
+    #[tokio::test]
+    async fn enroll_rejects_empty_token() {
+        let state = test_state();
+        let req = EnrollRequest {
+            token: "".to_string(),
+            device_id: "dev-1".to_string(),
+            hostname: "ws-1".to_string(),
+            os: "linux".to_string(),
+            arch: "x86_64".to_string(),
+        };
+        let result = enroll(State(state), Json(req)).await;
+        let Err(err) = result else {
+            panic!("expected error");
+        };
+        assert!(matches!(err, GatewayError::InvalidRequest(ref msg) if msg.contains("token")));
+    }
+
+    #[tokio::test]
+    async fn enroll_rejects_when_key_enrollment_enabled() {
+        let state = test_state_key_enrollment();
+        let req = EnrollRequest {
+            token: "cfgd_bs_token123".to_string(),
+            device_id: "dev-1".to_string(),
+            hostname: "ws-1".to_string(),
+            os: "linux".to_string(),
+            arch: "x86_64".to_string(),
+        };
+        let result = enroll(State(state), Json(req)).await;
+        let Err(err) = result else {
+            panic!("expected error");
+        };
+        assert!(matches!(err, GatewayError::InvalidRequest(ref msg) if msg.contains("key-based")));
+    }
+
+    #[tokio::test]
+    async fn enroll_rejects_invalid_token() {
+        let state = test_state();
+        let req = EnrollRequest {
+            token: "bogus_nonexistent_token".to_string(),
+            device_id: "dev-1".to_string(),
+            hostname: "ws-1".to_string(),
+            os: "linux".to_string(),
+            arch: "x86_64".to_string(),
+        };
+        let result = enroll(State(state), Json(req)).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn enroll_success_with_valid_bootstrap_token() {
+        let state = test_state();
+
+        // Create a bootstrap token in the DB
+        let token_plaintext = "cfgd_bs_test_enrollment_token_abcdef1234567890";
+        let token_hash = hash_token(token_plaintext);
+        let expires_at = cfgd_core::unix_secs_to_iso8601(
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs()
+                + 3600,
+        );
+        {
+            let db = state.db.lock().await;
+            db.create_bootstrap_token(&token_hash, "testuser", Some("platform"), &expires_at)
+                .expect("create token");
+        }
+
+        let req = EnrollRequest {
+            token: token_plaintext.to_string(),
+            device_id: "dev-enroll-1".to_string(),
+            hostname: "ws-enroll".to_string(),
+            os: "linux".to_string(),
+            arch: "x86_64".to_string(),
+        };
+        let result = enroll(State(state.clone()), Json(req)).await;
+        assert!(result.is_ok(), "enrollment should succeed with valid token");
+
+        // Verify device was created in DB
+        let db = state.db.lock().await;
+        let device = db.get_device("dev-enroll-1").expect("device should exist");
+        assert_eq!(device.hostname, "ws-enroll");
+        assert_eq!(device.os, "linux");
+        assert_eq!(device.arch, "x86_64");
+    }
+
+    #[tokio::test]
+    async fn enroll_token_cannot_be_reused() {
+        let state = test_state();
+
+        let token_plaintext = "cfgd_bs_reuse_test_token";
+        let token_hash = hash_token(token_plaintext);
+        let expires_at = cfgd_core::unix_secs_to_iso8601(
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs()
+                + 3600,
+        );
+        {
+            let db = state.db.lock().await;
+            db.create_bootstrap_token(&token_hash, "testuser", None, &expires_at)
+                .expect("create token");
+        }
+
+        // First enrollment succeeds
+        let req1 = EnrollRequest {
+            token: token_plaintext.to_string(),
+            device_id: "dev-first".to_string(),
+            hostname: "ws-1".to_string(),
+            os: "linux".to_string(),
+            arch: "x86_64".to_string(),
+        };
+        let result1 = enroll(State(state.clone()), Json(req1)).await;
+        assert!(result1.is_ok(), "first enrollment should succeed");
+
+        // Second enrollment with same token fails
+        let req2 = EnrollRequest {
+            token: token_plaintext.to_string(),
+            device_id: "dev-second".to_string(),
+            hostname: "ws-2".to_string(),
+            os: "linux".to_string(),
+            arch: "x86_64".to_string(),
+        };
+        let result2 = enroll(State(state), Json(req2)).await;
+        assert!(result2.is_err(), "reusing a consumed token should fail");
+    }
+
+    // --- checkin ---
+
+    #[tokio::test]
+    async fn checkin_rejects_empty_device_id() {
+        let state = test_state();
+        let auth = AuthContext::Admin;
+        let req = CheckinRequest {
+            device_id: "".to_string(),
+            hostname: "ws-1".to_string(),
+            os: "linux".to_string(),
+            arch: "x86_64".to_string(),
+            config_hash: "abc123".to_string(),
+            compliance_summary: None,
+        };
+        let result = checkin(State(state), Extension(auth), Json(req)).await;
+        let Err(err) = result else {
+            panic!("expected error");
+        };
+        assert!(matches!(err, GatewayError::InvalidRequest(ref msg) if msg.contains("device_id")));
+    }
+
+    #[tokio::test]
+    async fn checkin_registers_new_device() {
+        let state = test_state();
+        let auth = AuthContext::Admin;
+        let req = CheckinRequest {
+            device_id: "dev-new".to_string(),
+            hostname: "workstation-new".to_string(),
+            os: "linux".to_string(),
+            arch: "x86_64".to_string(),
+            config_hash: "hash123".to_string(),
+            compliance_summary: None,
+        };
+        let result = checkin(State(state.clone()), Extension(auth), Json(req)).await;
+        assert!(result.is_ok());
+
+        // Verify device was created
+        let db = state.db.lock().await;
+        let device = db.get_device("dev-new").expect("device should exist");
+        assert_eq!(device.hostname, "workstation-new");
+        assert_eq!(device.config_hash, "hash123");
+    }
+
+    #[tokio::test]
+    async fn checkin_updates_existing_device() {
+        let state = test_state();
+        {
+            let db = state.db.lock().await;
+            db.register_device("dev-1", "ws-1", "linux", "x86_64", "hash-old", None)
+                .expect("register");
+        }
+
+        let auth = AuthContext::Admin;
+        let req = CheckinRequest {
+            device_id: "dev-1".to_string(),
+            hostname: "ws-1".to_string(),
+            os: "linux".to_string(),
+            arch: "x86_64".to_string(),
+            config_hash: "hash-new".to_string(),
+            compliance_summary: None,
+        };
+        let result = checkin(State(state.clone()), Extension(auth), Json(req)).await;
+        assert!(result.is_ok());
+
+        // Verify config hash was updated
+        let db = state.db.lock().await;
+        let device = db.get_device("dev-1").expect("device");
+        assert_eq!(device.config_hash, "hash-new");
+    }
+
+    #[tokio::test]
+    async fn checkin_detects_config_change() {
+        let state = test_state();
+        {
+            let db = state.db.lock().await;
+            db.register_device("dev-1", "ws-1", "linux", "x86_64", "hash-old", None)
+                .expect("register");
+            db.set_device_config("dev-1", &serde_json::json!({"packages": ["vim"]}))
+                .expect("set config");
+        }
+
+        let auth = AuthContext::Admin;
+        let req = CheckinRequest {
+            device_id: "dev-1".to_string(),
+            hostname: "ws-1".to_string(),
+            os: "linux".to_string(),
+            arch: "x86_64".to_string(),
+            config_hash: "hash-different".to_string(),
+            compliance_summary: None,
+        };
+        let result = checkin(State(state), Extension(auth), Json(req)).await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn checkin_no_config_change_when_same_hash() {
+        let state = test_state();
+        {
+            let db = state.db.lock().await;
+            db.register_device("dev-1", "ws-1", "linux", "x86_64", "same-hash", None)
+                .expect("register");
+        }
+
+        let auth = AuthContext::Admin;
+        let req = CheckinRequest {
+            device_id: "dev-1".to_string(),
+            hostname: "ws-1".to_string(),
+            os: "linux".to_string(),
+            arch: "x86_64".to_string(),
+            config_hash: "same-hash".to_string(),
+            compliance_summary: None,
+        };
+        let result = checkin(State(state), Extension(auth), Json(req)).await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn checkin_device_auth_can_only_checkin_as_self() {
+        let state = test_state();
+        let auth = AuthContext::Device {
+            device_id: "dev-1".to_string(),
+            username: "jdoe".to_string(),
+        };
+        let req = CheckinRequest {
+            device_id: "dev-2".to_string(),
+            hostname: "ws-2".to_string(),
+            os: "linux".to_string(),
+            arch: "x86_64".to_string(),
+            config_hash: "hash".to_string(),
+            compliance_summary: None,
+        };
+        let result = checkin(State(state), Extension(auth), Json(req)).await;
+        let Err(err) = result else {
+            panic!("expected error");
+        };
+        assert!(matches!(err, GatewayError::Forbidden(_)));
+    }
+
+    #[tokio::test]
+    async fn checkin_with_compliance_summary() {
+        let state = test_state();
+        let auth = AuthContext::Admin;
+        let compliance = serde_json::json!({
+            "total": 10,
+            "compliant": 8,
+            "drifted": 2
+        });
+        let req = CheckinRequest {
+            device_id: "dev-compliance".to_string(),
+            hostname: "ws-compliance".to_string(),
+            os: "linux".to_string(),
+            arch: "x86_64".to_string(),
+            config_hash: "hash-comp".to_string(),
+            compliance_summary: Some(compliance.clone()),
+        };
+        let result = checkin(State(state.clone()), Extension(auth), Json(req)).await;
+        assert!(result.is_ok());
+
+        // Verify compliance_summary was stored
+        let db = state.db.lock().await;
+        let device = db.get_device("dev-compliance").expect("device");
+        assert!(device.compliance_summary.is_some());
+        assert_eq!(device.compliance_summary.unwrap()["total"], 10);
+    }
+
+    #[tokio::test]
+    async fn checkin_broadcasts_event() {
+        let state = test_state();
+        let mut rx = state.event_tx.subscribe();
+
+        let auth = AuthContext::Admin;
+        let req = CheckinRequest {
+            device_id: "dev-broadcast".to_string(),
+            hostname: "ws-broadcast".to_string(),
+            os: "linux".to_string(),
+            arch: "x86_64".to_string(),
+            config_hash: "hash-bc".to_string(),
+            compliance_summary: None,
+        };
+        let result = checkin(State(state), Extension(auth), Json(req)).await;
+        assert!(result.is_ok());
+
+        // Check that an event was broadcast
+        let event = rx.try_recv().expect("should receive broadcast event");
+        assert_eq!(event.device_id, "dev-broadcast");
+        assert_eq!(event.event_type, "checkin");
+    }
+
+    // --- list_devices ---
+
+    #[tokio::test]
+    async fn list_devices_empty() {
+        let state = test_state();
+        let auth = AuthContext::Admin;
+        let pagination = PaginationParams {
+            limit: 100,
+            offset: 0,
+        };
+        let result = list_devices(State(state), Extension(auth), Query(pagination)).await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn list_devices_returns_all_devices_for_admin() {
+        let state = test_state();
+        {
+            let db = state.db.lock().await;
+            db.register_device("dev-1", "ws-1", "linux", "x86_64", "h1", None)
+                .expect("register");
+            db.register_device("dev-2", "ws-2", "darwin", "aarch64", "h2", None)
+                .expect("register");
+        }
+
+        let auth = AuthContext::Admin;
+        let pagination = PaginationParams {
+            limit: 100,
+            offset: 0,
+        };
+        let result = list_devices(State(state), Extension(auth), Query(pagination)).await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn list_devices_device_auth_returns_only_self() {
+        let state = test_state();
+        {
+            let db = state.db.lock().await;
+            db.register_device("dev-1", "ws-1", "linux", "x86_64", "h1", None)
+                .expect("register");
+            db.register_device("dev-2", "ws-2", "darwin", "aarch64", "h2", None)
+                .expect("register");
+        }
+
+        let auth = AuthContext::Device {
+            device_id: "dev-1".to_string(),
+            username: "jdoe".to_string(),
+        };
+        let pagination = PaginationParams {
+            limit: 100,
+            offset: 0,
+        };
+        let result = list_devices(State(state), Extension(auth), Query(pagination)).await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn list_devices_respects_pagination_limit() {
+        let state = test_state();
+        {
+            let db = state.db.lock().await;
+            for i in 0..5 {
+                db.register_device(
+                    &format!("dev-{i}"),
+                    &format!("ws-{i}"),
+                    "linux",
+                    "x86_64",
+                    &format!("h{i}"),
+                    None,
+                )
+                .expect("register");
+            }
+        }
+
+        let auth = AuthContext::Admin;
+        let pagination = PaginationParams {
+            limit: 2,
+            offset: 0,
+        };
+        let result = list_devices(State(state), Extension(auth), Query(pagination)).await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn list_devices_caps_limit_at_1000() {
+        let state = test_state();
+        let auth = AuthContext::Admin;
+        let pagination = PaginationParams {
+            limit: 5000,
+            offset: 0,
+        };
+        // Should not error even with limit > 1000 — it gets capped internally
+        let result = list_devices(State(state), Extension(auth), Query(pagination)).await;
+        assert!(result.is_ok());
+    }
+
+    // --- get_device ---
+
+    #[tokio::test]
+    async fn get_device_existing() {
+        let state = test_state();
+        {
+            let db = state.db.lock().await;
+            db.register_device("dev-get", "ws-get", "linux", "x86_64", "hash-get", None)
+                .expect("register");
+        }
+
+        let auth = AuthContext::Admin;
+        let result = get_device(State(state), Extension(auth), Path("dev-get".to_string())).await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn get_device_not_found() {
+        let state = test_state();
+        let auth = AuthContext::Admin;
+        let result =
+            get_device(State(state), Extension(auth), Path("nonexistent".to_string())).await;
+        let Err(err) = result else {
+            panic!("expected error");
+        };
+        assert!(matches!(err, GatewayError::NotFound(_)));
+    }
+
+    #[tokio::test]
+    async fn get_device_device_auth_allows_self() {
+        let state = test_state();
+        {
+            let db = state.db.lock().await;
+            db.register_device("dev-own", "ws-own", "linux", "x86_64", "hash", None)
+                .expect("register");
+        }
+
+        let auth = AuthContext::Device {
+            device_id: "dev-own".to_string(),
+            username: "jdoe".to_string(),
+        };
+        let result =
+            get_device(State(state), Extension(auth), Path("dev-own".to_string())).await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn get_device_device_auth_denies_other() {
+        let state = test_state();
+        {
+            let db = state.db.lock().await;
+            db.register_device("dev-other", "ws-other", "linux", "x86_64", "hash", None)
+                .expect("register");
+        }
+
+        let auth = AuthContext::Device {
+            device_id: "dev-own".to_string(),
+            username: "jdoe".to_string(),
+        };
+        let result =
+            get_device(State(state), Extension(auth), Path("dev-other".to_string())).await;
+        let Err(err) = result else {
+            panic!("expected error");
+        };
+        assert!(matches!(err, GatewayError::Forbidden(_)));
+    }
+
+    // --- set_device_config ---
+
+    #[tokio::test]
+    async fn set_device_config_admin_success() {
+        let state = test_state();
+        {
+            let db = state.db.lock().await;
+            db.register_device("dev-cfg", "ws-cfg", "linux", "x86_64", "hash", None)
+                .expect("register");
+        }
+
+        let auth = AuthContext::Admin;
+        let req = SetConfigRequest {
+            config: serde_json::json!({"packages": ["vim", "git"]}),
+        };
+        let result = set_device_config(
+            State(state.clone()),
+            Extension(auth),
+            Path("dev-cfg".to_string()),
+            Json(req),
+        )
+        .await;
+        assert!(result.is_ok());
+
+        // Verify config was stored
+        let db = state.db.lock().await;
+        let device = db.get_device("dev-cfg").expect("device");
+        assert!(device.desired_config.is_some());
+        assert_eq!(device.desired_config.unwrap()["packages"][0], "vim");
+    }
+
+    #[tokio::test]
+    async fn set_device_config_device_auth_forbidden() {
+        let state = test_state();
+        {
+            let db = state.db.lock().await;
+            db.register_device("dev-cfg2", "ws-cfg2", "linux", "x86_64", "hash", None)
+                .expect("register");
+        }
+
+        let auth = AuthContext::Device {
+            device_id: "dev-cfg2".to_string(),
+            username: "jdoe".to_string(),
+        };
+        let req = SetConfigRequest {
+            config: serde_json::json!({"packages": ["vim"]}),
+        };
+        let result = set_device_config(
+            State(state),
+            Extension(auth),
+            Path("dev-cfg2".to_string()),
+            Json(req),
+        )
+        .await;
+        let Err(err) = result else {
+            panic!("expected error");
+        };
+        assert!(matches!(err, GatewayError::Forbidden(_)));
+    }
+
+    #[tokio::test]
+    async fn set_device_config_not_found() {
+        let state = test_state();
+        let auth = AuthContext::Admin;
+        let req = SetConfigRequest {
+            config: serde_json::json!({"packages": ["vim"]}),
+        };
+        let result = set_device_config(
+            State(state),
+            Extension(auth),
+            Path("nonexistent".to_string()),
+            Json(req),
+        )
+        .await;
+        let Err(err) = result else {
+            panic!("expected error");
+        };
+        assert!(matches!(err, GatewayError::NotFound(_)));
+    }
+
+    // --- list_drift_events ---
+
+    #[tokio::test]
+    async fn list_drift_events_empty() {
+        let state = test_state();
+        {
+            let db = state.db.lock().await;
+            db.register_device("dev-drift", "ws-drift", "linux", "x86_64", "hash", None)
+                .expect("register");
+        }
+
+        let auth = AuthContext::Admin;
+        let result =
+            list_drift_events(State(state), Extension(auth), Path("dev-drift".to_string())).await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn list_drift_events_with_events() {
+        let state = test_state();
+        {
+            let db = state.db.lock().await;
+            db.register_device("dev-drift2", "ws-drift2", "linux", "x86_64", "hash", None)
+                .expect("register");
+            db.record_drift_event("dev-drift2", "field changed")
+                .expect("record drift");
+        }
+
+        let auth = AuthContext::Admin;
+        let result = list_drift_events(
+            State(state),
+            Extension(auth),
+            Path("dev-drift2".to_string()),
+        )
+        .await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn list_drift_events_device_auth_allows_self() {
+        let state = test_state();
+        {
+            let db = state.db.lock().await;
+            db.register_device("dev-own-drift", "ws", "linux", "x86_64", "hash", None)
+                .expect("register");
+        }
+
+        let auth = AuthContext::Device {
+            device_id: "dev-own-drift".to_string(),
+            username: "jdoe".to_string(),
+        };
+        let result = list_drift_events(
+            State(state),
+            Extension(auth),
+            Path("dev-own-drift".to_string()),
+        )
+        .await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn list_drift_events_device_auth_denies_other() {
+        let state = test_state();
+        {
+            let db = state.db.lock().await;
+            db.register_device("dev-victim", "ws", "linux", "x86_64", "hash", None)
+                .expect("register");
+        }
+
+        let auth = AuthContext::Device {
+            device_id: "dev-attacker".to_string(),
+            username: "attacker".to_string(),
+        };
+        let result = list_drift_events(
+            State(state),
+            Extension(auth),
+            Path("dev-victim".to_string()),
+        )
+        .await;
+        let Err(err) = result else {
+            panic!("expected error");
+        };
+        assert!(matches!(err, GatewayError::Forbidden(_)));
+    }
+
+    #[tokio::test]
+    async fn list_drift_events_not_found() {
+        let state = test_state();
+        let auth = AuthContext::Admin;
+        let result = list_drift_events(
+            State(state),
+            Extension(auth),
+            Path("nonexistent".to_string()),
+        )
+        .await;
+        let Err(err) = result else {
+            panic!("expected error");
+        };
+        assert!(matches!(err, GatewayError::NotFound(_)));
+    }
+
+    // --- record_drift_event ---
+
+    #[tokio::test]
+    async fn record_drift_event_success() {
+        let state = test_state();
+        {
+            let db = state.db.lock().await;
+            db.register_device("dev-record", "ws-record", "linux", "x86_64", "hash", None)
+                .expect("register");
+        }
+
+        let auth = AuthContext::Admin;
+        let req = DriftRequest {
+            details: vec![DriftDetailInput {
+                field: "package/vim".to_string(),
+                expected: "installed".to_string(),
+                actual: "missing".to_string(),
+            }],
+        };
+        let result = record_drift_event(
+            State(state.clone()),
+            Extension(auth),
+            Path("dev-record".to_string()),
+            Json(req),
+        )
+        .await;
+        assert!(result.is_ok());
+
+        // Verify device status changed to drifted
+        let db = state.db.lock().await;
+        let device = db.get_device("dev-record").expect("device");
+        assert_eq!(device.status, super::super::db::DeviceStatus::Drifted);
+    }
+
+    #[tokio::test]
+    async fn record_drift_event_broadcasts_to_sse() {
+        let state = test_state();
+        let mut rx = state.event_tx.subscribe();
+        {
+            let db = state.db.lock().await;
+            db.register_device("dev-sse", "ws-sse", "linux", "x86_64", "hash", None)
+                .expect("register");
+        }
+
+        let auth = AuthContext::Admin;
+        let req = DriftRequest {
+            details: vec![DriftDetailInput {
+                field: "file/bashrc".to_string(),
+                expected: "hash-a".to_string(),
+                actual: "hash-b".to_string(),
+            }],
+        };
+        let _ = record_drift_event(
+            State(state),
+            Extension(auth),
+            Path("dev-sse".to_string()),
+            Json(req),
+        )
+        .await;
+
+        let event = rx.try_recv().expect("should receive broadcast");
+        assert_eq!(event.device_id, "dev-sse");
+        assert_eq!(event.event_type, "drift");
+    }
+
+    #[tokio::test]
+    async fn record_drift_event_device_auth_denies_other() {
+        let state = test_state();
+        {
+            let db = state.db.lock().await;
+            db.register_device("dev-target", "ws", "linux", "x86_64", "hash", None)
+                .expect("register");
+        }
+
+        let auth = AuthContext::Device {
+            device_id: "dev-attacker".to_string(),
+            username: "attacker".to_string(),
+        };
+        let req = DriftRequest {
+            details: vec![DriftDetailInput {
+                field: "pkg/vim".to_string(),
+                expected: "9.0".to_string(),
+                actual: "8.2".to_string(),
+            }],
+        };
+        let result = record_drift_event(
+            State(state),
+            Extension(auth),
+            Path("dev-target".to_string()),
+            Json(req),
+        )
+        .await;
+        let Err(err) = result else {
+            panic!("expected error");
+        };
+        assert!(matches!(err, GatewayError::Forbidden(_)));
+    }
+
+    #[tokio::test]
+    async fn record_drift_event_nonexistent_device() {
+        let state = test_state();
+        let auth = AuthContext::Admin;
+        let req = DriftRequest {
+            details: vec![DriftDetailInput {
+                field: "pkg/vim".to_string(),
+                expected: "9.0".to_string(),
+                actual: "8.2".to_string(),
+            }],
+        };
+        let result = record_drift_event(
+            State(state),
+            Extension(auth),
+            Path("nonexistent".to_string()),
+            Json(req),
+        )
+        .await;
+        let Err(err) = result else {
+            panic!("expected error");
+        };
+        assert!(matches!(err, GatewayError::NotFound(_)));
+    }
+
+    // --- force_reconcile ---
+
+    #[tokio::test]
+    async fn force_reconcile_admin_success() {
+        let state = test_state();
+        {
+            let db = state.db.lock().await;
+            db.register_device("dev-recon", "ws-recon", "linux", "x86_64", "hash", None)
+                .expect("register");
+        }
+
+        let auth = AuthContext::Admin;
+        let result = force_reconcile(
+            State(state.clone()),
+            Extension(auth),
+            Path("dev-recon".to_string()),
+        )
+        .await;
+        assert!(result.is_ok());
+
+        // Verify status changed to pending-reconcile
+        let db = state.db.lock().await;
+        let device = db.get_device("dev-recon").expect("device");
+        assert_eq!(
+            device.status,
+            super::super::db::DeviceStatus::PendingReconcile
+        );
+    }
+
+    #[tokio::test]
+    async fn force_reconcile_device_auth_forbidden() {
+        let state = test_state();
+        {
+            let db = state.db.lock().await;
+            db.register_device("dev-recon2", "ws", "linux", "x86_64", "hash", None)
+                .expect("register");
+        }
+
+        let auth = AuthContext::Device {
+            device_id: "dev-recon2".to_string(),
+            username: "jdoe".to_string(),
+        };
+        let result = force_reconcile(
+            State(state),
+            Extension(auth),
+            Path("dev-recon2".to_string()),
+        )
+        .await;
+        let Err(err) = result else {
+            panic!("expected error");
+        };
+        assert!(matches!(err, GatewayError::Forbidden(_)));
+    }
+
+    #[tokio::test]
+    async fn force_reconcile_not_found() {
+        let state = test_state();
+        let auth = AuthContext::Admin;
+        let result = force_reconcile(
+            State(state),
+            Extension(auth),
+            Path("nonexistent".to_string()),
+        )
+        .await;
+        let Err(err) = result else {
+            panic!("expected error");
+        };
+        assert!(matches!(err, GatewayError::NotFound(_)));
+    }
+
+    // --- list_fleet_events ---
+
+    #[tokio::test]
+    async fn list_fleet_events_empty() {
+        let state = test_state();
+        let pagination = PaginationParams {
+            limit: 100,
+            offset: 0,
+        };
+        let result = list_fleet_events(State(state), Query(pagination)).await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn list_fleet_events_with_data() {
+        let state = test_state();
+        {
+            let db = state.db.lock().await;
+            db.register_device("dev-fe", "ws-fe", "linux", "x86_64", "hash", None)
+                .expect("register");
+            db.record_checkin("dev-fe", "hash", false)
+                .expect("record checkin");
+            db.record_drift_event("dev-fe", "drift details")
+                .expect("record drift");
+        }
+
+        let pagination = PaginationParams {
+            limit: 100,
+            offset: 0,
+        };
+        let result = list_fleet_events(State(state), Query(pagination)).await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn list_fleet_events_caps_limit() {
+        let state = test_state();
+        let pagination = PaginationParams {
+            limit: 5000,
+            offset: 0,
+        };
+        // Should not error — limit gets capped to 1000 internally
+        let result = list_fleet_events(State(state), Query(pagination)).await;
+        assert!(result.is_ok());
+    }
+
+    // --- request_challenge ---
+
+    #[tokio::test]
+    async fn request_challenge_rejects_when_token_mode() {
+        let state = test_state(); // token mode by default
+        let req = ChallengeRequest {
+            username: "jdoe".to_string(),
+            device_id: "dev-1".to_string(),
+            hostname: "ws-1".to_string(),
+            os: "linux".to_string(),
+            arch: "x86_64".to_string(),
+        };
+        let result = request_challenge(State(state), Json(req)).await;
+        let Err(err) = result else {
+            panic!("expected error");
+        };
+        assert!(matches!(err, GatewayError::InvalidRequest(ref msg) if msg.contains("bootstrap token")));
+    }
+
+    #[tokio::test]
+    async fn request_challenge_rejects_empty_username() {
+        let state = test_state_key_enrollment();
+        let req = ChallengeRequest {
+            username: "".to_string(),
+            device_id: "dev-1".to_string(),
+            hostname: "ws-1".to_string(),
+            os: "linux".to_string(),
+            arch: "x86_64".to_string(),
+        };
+        let result = request_challenge(State(state), Json(req)).await;
+        let Err(err) = result else {
+            panic!("expected error");
+        };
+        assert!(matches!(err, GatewayError::InvalidRequest(ref msg) if msg.contains("username")));
+    }
+
+    #[tokio::test]
+    async fn request_challenge_rejects_empty_device_id() {
+        let state = test_state_key_enrollment();
+        let req = ChallengeRequest {
+            username: "jdoe".to_string(),
+            device_id: "".to_string(),
+            hostname: "ws-1".to_string(),
+            os: "linux".to_string(),
+            arch: "x86_64".to_string(),
+        };
+        let result = request_challenge(State(state), Json(req)).await;
+        let Err(err) = result else {
+            panic!("expected error");
+        };
+        assert!(matches!(err, GatewayError::InvalidRequest(ref msg) if msg.contains("device_id")));
+    }
+
+    #[tokio::test]
+    async fn request_challenge_rejects_user_without_keys() {
+        let state = test_state_key_enrollment();
+        let req = ChallengeRequest {
+            username: "unknown-user".to_string(),
+            device_id: "dev-1".to_string(),
+            hostname: "ws-1".to_string(),
+            os: "linux".to_string(),
+            arch: "x86_64".to_string(),
+        };
+        let result = request_challenge(State(state), Json(req)).await;
+        let Err(err) = result else {
+            panic!("expected error");
+        };
+        assert!(matches!(err, GatewayError::InvalidRequest(ref msg) if msg.contains("no public keys")));
+    }
+
+    #[tokio::test]
+    async fn request_challenge_success_with_registered_key() {
+        let state = test_state_key_enrollment();
+        {
+            let db = state.db.lock().await;
+            db.add_user_public_key(
+                "jdoe",
+                "ssh",
+                "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIG...",
+                "SHA256:testfp",
+                Some("laptop key"),
+            )
+            .expect("add key");
+        }
+
+        let req = ChallengeRequest {
+            username: "jdoe".to_string(),
+            device_id: "dev-ch".to_string(),
+            hostname: "ws-ch".to_string(),
+            os: "linux".to_string(),
+            arch: "x86_64".to_string(),
+        };
+        let result = request_challenge(State(state), Json(req)).await;
+        assert!(result.is_ok());
+    }
+
+    // --- verify_enrollment ---
+
+    #[tokio::test]
+    async fn verify_enrollment_rejects_when_token_mode() {
+        let state = test_state();
+        let req = VerifyRequest {
+            challenge_id: "ch-1".to_string(),
+            signature: "sig-data".to_string(),
+            key_type: "ssh".to_string(),
+        };
+        let result = verify_enrollment(State(state), Json(req)).await;
+        let Err(err) = result else {
+            panic!("expected error");
+        };
+        assert!(matches!(err, GatewayError::InvalidRequest(ref msg) if msg.contains("key-based")));
+    }
+
+    #[tokio::test]
+    async fn verify_enrollment_rejects_empty_challenge_id() {
+        let state = test_state_key_enrollment();
+        let req = VerifyRequest {
+            challenge_id: "".to_string(),
+            signature: "sig-data".to_string(),
+            key_type: "ssh".to_string(),
+        };
+        let result = verify_enrollment(State(state), Json(req)).await;
+        let Err(err) = result else {
+            panic!("expected error");
+        };
+        assert!(matches!(err, GatewayError::InvalidRequest(ref msg) if msg.contains("challenge_id")));
+    }
+
+    #[tokio::test]
+    async fn verify_enrollment_rejects_empty_signature() {
+        let state = test_state_key_enrollment();
+        let req = VerifyRequest {
+            challenge_id: "ch-1".to_string(),
+            signature: "".to_string(),
+            key_type: "ssh".to_string(),
+        };
+        let result = verify_enrollment(State(state), Json(req)).await;
+        let Err(err) = result else {
+            panic!("expected error");
+        };
+        assert!(matches!(err, GatewayError::InvalidRequest(ref msg) if msg.contains("signature")));
+    }
+
+    #[tokio::test]
+    async fn verify_enrollment_rejects_invalid_key_type() {
+        let state = test_state_key_enrollment();
+        let req = VerifyRequest {
+            challenge_id: "ch-1".to_string(),
+            signature: "sig-data".to_string(),
+            key_type: "rsa".to_string(),
+        };
+        let result = verify_enrollment(State(state), Json(req)).await;
+        let Err(err) = result else {
+            panic!("expected error");
+        };
+        assert!(matches!(err, GatewayError::InvalidRequest(ref msg) if msg.contains("key_type")));
+    }
+
+    #[tokio::test]
+    async fn verify_enrollment_rejects_nonexistent_challenge() {
+        let state = test_state_key_enrollment();
+        let req = VerifyRequest {
+            challenge_id: "nonexistent-challenge".to_string(),
+            signature: "sig-data".to_string(),
+            key_type: "ssh".to_string(),
+        };
+        let result = verify_enrollment(State(state), Json(req)).await;
+        let Err(err) = result else {
+            panic!("expected error");
+        };
+        assert!(matches!(err, GatewayError::NotFound(_)));
+    }
+
+    // --- admin_reset ---
+
+    #[tokio::test]
+    async fn admin_reset_clears_all_data() {
+        let state = test_state();
+        {
+            let db = state.db.lock().await;
+            db.register_device("dev-1", "ws-1", "linux", "x86_64", "hash", None)
+                .expect("register");
+            db.register_device("dev-2", "ws-2", "darwin", "aarch64", "hash2", None)
+                .expect("register");
+            db.record_drift_event("dev-1", "drift details")
+                .expect("record drift");
+        }
+
+        let result = admin_reset(State(state.clone())).await;
+        assert!(result.is_ok());
+
+        // Verify data was wiped
+        let db = state.db.lock().await;
+        let devices = db.list_devices().expect("list");
+        assert!(devices.is_empty(), "all devices should be deleted after reset");
+    }
+
+    // --- add_user_key ---
+
+    #[tokio::test]
+    async fn add_user_key_success() {
+        let state = test_state();
+        let req = AddKeyRequest {
+            key_type: "ssh".to_string(),
+            public_key: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIG...".to_string(),
+            fingerprint: "SHA256:abc123".to_string(),
+            label: Some("laptop key".to_string()),
+        };
+        let result =
+            add_user_key(State(state), Path("jdoe".to_string()), Json(req)).await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn add_user_key_empty_username() {
+        let state = test_state();
+        let req = AddKeyRequest {
+            key_type: "ssh".to_string(),
+            public_key: "ssh-ed25519 ...".to_string(),
+            fingerprint: "SHA256:abc".to_string(),
+            label: None,
+        };
+        let result = add_user_key(State(state), Path("".to_string()), Json(req)).await;
+        let Err(err) = result else {
+            panic!("expected error");
+        };
+        assert!(matches!(err, GatewayError::InvalidRequest(ref msg) if msg.contains("username")));
+    }
+
+    #[tokio::test]
+    async fn add_user_key_invalid_key_type() {
+        let state = test_state();
+        let req = AddKeyRequest {
+            key_type: "rsa".to_string(),
+            public_key: "ssh-rsa ...".to_string(),
+            fingerprint: "SHA256:abc".to_string(),
+            label: None,
+        };
+        let result = add_user_key(State(state), Path("jdoe".to_string()), Json(req)).await;
+        let Err(err) = result else {
+            panic!("expected error");
+        };
+        assert!(matches!(err, GatewayError::InvalidRequest(ref msg) if msg.contains("key_type")));
+    }
+
+    #[tokio::test]
+    async fn add_user_key_empty_public_key() {
+        let state = test_state();
+        let req = AddKeyRequest {
+            key_type: "ssh".to_string(),
+            public_key: "".to_string(),
+            fingerprint: "SHA256:abc".to_string(),
+            label: None,
+        };
+        let result = add_user_key(State(state), Path("jdoe".to_string()), Json(req)).await;
+        let Err(err) = result else {
+            panic!("expected error");
+        };
+        assert!(matches!(err, GatewayError::InvalidRequest(ref msg) if msg.contains("public_key")));
+    }
+
+    #[tokio::test]
+    async fn add_user_key_empty_fingerprint() {
+        let state = test_state();
+        let req = AddKeyRequest {
+            key_type: "ssh".to_string(),
+            public_key: "ssh-ed25519 ...".to_string(),
+            fingerprint: "".to_string(),
+            label: None,
+        };
+        let result = add_user_key(State(state), Path("jdoe".to_string()), Json(req)).await;
+        let Err(err) = result else {
+            panic!("expected error");
+        };
+        assert!(matches!(err, GatewayError::InvalidRequest(ref msg) if msg.contains("fingerprint")));
+    }
+
+    // --- list_user_keys ---
+
+    #[tokio::test]
+    async fn list_user_keys_empty() {
+        let state = test_state();
+        let result = list_user_keys(State(state), Path("jdoe".to_string())).await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn list_user_keys_with_keys() {
+        let state = test_state();
+        {
+            let db = state.db.lock().await;
+            db.add_user_public_key("jdoe", "ssh", "ssh-ed25519 AAAA...", "SHA256:a", Some("key1"))
+                .expect("add key");
+            db.add_user_public_key("jdoe", "gpg", "-----BEGIN PGP...", "DEADBEEF", None)
+                .expect("add key");
+        }
+
+        let result = list_user_keys(State(state), Path("jdoe".to_string())).await;
+        assert!(result.is_ok());
+    }
+
+    // --- delete_user_key ---
+
+    #[tokio::test]
+    async fn delete_user_key_success() {
+        let state = test_state();
+        let key_id;
+        {
+            let db = state.db.lock().await;
+            let key = db
+                .add_user_public_key("jdoe", "ssh", "ssh-ed25519 ...", "SHA256:x", None)
+                .expect("add key");
+            key_id = key.id;
+        }
+
+        let result =
+            delete_user_key(State(state), Path(("jdoe".to_string(), key_id))).await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn delete_user_key_not_found() {
+        let state = test_state();
+        let result = delete_user_key(
+            State(state),
+            Path(("jdoe".to_string(), "nonexistent".to_string())),
+        )
+        .await;
+        let Err(err) = result else {
+            panic!("expected error");
+        };
+        assert!(matches!(err, GatewayError::NotFound(_)));
+    }
+
+    // --- create_token ---
+
+    #[tokio::test]
+    async fn create_token_success() {
+        let state = test_state();
+        let req = CreateTokenRequest {
+            username: "admin".to_string(),
+            team: Some("platform".to_string()),
+            expires_in: 3600,
+        };
+        let result = create_token(State(state), Json(req)).await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn create_token_empty_username() {
+        let state = test_state();
+        let req = CreateTokenRequest {
+            username: "".to_string(),
+            team: None,
+            expires_in: 3600,
+        };
+        let result = create_token(State(state), Json(req)).await;
+        let Err(err) = result else {
+            panic!("expected error");
+        };
+        assert!(matches!(err, GatewayError::InvalidRequest(ref msg) if msg.contains("username")));
+    }
+
+    #[tokio::test]
+    async fn create_token_zero_expires_in() {
+        let state = test_state();
+        let req = CreateTokenRequest {
+            username: "admin".to_string(),
+            team: None,
+            expires_in: 0,
+        };
+        let result = create_token(State(state), Json(req)).await;
+        let Err(err) = result else {
+            panic!("expected error");
+        };
+        assert!(matches!(err, GatewayError::InvalidRequest(ref msg) if msg.contains("expires_in")));
+    }
+
+    #[tokio::test]
+    async fn create_token_excessive_expires_in() {
+        let state = test_state();
+        let req = CreateTokenRequest {
+            username: "admin".to_string(),
+            team: None,
+            expires_in: 31 * 86400, // 31 days, exceeds 30 day max
+        };
+        let result = create_token(State(state), Json(req)).await;
+        let Err(err) = result else {
+            panic!("expected error");
+        };
+        assert!(matches!(err, GatewayError::InvalidRequest(ref msg) if msg.contains("expires_in")));
+    }
+
+    // --- list_tokens ---
+
+    #[tokio::test]
+    async fn list_tokens_empty() {
+        let state = test_state();
+        let result = list_tokens(State(state)).await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn list_tokens_with_data() {
+        let state = test_state();
+        {
+            let db = state.db.lock().await;
+            db.create_bootstrap_token(
+                "hash1",
+                "admin",
+                None,
+                "2026-12-31T23:59:59Z",
+            )
+            .expect("create token");
+        }
+
+        let result = list_tokens(State(state)).await;
+        assert!(result.is_ok());
+    }
+
+    // --- delete_token ---
+
+    #[tokio::test]
+    async fn delete_token_success() {
+        let state = test_state();
+        let token_id;
+        {
+            let db = state.db.lock().await;
+            let token = db
+                .create_bootstrap_token("hash1", "admin", None, "2026-12-31T23:59:59Z")
+                .expect("create token");
+            token_id = token.id;
+        }
+
+        let result = delete_token(State(state), Path(token_id)).await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn delete_token_not_found() {
+        let state = test_state();
+        let result = delete_token(State(state), Path("nonexistent".to_string())).await;
+        let Err(err) = result else {
+            panic!("expected error");
+        };
+        assert!(matches!(err, GatewayError::NotFound(_)));
+    }
+
+    // --- revoke_credential ---
+
+    #[tokio::test]
+    async fn revoke_credential_success() {
+        let state = test_state();
+        {
+            let db = state.db.lock().await;
+            db.register_device("dev-revoke", "ws", "linux", "x86_64", "hash", None)
+                .expect("register");
+            db.create_device_credential("dev-revoke", "api_hash", "jdoe", None)
+                .expect("create credential");
+        }
+
+        let result =
+            revoke_credential(State(state), Path("dev-revoke".to_string())).await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn revoke_credential_not_found() {
+        let state = test_state();
+        let result =
+            revoke_credential(State(state), Path("nonexistent".to_string())).await;
+        let Err(err) = result else {
+            panic!("expected error");
+        };
+        assert!(matches!(err, GatewayError::NotFound(_)));
+    }
+
+    // --- event_stream ---
+
+    #[tokio::test]
+    async fn event_stream_returns_sse() {
+        let state = test_state();
+        // Just verify it doesn't panic and returns the SSE stream
+        let _sse = event_stream(State(state)).await;
+    }
 }

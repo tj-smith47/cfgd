@@ -2243,4 +2243,254 @@ mod tests {
             }
         }
     }
+
+    // --- decode_docker_auth ---
+
+    #[test]
+    fn decode_docker_auth_valid() {
+        // "user:pass" base64 = "dXNlcjpwYXNz"
+        let result = decode_docker_auth("dXNlcjpwYXNz");
+        assert!(result.is_some());
+        let auth = result.unwrap();
+        assert_eq!(auth.username, "user");
+        assert_eq!(auth.password, "pass");
+    }
+
+    #[test]
+    fn decode_docker_auth_no_colon() {
+        let result = decode_docker_auth("bm9jb2xvbg=="); // "nocolon"
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn decode_docker_auth_empty_password() {
+        // "user:" base64 = "dXNlcjo="
+        let result = decode_docker_auth("dXNlcjo=");
+        assert!(result.is_some());
+        let auth = result.unwrap();
+        assert_eq!(auth.username, "user");
+        assert_eq!(auth.password, "");
+    }
+
+    #[test]
+    fn decode_docker_auth_invalid_base64() {
+        let result = decode_docker_auth("!!!invalid!!!");
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn decode_docker_auth_password_with_colons() {
+        // "user:pa:ss:word" base64 = "dXNlcjpwYTpzczp3b3Jk"
+        let result = decode_docker_auth("dXNlcjpwYTpzczp3b3Jk");
+        assert!(result.is_some());
+        let auth = result.unwrap();
+        assert_eq!(auth.username, "user");
+        assert_eq!(auth.password, "pa:ss:word");
+    }
+
+    #[test]
+    fn decode_docker_auth_empty_username_rejected() {
+        // ":password" base64 = "OnBhc3N3b3Jk"
+        let result = decode_docker_auth("OnBhc3N3b3Jk");
+        assert!(result.is_none());
+    }
+
+    // --- rust_arch_to_oci ---
+
+    #[test]
+    fn rust_arch_to_oci_known() {
+        assert_eq!(rust_arch_to_oci("x86_64"), "amd64");
+        assert_eq!(rust_arch_to_oci("aarch64"), "arm64");
+        assert_eq!(rust_arch_to_oci("arm"), "arm");
+        assert_eq!(rust_arch_to_oci("s390x"), "s390x");
+        assert_eq!(rust_arch_to_oci("powerpc64"), "ppc64le");
+    }
+
+    #[test]
+    fn rust_arch_to_oci_unknown_passes_through() {
+        assert_eq!(rust_arch_to_oci("mips64"), "mips64");
+        assert_eq!(rust_arch_to_oci("riscv64"), "riscv64");
+    }
+
+    // --- detect_pkg_install_cmd ---
+
+    #[test]
+    fn detect_pkg_install_cmd_centos() {
+        assert_eq!(detect_pkg_install_cmd("centos:8"), "yum install -y");
+    }
+
+    #[test]
+    fn detect_pkg_install_cmd_archlinux() {
+        assert_eq!(
+            detect_pkg_install_cmd("archlinux:latest"),
+            "pacman -Sy --noconfirm"
+        );
+    }
+
+    #[test]
+    fn detect_pkg_install_cmd_unknown_defaults_to_apt() {
+        let cmd = detect_pkg_install_cmd("someunknownimage:latest");
+        assert!(
+            cmd.contains("apt-get"),
+            "unknown image should default to apt-get, got: {cmd}"
+        );
+    }
+
+    #[test]
+    fn detect_pkg_install_cmd_rockylinux() {
+        assert_eq!(detect_pkg_install_cmd("rockylinux:9"), "dnf install -y");
+    }
+
+    #[test]
+    fn detect_pkg_install_cmd_almalinux() {
+        assert_eq!(detect_pkg_install_cmd("almalinux:8"), "dnf install -y");
+    }
+
+    #[test]
+    fn detect_pkg_install_cmd_fedora() {
+        assert_eq!(detect_pkg_install_cmd("fedora:40"), "dnf install -y");
+    }
+
+    #[test]
+    fn detect_pkg_install_cmd_alpine_with_registry() {
+        assert_eq!(
+            detect_pkg_install_cmd("docker.io/library/alpine:3.19"),
+            "apk add --no-cache"
+        );
+    }
+
+    // --- resolve_from_docker_auths ---
+
+    #[test]
+    fn resolve_from_docker_auths_tries_https_prefix() {
+        let mut auths = HashMap::new();
+        auths.insert(
+            "https://registry.example.com".to_string(),
+            DockerAuthEntry {
+                auth: Some("dXNlcjpwYXNz".to_string()), // user:pass
+            },
+        );
+        let result = resolve_from_docker_auths(&auths, "registry.example.com");
+        assert!(result.is_some());
+        let auth = result.unwrap();
+        assert_eq!(auth.username, "user");
+        assert_eq!(auth.password, "pass");
+    }
+
+    #[test]
+    fn resolve_from_docker_auths_tries_v2_suffix() {
+        let mut auths = HashMap::new();
+        auths.insert(
+            "https://myregistry.io/v2/".to_string(),
+            DockerAuthEntry {
+                auth: Some("dXNlcjpwYXNz".to_string()),
+            },
+        );
+        let result = resolve_from_docker_auths(&auths, "myregistry.io");
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().username, "user");
+    }
+
+    #[test]
+    fn resolve_from_docker_auths_no_match() {
+        let mut auths = HashMap::new();
+        auths.insert(
+            "https://other.io".to_string(),
+            DockerAuthEntry {
+                auth: Some("dXNlcjpwYXNz".to_string()),
+            },
+        );
+        let result = resolve_from_docker_auths(&auths, "registry.example.com");
+        assert!(result.is_none());
+    }
+
+    // --- current_platform ---
+
+    #[test]
+    fn current_platform_returns_valid_format() {
+        let platform = current_platform();
+        assert!(
+            platform.contains('/'),
+            "platform should be os/arch format: {platform}"
+        );
+        let parts: Vec<&str> = platform.split('/').collect();
+        assert_eq!(parts.len(), 2);
+        assert!(!parts[0].is_empty());
+        assert!(!parts[1].is_empty());
+    }
+
+    // --- parse_platform_target edge cases ---
+
+    #[test]
+    fn parse_platform_target_three_parts_gives_arch_with_slash() {
+        // split_once('/') on "linux/amd64/extra" gives ("linux", "amd64/extra")
+        let result = parse_platform_target("linux/amd64/extra");
+        assert!(result.is_ok());
+        let (os, arch) = result.unwrap();
+        assert_eq!(os, "linux");
+        assert_eq!(arch, "amd64/extra");
+    }
+
+    #[test]
+    fn parse_platform_target_no_slash_fails() {
+        let result = parse_platform_target("linuxamd64");
+        assert!(result.is_err());
+    }
+
+    // --- sha256_digest ---
+
+    #[test]
+    fn sha256_digest_known_empty() {
+        let digest = sha256_digest(b"");
+        assert!(digest.starts_with("sha256:"));
+        assert_eq!(digest.len(), 7 + 64); // "sha256:" + 64 hex chars
+        assert_eq!(
+            digest,
+            "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        );
+    }
+
+    #[test]
+    fn sha256_digest_known_hello() {
+        let digest = sha256_digest(b"hello");
+        // SHA256("hello") = 2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824
+        assert_eq!(
+            digest,
+            "sha256:2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"
+        );
+    }
+
+    // --- VerifyOptions ---
+
+    #[test]
+    fn verify_options_default_keyless() {
+        let opts = VerifyOptions {
+            key: None,
+            identity: Some("user@example.com"),
+            issuer: Some("https://accounts.google.com"),
+        };
+        assert!(opts.key.is_none());
+        assert_eq!(opts.identity.unwrap(), "user@example.com");
+        assert_eq!(opts.issuer.unwrap(), "https://accounts.google.com");
+    }
+
+    // --- tar_gz symlink handling ---
+
+    #[test]
+    fn tar_gz_round_trip_via_create_and_extract() {
+        let dir = tempfile::tempdir().unwrap();
+        let subdir = dir.path().join("module");
+        std::fs::create_dir_all(&subdir).unwrap();
+        std::fs::write(subdir.join("module.yaml"), "name: test").unwrap();
+
+        let archive = create_tar_gz(&subdir).unwrap();
+        assert!(!archive.is_empty());
+
+        let output = tempfile::tempdir().unwrap();
+        let result = extract_tar_gz(&archive, output.path());
+        assert!(result.is_ok());
+        assert!(output.path().join("module.yaml").exists());
+        let content = std::fs::read_to_string(output.path().join("module.yaml")).unwrap();
+        assert_eq!(content, "name: test");
+    }
 }
