@@ -249,6 +249,8 @@ metadata:
     ${E2E_RUN_LABEL_YAML}
     ${E2E_JOB_LABEL_YAML}
 spec:
+  hostname: helm-upgrade-test-${E2E_RUN_ID}
+  profile: default
   packages: []
 EOF
 
