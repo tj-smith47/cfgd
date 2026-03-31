@@ -1263,12 +1263,14 @@ fn handle_reconcile(
             .collect();
         let cache_base = crate::modules::default_module_cache_dir()
             .unwrap_or_else(|_| config_dir.join(".module-cache"));
+        let quiet_printer = crate::output::Printer::new(crate::output::Verbosity::Quiet);
         match crate::modules::resolve_modules(
             &resolved.merged.modules,
             &config_dir,
             &cache_base,
             &platform,
             &mgr_map,
+            &quiet_printer,
         ) {
             Ok(m) => m,
             Err(e) => {
@@ -1833,7 +1835,7 @@ fn handle_sync(
 fn handle_version_check(state: &Arc<Mutex<DaemonState>>, notifier: &Arc<Notifier>) {
     tracing::info!("checking for cfgd updates");
 
-    match crate::upgrade::check_with_cache(None) {
+    match crate::upgrade::check_with_cache(None, None) {
         Ok(check) => {
             if check.update_available {
                 let version_str = check.latest.to_string();
@@ -3020,10 +3022,7 @@ mod tests {
         let json = serde_json::to_string(&status).unwrap();
         let parsed: SourceStatus = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed.name, "local");
-        assert_eq!(
-            parsed.last_sync.as_deref(),
-            Some("2026-01-01T00:00:00Z")
-        );
+        assert_eq!(parsed.last_sync.as_deref(), Some("2026-01-01T00:00:00Z"));
         assert!(parsed.last_reconcile.is_none());
         assert_eq!(parsed.drift_count, 3);
         assert_eq!(parsed.status, "active");
@@ -3607,15 +3606,9 @@ mod tests {
             response.last_reconcile.as_deref(),
             Some("2026-03-30T12:00:00Z")
         );
-        assert_eq!(
-            response.last_sync.as_deref(),
-            Some("2026-03-30T12:01:00Z")
-        );
+        assert_eq!(response.last_sync.as_deref(), Some("2026-03-30T12:01:00Z"));
         assert_eq!(response.drift_count, 5);
-        assert_eq!(
-            response.update_available.as_deref(),
-            Some("2.0.0")
-        );
+        assert_eq!(response.update_available.as_deref(), Some("2.0.0"));
         assert_eq!(response.sources.len(), 1);
         assert_eq!(response.sources[0].name, "local");
     }
@@ -3926,9 +3919,7 @@ mod tests {
 
         let action = Action::Module(ModuleAction {
             module_name: "security-baseline".into(),
-            kind: ModuleActionKind::InstallPackages {
-                resolved: vec![],
-            },
+            kind: ModuleActionKind::InstallPackages { resolved: vec![] },
         });
         let (rtype, rid) = action_resource_info(&action);
         assert_eq!(rtype, "module");
@@ -4512,7 +4503,10 @@ mod tests {
 
         // Ignore policy: silently skipped, no pending decisions, nothing excluded
         let pending = store.pending_decisions().unwrap();
-        assert!(pending.is_empty(), "ignore policy should not create pending decisions");
+        assert!(
+            pending.is_empty(),
+            "ignore policy should not create pending decisions"
+        );
         assert!(
             excluded.is_empty(),
             "ignore policy does not create pending records so nothing is excluded"
@@ -4593,16 +4587,20 @@ mod tests {
     #[test]
     fn daemon_state_module_last_reconcile_tracking() {
         let mut state = DaemonState::new();
-        state
-            .module_last_reconcile
-            .insert("security-baseline".to_string(), "2026-03-30T12:00:00Z".to_string());
+        state.module_last_reconcile.insert(
+            "security-baseline".to_string(),
+            "2026-03-30T12:00:00Z".to_string(),
+        );
         state
             .module_last_reconcile
             .insert("dev-tools".to_string(), "2026-03-30T12:05:00Z".to_string());
 
         assert_eq!(state.module_last_reconcile.len(), 2);
         assert_eq!(
-            state.module_last_reconcile.get("security-baseline").unwrap(),
+            state
+                .module_last_reconcile
+                .get("security-baseline")
+                .unwrap(),
             "2026-03-30T12:00:00Z"
         );
         assert_eq!(
@@ -4972,8 +4970,10 @@ mod tests {
             ..Default::default()
         };
 
-        let excluded_a = process_source_decisions(&store, "source-a", &merged_a, &policy, &notifier);
-        let excluded_b = process_source_decisions(&store, "source-b", &merged_b, &policy, &notifier);
+        let excluded_a =
+            process_source_decisions(&store, "source-a", &merged_a, &policy, &notifier);
+        let excluded_b =
+            process_source_decisions(&store, "source-b", &merged_b, &policy, &notifier);
 
         // Accept policy: both sources processed, nothing excluded
         assert!(excluded_a.is_empty());
@@ -5119,10 +5119,7 @@ mod tests {
 
     #[test]
     fn parse_duration_large_hours() {
-        assert_eq!(
-            parse_duration_or_default("24h"),
-            Duration::from_secs(86400)
-        );
+        assert_eq!(parse_duration_or_default("24h"), Duration::from_secs(86400));
     }
 
     #[test]
@@ -5137,7 +5134,9 @@ mod tests {
 
     #[test]
     fn hash_resources_large_set_deterministic() {
-        let set1: HashSet<String> = (0..100).map(|i| format!("packages.brew.pkg{}", i)).collect();
+        let set1: HashSet<String> = (0..100)
+            .map(|i| format!("packages.brew.pkg{}", i))
+            .collect();
         let set2: HashSet<String> = (0..100)
             .rev()
             .map(|i| format!("packages.brew.pkg{}", i))
@@ -5372,7 +5371,9 @@ mod tests {
         // Spawn the handler
         let handler_state = Arc::clone(&state);
         let handler = tokio::spawn(async move {
-            handle_health_connection(server, handler_state).await.unwrap();
+            handle_health_connection(server, handler_state)
+                .await
+                .unwrap();
         });
 
         // Send HTTP request
@@ -5423,7 +5424,9 @@ mod tests {
 
         let handler_state = Arc::clone(&state);
         let handler = tokio::spawn(async move {
-            handle_health_connection(server, handler_state).await.unwrap();
+            handle_health_connection(server, handler_state)
+                .await
+                .unwrap();
         });
 
         let (reader, mut writer) = tokio::io::split(client);
@@ -5473,7 +5476,9 @@ mod tests {
 
         let handler_state = Arc::clone(&state);
         let handler = tokio::spawn(async move {
-            handle_health_connection(server, handler_state).await.unwrap();
+            handle_health_connection(server, handler_state)
+                .await
+                .unwrap();
         });
 
         let (reader, mut writer) = tokio::io::split(client);
@@ -5514,7 +5519,9 @@ mod tests {
 
         let handler_state = Arc::clone(&state);
         let handler = tokio::spawn(async move {
-            handle_health_connection(server, handler_state).await.unwrap();
+            handle_health_connection(server, handler_state)
+                .await
+                .unwrap();
         });
 
         let (reader, mut writer) = tokio::io::split(client);
@@ -5558,11 +5565,7 @@ mod tests {
         git2::Repository::init_bare(&bare_dir).unwrap();
 
         // Clone the bare repo to get a working copy with origin
-        let repo = git2::Repository::clone(
-            bare_dir.to_str().unwrap(),
-            &work_dir,
-        )
-        .unwrap();
+        let repo = git2::Repository::clone(bare_dir.to_str().unwrap(), &work_dir).unwrap();
 
         // Configure committer identity
         let mut config = repo.config().unwrap();
@@ -5573,9 +5576,7 @@ mod tests {
         let readme = work_dir.join("README");
         std::fs::write(&readme, "test\n").unwrap();
         let mut index = repo.index().unwrap();
-        index
-            .add_path(Path::new("README"))
-            .unwrap();
+        index.add_path(Path::new("README")).unwrap();
         index.write().unwrap();
         let tree_id = index.write_tree().unwrap();
         let tree = repo.find_tree(tree_id).unwrap();
@@ -5609,11 +5610,7 @@ mod tests {
         git2::Repository::init_bare(&bare_dir).unwrap();
 
         // Clone into work_dir
-        let repo = git2::Repository::clone(
-            bare_dir.to_str().unwrap(),
-            &work_dir,
-        )
-        .unwrap();
+        let repo = git2::Repository::clone(bare_dir.to_str().unwrap(), &work_dir).unwrap();
         {
             let mut config = repo.config().unwrap();
             config.set_str("user.name", "cfgd-test").unwrap();
@@ -5640,11 +5637,7 @@ mod tests {
         }
 
         // Clone into pusher_dir and push a new commit
-        let pusher = git2::Repository::clone(
-            bare_dir.to_str().unwrap(),
-            &pusher_dir,
-        )
-        .unwrap();
+        let pusher = git2::Repository::clone(bare_dir.to_str().unwrap(), &pusher_dir).unwrap();
         {
             let mut config = pusher.config().unwrap();
             config.set_str("user.name", "cfgd-pusher").unwrap();
@@ -5695,11 +5688,7 @@ mod tests {
         git2::Repository::init_bare(&bare_dir).unwrap();
 
         // Clone, create initial commit, push
-        let repo = git2::Repository::clone(
-            bare_dir.to_str().unwrap(),
-            &work_dir,
-        )
-        .unwrap();
+        let repo = git2::Repository::clone(bare_dir.to_str().unwrap(), &work_dir).unwrap();
         {
             let mut config = repo.config().unwrap();
             config.set_str("user.name", "cfgd-test").unwrap();
@@ -5742,11 +5731,7 @@ mod tests {
         git2::Repository::init_bare(&bare_dir).unwrap();
 
         // Clone, create initial commit, push
-        let repo = git2::Repository::clone(
-            bare_dir.to_str().unwrap(),
-            &work_dir,
-        )
-        .unwrap();
+        let repo = git2::Repository::clone(bare_dir.to_str().unwrap(), &work_dir).unwrap();
         {
             let mut config = repo.config().unwrap();
             config.set_str("user.name", "cfgd-test").unwrap();

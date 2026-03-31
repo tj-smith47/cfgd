@@ -1574,7 +1574,9 @@ SystemdCgroup = true
     fn sysctl_validate_key_valid() {
         assert!(SysctlConfigurator::validate_sysctl_key("net.ipv4.ip_forward").is_ok());
         assert!(SysctlConfigurator::validate_sysctl_key("vm.max_map_count").is_ok());
-        assert!(SysctlConfigurator::validate_sysctl_key("net.bridge.bridge-nf-call-iptables").is_ok());
+        assert!(
+            SysctlConfigurator::validate_sysctl_key("net.bridge.bridge-nf-call-iptables").is_ok()
+        );
     }
 
     #[test]
@@ -1874,10 +1876,7 @@ SystemdCgroup = true
             value.get("clusterDNS").and_then(|v| v.as_str()),
             Some("10.96.0.10")
         );
-        assert_eq!(
-            value.get("maxPods").and_then(|v| v.as_u64()),
-            Some(110)
-        );
+        assert_eq!(value.get("maxPods").and_then(|v| v.as_u64()), Some(110));
     }
 
     #[test]
@@ -2148,9 +2147,7 @@ SystemdCgroup = true
 
         // No content drift, but may report "not loaded" depending on environment
         assert!(
-            drifts
-                .iter()
-                .all(|d| !d.key.contains("content")),
+            drifts.iter().all(|d| !d.key.contains("content")),
             "should not report content drift when content matches"
         );
     }
@@ -2273,11 +2270,7 @@ SystemdCgroup = true
     fn seccomp_diff_content_mismatch() {
         let dir = tempdir().unwrap();
         let profile_path = dir.path().join("default-audit.json");
-        fs::write(
-            &profile_path,
-            r#"{"defaultAction":"SCMP_ACT_ERRNO"}"#,
-        )
-        .unwrap();
+        fs::write(&profile_path, r#"{"defaultAction":"SCMP_ACT_ERRNO"}"#).unwrap();
 
         let sc = SeccompConfigurator;
 
@@ -2337,9 +2330,7 @@ SystemdCgroup = true
         );
         profile.insert(
             serde_yaml::Value::String("content".into()),
-            serde_yaml::Value::String(
-                r#"{"defaultAction":"SCMP_ACT_LOG","b":2}"#.into(),
-            ),
+            serde_yaml::Value::String(r#"{"defaultAction":"SCMP_ACT_LOG","b":2}"#.into()),
         );
 
         let mut m = serde_yaml::Mapping::new();
@@ -2690,10 +2681,7 @@ SystemdCgroup = true
             "a.b",
             &serde_yaml::Value::String("value".into()),
         );
-        assert_eq!(
-            find_toml_value(&table, "a.b"),
-            Some("value".to_string())
-        );
+        assert_eq!(find_toml_value(&table, "a.b"), Some("value".to_string()));
     }
 
     // --- yaml_to_toml_value edge cases ---
@@ -2708,10 +2696,7 @@ SystemdCgroup = true
         let result = yaml_to_toml_value(&serde_yaml::Value::Mapping(mapping));
         match result {
             toml::Value::Table(t) => {
-                assert_eq!(
-                    t.get("key").unwrap().as_str(),
-                    Some("value")
-                );
+                assert_eq!(t.get("key").unwrap().as_str(), Some("value"));
             }
             _ => panic!("expected Table"),
         }
@@ -2795,14 +2780,8 @@ SystemdCgroup = true
 
     #[test]
     fn json_equal_nested_objects() {
-        assert!(json_equal(
-            r#"{"a":{"b":1}}"#,
-            r#"{"a":{"b":1}}"#
-        ));
-        assert!(!json_equal(
-            r#"{"a":{"b":1}}"#,
-            r#"{"a":{"b":2}}"#
-        ));
+        assert!(json_equal(r#"{"a":{"b":1}}"#, r#"{"a":{"b":1}}"#));
+        assert!(!json_equal(r#"{"a":{"b":1}}"#, r#"{"a":{"b":2}}"#));
     }
 
     #[test]

@@ -1958,8 +1958,7 @@ mod tests {
             .expect("ssh-keygen failed");
         assert!(keygen_status.success(), "key generation must succeed");
 
-        let public_key =
-            std::fs::read_to_string(&pub_path).expect("read pubkey");
+        let public_key = std::fs::read_to_string(&pub_path).expect("read pubkey");
 
         // Sign a nonce
         let nonce = "cfgd_ch_test_nonce_12345";
@@ -2012,8 +2011,14 @@ mod tests {
         let sign_key = tmp.path().join("sign_key");
         let gen1 = std::process::Command::new("ssh-keygen")
             .args([
-                "-t", "ed25519", "-f", &sign_key.to_string_lossy(),
-                "-N", "", "-C", "signer@cfgd",
+                "-t",
+                "ed25519",
+                "-f",
+                &sign_key.to_string_lossy(),
+                "-N",
+                "",
+                "-C",
+                "signer@cfgd",
             ])
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
@@ -2025,8 +2030,14 @@ mod tests {
         let wrong_key = tmp.path().join("wrong_key");
         let gen2 = std::process::Command::new("ssh-keygen")
             .args([
-                "-t", "ed25519", "-f", &wrong_key.to_string_lossy(),
-                "-N", "", "-C", "wrong@cfgd",
+                "-t",
+                "ed25519",
+                "-f",
+                &wrong_key.to_string_lossy(),
+                "-N",
+                "",
+                "-C",
+                "wrong@cfgd",
             ])
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
@@ -2034,8 +2045,8 @@ mod tests {
             .expect("keygen");
         assert!(gen2.success());
 
-        let wrong_pubkey = std::fs::read_to_string(tmp.path().join("wrong_key.pub"))
-            .expect("read wrong pubkey");
+        let wrong_pubkey =
+            std::fs::read_to_string(tmp.path().join("wrong_key.pub")).expect("read wrong pubkey");
 
         // Sign with the signing key
         let nonce = "cfgd_ch_wrong_key_test";
@@ -2044,8 +2055,12 @@ mod tests {
 
         let sig_output = std::process::Command::new("ssh-keygen")
             .args([
-                "-Y", "sign", "-f", &sign_key.to_string_lossy(),
-                "-n", "cfgd-enroll",
+                "-Y",
+                "sign",
+                "-f",
+                &sign_key.to_string_lossy(),
+                "-n",
+                "cfgd-enroll",
             ])
             .stdin(std::fs::File::open(&nonce_path).expect("open nonce"))
             .output()
@@ -2096,8 +2111,14 @@ mod tests {
 
         let keygen_status = std::process::Command::new("ssh-keygen")
             .args([
-                "-t", "ed25519", "-f", &key_path.to_string_lossy(),
-                "-N", "", "-C", "test@cfgd",
+                "-t",
+                "ed25519",
+                "-f",
+                &key_path.to_string_lossy(),
+                "-N",
+                "",
+                "-C",
+                "test@cfgd",
             ])
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
@@ -2105,8 +2126,8 @@ mod tests {
             .expect("keygen");
         assert!(keygen_status.success());
 
-        let public_key = std::fs::read_to_string(tmp.path().join("test_key.pub"))
-            .expect("read pubkey");
+        let public_key =
+            std::fs::read_to_string(tmp.path().join("test_key.pub")).expect("read pubkey");
 
         let user_key = super::super::db::UserPublicKey {
             id: "key-1".to_string(),
@@ -2137,8 +2158,14 @@ mod tests {
         let sign_key = tmp.path().join("sign_key");
         let gen1 = std::process::Command::new("ssh-keygen")
             .args([
-                "-t", "ed25519", "-f", &sign_key.to_string_lossy(),
-                "-N", "", "-C", "signer@cfgd",
+                "-t",
+                "ed25519",
+                "-f",
+                &sign_key.to_string_lossy(),
+                "-N",
+                "",
+                "-C",
+                "signer@cfgd",
             ])
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
@@ -2146,15 +2173,21 @@ mod tests {
             .expect("keygen");
         assert!(gen1.success());
 
-        let sign_pubkey = std::fs::read_to_string(tmp.path().join("sign_key.pub"))
-            .expect("read sign pubkey");
+        let sign_pubkey =
+            std::fs::read_to_string(tmp.path().join("sign_key.pub")).expect("read sign pubkey");
 
         // Generate a decoy key
         let decoy_key = tmp.path().join("decoy_key");
         let gen2 = std::process::Command::new("ssh-keygen")
             .args([
-                "-t", "ed25519", "-f", &decoy_key.to_string_lossy(),
-                "-N", "", "-C", "decoy@cfgd",
+                "-t",
+                "ed25519",
+                "-f",
+                &decoy_key.to_string_lossy(),
+                "-N",
+                "",
+                "-C",
+                "decoy@cfgd",
             ])
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
@@ -2162,8 +2195,8 @@ mod tests {
             .expect("keygen");
         assert!(gen2.success());
 
-        let decoy_pubkey = std::fs::read_to_string(tmp.path().join("decoy_key.pub"))
-            .expect("read decoy pubkey");
+        let decoy_pubkey =
+            std::fs::read_to_string(tmp.path().join("decoy_key.pub")).expect("read decoy pubkey");
 
         // Sign with the signing key
         let nonce = "cfgd_ch_multi_key_test";
@@ -2172,8 +2205,12 @@ mod tests {
 
         let sig_output = std::process::Command::new("ssh-keygen")
             .args([
-                "-Y", "sign", "-f", &sign_key.to_string_lossy(),
-                "-n", "cfgd-enroll",
+                "-Y",
+                "sign",
+                "-f",
+                &sign_key.to_string_lossy(),
+                "-n",
+                "cfgd-enroll",
             ])
             .stdin(std::fs::File::open(&nonce_path).expect("open nonce"))
             .output()
@@ -2221,8 +2258,14 @@ mod tests {
 
         let keygen_status = std::process::Command::new("ssh-keygen")
             .args([
-                "-t", "ed25519", "-f", &key_path.to_string_lossy(),
-                "-N", "", "-C", "test@cfgd",
+                "-t",
+                "ed25519",
+                "-f",
+                &key_path.to_string_lossy(),
+                "-N",
+                "",
+                "-C",
+                "test@cfgd",
             ])
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
@@ -2230,8 +2273,8 @@ mod tests {
             .expect("keygen");
         assert!(keygen_status.success());
 
-        let public_key = std::fs::read_to_string(tmp.path().join("test_key.pub"))
-            .expect("read pubkey");
+        let public_key =
+            std::fs::read_to_string(tmp.path().join("test_key.pub")).expect("read pubkey");
 
         // Sign one nonce
         let original_nonce = "cfgd_ch_original_nonce";
@@ -2240,8 +2283,12 @@ mod tests {
 
         let sig_output = std::process::Command::new("ssh-keygen")
             .args([
-                "-Y", "sign", "-f", &key_path.to_string_lossy(),
-                "-n", "cfgd-enroll",
+                "-Y",
+                "sign",
+                "-f",
+                &key_path.to_string_lossy(),
+                "-n",
+                "cfgd-enroll",
             ])
             .stdin(std::fs::File::open(&nonce_path).expect("open nonce"))
             .output()
@@ -2808,8 +2855,12 @@ mod tests {
     async fn get_device_not_found() {
         let state = test_state();
         let auth = AuthContext::Admin;
-        let result =
-            get_device(State(state), Extension(auth), Path("nonexistent".to_string())).await;
+        let result = get_device(
+            State(state),
+            Extension(auth),
+            Path("nonexistent".to_string()),
+        )
+        .await;
         let Err(err) = result else {
             panic!("expected error");
         };
@@ -2829,8 +2880,7 @@ mod tests {
             device_id: "dev-own".to_string(),
             username: "jdoe".to_string(),
         };
-        let result =
-            get_device(State(state), Extension(auth), Path("dev-own".to_string())).await;
+        let result = get_device(State(state), Extension(auth), Path("dev-own".to_string())).await;
         assert!(result.is_ok());
     }
 
@@ -2847,8 +2897,7 @@ mod tests {
             device_id: "dev-own".to_string(),
             username: "jdoe".to_string(),
         };
-        let result =
-            get_device(State(state), Extension(auth), Path("dev-other".to_string())).await;
+        let result = get_device(State(state), Extension(auth), Path("dev-other".to_string())).await;
         let Err(err) = result else {
             panic!("expected error");
         };
@@ -3290,7 +3339,9 @@ mod tests {
         let Err(err) = result else {
             panic!("expected error");
         };
-        assert!(matches!(err, GatewayError::InvalidRequest(ref msg) if msg.contains("bootstrap token")));
+        assert!(
+            matches!(err, GatewayError::InvalidRequest(ref msg) if msg.contains("bootstrap token"))
+        );
     }
 
     #[tokio::test]
@@ -3341,7 +3392,9 @@ mod tests {
         let Err(err) = result else {
             panic!("expected error");
         };
-        assert!(matches!(err, GatewayError::InvalidRequest(ref msg) if msg.contains("no public keys")));
+        assert!(
+            matches!(err, GatewayError::InvalidRequest(ref msg) if msg.contains("no public keys"))
+        );
     }
 
     #[tokio::test]
@@ -3399,7 +3452,9 @@ mod tests {
         let Err(err) = result else {
             panic!("expected error");
         };
-        assert!(matches!(err, GatewayError::InvalidRequest(ref msg) if msg.contains("challenge_id")));
+        assert!(
+            matches!(err, GatewayError::InvalidRequest(ref msg) if msg.contains("challenge_id"))
+        );
     }
 
     #[tokio::test]
@@ -3468,7 +3523,10 @@ mod tests {
         // Verify data was wiped
         let db = state.db.lock().await;
         let devices = db.list_devices().expect("list");
-        assert!(devices.is_empty(), "all devices should be deleted after reset");
+        assert!(
+            devices.is_empty(),
+            "all devices should be deleted after reset"
+        );
     }
 
     // --- add_user_key ---
@@ -3482,8 +3540,7 @@ mod tests {
             fingerprint: "SHA256:abc123".to_string(),
             label: Some("laptop key".to_string()),
         };
-        let result =
-            add_user_key(State(state), Path("jdoe".to_string()), Json(req)).await;
+        let result = add_user_key(State(state), Path("jdoe".to_string()), Json(req)).await;
         assert!(result.is_ok());
     }
 
@@ -3548,7 +3605,9 @@ mod tests {
         let Err(err) = result else {
             panic!("expected error");
         };
-        assert!(matches!(err, GatewayError::InvalidRequest(ref msg) if msg.contains("fingerprint")));
+        assert!(
+            matches!(err, GatewayError::InvalidRequest(ref msg) if msg.contains("fingerprint"))
+        );
     }
 
     // --- list_user_keys ---
@@ -3565,8 +3624,14 @@ mod tests {
         let state = test_state();
         {
             let db = state.db.lock().await;
-            db.add_user_public_key("jdoe", "ssh", "ssh-ed25519 AAAA...", "SHA256:a", Some("key1"))
-                .expect("add key");
+            db.add_user_public_key(
+                "jdoe",
+                "ssh",
+                "ssh-ed25519 AAAA...",
+                "SHA256:a",
+                Some("key1"),
+            )
+            .expect("add key");
             db.add_user_public_key("jdoe", "gpg", "-----BEGIN PGP...", "DEADBEEF", None)
                 .expect("add key");
         }
@@ -3589,8 +3654,7 @@ mod tests {
             key_id = key.id;
         }
 
-        let result =
-            delete_user_key(State(state), Path(("jdoe".to_string(), key_id))).await;
+        let result = delete_user_key(State(state), Path(("jdoe".to_string(), key_id))).await;
         assert!(result.is_ok());
     }
 
@@ -3681,13 +3745,8 @@ mod tests {
         let state = test_state();
         {
             let db = state.db.lock().await;
-            db.create_bootstrap_token(
-                "hash1",
-                "admin",
-                None,
-                "2026-12-31T23:59:59Z",
-            )
-            .expect("create token");
+            db.create_bootstrap_token("hash1", "admin", None, "2026-12-31T23:59:59Z")
+                .expect("create token");
         }
 
         let result = list_tokens(State(state)).await;
@@ -3735,16 +3794,14 @@ mod tests {
                 .expect("create credential");
         }
 
-        let result =
-            revoke_credential(State(state), Path("dev-revoke".to_string())).await;
+        let result = revoke_credential(State(state), Path("dev-revoke".to_string())).await;
         assert!(result.is_ok());
     }
 
     #[tokio::test]
     async fn revoke_credential_not_found() {
         let state = test_state();
-        let result =
-            revoke_credential(State(state), Path("nonexistent".to_string())).await;
+        let result = revoke_credential(State(state), Path("nonexistent".to_string())).await;
         let Err(err) = result else {
             panic!("expected error");
         };

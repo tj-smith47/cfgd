@@ -884,7 +884,10 @@ mod tests {
         // All stats should be 0
         assert!(html.contains(r#"<div class="value">0</div>"#));
         // Nav links present
-        assert!(html.contains(r#"<a href="/">Devices</a>"#) || html.contains(r#"<a href="/" class="active">Devices</a>"#));
+        assert!(
+            html.contains(r#"<a href="/">Devices</a>"#)
+                || html.contains(r#"<a href="/" class="active">Devices</a>"#)
+        );
         assert!(html.contains(r#"<a href="/events">Events</a>"#));
     }
 
@@ -984,8 +987,15 @@ mod tests {
         let state = test_state();
         {
             let db = state.db.lock().await;
-            db.register_device("dev-42", "my-workstation", "linux", "x86_64", "abc123", None)
-                .expect("register");
+            db.register_device(
+                "dev-42",
+                "my-workstation",
+                "linux",
+                "x86_64",
+                "abc123",
+                None,
+            )
+            .expect("register");
         }
         let result = device_detail(State(state), Path("dev-42".to_string())).await;
         assert!(result.is_ok());
@@ -1048,8 +1058,10 @@ mod tests {
             let db = state.db.lock().await;
             db.register_device("dev-1", "host-1", "linux", "x86_64", "h1", None)
                 .expect("register");
-            db.record_checkin("dev-1", "hash-abc", false).expect("checkin");
-            db.record_checkin("dev-1", "hash-def", true).expect("checkin changed");
+            db.record_checkin("dev-1", "hash-abc", false)
+                .expect("checkin");
+            db.record_checkin("dev-1", "hash-def", true)
+                .expect("checkin changed");
         }
         let result = device_detail(State(state), Path("dev-1".to_string())).await;
         let html = result.unwrap().0;
@@ -1104,8 +1116,15 @@ mod tests {
         let state = test_state();
         {
             let db = state.db.lock().await;
-            db.register_device("dev-<id>", "host<name>", "os&type", "arch\"val", "hash'v", None)
-                .expect("register");
+            db.register_device(
+                "dev-<id>",
+                "host<name>",
+                "os&type",
+                "arch\"val",
+                "hash'v",
+                None,
+            )
+            .expect("register");
         }
         let result = device_detail(State(state), Path("dev-<id>".to_string())).await;
         let html = result.unwrap().0;
@@ -1136,7 +1155,8 @@ mod tests {
             let db = state.db.lock().await;
             db.register_device("dev-1", "host-1", "linux", "x86_64", "h1", None)
                 .expect("register");
-            db.record_checkin("dev-1", "hash-abc", false).expect("checkin");
+            db.record_checkin("dev-1", "hash-abc", false)
+                .expect("checkin");
         }
         let result = fleet_events(State(state)).await;
         let html = result.unwrap().0;
@@ -1181,7 +1201,8 @@ mod tests {
             let db = state.db.lock().await;
             db.register_device("dev-1", "host-1", "linux", "x86_64", "h1", None)
                 .expect("register");
-            db.record_checkin("dev-1", "new-hash", true).expect("changed checkin");
+            db.record_checkin("dev-1", "new-hash", true)
+                .expect("changed checkin");
         }
         let result = fleet_events(State(state)).await;
         let html = result.unwrap().0;
@@ -1241,10 +1262,7 @@ mod tests {
     /// Build a minimal router with the auth middleware for testing.
     fn auth_test_app() -> axum::Router {
         axum::Router::new()
-            .route(
-                "/test",
-                get(|| async { "ok" }),
-            )
+            .route("/test", get(|| async { "ok" }))
             .route_layer(middleware::from_fn(web_auth_middleware))
     }
 
@@ -1256,12 +1274,7 @@ mod tests {
 
         let app = auth_test_app();
         let resp = app
-            .oneshot(
-                Request::builder()
-                    .uri("/test")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
+            .oneshot(Request::builder().uri("/test").body(Body::empty()).unwrap())
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
@@ -1274,12 +1287,7 @@ mod tests {
 
         let app = auth_test_app();
         let resp = app
-            .oneshot(
-                Request::builder()
-                    .uri("/test")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
+            .oneshot(Request::builder().uri("/test").body(Body::empty()).unwrap())
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
@@ -1413,7 +1421,12 @@ mod tests {
         // Should redirect (303 See Other)
         assert_eq!(resp.status(), StatusCode::SEE_OTHER);
         // Location header should strip the token query param
-        let location = resp.headers().get(header::LOCATION).unwrap().to_str().unwrap();
+        let location = resp
+            .headers()
+            .get(header::LOCATION)
+            .unwrap()
+            .to_str()
+            .unwrap();
         assert_eq!(location, "/test");
         // Set-Cookie header should contain the session cookie
         let set_cookie = resp
@@ -1477,12 +1490,7 @@ mod tests {
         // Dashboard route
         let resp = app
             .clone()
-            .oneshot(
-                Request::builder()
-                    .uri("/")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
+            .oneshot(Request::builder().uri("/").body(Body::empty()).unwrap())
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::OK);

@@ -447,9 +447,14 @@ impl SystemConfigurator for GpgKeysConfigurator {
             ));
             cfgd_core::atomic_write_str(&param_path, &param)?;
 
-            let output = Command::new("gpg")
-                .args(["--batch", "--gen-key", param_path.to_str().unwrap_or("")])
-                .output()
+            let mut cmd = Command::new("gpg");
+            cmd.args(["--batch", "--gen-key", param_path.to_str().unwrap_or("")]);
+
+            let output = printer
+                .run_with_output(
+                    &mut cmd,
+                    &format!("Generating GPG key for {} <{}>", spec.real_name, spec.email),
+                )
                 .map_err(CfgdError::Io)?;
 
             // Clean up param file (best-effort, no %no-protection but still tidy up)
@@ -458,9 +463,7 @@ impl SystemConfigurator for GpgKeysConfigurator {
             if !output.status.success() {
                 return Err(CfgdError::Io(std::io::Error::other(format!(
                     "gpg --batch --gen-key failed for {} <{}>: {}",
-                    spec.real_name,
-                    spec.email,
-                    cfgd_core::stderr_lossy_trimmed(&output)
+                    spec.real_name, spec.email, output.stderr,
                 ))));
             }
 

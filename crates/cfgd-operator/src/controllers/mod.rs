@@ -2574,14 +2574,8 @@ mod tests {
     fn compliance_summary_formats_counts() {
         assert_eq!(compliance_summary(0, 0), "0 compliant, 0 non-compliant");
         assert_eq!(compliance_summary(5, 3), "5 compliant, 3 non-compliant");
-        assert_eq!(
-            compliance_summary(100, 0),
-            "100 compliant, 0 non-compliant"
-        );
-        assert_eq!(
-            compliance_summary(0, 42),
-            "0 compliant, 42 non-compliant"
-        );
+        assert_eq!(compliance_summary(100, 0), "100 compliant, 0 non-compliant");
+        assert_eq!(compliance_summary(0, 42), "0 compliant, 42 non-compliant");
     }
 
     #[test]
@@ -2843,7 +2837,11 @@ mod tests {
         let merged = merge_policy_requirements(&cluster, &[&ns1, &ns2, &ns3]);
 
         // Cluster kubectl >=1.30 should win over ns1's >=1.28
-        let kubectl = merged.packages.iter().find(|p| p.name == "kubectl").unwrap();
+        let kubectl = merged
+            .packages
+            .iter()
+            .find(|p| p.name == "kubectl")
+            .unwrap();
         assert_eq!(kubectl.version.as_deref(), Some(">=1.30"));
 
         // git: cluster has no git, ns1 adds it with None, ns2 tries to add but finds
@@ -3220,8 +3218,8 @@ mod tests {
 
     #[test]
     fn record_reconcile_metrics_labels_propagate() {
-        use prometheus_client::registry::Registry;
         use crate::metrics::{Metrics, ReconcileLabels};
+        use prometheus_client::registry::Registry;
 
         let mut registry = Registry::default();
         let metrics = Metrics::new(&mut registry);
@@ -3238,17 +3236,14 @@ mod tests {
             .observe(0.5);
 
         // Verify the counter incremented
-        let count = metrics
-            .reconciliations_total
-            .get_or_create(&labels)
-            .get();
+        let count = metrics.reconciliations_total.get_or_create(&labels).get();
         assert!(count >= 1, "counter should have incremented");
     }
 
     #[test]
     fn record_reconcile_metrics_error_labels_separate() {
-        use prometheus_client::registry::Registry;
         use crate::metrics::{Metrics, ReconcileLabels};
+        use prometheus_client::registry::Registry;
 
         let mut registry = Registry::default();
         let metrics = Metrics::new(&mut registry);
@@ -3293,8 +3288,8 @@ mod tests {
 
     #[test]
     fn drift_metrics_increment_by_severity() {
-        use prometheus_client::registry::Registry;
         use crate::metrics::{DriftLabels, Metrics};
+        use prometheus_client::registry::Registry;
 
         let mut registry = Registry::default();
         let metrics = Metrics::new(&mut registry);
@@ -3312,8 +3307,8 @@ mod tests {
 
     #[test]
     fn policy_compliance_gauge_set_and_read() {
-        use prometheus_client::registry::Registry;
         use crate::metrics::{Metrics, PolicyLabels};
+        use prometheus_client::registry::Registry;
 
         let mut registry = Registry::default();
         let metrics = Metrics::new(&mut registry);

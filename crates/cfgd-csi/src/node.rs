@@ -858,7 +858,10 @@ mod tests {
         };
         assert!(node.node_unpublish_volume(Request::new(req)).await.is_ok());
         // The directory should be cleaned up after unpublish
-        assert!(!target.exists(), "target dir should be removed after unpublish");
+        assert!(
+            !target.exists(),
+            "target dir should be removed after unpublish"
+        );
     }
 
     #[tokio::test]
@@ -961,10 +964,9 @@ mod tests {
 
     #[test]
     fn require_attr_accepts_present() {
-        let attrs: HashMap<String, String> =
-            [("module".to_string(), "nettools".to_string())]
-                .into_iter()
-                .collect();
+        let attrs: HashMap<String, String> = [("module".to_string(), "nettools".to_string())]
+            .into_iter()
+            .collect();
         assert_eq!(require_attr(&attrs, "module").unwrap(), "nettools");
     }
 
@@ -977,20 +979,18 @@ mod tests {
 
     #[test]
     fn require_attr_rejects_empty_value() {
-        let attrs: HashMap<String, String> =
-            [("module".to_string(), String::new())]
-                .into_iter()
-                .collect();
+        let attrs: HashMap<String, String> = [("module".to_string(), String::new())]
+            .into_iter()
+            .collect();
         let err = require_attr(&attrs, "module").unwrap_err();
         assert_eq!(err.code(), tonic::Code::InvalidArgument);
     }
 
     #[test]
     fn resolve_oci_ref_ignores_empty_override() {
-        let attrs: HashMap<String, String> =
-            [("ociRef".to_string(), String::new())]
-                .into_iter()
-                .collect();
+        let attrs: HashMap<String, String> = [("ociRef".to_string(), String::new())]
+            .into_iter()
+            .collect();
         assert_eq!(
             resolve_oci_ref(&attrs, "nettools", "1.0"),
             "cfgd-modules/nettools:1.0"

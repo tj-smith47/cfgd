@@ -1984,7 +1984,10 @@ mod tests {
         // Serialize both merged profiles and compare the full output
         let yaml1 = serde_yaml::to_string(&result1.resolved.merged).unwrap();
         let yaml2 = serde_yaml::to_string(&result2.resolved.merged).unwrap();
-        assert_eq!(yaml1, yaml2, "Full merged output must be identical across runs");
+        assert_eq!(
+            yaml1, yaml2,
+            "Full merged output must be identical across runs"
+        );
 
         // Also check conflict counts and types match
         assert_eq!(result1.conflicts.len(), result2.conflicts.len());
@@ -2756,7 +2759,7 @@ mod tests {
         };
         let mut merged = MergedProfile::default();
         merged.files.managed.push(ManagedFileSpec {
-            source: "local/override.yaml".into(), // different source
+            source: "local/override.yaml".into(),   // different source
             target: "~/.config/policy.yaml".into(), // same target
             strategy: None,
             private: false,
@@ -2851,7 +2854,11 @@ mod tests {
             subscription: SubscriptionConfig::default(),
         }];
         let changes = detect_permission_changes(&old, &new);
-        assert!(changes.iter().any(|c| c.description.contains("Locked items increased")));
+        assert!(
+            changes
+                .iter()
+                .any(|c| c.description.contains("Locked items increased"))
+        );
     }
 
     #[test]
@@ -2879,7 +2886,11 @@ mod tests {
             subscription: SubscriptionConfig::default(),
         }];
         let changes = detect_permission_changes(&old, &new);
-        assert!(changes.iter().any(|c| c.description.contains("Scripts have been enabled")));
+        assert!(
+            changes
+                .iter()
+                .any(|c| c.description.contains("Scripts have been enabled"))
+        );
     }
 
     #[test]
@@ -2907,7 +2918,11 @@ mod tests {
             subscription: SubscriptionConfig::default(),
         }];
         let changes = detect_permission_changes(&old, &new);
-        assert!(changes.iter().any(|c| c.description.contains("target paths expanded")));
+        assert!(
+            changes
+                .iter()
+                .any(|c| c.description.contains("target paths expanded"))
+        );
     }
 
     #[test]
@@ -3276,7 +3291,11 @@ mod tests {
             .iter()
             .filter(|s| s.source.contains("vault://secret/data/token"))
             .collect();
-        assert_eq!(vault_secrets.len(), 1, "secrets with same source should deduplicate");
+        assert_eq!(
+            vault_secrets.len(),
+            1,
+            "secrets with same source should deduplicate"
+        );
         // Local (higher priority, processed last) should win
         assert_eq!(vault_secrets[0].target, Some("/tmp/token".into()));
     }
@@ -3369,7 +3388,10 @@ mod tests {
         let result = validate_constraints("corp", &constraints, &spec);
         assert!(result.is_err());
         let msg = result.unwrap_err().to_string();
-        assert!(msg.contains("mode"), "expected mode mismatch error, got: {msg}");
+        assert!(
+            msg.contains("mode"),
+            "expected mode mismatch error, got: {msg}"
+        );
     }
 
     #[test]
@@ -3450,20 +3472,29 @@ mod tests {
         let mut conflicts = Vec::new();
         record_rejections("corp", &recommended, &reject, &mut conflicts);
         assert_eq!(conflicts.len(), 2);
-        assert!(conflicts
-            .iter()
-            .all(|c| c.resolution_type == ResolutionType::Rejected));
+        assert!(
+            conflicts
+                .iter()
+                .all(|c| c.resolution_type == ResolutionType::Rejected)
+        );
         assert!(conflicts.iter().any(|c| c.resource_id == "module:bad-mod"));
-        assert!(conflicts
-            .iter()
-            .any(|c| c.resource_id == "module:other-mod"));
+        assert!(
+            conflicts
+                .iter()
+                .any(|c| c.resource_id == "module:other-mod")
+        );
     }
 
     #[test]
     fn record_rejections_null_does_nothing() {
         let recommended = PolicyItems::default();
         let mut conflicts = Vec::new();
-        record_rejections("corp", &recommended, &serde_yaml::Value::Null, &mut conflicts);
+        record_rejections(
+            "corp",
+            &recommended,
+            &serde_yaml::Value::Null,
+            &mut conflicts,
+        );
         assert!(conflicts.is_empty());
     }
 
@@ -3487,9 +3518,11 @@ mod tests {
         record_policy_conflicts("corp", &items, ResolutionType::Required, &mut conflicts);
         assert_eq!(conflicts.len(), 2);
         assert!(conflicts.iter().any(|c| c.resource_id == "alias:g"));
-        assert!(conflicts
-            .iter()
-            .any(|c| c.resource_id == "secret:vault://test"));
+        assert!(
+            conflicts
+                .iter()
+                .any(|c| c.resource_id == "secret:vault://test")
+        );
     }
 
     #[test]
@@ -3518,12 +3551,36 @@ mod tests {
         };
         let names = collect_package_names(&pkgs);
         assert_eq!(names.len(), 7);
-        assert!(names.iter().any(|n| n.contains("git") && n.contains("brew")));
-        assert!(names.iter().any(|n| n.contains("firefox") && n.contains("brew cask")));
-        assert!(names.iter().any(|n| n.contains("curl") && n.contains("apt")));
-        assert!(names.iter().any(|n| n.contains("bat") && n.contains("cargo")));
-        assert!(names.iter().any(|n| n.contains("prettier") && n.contains("npm")));
-        assert!(names.iter().any(|n| n.contains("black") && n.contains("pipx")));
+        assert!(
+            names
+                .iter()
+                .any(|n| n.contains("git") && n.contains("brew"))
+        );
+        assert!(
+            names
+                .iter()
+                .any(|n| n.contains("firefox") && n.contains("brew cask"))
+        );
+        assert!(
+            names
+                .iter()
+                .any(|n| n.contains("curl") && n.contains("apt"))
+        );
+        assert!(
+            names
+                .iter()
+                .any(|n| n.contains("bat") && n.contains("cargo"))
+        );
+        assert!(
+            names
+                .iter()
+                .any(|n| n.contains("prettier") && n.contains("npm"))
+        );
+        assert!(
+            names
+                .iter()
+                .any(|n| n.contains("black") && n.contains("pipx"))
+        );
         assert!(names.iter().any(|n| n.contains("vim") && n.contains("dnf")));
     }
 
@@ -3589,10 +3646,8 @@ mod tests {
 
     #[test]
     fn find_matching_pattern_no_match() {
-        let result = find_matching_pattern(
-            "/etc/sudoers",
-            &["~/.config/*".into(), "~/.local/*".into()],
-        );
+        let result =
+            find_matching_pattern("/etc/sudoers", &["~/.config/*".into(), "~/.local/*".into()]);
         assert!(result.is_none());
     }
 

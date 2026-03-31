@@ -49,7 +49,7 @@ impl Cache {
         let tmp_dir = self.root.join(&tmp_name);
         std::fs::create_dir_all(&tmp_dir)?;
 
-        let pull_result = cfgd_core::oci::pull_module(oci_ref, &tmp_dir, false);
+        let pull_result = cfgd_core::oci::pull_module(oci_ref, &tmp_dir, false, None);
         if let Err(e) = pull_result {
             let _ = std::fs::remove_dir_all(&tmp_dir);
             return Err(e.into());

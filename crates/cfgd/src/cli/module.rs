@@ -32,7 +32,7 @@ struct ModuleShowOutput {
 pub(super) fn cmd_module_list(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
     let config_dir = config_dir(cli);
     let cache_base = modules::default_module_cache_dir()?;
-    let all_modules = modules::load_all_modules(&config_dir, &cache_base)?;
+    let all_modules = modules::load_all_modules(&config_dir, &cache_base, printer)?;
     let lockfile = modules::load_lockfile(&config_dir)?;
 
     if all_modules.is_empty() {
@@ -149,7 +149,7 @@ pub(super) fn cmd_module_show(
 ) -> anyhow::Result<()> {
     let config_dir = config_dir(cli);
     let cache_base = modules::default_module_cache_dir()?;
-    let all_modules = modules::load_all_modules(&config_dir, &cache_base)?;
+    let all_modules = modules::load_all_modules(&config_dir, &cache_base, printer)?;
 
     let module = match all_modules.get(name) {
         Some(m) => m,
@@ -701,6 +701,7 @@ pub(super) fn cmd_module_create(
             &cache_base,
             &platform,
             &mgr_map,
+            printer,
         )?;
 
         let resolved = config::ResolvedProfile {
@@ -1196,7 +1197,7 @@ pub(super) fn cmd_module_add_from_registry(
                 reg_ref.module
             ));
             // Fetch the registry repo so we can read tags
-            modules::fetch_registry_modules(registry_entry, &cache_base)?;
+            modules::fetch_registry_modules(registry_entry, &cache_base, printer)?;
             modules::latest_module_version(registry_entry, &reg_ref.module, &cache_base)?
                 .ok_or_else(|| {
                     anyhow::anyhow!(
@@ -1245,7 +1246,7 @@ pub(super) fn cmd_module_add_remote(
 
     // Fetch the remote module (validates pinned ref)
     printer.info(&format!("Fetching {}", url));
-    let fetched = modules::fetch_remote_module(url, &cache_base)?;
+    let fetched = modules::fetch_remote_module(url, &cache_base, printer)?;
     let module_name = fetched.module.name.clone();
     let module = fetched.module;
     let commit = fetched.commit;
@@ -1447,7 +1448,7 @@ pub(super) fn cmd_module_upgrade(
         git_ref: None,
         subdir: old_entry.subdir.clone(),
     };
-    let old_local_path = modules::fetch_git_source(&old_pinned_src, &cache_base, name)?;
+    let old_local_path = modules::fetch_git_source(&old_pinned_src, &cache_base, name, printer)?;
     let old_module = modules::load_module(&old_local_path)?;
 
     // Build the new URL with the updated ref
@@ -1461,7 +1462,7 @@ pub(super) fn cmd_module_upgrade(
                 git_ref: None,
                 subdir: None,
             };
-            modules::fetch_git_source(&git_src, &cache_base, name)?;
+            modules::fetch_git_source(&git_src, &cache_base, name, printer)?;
             let repo_dir = modules::git_cache_dir(&cache_base, &old_git_src.repo_url);
             let head = modules::get_head_commit_sha(&repo_dir)?;
             printer.info(&format!("Latest commit: {}", head));
@@ -1476,7 +1477,7 @@ pub(super) fn cmd_module_upgrade(
         git_ref: None,
         subdir: old_entry.subdir.clone(),
     };
-    let new_local_path = modules::fetch_git_source(&new_src, &cache_base, name)?;
+    let new_local_path = modules::fetch_git_source(&new_src, &cache_base, name, printer)?;
     let new_module = modules::load_module(&new_local_path)?;
     let repo_dir = modules::git_cache_dir(&cache_base, &old_git_src.repo_url);
     let new_commit = modules::get_head_commit_sha(&repo_dir)?;
@@ -1563,7 +1564,7 @@ pub(super) fn cmd_module_search(cli: &Cli, printer: &Printer, query: &str) -> an
     let mut errors: Vec<String> = Vec::new();
 
     for source in registries {
-        match modules::fetch_registry_modules(source, &cache_base) {
+        match modules::fetch_registry_modules(source, &cache_base, printer) {
             Ok(registry_modules) => {
                 let query_lower = query.to_lowercase();
                 let matches: Vec<&modules::RegistryModule> = registry_modules
@@ -2028,7 +2029,7 @@ fn export_devcontainer(
 ) -> anyhow::Result<()> {
     let config_dir = config_dir(cli);
     let cache_base = modules::default_module_cache_dir()?;
-    let all_modules = modules::load_all_modules(&config_dir, &cache_base)?;
+    let all_modules = modules::load_all_modules(&config_dir, &cache_base, printer)?;
 
     let module = all_modules
         .get(name)
@@ -2206,7 +2207,7 @@ pub(super) fn cmd_module_push(
         printer.key_value("Platform", p);
     }
 
-    let digest = cfgd_core::oci::push_module(dir_path, artifact, platform)
+    let digest = cfgd_core::oci::push_module(dir_path, artifact, platform, Some(printer))
         .map_err(|e| anyhow::anyhow!("{e}"))?;
 
     printer.success(&format!("Pushed {artifact}"));
@@ -2349,7 +2350,7 @@ pub(super) fn cmd_module_pull(
     }
 
     // Pull uses the existing require_signature=false since we've already verified above
-    cfgd_core::oci::pull_module(artifact_ref, output_path, false)
+    cfgd_core::oci::pull_module(artifact_ref, output_path, false, Some(printer))
         .map_err(|e| anyhow::anyhow!("{e}"))?;
 
     printer.success(&format!("Pulled {artifact_ref} to {output}"));
@@ -2407,8 +2408,9 @@ pub(super) fn cmd_module_build(
         printer.success(&format!("Built to {}", output_dir.display()));
 
         if let Some(art) = artifact {
-            let digest = cfgd_core::oci::push_module(&output_dir, art, Some(targets[0]))
-                .map_err(|e| anyhow::anyhow!("{e}"))?;
+            let digest =
+                cfgd_core::oci::push_module(&output_dir, art, Some(targets[0]), Some(printer))
+                    .map_err(|e| anyhow::anyhow!("{e}"))?;
             printer.success(&format!("Pushed {art}"));
             printer.key_value("Digest", &digest);
 
@@ -2432,7 +2434,7 @@ pub(super) fn cmd_module_build(
                 .iter()
                 .map(|(dir, plat)| (dir.as_path(), plat.as_str()))
                 .collect();
-            let digest = cfgd_core::oci::push_module_multiplatform(&build_refs, art)
+            let digest = cfgd_core::oci::push_module_multiplatform(&build_refs, art, Some(printer))
                 .map_err(|e| anyhow::anyhow!("{e}"))?;
             printer.success(&format!("Pushed multi-platform index {art}"));
             printer.key_value("Digest", &digest);

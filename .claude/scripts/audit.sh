@@ -138,7 +138,7 @@ log_section "No Unwrap in Library Code"
 check_pattern error \
     "No .unwrap()/.expect() in library code" \
     '\.unwrap\(\)[^_]|\.unwrap\(\)$|\.expect\(' \
-    'main\.rs:|gen_crds\.rs:'
+    'main\.rs:|gen_crds\.rs:|test_helpers\.rs:'
 
 log_section "Console/Indicatif Encapsulation"
 check_pattern error \

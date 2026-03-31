@@ -2529,7 +2529,8 @@ other: data
         let resolved = make_resolved_profile(vec![], FilesSpec::default());
         let fm = CfgdFileManager::new(dir.path(), &resolved).unwrap();
 
-        let result = fm.effective_strategy(Path::new("config.yaml.tera"), Some(FileStrategy::Symlink));
+        let result =
+            fm.effective_strategy(Path::new("config.yaml.tera"), Some(FileStrategy::Symlink));
         assert_eq!(result, FileStrategy::Copy);
     }
 
@@ -2539,7 +2540,8 @@ other: data
         let resolved = make_resolved_profile(vec![], FilesSpec::default());
         let fm = CfgdFileManager::new(dir.path(), &resolved).unwrap();
 
-        let result = fm.effective_strategy(Path::new("app.conf.tera"), Some(FileStrategy::Hardlink));
+        let result =
+            fm.effective_strategy(Path::new("app.conf.tera"), Some(FileStrategy::Hardlink));
         assert_eq!(result, FileStrategy::Copy);
     }
 

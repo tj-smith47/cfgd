@@ -106,7 +106,7 @@ pub(super) fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result
         if module_only {
             // Validate that requested modules exist
             let cache_base = modules::default_module_cache_dir()?;
-            let all_modules = modules::load_all_modules(&target_dir, &cache_base)?;
+            let all_modules = modules::load_all_modules(&target_dir, &cache_base, printer)?;
             for m in args.apply_modules {
                 let resolved_name = modules::resolve_profile_module_name(m);
                 if !all_modules.contains_key(resolved_name) {
@@ -135,6 +135,7 @@ pub(super) fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result
                 &cache_base,
                 &platform,
                 &mgr_map,
+                printer,
             )?;
 
             let reconciler = cfgd_core::reconciler::Reconciler::new(&registry, &store);
@@ -201,7 +202,7 @@ pub(super) fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result
                 let mgr_map = super::managers_map(&registry);
                 let cache_base = modules::default_module_cache_dir()?;
                 // Validate --apply-module names exist (load once, check all)
-                let all_modules = modules::load_all_modules(&target_dir, &cache_base)?;
+                let all_modules = modules::load_all_modules(&target_dir, &cache_base, printer)?;
                 for m in args.apply_modules {
                     let resolved_name = modules::resolve_profile_module_name(m);
                     if !all_modules.contains_key(resolved_name) {
@@ -214,6 +215,7 @@ pub(super) fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result
                     &cache_base,
                     &platform,
                     &mgr_map,
+                    printer,
                 )?
             } else {
                 Vec::new()
@@ -445,9 +447,7 @@ fn clone_into(target_dir: &Path, url: &str, branch: &str, printer: &Printer) -> 
         return Ok(());
     }
 
-    printer.info(&format!("Cloning {} (branch: {}) ...", url, branch));
-
-    cfgd_core::sources::git_clone_with_fallback(url, target_dir)
+    cfgd_core::sources::git_clone_with_fallback(url, target_dir, printer)
         .map_err(|e| anyhow::anyhow!("Clone failed: {}", e))?;
 
     printer.success(&format!("Cloned to {}", target_dir.display()));
@@ -1309,9 +1309,15 @@ mod tests {
         let printer = Printer::new(cfgd_core::output::Verbosity::Quiet);
         let result = check_prerequisites(&printer);
         if cfgd_core::command_available("git") {
-            assert!(result, "check_prerequisites should return true when git is available");
+            assert!(
+                result,
+                "check_prerequisites should return true when git is available"
+            );
         } else {
-            assert!(!result, "check_prerequisites should return false when git is missing");
+            assert!(
+                !result,
+                "check_prerequisites should return false when git is missing"
+            );
         }
     }
 
@@ -1421,11 +1427,13 @@ mod tests {
         let origin = dir.path().join("origin");
         let repo = git2::Repository::init(&origin).unwrap();
         let sig = git2::Signature::now("Test", "test@example.com").unwrap();
-        std::fs::write(origin.join("cfgd.yaml"), "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: test\nspec: {}\n").unwrap();
+        std::fs::write(
+            origin.join("cfgd.yaml"),
+            "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: test\nspec: {}\n",
+        )
+        .unwrap();
         let mut index = repo.index().unwrap();
-        index
-            .add_path(std::path::Path::new("cfgd.yaml"))
-            .unwrap();
+        index.add_path(std::path::Path::new("cfgd.yaml")).unwrap();
         index.write().unwrap();
         let tree_id = index.write_tree().unwrap();
         let tree = repo.find_tree(tree_id).unwrap();
@@ -1450,7 +1458,12 @@ mod tests {
 
         let printer = Printer::new(cfgd_core::output::Verbosity::Quiet);
         // Should return Ok without actually cloning
-        let result = clone_into(&target, "https://example.com/nonexistent", "master", &printer);
+        let result = clone_into(
+            &target,
+            "https://example.com/nonexistent",
+            "master",
+            &printer,
+        );
         assert!(result.is_ok());
     }
 
@@ -1462,11 +1475,13 @@ mod tests {
         let origin = dir.path().join("origin");
         let repo = git2::Repository::init(&origin).unwrap();
         let sig = git2::Signature::now("Test", "test@example.com").unwrap();
-        std::fs::write(origin.join("cfgd.yaml"), "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: test\nspec: {}\n").unwrap();
+        std::fs::write(
+            origin.join("cfgd.yaml"),
+            "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: test\nspec: {}\n",
+        )
+        .unwrap();
         let mut index = repo.index().unwrap();
-        index
-            .add_path(std::path::Path::new("cfgd.yaml"))
-            .unwrap();
+        index.add_path(std::path::Path::new("cfgd.yaml")).unwrap();
         index.write().unwrap();
         let tree_id = index.write_tree().unwrap();
         let tree = repo.find_tree(tree_id).unwrap();
@@ -1577,7 +1592,11 @@ mod tests {
         };
 
         let result = cmd_init(&printer, &args);
-        assert!(result.is_ok(), "cmd_init with --from local path failed: {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "cmd_init with --from local path failed: {:?}",
+            result.err()
+        );
     }
 
     #[test]

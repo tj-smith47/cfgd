@@ -190,10 +190,7 @@ async fn node_unpublish_volume_empty_dir_cleans_up() {
         })
         .await;
     assert!(resp.is_ok());
-    assert!(
-        !target.exists(),
-        "target should be removed after unpublish"
-    );
+    assert!(!target.exists(), "target should be removed after unpublish");
 }
 
 #[tokio::test]

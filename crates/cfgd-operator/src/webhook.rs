@@ -1560,10 +1560,7 @@ mod tests {
             oci_artifact: Some("second.io/mod:v1".to_string()),
             ..Default::default()
         };
-        let registries = vec![
-            "first.io/".to_string(),
-            "second.io/*".to_string(),
-        ];
+        let registries = vec!["first.io/".to_string(), "second.io/*".to_string()];
         assert!(check_trusted_registries(&spec, &registries).is_ok());
     }
 
@@ -1792,11 +1789,7 @@ mod tests {
         let pod = serde_json::json!({
             "spec": {}
         });
-        let modules = vec![(
-            "mod1".to_string(),
-            "1.0".to_string(),
-            ModuleSpec::default(),
-        )];
+        let modules = vec![("mod1".to_string(), "1.0".to_string(), ModuleSpec::default())];
         let patches = build_injection_patches(&pod, &modules);
         let patch_json = serde_json::to_string(&patches).unwrap();
         // Should still add the volume

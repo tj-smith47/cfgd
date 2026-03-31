@@ -2557,7 +2557,10 @@ HKEY_CURRENT_USER\\Environment\n\
         let plist =
             generate_launch_agent_plist("com.example.test", "/usr/bin/test", &["--key=a&b"], false);
         // Should contain XML-escaped ampersand
-        assert!(plist.contains("&amp;"), "ampersand must be XML-escaped in plist");
+        assert!(
+            plist.contains("&amp;"),
+            "ampersand must be XML-escaped in plist"
+        );
     }
 
     #[test]
@@ -3176,9 +3179,7 @@ HKEY_CURRENT_USER\\Environment\n\
         );
 
         // yaml_value_to_string converts bools to "true"/"false"
-        let drifts = diff_yaml_mapping(&desired, "", yaml_value_to_string, |_| {
-            "false".to_string()
-        });
+        let drifts = diff_yaml_mapping(&desired, "", yaml_value_to_string, |_| "false".to_string());
         assert_eq!(drifts.len(), 1);
         assert_eq!(drifts[0].expected, "true");
         assert_eq!(drifts[0].actual, "false");
@@ -3193,8 +3194,9 @@ HKEY_CURRENT_USER\\Environment\n\
         );
 
         // yaml_value_with_numeric_bools converts true→"1", false→"0"
-        let drifts =
-            diff_yaml_mapping(&desired, "", yaml_value_with_numeric_bools, |_| "0".to_string());
+        let drifts = diff_yaml_mapping(&desired, "", yaml_value_with_numeric_bools, |_| {
+            "0".to_string()
+        });
         assert_eq!(drifts.len(), 1);
         assert_eq!(drifts[0].expected, "1");
         assert_eq!(drifts[0].actual, "0");
@@ -3270,13 +3272,10 @@ HKEY_CURRENT_USER\\Environment\n\
         );
         let desired = serde_yaml::Value::Mapping(outer);
 
-        let drifts = diff_nested_mapping(&desired, |_schema, _key| "prefer-light".to_string())
-            .unwrap();
+        let drifts =
+            diff_nested_mapping(&desired, |_schema, _key| "prefer-light".to_string()).unwrap();
         assert_eq!(drifts.len(), 1);
-        assert_eq!(
-            drifts[0].key,
-            "org.gnome.desktop.interface.color-scheme"
-        );
+        assert_eq!(drifts[0].key, "org.gnome.desktop.interface.color-scheme");
         assert_eq!(drifts[0].expected, "prefer-dark");
         assert_eq!(drifts[0].actual, "prefer-light");
     }
@@ -3295,8 +3294,7 @@ HKEY_CURRENT_USER\\Environment\n\
         );
         let desired = serde_yaml::Value::Mapping(outer);
 
-        let drifts =
-            diff_nested_mapping(&desired, |_prefix, _key| "val1".to_string()).unwrap();
+        let drifts = diff_nested_mapping(&desired, |_prefix, _key| "val1".to_string()).unwrap();
         assert!(drifts.is_empty());
     }
 
@@ -3443,10 +3441,7 @@ org.gnome.desktop.wm.preferences:
 
     #[test]
     fn parse_reg_line_hkey_header_line() {
-        assert_eq!(
-            parse_reg_line("HKEY_CURRENT_USER\\Software\\Test"),
-            None
-        );
+        assert_eq!(parse_reg_line("HKEY_CURRENT_USER\\Software\\Test"), None);
     }
 
     #[test]
@@ -3512,8 +3507,7 @@ org.gnome.desktop.wm.preferences:
 
     #[test]
     fn yaml_value_to_defaults_type_float() {
-        let float_val =
-            serde_yaml::Value::Number(serde_yaml::Number::from(3.14_f64));
+        let float_val = serde_yaml::Value::Number(serde_yaml::Number::from(3.14_f64));
         let (t, v) = yaml_value_to_defaults_type(&float_val);
         assert_eq!(t, "float");
         assert!(v.starts_with("3.14"));
@@ -3740,20 +3734,14 @@ org.gnome.desktop.wm.preferences:
 
     #[test]
     fn parse_reg_line_hkey_local_machine() {
-        assert_eq!(
-            parse_reg_line("HKEY_LOCAL_MACHINE\\Software\\Test"),
-            None
-        );
+        assert_eq!(parse_reg_line("HKEY_LOCAL_MACHINE\\Software\\Test"), None);
     }
 
     #[test]
     fn parse_reg_line_with_spaces_in_value() {
         let line = "    MyPath    REG_SZ    C:\\Program Files\\App";
         let result = parse_reg_line(line);
-        assert_eq!(
-            result,
-            Some(("MyPath", "REG_SZ", "C:\\Program Files\\App"))
-        );
+        assert_eq!(result, Some(("MyPath", "REG_SZ", "C:\\Program Files\\App")));
     }
 
     // --- diff_yaml_mapping with float values ---
@@ -3859,9 +3847,9 @@ schema1:
 
         let drifts = diff_nested_mapping(&yaml, |_schema, key| {
             match key {
-                "key-a" => "val-a",  // matches
-                "key-b" => "wrong",  // drift
-                "key-c" => "val-c",  // matches
+                "key-a" => "val-a", // matches
+                "key-b" => "wrong", // drift
+                "key-c" => "val-c", // matches
                 _ => "",
             }
             .to_string()

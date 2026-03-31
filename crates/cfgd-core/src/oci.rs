@@ -11,6 +11,7 @@ use std::path::Path;
 use serde::{Deserialize, Serialize};
 
 use crate::errors::OciError;
+use crate::output::Printer;
 
 // ---------------------------------------------------------------------------
 // Media type constants
@@ -768,13 +769,18 @@ pub fn push_module(
     dir: &Path,
     artifact_ref: &str,
     platform: Option<&str>,
+    printer: Option<&Printer>,
 ) -> Result<String, OciError> {
     let oci_ref = OciReference::parse(artifact_ref)?;
     let auth = RegistryAuth::resolve(&oci_ref.registry);
     let agent = ureq::AgentBuilder::new()
         .timeout(std::time::Duration::from_secs(300))
         .build();
+    let spinner = printer.map(|p| p.spinner(&format!("Pushing module to {artifact_ref}...")));
     let (digest, _size) = push_module_inner(&agent, dir, &oci_ref, auth.as_ref(), platform)?;
+    if let Some(s) = spinner {
+        s.finish_and_clear();
+    }
     Ok(digest)
 }
 
@@ -939,12 +945,19 @@ pub fn parse_platform_target(target: &str) -> Result<(&str, &str), OciError> {
 pub fn push_module_multiplatform(
     builds: &[(&Path, &str)],
     artifact_ref: &str,
+    printer: Option<&Printer>,
 ) -> Result<String, OciError> {
     let oci_ref = OciReference::parse(artifact_ref)?;
     let auth = RegistryAuth::resolve(&oci_ref.registry);
     let agent = ureq::AgentBuilder::new()
         .timeout(std::time::Duration::from_secs(300))
         .build();
+
+    let spinner = printer.map(|p| {
+        p.spinner(&format!(
+            "Pushing multi-platform module to {artifact_ref}..."
+        ))
+    });
 
     let mut platform_manifests = Vec::new();
 
@@ -1002,6 +1015,11 @@ pub fn push_module_multiplatform(
     })?;
 
     let index_digest = sha256_digest(&index_json);
+
+    if let Some(s) = spinner {
+        s.finish_and_clear();
+    }
+
     tracing::info!(
         reference = %oci_ref,
         digest = %index_digest,
@@ -1462,12 +1480,15 @@ pub fn pull_module(
     artifact_ref: &str,
     output_dir: &Path,
     require_signature: bool,
+    printer: Option<&Printer>,
 ) -> Result<(), OciError> {
     let oci_ref = OciReference::parse(artifact_ref)?;
     let auth = RegistryAuth::resolve(&oci_ref.registry);
     let agent = ureq::AgentBuilder::new()
         .timeout(std::time::Duration::from_secs(300))
         .build();
+
+    let spinner = printer.map(|p| p.spinner(&format!("Pulling module from {artifact_ref}...")));
 
     // If signature required, check for cosign signature tag
     if require_signature {
@@ -1560,6 +1581,10 @@ pub fn pull_module(
 
     // Extract
     extract_tar_gz(&blob_data, output_dir)?;
+
+    if let Some(s) = spinner {
+        s.finish_and_clear();
+    }
 
     tracing::info!(
         reference = %oci_ref,
@@ -2514,9 +2539,7 @@ mod tests {
         let head_mock = server
             .mock(
                 "HEAD",
-                mockito::Matcher::Regex(format!(
-                    r"/v2/test/mod/blobs/sha256:.*"
-                )),
+                mockito::Matcher::Regex(format!(r"/v2/test/mod/blobs/sha256:.*")),
             )
             .with_status(404)
             .create();
@@ -2633,7 +2656,11 @@ mod tests {
             .build();
 
         let result = upload_blob(&agent, &oci_ref, None, data, "application/octet-stream");
-        assert!(result.is_ok(), "upload_blob with relative location failed: {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "upload_blob with relative location failed: {:?}",
+            result.err()
+        );
         put_mock.assert();
     }
 
@@ -2661,8 +2688,7 @@ mod tests {
             .create();
 
         // Mock blob upload POST (config + layer)
-        let upload_location =
-            format!("{}/v2/test/pushmod/blobs/uploads/upload-id", server.url());
+        let upload_location = format!("{}/v2/test/pushmod/blobs/uploads/upload-id", server.url());
         server
             .mock("POST", "/v2/test/pushmod/blobs/uploads/")
             .with_status(202)
@@ -2692,8 +2718,13 @@ mod tests {
             .timeout(std::time::Duration::from_secs(10))
             .build();
 
-        let result =
-            push_module_inner(&agent, module_dir.path(), &oci_ref, None, Some("linux/amd64"));
+        let result = push_module_inner(
+            &agent,
+            module_dir.path(),
+            &oci_ref,
+            None,
+            Some("linux/amd64"),
+        );
         assert!(
             result.is_ok(),
             "push_module_inner failed: {:?}",
@@ -2774,7 +2805,7 @@ mod tests {
 
         let output_dir = tempfile::tempdir().unwrap();
         let artifact_ref = format!("{}/test/pullmod:v1", registry);
-        let result = pull_module(&artifact_ref, output_dir.path(), false);
+        let result = pull_module(&artifact_ref, output_dir.path(), false, None);
         assert!(result.is_ok(), "pull_module failed: {:?}", result.err());
 
         // Verify extracted files
@@ -2823,7 +2854,7 @@ mod tests {
 
         let output_dir = tempfile::tempdir().unwrap();
         let artifact_ref = format!("{}/test/badmod:v1", registry);
-        let result = pull_module(&artifact_ref, output_dir.path(), false);
+        let result = pull_module(&artifact_ref, output_dir.path(), false, None);
         assert!(result.is_err());
         let err_msg = format!("{}", result.unwrap_err());
         assert!(
@@ -2845,7 +2876,7 @@ mod tests {
 
         let output_dir = tempfile::tempdir().unwrap();
         let artifact_ref = format!("{}/test/sigmod:v1", registry);
-        let result = pull_module(&artifact_ref, output_dir.path(), true);
+        let result = pull_module(&artifact_ref, output_dir.path(), true, None);
         assert!(result.is_err());
         assert!(
             matches!(result, Err(OciError::SignatureRequired { .. })),
@@ -2938,7 +2969,10 @@ mod tests {
 
         server
             .mock("GET", "/v2/test/repo/tags/list")
-            .match_header("Authorization", mockito::Matcher::Regex("Basic .*".to_string()))
+            .match_header(
+                "Authorization",
+                mockito::Matcher::Regex("Basic .*".to_string()),
+            )
             .with_status(200)
             .with_body("{}")
             .create();
@@ -2948,8 +2982,7 @@ mod tests {
             .build();
 
         let url = format!("{}/v2/test/repo/tags/list", server.url());
-        let result =
-            authenticated_request(&agent, "GET", &url, Some(&auth), None, None, None);
+        let result = authenticated_request(&agent, "GET", &url, Some(&auth), None, None, None);
         assert!(result.is_ok());
     }
 
@@ -2988,13 +3021,13 @@ mod tests {
     fn get_bearer_token_uses_access_token_field() {
         let mut server = mockito::Server::new();
 
-        let www_auth = format!(
-            r#"Bearer realm="{}/token",service="svc""#,
-            server.url()
-        );
+        let www_auth = format!(r#"Bearer realm="{}/token",service="svc""#, server.url());
 
         server
-            .mock("GET", mockito::Matcher::Regex(r"/token\?service=.*".to_string()))
+            .mock(
+                "GET",
+                mockito::Matcher::Regex(r"/token\?service=.*".to_string()),
+            )
             .with_status(200)
             .with_body(r#"{"access_token":"alt-token-456"}"#)
             .create();
@@ -3024,10 +3057,7 @@ mod tests {
     fn get_bearer_token_sends_basic_auth_when_provided() {
         let mut server = mockito::Server::new();
 
-        let www_auth = format!(
-            r#"Bearer realm="{}/token",service="svc""#,
-            server.url()
-        );
+        let www_auth = format!(r#"Bearer realm="{}/token",service="svc""#, server.url());
 
         let auth = RegistryAuth {
             username: "user".to_string(),
@@ -3035,8 +3065,14 @@ mod tests {
         };
 
         server
-            .mock("GET", mockito::Matcher::Regex(r"/token\?service=.*".to_string()))
-            .match_header("Authorization", mockito::Matcher::Regex("Basic .*".to_string()))
+            .mock(
+                "GET",
+                mockito::Matcher::Regex(r"/token\?service=.*".to_string()),
+            )
+            .match_header(
+                "Authorization",
+                mockito::Matcher::Regex("Basic .*".to_string()),
+            )
             .with_status(200)
             .with_body(r#"{"token":"authed-token"}"#)
             .create();

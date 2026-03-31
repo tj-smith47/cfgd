@@ -572,12 +572,14 @@ impl Printer {
             return;
         }
         let icon = self.theme.warning.apply_to(&self.theme.icon_warning);
-        let _ = self.term.write_line(&format!("{} {}", icon, text));
+        let styled_text = self.theme.warning.apply_to(text);
+        let _ = self.term.write_line(&format!("{} {}", icon, styled_text));
     }
 
     pub fn error(&self, text: &str) {
         let icon = self.theme.error.apply_to(&self.theme.icon_error);
-        let _ = self.term.write_line(&format!("{} {}", icon, text));
+        let styled_text = self.theme.error.apply_to(text);
+        let _ = self.term.write_line(&format!("{} {}", icon, styled_text));
     }
 
     pub fn info(&self, text: &str) {
@@ -585,7 +587,8 @@ impl Printer {
             return;
         }
         let icon = self.theme.info.apply_to(&self.theme.icon_info);
-        let _ = self.term.write_line(&format!("{} {}", icon, text));
+        let styled_text = self.theme.info.apply_to(text);
+        let _ = self.term.write_line(&format!("{} {}", icon, styled_text));
     }
 
     pub fn key_value(&self, key: &str, value: &str) {
@@ -652,6 +655,31 @@ impl Printer {
         pb
     }
 
+    pub fn spinner(&self, message: &str) -> ProgressBar {
+        if self.verbosity == Verbosity::Quiet {
+            return ProgressBar::hidden();
+        }
+        let pb = self.multi_progress.add(ProgressBar::new_spinner());
+        let frames_raw = [
+            "\u{28fb}", "\u{28d9}", "\u{2839}", "\u{2838}", "\u{283c}", "\u{2834}", "\u{2826}",
+            "\u{2827}", "\u{2807}", "\u{280f}",
+        ];
+        let styled_frames: Vec<String> = frames_raw
+            .iter()
+            .map(|f| self.theme.info.apply_to(f).to_string())
+            .collect();
+        let mut tick_refs: Vec<&str> = styled_frames.iter().map(|s| s.as_str()).collect();
+        tick_refs.push(" ");
+        pb.set_style(
+            ProgressStyle::with_template("{spinner} {msg}")
+                .unwrap_or_else(|_| ProgressStyle::default_spinner())
+                .tick_strings(&tick_refs),
+        );
+        pb.set_message(message.to_string());
+        pb.enable_steady_tick(Duration::from_millis(80));
+        pb
+    }
+
     pub fn multi_progress(&self) -> &MultiProgress {
         &self.multi_progress
     }
@@ -667,8 +695,9 @@ impl Printer {
             let _ = self.term.write_line(&muted.to_string());
         } else {
             for item in items {
-                let icon = self.theme.info.apply_to(&self.theme.icon_pending);
-                let _ = self.term.write_line(&format!("  {} {}", icon, item));
+                let icon = self.theme.muted.apply_to(&self.theme.icon_pending);
+                let muted_text = self.theme.muted.apply_to(item.as_str());
+                let _ = self.term.write_line(&format!("  {} {}", icon, muted_text));
             }
         }
     }

@@ -678,13 +678,14 @@ pub fn fetch_git_source(
     git_src: &GitSource,
     cache_base: &Path,
     module_name: &str,
+    printer: &crate::output::Printer,
 ) -> Result<PathBuf> {
     let cache_dir = git_cache_dir(cache_base, &git_src.repo_url);
 
     if cache_dir.join(".git").exists() || cache_dir.join("HEAD").exists() {
-        fetch_existing_repo(&cache_dir, git_src, module_name)?;
+        fetch_existing_repo(&cache_dir, git_src, module_name, printer)?;
     } else {
-        clone_repo(&cache_dir, git_src, module_name)?;
+        clone_repo(&cache_dir, git_src, module_name, printer)?;
     }
 
     checkout_ref(&cache_dir, git_src, module_name)?;
@@ -713,7 +714,12 @@ fn git_fetch_options<'a>() -> git2::FetchOptions<'a> {
     fetch_opts
 }
 
-fn clone_repo(dest: &Path, git_src: &GitSource, module_name: &str) -> Result<()> {
+fn clone_repo(
+    dest: &Path,
+    git_src: &GitSource,
+    module_name: &str,
+    printer: &crate::output::Printer,
+) -> Result<()> {
     if let Some(parent) = dest.parent() {
         std::fs::create_dir_all(parent).map_err(|e| ModuleError::GitFetchFailed {
             module: module_name.to_string(),
@@ -722,13 +728,15 @@ fn clone_repo(dest: &Path, git_src: &GitSource, module_name: &str) -> Result<()>
         })?;
     }
 
-    // Try git CLI first with SSH hang protection.
-    if crate::try_git_cmd(
-        Some(&git_src.repo_url),
-        &["clone", &git_src.repo_url, &dest.display().to_string()],
-        "clone",
-        None,
-    ) {
+    // Try git CLI first with live progress output.
+    let mut cmd = crate::git_cmd_safe(Some(&git_src.repo_url), None);
+    cmd.args(["clone", &git_src.repo_url, &dest.display().to_string()]);
+    cmd.stdout(std::process::Stdio::piped());
+    cmd.stderr(std::process::Stdio::piped());
+
+    let label = format!("Cloning module '{}'", module_name);
+    let cli_result = printer.run_with_output(&mut cmd, &label);
+    if matches!(&cli_result, Ok(output) if output.status.success()) {
         return Ok(());
     }
 
@@ -738,33 +746,45 @@ fn clone_repo(dest: &Path, git_src: &GitSource, module_name: &str) -> Result<()>
         let _ = std::fs::create_dir_all(parent);
     }
 
-    // Fall back to libgit2.
-    let mut builder = git2::build::RepoBuilder::new();
-    builder.fetch_options(git_fetch_options());
+    // Fall back to libgit2 with spinner.
+    let spinner = printer.spinner(&format!("Cloning module '{}' (libgit2)...", module_name));
 
-    builder
+    let result = git2::build::RepoBuilder::new()
+        .fetch_options(git_fetch_options())
         .clone(&git_src.repo_url, dest)
         .map_err(|e| ModuleError::GitFetchFailed {
             module: module_name.to_string(),
             url: git_src.repo_url.clone(),
             message: e.to_string(),
-        })?;
+        });
+
+    spinner.finish_and_clear();
+    result?;
 
     Ok(())
 }
 
-fn fetch_existing_repo(repo_path: &Path, git_src: &GitSource, module_name: &str) -> Result<()> {
-    // Try git CLI first with SSH hang protection.
-    if crate::try_git_cmd(
-        Some(&git_src.repo_url),
-        &["-C", &repo_path.display().to_string(), "fetch", "origin"],
-        "fetch",
-        None,
-    ) {
+fn fetch_existing_repo(
+    repo_path: &Path,
+    git_src: &GitSource,
+    module_name: &str,
+    printer: &crate::output::Printer,
+) -> Result<()> {
+    // Try git CLI first with live progress output.
+    let mut cmd = crate::git_cmd_safe(Some(&git_src.repo_url), None);
+    cmd.args(["-C", &repo_path.display().to_string(), "fetch", "origin"]);
+    cmd.stdout(std::process::Stdio::piped());
+    cmd.stderr(std::process::Stdio::piped());
+
+    let label = format!("Fetching module '{}'", module_name);
+    let cli_result = printer.run_with_output(&mut cmd, &label);
+    if matches!(&cli_result, Ok(output) if output.status.success()) {
         return Ok(());
     }
 
-    // Fall back to libgit2.
+    // Fall back to libgit2 with spinner.
+    let spinner = printer.spinner(&format!("Fetching module '{}' (libgit2)...", module_name));
+
     let repo = open_repo(repo_path, module_name, &git_src.repo_url)?;
 
     let mut remote = repo
@@ -781,13 +801,16 @@ fn fetch_existing_repo(repo_path: &Path, git_src: &GitSource, module_name: &str)
         .collect();
     let refspec_strs: Vec<&str> = refspecs.iter().map(|s| s.as_str()).collect();
 
-    remote
+    let fetch_result = remote
         .fetch(&refspec_strs, Some(&mut git_fetch_options()), None)
         .map_err(|e| ModuleError::GitFetchFailed {
             module: module_name.to_string(),
             url: git_src.repo_url.clone(),
             message: format!("fetch failed: {e}"),
-        })?;
+        });
+
+    spinner.finish_and_clear();
+    fetch_result?;
 
     Ok(())
 }
@@ -846,13 +869,17 @@ fn checkout_ref(repo_path: &Path, git_src: &GitSource, module_name: &str) -> Res
 /// Resolve module file entries to concrete local paths.
 /// Local sources are resolved relative to the module directory.
 /// Git sources are cloned/fetched to cache and resolved to the local cache path.
-pub fn resolve_module_files(module: &LoadedModule, cache_base: &Path) -> Result<Vec<ResolvedFile>> {
+pub fn resolve_module_files(
+    module: &LoadedModule,
+    cache_base: &Path,
+    printer: &crate::output::Printer,
+) -> Result<Vec<ResolvedFile>> {
     let mut resolved = Vec::new();
 
     for entry in &module.spec.files {
         if is_git_source(&entry.source) {
             let git_src = parse_git_source(&entry.source)?;
-            let local_path = fetch_git_source(&git_src, cache_base, &module.name)?;
+            let local_path = fetch_git_source(&git_src, cache_base, &module.name, printer)?;
 
             resolved.push(ResolvedFile {
                 source: local_path,
@@ -910,8 +937,9 @@ pub fn resolve_modules(
     cache_base: &Path,
     platform: &Platform,
     managers: &HashMap<String, &dyn PackageManager>,
+    printer: &crate::output::Printer,
 ) -> Result<Vec<ResolvedModule>> {
-    let all_modules = load_all_modules(config_dir, cache_base)?;
+    let all_modules = load_all_modules(config_dir, cache_base, printer)?;
 
     // Resolve profile references (e.g., "community/tmux" → "tmux") to actual module names
     let resolved_names: Vec<String> = requested
@@ -925,7 +953,7 @@ pub fn resolve_modules(
     for name in &order {
         let module = &all_modules[name];
         let packages = resolve_module_packages(module, platform, managers)?;
-        let files = resolve_module_files(module, cache_base)?;
+        let files = resolve_module_files(module, cache_base, printer)?;
 
         let scripts = module.spec.scripts.as_ref();
         let pre_apply_scripts = scripts.map(|s| s.pre_apply.clone()).unwrap_or_default();
@@ -1065,7 +1093,11 @@ pub struct FetchedRemoteModule {
 ///
 /// Validates that the URL has a pinned ref (tag or commit SHA).
 /// Branches are rejected for security (upstream push = code execution).
-pub fn fetch_remote_module(url: &str, cache_base: &Path) -> Result<FetchedRemoteModule> {
+pub fn fetch_remote_module(
+    url: &str,
+    cache_base: &Path,
+    printer: &crate::output::Printer,
+) -> Result<FetchedRemoteModule> {
     let git_src = parse_git_source(url)?;
 
     // Enforce pinned ref for remote modules — only tags (which may be semver tags or
@@ -1084,7 +1116,7 @@ pub fn fetch_remote_module(url: &str, cache_base: &Path) -> Result<FetchedRemote
         .into());
     }
 
-    let local_path = fetch_git_source(&git_src, cache_base, "remote")?;
+    let local_path = fetch_git_source(&git_src, cache_base, "remote", printer)?;
 
     // The repo root is the cache dir (before subdir), we need it for commit hash
     let repo_dir = git_cache_dir(cache_base, &git_src.repo_url);
@@ -1160,6 +1192,7 @@ pub fn load_locked_modules(
     config_dir: &Path,
     cache_base: &Path,
     modules: &mut HashMap<String, LoadedModule>,
+    printer: &crate::output::Printer,
 ) -> Result<()> {
     let lockfile = load_lockfile(config_dir)?;
 
@@ -1180,7 +1213,7 @@ pub fn load_locked_modules(
         };
 
         // Fetch to cache (no-op if already present at correct ref)
-        let local_path = fetch_git_source(&pinned_src, cache_base, &entry.name)?;
+        let local_path = fetch_git_source(&pinned_src, cache_base, &entry.name, printer)?;
 
         // Verify integrity
         verify_lockfile_integrity(entry, cache_base)?;
@@ -1197,9 +1230,10 @@ pub fn load_locked_modules(
 pub fn load_all_modules(
     config_dir: &Path,
     cache_base: &Path,
+    printer: &crate::output::Printer,
 ) -> Result<HashMap<String, LoadedModule>> {
     let mut modules = load_modules(config_dir)?;
-    load_locked_modules(config_dir, cache_base, &mut modules)?;
+    load_locked_modules(config_dir, cache_base, &mut modules, printer)?;
     Ok(modules)
 }
 
@@ -1293,6 +1327,7 @@ pub fn extract_registry_name(url: &str) -> Option<String> {
 pub fn fetch_registry_modules(
     registry: &ModuleRegistryEntry,
     cache_base: &Path,
+    printer: &crate::output::Printer,
 ) -> Result<Vec<RegistryModule>> {
     let git_src = GitSource {
         repo_url: registry.url.clone(),
@@ -1305,9 +1340,9 @@ pub fn fetch_registry_modules(
 
     // Clone or fetch
     if cache_dir.join(".git").exists() || cache_dir.join("HEAD").exists() {
-        fetch_existing_repo(&cache_dir, &git_src, &registry.name)?;
+        fetch_existing_repo(&cache_dir, &git_src, &registry.name, printer)?;
     } else {
-        clone_repo(&cache_dir, &git_src, &registry.name)?;
+        clone_repo(&cache_dir, &git_src, &registry.name, printer)?;
     }
 
     let modules_dir = cache_dir.join("modules");
@@ -2087,7 +2122,8 @@ spec: {}
         };
 
         let cache_dir = tempfile::tempdir().unwrap();
-        let resolved = resolve_module_files(&module, cache_dir.path()).unwrap();
+        let printer = crate::output::Printer::new(crate::output::Verbosity::Quiet);
+        let resolved = resolve_module_files(&module, cache_dir.path(), &printer).unwrap();
         assert_eq!(resolved.len(), 1);
         assert_eq!(resolved[0].source, dir.path().join("config/"));
         assert_eq!(
@@ -2152,6 +2188,7 @@ spec:
         let platform = macos_platform();
 
         let cache_dir = tempfile::tempdir().unwrap();
+        let printer = crate::output::Printer::new(crate::output::Verbosity::Quiet);
 
         let resolved = resolve_modules(
             &["nvim".into()],
@@ -2159,6 +2196,7 @@ spec:
             cache_dir.path(),
             &platform,
             &managers,
+            &printer,
         )
         .unwrap();
 
@@ -2958,8 +2996,10 @@ spec:
     #[test]
     fn fetch_remote_module_rejects_unpinned() {
         let dir = tempfile::tempdir().unwrap();
+        let printer = crate::output::Printer::new(crate::output::Verbosity::Quiet);
         // URL without @tag or ?ref= — should be rejected
-        let result = fetch_remote_module("https://github.com/user/module.git", dir.path());
+        let result =
+            fetch_remote_module("https://github.com/user/module.git", dir.path(), &printer);
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
         assert!(err.contains("pinned ref"));
@@ -2968,8 +3008,13 @@ spec:
     #[test]
     fn fetch_remote_module_rejects_branch_ref() {
         let dir = tempfile::tempdir().unwrap();
+        let printer = crate::output::Printer::new(crate::output::Verbosity::Quiet);
         // URL with ?ref=main — branches are rejected for security
-        let result = fetch_remote_module("https://github.com/user/module.git?ref=main", dir.path());
+        let result = fetch_remote_module(
+            "https://github.com/user/module.git?ref=main",
+            dir.path(),
+            &printer,
+        );
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
         assert!(err.contains("pinned ref"));
@@ -3161,10 +3206,7 @@ spec:
 
     #[test]
     fn extract_registry_name_non_github_returns_none() {
-        assert_eq!(
-            extract_registry_name("https://gitlab.com/org/repo"),
-            None
-        );
+        assert_eq!(extract_registry_name("https://gitlab.com/org/repo"), None);
     }
 
     #[test]
@@ -3257,9 +3299,11 @@ spec:
         }];
         let new = make_loaded_module("test", new_spec);
         let changes = diff_module_specs(&old, &new);
-        assert!(changes
-            .iter()
-            .any(|c| c.contains("kubectl") && c.contains("1.28") && c.contains("1.30")));
+        assert!(
+            changes
+                .iter()
+                .any(|c| c.contains("kubectl") && c.contains("1.28") && c.contains("1.30"))
+        );
     }
 
     #[test]
@@ -3275,9 +3319,11 @@ spec:
         }];
         let new = make_loaded_module("test", new_spec);
         let changes = diff_module_specs(&old, &new);
-        assert!(changes
-            .iter()
-            .any(|c| c.contains("+ file target: ~/.zshrc")));
+        assert!(
+            changes
+                .iter()
+                .any(|c| c.contains("+ file target: ~/.zshrc"))
+        );
     }
 
     #[test]
@@ -3299,6 +3345,9 @@ spec:
         let new = make_loaded_module("test", new_spec);
         let changes = diff_module_specs(&old, &new);
         // Should have: +dep core, -dep base, +pkg neovim, -pkg vim
-        assert!(changes.len() >= 4, "expected at least 4 changes, got {changes:?}");
+        assert!(
+            changes.len() >= 4,
+            "expected at least 4 changes, got {changes:?}"
+        );
     }
 }

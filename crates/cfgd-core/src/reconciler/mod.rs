@@ -991,8 +991,6 @@ impl<'a> Reconciler<'a> {
                 continue;
             }
 
-            printer.subheader(&format!("Phase: {}", phase.name.display_name()));
-
             let total = phase.actions.len();
             for (action_idx, action) in phase.actions.iter().enumerate() {
                 let desc_for_journal = format_action_description(action);
@@ -1313,55 +1311,46 @@ impl<'a> Reconciler<'a> {
     /// are deleted. Package installs and system changes are NOT rolled back — they
     /// are listed in the output as requiring manual review.
     pub fn rollback_apply(&self, apply_id: i64, printer: &Printer) -> Result<RollbackResult> {
-        let entries = self.state.journal_completed_actions(apply_id)?;
+        // Rollback restores the system to the state that existed AFTER the target apply.
+        // Strategy: find all file backups from applies after the target. Each backup
+        // captures the pre-state before that later apply. The earliest backup after the
+        // target for each file path is the state right after the target apply completed.
+        let after_backups = self.state.file_backups_after_apply(apply_id)?;
+        let after_entries = self.state.journal_entries_after_apply(apply_id)?;
+
         let mut files_restored = 0usize;
         let mut files_removed = 0usize;
         let mut non_file_actions = Vec::new();
 
-        // Process in reverse order
-        for entry in entries.iter().rev() {
+        // Collect non-file actions from subsequent applies
+        for entry in &after_entries {
             let is_file = entry.phase == "files"
                 || entry.action_type == "file"
                 || entry.resource_id.starts_with("file:");
-
-            if !is_file {
+            if !is_file && !non_file_actions.contains(&entry.resource_id) {
                 non_file_actions.push(entry.resource_id.clone());
+            }
+        }
+
+        // Track which file paths we've already restored (avoid duplicate restores)
+        let mut restored_paths = std::collections::HashSet::new();
+
+        // Restore files from the earliest backup after the target apply
+        for bk in &after_backups {
+            if restored_paths.contains(&bk.file_path) {
                 continue;
             }
+            restored_paths.insert(bk.file_path.clone());
 
-            // Try to get backup
-            let backup = self.state.get_file_backup(apply_id, &entry.resource_id)?;
-            // Strip "file:create:" or "file:update:" prefix to get the actual path
-            let actual_path = entry
-                .resource_id
-                .strip_prefix("file:create:")
-                .or_else(|| entry.resource_id.strip_prefix("file:update:"))
-                .or_else(|| entry.resource_id.strip_prefix("file:delete:"))
-                .unwrap_or(&entry.resource_id);
-            let target = std::path::Path::new(actual_path);
+            let target = std::path::Path::new(&bk.file_path);
 
-            if let Some(ref bk) = backup {
-                if bk.was_symlink {
-                    // Restore symlink
-                    if let Some(ref link_target) = bk.symlink_target {
-                        let _ = std::fs::remove_file(target);
-                        if let Err(e) =
-                            crate::create_symlink(std::path::Path::new(link_target), target)
-                        {
-                            printer.warning(&format!(
-                                "rollback: failed to restore symlink {}: {}",
-                                target.display(),
-                                e
-                            ));
-                        } else {
-                            files_restored += 1;
-                        }
-                    }
-                } else if !bk.oversized && !bk.content.is_empty() {
-                    // Restore file content
-                    if let Err(e) = crate::atomic_write(target, &bk.content) {
+            if bk.was_symlink {
+                if let Some(ref link_target) = bk.symlink_target {
+                    let _ = std::fs::remove_file(target);
+                    if let Err(e) = crate::create_symlink(std::path::Path::new(link_target), target)
+                    {
                         printer.warning(&format!(
-                            "rollback: failed to restore {}: {}",
+                            "rollback: failed to restore symlink {}: {}",
                             target.display(),
                             e
                         ));
@@ -1369,8 +1358,75 @@ impl<'a> Reconciler<'a> {
                         files_restored += 1;
                     }
                 }
-            } else {
-                // No backup means file was newly created — remove it
+            } else if !bk.oversized && !bk.content.is_empty() {
+                // Restore file content. atomic_write preserves the existing file's
+                // permissions, so if the target apply set specific permissions and a
+                // later apply kept them, they'll be preserved during rollback.
+                if let Err(e) = crate::atomic_write(target, &bk.content) {
+                    printer.warning(&format!(
+                        "rollback: failed to restore {}: {}",
+                        target.display(),
+                        e
+                    ));
+                } else {
+                    files_restored += 1;
+                }
+            } else if bk.content.is_empty() && !bk.was_symlink && !bk.oversized {
+                // Empty content with no symlink and not oversized means the file didn't exist
+                // before this backup — remove it to restore pre-state
+                if target.exists() {
+                    if let Err(e) = std::fs::remove_file(target) {
+                        printer.warning(&format!(
+                            "rollback: failed to remove {}: {}",
+                            target.display(),
+                            e
+                        ));
+                    } else {
+                        files_removed += 1;
+                    }
+                }
+            }
+        }
+
+        // Also handle files that were created by subsequent applies but have no backup
+        // (newly created files after the target apply)
+        for entry in &after_entries {
+            let is_file = entry.phase == "files"
+                || entry.action_type == "file"
+                || entry.resource_id.starts_with("file:");
+            if !is_file {
+                continue;
+            }
+
+            let actual_path = entry
+                .resource_id
+                .strip_prefix("file:create:")
+                .or_else(|| entry.resource_id.strip_prefix("file:update:"))
+                .or_else(|| entry.resource_id.strip_prefix("file:delete:"))
+                .unwrap_or(&entry.resource_id);
+
+            if restored_paths.contains(actual_path) {
+                continue;
+            }
+            restored_paths.insert(actual_path.to_string());
+
+            // Check if this file existed at the target apply by looking at the target apply's
+            // journal entries
+            let target_entries = self.state.journal_completed_actions(apply_id)?;
+            let target_had_file = target_entries.iter().any(|e| {
+                let target_path = e
+                    .resource_id
+                    .strip_prefix("file:create:")
+                    .or_else(|| e.resource_id.strip_prefix("file:update:"))
+                    .or_else(|| e.resource_id.strip_prefix("file:delete:"))
+                    .unwrap_or(&e.resource_id);
+                target_path == actual_path
+            });
+
+            // If the file was created after target apply and wasn't part of target apply,
+            // it's a new file that should be removed
+            if !target_had_file && entry.resource_id.starts_with("file:create:") {
+                let target = std::path::Path::new(actual_path);
                 if target.exists() {
                     if let Err(e) = std::fs::remove_file(target) {
                         printer.warning(&format!(
@@ -2470,7 +2526,7 @@ pub(crate) fn execute_script(
     working_dir: &std::path::Path,
     env_vars: &[(String, String)],
     default_timeout: std::time::Duration,
-    _printer: &Printer,
+    printer: &Printer,
 ) -> Result<(String, bool, Option<String>)> {
     let run_str = entry.run_str();
     let effective_timeout = match entry {
@@ -2556,8 +2612,12 @@ pub(crate) fn execute_script(
 
     let mut child = cmd.spawn()?;
 
-    // Drain stdout/stderr in reader threads. If idle_timeout is configured,
-    // track the last time output was received so we can kill idle scripts.
+    // Spinner with live output display (same pattern as Printer::run_with_progress)
+    let pb = printer.spinner(&label);
+
+    // Channel for live display + Arc buffers for final capture.
+    // Reader threads feed both so we get live scrolling output AND full capture.
+    let (tx, rx) = std::sync::mpsc::channel::<String>();
     let last_output = std::sync::Arc::new(std::sync::Mutex::new(std::time::Instant::now()));
     let stdout_buf = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
     let stderr_buf = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
@@ -2566,6 +2626,7 @@ pub(crate) fn execute_script(
         let pipe = child.stdout.take();
         let buf = std::sync::Arc::clone(&stdout_buf);
         let ts = std::sync::Arc::clone(&last_output);
+        let tx = tx.clone();
         std::thread::spawn(move || {
             if let Some(pipe) = pipe {
                 let reader = std::io::BufReader::new(pipe);
@@ -2579,6 +2640,7 @@ pub(crate) fn execute_script(
                                 b.push('\n');
                             }
                             b.push_str(&l);
+                            let _ = tx.send(l);
                         }
                         Err(_) => break,
                     }
@@ -2591,6 +2653,7 @@ pub(crate) fn execute_script(
         let pipe = child.stderr.take();
         let buf = std::sync::Arc::clone(&stderr_buf);
         let ts = std::sync::Arc::clone(&last_output);
+        let tx = tx.clone();
         std::thread::spawn(move || {
             if let Some(pipe) = pipe {
                 let reader = std::io::BufReader::new(pipe);
@@ -2604,6 +2667,7 @@ pub(crate) fn execute_script(
                                 b.push('\n');
                             }
                             b.push_str(&l);
+                            let _ = tx.send(l);
                         }
                         Err(_) => break,
                     }
@@ -2611,9 +2675,34 @@ pub(crate) fn execute_script(
             }
         })
     };
+    drop(tx);
+
+    const VISIBLE_LINES: usize = 5;
+    let mut ring: std::collections::VecDeque<String> =
+        std::collections::VecDeque::with_capacity(VISIBLE_LINES);
 
     let start = std::time::Instant::now();
     loop {
+        // Drain any pending output lines and update the spinner display
+        while let Ok(line) = rx.try_recv() {
+            if ring.len() >= VISIBLE_LINES {
+                ring.pop_front();
+            }
+            ring.push_back(line);
+        }
+        if !ring.is_empty() {
+            let mut msg = label.clone();
+            for l in &ring {
+                let display = if l.len() > 120 {
+                    l.get(..120).unwrap_or(l)
+                } else {
+                    l.as_str()
+                };
+                msg.push_str(&format!("\n  {}", display));
+            }
+            pb.set_message(msg);
+        }
+
         match child.try_wait()? {
             Some(status) => {
                 // Wait for reader threads to finish draining
@@ -2632,6 +2721,7 @@ pub(crate) fn execute_script(
                 let captured = combine_script_output(&stdout_str, &stderr_str);
 
                 if !status.success() {
+                    pb.finish_and_clear();
                     let exit_code = status.code().unwrap_or(-1);
                     return Err(crate::errors::CfgdError::Config(ConfigError::Invalid {
                         message: format!(
@@ -2643,6 +2733,9 @@ pub(crate) fn execute_script(
                     }));
                 }
 
+                let elapsed = start.elapsed();
+                pb.finish_and_clear();
+                printer.success(&format!("{} ({}s)", run_str, elapsed.as_secs()));
                 return Ok((label, true, captured));
             }
             None => {
@@ -2662,6 +2755,7 @@ pub(crate) fn execute_script(
                     }
                 }
                 if let Some((reason, duration)) = kill_reason {
+                    pb.finish_and_clear();
                     kill_script_child(&mut child);
                     // Join reader threads so we capture partial output
                     let _ = stdout_handle.join();
@@ -6294,96 +6388,86 @@ mod tests {
     fn rollback_restores_file_content() {
         let dir = tempfile::tempdir().unwrap();
         let target = dir.path().join("config.txt");
+        let file_path = target.display().to_string();
 
-        // Write original content
-        std::fs::write(&target, "original content").unwrap();
-
-        // Capture file state as backup
-        let file_state = crate::capture_file_state(&target).unwrap().unwrap();
-
-        // Set up state store with an apply + journal + backup
+        // Rollback restores to the state AFTER the target apply.
+        // Setup: apply 1 writes "v1 content", apply 2 modifies to "v2 content"
+        // (capturing "v1 content" as backup). Rollback to apply 1 → "v1 content".
         let state = StateStore::open_in_memory().unwrap();
-        let apply_id = state
+
+        // Apply 1: creates file with v1 content
+        let apply_id_1 = state
             .record_apply("test", "hash1", ApplyStatus::Success, None)
             .unwrap();
+        let resource_id = format!("file:create:{}", target.display());
+        let jid1 = state
+            .journal_begin(apply_id_1, 0, "files", "file", &resource_id, None)
+            .unwrap();
+        state.journal_complete(jid1, None, None).unwrap();
+        std::fs::write(&target, "v1 content").unwrap();
 
-        // Store file backup
-        let resource_id = format!("file:update:{}", target.display());
+        // Apply 2: modifies file to v2 content. Backup captures v1 content.
+        let file_state = crate::capture_file_state(&target).unwrap().unwrap();
+        let apply_id_2 = state
+            .record_apply("test", "hash2", ApplyStatus::Success, None)
+            .unwrap();
+        let update_resource_id = format!("file:update:{}", target.display());
         state
-            .store_file_backup(apply_id, &resource_id, &file_state)
+            .store_file_backup(apply_id_2, &file_path, &file_state)
             .unwrap();
-
-        // Record journal entry for the file action
-        let journal_id = state
-            .journal_begin(apply_id, 0, "files", "file", &resource_id, None)
+        let jid2 = state
+            .journal_begin(apply_id_2, 0, "files", "file", &update_resource_id, None)
             .unwrap();
-        state.journal_complete(journal_id, None, None).unwrap();
+        state.journal_complete(jid2, None, None).unwrap();
+        std::fs::write(&target, "v2 content").unwrap();
 
-        // Overwrite the file with new content (simulating a successful apply)
-        std::fs::write(&target, "new content after apply").unwrap();
-        assert_eq!(
-            std::fs::read_to_string(&target).unwrap(),
-            "new content after apply"
-        );
-
-        // Roll back
+        // Rollback to apply 1 — should restore v1 content
         let registry = ProviderRegistry::new();
         let reconciler = Reconciler::new(&registry, &state);
         let printer = Printer::new(crate::output::Verbosity::Quiet);
-        let rollback_result = reconciler.rollback_apply(apply_id, &printer).unwrap();
+        let rollback_result = reconciler.rollback_apply(apply_id_1, &printer).unwrap();
 
         assert_eq!(rollback_result.files_restored, 1);
         assert_eq!(rollback_result.files_removed, 0);
         assert!(rollback_result.non_file_actions.is_empty());
 
-        // Verify original content is restored
         let restored = std::fs::read_to_string(&target).unwrap();
-        assert_eq!(restored, "original content");
+        assert_eq!(restored, "v1 content");
     }
 
     #[test]
-    fn rollback_removes_newly_created_file() {
-        let dir = tempfile::tempdir().unwrap();
-        let target = dir.path().join("new_file.txt");
-
-        // File does not exist yet — simulate a "create" action with no backup
+    fn rollback_no_changes_when_at_latest_apply() {
+        // Rollback to the most recent apply with no subsequent applies
+        // should produce no changes (system is already at that state).
         let state = StateStore::open_in_memory().unwrap();
         let apply_id = state
             .record_apply("test", "hash1", ApplyStatus::Success, None)
             .unwrap();
 
-        let resource_id = format!("file:create:{}", target.display());
-        let journal_id = state
-            .journal_begin(apply_id, 0, "files", "file", &resource_id, None)
-            .unwrap();
-        state.journal_complete(journal_id, None, None).unwrap();
-
-        // Create the file (simulating the apply having created it)
-        std::fs::write(&target, "newly created").unwrap();
-        assert!(target.exists());
-
-        // Roll back — file should be removed since there's no backup
         let registry = ProviderRegistry::new();
         let reconciler = Reconciler::new(&registry, &state);
         let printer = Printer::new(crate::output::Verbosity::Quiet);
         let rollback_result = reconciler.rollback_apply(apply_id, &printer).unwrap();
 
         assert_eq!(rollback_result.files_restored, 0);
-        assert_eq!(rollback_result.files_removed, 1);
-        assert!(!target.exists());
+        assert_eq!(rollback_result.files_removed, 0);
+        assert!(rollback_result.non_file_actions.is_empty());
     }
 
     #[test]
     fn rollback_lists_non_file_actions() {
         let state = StateStore::open_in_memory().unwrap();
-        let apply_id = state
+        let apply_id_1 = state
             .record_apply("test", "hash1", ApplyStatus::Success, None)
             .unwrap();
 
-        // Record a package action (non-file) in the journal
+        // Apply 2 has a package action (non-file) after apply 1
+        let apply_id_2 = state
+            .record_apply("test", "hash2", ApplyStatus::Success, None)
+            .unwrap();
         let journal_id = state
             .journal_begin(
-                apply_id,
+                apply_id_2,
                 0,
                 "packages",
                 "package",
@@ -6396,7 +6480,7 @@ mod tests {
         let registry = ProviderRegistry::new();
         let reconciler = Reconciler::new(&registry, &state);
         let printer = Printer::new(crate::output::Verbosity::Quiet);
-        let rollback_result = reconciler.rollback_apply(apply_id, &printer).unwrap();
+        let rollback_result = reconciler.rollback_apply(apply_id_1, &printer).unwrap();
 
         assert_eq!(rollback_result.files_restored, 0);
         assert_eq!(rollback_result.files_removed, 0);
@@ -6643,11 +6727,7 @@ mod tests {
         assert_eq!(result.failed(), 1); // failed post-script
 
         // Verify the failed action is the script
-        let failed = result
-            .action_results
-            .iter()
-            .find(|r| !r.success)
-            .unwrap();
+        let failed = result.action_results.iter().find(|r| !r.success).unwrap();
         assert!(
             failed.description.contains("exit 42"),
             "failed action should be the script: {}",
@@ -6712,8 +6792,7 @@ mod tests {
 
         let mut resolved = make_empty_resolved();
         // Simple entry — no explicit continueOnError, defaults to true for post phase
-        resolved.merged.scripts.post_apply =
-            vec![ScriptEntry::Simple("exit 1".to_string())];
+        resolved.merged.scripts.post_apply = vec![ScriptEntry::Simple("exit 1".to_string())];
 
         let plan = reconciler
             .plan(
@@ -7408,10 +7487,7 @@ mod tests {
         assert_eq!(actions.len(), 1);
         match &actions[0] {
             Action::Secret(SecretAction::Skip { reason, .. }) => {
-                assert!(
-                    reason.contains("no target or envs"),
-                    "got: {reason}"
-                );
+                assert!(reason.contains("no target or envs"), "got: {reason}");
             }
             other => panic!("Expected Skip for no-target/no-envs, got {:?}", other),
         }
@@ -7667,7 +7743,8 @@ mod tests {
             dir: PathBuf::from("."),
         }];
 
-        let (env, aliases) = super::merge_module_env_aliases(&profile_env, &profile_aliases, &modules);
+        let (env, aliases) =
+            super::merge_module_env_aliases(&profile_env, &profile_aliases, &modules);
         // Module overrides profile: A=2 (module wins), B=3 (new)
         assert_eq!(env.len(), 2);
         assert_eq!(env.iter().find(|e| e.name == "A").unwrap().value, "2");
@@ -7866,9 +7943,7 @@ mod tests {
         assert_eq!(result.action_results.len(), 1);
         assert!(result.action_results[0].success);
         assert!(
-            result.action_results[0]
-                .description
-                .contains("bootstrap"),
+            result.action_results[0].description.contains("bootstrap"),
             "desc: {}",
             result.action_results[0].description
         );
@@ -8229,10 +8304,7 @@ mod tests {
                 actions: vec![Action::Secret(SecretAction::ResolveEnv {
                     provider: "vault".to_string(),
                     reference: "secret/data/gh#token".to_string(),
-                    envs: vec![
-                        "GH_TOKEN".to_string(),
-                        "GITHUB_TOKEN".to_string(),
-                    ],
+                    envs: vec!["GH_TOKEN".to_string(), "GITHUB_TOKEN".to_string()],
                     origin: "local".to_string(),
                 })],
             }],
@@ -8256,9 +8328,7 @@ mod tests {
         assert_eq!(result.status, ApplyStatus::Success);
         assert!(result.action_results[0].success);
         assert!(
-            result.action_results[0]
-                .description
-                .contains("resolve-env"),
+            result.action_results[0].description.contains("resolve-env"),
             "desc: {}",
             result.action_results[0].description
         );
@@ -8622,7 +8692,9 @@ mod tests {
         assert_eq!(result.status, ApplyStatus::Success);
         assert!(result.action_results[0].success);
         assert!(
-            result.action_results[0].description.contains("system:sysctl"),
+            result.action_results[0]
+                .description
+                .contains("system:sysctl"),
             "desc: {}",
             result.action_results[0].description
         );
@@ -9050,13 +9122,15 @@ mod tests {
 
         // Manager should have been bootstrapped and package installed
         assert!(registry.package_managers[0].is_available());
-        assert!(registry.package_managers[0]
-            .installed_packages()
-            .unwrap()
-            .contains("jq"));
+        assert!(
+            registry.package_managers[0]
+                .installed_packages()
+                .unwrap()
+                .contains("jq")
+        );
     }
 
-    // --- rollback_apply: symlink restore ---
+    // --- rollback_apply: symlink restore (restore to state after target apply) ---
 
     #[test]
     #[cfg(unix)]
@@ -9064,49 +9138,49 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let target = dir.path().join("link-file");
         let link_dest = dir.path().join("original-dest.txt");
+        let file_path = target.display().to_string();
         std::fs::write(&link_dest, "link content").unwrap();
-
-        // Create original symlink
-        std::os::unix::fs::symlink(&link_dest, &target).unwrap();
-        assert!(target.is_symlink());
 
         let state = StateStore::open_in_memory().unwrap();
 
-        let apply_id = state
-            .record_apply("test", "hash3", ApplyStatus::Success, None)
+        // Apply 1: creates the symlink
+        let apply_id_1 = state
+            .record_apply("test", "hash1", ApplyStatus::Success, None)
             .unwrap();
+        std::os::unix::fs::symlink(&link_dest, &target).unwrap();
+        assert!(target.is_symlink());
+        let resource_id = format!("file:create:{}", target.display());
+        let jid1 = state
+            .journal_begin(apply_id_1, 0, "files", "file", &resource_id, None)
+            .unwrap();
+        state.journal_complete(jid1, None, None).unwrap();
 
-        // Store backup of symlink
+        // Apply 2: replaces symlink with a regular file. Backup captures symlink state.
         let file_state = crate::capture_file_state(&target).unwrap().unwrap();
         assert!(file_state.is_symlink);
+        let apply_id_2 = state
+            .record_apply("test", "hash2", ApplyStatus::Success, None)
+            .unwrap();
         state
-            .store_file_backup(apply_id, &format!("file:update:{}", target.display()), &file_state)
+            .store_file_backup(apply_id_2, &file_path, &file_state)
             .unwrap();
-
-        // Record journal entry
-        let jid = state
-            .journal_begin(
-                apply_id,
-                0,
-                "files",
-                "file",
-                &format!("file:update:{}", target.display()),
-                None,
-            )
+        let update_resource_id = format!("file:update:{}", target.display());
+        let jid2 = state
+            .journal_begin(apply_id_2, 0, "files", "file", &update_resource_id, None)
             .unwrap();
-        state.journal_complete(jid, None, None).unwrap();
+        state.journal_complete(jid2, None, None).unwrap();
 
-        // Now replace the symlink with a regular file (simulating apply)
+        // Replace the symlink with a regular file (simulating apply 2)
         std::fs::remove_file(&target).unwrap();
         std::fs::write(&target, "replaced").unwrap();
         assert!(!target.is_symlink());
 
-        // Rollback
+        // Rollback to apply 1 — should restore the symlink
         let registry = ProviderRegistry::new();
         let reconciler = Reconciler::new(&registry, &state);
         let printer = Printer::new(crate::output::Verbosity::Quiet);
 
-        let rollback_result = reconciler.rollback_apply(apply_id, &printer).unwrap();
+        let rollback_result = reconciler.rollback_apply(apply_id_1, &printer).unwrap();
 
         assert_eq!(rollback_result.files_restored, 1);
         assert!(target.is_symlink(), "symlink should be restored");
@@ -9348,10 +9422,7 @@ mod tests {
             env: vec![],
             aliases: vec![],
             pre_apply_scripts: Vec::new(),
-            post_apply_scripts: vec![ScriptEntry::Simple(format!(
-                "touch {}",
-                marker.display()
-            ))],
+            post_apply_scripts: vec![ScriptEntry::Simple(format!("touch {}", marker.display()))],
             pre_reconcile_scripts: Vec::new(),
             post_reconcile_scripts: Vec::new(),
             on_change_scripts: Vec::new(),

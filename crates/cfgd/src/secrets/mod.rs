@@ -322,6 +322,11 @@ impl SecretBackend for AgeBackend {
                 message: format!("failed to read edited file: {}", e),
             })?;
 
+        // If content hasn't changed, skip re-encryption
+        if edited == *decrypted.expose_secret() {
+            return Ok(());
+        }
+
         cfgd_core::atomic_write_str(path, &edited).map_err(|e| SecretError::EncryptionFailed {
             path: path.to_path_buf(),
             message: format!("failed to write back: {}", e),
@@ -960,7 +965,8 @@ mod tests {
 
     #[test]
     fn extract_age_recipient_valid_content() {
-        let content = "# created: 2024-01-01\n# public key: age1abc123def456\nAGE-SECRET-KEY-1DEADBEEF\n";
+        let content =
+            "# created: 2024-01-01\n# public key: age1abc123def456\nAGE-SECRET-KEY-1DEADBEEF\n";
         assert_eq!(
             extract_age_recipient(content),
             Some("age1abc123def456".to_string())
@@ -1005,10 +1011,7 @@ AGE-SECRET-KEY-1STUFF\n";
     fn extract_age_recipient_only_prefix_no_key() {
         // The prefix is present but no key follows — empty key is rejected
         let content = "# public key: \n";
-        assert_eq!(
-            extract_age_recipient(content),
-            None
-        );
+        assert_eq!(extract_age_recipient(content), None);
     }
 
     // --- resolve_secret_refs edge case tests ---
@@ -1074,26 +1077,21 @@ AGE-SECRET-KEY-1STUFF\n";
         let provider = MockSecretProvider::new("vault").unavailable();
         let providers: Vec<&dyn SecretProvider> = vec![&provider];
 
-        let result = resolve_secret_refs(
-            "x=${secret:vault://path}",
-            &providers,
-            None,
-            Path::new("."),
-        );
+        let result =
+            resolve_secret_refs("x=${secret:vault://path}", &providers, None, Path::new("."));
         assert!(result.is_err());
         let err = format!("{}", result.unwrap_err());
-        assert!(err.contains("vault"), "error should mention provider: {err}");
+        assert!(
+            err.contains("vault"),
+            "error should mention provider: {err}"
+        );
     }
 
     #[test]
     fn resolve_secret_refs_unknown_provider_errors() {
         // No providers registered at all, but reference uses a provider scheme
-        let result = resolve_secret_refs(
-            "x=${secret:unknown://something}",
-            &[],
-            None,
-            Path::new("."),
-        );
+        let result =
+            resolve_secret_refs("x=${secret:unknown://something}", &[], None, Path::new("."));
         assert!(result.is_err());
     }
 
@@ -1130,13 +1128,8 @@ AGE-SECRET-KEY-1STUFF\n";
 
         let backend = MockBackend;
         // Marker at the very start and very end of the string
-        let result = resolve_secret_refs(
-            "${secret:s.enc}",
-            &[],
-            Some(&backend),
-            dir.path(),
-        )
-        .unwrap();
+        let result =
+            resolve_secret_refs("${secret:s.enc}", &[], Some(&backend), dir.path()).unwrap();
         assert_eq!(result, "decrypted-value");
     }
 
@@ -1177,7 +1170,11 @@ AGE-SECRET-KEY-1STUFF\n";
         assert_eq!(result, "pw=decrypted");
 
         let calls = backend.decrypt_calls.lock().unwrap();
-        assert_eq!(calls.len(), 1, "backend should have been called exactly once");
+        assert_eq!(
+            calls.len(),
+            1,
+            "backend should have been called exactly once"
+        );
         assert_eq!(
             calls[0],
             dir.path().join("secret.enc.yaml"),
@@ -1189,8 +1186,7 @@ AGE-SECRET-KEY-1STUFF\n";
     fn resolve_secret_ref_calls_provider_with_correct_reference() {
         use cfgd_core::test_helpers::MockSecretProvider;
 
-        let provider =
-            MockSecretProvider::new("1password").with_resolve_result("provider-secret");
+        let provider = MockSecretProvider::new("1password").with_resolve_result("provider-secret");
         let providers: Vec<&dyn SecretProvider> = vec![&provider];
         let dir = tempfile::tempdir().unwrap();
 
@@ -1204,7 +1200,11 @@ AGE-SECRET-KEY-1STUFF\n";
         assert_eq!(result, "token=provider-secret");
 
         let calls = provider.resolve_calls.lock().unwrap();
-        assert_eq!(calls.len(), 1, "provider should have been called exactly once");
+        assert_eq!(
+            calls.len(),
+            1,
+            "provider should have been called exactly once"
+        );
         assert_eq!(
             calls[0], "Vault/Item/Field",
             "provider should receive the reference without the scheme prefix"
@@ -1220,12 +1220,7 @@ AGE-SECRET-KEY-1STUFF\n";
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("secret.enc"), "data").unwrap();
 
-        let result = resolve_secret_refs(
-            "${secret:secret.enc}",
-            &[],
-            Some(&backend),
-            dir.path(),
-        );
+        let result = resolve_secret_refs("${secret:secret.enc}", &[], Some(&backend), dir.path());
         assert!(result.is_err(), "backend failure should propagate as error");
         let err = format!("{}", result.unwrap_err());
         assert!(
@@ -1248,26 +1243,23 @@ AGE-SECRET-KEY-1STUFF\n";
             None,
             Path::new("."),
         );
-        assert!(result.is_err(), "provider failure should propagate as error");
+        assert!(
+            result.is_err(),
+            "provider failure should propagate as error"
+        );
     }
 
     #[test]
     fn resolve_secret_ref_first_matching_provider_wins() {
         use cfgd_core::test_helpers::MockSecretProvider;
 
-        let provider1 =
-            MockSecretProvider::new("vault").with_resolve_result("from-first");
-        let provider2 =
-            MockSecretProvider::new("vault").with_resolve_result("from-second");
+        let provider1 = MockSecretProvider::new("vault").with_resolve_result("from-first");
+        let provider2 = MockSecretProvider::new("vault").with_resolve_result("from-second");
         let providers: Vec<&dyn SecretProvider> = vec![&provider1, &provider2];
 
-        let result = resolve_secret_refs(
-            "x=${secret:vault://path}",
-            &providers,
-            None,
-            Path::new("."),
-        )
-        .unwrap();
+        let result =
+            resolve_secret_refs("x=${secret:vault://path}", &providers, None, Path::new("."))
+                .unwrap();
         assert_eq!(result, "x=from-first");
 
         let calls1 = provider1.resolve_calls.lock().unwrap();

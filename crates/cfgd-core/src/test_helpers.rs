@@ -55,10 +55,7 @@ impl Default for MockFileManager {
 impl crate::providers::FileManager for MockFileManager {
     fn scan_source(&self, layers: &[FileLayer]) -> crate::errors::Result<FileTree> {
         let names: Vec<String> = layers.iter().map(|l| l.origin_source.clone()).collect();
-        self.scan_source_calls
-            .lock()
-            .unwrap()
-            .push(names.join(","));
+        self.scan_source_calls.lock().unwrap().push(names.join(","));
         Ok(FileTree {
             files: BTreeMap::new(),
         })
@@ -66,20 +63,13 @@ impl crate::providers::FileManager for MockFileManager {
 
     fn scan_target(&self, paths: &[PathBuf]) -> crate::errors::Result<FileTree> {
         let names: Vec<String> = paths.iter().map(|p| p.display().to_string()).collect();
-        self.scan_target_calls
-            .lock()
-            .unwrap()
-            .push(names.join(","));
+        self.scan_target_calls.lock().unwrap().push(names.join(","));
         Ok(FileTree {
             files: BTreeMap::new(),
         })
     }
 
-    fn diff(
-        &self,
-        _source: &FileTree,
-        _target: &FileTree,
-    ) -> crate::errors::Result<Vec<FileDiff>> {
+    fn diff(&self, _source: &FileTree, _target: &FileTree) -> crate::errors::Result<Vec<FileDiff>> {
         self.diff_calls.lock().unwrap().push("diff".into());
         Ok(Vec::new())
     }
@@ -307,9 +297,7 @@ impl SystemConfigurator for MockSystemConfigurator {
 
     fn diff(&self, _desired: &serde_yaml::Value) -> crate::errors::Result<Vec<SystemDrift>> {
         if *self.fail_diff.lock().unwrap() {
-            return Err(CfgdError::Io(std::io::Error::other(
-                "mock diff failed",
-            )));
+            return Err(CfgdError::Io(std::io::Error::other("mock diff failed")));
         }
         let items = self.drift.lock().unwrap();
         Ok(items
@@ -322,11 +310,7 @@ impl SystemConfigurator for MockSystemConfigurator {
             .collect())
     }
 
-    fn apply(
-        &self,
-        desired: &serde_yaml::Value,
-        _printer: &Printer,
-    ) -> crate::errors::Result<()> {
+    fn apply(&self, desired: &serde_yaml::Value, _printer: &Printer) -> crate::errors::Result<()> {
         self.apply_calls.lock().unwrap().push(desired.clone());
         if *self.fail_apply.lock().unwrap() {
             return Err(CfgdError::Io(std::io::Error::other(
@@ -586,9 +570,7 @@ mod tests {
     #[test]
     fn mock_secret_backend_tracks_decrypt() {
         let backend = MockSecretBackend::new("sops");
-        let secret = backend
-            .decrypt_file(Path::new("/tmp/secret.enc"))
-            .unwrap();
+        let secret = backend.decrypt_file(Path::new("/tmp/secret.enc")).unwrap();
         assert_eq!(secret.expose_secret(), "mock-secret-value");
         assert_eq!(backend.decrypt_calls.lock().unwrap().len(), 1);
     }

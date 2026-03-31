@@ -9,6 +9,7 @@ use std::time::{Duration, SystemTime};
 use semver::Version;
 
 use crate::errors::{Result, UpgradeError};
+use crate::output::Printer;
 
 const GITHUB_API_BASE: &str = "https://api.github.com";
 const DEFAULT_REPO: &str = "tj-smith47/cfgd";
@@ -58,8 +59,10 @@ pub fn current_version() -> std::result::Result<Version, UpgradeError> {
 }
 
 /// Query the GitHub Releases API for the latest release.
-pub fn fetch_latest_release(repo: &str) -> Result<ReleaseInfo> {
+pub fn fetch_latest_release(repo: &str, printer: Option<&Printer>) -> Result<ReleaseInfo> {
     let url = format!("{}/repos/{}/releases/latest", GITHUB_API_BASE, repo);
+
+    let spinner = printer.map(|p| p.spinner("Checking for latest release..."));
 
     let agent = ureq::AgentBuilder::new()
         .timeout(std::time::Duration::from_secs(300))
@@ -76,6 +79,10 @@ pub fn fetch_latest_release(repo: &str) -> Result<ReleaseInfo> {
     let body: String = response.into_string().map_err(|e| UpgradeError::ApiError {
         message: format!("failed to read response body: {}", e),
     })?;
+
+    if let Some(s) = spinner {
+        s.finish_and_clear();
+    }
 
     parse_release_json(&body)
 }
@@ -162,7 +169,11 @@ fn find_checksums_asset(release: &ReleaseInfo) -> Option<&ReleaseAsset> {
 }
 
 /// Download a file from a URL to a local path.
-fn download_to_file(url: &str, dest: &Path) -> std::result::Result<(), UpgradeError> {
+fn download_to_file(
+    url: &str,
+    dest: &Path,
+    printer: Option<&Printer>,
+) -> std::result::Result<(), UpgradeError> {
     let agent = ureq::AgentBuilder::new()
         .timeout(std::time::Duration::from_secs(300))
         .build();
@@ -174,6 +185,11 @@ fn download_to_file(url: &str, dest: &Path) -> std::result::Result<(), UpgradeEr
             message: format!("{}", e),
         })?;
 
+    // Determine content length for progress tracking
+    let content_length: Option<u64> = response
+        .header("content-length")
+        .and_then(|v| v.parse().ok());
+
     // Stream directly to a temp file (avoids buffering entire binary in memory)
     let parent = dest.parent().unwrap_or(std::path::Path::new("."));
     let mut tmp =
@@ -183,9 +199,45 @@ fn download_to_file(url: &str, dest: &Path) -> std::result::Result<(), UpgradeEr
 
     const MAX_DOWNLOAD_SIZE: u64 = 256 * 1024 * 1024;
     let mut reader = response.into_reader().take(MAX_DOWNLOAD_SIZE);
-    std::io::copy(&mut reader, &mut tmp).map_err(|e| UpgradeError::DownloadFailed {
-        message: format!("stream to disk: {}", e),
-    })?;
+
+    // Use progress bar if we know the size, spinner otherwise
+    match (printer, content_length) {
+        (Some(p), Some(total)) => {
+            let pb = p.progress_bar(total, url);
+            let mut buf = [0u8; 8192];
+            let mut downloaded: u64 = 0;
+            loop {
+                let n = reader
+                    .read(&mut buf)
+                    .map_err(|e| UpgradeError::DownloadFailed {
+                        message: format!("stream to disk: {}", e),
+                    })?;
+                if n == 0 {
+                    break;
+                }
+                std::io::Write::write_all(&mut tmp, &buf[..n]).map_err(|e| {
+                    UpgradeError::DownloadFailed {
+                        message: format!("stream to disk: {}", e),
+                    }
+                })?;
+                downloaded += n as u64;
+                pb.set_position(downloaded);
+            }
+            pb.finish_and_clear();
+        }
+        (Some(p), None) => {
+            let spinner = p.spinner(&format!("Downloading {url}..."));
+            std::io::copy(&mut reader, &mut tmp).map_err(|e| UpgradeError::DownloadFailed {
+                message: format!("stream to disk: {}", e),
+            })?;
+            spinner.finish_and_clear();
+        }
+        _ => {
+            std::io::copy(&mut reader, &mut tmp).map_err(|e| UpgradeError::DownloadFailed {
+                message: format!("stream to disk: {}", e),
+            })?;
+        }
+    }
 
     tmp.persist(dest)
         .map_err(|e| UpgradeError::DownloadFailed {
@@ -219,7 +271,11 @@ fn sha256_file(path: &Path) -> std::result::Result<String, UpgradeError> {
 /// Download, verify checksum, extract, and atomically install the new binary.
 ///
 /// Returns the path to the newly installed binary.
-pub fn download_and_install(release: &ReleaseInfo, asset: &ReleaseAsset) -> Result<PathBuf> {
+pub fn download_and_install(
+    release: &ReleaseInfo,
+    asset: &ReleaseAsset,
+    printer: Option<&Printer>,
+) -> Result<PathBuf> {
     let current_exe = std::env::current_exe().map_err(|e| UpgradeError::InstallFailed {
         message: format!("cannot determine current binary path: {}", e),
     })?;
@@ -232,12 +288,12 @@ pub fn download_and_install(release: &ReleaseInfo, asset: &ReleaseAsset) -> Resu
     let archive_path = tmp_dir.path().join(&asset.name);
 
     // Download archive
-    download_to_file(&asset.download_url, &archive_path)?;
+    download_to_file(&asset.download_url, &archive_path, printer)?;
 
     // Download and verify checksum if available
     if let Some(checksums_asset) = find_checksums_asset(release) {
         let checksums_path = tmp_dir.path().join(&checksums_asset.name);
-        download_to_file(&checksums_asset.download_url, &checksums_path)?;
+        download_to_file(&checksums_asset.download_url, &checksums_path, printer)?;
 
         let checksums_content =
             fs::read_to_string(&checksums_path).map_err(|e| UpgradeError::DownloadFailed {
@@ -246,12 +302,19 @@ pub fn download_and_install(release: &ReleaseInfo, asset: &ReleaseAsset) -> Resu
 
         let checksums = parse_checksums(&checksums_content);
         if let Some(expected) = checksums.get(&asset.name) {
+            let verify_spinner = printer.map(|p| p.spinner("Verifying checksum..."));
             let actual = sha256_file(&archive_path)?;
             if actual != *expected {
+                if let Some(s) = verify_spinner {
+                    s.finish_and_clear();
+                }
                 return Err(UpgradeError::ChecksumMismatch {
                     file: asset.name.clone(),
                 }
                 .into());
+            }
+            if let Some(s) = verify_spinner {
+                s.finish_and_clear();
             }
             tracing::debug!("checksum verified for {}", asset.name);
         } else {
@@ -273,10 +336,14 @@ pub fn download_and_install(release: &ReleaseInfo, asset: &ReleaseAsset) -> Resu
         message: format!("create extract dir: {}", e),
     })?;
 
+    let extract_spinner = printer.map(|p| p.spinner("Extracting archive..."));
     #[cfg(unix)]
     extract_tarball(&archive_path, &extract_dir)?;
     #[cfg(windows)]
     extract_zip(&archive_path, &extract_dir)?;
+    if let Some(s) = extract_spinner {
+        s.finish_and_clear();
+    }
 
     // Find the cfgd binary in the extracted contents
     #[cfg(unix)]
@@ -424,7 +491,7 @@ pub fn cleanup_old_binary() {
 }
 
 /// Check for an update, using a 24h disk cache to avoid excessive API calls.
-pub fn check_with_cache(repo: Option<&str>) -> Result<UpdateCheck> {
+pub fn check_with_cache(repo: Option<&str>, printer: Option<&Printer>) -> Result<UpdateCheck> {
     let repo = repo.unwrap_or(DEFAULT_REPO);
     let current = current_version()?;
 
@@ -451,7 +518,7 @@ pub fn check_with_cache(repo: Option<&str>) -> Result<UpdateCheck> {
     }
 
     // Cache miss or expired — fall through to fresh check + update cache
-    let check = check_latest(Some(repo))?;
+    let check = check_latest(Some(repo), printer)?;
 
     let _ = write_version_cache(&VersionCache {
         checked_at_secs: SystemTime::now()
@@ -471,10 +538,10 @@ pub fn check_with_cache(repo: Option<&str>) -> Result<UpdateCheck> {
 }
 
 /// Check for an update without using cache. Always queries the API.
-pub fn check_latest(repo: Option<&str>) -> Result<UpdateCheck> {
+pub fn check_latest(repo: Option<&str>, printer: Option<&Printer>) -> Result<UpdateCheck> {
     let repo = repo.unwrap_or(DEFAULT_REPO);
     let current = current_version()?;
-    let release = fetch_latest_release(repo)?;
+    let release = fetch_latest_release(repo, printer)?;
     let update_available = release.version > current;
 
     Ok(UpdateCheck {
@@ -936,15 +1003,15 @@ mod tests {
         let tarball_path = dir.path().join("cfgd-test.tar.gz");
         {
             let tar_file = std::fs::File::create(&tarball_path).unwrap();
-            let enc =
-                flate2::write::GzEncoder::new(tar_file, flate2::Compression::default());
+            let enc = flate2::write::GzEncoder::new(tar_file, flate2::Compression::default());
             let mut tar_builder = tar::Builder::new(enc);
             tar_builder.append_dir_all(".", &tar_dir).unwrap();
             tar_builder.finish().unwrap();
         }
 
         // Create a checksums file with WRONG hash
-        let checksums = "deadbeef00000000000000000000000000000000000000000000000000000000  cfgd-test.tar.gz\n";
+        let checksums =
+            "deadbeef00000000000000000000000000000000000000000000000000000000  cfgd-test.tar.gz\n";
         let parsed = parse_checksums(checksums);
         assert_eq!(
             parsed.get("cfgd-test.tar.gz").unwrap(),
@@ -954,8 +1021,7 @@ mod tests {
         // The actual hash of the tarball should NOT match the fake hash
         let actual_hash = sha256_file(&tarball_path).unwrap();
         assert_ne!(
-            actual_hash,
-            "deadbeef00000000000000000000000000000000000000000000000000000000",
+            actual_hash, "deadbeef00000000000000000000000000000000000000000000000000000000",
             "real hash should differ from fake"
         );
     }

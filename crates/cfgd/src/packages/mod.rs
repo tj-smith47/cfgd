@@ -3799,10 +3799,7 @@ mod tests {
         assert_eq!(packages.dnf, vec!["gcc"]);
 
         add_package("brew-tap", "homebrew/core", &mut packages).unwrap();
-        assert_eq!(
-            packages.brew.as_ref().unwrap().taps,
-            vec!["homebrew/core"]
-        );
+        assert_eq!(packages.brew.as_ref().unwrap().taps, vec!["homebrew/core"]);
 
         add_package("winget", "Microsoft.VisualStudioCode", &mut packages).unwrap();
         assert_eq!(packages.winget, vec!["Microsoft.VisualStudioCode"]);
@@ -5460,7 +5457,8 @@ Git        Git.Git     2.43.0\n\
     #[test]
     fn chocolatey_parse_list_with_cr_endings() {
         // Windows CRLF line endings
-        let output = "Chocolatey v2.2.2\r\nnodejs 21.4.0\r\npython 3.12.1\r\n2 packages installed.\r\n";
+        let output =
+            "Chocolatey v2.2.2\r\nnodejs 21.4.0\r\npython 3.12.1\r\n2 packages installed.\r\n";
         let packages = parse_choco_list(output);
         assert!(packages.contains("nodejs"));
         assert!(packages.contains("python"));
@@ -5601,10 +5599,7 @@ Git        Git.Git     2.43.0\n\
 
     #[test]
     fn extract_caveats_brew_no_caveats() {
-        let output = test_cmd_output(
-            "==> Installing ripgrep\n==> Summary\nDone.",
-            "",
-        );
+        let output = test_cmd_output("==> Installing ripgrep\n==> Summary\nDone.", "");
         let notes = extract_caveats("brew", &output);
         assert!(notes.is_empty());
     }
@@ -5621,10 +5616,7 @@ Git        Git.Git     2.43.0\n\
 
     #[test]
     fn extract_caveats_pip_warnings() {
-        let output = test_cmd_output(
-            "WARNING: pip is out of date\nInstalled black\n",
-            "",
-        );
+        let output = test_cmd_output("WARNING: pip is out of date\nInstalled black\n", "");
         let notes = extract_caveats("pip", &output);
         assert_eq!(notes.len(), 1);
         assert!(notes[0].message.contains("pip is out of date"));
@@ -5810,7 +5802,11 @@ Git        Git.Git     2.43.0\n\
             pkg_manager(),
         ];
         for mgr in &managers {
-            assert!(!mgr.can_bootstrap(), "{} should not be bootstrappable", mgr.name());
+            assert!(
+                !mgr.can_bootstrap(),
+                "{} should not be bootstrappable",
+                mgr.name()
+            );
         }
     }
 
@@ -6008,10 +6004,7 @@ Git        Git.Git     2.43.0\n\
 
     #[test]
     fn extract_caveats_brew_cask_works_same_as_brew() {
-        let output = test_cmd_output(
-            "==> Caveats\nRestart to complete install.\n==> Done\n",
-            "",
-        );
+        let output = test_cmd_output("==> Caveats\nRestart to complete install.\n==> Done\n", "");
         let notes = extract_caveats("brew-cask", &output);
         assert_eq!(notes.len(), 1);
         assert_eq!(notes[0].manager, "brew-cask");
@@ -6318,17 +6311,11 @@ Git        Git.Git     2.43.0\n\
         };
 
         add_package("mypm", "new-pkg", &mut packages).unwrap();
-        assert_eq!(
-            packages.custom[0].packages,
-            vec!["existing", "new-pkg"]
-        );
+        assert_eq!(packages.custom[0].packages, vec!["existing", "new-pkg"]);
 
         // Idempotent
         add_package("mypm", "new-pkg", &mut packages).unwrap();
-        assert_eq!(
-            packages.custom[0].packages,
-            vec!["existing", "new-pkg"]
-        );
+        assert_eq!(packages.custom[0].packages, vec!["existing", "new-pkg"]);
     }
 
     // --- format_package_actions edge cases ---
@@ -6537,10 +6524,7 @@ Git        Git.Git     2.43.0\n\
 
         let pkgs = parse_npm_package_json(&path).unwrap();
         // foo appears in both, should only be listed once
-        assert_eq!(
-            pkgs.iter().filter(|p| *p == "foo").count(),
-            1
-        );
+        assert_eq!(pkgs.iter().filter(|p| *p == "foo").count(), 1);
         assert!(pkgs.contains(&"bar".to_string()));
     }
 

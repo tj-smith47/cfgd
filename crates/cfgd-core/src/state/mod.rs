@@ -534,6 +534,30 @@ impl StateStore {
         }
     }
 
+    /// Get a specific apply record by ID.
+    pub fn get_apply(&self, apply_id: i64) -> Result<Option<ApplyRecord>> {
+        let result = self.conn.query_row(
+            "SELECT id, timestamp, profile, plan_hash, status, summary FROM applies WHERE id = ?1",
+            params![apply_id],
+            |row| {
+                Ok(ApplyRecord {
+                    id: row.get(0)?,
+                    timestamp: row.get(1)?,
+                    profile: row.get(2)?,
+                    plan_hash: row.get(3)?,
+                    status: ApplyStatus::from_str(&row.get::<_, String>(4)?),
+                    summary: row.get(5)?,
+                })
+            },
+        );
+
+        match result {
+            Ok(record) => Ok(Some(record)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(StateError::Database(e.to_string()).into()),
+        }
+    }
+
     /// Get apply history (most recent first), limited to `limit` entries.
     pub fn history(&self, limit: u32) -> Result<Vec<ApplyRecord>> {
         let mut stmt = self
@@ -1159,6 +1183,75 @@ impl StateStore {
             Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
             Err(e) => Err(StateError::Database(e.to_string()).into()),
         }
+    }
+
+    /// Get the earliest file backup for each unique file path from applies after the given ID.
+    /// This captures the state that existed right after the target apply completed, for each
+    /// file that was subsequently modified. Used by rollback to restore to a prior apply's state.
+    pub fn file_backups_after_apply(&self, after_apply_id: i64) -> Result<Vec<FileBackupRecord>> {
+        // For each distinct file_path in backups from applies after `after_apply_id`,
+        // pick the backup with the smallest apply_id (earliest apply after target).
+        let mut stmt = self.conn.prepare(
+            "SELECT b.id, b.apply_id, b.file_path, b.content_hash, b.content, b.permissions,
+                    b.was_symlink, b.symlink_target, b.oversized, b.backed_up_at
+             FROM file_backups b
+             INNER JOIN (
+                 SELECT file_path, MIN(apply_id) AS min_apply_id
+                 FROM file_backups
+                 WHERE apply_id > ?1
+                 GROUP BY file_path
+             ) earliest ON b.file_path = earliest.file_path AND b.apply_id = earliest.min_apply_id
+             ORDER BY b.id",
+        )?;
+
+        let records = stmt
+            .query_map(params![after_apply_id], |row| {
+                Ok(FileBackupRecord {
+                    id: row.get(0)?,
+                    apply_id: row.get(1)?,
+                    file_path: row.get(2)?,
+                    content_hash: row.get(3)?,
+                    content: row.get(4)?,
+                    permissions: row.get::<_, Option<i64>>(5)?.map(|p| p as u32),
+                    was_symlink: row.get::<_, i64>(6)? != 0,
+                    symlink_target: row.get(7)?,
+                    oversized: row.get::<_, i64>(8)? != 0,
+                    backed_up_at: row.get(9)?,
+                })
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+
+        Ok(records)
+    }
+
+    /// Get all journal entries from applies after the given ID, for rollback tracking.
+    pub fn journal_entries_after_apply(&self, after_apply_id: i64) -> Result<Vec<JournalEntry>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, apply_id, action_index, phase, action_type, resource_id, pre_state, post_state, status, error, started_at, completed_at, script_output
+             FROM apply_journal WHERE apply_id > ?1 AND status = 'completed' ORDER BY apply_id DESC, action_index DESC",
+        )?;
+
+        let records = stmt
+            .query_map(params![after_apply_id], |row| {
+                Ok(JournalEntry {
+                    id: row.get(0)?,
+                    apply_id: row.get(1)?,
+                    action_index: row.get(2)?,
+                    phase: row.get(3)?,
+                    action_type: row.get(4)?,
+                    resource_id: row.get(5)?,
+                    pre_state: row.get(6)?,
+                    post_state: row.get(7)?,
+                    status: row.get(8)?,
+                    error: row.get(9)?,
+                    started_at: row.get(10)?,
+                    completed_at: row.get(11)?,
+                    script_output: row.get(12)?,
+                })
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+
+        Ok(records)
     }
 
     /// Prune old backups, keeping only the last N applies' worth.

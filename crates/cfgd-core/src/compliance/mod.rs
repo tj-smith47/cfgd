@@ -1102,14 +1102,20 @@ mod tests {
         profile.packages.pipx = vec!["missing-pkg".into()];
 
         let mut registry = ProviderRegistry::new();
-        registry
-            .package_managers
-            .push(Box::new(StubPackageManager::new("pipx").with_installed(&[])));
+        registry.package_managers.push(Box::new(
+            StubPackageManager::new("pipx").with_installed(&[]),
+        ));
 
         let checks = collect_package_checks(&profile, &registry).unwrap();
         assert_eq!(checks.len(), 1);
         assert_eq!(checks[0].status, ComplianceStatus::Violation);
-        assert!(checks[0].detail.as_deref().unwrap().contains("not installed"));
+        assert!(
+            checks[0]
+                .detail
+                .as_deref()
+                .unwrap()
+                .contains("not installed")
+        );
     }
 
     #[test]
@@ -1140,15 +1146,21 @@ mod tests {
         registry.package_managers.push(Box::new(
             StubPackageManager::new("pipx").with_installed(&["ripgrep"]),
         ));
-        registry.package_managers.push(Box::new(
-            StubPackageManager::new("dnf").with_installed(&[]),
-        ));
+        registry
+            .package_managers
+            .push(Box::new(StubPackageManager::new("dnf").with_installed(&[])));
 
         let checks = collect_package_checks(&profile, &registry).unwrap();
         assert_eq!(checks.len(), 2);
-        let pipx_check = checks.iter().find(|c| c.manager.as_deref() == Some("pipx")).unwrap();
+        let pipx_check = checks
+            .iter()
+            .find(|c| c.manager.as_deref() == Some("pipx"))
+            .unwrap();
         assert_eq!(pipx_check.status, ComplianceStatus::Compliant);
-        let dnf_check = checks.iter().find(|c| c.manager.as_deref() == Some("dnf")).unwrap();
+        let dnf_check = checks
+            .iter()
+            .find(|c| c.manager.as_deref() == Some("dnf"))
+            .unwrap();
         assert_eq!(dnf_check.status, ComplianceStatus::Violation);
     }
 
@@ -1164,21 +1176,40 @@ mod tests {
         should_fail: bool,
     }
     impl crate::providers::SystemConfigurator for InlineSystemMock {
-        fn name(&self) -> &str { &self.configurator_name }
-        fn is_available(&self) -> bool { true }
+        fn name(&self) -> &str {
+            &self.configurator_name
+        }
+        fn is_available(&self) -> bool {
+            true
+        }
         fn current_state(&self) -> crate::errors::Result<serde_yaml::Value> {
             Ok(serde_yaml::Value::Mapping(serde_yaml::Mapping::new()))
         }
-        fn diff(&self, _desired: &serde_yaml::Value) -> crate::errors::Result<Vec<crate::providers::SystemDrift>> {
+        fn diff(
+            &self,
+            _desired: &serde_yaml::Value,
+        ) -> crate::errors::Result<Vec<crate::providers::SystemDrift>> {
             if self.should_fail {
-                Err(crate::errors::CfgdError::Io(std::io::Error::other("mock diff failure")))
+                Err(crate::errors::CfgdError::Io(std::io::Error::other(
+                    "mock diff failure",
+                )))
             } else {
-                Ok(self.drift_tuples.iter().map(|(k, e, a)| crate::providers::SystemDrift {
-                    key: k.clone(), expected: e.clone(), actual: a.clone(),
-                }).collect())
+                Ok(self
+                    .drift_tuples
+                    .iter()
+                    .map(|(k, e, a)| crate::providers::SystemDrift {
+                        key: k.clone(),
+                        expected: e.clone(),
+                        actual: a.clone(),
+                    })
+                    .collect())
             }
         }
-        fn apply(&self, _desired: &serde_yaml::Value, _printer: &crate::output::Printer) -> crate::errors::Result<()> {
+        fn apply(
+            &self,
+            _desired: &serde_yaml::Value,
+            _printer: &crate::output::Printer,
+        ) -> crate::errors::Result<()> {
             Ok(())
         }
     }
@@ -1194,11 +1225,13 @@ mod tests {
         );
 
         let mut registry = ProviderRegistry::new();
-        registry.system_configurators.push(Box::new(InlineSystemMock {
-            configurator_name: "mock".to_string(),
-            drift_tuples: vec![],
-            should_fail: false,
-        }));
+        registry
+            .system_configurators
+            .push(Box::new(InlineSystemMock {
+                configurator_name: "mock".to_string(),
+                drift_tuples: vec![],
+                should_fail: false,
+            }));
 
         let checks = collect_system_checks(&profile, &registry).unwrap();
         assert_eq!(checks.len(), 1);
@@ -1215,11 +1248,13 @@ mod tests {
         );
 
         let mut registry = ProviderRegistry::new();
-        registry.system_configurators.push(Box::new(InlineSystemMock {
-            configurator_name: "mock".to_string(),
-            drift_tuples: vec![("net.ipv4.ip_forward".into(), "1".into(), "0".into())],
-            should_fail: false,
-        }));
+        registry
+            .system_configurators
+            .push(Box::new(InlineSystemMock {
+                configurator_name: "mock".to_string(),
+                drift_tuples: vec![("net.ipv4.ip_forward".into(), "1".into(), "0".into())],
+                should_fail: false,
+            }));
 
         let checks = collect_system_checks(&profile, &registry).unwrap();
         assert_eq!(checks.len(), 1);
@@ -1242,11 +1277,13 @@ mod tests {
         let checks = collect_system_checks(&profile, &registry).unwrap();
         assert_eq!(checks.len(), 1);
         assert_eq!(checks[0].status, ComplianceStatus::Warning);
-        assert!(checks[0]
-            .detail
-            .as_deref()
-            .unwrap()
-            .contains("no configurator"));
+        assert!(
+            checks[0]
+                .detail
+                .as_deref()
+                .unwrap()
+                .contains("no configurator")
+        );
     }
 
     #[test]
@@ -1260,11 +1297,13 @@ mod tests {
         );
 
         let mut registry = ProviderRegistry::new();
-        registry.system_configurators.push(Box::new(InlineSystemMock {
-            configurator_name: "mock".to_string(),
-            drift_tuples: vec![],
-            should_fail: true,
-        }));
+        registry
+            .system_configurators
+            .push(Box::new(InlineSystemMock {
+                configurator_name: "mock".to_string(),
+                drift_tuples: vec![],
+                should_fail: true,
+            }));
 
         let checks = collect_system_checks(&profile, &registry).unwrap();
         assert_eq!(checks.len(), 1);
@@ -1282,18 +1321,24 @@ mod tests {
         );
 
         let mut registry = ProviderRegistry::new();
-        registry.system_configurators.push(Box::new(InlineSystemMock {
-            configurator_name: "mock".to_string(),
-            drift_tuples: vec![
-                ("a".into(), "1".into(), "0".into()),
-                ("b".into(), "true".into(), "false".into()),
-            ],
-            should_fail: false,
-        }));
+        registry
+            .system_configurators
+            .push(Box::new(InlineSystemMock {
+                configurator_name: "mock".to_string(),
+                drift_tuples: vec![
+                    ("a".into(), "1".into(), "0".into()),
+                    ("b".into(), "true".into(), "false".into()),
+                ],
+                should_fail: false,
+            }));
 
         let checks = collect_system_checks(&profile, &registry).unwrap();
         assert_eq!(checks.len(), 2);
-        assert!(checks.iter().all(|c| c.status == ComplianceStatus::Violation));
+        assert!(
+            checks
+                .iter()
+                .all(|c| c.status == ComplianceStatus::Violation)
+        );
     }
 
     #[test]

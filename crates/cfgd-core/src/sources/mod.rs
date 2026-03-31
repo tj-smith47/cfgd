@@ -127,33 +127,64 @@ impl SourceManager {
 
     /// Fetch (pull) updates for an already-cloned source.
     fn fetch_source(&self, spec: &SourceSpec, source_dir: &Path, printer: &Printer) -> Result<()> {
-        printer.info(&format!("Fetching source '{}'...", spec.name));
+        // Try git CLI first with live progress output.
+        let mut cmd = crate::git_cmd_safe(
+            Some(&spec.origin.url),
+            Some(spec.origin.ssh_strict_host_key_checking),
+        );
+        cmd.args([
+            "-C",
+            &source_dir.display().to_string(),
+            "fetch",
+            "origin",
+            &spec.origin.branch,
+        ]);
+        // Ensure stderr is captured (git progress goes to stderr)
+        cmd.stdout(std::process::Stdio::piped());
+        cmd.stderr(std::process::Stdio::piped());
 
+        let label = format!("Fetching source '{}'", spec.name);
+        let cli_result = printer.run_with_output(&mut cmd, &label);
+        let cli_ok = matches!(&cli_result, Ok(output) if output.status.success());
+
+        if !cli_ok {
+            // Fall back to libgit2 with spinner
+            let spinner = printer.spinner(&format!("Fetching source '{}' (libgit2)...", spec.name));
+
+            let repo = Repository::open(source_dir).map_err(|e| SourceError::GitError {
+                name: spec.name.clone(),
+                message: e.to_string(),
+            })?;
+
+            let mut remote = repo
+                .find_remote("origin")
+                .map_err(|e| SourceError::GitError {
+                    name: spec.name.clone(),
+                    message: e.to_string(),
+                })?;
+
+            let mut fo = FetchOptions::new();
+            let mut callbacks = RemoteCallbacks::new();
+            callbacks.credentials(crate::git_ssh_credentials);
+            fo.remote_callbacks(callbacks);
+
+            let fetch_result = remote
+                .fetch(&[&spec.origin.branch], Some(&mut fo), None)
+                .map_err(|e| SourceError::FetchFailed {
+                    name: spec.name.clone(),
+                    message: e.to_string(),
+                });
+
+            spinner.finish_and_clear();
+            fetch_result?;
+        }
+
+        // Fast-forward to FETCH_HEAD
         let repo = Repository::open(source_dir).map_err(|e| SourceError::GitError {
             name: spec.name.clone(),
             message: e.to_string(),
         })?;
 
-        let mut remote = repo
-            .find_remote("origin")
-            .map_err(|e| SourceError::GitError {
-                name: spec.name.clone(),
-                message: e.to_string(),
-            })?;
-
-        let mut fo = FetchOptions::new();
-        let mut callbacks = RemoteCallbacks::new();
-        callbacks.credentials(crate::git_ssh_credentials);
-        fo.remote_callbacks(callbacks);
-
-        remote
-            .fetch(&[&spec.origin.branch], Some(&mut fo), None)
-            .map_err(|e| SourceError::FetchFailed {
-                name: spec.name.clone(),
-                message: e.to_string(),
-            })?;
-
-        // Fast-forward to FETCH_HEAD
         let fetch_head = repo
             .find_reference("FETCH_HEAD")
             .map_err(|e| SourceError::GitError {
@@ -201,11 +232,6 @@ impl SourceManager {
     /// Clone a new source repo. Tries git CLI first (respects system credential
     /// helpers and SSH config), falls back to libgit2.
     fn clone_source(&self, spec: &SourceSpec, source_dir: &Path, printer: &Printer) -> Result<()> {
-        printer.info(&format!(
-            "Cloning source '{}' from {}...",
-            spec.name, spec.origin.url
-        ));
-
         // Ensure parent dir exists but not source_dir itself (git clone creates it)
         if let Some(parent) = source_dir.parent() {
             std::fs::create_dir_all(parent).map_err(|e| SourceError::CacheError {
@@ -213,25 +239,30 @@ impl SourceManager {
             })?;
         }
 
-        // Try git CLI first with SSH hang protection.
+        // Try git CLI first with live progress output.
         // --depth=1: only fetch latest commit (limits repo size for DoS protection)
         // --no-recurse-submodules: prevent malicious submodule URLs (SSRF, credential theft)
         // --single-branch: only fetch the target branch
-        if crate::try_git_cmd(
+        let mut cmd = crate::git_cmd_safe(
             Some(&spec.origin.url),
-            &[
-                "clone",
-                "--depth=1",
-                "--single-branch",
-                "--no-recurse-submodules",
-                "--branch",
-                &spec.origin.branch,
-                &spec.origin.url,
-                &source_dir.display().to_string(),
-            ],
-            "clone",
             Some(spec.origin.ssh_strict_host_key_checking),
-        ) {
+        );
+        cmd.args([
+            "clone",
+            "--depth=1",
+            "--single-branch",
+            "--no-recurse-submodules",
+            "--branch",
+            &spec.origin.branch,
+            &spec.origin.url,
+            &source_dir.display().to_string(),
+        ]);
+        cmd.stdout(std::process::Stdio::piped());
+        cmd.stderr(std::process::Stdio::piped());
+
+        let label = format!("Cloning source '{}'", spec.name);
+        let cli_result = printer.run_with_output(&mut cmd, &label);
+        if matches!(&cli_result, Ok(output) if output.status.success()) {
             // Restrict cloned directory to owner-only access
             let _ = crate::set_file_permissions(source_dir, 0o700);
             return Ok(());
@@ -239,6 +270,9 @@ impl SourceManager {
 
         // Clean up partial clone before libgit2 retry
         let _ = std::fs::remove_dir_all(source_dir);
+
+        // Fall back to libgit2 with spinner
+        let spinner = printer.spinner(&format!("Cloning source '{}' (libgit2)...", spec.name));
 
         let mut fo = FetchOptions::new();
         if spec.origin.url.starts_with("git@") || spec.origin.url.starts_with("ssh://") {
@@ -253,12 +287,16 @@ impl SourceManager {
         builder.fetch_options(fo);
         builder.branch(&spec.origin.branch);
 
-        builder
-            .clone(&spec.origin.url, source_dir)
-            .map_err(|e| SourceError::FetchFailed {
-                name: spec.name.clone(),
-                message: e.to_string(),
-            })?;
+        let clone_result =
+            builder
+                .clone(&spec.origin.url, source_dir)
+                .map_err(|e| SourceError::FetchFailed {
+                    name: spec.name.clone(),
+                    message: e.to_string(),
+                });
+
+        spinner.finish_and_clear();
+        clone_result?;
 
         // Restrict cloned directory to owner-only access
         let _ = crate::set_file_permissions(source_dir, 0o700);
@@ -601,10 +639,14 @@ fn normalize_semver_pin(pin: &str) -> String {
     }
 }
 
-/// Clone a git repo with git2, falling back to the git CLI for SSH URLs.
+/// Clone a git repo with git CLI (with live progress), falling back to libgit2.
 /// Returns Ok(()) on success, Err with description on failure.
-pub fn git_clone_with_fallback(url: &str, target: &Path) -> std::result::Result<(), String> {
-    // Try git CLI first with SSH hang protection.
+pub fn git_clone_with_fallback(
+    url: &str,
+    target: &Path,
+    printer: &Printer,
+) -> std::result::Result<(), String> {
+    // Try git CLI first with live progress output.
     let mut cmd = crate::git_cmd_safe(Some(url), None);
     cmd.args([
         "clone",
@@ -613,29 +655,22 @@ pub fn git_clone_with_fallback(url: &str, target: &Path) -> std::result::Result<
         url,
         &target.display().to_string(),
     ]);
-    let cli_result = crate::command_output_with_timeout(&mut cmd, crate::GIT_NETWORK_TIMEOUT);
+    cmd.stdout(std::process::Stdio::piped());
+    cmd.stderr(std::process::Stdio::piped());
 
-    match cli_result {
-        Ok(output) if output.status.success() => return Ok(()),
-        Ok(output) => {
-            tracing::debug!(
-                "git clone CLI failed (exit {}): {}",
-                output.status.code().unwrap_or(-1),
-                crate::stderr_lossy_trimmed(&output),
-            );
-            // Clean up partial clone before libgit2 retry
-            let _ = std::fs::remove_dir_all(target);
-            let _ = std::fs::create_dir_all(target);
-        }
-        Err(e) => {
-            tracing::debug!("git CLI not available: {}", e);
-            // Clean up and fall through to libgit2
-            let _ = std::fs::remove_dir_all(target);
-            let _ = std::fs::create_dir_all(target);
-        }
+    let label = format!("Cloning {}", url);
+    let cli_result = printer.run_with_output(&mut cmd, &label);
+    if matches!(&cli_result, Ok(output) if output.status.success()) {
+        return Ok(());
     }
 
-    // Fall back to libgit2 with SSH credential callbacks
+    // Clean up partial clone before libgit2 retry
+    let _ = std::fs::remove_dir_all(target);
+    let _ = std::fs::create_dir_all(target);
+
+    // Fall back to libgit2 with spinner
+    let spinner = printer.spinner("Cloning (libgit2)...");
+
     let mut fetch_opts = git2::FetchOptions::new();
     fetch_opts.depth(1);
     if url.starts_with("git@") || url.starts_with("ssh://") {
@@ -646,10 +681,13 @@ pub fn git_clone_with_fallback(url: &str, target: &Path) -> std::result::Result<
     let mut builder = git2::build::RepoBuilder::new();
     builder.fetch_options(fetch_opts);
 
-    builder
+    let result = builder
         .clone(url, target)
         .map(|_| ())
-        .map_err(|e| format!("Failed to clone {}: {}", url, e))
+        .map_err(|e| format!("Failed to clone {}: {}", url, e));
+
+    spinner.finish_and_clear();
+    result
 }
 
 #[cfg(test)]
@@ -1335,7 +1373,11 @@ spec:
         insert_fake_source(&mut mgr, "my-source", source_path);
 
         let result = mgr.load_source_profile("my-source", "default");
-        assert!(result.is_ok(), "load_source_profile failed: {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "load_source_profile failed: {:?}",
+            result.err()
+        );
         let profile = result.unwrap();
         assert_eq!(profile.metadata.name, "default");
     }
@@ -1488,7 +1530,9 @@ spec:
             .unwrap();
 
         let clone_path = dir.path().join("clone");
-        let result = git_clone_with_fallback(&origin_path.display().to_string(), &clone_path);
+        let printer = crate::output::Printer::new(crate::output::Verbosity::Quiet);
+        let result =
+            git_clone_with_fallback(&origin_path.display().to_string(), &clone_path, &printer);
         assert!(result.is_ok(), "clone failed: {:?}", result.err());
         assert!(clone_path.join("file.txt").exists());
     }
@@ -1499,7 +1543,8 @@ spec:
         let target = dir.path().join("clone");
         std::fs::create_dir_all(&target).unwrap();
 
-        let result = git_clone_with_fallback("file:///nonexistent/path/repo", &target);
+        let printer = crate::output::Printer::new(crate::output::Verbosity::Quiet);
+        let result = git_clone_with_fallback("file:///nonexistent/path/repo", &target, &printer);
         assert!(result.is_err());
     }
 
