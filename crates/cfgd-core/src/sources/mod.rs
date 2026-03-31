@@ -1281,4 +1281,261 @@ spec:
         // Verify the directory was removed from disk
         assert!(!source_path.exists());
     }
+
+    /// Helper: insert a fake CachedSource into a SourceManager for testing
+    /// methods that operate on already-cached sources.
+    fn insert_fake_source(mgr: &mut SourceManager, name: &str, local_path: PathBuf) {
+        let cached = CachedSource {
+            name: name.to_string(),
+            origin_url: "https://example.com/config.git".to_string(),
+            origin_branch: "main".to_string(),
+            local_path,
+            manifest: crate::config::ConfigSourceDocument {
+                api_version: crate::API_VERSION.into(),
+                kind: "ConfigSource".into(),
+                metadata: crate::config::ConfigSourceMetadata {
+                    name: name.into(),
+                    version: Some("1.0.0".into()),
+                    description: None,
+                },
+                spec: crate::config::ConfigSourceSpec {
+                    provides: Default::default(),
+                    policy: Default::default(),
+                },
+            },
+            last_commit: None,
+            last_fetched: None,
+        };
+        mgr.sources.insert(name.to_string(), cached);
+    }
+
+    #[test]
+    fn load_source_profile_success() {
+        let dir = tempfile::tempdir().unwrap();
+        let source_path = dir.path().join("my-source");
+        std::fs::create_dir_all(source_path.join(PROFILES_DIR)).unwrap();
+
+        // Write a valid profile YAML
+        std::fs::write(
+            source_path.join(PROFILES_DIR).join("default.yaml"),
+            r#"
+apiVersion: cfgd.io/v1alpha1
+kind: Profile
+metadata:
+  name: default
+spec:
+  packages:
+    pipx:
+      - ripgrep
+"#,
+        )
+        .unwrap();
+
+        let mut mgr = SourceManager::new(dir.path());
+        insert_fake_source(&mut mgr, "my-source", source_path);
+
+        let result = mgr.load_source_profile("my-source", "default");
+        assert!(result.is_ok(), "load_source_profile failed: {:?}", result.err());
+        let profile = result.unwrap();
+        assert_eq!(profile.metadata.name, "default");
+    }
+
+    #[test]
+    fn load_source_profile_missing_profile_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let source_path = dir.path().join("my-source");
+        std::fs::create_dir_all(source_path.join(PROFILES_DIR)).unwrap();
+        // No profile file written
+
+        let mut mgr = SourceManager::new(dir.path());
+        insert_fake_source(&mut mgr, "my-source", source_path);
+
+        let result = mgr.load_source_profile("my-source", "nonexistent");
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("not found") || err.contains("ProfileNotFound"),
+            "expected profile not found error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn source_profiles_dir_returns_path_for_cached_source() {
+        let dir = tempfile::tempdir().unwrap();
+        let source_path = dir.path().join("src-1");
+        std::fs::create_dir_all(&source_path).unwrap();
+
+        let mut mgr = SourceManager::new(dir.path());
+        insert_fake_source(&mut mgr, "src-1", source_path.clone());
+
+        let result = mgr.source_profiles_dir("src-1");
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), source_path.join(PROFILES_DIR));
+    }
+
+    #[test]
+    fn source_files_dir_returns_path_for_cached_source() {
+        let dir = tempfile::tempdir().unwrap();
+        let source_path = dir.path().join("src-1");
+        std::fs::create_dir_all(&source_path).unwrap();
+
+        let mut mgr = SourceManager::new(dir.path());
+        insert_fake_source(&mut mgr, "src-1", source_path.clone());
+
+        let result = mgr.source_files_dir("src-1");
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), source_path.join("files"));
+    }
+
+    #[test]
+    fn head_commit_returns_oid_for_valid_repo() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo_dir = dir.path().join("repo");
+
+        // Use a manually created repo
+        let repo = git2::Repository::init(&repo_dir).unwrap();
+        let sig = git2::Signature::now("Test", "test@example.com").unwrap();
+        std::fs::write(repo_dir.join("file.txt"), "content\n").unwrap();
+        let mut index = repo.index().unwrap();
+        index.add_path(std::path::Path::new("file.txt")).unwrap();
+        index.write().unwrap();
+        let tree_id = index.write_tree().unwrap();
+        let tree = repo.find_tree(tree_id).unwrap();
+        let oid = repo
+            .commit(Some("HEAD"), &sig, &sig, "initial", &tree, &[])
+            .unwrap();
+
+        let result = SourceManager::head_commit(&repo_dir);
+        assert!(result.is_some());
+        assert_eq!(result.unwrap(), oid.to_string());
+    }
+
+    #[test]
+    fn head_commit_returns_none_for_nonexistent_dir() {
+        let result = SourceManager::head_commit(std::path::Path::new("/tmp/no-such-repo-xyz"));
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn load_sources_fails_when_all_sources_fail() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut mgr = SourceManager::new(dir.path());
+        let printer = crate::output::Printer::new(crate::output::Verbosity::Quiet);
+
+        // Create specs that point to non-existent repos
+        let specs = vec![
+            crate::config::SourceSpec {
+                name: "bad1".into(),
+                origin: crate::config::OriginSpec {
+                    origin_type: OriginType::Git,
+                    url: "file:///nonexistent/repo1".into(),
+                    branch: "main".into(),
+                    auth: None,
+                    ssh_strict_host_key_checking: Default::default(),
+                },
+                subscription: Default::default(),
+                sync: Default::default(),
+            },
+            crate::config::SourceSpec {
+                name: "bad2".into(),
+                origin: crate::config::OriginSpec {
+                    origin_type: OriginType::Git,
+                    url: "file:///nonexistent/repo2".into(),
+                    branch: "main".into(),
+                    auth: None,
+                    ssh_strict_host_key_checking: Default::default(),
+                },
+                subscription: Default::default(),
+                sync: Default::default(),
+            },
+        ];
+
+        let result = mgr.load_sources(&specs, &printer);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("all sources failed"),
+            "expected all sources failed error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn load_sources_succeeds_with_empty_list() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut mgr = SourceManager::new(dir.path());
+        let printer = crate::output::Printer::new(crate::output::Verbosity::Quiet);
+
+        // Empty list should succeed
+        let result = mgr.load_sources(&[], &printer);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn git_clone_with_fallback_local_repo() {
+        let dir = tempfile::tempdir().unwrap();
+        let origin_path = dir.path().join("origin");
+
+        // Create a bare repo as the origin
+        let repo = git2::Repository::init(&origin_path).unwrap();
+        let sig = git2::Signature::now("Test", "test@example.com").unwrap();
+        std::fs::write(origin_path.join("file.txt"), "hello\n").unwrap();
+        let mut index = repo.index().unwrap();
+        index.add_path(std::path::Path::new("file.txt")).unwrap();
+        index.write().unwrap();
+        let tree_id = index.write_tree().unwrap();
+        let tree = repo.find_tree(tree_id).unwrap();
+        repo.commit(Some("HEAD"), &sig, &sig, "initial", &tree, &[])
+            .unwrap();
+
+        let clone_path = dir.path().join("clone");
+        let result = git_clone_with_fallback(&origin_path.display().to_string(), &clone_path);
+        assert!(result.is_ok(), "clone failed: {:?}", result.err());
+        assert!(clone_path.join("file.txt").exists());
+    }
+
+    #[test]
+    fn git_clone_with_fallback_invalid_url() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("clone");
+        std::fs::create_dir_all(&target).unwrap();
+
+        let result = git_clone_with_fallback("file:///nonexistent/path/repo", &target);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn remove_source_cleans_up_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let source_path = dir.path().join("removable");
+        std::fs::create_dir_all(&source_path).unwrap();
+        std::fs::write(source_path.join("data.txt"), "test").unwrap();
+
+        let mut mgr = SourceManager::new(dir.path());
+        insert_fake_source(&mut mgr, "removable", source_path.clone());
+
+        assert!(source_path.exists());
+        let result = mgr.remove_source("removable");
+        assert!(result.is_ok());
+        assert!(!source_path.exists());
+        assert!(mgr.get("removable").is_none());
+    }
+
+    #[test]
+    fn all_sources_returns_cached() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut mgr = SourceManager::new(dir.path());
+
+        let path1 = dir.path().join("src-a");
+        let path2 = dir.path().join("src-b");
+        std::fs::create_dir_all(&path1).unwrap();
+        std::fs::create_dir_all(&path2).unwrap();
+
+        insert_fake_source(&mut mgr, "src-a", path1);
+        insert_fake_source(&mut mgr, "src-b", path2);
+
+        let all = mgr.all_sources();
+        assert_eq!(all.len(), 2);
+        assert!(all.contains_key("src-a"));
+        assert!(all.contains_key("src-b"));
+    }
 }

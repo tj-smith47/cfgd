@@ -2474,6 +2474,707 @@ mod tests {
         assert_eq!(opts.issuer.unwrap(), "https://accounts.google.com");
     }
 
+    // --- mockito-based HTTP integration tests ---
+
+    /// Helper: extract host:port from a mockito server URL for use as OCI registry.
+    fn registry_from_url(url: &str) -> String {
+        url.trim_start_matches("http://")
+            .trim_start_matches("https://")
+            .trim_end_matches('/')
+            .to_string()
+    }
+
+    /// Helper: create a module directory with a valid module.yaml for push tests.
+    fn create_test_module_dir() -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("module.yaml"),
+            "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: test-mod\nspec:\n  packages:\n    - name: curl\n",
+        )
+        .unwrap();
+        std::fs::write(dir.path().join("README.md"), "# Test module\n").unwrap();
+        dir
+    }
+
+    #[test]
+    fn upload_blob_posts_then_puts() {
+        let mut server = mockito::Server::new();
+        let registry = registry_from_url(&server.url());
+
+        let oci_ref = OciReference {
+            registry: registry.clone(),
+            repository: "test/mod".to_string(),
+            reference: ReferenceKind::Tag("v1".to_string()),
+        };
+
+        let data = b"hello blob data";
+        let expected_digest = sha256_digest(data);
+
+        // HEAD check returns 404 (blob doesn't exist)
+        let head_mock = server
+            .mock(
+                "HEAD",
+                mockito::Matcher::Regex(format!(
+                    r"/v2/test/mod/blobs/sha256:.*"
+                )),
+            )
+            .with_status(404)
+            .create();
+
+        // POST to initiate upload -> 202 with Location
+        let upload_location = format!("{}/v2/test/mod/blobs/uploads/some-uuid", server.url());
+        let post_mock = server
+            .mock("POST", "/v2/test/mod/blobs/uploads/")
+            .with_status(202)
+            .with_header("Location", &upload_location)
+            .create();
+
+        // PUT to complete upload
+        let put_mock = server
+            .mock(
+                "PUT",
+                mockito::Matcher::Regex(
+                    r"/v2/test/mod/blobs/uploads/some-uuid\?digest=sha256:.*".to_string(),
+                ),
+            )
+            .with_status(201)
+            .create();
+
+        let agent = ureq::AgentBuilder::new()
+            .timeout(std::time::Duration::from_secs(10))
+            .build();
+
+        let result = upload_blob(&agent, &oci_ref, None, data, "application/octet-stream");
+        assert!(result.is_ok(), "upload_blob failed: {:?}", result.err());
+        assert_eq!(result.unwrap(), expected_digest);
+
+        head_mock.assert();
+        post_mock.assert();
+        put_mock.assert();
+    }
+
+    #[test]
+    fn upload_blob_skips_when_already_exists() {
+        let mut server = mockito::Server::new();
+        let registry = registry_from_url(&server.url());
+
+        let oci_ref = OciReference {
+            registry,
+            repository: "test/mod".to_string(),
+            reference: ReferenceKind::Tag("v1".to_string()),
+        };
+
+        let data = b"existing blob";
+        let expected_digest = sha256_digest(data);
+
+        // HEAD check returns 200 (blob exists)
+        let head_mock = server
+            .mock(
+                "HEAD",
+                mockito::Matcher::Regex(r"/v2/test/mod/blobs/sha256:.*".to_string()),
+            )
+            .with_status(200)
+            .create();
+
+        let agent = ureq::AgentBuilder::new()
+            .timeout(std::time::Duration::from_secs(10))
+            .build();
+
+        let result = upload_blob(&agent, &oci_ref, None, data, "application/octet-stream");
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), expected_digest);
+
+        head_mock.assert();
+        // POST and PUT should NOT have been called
+    }
+
+    #[test]
+    fn upload_blob_handles_relative_location() {
+        let mut server = mockito::Server::new();
+        let registry = registry_from_url(&server.url());
+
+        let oci_ref = OciReference {
+            registry,
+            repository: "test/mod".to_string(),
+            reference: ReferenceKind::Tag("v1".to_string()),
+        };
+
+        let data = b"blob with relative location";
+
+        // HEAD returns 404
+        server
+            .mock(
+                "HEAD",
+                mockito::Matcher::Regex(r"/v2/test/mod/blobs/sha256:.*".to_string()),
+            )
+            .with_status(404)
+            .create();
+
+        // POST returns relative Location
+        server
+            .mock("POST", "/v2/test/mod/blobs/uploads/")
+            .with_status(202)
+            .with_header("Location", "/v2/test/mod/blobs/uploads/rel-uuid")
+            .create();
+
+        // PUT with relative path (should be made absolute)
+        let put_mock = server
+            .mock(
+                "PUT",
+                mockito::Matcher::Regex(
+                    r"/v2/test/mod/blobs/uploads/rel-uuid\?digest=sha256:.*".to_string(),
+                ),
+            )
+            .with_status(201)
+            .create();
+
+        let agent = ureq::AgentBuilder::new()
+            .timeout(std::time::Duration::from_secs(10))
+            .build();
+
+        let result = upload_blob(&agent, &oci_ref, None, data, "application/octet-stream");
+        assert!(result.is_ok(), "upload_blob with relative location failed: {:?}", result.err());
+        put_mock.assert();
+    }
+
+    #[test]
+    fn push_module_inner_uploads_blobs_and_manifest() {
+        let mut server = mockito::Server::new();
+        let registry = registry_from_url(&server.url());
+
+        let oci_ref = OciReference {
+            registry,
+            repository: "test/pushmod".to_string(),
+            reference: ReferenceKind::Tag("v1".to_string()),
+        };
+
+        let module_dir = create_test_module_dir();
+
+        // Mock blob HEAD (not found) for config + layer
+        server
+            .mock(
+                "HEAD",
+                mockito::Matcher::Regex(r"/v2/test/pushmod/blobs/sha256:.*".to_string()),
+            )
+            .with_status(404)
+            .expect_at_least(2)
+            .create();
+
+        // Mock blob upload POST (config + layer)
+        let upload_location =
+            format!("{}/v2/test/pushmod/blobs/uploads/upload-id", server.url());
+        server
+            .mock("POST", "/v2/test/pushmod/blobs/uploads/")
+            .with_status(202)
+            .with_header("Location", &upload_location)
+            .expect_at_least(2)
+            .create();
+
+        // Mock blob upload PUT (config + layer)
+        server
+            .mock(
+                "PUT",
+                mockito::Matcher::Regex(
+                    r"/v2/test/pushmod/blobs/uploads/upload-id\?digest=sha256:.*".to_string(),
+                ),
+            )
+            .with_status(201)
+            .expect_at_least(2)
+            .create();
+
+        // Mock manifest PUT
+        let manifest_mock = server
+            .mock("PUT", "/v2/test/pushmod/manifests/v1")
+            .with_status(201)
+            .create();
+
+        let agent = ureq::AgentBuilder::new()
+            .timeout(std::time::Duration::from_secs(10))
+            .build();
+
+        let result =
+            push_module_inner(&agent, module_dir.path(), &oci_ref, None, Some("linux/amd64"));
+        assert!(
+            result.is_ok(),
+            "push_module_inner failed: {:?}",
+            result.err()
+        );
+
+        let (digest, size) = result.unwrap();
+        assert!(digest.starts_with("sha256:"));
+        assert!(size > 0);
+        manifest_mock.assert();
+    }
+
+    #[test]
+    fn push_module_inner_rejects_missing_module_yaml() {
+        let dir = tempfile::tempdir().unwrap();
+        // No module.yaml
+
+        let oci_ref = OciReference {
+            registry: "localhost:9999".to_string(),
+            repository: "test/mod".to_string(),
+            reference: ReferenceKind::Tag("v1".to_string()),
+        };
+
+        let agent = ureq::AgentBuilder::new().build();
+        let result = push_module_inner(&agent, dir.path(), &oci_ref, None, None);
+        assert!(matches!(result, Err(OciError::ModuleYamlNotFound { .. })));
+    }
+
+    #[test]
+    fn pull_module_downloads_and_verifies_digest() {
+        let mut server = mockito::Server::new();
+        let registry = registry_from_url(&server.url());
+
+        // Create a layer tarball from a temp module dir
+        let src_dir = create_test_module_dir();
+        let layer_data = create_tar_gz(src_dir.path()).unwrap();
+        let layer_digest = sha256_digest(&layer_data);
+
+        // Build a manifest referencing this layer
+        let config_blob = serde_json::to_vec(&serde_json::json!({
+            "moduleYaml": "name: test",
+        }))
+        .unwrap();
+        let config_digest = sha256_digest(&config_blob);
+
+        let manifest = serde_json::json!({
+            "schemaVersion": 2,
+            "mediaType": MEDIA_TYPE_OCI_MANIFEST,
+            "config": {
+                "mediaType": MEDIA_TYPE_MODULE_CONFIG,
+                "digest": config_digest,
+                "size": config_blob.len(),
+            },
+            "layers": [{
+                "mediaType": MEDIA_TYPE_MODULE_LAYER,
+                "digest": layer_digest,
+                "size": layer_data.len(),
+            }],
+        });
+
+        // Mock manifest GET
+        server
+            .mock("GET", "/v2/test/pullmod/manifests/v1")
+            .with_status(200)
+            .with_header("Content-Type", MEDIA_TYPE_OCI_MANIFEST)
+            .with_body(serde_json::to_string(&manifest).unwrap())
+            .create();
+
+        // Mock layer blob GET
+        server
+            .mock(
+                "GET",
+                mockito::Matcher::Regex(r"/v2/test/pullmod/blobs/sha256:.*".to_string()),
+            )
+            .with_status(200)
+            .with_body(layer_data)
+            .create();
+
+        let output_dir = tempfile::tempdir().unwrap();
+        let artifact_ref = format!("{}/test/pullmod:v1", registry);
+        let result = pull_module(&artifact_ref, output_dir.path(), false);
+        assert!(result.is_ok(), "pull_module failed: {:?}", result.err());
+
+        // Verify extracted files
+        assert!(output_dir.path().join("module.yaml").exists());
+        assert!(output_dir.path().join("README.md").exists());
+    }
+
+    #[test]
+    fn pull_module_detects_digest_mismatch() {
+        let mut server = mockito::Server::new();
+        let registry = registry_from_url(&server.url());
+
+        let real_layer_data = b"real layer content";
+        // Use a fake digest that does NOT match the real data
+        let fake_digest = "sha256:0000000000000000000000000000000000000000000000000000000000000000";
+
+        let manifest = serde_json::json!({
+            "schemaVersion": 2,
+            "mediaType": MEDIA_TYPE_OCI_MANIFEST,
+            "config": {
+                "mediaType": MEDIA_TYPE_MODULE_CONFIG,
+                "digest": "sha256:cfgcfg",
+                "size": 10,
+            },
+            "layers": [{
+                "mediaType": MEDIA_TYPE_MODULE_LAYER,
+                "digest": fake_digest,
+                "size": real_layer_data.len(),
+            }],
+        });
+
+        server
+            .mock("GET", "/v2/test/badmod/manifests/v1")
+            .with_status(200)
+            .with_body(serde_json::to_string(&manifest).unwrap())
+            .create();
+
+        server
+            .mock(
+                "GET",
+                mockito::Matcher::Regex(r"/v2/test/badmod/blobs/sha256:.*".to_string()),
+            )
+            .with_status(200)
+            .with_body(real_layer_data.as_slice())
+            .create();
+
+        let output_dir = tempfile::tempdir().unwrap();
+        let artifact_ref = format!("{}/test/badmod:v1", registry);
+        let result = pull_module(&artifact_ref, output_dir.path(), false);
+        assert!(result.is_err());
+        let err_msg = format!("{}", result.unwrap_err());
+        assert!(
+            err_msg.contains("digest mismatch"),
+            "expected digest mismatch error, got: {err_msg}"
+        );
+    }
+
+    #[test]
+    fn pull_module_checks_signature_when_required() {
+        let mut server = mockito::Server::new();
+        let registry = registry_from_url(&server.url());
+
+        // No signature tag exists
+        server
+            .mock("HEAD", "/v2/test/sigmod/manifests/v1.sig")
+            .with_status(404)
+            .create();
+
+        let output_dir = tempfile::tempdir().unwrap();
+        let artifact_ref = format!("{}/test/sigmod:v1", registry);
+        let result = pull_module(&artifact_ref, output_dir.path(), true);
+        assert!(result.is_err());
+        assert!(
+            matches!(result, Err(OciError::SignatureRequired { .. })),
+            "expected SignatureRequired, got: {:?}",
+            result.err()
+        );
+    }
+
+    #[test]
+    fn authenticated_request_handles_401_token_exchange() {
+        let mut server = mockito::Server::new();
+
+        let www_auth = format!(
+            r#"Bearer realm="{}",service="test.io",scope="repository:test/repo:pull""#,
+            format!("{}/token", server.url())
+        );
+
+        // First request returns 401 with Www-Authenticate
+        server
+            .mock("GET", "/v2/test/repo/manifests/v1")
+            .with_status(401)
+            .with_header("Www-Authenticate", &www_auth)
+            .expect(1)
+            .create();
+
+        // Token endpoint returns a bearer token
+        server
+            .mock(
+                "GET",
+                mockito::Matcher::Regex(r"/token\?service=.*&scope=.*".to_string()),
+            )
+            .with_status(200)
+            .with_body(r#"{"token":"my-bearer-token"}"#)
+            .create();
+
+        // Retry with bearer token succeeds
+        server
+            .mock("GET", "/v2/test/repo/manifests/v1")
+            .match_header("Authorization", "Bearer my-bearer-token")
+            .with_status(200)
+            .with_body("manifest content")
+            .create();
+
+        let agent = ureq::AgentBuilder::new()
+            .timeout(std::time::Duration::from_secs(10))
+            .build();
+
+        let url = format!("{}/v2/test/repo/manifests/v1", server.url());
+        let result = authenticated_request(&agent, "GET", &url, None, None, None, None);
+        assert!(
+            result.is_ok(),
+            "authenticated_request failed: {:?}",
+            result.err()
+        );
+    }
+
+    #[test]
+    fn authenticated_request_fails_on_401_without_bearer() {
+        let mut server = mockito::Server::new();
+
+        // 401 without Bearer challenge
+        server
+            .mock("GET", "/v2/test/repo/manifests/v1")
+            .with_status(401)
+            .with_header("Www-Authenticate", "Basic realm=\"test\"")
+            .create();
+
+        let agent = ureq::AgentBuilder::new()
+            .timeout(std::time::Duration::from_secs(10))
+            .build();
+
+        let url = format!("{}/v2/test/repo/manifests/v1", server.url());
+        let result = authenticated_request(&agent, "GET", &url, None, None, None, None);
+        assert!(result.is_err());
+        let err_msg = format!("{}", result.unwrap_err());
+        assert!(
+            err_msg.contains("no Bearer challenge"),
+            "expected no Bearer challenge error, got: {err_msg}"
+        );
+    }
+
+    #[test]
+    fn authenticated_request_passes_basic_auth() {
+        let mut server = mockito::Server::new();
+
+        let auth = RegistryAuth {
+            username: "user".to_string(),
+            password: "pass".to_string(),
+        };
+
+        server
+            .mock("GET", "/v2/test/repo/tags/list")
+            .match_header("Authorization", mockito::Matcher::Regex("Basic .*".to_string()))
+            .with_status(200)
+            .with_body("{}")
+            .create();
+
+        let agent = ureq::AgentBuilder::new()
+            .timeout(std::time::Duration::from_secs(10))
+            .build();
+
+        let url = format!("{}/v2/test/repo/tags/list", server.url());
+        let result =
+            authenticated_request(&agent, "GET", &url, Some(&auth), None, None, None);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn get_bearer_token_parses_www_authenticate() {
+        let mut server = mockito::Server::new();
+
+        let www_auth = format!(
+            r#"Bearer realm="{}/auth/token",service="registry.example.com",scope="repository:lib/test:pull,push""#,
+            server.url()
+        );
+
+        server
+            .mock(
+                "GET",
+                mockito::Matcher::Regex(r"/auth/token\?service=.*&scope=.*".to_string()),
+            )
+            .with_status(200)
+            .with_body(r#"{"token":"tok-abc-123"}"#)
+            .create();
+
+        let agent = ureq::AgentBuilder::new()
+            .timeout(std::time::Duration::from_secs(10))
+            .build();
+
+        let result = get_bearer_token(&agent, &www_auth, None);
+        assert!(
+            result.is_ok(),
+            "get_bearer_token failed: {:?}",
+            result.err()
+        );
+        assert_eq!(result.unwrap(), "tok-abc-123");
+    }
+
+    #[test]
+    fn get_bearer_token_uses_access_token_field() {
+        let mut server = mockito::Server::new();
+
+        let www_auth = format!(
+            r#"Bearer realm="{}/token",service="svc""#,
+            server.url()
+        );
+
+        server
+            .mock("GET", mockito::Matcher::Regex(r"/token\?service=.*".to_string()))
+            .with_status(200)
+            .with_body(r#"{"access_token":"alt-token-456"}"#)
+            .create();
+
+        let agent = ureq::AgentBuilder::new()
+            .timeout(std::time::Duration::from_secs(10))
+            .build();
+
+        let result = get_bearer_token(&agent, &www_auth, None);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), "alt-token-456");
+    }
+
+    #[test]
+    fn get_bearer_token_fails_without_realm() {
+        let agent = ureq::AgentBuilder::new().build();
+        let result = get_bearer_token(&agent, "Bearer service=\"svc\"", None);
+        assert!(result.is_err());
+        let err_msg = format!("{}", result.unwrap_err());
+        assert!(
+            err_msg.contains("missing realm"),
+            "expected missing realm error, got: {err_msg}"
+        );
+    }
+
+    #[test]
+    fn get_bearer_token_sends_basic_auth_when_provided() {
+        let mut server = mockito::Server::new();
+
+        let www_auth = format!(
+            r#"Bearer realm="{}/token",service="svc""#,
+            server.url()
+        );
+
+        let auth = RegistryAuth {
+            username: "user".to_string(),
+            password: "pass".to_string(),
+        };
+
+        server
+            .mock("GET", mockito::Matcher::Regex(r"/token\?service=.*".to_string()))
+            .match_header("Authorization", mockito::Matcher::Regex("Basic .*".to_string()))
+            .with_status(200)
+            .with_body(r#"{"token":"authed-token"}"#)
+            .create();
+
+        let agent = ureq::AgentBuilder::new()
+            .timeout(std::time::Duration::from_secs(10))
+            .build();
+
+        let result = get_bearer_token(&agent, &www_auth, Some(&auth));
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), "authed-token");
+    }
+
+    #[test]
+    fn check_signature_exists_ok_when_present() {
+        let mut server = mockito::Server::new();
+        let registry = registry_from_url(&server.url());
+
+        let oci_ref = OciReference {
+            registry,
+            repository: "test/sigexist".to_string(),
+            reference: ReferenceKind::Tag("v1".to_string()),
+        };
+
+        server
+            .mock("HEAD", "/v2/test/sigexist/manifests/v1.sig")
+            .with_status(200)
+            .create();
+
+        let agent = ureq::AgentBuilder::new()
+            .timeout(std::time::Duration::from_secs(10))
+            .build();
+
+        let result = check_signature_exists(&agent, &oci_ref, None);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn check_signature_exists_fails_when_missing() {
+        let mut server = mockito::Server::new();
+        let registry = registry_from_url(&server.url());
+
+        let oci_ref = OciReference {
+            registry,
+            repository: "test/nosig".to_string(),
+            reference: ReferenceKind::Tag("v1".to_string()),
+        };
+
+        server
+            .mock("HEAD", "/v2/test/nosig/manifests/v1.sig")
+            .with_status(404)
+            .create();
+
+        let agent = ureq::AgentBuilder::new()
+            .timeout(std::time::Duration::from_secs(10))
+            .build();
+
+        let result = check_signature_exists(&agent, &oci_ref, None);
+        assert!(matches!(result, Err(OciError::SignatureRequired { .. })));
+    }
+
+    #[test]
+    fn check_signature_exists_digest_reference() {
+        let mut server = mockito::Server::new();
+        let registry = registry_from_url(&server.url());
+
+        let oci_ref = OciReference {
+            registry,
+            repository: "test/digsig".to_string(),
+            reference: ReferenceKind::Digest("sha256:abc123".to_string()),
+        };
+
+        // For digest refs, sig tag is "sha256-abc123.sig"
+        server
+            .mock("HEAD", "/v2/test/digsig/manifests/sha256-abc123.sig")
+            .with_status(200)
+            .create();
+
+        let agent = ureq::AgentBuilder::new()
+            .timeout(std::time::Duration::from_secs(10))
+            .build();
+
+        let result = check_signature_exists(&agent, &oci_ref, None);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn authenticated_request_sends_body_with_put() {
+        let mut server = mockito::Server::new();
+
+        let body_content = b"test manifest content";
+        server
+            .mock("PUT", "/v2/test/repo/manifests/v1")
+            .match_header("Content-Type", "application/vnd.oci.image.manifest.v1+json")
+            .match_body(mockito::Matcher::Any)
+            .with_status(201)
+            .create();
+
+        let agent = ureq::AgentBuilder::new()
+            .timeout(std::time::Duration::from_secs(10))
+            .build();
+
+        let url = format!("{}/v2/test/repo/manifests/v1", server.url());
+        let result = authenticated_request(
+            &agent,
+            "PUT",
+            &url,
+            None,
+            None,
+            Some("application/vnd.oci.image.manifest.v1+json"),
+            Some(body_content),
+        );
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn authenticated_request_returns_error_on_500() {
+        let mut server = mockito::Server::new();
+
+        server
+            .mock("GET", "/v2/test/repo/tags/list")
+            .with_status(500)
+            .create();
+
+        let agent = ureq::AgentBuilder::new()
+            .timeout(std::time::Duration::from_secs(10))
+            .build();
+
+        let url = format!("{}/v2/test/repo/tags/list", server.url());
+        let result = authenticated_request(&agent, "GET", &url, None, None, None, None);
+        assert!(result.is_err());
+        let err_msg = format!("{}", result.unwrap_err());
+        assert!(
+            err_msg.contains("HTTP 500"),
+            "expected HTTP 500 error, got: {err_msg}"
+        );
+    }
+
     // --- tar_gz symlink handling ---
 
     #[test]

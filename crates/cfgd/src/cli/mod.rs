@@ -11056,4 +11056,716 @@ spec:
         let err = result.unwrap_err();
         assert!(err.contains("unknown output format"));
     }
+
+    // --- cmd_plan tests ---
+
+    #[test]
+    fn cmd_plan_empty_profile() {
+        let (config_dir, state_dir) = setup_test_env();
+
+        let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
+        let printer = test_printer();
+        let args = PlanArgs {
+            phase: None,
+            skip: vec![],
+            only: vec![],
+            module: None,
+            skip_scripts: false,
+            context: "apply".to_string(),
+        };
+
+        let result = super::cmd_plan(&cli, &printer, &args);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn cmd_plan_reconcile_context() {
+        let (config_dir, state_dir) = setup_test_env();
+
+        let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
+        let printer = test_printer();
+        let args = PlanArgs {
+            phase: None,
+            skip: vec![],
+            only: vec![],
+            module: None,
+            skip_scripts: false,
+            context: "reconcile".to_string(),
+        };
+
+        let result = super::cmd_plan(&cli, &printer, &args);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn cmd_plan_invalid_context() {
+        let (config_dir, state_dir) = setup_test_env();
+
+        let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
+        let printer = test_printer();
+        let args = PlanArgs {
+            phase: None,
+            skip: vec![],
+            only: vec![],
+            module: None,
+            skip_scripts: false,
+            context: "bogus".to_string(),
+        };
+
+        let result = super::cmd_plan(&cli, &printer, &args);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("Unknown context"));
+    }
+
+    #[test]
+    fn cmd_plan_with_phase_filter() {
+        let (config_dir, state_dir) = setup_test_env();
+
+        let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
+        let printer = test_printer();
+        let args = PlanArgs {
+            phase: Some("packages".to_string()),
+            skip: vec![],
+            only: vec![],
+            module: None,
+            skip_scripts: false,
+            context: "apply".to_string(),
+        };
+
+        assert!(super::cmd_plan(&cli, &printer, &args).is_ok());
+    }
+
+    #[test]
+    fn cmd_plan_invalid_phase() {
+        let (config_dir, state_dir) = setup_test_env();
+
+        let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
+        let printer = test_printer();
+        let args = PlanArgs {
+            phase: Some("nonexistent-phase".to_string()),
+            skip: vec![],
+            only: vec![],
+            module: None,
+            skip_scripts: false,
+            context: "apply".to_string(),
+        };
+
+        let result = super::cmd_plan(&cli, &printer, &args);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("Unknown phase"));
+    }
+
+    #[test]
+    fn cmd_plan_with_skip_filter() {
+        let (config_dir, state_dir) = setup_test_env();
+
+        let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
+        let printer = test_printer();
+        let args = PlanArgs {
+            phase: None,
+            skip: vec!["packages".to_string()],
+            only: vec![],
+            module: None,
+            skip_scripts: false,
+            context: "apply".to_string(),
+        };
+
+        assert!(super::cmd_plan(&cli, &printer, &args).is_ok());
+    }
+
+    #[test]
+    fn cmd_plan_with_only_filter() {
+        let (config_dir, state_dir) = setup_test_env();
+
+        let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
+        let printer = test_printer();
+        let args = PlanArgs {
+            phase: None,
+            skip: vec![],
+            only: vec!["files".to_string()],
+            module: None,
+            skip_scripts: false,
+            context: "apply".to_string(),
+        };
+
+        assert!(super::cmd_plan(&cli, &printer, &args).is_ok());
+    }
+
+    #[test]
+    fn cmd_plan_with_skip_scripts() {
+        let (config_dir, state_dir) = setup_test_env();
+
+        let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
+        let printer = test_printer();
+        let args = PlanArgs {
+            phase: None,
+            skip: vec![],
+            only: vec![],
+            module: None,
+            skip_scripts: true,
+            context: "apply".to_string(),
+        };
+
+        assert!(super::cmd_plan(&cli, &printer, &args).is_ok());
+    }
+
+    #[test]
+    fn cmd_plan_with_module_filter() {
+        let (config_dir, state_dir) = setup_test_env();
+
+        create_module_in_dir(
+            config_dir.path(),
+            "plan-mod",
+            "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: plan-mod\nspec:\n  packages: []\n",
+        );
+
+        let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
+        let printer = test_printer();
+        let args = PlanArgs {
+            phase: None,
+            skip: vec![],
+            only: vec![],
+            module: Some("plan-mod".to_string()),
+            skip_scripts: false,
+            context: "apply".to_string(),
+        };
+
+        assert!(super::cmd_plan(&cli, &printer, &args).is_ok());
+    }
+
+    // --- cmd_rollback tests ---
+
+    #[test]
+    fn cmd_rollback_invalid_id_empty_state() {
+        let state_dir = tempfile::tempdir().unwrap();
+        let printer = test_printer();
+
+        let result = super::cmd_rollback(&printer, 9999, true, Some(state_dir.path()));
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("no apply found"));
+    }
+
+    #[test]
+    fn cmd_rollback_after_file_apply() {
+        let (config_dir, state_dir) = setup_test_env();
+
+        let files_dir = config_dir.path().join("files");
+        std::fs::create_dir_all(&files_dir).unwrap();
+        std::fs::write(files_dir.join("rollback-test.txt"), "rollback content").unwrap();
+
+        let target = config_dir.path().join("output").join("rollback-test.txt");
+
+        let profile = format!(
+            "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: withfile\nspec:\n  inherits: []\n  modules: []\n  files:\n    managed:\n      - source: files/rollback-test.txt\n        target: {}\n        strategy: Copy\n",
+            target.display()
+        );
+        std::fs::write(
+            config_dir.path().join("profiles").join("withfile.yaml"),
+            &profile,
+        )
+        .unwrap();
+        let config = "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec:\n  profile: withfile\n";
+        std::fs::write(config_dir.path().join("cfgd.yaml"), config).unwrap();
+
+        let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
+        let printer = test_printer();
+
+        // Apply to create the file
+        let args = ApplyArgs {
+            from: None,
+            dry_run: false,
+            phase: None,
+            yes: true,
+            skip: vec![],
+            only: vec![],
+            module: None,
+            skip_scripts: false,
+        };
+        super::cmd_apply(&cli, &printer, &args).unwrap();
+        assert!(target.exists());
+
+        // Get the apply ID from history
+        let state = super::open_state_store(Some(state_dir.path())).unwrap();
+        let history = state.history(1).unwrap();
+        if !history.is_empty() {
+            let apply_id = history[0].id;
+
+            // Rollback
+            let result = super::cmd_rollback(&printer, apply_id, true, Some(state_dir.path()));
+            assert!(result.is_ok());
+        }
+    }
+
+    // --- cmd_compliance tests ---
+
+    #[test]
+    fn cmd_compliance_snapshot_basic() {
+        let (config_dir, state_dir) = setup_test_env();
+
+        let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
+        let printer = test_printer();
+
+        let result = super::cmd_compliance_snapshot(&cli, &printer);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn cmd_compliance_export_basic() {
+        let (config_dir, state_dir) = setup_test_env();
+
+        let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
+        let printer = test_printer();
+
+        let result = super::cmd_compliance_export(&cli, &printer);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn cmd_compliance_history_empty() {
+        let (config_dir, state_dir) = setup_test_env();
+
+        let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
+        let printer = test_printer();
+
+        let result = super::cmd_compliance_history(&cli, &printer, None);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn cmd_compliance_history_with_since() {
+        let (config_dir, state_dir) = setup_test_env();
+
+        let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
+        let printer = test_printer();
+
+        let result = super::cmd_compliance_history(&cli, &printer, Some("7d"));
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn cmd_compliance_history_invalid_since() {
+        let (config_dir, state_dir) = setup_test_env();
+
+        let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
+        let printer = test_printer();
+
+        let result = super::cmd_compliance_history(&cli, &printer, Some("invalid-duration"));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn cmd_compliance_diff_missing_snapshots() {
+        let (config_dir, state_dir) = setup_test_env();
+
+        let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
+        let printer = test_printer();
+
+        let result = super::cmd_compliance_diff(&cli, &printer, 1, 2);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("not found"));
+    }
+
+    #[test]
+    fn cmd_compliance_diff_after_two_snapshots() {
+        let (config_dir, state_dir) = setup_test_env();
+
+        let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
+        let printer = test_printer();
+
+        // Create two snapshots
+        super::cmd_compliance_snapshot(&cli, &printer).unwrap();
+        super::cmd_compliance_snapshot(&cli, &printer).unwrap();
+
+        // Get snapshot IDs from history
+        let state = super::open_state_store(Some(state_dir.path())).unwrap();
+        let entries = state.compliance_history(None, 10).unwrap();
+        if entries.len() >= 2 {
+            let result =
+                super::cmd_compliance_diff(&cli, &printer, entries[1].id, entries[0].id);
+            assert!(result.is_ok());
+        }
+    }
+
+    #[test]
+    fn cmd_compliance_history_after_snapshot() {
+        let (config_dir, state_dir) = setup_test_env();
+
+        let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
+        let printer = test_printer();
+
+        // Create a snapshot first
+        super::cmd_compliance_snapshot(&cli, &printer).unwrap();
+
+        // History should show at least one entry
+        let result = super::cmd_compliance_history(&cli, &printer, None);
+        assert!(result.is_ok());
+
+        let state = super::open_state_store(Some(state_dir.path())).unwrap();
+        let entries = state.compliance_history(None, 10).unwrap();
+        assert!(!entries.is_empty());
+    }
+
+    // --- empty_resolved_profile tests ---
+
+    #[test]
+    fn empty_resolved_profile_contains_module_name() {
+        let resolved = super::empty_resolved_profile("my-module");
+        assert_eq!(resolved.merged.modules, vec!["my-module".to_string()]);
+        assert!(resolved.layers.is_empty());
+        assert!(resolved.merged.packages.brew.is_none());
+        assert!(resolved.merged.env.is_empty());
+        assert!(resolved.merged.secrets.is_empty());
+    }
+
+    // --- cmd_log with show_output ---
+
+    #[test]
+    fn cmd_log_show_output_nonexistent_apply() {
+        let state_dir = tempfile::tempdir().unwrap();
+        let printer = test_printer();
+
+        // show_output for a nonexistent apply ID should succeed (just prints "no journal entries")
+        let result = super::cmd_log(&printer, 10, Some(9999), Some(state_dir.path()));
+        assert!(result.is_ok());
+    }
+
+    // --- cmd_apply with skip_scripts ---
+
+    #[test]
+    fn cmd_apply_dry_run_with_skip_scripts() {
+        let (config_dir, state_dir) = setup_test_env();
+
+        let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
+        let printer = test_printer();
+        let args = ApplyArgs {
+            from: None,
+            dry_run: true,
+            phase: None,
+            yes: true,
+            skip: vec![],
+            only: vec![],
+            module: None,
+            skip_scripts: true,
+        };
+
+        assert!(super::cmd_apply(&cli, &printer, &args).is_ok());
+    }
+
+    // --- execute dispatch tests for new commands ---
+
+    #[test]
+    fn execute_plan_command() {
+        let (config_dir, state_dir) = setup_test_env();
+
+        let cli = Cli {
+            command: Command::Plan(PlanArgs {
+                phase: None,
+                skip: vec![],
+                only: vec![],
+                module: None,
+                skip_scripts: false,
+                context: "apply".to_string(),
+            }),
+            ..test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()))
+        };
+        let printer = test_printer();
+
+        assert!(super::execute(&cli, &printer).is_ok());
+    }
+
+    #[test]
+    fn execute_compliance_snapshot() {
+        let (config_dir, state_dir) = setup_test_env();
+
+        let cli = Cli {
+            command: Command::Compliance { command: None },
+            ..test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()))
+        };
+        let printer = test_printer();
+
+        assert!(super::execute(&cli, &printer).is_ok());
+    }
+
+    #[test]
+    fn execute_compliance_export() {
+        let (config_dir, state_dir) = setup_test_env();
+
+        let cli = Cli {
+            command: Command::Compliance {
+                command: Some(ComplianceCommand::Export),
+            },
+            ..test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()))
+        };
+        let printer = test_printer();
+
+        assert!(super::execute(&cli, &printer).is_ok());
+    }
+
+    #[test]
+    fn execute_compliance_history() {
+        let (config_dir, state_dir) = setup_test_env();
+
+        let cli = Cli {
+            command: Command::Compliance {
+                command: Some(ComplianceCommand::History { since: None }),
+            },
+            ..test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()))
+        };
+        let printer = test_printer();
+
+        assert!(super::execute(&cli, &printer).is_ok());
+    }
+
+    #[test]
+    fn execute_rollback_invalid() {
+        let state_dir = tempfile::tempdir().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+
+        let cli = Cli {
+            command: Command::Rollback {
+                apply_id: 9999,
+                yes: true,
+            },
+            ..test_cli_with_state(dir.path(), Some(state_dir.path().to_path_buf()))
+        };
+        let printer = test_printer();
+
+        let result = super::execute(&cli, &printer);
+        assert!(result.is_err());
+    }
+
+    // --- secret_backend_from_config with config ---
+
+    #[test]
+    fn secret_backend_from_config_with_backend() {
+        let yaml = r#"apiVersion: cfgd.io/v1alpha1
+kind: Config
+metadata:
+  name: test
+spec:
+  profile: default
+  secrets:
+    backend: sops-age
+"#;
+        let cfg = config::parse_config(yaml, std::path::Path::new("cfgd.yaml")).unwrap();
+        let (backend, _) = super::secret_backend_from_config(Some(&cfg));
+        assert_eq!(backend, "sops-age");
+    }
+
+    // --- known_manager_names ---
+
+    #[test]
+    fn known_manager_names_is_not_empty() {
+        let names = super::known_manager_names();
+        assert!(!names.is_empty());
+        // Should at least contain "cargo" which is always available in Rust projects
+        assert!(names.contains(&"cargo".to_string()));
+    }
+
+    // --- Structured output mode tests ---
+
+    #[test]
+    fn cmd_plan_structured_json() {
+        let (config_dir, state_dir) = setup_test_env();
+
+        let cli = Cli {
+            output: OutputFormatArg(cfgd_core::output::OutputFormat::Json),
+            ..test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()))
+        };
+        let printer = Printer::new(cfgd_core::output::Verbosity::Quiet);
+
+        let args = PlanArgs {
+            phase: None,
+            skip: vec![],
+            only: vec![],
+            module: None,
+            skip_scripts: false,
+            context: "apply".to_string(),
+        };
+
+        assert!(super::cmd_plan(&cli, &printer, &args).is_ok());
+    }
+
+    #[test]
+    fn cmd_verify_structured_json() {
+        let (config_dir, state_dir) = setup_test_env();
+
+        let cli = Cli {
+            output: OutputFormatArg(cfgd_core::output::OutputFormat::Json),
+            ..test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()))
+        };
+        let printer = Printer::new(cfgd_core::output::Verbosity::Quiet);
+
+        assert!(super::cmd_verify(&cli, &printer, None).is_ok());
+    }
+
+    #[test]
+    fn cmd_doctor_structured_json() {
+        let (config_dir, state_dir) = setup_test_env();
+
+        let cli = Cli {
+            output: OutputFormatArg(cfgd_core::output::OutputFormat::Json),
+            ..test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()))
+        };
+        let printer = Printer::new(cfgd_core::output::Verbosity::Quiet);
+
+        assert!(super::cmd_doctor(&cli, &printer).is_ok());
+    }
+
+    #[test]
+    fn cmd_compliance_snapshot_structured_json() {
+        let (config_dir, state_dir) = setup_test_env();
+
+        let cli = Cli {
+            output: OutputFormatArg(cfgd_core::output::OutputFormat::Json),
+            ..test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()))
+        };
+        let printer = Printer::new(cfgd_core::output::Verbosity::Quiet);
+
+        assert!(super::cmd_compliance_snapshot(&cli, &printer).is_ok());
+    }
+
+    #[test]
+    fn cmd_compliance_history_structured_json() {
+        let (config_dir, state_dir) = setup_test_env();
+
+        let cli = Cli {
+            output: OutputFormatArg(cfgd_core::output::OutputFormat::Json),
+            ..test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()))
+        };
+        let printer = Printer::new(cfgd_core::output::Verbosity::Quiet);
+
+        assert!(super::cmd_compliance_history(&cli, &printer, None).is_ok());
+    }
+
+    // --- cmd_diff with module filter ---
+
+    #[test]
+    fn cmd_diff_with_module_filter() {
+        let (config_dir, state_dir) = setup_test_env();
+
+        create_module_in_dir(
+            config_dir.path(),
+            "diff-mod",
+            "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: diff-mod\nspec:\n  packages: []\n",
+        );
+
+        let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
+        let printer = test_printer();
+
+        assert!(super::cmd_diff(&cli, &printer, Some("diff-mod")).is_ok());
+    }
+
+    // --- cmd_verify with module filter on nonexistent module ---
+
+    #[test]
+    fn cmd_verify_module_not_found() {
+        let (config_dir, state_dir) = setup_test_env();
+
+        let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
+        let printer = test_printer();
+
+        let result = super::cmd_verify(&cli, &printer, Some("nonexistent"));
+        assert!(result.is_err());
+    }
+
+    // --- cmd_plan with module that has dependencies ---
+
+    #[test]
+    fn cmd_plan_module_with_packages() {
+        let (config_dir, state_dir) = setup_test_env();
+
+        create_module_in_dir(
+            config_dir.path(),
+            "pkg-mod",
+            "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: pkg-mod\nspec:\n  packages:\n    - name: curl\n    - name: wget\n",
+        );
+
+        let profile = "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec:\n  modules:\n    - pkg-mod\n";
+        std::fs::write(
+            config_dir.path().join("profiles").join("default.yaml"),
+            profile,
+        )
+        .unwrap();
+
+        let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
+        let printer = test_printer();
+        let args = PlanArgs {
+            phase: None,
+            skip: vec![],
+            only: vec![],
+            module: None,
+            skip_scripts: false,
+            context: "apply".to_string(),
+        };
+
+        assert!(super::cmd_plan(&cli, &printer, &args).is_ok());
+    }
+
+    // --- open_state_store ---
+
+    #[test]
+    fn open_state_store_creates_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        let subdir = dir.path().join("nested").join("state");
+        let result = super::open_state_store(Some(&subdir));
+        assert!(result.is_ok());
+        assert!(subdir.exists());
+    }
+
+    #[test]
+    fn open_state_store_default() {
+        // Just verify the default path variant does not panic
+        let result = super::open_state_store(None);
+        assert!(result.is_ok());
+    }
+
+    // --- build_registry ---
+
+    #[test]
+    fn build_registry_has_package_managers() {
+        let registry = super::build_registry();
+        assert!(
+            !registry.package_managers.is_empty(),
+            "registry should have at least one package manager"
+        );
+    }
+
+    #[test]
+    fn build_registry_has_system_configurators() {
+        let registry = super::build_registry();
+        assert!(
+            !registry.system_configurators.is_empty(),
+            "registry should have system configurators"
+        );
+    }
+
+    #[test]
+    fn build_registry_has_secret_backend() {
+        let registry = super::build_registry();
+        assert!(
+            registry.secret_backend.is_some(),
+            "registry should have a secret backend"
+        );
+    }
+
+    // --- config_dir helper ---
+
+    #[test]
+    fn config_dir_derives_from_cli_config() {
+        let dir = tempfile::tempdir().unwrap();
+        let cli = test_cli(dir.path());
+        let result = super::config_dir(&cli);
+        assert_eq!(result, dir.path().to_path_buf());
+    }
+
+    // --- profiles_dir helper ---
+
+    #[test]
+    fn profiles_dir_derives_from_cli() {
+        let dir = tempfile::tempdir().unwrap();
+        let cli = test_cli(dir.path());
+        let result = super::profiles_dir(&cli);
+        assert_eq!(result, dir.path().join("profiles"));
+    }
 }

@@ -5361,4 +5361,554 @@ mod tests {
         // The key assertion is that it doesn't panic
         assert!(response.uptime_secs < 10);
     }
+
+    // --- handle_health_connection: /health endpoint ---
+
+    #[tokio::test]
+    async fn health_connection_health_endpoint() {
+        let state = Arc::new(Mutex::new(DaemonState::new()));
+        let (client, server) = tokio::io::duplex(4096);
+
+        // Spawn the handler
+        let handler_state = Arc::clone(&state);
+        let handler = tokio::spawn(async move {
+            handle_health_connection(server, handler_state).await.unwrap();
+        });
+
+        // Send HTTP request
+        let (reader, mut writer) = tokio::io::split(client);
+        writer
+            .write_all(b"GET /health HTTP/1.1\r\nHost: localhost\r\n\r\n")
+            .await
+            .unwrap();
+        writer.shutdown().await.unwrap();
+
+        // Read response
+        let mut buf_reader = tokio::io::BufReader::new(reader);
+        let mut response = String::new();
+        loop {
+            let mut line = String::new();
+            match buf_reader.read_line(&mut line).await {
+                Ok(0) => break,
+                Ok(_) => response.push_str(&line),
+                Err(_) => break,
+            }
+        }
+
+        handler.await.unwrap();
+
+        assert!(
+            response.starts_with("HTTP/1.1 200 OK"),
+            "expected 200 OK, got: {}",
+            &response[..response.len().min(40)]
+        );
+        assert!(response.contains("\"status\""));
+        assert!(response.contains("\"pid\""));
+        assert!(response.contains("\"uptime_secs\""));
+    }
+
+    // --- handle_health_connection: /status endpoint ---
+
+    #[tokio::test]
+    async fn health_connection_status_endpoint() {
+        let state = Arc::new(Mutex::new(DaemonState::new()));
+        // Populate some state
+        {
+            let mut st = state.lock().await;
+            st.drift_count = 3;
+            st.last_reconcile = Some("2026-03-30T10:00:00Z".to_string());
+        }
+
+        let (client, server) = tokio::io::duplex(4096);
+
+        let handler_state = Arc::clone(&state);
+        let handler = tokio::spawn(async move {
+            handle_health_connection(server, handler_state).await.unwrap();
+        });
+
+        let (reader, mut writer) = tokio::io::split(client);
+        writer
+            .write_all(b"GET /status HTTP/1.1\r\nHost: localhost\r\n\r\n")
+            .await
+            .unwrap();
+        writer.shutdown().await.unwrap();
+
+        let mut buf_reader = tokio::io::BufReader::new(reader);
+        let mut response = String::new();
+        loop {
+            let mut line = String::new();
+            match buf_reader.read_line(&mut line).await {
+                Ok(0) => break,
+                Ok(_) => response.push_str(&line),
+                Err(_) => break,
+            }
+        }
+
+        handler.await.unwrap();
+
+        assert!(
+            response.starts_with("HTTP/1.1 200 OK"),
+            "expected 200 OK, got: {}",
+            &response[..response.len().min(40)]
+        );
+        // Body should contain DaemonStatusResponse fields (pretty-printed JSON)
+        assert!(
+            response.contains("\"running\": true"),
+            "response should contain running field: {}",
+            &response
+        );
+        assert!(
+            response.contains("\"driftCount\": 3"),
+            "response should contain driftCount field: {}",
+            &response
+        );
+    }
+
+    // --- handle_health_connection: /drift endpoint ---
+
+    #[tokio::test]
+    async fn health_connection_drift_endpoint() {
+        let state = Arc::new(Mutex::new(DaemonState::new()));
+        let (client, server) = tokio::io::duplex(4096);
+
+        let handler_state = Arc::clone(&state);
+        let handler = tokio::spawn(async move {
+            handle_health_connection(server, handler_state).await.unwrap();
+        });
+
+        let (reader, mut writer) = tokio::io::split(client);
+        writer
+            .write_all(b"GET /drift HTTP/1.1\r\nHost: localhost\r\n\r\n")
+            .await
+            .unwrap();
+        writer.shutdown().await.unwrap();
+
+        let mut buf_reader = tokio::io::BufReader::new(reader);
+        let mut response = String::new();
+        loop {
+            let mut line = String::new();
+            match buf_reader.read_line(&mut line).await {
+                Ok(0) => break,
+                Ok(_) => response.push_str(&line),
+                Err(_) => break,
+            }
+        }
+
+        handler.await.unwrap();
+
+        assert!(
+            response.starts_with("HTTP/1.1 200 OK"),
+            "expected 200 OK, got: {}",
+            &response[..response.len().min(40)]
+        );
+        assert!(response.contains("\"drift_count\""));
+        assert!(response.contains("\"events\""));
+    }
+
+    // --- handle_health_connection: 404 for unknown path ---
+
+    #[tokio::test]
+    async fn health_connection_unknown_path_returns_404() {
+        let state = Arc::new(Mutex::new(DaemonState::new()));
+        let (client, server) = tokio::io::duplex(4096);
+
+        let handler_state = Arc::clone(&state);
+        let handler = tokio::spawn(async move {
+            handle_health_connection(server, handler_state).await.unwrap();
+        });
+
+        let (reader, mut writer) = tokio::io::split(client);
+        writer
+            .write_all(b"GET /nonexistent HTTP/1.1\r\nHost: localhost\r\n\r\n")
+            .await
+            .unwrap();
+        writer.shutdown().await.unwrap();
+
+        let mut buf_reader = tokio::io::BufReader::new(reader);
+        let mut response = String::new();
+        loop {
+            let mut line = String::new();
+            match buf_reader.read_line(&mut line).await {
+                Ok(0) => break,
+                Ok(_) => response.push_str(&line),
+                Err(_) => break,
+            }
+        }
+
+        handler.await.unwrap();
+
+        assert!(
+            response.starts_with("HTTP/1.1 404 Not Found"),
+            "expected 404, got: {}",
+            &response[..response.len().min(40)]
+        );
+        assert!(response.contains("\"error\""));
+    }
+
+    // --- git_pull: repo with no remote changes returns Ok(false) ---
+
+    #[test]
+    fn git_pull_no_remote_returns_up_to_date() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let bare_dir = tmp.path().join("bare.git");
+        let work_dir = tmp.path().join("work");
+
+        // Create a bare repo as "remote"
+        std::fs::create_dir_all(&bare_dir).unwrap();
+        git2::Repository::init_bare(&bare_dir).unwrap();
+
+        // Clone the bare repo to get a working copy with origin
+        let repo = git2::Repository::clone(
+            bare_dir.to_str().unwrap(),
+            &work_dir,
+        )
+        .unwrap();
+
+        // Configure committer identity
+        let mut config = repo.config().unwrap();
+        config.set_str("user.name", "cfgd-test").unwrap();
+        config.set_str("user.email", "test@cfgd.io").unwrap();
+
+        // Create initial commit (bare repos start empty, clone has no HEAD)
+        let readme = work_dir.join("README");
+        std::fs::write(&readme, "test\n").unwrap();
+        let mut index = repo.index().unwrap();
+        index
+            .add_path(Path::new("README"))
+            .unwrap();
+        index.write().unwrap();
+        let tree_id = index.write_tree().unwrap();
+        let tree = repo.find_tree(tree_id).unwrap();
+        let sig = repo.signature().unwrap();
+        repo.commit(Some("HEAD"), &sig, &sig, "initial", &tree, &[])
+            .unwrap();
+
+        // Push initial commit to bare remote
+        let mut remote = repo.find_remote("origin").unwrap();
+        remote
+            .push(&["refs/heads/master:refs/heads/master"], None)
+            .unwrap();
+
+        // Now pull — should be up-to-date since we just pushed
+        let result = git_pull(&work_dir);
+        assert!(result.is_ok(), "git_pull failed: {:?}", result);
+        assert!(!result.unwrap(), "expected no changes");
+    }
+
+    // --- git_pull: repo with new remote commits returns Ok(true) ---
+
+    #[test]
+    fn git_pull_with_remote_changes_returns_true() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let bare_dir = tmp.path().join("bare.git");
+        let work_dir = tmp.path().join("work");
+        let pusher_dir = tmp.path().join("pusher");
+
+        // Create bare repo
+        std::fs::create_dir_all(&bare_dir).unwrap();
+        git2::Repository::init_bare(&bare_dir).unwrap();
+
+        // Clone into work_dir
+        let repo = git2::Repository::clone(
+            bare_dir.to_str().unwrap(),
+            &work_dir,
+        )
+        .unwrap();
+        {
+            let mut config = repo.config().unwrap();
+            config.set_str("user.name", "cfgd-test").unwrap();
+            config.set_str("user.email", "test@cfgd.io").unwrap();
+        }
+
+        // Create initial commit and push
+        std::fs::write(work_dir.join("README"), "v1\n").unwrap();
+        {
+            let mut index = repo.index().unwrap();
+            index.add_path(Path::new("README")).unwrap();
+            index.write().unwrap();
+            let tree_id = index.write_tree().unwrap();
+            let tree = repo.find_tree(tree_id).unwrap();
+            let sig = repo.signature().unwrap();
+            repo.commit(Some("HEAD"), &sig, &sig, "initial", &tree, &[])
+                .unwrap();
+        }
+        {
+            let mut remote = repo.find_remote("origin").unwrap();
+            remote
+                .push(&["refs/heads/master:refs/heads/master"], None)
+                .unwrap();
+        }
+
+        // Clone into pusher_dir and push a new commit
+        let pusher = git2::Repository::clone(
+            bare_dir.to_str().unwrap(),
+            &pusher_dir,
+        )
+        .unwrap();
+        {
+            let mut config = pusher.config().unwrap();
+            config.set_str("user.name", "cfgd-pusher").unwrap();
+            config.set_str("user.email", "pusher@cfgd.io").unwrap();
+        }
+        std::fs::write(pusher_dir.join("NEW_FILE"), "hello\n").unwrap();
+        {
+            let mut index = pusher.index().unwrap();
+            index.add_path(Path::new("NEW_FILE")).unwrap();
+            index.write().unwrap();
+            let tree_id = index.write_tree().unwrap();
+            let tree = pusher.find_tree(tree_id).unwrap();
+            let sig = pusher.signature().unwrap();
+            let parent = pusher.head().unwrap().peel_to_commit().unwrap();
+            pusher
+                .commit(Some("HEAD"), &sig, &sig, "add file", &tree, &[&parent])
+                .unwrap();
+        }
+        {
+            let mut remote = pusher.find_remote("origin").unwrap();
+            remote
+                .push(&["refs/heads/master:refs/heads/master"], None)
+                .unwrap();
+        }
+
+        // Now git_pull in work_dir should detect changes
+        let result = git_pull(&work_dir);
+        assert!(result.is_ok(), "git_pull failed: {:?}", result);
+        assert!(result.unwrap(), "expected changes from remote");
+
+        // Verify the new file exists after pull
+        assert!(
+            work_dir.join("NEW_FILE").exists(),
+            "NEW_FILE should exist after fast-forward pull"
+        );
+    }
+
+    // --- git_auto_commit_push: no changes returns Ok(false) ---
+
+    #[test]
+    fn git_auto_commit_push_no_changes() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let bare_dir = tmp.path().join("bare.git");
+        let work_dir = tmp.path().join("work");
+
+        // Create bare repo
+        std::fs::create_dir_all(&bare_dir).unwrap();
+        git2::Repository::init_bare(&bare_dir).unwrap();
+
+        // Clone, create initial commit, push
+        let repo = git2::Repository::clone(
+            bare_dir.to_str().unwrap(),
+            &work_dir,
+        )
+        .unwrap();
+        {
+            let mut config = repo.config().unwrap();
+            config.set_str("user.name", "cfgd-test").unwrap();
+            config.set_str("user.email", "test@cfgd.io").unwrap();
+        }
+        std::fs::write(work_dir.join("README"), "test\n").unwrap();
+        {
+            let mut index = repo.index().unwrap();
+            index.add_path(Path::new("README")).unwrap();
+            index.write().unwrap();
+            let tree_id = index.write_tree().unwrap();
+            let tree = repo.find_tree(tree_id).unwrap();
+            let sig = repo.signature().unwrap();
+            repo.commit(Some("HEAD"), &sig, &sig, "initial", &tree, &[])
+                .unwrap();
+        }
+        {
+            let mut remote = repo.find_remote("origin").unwrap();
+            remote
+                .push(&["refs/heads/master:refs/heads/master"], None)
+                .unwrap();
+        }
+
+        // No changes — should return Ok(false)
+        let result = git_auto_commit_push(&work_dir);
+        assert!(result.is_ok(), "git_auto_commit_push failed: {:?}", result);
+        assert!(!result.unwrap(), "expected no changes to push");
+    }
+
+    // --- git_auto_commit_push: with changes commits and pushes ---
+
+    #[test]
+    fn git_auto_commit_push_with_changes() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let bare_dir = tmp.path().join("bare.git");
+        let work_dir = tmp.path().join("work");
+
+        // Create bare repo
+        std::fs::create_dir_all(&bare_dir).unwrap();
+        git2::Repository::init_bare(&bare_dir).unwrap();
+
+        // Clone, create initial commit, push
+        let repo = git2::Repository::clone(
+            bare_dir.to_str().unwrap(),
+            &work_dir,
+        )
+        .unwrap();
+        {
+            let mut config = repo.config().unwrap();
+            config.set_str("user.name", "cfgd-test").unwrap();
+            config.set_str("user.email", "test@cfgd.io").unwrap();
+        }
+        std::fs::write(work_dir.join("README"), "test\n").unwrap();
+        {
+            let mut index = repo.index().unwrap();
+            index.add_path(Path::new("README")).unwrap();
+            index.write().unwrap();
+            let tree_id = index.write_tree().unwrap();
+            let tree = repo.find_tree(tree_id).unwrap();
+            let sig = repo.signature().unwrap();
+            repo.commit(Some("HEAD"), &sig, &sig, "initial", &tree, &[])
+                .unwrap();
+        }
+        {
+            let mut remote = repo.find_remote("origin").unwrap();
+            remote
+                .push(&["refs/heads/master:refs/heads/master"], None)
+                .unwrap();
+        }
+
+        // Create a new file (uncommitted change)
+        std::fs::write(work_dir.join("new_config.yaml"), "key: value\n").unwrap();
+
+        // Should commit and push the change
+        let result = git_auto_commit_push(&work_dir);
+        assert!(result.is_ok(), "git_auto_commit_push failed: {:?}", result);
+        assert!(result.unwrap(), "expected changes to be pushed");
+
+        // Verify commit was created
+        let repo = git2::Repository::open(&work_dir).unwrap();
+        let head = repo.head().unwrap().peel_to_commit().unwrap();
+        assert_eq!(
+            head.message().unwrap(),
+            "cfgd: auto-commit configuration changes"
+        );
+
+        // Verify the change was pushed to bare repo
+        let bare = git2::Repository::open_bare(&bare_dir).unwrap();
+        let bare_head = bare
+            .find_reference("refs/heads/master")
+            .unwrap()
+            .peel_to_commit()
+            .unwrap();
+        assert_eq!(head.id(), bare_head.id());
+    }
+
+    // --- git_pull: non-git directory returns error ---
+
+    #[test]
+    fn git_pull_non_repo_returns_error() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let result = git_pull(tmp.path());
+        assert!(result.is_err());
+    }
+
+    // --- git_auto_commit_push: non-git directory returns error ---
+
+    #[test]
+    fn git_auto_commit_push_non_repo_returns_error() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let result = git_auto_commit_push(tmp.path());
+        assert!(result.is_err());
+    }
+
+    // --- handle_sync: updates daemon state timestamps ---
+    // Note: handle_sync uses tokio::runtime::Handle::current().block_on() internally,
+    // so it must be called from a blocking context (spawn_blocking) within a tokio test.
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn handle_sync_updates_state_timestamps() {
+        use crate::test_helpers::init_test_git_repo;
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        let repo_dir = tmp.path().join("repo");
+        init_test_git_repo(&repo_dir);
+
+        let state = Arc::new(Mutex::new(DaemonState::new()));
+
+        let st = Arc::clone(&state);
+        let rd = repo_dir.clone();
+        let changed = tokio::task::spawn_blocking(move || {
+            handle_sync(&rd, false, false, "local", &st, false, false)
+        })
+        .await
+        .unwrap();
+
+        assert!(!changed);
+
+        let st = state.lock().await;
+        assert!(st.last_sync.is_some(), "last_sync should be set");
+    }
+
+    // --- handle_sync: with auto_pull on repo without remote ---
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn handle_sync_pull_without_remote_logs_warning() {
+        use crate::test_helpers::init_test_git_repo;
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        let repo_dir = tmp.path().join("repo");
+        init_test_git_repo(&repo_dir);
+
+        let state = Arc::new(Mutex::new(DaemonState::new()));
+
+        let st = Arc::clone(&state);
+        let rd = repo_dir.clone();
+        let changed = tokio::task::spawn_blocking(move || {
+            handle_sync(&rd, true, false, "local", &st, false, false)
+        })
+        .await
+        .unwrap();
+
+        // Should not crash; pull fails gracefully
+        assert!(!changed);
+    }
+
+    // --- handle_sync: per-source status update ---
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn handle_sync_updates_per_source_status() {
+        use crate::test_helpers::init_test_git_repo;
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        let repo_dir = tmp.path().join("repo");
+        init_test_git_repo(&repo_dir);
+
+        let state = Arc::new(Mutex::new(DaemonState::new()));
+        // Add a second source
+        {
+            let mut st = state.lock().await;
+            st.sources.push(SourceStatus {
+                name: "acme".to_string(),
+                last_sync: None,
+                last_reconcile: None,
+                drift_count: 0,
+                status: "active".to_string(),
+            });
+        }
+
+        let st = Arc::clone(&state);
+        let rd = repo_dir.clone();
+        tokio::task::spawn_blocking(move || {
+            handle_sync(&rd, false, false, "acme", &st, false, false)
+        })
+        .await
+        .unwrap();
+
+        let st = state.lock().await;
+        // The "acme" source should have its last_sync updated
+        let acme = st.sources.iter().find(|s| s.name == "acme").unwrap();
+        assert!(
+            acme.last_sync.is_some(),
+            "acme source last_sync should be set"
+        );
+        // The "local" source should NOT have been updated
+        let local = st.sources.iter().find(|s| s.name == "local").unwrap();
+        assert!(
+            local.last_sync.is_none(),
+            "local source last_sync should remain None"
+        );
+    }
 }

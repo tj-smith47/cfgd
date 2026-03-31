@@ -7766,4 +7766,1704 @@ mod tests {
         // But the file action should still have been applied
         assert!(target.exists());
     }
+
+    // --- apply_package_action: Bootstrap path ---
+
+    /// A package manager that starts unavailable but becomes available after bootstrap.
+    struct BootstrappablePackageManager {
+        name: String,
+        bootstrapped: std::sync::Mutex<bool>,
+        installed: std::sync::Mutex<HashSet<String>>,
+    }
+
+    impl BootstrappablePackageManager {
+        fn new(name: &str) -> Self {
+            Self {
+                name: name.to_string(),
+                bootstrapped: std::sync::Mutex::new(false),
+                installed: std::sync::Mutex::new(HashSet::new()),
+            }
+        }
+    }
+
+    impl PackageManager for BootstrappablePackageManager {
+        fn name(&self) -> &str {
+            &self.name
+        }
+        fn is_available(&self) -> bool {
+            *self.bootstrapped.lock().unwrap()
+        }
+        fn can_bootstrap(&self) -> bool {
+            true
+        }
+        fn bootstrap(&self, _printer: &Printer) -> Result<()> {
+            *self.bootstrapped.lock().unwrap() = true;
+            Ok(())
+        }
+        fn installed_packages(&self) -> Result<HashSet<String>> {
+            Ok(self.installed.lock().unwrap().clone())
+        }
+        fn install(&self, packages: &[String], _printer: &Printer) -> Result<()> {
+            let mut installed = self.installed.lock().unwrap();
+            for p in packages {
+                installed.insert(p.clone());
+            }
+            Ok(())
+        }
+        fn uninstall(&self, packages: &[String], _printer: &Printer) -> Result<()> {
+            let mut installed = self.installed.lock().unwrap();
+            for p in packages {
+                installed.remove(p);
+            }
+            Ok(())
+        }
+        fn update(&self, _printer: &Printer) -> Result<()> {
+            Ok(())
+        }
+        fn available_version(&self, _package: &str) -> Result<Option<String>> {
+            Ok(None)
+        }
+    }
+
+    #[test]
+    fn apply_package_bootstrap_makes_manager_available() {
+        let state = StateStore::open_in_memory().unwrap();
+        let mut registry = ProviderRegistry::new();
+        registry
+            .package_managers
+            .push(Box::new(BootstrappablePackageManager::new("snap")));
+
+        let reconciler = Reconciler::new(&registry, &state);
+        let resolved = make_empty_resolved();
+
+        let plan = Plan {
+            phases: vec![Phase {
+                name: PhaseName::Packages,
+                actions: vec![Action::Package(PackageAction::Bootstrap {
+                    manager: "snap".to_string(),
+                    method: "auto".to_string(),
+                    origin: "local".to_string(),
+                })],
+            }],
+            warnings: vec![],
+        };
+
+        let printer = Printer::new(crate::output::Verbosity::Quiet);
+        let result = reconciler
+            .apply(
+                &plan,
+                &resolved,
+                Path::new("."),
+                &printer,
+                Some(&PhaseName::Packages),
+                &[],
+                ReconcileContext::Apply,
+                false,
+            )
+            .unwrap();
+
+        assert_eq!(result.status, ApplyStatus::Success);
+        assert_eq!(result.action_results.len(), 1);
+        assert!(result.action_results[0].success);
+        assert!(
+            result.action_results[0]
+                .description
+                .contains("bootstrap"),
+            "desc: {}",
+            result.action_results[0].description
+        );
+
+        // Manager should now be available
+        assert!(registry.package_managers[0].is_available());
+    }
+
+    #[test]
+    fn apply_package_bootstrap_unknown_manager_errors() {
+        let state = StateStore::open_in_memory().unwrap();
+        let registry = ProviderRegistry::new(); // no managers
+        let reconciler = Reconciler::new(&registry, &state);
+        let resolved = make_empty_resolved();
+
+        let plan = Plan {
+            phases: vec![Phase {
+                name: PhaseName::Packages,
+                actions: vec![Action::Package(PackageAction::Bootstrap {
+                    manager: "nonexistent".to_string(),
+                    method: "auto".to_string(),
+                    origin: "local".to_string(),
+                })],
+            }],
+            warnings: vec![],
+        };
+
+        let printer = Printer::new(crate::output::Verbosity::Quiet);
+        let result = reconciler
+            .apply(
+                &plan,
+                &resolved,
+                Path::new("."),
+                &printer,
+                Some(&PhaseName::Packages),
+                &[],
+                ReconcileContext::Apply,
+                false,
+            )
+            .unwrap();
+
+        // Should fail — unknown manager
+        assert_eq!(result.status, ApplyStatus::Failed);
+        assert_eq!(result.failed(), 1);
+        assert!(result.action_results[0].error.is_some());
+    }
+
+    #[test]
+    fn apply_package_install_unknown_manager_errors() {
+        let state = StateStore::open_in_memory().unwrap();
+        let registry = ProviderRegistry::new(); // no managers
+        let reconciler = Reconciler::new(&registry, &state);
+        let resolved = make_empty_resolved();
+
+        let plan = Plan {
+            phases: vec![Phase {
+                name: PhaseName::Packages,
+                actions: vec![Action::Package(PackageAction::Install {
+                    manager: "nonexistent".to_string(),
+                    packages: vec!["foo".to_string()],
+                    origin: "local".to_string(),
+                })],
+            }],
+            warnings: vec![],
+        };
+
+        let printer = Printer::new(crate::output::Verbosity::Quiet);
+        let result = reconciler
+            .apply(
+                &plan,
+                &resolved,
+                Path::new("."),
+                &printer,
+                Some(&PhaseName::Packages),
+                &[],
+                ReconcileContext::Apply,
+                false,
+            )
+            .unwrap();
+
+        assert_eq!(result.status, ApplyStatus::Failed);
+        assert_eq!(result.failed(), 1);
+    }
+
+    #[test]
+    fn apply_package_uninstall_unknown_manager_errors() {
+        let state = StateStore::open_in_memory().unwrap();
+        let registry = ProviderRegistry::new();
+        let reconciler = Reconciler::new(&registry, &state);
+        let resolved = make_empty_resolved();
+
+        let plan = Plan {
+            phases: vec![Phase {
+                name: PhaseName::Packages,
+                actions: vec![Action::Package(PackageAction::Uninstall {
+                    manager: "nonexistent".to_string(),
+                    packages: vec!["foo".to_string()],
+                    origin: "local".to_string(),
+                })],
+            }],
+            warnings: vec![],
+        };
+
+        let printer = Printer::new(crate::output::Verbosity::Quiet);
+        let result = reconciler
+            .apply(
+                &plan,
+                &resolved,
+                Path::new("."),
+                &printer,
+                Some(&PhaseName::Packages),
+                &[],
+                ReconcileContext::Apply,
+                false,
+            )
+            .unwrap();
+
+        assert_eq!(result.status, ApplyStatus::Failed);
+        assert_eq!(result.failed(), 1);
+    }
+
+    // --- apply_secret_action: Decrypt, Resolve, ResolveEnv ---
+
+    struct TestSecretBackend {
+        decrypted_value: String,
+    }
+
+    impl crate::providers::SecretBackend for TestSecretBackend {
+        fn name(&self) -> &str {
+            "test-sops"
+        }
+        fn is_available(&self) -> bool {
+            true
+        }
+        fn encrypt_file(&self, _path: &std::path::Path) -> Result<()> {
+            Ok(())
+        }
+        fn decrypt_file(&self, _path: &std::path::Path) -> Result<secrecy::SecretString> {
+            Ok(secrecy::SecretString::from(self.decrypted_value.clone()))
+        }
+        fn edit_file(&self, _path: &std::path::Path) -> Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn apply_secret_decrypt_writes_decrypted_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("token.enc");
+        let target = dir.path().join("token.txt");
+        std::fs::write(&source, "encrypted-data").unwrap();
+
+        let state = StateStore::open_in_memory().unwrap();
+        let mut registry = ProviderRegistry::new();
+        registry.secret_backend = Some(Box::new(TestSecretBackend {
+            decrypted_value: "my-secret-token".to_string(),
+        }));
+
+        let reconciler = Reconciler::new(&registry, &state);
+        let resolved = make_empty_resolved();
+
+        let plan = Plan {
+            phases: vec![Phase {
+                name: PhaseName::Secrets,
+                actions: vec![Action::Secret(SecretAction::Decrypt {
+                    source: source.clone(),
+                    target: target.clone(),
+                    backend: "test-sops".to_string(),
+                    origin: "local".to_string(),
+                })],
+            }],
+            warnings: vec![],
+        };
+
+        let printer = Printer::new(crate::output::Verbosity::Quiet);
+        let result = reconciler
+            .apply(
+                &plan,
+                &resolved,
+                dir.path(),
+                &printer,
+                Some(&PhaseName::Secrets),
+                &[],
+                ReconcileContext::Apply,
+                false,
+            )
+            .unwrap();
+
+        assert_eq!(result.status, ApplyStatus::Success);
+        assert_eq!(result.action_results.len(), 1);
+        assert!(result.action_results[0].success);
+        assert!(
+            result.action_results[0].description.contains("decrypt"),
+            "desc: {}",
+            result.action_results[0].description
+        );
+
+        // Verify decrypted file was written
+        let content = std::fs::read_to_string(&target).unwrap();
+        assert_eq!(content, "my-secret-token");
+    }
+
+    #[test]
+    fn apply_secret_decrypt_no_backend_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("token.enc");
+        let target = dir.path().join("token.txt");
+        std::fs::write(&source, "encrypted-data").unwrap();
+
+        let state = StateStore::open_in_memory().unwrap();
+        let registry = ProviderRegistry::new(); // no backend
+
+        let reconciler = Reconciler::new(&registry, &state);
+        let resolved = make_empty_resolved();
+
+        let plan = Plan {
+            phases: vec![Phase {
+                name: PhaseName::Secrets,
+                actions: vec![Action::Secret(SecretAction::Decrypt {
+                    source: source.clone(),
+                    target: target.clone(),
+                    backend: "sops".to_string(),
+                    origin: "local".to_string(),
+                })],
+            }],
+            warnings: vec![],
+        };
+
+        let printer = Printer::new(crate::output::Verbosity::Quiet);
+        let result = reconciler
+            .apply(
+                &plan,
+                &resolved,
+                dir.path(),
+                &printer,
+                Some(&PhaseName::Secrets),
+                &[],
+                ReconcileContext::Apply,
+                false,
+            )
+            .unwrap();
+
+        assert_eq!(result.status, ApplyStatus::Failed);
+        assert_eq!(result.failed(), 1);
+    }
+
+    #[test]
+    fn apply_secret_resolve_writes_provider_value_to_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("resolved-secret.txt");
+
+        let state = StateStore::open_in_memory().unwrap();
+        let mut registry = ProviderRegistry::new();
+        registry.secret_providers.push(Box::new(MockSecretProvider {
+            provider_name: "vault".to_string(),
+            value: "provider-secret-value".to_string(),
+        }));
+
+        let reconciler = Reconciler::new(&registry, &state);
+        let resolved = make_empty_resolved();
+
+        let plan = Plan {
+            phases: vec![Phase {
+                name: PhaseName::Secrets,
+                actions: vec![Action::Secret(SecretAction::Resolve {
+                    provider: "vault".to_string(),
+                    reference: "secret/data/app#key".to_string(),
+                    target: target.clone(),
+                    origin: "local".to_string(),
+                })],
+            }],
+            warnings: vec![],
+        };
+
+        let printer = Printer::new(crate::output::Verbosity::Quiet);
+        let result = reconciler
+            .apply(
+                &plan,
+                &resolved,
+                dir.path(),
+                &printer,
+                Some(&PhaseName::Secrets),
+                &[],
+                ReconcileContext::Apply,
+                false,
+            )
+            .unwrap();
+
+        assert_eq!(result.status, ApplyStatus::Success);
+        assert!(result.action_results[0].success);
+        assert!(
+            result.action_results[0].description.contains("resolve"),
+            "desc: {}",
+            result.action_results[0].description
+        );
+
+        let content = std::fs::read_to_string(&target).unwrap();
+        assert_eq!(content, "provider-secret-value");
+    }
+
+    #[test]
+    fn apply_secret_resolve_unknown_provider_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("nope.txt");
+
+        let state = StateStore::open_in_memory().unwrap();
+        let registry = ProviderRegistry::new(); // no providers
+
+        let reconciler = Reconciler::new(&registry, &state);
+        let resolved = make_empty_resolved();
+
+        let plan = Plan {
+            phases: vec![Phase {
+                name: PhaseName::Secrets,
+                actions: vec![Action::Secret(SecretAction::Resolve {
+                    provider: "vault".to_string(),
+                    reference: "secret/data/app#key".to_string(),
+                    target: target.clone(),
+                    origin: "local".to_string(),
+                })],
+            }],
+            warnings: vec![],
+        };
+
+        let printer = Printer::new(crate::output::Verbosity::Quiet);
+        let result = reconciler
+            .apply(
+                &plan,
+                &resolved,
+                dir.path(),
+                &printer,
+                Some(&PhaseName::Secrets),
+                &[],
+                ReconcileContext::Apply,
+                false,
+            )
+            .unwrap();
+
+        assert_eq!(result.status, ApplyStatus::Failed);
+        assert_eq!(result.failed(), 1);
+    }
+
+    #[test]
+    fn apply_secret_resolve_env_collects_env_vars() {
+        let state = StateStore::open_in_memory().unwrap();
+        let mut registry = ProviderRegistry::new();
+        registry.secret_providers.push(Box::new(MockSecretProvider {
+            provider_name: "vault".to_string(),
+            value: "env-secret-value".to_string(),
+        }));
+
+        let reconciler = Reconciler::new(&registry, &state);
+        let resolved = make_empty_resolved();
+
+        let plan = Plan {
+            phases: vec![Phase {
+                name: PhaseName::Secrets,
+                actions: vec![Action::Secret(SecretAction::ResolveEnv {
+                    provider: "vault".to_string(),
+                    reference: "secret/data/gh#token".to_string(),
+                    envs: vec![
+                        "GH_TOKEN".to_string(),
+                        "GITHUB_TOKEN".to_string(),
+                    ],
+                    origin: "local".to_string(),
+                })],
+            }],
+            warnings: vec![],
+        };
+
+        let printer = Printer::new(crate::output::Verbosity::Quiet);
+        let result = reconciler
+            .apply(
+                &plan,
+                &resolved,
+                Path::new("."),
+                &printer,
+                Some(&PhaseName::Secrets),
+                &[],
+                ReconcileContext::Apply,
+                false,
+            )
+            .unwrap();
+
+        assert_eq!(result.status, ApplyStatus::Success);
+        assert!(result.action_results[0].success);
+        assert!(
+            result.action_results[0]
+                .description
+                .contains("resolve-env"),
+            "desc: {}",
+            result.action_results[0].description
+        );
+    }
+
+    #[test]
+    fn apply_secret_resolve_env_unknown_provider_errors() {
+        let state = StateStore::open_in_memory().unwrap();
+        let registry = ProviderRegistry::new(); // no providers
+
+        let reconciler = Reconciler::new(&registry, &state);
+        let resolved = make_empty_resolved();
+
+        let plan = Plan {
+            phases: vec![Phase {
+                name: PhaseName::Secrets,
+                actions: vec![Action::Secret(SecretAction::ResolveEnv {
+                    provider: "vault".to_string(),
+                    reference: "secret/data/gh#token".to_string(),
+                    envs: vec!["GH_TOKEN".to_string()],
+                    origin: "local".to_string(),
+                })],
+            }],
+            warnings: vec![],
+        };
+
+        let printer = Printer::new(crate::output::Verbosity::Quiet);
+        let result = reconciler
+            .apply(
+                &plan,
+                &resolved,
+                Path::new("."),
+                &printer,
+                Some(&PhaseName::Secrets),
+                &[],
+                ReconcileContext::Apply,
+                false,
+            )
+            .unwrap();
+
+        assert_eq!(result.status, ApplyStatus::Failed);
+        assert_eq!(result.failed(), 1);
+    }
+
+    #[test]
+    fn apply_secret_skip_succeeds() {
+        let state = StateStore::open_in_memory().unwrap();
+        let registry = ProviderRegistry::new();
+        let reconciler = Reconciler::new(&registry, &state);
+        let resolved = make_empty_resolved();
+
+        let plan = Plan {
+            phases: vec![Phase {
+                name: PhaseName::Secrets,
+                actions: vec![Action::Secret(SecretAction::Skip {
+                    source: "vault://test".to_string(),
+                    reason: "not available".to_string(),
+                    origin: "local".to_string(),
+                })],
+            }],
+            warnings: vec![],
+        };
+
+        let printer = Printer::new(crate::output::Verbosity::Quiet);
+        let result = reconciler
+            .apply(
+                &plan,
+                &resolved,
+                Path::new("."),
+                &printer,
+                Some(&PhaseName::Secrets),
+                &[],
+                ReconcileContext::Apply,
+                false,
+            )
+            .unwrap();
+
+        assert_eq!(result.status, ApplyStatus::Success);
+        assert!(result.action_results[0].success);
+        assert!(result.action_results[0].description.contains("skip"));
+    }
+
+    // --- apply_file_action: Delete and SetPermissions ---
+
+    #[test]
+    fn apply_file_delete_action_removes_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("to-delete.txt");
+        std::fs::write(&target, "delete me").unwrap();
+        assert!(target.exists());
+
+        let state = StateStore::open_in_memory().unwrap();
+        let mut registry = ProviderRegistry::new();
+        registry.default_file_strategy = crate::config::FileStrategy::Copy;
+
+        let reconciler = Reconciler::new(&registry, &state);
+        let resolved = make_empty_resolved();
+
+        let plan = Plan {
+            phases: vec![Phase {
+                name: PhaseName::Files,
+                actions: vec![Action::File(FileAction::Delete {
+                    target: target.clone(),
+                    origin: "local".to_string(),
+                })],
+            }],
+            warnings: vec![],
+        };
+
+        let printer = Printer::new(crate::output::Verbosity::Quiet);
+        let result = reconciler
+            .apply(
+                &plan,
+                &resolved,
+                dir.path(),
+                &printer,
+                Some(&PhaseName::Files),
+                &[],
+                ReconcileContext::Apply,
+                false,
+            )
+            .unwrap();
+
+        assert_eq!(result.status, ApplyStatus::Success);
+        assert!(!target.exists(), "file should be deleted");
+        assert!(
+            result.action_results[0].description.contains("delete"),
+            "desc: {}",
+            result.action_results[0].description
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn apply_file_set_permissions_action() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("script.sh");
+        std::fs::write(&target, "#!/bin/sh\necho hi").unwrap();
+
+        let state = StateStore::open_in_memory().unwrap();
+        let registry = ProviderRegistry::new();
+        let reconciler = Reconciler::new(&registry, &state);
+        let resolved = make_empty_resolved();
+
+        let plan = Plan {
+            phases: vec![Phase {
+                name: PhaseName::Files,
+                actions: vec![Action::File(FileAction::SetPermissions {
+                    target: target.clone(),
+                    mode: 0o755,
+                    origin: "local".to_string(),
+                })],
+            }],
+            warnings: vec![],
+        };
+
+        let printer = Printer::new(crate::output::Verbosity::Quiet);
+        let result = reconciler
+            .apply(
+                &plan,
+                &resolved,
+                dir.path(),
+                &printer,
+                Some(&PhaseName::Files),
+                &[],
+                ReconcileContext::Apply,
+                false,
+            )
+            .unwrap();
+
+        assert_eq!(result.status, ApplyStatus::Success);
+        assert!(result.action_results[0].success);
+        assert!(
+            result.action_results[0].description.contains("chmod"),
+            "desc: {}",
+            result.action_results[0].description
+        );
+
+        // Verify permissions
+        use std::os::unix::fs::PermissionsExt;
+        let meta = std::fs::metadata(&target).unwrap();
+        assert_eq!(meta.permissions().mode() & 0o777, 0o755);
+    }
+
+    #[test]
+    fn apply_file_skip_action_succeeds() {
+        let state = StateStore::open_in_memory().unwrap();
+        let registry = ProviderRegistry::new();
+        let reconciler = Reconciler::new(&registry, &state);
+        let resolved = make_empty_resolved();
+
+        let plan = Plan {
+            phases: vec![Phase {
+                name: PhaseName::Files,
+                actions: vec![Action::File(FileAction::Skip {
+                    target: PathBuf::from("/nonexistent"),
+                    reason: "unchanged".to_string(),
+                    origin: "local".to_string(),
+                })],
+            }],
+            warnings: vec![],
+        };
+
+        let printer = Printer::new(crate::output::Verbosity::Quiet);
+        let result = reconciler
+            .apply(
+                &plan,
+                &resolved,
+                Path::new("."),
+                &printer,
+                Some(&PhaseName::Files),
+                &[],
+                ReconcileContext::Apply,
+                false,
+            )
+            .unwrap();
+
+        assert_eq!(result.status, ApplyStatus::Success);
+        assert!(result.action_results[0].success);
+        assert!(result.action_results[0].description.contains("skip"));
+    }
+
+    #[test]
+    fn apply_file_update_action_overwrites_target() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("new-content.txt");
+        let target = dir.path().join("existing.txt");
+        std::fs::write(&source, "updated content").unwrap();
+        std::fs::write(&target, "old content").unwrap();
+
+        let state = StateStore::open_in_memory().unwrap();
+        let mut registry = ProviderRegistry::new();
+        registry.default_file_strategy = crate::config::FileStrategy::Copy;
+
+        let reconciler = Reconciler::new(&registry, &state);
+        let resolved = make_empty_resolved();
+
+        let plan = Plan {
+            phases: vec![Phase {
+                name: PhaseName::Files,
+                actions: vec![Action::File(FileAction::Update {
+                    source: source.clone(),
+                    target: target.clone(),
+                    diff: "diff output".to_string(),
+                    origin: "local".to_string(),
+                    strategy: crate::config::FileStrategy::Copy,
+                    source_hash: None,
+                })],
+            }],
+            warnings: vec![],
+        };
+
+        let printer = Printer::new(crate::output::Verbosity::Quiet);
+        let result = reconciler
+            .apply(
+                &plan,
+                &resolved,
+                dir.path(),
+                &printer,
+                Some(&PhaseName::Files),
+                &[],
+                ReconcileContext::Apply,
+                false,
+            )
+            .unwrap();
+
+        assert_eq!(result.status, ApplyStatus::Success);
+        let content = std::fs::read_to_string(&target).unwrap();
+        assert_eq!(content, "updated content");
+        assert!(
+            result.action_results[0].description.contains("update"),
+            "desc: {}",
+            result.action_results[0].description
+        );
+    }
+
+    // --- apply_system_action: SetValue and Skip ---
+
+    /// A mock system configurator that tracks apply calls.
+    struct TestSystemConfigurator {
+        configurator_name: String,
+        applied: std::sync::Mutex<bool>,
+    }
+
+    impl TestSystemConfigurator {
+        fn new(name: &str) -> Self {
+            Self {
+                configurator_name: name.to_string(),
+                applied: std::sync::Mutex::new(false),
+            }
+        }
+    }
+
+    impl crate::providers::SystemConfigurator for TestSystemConfigurator {
+        fn name(&self) -> &str {
+            &self.configurator_name
+        }
+        fn is_available(&self) -> bool {
+            true
+        }
+        fn current_state(&self) -> Result<serde_yaml::Value> {
+            Ok(serde_yaml::Value::Null)
+        }
+        fn diff(&self, _desired: &serde_yaml::Value) -> Result<Vec<crate::providers::SystemDrift>> {
+            Ok(vec![crate::providers::SystemDrift {
+                key: "test.key".to_string(),
+                expected: "desired-val".to_string(),
+                actual: "current-val".to_string(),
+            }])
+        }
+        fn apply(&self, _desired: &serde_yaml::Value, _printer: &Printer) -> Result<()> {
+            *self.applied.lock().unwrap() = true;
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn apply_system_set_value_calls_configurator() {
+        let state = StateStore::open_in_memory().unwrap();
+        let mut registry = ProviderRegistry::new();
+        registry
+            .system_configurators
+            .push(Box::new(TestSystemConfigurator::new("sysctl")));
+
+        let reconciler = Reconciler::new(&registry, &state);
+        let mut resolved = make_empty_resolved();
+        // Put desired system config in the profile
+        resolved.merged.system.insert(
+            "sysctl".to_string(),
+            serde_yaml::from_str("{net.ipv4.ip_forward: 1}").unwrap(),
+        );
+
+        let plan = Plan {
+            phases: vec![Phase {
+                name: PhaseName::System,
+                actions: vec![Action::System(SystemAction::SetValue {
+                    configurator: "sysctl".to_string(),
+                    key: "net.ipv4.ip_forward".to_string(),
+                    desired: "1".to_string(),
+                    current: "0".to_string(),
+                    origin: "local".to_string(),
+                })],
+            }],
+            warnings: vec![],
+        };
+
+        let printer = Printer::new(crate::output::Verbosity::Quiet);
+        let result = reconciler
+            .apply(
+                &plan,
+                &resolved,
+                Path::new("."),
+                &printer,
+                Some(&PhaseName::System),
+                &[],
+                ReconcileContext::Apply,
+                false,
+            )
+            .unwrap();
+
+        assert_eq!(result.status, ApplyStatus::Success);
+        assert!(result.action_results[0].success);
+        assert!(
+            result.action_results[0].description.contains("system:sysctl"),
+            "desc: {}",
+            result.action_results[0].description
+        );
+    }
+
+    #[test]
+    fn apply_system_skip_logs_warning() {
+        let state = StateStore::open_in_memory().unwrap();
+        let registry = ProviderRegistry::new();
+        let reconciler = Reconciler::new(&registry, &state);
+        let resolved = make_empty_resolved();
+
+        let plan = Plan {
+            phases: vec![Phase {
+                name: PhaseName::System,
+                actions: vec![Action::System(SystemAction::Skip {
+                    configurator: "customThing".to_string(),
+                    reason: "no configurator registered".to_string(),
+                    origin: "local".to_string(),
+                })],
+            }],
+            warnings: vec![],
+        };
+
+        let printer = Printer::new(crate::output::Verbosity::Quiet);
+        let result = reconciler
+            .apply(
+                &plan,
+                &resolved,
+                Path::new("."),
+                &printer,
+                Some(&PhaseName::System),
+                &[],
+                ReconcileContext::Apply,
+                false,
+            )
+            .unwrap();
+
+        assert_eq!(result.status, ApplyStatus::Success);
+        assert!(result.action_results[0].success);
+        assert!(
+            result.action_results[0].description.contains("skipped"),
+            "desc: {}",
+            result.action_results[0].description
+        );
+    }
+
+    #[test]
+    fn plan_system_generates_skip_for_unregistered_configurator() {
+        let state = StateStore::open_in_memory().unwrap();
+        let registry = ProviderRegistry::new(); // no configurators
+        let reconciler = Reconciler::new(&registry, &state);
+
+        let mut profile = MergedProfile::default();
+        profile.system.insert(
+            "unknownConf".to_string(),
+            serde_yaml::from_str("{key: value}").unwrap(),
+        );
+
+        let actions = reconciler.plan_system(&profile, &[]).unwrap();
+        assert_eq!(actions.len(), 1);
+        match &actions[0] {
+            Action::System(SystemAction::Skip {
+                configurator,
+                reason,
+                ..
+            }) => {
+                assert_eq!(configurator, "unknownConf");
+                assert!(reason.contains("no configurator registered"));
+            }
+            other => panic!("Expected SystemAction::Skip, got {:?}", other),
+        }
+    }
+
+    // --- apply_module_action: InstallPackages, DeployFiles, Skip ---
+
+    #[test]
+    fn apply_module_install_packages_calls_manager() {
+        let state = StateStore::open_in_memory().unwrap();
+        let mut registry = ProviderRegistry::new();
+        registry
+            .package_managers
+            .push(Box::new(TrackingPackageManager::new("brew")));
+
+        let reconciler = Reconciler::new(&registry, &state);
+        let resolved = make_empty_resolved();
+
+        let modules = vec![ResolvedModule {
+            name: "nvim".to_string(),
+            packages: vec![ResolvedPackage {
+                canonical_name: "neovim".to_string(),
+                resolved_name: "neovim".to_string(),
+                manager: "brew".to_string(),
+                version: None,
+                script: None,
+            }],
+            files: vec![],
+            env: vec![],
+            aliases: vec![],
+            post_apply_scripts: vec![],
+            pre_apply_scripts: Vec::new(),
+            pre_reconcile_scripts: Vec::new(),
+            post_reconcile_scripts: Vec::new(),
+            on_change_scripts: Vec::new(),
+            system: HashMap::new(),
+            depends: vec![],
+            dir: PathBuf::from("."),
+        }];
+
+        let plan = Plan {
+            phases: vec![Phase {
+                name: PhaseName::Modules,
+                actions: vec![Action::Module(ModuleAction {
+                    module_name: "nvim".to_string(),
+                    kind: ModuleActionKind::InstallPackages {
+                        resolved: vec![ResolvedPackage {
+                            canonical_name: "neovim".to_string(),
+                            resolved_name: "neovim".to_string(),
+                            manager: "brew".to_string(),
+                            version: None,
+                            script: None,
+                        }],
+                    },
+                })],
+            }],
+            warnings: vec![],
+        };
+
+        let printer = Printer::new(crate::output::Verbosity::Quiet);
+        let result = reconciler
+            .apply(
+                &plan,
+                &resolved,
+                Path::new("."),
+                &printer,
+                Some(&PhaseName::Modules),
+                &modules,
+                ReconcileContext::Apply,
+                false,
+            )
+            .unwrap();
+
+        assert_eq!(result.status, ApplyStatus::Success);
+        assert!(result.action_results[0].success);
+        assert!(
+            result.action_results[0]
+                .description
+                .contains("module:nvim:packages"),
+            "desc: {}",
+            result.action_results[0].description
+        );
+
+        // Verify install was called
+        let installed = registry.package_managers[0].installed_packages().unwrap();
+        assert!(installed.contains("neovim"));
+    }
+
+    #[test]
+    fn apply_module_deploy_files_creates_target() {
+        let dir = tempfile::tempdir().unwrap();
+        let source_file = dir.path().join("module-source.txt");
+        let target_file = dir.path().join("subdir/module-target.txt");
+        std::fs::write(&source_file, "module content").unwrap();
+
+        let state = StateStore::open_in_memory().unwrap();
+        let mut registry = ProviderRegistry::new();
+        registry.default_file_strategy = crate::config::FileStrategy::Copy;
+
+        let reconciler = Reconciler::new(&registry, &state);
+        let resolved = make_empty_resolved();
+
+        let modules = vec![ResolvedModule {
+            name: "mymod".to_string(),
+            packages: vec![],
+            files: vec![ResolvedFile {
+                source: source_file.clone(),
+                target: target_file.clone(),
+                is_git_source: false,
+                strategy: Some(crate::config::FileStrategy::Copy),
+                encryption: None,
+            }],
+            env: vec![],
+            aliases: vec![],
+            post_apply_scripts: vec![],
+            pre_apply_scripts: Vec::new(),
+            pre_reconcile_scripts: Vec::new(),
+            post_reconcile_scripts: Vec::new(),
+            on_change_scripts: Vec::new(),
+            system: HashMap::new(),
+            depends: vec![],
+            dir: dir.path().to_path_buf(),
+        }];
+
+        let plan = Plan {
+            phases: vec![Phase {
+                name: PhaseName::Modules,
+                actions: vec![Action::Module(ModuleAction {
+                    module_name: "mymod".to_string(),
+                    kind: ModuleActionKind::DeployFiles {
+                        files: vec![ResolvedFile {
+                            source: source_file.clone(),
+                            target: target_file.clone(),
+                            is_git_source: false,
+                            strategy: Some(crate::config::FileStrategy::Copy),
+                            encryption: None,
+                        }],
+                    },
+                })],
+            }],
+            warnings: vec![],
+        };
+
+        let printer = Printer::new(crate::output::Verbosity::Quiet);
+        let result = reconciler
+            .apply(
+                &plan,
+                &resolved,
+                dir.path(),
+                &printer,
+                Some(&PhaseName::Modules),
+                &modules,
+                ReconcileContext::Apply,
+                false,
+            )
+            .unwrap();
+
+        assert_eq!(result.status, ApplyStatus::Success);
+        assert!(result.action_results[0].success);
+        assert!(target_file.exists(), "target file should be deployed");
+        assert_eq!(
+            std::fs::read_to_string(&target_file).unwrap(),
+            "module content"
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn apply_module_deploy_files_symlink_strategy() {
+        let dir = tempfile::tempdir().unwrap();
+        let source_file = dir.path().join("source.txt");
+        let target_file = dir.path().join("link-target.txt");
+        std::fs::write(&source_file, "linked content").unwrap();
+
+        let state = StateStore::open_in_memory().unwrap();
+        let mut registry = ProviderRegistry::new();
+        registry.default_file_strategy = crate::config::FileStrategy::Symlink;
+
+        let reconciler = Reconciler::new(&registry, &state);
+        let resolved = make_empty_resolved();
+
+        let modules = vec![ResolvedModule {
+            name: "linkmod".to_string(),
+            packages: vec![],
+            files: vec![ResolvedFile {
+                source: source_file.clone(),
+                target: target_file.clone(),
+                is_git_source: false,
+                strategy: None, // uses default = Symlink
+                encryption: None,
+            }],
+            env: vec![],
+            aliases: vec![],
+            post_apply_scripts: vec![],
+            pre_apply_scripts: Vec::new(),
+            pre_reconcile_scripts: Vec::new(),
+            post_reconcile_scripts: Vec::new(),
+            on_change_scripts: Vec::new(),
+            system: HashMap::new(),
+            depends: vec![],
+            dir: dir.path().to_path_buf(),
+        }];
+
+        let plan = Plan {
+            phases: vec![Phase {
+                name: PhaseName::Modules,
+                actions: vec![Action::Module(ModuleAction {
+                    module_name: "linkmod".to_string(),
+                    kind: ModuleActionKind::DeployFiles {
+                        files: vec![ResolvedFile {
+                            source: source_file.clone(),
+                            target: target_file.clone(),
+                            is_git_source: false,
+                            strategy: None,
+                            encryption: None,
+                        }],
+                    },
+                })],
+            }],
+            warnings: vec![],
+        };
+
+        let printer = Printer::new(crate::output::Verbosity::Quiet);
+        let result = reconciler
+            .apply(
+                &plan,
+                &resolved,
+                dir.path(),
+                &printer,
+                Some(&PhaseName::Modules),
+                &modules,
+                ReconcileContext::Apply,
+                false,
+            )
+            .unwrap();
+
+        assert_eq!(result.status, ApplyStatus::Success);
+        assert!(target_file.is_symlink(), "target should be a symlink");
+        assert_eq!(
+            std::fs::read_to_string(&target_file).unwrap(),
+            "linked content"
+        );
+    }
+
+    #[test]
+    fn apply_module_skip_reports_skipped() {
+        let state = StateStore::open_in_memory().unwrap();
+        let registry = ProviderRegistry::new();
+        let reconciler = Reconciler::new(&registry, &state);
+        let resolved = make_empty_resolved();
+
+        let plan = Plan {
+            phases: vec![Phase {
+                name: PhaseName::Modules,
+                actions: vec![Action::Module(ModuleAction {
+                    module_name: "broken".to_string(),
+                    kind: ModuleActionKind::Skip {
+                        reason: "dependency not met".to_string(),
+                    },
+                })],
+            }],
+            warnings: vec![],
+        };
+
+        let printer = Printer::new(crate::output::Verbosity::Quiet);
+        let result = reconciler
+            .apply(
+                &plan,
+                &resolved,
+                Path::new("."),
+                &printer,
+                Some(&PhaseName::Modules),
+                &[],
+                ReconcileContext::Apply,
+                false,
+            )
+            .unwrap();
+
+        assert_eq!(result.status, ApplyStatus::Success);
+        assert!(result.action_results[0].success);
+        assert!(
+            result.action_results[0].description.contains("skip"),
+            "desc: {}",
+            result.action_results[0].description
+        );
+    }
+
+    #[test]
+    fn apply_module_install_packages_bootstraps_when_needed() {
+        let state = StateStore::open_in_memory().unwrap();
+        let mut registry = ProviderRegistry::new();
+        registry
+            .package_managers
+            .push(Box::new(BootstrappablePackageManager::new("brew")));
+
+        let reconciler = Reconciler::new(&registry, &state);
+        let resolved = make_empty_resolved();
+
+        let modules = vec![ResolvedModule {
+            name: "tools".to_string(),
+            packages: vec![ResolvedPackage {
+                canonical_name: "jq".to_string(),
+                resolved_name: "jq".to_string(),
+                manager: "brew".to_string(),
+                version: None,
+                script: None,
+            }],
+            files: vec![],
+            env: vec![],
+            aliases: vec![],
+            post_apply_scripts: vec![],
+            pre_apply_scripts: Vec::new(),
+            pre_reconcile_scripts: Vec::new(),
+            post_reconcile_scripts: Vec::new(),
+            on_change_scripts: Vec::new(),
+            system: HashMap::new(),
+            depends: vec![],
+            dir: PathBuf::from("."),
+        }];
+
+        let plan = Plan {
+            phases: vec![Phase {
+                name: PhaseName::Modules,
+                actions: vec![Action::Module(ModuleAction {
+                    module_name: "tools".to_string(),
+                    kind: ModuleActionKind::InstallPackages {
+                        resolved: vec![ResolvedPackage {
+                            canonical_name: "jq".to_string(),
+                            resolved_name: "jq".to_string(),
+                            manager: "brew".to_string(),
+                            version: None,
+                            script: None,
+                        }],
+                    },
+                })],
+            }],
+            warnings: vec![],
+        };
+
+        let printer = Printer::new(crate::output::Verbosity::Quiet);
+        let result = reconciler
+            .apply(
+                &plan,
+                &resolved,
+                Path::new("."),
+                &printer,
+                Some(&PhaseName::Modules),
+                &modules,
+                ReconcileContext::Apply,
+                false,
+            )
+            .unwrap();
+
+        assert_eq!(result.status, ApplyStatus::Success);
+        assert!(result.action_results[0].success);
+
+        // Manager should have been bootstrapped and package installed
+        assert!(registry.package_managers[0].is_available());
+        assert!(registry.package_managers[0]
+            .installed_packages()
+            .unwrap()
+            .contains("jq"));
+    }
+
+    // --- rollback_apply: symlink restore ---
+
+    #[test]
+    #[cfg(unix)]
+    fn rollback_restores_symlink_target() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("link-file");
+        let link_dest = dir.path().join("original-dest.txt");
+        std::fs::write(&link_dest, "link content").unwrap();
+
+        // Create original symlink
+        std::os::unix::fs::symlink(&link_dest, &target).unwrap();
+        assert!(target.is_symlink());
+
+        let state = StateStore::open_in_memory().unwrap();
+
+        let apply_id = state
+            .record_apply("test", "hash3", ApplyStatus::Success, None)
+            .unwrap();
+
+        // Store backup of symlink
+        let file_state = crate::capture_file_state(&target).unwrap().unwrap();
+        assert!(file_state.is_symlink);
+        state
+            .store_file_backup(apply_id, &format!("file:update:{}", target.display()), &file_state)
+            .unwrap();
+
+        // Record journal entry
+        let jid = state
+            .journal_begin(
+                apply_id,
+                0,
+                "files",
+                "file",
+                &format!("file:update:{}", target.display()),
+                None,
+            )
+            .unwrap();
+        state.journal_complete(jid, None, None).unwrap();
+
+        // Now replace the symlink with a regular file (simulating apply)
+        std::fs::remove_file(&target).unwrap();
+        std::fs::write(&target, "replaced").unwrap();
+        assert!(!target.is_symlink());
+
+        // Rollback
+        let registry = ProviderRegistry::new();
+        let reconciler = Reconciler::new(&registry, &state);
+        let printer = Printer::new(crate::output::Verbosity::Quiet);
+
+        let rollback_result = reconciler.rollback_apply(apply_id, &printer).unwrap();
+
+        assert_eq!(rollback_result.files_restored, 1);
+        assert!(target.is_symlink(), "symlink should be restored");
+        assert_eq!(
+            std::fs::read_link(&target).unwrap(),
+            link_dest,
+            "symlink should point to original destination"
+        );
+    }
+
+    // --- plan_modules: encryption validation ---
+
+    #[test]
+    fn plan_modules_encryption_always_with_symlink_skips() {
+        let state = StateStore::open_in_memory().unwrap();
+        let mut registry = ProviderRegistry::new();
+        registry.default_file_strategy = crate::config::FileStrategy::Symlink;
+        let reconciler = Reconciler::new(&registry, &state);
+
+        let modules = vec![ResolvedModule {
+            name: "secrets-mod".to_string(),
+            packages: vec![],
+            files: vec![ResolvedFile {
+                source: PathBuf::from("/nonexistent/secret.enc"),
+                target: PathBuf::from("/home/user/.secret"),
+                is_git_source: false,
+                strategy: None, // defaults to Symlink
+                encryption: Some(crate::config::EncryptionSpec {
+                    backend: "sops".to_string(),
+                    mode: crate::config::EncryptionMode::Always,
+                }),
+            }],
+            env: vec![],
+            aliases: vec![],
+            post_apply_scripts: vec![],
+            pre_apply_scripts: Vec::new(),
+            pre_reconcile_scripts: Vec::new(),
+            post_reconcile_scripts: Vec::new(),
+            on_change_scripts: Vec::new(),
+            system: HashMap::new(),
+            depends: vec![],
+            dir: PathBuf::from("."),
+        }];
+
+        let actions = reconciler.plan_modules(&modules, ReconcileContext::Apply);
+        // Should produce a Skip action because encryption=Always + symlink is incompatible
+        assert_eq!(actions.len(), 1);
+        match &actions[0] {
+            Action::Module(ma) => match &ma.kind {
+                ModuleActionKind::Skip { reason } => {
+                    assert!(
+                        reason.contains("encryption mode Always incompatible"),
+                        "got: {reason}"
+                    );
+                }
+                other => panic!("Expected Skip, got {:?}", other),
+            },
+            other => panic!("Expected Module action, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn plan_modules_encryption_always_with_copy_proceeds() {
+        let dir = tempfile::tempdir().unwrap();
+        // Create a fake SOPS-encrypted file with required `mac` and `lastmodified` keys
+        let source = dir.path().join("secret.enc");
+        std::fs::write(
+            &source,
+            "{\"sops\":{\"mac\":\"abc123\",\"lastmodified\":\"2024-01-01T00:00:00Z\",\"version\":\"3.0\"}, \"data\": \"ENC[AES256_GCM,data:abc]\"}",
+        )
+        .unwrap();
+
+        let state = StateStore::open_in_memory().unwrap();
+        let mut registry = ProviderRegistry::new();
+        registry.default_file_strategy = crate::config::FileStrategy::Copy;
+        let reconciler = Reconciler::new(&registry, &state);
+
+        let modules = vec![ResolvedModule {
+            name: "secrets-mod".to_string(),
+            packages: vec![],
+            files: vec![ResolvedFile {
+                source: source.clone(),
+                target: PathBuf::from("/home/user/.secret"),
+                is_git_source: false,
+                strategy: Some(crate::config::FileStrategy::Copy),
+                encryption: Some(crate::config::EncryptionSpec {
+                    backend: "sops".to_string(),
+                    mode: crate::config::EncryptionMode::Always,
+                }),
+            }],
+            env: vec![],
+            aliases: vec![],
+            post_apply_scripts: vec![],
+            pre_apply_scripts: Vec::new(),
+            pre_reconcile_scripts: Vec::new(),
+            post_reconcile_scripts: Vec::new(),
+            on_change_scripts: Vec::new(),
+            system: HashMap::new(),
+            depends: vec![],
+            dir: dir.path().to_path_buf(),
+        }];
+
+        let actions = reconciler.plan_modules(&modules, ReconcileContext::Apply);
+        // Should produce DeployFiles (encryption=Always + copy is OK, and file has sops marker)
+        assert_eq!(actions.len(), 1);
+        match &actions[0] {
+            Action::Module(ma) => match &ma.kind {
+                ModuleActionKind::DeployFiles { files } => {
+                    assert_eq!(files.len(), 1);
+                }
+                other => panic!("Expected DeployFiles, got {:?}", other),
+            },
+            other => panic!("Expected Module action, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn plan_modules_encryption_file_not_encrypted_skips() {
+        let dir = tempfile::tempdir().unwrap();
+        // Create a plaintext file (not encrypted)
+        let source = dir.path().join("plain.txt");
+        std::fs::write(&source, "plain text content").unwrap();
+
+        let state = StateStore::open_in_memory().unwrap();
+        let mut registry = ProviderRegistry::new();
+        registry.default_file_strategy = crate::config::FileStrategy::Copy;
+        let reconciler = Reconciler::new(&registry, &state);
+
+        let modules = vec![ResolvedModule {
+            name: "secrets-mod".to_string(),
+            packages: vec![],
+            files: vec![ResolvedFile {
+                source: source.clone(),
+                target: PathBuf::from("/home/user/.secret"),
+                is_git_source: false,
+                strategy: Some(crate::config::FileStrategy::Copy),
+                encryption: Some(crate::config::EncryptionSpec {
+                    backend: "sops".to_string(),
+                    mode: crate::config::EncryptionMode::Always,
+                }),
+            }],
+            env: vec![],
+            aliases: vec![],
+            post_apply_scripts: vec![],
+            pre_apply_scripts: Vec::new(),
+            pre_reconcile_scripts: Vec::new(),
+            post_reconcile_scripts: Vec::new(),
+            on_change_scripts: Vec::new(),
+            system: HashMap::new(),
+            depends: vec![],
+            dir: dir.path().to_path_buf(),
+        }];
+
+        let actions = reconciler.plan_modules(&modules, ReconcileContext::Apply);
+        // Should skip because file requires encryption but isn't encrypted
+        assert_eq!(actions.len(), 1);
+        match &actions[0] {
+            Action::Module(ma) => match &ma.kind {
+                ModuleActionKind::Skip { reason } => {
+                    assert!(
+                        reason.contains("requires encryption") && reason.contains("not encrypted"),
+                        "got: {reason}"
+                    );
+                }
+                other => panic!("Expected Skip, got {:?}", other),
+            },
+            other => panic!("Expected Module action, got {:?}", other),
+        }
+    }
+
+    // --- apply_script_action via apply() ---
+
+    #[test]
+    #[cfg(unix)]
+    fn apply_script_action_executes_and_records_output() {
+        let dir = tempfile::tempdir().unwrap();
+        let marker = dir.path().join("script-ran");
+
+        let state = StateStore::open_in_memory().unwrap();
+        let registry = ProviderRegistry::new();
+        let reconciler = Reconciler::new(&registry, &state);
+        let mut resolved = make_empty_resolved();
+
+        // Post-apply script so it doesn't abort on failure
+        resolved.merged.scripts.post_apply =
+            vec![ScriptEntry::Simple(format!("touch {}", marker.display()))];
+
+        let plan = reconciler
+            .plan(
+                &resolved,
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                ReconcileContext::Apply,
+            )
+            .unwrap();
+
+        let printer = Printer::new(crate::output::Verbosity::Quiet);
+        let result = reconciler
+            .apply(
+                &plan,
+                &resolved,
+                dir.path(),
+                &printer,
+                None,
+                &[],
+                ReconcileContext::Apply,
+                false,
+            )
+            .unwrap();
+
+        // The script phase should have run
+        let script_result = result
+            .action_results
+            .iter()
+            .find(|r| r.description.contains("script:"));
+        assert!(script_result.is_some(), "script action should be recorded");
+        assert!(script_result.unwrap().success);
+        assert!(marker.exists(), "script should have run and created marker");
+    }
+
+    // --- apply_module_action: RunScript ---
+
+    #[test]
+    #[cfg(unix)]
+    fn apply_module_run_script_executes_in_module_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        let marker = dir.path().join("module-script-ran");
+
+        let state = StateStore::open_in_memory().unwrap();
+        let registry = ProviderRegistry::new();
+        let reconciler = Reconciler::new(&registry, &state);
+        let resolved = make_empty_resolved();
+
+        let modules = vec![ResolvedModule {
+            name: "testmod".to_string(),
+            packages: vec![],
+            files: vec![],
+            env: vec![],
+            aliases: vec![],
+            pre_apply_scripts: Vec::new(),
+            post_apply_scripts: vec![ScriptEntry::Simple(format!(
+                "touch {}",
+                marker.display()
+            ))],
+            pre_reconcile_scripts: Vec::new(),
+            post_reconcile_scripts: Vec::new(),
+            on_change_scripts: Vec::new(),
+            system: HashMap::new(),
+            depends: vec![],
+            dir: dir.path().to_path_buf(),
+        }];
+
+        let plan = Plan {
+            phases: vec![Phase {
+                name: PhaseName::Modules,
+                actions: vec![Action::Module(ModuleAction {
+                    module_name: "testmod".to_string(),
+                    kind: ModuleActionKind::RunScript {
+                        script: ScriptEntry::Simple(format!("touch {}", marker.display())),
+                        phase: ScriptPhase::PostApply,
+                    },
+                })],
+            }],
+            warnings: vec![],
+        };
+
+        let printer = Printer::new(crate::output::Verbosity::Quiet);
+        let result = reconciler
+            .apply(
+                &plan,
+                &resolved,
+                dir.path(),
+                &printer,
+                Some(&PhaseName::Modules),
+                &modules,
+                ReconcileContext::Apply,
+                false,
+            )
+            .unwrap();
+
+        assert_eq!(result.status, ApplyStatus::Success);
+        assert!(result.action_results[0].success);
+        assert!(marker.exists(), "module script should have created marker");
+        assert!(
+            result.action_results[0]
+                .description
+                .contains("module:testmod:script"),
+            "desc: {}",
+            result.action_results[0].description
+        );
+    }
+
+    // --- plan_env: Fish and PowerShell content generation ---
+
+    #[test]
+    fn generate_fish_env_content_basic() {
+        let env = vec![
+            crate::config::EnvVar {
+                name: "EDITOR".into(),
+                value: "nvim".into(),
+            },
+            crate::config::EnvVar {
+                name: "CARGO_HOME".into(),
+                value: "/home/user/.cargo".into(),
+            },
+        ];
+        let aliases = vec![crate::config::ShellAlias {
+            name: "g".into(),
+            command: "git".into(),
+        }];
+        let content = super::generate_fish_env_content(&env, &aliases);
+        assert!(content.starts_with("# managed by cfgd"));
+        assert!(content.contains("set -gx EDITOR 'nvim'"));
+        assert!(content.contains("set -gx CARGO_HOME '/home/user/.cargo'"));
+        assert!(content.contains("abbr -a g 'git'"));
+    }
+
+    #[test]
+    fn generate_powershell_env_content_with_env_ref() {
+        let env = vec![crate::config::EnvVar {
+            name: "MY_PATH".into(),
+            value: r"C:\tools;$env:PATH".into(),
+        }];
+        let content = super::generate_powershell_env_content(&env, &[]);
+        // Contains $env: so should be double-quoted
+        assert!(
+            content.contains(r#"$env:MY_PATH = "C:\tools;$env:PATH""#),
+            "content: {}",
+            content
+        );
+    }
+
+    #[test]
+    fn generate_powershell_env_function_alias() {
+        // When an alias command contains a space, PowerShell generates a function instead of Set-Alias
+        let aliases = vec![crate::config::ShellAlias {
+            name: "ll".into(),
+            command: "Get-ChildItem -Force".into(),
+        }];
+        let content = super::generate_powershell_env_content(&[], &aliases);
+        assert!(content.contains("function ll {"));
+        assert!(content.contains("Get-ChildItem -Force @args"));
+    }
+
+    #[test]
+    fn generate_fish_env_path_splitting() {
+        // Fish should split PATH values on :
+        let env = vec![crate::config::EnvVar {
+            name: "PATH".into(),
+            value: "/usr/bin:/usr/local/bin:$PATH".into(),
+        }];
+        let content = super::generate_fish_env_content(&env, &[]);
+        assert!(
+            content.contains("set -gx PATH '/usr/bin' '/usr/local/bin' '$PATH'"),
+            "content: {}",
+            content
+        );
+    }
 }

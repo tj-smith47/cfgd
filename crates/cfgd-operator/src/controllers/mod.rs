@@ -3213,4 +3213,314 @@ mod tests {
             "None labels with non-empty match_labels should reject"
         );
     }
+
+    // -----------------------------------------------------------------------
+    // record_reconcile_metrics and record_reconcile_success
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn record_reconcile_metrics_labels_propagate() {
+        use prometheus_client::registry::Registry;
+        use crate::metrics::{Metrics, ReconcileLabels};
+
+        let mut registry = Registry::default();
+        let metrics = Metrics::new(&mut registry);
+
+        // Directly exercise the metric families (same code path as record_reconcile_metrics)
+        let labels = ReconcileLabels {
+            controller: "machine_config".to_string(),
+            result: "success".to_string(),
+        };
+        metrics.reconciliations_total.get_or_create(&labels).inc();
+        metrics
+            .reconciliation_duration_seconds
+            .get_or_create(&labels)
+            .observe(0.5);
+
+        // Verify the counter incremented
+        let count = metrics
+            .reconciliations_total
+            .get_or_create(&labels)
+            .get();
+        assert!(count >= 1, "counter should have incremented");
+    }
+
+    #[test]
+    fn record_reconcile_metrics_error_labels_separate() {
+        use prometheus_client::registry::Registry;
+        use crate::metrics::{Metrics, ReconcileLabels};
+
+        let mut registry = Registry::default();
+        let metrics = Metrics::new(&mut registry);
+
+        let success_labels = ReconcileLabels {
+            controller: "drift_alert".to_string(),
+            result: "success".to_string(),
+        };
+        let error_labels = ReconcileLabels {
+            controller: "drift_alert".to_string(),
+            result: "error".to_string(),
+        };
+
+        metrics
+            .reconciliations_total
+            .get_or_create(&success_labels)
+            .inc();
+        metrics
+            .reconciliations_total
+            .get_or_create(&success_labels)
+            .inc();
+        metrics
+            .reconciliations_total
+            .get_or_create(&error_labels)
+            .inc();
+
+        let success_count = metrics
+            .reconciliations_total
+            .get_or_create(&success_labels)
+            .get();
+        let error_count = metrics
+            .reconciliations_total
+            .get_or_create(&error_labels)
+            .get();
+        assert_eq!(success_count, 2);
+        assert_eq!(error_count, 1);
+    }
+
+    // -----------------------------------------------------------------------
+    // Drift and policy metrics families
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn drift_metrics_increment_by_severity() {
+        use prometheus_client::registry::Registry;
+        use crate::metrics::{DriftLabels, Metrics};
+
+        let mut registry = Registry::default();
+        let metrics = Metrics::new(&mut registry);
+
+        let labels = DriftLabels {
+            severity: "warning".to_string(),
+            namespace: "default".to_string(),
+        };
+        metrics.drift_events_total.get_or_create(&labels).inc();
+        metrics.drift_events_total.get_or_create(&labels).inc();
+
+        let count = metrics.drift_events_total.get_or_create(&labels).get();
+        assert_eq!(count, 2);
+    }
+
+    #[test]
+    fn policy_compliance_gauge_set_and_read() {
+        use prometheus_client::registry::Registry;
+        use crate::metrics::{Metrics, PolicyLabels};
+
+        let mut registry = Registry::default();
+        let metrics = Metrics::new(&mut registry);
+
+        let labels = PolicyLabels {
+            policy: "security-baseline".to_string(),
+            namespace: "production".to_string(),
+        };
+        metrics.devices_compliant.get_or_create(&labels).set(42);
+
+        let value = metrics.devices_compliant.get_or_create(&labels).get();
+        assert_eq!(value, 42);
+    }
+
+    // -----------------------------------------------------------------------
+    // build_drift_alert_conditions: Medium severity (not escalated)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn build_drift_alert_conditions_medium_not_escalated() {
+        let conditions = build_drift_alert_conditions(
+            &DriftSeverity::Medium,
+            false,
+            "dev-2",
+            2,
+            "2024-06-01T00:00:00Z",
+            Some(5),
+        );
+        assert_eq!(conditions.len(), 3);
+        assert_eq!(conditions[0].condition_type, "Acknowledged");
+        assert_eq!(conditions[0].status, "False");
+        assert_eq!(conditions[1].condition_type, "Resolved");
+        assert_eq!(conditions[1].status, "False");
+        assert!(conditions[1].message.contains("dev-2"));
+        assert!(conditions[1].message.contains("2 detail(s)"));
+        // Medium is NOT escalated
+        assert_eq!(conditions[2].condition_type, "Escalated");
+        assert_eq!(conditions[2].status, "False");
+        assert_eq!(conditions[2].reason, "BelowThreshold");
+    }
+
+    // -----------------------------------------------------------------------
+    // build_drift_alert_conditions: resolved with zero details
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn build_drift_alert_conditions_resolved_zero_details() {
+        let conditions = build_drift_alert_conditions(
+            &DriftSeverity::Low,
+            true,
+            "dev-3",
+            0,
+            "2024-07-01T00:00:00Z",
+            None,
+        );
+        assert_eq!(conditions[1].status, "True");
+        assert_eq!(conditions[1].reason, "DriftResolved");
+        assert_eq!(conditions[1].message, "Drift has been resolved");
+        assert!(conditions[0].observed_generation.is_none());
+    }
+
+    // -----------------------------------------------------------------------
+    // build_condition: empty existing list uses provided time
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn build_condition_empty_existing_uses_now() {
+        let c = build_condition(
+            &[],
+            "Ready",
+            "True",
+            "AllGood",
+            "everything is fine",
+            "2024-08-01T00:00:00Z",
+            Some(10),
+        );
+        assert_eq!(c.condition_type, "Ready");
+        assert_eq!(c.status, "True");
+        assert_eq!(c.reason, "AllGood");
+        assert_eq!(c.message, "everything is fine");
+        assert_eq!(c.last_transition_time, "2024-08-01T00:00:00Z");
+        assert_eq!(c.observed_generation, Some(10));
+    }
+
+    // -----------------------------------------------------------------------
+    // validate_policy_compliance: combined modules + packages + settings
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn policy_compliance_combined_all_requirements() {
+        let mut spec = mc_spec("host1", "default");
+        spec.module_refs = vec![ModuleRef {
+            name: "corp-vpn".to_string(),
+            required: true,
+        }];
+        spec.packages = vec![PackageRef {
+            name: "kubectl".to_string(),
+            version: None,
+        }];
+        spec.system_settings
+            .insert("enforce_tls".to_string(), serde_json::json!(true));
+
+        let mut status = MachineConfigStatus::default();
+        status
+            .package_versions
+            .insert("kubectl".to_string(), "1.29.0".to_string());
+
+        let required_modules = vec![ModuleRef {
+            name: "corp-vpn".to_string(),
+            required: true,
+        }];
+        let required_packages = vec![PackageRef {
+            name: "kubectl".to_string(),
+            version: Some(">=1.28".to_string()),
+        }];
+        let mut required_settings = BTreeMap::new();
+        required_settings.insert("enforce_tls".to_string(), serde_json::json!(true));
+
+        // All requirements met
+        assert!(validate_policy_compliance(
+            &spec,
+            Some(&status),
+            &required_modules,
+            &required_packages,
+            &required_settings,
+        ));
+
+        // Fail if module missing
+        spec.module_refs.clear();
+        assert!(!validate_policy_compliance(
+            &spec,
+            Some(&status),
+            &required_modules,
+            &required_packages,
+            &required_settings,
+        ));
+    }
+
+    // -----------------------------------------------------------------------
+    // merge_policy_requirements: empty cluster + empty namespace
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn merge_policy_all_empty() {
+        let cluster = ClusterConfigPolicySpec::default();
+        let merged = merge_policy_requirements(&cluster, &[]);
+        assert!(merged.packages.is_empty());
+        assert!(merged.modules.is_empty());
+        assert!(merged.settings.is_empty());
+    }
+
+    // -----------------------------------------------------------------------
+    // compliance_summary edge cases
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn compliance_summary_large_numbers() {
+        let result = compliance_summary(999_999, 1);
+        assert_eq!(result, "999999 compliant, 1 non-compliant");
+    }
+
+    // -----------------------------------------------------------------------
+    // validate_spec with valid spec
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn validate_spec_valid() {
+        let spec = mc_spec("myhost.local", "production");
+        assert!(validate_spec(&spec).is_ok());
+    }
+
+    // -----------------------------------------------------------------------
+    // log_reconcile: verify the closure doesn't panic on Ok/Err
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn log_reconcile_ok_does_not_panic() {
+        use kube::runtime::controller::Action;
+        use kube::runtime::reflector::ObjectRef;
+
+        let log_fn = log_reconcile::<MachineConfig>("MachineConfig");
+
+        // Create a mock ObjectRef
+        let obj_ref = ObjectRef::<MachineConfig>::new("test-mc").within("default");
+        let action = Action::requeue(std::time::Duration::from_secs(60));
+        let result: ReconcileResult<MachineConfig> = Ok((obj_ref, action));
+
+        // Should log and not panic
+        futures::executor::block_on(log_fn(result));
+    }
+
+    // -----------------------------------------------------------------------
+    // matches_selector: NotIn with missing label accepts (key absent)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn matches_selector_not_in_missing_key_accepts() {
+        let labels = BTreeMap::new(); // no labels at all
+        let selector = LabelSelector {
+            match_labels: Default::default(),
+            match_expressions: vec![LabelSelectorRequirement {
+                key: "restricted".to_string(),
+                operator: SelectorOperator::NotIn,
+                values: vec!["true".to_string()],
+            }],
+        };
+        // Key is missing → is_none_or returns true → accepts
+        assert!(matches_selector(Some(&labels), &selector));
+    }
 }

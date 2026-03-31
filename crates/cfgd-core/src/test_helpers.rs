@@ -257,6 +257,7 @@ pub struct MockSystemConfigurator {
     pub apply_calls: Mutex<Vec<serde_yaml::Value>>,
     pub drift: Mutex<Vec<SystemDrift>>,
     pub fail_apply: Mutex<bool>,
+    pub fail_diff: Mutex<bool>,
 }
 
 impl MockSystemConfigurator {
@@ -267,6 +268,7 @@ impl MockSystemConfigurator {
             apply_calls: Mutex::new(Vec::new()),
             drift: Mutex::new(Vec::new()),
             fail_apply: Mutex::new(false),
+            fail_diff: Mutex::new(false),
         }
     }
 
@@ -277,6 +279,11 @@ impl MockSystemConfigurator {
 
     pub fn with_drift(self, drifts: Vec<SystemDrift>) -> Self {
         *self.drift.lock().unwrap() = drifts;
+        self
+    }
+
+    pub fn failing(self) -> Self {
+        *self.fail_diff.lock().unwrap() = true;
         self
     }
 
@@ -299,6 +306,11 @@ impl SystemConfigurator for MockSystemConfigurator {
     }
 
     fn diff(&self, _desired: &serde_yaml::Value) -> crate::errors::Result<Vec<SystemDrift>> {
+        if *self.fail_diff.lock().unwrap() {
+            return Err(CfgdError::Io(std::io::Error::other(
+                "mock diff failed",
+            )));
+        }
         let items = self.drift.lock().unwrap();
         Ok(items
             .iter()

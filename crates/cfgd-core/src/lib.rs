@@ -13,7 +13,7 @@ pub mod reconciler;
 pub mod server_client;
 pub mod sources;
 pub mod state;
-#[cfg(feature = "test-helpers")]
+#[cfg(any(test, feature = "test-helpers"))]
 pub mod test_helpers;
 pub mod upgrade;
 

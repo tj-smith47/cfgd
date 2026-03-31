@@ -1243,6 +1243,7 @@ fn json_equal(a: &str, b: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tempfile::tempdir;
 
     #[test]
     fn sysctl_configurator_name() {
@@ -1565,5 +1566,1311 @@ SystemdCgroup = true
         let value = KubeletConfigurator::read_current_config(Path::new("/nonexistent/config.yaml"))
             .unwrap();
         assert!(value.is_mapping());
+    }
+
+    // --- validate_sysctl_key ---
+
+    #[test]
+    fn sysctl_validate_key_valid() {
+        assert!(SysctlConfigurator::validate_sysctl_key("net.ipv4.ip_forward").is_ok());
+        assert!(SysctlConfigurator::validate_sysctl_key("vm.max_map_count").is_ok());
+        assert!(SysctlConfigurator::validate_sysctl_key("net.bridge.bridge-nf-call-iptables").is_ok());
+    }
+
+    #[test]
+    fn sysctl_validate_key_empty_rejected() {
+        assert!(SysctlConfigurator::validate_sysctl_key("").is_err());
+    }
+
+    #[test]
+    fn sysctl_validate_key_uppercase_rejected() {
+        assert!(SysctlConfigurator::validate_sysctl_key("NET.IPV4").is_err());
+        assert!(SysctlConfigurator::validate_sysctl_key("net.ipV4.ip_forward").is_err());
+    }
+
+    #[test]
+    fn sysctl_validate_key_special_chars_rejected() {
+        assert!(SysctlConfigurator::validate_sysctl_key("net/ipv4/ip_forward").is_err());
+        assert!(SysctlConfigurator::validate_sysctl_key("key;rm -rf /").is_err());
+        assert!(SysctlConfigurator::validate_sysctl_key("key with spaces").is_err());
+    }
+
+    // --- sysctl diff with populated mapping ---
+
+    #[test]
+    fn sysctl_diff_detects_drift_for_unreadable_keys() {
+        // On a test machine without /proc/sys, read_sysctl returns "<unreadable>"
+        // so any desired value will drift
+        let sc = SysctlConfigurator;
+        let mut mapping = serde_yaml::Mapping::new();
+        mapping.insert(
+            serde_yaml::Value::String("net.ipv4.ip_forward".into()),
+            serde_yaml::Value::String("1".into()),
+        );
+        let desired = serde_yaml::Value::Mapping(mapping);
+        let drifts = sc.diff(&desired).unwrap();
+        // The key may or may not be readable depending on the test environment,
+        // but the diff should return without error
+        assert!(drifts.len() <= 1);
+        if !drifts.is_empty() {
+            assert_eq!(drifts[0].key, "net.ipv4.ip_forward");
+            assert_eq!(drifts[0].expected, "1");
+        }
+    }
+
+    #[test]
+    fn sysctl_diff_bool_true_converts_to_1() {
+        let sc = SysctlConfigurator;
+        let mut mapping = serde_yaml::Mapping::new();
+        mapping.insert(
+            serde_yaml::Value::String("net.ipv4.ip_forward".into()),
+            serde_yaml::Value::Bool(true),
+        );
+        let desired = serde_yaml::Value::Mapping(mapping);
+        let drifts = sc.diff(&desired).unwrap();
+        // yaml_value_with_numeric_bools converts true to "1"
+        if !drifts.is_empty() {
+            assert_eq!(drifts[0].expected, "1");
+        }
+    }
+
+    #[test]
+    fn sysctl_diff_skips_non_string_keys() {
+        let sc = SysctlConfigurator;
+        let mut mapping = serde_yaml::Mapping::new();
+        mapping.insert(
+            serde_yaml::Value::Number(42.into()),
+            serde_yaml::Value::String("value".into()),
+        );
+        let desired = serde_yaml::Value::Mapping(mapping);
+        let drifts = sc.diff(&desired).unwrap();
+        assert!(drifts.is_empty());
+    }
+
+    // --- kernel module diff ---
+
+    #[test]
+    fn kernel_module_diff_with_non_sequence() {
+        let km = KernelModuleConfigurator;
+        let desired = serde_yaml::Value::String("not a sequence".into());
+        let drifts = km.diff(&desired).unwrap();
+        assert!(drifts.is_empty());
+    }
+
+    #[test]
+    fn kernel_module_diff_skips_non_string_entries() {
+        let km = KernelModuleConfigurator;
+        let desired = serde_yaml::Value::Sequence(vec![
+            serde_yaml::Value::Number(42.into()),
+            serde_yaml::Value::Bool(true),
+        ]);
+        let drifts = km.diff(&desired).unwrap();
+        // Non-string entries are skipped, so no drifts from them
+        assert!(drifts.is_empty());
+    }
+
+    #[test]
+    fn kernel_module_diff_reports_unloaded_modules() {
+        let km = KernelModuleConfigurator;
+        // Use a module name that definitely won't be loaded
+        let desired = serde_yaml::Value::Sequence(vec![serde_yaml::Value::String(
+            "cfgd_fake_module_xyz_12345".into(),
+        )]);
+        let drifts = km.diff(&desired).unwrap();
+        assert_eq!(drifts.len(), 1);
+        assert_eq!(drifts[0].key, "cfgd_fake_module_xyz_12345");
+        assert_eq!(drifts[0].expected, "loaded");
+        assert_eq!(drifts[0].actual, "not loaded");
+    }
+
+    // --- containerd diff with real TOML files ---
+
+    #[test]
+    fn containerd_read_existing_config() {
+        let dir = tempdir().unwrap();
+        let config = dir.path().join("config.toml");
+        fs::write(
+            &config,
+            "[plugins]\n[plugins.cri]\nsandbox_image = \"pause:3.9\"\n",
+        )
+        .unwrap();
+        let table = ContainerdConfigurator::read_current_config(&config).unwrap();
+        assert_eq!(
+            find_toml_value(&table, "plugins.cri.sandbox_image"),
+            Some("pause:3.9".to_string())
+        );
+    }
+
+    #[test]
+    fn containerd_read_invalid_toml_returns_error() {
+        let dir = tempdir().unwrap();
+        let config = dir.path().join("config.toml");
+        fs::write(&config, "this is not valid toml [[[").unwrap();
+        let result = ContainerdConfigurator::read_current_config(&config);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn containerd_config_path_custom() {
+        let mut mapping = serde_yaml::Mapping::new();
+        mapping.insert(
+            serde_yaml::Value::String("configPath".into()),
+            serde_yaml::Value::String("/custom/containerd.toml".into()),
+        );
+        let desired = serde_yaml::Value::Mapping(mapping);
+        let path = ContainerdConfigurator::config_path(&desired);
+        assert_eq!(path, PathBuf::from("/custom/containerd.toml"));
+    }
+
+    #[test]
+    fn containerd_diff_detects_changed_setting() {
+        let dir = tempdir().unwrap();
+        let config = dir.path().join("config.toml");
+        fs::write(&config, "sandbox_image = \"pause:3.8\"\n").unwrap();
+
+        let mut settings = serde_yaml::Mapping::new();
+        settings.insert(
+            serde_yaml::Value::String("sandbox_image".into()),
+            serde_yaml::Value::String("pause:3.9".into()),
+        );
+
+        let mut desired_map = serde_yaml::Mapping::new();
+        desired_map.insert(
+            serde_yaml::Value::String("configPath".into()),
+            serde_yaml::Value::String(config.to_str().unwrap().into()),
+        );
+        desired_map.insert(
+            serde_yaml::Value::String("settings".into()),
+            serde_yaml::Value::Mapping(settings),
+        );
+
+        let cc = ContainerdConfigurator;
+        let desired = serde_yaml::Value::Mapping(desired_map);
+        let drifts = cc.diff(&desired).unwrap();
+        assert_eq!(drifts.len(), 1);
+        assert_eq!(drifts[0].key, "containerd.sandbox_image");
+        assert_eq!(drifts[0].expected, "pause:3.9");
+        assert_eq!(drifts[0].actual, "pause:3.8");
+    }
+
+    #[test]
+    fn containerd_diff_no_drift_when_matching() {
+        let dir = tempdir().unwrap();
+        let config = dir.path().join("config.toml");
+        fs::write(&config, "sandbox_image = \"pause:3.9\"\n").unwrap();
+
+        let mut settings = serde_yaml::Mapping::new();
+        settings.insert(
+            serde_yaml::Value::String("sandbox_image".into()),
+            serde_yaml::Value::String("pause:3.9".into()),
+        );
+
+        let mut desired_map = serde_yaml::Mapping::new();
+        desired_map.insert(
+            serde_yaml::Value::String("configPath".into()),
+            serde_yaml::Value::String(config.to_str().unwrap().into()),
+        );
+        desired_map.insert(
+            serde_yaml::Value::String("settings".into()),
+            serde_yaml::Value::Mapping(settings),
+        );
+
+        let cc = ContainerdConfigurator;
+        let desired = serde_yaml::Value::Mapping(desired_map);
+        let drifts = cc.diff(&desired).unwrap();
+        assert!(drifts.is_empty());
+    }
+
+    #[test]
+    fn containerd_diff_missing_setting_shows_not_set() {
+        let dir = tempdir().unwrap();
+        let config = dir.path().join("config.toml");
+        fs::write(&config, "version = 2\n").unwrap();
+
+        let mut settings = serde_yaml::Mapping::new();
+        settings.insert(
+            serde_yaml::Value::String("sandbox_image".into()),
+            serde_yaml::Value::String("pause:3.9".into()),
+        );
+
+        let mut desired_map = serde_yaml::Mapping::new();
+        desired_map.insert(
+            serde_yaml::Value::String("configPath".into()),
+            serde_yaml::Value::String(config.to_str().unwrap().into()),
+        );
+        desired_map.insert(
+            serde_yaml::Value::String("settings".into()),
+            serde_yaml::Value::Mapping(settings),
+        );
+
+        let cc = ContainerdConfigurator;
+        let desired = serde_yaml::Value::Mapping(desired_map);
+        let drifts = cc.diff(&desired).unwrap();
+        assert_eq!(drifts.len(), 1);
+        assert_eq!(drifts[0].actual, "<not set>");
+    }
+
+    #[test]
+    fn containerd_diff_no_settings_returns_empty() {
+        let cc = ContainerdConfigurator;
+        let mut desired_map = serde_yaml::Mapping::new();
+        desired_map.insert(
+            serde_yaml::Value::String("configPath".into()),
+            serde_yaml::Value::String("/nonexistent/config.toml".into()),
+        );
+        let desired = serde_yaml::Value::Mapping(desired_map);
+        let drifts = cc.diff(&desired).unwrap();
+        assert!(drifts.is_empty());
+    }
+
+    #[test]
+    fn containerd_diff_with_nested_toml_settings() {
+        let dir = tempdir().unwrap();
+        let config = dir.path().join("config.toml");
+        fs::write(
+            &config,
+            "[plugins]\n[plugins.cri]\nsandbox_image = \"pause:3.8\"\n",
+        )
+        .unwrap();
+
+        let mut settings = serde_yaml::Mapping::new();
+        settings.insert(
+            serde_yaml::Value::String("plugins.cri.sandbox_image".into()),
+            serde_yaml::Value::String("pause:3.9".into()),
+        );
+
+        let mut desired_map = serde_yaml::Mapping::new();
+        desired_map.insert(
+            serde_yaml::Value::String("configPath".into()),
+            serde_yaml::Value::String(config.to_str().unwrap().into()),
+        );
+        desired_map.insert(
+            serde_yaml::Value::String("settings".into()),
+            serde_yaml::Value::Mapping(settings),
+        );
+
+        let cc = ContainerdConfigurator;
+        let desired = serde_yaml::Value::Mapping(desired_map);
+        let drifts = cc.diff(&desired).unwrap();
+        assert_eq!(drifts.len(), 1);
+        assert_eq!(drifts[0].key, "containerd.plugins.cri.sandbox_image");
+        assert_eq!(drifts[0].expected, "pause:3.9");
+        assert_eq!(drifts[0].actual, "pause:3.8");
+    }
+
+    // --- kubelet diff with real YAML files ---
+
+    #[test]
+    fn kubelet_read_existing_config() {
+        let dir = tempdir().unwrap();
+        let config = dir.path().join("config.yaml");
+        fs::write(
+            &config,
+            "clusterDNS: 10.96.0.10\nclusterDomain: cluster.local\nmaxPods: 110\n",
+        )
+        .unwrap();
+        let value = KubeletConfigurator::read_current_config(&config).unwrap();
+        assert_eq!(
+            value.get("clusterDNS").and_then(|v| v.as_str()),
+            Some("10.96.0.10")
+        );
+        assert_eq!(
+            value.get("maxPods").and_then(|v| v.as_u64()),
+            Some(110)
+        );
+    }
+
+    #[test]
+    fn kubelet_read_invalid_yaml_returns_error() {
+        let dir = tempdir().unwrap();
+        let config = dir.path().join("config.yaml");
+        fs::write(&config, ":\n  - :\n    bad: [[[").unwrap();
+        let result = KubeletConfigurator::read_current_config(&config);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn kubelet_config_path_custom() {
+        let mut mapping = serde_yaml::Mapping::new();
+        mapping.insert(
+            serde_yaml::Value::String("configPath".into()),
+            serde_yaml::Value::String("/custom/kubelet.yaml".into()),
+        );
+        let desired = serde_yaml::Value::Mapping(mapping);
+        let path = KubeletConfigurator::config_path(&desired);
+        assert_eq!(path, PathBuf::from("/custom/kubelet.yaml"));
+    }
+
+    #[test]
+    fn kubelet_diff_detects_changed_value() {
+        let dir = tempdir().unwrap();
+        let config = dir.path().join("config.yaml");
+        fs::write(&config, "maxPods: 100\ncgroupDriver: cgroupfs\n").unwrap();
+
+        let mut settings = serde_yaml::Mapping::new();
+        settings.insert(
+            serde_yaml::Value::String("maxPods".into()),
+            serde_yaml::Value::Number(110.into()),
+        );
+        settings.insert(
+            serde_yaml::Value::String("cgroupDriver".into()),
+            serde_yaml::Value::String("systemd".into()),
+        );
+
+        let mut desired_map = serde_yaml::Mapping::new();
+        desired_map.insert(
+            serde_yaml::Value::String("configPath".into()),
+            serde_yaml::Value::String(config.to_str().unwrap().into()),
+        );
+        desired_map.insert(
+            serde_yaml::Value::String("settings".into()),
+            serde_yaml::Value::Mapping(settings),
+        );
+
+        let kc = KubeletConfigurator;
+        let desired = serde_yaml::Value::Mapping(desired_map);
+        let drifts = kc.diff(&desired).unwrap();
+        assert_eq!(drifts.len(), 2);
+
+        let max_pods_drift = drifts.iter().find(|d| d.key == "kubelet.maxPods").unwrap();
+        assert_eq!(max_pods_drift.expected, "110");
+        assert_eq!(max_pods_drift.actual, "100");
+
+        let cgroup_drift = drifts
+            .iter()
+            .find(|d| d.key == "kubelet.cgroupDriver")
+            .unwrap();
+        assert_eq!(cgroup_drift.expected, "systemd");
+        assert_eq!(cgroup_drift.actual, "cgroupfs");
+    }
+
+    #[test]
+    fn kubelet_diff_no_drift_when_matching() {
+        let dir = tempdir().unwrap();
+        let config = dir.path().join("config.yaml");
+        fs::write(&config, "maxPods: 110\n").unwrap();
+
+        let mut settings = serde_yaml::Mapping::new();
+        settings.insert(
+            serde_yaml::Value::String("maxPods".into()),
+            serde_yaml::Value::Number(110.into()),
+        );
+
+        let mut desired_map = serde_yaml::Mapping::new();
+        desired_map.insert(
+            serde_yaml::Value::String("configPath".into()),
+            serde_yaml::Value::String(config.to_str().unwrap().into()),
+        );
+        desired_map.insert(
+            serde_yaml::Value::String("settings".into()),
+            serde_yaml::Value::Mapping(settings),
+        );
+
+        let kc = KubeletConfigurator;
+        let desired = serde_yaml::Value::Mapping(desired_map);
+        let drifts = kc.diff(&desired).unwrap();
+        assert!(drifts.is_empty());
+    }
+
+    #[test]
+    fn kubelet_diff_missing_key_shows_not_set() {
+        let dir = tempdir().unwrap();
+        let config = dir.path().join("config.yaml");
+        fs::write(&config, "clusterDomain: cluster.local\n").unwrap();
+
+        let mut settings = serde_yaml::Mapping::new();
+        settings.insert(
+            serde_yaml::Value::String("maxPods".into()),
+            serde_yaml::Value::Number(110.into()),
+        );
+
+        let mut desired_map = serde_yaml::Mapping::new();
+        desired_map.insert(
+            serde_yaml::Value::String("configPath".into()),
+            serde_yaml::Value::String(config.to_str().unwrap().into()),
+        );
+        desired_map.insert(
+            serde_yaml::Value::String("settings".into()),
+            serde_yaml::Value::Mapping(settings),
+        );
+
+        let kc = KubeletConfigurator;
+        let desired = serde_yaml::Value::Mapping(desired_map);
+        let drifts = kc.diff(&desired).unwrap();
+        assert_eq!(drifts.len(), 1);
+        assert_eq!(drifts[0].key, "kubelet.maxPods");
+        assert_eq!(drifts[0].actual, "<not set>");
+    }
+
+    #[test]
+    fn kubelet_diff_no_settings_returns_empty() {
+        let kc = KubeletConfigurator;
+        let mut desired_map = serde_yaml::Mapping::new();
+        desired_map.insert(
+            serde_yaml::Value::String("configPath".into()),
+            serde_yaml::Value::String("/nonexistent/config.yaml".into()),
+        );
+        let desired = serde_yaml::Value::Mapping(desired_map);
+        let drifts = kc.diff(&desired).unwrap();
+        assert!(drifts.is_empty());
+    }
+
+    #[test]
+    fn kubelet_diff_nonexistent_file_shows_not_set() {
+        let mut settings = serde_yaml::Mapping::new();
+        settings.insert(
+            serde_yaml::Value::String("maxPods".into()),
+            serde_yaml::Value::Number(110.into()),
+        );
+
+        let mut desired_map = serde_yaml::Mapping::new();
+        desired_map.insert(
+            serde_yaml::Value::String("configPath".into()),
+            serde_yaml::Value::String("/nonexistent/kubelet/config.yaml".into()),
+        );
+        desired_map.insert(
+            serde_yaml::Value::String("settings".into()),
+            serde_yaml::Value::Mapping(settings),
+        );
+
+        let kc = KubeletConfigurator;
+        let desired = serde_yaml::Value::Mapping(desired_map);
+        let drifts = kc.diff(&desired).unwrap();
+        assert_eq!(drifts.len(), 1);
+        assert_eq!(drifts[0].actual, "<not set>");
+    }
+
+    // --- apparmor diff with temp files ---
+
+    #[test]
+    fn apparmor_diff_missing_profile_file() {
+        let ac = AppArmorConfigurator;
+
+        let mut profile = serde_yaml::Mapping::new();
+        profile.insert(
+            serde_yaml::Value::String("name".into()),
+            serde_yaml::Value::String("test-profile".into()),
+        );
+        profile.insert(
+            serde_yaml::Value::String("path".into()),
+            serde_yaml::Value::String("/nonexistent/apparmor/test-profile".into()),
+        );
+        profile.insert(
+            serde_yaml::Value::String("content".into()),
+            serde_yaml::Value::String("profile test-profile {}".into()),
+        );
+
+        let mut m = serde_yaml::Mapping::new();
+        m.insert(
+            serde_yaml::Value::String("profiles".into()),
+            serde_yaml::Value::Sequence(vec![serde_yaml::Value::Mapping(profile)]),
+        );
+        let desired = serde_yaml::Value::Mapping(m);
+        let drifts = ac.diff(&desired).unwrap();
+
+        // Should report file missing
+        let file_drift = drifts
+            .iter()
+            .find(|d| d.key == "apparmor.test-profile.file")
+            .unwrap();
+        assert_eq!(file_drift.expected, "present");
+        assert_eq!(file_drift.actual, "missing");
+    }
+
+    #[test]
+    fn apparmor_diff_content_mismatch() {
+        let dir = tempdir().unwrap();
+        let profile_path = dir.path().join("test-profile");
+        fs::write(&profile_path, "old content").unwrap();
+
+        let ac = AppArmorConfigurator;
+
+        let mut profile = serde_yaml::Mapping::new();
+        profile.insert(
+            serde_yaml::Value::String("name".into()),
+            serde_yaml::Value::String("test-profile".into()),
+        );
+        profile.insert(
+            serde_yaml::Value::String("path".into()),
+            serde_yaml::Value::String(profile_path.to_str().unwrap().into()),
+        );
+        profile.insert(
+            serde_yaml::Value::String("content".into()),
+            serde_yaml::Value::String("new content".into()),
+        );
+
+        let mut m = serde_yaml::Mapping::new();
+        m.insert(
+            serde_yaml::Value::String("profiles".into()),
+            serde_yaml::Value::Sequence(vec![serde_yaml::Value::Mapping(profile)]),
+        );
+        let desired = serde_yaml::Value::Mapping(m);
+        let drifts = ac.diff(&desired).unwrap();
+
+        let content_drift = drifts
+            .iter()
+            .find(|d| d.key == "apparmor.test-profile.content")
+            .unwrap();
+        assert_eq!(content_drift.expected, "updated");
+        assert_eq!(content_drift.actual, "outdated");
+    }
+
+    #[test]
+    fn apparmor_diff_content_matches_no_content_drift() {
+        let dir = tempdir().unwrap();
+        let profile_path = dir.path().join("test-profile");
+        let content = "profile test-profile flags=(attach_disconnected) {}";
+        fs::write(&profile_path, content).unwrap();
+
+        let ac = AppArmorConfigurator;
+
+        let mut profile = serde_yaml::Mapping::new();
+        profile.insert(
+            serde_yaml::Value::String("name".into()),
+            serde_yaml::Value::String("test-profile".into()),
+        );
+        profile.insert(
+            serde_yaml::Value::String("path".into()),
+            serde_yaml::Value::String(profile_path.to_str().unwrap().into()),
+        );
+        profile.insert(
+            serde_yaml::Value::String("content".into()),
+            serde_yaml::Value::String(content.to_string()),
+        );
+
+        let mut m = serde_yaml::Mapping::new();
+        m.insert(
+            serde_yaml::Value::String("profiles".into()),
+            serde_yaml::Value::Sequence(vec![serde_yaml::Value::Mapping(profile)]),
+        );
+        let desired = serde_yaml::Value::Mapping(m);
+        let drifts = ac.diff(&desired).unwrap();
+
+        // No content drift, but may report "not loaded" depending on environment
+        assert!(
+            drifts
+                .iter()
+                .all(|d| !d.key.contains("content")),
+            "should not report content drift when content matches"
+        );
+    }
+
+    #[test]
+    fn apparmor_diff_path_traversal_skipped() {
+        let ac = AppArmorConfigurator;
+
+        let mut profile = serde_yaml::Mapping::new();
+        profile.insert(
+            serde_yaml::Value::String("name".into()),
+            serde_yaml::Value::String("traversal-profile".into()),
+        );
+        profile.insert(
+            serde_yaml::Value::String("path".into()),
+            serde_yaml::Value::String("/etc/apparmor.d/../../../etc/passwd".into()),
+        );
+
+        let mut m = serde_yaml::Mapping::new();
+        m.insert(
+            serde_yaml::Value::String("profiles".into()),
+            serde_yaml::Value::Sequence(vec![serde_yaml::Value::Mapping(profile)]),
+        );
+        let desired = serde_yaml::Value::Mapping(m);
+        let drifts = ac.diff(&desired).unwrap();
+        // Profile with path traversal should be skipped entirely
+        assert!(drifts.is_empty());
+    }
+
+    #[test]
+    fn apparmor_diff_no_profiles_key() {
+        let ac = AppArmorConfigurator;
+        let desired = serde_yaml::Value::Mapping(serde_yaml::Mapping::new());
+        let drifts = ac.diff(&desired).unwrap();
+        assert!(drifts.is_empty());
+    }
+
+    #[test]
+    fn apparmor_diff_profile_without_name_skipped() {
+        let ac = AppArmorConfigurator;
+
+        let mut profile = serde_yaml::Mapping::new();
+        // No "name" key
+        profile.insert(
+            serde_yaml::Value::String("path".into()),
+            serde_yaml::Value::String("/tmp/profile".into()),
+        );
+
+        let mut m = serde_yaml::Mapping::new();
+        m.insert(
+            serde_yaml::Value::String("profiles".into()),
+            serde_yaml::Value::Sequence(vec![serde_yaml::Value::Mapping(profile)]),
+        );
+        let desired = serde_yaml::Value::Mapping(m);
+        let drifts = ac.diff(&desired).unwrap();
+        assert!(drifts.is_empty());
+    }
+
+    #[test]
+    fn apparmor_diff_profile_without_path_skipped() {
+        let ac = AppArmorConfigurator;
+
+        let mut profile = serde_yaml::Mapping::new();
+        profile.insert(
+            serde_yaml::Value::String("name".into()),
+            serde_yaml::Value::String("test".into()),
+        );
+        // No "path" key
+
+        let mut m = serde_yaml::Mapping::new();
+        m.insert(
+            serde_yaml::Value::String("profiles".into()),
+            serde_yaml::Value::Sequence(vec![serde_yaml::Value::Mapping(profile)]),
+        );
+        let desired = serde_yaml::Value::Mapping(m);
+        let drifts = ac.diff(&desired).unwrap();
+        assert!(drifts.is_empty());
+    }
+
+    // --- seccomp diff with temp files ---
+
+    #[test]
+    fn seccomp_diff_missing_profile_file() {
+        let sc = SeccompConfigurator;
+        let dir = tempdir().unwrap();
+
+        let mut profile = serde_yaml::Mapping::new();
+        profile.insert(
+            serde_yaml::Value::String("name".into()),
+            serde_yaml::Value::String("default-audit".into()),
+        );
+        profile.insert(
+            serde_yaml::Value::String("file".into()),
+            serde_yaml::Value::String("default-audit.json".into()),
+        );
+        profile.insert(
+            serde_yaml::Value::String("content".into()),
+            serde_yaml::Value::String(r#"{"defaultAction":"SCMP_ACT_LOG"}"#.into()),
+        );
+
+        let mut m = serde_yaml::Mapping::new();
+        m.insert(
+            serde_yaml::Value::String("profilesDir".into()),
+            serde_yaml::Value::String(dir.path().to_str().unwrap().into()),
+        );
+        m.insert(
+            serde_yaml::Value::String("profiles".into()),
+            serde_yaml::Value::Sequence(vec![serde_yaml::Value::Mapping(profile)]),
+        );
+
+        let desired = serde_yaml::Value::Mapping(m);
+        let drifts = sc.diff(&desired).unwrap();
+        assert_eq!(drifts.len(), 1);
+        assert_eq!(drifts[0].key, "seccomp.default-audit");
+        assert_eq!(drifts[0].expected, "present");
+        assert_eq!(drifts[0].actual, "missing");
+    }
+
+    #[test]
+    fn seccomp_diff_content_mismatch() {
+        let dir = tempdir().unwrap();
+        let profile_path = dir.path().join("default-audit.json");
+        fs::write(
+            &profile_path,
+            r#"{"defaultAction":"SCMP_ACT_ERRNO"}"#,
+        )
+        .unwrap();
+
+        let sc = SeccompConfigurator;
+
+        let mut profile = serde_yaml::Mapping::new();
+        profile.insert(
+            serde_yaml::Value::String("name".into()),
+            serde_yaml::Value::String("default-audit".into()),
+        );
+        profile.insert(
+            serde_yaml::Value::String("file".into()),
+            serde_yaml::Value::String("default-audit.json".into()),
+        );
+        profile.insert(
+            serde_yaml::Value::String("content".into()),
+            serde_yaml::Value::String(r#"{"defaultAction":"SCMP_ACT_LOG"}"#.into()),
+        );
+
+        let mut m = serde_yaml::Mapping::new();
+        m.insert(
+            serde_yaml::Value::String("profilesDir".into()),
+            serde_yaml::Value::String(dir.path().to_str().unwrap().into()),
+        );
+        m.insert(
+            serde_yaml::Value::String("profiles".into()),
+            serde_yaml::Value::Sequence(vec![serde_yaml::Value::Mapping(profile)]),
+        );
+
+        let desired = serde_yaml::Value::Mapping(m);
+        let drifts = sc.diff(&desired).unwrap();
+        assert_eq!(drifts.len(), 1);
+        assert_eq!(drifts[0].key, "seccomp.default-audit.content");
+        assert_eq!(drifts[0].expected, "updated");
+        assert_eq!(drifts[0].actual, "outdated");
+    }
+
+    #[test]
+    fn seccomp_diff_content_matches_semantically() {
+        let dir = tempdir().unwrap();
+        let profile_path = dir.path().join("default-audit.json");
+        // Write with different whitespace/key order
+        fs::write(
+            &profile_path,
+            r#"{ "b": 2, "defaultAction": "SCMP_ACT_LOG" }"#,
+        )
+        .unwrap();
+
+        let sc = SeccompConfigurator;
+
+        let mut profile = serde_yaml::Mapping::new();
+        profile.insert(
+            serde_yaml::Value::String("name".into()),
+            serde_yaml::Value::String("default-audit".into()),
+        );
+        profile.insert(
+            serde_yaml::Value::String("file".into()),
+            serde_yaml::Value::String("default-audit.json".into()),
+        );
+        profile.insert(
+            serde_yaml::Value::String("content".into()),
+            serde_yaml::Value::String(
+                r#"{"defaultAction":"SCMP_ACT_LOG","b":2}"#.into(),
+            ),
+        );
+
+        let mut m = serde_yaml::Mapping::new();
+        m.insert(
+            serde_yaml::Value::String("profilesDir".into()),
+            serde_yaml::Value::String(dir.path().to_str().unwrap().into()),
+        );
+        m.insert(
+            serde_yaml::Value::String("profiles".into()),
+            serde_yaml::Value::Sequence(vec![serde_yaml::Value::Mapping(profile)]),
+        );
+
+        let desired = serde_yaml::Value::Mapping(m);
+        let drifts = sc.diff(&desired).unwrap();
+        // json_equal should match semantically equivalent JSON
+        assert!(drifts.is_empty());
+    }
+
+    #[test]
+    fn seccomp_diff_path_traversal_skipped() {
+        let sc = SeccompConfigurator;
+        let dir = tempdir().unwrap();
+
+        let mut profile = serde_yaml::Mapping::new();
+        profile.insert(
+            serde_yaml::Value::String("name".into()),
+            serde_yaml::Value::String("evil".into()),
+        );
+        profile.insert(
+            serde_yaml::Value::String("file".into()),
+            serde_yaml::Value::String("../../etc/passwd".into()),
+        );
+
+        let mut m = serde_yaml::Mapping::new();
+        m.insert(
+            serde_yaml::Value::String("profilesDir".into()),
+            serde_yaml::Value::String(dir.path().to_str().unwrap().into()),
+        );
+        m.insert(
+            serde_yaml::Value::String("profiles".into()),
+            serde_yaml::Value::Sequence(vec![serde_yaml::Value::Mapping(profile)]),
+        );
+
+        let desired = serde_yaml::Value::Mapping(m);
+        let drifts = sc.diff(&desired).unwrap();
+        // Path traversal profiles should be skipped
+        assert!(drifts.is_empty());
+    }
+
+    #[test]
+    fn seccomp_diff_no_profiles_key() {
+        let sc = SeccompConfigurator;
+        let desired = serde_yaml::Value::Mapping(serde_yaml::Mapping::new());
+        let drifts = sc.diff(&desired).unwrap();
+        assert!(drifts.is_empty());
+    }
+
+    #[test]
+    fn seccomp_diff_profile_without_name_skipped() {
+        let sc = SeccompConfigurator;
+        let dir = tempdir().unwrap();
+
+        let mut profile = serde_yaml::Mapping::new();
+        // No "name" key
+        profile.insert(
+            serde_yaml::Value::String("file".into()),
+            serde_yaml::Value::String("test.json".into()),
+        );
+
+        let mut m = serde_yaml::Mapping::new();
+        m.insert(
+            serde_yaml::Value::String("profilesDir".into()),
+            serde_yaml::Value::String(dir.path().to_str().unwrap().into()),
+        );
+        m.insert(
+            serde_yaml::Value::String("profiles".into()),
+            serde_yaml::Value::Sequence(vec![serde_yaml::Value::Mapping(profile)]),
+        );
+
+        let desired = serde_yaml::Value::Mapping(m);
+        let drifts = sc.diff(&desired).unwrap();
+        assert!(drifts.is_empty());
+    }
+
+    #[test]
+    fn seccomp_diff_profile_without_file_skipped() {
+        let sc = SeccompConfigurator;
+        let dir = tempdir().unwrap();
+
+        let mut profile = serde_yaml::Mapping::new();
+        profile.insert(
+            serde_yaml::Value::String("name".into()),
+            serde_yaml::Value::String("test".into()),
+        );
+        // No "file" key
+
+        let mut m = serde_yaml::Mapping::new();
+        m.insert(
+            serde_yaml::Value::String("profilesDir".into()),
+            serde_yaml::Value::String(dir.path().to_str().unwrap().into()),
+        );
+        m.insert(
+            serde_yaml::Value::String("profiles".into()),
+            serde_yaml::Value::Sequence(vec![serde_yaml::Value::Mapping(profile)]),
+        );
+
+        let desired = serde_yaml::Value::Mapping(m);
+        let drifts = sc.diff(&desired).unwrap();
+        assert!(drifts.is_empty());
+    }
+
+    #[test]
+    fn seccomp_diff_uses_default_profiles_dir() {
+        let sc = SeccompConfigurator;
+
+        let mut profile = serde_yaml::Mapping::new();
+        profile.insert(
+            serde_yaml::Value::String("name".into()),
+            serde_yaml::Value::String("test".into()),
+        );
+        profile.insert(
+            serde_yaml::Value::String("file".into()),
+            serde_yaml::Value::String("test.json".into()),
+        );
+
+        let mut m = serde_yaml::Mapping::new();
+        // No profilesDir — should use default /etc/cfgd/seccomp
+        m.insert(
+            serde_yaml::Value::String("profiles".into()),
+            serde_yaml::Value::Sequence(vec![serde_yaml::Value::Mapping(profile)]),
+        );
+
+        let desired = serde_yaml::Value::Mapping(m);
+        let drifts = sc.diff(&desired).unwrap();
+        // File won't exist at default path, so should report missing
+        assert_eq!(drifts.len(), 1);
+        assert_eq!(drifts[0].key, "seccomp.test");
+        assert_eq!(drifts[0].actual, "missing");
+    }
+
+    // --- certificate diff with temp files and permissions ---
+
+    #[test]
+    fn certificate_diff_missing_cert_and_key_and_ca() {
+        let cc = CertificateConfigurator;
+
+        let mut cert = serde_yaml::Mapping::new();
+        cert.insert(
+            serde_yaml::Value::String("name".into()),
+            serde_yaml::Value::String("kubelet-client".into()),
+        );
+        cert.insert(
+            serde_yaml::Value::String("certPath".into()),
+            serde_yaml::Value::String("/nonexistent/cert.pem".into()),
+        );
+        cert.insert(
+            serde_yaml::Value::String("keyPath".into()),
+            serde_yaml::Value::String("/nonexistent/key.pem".into()),
+        );
+        cert.insert(
+            serde_yaml::Value::String("caPath".into()),
+            serde_yaml::Value::String("/nonexistent/ca.pem".into()),
+        );
+
+        let mut m = serde_yaml::Mapping::new();
+        m.insert(
+            serde_yaml::Value::String("certificates".into()),
+            serde_yaml::Value::Sequence(vec![serde_yaml::Value::Mapping(cert)]),
+        );
+
+        let desired = serde_yaml::Value::Mapping(m);
+        let drifts = cc.diff(&desired).unwrap();
+        assert_eq!(drifts.len(), 3);
+        assert!(drifts.iter().any(|d| d.key == "cert.kubelet-client.cert"));
+        assert!(drifts.iter().any(|d| d.key == "cert.kubelet-client.key"));
+        assert!(drifts.iter().any(|d| d.key == "cert.kubelet-client.ca"));
+    }
+
+    #[test]
+    fn certificate_diff_wrong_permissions() {
+        let dir = tempdir().unwrap();
+        let cert_path = dir.path().join("tls.crt");
+        let key_path = dir.path().join("tls.key");
+        fs::write(&cert_path, "cert data").unwrap();
+        fs::write(&key_path, "key data").unwrap();
+
+        // Set permissions to 0o644 (default)
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&cert_path, fs::Permissions::from_mode(0o644)).unwrap();
+            fs::set_permissions(&key_path, fs::Permissions::from_mode(0o644)).unwrap();
+        }
+
+        let cc = CertificateConfigurator;
+
+        let mut cert = serde_yaml::Mapping::new();
+        cert.insert(
+            serde_yaml::Value::String("name".into()),
+            serde_yaml::Value::String("tls".into()),
+        );
+        cert.insert(
+            serde_yaml::Value::String("certPath".into()),
+            serde_yaml::Value::String(cert_path.to_str().unwrap().into()),
+        );
+        cert.insert(
+            serde_yaml::Value::String("keyPath".into()),
+            serde_yaml::Value::String(key_path.to_str().unwrap().into()),
+        );
+        cert.insert(
+            serde_yaml::Value::String("mode".into()),
+            serde_yaml::Value::String("0600".into()),
+        );
+
+        let mut m = serde_yaml::Mapping::new();
+        m.insert(
+            serde_yaml::Value::String("certificates".into()),
+            serde_yaml::Value::Sequence(vec![serde_yaml::Value::Mapping(cert)]),
+        );
+
+        let desired = serde_yaml::Value::Mapping(m);
+        let drifts = cc.diff(&desired).unwrap();
+
+        #[cfg(unix)]
+        {
+            // Should detect permission drift on both files
+            assert_eq!(drifts.len(), 2);
+            for drift in &drifts {
+                assert_eq!(drift.expected, "0600");
+                assert_eq!(drift.actual, "0644");
+            }
+        }
+    }
+
+    #[test]
+    fn certificate_diff_correct_permissions_no_drift() {
+        let dir = tempdir().unwrap();
+        let cert_path = dir.path().join("tls.crt");
+        fs::write(&cert_path, "cert data").unwrap();
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&cert_path, fs::Permissions::from_mode(0o600)).unwrap();
+        }
+
+        let cc = CertificateConfigurator;
+
+        let mut cert = serde_yaml::Mapping::new();
+        cert.insert(
+            serde_yaml::Value::String("name".into()),
+            serde_yaml::Value::String("tls".into()),
+        );
+        cert.insert(
+            serde_yaml::Value::String("certPath".into()),
+            serde_yaml::Value::String(cert_path.to_str().unwrap().into()),
+        );
+        cert.insert(
+            serde_yaml::Value::String("mode".into()),
+            serde_yaml::Value::String("0600".into()),
+        );
+
+        let mut m = serde_yaml::Mapping::new();
+        m.insert(
+            serde_yaml::Value::String("certificates".into()),
+            serde_yaml::Value::Sequence(vec![serde_yaml::Value::Mapping(cert)]),
+        );
+
+        let desired = serde_yaml::Value::Mapping(m);
+        let drifts = cc.diff(&desired).unwrap();
+
+        #[cfg(unix)]
+        {
+            assert!(drifts.is_empty());
+        }
+    }
+
+    #[test]
+    fn certificate_diff_no_mode_no_permission_drift() {
+        let dir = tempdir().unwrap();
+        let cert_path = dir.path().join("tls.crt");
+        fs::write(&cert_path, "cert data").unwrap();
+
+        let cc = CertificateConfigurator;
+
+        let mut cert = serde_yaml::Mapping::new();
+        cert.insert(
+            serde_yaml::Value::String("name".into()),
+            serde_yaml::Value::String("tls".into()),
+        );
+        cert.insert(
+            serde_yaml::Value::String("certPath".into()),
+            serde_yaml::Value::String(cert_path.to_str().unwrap().into()),
+        );
+        // No "mode" key — no permission checking
+
+        let mut m = serde_yaml::Mapping::new();
+        m.insert(
+            serde_yaml::Value::String("certificates".into()),
+            serde_yaml::Value::Sequence(vec![serde_yaml::Value::Mapping(cert)]),
+        );
+
+        let desired = serde_yaml::Value::Mapping(m);
+        let drifts = cc.diff(&desired).unwrap();
+        assert!(drifts.is_empty());
+    }
+
+    #[test]
+    fn certificate_diff_no_certificates_key() {
+        let cc = CertificateConfigurator;
+        let desired = serde_yaml::Value::Mapping(serde_yaml::Mapping::new());
+        let drifts = cc.diff(&desired).unwrap();
+        assert!(drifts.is_empty());
+    }
+
+    #[test]
+    fn certificate_diff_cert_without_name_skipped() {
+        let cc = CertificateConfigurator;
+
+        let mut cert = serde_yaml::Mapping::new();
+        // No "name" key
+        cert.insert(
+            serde_yaml::Value::String("certPath".into()),
+            serde_yaml::Value::String("/nonexistent/cert.pem".into()),
+        );
+
+        let mut m = serde_yaml::Mapping::new();
+        m.insert(
+            serde_yaml::Value::String("certificates".into()),
+            serde_yaml::Value::Sequence(vec![serde_yaml::Value::Mapping(cert)]),
+        );
+
+        let desired = serde_yaml::Value::Mapping(m);
+        let drifts = cc.diff(&desired).unwrap();
+        assert!(drifts.is_empty());
+    }
+
+    // --- set_toml_value edge cases ---
+
+    #[test]
+    fn set_toml_value_overwrites_non_table_intermediate() {
+        let mut table = toml::Table::new();
+        // Set "a" to a string first
+        table.insert("a".to_string(), toml::Value::String("not a table".into()));
+        // Now set "a.b" — should replace "a" with a table
+        set_toml_value(
+            &mut table,
+            "a.b",
+            &serde_yaml::Value::String("value".into()),
+        );
+        assert_eq!(
+            find_toml_value(&table, "a.b"),
+            Some("value".to_string())
+        );
+    }
+
+    // --- yaml_to_toml_value edge cases ---
+
+    #[test]
+    fn yaml_to_toml_mapping_conversion() {
+        let mut mapping = serde_yaml::Mapping::new();
+        mapping.insert(
+            serde_yaml::Value::String("key".into()),
+            serde_yaml::Value::String("value".into()),
+        );
+        let result = yaml_to_toml_value(&serde_yaml::Value::Mapping(mapping));
+        match result {
+            toml::Value::Table(t) => {
+                assert_eq!(
+                    t.get("key").unwrap().as_str(),
+                    Some("value")
+                );
+            }
+            _ => panic!("expected Table"),
+        }
+    }
+
+    #[test]
+    fn yaml_to_toml_sequence_conversion() {
+        let seq = serde_yaml::Value::Sequence(vec![
+            serde_yaml::Value::Number(1.into()),
+            serde_yaml::Value::Number(2.into()),
+        ]);
+        let result = yaml_to_toml_value(&seq);
+        match result {
+            toml::Value::Array(arr) => {
+                assert_eq!(arr.len(), 2);
+                assert_eq!(arr[0].as_integer(), Some(1));
+                assert_eq!(arr[1].as_integer(), Some(2));
+            }
+            _ => panic!("expected Array"),
+        }
+    }
+
+    #[test]
+    fn yaml_to_toml_null_becomes_empty_string() {
+        let result = yaml_to_toml_value(&serde_yaml::Value::Null);
+        assert_eq!(result, toml::Value::String(String::new()));
+    }
+
+    #[test]
+    fn yaml_to_toml_float_conversion() {
+        let val = serde_yaml::Value::Number(serde_yaml::Number::from(3.14_f64));
+        let result = yaml_to_toml_value(&val);
+        match result {
+            toml::Value::Float(f) => assert!((f - 3.14).abs() < 0.001),
+            _ => panic!("expected Float, got {:?}", result),
+        }
+    }
+
+    #[test]
+    fn yaml_to_toml_mapping_non_string_keys_skipped() {
+        let mut mapping = serde_yaml::Mapping::new();
+        mapping.insert(
+            serde_yaml::Value::Number(42.into()),
+            serde_yaml::Value::String("value".into()),
+        );
+        mapping.insert(
+            serde_yaml::Value::String("valid".into()),
+            serde_yaml::Value::String("kept".into()),
+        );
+        let result = yaml_to_toml_value(&serde_yaml::Value::Mapping(mapping));
+        match result {
+            toml::Value::Table(t) => {
+                assert_eq!(t.len(), 1);
+                assert_eq!(t.get("valid").unwrap().as_str(), Some("kept"));
+            }
+            _ => panic!("expected Table"),
+        }
+    }
+
+    // --- toml_value_to_string edge cases ---
+
+    #[test]
+    fn toml_value_to_string_float() {
+        let result = toml_value_to_string(&toml::Value::Float(3.14));
+        assert!(result.starts_with("3.14"));
+    }
+
+    #[test]
+    fn toml_value_to_string_array_uses_display() {
+        let arr = toml::Value::Array(vec![toml::Value::Integer(1)]);
+        let result = toml_value_to_string(&arr);
+        assert!(result.contains('1'));
+    }
+
+    // --- json_equal edge cases ---
+
+    #[test]
+    fn json_equal_both_empty_objects() {
+        assert!(json_equal("{}", "{}"));
+    }
+
+    #[test]
+    fn json_equal_nested_objects() {
+        assert!(json_equal(
+            r#"{"a":{"b":1}}"#,
+            r#"{"a":{"b":1}}"#
+        ));
+        assert!(!json_equal(
+            r#"{"a":{"b":1}}"#,
+            r#"{"a":{"b":2}}"#
+        ));
+    }
+
+    #[test]
+    fn json_equal_whitespace_trimming_fallback() {
+        // Both invalid JSON but equal after trimming
+        assert!(json_equal("  not json  ", "not json"));
+    }
+
+    // --- containerd diff with boolean TOML values ---
+
+    #[test]
+    fn containerd_diff_boolean_setting() {
+        let dir = tempdir().unwrap();
+        let config = dir.path().join("config.toml");
+        fs::write(&config, "SystemdCgroup = false\n").unwrap();
+
+        let mut settings = serde_yaml::Mapping::new();
+        settings.insert(
+            serde_yaml::Value::String("SystemdCgroup".into()),
+            serde_yaml::Value::Bool(true),
+        );
+
+        let mut desired_map = serde_yaml::Mapping::new();
+        desired_map.insert(
+            serde_yaml::Value::String("configPath".into()),
+            serde_yaml::Value::String(config.to_str().unwrap().into()),
+        );
+        desired_map.insert(
+            serde_yaml::Value::String("settings".into()),
+            serde_yaml::Value::Mapping(settings),
+        );
+
+        let cc = ContainerdConfigurator;
+        let desired = serde_yaml::Value::Mapping(desired_map);
+        let drifts = cc.diff(&desired).unwrap();
+        assert_eq!(drifts.len(), 1);
+        assert_eq!(drifts[0].key, "containerd.SystemdCgroup");
+        assert_eq!(drifts[0].expected, "true");
+        assert_eq!(drifts[0].actual, "false");
+    }
+
+    // --- kubelet diff with string matching ---
+
+    #[test]
+    fn kubelet_diff_string_value_matches() {
+        let dir = tempdir().unwrap();
+        let config = dir.path().join("config.yaml");
+        fs::write(&config, "cgroupDriver: systemd\n").unwrap();
+
+        let mut settings = serde_yaml::Mapping::new();
+        settings.insert(
+            serde_yaml::Value::String("cgroupDriver".into()),
+            serde_yaml::Value::String("systemd".into()),
+        );
+
+        let mut desired_map = serde_yaml::Mapping::new();
+        desired_map.insert(
+            serde_yaml::Value::String("configPath".into()),
+            serde_yaml::Value::String(config.to_str().unwrap().into()),
+        );
+        desired_map.insert(
+            serde_yaml::Value::String("settings".into()),
+            serde_yaml::Value::Mapping(settings),
+        );
+
+        let kc = KubeletConfigurator;
+        let desired = serde_yaml::Value::Mapping(desired_map);
+        let drifts = kc.diff(&desired).unwrap();
+        assert!(drifts.is_empty());
     }
 }

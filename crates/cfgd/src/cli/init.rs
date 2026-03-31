@@ -1302,4 +1302,322 @@ mod tests {
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("does not exist"));
     }
+
+    #[test]
+    fn check_prerequisites_returns_true_when_git_available() {
+        // git should be available in CI and dev environments
+        let printer = Printer::new(cfgd_core::output::Verbosity::Quiet);
+        let result = check_prerequisites(&printer);
+        if cfgd_core::command_available("git") {
+            assert!(result, "check_prerequisites should return true when git is available");
+        } else {
+            assert!(!result, "check_prerequisites should return false when git is missing");
+        }
+    }
+
+    #[test]
+    fn cmd_init_scaffolds_local_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("my-config");
+        std::fs::create_dir_all(&target).unwrap();
+
+        let printer = Printer::new(cfgd_core::output::Verbosity::Quiet);
+        let args = InitArgs {
+            path: Some(target.to_str().unwrap()),
+            from: None,
+            branch: "master",
+            name: Some("test-init"),
+            apply: false,
+            dry_run: false,
+            yes: false,
+            install_daemon: false,
+            theme: None,
+            apply_profile: None,
+            apply_modules: &[],
+        };
+
+        let result = cmd_init(&printer, &args);
+        assert!(result.is_ok(), "cmd_init failed: {:?}", result.err());
+
+        // Verify scaffolded files
+        assert!(target.join("cfgd.yaml").exists());
+        assert!(target.join("profiles").is_dir());
+        assert!(target.join("modules").is_dir());
+        assert!(target.join(".gitignore").exists());
+        assert!(target.join("README.md").exists());
+
+        // Verify git repo was initialized
+        assert!(target.join(".git").exists());
+    }
+
+    #[test]
+    fn cmd_init_skips_if_already_initialized() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("existing");
+        std::fs::create_dir_all(&target).unwrap();
+        std::fs::write(
+            target.join("cfgd.yaml"),
+            "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: existing\nspec: {}\n",
+        )
+        .unwrap();
+
+        let printer = Printer::new(cfgd_core::output::Verbosity::Quiet);
+        let args = InitArgs {
+            path: Some(target.to_str().unwrap()),
+            from: None,
+            branch: "master",
+            name: None,
+            apply: false,
+            dry_run: false,
+            yes: false,
+            install_daemon: false,
+            theme: None,
+            apply_profile: None,
+            apply_modules: &[],
+        };
+
+        let result = cmd_init(&printer, &args);
+        assert!(result.is_ok());
+        // cfgd.yaml should be unchanged (not overwritten)
+        let contents = std::fs::read_to_string(target.join("cfgd.yaml")).unwrap();
+        assert!(contents.contains("name: existing"));
+    }
+
+    #[test]
+    fn cmd_init_creates_directory_if_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("new-config");
+        assert!(!target.exists());
+
+        let printer = Printer::new(cfgd_core::output::Verbosity::Quiet);
+        let args = InitArgs {
+            path: Some(target.to_str().unwrap()),
+            from: None,
+            branch: "master",
+            name: Some("fresh"),
+            apply: false,
+            dry_run: false,
+            yes: false,
+            install_daemon: false,
+            theme: Some("minimal"),
+            apply_profile: None,
+            apply_modules: &[],
+        };
+
+        let result = cmd_init(&printer, &args);
+        assert!(result.is_ok(), "cmd_init failed: {:?}", result.err());
+        assert!(target.exists());
+        assert!(target.join("cfgd.yaml").exists());
+
+        let contents = std::fs::read_to_string(target.join("cfgd.yaml")).unwrap();
+        assert!(contents.contains("theme: minimal"));
+    }
+
+    #[test]
+    fn clone_into_local_repo() {
+        let dir = tempfile::tempdir().unwrap();
+
+        // Create a source repo with a commit
+        let origin = dir.path().join("origin");
+        let repo = git2::Repository::init(&origin).unwrap();
+        let sig = git2::Signature::now("Test", "test@example.com").unwrap();
+        std::fs::write(origin.join("cfgd.yaml"), "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: test\nspec: {}\n").unwrap();
+        let mut index = repo.index().unwrap();
+        index
+            .add_path(std::path::Path::new("cfgd.yaml"))
+            .unwrap();
+        index.write().unwrap();
+        let tree_id = index.write_tree().unwrap();
+        let tree = repo.find_tree(tree_id).unwrap();
+        repo.commit(Some("HEAD"), &sig, &sig, "init", &tree, &[])
+            .unwrap();
+
+        let target = dir.path().join("clone");
+        std::fs::create_dir_all(&target).unwrap();
+
+        let printer = Printer::new(cfgd_core::output::Verbosity::Quiet);
+        let result = clone_into(&target, &origin.display().to_string(), "master", &printer);
+        assert!(result.is_ok(), "clone_into failed: {:?}", result.err());
+        assert!(target.join("cfgd.yaml").exists());
+        assert!(target.join(".git").exists());
+    }
+
+    #[test]
+    fn clone_into_skips_if_already_cloned() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("clone");
+        std::fs::create_dir_all(target.join(".git")).unwrap();
+
+        let printer = Printer::new(cfgd_core::output::Verbosity::Quiet);
+        // Should return Ok without actually cloning
+        let result = clone_into(&target, "https://example.com/nonexistent", "master", &printer);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn resolve_from_git_source_local_repo() {
+        let dir = tempfile::tempdir().unwrap();
+
+        // Create a source repo
+        let origin = dir.path().join("origin");
+        let repo = git2::Repository::init(&origin).unwrap();
+        let sig = git2::Signature::now("Test", "test@example.com").unwrap();
+        std::fs::write(origin.join("cfgd.yaml"), "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: test\nspec: {}\n").unwrap();
+        let mut index = repo.index().unwrap();
+        index
+            .add_path(std::path::Path::new("cfgd.yaml"))
+            .unwrap();
+        index.write().unwrap();
+        let tree_id = index.write_tree().unwrap();
+        let tree = repo.find_tree(tree_id).unwrap();
+        repo.commit(Some("HEAD"), &sig, &sig, "init", &tree, &[])
+            .unwrap();
+
+        let target = dir.path().join("target");
+        let printer = Printer::new(cfgd_core::output::Verbosity::Quiet);
+        let result = resolve_from(
+            &origin.display().to_string(),
+            Some(&target),
+            "master",
+            &printer,
+        );
+        assert!(result.is_ok(), "resolve_from failed: {:?}", result.err());
+        assert!(target.join("cfgd.yaml").exists());
+    }
+
+    #[test]
+    fn resolve_from_already_initialized_git_source() {
+        let dir = tempfile::tempdir().unwrap();
+
+        // Create target with existing cfgd.yaml
+        let target = dir.path().join("already-init");
+        std::fs::create_dir_all(&target).unwrap();
+        std::fs::write(
+            target.join("cfgd.yaml"),
+            "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: test\nspec: {}\n",
+        )
+        .unwrap();
+
+        let printer = Printer::new(cfgd_core::output::Verbosity::Quiet);
+        // Using a git URL (https://) triggers the git source path
+        let result = resolve_from(
+            "https://example.com/repo.git",
+            Some(&target),
+            "master",
+            &printer,
+        );
+        assert!(result.is_ok());
+        // Should return the target path without re-cloning
+        assert_eq!(result.unwrap(), target);
+    }
+
+    #[test]
+    fn scaffold_creates_readme_with_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let printer = Printer::new(cfgd_core::output::Verbosity::Quiet);
+
+        scaffold(dir.path(), Some("my-dotfiles"), None, &printer).unwrap();
+
+        let readme = std::fs::read_to_string(dir.path().join("README.md")).unwrap();
+        assert!(
+            readme.contains("my-dotfiles"),
+            "README should contain the config name"
+        );
+    }
+
+    #[test]
+    fn scaffold_creates_gitignore() {
+        let dir = tempfile::tempdir().unwrap();
+        let printer = Printer::new(cfgd_core::output::Verbosity::Quiet);
+
+        scaffold(dir.path(), Some("test"), None, &printer).unwrap();
+
+        let gitignore = std::fs::read_to_string(dir.path().join(".gitignore")).unwrap();
+        assert!(gitignore.contains("!cfgd.yaml"));
+        assert!(gitignore.contains("!profiles/"));
+        assert!(gitignore.contains("!modules/"));
+    }
+
+    #[test]
+    fn scaffold_creates_workflow() {
+        let dir = tempfile::tempdir().unwrap();
+        let printer = Printer::new(cfgd_core::output::Verbosity::Quiet);
+
+        scaffold(dir.path(), Some("test"), None, &printer).unwrap();
+
+        let workflow_path = dir.path().join(".github/workflows/cfgd-release.yml");
+        assert!(workflow_path.exists());
+    }
+
+    #[test]
+    fn cmd_init_with_from_local_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("source");
+        std::fs::create_dir_all(&source).unwrap();
+        std::fs::write(
+            source.join("cfgd.yaml"),
+            "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: source\nspec: {}\n",
+        )
+        .unwrap();
+
+        let printer = Printer::new(cfgd_core::output::Verbosity::Quiet);
+        let source_str = source.display().to_string();
+        let args = InitArgs {
+            path: None,
+            from: Some(&source_str),
+            branch: "master",
+            name: None,
+            apply: false,
+            dry_run: false,
+            yes: false,
+            install_daemon: false,
+            theme: None,
+            apply_profile: None,
+            apply_modules: &[],
+        };
+
+        let result = cmd_init(&printer, &args);
+        assert!(result.is_ok(), "cmd_init with --from local path failed: {:?}", result.err());
+    }
+
+    #[test]
+    fn ensure_config_file_creates_without_origin() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("cfgd.yaml");
+
+        ensure_config_file(dir.path(), &config_path, "default", None, "master", None).unwrap();
+
+        let contents = std::fs::read_to_string(&config_path).unwrap();
+        assert!(contents.contains("profile: default"));
+        // No origin section when from_url is None
+        assert!(!contents.contains("origin:"));
+    }
+
+    #[test]
+    fn count_packages_npm_and_pipx() {
+        let spec = config::ProfileSpec {
+            packages: Some(config::PackagesSpec {
+                npm: Some(config::NpmSpec {
+                    global: vec!["prettier".into(), "eslint".into()],
+                    ..Default::default()
+                }),
+                pipx: vec!["black".into()],
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        assert_eq!(count_packages(&spec), 3);
+    }
+
+    #[test]
+    fn count_packages_dnf() {
+        let spec = config::ProfileSpec {
+            packages: Some(config::PackagesSpec {
+                dnf: vec!["vim".into(), "tmux".into()],
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        assert_eq!(count_packages(&spec), 2);
+    }
 }
