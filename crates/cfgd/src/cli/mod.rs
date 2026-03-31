@@ -5377,11 +5377,21 @@ fn cmd_rollback(
         anyhow::bail!("no apply found with ID {}", apply_id);
     }
 
-    // Preview: count subsequent file backups and non-file actions
+    // Preview: count file backups available for rollback (target apply's own
+    // post-apply snapshots + subsequent apply backups) and non-file actions.
+    let target_backups = state.get_apply_backups(apply_id)?;
     let after_backups = state.file_backups_after_apply(apply_id)?;
     let after_entries = state.journal_entries_after_apply(apply_id)?;
 
-    let file_count = after_backups.len();
+    // Unique file paths across both sources
+    let mut file_paths = std::collections::HashSet::new();
+    for bk in &target_backups {
+        file_paths.insert(bk.file_path.clone());
+    }
+    for bk in &after_backups {
+        file_paths.insert(bk.file_path.clone());
+    }
+    let file_count = file_paths.len();
     let non_file_actions: Vec<String> = after_entries
         .iter()
         .filter(|e| {
@@ -12557,6 +12567,7 @@ modules:
     }
 
     #[test]
+    #[cfg(unix)]
     fn module_delete_restores_symlinked_files() {
         let dir = create_test_config_dir();
 

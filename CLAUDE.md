@@ -152,6 +152,7 @@ Current shared items (keep this list updated when adding new ones):
 - `atomic_write(target, content)` — atomic file write via temp+rename; returns SHA256 hash; use instead of `fs::write()` in ALL production code
 - `atomic_write_str(target, content)` — string variant of `atomic_write`
 - `capture_file_state(path)` — capture file content/permissions/symlink state for backup; returns `Option<FileState>`
+- `capture_file_resolved_state(path)` — like `capture_file_state` but follows symlinks to read actual content; used for post-apply snapshots where both link target and resolved content are needed
 - `FileState` — struct holding captured file state (content, hash, permissions, symlink info, oversized flag)
 - `validate_path_within(path, root)` — canonicalize and verify path is within root directory
 - `validate_no_traversal(path)` — reject paths containing `..` components

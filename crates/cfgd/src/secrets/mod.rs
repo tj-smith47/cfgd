@@ -148,7 +148,9 @@ impl SecretBackend for SopsBackend {
             .status()
             .map_err(|_| SecretError::SopsNotFound)?;
 
-        if !status.success() {
+        // sops exits with code 200 when the editor didn't change the file
+        // (e.g., EDITOR=true). Treat this as a no-op success.
+        if !status.success() && status.code() != Some(200) {
             return Err(SecretError::EncryptionFailed {
                 path: path.to_path_buf(),
                 message: "sops edit exited with non-zero status".to_string(),

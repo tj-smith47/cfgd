@@ -227,10 +227,10 @@ mod tests {
 
     // SAFETY: env var mutations are serialized via #[serial]
     unsafe fn set_env(key: &str, val: &str) {
-        std::env::set_var(key, val);
+        unsafe { std::env::set_var(key, val) };
     }
     unsafe fn remove_env(key: &str) {
-        std::env::remove_var(key);
+        unsafe { std::env::remove_var(key) };
     }
 
     #[test]

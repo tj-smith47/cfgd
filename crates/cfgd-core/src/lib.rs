@@ -191,11 +191,22 @@ pub fn command_output_with_timeout(
     result
 }
 
-/// Default config directory: `~/.config/cfgd/` (XDG_CONFIG_HOME/cfgd on Linux).
+/// Default config directory: `~/.config/cfgd` on Unix (respects XDG_CONFIG_HOME),
+/// `AppData\Roaming\cfgd` on Windows.
 pub fn default_config_dir() -> std::path::PathBuf {
-    directories::BaseDirs::new()
-        .map(|b| b.config_dir().join("cfgd"))
-        .unwrap_or_else(|| expand_tilde(std::path::Path::new("~/.config/cfgd")))
+    #[cfg(unix)]
+    {
+        if let Ok(xdg) = std::env::var("XDG_CONFIG_HOME") {
+            return std::path::PathBuf::from(xdg).join("cfgd");
+        }
+        expand_tilde(std::path::Path::new("~/.config/cfgd"))
+    }
+    #[cfg(windows)]
+    {
+        directories::BaseDirs::new()
+            .map(|b| b.config_dir().join("cfgd"))
+            .unwrap_or_else(|| std::path::PathBuf::from(r"C:\ProgramData\cfgd"))
+    }
 }
 
 /// Expand `~` and `~/...` paths to the user's home directory.
@@ -778,6 +789,65 @@ pub fn capture_file_state(
         permissions,
         is_symlink: false,
         symlink_target: None,
+        oversized: false,
+    }))
+}
+
+/// Like `capture_file_state`, but follows symlinks to capture the resolved
+/// content. For symlinks, `is_symlink` and `symlink_target` are recorded AND
+/// the actual file content behind the symlink is read. This is used for
+/// post-apply snapshots where we need to know both the link target and the
+/// content that was accessible through the symlink at the time of capture.
+///
+/// Returns `None` if the file does not exist (or the symlink is dangling).
+pub fn capture_file_resolved_state(
+    path: &std::path::Path,
+) -> std::result::Result<Option<FileState>, std::io::Error> {
+    let symlink_meta = match std::fs::symlink_metadata(path) {
+        Ok(m) => m,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(e),
+    };
+
+    let is_symlink = symlink_meta.file_type().is_symlink();
+    let symlink_target = if is_symlink {
+        std::fs::read_link(path).ok()
+    } else {
+        None
+    };
+
+    // Read the actual content (following symlinks)
+    let real_meta = match std::fs::metadata(path) {
+        Ok(m) => m,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            // Dangling symlink
+            return Ok(None);
+        }
+        Err(e) => return Err(e),
+    };
+
+    let permissions = file_permissions_mode(&real_meta);
+
+    if real_meta.len() > MAX_BACKUP_FILE_SIZE {
+        return Ok(Some(FileState {
+            content: Vec::new(),
+            content_hash: String::new(),
+            permissions,
+            is_symlink,
+            symlink_target,
+            oversized: true,
+        }));
+    }
+
+    let content = std::fs::read(path)?;
+    let hash = sha256_hex(&content);
+
+    Ok(Some(FileState {
+        content,
+        content_hash: hash,
+        permissions,
+        is_symlink,
+        symlink_target,
         oversized: false,
     }))
 }

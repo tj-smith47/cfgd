@@ -1298,6 +1298,40 @@ impl<'a> Reconciler<'a> {
         // Update module state and file manifests for successfully applied modules
         self.update_module_state(module_actions, apply_id, &results)?;
 
+        // Post-apply snapshot: capture the resolved content of all managed file
+        // targets (following symlinks). This ensures rollback can restore the
+        // exact content visible at this point, even for symlink-deployed files
+        // where the source may be modified in-place between applies.
+        let mut snapshot_paths = std::collections::HashSet::new();
+        for managed in &resolved.merged.files.managed {
+            let target = crate::expand_tilde(&managed.target);
+            let key = target.display().to_string();
+            if snapshot_paths.contains(&key) {
+                continue;
+            }
+            snapshot_paths.insert(key.clone());
+            if let Ok(Some(state)) = crate::capture_file_resolved_state(&target)
+                && let Err(e) = self.state.store_file_backup(apply_id, &key, &state)
+            {
+                tracing::debug!("post-apply snapshot for {}: {}", key, e);
+            }
+        }
+        for module in module_actions {
+            for file in &module.files {
+                let target = crate::expand_tilde(&file.target);
+                let key = target.display().to_string();
+                if snapshot_paths.contains(&key) {
+                    continue;
+                }
+                snapshot_paths.insert(key.clone());
+                if let Ok(Some(state)) = crate::capture_file_resolved_state(&target)
+                    && let Err(e) = self.state.store_file_backup(apply_id, &key, &state)
+                {
+                    tracing::debug!("post-apply snapshot for {}: {}", key, e);
+                }
+            }
+        }
+
         Ok(ApplyResult {
             action_results: results,
             status,
@@ -1312,11 +1346,25 @@ impl<'a> Reconciler<'a> {
     /// are listed in the output as requiring manual review.
     pub fn rollback_apply(&self, apply_id: i64, printer: &Printer) -> Result<RollbackResult> {
         // Rollback restores the system to the state that existed AFTER the target apply.
-        // Strategy: find all file backups from applies after the target. Each backup
-        // captures the pre-state before that later apply. The earliest backup after the
-        // target for each file path is the state right after the target apply completed.
+        //
+        // Primary source: post-apply snapshots stored with the target apply_id.
+        // These capture the resolved content of all managed files (following symlinks)
+        // at the moment the target apply completed. For each file path, the LAST
+        // backup entry (highest id) for the target apply is the post-apply snapshot.
+        //
+        // Fallback: for files not covered by the target apply's snapshots, use the
+        // earliest backup from applies AFTER the target (pre-action backups from
+        // later applies, which represent the state right after the target).
+        let target_backups = self.state.get_apply_backups(apply_id)?;
         let after_backups = self.state.file_backups_after_apply(apply_id)?;
         let after_entries = self.state.journal_entries_after_apply(apply_id)?;
+
+        // Build a map of file_path -> last backup from the target apply
+        // (last = post-apply snapshot, which has the highest id)
+        let mut target_snapshot: HashMap<String, &crate::state::FileBackupRecord> = HashMap::new();
+        for bk in &target_backups {
+            target_snapshot.insert(bk.file_path.clone(), bk);
+        }
 
         let mut files_restored = 0usize;
         let mut files_removed = 0usize;
@@ -1335,61 +1383,34 @@ impl<'a> Reconciler<'a> {
         // Track which file paths we've already restored (avoid duplicate restores)
         let mut restored_paths = std::collections::HashSet::new();
 
-        // Restore files from the earliest backup after the target apply
+        // Phase 1: restore from target apply's post-apply snapshots
+        for (path, bk) in &target_snapshot {
+            restored_paths.insert(path.clone());
+            let target = std::path::Path::new(path);
+            let result = restore_file_from_backup(target, bk, printer);
+            match result {
+                RestoreOutcome::Restored => files_restored += 1,
+                RestoreOutcome::Removed => files_removed += 1,
+                RestoreOutcome::Skipped | RestoreOutcome::Failed => {}
+            }
+        }
+
+        // Phase 2: fallback to earliest backup after target for remaining paths
         for bk in &after_backups {
             if restored_paths.contains(&bk.file_path) {
                 continue;
             }
             restored_paths.insert(bk.file_path.clone());
-
             let target = std::path::Path::new(&bk.file_path);
-
-            if bk.was_symlink {
-                if let Some(ref link_target) = bk.symlink_target {
-                    let _ = std::fs::remove_file(target);
-                    if let Err(e) = crate::create_symlink(std::path::Path::new(link_target), target)
-                    {
-                        printer.warning(&format!(
-                            "rollback: failed to restore symlink {}: {}",
-                            target.display(),
-                            e
-                        ));
-                    } else {
-                        files_restored += 1;
-                    }
-                }
-            } else if !bk.oversized && !bk.content.is_empty() {
-                // Restore file content. atomic_write preserves the existing file's
-                // permissions, so if the target apply set specific permissions and a
-                // later apply kept them, they'll be preserved during rollback.
-                if let Err(e) = crate::atomic_write(target, &bk.content) {
-                    printer.warning(&format!(
-                        "rollback: failed to restore {}: {}",
-                        target.display(),
-                        e
-                    ));
-                } else {
-                    files_restored += 1;
-                }
-            } else if bk.content.is_empty() && !bk.was_symlink && !bk.oversized {
-                // Empty content with no symlink and not oversized means the file didn't exist
-                // before this backup — remove it to restore pre-state
-                if target.exists() {
-                    if let Err(e) = std::fs::remove_file(target) {
-                        printer.warning(&format!(
-                            "rollback: failed to remove {}: {}",
-                            target.display(),
-                            e
-                        ));
-                    } else {
-                        files_removed += 1;
-                    }
-                }
+            let result = restore_file_from_backup(target, bk, printer);
+            match result {
+                RestoreOutcome::Restored => files_restored += 1,
+                RestoreOutcome::Removed => files_removed += 1,
+                RestoreOutcome::Skipped | RestoreOutcome::Failed => {}
             }
         }
 
-        // Also handle files that were created by subsequent applies but have no backup
-        // (newly created files after the target apply)
+        // Phase 3: handle files created by subsequent applies but not in target's snapshot
         for entry in &after_entries {
             let is_file = entry.phase == "files"
                 || entry.action_type == "file"
@@ -1410,8 +1431,8 @@ impl<'a> Reconciler<'a> {
             }
             restored_paths.insert(actual_path.to_string());
 
-            // Check if this file existed at the target apply by looking at the target apply's
-            // journal entries
+            // If the file is in the target apply's snapshot, it was already handled in phase 1.
+            // If not, check the journal to see if it existed at the target apply.
             let target_entries = self.state.journal_completed_actions(apply_id)?;
             let target_had_file = target_entries.iter().any(|e| {
                 let target_path = e
@@ -1423,8 +1444,6 @@ impl<'a> Reconciler<'a> {
                 target_path == actual_path
             });
 
-            // If the file was created after target apply and wasn't part of target apply,
-            // it's a new file that should be removed
             if !target_had_file && entry.resource_id.starts_with("file:create:") {
                 let target = std::path::Path::new(actual_path);
                 if target.exists() {
@@ -2936,6 +2955,85 @@ pub fn format_action_description(action: &Action) -> String {
             }
         },
     }
+}
+
+/// Outcome of a single file restoration during rollback.
+enum RestoreOutcome {
+    Restored,
+    Removed,
+    Skipped,
+    Failed,
+}
+
+/// Restore a single file from a backup record. Used by `rollback_apply`.
+fn restore_file_from_backup(
+    target: &std::path::Path,
+    bk: &crate::state::FileBackupRecord,
+    printer: &crate::output::Printer,
+) -> RestoreOutcome {
+    // Backup has content — write it (works for both regular files and symlink snapshots
+    // where the resolved content was captured)
+    if !bk.oversized && !bk.content.is_empty() {
+        // Check if the current resolved content already matches the backup — skip if so
+        if let Ok(Some(current)) = crate::capture_file_resolved_state(target)
+            && current.content == bk.content
+        {
+            return RestoreOutcome::Skipped;
+        }
+        // Remove existing target (might be a symlink or regular file)
+        if target.symlink_metadata().is_ok() {
+            let _ = std::fs::remove_file(target);
+        }
+        if let Some(parent) = target.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        if let Err(e) = crate::atomic_write(target, &bk.content) {
+            printer.warning(&format!(
+                "rollback: failed to restore {}: {}",
+                target.display(),
+                e
+            ));
+            return RestoreOutcome::Failed;
+        }
+        // Restore permissions if recorded
+        if let Some(mode) = bk.permissions {
+            let _ = crate::set_file_permissions(target, mode);
+        }
+        return RestoreOutcome::Restored;
+    }
+
+    // Symlink with no content (only link target recorded — legacy backup)
+    if bk.was_symlink
+        && let Some(ref link_target) = bk.symlink_target
+    {
+        let _ = std::fs::remove_file(target);
+        if let Err(e) = crate::create_symlink(std::path::Path::new(link_target), target) {
+            printer.warning(&format!(
+                "rollback: failed to restore symlink {}: {}",
+                target.display(),
+                e
+            ));
+            return RestoreOutcome::Failed;
+        }
+        return RestoreOutcome::Restored;
+    }
+
+    // Empty content, not symlink, not oversized — file didn't exist before
+    if bk.content.is_empty() && !bk.was_symlink && !bk.oversized
+        && target.exists()
+    {
+        if let Err(e) = std::fs::remove_file(target) {
+            printer.warning(&format!(
+                "rollback: failed to remove {}: {}",
+                target.display(),
+                e
+            ));
+            return RestoreOutcome::Failed;
+        }
+        return RestoreOutcome::Removed;
+    }
+
+    RestoreOutcome::Skipped
 }
 
 /// Extract the target file path from an action, if it writes to a file.
