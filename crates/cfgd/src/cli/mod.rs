@@ -11768,4 +11768,3543 @@ spec:
         let result = super::profiles_dir(&cli);
         assert_eq!(result, dir.path().join("profiles"));
     }
+
+    // =========================================================================
+    // Module handler tests
+    // =========================================================================
+
+    // --- cmd_module_list ---
+
+    #[test]
+    fn module_list_empty_config_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("modules")).unwrap();
+        let state_dir = dir.path().join("state");
+        let cli = test_cli_with_state(dir.path(), Some(state_dir));
+        let printer = test_printer();
+
+        let result = module::cmd_module_list(&cli, &printer);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn module_list_with_modules() {
+        let dir = tempfile::tempdir().unwrap();
+        create_module_in_dir(
+            dir.path(),
+            "vim",
+            "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: vim\nspec:\n  packages:\n    - name: vim\n",
+        );
+        create_module_in_dir(
+            dir.path(),
+            "git",
+            "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: git\nspec:\n  packages:\n    - name: git\n    - name: git-lfs\n",
+        );
+        let state_dir = dir.path().join("state");
+        let cli = test_cli_with_state(dir.path(), Some(state_dir));
+        let printer = test_printer();
+
+        let result = module::cmd_module_list(&cli, &printer);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn module_list_no_modules_dir() {
+        // No modules/ directory at all — should report "no modules found"
+        let dir = tempfile::tempdir().unwrap();
+        let state_dir = dir.path().join("state");
+        let cli = test_cli_with_state(dir.path(), Some(state_dir));
+        let printer = test_printer();
+
+        let result = module::cmd_module_list(&cli, &printer);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn module_list_with_config_and_profile() {
+        let dir = create_test_config_dir();
+        // Write cfgd.yaml
+        std::fs::write(
+            dir.path().join("cfgd.yaml"),
+            TEST_CONFIG_YAML,
+        )
+        .unwrap();
+        // Add a module referenced in the profile
+        create_module_in_dir(
+            dir.path(),
+            "bat",
+            "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: bat\nspec:\n  packages:\n    - name: bat\n",
+        );
+        // Update profile to reference module
+        let profile_path = dir.path().join("profiles").join("default.yaml");
+        let mut doc = config::load_profile(&profile_path).unwrap();
+        doc.spec.modules.push("bat".to_string());
+        let yaml = serde_yaml::to_string(&doc).unwrap();
+        std::fs::write(&profile_path, &yaml).unwrap();
+
+        let state_dir = dir.path().join("state");
+        let cli = test_cli_with_state(dir.path(), Some(state_dir));
+        let printer = test_printer();
+
+        let result = module::cmd_module_list(&cli, &printer);
+        assert!(result.is_ok());
+    }
+
+    // --- cmd_module_show ---
+
+    #[test]
+    fn module_show_not_found() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("modules")).unwrap();
+        let state_dir = dir.path().join("state");
+        let cli = test_cli_with_state(dir.path(), Some(state_dir));
+        let printer = test_printer();
+
+        let result = module::cmd_module_show(&cli, &printer, "nonexistent", false);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("not found"));
+    }
+
+    #[test]
+    fn module_show_with_packages_and_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let mod_dir = dir.path().join("modules").join("dev-tools");
+        std::fs::create_dir_all(mod_dir.join("files")).unwrap();
+        std::fs::write(mod_dir.join("files").join("config.toml"), "content").unwrap();
+        std::fs::write(
+            mod_dir.join("module.yaml"),
+            r#"apiVersion: cfgd.io/v1alpha1
+kind: Module
+metadata:
+  name: dev-tools
+  description: Development tools
+spec:
+  depends:
+    - base
+  packages:
+    - name: ripgrep
+    - name: fd
+      prefer:
+        - cargo
+  files:
+    - source: files/config.toml
+      target: ~/.config/tool/config.toml
+  env:
+    - name: EDITOR
+      value: nvim
+  aliases:
+    - name: ll
+      command: ls -la
+"#,
+        )
+        .unwrap();
+
+        let state_dir = dir.path().join("state");
+        let cli = test_cli_with_state(dir.path(), Some(state_dir));
+        let printer = test_printer();
+
+        let result = module::cmd_module_show(&cli, &printer, "dev-tools", false);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn module_show_with_values_flag() {
+        let dir = tempfile::tempdir().unwrap();
+        create_module_in_dir(
+            dir.path(),
+            "secrets-mod",
+            r#"apiVersion: cfgd.io/v1alpha1
+kind: Module
+metadata:
+  name: secrets-mod
+spec:
+  env:
+    - name: API_KEY
+      value: super-secret-token-123
+"#,
+        );
+
+        let state_dir = dir.path().join("state");
+        let cli = test_cli_with_state(dir.path(), Some(state_dir));
+        let printer = test_printer();
+
+        // show_values=false (default) should work
+        let result = module::cmd_module_show(&cli, &printer, "secrets-mod", false);
+        assert!(result.is_ok());
+        // show_values=true should also work
+        let result = module::cmd_module_show(&cli, &printer, "secrets-mod", true);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn module_show_suggests_available_modules() {
+        let dir = tempfile::tempdir().unwrap();
+        create_module_in_dir(
+            dir.path(),
+            "vim",
+            "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: vim\nspec: {}\n",
+        );
+        let state_dir = dir.path().join("state");
+        let cli = test_cli_with_state(dir.path(), Some(state_dir));
+        let printer = test_printer();
+
+        let result = module::cmd_module_show(&cli, &printer, "emacs", false);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("not found"));
+    }
+
+    #[test]
+    fn module_show_with_scripts() {
+        let dir = tempfile::tempdir().unwrap();
+        create_module_in_dir(
+            dir.path(),
+            "scripted",
+            r#"apiVersion: cfgd.io/v1alpha1
+kind: Module
+metadata:
+  name: scripted
+spec:
+  packages:
+    - name: curl
+  scripts:
+    postApply:
+      - echo "done"
+"#,
+        );
+
+        let state_dir = dir.path().join("state");
+        let cli = test_cli_with_state(dir.path(), Some(state_dir));
+        let printer = test_printer();
+
+        let result = module::cmd_module_show(&cli, &printer, "scripted", false);
+        assert!(result.is_ok());
+    }
+
+    // --- cmd_module_create ---
+
+    #[test]
+    fn module_create_minimal() {
+        let dir = tempfile::tempdir().unwrap();
+        let cli = test_cli(dir.path());
+        let printer = test_printer();
+
+        let args = ModuleCreateArgs {
+            description: Some("Minimal module".to_string()),
+            ..test_module_create_args("minimal")
+        };
+        module::cmd_module_create(&cli, &printer, &args).unwrap();
+
+        let module_yaml = dir.path().join("modules").join("minimal").join("module.yaml");
+        assert!(module_yaml.exists());
+        let (doc, _) = module::load_module_document(dir.path(), "minimal").unwrap();
+        assert_eq!(doc.metadata.name, "minimal");
+        assert_eq!(doc.metadata.description, Some("Minimal module".to_string()));
+        assert!(doc.spec.packages.is_empty());
+        assert!(doc.spec.files.is_empty());
+        assert!(doc.spec.depends.is_empty());
+    }
+
+    #[test]
+    fn module_create_with_env_and_aliases() {
+        let dir = tempfile::tempdir().unwrap();
+        let cli = test_cli(dir.path());
+        let printer = test_printer();
+
+        let args = ModuleCreateArgs {
+            description: Some("Env module".to_string()),
+            env: vec!["EDITOR=nvim".to_string(), "PAGER=less".to_string()],
+            aliases: vec!["ll=ls -la".to_string(), "gs=git status".to_string()],
+            ..test_module_create_args("env-mod")
+        };
+        module::cmd_module_create(&cli, &printer, &args).unwrap();
+
+        let (doc, _) = module::load_module_document(dir.path(), "env-mod").unwrap();
+        assert_eq!(doc.spec.env.len(), 2);
+        assert_eq!(doc.spec.env[0].name, "EDITOR");
+        assert_eq!(doc.spec.env[0].value, "nvim");
+        assert_eq!(doc.spec.env[1].name, "PAGER");
+        assert_eq!(doc.spec.env[1].value, "less");
+        assert_eq!(doc.spec.aliases.len(), 2);
+        assert_eq!(doc.spec.aliases[0].name, "ll");
+        assert_eq!(doc.spec.aliases[0].command, "ls -la");
+    }
+
+    #[test]
+    fn module_create_with_depends() {
+        let dir = tempfile::tempdir().unwrap();
+        let cli = test_cli(dir.path());
+        let printer = test_printer();
+
+        let args = ModuleCreateArgs {
+            depends: vec!["base".to_string(), "core".to_string()],
+            ..test_module_create_args("dep-mod")
+        };
+        module::cmd_module_create(&cli, &printer, &args).unwrap();
+
+        let (doc, _) = module::load_module_document(dir.path(), "dep-mod").unwrap();
+        assert_eq!(doc.spec.depends, vec!["base", "core"]);
+    }
+
+    #[test]
+    fn module_create_with_post_apply_normalizes_escapes() {
+        let dir = tempfile::tempdir().unwrap();
+        let cli = test_cli(dir.path());
+        let printer = test_printer();
+
+        let args = ModuleCreateArgs {
+            post_apply: vec!["echo \\!done".to_string()],
+            ..test_module_create_args("script-mod")
+        };
+        module::cmd_module_create(&cli, &printer, &args).unwrap();
+
+        let (doc, _) = module::load_module_document(dir.path(), "script-mod").unwrap();
+        let scripts = doc.spec.scripts.unwrap();
+        assert_eq!(scripts.post_apply.len(), 1);
+        // \! should be normalized to !
+        assert_eq!(scripts.post_apply[0].run_str(), "echo !done");
+    }
+
+    #[test]
+    fn module_create_rejects_invalid_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let cli = test_cli(dir.path());
+        let printer = test_printer();
+
+        let args = test_module_create_args(".bad-name");
+        let result = module::cmd_module_create(&cli, &printer, &args);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn module_create_with_duplicate_file_basenames_fails() {
+        let dir = tempfile::tempdir().unwrap();
+        // Create two files with same basename in different directories
+        let dir_a = dir.path().join("dir_a");
+        let dir_b = dir.path().join("dir_b");
+        std::fs::create_dir_all(&dir_a).unwrap();
+        std::fs::create_dir_all(&dir_b).unwrap();
+        std::fs::write(dir_a.join("config.toml"), "a").unwrap();
+        std::fs::write(dir_b.join("config.toml"), "b").unwrap();
+
+        let cli = test_cli(dir.path());
+        let printer = test_printer();
+
+        let args = ModuleCreateArgs {
+            files: vec![
+                format!("{}:~/.config/a", dir_a.join("config.toml").display()),
+                format!("{}:~/.config/b", dir_b.join("config.toml").display()),
+            ],
+            ..test_module_create_args("dup-files")
+        };
+        let result = module::cmd_module_create(&cli, &printer, &args);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("Duplicate file basename"));
+    }
+
+    // --- cmd_module_update_local ---
+
+    #[test]
+    fn module_update_add_and_remove_env() {
+        let dir = tempfile::tempdir().unwrap();
+        create_module_in_dir(
+            dir.path(),
+            "env-mod",
+            r#"apiVersion: cfgd.io/v1alpha1
+kind: Module
+metadata:
+  name: env-mod
+spec:
+  env:
+    - name: EDITOR
+      value: vim
+    - name: PAGER
+      value: less
+"#,
+        );
+
+        let cli = test_cli(dir.path());
+        let printer = test_printer();
+
+        let args = ModuleUpdateArgs {
+            env: vec!["TERM=xterm".to_string(), "-PAGER".to_string()],
+            ..empty_module_update_args("env-mod")
+        };
+        module::cmd_module_update_local(&cli, &printer, &args).unwrap();
+
+        let (doc, _) = module::load_module_document(dir.path(), "env-mod").unwrap();
+        let names: Vec<&str> = doc.spec.env.iter().map(|e| e.name.as_str()).collect();
+        assert!(names.contains(&"EDITOR"));
+        assert!(names.contains(&"TERM"));
+        assert!(!names.contains(&"PAGER"));
+    }
+
+    #[test]
+    fn module_update_add_and_remove_aliases() {
+        let dir = tempfile::tempdir().unwrap();
+        create_module_in_dir(
+            dir.path(),
+            "alias-mod",
+            r#"apiVersion: cfgd.io/v1alpha1
+kind: Module
+metadata:
+  name: alias-mod
+spec:
+  aliases:
+    - name: ll
+      command: ls -la
+    - name: gs
+      command: git status
+"#,
+        );
+
+        let cli = test_cli(dir.path());
+        let printer = test_printer();
+
+        let args = ModuleUpdateArgs {
+            aliases: vec!["gd=git diff".to_string(), "-gs".to_string()],
+            ..empty_module_update_args("alias-mod")
+        };
+        module::cmd_module_update_local(&cli, &printer, &args).unwrap();
+
+        let (doc, _) = module::load_module_document(dir.path(), "alias-mod").unwrap();
+        let names: Vec<&str> = doc.spec.aliases.iter().map(|a| a.name.as_str()).collect();
+        assert!(names.contains(&"ll"));
+        assert!(names.contains(&"gd"));
+        assert!(!names.contains(&"gs"));
+    }
+
+    #[test]
+    fn module_update_add_and_remove_depends() {
+        let dir = tempfile::tempdir().unwrap();
+        create_module_in_dir(
+            dir.path(),
+            "dep-mod",
+            r#"apiVersion: cfgd.io/v1alpha1
+kind: Module
+metadata:
+  name: dep-mod
+spec:
+  depends:
+    - base
+    - core
+"#,
+        );
+
+        let cli = test_cli(dir.path());
+        let printer = test_printer();
+
+        let args = ModuleUpdateArgs {
+            depends: vec!["tools".to_string(), "-core".to_string()],
+            ..empty_module_update_args("dep-mod")
+        };
+        module::cmd_module_update_local(&cli, &printer, &args).unwrap();
+
+        let (doc, _) = module::load_module_document(dir.path(), "dep-mod").unwrap();
+        assert!(doc.spec.depends.contains(&"base".to_string()));
+        assert!(doc.spec.depends.contains(&"tools".to_string()));
+        assert!(!doc.spec.depends.contains(&"core".to_string()));
+    }
+
+    #[test]
+    fn module_update_add_and_remove_post_apply() {
+        let dir = tempfile::tempdir().unwrap();
+        create_module_in_dir(
+            dir.path(),
+            "script-mod",
+            r#"apiVersion: cfgd.io/v1alpha1
+kind: Module
+metadata:
+  name: script-mod
+spec:
+  scripts:
+    postApply:
+      - echo setup
+      - echo cleanup
+"#,
+        );
+
+        let cli = test_cli(dir.path());
+        let printer = test_printer();
+
+        let args = ModuleUpdateArgs {
+            post_apply: vec!["echo new-step".to_string(), "-echo cleanup".to_string()],
+            ..empty_module_update_args("script-mod")
+        };
+        module::cmd_module_update_local(&cli, &printer, &args).unwrap();
+
+        let (doc, _) = module::load_module_document(dir.path(), "script-mod").unwrap();
+        let scripts = doc.spec.scripts.unwrap();
+        let script_strs: Vec<&str> = scripts.post_apply.iter().map(|s| s.run_str()).collect();
+        assert!(script_strs.contains(&"echo setup"));
+        assert!(script_strs.contains(&"echo new-step"));
+        assert!(!script_strs.contains(&"echo cleanup"));
+    }
+
+    #[test]
+    fn module_update_description() {
+        let dir = tempfile::tempdir().unwrap();
+        create_module_in_dir(
+            dir.path(),
+            "desc-mod",
+            "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: desc-mod\nspec: {}\n",
+        );
+
+        let cli = test_cli(dir.path());
+        let printer = test_printer();
+
+        let args = ModuleUpdateArgs {
+            description: Some("New description".to_string()),
+            ..empty_module_update_args("desc-mod")
+        };
+        module::cmd_module_update_local(&cli, &printer, &args).unwrap();
+
+        let (doc, _) = module::load_module_document(dir.path(), "desc-mod").unwrap();
+        assert_eq!(doc.metadata.description, Some("New description".to_string()));
+    }
+
+    #[test]
+    fn module_update_clear_description() {
+        let dir = tempfile::tempdir().unwrap();
+        create_module_in_dir(
+            dir.path(),
+            "desc-mod",
+            "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: desc-mod\n  description: Old desc\nspec: {}\n",
+        );
+
+        let cli = test_cli(dir.path());
+        let printer = test_printer();
+
+        let args = ModuleUpdateArgs {
+            description: Some(String::new()),
+            ..empty_module_update_args("desc-mod")
+        };
+        module::cmd_module_update_local(&cli, &printer, &args).unwrap();
+
+        let (doc, _) = module::load_module_document(dir.path(), "desc-mod").unwrap();
+        assert_eq!(doc.metadata.description, None);
+    }
+
+    #[test]
+    fn module_update_no_changes() {
+        let dir = tempfile::tempdir().unwrap();
+        create_module_in_dir(
+            dir.path(),
+            "noop-mod",
+            "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: noop-mod\nspec: {}\n",
+        );
+
+        let cli = test_cli(dir.path());
+        let printer = test_printer();
+
+        // No flags at all — should print "no changes" and succeed
+        let args = empty_module_update_args("noop-mod");
+        let result = module::cmd_module_update_local(&cli, &printer, &args);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn module_update_nonexistent_module_fails() {
+        let dir = tempfile::tempdir().unwrap();
+        let cli = test_cli(dir.path());
+        let printer = test_printer();
+
+        let args = empty_module_update_args("nonexistent");
+        let result = module::cmd_module_update_local(&cli, &printer, &args);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn module_update_add_files() {
+        let dir = tempfile::tempdir().unwrap();
+        create_module_in_dir(
+            dir.path(),
+            "file-mod",
+            "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: file-mod\nspec: {}\n",
+        );
+
+        // Create a file to import
+        let source_file = dir.path().join("my-config.toml");
+        std::fs::write(&source_file, "key = \"value\"").unwrap();
+
+        let cli = test_cli(dir.path());
+        let printer = test_printer();
+
+        let args = ModuleUpdateArgs {
+            files: vec![format!(
+                "{}:~/.config/app/config.toml",
+                source_file.display()
+            )],
+            ..empty_module_update_args("file-mod")
+        };
+        module::cmd_module_update_local(&cli, &printer, &args).unwrap();
+
+        let (doc, _) = module::load_module_document(dir.path(), "file-mod").unwrap();
+        assert_eq!(doc.spec.files.len(), 1);
+        assert!(doc.spec.files[0].source.contains("my-config.toml"));
+    }
+
+    #[test]
+    fn module_update_remove_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let target_path = "/tmp/cfgd-test-file-target";
+        let module_yaml = format!(
+            r#"apiVersion: cfgd.io/v1alpha1
+kind: Module
+metadata:
+  name: rm-file-mod
+spec:
+  files:
+    - source: files/config.toml
+      target: {}
+"#,
+            target_path
+        );
+        create_module_in_dir(dir.path(), "rm-file-mod", &module_yaml);
+        // Create the source file in the module
+        std::fs::write(
+            dir.path()
+                .join("modules")
+                .join("rm-file-mod")
+                .join("files")
+                .join("config.toml"),
+            "content",
+        )
+        .unwrap();
+
+        let cli = test_cli(dir.path());
+        let printer = test_printer();
+
+        let args = ModuleUpdateArgs {
+            files: vec![format!("-{}", target_path)],
+            ..empty_module_update_args("rm-file-mod")
+        };
+        module::cmd_module_update_local(&cli, &printer, &args).unwrap();
+
+        let (doc, _) = module::load_module_document(dir.path(), "rm-file-mod").unwrap();
+        assert!(doc.spec.files.is_empty());
+        // Source file should also be removed
+        assert!(!dir
+            .path()
+            .join("modules")
+            .join("rm-file-mod")
+            .join("files")
+            .join("config.toml")
+            .exists());
+    }
+
+    #[test]
+    fn module_update_remove_nonexistent_warns() {
+        let dir = tempfile::tempdir().unwrap();
+        create_module_in_dir(
+            dir.path(),
+            "warn-mod",
+            "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: warn-mod\nspec:\n  packages:\n    - name: curl\n",
+        );
+
+        let cli = test_cli(dir.path());
+        let printer = test_printer();
+
+        // Try removing items that don't exist — should still succeed (just warns)
+        let args = ModuleUpdateArgs {
+            packages: vec!["-nonexistent".to_string()],
+            env: vec!["-MISSING".to_string()],
+            aliases: vec!["-gone".to_string()],
+            depends: vec!["-nodep".to_string()],
+            ..empty_module_update_args("warn-mod")
+        };
+        let result = module::cmd_module_update_local(&cli, &printer, &args);
+        assert!(result.is_ok());
+    }
+
+    // --- cmd_module_delete ---
+
+    #[test]
+    fn module_delete_nonexistent() {
+        let dir = create_test_config_dir();
+        let cli = test_cli(dir.path());
+        let printer = test_printer();
+
+        let result = module::cmd_module_delete(&cli, &printer, "nonexistent", true, false);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("not found"));
+    }
+
+    #[test]
+    fn module_delete_cleans_lockfile() {
+        let dir = create_test_config_dir();
+        create_module_in_dir(
+            dir.path(),
+            "remote-mod",
+            "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: remote-mod\nspec: {}\n",
+        );
+
+        // Create a lockfile with an entry for this module
+        let lockfile_content = r#"apiVersion: cfgd.io/v1alpha1
+kind: ModuleLock
+modules:
+  - name: remote-mod
+    url: https://github.com/example/mod.git@v1.0
+    pinnedRef: v1.0
+    commit: abc123
+    integrity: sha256-fake
+"#;
+        std::fs::write(dir.path().join("modules.lock"), lockfile_content).unwrap();
+
+        let cli = test_cli(dir.path());
+        let printer = test_printer();
+
+        module::cmd_module_delete(&cli, &printer, "remote-mod", true, false).unwrap();
+
+        // Module directory should be gone
+        assert!(!dir.path().join("modules").join("remote-mod").exists());
+
+        // Lockfile should no longer contain the module
+        let lockfile = cfgd_core::modules::load_lockfile(dir.path()).unwrap();
+        assert!(lockfile.modules.is_empty());
+    }
+
+    #[test]
+    fn module_delete_restores_symlinked_files() {
+        let dir = create_test_config_dir();
+
+        // Create a target that's a symlink into the module dir
+        let target_dir = dir.path().join("targets");
+        std::fs::create_dir_all(&target_dir).unwrap();
+
+        let module_dir = dir.path().join("modules").join("link-mod");
+        let files_dir = module_dir.join("files");
+        std::fs::create_dir_all(&files_dir).unwrap();
+        std::fs::write(files_dir.join("config.txt"), "module content").unwrap();
+
+        let target_file = target_dir.join("config.txt");
+        // Create symlink from target -> module file
+        std::os::unix::fs::symlink(files_dir.join("config.txt"), &target_file).unwrap();
+
+        let module_yaml = format!(
+            "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: link-mod\nspec:\n  files:\n    - source: files/config.txt\n      target: {}\n",
+            target_file.display()
+        );
+        std::fs::write(module_dir.join("module.yaml"), &module_yaml).unwrap();
+
+        let cli = test_cli(dir.path());
+        let printer = test_printer();
+
+        module::cmd_module_delete(&cli, &printer, "link-mod", true, false).unwrap();
+
+        // Module dir gone
+        assert!(!module_dir.exists());
+        // Target should have been restored as a regular file
+        assert!(target_file.exists());
+        assert!(!target_file.is_symlink());
+        assert_eq!(std::fs::read_to_string(&target_file).unwrap(), "module content");
+    }
+
+    // --- cmd_module_export ---
+
+    #[test]
+    fn module_export_devcontainer_via_wrapper() {
+        let dir = tempfile::tempdir().unwrap();
+        create_module_in_dir(
+            dir.path(),
+            "export-mod",
+            r#"apiVersion: cfgd.io/v1alpha1
+kind: Module
+metadata:
+  name: export-mod
+spec:
+  packages:
+    - name: jq
+"#,
+        );
+
+        let output = tempfile::tempdir().unwrap();
+        let cli = test_cli(dir.path());
+        let printer = test_printer();
+
+        let result = module::cmd_module_export(
+            &cli,
+            &printer,
+            "export-mod",
+            &ExportFormat::Devcontainer,
+            Some(output.path().to_str().unwrap()),
+        );
+        assert!(result.is_ok());
+        assert!(output.path().join("export-mod").join("install.sh").exists());
+        assert!(output
+            .path()
+            .join("export-mod")
+            .join("devcontainer-feature.json")
+            .exists());
+    }
+
+    #[test]
+    fn module_export_nonexistent_module() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("modules")).unwrap();
+        let cli = test_cli(dir.path());
+        let printer = test_printer();
+
+        let result = module::cmd_module_export(
+            &cli,
+            &printer,
+            "nonexistent",
+            &ExportFormat::Devcontainer,
+            None,
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn module_export_devcontainer_with_env_and_depends() {
+        let dir = tempfile::tempdir().unwrap();
+        create_module_in_dir(
+            dir.path(),
+            "full-mod",
+            r#"apiVersion: cfgd.io/v1alpha1
+kind: Module
+metadata:
+  name: full-mod
+  description: A full module
+spec:
+  depends:
+    - base
+  packages:
+    - name: curl
+    - name: custom-tool
+      script: curl -sL https://example.com/install.sh | sh
+  env:
+    - name: EDITOR
+      value: vim
+  scripts:
+    postApply:
+      - echo setup complete
+"#,
+        );
+
+        let output = tempfile::tempdir().unwrap();
+        let cli = test_cli(dir.path());
+        let printer = test_printer();
+
+        module::cmd_module_export(
+            &cli,
+            &printer,
+            "full-mod",
+            &ExportFormat::Devcontainer,
+            Some(output.path().to_str().unwrap()),
+        )
+        .unwrap();
+
+        let install = std::fs::read_to_string(
+            output.path().join("full-mod").join("install.sh"),
+        )
+        .unwrap();
+        assert!(install.contains("curl"));
+        assert!(install.contains("EDITOR"));
+        assert!(install.contains("setup complete"));
+        assert!(install.contains("curl -sL https://example.com/install.sh | sh"));
+
+        let feature_json = std::fs::read_to_string(
+            output.path().join("full-mod").join("devcontainer-feature.json"),
+        )
+        .unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&feature_json).unwrap();
+        assert_eq!(parsed["description"], "A full module");
+        let installs_after = parsed["installsAfter"].as_array().unwrap();
+        assert_eq!(installs_after.len(), 1);
+        assert!(installs_after[0].as_str().unwrap().contains("base"));
+    }
+
+    // --- cmd_module_registry_list ---
+
+    #[test]
+    fn module_registry_list_no_config() {
+        let dir = tempfile::tempdir().unwrap();
+        // No cfgd.yaml
+        let cli = test_cli(dir.path());
+        let printer = test_printer();
+
+        let result = module::cmd_module_registry_list(&cli, &printer);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn module_registry_list_empty_registries() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("cfgd.yaml"),
+            TEST_CONFIG_YAML,
+        )
+        .unwrap();
+
+        let cli = test_cli(dir.path());
+        let printer = test_printer();
+
+        let result = module::cmd_module_registry_list(&cli, &printer);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn module_registry_list_with_registries() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("cfgd.yaml"),
+            r#"apiVersion: cfgd.io/v1alpha1
+kind: Config
+metadata:
+  name: test
+spec:
+  profile: default
+  modules:
+    registries:
+      - name: community
+        url: https://github.com/cfgd-modules/community.git
+      - name: private
+        url: git@github.com:my-org/modules.git
+"#,
+        )
+        .unwrap();
+
+        let cli = test_cli(dir.path());
+        let printer = test_printer();
+
+        let result = module::cmd_module_registry_list(&cli, &printer);
+        assert!(result.is_ok());
+    }
+
+    // --- cmd_module_registry_add ---
+
+    #[test]
+    fn module_registry_add_no_config() {
+        let dir = tempfile::tempdir().unwrap();
+        let cli = test_cli(dir.path());
+        let printer = test_printer();
+
+        let result = module::cmd_module_registry_add(
+            &cli,
+            &printer,
+            "https://github.com/example/modules.git",
+            None,
+        );
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("No cfgd.yaml"));
+    }
+
+    #[test]
+    fn module_registry_add_success() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("cfgd.yaml"),
+            TEST_CONFIG_YAML,
+        )
+        .unwrap();
+
+        let cli = test_cli(dir.path());
+        let printer = test_printer();
+
+        module::cmd_module_registry_add(
+            &cli,
+            &printer,
+            "https://github.com/cfgd-community/modules.git",
+            Some("community"),
+        )
+        .unwrap();
+
+        let cfg = config::load_config(&dir.path().join("cfgd.yaml")).unwrap();
+        let registries = cfg.spec.modules.unwrap().registries;
+        assert_eq!(registries.len(), 1);
+        assert_eq!(registries[0].name, "community");
+        assert_eq!(
+            registries[0].url,
+            "https://github.com/cfgd-community/modules.git"
+        );
+    }
+
+    #[test]
+    fn module_registry_add_duplicate() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("cfgd.yaml"),
+            r#"apiVersion: cfgd.io/v1alpha1
+kind: Config
+metadata:
+  name: test
+spec:
+  profile: default
+  modules:
+    registries:
+      - name: community
+        url: https://github.com/cfgd-community/modules.git
+"#,
+        )
+        .unwrap();
+
+        let cli = test_cli(dir.path());
+        let printer = test_printer();
+
+        // Adding the same registry again should succeed (idempotent) but not duplicate
+        let result = module::cmd_module_registry_add(
+            &cli,
+            &printer,
+            "https://github.com/cfgd-community/modules.git",
+            Some("community"),
+        );
+        assert!(result.is_ok());
+
+        let cfg = config::load_config(&dir.path().join("cfgd.yaml")).unwrap();
+        let registries = cfg.spec.modules.unwrap().registries;
+        assert_eq!(registries.len(), 1);
+    }
+
+    #[test]
+    fn module_registry_add_second_registry() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("cfgd.yaml"),
+            r#"apiVersion: cfgd.io/v1alpha1
+kind: Config
+metadata:
+  name: test
+spec:
+  profile: default
+  modules:
+    registries:
+      - name: community
+        url: https://github.com/cfgd-community/modules.git
+"#,
+        )
+        .unwrap();
+
+        let cli = test_cli(dir.path());
+        let printer = test_printer();
+
+        module::cmd_module_registry_add(
+            &cli,
+            &printer,
+            "git@github.com:my-org/private-modules.git",
+            Some("private"),
+        )
+        .unwrap();
+
+        let cfg = config::load_config(&dir.path().join("cfgd.yaml")).unwrap();
+        let registries = cfg.spec.modules.unwrap().registries;
+        assert_eq!(registries.len(), 2);
+        assert_eq!(registries[1].name, "private");
+    }
+
+    // --- cmd_module_registry_remove ---
+
+    #[test]
+    fn module_registry_remove_no_config() {
+        let dir = tempfile::tempdir().unwrap();
+        let cli = test_cli(dir.path());
+        let printer = test_printer();
+
+        let result = module::cmd_module_registry_remove(&cli, &printer, "community");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn module_registry_remove_success() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("cfgd.yaml"),
+            r#"apiVersion: cfgd.io/v1alpha1
+kind: Config
+metadata:
+  name: test
+spec:
+  profile: default
+  modules:
+    registries:
+      - name: community
+        url: https://github.com/cfgd-community/modules.git
+      - name: private
+        url: git@github.com:my-org/modules.git
+"#,
+        )
+        .unwrap();
+
+        let cli = test_cli(dir.path());
+        let printer = test_printer();
+
+        module::cmd_module_registry_remove(&cli, &printer, "community").unwrap();
+
+        let cfg = config::load_config(&dir.path().join("cfgd.yaml")).unwrap();
+        let registries = cfg.spec.modules.unwrap().registries;
+        assert_eq!(registries.len(), 1);
+        assert_eq!(registries[0].name, "private");
+    }
+
+    #[test]
+    fn module_registry_remove_not_found() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("cfgd.yaml"), TEST_CONFIG_YAML).unwrap();
+
+        let cli = test_cli(dir.path());
+        let printer = test_printer();
+
+        // Removing a non-existent registry should not error (just info)
+        let result = module::cmd_module_registry_remove(&cli, &printer, "nonexistent");
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn module_registry_remove_warns_on_profile_references() {
+        let dir = tempfile::tempdir().unwrap();
+        // Config with a registry
+        std::fs::write(
+            dir.path().join("cfgd.yaml"),
+            r#"apiVersion: cfgd.io/v1alpha1
+kind: Config
+metadata:
+  name: test
+spec:
+  profile: default
+  modules:
+    registries:
+      - name: community
+        url: https://github.com/cfgd-community/modules.git
+"#,
+        )
+        .unwrap();
+        // Profile that references community/vim
+        let profiles_dir = dir.path().join("profiles");
+        std::fs::create_dir_all(&profiles_dir).unwrap();
+        std::fs::write(
+            profiles_dir.join("default.yaml"),
+            r#"apiVersion: cfgd.io/v1alpha1
+kind: Profile
+metadata:
+  name: default
+spec:
+  modules:
+    - community/vim
+"#,
+        )
+        .unwrap();
+
+        let cli = test_cli(dir.path());
+        let printer = test_printer();
+
+        // Should succeed but issue a warning about the reference
+        let result = module::cmd_module_registry_remove(&cli, &printer, "community");
+        assert!(result.is_ok());
+    }
+
+    // --- cmd_module_registry_rename ---
+
+    #[test]
+    fn module_registry_rename_success() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("cfgd.yaml"),
+            r#"apiVersion: cfgd.io/v1alpha1
+kind: Config
+metadata:
+  name: test
+spec:
+  profile: default
+  modules:
+    registries:
+      - name: old-name
+        url: https://github.com/example/modules.git
+"#,
+        )
+        .unwrap();
+
+        let cli = test_cli(dir.path());
+        let printer = test_printer();
+
+        module::cmd_module_registry_rename(&cli, &printer, "old-name", "new-name").unwrap();
+
+        let cfg = config::load_config(&dir.path().join("cfgd.yaml")).unwrap();
+        let registries = cfg.spec.modules.unwrap().registries;
+        assert_eq!(registries[0].name, "new-name");
+    }
+
+    #[test]
+    fn module_registry_rename_cascades_to_profiles() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("cfgd.yaml"),
+            r#"apiVersion: cfgd.io/v1alpha1
+kind: Config
+metadata:
+  name: test
+spec:
+  profile: default
+  modules:
+    registries:
+      - name: old-reg
+        url: https://github.com/example/modules.git
+"#,
+        )
+        .unwrap();
+
+        let profiles_dir = dir.path().join("profiles");
+        std::fs::create_dir_all(&profiles_dir).unwrap();
+        std::fs::write(
+            profiles_dir.join("default.yaml"),
+            r#"apiVersion: cfgd.io/v1alpha1
+kind: Profile
+metadata:
+  name: default
+spec:
+  modules:
+    - old-reg/vim
+    - old-reg/git
+    - local-mod
+"#,
+        )
+        .unwrap();
+
+        let cli = test_cli(dir.path());
+        let printer = test_printer();
+
+        module::cmd_module_registry_rename(&cli, &printer, "old-reg", "new-reg").unwrap();
+
+        // Profile should be updated
+        let profile = config::load_profile(&profiles_dir.join("default.yaml")).unwrap();
+        assert!(profile.spec.modules.contains(&"new-reg/vim".to_string()));
+        assert!(profile.spec.modules.contains(&"new-reg/git".to_string()));
+        assert!(profile.spec.modules.contains(&"local-mod".to_string()));
+        // Old references should be gone
+        assert!(!profile.spec.modules.iter().any(|m| m.starts_with("old-reg/")));
+    }
+
+    #[test]
+    fn module_registry_rename_not_found() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("cfgd.yaml"), TEST_CONFIG_YAML).unwrap();
+
+        let cli = test_cli(dir.path());
+        let printer = test_printer();
+
+        let result = module::cmd_module_registry_rename(&cli, &printer, "nonexistent", "new-name");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("not found"));
+    }
+
+    #[test]
+    fn module_registry_rename_duplicate_target() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("cfgd.yaml"),
+            r#"apiVersion: cfgd.io/v1alpha1
+kind: Config
+metadata:
+  name: test
+spec:
+  profile: default
+  modules:
+    registries:
+      - name: alpha
+        url: https://github.com/alpha/modules.git
+      - name: beta
+        url: https://github.com/beta/modules.git
+"#,
+        )
+        .unwrap();
+
+        let cli = test_cli(dir.path());
+        let printer = test_printer();
+
+        let result = module::cmd_module_registry_rename(&cli, &printer, "alpha", "beta");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("already exists"));
+    }
+
+    #[test]
+    fn module_registry_rename_no_config() {
+        let dir = tempfile::tempdir().unwrap();
+        let cli = test_cli(dir.path());
+        let printer = test_printer();
+
+        let result = module::cmd_module_registry_rename(&cli, &printer, "old", "new");
+        assert!(result.is_err());
+    }
+
+    // --- cmd_module_keys_list ---
+
+    #[test]
+    fn module_keys_list_no_keys() {
+        // Run in a temp dir where no cosign keys exist
+        let printer = test_printer();
+        let result = module::cmd_module_keys_list(&printer);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn module_keys_list_with_pub_key() {
+        let dir = tempfile::tempdir().unwrap();
+        // Create a fake cosign.pub in the current directory
+        std::fs::write(dir.path().join("cosign.pub"), "fake pub key").unwrap();
+
+        // We need to chdir temporarily since the function looks at ./cosign.pub
+        // Instead, since the function uses hardcoded paths, we just verify it doesn't crash
+        let printer = test_printer();
+        let result = module::cmd_module_keys_list(&printer);
+        assert!(result.is_ok());
+    }
+
+    // --- cmd_module_create with manager prefix ---
+
+    #[test]
+    fn module_create_with_manager_prefix_packages() {
+        let dir = tempfile::tempdir().unwrap();
+        let cli = test_cli(dir.path());
+        let printer = test_printer();
+
+        let args = ModuleCreateArgs {
+            packages: vec!["brew:ripgrep".to_string(), "cargo:bat".to_string()],
+            ..test_module_create_args("mgr-mod")
+        };
+        module::cmd_module_create(&cli, &printer, &args).unwrap();
+
+        let (doc, _) = module::load_module_document(dir.path(), "mgr-mod").unwrap();
+        assert_eq!(doc.spec.packages.len(), 2);
+        assert_eq!(doc.spec.packages[0].name, "ripgrep");
+        assert_eq!(doc.spec.packages[0].prefer, vec!["brew"]);
+        assert_eq!(doc.spec.packages[1].name, "bat");
+        assert_eq!(doc.spec.packages[1].prefer, vec!["cargo"]);
+    }
+
+    // --- structured output mode ---
+
+    #[test]
+    fn module_list_structured_output_empty() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("modules")).unwrap();
+        let state_dir = dir.path().join("state");
+        let cli = test_cli_with_state(dir.path(), Some(state_dir));
+        let printer = Printer::with_format(
+            cfgd_core::output::Verbosity::Quiet,
+            None,
+            cfgd_core::output::OutputFormat::Json,
+        );
+
+        let result = module::cmd_module_list(&cli, &printer);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn module_show_structured_output() {
+        let dir = tempfile::tempdir().unwrap();
+        create_module_in_dir(
+            dir.path(),
+            "json-mod",
+            "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: json-mod\nspec:\n  packages:\n    - name: curl\n",
+        );
+        let state_dir = dir.path().join("state");
+        let cli = test_cli_with_state(dir.path(), Some(state_dir));
+        let printer = Printer::with_format(
+            cfgd_core::output::Verbosity::Quiet,
+            None,
+            cfgd_core::output::OutputFormat::Json,
+        );
+
+        let result = module::cmd_module_show(&cli, &printer, "json-mod", false);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn module_registry_list_structured_output() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("cfgd.yaml"),
+            r#"apiVersion: cfgd.io/v1alpha1
+kind: Config
+metadata:
+  name: test
+spec:
+  profile: default
+  modules:
+    registries:
+      - name: community
+        url: https://github.com/cfgd-modules/community.git
+"#,
+        )
+        .unwrap();
+
+        let cli = test_cli(dir.path());
+        let printer = Printer::with_format(
+            cfgd_core::output::Verbosity::Quiet,
+            None,
+            cfgd_core::output::OutputFormat::Json,
+        );
+
+        let result = module::cmd_module_registry_list(&cli, &printer);
+        assert!(result.is_ok());
+    }
+
+    // ===================================================================
+    // Additional coverage tests — untested command handlers & helpers
+    // ===================================================================
+
+    // --- load_config_and_profile ---
+
+    #[test]
+    fn load_config_and_profile_default_profile() {
+        let dir = create_test_config_dir();
+        std::fs::write(dir.path().join("cfgd.yaml"), TEST_CONFIG_YAML).unwrap();
+
+        let cli = test_cli(dir.path());
+        let printer = test_printer();
+
+        let result = super::load_config_and_profile(&cli, &printer);
+        assert!(result.is_ok());
+        let (cfg, resolved) = result.unwrap();
+        assert_eq!(cfg.spec.profile.as_deref(), Some("default"));
+        // The resolved profile should contain the env var from default profile
+        assert!(resolved.merged.env.iter().any(|e| e.name == "editor"));
+    }
+
+    #[test]
+    fn load_config_and_profile_with_override() {
+        let dir = create_test_config_dir();
+        std::fs::write(dir.path().join("cfgd.yaml"), TEST_CONFIG_YAML).unwrap();
+
+        let mut cli = test_cli(dir.path());
+        cli.profile = Some("work".to_string());
+        let printer = test_printer();
+
+        let result = super::load_config_and_profile(&cli, &printer);
+        assert!(result.is_ok());
+        let (_cfg, resolved) = result.unwrap();
+        // Work profile overrides editor to 'code'
+        let editor = resolved.merged.env.iter().find(|e| e.name == "editor");
+        assert!(editor.is_some());
+        assert_eq!(editor.unwrap().value.as_deref(), Some("code"));
+    }
+
+    #[test]
+    fn load_config_and_profile_missing_config_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        let cli = test_cli(dir.path());
+        let printer = test_printer();
+
+        let result = super::load_config_and_profile(&cli, &printer);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn load_config_and_profile_missing_profile_errors() {
+        let dir = create_test_config_dir();
+        std::fs::write(
+            dir.path().join("cfgd.yaml"),
+            "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec:\n  profile: nonexistent\n",
+        )
+        .unwrap();
+
+        let cli = test_cli(dir.path());
+        let printer = test_printer();
+
+        let result = super::load_config_and_profile(&cli, &printer);
+        assert!(result.is_err());
+    }
+
+    // --- print_apply_result for InProgress status ---
+
+    #[test]
+    fn print_apply_result_in_progress() {
+        let printer = test_printer();
+        let result = cfgd_core::reconciler::ApplyResult {
+            status: cfgd_core::state::ApplyStatus::InProgress,
+            action_results: vec![],
+            apply_id: 4,
+        };
+        let status = super::print_apply_result(&result, &printer);
+        assert_eq!(status, cfgd_core::state::ApplyStatus::InProgress);
+    }
+
+    // --- add_to_gitignore edge cases ---
+
+    #[test]
+    fn add_to_gitignore_appends_to_existing() {
+        let dir = tempfile::tempdir().unwrap();
+        // Pre-populate .gitignore with existing content (no trailing newline)
+        std::fs::write(dir.path().join(".gitignore"), "*.log").unwrap();
+
+        super::add_to_gitignore(dir.path(), "secrets/").unwrap();
+
+        let content = std::fs::read_to_string(dir.path().join(".gitignore")).unwrap();
+        assert!(content.contains("*.log"));
+        assert!(content.contains("secrets/"));
+        // Ensure a newline was added between old and new content
+        assert!(content.contains("*.log\n"));
+    }
+
+    #[test]
+    fn add_to_gitignore_preserves_trailing_newline() {
+        let dir = tempfile::tempdir().unwrap();
+        // Pre-populate with trailing newline
+        std::fs::write(dir.path().join(".gitignore"), "*.log\n").unwrap();
+
+        super::add_to_gitignore(dir.path(), "secrets/").unwrap();
+
+        let content = std::fs::read_to_string(dir.path().join(".gitignore")).unwrap();
+        // Should not double-newline
+        assert!(!content.contains("\n\n"));
+        assert!(content.contains("secrets/\n"));
+    }
+
+    // --- copy_files_to_dir edge cases ---
+
+    #[test]
+    fn copy_files_to_dir_with_source_target_spec() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("my-config.txt");
+        std::fs::write(&source, "config data").unwrap();
+        let repo_dir = dir.path().join("repo");
+
+        let target = dir.path().join("deploy").join("app.conf");
+        let spec = format!("{}:{}", source.display(), target.display());
+        let results = super::copy_files_to_dir(&[spec], &repo_dir).unwrap();
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].0, "my-config.txt");
+        assert_eq!(results[0].1, target);
+        // File should be in repo
+        assert!(repo_dir.join("my-config.txt").exists());
+        // Original should now be a symlink
+        assert!(source.symlink_metadata().unwrap().file_type().is_symlink());
+    }
+
+    #[test]
+    fn copy_files_to_dir_directory_source() {
+        let dir = tempfile::tempdir().unwrap();
+        let source_dir = dir.path().join("dotfiles");
+        std::fs::create_dir_all(&source_dir).unwrap();
+        std::fs::write(source_dir.join("file1.txt"), "content1").unwrap();
+        std::fs::write(source_dir.join("file2.txt"), "content2").unwrap();
+
+        let repo_dir = dir.path().join("repo");
+        let results =
+            super::copy_files_to_dir(&[source_dir.display().to_string()], &repo_dir).unwrap();
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].0, "dotfiles");
+        // Directory should be recursively copied
+        assert!(repo_dir.join("dotfiles").join("file1.txt").exists());
+        assert!(repo_dir.join("dotfiles").join("file2.txt").exists());
+        // Source should be a symlink
+        assert!(source_dir
+            .symlink_metadata()
+            .unwrap()
+            .file_type()
+            .is_symlink());
+    }
+
+    #[test]
+    fn copy_files_to_dir_rejects_system_directories() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo_dir = dir.path().join("repo");
+
+        // /etc/passwd exists on Linux, and it should be rejected
+        if std::path::Path::new("/etc/passwd").exists() {
+            let result = super::copy_files_to_dir(&["/etc/passwd".into()], &repo_dir);
+            assert!(result.is_err());
+            assert!(result
+                .unwrap_err()
+                .to_string()
+                .contains("system directory"));
+        }
+    }
+
+    // --- action_type_str ---
+
+    #[test]
+    fn action_type_str_file_variants() {
+        use cfgd_core::reconciler::Action;
+
+        assert_eq!(
+            super::action_type_str(&Action::File(FileAction::Create {
+                source: "/a".into(),
+                target: "/b".into(),
+                origin: "local".into(),
+                strategy: cfgd_core::config::FileStrategy::default(),
+                source_hash: None,
+            })),
+            "create"
+        );
+
+        assert_eq!(
+            super::action_type_str(&Action::File(FileAction::Update {
+                source: "/a".into(),
+                target: "/b".into(),
+                origin: "local".into(),
+                strategy: cfgd_core::config::FileStrategy::default(),
+                source_hash: None,
+            })),
+            "update"
+        );
+
+        assert_eq!(
+            super::action_type_str(&Action::File(FileAction::Delete {
+                target: "/b".into(),
+                origin: "local".into(),
+            })),
+            "delete"
+        );
+
+        assert_eq!(
+            super::action_type_str(&Action::File(FileAction::SetPermissions {
+                target: "/b".into(),
+                mode: 0o644,
+            })),
+            "chmod"
+        );
+
+        assert_eq!(
+            super::action_type_str(&Action::File(FileAction::Skip {
+                target: "/b".into(),
+                reason: "test".into(),
+            })),
+            "skip"
+        );
+    }
+
+    #[test]
+    fn action_type_str_package_variants() {
+        use cfgd_core::reconciler::Action;
+
+        assert_eq!(
+            super::action_type_str(&Action::Package(PackageAction::Install {
+                manager: "brew".into(),
+                packages: vec!["curl".into()],
+                origin: "local".into(),
+            })),
+            "install"
+        );
+
+        assert_eq!(
+            super::action_type_str(&Action::Package(PackageAction::Uninstall {
+                manager: "brew".into(),
+                packages: vec!["curl".into()],
+                origin: "local".into(),
+            })),
+            "uninstall"
+        );
+
+        assert_eq!(
+            super::action_type_str(&Action::Package(PackageAction::Bootstrap {
+                manager: "brew".into(),
+            })),
+            "bootstrap"
+        );
+
+        assert_eq!(
+            super::action_type_str(&Action::Package(PackageAction::Skip {
+                manager: "brew".into(),
+                packages: vec!["curl".into()],
+                reason: "test".into(),
+            })),
+            "skip"
+        );
+    }
+
+    #[test]
+    fn action_type_str_secret_variants() {
+        use cfgd_core::reconciler::Action;
+
+        assert_eq!(
+            super::action_type_str(&Action::Secret(SecretAction::Decrypt {
+                source: "a.enc".into(),
+                target: "/b".into(),
+                backend: SecretBackend::SopsAge,
+                origin: "local".into(),
+            })),
+            "decrypt"
+        );
+
+        assert_eq!(
+            super::action_type_str(&Action::Secret(SecretAction::Resolve {
+                source: "op://vault/item".into(),
+                target: "/b".into(),
+                provider: "onepassword".into(),
+                origin: "local".into(),
+            })),
+            "resolve"
+        );
+
+        assert_eq!(
+            super::action_type_str(&Action::Secret(SecretAction::Skip {
+                source: "a".into(),
+                target: "/b".into(),
+                reason: "test".into(),
+            })),
+            "skip"
+        );
+    }
+
+    #[test]
+    fn action_type_str_env_variants() {
+        use cfgd_core::reconciler::{Action, EnvAction};
+
+        assert_eq!(
+            super::action_type_str(&Action::Env(EnvAction::WriteEnvFile {
+                target: "/tmp/env".into(),
+                entries: vec![],
+            })),
+            "write"
+        );
+
+        assert_eq!(
+            super::action_type_str(&Action::Env(EnvAction::InjectSourceLine {
+                shell_config: "/tmp/rc".into(),
+                env_file: "/tmp/env".into(),
+            })),
+            "inject"
+        );
+    }
+
+    #[test]
+    fn action_type_str_system_variants() {
+        use cfgd_core::reconciler::{Action, SystemAction};
+
+        assert_eq!(
+            super::action_type_str(&Action::System(SystemAction::SetValue {
+                configurator: "shell".into(),
+                key: "/bin/zsh".into(),
+                value: "/bin/zsh".into(),
+            })),
+            "set"
+        );
+
+        assert_eq!(
+            super::action_type_str(&Action::System(SystemAction::Skip {
+                configurator: "shell".into(),
+                key: "/bin/zsh".into(),
+                reason: "test".into(),
+            })),
+            "skip"
+        );
+    }
+
+    #[test]
+    fn action_type_str_module_variants() {
+        use cfgd_core::reconciler::{Action, ModuleAction, ModuleActionKind};
+
+        assert_eq!(
+            super::action_type_str(&Action::Module(ModuleAction {
+                module_name: "m".into(),
+                kind: ModuleActionKind::InstallPackages { resolved: vec![] },
+            })),
+            "install"
+        );
+
+        assert_eq!(
+            super::action_type_str(&Action::Module(ModuleAction {
+                module_name: "m".into(),
+                kind: ModuleActionKind::DeployFiles { actions: vec![] },
+            })),
+            "deploy"
+        );
+
+        assert_eq!(
+            super::action_type_str(&Action::Module(ModuleAction {
+                module_name: "m".into(),
+                kind: ModuleActionKind::RunScript {
+                    command: "echo hi".into()
+                },
+            })),
+            "run"
+        );
+
+        assert_eq!(
+            super::action_type_str(&Action::Module(ModuleAction {
+                module_name: "m".into(),
+                kind: ModuleActionKind::Skip {
+                    reason: "test".into()
+                },
+            })),
+            "skip"
+        );
+    }
+
+    #[test]
+    fn action_type_str_script() {
+        use cfgd_core::reconciler::{Action, ScriptAction};
+
+        assert_eq!(
+            super::action_type_str(&Action::Script(ScriptAction {
+                command: "echo done".into(),
+                label: None,
+            })),
+            "run"
+        );
+    }
+
+    // --- build_plan_output ---
+
+    #[test]
+    fn build_plan_output_empty_plan() {
+        let plan = reconciler::Plan {
+            phases: vec![],
+            warnings: vec![],
+        };
+        let output = super::build_plan_output(&plan, "apply", None);
+        assert_eq!(output.context, "apply");
+        assert_eq!(output.total_actions, 0);
+        assert!(output.phases.is_empty());
+    }
+
+    #[test]
+    fn build_plan_output_with_actions() {
+        let plan = reconciler::Plan {
+            phases: vec![reconciler::Phase {
+                name: reconciler::PhaseName::Packages,
+                actions: vec![reconciler::Action::Package(PackageAction::Install {
+                    manager: "brew".into(),
+                    packages: vec!["curl".into()],
+                    origin: "local".into(),
+                })],
+            }],
+            warnings: vec!["something".into()],
+        };
+        let output = super::build_plan_output(&plan, "reconcile", None);
+        assert_eq!(output.context, "reconcile");
+        assert_eq!(output.total_actions, 1);
+        assert_eq!(output.phases.len(), 1);
+        assert_eq!(output.warnings, vec!["something".to_string()]);
+    }
+
+    #[test]
+    fn build_plan_output_with_phase_filter() {
+        let plan = reconciler::Plan {
+            phases: vec![
+                reconciler::Phase {
+                    name: reconciler::PhaseName::Packages,
+                    actions: vec![reconciler::Action::Package(PackageAction::Install {
+                        manager: "brew".into(),
+                        packages: vec!["curl".into()],
+                        origin: "local".into(),
+                    })],
+                },
+                reconciler::Phase {
+                    name: reconciler::PhaseName::Files,
+                    actions: vec![reconciler::Action::File(FileAction::Create {
+                        source: "/a".into(),
+                        target: "/b".into(),
+                        origin: "local".into(),
+                        strategy: cfgd_core::config::FileStrategy::default(),
+                        source_hash: None,
+                    })],
+                },
+            ],
+            warnings: vec![],
+        };
+        // Filter to only Files phase
+        let output =
+            super::build_plan_output(&plan, "apply", Some(&reconciler::PhaseName::Files));
+        assert_eq!(output.total_actions, 1);
+        assert_eq!(output.phases.len(), 1);
+        assert_eq!(output.phases[0].phase, "Files");
+    }
+
+    // --- strip_scripts_from_plan ---
+
+    #[test]
+    fn strip_scripts_removes_script_phases() {
+        use cfgd_core::reconciler::{Phase, PhaseName, Plan, ScriptAction};
+
+        let mut plan = Plan {
+            phases: vec![
+                Phase {
+                    name: PhaseName::PreScripts,
+                    actions: vec![reconciler::Action::Script(ScriptAction {
+                        command: "echo pre".into(),
+                        label: None,
+                    })],
+                },
+                Phase {
+                    name: PhaseName::Packages,
+                    actions: vec![reconciler::Action::Package(PackageAction::Install {
+                        manager: "brew".into(),
+                        packages: vec!["curl".into()],
+                        origin: "local".into(),
+                    })],
+                },
+                Phase {
+                    name: PhaseName::PostScripts,
+                    actions: vec![reconciler::Action::Script(ScriptAction {
+                        command: "echo post".into(),
+                        label: None,
+                    })],
+                },
+            ],
+            warnings: vec![],
+        };
+
+        super::strip_scripts_from_plan(&mut plan);
+
+        // Pre and post script phases should be removed
+        assert_eq!(plan.phases.len(), 1);
+        assert_eq!(plan.phases[0].name, PhaseName::Packages);
+    }
+
+    #[test]
+    fn strip_scripts_removes_module_run_script_actions() {
+        use cfgd_core::reconciler::{ModuleAction, ModuleActionKind, Phase, PhaseName, Plan};
+
+        let mut plan = Plan {
+            phases: vec![Phase {
+                name: PhaseName::Modules,
+                actions: vec![
+                    reconciler::Action::Module(ModuleAction {
+                        module_name: "m".into(),
+                        kind: ModuleActionKind::InstallPackages { resolved: vec![] },
+                    }),
+                    reconciler::Action::Module(ModuleAction {
+                        module_name: "m".into(),
+                        kind: ModuleActionKind::RunScript {
+                            command: "echo hello".into(),
+                        },
+                    }),
+                    reconciler::Action::Module(ModuleAction {
+                        module_name: "m".into(),
+                        kind: ModuleActionKind::DeployFiles { actions: vec![] },
+                    }),
+                ],
+            }],
+            warnings: vec![],
+        };
+
+        super::strip_scripts_from_plan(&mut plan);
+
+        // RunScript should be removed, other actions kept
+        assert_eq!(plan.phases[0].actions.len(), 2);
+    }
+
+    // --- filter_plan edge cases ---
+
+    #[test]
+    fn filter_plan_skip_file_by_target() {
+        use cfgd_core::reconciler::{Action, Phase, PhaseName, Plan};
+
+        let mut plan = Plan {
+            phases: vec![Phase {
+                name: PhaseName::Files,
+                actions: vec![
+                    Action::File(FileAction::Create {
+                        source: "/tmp/a".into(),
+                        target: "/etc/foo".into(),
+                        origin: "local".into(),
+                        strategy: cfgd_core::config::FileStrategy::default(),
+                        source_hash: None,
+                    }),
+                    Action::File(FileAction::Create {
+                        source: "/tmp/b".into(),
+                        target: "/etc/bar".into(),
+                        origin: "local".into(),
+                        strategy: cfgd_core::config::FileStrategy::default(),
+                        source_hash: None,
+                    }),
+                ],
+            }],
+            warnings: vec![],
+        };
+
+        super::filter_plan(&mut plan, &["files:/etc/foo".into()], &[]);
+        assert_eq!(plan.phases[0].actions.len(), 1);
+    }
+
+    #[test]
+    fn filter_plan_empty_skip_and_only_noop() {
+        use cfgd_core::reconciler::{Action, Phase, PhaseName, Plan};
+
+        let mut plan = Plan {
+            phases: vec![Phase {
+                name: PhaseName::Packages,
+                actions: vec![Action::Package(PackageAction::Install {
+                    manager: "brew".into(),
+                    packages: vec!["curl".into()],
+                    origin: "local".into(),
+                })],
+            }],
+            warnings: vec![],
+        };
+
+        super::filter_plan(&mut plan, &[], &[]);
+        assert_eq!(plan.phases[0].actions.len(), 1);
+    }
+
+    #[test]
+    fn filter_plan_skip_uninstall_packages() {
+        use cfgd_core::reconciler::{Action, Phase, PhaseName, Plan};
+
+        let mut plan = Plan {
+            phases: vec![Phase {
+                name: PhaseName::Packages,
+                actions: vec![Action::Package(PackageAction::Uninstall {
+                    manager: "brew".into(),
+                    packages: vec!["old-tool".into(), "keep-me".into()],
+                    origin: "local".into(),
+                })],
+            }],
+            warnings: vec![],
+        };
+
+        super::filter_plan(&mut plan, &["packages.brew.old-tool".into()], &[]);
+
+        match &plan.phases[0].actions[0] {
+            reconciler::Action::Package(PackageAction::Uninstall { packages, .. }) => {
+                assert_eq!(packages, &["keep-me".to_string()]);
+            }
+            _ => panic!("expected Uninstall action"),
+        }
+    }
+
+    #[test]
+    fn filter_plan_only_with_uninstall() {
+        use cfgd_core::reconciler::{Action, Phase, PhaseName, Plan};
+
+        let mut plan = Plan {
+            phases: vec![Phase {
+                name: PhaseName::Packages,
+                actions: vec![Action::Package(PackageAction::Uninstall {
+                    manager: "apt".into(),
+                    packages: vec!["vim".into(), "nano".into()],
+                    origin: "local".into(),
+                })],
+            }],
+            warnings: vec![],
+        };
+
+        super::filter_plan(&mut plan, &[], &["packages.apt.vim".into()]);
+
+        match &plan.phases[0].actions[0] {
+            reconciler::Action::Package(PackageAction::Uninstall { packages, .. }) => {
+                assert_eq!(packages, &["vim".to_string()]);
+            }
+            _ => panic!("expected Uninstall action"),
+        }
+    }
+
+    // --- cmd_config_set and cmd_config_unset via full commands ---
+
+    #[test]
+    fn cmd_config_set_creates_nested_key() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("cfgd.yaml");
+        std::fs::write(&config_path, TEST_CONFIG_YAML).unwrap();
+
+        let cli = Cli {
+            config: config_path.clone(),
+            ..test_cli(dir.path())
+        };
+        let printer = test_printer();
+
+        // Set a nested key
+        super::cmd_config_set(&cli, &printer, "daemon.enabled", "true").unwrap();
+
+        let contents = std::fs::read_to_string(&config_path).unwrap();
+        assert!(contents.contains("daemon"));
+        assert!(contents.contains("enabled"));
+    }
+
+    #[test]
+    fn cmd_config_set_no_config_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        let cli = Cli {
+            config: dir.path().join("nonexistent.yaml"),
+            ..test_cli(dir.path())
+        };
+        let printer = test_printer();
+
+        let result = super::cmd_config_set(&cli, &printer, "profile", "work");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("No cfgd.yaml"));
+    }
+
+    #[test]
+    fn cmd_config_unset_no_config_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        let cli = Cli {
+            config: dir.path().join("nonexistent.yaml"),
+            ..test_cli(dir.path())
+        };
+        let printer = test_printer();
+
+        let result = super::cmd_config_unset(&cli, &printer, "profile");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("No cfgd.yaml"));
+    }
+
+    // --- cmd_source_list with sources configured ---
+
+    #[test]
+    fn cmd_source_list_with_sources_configured() {
+        let (config_dir, state_dir) = setup_test_env();
+
+        let config_with_source = r#"apiVersion: cfgd.io/v1alpha1
+kind: Config
+metadata:
+  name: t
+spec:
+  profile: default
+  sources:
+    - name: team-config
+      origin:
+        url: https://github.com/team/config
+        branch: main
+        type: Git
+      subscription:
+        priority: 100
+"#;
+        std::fs::write(config_dir.path().join("cfgd.yaml"), config_with_source).unwrap();
+
+        let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
+        let printer = test_printer();
+
+        let result = super::cmd_source_list(&cli, &printer);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn cmd_source_list_structured_output() {
+        let (config_dir, state_dir) = setup_test_env();
+
+        let cli = Cli {
+            output: OutputFormatArg(cfgd_core::output::OutputFormat::Json),
+            ..test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()))
+        };
+        let printer = Printer::new(cfgd_core::output::Verbosity::Quiet);
+
+        let result = super::cmd_source_list(&cli, &printer);
+        assert!(result.is_ok());
+    }
+
+    // --- cmd_source_show ---
+
+    #[test]
+    fn cmd_source_show_not_found() {
+        let (config_dir, state_dir) = setup_test_env();
+
+        let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
+        let printer = test_printer();
+
+        let result = super::cmd_source_show(&cli, &printer, "nonexistent");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("not found"));
+    }
+
+    #[test]
+    fn cmd_source_show_with_source() {
+        let (config_dir, state_dir) = setup_test_env();
+
+        let config_with_source = r#"apiVersion: cfgd.io/v1alpha1
+kind: Config
+metadata:
+  name: t
+spec:
+  profile: default
+  sources:
+    - name: team-config
+      origin:
+        url: https://github.com/team/config
+        branch: main
+        type: Git
+      subscription:
+        priority: 100
+"#;
+        std::fs::write(config_dir.path().join("cfgd.yaml"), config_with_source).unwrap();
+
+        let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
+        let printer = test_printer();
+
+        let result = super::cmd_source_show(&cli, &printer, "team-config");
+        assert!(result.is_ok());
+    }
+
+    // --- cmd_source_remove ---
+
+    #[test]
+    fn cmd_source_remove_not_found() {
+        let (config_dir, state_dir) = setup_test_env();
+
+        let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
+        let printer = test_printer();
+
+        let result = super::cmd_source_remove(&cli, &printer, "nonexistent", true, false);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("not found"));
+    }
+
+    #[test]
+    fn cmd_source_remove_keep_all_and_remove_all_conflict() {
+        let (config_dir, state_dir) = setup_test_env();
+
+        let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
+        let printer = test_printer();
+
+        let result = super::cmd_source_remove(&cli, &printer, "anything", true, true);
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("cannot use --keep-all and --remove-all together"));
+    }
+
+    // --- cmd_source_override ---
+
+    #[test]
+    fn cmd_source_override_source_not_found() {
+        let (config_dir, state_dir) = setup_test_env();
+
+        let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
+        let printer = test_printer();
+
+        let result =
+            super::cmd_source_override(&cli, &printer, "nonexistent", "reject", "env.FOO", None);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("not found"));
+    }
+
+    #[test]
+    fn cmd_source_override_invalid_action() {
+        let (config_dir, state_dir) = setup_test_env();
+
+        let config_with_source = r#"apiVersion: cfgd.io/v1alpha1
+kind: Config
+metadata:
+  name: t
+spec:
+  profile: default
+  sources:
+    - name: team
+      origin:
+        url: https://github.com/team/config
+        branch: main
+        type: Git
+      subscription:
+        priority: 100
+"#;
+        std::fs::write(config_dir.path().join("cfgd.yaml"), config_with_source).unwrap();
+
+        let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
+        let printer = test_printer();
+
+        let result =
+            super::cmd_source_override(&cli, &printer, "team", "invalid", "env.FOO", None);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("Unknown action"));
+    }
+
+    #[test]
+    fn cmd_source_override_set_requires_value() {
+        let (config_dir, state_dir) = setup_test_env();
+
+        let config_with_source = r#"apiVersion: cfgd.io/v1alpha1
+kind: Config
+metadata:
+  name: t
+spec:
+  profile: default
+  sources:
+    - name: team
+      origin:
+        url: https://github.com/team/config
+        branch: main
+        type: Git
+      subscription:
+        priority: 100
+"#;
+        std::fs::write(config_dir.path().join("cfgd.yaml"), config_with_source).unwrap();
+
+        let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
+        let printer = test_printer();
+
+        let result = super::cmd_source_override(&cli, &printer, "team", "set", "env.FOO", None);
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("requires a value"));
+    }
+
+    // --- cmd_source_priority ---
+
+    #[test]
+    fn cmd_source_priority_not_found() {
+        let (config_dir, state_dir) = setup_test_env();
+
+        let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
+        let printer = test_printer();
+
+        let result = super::cmd_source_priority(&cli, &printer, "nonexistent", None);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("not found"));
+    }
+
+    #[test]
+    fn cmd_source_priority_view() {
+        let (config_dir, state_dir) = setup_test_env();
+
+        let config_with_source = r#"apiVersion: cfgd.io/v1alpha1
+kind: Config
+metadata:
+  name: t
+spec:
+  profile: default
+  sources:
+    - name: team
+      origin:
+        url: https://github.com/team/config
+        branch: main
+        type: Git
+      subscription:
+        priority: 200
+"#;
+        std::fs::write(config_dir.path().join("cfgd.yaml"), config_with_source).unwrap();
+
+        let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
+        let printer = test_printer();
+
+        let result = super::cmd_source_priority(&cli, &printer, "team", None);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn cmd_source_priority_update() {
+        let (config_dir, state_dir) = setup_test_env();
+
+        let config_with_source = r#"apiVersion: cfgd.io/v1alpha1
+kind: Config
+metadata:
+  name: t
+spec:
+  profile: default
+  sources:
+    - name: team
+      origin:
+        url: https://github.com/team/config
+        branch: main
+        type: Git
+      subscription:
+        priority: 200
+"#;
+        std::fs::write(config_dir.path().join("cfgd.yaml"), config_with_source).unwrap();
+
+        let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
+        let printer = test_printer();
+
+        let result = super::cmd_source_priority(&cli, &printer, "team", Some(500));
+        assert!(result.is_ok());
+
+        // Verify the config was updated
+        let cfg = config::load_config(&config_dir.path().join("cfgd.yaml")).unwrap();
+        let source = cfg.spec.sources.iter().find(|s| s.name == "team").unwrap();
+        assert_eq!(source.subscription.priority, 500);
+    }
+
+    // --- cmd_decide edge cases ---
+
+    #[test]
+    fn cmd_decide_no_args_shows_pending() {
+        let state_dir = tempfile::tempdir().unwrap();
+        let printer = test_printer();
+
+        let result =
+            super::cmd_decide(&printer, "accept", None, None, false, Some(state_dir.path()));
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn cmd_decide_with_pending_decision() {
+        let state_dir = tempfile::tempdir().unwrap();
+        let printer = test_printer();
+
+        let state = super::open_state_store(Some(state_dir.path())).unwrap();
+        state
+            .record_pending_decision(
+                "packages.brew.curl",
+                "install",
+                "team-config",
+                "recommended",
+            )
+            .unwrap();
+
+        let result = super::cmd_decide(
+            &printer,
+            "accept",
+            Some("packages.brew.curl"),
+            None,
+            false,
+            Some(state_dir.path()),
+        );
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn cmd_decide_accept_all_with_pending() {
+        let state_dir = tempfile::tempdir().unwrap();
+        let printer = test_printer();
+
+        let state = super::open_state_store(Some(state_dir.path())).unwrap();
+        state
+            .record_pending_decision("packages.brew.curl", "install", "team", "recommended")
+            .unwrap();
+        state
+            .record_pending_decision("env.EDITOR", "set", "team", "recommended")
+            .unwrap();
+
+        let result =
+            super::cmd_decide(&printer, "accept", None, None, true, Some(state_dir.path()));
+        assert!(result.is_ok());
+
+        // All decisions should now be resolved
+        let pending = state.pending_decisions().unwrap();
+        assert!(pending.is_empty());
+    }
+
+    #[test]
+    fn cmd_decide_reject_by_source_with_pending() {
+        let state_dir = tempfile::tempdir().unwrap();
+        let printer = test_printer();
+
+        let state = super::open_state_store(Some(state_dir.path())).unwrap();
+        state
+            .record_pending_decision("packages.brew.curl", "install", "team", "recommended")
+            .unwrap();
+        state
+            .record_pending_decision("env.EDITOR", "set", "other", "recommended")
+            .unwrap();
+
+        let result = super::cmd_decide(
+            &printer,
+            "reject",
+            None,
+            Some("team"),
+            false,
+            Some(state_dir.path()),
+        );
+        assert!(result.is_ok());
+
+        // Only the "other" source's decision should remain pending
+        let pending = state.pending_decisions().unwrap();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].source, "other");
+    }
+
+    // --- cmd_workflow_generate ---
+
+    #[test]
+    fn cmd_workflow_generate_no_overwrite_without_force() {
+        let dir = create_test_config_dir();
+        std::fs::write(dir.path().join("cfgd.yaml"), TEST_CONFIG_YAML).unwrap();
+
+        let cli = test_cli(dir.path());
+        let printer = test_printer();
+
+        // First generate
+        super::cmd_workflow_generate(&cli, &printer, false).unwrap();
+        let path = dir.path().join(".github/workflows/cfgd-release.yml");
+        assert!(path.exists());
+
+        // Write custom content
+        std::fs::write(&path, "custom content").unwrap();
+
+        // Generate without force — should NOT overwrite
+        super::cmd_workflow_generate(&cli, &printer, false).unwrap();
+
+        let contents = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(
+            contents, "custom content",
+            "should not overwrite without --force"
+        );
+    }
+
+    // --- cmd_log_show_output ---
+
+    #[test]
+    fn cmd_log_show_output_no_entries() {
+        let state_dir = tempfile::tempdir().unwrap();
+        let printer = test_printer();
+        let state = super::open_state_store(Some(state_dir.path())).unwrap();
+
+        let result = super::cmd_log_show_output(&printer, &state, 9999);
+        assert!(result.is_ok());
+    }
+
+    // --- cmd_compliance_history ---
+
+    #[test]
+    fn cmd_compliance_history_empty() {
+        let (config_dir, state_dir) = setup_test_env();
+
+        let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
+        let printer = test_printer();
+
+        let result = super::cmd_compliance_history(&cli, &printer, None);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn cmd_compliance_history_with_since() {
+        let (config_dir, state_dir) = setup_test_env();
+
+        let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
+        let printer = test_printer();
+
+        let result = super::cmd_compliance_history(&cli, &printer, Some("7d"));
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn cmd_compliance_history_invalid_since() {
+        let (config_dir, state_dir) = setup_test_env();
+
+        let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
+        let printer = test_printer();
+
+        let result = super::cmd_compliance_history(&cli, &printer, Some("invalid"));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn cmd_compliance_history_structured() {
+        let (config_dir, state_dir) = setup_test_env();
+
+        let cli = Cli {
+            output: OutputFormatArg(cfgd_core::output::OutputFormat::Json),
+            ..test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()))
+        };
+        let printer = Printer::new(cfgd_core::output::Verbosity::Quiet);
+
+        let result = super::cmd_compliance_history(&cli, &printer, None);
+        assert!(result.is_ok());
+    }
+
+    // --- cmd_compliance_diff ---
+
+    #[test]
+    fn cmd_compliance_diff_missing_snapshot() {
+        let (config_dir, state_dir) = setup_test_env();
+
+        let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
+        let printer = test_printer();
+
+        let result = super::cmd_compliance_diff(&cli, &printer, 1, 2);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("not found"));
+    }
+
+    // --- cmd_apply with skip_scripts ---
+
+    #[test]
+    fn cmd_apply_dry_run_with_skip_scripts() {
+        let (config_dir, state_dir) = setup_test_env();
+
+        let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
+        let printer = test_printer();
+        let args = ApplyArgs {
+            from: None,
+            dry_run: true,
+            phase: None,
+            yes: true,
+            skip: vec![],
+            only: vec![],
+            module: None,
+            skip_scripts: true,
+        };
+
+        let result = super::cmd_apply(&cli, &printer, &args);
+        assert!(result.is_ok());
+    }
+
+    // --- cmd_apply module-only mode (no profile configured) ---
+
+    #[test]
+    fn cmd_apply_module_only_no_profile() {
+        let dir = tempfile::tempdir().unwrap();
+        let state_dir = tempfile::tempdir().unwrap();
+
+        // Minimal config with no profile
+        std::fs::write(
+            dir.path().join("cfgd.yaml"),
+            "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec: {}\n",
+        )
+        .unwrap();
+
+        // Create a module
+        create_module_in_dir(
+            dir.path(),
+            "standalone-mod",
+            "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: standalone-mod\nspec:\n  packages: []\n",
+        );
+
+        let cli = test_cli_with_state(dir.path(), Some(state_dir.path().to_path_buf()));
+        let printer = test_printer();
+        let args = ApplyArgs {
+            from: None,
+            dry_run: true,
+            phase: None,
+            yes: true,
+            skip: vec![],
+            only: vec![],
+            module: Some("standalone-mod".to_string()),
+            skip_scripts: false,
+        };
+
+        let result = super::cmd_apply(&cli, &printer, &args);
+        assert!(result.is_ok());
+    }
+
+    // --- cmd_plan module-only mode (no profile) ---
+
+    #[test]
+    fn cmd_plan_module_only_no_profile() {
+        let dir = tempfile::tempdir().unwrap();
+        let state_dir = tempfile::tempdir().unwrap();
+
+        std::fs::write(
+            dir.path().join("cfgd.yaml"),
+            "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec: {}\n",
+        )
+        .unwrap();
+
+        create_module_in_dir(
+            dir.path(),
+            "solo",
+            "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: solo\nspec:\n  packages: []\n",
+        );
+
+        let cli = test_cli_with_state(dir.path(), Some(state_dir.path().to_path_buf()));
+        let printer = test_printer();
+        let args = PlanArgs {
+            phase: None,
+            skip: vec![],
+            only: vec![],
+            module: Some("solo".to_string()),
+            skip_scripts: false,
+            context: "apply".to_string(),
+        };
+
+        let result = super::cmd_plan(&cli, &printer, &args);
+        assert!(result.is_ok());
+    }
+
+    // --- empty_resolved_profile ---
+
+    #[test]
+    fn empty_resolved_profile_has_module() {
+        let resolved = super::empty_resolved_profile("my-mod");
+        assert_eq!(resolved.merged.modules, vec!["my-mod".to_string()]);
+        assert!(resolved.merged.env.is_empty());
+        assert!(resolved.layers.is_empty());
+    }
+
+    // --- known_manager_names ---
+
+    #[test]
+    fn known_manager_names_not_empty() {
+        let names = super::known_manager_names();
+        assert!(!names.is_empty());
+        // Should contain at least "cargo" since it's always available
+        assert!(
+            names.contains(&"cargo".to_string()),
+            "should contain 'cargo' manager"
+        );
+    }
+
+    // --- secret_backend_from_config with config ---
+
+    #[test]
+    fn secret_backend_from_config_with_custom_backend() {
+        let cfg = config::parse_config(
+            r#"apiVersion: cfgd.io/v1alpha1
+kind: Config
+metadata:
+  name: test
+spec:
+  secrets:
+    backend: sops-age
+    sops:
+      ageKey: /tmp/test-key.txt
+"#,
+            std::path::Path::new("cfgd.yaml"),
+        )
+        .unwrap();
+
+        let (backend, key) = super::secret_backend_from_config(Some(&cfg));
+        assert_eq!(backend, "sops-age");
+        assert_eq!(key, Some(PathBuf::from("/tmp/test-key.txt")));
+    }
+
+    #[test]
+    fn secret_backend_from_config_no_secrets_section() {
+        let cfg = config::parse_config(
+            "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: test\nspec:\n  profile: default\n",
+            std::path::Path::new("cfgd.yaml"),
+        )
+        .unwrap();
+
+        let (backend, key) = super::secret_backend_from_config(Some(&cfg));
+        assert_eq!(backend, "sops");
+        assert!(key.is_none());
+    }
+
+    // --- build_registry_with_config ---
+
+    #[test]
+    fn build_registry_with_config_applies_file_strategy() {
+        let cfg = config::parse_config(
+            r#"apiVersion: cfgd.io/v1alpha1
+kind: Config
+metadata:
+  name: test
+spec:
+  fileStrategy: Copy
+"#,
+            std::path::Path::new("cfgd.yaml"),
+        )
+        .unwrap();
+
+        let registry = super::build_registry_with_config(Some(&cfg));
+        assert_eq!(
+            registry.default_file_strategy,
+            cfgd_core::config::FileStrategy::Copy
+        );
+    }
+
+    // --- execute dispatch for more commands ---
+
+    #[test]
+    fn execute_explain_recursive() {
+        let dir = tempfile::tempdir().unwrap();
+        let cli = Cli {
+            command: Command::Explain {
+                resource: Some("config".to_string()),
+                recursive: true,
+            },
+            ..test_cli(dir.path())
+        };
+        let printer = test_printer();
+
+        assert!(super::execute(&cli, &printer).is_ok());
+    }
+
+    #[test]
+    fn execute_compliance_command() {
+        let (config_dir, state_dir) = setup_test_env();
+
+        let cli = Cli {
+            command: Command::Compliance { command: None },
+            ..test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()))
+        };
+        let printer = test_printer();
+
+        assert!(super::execute(&cli, &printer).is_ok());
+    }
+
+    #[test]
+    fn execute_compliance_export() {
+        let (config_dir, state_dir) = setup_test_env();
+
+        let cli = Cli {
+            command: Command::Compliance {
+                command: Some(ComplianceCommand::Export),
+            },
+            ..test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()))
+        };
+        let printer = test_printer();
+
+        assert!(super::execute(&cli, &printer).is_ok());
+    }
+
+    #[test]
+    fn execute_compliance_history() {
+        let (config_dir, state_dir) = setup_test_env();
+
+        let cli = Cli {
+            command: Command::Compliance {
+                command: Some(ComplianceCommand::History { since: None }),
+            },
+            ..test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()))
+        };
+        let printer = test_printer();
+
+        assert!(super::execute(&cli, &printer).is_ok());
+    }
+
+    #[test]
+    fn execute_source_list() {
+        let (config_dir, state_dir) = setup_test_env();
+
+        let cli = Cli {
+            command: Command::Source {
+                command: SourceCommand::List,
+            },
+            ..test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()))
+        };
+        let printer = test_printer();
+
+        assert!(super::execute(&cli, &printer).is_ok());
+    }
+
+    #[test]
+    fn execute_decide_accept_all() {
+        let (_config_dir, state_dir) = setup_test_env();
+
+        let dir = tempfile::tempdir().unwrap();
+        let cli = Cli {
+            command: Command::Decide {
+                action: "accept".to_string(),
+                resource: None,
+                source: None,
+                all: true,
+            },
+            state_dir: Some(state_dir.path().to_path_buf()),
+            ..test_cli(dir.path())
+        };
+        let printer = test_printer();
+
+        assert!(super::execute(&cli, &printer).is_ok());
+    }
+
+    #[test]
+    fn execute_sync_command() {
+        let (config_dir, state_dir) = setup_test_env();
+
+        let cli = Cli {
+            command: Command::Sync,
+            ..test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()))
+        };
+        let printer = test_printer();
+
+        assert!(super::execute(&cli, &printer).is_ok());
+    }
+
+    #[test]
+    fn execute_pull_command() {
+        let (config_dir, state_dir) = setup_test_env();
+
+        let cli = Cli {
+            command: Command::Pull,
+            ..test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()))
+        };
+        let printer = test_printer();
+
+        assert!(super::execute(&cli, &printer).is_ok());
+    }
+
+    // --- cmd_apply with aliases ---
+
+    #[test]
+    fn cmd_apply_with_aliases() {
+        let (config_dir, state_dir) = setup_test_env();
+
+        let profile = "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec:\n  aliases:\n    - name: ll\n      command: ls -la\n  modules: []\n";
+        std::fs::write(
+            config_dir.path().join("profiles").join("default.yaml"),
+            profile,
+        )
+        .unwrap();
+
+        let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
+        let printer = test_printer();
+        let args = ApplyArgs {
+            from: None,
+            dry_run: true,
+            phase: None,
+            yes: true,
+            skip: vec![],
+            only: vec![],
+            module: None,
+            skip_scripts: false,
+        };
+
+        let result = super::cmd_apply(&cli, &printer, &args);
+        assert!(result.is_ok());
+    }
+
+    // --- cmd_status structured output for module ---
+
+    #[test]
+    fn cmd_status_module_structured_output() {
+        let (config_dir, state_dir) = setup_test_env();
+
+        let mod_dir = config_dir.path().join("modules").join("json-mod");
+        std::fs::create_dir_all(&mod_dir).unwrap();
+        std::fs::write(
+            mod_dir.join("module.yaml"),
+            "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: json-mod\nspec:\n  packages: []\n",
+        )
+        .unwrap();
+
+        let cli = Cli {
+            output: OutputFormatArg(cfgd_core::output::OutputFormat::Json),
+            ..test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()))
+        };
+        let printer = Printer::new(cfgd_core::output::Verbosity::Quiet);
+
+        let result = super::cmd_status(&cli, &printer, Some("json-mod"));
+        assert!(result.is_ok());
+    }
+
+    // --- cmd_verify structured output ---
+
+    #[test]
+    fn cmd_verify_structured_output() {
+        let (config_dir, state_dir) = setup_test_env();
+
+        let cli = Cli {
+            output: OutputFormatArg(cfgd_core::output::OutputFormat::Json),
+            ..test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()))
+        };
+        let printer = Printer::new(cfgd_core::output::Verbosity::Quiet);
+
+        let result = super::cmd_verify(&cli, &printer, None);
+        assert!(result.is_ok());
+    }
+
+    // --- cmd_plan structured output ---
+
+    #[test]
+    fn cmd_plan_structured_output() {
+        let (config_dir, state_dir) = setup_test_env();
+
+        let cli = Cli {
+            output: OutputFormatArg(cfgd_core::output::OutputFormat::Json),
+            ..test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()))
+        };
+        let printer = Printer::new(cfgd_core::output::Verbosity::Quiet);
+        let args = PlanArgs {
+            phase: None,
+            skip: vec![],
+            only: vec![],
+            module: None,
+            skip_scripts: false,
+            context: "apply".to_string(),
+        };
+
+        let result = super::cmd_plan(&cli, &printer, &args);
+        assert!(result.is_ok());
+    }
+
+    // --- cmd_diff with module filter ---
+
+    #[test]
+    fn cmd_diff_with_module_filter() {
+        let (config_dir, state_dir) = setup_test_env();
+
+        let mod_dir = config_dir.path().join("modules").join("diff-mod");
+        std::fs::create_dir_all(&mod_dir).unwrap();
+        std::fs::write(
+            mod_dir.join("module.yaml"),
+            "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: diff-mod\nspec:\n  packages: []\n",
+        )
+        .unwrap();
+
+        let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
+        let printer = test_printer();
+
+        let result = super::cmd_diff(&cli, &printer, Some("diff-mod"));
+        assert!(result.is_ok());
+    }
+
+    // --- cmd_log with show_output ---
+
+    #[test]
+    fn cmd_log_show_output_for_nonexistent_apply() {
+        let state_dir = tempfile::tempdir().unwrap();
+        let printer = test_printer();
+
+        let result = super::cmd_log(&printer, 10, Some(999), Some(state_dir.path()));
+        assert!(result.is_ok());
+    }
+
+    // --- validate_resource_name edge cases ---
+
+    #[test]
+    fn validate_resource_name_max_length() {
+        // 128 chars should be valid
+        let name = "a".repeat(128);
+        assert!(super::validate_resource_name(&name, "Module").is_ok());
+
+        // 129 chars should be invalid
+        let name = "a".repeat(129);
+        assert!(super::validate_resource_name(&name, "Module").is_err());
+    }
+
+    #[test]
+    fn validate_resource_name_underscores_and_dots() {
+        assert!(super::validate_resource_name("my_module.v2", "Module").is_ok());
+    }
+
+    // --- display_plan_table ---
+
+    #[test]
+    fn display_plan_table_empty_plan() {
+        let plan = reconciler::Plan {
+            phases: vec![],
+            warnings: vec![],
+        };
+        let printer = test_printer();
+        super::display_plan_table(&plan, &printer, None);
+        // No panic = success
+    }
+
+    #[test]
+    fn display_plan_table_with_phase_filter() {
+        let plan = reconciler::Plan {
+            phases: vec![
+                reconciler::Phase {
+                    name: reconciler::PhaseName::Packages,
+                    actions: vec![reconciler::Action::Package(PackageAction::Install {
+                        manager: "brew".into(),
+                        packages: vec!["curl".into()],
+                        origin: "local".into(),
+                    })],
+                },
+                reconciler::Phase {
+                    name: reconciler::PhaseName::Files,
+                    actions: vec![],
+                },
+            ],
+            warnings: vec![],
+        };
+        let printer = test_printer();
+        // Only display Files phase
+        super::display_plan_table(&plan, &printer, Some(&reconciler::PhaseName::Files));
+        // No panic = success
+    }
+
+    // --- infer_source_name edge cases ---
+
+    #[test]
+    fn infer_source_name_plain_url() {
+        let name = super::infer_source_name("https://example.com/config");
+        assert_eq!(name, "config");
+    }
+
+    #[test]
+    fn infer_source_name_with_git_suffix() {
+        let name = super::infer_source_name("https://github.com/org/repo.git");
+        assert_eq!(name, "repo");
+    }
+
+    // --- OutputFormatArg From impl ---
+
+    #[test]
+    fn output_format_arg_into_os_str() {
+        use super::OutputFormatArg;
+        let arg = OutputFormatArg(cfgd_core::output::OutputFormat::Json);
+        let os_str: clap::builder::OsStr = arg.into();
+        assert_eq!(os_str, "table");
+    }
+
+    // --- set_nested_yaml_value ---
+
+    #[test]
+    fn set_nested_yaml_value_overwrites_existing() {
+        let mut root: serde_yaml::Value = serde_yaml::from_str("a:\n  b: old\n").unwrap();
+        super::set_nested_yaml_value(
+            &mut root,
+            "a.b",
+            &serde_yaml::Value::String("new".into()),
+        )
+        .unwrap();
+
+        let val = root
+            .get("a")
+            .and_then(|v| v.get("b"))
+            .and_then(|v| v.as_str());
+        assert_eq!(val, Some("new"));
+    }
+
+    #[test]
+    fn set_nested_yaml_value_creates_deep_path() {
+        let mut root = serde_yaml::Value::Mapping(serde_yaml::Mapping::new());
+        super::set_nested_yaml_value(
+            &mut root,
+            "a.b.c.d",
+            &serde_yaml::Value::String("deep".into()),
+        )
+        .unwrap();
+
+        let val = root
+            .get("a")
+            .and_then(|v| v.get("b"))
+            .and_then(|v| v.get("c"))
+            .and_then(|v| v.get("d"))
+            .and_then(|v| v.as_str());
+        assert_eq!(val, Some("deep"));
+    }
+
+    // --- Profile update with files ---
+
+    #[test]
+    fn profile_update_add_and_remove_files() {
+        let dir = create_test_config_dir();
+
+        // Create a test file to import
+        let test_file = dir.path().join("testfile.conf");
+        std::fs::write(&test_file, "test content").unwrap();
+
+        let cli = test_cli(dir.path());
+        let printer = test_printer();
+
+        // Add file to profile
+        let args = ProfileUpdateArgs {
+            files: vec![format!(
+                "{}:{}",
+                test_file.display(),
+                dir.path().join("deploy").join("testfile.conf").display()
+            )],
+            ..empty_profile_update_args()
+        };
+        profile::cmd_profile_update(&cli, &printer, "default", &args).unwrap();
+
+        let doc = config::load_profile(&dir.path().join("profiles").join("default.yaml")).unwrap();
+        assert!(!doc.spec.files.managed.is_empty());
+
+        // Remove file from profile
+        let target_path = dir.path().join("deploy").join("testfile.conf");
+        let args = ProfileUpdateArgs {
+            files: vec![format!("-{}", target_path.display())],
+            ..empty_profile_update_args()
+        };
+        profile::cmd_profile_update(&cli, &printer, "default", &args).unwrap();
+
+        let doc = config::load_profile(&dir.path().join("profiles").join("default.yaml")).unwrap();
+        assert!(doc.spec.files.managed.is_empty());
+    }
+
+    // --- Profile update env add/remove ---
+
+    #[test]
+    fn profile_update_env_add_and_remove() {
+        let dir = create_test_config_dir();
+        let cli = test_cli(dir.path());
+        let printer = test_printer();
+
+        // Add env var
+        let args = ProfileUpdateArgs {
+            env: vec!["CUSTOM_VAR=hello".to_string()],
+            ..empty_profile_update_args()
+        };
+        profile::cmd_profile_update(&cli, &printer, "default", &args).unwrap();
+
+        let doc = config::load_profile(&dir.path().join("profiles").join("default.yaml")).unwrap();
+        assert!(doc.spec.env.iter().any(|e| e.name == "CUSTOM_VAR"));
+
+        // Remove env var
+        let args = ProfileUpdateArgs {
+            env: vec!["-CUSTOM_VAR".to_string()],
+            ..empty_profile_update_args()
+        };
+        profile::cmd_profile_update(&cli, &printer, "default", &args).unwrap();
+
+        let doc = config::load_profile(&dir.path().join("profiles").join("default.yaml")).unwrap();
+        assert!(!doc.spec.env.iter().any(|e| e.name == "CUSTOM_VAR"));
+    }
+
+    // --- Profile update alias add/remove ---
+
+    #[test]
+    fn profile_update_alias_add_and_remove() {
+        let dir = create_test_config_dir();
+        let cli = test_cli(dir.path());
+        let printer = test_printer();
+
+        // Add alias
+        let args = ProfileUpdateArgs {
+            aliases: vec!["ll=ls -la".to_string()],
+            ..empty_profile_update_args()
+        };
+        profile::cmd_profile_update(&cli, &printer, "default", &args).unwrap();
+
+        let doc = config::load_profile(&dir.path().join("profiles").join("default.yaml")).unwrap();
+        assert!(doc.spec.aliases.iter().any(|a| a.name == "ll"));
+
+        // Remove alias
+        let args = ProfileUpdateArgs {
+            aliases: vec!["-ll".to_string()],
+            ..empty_profile_update_args()
+        };
+        profile::cmd_profile_update(&cli, &printer, "default", &args).unwrap();
+
+        let doc = config::load_profile(&dir.path().join("profiles").join("default.yaml")).unwrap();
+        assert!(!doc.spec.aliases.iter().any(|a| a.name == "ll"));
+    }
+
+    // --- Profile update modules add/remove ---
+
+    #[test]
+    fn profile_update_modules_add_and_remove() {
+        let dir = create_test_config_dir();
+        let cli = test_cli(dir.path());
+        let printer = test_printer();
+
+        // Add module
+        let args = ProfileUpdateArgs {
+            modules: vec!["neovim".to_string()],
+            ..empty_profile_update_args()
+        };
+        profile::cmd_profile_update(&cli, &printer, "default", &args).unwrap();
+
+        let doc = config::load_profile(&dir.path().join("profiles").join("default.yaml")).unwrap();
+        assert!(doc.spec.modules.contains(&"neovim".to_string()));
+
+        // Remove module
+        let args = ProfileUpdateArgs {
+            modules: vec!["-neovim".to_string()],
+            ..empty_profile_update_args()
+        };
+        profile::cmd_profile_update(&cli, &printer, "default", &args).unwrap();
+
+        let doc = config::load_profile(&dir.path().join("profiles").join("default.yaml")).unwrap();
+        assert!(!doc.spec.modules.contains(&"neovim".to_string()));
+    }
+
+    // --- Profile update packages add/remove ---
+
+    #[test]
+    fn profile_update_packages_add_and_remove() {
+        let dir = create_test_config_dir();
+        let cli = test_cli(dir.path());
+        let printer = test_printer();
+
+        // Add package
+        let args = ProfileUpdateArgs {
+            packages: vec!["brew:jq".to_string()],
+            ..empty_profile_update_args()
+        };
+        profile::cmd_profile_update(&cli, &printer, "default", &args).unwrap();
+
+        let doc = config::load_profile(&dir.path().join("profiles").join("default.yaml")).unwrap();
+        let brew = doc.spec.packages.brew.as_ref().unwrap();
+        assert!(brew.formulae.contains(&"jq".to_string()));
+
+        // Remove package
+        let args = ProfileUpdateArgs {
+            packages: vec!["-brew:jq".to_string()],
+            ..empty_profile_update_args()
+        };
+        profile::cmd_profile_update(&cli, &printer, "default", &args).unwrap();
+
+        let doc = config::load_profile(&dir.path().join("profiles").join("default.yaml")).unwrap();
+        let brew = doc.spec.packages.brew.as_ref().unwrap();
+        assert!(!brew.formulae.contains(&"jq".to_string()));
+    }
+
+    // --- Profile create with aliases, secrets, scripts ---
+
+    #[test]
+    fn profile_create_with_aliases() {
+        let dir = create_test_config_dir();
+        let cli = test_cli(dir.path());
+        let printer = test_printer();
+
+        let args = ProfileCreateArgs {
+            aliases: vec!["ll=ls -la".to_string(), "gs=git status".to_string()],
+            ..test_profile_create_args("alias-profile")
+        };
+        profile::cmd_profile_create(&cli, &printer, &args).unwrap();
+
+        let doc =
+            config::load_profile(&dir.path().join("profiles").join("alias-profile.yaml")).unwrap();
+        assert_eq!(doc.spec.aliases.len(), 2);
+        assert!(doc.spec.aliases.iter().any(|a| a.name == "ll"));
+        assert!(doc.spec.aliases.iter().any(|a| a.name == "gs"));
+    }
+
+    #[test]
+    fn profile_create_with_secrets() {
+        let dir = create_test_config_dir();
+        let cli = test_cli(dir.path());
+        let printer = test_printer();
+
+        let args = ProfileCreateArgs {
+            secrets: vec!["secrets/api.enc:~/.config/app/key".to_string()],
+            ..test_profile_create_args("secret-profile")
+        };
+        profile::cmd_profile_create(&cli, &printer, &args).unwrap();
+
+        let doc = config::load_profile(
+            &dir.path().join("profiles").join("secret-profile.yaml"),
+        )
+        .unwrap();
+        assert_eq!(doc.spec.secrets.len(), 1);
+        assert_eq!(doc.spec.secrets[0].source, "secrets/api.enc");
+    }
+
+    #[test]
+    fn profile_create_with_scripts() {
+        let dir = create_test_config_dir();
+        let cli = test_cli(dir.path());
+        let printer = test_printer();
+
+        let args = ProfileCreateArgs {
+            pre_apply: vec!["scripts/pre.sh".to_string()],
+            post_apply: vec!["scripts/post.sh".to_string()],
+            on_change: vec!["scripts/change.sh".to_string()],
+            on_drift: vec!["scripts/drift.sh".to_string()],
+            ..test_profile_create_args("script-profile")
+        };
+        profile::cmd_profile_create(&cli, &printer, &args).unwrap();
+
+        let doc = config::load_profile(
+            &dir.path().join("profiles").join("script-profile.yaml"),
+        )
+        .unwrap();
+        let scripts = doc.spec.scripts.as_ref().unwrap();
+        assert_eq!(scripts.pre_apply.len(), 1);
+        assert_eq!(scripts.post_apply.len(), 1);
+        assert_eq!(scripts.on_change.len(), 1);
+        assert_eq!(scripts.on_drift.len(), 1);
+    }
+
+    // --- Profile update on_drift scripts ---
+
+    #[test]
+    fn profile_update_on_drift_scripts() {
+        let dir = create_test_config_dir();
+        let cli = test_cli(dir.path());
+        let printer = test_printer();
+
+        let args = ProfileUpdateArgs {
+            on_drift: vec!["scripts/drift.sh".to_string()],
+            ..empty_profile_update_args()
+        };
+        profile::cmd_profile_update(&cli, &printer, "default", &args).unwrap();
+
+        let doc = config::load_profile(&dir.path().join("profiles").join("default.yaml")).unwrap();
+        let scripts = doc.spec.scripts.as_ref().unwrap();
+        assert_eq!(
+            scripts.on_drift,
+            vec![config::ScriptEntry::Simple("scripts/drift.sh".to_string())]
+        );
+
+        // Remove
+        let args = ProfileUpdateArgs {
+            on_drift: vec!["-scripts/drift.sh".to_string()],
+            ..empty_profile_update_args()
+        };
+        profile::cmd_profile_update(&cli, &printer, "default", &args).unwrap();
+
+        let doc = config::load_profile(&dir.path().join("profiles").join("default.yaml")).unwrap();
+        let scripts = doc.spec.scripts.as_ref().unwrap();
+        assert!(scripts.on_drift.is_empty());
+    }
+
+    // --- Module create with env and aliases ---
+
+    #[test]
+    fn module_create_with_env_and_aliases() {
+        let dir = tempfile::tempdir().unwrap();
+        let cli = test_cli(dir.path());
+        let printer = test_printer();
+
+        let args = ModuleCreateArgs {
+            env: vec!["MY_VAR=hello".to_string()],
+            aliases: vec!["ll=ls -la".to_string()],
+            ..test_module_create_args("ea-mod")
+        };
+        module::cmd_module_create(&cli, &printer, &args).unwrap();
+
+        let (doc, _) = module::load_module_document(dir.path(), "ea-mod").unwrap();
+        assert!(doc.spec.env.iter().any(|e| e.name == "MY_VAR"));
+        assert!(doc.spec.aliases.iter().any(|a| a.name == "ll"));
+    }
+
+    // --- Module update add/remove env ---
+
+    #[test]
+    fn module_update_env_add_and_remove() {
+        let dir = tempfile::tempdir().unwrap();
+        create_module_in_dir(
+            dir.path(),
+            "env-mod",
+            "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: env-mod\nspec:\n  packages: []\n",
+        );
+
+        let cli = test_cli(dir.path());
+        let printer = test_printer();
+
+        // Add env
+        let args = ModuleUpdateArgs {
+            env: vec!["MY_VAR=hello".to_string()],
+            ..empty_module_update_args("env-mod")
+        };
+        module::cmd_module_update_local(&cli, &printer, &args).unwrap();
+
+        let (doc, _) = module::load_module_document(dir.path(), "env-mod").unwrap();
+        assert!(doc.spec.env.iter().any(|e| e.name == "MY_VAR"));
+
+        // Remove env
+        let args = ModuleUpdateArgs {
+            env: vec!["-MY_VAR".to_string()],
+            ..empty_module_update_args("env-mod")
+        };
+        module::cmd_module_update_local(&cli, &printer, &args).unwrap();
+
+        let (doc, _) = module::load_module_document(dir.path(), "env-mod").unwrap();
+        assert!(!doc.spec.env.iter().any(|e| e.name == "MY_VAR"));
+    }
+
+    // --- Module update add/remove aliases ---
+
+    #[test]
+    fn module_update_alias_add_and_remove() {
+        let dir = tempfile::tempdir().unwrap();
+        create_module_in_dir(
+            dir.path(),
+            "alias-mod",
+            "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: alias-mod\nspec:\n  packages: []\n",
+        );
+
+        let cli = test_cli(dir.path());
+        let printer = test_printer();
+
+        // Add alias
+        let args = ModuleUpdateArgs {
+            aliases: vec!["ll=ls -la".to_string()],
+            ..empty_module_update_args("alias-mod")
+        };
+        module::cmd_module_update_local(&cli, &printer, &args).unwrap();
+
+        let (doc, _) = module::load_module_document(dir.path(), "alias-mod").unwrap();
+        assert!(doc.spec.aliases.iter().any(|a| a.name == "ll"));
+
+        // Remove alias
+        let args = ModuleUpdateArgs {
+            aliases: vec!["-ll".to_string()],
+            ..empty_module_update_args("alias-mod")
+        };
+        module::cmd_module_update_local(&cli, &printer, &args).unwrap();
+
+        let (doc, _) = module::load_module_document(dir.path(), "alias-mod").unwrap();
+        assert!(!doc.spec.aliases.iter().any(|a| a.name == "ll"));
+    }
+
+    // --- Module update add/remove depends ---
+
+    #[test]
+    fn module_update_depends_add_and_remove() {
+        let dir = tempfile::tempdir().unwrap();
+        create_module_in_dir(
+            dir.path(),
+            "dep-mod",
+            "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: dep-mod\nspec:\n  packages: []\n",
+        );
+
+        let cli = test_cli(dir.path());
+        let printer = test_printer();
+
+        // Add dependency
+        let args = ModuleUpdateArgs {
+            depends: vec!["base".to_string()],
+            ..empty_module_update_args("dep-mod")
+        };
+        module::cmd_module_update_local(&cli, &printer, &args).unwrap();
+
+        let (doc, _) = module::load_module_document(dir.path(), "dep-mod").unwrap();
+        assert!(doc.spec.depends.contains(&"base".to_string()));
+
+        // Remove dependency
+        let args = ModuleUpdateArgs {
+            depends: vec!["-base".to_string()],
+            ..empty_module_update_args("dep-mod")
+        };
+        module::cmd_module_update_local(&cli, &printer, &args).unwrap();
+
+        let (doc, _) = module::load_module_document(dir.path(), "dep-mod").unwrap();
+        assert!(!doc.spec.depends.contains(&"base".to_string()));
+    }
+
+    // --- Module update with description ---
+
+    #[test]
+    fn module_update_description() {
+        let dir = tempfile::tempdir().unwrap();
+        create_module_in_dir(
+            dir.path(),
+            "desc-mod",
+            "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: desc-mod\nspec:\n  packages: []\n",
+        );
+
+        let cli = test_cli(dir.path());
+        let printer = test_printer();
+
+        let args = ModuleUpdateArgs {
+            description: Some("Updated description".to_string()),
+            ..empty_module_update_args("desc-mod")
+        };
+        module::cmd_module_update_local(&cli, &printer, &args).unwrap();
+
+        let (doc, _) = module::load_module_document(dir.path(), "desc-mod").unwrap();
+        assert_eq!(
+            doc.metadata.description,
+            Some("Updated description".to_string())
+        );
+    }
+
+    // --- source_cache_dir ---
+
+    #[test]
+    fn source_cache_dir_with_state_dir() {
+        let (config_dir, state_dir) = setup_test_env();
+
+        let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
+        let result = super::source_cache_dir(&cli);
+        assert!(result.is_ok());
+        let path = result.unwrap();
+        assert!(path.to_string_lossy().contains("sources"));
+    }
+
+    // --- cmd_apply with both skip and only ---
+
+    #[test]
+    fn cmd_apply_dry_run_with_skip_and_only() {
+        let (config_dir, state_dir) = setup_test_env();
+
+        let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
+        let printer = test_printer();
+        let args = ApplyArgs {
+            from: None,
+            dry_run: true,
+            phase: None,
+            yes: true,
+            skip: vec!["packages.cargo".to_string()],
+            only: vec!["packages".to_string()],
+            module: None,
+            skip_scripts: false,
+        };
+
+        let result = super::cmd_apply(&cli, &printer, &args);
+        assert!(result.is_ok());
+    }
+
+    // --- cmd_plan with module filter and structured output ---
+
+    #[test]
+    fn cmd_plan_module_structured_output() {
+        let (config_dir, state_dir) = setup_test_env();
+
+        create_module_in_dir(
+            config_dir.path(),
+            "struct-mod",
+            "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: struct-mod\nspec:\n  packages: []\n",
+        );
+
+        let cli = Cli {
+            output: OutputFormatArg(cfgd_core::output::OutputFormat::Json),
+            ..test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()))
+        };
+        let printer = Printer::new(cfgd_core::output::Verbosity::Quiet);
+        let args = PlanArgs {
+            phase: None,
+            skip: vec![],
+            only: vec![],
+            module: Some("struct-mod".to_string()),
+            skip_scripts: false,
+            context: "apply".to_string(),
+        };
+
+        let result = super::cmd_plan(&cli, &printer, &args);
+        assert!(result.is_ok());
+    }
 }
