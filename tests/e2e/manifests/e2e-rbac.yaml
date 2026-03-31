@@ -62,6 +62,13 @@ rules:
   - apiGroups: ["cert-manager.io"]
     resources: ["certificates", "issuers"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # Crossplane — XRDs, Compositions, Functions, runtime configs
+  - apiGroups: ["apiextensions.crossplane.io"]
+    resources: ["compositeresourcedefinitions", "compositions"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["pkg.crossplane.io"]
+    resources: ["functions", "deploymentruntimeconfigs"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
 ---
 # Binding for the cfgd-e2e SA (used by test pods)
 apiVersion: rbac.authorization.k8s.io/v1

@@ -390,15 +390,24 @@ impl StateStore {
     }
 
     fn run_migrations(&mut self) -> Result<()> {
+        // Use EXCLUSIVE transaction to serialize concurrent migration attempts
+        // (e.g. parallel cargo test processes sharing the same state DB).
+        self.conn
+            .execute_batch("BEGIN EXCLUSIVE")
+            .map_err(|e| StateError::MigrationFailed {
+                message: format!("failed to acquire migration lock: {e}"),
+            })?;
+
         let current_version = self.schema_version();
 
         for (i, migration) in MIGRATIONS.iter().enumerate() {
             if i >= current_version {
-                self.conn
-                    .execute_batch(migration)
-                    .map_err(|e| StateError::MigrationFailed {
+                self.conn.execute_batch(migration).map_err(|e| {
+                    let _ = self.conn.execute_batch("ROLLBACK");
+                    StateError::MigrationFailed {
                         message: format!("migration {}: {}", i, e),
-                    })?;
+                    }
+                })?;
                 // Set version automatically — no hardcoded UPDATE in migration SQL
                 let new_version = (i + 1) as i64;
                 self.conn
@@ -406,11 +415,20 @@ impl StateStore {
                         "UPDATE schema_version SET version = ?1",
                         rusqlite::params![new_version],
                     )
-                    .map_err(|e| StateError::MigrationFailed {
-                        message: format!("migration {}: failed to update version: {}", i, e),
+                    .map_err(|e| {
+                        let _ = self.conn.execute_batch("ROLLBACK");
+                        StateError::MigrationFailed {
+                            message: format!("migration {}: failed to update version: {}", i, e),
+                        }
                     })?;
             }
         }
+
+        self.conn
+            .execute_batch("COMMIT")
+            .map_err(|e| StateError::MigrationFailed {
+                message: format!("failed to commit migrations: {e}"),
+            })?;
 
         Ok(())
     }
