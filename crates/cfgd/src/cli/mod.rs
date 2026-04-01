@@ -14327,6 +14327,7 @@ spec:
     // --- cmd_workflow_generate ---
 
     #[test]
+    #[cfg(unix)] // prompt_confirm hangs on Windows CI (no /dev/null stdin fallback)
     fn cmd_workflow_generate_no_overwrite_without_force() {
         let dir = create_test_config_dir();
         std::fs::write(dir.path().join("cfgd.yaml"), TEST_CONFIG_YAML).unwrap();
