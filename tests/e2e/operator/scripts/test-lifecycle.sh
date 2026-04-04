@@ -95,12 +95,29 @@ else
     fi
 fi
 
+# Wait for webhook endpoints to be available after OP-LC-03 pod restart.
+# The deployment becomes Available before the new pod registers webhook
+# endpoints, so kubectl apply can fail with "no endpoints available".
+echo "  Waiting for webhook readiness after pod restart..."
+kubectl wait --for=condition=Ready pod -l app=cfgd-operator \
+    -n cfgd-system --timeout=60s 2>/dev/null || true
+for _i in $(seq 1 12); do
+    if kubectl get endpoints cfgd-operator -n cfgd-system \
+        -o jsonpath='{.subsets[0].addresses[0].ip}' 2>/dev/null | grep -q .; then
+        break
+    fi
+    sleep 5
+done
+
 # =================================================================
 # OP-LC-04: MachineConfig reconcile loop
 # =================================================================
 begin_test "OP-LC-04: MachineConfig reconcile loop"
 
-kubectl apply -n "$E2E_NAMESPACE" -f - <<EOF
+# Retry apply — webhook endpoint may still be registering after OP-LC-03 restart
+LC04_APPLIED=false
+for _attempt in $(seq 1 6); do
+    if kubectl apply -n "$E2E_NAMESPACE" -f - <<EOF 2>/dev/null
 apiVersion: cfgd.io/v1alpha1
 kind: MachineConfig
 metadata:
@@ -117,6 +134,17 @@ spec:
     - name: git
   systemSettings: {}
 EOF
+    then
+        LC04_APPLIED=true
+        break
+    fi
+    echo "  Webhook not ready, retrying in 5s..."
+    sleep 5
+done
+
+if [ "$LC04_APPLIED" = "false" ]; then
+    fail_test "OP-LC-04" "Failed to create MachineConfig after retries (webhook unavailable)"
+fi
 
 # Wait for Reconciled condition
 echo "  Waiting for Reconciled condition..."
