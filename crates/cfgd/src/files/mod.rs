@@ -935,19 +935,16 @@ mod tests {
 
     #[test]
     fn expand_tilde_with_home() {
-        // SAFETY: This test runs single-threaded; no concurrent env access.
+        // Verify expand_tilde resolves ~/... to $HOME/... without mutating env vars
+        // (mutating HOME in parallel tests can corrupt other tests).
+        let result = expand_tilde(Path::new("~/.config/test"));
         #[cfg(unix)]
-        {
-            unsafe { std::env::set_var("HOME", "/home/testuser") };
-            let result = expand_tilde(Path::new("~/.config/test"));
-            assert_eq!(result, PathBuf::from("/home/testuser/.config/test"));
-        }
+        let home = std::env::var("HOME").expect("HOME must be set");
         #[cfg(windows)]
-        {
-            unsafe { std::env::set_var("USERPROFILE", r"C:\Users\testuser") };
-            let result = expand_tilde(Path::new("~/.config/test"));
-            assert_eq!(result, PathBuf::from(r"C:\Users\testuser/.config/test"));
-        }
+        let home = std::env::var("USERPROFILE")
+            .or_else(|_| std::env::var("HOME"))
+            .expect("USERPROFILE or HOME must be set");
+        assert_eq!(result, PathBuf::from(home).join(".config/test"));
     }
 
     #[test]

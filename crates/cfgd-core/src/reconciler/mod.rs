@@ -477,6 +477,17 @@ impl<'a> Reconciler<'a> {
         modules: &[ResolvedModule],
         secret_envs: &[(String, String)],
     ) -> (Vec<Action>, Vec<String>) {
+        let home = crate::expand_tilde(std::path::Path::new("~"));
+        Self::plan_env_with_home(profile_env, profile_aliases, modules, secret_envs, &home)
+    }
+
+    fn plan_env_with_home(
+        profile_env: &[crate::config::EnvVar],
+        profile_aliases: &[crate::config::ShellAlias],
+        modules: &[ResolvedModule],
+        secret_envs: &[(String, String)],
+        home: &std::path::Path,
+    ) -> (Vec<Action>, Vec<String>) {
         let (mut merged, merged_aliases) =
             merge_module_env_aliases(profile_env, profile_aliases, modules);
 
@@ -497,7 +508,7 @@ impl<'a> Reconciler<'a> {
 
         let warnings = if cfg!(windows) {
             // PowerShell env file — always generated on Windows
-            let ps_path = crate::expand_tilde(std::path::Path::new("~/.cfgd-env.ps1"));
+            let ps_path = home.join(".cfgd-env.ps1");
             let ps_content = generate_powershell_env_content(&merged, &merged_aliases);
             actions.push(Action::Env(EnvAction::WriteEnvFile {
                 path: ps_path,
@@ -506,8 +517,8 @@ impl<'a> Reconciler<'a> {
 
             // Inject dot-source line into PowerShell profiles
             let ps_profile_dirs = [
-                crate::expand_tilde(std::path::Path::new("~/Documents/PowerShell")),
-                crate::expand_tilde(std::path::Path::new("~/Documents/WindowsPowerShell")),
+                home.join("Documents/PowerShell"),
+                home.join("Documents/WindowsPowerShell"),
             ];
             for profile_dir in &ps_profile_dirs {
                 let profile_path = profile_dir.join("Microsoft.PowerShell_profile.ps1");
@@ -519,13 +530,13 @@ impl<'a> Reconciler<'a> {
 
             // If Git Bash is available, also generate bash env file
             if crate::command_available("sh") {
-                let bash_path = crate::expand_tilde(std::path::Path::new("~/.cfgd.env"));
+                let bash_path = home.join(".cfgd.env");
                 let bash_content = generate_env_file_content(&merged, &merged_aliases);
                 actions.push(Action::Env(EnvAction::WriteEnvFile {
                     path: bash_path,
                     content: bash_content,
                 }));
-                let bashrc = crate::expand_tilde(std::path::Path::new("~/.bashrc"));
+                let bashrc = home.join(".bashrc");
                 actions.push(Action::Env(EnvAction::InjectSourceLine {
                     rc_path: bashrc,
                     line: "[ -f ~/.cfgd.env ] && source ~/.cfgd.env".to_string(),
@@ -536,7 +547,7 @@ impl<'a> Reconciler<'a> {
             Vec::new()
         } else {
             // Unix: bash/zsh env file + source line
-            let env_path = crate::expand_tilde(std::path::Path::new("~/.cfgd.env"));
+            let env_path = home.join(".cfgd.env");
             let content = generate_env_file_content(&merged, &merged_aliases);
             actions.push(Action::Env(EnvAction::WriteEnvFile {
                 path: env_path.clone(),
@@ -545,9 +556,9 @@ impl<'a> Reconciler<'a> {
 
             let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".to_string());
             let rc_path = if shell.contains("zsh") {
-                crate::expand_tilde(std::path::Path::new("~/.zshrc"))
+                home.join(".zshrc")
             } else {
-                crate::expand_tilde(std::path::Path::new("~/.bashrc"))
+                home.join(".bashrc")
             };
             actions.push(Action::Env(EnvAction::InjectSourceLine {
                 rc_path: rc_path.clone(),
@@ -559,7 +570,7 @@ impl<'a> Reconciler<'a> {
         };
 
         // Fish shell: only generate fish env if fish is the user's shell
-        let fish_conf_d = crate::expand_tilde(std::path::Path::new("~/.config/fish/conf.d"));
+        let fish_conf_d = home.join(".config/fish/conf.d");
         let current_shell = std::env::var("SHELL").unwrap_or_default();
         if current_shell.contains("fish") && fish_conf_d.exists() {
             let fish_path = fish_conf_d.join("cfgd-env.fish");
@@ -4813,7 +4824,8 @@ mod tests {
 
     #[test]
     fn plan_env_empty_when_no_env() {
-        let (actions, _warnings) = Reconciler::plan_env(&[], &[], &[], &[]);
+        let tmp = tempfile::tempdir().unwrap();
+        let (actions, _warnings) = Reconciler::plan_env_with_home(&[], &[], &[], &[], tmp.path());
         assert!(actions.is_empty());
     }
 
@@ -4842,9 +4854,10 @@ mod tests {
             dir: PathBuf::from("."),
         }];
         // plan_env merges and generates actions — the merged env should have EDITOR=nvim
-        let (actions, _warnings) = Reconciler::plan_env(&profile_env, &[], &modules, &[]);
+        let tmp = tempfile::tempdir().unwrap();
+        let (actions, _warnings) =
+            Reconciler::plan_env_with_home(&profile_env, &[], &modules, &[], tmp.path());
         // With non-empty env, there should be at least a WriteEnvFile action
-        // (since ~/.cfgd.env won't exist in test env)
         let has_write = actions
             .iter()
             .any(|a| matches!(a, Action::Env(EnvAction::WriteEnvFile { .. })));
@@ -4920,7 +4933,9 @@ mod tests {
             name: "vim".into(),
             command: "nvim".into(),
         }];
-        let (actions, _warnings) = Reconciler::plan_env(&[], &aliases, &[], &[]);
+        let tmp = tempfile::tempdir().unwrap();
+        let (actions, _warnings) =
+            Reconciler::plan_env_with_home(&[], &aliases, &[], &[], tmp.path());
         let has_write = actions
             .iter()
             .any(|a| matches!(a, Action::Env(EnvAction::WriteEnvFile { .. })));
@@ -4952,7 +4967,9 @@ mod tests {
             depends: vec![],
             dir: PathBuf::from("."),
         }];
-        let (actions, _warnings) = Reconciler::plan_env(&[], &profile_aliases, &modules, &[]);
+        let tmp = tempfile::tempdir().unwrap();
+        let (actions, _warnings) =
+            Reconciler::plan_env_with_home(&[], &profile_aliases, &modules, &[], tmp.path());
         // Find the WriteEnvFile action and check it has "nvim" not "vi"
         for action in &actions {
             if let Action::Env(EnvAction::WriteEnvFile { content, .. }) = action {
@@ -5070,7 +5087,9 @@ mod tests {
             ("GITHUB_TOKEN".to_string(), "ghp_abc123".to_string()),
             ("NPM_TOKEN".to_string(), "npm_xyz789".to_string()),
         ];
-        let (actions, _warnings) = Reconciler::plan_env(&[], &[], &[], &secret_envs);
+        let tmp = tempfile::tempdir().unwrap();
+        let (actions, _warnings) =
+            Reconciler::plan_env_with_home(&[], &[], &[], &secret_envs, tmp.path());
         // With non-empty secret envs, there should be at least a WriteEnvFile action
         let has_write = actions
             .iter()
@@ -5086,7 +5105,9 @@ mod tests {
             value: "nvim".into(),
         }];
         let secret_envs = vec![("GITHUB_TOKEN".to_string(), "ghp_abc123".to_string())];
-        let (actions, _warnings) = Reconciler::plan_env(&regular_env, &[], &[], &secret_envs);
+        let tmp = tempfile::tempdir().unwrap();
+        let (actions, _warnings) =
+            Reconciler::plan_env_with_home(&regular_env, &[], &[], &secret_envs, tmp.path());
 
         // Find the WriteEnvFile action and check its content
         for action in &actions {
