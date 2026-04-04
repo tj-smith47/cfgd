@@ -1798,7 +1798,8 @@ mod tests {
     #[test]
     fn expand_tilde_with_home() {
         let result = expand_tilde(std::path::Path::new("~/test"));
-        let expected = std::path::PathBuf::from(std::env::var("HOME").unwrap()).join("test");
+        let home = home_dir_var().expect("home directory must be available in test");
+        let expected = std::path::PathBuf::from(home).join("test");
         assert_eq!(result, expected);
     }
 
