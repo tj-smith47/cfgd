@@ -3755,4 +3755,458 @@ spec:
         assert_eq!(src.repo_url, "https://github.com/user/repo");
         assert_eq!(src.tag, Some("v1.0".into()));
     }
+
+    // --- resolve_module_files tests ---
+
+    #[test]
+    fn resolve_module_files_local_relative() {
+        let dir = tempfile::tempdir().unwrap();
+        let mod_dir = dir.path().join("modules").join("mymod");
+        std::fs::create_dir_all(&mod_dir).unwrap();
+        std::fs::write(mod_dir.join("vimrc"), "set nocompat").unwrap();
+
+        let module = LoadedModule {
+            name: "mymod".into(),
+            spec: ModuleSpec {
+                files: vec![ModuleFileEntry {
+                    source: "vimrc".into(),
+                    target: "/tmp/test-target/.vimrc".into(),
+                    strategy: None,
+                    private: false,
+                    encryption: None,
+                }],
+                ..Default::default()
+            },
+            dir: mod_dir.clone(),
+        };
+
+        let printer = crate::output::Printer::new(crate::output::Verbosity::Quiet);
+        let cache_base = dir.path().join("cache");
+        let resolved = resolve_module_files(&module, &cache_base, &printer).unwrap();
+
+        assert_eq!(resolved.len(), 1);
+        assert_eq!(resolved[0].source, mod_dir.join("vimrc"));
+        assert_eq!(resolved[0].target, PathBuf::from("/tmp/test-target/.vimrc"));
+        assert!(!resolved[0].is_git_source);
+        assert!(resolved[0].strategy.is_none());
+        assert!(resolved[0].encryption.is_none());
+    }
+
+    #[test]
+    fn resolve_module_files_path_traversal_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        let mod_dir = dir.path().join("modules").join("evil");
+        std::fs::create_dir_all(&mod_dir).unwrap();
+
+        let module = LoadedModule {
+            name: "evil".into(),
+            spec: ModuleSpec {
+                files: vec![ModuleFileEntry {
+                    source: "../../../etc/passwd".into(),
+                    target: "/tmp/stolen".into(),
+                    strategy: None,
+                    private: false,
+                    encryption: None,
+                }],
+                ..Default::default()
+            },
+            dir: mod_dir,
+        };
+
+        let printer = crate::output::Printer::new(crate::output::Verbosity::Quiet);
+        let cache_base = dir.path().join("cache");
+        let result = resolve_module_files(&module, &cache_base, &printer);
+
+        assert!(result.is_err(), "path traversal should be rejected");
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("traversal"),
+            "error should mention traversal: {err}"
+        );
+    }
+
+    #[test]
+    fn resolve_module_files_multiple_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let mod_dir = dir.path().join("modules").join("multi");
+        std::fs::create_dir_all(&mod_dir).unwrap();
+        std::fs::write(mod_dir.join("bashrc"), "# bashrc").unwrap();
+        std::fs::write(mod_dir.join("zshrc"), "# zshrc").unwrap();
+
+        let module = LoadedModule {
+            name: "multi".into(),
+            spec: ModuleSpec {
+                files: vec![
+                    ModuleFileEntry {
+                        source: "bashrc".into(),
+                        target: "/tmp/test-resolve/.bashrc".into(),
+                        strategy: Some(crate::config::FileStrategy::Copy),
+                        private: false,
+                        encryption: None,
+                    },
+                    ModuleFileEntry {
+                        source: "zshrc".into(),
+                        target: "/tmp/test-resolve/.zshrc".into(),
+                        strategy: Some(crate::config::FileStrategy::Symlink),
+                        private: false,
+                        encryption: None,
+                    },
+                ],
+                ..Default::default()
+            },
+            dir: mod_dir.clone(),
+        };
+
+        let printer = crate::output::Printer::new(crate::output::Verbosity::Quiet);
+        let cache_base = dir.path().join("cache");
+        let resolved = resolve_module_files(&module, &cache_base, &printer).unwrap();
+
+        assert_eq!(resolved.len(), 2);
+        assert_eq!(resolved[0].source, mod_dir.join("bashrc"));
+        assert_eq!(
+            resolved[0].strategy,
+            Some(crate::config::FileStrategy::Copy)
+        );
+        assert_eq!(resolved[1].source, mod_dir.join("zshrc"));
+        assert_eq!(
+            resolved[1].strategy,
+            Some(crate::config::FileStrategy::Symlink)
+        );
+    }
+
+    #[test]
+    fn resolve_module_files_empty_spec() {
+        let dir = tempfile::tempdir().unwrap();
+        let mod_dir = dir.path().join("modules").join("empty");
+        std::fs::create_dir_all(&mod_dir).unwrap();
+
+        let module = LoadedModule {
+            name: "empty".into(),
+            spec: ModuleSpec::default(),
+            dir: mod_dir,
+        };
+
+        let printer = crate::output::Printer::new(crate::output::Verbosity::Quiet);
+        let cache_base = dir.path().join("cache");
+        let resolved = resolve_module_files(&module, &cache_base, &printer).unwrap();
+        assert!(
+            resolved.is_empty(),
+            "module with no files should resolve to empty list"
+        );
+    }
+
+    #[test]
+    fn resolve_module_files_symlink_escape_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        let mod_dir = dir.path().join("modules").join("tricky");
+        std::fs::create_dir_all(&mod_dir).unwrap();
+
+        // Create a symlink that points outside the module directory
+        let outside_file = dir.path().join("outside.txt");
+        std::fs::write(&outside_file, "escaped!").unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&outside_file, mod_dir.join("escape.txt")).unwrap();
+        #[cfg(windows)]
+        std::os::windows::fs::symlink_file(&outside_file, mod_dir.join("escape.txt")).unwrap();
+
+        let module = LoadedModule {
+            name: "tricky".into(),
+            spec: ModuleSpec {
+                files: vec![ModuleFileEntry {
+                    source: "escape.txt".into(),
+                    target: "/tmp/test-tricky/out".into(),
+                    strategy: None,
+                    private: false,
+                    encryption: None,
+                }],
+                ..Default::default()
+            },
+            dir: mod_dir,
+        };
+
+        let printer = crate::output::Printer::new(crate::output::Verbosity::Quiet);
+        let cache_base = dir.path().join("cache");
+        let result = resolve_module_files(&module, &cache_base, &printer);
+        assert!(
+            result.is_err(),
+            "symlink escaping module directory should be rejected"
+        );
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("outside"),
+            "error should mention resolving outside: {err}"
+        );
+    }
+
+    // --- dependency_order edge cases ---
+
+    #[test]
+    fn dependency_order_empty_request() {
+        let modules = make_modules(&[("a", &[])]);
+        let order = resolve_dependency_order(&[], &modules).unwrap();
+        assert!(order.is_empty(), "empty request should yield empty order");
+    }
+
+    #[test]
+    fn dependency_order_deduplicated_request() {
+        let modules = make_modules(&[("a", &[])]);
+        let order = resolve_dependency_order(&["a".into(), "a".into()], &modules).unwrap();
+        assert_eq!(
+            order,
+            vec!["a"],
+            "duplicate requests should be deduplicated"
+        );
+    }
+
+    #[test]
+    fn dependency_order_request_includes_transitive_dep() {
+        // Requesting both "top" and its transitive dep "base" explicitly
+        let modules = make_modules(&[("base", &[]), ("top", &["base"])]);
+        let order = resolve_dependency_order(&["top".into(), "base".into()], &modules).unwrap();
+        assert_eq!(order, vec!["base", "top"]);
+    }
+
+    #[test]
+    fn dependency_order_independent_subgraphs() {
+        let modules = make_modules(&[("a1", &[]), ("a2", &["a1"]), ("b1", &[]), ("b2", &["b1"])]);
+        let order = resolve_dependency_order(&["a2".into(), "b2".into()], &modules).unwrap();
+        assert_eq!(order.len(), 4);
+        // a1 before a2, b1 before b2
+        let pos_a1 = order.iter().position(|n| n == "a1").unwrap();
+        let pos_a2 = order.iter().position(|n| n == "a2").unwrap();
+        let pos_b1 = order.iter().position(|n| n == "b1").unwrap();
+        let pos_b2 = order.iter().position(|n| n == "b2").unwrap();
+        assert!(pos_a1 < pos_a2, "a1 must come before a2");
+        assert!(pos_b1 < pos_b2, "b1 must come before b2");
+    }
+
+    #[test]
+    fn dependency_order_deep_chain_within_limit() {
+        // Build a chain of 50 modules (MAX_DEPENDENCY_DEPTH = 50)
+        let mut specs: Vec<(&str, Vec<&str>)> = Vec::new();
+        // We need static strings for the test, so use a different approach
+        let names: Vec<String> = (0..50).map(|i| format!("mod{i:03}")).collect();
+        let mut modules = HashMap::new();
+        for (i, name) in names.iter().enumerate() {
+            let deps = if i > 0 {
+                vec![names[i - 1].clone()]
+            } else {
+                vec![]
+            };
+            modules.insert(
+                name.clone(),
+                LoadedModule {
+                    name: name.clone(),
+                    spec: ModuleSpec {
+                        depends: deps,
+                        ..Default::default()
+                    },
+                    dir: PathBuf::from(format!("/fake/{name}")),
+                },
+            );
+        }
+        let order = resolve_dependency_order(&[names.last().unwrap().clone()], &modules).unwrap();
+        assert_eq!(order.len(), 50);
+        assert_eq!(order[0], "mod000");
+        assert_eq!(*order.last().unwrap(), "mod049");
+    }
+
+    #[test]
+    fn dependency_order_exceeds_depth_limit() {
+        // Build a chain of 52 modules (exceeds MAX_DEPENDENCY_DEPTH = 50)
+        let names: Vec<String> = (0..52).map(|i| format!("deep{i:03}")).collect();
+        let mut modules = HashMap::new();
+        for (i, name) in names.iter().enumerate() {
+            let deps = if i > 0 {
+                vec![names[i - 1].clone()]
+            } else {
+                vec![]
+            };
+            modules.insert(
+                name.clone(),
+                LoadedModule {
+                    name: name.clone(),
+                    spec: ModuleSpec {
+                        depends: deps,
+                        ..Default::default()
+                    },
+                    dir: PathBuf::from(format!("/fake/{name}")),
+                },
+            );
+        }
+        let result = resolve_dependency_order(&[names.last().unwrap().clone()], &modules);
+        assert!(result.is_err(), "chain exceeding depth limit should fail");
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("depth") || err.contains("cycle"),
+            "error should mention depth: {err}"
+        );
+    }
+
+    // --- load_all_modules tests ---
+
+    #[test]
+    fn load_all_modules_local_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let mod_dir = dir.path().join("modules").join("shell");
+        std::fs::create_dir_all(&mod_dir).unwrap();
+        std::fs::write(
+            mod_dir.join("module.yaml"),
+            r#"
+apiVersion: cfgd.io/v1alpha1
+kind: Module
+metadata:
+  name: shell
+spec:
+  packages:
+    - name: zsh
+"#,
+        )
+        .unwrap();
+
+        let cache_base = dir.path().join("cache");
+        std::fs::create_dir_all(&cache_base).unwrap();
+        let printer = crate::output::Printer::new(crate::output::Verbosity::Quiet);
+
+        let modules = load_all_modules(dir.path(), &cache_base, &printer).unwrap();
+        assert_eq!(modules.len(), 1);
+        assert!(modules.contains_key("shell"));
+        assert_eq!(modules["shell"].spec.packages.len(), 1);
+        assert_eq!(modules["shell"].spec.packages[0].name, "zsh");
+    }
+
+    #[test]
+    fn load_all_modules_with_lockfile_no_cache() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache_base = dir.path().join("cache");
+        std::fs::create_dir_all(&cache_base).unwrap();
+
+        // Create a lockfile referencing a remote module
+        std::fs::write(
+            dir.path().join("modules.lock"),
+            r#"
+apiVersion: cfgd.io/v1alpha1
+kind: ModuleLockfile
+entries:
+  - name: remote-mod
+    source: "https://github.com/example/modules.git//remote-mod"
+    commit: "abc123"
+    contentHash: "sha256:deadbeef"
+"#,
+        )
+        .unwrap();
+
+        let printer = crate::output::Printer::new(crate::output::Verbosity::Quiet);
+        // load_all_modules should succeed but remote module won't be in result
+        // because its cache directory doesn't exist
+        let modules = load_all_modules(dir.path(), &cache_base, &printer).unwrap();
+        // No local modules, remote module cache doesn't exist — empty result
+        assert!(
+            modules.is_empty(),
+            "remote module with no cache should not appear in loaded modules"
+        );
+    }
+
+    // --- diff_module_specs edge cases ---
+
+    #[test]
+    fn diff_module_specs_file_changes() {
+        let old = LoadedModule {
+            name: "mymod".into(),
+            spec: ModuleSpec {
+                files: vec![
+                    ModuleFileEntry {
+                        source: "old.conf".into(),
+                        target: "~/.config/app/old.conf".into(),
+                        strategy: None,
+                        private: false,
+                        encryption: None,
+                    },
+                    ModuleFileEntry {
+                        source: "shared.conf".into(),
+                        target: "~/.config/app/shared.conf".into(),
+                        strategy: None,
+                        private: false,
+                        encryption: None,
+                    },
+                ],
+                ..Default::default()
+            },
+            dir: PathBuf::from("/fake/mymod"),
+        };
+        let new = LoadedModule {
+            name: "mymod".into(),
+            spec: ModuleSpec {
+                files: vec![
+                    ModuleFileEntry {
+                        source: "new.conf".into(),
+                        target: "~/.config/app/new.conf".into(),
+                        strategy: None,
+                        private: false,
+                        encryption: None,
+                    },
+                    ModuleFileEntry {
+                        source: "shared.conf".into(),
+                        target: "~/.config/app/shared.conf".into(),
+                        strategy: None,
+                        private: false,
+                        encryption: None,
+                    },
+                ],
+                ..Default::default()
+            },
+            dir: PathBuf::from("/fake/mymod"),
+        };
+
+        let changes = diff_module_specs(&old, &new);
+        let joined = changes.join("\n");
+        assert!(
+            joined.contains("+ file target: ~/.config/app/new.conf"),
+            "should show added file: {joined}"
+        );
+        assert!(
+            joined.contains("- file target: ~/.config/app/old.conf"),
+            "should show removed file: {joined}"
+        );
+        // shared.conf should NOT appear in changes
+        assert!(
+            !joined.contains("shared.conf"),
+            "unchanged file should not appear: {joined}"
+        );
+    }
+
+    #[test]
+    fn diff_module_specs_env_changes_not_tracked() {
+        // diff_module_specs currently only tracks deps, packages, files, and scripts.
+        // Env changes should result in "(no spec changes)" since env isn't diffed.
+        let old = LoadedModule {
+            name: "mymod".into(),
+            spec: ModuleSpec {
+                env: vec![crate::config::EnvVar {
+                    name: "OLD".into(),
+                    value: "1".into(),
+                }],
+                ..Default::default()
+            },
+            dir: PathBuf::from("/fake/mymod"),
+        };
+        let new = LoadedModule {
+            name: "mymod".into(),
+            spec: ModuleSpec {
+                env: vec![crate::config::EnvVar {
+                    name: "NEW".into(),
+                    value: "2".into(),
+                }],
+                ..Default::default()
+            },
+            dir: PathBuf::from("/fake/mymod"),
+        };
+
+        let changes = diff_module_specs(&old, &new);
+        assert_eq!(
+            changes,
+            vec!["(no spec changes)"],
+            "env-only change should show as no spec changes (env not diffed)"
+        );
+    }
 }

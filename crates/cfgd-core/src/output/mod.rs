@@ -1437,4 +1437,339 @@ mod tests {
         let printer = Printer::new(Verbosity::Normal);
         assert!(!printer.is_structured());
     }
+
+    // --- write_structured format variants ---
+
+    #[test]
+    fn write_structured_name_single_object() {
+        let printer = Printer::with_format(Verbosity::Normal, None, OutputFormat::Name);
+        assert!(printer.is_structured());
+        let val = serde_json::json!({"name": "my-profile"});
+        assert!(printer.write_structured(&val));
+    }
+
+    #[test]
+    fn write_structured_name_array() {
+        let printer = Printer::with_format(Verbosity::Normal, None, OutputFormat::Name);
+        let val = serde_json::json!([
+            {"name": "profile-a"},
+            {"name": "profile-b"}
+        ]);
+        assert!(printer.write_structured(&val));
+    }
+
+    #[test]
+    fn write_structured_name_fallback_fields() {
+        // name_from_value tries "name", then "context", "phase", "resourceType", "url", "applyId"
+        let printer = Printer::with_format(Verbosity::Normal, None, OutputFormat::Name);
+
+        let context_val = serde_json::json!({"context": "production"});
+        assert!(printer.write_structured(&context_val));
+
+        let phase_val = serde_json::json!({"phase": "Packages"});
+        assert!(printer.write_structured(&phase_val));
+
+        let apply_id_val = serde_json::json!({"applyId": 42});
+        assert!(printer.write_structured(&apply_id_val));
+    }
+
+    #[test]
+    fn write_structured_jsonpath() {
+        let printer = Printer::with_format(
+            Verbosity::Normal,
+            None,
+            OutputFormat::Jsonpath("{.status.phase}".to_string()),
+        );
+        assert!(printer.is_structured());
+        let val = serde_json::json!({"status": {"phase": "ready"}});
+        assert!(printer.write_structured(&val));
+    }
+
+    #[test]
+    fn write_structured_template() {
+        let printer = Printer::with_format(
+            Verbosity::Normal,
+            None,
+            OutputFormat::Template("Name: {{ name }}".to_string()),
+        );
+        assert!(printer.is_structured());
+        let val = serde_json::json!({"name": "my-config"});
+        assert!(printer.write_structured(&val));
+    }
+
+    #[test]
+    fn write_structured_template_array() {
+        let printer = Printer::with_format(
+            Verbosity::Normal,
+            None,
+            OutputFormat::Template("- {{ name }}".to_string()),
+        );
+        let val = serde_json::json!([
+            {"name": "a"},
+            {"name": "b"}
+        ]);
+        assert!(printer.write_structured(&val));
+    }
+
+    #[test]
+    fn write_structured_template_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let tmpl_path = dir.path().join("output.tmpl");
+        std::fs::write(&tmpl_path, "Name={{ name }} Version={{ version }}").unwrap();
+
+        let printer = Printer::with_format(
+            Verbosity::Normal,
+            None,
+            OutputFormat::TemplateFile(tmpl_path),
+        );
+        let val = serde_json::json!({"name": "cfgd", "version": "1.0"});
+        assert!(printer.write_structured(&val));
+    }
+
+    #[test]
+    fn write_structured_template_file_missing() {
+        let printer = Printer::with_format(
+            Verbosity::Normal,
+            None,
+            OutputFormat::TemplateFile("/nonexistent/template.tmpl".into()),
+        );
+        let val = serde_json::json!({"key": "value"});
+        // Should return true (structured output mode) but print error
+        assert!(printer.write_structured(&val));
+    }
+
+    #[test]
+    fn write_structured_wide_returns_false() {
+        let printer = Printer::with_format(Verbosity::Normal, None, OutputFormat::Wide);
+        assert!(!printer.is_structured());
+        assert!(printer.is_wide());
+        let val = serde_json::json!({"key": "value"});
+        assert!(!printer.write_structured(&val));
+    }
+
+    // --- name_from_value edge cases ---
+
+    #[test]
+    fn name_from_value_no_match_returns_none() {
+        let val = serde_json::json!({"unknown_field": "value"});
+        assert!(name_from_value(&val).is_none());
+    }
+
+    #[test]
+    fn name_from_value_prefers_name_over_others() {
+        let val = serde_json::json!({"name": "primary", "context": "secondary"});
+        assert_eq!(name_from_value(&val), Some("primary".to_string()));
+    }
+
+    #[test]
+    fn name_from_value_numeric_apply_id() {
+        let val = serde_json::json!({"applyId": 123});
+        assert_eq!(name_from_value(&val), Some("123".to_string()));
+    }
+
+    #[test]
+    fn name_from_value_null_returns_none() {
+        assert!(name_from_value(&serde_json::Value::Null).is_none());
+    }
+
+    // --- Theme construction edge cases ---
+
+    #[test]
+    fn theme_from_config_all_icon_overrides() {
+        let config = ThemeConfig {
+            name: "default".into(),
+            overrides: crate::config::ThemeOverrides {
+                icon_success: Some("OK".into()),
+                icon_warning: Some("!!".into()),
+                icon_error: Some("ERR".into()),
+                icon_info: Some("ii".into()),
+                icon_pending: Some("..".into()),
+                icon_arrow: Some(">>".into()),
+                ..Default::default()
+            },
+        };
+        let theme = Theme::from_config(Some(&config));
+        assert_eq!(theme.icon_success, "OK");
+        assert_eq!(theme.icon_warning, "!!");
+        assert_eq!(theme.icon_error, "ERR");
+        assert_eq!(theme.icon_info, "ii");
+        assert_eq!(theme.icon_pending, "..");
+        assert_eq!(theme.icon_arrow, ">>");
+    }
+
+    #[test]
+    fn theme_from_config_all_color_overrides() {
+        let config = ThemeConfig {
+            name: "default".into(),
+            overrides: crate::config::ThemeOverrides {
+                success: Some("#00ff00".into()),
+                warning: Some("#ffff00".into()),
+                error: Some("#ff0000".into()),
+                info: Some("#00ffff".into()),
+                muted: Some("#888888".into()),
+                header: Some("#0000ff".into()),
+                subheader: Some("#ff00ff".into()),
+                key: Some("#ff79c6".into()),
+                value: Some("#f8f8f2".into()),
+                diff_add: Some("#50fa7b".into()),
+                diff_remove: Some("#ff5555".into()),
+                diff_context: Some("#6272a4".into()),
+                ..Default::default()
+            },
+        };
+        // Should not panic — all colors are applied
+        let _theme = Theme::from_config(Some(&config));
+    }
+
+    #[test]
+    fn theme_from_config_invalid_color_ignored() {
+        let config = ThemeConfig {
+            name: "default".into(),
+            overrides: crate::config::ThemeOverrides {
+                success: Some("not-a-color".into()),
+                ..Default::default()
+            },
+        };
+        // Should not panic — invalid color is silently ignored
+        let _theme = Theme::from_config(Some(&config));
+    }
+
+    // --- format_jsonpath_result ---
+
+    #[test]
+    fn format_jsonpath_result_bool() {
+        assert_eq!(
+            format_jsonpath_result(&serde_json::Value::Bool(true)),
+            "true"
+        );
+        assert_eq!(
+            format_jsonpath_result(&serde_json::Value::Bool(false)),
+            "false"
+        );
+    }
+
+    #[test]
+    fn format_jsonpath_result_number() {
+        let num = serde_json::json!(42);
+        assert_eq!(format_jsonpath_result(&num), "42");
+        let float = serde_json::json!(3.14);
+        assert_eq!(format_jsonpath_result(&float), "3.14");
+    }
+
+    #[test]
+    fn format_jsonpath_result_null_empty() {
+        assert_eq!(format_jsonpath_result(&serde_json::Value::Null), "");
+    }
+
+    // --- Printer method behavior ---
+
+    #[test]
+    fn printer_normal_verbosity_methods_do_not_panic() {
+        // Unlike Quiet mode (which skips), Normal mode exercises the full rendering path
+        let printer = Printer::new(Verbosity::Normal);
+
+        printer.header("Test Header");
+        printer.subheader("Test Subheader");
+        printer.success("Operation succeeded");
+        printer.warning("Something might be wrong");
+        printer.error("Something failed");
+        printer.info("Some information");
+        printer.key_value("Profile", "developer");
+        printer.key_value("Config Dir", "~/.config/cfgd");
+        printer.newline();
+
+        // Table with real data
+        printer.table(
+            &["NAME", "STATUS", "AGE"],
+            &[
+                vec!["nvim".into(), "installed".into(), "2d".into()],
+                vec!["tmux".into(), "missing".into(), "-".into()],
+            ],
+        );
+
+        // Plan phase
+        printer.plan_phase(
+            "Packages",
+            &[
+                "install brew: neovim".to_string(),
+                "install apt: ripgrep".to_string(),
+            ],
+        );
+        printer.plan_phase("Files", &[]);
+
+        // Diff
+        printer.diff("line1\nline2\nline3", "line1\nmodified\nline3");
+        printer.diff("identical", "identical");
+
+        // Syntax highlight
+        printer.syntax_highlight("fn main() { println!(\"hello\"); }", "rs");
+    }
+
+    #[test]
+    fn spinner_hidden_in_quiet_mode() {
+        let printer = Printer::new(Verbosity::Quiet);
+        let spinner = printer.spinner("loading...");
+        // ProgressBar::hidden() is returned in quiet mode — verify it doesn't panic
+        spinner.finish_and_clear();
+    }
+
+    #[test]
+    fn progress_bar_creates_valid_bar() {
+        let printer = Printer::new(Verbosity::Normal);
+        let pb = printer.progress_bar(100, "processing");
+        pb.inc(50);
+        assert_eq!(pb.position(), 50);
+        pb.finish();
+    }
+
+    #[test]
+    fn disable_colors_does_not_panic() {
+        Printer::disable_colors();
+    }
+
+    // --- jsonpath walk edge cases ---
+
+    #[test]
+    fn jsonpath_non_array_bracket_access_returns_empty() {
+        let val = serde_json::json!({"items": "not-an-array"});
+        assert_eq!(apply_jsonpath(&val, "{.items[0]}"), "");
+    }
+
+    #[test]
+    fn jsonpath_non_numeric_bracket_returns_empty() {
+        let val = serde_json::json!({"items": [1, 2, 3]});
+        assert_eq!(apply_jsonpath(&val, "{.items[abc]}"), "");
+    }
+
+    #[test]
+    fn jsonpath_nested_array_wildcard() {
+        let val = serde_json::json!({
+            "groups": [
+                {"members": [{"name": "alice"}, {"name": "bob"}]},
+                {"members": [{"name": "charlie"}]}
+            ]
+        });
+        let result = apply_jsonpath(&val, "{.groups[*].members[*].name}");
+        assert!(result.contains("alice"), "should contain alice: {result}");
+        assert!(result.contains("bob"), "should contain bob: {result}");
+        assert!(
+            result.contains("charlie"),
+            "should contain charlie: {result}"
+        );
+    }
+
+    #[test]
+    fn jsonpath_slice_from_start() {
+        let val = serde_json::json!({"items": ["a", "b", "c", "d"]});
+        // [0:2] should return first two
+        assert_eq!(apply_jsonpath(&val, "{.items[0:2]}"), "a\nb");
+    }
+
+    #[test]
+    fn jsonpath_empty_array() {
+        let val = serde_json::json!({"items": []});
+        assert_eq!(apply_jsonpath(&val, "{.items[0]}"), "");
+        assert_eq!(apply_jsonpath(&val, "{.items[*]}"), "");
+        assert_eq!(apply_jsonpath(&val, "{.items[0:5]}"), "");
+    }
 }

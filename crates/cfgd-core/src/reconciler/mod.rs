@@ -4722,7 +4722,7 @@ mod tests {
             packages: vec![],
             files: vec![crate::modules::ResolvedFile {
                 source: file_b,
-                target,
+                target: target.clone(),
                 is_git_source: false,
                 strategy: None,
                 encryption: None,
@@ -4740,7 +4740,39 @@ mod tests {
         }];
 
         let result = Reconciler::detect_file_conflicts(&file_actions, &modules);
-        assert!(result.is_ok());
+        assert!(
+            result.is_ok(),
+            "identical content targeting the same path should NOT conflict: {:?}",
+            result.err()
+        );
+        // Prove the identical-content check is meaningful: different content WOULD conflict
+        let file_c = dir.path().join("c.txt");
+        std::fs::write(&file_c, "different content").unwrap();
+        let conflicting_modules = vec![ResolvedModule {
+            name: "mymod".to_string(),
+            packages: vec![],
+            files: vec![crate::modules::ResolvedFile {
+                source: file_c,
+                target: target.clone(),
+                is_git_source: false,
+                strategy: None,
+                encryption: None,
+            }],
+            env: vec![],
+            aliases: vec![],
+            post_apply_scripts: vec![],
+            pre_apply_scripts: Vec::new(),
+            pre_reconcile_scripts: Vec::new(),
+            post_reconcile_scripts: Vec::new(),
+            on_change_scripts: Vec::new(),
+            system: HashMap::new(),
+            depends: vec![],
+            dir: PathBuf::from("."),
+        }];
+        assert!(
+            Reconciler::detect_file_conflicts(&file_actions, &conflicting_modules).is_err(),
+            "different content at same target should conflict (proves the Ok was meaningful)"
+        );
     }
 
     #[test]
@@ -4751,9 +4783,11 @@ mod tests {
         std::fs::write(&file_a, "content A").unwrap();
         std::fs::write(&file_b, "content B").unwrap();
 
+        let target_a = PathBuf::from("/target/a");
+        let target_b = PathBuf::from("/target/b");
         let file_actions = vec![FileAction::Create {
-            source: file_a,
-            target: PathBuf::from("/target/a"),
+            source: file_a.clone(),
+            target: target_a,
             origin: "local".to_string(),
             strategy: crate::config::FileStrategy::Copy,
             source_hash: None,
@@ -4763,8 +4797,8 @@ mod tests {
             name: "mymod".to_string(),
             packages: vec![],
             files: vec![crate::modules::ResolvedFile {
-                source: file_b,
-                target: PathBuf::from("/target/b"),
+                source: file_b.clone(),
+                target: target_b,
                 is_git_source: false,
                 strategy: None,
                 encryption: None,
@@ -4782,7 +4816,37 @@ mod tests {
         }];
 
         let result = Reconciler::detect_file_conflicts(&file_actions, &modules);
-        assert!(result.is_ok());
+        assert!(
+            result.is_ok(),
+            "different targets should not conflict: {:?}",
+            result.err()
+        );
+        // Prove this is meaningful: same target with different content WOULD conflict
+        let overlapping_modules = vec![ResolvedModule {
+            name: "mymod".to_string(),
+            packages: vec![],
+            files: vec![crate::modules::ResolvedFile {
+                source: file_b,
+                target: PathBuf::from("/target/a"), // same as file_actions target
+                is_git_source: false,
+                strategy: None,
+                encryption: None,
+            }],
+            env: vec![],
+            aliases: vec![],
+            post_apply_scripts: vec![],
+            pre_apply_scripts: Vec::new(),
+            pre_reconcile_scripts: Vec::new(),
+            post_reconcile_scripts: Vec::new(),
+            on_change_scripts: Vec::new(),
+            system: HashMap::new(),
+            depends: vec![],
+            dir: PathBuf::from("."),
+        }];
+        assert!(
+            Reconciler::detect_file_conflicts(&file_actions, &overlapping_modules).is_err(),
+            "different content at same target should conflict (proves the Ok was meaningful)"
+        );
     }
 
     #[test]
@@ -7788,9 +7852,17 @@ mod tests {
 
     #[test]
     fn detect_file_conflicts_skip_and_delete_actions_ignored() {
+        let dir = tempfile::tempdir().unwrap();
+        let file_a = dir.path().join("a.txt");
+        let file_b = dir.path().join("b.txt");
+        std::fs::write(&file_a, "content A").unwrap();
+        std::fs::write(&file_b, "content B").unwrap();
+
+        let shared_target = PathBuf::from("/target/a");
+
         let file_actions = vec![
             FileAction::Skip {
-                target: PathBuf::from("/target/a"),
+                target: shared_target.clone(),
                 reason: "unchanged".into(),
                 origin: "local".into(),
             },
@@ -7799,9 +7871,50 @@ mod tests {
                 origin: "local".into(),
             },
         ];
-        // Skip and Delete actions should not participate in conflict detection
-        let result = Reconciler::detect_file_conflicts(&file_actions, &[]);
-        assert!(result.is_ok());
+
+        // Module targets the same path as Skip — should NOT conflict because
+        // Skip/Delete actions are excluded from conflict detection
+        let modules = vec![ResolvedModule {
+            name: "mymod".to_string(),
+            packages: vec![],
+            files: vec![crate::modules::ResolvedFile {
+                source: file_a.clone(),
+                target: shared_target.clone(),
+                is_git_source: false,
+                strategy: None,
+                encryption: None,
+            }],
+            env: vec![],
+            aliases: vec![],
+            post_apply_scripts: vec![],
+            pre_apply_scripts: Vec::new(),
+            pre_reconcile_scripts: Vec::new(),
+            post_reconcile_scripts: Vec::new(),
+            on_change_scripts: Vec::new(),
+            system: HashMap::new(),
+            depends: vec![],
+            dir: PathBuf::from("."),
+        }];
+
+        let result = Reconciler::detect_file_conflicts(&file_actions, &modules);
+        assert!(
+            result.is_ok(),
+            "Skip/Delete actions should be excluded from conflict detection: {:?}",
+            result.err()
+        );
+
+        // Prove this matters: if the Skip were a Create with different content, it WOULD conflict
+        let create_actions = vec![FileAction::Create {
+            source: file_b,
+            target: shared_target,
+            origin: "local".to_string(),
+            strategy: crate::config::FileStrategy::Copy,
+            source_hash: None,
+        }];
+        assert!(
+            Reconciler::detect_file_conflicts(&create_actions, &modules).is_err(),
+            "Create with different content at same target should conflict (proves Skip exclusion is meaningful)"
+        );
     }
 
     #[test]
