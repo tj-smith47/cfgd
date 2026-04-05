@@ -3494,10 +3494,24 @@ mod tests {
         // Create a mock ObjectRef
         let obj_ref = ObjectRef::<MachineConfig>::new("test-mc").within("default");
         let action = Action::requeue(std::time::Duration::from_secs(60));
-        let result: ReconcileResult<MachineConfig> = Ok((obj_ref, action));
+        let result: ReconcileResult<MachineConfig> = Ok((obj_ref.clone(), action));
 
-        // Should log and not panic
-        futures::executor::block_on(log_fn(result));
+        // Verify the closure returns Ready<()> (resolves immediately)
+        let future = log_fn(result);
+        let output = futures::executor::block_on(future);
+        // log_reconcile returns () — verify it completed (type-level assertion)
+        let _: () = output;
+
+        // Also verify the Err path does not panic
+        let log_fn_err = log_reconcile::<MachineConfig>("MachineConfig");
+        let err_result: ReconcileResult<MachineConfig> =
+            Err(kube::runtime::controller::Error::ReconcilerFailed(
+                OperatorError::Reconciliation("test error".into()),
+                obj_ref.erase(),
+            ));
+        let err_future = log_fn_err(err_result);
+        let err_output = futures::executor::block_on(err_future);
+        let _: () = err_output;
     }
 
     // -----------------------------------------------------------------------
@@ -3517,5 +3531,351 @@ mod tests {
         };
         // Key is missing → is_none_or returns true → accepts
         assert!(matches_selector(Some(&labels), &selector));
+    }
+
+    // -----------------------------------------------------------------------
+    // build_condition
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn build_condition_new_sets_transition_time() {
+        let cond = build_condition(
+            &[],
+            "Ready",
+            "True",
+            "Ready",
+            "All ok",
+            "2026-01-01T00:00:00Z",
+            Some(1),
+        );
+        assert_eq!(cond.condition_type, "Ready");
+        assert_eq!(cond.status, "True");
+        assert_eq!(cond.reason, "Ready");
+        assert_eq!(cond.message, "All ok");
+        assert_eq!(cond.last_transition_time, "2026-01-01T00:00:00Z");
+        assert_eq!(cond.observed_generation, Some(1));
+    }
+
+    #[test]
+    fn build_condition_preserves_transition_time_on_same_status() {
+        let existing = vec![Condition {
+            condition_type: "Ready".to_string(),
+            status: "True".to_string(),
+            reason: "Ready".to_string(),
+            message: "old".to_string(),
+            last_transition_time: "2025-01-01T00:00:00Z".to_string(),
+            observed_generation: Some(1),
+        }];
+        let cond = build_condition(
+            &existing,
+            "Ready",
+            "True",
+            "Ready",
+            "new message",
+            "2026-01-01T00:00:00Z",
+            Some(2),
+        );
+        // Status didn't change (still True), so transition time is preserved
+        assert_eq!(cond.last_transition_time, "2025-01-01T00:00:00Z");
+        assert_eq!(cond.message, "new message");
+        assert_eq!(cond.observed_generation, Some(2));
+    }
+
+    #[test]
+    fn build_condition_updates_transition_time_on_status_change() {
+        let existing = vec![Condition {
+            condition_type: "Ready".to_string(),
+            status: "True".to_string(),
+            reason: "Ready".to_string(),
+            message: "was ready".to_string(),
+            last_transition_time: "2025-01-01T00:00:00Z".to_string(),
+            observed_generation: Some(1),
+        }];
+        let cond = build_condition(
+            &existing,
+            "Ready",
+            "False",
+            "Error",
+            "failed",
+            "2026-06-01T00:00:00Z",
+            Some(2),
+        );
+        // Status changed from True to False, so transition time updates
+        assert_eq!(cond.last_transition_time, "2026-06-01T00:00:00Z");
+        assert_eq!(cond.status, "False");
+    }
+
+    // -----------------------------------------------------------------------
+    // find_condition_status / find_condition_transition_time
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn find_condition_status_found() {
+        let conditions = vec![
+            Condition {
+                condition_type: "Ready".to_string(),
+                status: "True".to_string(),
+                reason: "R".to_string(),
+                message: "M".to_string(),
+                last_transition_time: "now".to_string(),
+                observed_generation: None,
+            },
+            Condition {
+                condition_type: "Degraded".to_string(),
+                status: "False".to_string(),
+                reason: "R".to_string(),
+                message: "M".to_string(),
+                last_transition_time: "now".to_string(),
+                observed_generation: None,
+            },
+        ];
+        assert_eq!(
+            find_condition_status(&conditions, "Ready"),
+            Some("True".to_string())
+        );
+        assert_eq!(
+            find_condition_status(&conditions, "Degraded"),
+            Some("False".to_string())
+        );
+    }
+
+    #[test]
+    fn find_condition_status_not_found() {
+        assert_eq!(find_condition_status(&[], "Ready"), None);
+    }
+
+    #[test]
+    fn find_condition_transition_time_found() {
+        let conditions = vec![Condition {
+            condition_type: "Ready".to_string(),
+            status: "True".to_string(),
+            reason: "R".to_string(),
+            message: "M".to_string(),
+            last_transition_time: "2025-01-01T00:00:00Z".to_string(),
+            observed_generation: None,
+        }];
+        assert_eq!(
+            find_condition_transition_time(&conditions, "Ready"),
+            Some("2025-01-01T00:00:00Z".to_string())
+        );
+    }
+
+    #[test]
+    fn find_condition_transition_time_not_found() {
+        assert_eq!(find_condition_transition_time(&[], "Missing"), None);
+    }
+
+    // -----------------------------------------------------------------------
+    // build_drift_alert_conditions
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn drift_alert_conditions_active_low_severity() {
+        let conditions = build_drift_alert_conditions(
+            &DriftSeverity::Low,
+            false,
+            "dev-1",
+            3,
+            "2026-01-01T00:00:00Z",
+            Some(1),
+        );
+        assert_eq!(conditions.len(), 3);
+
+        let resolved = conditions
+            .iter()
+            .find(|c| c.condition_type == "Resolved")
+            .unwrap();
+        assert_eq!(resolved.status, "False");
+        assert_eq!(resolved.reason, "DriftActive");
+        assert!(resolved.message.contains("dev-1"));
+        assert!(resolved.message.contains("3"));
+
+        let escalated = conditions
+            .iter()
+            .find(|c| c.condition_type == "Escalated")
+            .unwrap();
+        assert_eq!(escalated.status, "False");
+        assert_eq!(escalated.reason, "BelowThreshold");
+    }
+
+    #[test]
+    fn drift_alert_conditions_resolved_high_severity() {
+        let conditions = build_drift_alert_conditions(
+            &DriftSeverity::High,
+            true,
+            "dev-2",
+            0,
+            "2026-01-01T00:00:00Z",
+            None,
+        );
+        let resolved = conditions
+            .iter()
+            .find(|c| c.condition_type == "Resolved")
+            .unwrap();
+        assert_eq!(resolved.status, "True");
+        assert_eq!(resolved.reason, "DriftResolved");
+
+        let escalated = conditions
+            .iter()
+            .find(|c| c.condition_type == "Escalated")
+            .unwrap();
+        assert_eq!(escalated.status, "True");
+        assert_eq!(escalated.reason, "SeverityThreshold");
+    }
+
+    #[test]
+    fn drift_alert_conditions_critical_is_escalated() {
+        let conditions =
+            build_drift_alert_conditions(&DriftSeverity::Critical, false, "d", 1, "now", None);
+        let escalated = conditions
+            .iter()
+            .find(|c| c.condition_type == "Escalated")
+            .unwrap();
+        assert_eq!(escalated.status, "True");
+    }
+
+    #[test]
+    fn drift_alert_conditions_medium_not_escalated() {
+        let conditions =
+            build_drift_alert_conditions(&DriftSeverity::Medium, false, "d", 1, "now", None);
+        let escalated = conditions
+            .iter()
+            .find(|c| c.condition_type == "Escalated")
+            .unwrap();
+        assert_eq!(escalated.status, "False");
+    }
+
+    // -----------------------------------------------------------------------
+    // evaluate_module_verification
+    // -----------------------------------------------------------------------
+
+    // evaluate_module_verification basic variants already tested above
+    #[test]
+    fn module_verification_keyless_with_identity_coverage() {
+        use crate::crds::CosignSignature;
+        let sig = ModuleSignature {
+            cosign: Some(CosignSignature {
+                public_key: None,
+                keyless: true,
+                certificate_identity: Some("user@example.com".to_string()),
+                certificate_oidc_issuer: Some("https://accounts.google.com".to_string()),
+            }),
+        };
+        let result = evaluate_module_verification(&Some(sig));
+        assert_eq!(result.status, "True");
+        assert_eq!(result.reason, "SignatureConfigured");
+        assert!(result.message.contains("Keyless"));
+        let digest = result.signature_digest.unwrap();
+        assert!(digest.contains("keyless:"));
+        assert!(digest.contains("user@example.com"));
+    }
+
+    #[test]
+    fn module_verification_cosign_no_key_no_keyless() {
+        use crate::crds::CosignSignature;
+        let sig = ModuleSignature {
+            cosign: Some(CosignSignature {
+                public_key: None,
+                keyless: false,
+                certificate_identity: None,
+                certificate_oidc_issuer: None,
+            }),
+        };
+        let result = evaluate_module_verification(&Some(sig));
+        assert_eq!(result.status, "False");
+        assert_eq!(result.reason, "SignatureInvalid");
+    }
+
+    // -----------------------------------------------------------------------
+    // merge_policy_requirements
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn merge_policy_cluster_and_namespace_packages() {
+        let cluster = ClusterConfigPolicySpec {
+            packages: vec![PackageRef {
+                name: "git".to_string(),
+                version: Some(">=2.40".to_string()),
+            }],
+            ..Default::default()
+        };
+        let ns_spec = ConfigPolicySpec {
+            packages: vec![
+                PackageRef {
+                    name: "git".to_string(),
+                    version: None,
+                },
+                PackageRef {
+                    name: "vim".to_string(),
+                    version: None,
+                },
+            ],
+            ..Default::default()
+        };
+        let merged = merge_policy_requirements(&cluster, &[&ns_spec]);
+        assert_eq!(merged.packages.len(), 2);
+        // Cluster version wins for git
+        let git = merged.packages.iter().find(|p| p.name == "git").unwrap();
+        assert_eq!(git.version, Some(">=2.40".to_string()));
+    }
+
+    #[test]
+    fn merge_policy_deduplicates_modules() {
+        use crate::crds::ModuleRef;
+        let cluster = ClusterConfigPolicySpec {
+            required_modules: vec![ModuleRef {
+                name: "base".to_string(),
+                required: true,
+            }],
+            ..Default::default()
+        };
+        let ns_spec = ConfigPolicySpec {
+            required_modules: vec![
+                ModuleRef {
+                    name: "base".to_string(),
+                    required: true,
+                },
+                ModuleRef {
+                    name: "vpn".to_string(),
+                    required: true,
+                },
+            ],
+            ..Default::default()
+        };
+        let merged = merge_policy_requirements(&cluster, &[&ns_spec]);
+        assert_eq!(merged.modules.len(), 2); // base + vpn, no duplication
+    }
+
+    #[test]
+    fn merge_policy_settings_namespace_then_cluster() {
+        let mut cluster_settings = BTreeMap::new();
+        cluster_settings.insert("key".to_string(), serde_json::json!("cluster-val"));
+        let cluster = ClusterConfigPolicySpec {
+            settings: cluster_settings,
+            ..Default::default()
+        };
+        let mut ns_settings = BTreeMap::new();
+        ns_settings.insert("key".to_string(), serde_json::json!("ns-val"));
+        let ns_spec = ConfigPolicySpec {
+            settings: ns_settings,
+            ..Default::default()
+        };
+        let merged = merge_policy_requirements(&cluster, &[&ns_spec]);
+        // Cluster settings are applied after namespace, so cluster wins
+        assert_eq!(merged.settings["key"], serde_json::json!("cluster-val"));
+    }
+
+    // -----------------------------------------------------------------------
+    // compliance_summary
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn compliance_summary_zero_zero() {
+        assert_eq!(compliance_summary(0, 0), "0 compliant, 0 non-compliant");
+    }
+
+    #[test]
+    fn compliance_summary_typical() {
+        assert_eq!(compliance_summary(5, 2), "5 compliant, 2 non-compliant");
     }
 }

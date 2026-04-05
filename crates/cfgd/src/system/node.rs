@@ -1121,7 +1121,7 @@ impl SystemConfigurator for CertificateConfigurator {
 // Helpers
 // ---------------------------------------------------------------------------
 
-fn find_toml_value(table: &toml::Table, key: &str) -> Option<String> {
+pub(crate) fn find_toml_value(table: &toml::Table, key: &str) -> Option<String> {
     // First try dot-separated path lookup
     if key.contains('.') {
         let parts: Vec<&str> = key.rsplitn(2, '.').collect();
@@ -1159,7 +1159,7 @@ fn find_toml_value(table: &toml::Table, key: &str) -> Option<String> {
     None
 }
 
-fn toml_value_to_string(value: &toml::Value) -> String {
+pub(crate) fn toml_value_to_string(value: &toml::Value) -> String {
     match value {
         toml::Value::Boolean(b) => b.to_string(),
         toml::Value::Integer(n) => n.to_string(),
@@ -1169,7 +1169,7 @@ fn toml_value_to_string(value: &toml::Value) -> String {
     }
 }
 
-fn set_toml_value(table: &mut toml::Table, key: &str, value: &serde_yaml::Value) {
+pub(crate) fn set_toml_value(table: &mut toml::Table, key: &str, value: &serde_yaml::Value) {
     let toml_val = yaml_to_toml_value(value);
 
     if !key.contains('.') {
@@ -1197,7 +1197,7 @@ fn set_toml_value(table: &mut toml::Table, key: &str, value: &serde_yaml::Value)
     current.insert(leaf.to_string(), toml_val);
 }
 
-fn yaml_to_toml_value(value: &serde_yaml::Value) -> toml::Value {
+pub(crate) fn yaml_to_toml_value(value: &serde_yaml::Value) -> toml::Value {
     match value {
         serde_yaml::Value::Bool(b) => toml::Value::Boolean(*b),
         serde_yaml::Value::Number(n) => {
@@ -2851,5 +2851,418 @@ SystemdCgroup = true
         let desired = serde_yaml::Value::Mapping(desired_map);
         let drifts = kc.diff(&desired).unwrap();
         assert!(drifts.is_empty());
+    }
+
+    // --- SysctlConfigurator current_state ---
+
+    #[test]
+    fn sysctl_current_state_returns_empty_mapping() {
+        let sc = SysctlConfigurator;
+        let state = sc.current_state().unwrap();
+        assert!(state.as_mapping().unwrap().is_empty());
+    }
+
+    // --- KernelModuleConfigurator current_state ---
+
+    #[test]
+    fn kernel_module_current_state_returns_empty_sequence() {
+        let km = KernelModuleConfigurator;
+        let state = km.current_state().unwrap();
+        assert!(state.is_sequence());
+        assert!(state.as_sequence().unwrap().is_empty());
+    }
+
+    // --- ContainerdConfigurator current_state ---
+
+    #[test]
+    fn containerd_current_state_returns_empty_mapping() {
+        let cc = ContainerdConfigurator;
+        let state = cc.current_state().unwrap();
+        assert!(state.as_mapping().unwrap().is_empty());
+    }
+
+    // --- KubeletConfigurator current_state ---
+
+    #[test]
+    fn kubelet_current_state_returns_empty_mapping() {
+        let kc = KubeletConfigurator;
+        let state = kc.current_state().unwrap();
+        assert!(state.as_mapping().unwrap().is_empty());
+    }
+
+    // --- AppArmorConfigurator current_state ---
+
+    #[test]
+    fn apparmor_current_state_returns_empty_mapping() {
+        let ac = AppArmorConfigurator;
+        let state = ac.current_state().unwrap();
+        assert!(state.as_mapping().unwrap().is_empty());
+    }
+
+    // --- SeccompConfigurator current_state ---
+
+    #[test]
+    fn seccomp_current_state_returns_empty_mapping() {
+        let sc = SeccompConfigurator;
+        let state = sc.current_state().unwrap();
+        assert!(state.as_mapping().unwrap().is_empty());
+    }
+
+    // --- CertificateConfigurator current_state ---
+
+    #[test]
+    fn certificate_current_state_returns_empty_mapping() {
+        let cc = CertificateConfigurator;
+        let state = cc.current_state().unwrap();
+        assert!(state.as_mapping().unwrap().is_empty());
+    }
+
+    // --- SysctlConfigurator::validate_sysctl_key additional patterns ---
+
+    #[test]
+    fn sysctl_validate_key_with_dash() {
+        assert!(
+            SysctlConfigurator::validate_sysctl_key("net.bridge.bridge-nf-call-ip6tables").is_ok()
+        );
+    }
+
+    #[test]
+    fn sysctl_validate_key_with_underscore_and_digits() {
+        assert!(SysctlConfigurator::validate_sysctl_key("vm.max_map_count").is_ok());
+    }
+
+    #[test]
+    fn sysctl_validate_key_single_segment() {
+        assert!(SysctlConfigurator::validate_sysctl_key("hostname").is_ok());
+    }
+
+    #[test]
+    fn sysctl_validate_key_with_tab_rejected() {
+        assert!(SysctlConfigurator::validate_sysctl_key("key\twith\ttab").is_err());
+    }
+
+    #[test]
+    fn sysctl_validate_key_with_shell_injection_rejected() {
+        assert!(SysctlConfigurator::validate_sysctl_key("key$(whoami)").is_err());
+    }
+
+    #[test]
+    fn sysctl_validate_key_with_backtick_rejected() {
+        assert!(SysctlConfigurator::validate_sysctl_key("key`cmd`").is_err());
+    }
+
+    // --- ContainerdConfigurator::read_current_config with valid TOML ---
+
+    #[test]
+    fn containerd_read_config_with_multiple_sections() {
+        let dir = tempdir().unwrap();
+        let config = dir.path().join("config.toml");
+        fs::write(
+            &config,
+            "version = 2\n\n[plugins.cri]\nsandbox_image = \"pause:3.9\"\n\n[plugins.cri.containerd.runtimes.runc.options]\nSystemdCgroup = true\n",
+        ).unwrap();
+        let table = ContainerdConfigurator::read_current_config(&config).unwrap();
+        assert_eq!(table.get("version").unwrap().as_integer(), Some(2));
+        assert_eq!(
+            find_toml_value(&table, "plugins.cri.sandbox_image"),
+            Some("pause:3.9".to_string())
+        );
+        assert_eq!(
+            find_toml_value(
+                &table,
+                "plugins.cri.containerd.runtimes.runc.options.SystemdCgroup"
+            ),
+            Some("true".to_string())
+        );
+    }
+
+    // --- ContainerdConfigurator diff with non-mapping desired ---
+
+    #[test]
+    fn containerd_diff_non_mapping_returns_empty() {
+        let cc = ContainerdConfigurator;
+        let desired = serde_yaml::Value::String("not a mapping".into());
+        let drifts = cc.diff(&desired).unwrap();
+        assert!(drifts.is_empty());
+    }
+
+    // --- KubeletConfigurator diff with non-mapping desired ---
+
+    #[test]
+    fn kubelet_diff_non_mapping_returns_empty() {
+        let kc = KubeletConfigurator;
+        let desired = serde_yaml::Value::String("not a mapping".into());
+        // config_path falls back to default, which doesn't exist
+        // and settings extraction returns None since desired is not a mapping
+        // Note: config_path looks for "configPath" on desired, which is not available
+        // so uses default. The real test is that settings returns None.
+        let drifts = kc.diff(&desired).unwrap();
+        assert!(drifts.is_empty());
+    }
+
+    // --- seccomp diff with existing matching JSON content ---
+
+    #[test]
+    fn seccomp_diff_existing_matching_content_no_drift() {
+        let dir = tempdir().unwrap();
+        let profile_path = dir.path().join("default-audit.json");
+        let content = r#"{"defaultAction":"SCMP_ACT_LOG"}"#;
+        fs::write(&profile_path, content).unwrap();
+
+        let sc = SeccompConfigurator;
+
+        let mut profile = serde_yaml::Mapping::new();
+        profile.insert(
+            serde_yaml::Value::String("name".into()),
+            serde_yaml::Value::String("default-audit".into()),
+        );
+        profile.insert(
+            serde_yaml::Value::String("file".into()),
+            serde_yaml::Value::String("default-audit.json".into()),
+        );
+        profile.insert(
+            serde_yaml::Value::String("content".into()),
+            serde_yaml::Value::String(content.into()),
+        );
+
+        let mut m = serde_yaml::Mapping::new();
+        m.insert(
+            serde_yaml::Value::String("profilesDir".into()),
+            serde_yaml::Value::String(dir.path().to_str().unwrap().into()),
+        );
+        m.insert(
+            serde_yaml::Value::String("profiles".into()),
+            serde_yaml::Value::Sequence(vec![serde_yaml::Value::Mapping(profile)]),
+        );
+
+        let desired = serde_yaml::Value::Mapping(m);
+        let drifts = sc.diff(&desired).unwrap();
+        assert!(drifts.is_empty());
+    }
+
+    // --- seccomp diff with profile that has no content key ---
+
+    #[test]
+    fn seccomp_diff_profile_without_content_no_content_drift() {
+        let dir = tempdir().unwrap();
+        let profile_path = dir.path().join("existing.json");
+        fs::write(&profile_path, r#"{"defaultAction":"SCMP_ACT_LOG"}"#).unwrap();
+
+        let sc = SeccompConfigurator;
+
+        let mut profile = serde_yaml::Mapping::new();
+        profile.insert(
+            serde_yaml::Value::String("name".into()),
+            serde_yaml::Value::String("existing".into()),
+        );
+        profile.insert(
+            serde_yaml::Value::String("file".into()),
+            serde_yaml::Value::String("existing.json".into()),
+        );
+        // No "content" key — content comparison should be skipped
+
+        let mut m = serde_yaml::Mapping::new();
+        m.insert(
+            serde_yaml::Value::String("profilesDir".into()),
+            serde_yaml::Value::String(dir.path().to_str().unwrap().into()),
+        );
+        m.insert(
+            serde_yaml::Value::String("profiles".into()),
+            serde_yaml::Value::Sequence(vec![serde_yaml::Value::Mapping(profile)]),
+        );
+
+        let desired = serde_yaml::Value::Mapping(m);
+        let drifts = sc.diff(&desired).unwrap();
+        // File exists, no content key — no drift expected
+        assert!(drifts.is_empty());
+    }
+
+    // --- certificate diff with existing cert with correct permissions ---
+
+    #[test]
+    fn certificate_diff_existing_cert_no_drift() {
+        let dir = tempdir().unwrap();
+        let cert_path = dir.path().join("tls.crt");
+        let key_path = dir.path().join("tls.key");
+        fs::write(&cert_path, "cert data").unwrap();
+        fs::write(&key_path, "key data").unwrap();
+
+        let cc = CertificateConfigurator;
+
+        let mut cert = serde_yaml::Mapping::new();
+        cert.insert(
+            serde_yaml::Value::String("name".into()),
+            serde_yaml::Value::String("tls".into()),
+        );
+        cert.insert(
+            serde_yaml::Value::String("certPath".into()),
+            serde_yaml::Value::String(cert_path.to_str().unwrap().into()),
+        );
+        cert.insert(
+            serde_yaml::Value::String("keyPath".into()),
+            serde_yaml::Value::String(key_path.to_str().unwrap().into()),
+        );
+        // No mode key — no permission drift
+
+        let mut m = serde_yaml::Mapping::new();
+        m.insert(
+            serde_yaml::Value::String("certificates".into()),
+            serde_yaml::Value::Sequence(vec![serde_yaml::Value::Mapping(cert)]),
+        );
+
+        let desired = serde_yaml::Value::Mapping(m);
+        let drifts = cc.diff(&desired).unwrap();
+        assert!(drifts.is_empty());
+    }
+
+    // --- certificate diff with non-sequence desired ---
+
+    #[test]
+    fn certificate_diff_non_sequence_desired() {
+        let cc = CertificateConfigurator;
+        let desired = serde_yaml::Value::String("not a mapping".into());
+        let drifts = cc.diff(&desired).unwrap();
+        assert!(drifts.is_empty());
+    }
+
+    // --- CertificateConfigurator is_available ---
+
+    #[test]
+    fn certificate_is_available_on_linux() {
+        let cc = CertificateConfigurator;
+        assert_eq!(cc.is_available(), cfg!(target_os = "linux"));
+    }
+
+    // --- SeccompConfigurator is_available ---
+
+    #[test]
+    fn seccomp_is_available_depends_on_proc() {
+        let sc = SeccompConfigurator;
+        let expected = std::path::Path::new("/proc/sys/kernel/seccomp").exists();
+        assert_eq!(sc.is_available(), expected);
+    }
+
+    // --- find_toml_value dot-path with missing intermediate ---
+
+    #[test]
+    fn find_toml_value_dot_path_with_nonexistent_intermediate() {
+        let mut table = toml::Table::new();
+        table.insert("key".to_string(), toml::Value::String("val".into()));
+        assert_eq!(find_toml_value(&table, "nonexistent.sub.key"), None);
+    }
+
+    // --- find_toml_value recursive search ---
+
+    #[test]
+    fn find_toml_value_recursive_search_in_nested() {
+        let mut inner = toml::Table::new();
+        inner.insert("deep_key".to_string(), toml::Value::Integer(42));
+        let mut mid = toml::Table::new();
+        mid.insert("inner".to_string(), toml::Value::Table(inner));
+        let mut table = toml::Table::new();
+        table.insert("outer".to_string(), toml::Value::Table(mid));
+
+        // Non-dotted key should be found via recursive search
+        assert_eq!(find_toml_value(&table, "deep_key"), Some("42".to_string()));
+    }
+
+    // --- json_equal both empty arrays ---
+
+    #[test]
+    fn json_equal_empty_arrays() {
+        assert!(json_equal("[]", "[]"));
+    }
+
+    #[test]
+    fn json_equal_arrays_with_different_order() {
+        assert!(!json_equal("[1,2]", "[2,1]"));
+    }
+
+    // --- KernelModuleConfigurator diff mixed entries ---
+
+    #[test]
+    fn kernel_module_diff_mixed_string_and_non_string() {
+        let km = KernelModuleConfigurator;
+        // First entry is a non-string (skipped), second is a definitely-missing module
+        let desired = serde_yaml::Value::Sequence(vec![
+            serde_yaml::Value::Number(99.into()),
+            serde_yaml::Value::String("cfgd_fake_module_test_abc".into()),
+        ]);
+        let drifts = km.diff(&desired).unwrap();
+        // Only the string module should produce drift
+        assert_eq!(drifts.len(), 1);
+        assert_eq!(drifts[0].key, "cfgd_fake_module_test_abc");
+    }
+
+    // --- ContainerdConfigurator config_path default vs custom ---
+
+    #[test]
+    fn containerd_config_path_falls_back_to_default_for_empty_mapping() {
+        let desired = serde_yaml::Value::Mapping(serde_yaml::Mapping::new());
+        let path = ContainerdConfigurator::config_path(&desired);
+        assert_eq!(
+            path,
+            PathBuf::from(ContainerdConfigurator::DEFAULT_CONFIG_PATH)
+        );
+    }
+
+    // --- KubeletConfigurator config_path ---
+
+    #[test]
+    fn kubelet_config_path_falls_back_to_default_for_empty_mapping() {
+        let desired = serde_yaml::Value::Mapping(serde_yaml::Mapping::new());
+        let path = KubeletConfigurator::config_path(&desired);
+        assert_eq!(
+            path,
+            PathBuf::from(KubeletConfigurator::DEFAULT_CONFIG_PATH)
+        );
+    }
+
+    // --- KubeletConfigurator read_current_config with complex YAML ---
+
+    #[test]
+    fn kubelet_read_config_with_nested_yaml() {
+        let dir = tempdir().unwrap();
+        let config = dir.path().join("config.yaml");
+        fs::write(
+            &config,
+            "apiVersion: kubelet.config.k8s.io/v1beta1\nkind: KubeletConfiguration\nmaxPods: 110\nclusterDNS:\n  - 10.96.0.10\n",
+        ).unwrap();
+        let value = KubeletConfigurator::read_current_config(&config).unwrap();
+        assert_eq!(value.get("maxPods").and_then(|v| v.as_u64()), Some(110));
+        assert!(value.get("clusterDNS").unwrap().is_sequence());
+    }
+
+    // --- set_toml_value deeply nested ---
+
+    #[test]
+    fn set_toml_value_deeply_nested_path() {
+        let mut table = toml::Table::new();
+        set_toml_value(
+            &mut table,
+            "a.b.c.d.e",
+            &serde_yaml::Value::String("deep".into()),
+        );
+        assert_eq!(
+            find_toml_value(&table, "a.b.c.d.e"),
+            Some("deep".to_string())
+        );
+    }
+
+    #[test]
+    fn set_toml_value_boolean_in_nested_path() {
+        let mut table = toml::Table::new();
+        set_toml_value(
+            &mut table,
+            "plugins.cri.containerd.runtimes.runc.options.SystemdCgroup",
+            &serde_yaml::Value::Bool(true),
+        );
+        assert_eq!(
+            find_toml_value(
+                &table,
+                "plugins.cri.containerd.runtimes.runc.options.SystemdCgroup"
+            ),
+            Some("true".to_string())
+        );
     }
 }

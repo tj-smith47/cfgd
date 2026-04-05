@@ -3765,7 +3765,18 @@ spec:
   profile: default
 "#;
         let result = parse_config(yaml, std::path::Path::new("cfgd.yaml"));
-        assert!(result.is_ok());
+        assert!(
+            result.is_ok(),
+            "normal config should parse: {:?}",
+            result.err()
+        );
+        let config = result.unwrap();
+        assert_eq!(config.metadata.name, "test");
+        assert_eq!(config.spec.profile.as_deref(), Some("default"));
+        assert_eq!(config.api_version, "cfgd.io/v1alpha1");
+        assert_eq!(config.kind, "Config");
+        assert!(config.spec.origin.is_empty(), "no origins configured");
+        assert!(config.spec.sources.is_empty(), "no sources configured");
     }
 
     #[test]

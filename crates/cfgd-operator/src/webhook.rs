@@ -829,7 +829,12 @@ mod tests {
             "profile": "developer"
         }));
         let req = extract_req(review);
-        assert!(validate_object_spec::<MachineConfigSpec>(&req).is_ok());
+        let result = validate_object_spec::<MachineConfigSpec>(&req);
+        assert!(
+            result.is_ok(),
+            "valid MachineConfigSpec with hostname+profile should pass: {:?}",
+            result.err()
+        );
     }
 
     #[test]
@@ -885,7 +890,16 @@ mod tests {
         }))
         .expect("test review");
         let req = extract_req(review);
-        assert!(validate_object_spec::<MachineConfigSpec>(&req).is_ok());
+        assert!(
+            req.object.is_none(),
+            "DELETE operations should have no object"
+        );
+        let result = validate_object_spec::<MachineConfigSpec>(&req);
+        assert!(
+            result.is_ok(),
+            "DELETE operations without object should be allowed: {:?}",
+            result.err()
+        );
     }
 
     #[test]
@@ -895,7 +909,12 @@ mod tests {
             "requiredModules": [{"name": "corp-vpn"}]
         }));
         let req = extract_req(review);
-        assert!(validate_object_spec::<ConfigPolicySpec>(&req).is_ok());
+        let result = validate_object_spec::<ConfigPolicySpec>(&req);
+        assert!(
+            result.is_ok(),
+            "valid ConfigPolicySpec with packages and requiredModules should pass: {:?}",
+            result.err()
+        );
     }
 
     #[test]
@@ -916,7 +935,12 @@ mod tests {
             "severity": "High"
         }));
         let req = extract_req(review);
-        assert!(validate_object_spec::<DriftAlertSpec>(&req).is_ok());
+        let result = validate_object_spec::<DriftAlertSpec>(&req);
+        assert!(
+            result.is_ok(),
+            "valid DriftAlertSpec with deviceId, machineConfigRef, and severity should pass: {:?}",
+            result.err()
+        );
     }
 
     #[test]
@@ -996,7 +1020,12 @@ mod tests {
             }
         }));
         let req = extract_req(review);
-        assert!(validate_object_spec::<ModuleSpec>(&req).is_ok());
+        let result = validate_object_spec::<ModuleSpec>(&req);
+        assert!(
+            result.is_ok(),
+            "valid ModuleSpec with packages, files, env, depends, ociArtifact, and signature should pass: {:?}",
+            result.err()
+        );
     }
 
     #[test]
@@ -1077,13 +1106,27 @@ mod tests {
 
     #[test]
     fn enforce_module_policy_allows_trusted_registry() {
+        let oci_ref = "trusted.registry.io/modules/vim:v1";
         let spec = ModuleSpec {
-            oci_artifact: Some("trusted.registry.io/modules/vim:v1".to_string()),
+            oci_artifact: Some(oci_ref.to_string()),
             ..Default::default()
         };
         let registries = vec!["trusted.registry.io/*".to_string()];
         let result = check_trusted_registries(&spec, &registries);
-        assert!(result.is_ok());
+        assert!(
+            result.is_ok(),
+            "OCI ref '{}' should match trusted registry pattern 'trusted.registry.io/*': {:?}",
+            oci_ref,
+            result.err()
+        );
+        // Verify the same ref fails against a different registry to confirm the match was meaningful
+        let wrong_registries = vec!["other.registry.io/*".to_string()];
+        let reject_result = check_trusted_registries(&spec, &wrong_registries);
+        assert!(
+            reject_result.is_err(),
+            "OCI ref '{}' should NOT match 'other.registry.io/*'",
+            oci_ref
+        );
     }
 
     #[test]
@@ -1100,20 +1143,33 @@ mod tests {
     #[test]
     fn enforce_module_policy_allows_signed_when_required() {
         use crate::crds::{CosignSignature, ModuleSignature};
+        let public_key = "-----BEGIN PUBLIC KEY-----\ndata\n-----END PUBLIC KEY-----".to_string();
         let spec = ModuleSpec {
             oci_artifact: Some("registry.example.com/mod:v1".to_string()),
             signature: Some(ModuleSignature {
                 cosign: Some(CosignSignature {
-                    public_key: Some(
-                        "-----BEGIN PUBLIC KEY-----\ndata\n-----END PUBLIC KEY-----".to_string(),
-                    ),
+                    public_key: Some(public_key.clone()),
                     ..Default::default()
                 }),
             }),
             ..Default::default()
         };
         let result = check_unsigned_policy(&spec, true);
-        assert!(result.is_ok());
+        assert!(
+            result.is_ok(),
+            "module with cosign public_key should pass unsigned policy check: {:?}",
+            result.err()
+        );
+        // Verify the signature is what made it pass — same spec without signature should fail
+        let unsigned_spec = ModuleSpec {
+            oci_artifact: spec.oci_artifact.clone(),
+            signature: None,
+            ..Default::default()
+        };
+        assert!(
+            check_unsigned_policy(&unsigned_spec, true).is_err(),
+            "same module without signature should be rejected when disallow_unsigned=true"
+        );
     }
 
     #[test]
@@ -1131,8 +1187,51 @@ mod tests {
             }),
             ..Default::default()
         };
+        // Verify keyless=true is what makes this pass
+        assert!(
+            spec.signature
+                .as_ref()
+                .unwrap()
+                .cosign
+                .as_ref()
+                .unwrap()
+                .keyless,
+            "test setup: cosign keyless flag should be true"
+        );
+        assert!(
+            spec.signature
+                .as_ref()
+                .unwrap()
+                .cosign
+                .as_ref()
+                .unwrap()
+                .public_key
+                .is_none(),
+            "test setup: keyless mode should have no public_key"
+        );
         let result = check_unsigned_policy(&spec, true);
-        assert!(result.is_ok());
+        assert!(
+            result.is_ok(),
+            "module with keyless cosign should pass unsigned policy check: {:?}",
+            result.err()
+        );
+        // Verify keyless=false (without a public key) would fail
+        let non_keyless_spec = ModuleSpec {
+            oci_artifact: spec.oci_artifact.clone(),
+            signature: Some(ModuleSignature {
+                cosign: Some(CosignSignature {
+                    keyless: false,
+                    certificate_identity: Some("user@example.com".to_string()),
+                    certificate_oidc_issuer: Some("https://accounts.google.com".to_string()),
+                    ..Default::default()
+                }),
+            }),
+            ..Default::default()
+        };
+        assert!(
+            check_unsigned_policy(&non_keyless_spec, true).is_err(),
+            "same module with keyless=false and no public_key should be rejected"
+        );
     }
 
     // --- Pod mutation tests ---
@@ -1450,8 +1549,14 @@ mod tests {
     fn check_unsigned_policy_no_oci_artifact_always_ok() {
         // No OCI artifact means there is nothing to sign — should pass even with disallow_unsigned
         let spec = ModuleSpec::default();
-        assert!(spec.oci_artifact.is_none());
-        assert!(check_unsigned_policy(&spec, true).is_ok());
+        assert!(spec.oci_artifact.is_none(), "test setup: no oci_artifact");
+        assert!(spec.signature.is_none(), "test setup: no signature either");
+        let result = check_unsigned_policy(&spec, true);
+        assert!(
+            result.is_ok(),
+            "module without oci_artifact should pass even with disallow_unsigned=true: {:?}",
+            result.err()
+        );
     }
 
     #[test]
@@ -1461,7 +1566,21 @@ mod tests {
             oci_artifact: Some("registry.example.com/mod:v1".to_string()),
             ..Default::default()
         };
-        assert!(check_unsigned_policy(&spec, false).is_ok());
+        assert!(
+            spec.signature.is_none(),
+            "test setup: module has no signature"
+        );
+        let result = check_unsigned_policy(&spec, false);
+        assert!(
+            result.is_ok(),
+            "unsigned module should pass when disallow_unsigned=false: {:?}",
+            result.err()
+        );
+        // Verify the same unsigned spec WOULD fail with disallow_unsigned=true
+        assert!(
+            check_unsigned_policy(&spec, true).is_err(),
+            "same unsigned module should be rejected when disallow_unsigned=true"
+        );
     }
 
     #[test]
@@ -1503,7 +1622,15 @@ mod tests {
             ..Default::default()
         };
         let result = check_unsigned_policy(&spec, true);
-        assert!(result.is_err());
+        assert!(
+            result.is_err(),
+            "module with no signature field should be rejected"
+        );
+        let err = result.unwrap_err();
+        assert!(
+            err.contains("unsigned"),
+            "error should mention 'unsigned': {err}"
+        );
     }
 
     #[test]
@@ -1521,58 +1648,122 @@ mod tests {
             ..Default::default()
         };
         let result = check_unsigned_policy(&spec, true);
-        assert!(result.is_err());
+        assert!(
+            result.is_err(),
+            "cosign with keyless=false and no public_key should be rejected"
+        );
+        let err = result.unwrap_err();
+        assert!(
+            err.contains("unsigned"),
+            "error should mention 'unsigned': {err}"
+        );
     }
 
     // --- check_trusted_registries edge cases ---
 
     #[test]
     fn check_trusted_registries_empty_list_allows_all() {
+        let oci_ref = "any.registry.io/mod:v1";
         let spec = ModuleSpec {
-            oci_artifact: Some("any.registry.io/mod:v1".to_string()),
+            oci_artifact: Some(oci_ref.to_string()),
             ..Default::default()
         };
         // Empty registries list means no restrictions
-        assert!(check_trusted_registries(&spec, &[]).is_ok());
+        let result = check_trusted_registries(&spec, &[]);
+        assert!(
+            result.is_ok(),
+            "empty registries list should allow any OCI ref '{}': {:?}",
+            oci_ref,
+            result.err()
+        );
+        // Verify a non-empty list would reject this same ref
+        let restrictive = vec!["other.io/".to_string()];
+        assert!(
+            check_trusted_registries(&spec, &restrictive).is_err(),
+            "non-empty registries list should reject unmatched ref '{}'",
+            oci_ref
+        );
     }
 
     #[test]
     fn check_trusted_registries_no_oci_artifact_always_ok() {
         let spec = ModuleSpec::default();
+        assert!(spec.oci_artifact.is_none(), "test setup: no oci_artifact");
         let registries = vec!["trusted.io/".to_string()];
-        assert!(check_trusted_registries(&spec, &registries).is_ok());
+        let result = check_trusted_registries(&spec, &registries);
+        assert!(
+            result.is_ok(),
+            "module without oci_artifact should pass registry check regardless of list: {:?}",
+            result.err()
+        );
     }
 
     #[test]
     fn check_trusted_registries_exact_prefix_match_no_wildcard() {
+        let oci_ref = "trusted.io/modules/vim:v1";
         let spec = ModuleSpec {
-            oci_artifact: Some("trusted.io/modules/vim:v1".to_string()),
+            oci_artifact: Some(oci_ref.to_string()),
             ..Default::default()
         };
         // Without wildcard suffix, starts_with check still works
         let registries = vec!["trusted.io/".to_string()];
-        assert!(check_trusted_registries(&spec, &registries).is_ok());
+        let result = check_trusted_registries(&spec, &registries);
+        assert!(
+            result.is_ok(),
+            "OCI ref '{}' should match prefix 'trusted.io/' without wildcard: {:?}",
+            oci_ref,
+            result.err()
+        );
     }
 
     #[test]
     fn check_trusted_registries_multiple_registries_second_matches() {
+        let oci_ref = "second.io/mod:v1";
         let spec = ModuleSpec {
-            oci_artifact: Some("second.io/mod:v1".to_string()),
+            oci_artifact: Some(oci_ref.to_string()),
             ..Default::default()
         };
         let registries = vec!["first.io/".to_string(), "second.io/*".to_string()];
-        assert!(check_trusted_registries(&spec, &registries).is_ok());
+        let result = check_trusted_registries(&spec, &registries);
+        assert!(
+            result.is_ok(),
+            "OCI ref '{}' should match second registry pattern 'second.io/*': {:?}",
+            oci_ref,
+            result.err()
+        );
+        // Verify it doesn't match first.io alone
+        let only_first = vec!["first.io/".to_string()];
+        assert!(
+            check_trusted_registries(&spec, &only_first).is_err(),
+            "OCI ref '{}' should NOT match only 'first.io/'",
+            oci_ref
+        );
     }
 
     #[test]
     fn check_trusted_registries_partial_match_rejected() {
+        let oci_ref = "evil-trusted.io/mod:v1";
         let spec = ModuleSpec {
-            oci_artifact: Some("evil-trusted.io/mod:v1".to_string()),
+            oci_artifact: Some(oci_ref.to_string()),
             ..Default::default()
         };
         // "trusted.io/" should NOT match "evil-trusted.io/"
         let registries = vec!["trusted.io/".to_string()];
-        assert!(check_trusted_registries(&spec, &registries).is_err());
+        let result = check_trusted_registries(&spec, &registries);
+        assert!(
+            result.is_err(),
+            "OCI ref '{}' should NOT match 'trusted.io/' (prefix mismatch)",
+            oci_ref
+        );
+        let err = result.unwrap_err();
+        assert!(
+            err.contains("trusted registry"),
+            "error should mention trusted registry: {err}"
+        );
+        assert!(
+            err.contains(oci_ref),
+            "error should include the rejected OCI ref: {err}"
+        );
     }
 
     // --- parse_module_annotations edge cases ---
@@ -1706,7 +1897,12 @@ mod tests {
             }
         }));
         let req = extract_req(review);
-        assert!(validate_object_spec::<ClusterConfigPolicySpec>(&req).is_ok());
+        let result = validate_object_spec::<ClusterConfigPolicySpec>(&req);
+        assert!(
+            result.is_ok(),
+            "valid ClusterConfigPolicySpec with requiredModules, packages, and security should pass: {:?}",
+            result.err()
+        );
     }
 
     #[test]
@@ -1735,7 +1931,12 @@ mod tests {
         // Completely empty spec should be valid (all fields are defaulted)
         let review = make_module_review(serde_json::json!({}));
         let req = extract_req(review);
-        assert!(validate_object_spec::<ModuleSpec>(&req).is_ok());
+        let result = validate_object_spec::<ModuleSpec>(&req);
+        assert!(
+            result.is_ok(),
+            "empty ModuleSpec (all defaults) should be valid: {:?}",
+            result.err()
+        );
     }
 
     // --- build_injection_patches edge cases ---
@@ -1995,9 +2196,14 @@ mod tests {
             "files": [{"source": "vimrc", "target": ""}]
         }));
         let req = extract_req(review);
-        // ModuleFileSpec may not validate path emptiness at the webhook level,
-        // but let's verify the validation runs without panic
-        let _result = validate_object_spec::<ModuleSpec>(&req);
+        let result = validate_object_spec::<ModuleSpec>(&req);
+        // ModuleSpec.validate() does not check file target emptiness (unlike MachineConfigSpec),
+        // so this should pass deserialization and validation without error or panic.
+        assert!(
+            result.is_ok(),
+            "ModuleSpec with empty file target should pass webhook validation (module file validation is deferred to reconciliation): {:?}",
+            result.err()
+        );
     }
 
     // --- ptr helper ---

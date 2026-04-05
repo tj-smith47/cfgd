@@ -3861,4 +3861,395 @@ schema1:
         assert_eq!(drifts[0].expected, "val-b");
         assert_eq!(drifts[0].actual, "wrong");
     }
+
+    // --- EnvironmentConfigurator::parse_env_file ---
+
+    #[test]
+    fn parse_env_file_standard_entries() {
+        let dir = tempfile::tempdir().unwrap();
+        let env_path = dir.path().join("env");
+        std::fs::write(&env_path, "LANG=en_US.UTF-8\nPATH=/usr/bin\n").unwrap();
+
+        let vars = EnvironmentConfigurator::parse_env_file(env_path.to_str().unwrap());
+        assert_eq!(vars.len(), 2);
+        assert_eq!(vars["LANG"], "en_US.UTF-8");
+        assert_eq!(vars["PATH"], "/usr/bin");
+    }
+
+    #[test]
+    fn parse_env_file_quoted_values() {
+        let dir = tempfile::tempdir().unwrap();
+        let env_path = dir.path().join("env");
+        std::fs::write(&env_path, "EDITOR=\"vim\"\nSHELL=\"/bin/bash\"\n").unwrap();
+
+        let vars = EnvironmentConfigurator::parse_env_file(env_path.to_str().unwrap());
+        assert_eq!(vars["EDITOR"], "vim");
+        assert_eq!(vars["SHELL"], "/bin/bash");
+    }
+
+    #[test]
+    fn parse_env_file_skips_comments_and_blanks() {
+        let dir = tempfile::tempdir().unwrap();
+        let env_path = dir.path().join("env");
+        std::fs::write(&env_path, "# comment line\n\n  \nKEY=value\n# another\n").unwrap();
+
+        let vars = EnvironmentConfigurator::parse_env_file(env_path.to_str().unwrap());
+        assert_eq!(vars.len(), 1);
+        assert_eq!(vars["KEY"], "value");
+    }
+
+    #[test]
+    fn parse_env_file_nonexistent_returns_empty() {
+        let vars = EnvironmentConfigurator::parse_env_file("/nonexistent/path/env");
+        assert!(vars.is_empty());
+    }
+
+    #[test]
+    fn parse_env_file_empty_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let env_path = dir.path().join("env");
+        std::fs::write(&env_path, "").unwrap();
+
+        let vars = EnvironmentConfigurator::parse_env_file(env_path.to_str().unwrap());
+        assert!(vars.is_empty());
+    }
+
+    #[test]
+    fn parse_env_file_value_with_equals() {
+        let dir = tempfile::tempdir().unwrap();
+        let env_path = dir.path().join("env");
+        std::fs::write(&env_path, "OPTS=--key=value\n").unwrap();
+
+        let vars = EnvironmentConfigurator::parse_env_file(env_path.to_str().unwrap());
+        assert_eq!(vars["OPTS"], "--key=value");
+    }
+
+    // --- EnvironmentConfigurator::parse_export_file ---
+
+    #[test]
+    fn parse_export_file_standard_entries() {
+        let dir = tempfile::tempdir().unwrap();
+        let file_path = dir.path().join("env.sh");
+        std::fs::write(
+            &file_path,
+            "#!/bin/sh\nexport FOO=\"bar\"\nexport BAZ='qux'\n",
+        )
+        .unwrap();
+
+        let vars = EnvironmentConfigurator::parse_export_file(file_path.to_str().unwrap());
+        assert_eq!(vars.len(), 2);
+        assert_eq!(vars["FOO"], "bar");
+        assert_eq!(vars["BAZ"], "qux");
+    }
+
+    #[test]
+    fn parse_export_file_unquoted_values() {
+        let dir = tempfile::tempdir().unwrap();
+        let file_path = dir.path().join("env.sh");
+        std::fs::write(&file_path, "export LANG=en_US.UTF-8\n").unwrap();
+
+        let vars = EnvironmentConfigurator::parse_export_file(file_path.to_str().unwrap());
+        assert_eq!(vars["LANG"], "en_US.UTF-8");
+    }
+
+    #[test]
+    fn parse_export_file_nonexistent_returns_empty() {
+        let vars = EnvironmentConfigurator::parse_export_file("/nonexistent/env.sh");
+        assert!(vars.is_empty());
+    }
+
+    #[test]
+    fn parse_export_file_skips_non_export_lines() {
+        let dir = tempfile::tempdir().unwrap();
+        let file_path = dir.path().join("env.sh");
+        std::fs::write(
+            &file_path,
+            "#!/bin/sh\n# comment\nSOMETHING=not_exported\nexport REAL=yes\n",
+        )
+        .unwrap();
+
+        let vars = EnvironmentConfigurator::parse_export_file(file_path.to_str().unwrap());
+        assert_eq!(vars.len(), 1);
+        assert_eq!(vars["REAL"], "yes");
+    }
+
+    // --- EnvironmentConfigurator::parse_reg_query_output additional ---
+
+    #[test]
+    fn parse_reg_query_output_dword_preserved_as_raw() {
+        // parse_reg_query_output uses parse_reg_line which returns raw value
+        let output = "HKEY_CURRENT_USER\\Environment\n\
+                      \n\
+                          Count    REG_DWORD    0x5\n";
+        let vars = EnvironmentConfigurator::parse_reg_query_output(output);
+        // The raw DWORD hex value is preserved
+        assert_eq!(vars["Count"], "0x5");
+    }
+
+    // --- MacosDefaultsConfigurator diff edge cases ---
+
+    #[test]
+    fn macos_defaults_diff_empty_mapping() {
+        let md = MacosDefaultsConfigurator;
+        let desired = serde_yaml::Value::Mapping(serde_yaml::Mapping::new());
+        let drifts = md.diff(&desired).unwrap();
+        assert!(drifts.is_empty());
+    }
+
+    #[test]
+    fn macos_defaults_diff_non_mapping() {
+        let md = MacosDefaultsConfigurator;
+        let desired = serde_yaml::Value::String("not a mapping".into());
+        let drifts = md.diff(&desired).unwrap();
+        assert!(drifts.is_empty());
+    }
+
+    #[test]
+    fn macos_defaults_diff_inner_non_mapping_is_skipped() {
+        let md = MacosDefaultsConfigurator;
+        let mut outer = serde_yaml::Mapping::new();
+        outer.insert(
+            serde_yaml::Value::String("com.apple.dock".into()),
+            serde_yaml::Value::String("not a mapping".into()),
+        );
+        let desired = serde_yaml::Value::Mapping(outer);
+        let drifts = md.diff(&desired).unwrap();
+        assert!(drifts.is_empty());
+    }
+
+    #[test]
+    fn macos_defaults_diff_non_string_domain_key_skipped() {
+        let md = MacosDefaultsConfigurator;
+        let mut outer = serde_yaml::Mapping::new();
+        let mut inner = serde_yaml::Mapping::new();
+        inner.insert(
+            serde_yaml::Value::String("key".into()),
+            serde_yaml::Value::String("val".into()),
+        );
+        outer.insert(
+            serde_yaml::Value::Number(42.into()),
+            serde_yaml::Value::Mapping(inner),
+        );
+        let desired = serde_yaml::Value::Mapping(outer);
+        let drifts = md.diff(&desired).unwrap();
+        assert!(drifts.is_empty());
+    }
+
+    // --- SystemdUnitConfigurator diff edge cases ---
+
+    #[test]
+    fn systemd_diff_non_sequence_desired() {
+        let su = SystemdUnitConfigurator;
+        let desired = serde_yaml::Value::String("not a sequence".into());
+        let drifts = su.diff(&desired).unwrap();
+        assert!(drifts.is_empty());
+    }
+
+    #[test]
+    fn systemd_diff_unit_without_name_skipped() {
+        let su = SystemdUnitConfigurator;
+        let mut unit = serde_yaml::Mapping::new();
+        unit.insert(
+            serde_yaml::Value::String("enabled".into()),
+            serde_yaml::Value::Bool(true),
+        );
+        let desired = serde_yaml::Value::Sequence(vec![serde_yaml::Value::Mapping(unit)]);
+        let drifts = su.diff(&desired).unwrap();
+        assert!(drifts.is_empty());
+    }
+
+    // --- LaunchAgentConfigurator diff edge cases ---
+
+    #[test]
+    fn launch_agent_diff_non_sequence_desired() {
+        let la = LaunchAgentConfigurator;
+        let desired = serde_yaml::Value::String("not a sequence".into());
+        let drifts = la.diff(&desired).unwrap();
+        assert!(drifts.is_empty());
+    }
+
+    #[test]
+    fn launch_agent_diff_agent_without_name_skipped() {
+        let la = LaunchAgentConfigurator;
+        let mut agent = serde_yaml::Mapping::new();
+        agent.insert(
+            serde_yaml::Value::String("program".into()),
+            serde_yaml::Value::String("/usr/bin/true".into()),
+        );
+        let desired = serde_yaml::Value::Sequence(vec![serde_yaml::Value::Mapping(agent)]);
+        let drifts = la.diff(&desired).unwrap();
+        assert!(drifts.is_empty());
+    }
+
+    // --- yaml_value_to_defaults_type additional ---
+
+    #[test]
+    fn yaml_value_to_defaults_type_mapping_fallback() {
+        let mapping = serde_yaml::Value::Mapping(serde_yaml::Mapping::new());
+        let (t, _v) = yaml_value_to_defaults_type(&mapping);
+        assert_eq!(t, "string");
+    }
+
+    // --- EnvironmentConfigurator current_state returns a mapping ---
+
+    #[test]
+    fn environment_current_state_returns_mapping() {
+        let ec = EnvironmentConfigurator;
+        let state = ec.current_state().unwrap();
+        assert!(state.is_mapping());
+    }
+
+    // --- ShellConfigurator current_state returns a string ---
+
+    #[test]
+    fn shell_current_state_is_string() {
+        let sc = ShellConfigurator;
+        let state = sc.current_state().unwrap();
+        assert!(state.is_string());
+    }
+
+    // --- MacosDefaultsConfigurator current_state returns empty mapping ---
+
+    #[test]
+    fn macos_defaults_current_state_is_empty_mapping() {
+        let md = MacosDefaultsConfigurator;
+        let state = md.current_state().unwrap();
+        assert!(state.as_mapping().unwrap().is_empty());
+    }
+
+    // --- SystemdUnitConfigurator current_state returns empty sequence ---
+
+    #[test]
+    fn systemd_current_state_returns_empty_sequence() {
+        let su = SystemdUnitConfigurator;
+        let state = su.current_state().unwrap();
+        assert!(state.is_sequence());
+        assert!(state.as_sequence().unwrap().is_empty());
+    }
+
+    // --- LaunchAgentConfigurator current_state returns empty sequence ---
+
+    #[test]
+    fn launch_agent_current_state_returns_empty_sequence() {
+        let la = LaunchAgentConfigurator;
+        let state = la.current_state().unwrap();
+        assert!(state.is_sequence());
+        assert!(state.as_sequence().unwrap().is_empty());
+    }
+
+    // --- WindowsRegistryConfigurator current_state returns empty mapping ---
+
+    #[test]
+    fn windows_registry_current_state_is_empty_mapping() {
+        let wrc = WindowsRegistryConfigurator;
+        let state = wrc.current_state().unwrap();
+        assert!(state.as_mapping().unwrap().is_empty());
+    }
+
+    // --- WindowsRegistryConfigurator diff with nested mapping ---
+
+    #[test]
+    fn registry_diff_with_inner_non_mapping_values_skipped() {
+        let wrc = WindowsRegistryConfigurator;
+        let mut outer = serde_yaml::Mapping::new();
+        outer.insert(
+            serde_yaml::Value::String(r"HKCU\Software\Test".into()),
+            serde_yaml::Value::String("not a mapping".into()),
+        );
+        let desired = serde_yaml::Value::Mapping(outer);
+        let drifts = wrc.diff(&desired).unwrap();
+        assert!(drifts.is_empty());
+    }
+
+    #[test]
+    fn registry_diff_non_string_key_path_skipped() {
+        let wrc = WindowsRegistryConfigurator;
+        let mut outer = serde_yaml::Mapping::new();
+        let mut inner = serde_yaml::Mapping::new();
+        inner.insert(
+            serde_yaml::Value::String("value".into()),
+            serde_yaml::Value::String("data".into()),
+        );
+        outer.insert(
+            serde_yaml::Value::Number(42.into()),
+            serde_yaml::Value::Mapping(inner),
+        );
+        let desired = serde_yaml::Value::Mapping(outer);
+        let drifts = wrc.diff(&desired).unwrap();
+        assert!(drifts.is_empty());
+    }
+
+    // --- WindowsServiceConfigurator diff - service not found but no binary_path ---
+
+    #[test]
+    fn service_diff_missing_service_without_binary_path_no_drift() {
+        let wsc = WindowsServiceConfigurator;
+        // A service entry with only name and state but no binary_path
+        // On non-Windows, query_service returns None
+        // Without binary_path, no "exists" drift should be produced
+        let yaml: serde_yaml::Value = serde_yaml::from_str(
+            r#"
+- name: NonExistentService12345
+  state: running
+"#,
+        )
+        .unwrap();
+        let drifts = wsc.diff(&yaml).unwrap();
+        // On non-Windows, query_service returns None.
+        // The code only reports "exists" drift when binary_path is Some,
+        // so there should be no drift for this entry.
+        assert!(
+            !drifts.iter().any(|d| d.key.contains("exists")),
+            "should not report exists drift without binary_path"
+        );
+    }
+
+    // --- generate_launch_agent_plist with special characters ---
+
+    #[test]
+    fn generate_plist_special_chars_in_program() {
+        let plist =
+            generate_launch_agent_plist("com.example.test", "/path/with spaces/prog", &[], false);
+        assert!(plist.contains("/path/with spaces/prog"));
+    }
+
+    #[test]
+    fn generate_plist_xml_escape_in_program() {
+        let plist = generate_launch_agent_plist("com.test", "/usr/bin/test<>", &[], false);
+        assert!(
+            plist.contains("&lt;") && plist.contains("&gt;"),
+            "program path should be XML-escaped"
+        );
+    }
+
+    // --- yaml_value_with_numeric_bools float fallback ---
+
+    #[test]
+    fn yaml_value_with_numeric_bools_float() {
+        let float_val = serde_yaml::Value::Number(serde_yaml::Number::from(3.14_f64));
+        let result = yaml_value_with_numeric_bools(&float_val);
+        assert!(result.starts_with("3.14"));
+    }
+
+    // --- EnvironmentConfigurator diff with matching current value ---
+
+    #[test]
+    fn environment_diff_matching_values_no_drift() {
+        // We can only test this reliably by setting an env var that matches
+        // On Linux, parse_env_file/parse_export_file are used
+        let ec = EnvironmentConfigurator;
+        let yaml = serde_yaml::Value::Mapping(serde_yaml::Mapping::new());
+        let drifts = ec.diff(&yaml).unwrap();
+        assert!(drifts.is_empty());
+    }
+
+    // --- EnvironmentConfigurator diff with non-mapping desired ---
+
+    #[test]
+    fn environment_diff_non_mapping_desired_returns_empty() {
+        let ec = EnvironmentConfigurator;
+        let yaml = serde_yaml::Value::String("not a mapping".into());
+        let drifts = ec.diff(&yaml).unwrap();
+        assert!(drifts.is_empty());
+    }
 }

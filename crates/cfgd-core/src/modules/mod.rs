@@ -3350,4 +3350,409 @@ spec:
             "expected at least 4 changes, got {changes:?}"
         );
     }
+
+    // -----------------------------------------------------------------------
+    // Lockfile load/save
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn load_lockfile_nonexistent_returns_empty() {
+        let dir = tempfile::tempdir().unwrap();
+        let lockfile = load_lockfile(dir.path()).unwrap();
+        assert!(lockfile.modules.is_empty());
+    }
+
+    #[test]
+    fn save_and_load_lockfile_roundtrip() {
+        let dir = tempfile::tempdir().unwrap();
+        let lockfile = crate::config::ModuleLockfile {
+            modules: vec![crate::config::ModuleLockEntry {
+                name: "nvim".to_string(),
+                url: "https://github.com/user/nvim-config.git@v1.0".to_string(),
+                pinned_ref: "v1.0".to_string(),
+                commit: "abc123".to_string(),
+                integrity: "sha256:deadbeef".to_string(),
+                subdir: None,
+            }],
+        };
+        save_lockfile(dir.path(), &lockfile).unwrap();
+
+        let loaded = load_lockfile(dir.path()).unwrap();
+        assert_eq!(loaded.modules.len(), 1);
+        assert_eq!(loaded.modules[0].name, "nvim");
+        assert_eq!(loaded.modules[0].commit, "abc123");
+        assert_eq!(loaded.modules[0].integrity, "sha256:deadbeef");
+    }
+
+    #[test]
+    fn save_lockfile_overwrites_existing() {
+        let dir = tempfile::tempdir().unwrap();
+        let lock1 = crate::config::ModuleLockfile {
+            modules: vec![crate::config::ModuleLockEntry {
+                name: "old".to_string(),
+                url: "https://example.com/old.git@v1".to_string(),
+                pinned_ref: "v1".to_string(),
+                commit: "111".to_string(),
+                integrity: "sha256:aaa".to_string(),
+                subdir: None,
+            }],
+        };
+        save_lockfile(dir.path(), &lock1).unwrap();
+
+        let lock2 = crate::config::ModuleLockfile {
+            modules: vec![crate::config::ModuleLockEntry {
+                name: "new".to_string(),
+                url: "https://example.com/new.git@v2".to_string(),
+                pinned_ref: "v2".to_string(),
+                commit: "222".to_string(),
+                integrity: "sha256:bbb".to_string(),
+                subdir: Some("subdir".to_string()),
+            }],
+        };
+        save_lockfile(dir.path(), &lock2).unwrap();
+
+        let loaded = load_lockfile(dir.path()).unwrap();
+        assert_eq!(loaded.modules.len(), 1);
+        assert_eq!(loaded.modules[0].name, "new");
+        assert_eq!(loaded.modules[0].subdir, Some("subdir".to_string()));
+    }
+
+    // -----------------------------------------------------------------------
+    // hash_module_contents
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn hash_module_contents_deterministic_v2() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("module.yaml"), "spec: {}").unwrap();
+        std::fs::write(dir.path().join("init.lua"), "-- lua config").unwrap();
+
+        let h1 = hash_module_contents(dir.path()).unwrap();
+        let h2 = hash_module_contents(dir.path()).unwrap();
+        assert_eq!(h1, h2);
+        assert!(h1.starts_with("sha256:"));
+    }
+
+    #[test]
+    fn hash_module_contents_differs_on_content_change() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("file.txt"), "version 1").unwrap();
+        let h1 = hash_module_contents(dir.path()).unwrap();
+
+        std::fs::write(dir.path().join("file.txt"), "version 2").unwrap();
+        let h2 = hash_module_contents(dir.path()).unwrap();
+        assert_ne!(h1, h2);
+    }
+
+    #[test]
+    fn hash_module_contents_skips_git_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("file.txt"), "content").unwrap();
+        std::fs::create_dir(dir.path().join(".git")).unwrap();
+        std::fs::write(dir.path().join(".git/HEAD"), "ref: refs/heads/main").unwrap();
+
+        let h1 = hash_module_contents(dir.path()).unwrap();
+
+        // Change .git content and hash again - should be identical
+        std::fs::write(dir.path().join(".git/HEAD"), "ref: refs/heads/dev").unwrap();
+        let h2 = hash_module_contents(dir.path()).unwrap();
+        assert_eq!(h1, h2);
+    }
+
+    #[test]
+    fn hash_module_contents_empty_dir_v2() {
+        let dir = tempfile::tempdir().unwrap();
+        let h = hash_module_contents(dir.path()).unwrap();
+        assert!(h.starts_with("sha256:"));
+    }
+
+    // -----------------------------------------------------------------------
+    // verify_lockfile_integrity
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn verify_lockfile_integrity_missing_cache_dir() {
+        let cache_base = tempfile::tempdir().unwrap();
+        let entry = crate::config::ModuleLockEntry {
+            name: "test".to_string(),
+            url: "https://github.com/user/repo.git@v1.0".to_string(),
+            pinned_ref: "v1.0".to_string(),
+            commit: "abc".to_string(),
+            integrity: "sha256:xxx".to_string(),
+            subdir: None,
+        };
+        let result = verify_lockfile_integrity(&entry, cache_base.path());
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("does not exist") || err.contains("update"),
+            "expected cache-not-found error, got: {err}"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // is_registry_ref / parse_registry_ref / resolve_profile_module_name
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn is_registry_ref_with_slash() {
+        assert!(is_registry_ref("community/tmux"));
+        assert!(is_registry_ref("myorg/nvim@v1.0"));
+    }
+
+    #[test]
+    fn is_registry_ref_local_name() {
+        assert!(!is_registry_ref("tmux"));
+        assert!(!is_registry_ref("nvim"));
+    }
+
+    #[test]
+    fn is_registry_ref_git_url_not_registry() {
+        assert!(!is_registry_ref("https://github.com/user/repo.git"));
+        assert!(!is_registry_ref("git@github.com:user/repo.git"));
+    }
+
+    #[test]
+    fn parse_registry_ref_basic() {
+        let r = parse_registry_ref("community/tmux").unwrap();
+        assert_eq!(r.registry, "community");
+        assert_eq!(r.module, "tmux");
+        assert_eq!(r.tag, None);
+    }
+
+    #[test]
+    fn parse_registry_ref_with_tag_v2() {
+        let r = parse_registry_ref("myorg/nvim@v2.0").unwrap();
+        assert_eq!(r.registry, "myorg");
+        assert_eq!(r.module, "nvim");
+        assert_eq!(r.tag, Some("v2.0".to_string()));
+    }
+
+    #[test]
+    fn parse_registry_ref_empty_registry() {
+        assert!(parse_registry_ref("/tmux").is_none());
+    }
+
+    #[test]
+    fn parse_registry_ref_empty_module() {
+        assert!(parse_registry_ref("community/").is_none());
+    }
+
+    #[test]
+    fn parse_registry_ref_empty_tag() {
+        assert!(parse_registry_ref("community/tmux@").is_none());
+    }
+
+    #[test]
+    fn parse_registry_ref_no_slash() {
+        assert!(parse_registry_ref("tmux").is_none());
+    }
+
+    #[test]
+    fn resolve_profile_module_name_local() {
+        assert_eq!(resolve_profile_module_name("tmux"), "tmux");
+        assert_eq!(resolve_profile_module_name("nvim"), "nvim");
+    }
+
+    #[test]
+    fn resolve_profile_module_name_registry_ref_v2() {
+        assert_eq!(resolve_profile_module_name("community/tmux"), "tmux");
+        assert_eq!(resolve_profile_module_name("myorg/nvim"), "nvim");
+    }
+
+    // -----------------------------------------------------------------------
+    // resolve_subdir
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn resolve_subdir_none_returns_base() {
+        let base = PathBuf::from("/cache/abc123");
+        let result = super::resolve_subdir(base.clone(), &None, "test", "url").unwrap();
+        assert_eq!(result, base);
+    }
+
+    #[test]
+    fn resolve_subdir_valid_path() {
+        let base = PathBuf::from("/cache/abc123");
+        let result = super::resolve_subdir(base, &Some("nvim".to_string()), "test", "url").unwrap();
+        assert_eq!(result, PathBuf::from("/cache/abc123/nvim"));
+    }
+
+    #[test]
+    fn resolve_subdir_traversal_rejected() {
+        let base = PathBuf::from("/cache/abc123");
+        let result = super::resolve_subdir(base, &Some("../escape".to_string()), "test", "url");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("traversal"));
+    }
+
+    // -----------------------------------------------------------------------
+    // load_module
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn load_module_missing_yaml_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        let mod_dir = dir.path().join("mymod");
+        std::fs::create_dir(&mod_dir).unwrap();
+        // No module.yaml
+        let result = load_module(&mod_dir);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("not found") || err.contains("mymod"),
+            "expected not-found error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn load_module_valid() {
+        let dir = tempfile::tempdir().unwrap();
+        let mod_dir = dir.path().join("mymod");
+        std::fs::create_dir(&mod_dir).unwrap();
+        std::fs::write(
+            mod_dir.join("module.yaml"),
+            r#"
+apiVersion: cfgd.io/v1alpha1
+kind: Module
+metadata:
+  name: mymod
+spec:
+  packages:
+    - name: ripgrep
+"#,
+        )
+        .unwrap();
+
+        let module = load_module(&mod_dir).unwrap();
+        assert_eq!(module.name, "mymod");
+        assert_eq!(module.spec.packages.len(), 1);
+        assert_eq!(module.spec.packages[0].name, "ripgrep");
+    }
+
+    // -----------------------------------------------------------------------
+    // Package resolution: deny list, platform filtering, script manager
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn resolve_package_deny_skips_manager() {
+        let brew = MockManager::new("brew").with_package("ripgrep", "14.1.0");
+        let apt = MockManager::new("apt").with_package("ripgrep", "13.0.0");
+        let managers = make_manager_map(&[("brew", &brew), ("apt", &apt)]);
+        let platform = linux_ubuntu_platform();
+
+        let entry = crate::config::ModulePackageEntry {
+            name: "ripgrep".into(),
+            min_version: None,
+            prefer: vec!["brew".into(), "apt".into()],
+            aliases: HashMap::new(),
+            script: None,
+            deny: vec!["brew".into()],
+            platforms: vec![],
+        };
+
+        let result = resolve_package(&entry, "test", &platform, &managers)
+            .unwrap()
+            .unwrap();
+        // brew is denied, so apt should be used
+        assert_eq!(result.manager, "apt");
+    }
+
+    #[test]
+    fn resolve_package_platform_filter_skips() {
+        let brew = MockManager::new("brew").with_package("ripgrep", "14.1.0");
+        let managers = make_manager_map(&[("brew", &brew)]);
+        let platform = linux_ubuntu_platform();
+
+        let entry = crate::config::ModulePackageEntry {
+            name: "ripgrep".into(),
+            min_version: None,
+            prefer: vec!["brew".into()],
+            aliases: HashMap::new(),
+            script: None,
+            deny: vec![],
+            platforms: vec!["macos".to_string()], // only macOS
+        };
+
+        // Linux platform should be filtered out
+        let result = resolve_package(&entry, "test", &platform, &managers).unwrap();
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn resolve_package_script_manager_with_deny() {
+        let managers: HashMap<String, &dyn PackageManager> = HashMap::new();
+        let platform = linux_ubuntu_platform();
+
+        let entry = crate::config::ModulePackageEntry {
+            name: "rustup".into(),
+            min_version: None,
+            prefer: vec!["script".into()],
+            aliases: HashMap::new(),
+            script: Some("curl -sSf https://sh.rustup.rs | sh".into()),
+            deny: vec![],
+            platforms: vec![],
+        };
+
+        let result = resolve_package(&entry, "test", &platform, &managers)
+            .unwrap()
+            .unwrap();
+        assert_eq!(result.manager, "script");
+        assert!(result.script.is_some());
+        assert_eq!(result.canonical_name, "rustup");
+    }
+
+    #[test]
+    fn resolve_package_script_no_script_field_errors() {
+        let managers: HashMap<String, &dyn PackageManager> = HashMap::new();
+        let platform = linux_ubuntu_platform();
+
+        let entry = crate::config::ModulePackageEntry {
+            name: "tool".into(),
+            min_version: None,
+            prefer: vec!["script".into()],
+            aliases: HashMap::new(),
+            script: None, // missing!
+            deny: vec![],
+            platforms: vec![],
+        };
+
+        let result = resolve_package(&entry, "test", &platform, &managers);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("script"));
+    }
+
+    // -----------------------------------------------------------------------
+    // git_cache_dir
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn git_cache_dir_uses_hash_prefix() {
+        let base = Path::new("/tmp/cache");
+        let dir = git_cache_dir(base, "https://github.com/user/repo.git");
+        assert!(dir.starts_with("/tmp/cache"));
+        // Hash should be 32 chars (first 32 of SHA-256)
+        let dirname = dir.file_name().unwrap().to_str().unwrap();
+        assert_eq!(dirname.len(), 32);
+    }
+
+    // -----------------------------------------------------------------------
+    // parse_git_source edge cases
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn parse_git_source_ref_and_subdir_combined() {
+        let src = parse_git_source("https://github.com/user/repo.git?ref=dev//nvim").unwrap();
+        assert_eq!(src.repo_url, "https://github.com/user/repo.git");
+        assert_eq!(src.git_ref, Some("dev".into()));
+        assert_eq!(src.subdir, Some("nvim".into()));
+        assert_eq!(src.tag, None);
+    }
+
+    #[test]
+    fn parse_git_source_no_git_extension_with_tag() {
+        let src = parse_git_source("https://github.com/user/repo@v1.0").unwrap();
+        assert_eq!(src.repo_url, "https://github.com/user/repo");
+        assert_eq!(src.tag, Some("v1.0".into()));
+    }
 }

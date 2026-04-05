@@ -3007,6 +3007,9 @@ mod tests {
     #[test]
     fn notifier_stdout_does_not_panic() {
         let notifier = Notifier::new(NotifyMethod::Stdout, None);
+        assert!(matches!(notifier.method, NotifyMethod::Stdout));
+        assert!(notifier.webhook_url.is_none());
+        // Stdout notifier calls tracing::info! — verify it completes without panic
         notifier.notify("test", "message");
     }
 
@@ -4127,7 +4130,13 @@ mod tests {
     #[test]
     fn notifier_webhook_without_url_does_not_panic() {
         let notifier = Notifier::new(NotifyMethod::Webhook, None);
-        // This should log a warning but not panic
+        assert!(matches!(notifier.method, NotifyMethod::Webhook));
+        // Webhook with no URL should early-return via `let Some(ref url) = ...` guard
+        assert!(
+            notifier.webhook_url.is_none(),
+            "webhook_url must be None to exercise the early-return path"
+        );
+        // Should log a warning but not panic and not attempt any HTTP request
         notifier.notify("test", "no url configured");
     }
 
@@ -4517,8 +4526,14 @@ mod tests {
 
     #[test]
     fn notifier_desktop_mode_does_not_panic() {
-        // Desktop notification may fail in CI but should not panic
+        // Desktop notification may fail in CI (no display server) but should not panic.
+        // On failure, notify_desktop falls back to notify_stdout via tracing::info.
         let notifier = Notifier::new(NotifyMethod::Desktop, None);
+        assert!(matches!(notifier.method, NotifyMethod::Desktop));
+        assert!(
+            notifier.webhook_url.is_none(),
+            "desktop notifier should not have a webhook URL"
+        );
         notifier.notify("test title", "test body");
     }
 
@@ -4534,9 +4549,15 @@ mod tests {
 
     #[test]
     fn notifier_stdout_writes_info() {
-        // Verify stdout notifier runs the tracing::info path
+        // Verify stdout notifier is configured for Stdout method and runs
+        // the tracing::info path with structured title/message fields.
         let notifier = Notifier::new(NotifyMethod::Stdout, None);
+        assert!(matches!(notifier.method, NotifyMethod::Stdout));
+        // The notify_stdout method calls tracing::info!(title, message, "notification")
+        // Verify it handles non-trivial content without panic
         notifier.notify("drift event", "file /etc/foo changed");
+        notifier.notify("", ""); // edge case: empty strings
+        notifier.notify("special chars: <>&\"'", "path: /home/user/.config/cfgd");
     }
 
     // --- DaemonState: multiple sources ---
@@ -5894,6 +5915,1333 @@ mod tests {
         assert!(
             local.last_sync.is_none(),
             "local source last_sync should remain None"
+        );
+    }
+
+    // --- handle_sync: auto_pull with remote changes fast-forwards ---
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn handle_sync_auto_pull_with_remote_changes() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let bare_dir = tmp.path().join("bare.git");
+        let work_dir = tmp.path().join("work");
+        let pusher_dir = tmp.path().join("pusher");
+
+        // Set up bare + work + pusher repos
+        std::fs::create_dir_all(&bare_dir).unwrap();
+        git2::Repository::init_bare(&bare_dir).unwrap();
+
+        let repo = git2::Repository::clone(bare_dir.to_str().unwrap(), &work_dir).unwrap();
+        {
+            let mut config = repo.config().unwrap();
+            config.set_str("user.name", "cfgd-test").unwrap();
+            config.set_str("user.email", "test@cfgd.io").unwrap();
+        }
+        std::fs::write(work_dir.join("README"), "v1\n").unwrap();
+        {
+            let mut index = repo.index().unwrap();
+            index.add_path(Path::new("README")).unwrap();
+            index.write().unwrap();
+            let tree_id = index.write_tree().unwrap();
+            let tree = repo.find_tree(tree_id).unwrap();
+            let sig = repo.signature().unwrap();
+            repo.commit(Some("HEAD"), &sig, &sig, "initial", &tree, &[])
+                .unwrap();
+        }
+        {
+            let mut remote = repo.find_remote("origin").unwrap();
+            remote
+                .push(&["refs/heads/master:refs/heads/master"], None)
+                .unwrap();
+        }
+
+        // Push a change from pusher
+        let pusher = git2::Repository::clone(bare_dir.to_str().unwrap(), &pusher_dir).unwrap();
+        {
+            let mut config = pusher.config().unwrap();
+            config.set_str("user.name", "cfgd-pusher").unwrap();
+            config.set_str("user.email", "pusher@cfgd.io").unwrap();
+        }
+        std::fs::write(pusher_dir.join("NEWFILE"), "synced\n").unwrap();
+        {
+            let mut index = pusher.index().unwrap();
+            index.add_path(Path::new("NEWFILE")).unwrap();
+            index.write().unwrap();
+            let tree_id = index.write_tree().unwrap();
+            let tree = pusher.find_tree(tree_id).unwrap();
+            let sig = pusher.signature().unwrap();
+            let parent = pusher.head().unwrap().peel_to_commit().unwrap();
+            pusher
+                .commit(Some("HEAD"), &sig, &sig, "add newfile", &tree, &[&parent])
+                .unwrap();
+        }
+        {
+            let mut remote = pusher.find_remote("origin").unwrap();
+            remote
+                .push(&["refs/heads/master:refs/heads/master"], None)
+                .unwrap();
+        }
+
+        let state = Arc::new(Mutex::new(DaemonState::new()));
+        let st = Arc::clone(&state);
+        let wd = work_dir.clone();
+        let changed = tokio::task::spawn_blocking(move || {
+            handle_sync(&wd, true, false, "local", &st, false, false)
+        })
+        .await
+        .unwrap();
+
+        assert!(changed, "handle_sync should detect remote changes");
+        assert!(
+            work_dir.join("NEWFILE").exists(),
+            "pulled file should exist after sync"
+        );
+    }
+
+    // --- handle_sync: auto_push with local changes ---
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn handle_sync_auto_push_with_local_changes() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let bare_dir = tmp.path().join("bare.git");
+        let work_dir = tmp.path().join("work");
+
+        std::fs::create_dir_all(&bare_dir).unwrap();
+        git2::Repository::init_bare(&bare_dir).unwrap();
+
+        let repo = git2::Repository::clone(bare_dir.to_str().unwrap(), &work_dir).unwrap();
+        {
+            let mut config = repo.config().unwrap();
+            config.set_str("user.name", "cfgd-test").unwrap();
+            config.set_str("user.email", "test@cfgd.io").unwrap();
+        }
+        std::fs::write(work_dir.join("README"), "v1\n").unwrap();
+        {
+            let mut index = repo.index().unwrap();
+            index.add_path(Path::new("README")).unwrap();
+            index.write().unwrap();
+            let tree_id = index.write_tree().unwrap();
+            let tree = repo.find_tree(tree_id).unwrap();
+            let sig = repo.signature().unwrap();
+            repo.commit(Some("HEAD"), &sig, &sig, "initial", &tree, &[])
+                .unwrap();
+        }
+        {
+            let mut remote = repo.find_remote("origin").unwrap();
+            remote
+                .push(&["refs/heads/master:refs/heads/master"], None)
+                .unwrap();
+        }
+
+        // Create a local change
+        std::fs::write(work_dir.join("local_change.txt"), "new content\n").unwrap();
+
+        let state = Arc::new(Mutex::new(DaemonState::new()));
+        let st = Arc::clone(&state);
+        let wd = work_dir.clone();
+        // pull=false, push=true
+        let changed = tokio::task::spawn_blocking(move || {
+            handle_sync(&wd, false, true, "local", &st, false, false)
+        })
+        .await
+        .unwrap();
+
+        // No remote changes to pull, but push should succeed
+        assert!(!changed, "no pull changes expected");
+
+        // Verify commit was pushed to bare repo
+        let bare = git2::Repository::open_bare(&bare_dir).unwrap();
+        let bare_head = bare
+            .find_reference("refs/heads/master")
+            .unwrap()
+            .peel_to_commit()
+            .unwrap();
+        assert_eq!(
+            bare_head.message().unwrap(),
+            "cfgd: auto-commit configuration changes"
+        );
+    }
+
+    // --- git_pull: diverged branches return error ---
+
+    #[test]
+    fn git_pull_diverged_returns_error() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let bare_dir = tmp.path().join("bare.git");
+        let work_dir = tmp.path().join("work");
+        let pusher_dir = tmp.path().join("pusher");
+
+        std::fs::create_dir_all(&bare_dir).unwrap();
+        git2::Repository::init_bare(&bare_dir).unwrap();
+
+        let repo = git2::Repository::clone(bare_dir.to_str().unwrap(), &work_dir).unwrap();
+        {
+            let mut config = repo.config().unwrap();
+            config.set_str("user.name", "cfgd-test").unwrap();
+            config.set_str("user.email", "test@cfgd.io").unwrap();
+        }
+        std::fs::write(work_dir.join("README"), "v1\n").unwrap();
+        {
+            let mut index = repo.index().unwrap();
+            index.add_path(Path::new("README")).unwrap();
+            index.write().unwrap();
+            let tree_id = index.write_tree().unwrap();
+            let tree = repo.find_tree(tree_id).unwrap();
+            let sig = repo.signature().unwrap();
+            repo.commit(Some("HEAD"), &sig, &sig, "initial", &tree, &[])
+                .unwrap();
+        }
+        {
+            let mut remote = repo.find_remote("origin").unwrap();
+            remote
+                .push(&["refs/heads/master:refs/heads/master"], None)
+                .unwrap();
+        }
+
+        // Push a divergent change from pusher
+        let pusher = git2::Repository::clone(bare_dir.to_str().unwrap(), &pusher_dir).unwrap();
+        {
+            let mut config = pusher.config().unwrap();
+            config.set_str("user.name", "cfgd-pusher").unwrap();
+            config.set_str("user.email", "pusher@cfgd.io").unwrap();
+        }
+        std::fs::write(pusher_dir.join("PUSHER_FILE"), "pusher\n").unwrap();
+        {
+            let mut index = pusher.index().unwrap();
+            index.add_path(Path::new("PUSHER_FILE")).unwrap();
+            index.write().unwrap();
+            let tree_id = index.write_tree().unwrap();
+            let tree = pusher.find_tree(tree_id).unwrap();
+            let sig = pusher.signature().unwrap();
+            let parent = pusher.head().unwrap().peel_to_commit().unwrap();
+            pusher
+                .commit(Some("HEAD"), &sig, &sig, "pusher commit", &tree, &[&parent])
+                .unwrap();
+        }
+        {
+            let mut remote = pusher.find_remote("origin").unwrap();
+            remote
+                .push(&["refs/heads/master:refs/heads/master"], None)
+                .unwrap();
+        }
+
+        // Create a local commit in work_dir (diverged from remote)
+        std::fs::write(work_dir.join("LOCAL_FILE"), "local\n").unwrap();
+        {
+            let mut index = repo.index().unwrap();
+            index.add_path(Path::new("LOCAL_FILE")).unwrap();
+            index.write().unwrap();
+            let tree_id = index.write_tree().unwrap();
+            let tree = repo.find_tree(tree_id).unwrap();
+            let sig = repo.signature().unwrap();
+            let parent = repo.head().unwrap().peel_to_commit().unwrap();
+            repo.commit(Some("HEAD"), &sig, &sig, "local commit", &tree, &[&parent])
+                .unwrap();
+        }
+
+        // git_pull should fail because branches diverged (not fast-forwardable)
+        let result = git_pull(&work_dir);
+        assert!(result.is_err(), "diverged branch should return error");
+        let err_msg = result.unwrap_err();
+        assert!(
+            err_msg.contains("diverged") || err_msg.contains("fast-forward"),
+            "error should mention divergence: {}",
+            err_msg
+        );
+    }
+
+    // --- git_auto_commit_push: fresh repo with no HEAD ---
+
+    #[test]
+    fn git_auto_commit_push_fresh_repo_no_head() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let bare_dir = tmp.path().join("bare.git");
+        let work_dir = tmp.path().join("work");
+
+        std::fs::create_dir_all(&bare_dir).unwrap();
+        git2::Repository::init_bare(&bare_dir).unwrap();
+
+        let repo = git2::Repository::clone(bare_dir.to_str().unwrap(), &work_dir).unwrap();
+        {
+            let mut config = repo.config().unwrap();
+            config.set_str("user.name", "cfgd-test").unwrap();
+            config.set_str("user.email", "test@cfgd.io").unwrap();
+        }
+
+        // Create a file but don't commit yet — repo has no HEAD
+        std::fs::write(work_dir.join("first_file.txt"), "hello\n").unwrap();
+
+        let result = git_auto_commit_push(&work_dir);
+        assert!(result.is_ok(), "fresh repo push failed: {:?}", result);
+        assert!(result.unwrap(), "expected changes to be committed");
+
+        // Verify HEAD now exists with the auto-commit message
+        let repo = git2::Repository::open(&work_dir).unwrap();
+        let head = repo.head().unwrap().peel_to_commit().unwrap();
+        assert_eq!(
+            head.message().unwrap(),
+            "cfgd: auto-commit configuration changes"
+        );
+    }
+
+    // --- server_checkin: mock HTTP test for config_changed=true ---
+
+    #[test]
+    fn server_checkin_mock_config_changed() {
+        use crate::config::{
+            LayerPolicy, MergedProfile, PackagesSpec, ProfileLayer, ProfileSpec, ResolvedProfile,
+        };
+
+        let mut server = mockito::Server::new();
+        let mock = server
+            .mock("POST", "/api/v1/checkin")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"status":"ok","config_changed":true,"config":null}"#)
+            .create();
+
+        let resolved = ResolvedProfile {
+            layers: vec![ProfileLayer {
+                source: "local".into(),
+                profile_name: "test".into(),
+                priority: 1000,
+                policy: LayerPolicy::Local,
+                spec: ProfileSpec::default(),
+            }],
+            merged: MergedProfile {
+                packages: PackagesSpec::default(),
+                ..Default::default()
+            },
+        };
+
+        let changed = server_checkin(&server.url(), &resolved);
+        assert!(changed, "server should report config changed");
+        mock.assert();
+    }
+
+    // --- server_checkin: mock HTTP test for config_changed=false ---
+
+    #[test]
+    fn server_checkin_mock_no_change() {
+        use crate::config::{
+            LayerPolicy, MergedProfile, PackagesSpec, ProfileLayer, ProfileSpec, ResolvedProfile,
+        };
+
+        let mut server = mockito::Server::new();
+        let mock = server
+            .mock("POST", "/api/v1/checkin")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"status":"ok","config_changed":false,"config":null}"#)
+            .create();
+
+        let resolved = ResolvedProfile {
+            layers: vec![ProfileLayer {
+                source: "local".into(),
+                profile_name: "test".into(),
+                priority: 1000,
+                policy: LayerPolicy::Local,
+                spec: ProfileSpec::default(),
+            }],
+            merged: MergedProfile {
+                packages: PackagesSpec::default(),
+                ..Default::default()
+            },
+        };
+
+        let changed = server_checkin(&server.url(), &resolved);
+        assert!(!changed, "server should report no change");
+        mock.assert();
+    }
+
+    // --- server_checkin: server returns 500 ---
+
+    #[test]
+    fn server_checkin_mock_server_error() {
+        use crate::config::{
+            LayerPolicy, MergedProfile, PackagesSpec, ProfileLayer, ProfileSpec, ResolvedProfile,
+        };
+
+        let mut server = mockito::Server::new();
+        let mock = server
+            .mock("POST", "/api/v1/checkin")
+            .with_status(500)
+            .with_body("internal server error")
+            .create();
+
+        let resolved = ResolvedProfile {
+            layers: vec![ProfileLayer {
+                source: "local".into(),
+                profile_name: "test".into(),
+                priority: 1000,
+                policy: LayerPolicy::Local,
+                spec: ProfileSpec::default(),
+            }],
+            merged: MergedProfile {
+                packages: PackagesSpec::default(),
+                ..Default::default()
+            },
+        };
+
+        let changed = server_checkin(&server.url(), &resolved);
+        assert!(!changed, "server error should return false");
+        mock.assert();
+    }
+
+    // --- server_checkin: malformed JSON response ---
+
+    #[test]
+    fn server_checkin_mock_malformed_json() {
+        use crate::config::{
+            LayerPolicy, MergedProfile, PackagesSpec, ProfileLayer, ProfileSpec, ResolvedProfile,
+        };
+
+        let mut server = mockito::Server::new();
+        let mock = server
+            .mock("POST", "/api/v1/checkin")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body("not json at all")
+            .create();
+
+        let resolved = ResolvedProfile {
+            layers: vec![ProfileLayer {
+                source: "local".into(),
+                profile_name: "test".into(),
+                priority: 1000,
+                policy: LayerPolicy::Local,
+                spec: ProfileSpec::default(),
+            }],
+            merged: MergedProfile {
+                packages: PackagesSpec::default(),
+                ..Default::default()
+            },
+        };
+
+        let changed = server_checkin(&server.url(), &resolved);
+        assert!(!changed, "malformed JSON should return false");
+        mock.assert();
+    }
+
+    // --- server_checkin: URL with trailing slash ---
+
+    #[test]
+    fn server_checkin_mock_trailing_slash_url() {
+        use crate::config::{
+            LayerPolicy, MergedProfile, PackagesSpec, ProfileLayer, ProfileSpec, ResolvedProfile,
+        };
+
+        let mut server = mockito::Server::new();
+        let mock = server
+            .mock("POST", "/api/v1/checkin")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"status":"ok","config_changed":false,"config":null}"#)
+            .create();
+
+        let resolved = ResolvedProfile {
+            layers: vec![ProfileLayer {
+                source: "local".into(),
+                profile_name: "test".into(),
+                priority: 1000,
+                policy: LayerPolicy::Local,
+                spec: ProfileSpec::default(),
+            }],
+            merged: MergedProfile {
+                packages: PackagesSpec::default(),
+                ..Default::default()
+            },
+        };
+
+        // URL with trailing slash should be trimmed
+        let url_with_slash = format!("{}/", server.url());
+        let changed = server_checkin(&url_with_slash, &resolved);
+        assert!(!changed);
+        mock.assert();
+    }
+
+    // --- server_checkin: verifies request payload structure ---
+
+    #[test]
+    fn server_checkin_mock_verifies_request_body() {
+        use crate::config::{
+            CargoSpec, LayerPolicy, MergedProfile, PackagesSpec, ProfileLayer, ProfileSpec,
+            ResolvedProfile,
+        };
+
+        let mut server = mockito::Server::new();
+        let mock = server
+            .mock("POST", "/api/v1/checkin")
+            .match_header("Content-Type", "application/json")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"status":"ok","config_changed":false,"config":null}"#)
+            .create();
+
+        let resolved = ResolvedProfile {
+            layers: vec![ProfileLayer {
+                source: "local".into(),
+                profile_name: "test".into(),
+                priority: 1000,
+                policy: LayerPolicy::Local,
+                spec: ProfileSpec::default(),
+            }],
+            merged: MergedProfile {
+                packages: PackagesSpec {
+                    cargo: Some(CargoSpec {
+                        file: None,
+                        packages: vec!["bat".into()],
+                    }),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        };
+
+        let changed = server_checkin(&server.url(), &resolved);
+        assert!(!changed);
+        // Verify the mock received the request with correct Content-Type
+        mock.assert();
+    }
+
+    // --- try_server_checkin: delegates to server_checkin when URL present ---
+
+    #[test]
+    fn try_server_checkin_no_server_origin_returns_false() {
+        use crate::config::*;
+        let config = CfgdConfig {
+            api_version: crate::API_VERSION.into(),
+            kind: "Config".into(),
+            metadata: ConfigMetadata {
+                name: "test".into(),
+            },
+            spec: ConfigSpec {
+                profile: Some("default".into()),
+                origin: vec![OriginSpec {
+                    origin_type: OriginType::Git,
+                    url: "https://github.com/test/repo.git".into(),
+                    branch: "main".into(),
+                    auth: None,
+                    ssh_strict_host_key_checking: Default::default(),
+                }],
+                daemon: None,
+                secrets: None,
+                sources: vec![],
+                theme: None,
+                modules: None,
+                security: None,
+                aliases: std::collections::HashMap::new(),
+                file_strategy: FileStrategy::default(),
+                ai: None,
+                compliance: None,
+            },
+        };
+        let resolved = ResolvedProfile {
+            layers: vec![ProfileLayer {
+                source: "local".into(),
+                profile_name: "test".into(),
+                priority: 1000,
+                policy: LayerPolicy::Local,
+                spec: ProfileSpec::default(),
+            }],
+            merged: MergedProfile::default(),
+        };
+
+        let changed = try_server_checkin(&config, &resolved);
+        assert!(!changed, "no server origin means no checkin");
+    }
+
+    // --- try_server_checkin: with mock server ---
+
+    #[test]
+    fn try_server_checkin_with_server_origin_calls_checkin() {
+        use crate::config::*;
+
+        let mut server = mockito::Server::new();
+        let mock = server
+            .mock("POST", "/api/v1/checkin")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"status":"ok","config_changed":true,"config":null}"#)
+            .create();
+
+        let config = CfgdConfig {
+            api_version: crate::API_VERSION.into(),
+            kind: "Config".into(),
+            metadata: ConfigMetadata {
+                name: "test".into(),
+            },
+            spec: ConfigSpec {
+                profile: Some("default".into()),
+                origin: vec![OriginSpec {
+                    origin_type: OriginType::Server,
+                    url: server.url(),
+                    branch: "main".into(),
+                    auth: None,
+                    ssh_strict_host_key_checking: Default::default(),
+                }],
+                daemon: None,
+                secrets: None,
+                sources: vec![],
+                theme: None,
+                modules: None,
+                security: None,
+                aliases: std::collections::HashMap::new(),
+                file_strategy: FileStrategy::default(),
+                ai: None,
+                compliance: None,
+            },
+        };
+        let resolved = ResolvedProfile {
+            layers: vec![ProfileLayer {
+                source: "local".into(),
+                profile_name: "test".into(),
+                priority: 1000,
+                policy: LayerPolicy::Local,
+                spec: ProfileSpec::default(),
+            }],
+            merged: MergedProfile::default(),
+        };
+
+        let changed = try_server_checkin(&config, &resolved);
+        assert!(changed, "server origin should trigger checkin");
+        mock.assert();
+    }
+
+    // --- handle_health_connection: response includes Content-Type and Content-Length ---
+
+    #[tokio::test]
+    async fn health_connection_response_headers() {
+        let state = Arc::new(Mutex::new(DaemonState::new()));
+        let (client, server) = tokio::io::duplex(4096);
+
+        let handler_state = Arc::clone(&state);
+        let handler = tokio::spawn(async move {
+            handle_health_connection(server, handler_state)
+                .await
+                .unwrap();
+        });
+
+        let (reader, mut writer) = tokio::io::split(client);
+        writer
+            .write_all(b"GET /health HTTP/1.1\r\nHost: localhost\r\n\r\n")
+            .await
+            .unwrap();
+        writer.shutdown().await.unwrap();
+
+        let mut buf_reader = tokio::io::BufReader::new(reader);
+        let mut response = String::new();
+        loop {
+            let mut line = String::new();
+            match buf_reader.read_line(&mut line).await {
+                Ok(0) => break,
+                Ok(_) => response.push_str(&line),
+                Err(_) => break,
+            }
+        }
+
+        handler.await.unwrap();
+
+        assert!(
+            response.contains("Content-Type: application/json"),
+            "missing Content-Type header"
+        );
+        assert!(
+            response.contains("Content-Length:"),
+            "missing Content-Length header"
+        );
+        assert!(
+            response.contains("Connection: close"),
+            "missing Connection header"
+        );
+    }
+
+    // --- handle_health_connection: empty request line defaults to /health ---
+
+    #[tokio::test]
+    async fn health_connection_empty_request_defaults_to_health() {
+        let state = Arc::new(Mutex::new(DaemonState::new()));
+        let (client, server) = tokio::io::duplex(4096);
+
+        let handler_state = Arc::clone(&state);
+        let handler = tokio::spawn(async move {
+            handle_health_connection(server, handler_state)
+                .await
+                .unwrap();
+        });
+
+        let (reader, mut writer) = tokio::io::split(client);
+        // Send an empty line as the request
+        writer.write_all(b"\r\n\r\n").await.unwrap();
+        writer.shutdown().await.unwrap();
+
+        let mut buf_reader = tokio::io::BufReader::new(reader);
+        let mut response = String::new();
+        loop {
+            let mut line = String::new();
+            match buf_reader.read_line(&mut line).await {
+                Ok(0) => break,
+                Ok(_) => response.push_str(&line),
+                Err(_) => break,
+            }
+        }
+
+        handler.await.unwrap();
+
+        // Empty request should either default to /health or return 404
+        // The code uses `split_whitespace().nth(1).unwrap_or("/health")` so
+        // empty request line -> /health
+        assert!(
+            response.contains("200 OK") || response.contains("404 Not Found"),
+            "should handle empty request gracefully: {}",
+            &response[..response.len().min(80)]
+        );
+    }
+
+    // --- handle_health_connection: /status body parses to DaemonStatusResponse ---
+
+    #[tokio::test]
+    async fn health_connection_status_body_parses_as_response() {
+        let state = Arc::new(Mutex::new(DaemonState::new()));
+        {
+            let mut st = state.lock().await;
+            st.drift_count = 7;
+            st.update_available = Some("2.0.0".to_string());
+        }
+
+        let (client, server) = tokio::io::duplex(8192);
+
+        let handler_state = Arc::clone(&state);
+        let handler = tokio::spawn(async move {
+            handle_health_connection(server, handler_state)
+                .await
+                .unwrap();
+        });
+
+        let (reader, mut writer) = tokio::io::split(client);
+        writer
+            .write_all(b"GET /status HTTP/1.1\r\nHost: localhost\r\n\r\n")
+            .await
+            .unwrap();
+        writer.shutdown().await.unwrap();
+
+        let mut buf_reader = tokio::io::BufReader::new(reader);
+        let mut lines: Vec<String> = Vec::new();
+        let mut in_body = false;
+        loop {
+            let mut line = String::new();
+            match buf_reader.read_line(&mut line).await {
+                Ok(0) => break,
+                Ok(_) => {
+                    if in_body {
+                        lines.push(line);
+                    } else if line.trim().is_empty() {
+                        in_body = true;
+                    }
+                }
+                Err(_) => break,
+            }
+        }
+
+        handler.await.unwrap();
+
+        let body = lines.join("");
+        let parsed: DaemonStatusResponse =
+            serde_json::from_str(&body).expect("body should parse as DaemonStatusResponse");
+        assert!(parsed.running);
+        assert_eq!(parsed.drift_count, 7);
+        assert_eq!(parsed.update_available.as_deref(), Some("2.0.0"));
+        assert_eq!(parsed.sources.len(), 1);
+        assert_eq!(parsed.sources[0].name, "local");
+    }
+
+    // --- DaemonState: module_last_reconcile overwrite ---
+
+    #[test]
+    fn daemon_state_module_last_reconcile_overwrite() {
+        let mut state = DaemonState::new();
+        state
+            .module_last_reconcile
+            .insert("mod-a".into(), "2026-01-01T00:00:00Z".into());
+        state
+            .module_last_reconcile
+            .insert("mod-a".into(), "2026-01-02T00:00:00Z".into());
+
+        // Overwrite should replace the old value
+        assert_eq!(state.module_last_reconcile.len(), 1);
+        assert_eq!(
+            state.module_last_reconcile.get("mod-a").unwrap(),
+            "2026-01-02T00:00:00Z"
+        );
+    }
+
+    // --- DaemonState: update_available persists through to_response ---
+
+    #[test]
+    fn daemon_state_update_available_in_response() {
+        let mut state = DaemonState::new();
+        state.update_available = Some("3.1.0".to_string());
+
+        let response = state.to_response();
+        assert_eq!(response.update_available.as_deref(), Some("3.1.0"));
+    }
+
+    // --- Notifier: webhook builds correct JSON payload structure ---
+
+    #[test]
+    fn notifier_webhook_payload_structure() {
+        // Verify the JSON payload structure by constructing it the same way as notify_webhook
+        let title = "cfgd: drift detected";
+        let message = "3 files drifted";
+        let payload = serde_json::json!({
+            "event": title,
+            "message": message,
+            "timestamp": crate::utc_now_iso8601(),
+            "source": "cfgd",
+        });
+
+        let obj = payload.as_object().unwrap();
+        assert_eq!(obj.len(), 4);
+        assert_eq!(obj.get("event").unwrap().as_str().unwrap(), title);
+        assert_eq!(obj.get("message").unwrap().as_str().unwrap(), message);
+        assert!(obj.contains_key("timestamp"));
+        assert_eq!(obj.get("source").unwrap().as_str().unwrap(), "cfgd");
+    }
+
+    // --- Notifier: webhook payload timestamp format ---
+
+    #[test]
+    fn notifier_webhook_payload_timestamp_is_iso8601() {
+        let payload = serde_json::json!({
+            "event": "test",
+            "message": "msg",
+            "timestamp": crate::utc_now_iso8601(),
+            "source": "cfgd",
+        });
+
+        let ts = payload["timestamp"].as_str().unwrap();
+        // ISO 8601 format: contains 'T' separator and ends with 'Z'
+        assert!(ts.contains('T'), "timestamp should be ISO 8601: {}", ts);
+        assert!(ts.ends_with('Z'), "timestamp should end with Z: {}", ts);
+    }
+
+    // --- ReconcileTask: drift_policy variants ---
+
+    #[test]
+    fn reconcile_task_drift_policy_auto() {
+        let task = ReconcileTask {
+            entity: "critical-module".into(),
+            interval: Duration::from_secs(30),
+            auto_apply: true,
+            drift_policy: config::DriftPolicy::Auto,
+            last_reconciled: None,
+        };
+        assert!(matches!(task.drift_policy, config::DriftPolicy::Auto));
+    }
+
+    #[test]
+    fn reconcile_task_drift_policy_notify_only() {
+        let task = ReconcileTask {
+            entity: "optional-module".into(),
+            interval: Duration::from_secs(600),
+            auto_apply: false,
+            drift_policy: config::DriftPolicy::NotifyOnly,
+            last_reconciled: None,
+        };
+        assert!(matches!(task.drift_policy, config::DriftPolicy::NotifyOnly));
+    }
+
+    #[test]
+    fn reconcile_task_drift_policy_prompt() {
+        let task = ReconcileTask {
+            entity: "interactive-module".into(),
+            interval: Duration::from_secs(300),
+            auto_apply: false,
+            drift_policy: config::DriftPolicy::Prompt,
+            last_reconciled: None,
+        };
+        assert!(matches!(task.drift_policy, config::DriftPolicy::Prompt));
+    }
+
+    // --- process_source_decisions: new_optional tier with Accept policy ---
+
+    #[test]
+    fn process_source_decisions_optional_tier_accept() {
+        let store = StateStore::open_in_memory().unwrap();
+        let notifier = Notifier::new(NotifyMethod::Stdout, None);
+        let policy = AutoApplyPolicyConfig {
+            new_recommended: PolicyAction::Notify,
+            new_optional: PolicyAction::Accept,
+            locked_conflict: PolicyAction::Notify,
+        };
+
+        // Regular packages trigger "recommended" tier, not "optional".
+        // The current infer_item_tier only returns "recommended" or "locked".
+        // Verify that recommended items still get the Notify treatment.
+        let merged = MergedProfile {
+            packages: crate::config::PackagesSpec {
+                cargo: Some(crate::config::CargoSpec {
+                    file: None,
+                    packages: vec!["bat".into()],
+                }),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        let excluded = process_source_decisions(&store, "acme", &merged, &policy, &notifier);
+        let pending = store.pending_decisions().unwrap();
+        // "bat" is recommended tier -> Notify policy -> creates pending decision
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].resource, "packages.cargo.bat");
+        assert!(excluded.contains("packages.cargo.bat"));
+    }
+
+    // --- process_source_decisions: empty merged profile no decisions ---
+
+    #[test]
+    fn process_source_decisions_empty_profile_no_decisions() {
+        let store = StateStore::open_in_memory().unwrap();
+        let notifier = Notifier::new(NotifyMethod::Stdout, None);
+        let policy = AutoApplyPolicyConfig::default();
+
+        let merged = MergedProfile::default();
+
+        let excluded = process_source_decisions(&store, "empty", &merged, &policy, &notifier);
+        let pending = store.pending_decisions().unwrap();
+        assert!(pending.is_empty());
+        assert!(excluded.is_empty());
+    }
+
+    // --- DaemonStatusResponse: deserialization with all optional fields ---
+
+    #[test]
+    fn daemon_status_response_full_deserialization() {
+        let json = r#"{
+            "running": true,
+            "pid": 54321,
+            "uptimeSecs": 7200,
+            "lastReconcile": "2026-04-01T00:00:00Z",
+            "lastSync": "2026-04-01T00:01:00Z",
+            "driftCount": 42,
+            "sources": [
+                {
+                    "name": "local",
+                    "lastSync": "2026-04-01T00:01:00Z",
+                    "lastReconcile": "2026-04-01T00:00:00Z",
+                    "driftCount": 10,
+                    "status": "active"
+                }
+            ],
+            "updateAvailable": "4.0.0",
+            "moduleReconcile": [
+                {
+                    "name": "sec",
+                    "interval": "30s",
+                    "autoApply": true,
+                    "driftPolicy": "Auto",
+                    "lastReconcile": "2026-04-01T00:00:00Z"
+                }
+            ]
+        }"#;
+
+        let parsed: DaemonStatusResponse = serde_json::from_str(json).unwrap();
+        assert!(parsed.running);
+        assert_eq!(parsed.pid, 54321);
+        assert_eq!(parsed.uptime_secs, 7200);
+        assert_eq!(
+            parsed.last_reconcile.as_deref(),
+            Some("2026-04-01T00:00:00Z")
+        );
+        assert_eq!(parsed.last_sync.as_deref(), Some("2026-04-01T00:01:00Z"));
+        assert_eq!(parsed.drift_count, 42);
+        assert_eq!(parsed.sources.len(), 1);
+        assert_eq!(parsed.sources[0].drift_count, 10);
+        assert_eq!(parsed.update_available.as_deref(), Some("4.0.0"));
+        assert_eq!(parsed.module_reconcile.len(), 1);
+        assert_eq!(parsed.module_reconcile[0].name, "sec");
+        assert!(parsed.module_reconcile[0].auto_apply);
+    }
+
+    // --- CheckinServerResponse: missing config field defaults to None ---
+
+    #[test]
+    fn checkin_response_without_config_field() {
+        let json = r#"{"status":"ok","config_changed":false}"#;
+        let resp: CheckinServerResponse = serde_json::from_str(json).unwrap();
+        // _config is Option<Value>, so missing field deserializes as None
+        assert!(!resp.config_changed);
+        assert!(resp._config.is_none());
+    }
+
+    // --- hash_resources: unicode content ---
+
+    #[test]
+    fn hash_resources_unicode_content() {
+        let set: HashSet<String> = HashSet::from_iter(["packages.brew.\u{1f600}".to_string()]);
+        let hash = hash_resources(&set);
+        assert_eq!(hash.len(), 64);
+        // Must be deterministic
+        assert_eq!(hash, hash_resources(&set));
+    }
+
+    // --- parse_duration_or_default: whitespace-only falls back ---
+
+    #[test]
+    fn parse_duration_whitespace_only_falls_back() {
+        assert_eq!(
+            parse_duration_or_default("   "),
+            Duration::from_secs(DEFAULT_RECONCILE_SECS)
+        );
+    }
+
+    // --- SyncTask: interval boundary values ---
+
+    #[test]
+    fn sync_task_zero_interval() {
+        let task = SyncTask {
+            source_name: "instant".into(),
+            repo_path: PathBuf::from("/tmp"),
+            auto_pull: true,
+            auto_push: true,
+            auto_apply: true,
+            interval: Duration::from_secs(0),
+            last_synced: None,
+            require_signed_commits: false,
+            allow_unsigned: false,
+        };
+        assert_eq!(task.interval, Duration::ZERO);
+    }
+
+    // --- DaemonState: to_response sources ordering is preserved ---
+
+    #[test]
+    fn daemon_state_to_response_preserves_source_order() {
+        let mut state = DaemonState::new();
+        state.sources.push(SourceStatus {
+            name: "z-source".into(),
+            last_sync: None,
+            last_reconcile: None,
+            drift_count: 0,
+            status: "active".into(),
+        });
+        state.sources.push(SourceStatus {
+            name: "a-source".into(),
+            last_sync: None,
+            last_reconcile: None,
+            drift_count: 0,
+            status: "active".into(),
+        });
+
+        let response = state.to_response();
+        assert_eq!(response.sources[0].name, "local");
+        assert_eq!(response.sources[1].name, "z-source");
+        assert_eq!(response.sources[2].name, "a-source");
+    }
+
+    // --- DaemonState: started_at tracks elapsed time ---
+
+    #[test]
+    fn daemon_state_started_at_elapses() {
+        let state = DaemonState::new();
+        let elapsed = state.started_at.elapsed();
+        assert!(
+            elapsed < Duration::from_secs(5),
+            "started_at should be recent"
+        );
+    }
+
+    // --- handle_health_connection: /drift response structure ---
+
+    #[tokio::test]
+    async fn health_connection_drift_body_parses_as_json() {
+        let state = Arc::new(Mutex::new(DaemonState::new()));
+        let (client, server) = tokio::io::duplex(8192);
+
+        let handler_state = Arc::clone(&state);
+        let handler = tokio::spawn(async move {
+            handle_health_connection(server, handler_state)
+                .await
+                .unwrap();
+        });
+
+        let (reader, mut writer) = tokio::io::split(client);
+        writer
+            .write_all(b"GET /drift HTTP/1.1\r\nHost: localhost\r\n\r\n")
+            .await
+            .unwrap();
+        writer.shutdown().await.unwrap();
+
+        let mut buf_reader = tokio::io::BufReader::new(reader);
+        let mut lines: Vec<String> = Vec::new();
+        let mut in_body = false;
+        loop {
+            let mut line = String::new();
+            match buf_reader.read_line(&mut line).await {
+                Ok(0) => break,
+                Ok(_) => {
+                    if in_body {
+                        lines.push(line);
+                    } else if line.trim().is_empty() {
+                        in_body = true;
+                    }
+                }
+                Err(_) => break,
+            }
+        }
+
+        handler.await.unwrap();
+
+        let body = lines.join("");
+        let parsed: serde_json::Value =
+            serde_json::from_str(&body).expect("drift body should be valid JSON");
+        assert!(parsed.get("drift_count").is_some());
+        assert!(parsed.get("events").is_some());
+        assert!(parsed["events"].is_array());
+        // With an empty default state store, events should be empty
+        assert_eq!(parsed["drift_count"].as_u64().unwrap(), 0);
+    }
+
+    // --- handle_sync: no pull, no push, still updates timestamp ---
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn handle_sync_no_pull_no_push_updates_timestamp() {
+        use crate::test_helpers::init_test_git_repo;
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        let repo_dir = tmp.path().join("repo");
+        init_test_git_repo(&repo_dir);
+
+        let state = Arc::new(Mutex::new(DaemonState::new()));
+        let st = Arc::clone(&state);
+        let rd = repo_dir.clone();
+
+        let changed = tokio::task::spawn_blocking(move || {
+            handle_sync(&rd, false, false, "local", &st, false, false)
+        })
+        .await
+        .unwrap();
+
+        assert!(!changed, "no pull/push means no changes");
+
+        let st = state.lock().await;
+        assert!(
+            st.last_sync.is_some(),
+            "last_sync should be set even with no operations"
+        );
+    }
+
+    // --- git_pull_sync: delegates to git_pull ---
+
+    #[test]
+    fn git_pull_sync_non_repo_returns_error() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let result = git_pull_sync(tmp.path());
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn git_pull_sync_clean_repo_no_changes() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let bare_dir = tmp.path().join("bare.git");
+        let work_dir = tmp.path().join("work");
+
+        std::fs::create_dir_all(&bare_dir).unwrap();
+        git2::Repository::init_bare(&bare_dir).unwrap();
+
+        let repo = git2::Repository::clone(bare_dir.to_str().unwrap(), &work_dir).unwrap();
+        {
+            let mut config = repo.config().unwrap();
+            config.set_str("user.name", "cfgd-test").unwrap();
+            config.set_str("user.email", "test@cfgd.io").unwrap();
+        }
+        std::fs::write(work_dir.join("README"), "test\n").unwrap();
+        {
+            let mut index = repo.index().unwrap();
+            index.add_path(Path::new("README")).unwrap();
+            index.write().unwrap();
+            let tree_id = index.write_tree().unwrap();
+            let tree = repo.find_tree(tree_id).unwrap();
+            let sig = repo.signature().unwrap();
+            repo.commit(Some("HEAD"), &sig, &sig, "initial", &tree, &[])
+                .unwrap();
+        }
+        {
+            let mut remote = repo.find_remote("origin").unwrap();
+            remote
+                .push(&["refs/heads/master:refs/heads/master"], None)
+                .unwrap();
+        }
+
+        let result = git_pull_sync(&work_dir);
+        assert!(result.is_ok());
+        assert!(!result.unwrap(), "should be up to date");
+    }
+
+    // --- Notifier: all methods construct without panic ---
+
+    #[test]
+    fn notifier_all_methods_construct() {
+        let _stdout = Notifier::new(NotifyMethod::Stdout, None);
+        let _desktop = Notifier::new(NotifyMethod::Desktop, None);
+        let _webhook_none = Notifier::new(NotifyMethod::Webhook, None);
+        let _webhook_url = Notifier::new(
+            NotifyMethod::Webhook,
+            Some("https://example.com/hook".into()),
+        );
+    }
+
+    // --- DaemonStatusResponse: serialization/deserialization symmetry ---
+
+    #[test]
+    fn daemon_status_response_roundtrip_symmetry() {
+        let original = DaemonStatusResponse {
+            running: true,
+            pid: 99999,
+            uptime_secs: 86400,
+            last_reconcile: Some("2026-04-01T12:00:00Z".into()),
+            last_sync: Some("2026-04-01T12:01:00Z".into()),
+            drift_count: 100,
+            sources: vec![
+                SourceStatus {
+                    name: "local".into(),
+                    last_sync: Some("2026-04-01T12:01:00Z".into()),
+                    last_reconcile: Some("2026-04-01T12:00:00Z".into()),
+                    drift_count: 50,
+                    status: "active".into(),
+                },
+                SourceStatus {
+                    name: "corp".into(),
+                    last_sync: None,
+                    last_reconcile: None,
+                    drift_count: 50,
+                    status: "error".into(),
+                },
+            ],
+            update_available: Some("5.0.0".into()),
+            module_reconcile: vec![ModuleReconcileStatus {
+                name: "sec-baseline".into(),
+                interval: "30s".into(),
+                auto_apply: true,
+                drift_policy: "Auto".into(),
+                last_reconcile: Some("2026-04-01T12:00:00Z".into()),
+            }],
+        };
+
+        let json = serde_json::to_string(&original).unwrap();
+        let roundtripped: DaemonStatusResponse = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(roundtripped.pid, original.pid);
+        assert_eq!(roundtripped.uptime_secs, original.uptime_secs);
+        assert_eq!(roundtripped.drift_count, original.drift_count);
+        assert_eq!(roundtripped.sources.len(), original.sources.len());
+        assert_eq!(
+            roundtripped.sources[1].drift_count,
+            original.sources[1].drift_count
+        );
+        assert_eq!(
+            roundtripped.module_reconcile.len(),
+            original.module_reconcile.len()
+        );
+        assert_eq!(roundtripped.update_available, original.update_available);
+    }
+
+    // --- SourceStatus: serialization includes camelCase properly ---
+
+    #[test]
+    fn source_status_camel_case_serialization() {
+        let status = SourceStatus {
+            name: "test".into(),
+            last_sync: Some("ts".into()),
+            last_reconcile: Some("tr".into()),
+            drift_count: 1,
+            status: "active".into(),
+        };
+        let json = serde_json::to_string(&status).unwrap();
+        assert!(json.contains("\"lastSync\""));
+        assert!(json.contains("\"lastReconcile\""));
+        assert!(json.contains("\"driftCount\""));
+        assert!(!json.contains("\"last_sync\""));
+        assert!(!json.contains("\"last_reconcile\""));
+        assert!(!json.contains("\"drift_count\""));
+    }
+
+    // --- infer_item_tier: boundary cases ---
+
+    #[test]
+    fn infer_item_tier_empty_string() {
+        assert_eq!(infer_item_tier(""), "recommended");
+    }
+
+    #[test]
+    fn infer_item_tier_case_sensitivity() {
+        // "Security" (uppercase S) does NOT match since contains() is case-sensitive
+        assert_eq!(infer_item_tier("files.Security-settings"), "recommended");
+        // "POLICY" (all caps) does NOT match since contains() is case-sensitive
+        assert_eq!(infer_item_tier("files.POLICY-doc"), "recommended");
+        // Only lowercase matches trigger the "locked" tier
+        assert_eq!(infer_item_tier("files.security-settings"), "locked");
+        assert_eq!(infer_item_tier("files.policy-doc"), "locked");
+    }
+
+    #[test]
+    fn infer_item_tier_partial_keyword_match() {
+        // "insecurity" contains "security"
+        assert_eq!(infer_item_tier("files.insecurity-note"), "locked");
+    }
+
+    // --- compute_config_hash: uses only packages for hash ---
+
+    #[test]
+    fn compute_config_hash_ignores_non_package_fields() {
+        use crate::config::{
+            EnvVar, LayerPolicy, MergedProfile, PackagesSpec, ProfileLayer, ProfileSpec,
+            ResolvedProfile,
+        };
+
+        let resolved_a = ResolvedProfile {
+            layers: vec![ProfileLayer {
+                source: "local".into(),
+                profile_name: "a".into(),
+                priority: 1000,
+                policy: LayerPolicy::Local,
+                spec: ProfileSpec::default(),
+            }],
+            merged: MergedProfile {
+                packages: PackagesSpec::default(),
+                env: vec![EnvVar {
+                    name: "FOO".into(),
+                    value: "bar".into(),
+                }],
+                ..Default::default()
+            },
+        };
+
+        let resolved_b = ResolvedProfile {
+            layers: vec![ProfileLayer {
+                source: "local".into(),
+                profile_name: "b".into(),
+                priority: 1000,
+                policy: LayerPolicy::Local,
+                spec: ProfileSpec::default(),
+            }],
+            merged: MergedProfile {
+                packages: PackagesSpec::default(),
+                env: vec![EnvVar {
+                    name: "BAZ".into(),
+                    value: "qux".into(),
+                }],
+                ..Default::default()
+            },
+        };
+
+        // Both have same empty packages, so hash should be the same
+        // because compute_config_hash only hashes the packages field
+        let hash_a = compute_config_hash(&resolved_a).unwrap();
+        let hash_b = compute_config_hash(&resolved_b).unwrap();
+        assert_eq!(
+            hash_a, hash_b,
+            "compute_config_hash should only hash packages, not env vars"
         );
     }
 }

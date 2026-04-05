@@ -6707,4 +6707,1687 @@ Git        Git.Git     2.43.0\n\
         // query_version is a function pointer — it exists
         assert_eq!(apt.mgr_name, "apt");
     }
+
+    // =========================================================================
+    // Additional coverage tests
+    // =========================================================================
+
+    // --- Concrete manager name/can_bootstrap/trait verification ---
+
+    #[test]
+    fn brew_manager_name_and_bootstrap() {
+        let mgr = BrewManager;
+        assert_eq!(mgr.name(), "brew");
+        assert!(mgr.can_bootstrap());
+    }
+
+    #[test]
+    fn brew_tap_manager_name_and_bootstrap() {
+        let mgr = BrewTapManager;
+        assert_eq!(mgr.name(), "brew-tap");
+        assert!(!mgr.can_bootstrap());
+        // bootstrap is a no-op
+        let printer = Printer::new(cfgd_core::output::Verbosity::Quiet);
+        mgr.bootstrap(&printer).unwrap();
+    }
+
+    #[test]
+    fn brew_cask_manager_name_and_bootstrap() {
+        let mgr = BrewCaskManager;
+        assert_eq!(mgr.name(), "brew-cask");
+        assert!(!mgr.can_bootstrap());
+        let printer = Printer::new(cfgd_core::output::Verbosity::Quiet);
+        mgr.bootstrap(&printer).unwrap();
+    }
+
+    #[test]
+    fn brew_tap_manager_update_is_noop() {
+        let mgr = BrewTapManager;
+        let printer = Printer::new(cfgd_core::output::Verbosity::Quiet);
+        mgr.update(&printer).unwrap();
+    }
+
+    #[test]
+    fn brew_tap_manager_available_version_is_none() {
+        let mgr = BrewTapManager;
+        assert!(mgr.available_version("any").unwrap().is_none());
+    }
+
+    #[test]
+    fn brew_cask_manager_update_is_noop() {
+        let mgr = BrewCaskManager;
+        let printer = Printer::new(cfgd_core::output::Verbosity::Quiet);
+        mgr.update(&printer).unwrap();
+    }
+
+    #[test]
+    fn cargo_manager_name_and_traits() {
+        let mgr = CargoManager;
+        assert_eq!(mgr.name(), "cargo");
+    }
+
+    #[test]
+    fn cargo_manager_update_is_noop() {
+        let mgr = CargoManager;
+        let printer = Printer::new(cfgd_core::output::Verbosity::Quiet);
+        mgr.update(&printer).unwrap();
+    }
+
+    #[test]
+    fn npm_manager_name() {
+        let mgr = NpmManager;
+        assert_eq!(mgr.name(), "npm");
+    }
+
+    #[test]
+    fn pipx_manager_name() {
+        let mgr = PipxManager;
+        assert_eq!(mgr.name(), "pipx");
+    }
+
+    #[test]
+    fn snap_manager_name_and_traits() {
+        let mgr = SnapManager;
+        assert_eq!(mgr.name(), "snap");
+    }
+
+    #[test]
+    fn flatpak_manager_name_and_traits() {
+        let mgr = FlatpakManager;
+        assert_eq!(mgr.name(), "flatpak");
+    }
+
+    #[test]
+    fn nix_manager_name_and_traits() {
+        let mgr = NixManager;
+        assert_eq!(mgr.name(), "nix");
+    }
+
+    #[test]
+    fn go_install_manager_name_and_traits() {
+        let mgr = GoInstallManager;
+        assert_eq!(mgr.name(), "go");
+    }
+
+    #[test]
+    fn go_install_manager_update_is_noop() {
+        let mgr = GoInstallManager;
+        let printer = Printer::new(cfgd_core::output::Verbosity::Quiet);
+        mgr.update(&printer).unwrap();
+    }
+
+    #[test]
+    fn nix_manager_update_is_noop() {
+        let mgr = NixManager;
+        let printer = Printer::new(cfgd_core::output::Verbosity::Quiet);
+        mgr.update(&printer).unwrap();
+    }
+
+    #[test]
+    fn winget_manager_name_and_traits() {
+        let mgr = WingetManager;
+        assert_eq!(mgr.name(), "winget");
+        assert!(!mgr.can_bootstrap());
+    }
+
+    #[test]
+    fn winget_manager_bootstrap_returns_error() {
+        let mgr = WingetManager;
+        let printer = Printer::new(cfgd_core::output::Verbosity::Quiet);
+        let result = mgr.bootstrap(&printer);
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(err_msg.contains("Microsoft Store"));
+    }
+
+    #[test]
+    fn chocolatey_manager_name_and_traits() {
+        let mgr = ChocolateyManager;
+        assert_eq!(mgr.name(), "chocolatey");
+        assert!(mgr.can_bootstrap());
+    }
+
+    #[test]
+    fn scoop_manager_name_and_traits() {
+        let mgr = ScoopManager;
+        assert_eq!(mgr.name(), "scoop");
+        assert!(mgr.can_bootstrap());
+    }
+
+    // --- BrewManager path_dirs tests ---
+
+    #[test]
+    fn brew_manager_path_dirs_returns_vec() {
+        let mgr = BrewManager;
+        let dirs = mgr.path_dirs();
+        // On Linux CI, should return linuxbrew paths
+        // On macOS, should return /opt/homebrew or /usr/local paths
+        // On Windows, should return empty
+        if cfg!(target_os = "windows") {
+            assert!(dirs.is_empty());
+        } else if cfg!(target_os = "linux") {
+            assert_eq!(dirs.len(), 2);
+            assert!(dirs[0].contains("linuxbrew"));
+        }
+    }
+
+    // --- parse_brew_versions additional edge cases ---
+
+    #[test]
+    fn parse_brew_versions_with_leading_trailing_whitespace() {
+        let output = "  git 2.43.0  \n  fd 9.0.0  \n";
+        let pkgs = parse_brew_versions(output);
+        assert_eq!(pkgs.len(), 2);
+        assert!(pkgs.iter().any(|p| p.name == "git"));
+        assert!(pkgs.iter().any(|p| p.name == "fd"));
+    }
+
+    #[test]
+    fn parse_brew_versions_single_package_no_trailing_newline() {
+        let output = "ripgrep 14.1.0";
+        let pkgs = parse_brew_versions(output);
+        assert_eq!(pkgs.len(), 1);
+        assert_eq!(pkgs[0].name, "ripgrep");
+        assert_eq!(pkgs[0].version, "14.1.0");
+    }
+
+    // --- parse_tab_separated_versions additional cases ---
+
+    #[test]
+    fn parse_tab_separated_versions_multiple_tabs() {
+        // Only splits on first tab
+        let output = "curl\t7.88.1\textra\n";
+        let pkgs = parse_tab_separated_versions(output);
+        assert_eq!(pkgs.len(), 1);
+        assert_eq!(pkgs[0].name, "curl");
+        assert_eq!(pkgs[0].version, "7.88.1\textra");
+    }
+
+    #[test]
+    fn parse_tab_separated_versions_many_packages() {
+        let output = "a\t1.0\nb\t2.0\nc\t3.0\nd\t4.0\ne\t5.0\n";
+        let pkgs = parse_tab_separated_versions(output);
+        assert_eq!(pkgs.len(), 5);
+        assert!(pkgs.iter().any(|p| p.name == "a" && p.version == "1.0"));
+        assert!(pkgs.iter().any(|p| p.name == "e" && p.version == "5.0"));
+    }
+
+    // --- parse_cargo_install_list additional cases ---
+
+    #[test]
+    fn parse_cargo_install_list_multiple_binaries() {
+        let output = "cargo-edit v0.12.2:\n    cargo-add\n    cargo-rm\n    cargo-upgrade\n    cargo-set-version\n";
+        let pkgs = parse_cargo_install_list(output);
+        assert_eq!(pkgs.len(), 1);
+        assert_eq!(pkgs[0].name, "cargo-edit");
+        assert_eq!(pkgs[0].version, "0.12.2");
+    }
+
+    #[test]
+    fn parse_cargo_install_list_consecutive_packages() {
+        let output = "bat v0.24.0:\n    bat\nfd-find v9.0.0:\n    fd\ntokei v12.1.2:\n    tokei\n";
+        let pkgs = parse_cargo_install_list(output);
+        assert_eq!(pkgs.len(), 3);
+        let names: Vec<&str> = pkgs.iter().map(|p| p.name.as_str()).collect();
+        assert!(names.contains(&"bat"));
+        assert!(names.contains(&"fd-find"));
+        assert!(names.contains(&"tokei"));
+    }
+
+    // --- parse_npm_list_versions additional cases ---
+
+    #[test]
+    fn parse_npm_list_versions_empty_deps() {
+        let json = serde_json::json!({"dependencies": {}});
+        let pkgs = parse_npm_list_versions(&json);
+        assert!(pkgs.is_empty());
+    }
+
+    #[test]
+    fn parse_npm_list_versions_non_string_version() {
+        let json = serde_json::json!({
+            "dependencies": {
+                "pkg": {"version": 123}
+            }
+        });
+        let pkgs = parse_npm_list_versions(&json);
+        assert_eq!(pkgs.len(), 1);
+        // version is not a string, so it falls back to "unknown"
+        assert_eq!(pkgs[0].version, "unknown");
+    }
+
+    // --- parse_pipx_list_versions additional cases ---
+
+    #[test]
+    fn parse_pipx_list_versions_multiple_venvs() {
+        let json = serde_json::json!({
+            "venvs": {
+                "black": {"metadata": {"main_package": {"package_version": "24.1.1"}}},
+                "httpie": {"metadata": {"main_package": {"package_version": "3.2.2"}}},
+                "ruff": {"metadata": {"main_package": {"package_version": "0.2.0"}}},
+                "mypy": {"metadata": {"main_package": {"package_version": "1.8.0"}}}
+            }
+        });
+        let pkgs = parse_pipx_list_versions(&json);
+        assert_eq!(pkgs.len(), 4);
+        assert!(
+            pkgs.iter()
+                .any(|p| p.name == "ruff" && p.version == "0.2.0")
+        );
+        assert!(
+            pkgs.iter()
+                .any(|p| p.name == "mypy" && p.version == "1.8.0")
+        );
+    }
+
+    #[test]
+    fn parse_pipx_list_versions_no_venvs_key() {
+        let json = serde_json::json!({"pipx_spec_version": "0.1"});
+        let pkgs = parse_pipx_list_versions(&json);
+        assert!(pkgs.is_empty());
+    }
+
+    // --- parse_dnf_lines additional cases ---
+
+    #[test]
+    fn parse_dnf_lines_multi_arch_packages() {
+        let input = "\
+bash.x86_64     5.2.15  @anaconda\n\
+glibc.i686      2.38    @updates\n\
+glibc.x86_64    2.38    @updates\n";
+        let result = parse_dnf_lines(input);
+        // Both glibc entries collapse to "glibc" since arch is stripped
+        assert!(result.contains("bash"));
+        assert!(result.contains("glibc"));
+    }
+
+    // --- parse_yum_lines additional cases ---
+
+    #[test]
+    fn parse_yum_lines_empty() {
+        let result = parse_yum_lines("");
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn parse_yum_lines_only_headers() {
+        let input = "Installed Packages\nLoaded plugins: fastestmirror\n";
+        let result = parse_yum_lines(input);
+        assert!(result.is_empty());
+    }
+
+    // --- parse_apk_lines additional cases ---
+
+    #[test]
+    fn parse_apk_lines_no_version_in_name() {
+        // Package name without any version-like suffix
+        let result = parse_apk_lines("busybox\nmusl\n");
+        assert!(result.contains("busybox"));
+        assert!(result.contains("musl"));
+    }
+
+    // --- parse_zypper_lines additional cases ---
+
+    #[test]
+    fn parse_zypper_lines_fewer_than_3_columns() {
+        // Line with pipes but fewer than 3 columns
+        let output = "i | vim\n";
+        let result = parse_zypper_lines(output);
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn parse_zypper_lines_real_output() {
+        let output = "\
+S  | Name           | Type     | Version        | Arch   | Repository\n\
+---+----------------+----------+----------------+--------+-----------\n\
+i+ | bash           | package  | 5.1.16-2.1     | x86_64 | Main\n\
+i  | coreutils      | package  | 9.1-2.2        | x86_64 | Main\n\
+i  | vim            | package  | 9.0.1894-1.1   | x86_64 | Main\n";
+        let result = parse_zypper_lines(output);
+        assert_eq!(result.len(), 3);
+        assert!(result.contains("bash"));
+        assert!(result.contains("coreutils"));
+        assert!(result.contains("vim"));
+    }
+
+    // --- parse_pkg_lines additional cases ---
+
+    #[test]
+    fn parse_pkg_lines_with_complex_names() {
+        let result = parse_pkg_lines("py39-pip-23.0\nrust-1.75.0\n");
+        assert!(result.contains("py39-pip"));
+        assert!(result.contains("rust"));
+    }
+
+    // --- parse_winget_list more edge cases ---
+
+    #[test]
+    fn parse_winget_list_with_available_column() {
+        let output = "\
+Name                  Id                        Version    Available  Source\n\
+---------------------------------------------------------------------------\n\
+Git                   Git.Git                   2.43.0     2.44.0     winget\n\
+PowerShell            Microsoft.PowerShell      7.4.0                 winget\n";
+        let packages = parse_winget_list(output);
+        assert_eq!(packages.len(), 2);
+        assert!(packages.contains("Git.Git"));
+        assert!(packages.contains("Microsoft.PowerShell"));
+    }
+
+    #[test]
+    fn parse_winget_list_only_header() {
+        let output = "Name   Id      Version\n---\n";
+        let packages = parse_winget_list(output);
+        assert!(packages.is_empty());
+    }
+
+    // --- parse_choco_list additional cases ---
+
+    #[test]
+    fn chocolatey_parse_list_multiple_versions() {
+        let output = "Chocolatey v2.2.2\n\
+                      git 2.43.0\n\
+                      git.install 2.43.0\n\
+                      nodejs 21.4.0\n\
+                      3 packages installed.";
+        let packages = parse_choco_list(output);
+        assert_eq!(packages.len(), 3);
+        assert!(packages.contains("git"));
+        assert!(packages.contains("git.install"));
+        assert!(packages.contains("nodejs"));
+    }
+
+    // --- parse_scoop_list additional cases ---
+
+    #[test]
+    fn scoop_parse_list_single_package() {
+        let output = "Name   Version  Source\n\
+                      ----   -------  ------\n\
+                      git    2.43.0   main\n";
+        let packages = parse_scoop_list(output);
+        assert_eq!(packages.len(), 1);
+        assert!(packages.contains("git"));
+    }
+
+    // --- format_package_actions comprehensive ---
+
+    #[test]
+    fn format_package_actions_all_action_types() {
+        let actions = vec![
+            PackageAction::Bootstrap {
+                manager: "brew".into(),
+                method: "homebrew installer".into(),
+                origin: "local".into(),
+            },
+            PackageAction::Install {
+                manager: "cargo".into(),
+                packages: vec!["ripgrep".into(), "fd-find".into(), "bat".into()],
+                origin: "local".into(),
+            },
+            PackageAction::Uninstall {
+                manager: "npm".into(),
+                packages: vec!["old-pkg".into()],
+                origin: "local".into(),
+            },
+            PackageAction::Skip {
+                manager: "snap".into(),
+                reason: "'snap' not available".into(),
+                origin: "local".into(),
+            },
+        ];
+
+        let formatted = format_package_actions(&actions);
+        assert_eq!(formatted.len(), 4);
+
+        assert_eq!(formatted[0], "bootstrap brew via homebrew installer");
+        assert_eq!(formatted[1], "install via cargo: ripgrep, fd-find, bat");
+        assert_eq!(formatted[2], "uninstall via npm: old-pkg");
+        assert_eq!(formatted[3], "skip snap: 'snap' not available");
+    }
+
+    #[test]
+    fn format_package_actions_single_package_install() {
+        let actions = vec![PackageAction::Install {
+            manager: "apt".into(),
+            packages: vec!["curl".into()],
+            origin: "local".into(),
+        }];
+        let formatted = format_package_actions(&actions);
+        assert_eq!(formatted[0], "install via apt: curl");
+    }
+
+    // --- plan_packages comprehensive scenarios ---
+
+    #[test]
+    fn plan_packages_mixed_available_and_unavailable() {
+        let available = MockPackageManager::new("cargo", true, vec!["bat"]);
+        let unavailable = MockPackageManager::new("snap", false, vec![]);
+        let bootstrappable = MockPackageManager::new("nix", false, vec![]).with_bootstrap();
+
+        let profile = test_profile(PackagesSpec {
+            cargo: Some(cfgd_core::config::CargoSpec {
+                file: None,
+                packages: vec!["bat".into(), "ripgrep".into()],
+            }),
+            snap: Some(cfgd_core::config::SnapSpec {
+                packages: vec!["nvim".into()],
+                classic: vec![],
+            }),
+            nix: vec!["fd".into()],
+            ..Default::default()
+        });
+
+        let managers: Vec<&dyn PackageManager> = vec![&available, &unavailable, &bootstrappable];
+        let actions = plan_packages(&profile, &managers).unwrap();
+
+        // cargo: ripgrep needs install (bat already installed)
+        let cargo_install = actions.iter().find(|a| {
+            matches!(
+                a,
+                PackageAction::Install { manager, .. } if manager == "cargo"
+            )
+        });
+        assert!(cargo_install.is_some());
+        if let Some(PackageAction::Install { packages, .. }) = cargo_install {
+            assert_eq!(packages, &vec!["ripgrep".to_string()]);
+        }
+
+        // snap: unavailable + no bootstrap → skip
+        assert!(actions.iter().any(|a| matches!(
+            a,
+            PackageAction::Skip { manager, .. } if manager == "snap"
+        )));
+
+        // nix: unavailable + bootstrappable → bootstrap + install
+        assert!(
+            actions
+                .iter()
+                .any(|a| matches!(a, PackageAction::Bootstrap { manager, .. } if manager == "nix"))
+        );
+        assert!(actions.iter().any(|a| matches!(
+            a,
+            PackageAction::Install { manager, packages, .. }
+            if manager == "nix" && packages.contains(&"fd".to_string())
+        )));
+    }
+
+    #[test]
+    fn plan_packages_all_already_installed() {
+        let mock = MockPackageManager::new("npm", true, vec!["typescript", "eslint"]);
+        let profile = test_profile(PackagesSpec {
+            npm: Some(cfgd_core::config::NpmSpec {
+                file: None,
+                global: vec!["typescript".into(), "eslint".into()],
+            }),
+            ..Default::default()
+        });
+
+        let managers: Vec<&dyn PackageManager> = vec![&mock];
+        let actions = plan_packages(&profile, &managers).unwrap();
+        assert!(actions.is_empty());
+    }
+
+    #[test]
+    fn plan_packages_empty_desired_skips_available_manager() {
+        let mock = MockPackageManager::new("cargo", true, vec!["bat"]);
+        // Profile has cargo spec but with empty packages list
+        let profile = test_profile(PackagesSpec {
+            cargo: Some(cfgd_core::config::CargoSpec {
+                file: None,
+                packages: vec![],
+            }),
+            ..Default::default()
+        });
+
+        let managers: Vec<&dyn PackageManager> = vec![&mock];
+        let actions = plan_packages(&profile, &managers).unwrap();
+        assert!(actions.is_empty());
+    }
+
+    // --- add_package idempotency for all managers ---
+
+    #[test]
+    fn add_package_snap_idempotent() {
+        let mut packages = PackagesSpec::default();
+        add_package("snap", "core", &mut packages).unwrap();
+        add_package("snap", "core", &mut packages).unwrap();
+        assert_eq!(packages.snap.as_ref().unwrap().packages, vec!["core"]);
+    }
+
+    #[test]
+    fn add_package_flatpak_idempotent() {
+        let mut packages = PackagesSpec::default();
+        add_package("flatpak", "org.gimp.GIMP", &mut packages).unwrap();
+        add_package("flatpak", "org.gimp.GIMP", &mut packages).unwrap();
+        assert_eq!(
+            packages.flatpak.as_ref().unwrap().packages,
+            vec!["org.gimp.GIMP"]
+        );
+    }
+
+    #[test]
+    fn add_package_brew_tap_idempotent() {
+        let mut packages = PackagesSpec::default();
+        add_package("brew-tap", "homebrew/core", &mut packages).unwrap();
+        add_package("brew-tap", "homebrew/core", &mut packages).unwrap();
+        assert_eq!(packages.brew.as_ref().unwrap().taps, vec!["homebrew/core"]);
+    }
+
+    #[test]
+    fn add_package_brew_cask_idempotent() {
+        let mut packages = PackagesSpec::default();
+        add_package("brew-cask", "firefox", &mut packages).unwrap();
+        add_package("brew-cask", "firefox", &mut packages).unwrap();
+        assert_eq!(packages.brew.as_ref().unwrap().casks, vec!["firefox"]);
+    }
+
+    #[test]
+    fn add_package_apt_idempotent() {
+        let mut packages = PackagesSpec::default();
+        add_package("apt", "curl", &mut packages).unwrap();
+        add_package("apt", "curl", &mut packages).unwrap();
+        assert_eq!(packages.apt.as_ref().unwrap().packages, vec!["curl"]);
+    }
+
+    #[test]
+    fn add_package_npm_idempotent() {
+        let mut packages = PackagesSpec::default();
+        add_package("npm", "typescript", &mut packages).unwrap();
+        add_package("npm", "typescript", &mut packages).unwrap();
+        assert_eq!(packages.npm.as_ref().unwrap().global, vec!["typescript"]);
+    }
+
+    // --- add_package / remove_package round trip for all simple managers ---
+
+    #[test]
+    fn add_remove_round_trip_simple_managers() {
+        let simple_managers = [
+            "pipx",
+            "dnf",
+            "apk",
+            "pacman",
+            "zypper",
+            "yum",
+            "pkg",
+            "nix",
+            "go",
+            "winget",
+            "chocolatey",
+            "scoop",
+        ];
+
+        for mgr in &simple_managers {
+            let mut packages = PackagesSpec::default();
+            add_package(mgr, "test-pkg", &mut packages).unwrap();
+
+            let list = packages.simple_list_mut(mgr).unwrap();
+            assert_eq!(
+                list,
+                &vec!["test-pkg".to_string()],
+                "add failed for {}",
+                mgr
+            );
+
+            let removed = remove_package(mgr, "test-pkg", &mut packages).unwrap();
+            assert!(removed, "remove failed for {}", mgr);
+
+            let list = packages.simple_list_mut(mgr).unwrap();
+            assert!(list.is_empty(), "list not empty after remove for {}", mgr);
+        }
+    }
+
+    // --- remove_package for non-existent entries ---
+
+    #[test]
+    fn remove_package_from_empty_simple_managers() {
+        let simple_managers = [
+            "pipx",
+            "dnf",
+            "apk",
+            "pacman",
+            "zypper",
+            "yum",
+            "pkg",
+            "nix",
+            "go",
+            "winget",
+            "chocolatey",
+            "scoop",
+        ];
+
+        for mgr in &simple_managers {
+            let mut packages = PackagesSpec::default();
+            let removed = remove_package(mgr, "nonexistent", &mut packages).unwrap();
+            assert!(!removed, "should return false for empty {} list", mgr);
+        }
+    }
+
+    // --- resolve_manifest_packages all file types at once ---
+
+    #[test]
+    fn resolve_manifest_packages_all_file_types_simultaneously() {
+        let dir = tempfile::tempdir().unwrap();
+
+        std::fs::write(
+            dir.path().join("Brewfile"),
+            "tap \"custom/tap\"\nbrew \"jq\"\ncask \"iterm2\"\n",
+        )
+        .unwrap();
+        std::fs::write(dir.path().join("apt-pkgs.txt"), "htop\ntmux\n").unwrap();
+        std::fs::write(
+            dir.path().join("pkg.json"),
+            r#"{"dependencies": {"lodash": "^4.17.0"}, "devDependencies": {"jest": "^29.0.0"}}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("deps.toml"),
+            "[package]\nname = \"test\"\n\n[dependencies]\nserde = \"1.0\"\ntokio = \"1\"\n",
+        )
+        .unwrap();
+
+        let mut packages = PackagesSpec {
+            brew: Some(cfgd_core::config::BrewSpec {
+                file: Some("Brewfile".into()),
+                formulae: vec!["existing-brew".into()],
+                taps: vec![],
+                casks: vec![],
+            }),
+            apt: Some(cfgd_core::config::AptSpec {
+                file: Some("apt-pkgs.txt".into()),
+                packages: vec!["existing-apt".into()],
+            }),
+            npm: Some(cfgd_core::config::NpmSpec {
+                file: Some("pkg.json".into()),
+                global: vec!["existing-npm".into()],
+            }),
+            cargo: Some(cfgd_core::config::CargoSpec {
+                file: Some("deps.toml".into()),
+                packages: vec!["existing-cargo".into()],
+            }),
+            ..Default::default()
+        };
+
+        resolve_manifest_packages(&mut packages, dir.path()).unwrap();
+
+        let brew = packages.brew.as_ref().unwrap();
+        assert!(brew.taps.contains(&"custom/tap".to_string()));
+        assert!(brew.formulae.contains(&"existing-brew".to_string()));
+        assert!(brew.formulae.contains(&"jq".to_string()));
+        assert!(brew.casks.contains(&"iterm2".to_string()));
+
+        let apt = packages.apt.as_ref().unwrap();
+        assert!(apt.packages.contains(&"existing-apt".to_string()));
+        assert!(apt.packages.contains(&"htop".to_string()));
+        assert!(apt.packages.contains(&"tmux".to_string()));
+
+        let npm = packages.npm.as_ref().unwrap();
+        assert!(npm.global.contains(&"existing-npm".to_string()));
+        assert!(npm.global.contains(&"lodash".to_string()));
+        assert!(npm.global.contains(&"jest".to_string()));
+
+        let cargo = packages.cargo.as_ref().unwrap();
+        assert!(cargo.packages.contains(&"existing-cargo".to_string()));
+        assert!(cargo.packages.contains(&"serde".to_string()));
+        assert!(cargo.packages.contains(&"tokio".to_string()));
+    }
+
+    #[test]
+    fn resolve_manifest_packages_no_specs_is_noop() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut packages = PackagesSpec::default();
+        resolve_manifest_packages(&mut packages, dir.path()).unwrap();
+        // Everything stays default
+        assert!(packages.brew.is_none());
+        assert!(packages.apt.is_none());
+        assert!(packages.npm.is_none());
+        assert!(packages.cargo.is_none());
+    }
+
+    #[test]
+    fn resolve_manifest_packages_duplicate_merging() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("Brewfile"),
+            "brew \"fd\"\nbrew \"ripgrep\"\n",
+        )
+        .unwrap();
+
+        let mut packages = PackagesSpec {
+            brew: Some(cfgd_core::config::BrewSpec {
+                file: Some("Brewfile".into()),
+                // fd is already in the inline list
+                formulae: vec!["fd".into(), "bat".into()],
+                taps: vec![],
+                casks: vec![],
+            }),
+            ..Default::default()
+        };
+
+        resolve_manifest_packages(&mut packages, dir.path()).unwrap();
+
+        let brew = packages.brew.as_ref().unwrap();
+        // fd should not be duplicated — union_extend deduplicates
+        let fd_count = brew.formulae.iter().filter(|f| *f == "fd").count();
+        assert_eq!(fd_count, 1);
+        // ripgrep should be added, bat should remain
+        assert!(brew.formulae.contains(&"ripgrep".to_string()));
+        assert!(brew.formulae.contains(&"bat".to_string()));
+    }
+
+    // --- custom_managers tests ---
+
+    #[test]
+    fn custom_managers_empty_specs() {
+        let managers = custom_managers(&[]);
+        assert!(managers.is_empty());
+    }
+
+    #[test]
+    fn custom_managers_preserves_names() {
+        let specs = vec![
+            cfgd_core::config::CustomManagerSpec {
+                name: "alpha".to_string(),
+                check: "true".to_string(),
+                list_installed: "echo".to_string(),
+                install: "echo".to_string(),
+                uninstall: "echo".to_string(),
+                update: Some("echo update".to_string()),
+                packages: vec!["pkg1".to_string()],
+            },
+            cfgd_core::config::CustomManagerSpec {
+                name: "beta".to_string(),
+                check: "true".to_string(),
+                list_installed: "echo".to_string(),
+                install: "echo".to_string(),
+                uninstall: "echo".to_string(),
+                update: None,
+                packages: vec![],
+            },
+            cfgd_core::config::CustomManagerSpec {
+                name: "gamma".to_string(),
+                check: "true".to_string(),
+                list_installed: "echo".to_string(),
+                install: "echo".to_string(),
+                uninstall: "echo".to_string(),
+                update: None,
+                packages: vec!["a".to_string(), "b".to_string()],
+            },
+        ];
+        let managers = custom_managers(&specs);
+        assert_eq!(managers.len(), 3);
+        assert_eq!(managers[0].name(), "alpha");
+        assert_eq!(managers[1].name(), "beta");
+        assert_eq!(managers[2].name(), "gamma");
+        // All should not be bootstrappable
+        for m in &managers {
+            assert!(!m.can_bootstrap());
+        }
+    }
+
+    // --- bootstrap_method comprehensive ---
+
+    #[test]
+    fn bootstrap_method_snap_or_flatpak_returns_system_method() {
+        let snap_mock = MockPackageManager::new("snap", false, vec![]);
+        let method = bootstrap_method(&snap_mock);
+        assert!(
+            method == "apt" || method == "dnf" || method == "zypper",
+            "expected system method, got: {}",
+            method
+        );
+
+        let flatpak_mock = MockPackageManager::new("flatpak", false, vec![]);
+        let method = bootstrap_method(&flatpak_mock);
+        assert!(
+            method == "apt" || method == "dnf" || method == "zypper",
+            "expected system method, got: {}",
+            method
+        );
+    }
+
+    #[test]
+    fn bootstrap_method_npm_detects_method() {
+        let mock = MockPackageManager::new("npm", false, vec![]);
+        let method = bootstrap_method(&mock);
+        assert!(
+            method == "brew" || method == "apt" || method == "dnf" || method == "nvm",
+            "expected brew/apt/dnf/nvm, got: {}",
+            method
+        );
+    }
+
+    #[test]
+    fn bootstrap_method_pipx_detects_method() {
+        let mock = MockPackageManager::new("pipx", false, vec![]);
+        let method = bootstrap_method(&mock);
+        assert!(
+            method == "brew" || method == "apt" || method == "dnf" || method == "pip",
+            "expected brew/apt/dnf/pip, got: {}",
+            method
+        );
+    }
+
+    #[test]
+    fn bootstrap_method_go_detects_method() {
+        let mock = MockPackageManager::new("go", false, vec![]);
+        let method = bootstrap_method(&mock);
+        assert!(
+            method == "brew" || method == "apt" || method == "dnf",
+            "expected brew/apt/dnf, got: {}",
+            method
+        );
+    }
+
+    // --- apply_packages with skip action ---
+
+    #[test]
+    fn apply_packages_mixed_actions() {
+        let cargo_mock = MockPackageManager::new("cargo", true, vec![]);
+        let npm_mock = MockPackageManager::new("npm", true, vec!["old-pkg"]);
+
+        let actions = vec![
+            PackageAction::Bootstrap {
+                manager: "cargo".into(),
+                method: "rustup".into(),
+                origin: "local".into(),
+            },
+            PackageAction::Install {
+                manager: "cargo".into(),
+                packages: vec!["ripgrep".into(), "bat".into()],
+                origin: "local".into(),
+            },
+            PackageAction::Uninstall {
+                manager: "npm".into(),
+                packages: vec!["old-pkg".into()],
+                origin: "local".into(),
+            },
+            PackageAction::Skip {
+                manager: "snap".into(),
+                reason: "not available".into(),
+                origin: "local".into(),
+            },
+        ];
+
+        let managers: Vec<&dyn PackageManager> = vec![&cargo_mock, &npm_mock];
+        let printer = Printer::new(cfgd_core::output::Verbosity::Quiet);
+        apply_packages(&actions, &managers, &printer).unwrap();
+
+        let cargo_installs = cargo_mock.installs.lock().unwrap();
+        assert_eq!(cargo_installs.len(), 1);
+        assert_eq!(cargo_installs[0], vec!["ripgrep", "bat"]);
+
+        let npm_uninstalls = npm_mock.uninstalls.lock().unwrap();
+        assert_eq!(npm_uninstalls.len(), 1);
+        assert_eq!(npm_uninstalls[0], vec!["old-pkg"]);
+    }
+
+    // --- extract_caveats comprehensive ---
+
+    #[test]
+    fn extract_caveats_brew_empty_caveat_section() {
+        // Caveats section immediately followed by another section with no content
+        let output = test_cmd_output("==> Caveats\n==> Summary\nDone.", "");
+        let notes = extract_caveats("brew", &output);
+        assert!(notes.is_empty());
+    }
+
+    #[test]
+    fn extract_caveats_brew_caveat_in_stderr() {
+        // Brew caveats appear in stdout, but test that stderr is also scanned
+        let output = test_cmd_output("", "==> Caveats\nSet up PATH.\n");
+        let notes = extract_caveats("brew", &output);
+        assert_eq!(notes.len(), 1);
+        assert!(notes[0].message.contains("Set up PATH"));
+    }
+
+    #[test]
+    fn extract_caveats_generic_warning_case_insensitive() {
+        let output = test_cmd_output("", "WARNING: important\nWarning: also important\n");
+        let notes = extract_caveats("zypper", &output);
+        assert_eq!(notes.len(), 2);
+    }
+
+    #[test]
+    fn extract_caveats_generic_only_checks_stderr() {
+        // Generic manager only scans stderr, not stdout
+        let output = test_cmd_output("warning: this is in stdout\n", "");
+        let notes = extract_caveats("unknown-mgr", &output);
+        assert!(notes.is_empty());
+    }
+
+    #[test]
+    fn extract_caveats_npm_in_stdout() {
+        // npm warnings can appear in stdout too (combined is checked)
+        let output = test_cmd_output("npm warn old package\n", "");
+        let notes = extract_caveats("npm", &output);
+        assert_eq!(notes.len(), 1);
+    }
+
+    #[test]
+    fn extract_caveats_pip_in_stderr() {
+        let output = test_cmd_output("", "WARNING: pip upgrade available\n");
+        let notes = extract_caveats("pip", &output);
+        assert_eq!(notes.len(), 1);
+    }
+
+    // --- print_caveats with multiple notes ---
+
+    #[test]
+    fn print_caveats_multiple_notes() {
+        let printer = Printer::new(cfgd_core::output::Verbosity::Quiet);
+        let notes = vec![
+            PostInstallNote {
+                manager: "brew".to_string(),
+                message: "First note".to_string(),
+            },
+            PostInstallNote {
+                manager: "npm".to_string(),
+                message: "Second note".to_string(),
+            },
+            PostInstallNote {
+                manager: "pip".to_string(),
+                message: "Third note".to_string(),
+            },
+        ];
+        // Should not panic
+        print_caveats(&printer, &notes);
+    }
+
+    // --- Brewfile parsing edge cases ---
+
+    #[test]
+    fn parse_brewfile_mixed_quote_styles() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("Brewfile");
+        std::fs::write(
+            &path,
+            "tap \"custom/tap\"\nbrew 'jq'\ncask \"visual-studio-code\"\nbrew unquoted\n",
+        )
+        .unwrap();
+
+        let (taps, formulae, casks) = parse_brewfile(&path).unwrap();
+        assert_eq!(taps, vec!["custom/tap"]);
+        assert_eq!(formulae, vec!["jq", "unquoted"]);
+        assert_eq!(casks, vec!["visual-studio-code"]);
+    }
+
+    #[test]
+    fn parse_brewfile_ignores_mas_and_others() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("Brewfile");
+        std::fs::write(
+            &path,
+            "mas \"Xcode\", id: 497799835\nwhalebrew \"whalebrew/wget\"\nvscode \"ms-python.python\"\n",
+        )
+        .unwrap();
+
+        let (taps, formulae, casks) = parse_brewfile(&path).unwrap();
+        // None of these should be parsed as taps, formulae, or casks
+        assert!(taps.is_empty());
+        assert!(formulae.is_empty());
+        assert!(casks.is_empty());
+    }
+
+    // --- extract_brewfile_name edge cases ---
+
+    #[test]
+    fn extract_brewfile_name_empty_quotes() {
+        assert_eq!(extract_brewfile_name(r#"brew """#), Some("".to_string()));
+    }
+
+    #[test]
+    fn extract_brewfile_name_empty_single_quotes() {
+        assert_eq!(extract_brewfile_name("brew ''"), Some("".to_string()));
+    }
+
+    // --- parse_apt_manifest edge cases ---
+
+    #[test]
+    fn parse_apt_manifest_empty_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("empty.txt");
+        std::fs::write(&path, "").unwrap();
+
+        let pkgs = parse_apt_manifest(&path).unwrap();
+        assert!(pkgs.is_empty());
+    }
+
+    #[test]
+    fn parse_apt_manifest_only_comments() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("comments.txt");
+        std::fs::write(&path, "# comment 1\n# comment 2\n").unwrap();
+
+        let pkgs = parse_apt_manifest(&path).unwrap();
+        assert!(pkgs.is_empty());
+    }
+
+    #[test]
+    fn parse_apt_manifest_nonexistent_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("nonexistent");
+        let result = parse_apt_manifest(&path);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn parse_apt_manifest_with_whitespace() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("pkgs.txt");
+        std::fs::write(&path, "  curl  \n  wget  \n  \n").unwrap();
+
+        let pkgs = parse_apt_manifest(&path).unwrap();
+        assert_eq!(pkgs, vec!["curl", "wget"]);
+    }
+
+    // --- parse_npm_package_json edge cases ---
+
+    #[test]
+    fn parse_npm_package_json_nonexistent_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("nonexistent.json");
+        let result = parse_npm_package_json(&path);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn parse_npm_package_json_only_dev_deps() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("package.json");
+        std::fs::write(
+            &path,
+            r#"{"devDependencies": {"jest": "^29.0.0", "prettier": "^3.0.0"}}"#,
+        )
+        .unwrap();
+
+        let pkgs = parse_npm_package_json(&path).unwrap();
+        assert_eq!(pkgs.len(), 2);
+        assert!(pkgs.contains(&"jest".to_string()));
+        assert!(pkgs.contains(&"prettier".to_string()));
+    }
+
+    // --- parse_cargo_toml edge cases ---
+
+    #[test]
+    fn parse_cargo_toml_nonexistent_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("nonexistent.toml");
+        let result = parse_cargo_toml(&path);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn parse_cargo_toml_with_dev_dependencies() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("Cargo.toml");
+        std::fs::write(
+            &path,
+            "[package]\nname = \"test\"\n\n[dependencies]\nserde = \"1\"\n\n[dev-dependencies]\ntempfile = \"3\"\n",
+        )
+        .unwrap();
+
+        let pkgs = parse_cargo_toml(&path).unwrap();
+        // Only reads [dependencies], not [dev-dependencies]
+        assert_eq!(pkgs.len(), 1);
+        assert!(pkgs.contains(&"serde".to_string()));
+        assert!(!pkgs.contains(&"tempfile".to_string()));
+    }
+
+    // --- ScriptedManager additional edge cases ---
+
+    #[test]
+    fn scripted_manager_from_spec_preserves_all_fields() {
+        let spec = cfgd_core::config::CustomManagerSpec {
+            name: "test-pm".to_string(),
+            check: "which test-pm".to_string(),
+            list_installed: "test-pm list".to_string(),
+            install: "test-pm install {package}".to_string(),
+            uninstall: "test-pm remove {packages}".to_string(),
+            update: Some("test-pm update".to_string()),
+            packages: vec!["a".to_string(), "b".to_string()],
+        };
+        let mgr = ScriptedManager::from_spec(&spec);
+        assert_eq!(mgr.name(), "test-pm");
+        assert_eq!(mgr.check_cmd, "which test-pm");
+        assert_eq!(mgr.list_cmd, "test-pm list");
+        assert_eq!(mgr.install_cmd, "test-pm install {package}");
+        assert_eq!(mgr.uninstall_cmd, "test-pm remove {packages}");
+        assert_eq!(mgr.update_cmd, Some("test-pm update".to_string()));
+    }
+
+    #[test]
+    fn scripted_manager_shell_escapes_packages() {
+        // Verify that a package name with special characters is handled
+        let spec = cfgd_core::config::CustomManagerSpec {
+            name: "escapepm".to_string(),
+            check: "true".to_string(),
+            list_installed: "echo".to_string(),
+            install: "echo {package}".to_string(),
+            uninstall: "echo".to_string(),
+            update: None,
+            packages: vec![],
+        };
+        let mgr = ScriptedManager::from_spec(&spec);
+        let printer = Printer::new(cfgd_core::output::Verbosity::Quiet);
+        // Package name with spaces and special chars
+        mgr.install(&["pkg with spaces".to_string()], &printer)
+            .unwrap();
+    }
+
+    // --- all_package_managers trait properties ---
+
+    #[test]
+    fn all_package_managers_unique_names() {
+        let managers = all_package_managers();
+        let mut names: Vec<&str> = managers.iter().map(|m| m.name()).collect();
+        let original_len = names.len();
+        names.sort();
+        names.dedup();
+        assert_eq!(
+            names.len(),
+            original_len,
+            "all_package_managers contains duplicate names"
+        );
+    }
+
+    #[test]
+    fn all_package_managers_bootstrap_consistency() {
+        let managers = all_package_managers();
+        // Managers that should be bootstrappable
+        let bootstrappable: HashSet<&str> = [
+            "brew",
+            "cargo",
+            "npm",
+            "pipx",
+            "snap",
+            "flatpak",
+            "nix",
+            "go",
+            "chocolatey",
+            "scoop",
+        ]
+        .into();
+        // Managers that should NOT be bootstrappable
+        let not_bootstrappable: HashSet<&str> = [
+            "brew-tap",
+            "brew-cask",
+            "apt",
+            "dnf",
+            "apk",
+            "pacman",
+            "zypper",
+            "yum",
+            "pkg",
+            "winget",
+        ]
+        .into();
+
+        for m in &managers {
+            if bootstrappable.contains(m.name()) {
+                assert!(m.can_bootstrap(), "{} should be bootstrappable", m.name());
+            } else if not_bootstrappable.contains(m.name()) {
+                assert!(
+                    !m.can_bootstrap(),
+                    "{} should NOT be bootstrappable",
+                    m.name()
+                );
+            }
+        }
+    }
+
+    // --- strip_sudo_if_root edge cases ---
+
+    #[test]
+    fn strip_sudo_if_root_single_element_sudo() {
+        let cmd: &[&str] = &["sudo"];
+        let result = strip_sudo_if_root(cmd);
+        // When running as non-root in tests, sudo stays
+        if cfgd_core::is_root() {
+            assert!(result.is_empty());
+        } else {
+            assert_eq!(result, &["sudo"]);
+        }
+    }
+
+    #[test]
+    fn strip_sudo_if_root_non_sudo_first() {
+        let cmd: &[&str] = &["apt-get", "install", "sudo"];
+        let result = strip_sudo_if_root(cmd);
+        // "sudo" is not the first element, so unchanged
+        assert_eq!(result, &["apt-get", "install", "sudo"]);
+    }
+
+    // --- SimpleManager installed_packages_with_versions dispatch ---
+
+    #[test]
+    fn simple_manager_with_versions_fn_dispatches() {
+        // Verify that apt and dnf managers have list_with_versions set
+        let apt = apt_manager();
+        assert!(apt.list_with_versions.is_some());
+        let dnf = dnf_manager();
+        assert!(dnf.list_with_versions.is_some());
+        let yum = yum_manager();
+        assert!(yum.list_with_versions.is_some());
+    }
+
+    #[test]
+    fn simple_manager_without_versions_fn() {
+        // Verify that apk, pacman, zypper, pkg don't have list_with_versions
+        let managers = [
+            apk_manager(),
+            pacman_manager(),
+            zypper_manager(),
+            pkg_manager(),
+        ];
+        for mgr in &managers {
+            assert!(
+                mgr.list_with_versions.is_none(),
+                "{} should not have list_with_versions",
+                mgr.name()
+            );
+        }
+    }
+
+    // --- plan_packages with custom managers ---
+
+    #[test]
+    fn plan_packages_with_custom_manager() {
+        let custom = ScriptedManager {
+            mgr_name: "mypm".to_string(),
+            check_cmd: "true".to_string(),
+            list_cmd: "printf 'existing\\n'".to_string(),
+            install_cmd: "echo".to_string(),
+            uninstall_cmd: "echo".to_string(),
+            update_cmd: None,
+        };
+
+        let profile = test_profile(PackagesSpec {
+            custom: vec![cfgd_core::config::CustomManagerSpec {
+                name: "mypm".to_string(),
+                check: "true".to_string(),
+                list_installed: "printf 'existing\\n'".to_string(),
+                install: "echo".to_string(),
+                uninstall: "echo".to_string(),
+                update: None,
+                packages: vec!["existing".to_string(), "new-pkg".to_string()],
+            }],
+            ..Default::default()
+        });
+
+        let managers: Vec<&dyn PackageManager> = vec![&custom];
+        let actions = plan_packages(&profile, &managers).unwrap();
+
+        // "existing" is installed, "new-pkg" is not → should have Install action for new-pkg
+        assert_eq!(actions.len(), 1);
+        match &actions[0] {
+            PackageAction::Install {
+                manager, packages, ..
+            } => {
+                assert_eq!(manager, "mypm");
+                assert!(packages.contains(&"new-pkg".to_string()));
+                assert!(!packages.contains(&"existing".to_string()));
+            }
+            _ => panic!("expected Install action"),
+        }
+    }
+
+    // --- parse_simple_lines edge cases ---
+
+    #[test]
+    fn parse_simple_lines_empty() {
+        let result = parse_simple_lines("");
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn parse_simple_lines_only_whitespace() {
+        let result = parse_simple_lines("   \n  \n\n  ");
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn parse_simple_lines_trims_whitespace() {
+        let result = parse_simple_lines("  curl  \n  wget  \n");
+        assert!(result.contains("curl"));
+        assert!(result.contains("wget"));
+        assert_eq!(result.len(), 2);
+    }
+
+    // --- plan_packages with brew sub-managers when brew available ---
+
+    #[test]
+    fn plan_packages_brew_submanagers_available() {
+        let brew = MockPackageManager::new("brew", true, vec!["ripgrep"]);
+        let brew_tap = MockPackageManager::new("brew-tap", true, vec!["homebrew/core"]);
+        let brew_cask = MockPackageManager::new("brew-cask", true, vec![]);
+
+        let profile = test_profile(PackagesSpec {
+            brew: Some(cfgd_core::config::BrewSpec {
+                formulae: vec!["ripgrep".into(), "fd".into()],
+                taps: vec!["homebrew/core".into(), "custom/tap".into()],
+                casks: vec!["firefox".into()],
+                file: None,
+            }),
+            ..Default::default()
+        });
+
+        let managers: Vec<&dyn PackageManager> = vec![&brew, &brew_tap, &brew_cask];
+        let actions = plan_packages(&profile, &managers).unwrap();
+
+        // brew: fd needs install (ripgrep already installed)
+        let brew_install = actions.iter().find(|a| {
+            matches!(
+                a,
+                PackageAction::Install { manager, .. } if manager == "brew"
+            )
+        });
+        assert!(brew_install.is_some());
+        if let Some(PackageAction::Install { packages, .. }) = brew_install {
+            assert!(packages.contains(&"fd".to_string()));
+            assert!(!packages.contains(&"ripgrep".to_string()));
+        }
+
+        // brew-tap: custom/tap needs install
+        let tap_install = actions.iter().find(|a| {
+            matches!(
+                a,
+                PackageAction::Install { manager, .. } if manager == "brew-tap"
+            )
+        });
+        assert!(tap_install.is_some());
+        if let Some(PackageAction::Install { packages, .. }) = tap_install {
+            assert!(packages.contains(&"custom/tap".to_string()));
+            assert!(!packages.contains(&"homebrew/core".to_string()));
+        }
+
+        // brew-cask: firefox needs install
+        let cask_install = actions.iter().find(|a| {
+            matches!(
+                a,
+                PackageAction::Install { manager, .. } if manager == "brew-cask"
+            )
+        });
+        assert!(cask_install.is_some());
+    }
+
+    // --- MockPackageManager installed_packages ---
+
+    #[test]
+    fn mock_manager_installed_packages_returns_set() {
+        let mock = MockPackageManager::new("test", true, vec!["a", "b", "c"]);
+        let installed = mock.installed_packages().unwrap();
+        assert_eq!(installed.len(), 3);
+        assert!(installed.contains("a"));
+        assert!(installed.contains("b"));
+        assert!(installed.contains("c"));
+    }
+
+    #[test]
+    fn mock_manager_installed_packages_empty() {
+        let mock = MockPackageManager::new("test", true, vec![]);
+        let installed = mock.installed_packages().unwrap();
+        assert!(installed.is_empty());
+    }
+
+    // --- brew path_dirs on different platforms ---
+
+    #[test]
+    fn brew_manager_path_dirs_non_empty_on_unix() {
+        if cfg!(unix) {
+            let mgr = BrewManager;
+            let dirs = mgr.path_dirs();
+            assert!(!dirs.is_empty());
+        }
+    }
+
+    // --- Comprehensive SimpleManager constructor tests ---
+
+    #[test]
+    fn all_simple_managers_have_list_cmd() {
+        let managers = [
+            apt_manager(),
+            dnf_manager(),
+            yum_manager(),
+            apk_manager(),
+            pacman_manager(),
+            zypper_manager(),
+            pkg_manager(),
+        ];
+        for mgr in &managers {
+            assert!(
+                !mgr.list_cmd.is_empty(),
+                "{} should have list_cmd",
+                mgr.name()
+            );
+            assert!(
+                !mgr.install_cmd.is_empty(),
+                "{} should have install_cmd",
+                mgr.name()
+            );
+            assert!(
+                !mgr.uninstall_cmd.is_empty(),
+                "{} should have uninstall_cmd",
+                mgr.name()
+            );
+        }
+    }
+
+    #[test]
+    fn all_simple_managers_have_update_cmd() {
+        let managers = [
+            apt_manager(),
+            dnf_manager(),
+            yum_manager(),
+            apk_manager(),
+            pacman_manager(),
+            zypper_manager(),
+            pkg_manager(),
+        ];
+        for mgr in &managers {
+            assert!(
+                mgr.update_cmd.is_some(),
+                "{} should have update_cmd",
+                mgr.name()
+            );
+        }
+    }
+
+    // --- SimpleManager package_aliases for managers without aliases ---
+
+    #[test]
+    fn simple_managers_without_aliases_return_empty() {
+        let managers = [
+            apk_manager(),
+            pacman_manager(),
+            zypper_manager(),
+            pkg_manager(),
+        ];
+        for mgr in &managers {
+            let aliases = mgr.package_aliases("fd").unwrap();
+            assert!(aliases.is_empty(), "{} should have no aliases", mgr.name());
+        }
+    }
+
+    // --- Verify parse function outputs match expected types ---
+
+    #[test]
+    fn parse_brew_versions_returns_sorted_stable_output() {
+        let output = "zsh 5.9\nabc 1.0\nmno 2.0\n";
+        let pkgs = parse_brew_versions(output);
+        // Should maintain input order
+        assert_eq!(pkgs[0].name, "zsh");
+        assert_eq!(pkgs[1].name, "abc");
+        assert_eq!(pkgs[2].name, "mno");
+    }
+
+    #[test]
+    fn parse_cargo_install_list_real_world_output() {
+        // Simulate a real cargo install --list output
+        let output = "\
+cargo-edit v0.12.2:
+    cargo-add
+    cargo-rm
+    cargo-set-version
+    cargo-upgrade
+cargo-watch v8.5.2:
+    cargo-watch
+ripgrep v14.1.0:
+    rg
+tokei v12.1.2:
+    tokei
+";
+        let pkgs = parse_cargo_install_list(output);
+        assert_eq!(pkgs.len(), 4);
+        assert!(
+            pkgs.iter()
+                .any(|p| p.name == "cargo-edit" && p.version == "0.12.2")
+        );
+        assert!(
+            pkgs.iter()
+                .any(|p| p.name == "cargo-watch" && p.version == "8.5.2")
+        );
+        assert!(
+            pkgs.iter()
+                .any(|p| p.name == "ripgrep" && p.version == "14.1.0")
+        );
+        assert!(
+            pkgs.iter()
+                .any(|p| p.name == "tokei" && p.version == "12.1.2")
+        );
+    }
+
+    #[test]
+    fn parse_npm_list_versions_real_world_output() {
+        let json = serde_json::json!({
+            "version": "10.2.4",
+            "name": "lib",
+            "dependencies": {
+                "corepack": {"version": "0.24.0"},
+                "npm": {"version": "10.2.4"},
+                "typescript": {"version": "5.3.3"},
+                "eslint": {"version": "8.56.0"},
+                "prettier": {"version": "3.2.0"}
+            }
+        });
+        let pkgs = parse_npm_list_versions(&json);
+        assert_eq!(pkgs.len(), 5);
+        assert!(
+            pkgs.iter()
+                .any(|p| p.name == "corepack" && p.version == "0.24.0")
+        );
+        assert!(
+            pkgs.iter()
+                .any(|p| p.name == "npm" && p.version == "10.2.4")
+        );
+    }
+
+    #[test]
+    fn parse_pipx_list_versions_real_world_output() {
+        let json = serde_json::json!({
+            "pipx_spec_version": "0.1",
+            "venvs": {
+                "black": {
+                    "metadata": {
+                        "main_package": {
+                            "package": "black",
+                            "package_version": "24.1.1",
+                            "pip_args": [],
+                            "include_apps": true,
+                            "include_dependencies": false
+                        },
+                        "python_version": "Python 3.12.1"
+                    }
+                },
+                "ruff": {
+                    "metadata": {
+                        "main_package": {
+                            "package": "ruff",
+                            "package_version": "0.2.0",
+                            "pip_args": [],
+                            "include_apps": true,
+                            "include_dependencies": false
+                        },
+                        "python_version": "Python 3.12.1"
+                    }
+                }
+            }
+        });
+        let pkgs = parse_pipx_list_versions(&json);
+        assert_eq!(pkgs.len(), 2);
+        assert!(
+            pkgs.iter()
+                .any(|p| p.name == "black" && p.version == "24.1.1")
+        );
+        assert!(
+            pkgs.iter()
+                .any(|p| p.name == "ruff" && p.version == "0.2.0")
+        );
+    }
+
+    // --- parse_winget_list real-world output ---
+
+    #[test]
+    fn parse_winget_list_real_world_output() {
+        let output = "\
+Name                                   Id                                      Version          Available        Source
+----------------------------------------------------------------------------------------------------------------------
+Microsoft Visual Studio Code           Microsoft.VisualStudioCode              1.85.1           1.86.0           winget
+Git                                    Git.Git                                 2.43.0                            winget
+Windows Terminal                       Microsoft.WindowsTerminal               1.18.3181.0                       winget
+PowerShell                             Microsoft.PowerShell                    7.4.0            7.4.1            winget
+";
+        let packages = parse_winget_list(output);
+        assert_eq!(packages.len(), 4);
+        assert!(packages.contains("Microsoft.VisualStudioCode"));
+        assert!(packages.contains("Git.Git"));
+        assert!(packages.contains("Microsoft.WindowsTerminal"));
+        assert!(packages.contains("Microsoft.PowerShell"));
+    }
+
+    // --- parse_choco_list real-world output ---
+
+    #[test]
+    fn chocolatey_parse_list_real_world_output() {
+        let output = "\
+Chocolatey v2.2.2
+chocolatey 2.2.2
+chocolatey-core.extension 1.4.0
+git 2.43.0
+git.install 2.43.0
+nodejs 21.4.0
+python 3.12.1
+vscode 1.85.1
+vscode.install 1.85.1
+8 packages installed.";
+        let packages = parse_choco_list(output);
+        assert_eq!(packages.len(), 8);
+        assert!(packages.contains("chocolatey"));
+        assert!(packages.contains("chocolatey-core.extension"));
+        assert!(packages.contains("git"));
+        assert!(packages.contains("git.install"));
+        assert!(packages.contains("vscode"));
+    }
+
+    // --- parse_scoop_list real-world output ---
+
+    #[test]
+    fn scoop_parse_list_real_world_output() {
+        let output = "\
+Installed apps:
+
+Name         Version       Source  Updated             Info
+----         -------       ------  -------             ----
+7zip         23.01         main    2024-01-15 10:30:00
+fd           9.0.0         main    2024-01-10 08:15:00
+git          2.43.0.windows.1 main 2024-01-12 14:20:00
+ripgrep      14.1.0        main    2024-01-10 08:15:00
+";
+        let packages = parse_scoop_list(output);
+        assert_eq!(packages.len(), 4);
+        assert!(packages.contains("7zip"));
+        assert!(packages.contains("fd"));
+        assert!(packages.contains("git"));
+        assert!(packages.contains("ripgrep"));
+    }
 }

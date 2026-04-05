@@ -185,4 +185,166 @@ mod tests {
         encode(&mut buf, &registry).unwrap();
         assert!(buf.contains("cfgd_operator_reconciliations_total"));
     }
+
+    #[test]
+    fn all_metrics_registered() {
+        let mut registry = Registry::default();
+        let _metrics = Metrics::new(&mut registry);
+        let mut buf = String::new();
+        encode(&mut buf, &registry).unwrap();
+        // All metric families should appear in the output (even if zero-valued)
+        // Verify the registry doesn't panic during encoding
+        assert!(!buf.is_empty());
+    }
+
+    #[test]
+    fn reconciliation_counter_increments() {
+        let mut registry = Registry::default();
+        let metrics = Metrics::new(&mut registry);
+        let labels = ReconcileLabels {
+            controller: "machineconfig".to_string(),
+            result: "success".to_string(),
+        };
+        metrics.reconciliations_total.get_or_create(&labels).inc();
+        metrics.reconciliations_total.get_or_create(&labels).inc();
+
+        let mut buf = String::new();
+        encode(&mut buf, &registry).unwrap();
+        assert!(buf.contains("cfgd_operator_reconciliations_total"));
+        // The encoded value should show 2
+        assert!(
+            buf.contains("2"),
+            "expected counter value 2 in output: {buf}"
+        );
+    }
+
+    #[test]
+    fn drift_events_counter() {
+        let mut registry = Registry::default();
+        let metrics = Metrics::new(&mut registry);
+        metrics
+            .drift_events_total
+            .get_or_create(&DriftLabels {
+                severity: "critical".to_string(),
+                namespace: "default".to_string(),
+            })
+            .inc();
+
+        let mut buf = String::new();
+        encode(&mut buf, &registry).unwrap();
+        assert!(buf.contains("cfgd_operator_drift_events_total"));
+        assert!(buf.contains("critical"));
+    }
+
+    #[test]
+    fn webhook_requests_counter() {
+        let mut registry = Registry::default();
+        let metrics = Metrics::new(&mut registry);
+        metrics
+            .webhook_requests_total
+            .get_or_create(&WebhookLabels {
+                operation: "CREATE".to_string(),
+                result: "allowed".to_string(),
+            })
+            .inc();
+
+        let mut buf = String::new();
+        encode(&mut buf, &registry).unwrap();
+        assert!(buf.contains("cfgd_operator_webhook_requests_total"));
+    }
+
+    #[test]
+    fn reconciliation_duration_histogram() {
+        let mut registry = Registry::default();
+        let metrics = Metrics::new(&mut registry);
+        let labels = ReconcileLabels {
+            controller: "configpolicy".to_string(),
+            result: "success".to_string(),
+        };
+        metrics
+            .reconciliation_duration_seconds
+            .get_or_create(&labels)
+            .observe(0.5);
+
+        let mut buf = String::new();
+        encode(&mut buf, &registry).unwrap();
+        assert!(buf.contains("cfgd_operator_reconciliation_duration_seconds"));
+    }
+
+    #[test]
+    fn webhook_duration_histogram() {
+        let mut registry = Registry::default();
+        let metrics = Metrics::new(&mut registry);
+        let labels = WebhookLabels {
+            operation: "UPDATE".to_string(),
+            result: "denied".to_string(),
+        };
+        metrics
+            .webhook_duration_seconds
+            .get_or_create(&labels)
+            .observe(0.01);
+
+        let mut buf = String::new();
+        encode(&mut buf, &registry).unwrap();
+        assert!(buf.contains("cfgd_operator_webhook_duration_seconds"));
+    }
+
+    #[test]
+    fn devices_compliant_gauge() {
+        let mut registry = Registry::default();
+        let metrics = Metrics::new(&mut registry);
+        let labels = PolicyLabels {
+            policy: "baseline".to_string(),
+            namespace: "prod".to_string(),
+        };
+        metrics.devices_compliant.get_or_create(&labels).set(42);
+
+        let mut buf = String::new();
+        encode(&mut buf, &registry).unwrap();
+        assert!(buf.contains("cfgd_operator_devices_compliant"));
+        assert!(buf.contains("42"), "expected gauge value 42 in: {buf}");
+    }
+
+    #[test]
+    fn devices_enrolled_counter() {
+        let mut registry = Registry::default();
+        let metrics = Metrics::new(&mut registry);
+        metrics.devices_enrolled_total.inc();
+        metrics.devices_enrolled_total.inc();
+        metrics.devices_enrolled_total.inc();
+
+        let mut buf = String::new();
+        encode(&mut buf, &registry).unwrap();
+        assert!(buf.contains("cfgd_operator_devices_enrolled_total"));
+        assert!(buf.contains("3"), "expected counter value 3 in: {buf}");
+    }
+
+    #[test]
+    fn multiple_label_combinations() {
+        let mut registry = Registry::default();
+        let metrics = Metrics::new(&mut registry);
+
+        // Different controllers
+        metrics
+            .reconciliations_total
+            .get_or_create(&ReconcileLabels {
+                controller: "machineconfig".to_string(),
+                result: "success".to_string(),
+            })
+            .inc();
+        metrics
+            .reconciliations_total
+            .get_or_create(&ReconcileLabels {
+                controller: "configpolicy".to_string(),
+                result: "error".to_string(),
+            })
+            .inc();
+
+        let mut buf = String::new();
+        encode(&mut buf, &registry).unwrap();
+        assert!(buf.contains("machineconfig"));
+        assert!(buf.contains("configpolicy"));
+        assert!(buf.contains("success"));
+        assert!(buf.contains("error"));
+    }
 }

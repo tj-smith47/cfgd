@@ -2393,14 +2393,36 @@ mod tests {
     async fn enroll_info_returns_token_method() {
         let state = test_state();
         let result = enroll_info(State(state)).await;
-        assert!(result.is_ok());
+        assert!(
+            result.is_ok(),
+            "enroll_info should succeed: {:?}",
+            result.err()
+        );
+        let response = result.unwrap().into_response();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), 1024 * 1024)
+            .await
+            .unwrap();
+        let info: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(info["method"], "token");
     }
 
     #[tokio::test]
     async fn enroll_info_returns_key_method() {
         let state = test_state_key_enrollment();
         let result = enroll_info(State(state)).await;
-        assert!(result.is_ok());
+        assert!(
+            result.is_ok(),
+            "enroll_info should succeed: {:?}",
+            result.err()
+        );
+        let response = result.unwrap().into_response();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), 1024 * 1024)
+            .await
+            .unwrap();
+        let info: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(info["method"], "key");
     }
 
     // --- enroll ---
@@ -2498,7 +2520,28 @@ mod tests {
             arch: "x86_64".to_string(),
         };
         let result = enroll(State(state.clone()), Json(req)).await;
-        assert!(result.is_ok(), "enrollment should succeed with valid token");
+        assert!(
+            result.is_ok(),
+            "enrollment should succeed with valid token: {:?}",
+            result.err()
+        );
+        let response = result.unwrap().into_response();
+        assert_eq!(response.status(), StatusCode::CREATED);
+        let body = axum::body::to_bytes(response.into_body(), 1024 * 1024)
+            .await
+            .unwrap();
+        let enroll_resp: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(enroll_resp["status"], "enrolled");
+        assert_eq!(enroll_resp["deviceId"], "dev-enroll-1");
+        assert_eq!(enroll_resp["username"], "testuser");
+        assert_eq!(enroll_resp["team"], "platform");
+        assert!(
+            enroll_resp["apiKey"]
+                .as_str()
+                .unwrap()
+                .starts_with("cfgd_dev_"),
+            "api key should have cfgd_dev_ prefix"
+        );
 
         // Verify device was created in DB
         let db = state.db.lock().await;
@@ -2536,7 +2579,11 @@ mod tests {
             arch: "x86_64".to_string(),
         };
         let result1 = enroll(State(state.clone()), Json(req1)).await;
-        assert!(result1.is_ok(), "first enrollment should succeed");
+        assert!(
+            result1.is_ok(),
+            "first enrollment should succeed: {:?}",
+            result1.err()
+        );
 
         // Second enrollment with same token fails
         let req2 = EnrollRequest {
@@ -2584,7 +2631,18 @@ mod tests {
             compliance_summary: None,
         };
         let result = checkin(State(state.clone()), Extension(auth), Json(req)).await;
-        assert!(result.is_ok());
+        assert!(result.is_ok(), "checkin should succeed: {:?}", result.err());
+        let response = result.unwrap().into_response();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), 1024 * 1024)
+            .await
+            .unwrap();
+        let checkin_resp: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(checkin_resp["status"], "ok");
+        assert_eq!(
+            checkin_resp["configChanged"], false,
+            "new device should not have config_changed"
+        );
 
         // Verify device was created
         let db = state.db.lock().await;
@@ -2612,7 +2670,18 @@ mod tests {
             compliance_summary: None,
         };
         let result = checkin(State(state.clone()), Extension(auth), Json(req)).await;
-        assert!(result.is_ok());
+        assert!(result.is_ok(), "checkin should succeed: {:?}", result.err());
+        let response = result.unwrap().into_response();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), 1024 * 1024)
+            .await
+            .unwrap();
+        let checkin_resp: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(checkin_resp["status"], "ok");
+        assert_eq!(
+            checkin_resp["configChanged"], true,
+            "different hash should detect config change"
+        );
 
         // Verify config hash was updated
         let db = state.db.lock().await;
@@ -2641,7 +2710,22 @@ mod tests {
             compliance_summary: None,
         };
         let result = checkin(State(state), Extension(auth), Json(req)).await;
-        assert!(result.is_ok());
+        assert!(result.is_ok(), "checkin should succeed: {:?}", result.err());
+        let response = result.unwrap().into_response();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), 1024 * 1024)
+            .await
+            .unwrap();
+        let checkin_resp: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(checkin_resp["status"], "ok");
+        assert_eq!(
+            checkin_resp["configChanged"], true,
+            "different hash should detect config change"
+        );
+        assert!(
+            !checkin_resp["desiredConfig"].is_null(),
+            "should return desired_config when config changed"
+        );
     }
 
     #[tokio::test]
@@ -2663,7 +2747,22 @@ mod tests {
             compliance_summary: None,
         };
         let result = checkin(State(state), Extension(auth), Json(req)).await;
-        assert!(result.is_ok());
+        assert!(result.is_ok(), "checkin should succeed: {:?}", result.err());
+        let response = result.unwrap().into_response();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), 1024 * 1024)
+            .await
+            .unwrap();
+        let checkin_resp: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(checkin_resp["status"], "ok");
+        assert_eq!(
+            checkin_resp["configChanged"], false,
+            "same hash should not detect config change"
+        );
+        assert!(
+            checkin_resp.get("desiredConfig").is_none(),
+            "should not return desired_config when config unchanged"
+        );
     }
 
     #[tokio::test]
@@ -2706,7 +2805,18 @@ mod tests {
             compliance_summary: Some(compliance.clone()),
         };
         let result = checkin(State(state.clone()), Extension(auth), Json(req)).await;
-        assert!(result.is_ok());
+        assert!(
+            result.is_ok(),
+            "checkin with compliance summary should succeed: {:?}",
+            result.err()
+        );
+        let response = result.unwrap().into_response();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), 1024 * 1024)
+            .await
+            .unwrap();
+        let checkin_resp: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(checkin_resp["status"], "ok");
 
         // Verify compliance_summary was stored
         let db = state.db.lock().await;
@@ -2730,7 +2840,13 @@ mod tests {
             compliance_summary: None,
         };
         let result = checkin(State(state), Extension(auth), Json(req)).await;
-        assert!(result.is_ok());
+        assert!(
+            result.is_ok(),
+            "checkin should succeed for broadcast test: {:?}",
+            result.err()
+        );
+        let response = result.unwrap().into_response();
+        assert_eq!(response.status(), StatusCode::OK);
 
         // Check that an event was broadcast
         let event = rx.try_recv().expect("should receive broadcast event");
@@ -2749,7 +2865,21 @@ mod tests {
             offset: 0,
         };
         let result = list_devices(State(state), Extension(auth), Query(pagination)).await;
-        assert!(result.is_ok());
+        assert!(
+            result.is_ok(),
+            "list_devices should succeed: {:?}",
+            result.err()
+        );
+        let response = result.unwrap().into_response();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), 1024 * 1024)
+            .await
+            .unwrap();
+        let devices: Vec<super::super::db::Device> = serde_json::from_slice(&body).unwrap();
+        assert!(
+            devices.is_empty(),
+            "should return empty list when no devices registered"
+        );
     }
 
     #[tokio::test]
@@ -2769,7 +2899,21 @@ mod tests {
             offset: 0,
         };
         let result = list_devices(State(state), Extension(auth), Query(pagination)).await;
-        assert!(result.is_ok());
+        assert!(
+            result.is_ok(),
+            "list_devices should succeed: {:?}",
+            result.err()
+        );
+        let response = result.unwrap().into_response();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), 1024 * 1024)
+            .await
+            .unwrap();
+        let devices: Vec<super::super::db::Device> = serde_json::from_slice(&body).unwrap();
+        assert_eq!(devices.len(), 2, "admin should see all devices");
+        let hostnames: Vec<&str> = devices.iter().map(|d| d.hostname.as_str()).collect();
+        assert!(hostnames.contains(&"ws-1"));
+        assert!(hostnames.contains(&"ws-2"));
     }
 
     #[tokio::test]
@@ -2792,7 +2936,20 @@ mod tests {
             offset: 0,
         };
         let result = list_devices(State(state), Extension(auth), Query(pagination)).await;
-        assert!(result.is_ok());
+        assert!(
+            result.is_ok(),
+            "device should be able to list self: {:?}",
+            result.err()
+        );
+        let response = result.unwrap().into_response();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), 1024 * 1024)
+            .await
+            .unwrap();
+        let devices: Vec<super::super::db::Device> = serde_json::from_slice(&body).unwrap();
+        assert_eq!(devices.len(), 1, "device auth should return only self");
+        assert_eq!(devices[0].id, "dev-1");
+        assert_eq!(devices[0].hostname, "ws-1");
     }
 
     #[tokio::test]
@@ -2819,7 +2976,22 @@ mod tests {
             offset: 0,
         };
         let result = list_devices(State(state), Extension(auth), Query(pagination)).await;
-        assert!(result.is_ok());
+        assert!(
+            result.is_ok(),
+            "list_devices with limit should succeed: {:?}",
+            result.err()
+        );
+        let response = result.unwrap().into_response();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), 1024 * 1024)
+            .await
+            .unwrap();
+        let devices: Vec<super::super::db::Device> = serde_json::from_slice(&body).unwrap();
+        assert_eq!(
+            devices.len(),
+            2,
+            "pagination limit=2 should return exactly 2 devices"
+        );
     }
 
     #[tokio::test]
@@ -2832,7 +3004,13 @@ mod tests {
         };
         // Should not error even with limit > 1000 — it gets capped internally
         let result = list_devices(State(state), Extension(auth), Query(pagination)).await;
-        assert!(result.is_ok());
+        assert!(
+            result.is_ok(),
+            "list_devices should succeed even with limit > 1000: {:?}",
+            result.err()
+        );
+        let response = result.unwrap().into_response();
+        assert_eq!(response.status(), StatusCode::OK);
     }
 
     // --- get_device ---
@@ -2848,7 +3026,22 @@ mod tests {
 
         let auth = AuthContext::Admin;
         let result = get_device(State(state), Extension(auth), Path("dev-get".to_string())).await;
-        assert!(result.is_ok());
+        assert!(
+            result.is_ok(),
+            "get_device should succeed: {:?}",
+            result.err()
+        );
+        let response = result.unwrap().into_response();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), 1024 * 1024)
+            .await
+            .unwrap();
+        let device: super::super::db::Device = serde_json::from_slice(&body).unwrap();
+        assert_eq!(device.id, "dev-get");
+        assert_eq!(device.hostname, "ws-get");
+        assert_eq!(device.os, "linux");
+        assert_eq!(device.arch, "x86_64");
+        assert_eq!(device.config_hash, "hash-get");
     }
 
     #[tokio::test]
@@ -2881,7 +3074,19 @@ mod tests {
             username: "jdoe".to_string(),
         };
         let result = get_device(State(state), Extension(auth), Path("dev-own".to_string())).await;
-        assert!(result.is_ok());
+        assert!(
+            result.is_ok(),
+            "device should be able to get self: {:?}",
+            result.err()
+        );
+        let response = result.unwrap().into_response();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), 1024 * 1024)
+            .await
+            .unwrap();
+        let device: super::super::db::Device = serde_json::from_slice(&body).unwrap();
+        assert_eq!(device.id, "dev-own");
+        assert_eq!(device.hostname, "ws-own");
     }
 
     #[tokio::test]
@@ -2926,7 +3131,13 @@ mod tests {
             Json(req),
         )
         .await;
-        assert!(result.is_ok());
+        assert!(
+            result.is_ok(),
+            "set_device_config should succeed: {:?}",
+            result.err()
+        );
+        let response = result.unwrap().into_response();
+        assert_eq!(response.status(), StatusCode::NO_CONTENT);
 
         // Verify config was stored
         let db = state.db.lock().await;
@@ -2998,7 +3209,21 @@ mod tests {
         let auth = AuthContext::Admin;
         let result =
             list_drift_events(State(state), Extension(auth), Path("dev-drift".to_string())).await;
-        assert!(result.is_ok());
+        assert!(
+            result.is_ok(),
+            "list_drift_events should succeed: {:?}",
+            result.err()
+        );
+        let response = result.unwrap().into_response();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), 1024 * 1024)
+            .await
+            .unwrap();
+        let events: Vec<super::super::db::DriftEvent> = serde_json::from_slice(&body).unwrap();
+        assert!(
+            events.is_empty(),
+            "should return empty list when no drift events"
+        );
     }
 
     #[tokio::test]
@@ -3019,7 +3244,20 @@ mod tests {
             Path("dev-drift2".to_string()),
         )
         .await;
-        assert!(result.is_ok());
+        assert!(
+            result.is_ok(),
+            "list_drift_events should succeed: {:?}",
+            result.err()
+        );
+        let response = result.unwrap().into_response();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), 1024 * 1024)
+            .await
+            .unwrap();
+        let events: Vec<super::super::db::DriftEvent> = serde_json::from_slice(&body).unwrap();
+        assert_eq!(events.len(), 1, "should return one drift event");
+        assert_eq!(events[0].device_id, "dev-drift2");
+        assert_eq!(events[0].details, "field changed");
     }
 
     #[tokio::test]
@@ -3041,7 +3279,21 @@ mod tests {
             Path("dev-own-drift".to_string()),
         )
         .await;
-        assert!(result.is_ok());
+        assert!(
+            result.is_ok(),
+            "device should be able to list own drift events: {:?}",
+            result.err()
+        );
+        let response = result.unwrap().into_response();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), 1024 * 1024)
+            .await
+            .unwrap();
+        let events: Vec<super::super::db::DriftEvent> = serde_json::from_slice(&body).unwrap();
+        assert!(
+            events.is_empty(),
+            "no drift events recorded for this device"
+        );
     }
 
     #[tokio::test]
@@ -3111,7 +3363,23 @@ mod tests {
             Json(req),
         )
         .await;
-        assert!(result.is_ok());
+        assert!(
+            result.is_ok(),
+            "record_drift_event should succeed: {:?}",
+            result.err()
+        );
+        let response = result.unwrap().into_response();
+        assert_eq!(response.status(), StatusCode::CREATED);
+        let body = axum::body::to_bytes(response.into_body(), 1024 * 1024)
+            .await
+            .unwrap();
+        let event: super::super::db::DriftEvent = serde_json::from_slice(&body).unwrap();
+        assert_eq!(event.device_id, "dev-record");
+        assert!(!event.id.is_empty(), "drift event should have an id");
+        assert!(
+            !event.timestamp.is_empty(),
+            "drift event should have a timestamp"
+        );
 
         // Verify device status changed to drifted
         let db = state.db.lock().await;
@@ -3225,7 +3493,13 @@ mod tests {
             Path("dev-recon".to_string()),
         )
         .await;
-        assert!(result.is_ok());
+        assert!(
+            result.is_ok(),
+            "force_reconcile should succeed: {:?}",
+            result.err()
+        );
+        let response = result.unwrap().into_response();
+        assert_eq!(response.status(), StatusCode::NO_CONTENT);
 
         // Verify status changed to pending-reconcile
         let db = state.db.lock().await;
@@ -3287,7 +3561,21 @@ mod tests {
             offset: 0,
         };
         let result = list_fleet_events(State(state), Query(pagination)).await;
-        assert!(result.is_ok());
+        assert!(
+            result.is_ok(),
+            "list_fleet_events should succeed: {:?}",
+            result.err()
+        );
+        let response = result.unwrap().into_response();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), 1024 * 1024)
+            .await
+            .unwrap();
+        let events: Vec<serde_json::Value> = serde_json::from_slice(&body).unwrap();
+        assert!(
+            events.is_empty(),
+            "should return empty list when no fleet events"
+        );
     }
 
     #[tokio::test]
@@ -3308,7 +3596,22 @@ mod tests {
             offset: 0,
         };
         let result = list_fleet_events(State(state), Query(pagination)).await;
-        assert!(result.is_ok());
+        assert!(
+            result.is_ok(),
+            "list_fleet_events should succeed: {:?}",
+            result.err()
+        );
+        let response = result.unwrap().into_response();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), 1024 * 1024)
+            .await
+            .unwrap();
+        let events: Vec<serde_json::Value> = serde_json::from_slice(&body).unwrap();
+        assert!(
+            events.len() >= 2,
+            "should have at least checkin and drift events, got {}",
+            events.len()
+        );
     }
 
     #[tokio::test]
@@ -3320,7 +3623,13 @@ mod tests {
         };
         // Should not error — limit gets capped to 1000 internally
         let result = list_fleet_events(State(state), Query(pagination)).await;
-        assert!(result.is_ok());
+        assert!(
+            result.is_ok(),
+            "list_fleet_events should succeed even with limit > 1000: {:?}",
+            result.err()
+        );
+        let response = result.unwrap().into_response();
+        assert_eq!(response.status(), StatusCode::OK);
     }
 
     // --- request_challenge ---
@@ -3420,7 +3729,29 @@ mod tests {
             arch: "x86_64".to_string(),
         };
         let result = request_challenge(State(state), Json(req)).await;
-        assert!(result.is_ok());
+        assert!(
+            result.is_ok(),
+            "request_challenge should succeed with registered key: {:?}",
+            result.err()
+        );
+        let response = result.unwrap().into_response();
+        assert_eq!(response.status(), StatusCode::CREATED);
+        let body = axum::body::to_bytes(response.into_body(), 1024 * 1024)
+            .await
+            .unwrap();
+        let challenge: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert!(
+            !challenge["challengeId"].as_str().unwrap().is_empty(),
+            "challenge should have an id"
+        );
+        assert!(
+            !challenge["nonce"].as_str().unwrap().is_empty(),
+            "challenge should have a nonce"
+        );
+        assert!(
+            !challenge["expiresAt"].as_str().unwrap().is_empty(),
+            "challenge should have an expiry"
+        );
     }
 
     // --- verify_enrollment ---
@@ -3518,7 +3849,22 @@ mod tests {
         }
 
         let result = admin_reset(State(state.clone())).await;
-        assert!(result.is_ok());
+        assert!(
+            result.is_ok(),
+            "admin_reset should succeed: {:?}",
+            result.err()
+        );
+        let response = result.unwrap().into_response();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), 1024 * 1024)
+            .await
+            .unwrap();
+        let reset_resp: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(reset_resp["status"], "ok");
+        assert!(
+            reset_resp["rowsDeleted"].as_u64().unwrap() > 0,
+            "should have deleted rows"
+        );
 
         // Verify data was wiped
         let db = state.db.lock().await;
@@ -3541,7 +3887,22 @@ mod tests {
             label: Some("laptop key".to_string()),
         };
         let result = add_user_key(State(state), Path("jdoe".to_string()), Json(req)).await;
-        assert!(result.is_ok());
+        assert!(
+            result.is_ok(),
+            "add_user_key should succeed: {:?}",
+            result.err()
+        );
+        let response = result.unwrap().into_response();
+        assert_eq!(response.status(), StatusCode::CREATED);
+        let body = axum::body::to_bytes(response.into_body(), 1024 * 1024)
+            .await
+            .unwrap();
+        let key: super::super::db::UserPublicKey = serde_json::from_slice(&body).unwrap();
+        assert_eq!(key.username, "jdoe");
+        assert_eq!(key.key_type, "ssh");
+        assert_eq!(key.fingerprint, "SHA256:abc123");
+        assert_eq!(key.label, Some("laptop key".to_string()));
+        assert!(!key.id.is_empty(), "key should have an id");
     }
 
     #[tokio::test]
@@ -3616,7 +3977,21 @@ mod tests {
     async fn list_user_keys_empty() {
         let state = test_state();
         let result = list_user_keys(State(state), Path("jdoe".to_string())).await;
-        assert!(result.is_ok());
+        assert!(
+            result.is_ok(),
+            "list_user_keys should succeed: {:?}",
+            result.err()
+        );
+        let response = result.unwrap().into_response();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), 1024 * 1024)
+            .await
+            .unwrap();
+        let keys: Vec<super::super::db::UserPublicKey> = serde_json::from_slice(&body).unwrap();
+        assert!(
+            keys.is_empty(),
+            "should return empty list when no keys registered"
+        );
     }
 
     #[tokio::test]
@@ -3637,7 +4012,21 @@ mod tests {
         }
 
         let result = list_user_keys(State(state), Path("jdoe".to_string())).await;
-        assert!(result.is_ok());
+        assert!(
+            result.is_ok(),
+            "list_user_keys should succeed: {:?}",
+            result.err()
+        );
+        let response = result.unwrap().into_response();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), 1024 * 1024)
+            .await
+            .unwrap();
+        let keys: Vec<super::super::db::UserPublicKey> = serde_json::from_slice(&body).unwrap();
+        assert_eq!(keys.len(), 2, "should return both registered keys");
+        let key_types: Vec<&str> = keys.iter().map(|k| k.key_type.as_str()).collect();
+        assert!(key_types.contains(&"ssh"));
+        assert!(key_types.contains(&"gpg"));
     }
 
     // --- delete_user_key ---
@@ -3655,7 +4044,13 @@ mod tests {
         }
 
         let result = delete_user_key(State(state), Path(("jdoe".to_string(), key_id))).await;
-        assert!(result.is_ok());
+        assert!(
+            result.is_ok(),
+            "delete_user_key should succeed: {:?}",
+            result.err()
+        );
+        let response = result.unwrap().into_response();
+        assert_eq!(response.status(), StatusCode::NO_CONTENT);
     }
 
     #[tokio::test]
@@ -3683,7 +4078,34 @@ mod tests {
             expires_in: 3600,
         };
         let result = create_token(State(state), Json(req)).await;
-        assert!(result.is_ok());
+        assert!(
+            result.is_ok(),
+            "create_token should succeed: {:?}",
+            result.err()
+        );
+        let response = result.unwrap().into_response();
+        assert_eq!(response.status(), StatusCode::CREATED);
+        let body = axum::body::to_bytes(response.into_body(), 1024 * 1024)
+            .await
+            .unwrap();
+        let token_resp: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert!(
+            !token_resp["id"].as_str().unwrap().is_empty(),
+            "token should have an id"
+        );
+        assert!(
+            token_resp["token"]
+                .as_str()
+                .unwrap()
+                .starts_with("cfgd_bs_"),
+            "token should have cfgd_bs_ prefix"
+        );
+        assert_eq!(token_resp["username"], "admin");
+        assert_eq!(token_resp["team"], "platform");
+        assert!(
+            !token_resp["expiresAt"].as_str().unwrap().is_empty(),
+            "token should have an expiry"
+        );
     }
 
     #[tokio::test]
@@ -3737,7 +4159,21 @@ mod tests {
     async fn list_tokens_empty() {
         let state = test_state();
         let result = list_tokens(State(state)).await;
-        assert!(result.is_ok());
+        assert!(
+            result.is_ok(),
+            "list_tokens should succeed: {:?}",
+            result.err()
+        );
+        let response = result.unwrap().into_response();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), 1024 * 1024)
+            .await
+            .unwrap();
+        let tokens: Vec<super::super::db::BootstrapToken> = serde_json::from_slice(&body).unwrap();
+        assert!(
+            tokens.is_empty(),
+            "should return empty list when no tokens exist"
+        );
     }
 
     #[tokio::test]
@@ -3750,7 +4186,20 @@ mod tests {
         }
 
         let result = list_tokens(State(state)).await;
-        assert!(result.is_ok());
+        assert!(
+            result.is_ok(),
+            "list_tokens should succeed: {:?}",
+            result.err()
+        );
+        let response = result.unwrap().into_response();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), 1024 * 1024)
+            .await
+            .unwrap();
+        let tokens: Vec<super::super::db::BootstrapToken> = serde_json::from_slice(&body).unwrap();
+        assert_eq!(tokens.len(), 1, "should return one token");
+        assert_eq!(tokens[0].username, "admin");
+        assert_eq!(tokens[0].expires_at, "2026-12-31T23:59:59Z");
     }
 
     // --- delete_token ---
@@ -3768,7 +4217,13 @@ mod tests {
         }
 
         let result = delete_token(State(state), Path(token_id)).await;
-        assert!(result.is_ok());
+        assert!(
+            result.is_ok(),
+            "delete_token should succeed: {:?}",
+            result.err()
+        );
+        let response = result.unwrap().into_response();
+        assert_eq!(response.status(), StatusCode::NO_CONTENT);
     }
 
     #[tokio::test]
@@ -3795,7 +4250,13 @@ mod tests {
         }
 
         let result = revoke_credential(State(state), Path("dev-revoke".to_string())).await;
-        assert!(result.is_ok());
+        assert!(
+            result.is_ok(),
+            "revoke_credential should succeed: {:?}",
+            result.err()
+        );
+        let response = result.unwrap().into_response();
+        assert_eq!(response.status(), StatusCode::NO_CONTENT);
     }
 
     #[tokio::test]

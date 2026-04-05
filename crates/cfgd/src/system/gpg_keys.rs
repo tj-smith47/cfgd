@@ -859,4 +859,236 @@ email: bad@example.com
         let valid = matching.iter().any(|k| !k.is_expired());
         assert!(valid, "newly generated key should not be expired");
     }
+
+    // --- parse_gpg_colon_output additional edge cases ---
+
+    #[test]
+    fn parse_colon_multiple_pub_blocks() {
+        let output = "\
+pub:u:255:22:AAAA:1700000000:0::u:::SC:::23::\n\
+fpr:::::::::FPR1:\n\
+uid:u::::1700000000::HASH1::User One <one@example.com>::::::::::0:\n\
+pub:u:255:22:BBBB:1700000000:0::u:::E:::23::\n\
+fpr:::::::::FPR2:\n\
+uid:u::::1700000000::HASH2::User Two <two@example.com>::::::::::0:\n\
+";
+        let entries = parse_gpg_colon_output(output);
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].fingerprint, "FPR1");
+        assert_eq!(entries[0].email, "one@example.com");
+        assert_eq!(entries[0].capabilities, "SC");
+        assert_eq!(entries[1].fingerprint, "FPR2");
+        assert_eq!(entries[1].email, "two@example.com");
+        assert_eq!(entries[1].capabilities, "E");
+    }
+
+    #[test]
+    fn parse_colon_pub_without_fpr() {
+        let output = "\
+pub:u:255:22:AAAA:1700000000:0::u:::SC:::23::\n\
+uid:u::::1700000000::HASH::User <user@example.com>::::::::::0:\n\
+";
+        let entries = parse_gpg_colon_output(output);
+        // No fpr line means fingerprint is empty => entry is NOT flushed by end
+        // because the code checks !current_fingerprint.is_empty()
+        assert!(entries.is_empty());
+    }
+
+    #[test]
+    fn parse_colon_sub_records_are_ignored() {
+        // sub records should not create additional entries
+        let output = "\
+pub:u:255:22:AAAA:1700000000:0::u:::SC:::23::\n\
+fpr:::::::::PRIMARYFPR:\n\
+uid:u::::1700000000::HASH::User <user@example.com>::::::::::0:\n\
+sub:u:255:18:BBBB:1700000000:0::u:::e:::\n\
+fpr:::::::::SUBFPR:\n\
+";
+        let entries = parse_gpg_colon_output(output);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].fingerprint, "PRIMARYFPR");
+    }
+
+    #[test]
+    fn parse_colon_capabilities_are_uppercased() {
+        let output = "\
+pub:u:255:22:AAAA:1700000000:0::u:::sc:::23::\n\
+fpr:::::::::FPR:\n\
+uid:u::::1700000000::HASH::User <user@example.com>::::::::::0:\n\
+";
+        let entries = parse_gpg_colon_output(output);
+        assert_eq!(entries[0].capabilities, "SC");
+    }
+
+    // --- KeyringEntry validity ---
+
+    #[test]
+    fn keyring_entry_not_expired_with_far_future_expiry() {
+        let entry = KeyringEntry {
+            fingerprint: "FPR".to_string(),
+            email: "user@test.com".to_string(),
+            validity: 'u',
+            expiry_ts: u64::MAX / 2, // far future
+            capabilities: "SC".to_string(),
+        };
+        assert!(!entry.is_expired());
+        assert!(!entry.is_revoked());
+    }
+
+    #[test]
+    fn keyring_entry_expired_with_validity_e() {
+        let entry = KeyringEntry {
+            fingerprint: "FPR".to_string(),
+            email: "user@test.com".to_string(),
+            validity: 'e',
+            expiry_ts: 0,
+            capabilities: "SC".to_string(),
+        };
+        assert!(entry.is_expired());
+    }
+
+    #[test]
+    fn keyring_entry_not_expired_with_zero_expiry() {
+        // expiry_ts == 0 means no expiry
+        let entry = KeyringEntry {
+            fingerprint: "FPR".to_string(),
+            email: "user@test.com".to_string(),
+            validity: 'u',
+            expiry_ts: 0,
+            capabilities: "SC".to_string(),
+        };
+        assert!(!entry.is_expired());
+    }
+
+    // --- extract_email_from_uid additional ---
+
+    #[test]
+    fn extract_email_reversed_brackets() {
+        // > before < should return None
+        assert_eq!(extract_email_from_uid("Name >bad< format"), None);
+    }
+
+    #[test]
+    fn extract_email_multiple_angle_brackets() {
+        // Should extract from the last pair
+        assert_eq!(
+            extract_email_from_uid("Name <old@email.com> Alias <new@email.com>"),
+            Some("new@email.com".to_string())
+        );
+    }
+
+    // --- required_capabilities additional ---
+
+    #[test]
+    fn required_caps_with_spaces() {
+        assert_eq!(required_capabilities("sign , encrypt"), vec!['S', 'E']);
+    }
+
+    #[test]
+    fn required_caps_all_three() {
+        assert_eq!(
+            required_capabilities("sign,encrypt,auth"),
+            vec!['S', 'E', 'A']
+        );
+    }
+
+    #[test]
+    fn required_caps_empty_string() {
+        assert_eq!(required_capabilities(""), Vec::<char>::new());
+    }
+
+    // --- parse_key_spec additional ---
+
+    #[test]
+    fn parse_key_spec_missing_name_returns_none() {
+        let yaml: serde_yaml::Value = serde_yaml::from_str(
+            r#"
+realName: "No Name Field"
+email: test@example.com
+"#,
+        )
+        .unwrap();
+        assert!(parse_key_spec(&yaml).is_none());
+    }
+
+    #[test]
+    fn parse_key_spec_missing_real_name_returns_none() {
+        let yaml: serde_yaml::Value = serde_yaml::from_str(
+            r#"
+name: test
+email: test@example.com
+"#,
+        )
+        .unwrap();
+        assert!(parse_key_spec(&yaml).is_none());
+    }
+
+    #[test]
+    fn parse_key_spec_rsa4096_type() {
+        let yaml: serde_yaml::Value = serde_yaml::from_str(
+            r#"
+name: rsa-key
+type: rsa4096
+realName: "RSA User"
+email: rsa@example.com
+usage: encrypt
+"#,
+        )
+        .unwrap();
+        let spec = parse_key_spec(&yaml).unwrap();
+        assert_eq!(spec.key_type, GpgKeyType::Rsa4096);
+        assert_eq!(spec.usage, "encrypt");
+    }
+
+    // --- build_param_file additional ---
+
+    #[test]
+    fn build_param_file_no_expiry() {
+        let spec = GpgKeySpec {
+            name: "no-expire".to_string(),
+            key_type: GpgKeyType::Ed25519,
+            real_name: "Test".to_string(),
+            email: "test@test.com".to_string(),
+            expiry: "0".to_string(),
+            usage: "sign".to_string(),
+        };
+        let param = build_param_file(&spec);
+        assert!(param.contains("Expire-Date: 0"));
+    }
+
+    #[test]
+    fn build_param_file_auth_usage() {
+        let spec = GpgKeySpec {
+            name: "auth-key".to_string(),
+            key_type: GpgKeyType::Ed25519,
+            real_name: "Auth User".to_string(),
+            email: "auth@test.com".to_string(),
+            expiry: "1y".to_string(),
+            usage: "auth".to_string(),
+        };
+        let param = build_param_file(&spec);
+        assert!(param.contains("Key-Usage: auth"));
+    }
+
+    // --- diff with non-parseable entry ---
+
+    #[test]
+    fn diff_skips_unparseable_entries() {
+        let configurator = GpgKeysConfigurator;
+        // Entry missing required fields
+        let bad_entry: serde_yaml::Value = serde_yaml::from_str(
+            r#"
+- displayName: "No name or email"
+- name: also-bad
+  type: dsa512
+  realName: "Bad Type"
+  email: bad@example.com
+"#,
+        )
+        .unwrap();
+        // Should not panic, just skip unparseable entries
+        let drifts = configurator.diff(&bad_entry).unwrap();
+        // The entries are unparseable so no drift from them
+        assert!(drifts.is_empty());
+    }
 }

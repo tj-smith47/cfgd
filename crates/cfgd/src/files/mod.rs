@@ -2311,7 +2311,7 @@ other: data
             FilesSpec {
                 managed: vec![ManagedFileSpec {
                     source: "files/secret.yaml".to_string(),
-                    target,
+                    target: target.clone(),
                     strategy: Some(FileStrategy::Copy),
                     private: false,
                     origin: None,
@@ -2331,6 +2331,21 @@ other: data
             result.is_ok(),
             "expected plan to succeed: {:?}",
             result.err()
+        );
+        let actions = result.unwrap();
+        assert_eq!(actions.len(), 1, "should produce exactly one file action");
+        assert!(
+            matches!(
+                &actions[0],
+                FileAction::Create {
+                    source,
+                    target: t,
+                    strategy: FileStrategy::Copy,
+                    ..
+                } if source.ends_with("secret.yaml") && *t == target
+            ),
+            "expected Create action targeting secret.yaml with Copy strategy, got: {:?}",
+            actions[0]
         );
     }
 
@@ -2453,7 +2468,7 @@ other: data
             FilesSpec {
                 managed: vec![ManagedFileSpec {
                     source: "files/secret.yaml".to_string(),
-                    target,
+                    target: target.clone(),
                     strategy: Some(FileStrategy::Copy),
                     private: false,
                     origin: None,
@@ -2474,6 +2489,27 @@ other: data
             "expected plan to succeed: {:?}",
             result.err()
         );
+        let actions = result.unwrap();
+        assert_eq!(actions.len(), 1, "should produce exactly one file action");
+        assert!(
+            matches!(
+                &actions[0],
+                FileAction::Create {
+                    strategy: FileStrategy::Copy,
+                    ..
+                }
+            ),
+            "expected Create action with Copy strategy for Always+Copy encryption, got: {:?}",
+            actions[0]
+        );
+        // Verify the encryption spec (Always mode) didn't prevent Copy strategy
+        if let FileAction::Create {
+            source, target: t, ..
+        } = &actions[0]
+        {
+            assert!(source.ends_with("secret.yaml"));
+            assert_eq!(*t, target);
+        }
     }
 
     // --- is_tera_template edge cases ---
@@ -2778,7 +2814,7 @@ other: data
             FilesSpec {
                 managed: vec![ManagedFileSpec {
                     source: "files/secret.yaml".to_string(),
-                    target,
+                    target: target.clone(),
                     // InRepo + Symlink should be allowed (only Always blocks symlinks)
                     strategy: Some(FileStrategy::Symlink),
                     private: false,
@@ -2800,6 +2836,26 @@ other: data
             "InRepo + Symlink should be allowed: {:?}",
             result.err()
         );
+        let actions = result.unwrap();
+        assert_eq!(actions.len(), 1, "should produce exactly one file action");
+        assert!(
+            matches!(
+                &actions[0],
+                FileAction::Create {
+                    strategy: FileStrategy::Symlink,
+                    ..
+                }
+            ),
+            "expected Create action with Symlink strategy for InRepo mode, got: {:?}",
+            actions[0]
+        );
+        if let FileAction::Create {
+            source, target: t, ..
+        } = &actions[0]
+        {
+            assert!(source.ends_with("secret.yaml"));
+            assert_eq!(*t, target);
+        }
     }
 
     // --- global strategy with templates ---
@@ -2990,6 +3046,19 @@ other: data
             "Always + Copy should be allowed, got: {:?}",
             result.err()
         );
+        let actions = result.unwrap();
+        assert_eq!(actions.len(), 1, "should produce exactly one file action");
+        assert!(
+            matches!(
+                &actions[0],
+                FileAction::Create {
+                    strategy: FileStrategy::Copy,
+                    ..
+                }
+            ),
+            "expected Create with Copy strategy for Always encryption, got: {:?}",
+            actions[0]
+        );
     }
 
     #[test]
@@ -3034,6 +3103,19 @@ other: data
             result.is_ok(),
             "InRepo + Symlink should be allowed, got: {:?}",
             result.err()
+        );
+        let actions = result.unwrap();
+        assert_eq!(actions.len(), 1, "should produce exactly one file action");
+        assert!(
+            matches!(
+                &actions[0],
+                FileAction::Create {
+                    strategy: FileStrategy::Symlink,
+                    ..
+                }
+            ),
+            "expected Create with Symlink strategy for InRepo encryption, got: {:?}",
+            actions[0]
         );
     }
 

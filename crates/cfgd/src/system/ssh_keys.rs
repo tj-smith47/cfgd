@@ -537,4 +537,281 @@ mod tests {
             mode
         );
     }
+
+    // --- SshKeySpec::resolved_path ---
+
+    #[test]
+    fn resolved_path_uses_provided_path() {
+        let spec = SshKeySpec {
+            name: "test".to_string(),
+            key_type: "ed25519".to_string(),
+            bits: None,
+            path: Some("/custom/path/id_ed25519".to_string()),
+            comment: None,
+            passphrase: None,
+            permissions: "600".to_string(),
+        };
+        assert_eq!(
+            spec.resolved_path(),
+            PathBuf::from("/custom/path/id_ed25519")
+        );
+    }
+
+    #[test]
+    fn resolved_path_default_ed25519() {
+        let spec = SshKeySpec {
+            name: "default".to_string(),
+            key_type: "ed25519".to_string(),
+            bits: None,
+            path: None,
+            comment: None,
+            passphrase: None,
+            permissions: "600".to_string(),
+        };
+        let path = spec.resolved_path();
+        assert!(
+            path.to_str().unwrap().ends_with(".ssh/id_ed25519"),
+            "expected path ending in .ssh/id_ed25519, got {}",
+            path.display()
+        );
+    }
+
+    #[test]
+    fn resolved_path_default_rsa() {
+        let spec = SshKeySpec {
+            name: "rsa-default".to_string(),
+            key_type: "rsa".to_string(),
+            bits: None,
+            path: None,
+            comment: None,
+            passphrase: None,
+            permissions: "600".to_string(),
+        };
+        let path = spec.resolved_path();
+        assert!(
+            path.to_str().unwrap().ends_with(".ssh/id_rsa"),
+            "expected path ending in .ssh/id_rsa, got {}",
+            path.display()
+        );
+    }
+
+    // --- SshKeySpec::permissions_mode ---
+
+    #[test]
+    fn permissions_mode_valid_600() {
+        let spec = SshKeySpec {
+            name: "test".to_string(),
+            key_type: "ed25519".to_string(),
+            bits: None,
+            path: None,
+            comment: None,
+            passphrase: None,
+            permissions: "600".to_string(),
+        };
+        assert_eq!(spec.permissions_mode().unwrap(), 0o600);
+    }
+
+    #[test]
+    fn permissions_mode_valid_644() {
+        let spec = SshKeySpec {
+            name: "test".to_string(),
+            key_type: "ed25519".to_string(),
+            bits: None,
+            path: None,
+            comment: None,
+            passphrase: None,
+            permissions: "644".to_string(),
+        };
+        assert_eq!(spec.permissions_mode().unwrap(), 0o644);
+    }
+
+    #[test]
+    fn permissions_mode_invalid_returns_error() {
+        let spec = SshKeySpec {
+            name: "test".to_string(),
+            key_type: "ed25519".to_string(),
+            bits: None,
+            path: None,
+            comment: None,
+            passphrase: None,
+            permissions: "xyz".to_string(),
+        };
+        assert!(spec.permissions_mode().is_err());
+    }
+
+    // --- detect_key_type ---
+
+    #[test]
+    fn detect_key_type_ed25519() {
+        let tmp = TempDir::new().unwrap();
+        let key_path = tmp.path().join("id_test");
+        let pub_path = tmp.path().join("id_test.pub");
+        fs::write(&key_path, b"FAKE").unwrap();
+        fs::write(&pub_path, b"ssh-ed25519 AAAA comment\n").unwrap();
+
+        assert_eq!(
+            SshKeysConfigurator::detect_key_type(&key_path),
+            Some("ed25519".to_string())
+        );
+    }
+
+    #[test]
+    fn detect_key_type_rsa() {
+        let tmp = TempDir::new().unwrap();
+        let key_path = tmp.path().join("id_test");
+        let pub_path = tmp.path().join("id_test.pub");
+        fs::write(&key_path, b"FAKE").unwrap();
+        fs::write(&pub_path, b"ssh-rsa AAAA comment\n").unwrap();
+
+        assert_eq!(
+            SshKeysConfigurator::detect_key_type(&key_path),
+            Some("rsa".to_string())
+        );
+    }
+
+    #[test]
+    fn detect_key_type_ecdsa() {
+        let tmp = TempDir::new().unwrap();
+        let key_path = tmp.path().join("id_test");
+        let pub_path = tmp.path().join("id_test.pub");
+        fs::write(&key_path, b"FAKE").unwrap();
+        fs::write(&pub_path, b"ecdsa-sha2-nistp256 AAAA comment\n").unwrap();
+
+        assert_eq!(
+            SshKeysConfigurator::detect_key_type(&key_path),
+            Some("ecdsa".to_string())
+        );
+    }
+
+    #[test]
+    fn detect_key_type_no_pub_file() {
+        let tmp = TempDir::new().unwrap();
+        let key_path = tmp.path().join("id_test");
+        fs::write(&key_path, b"FAKE").unwrap();
+        // No .pub file
+
+        assert_eq!(SshKeysConfigurator::detect_key_type(&key_path), None);
+    }
+
+    // --- parse_desired ---
+
+    #[test]
+    fn parse_desired_empty_sequence() {
+        let desired = serde_yaml::Value::Sequence(Vec::new());
+        let specs = SshKeysConfigurator::parse_desired(&desired).unwrap();
+        assert!(specs.is_empty());
+    }
+
+    #[test]
+    fn parse_desired_non_sequence_returns_empty() {
+        let desired = serde_yaml::Value::String("not a sequence".into());
+        let specs = SshKeysConfigurator::parse_desired(&desired).unwrap();
+        assert!(specs.is_empty());
+    }
+
+    #[test]
+    fn parse_desired_unsupported_key_type_errors() {
+        let yaml: serde_yaml::Value = serde_yaml::from_str(
+            r#"
+- name: bad
+  type: dsa
+"#,
+        )
+        .unwrap();
+        let result = SshKeysConfigurator::parse_desired(&yaml);
+        assert!(result.is_err());
+        let err = format!("{}", result.unwrap_err());
+        assert!(
+            err.contains("unsupported key type"),
+            "error should mention unsupported type: {err}"
+        );
+    }
+
+    #[test]
+    fn parse_desired_valid_entry_with_defaults() {
+        let yaml: serde_yaml::Value = serde_yaml::from_str(
+            r#"
+- name: mykey
+"#,
+        )
+        .unwrap();
+        let specs = SshKeysConfigurator::parse_desired(&yaml).unwrap();
+        assert_eq!(specs.len(), 1);
+        assert_eq!(specs[0].name, "mykey");
+        assert_eq!(specs[0].key_type, "ed25519");
+        assert_eq!(specs[0].permissions, "600");
+    }
+
+    #[test]
+    fn parse_desired_valid_rsa_with_bits() {
+        let yaml: serde_yaml::Value = serde_yaml::from_str(
+            r#"
+- name: rsa-key
+  type: rsa
+  bits: 8192
+  comment: "test key"
+"#,
+        )
+        .unwrap();
+        let specs = SshKeysConfigurator::parse_desired(&yaml).unwrap();
+        assert_eq!(specs[0].key_type, "rsa");
+        assert_eq!(specs[0].bits, Some(8192));
+        assert_eq!(specs[0].comment, Some("test key".to_string()));
+    }
+
+    // --- current_perms_str ---
+
+    #[test]
+    fn current_perms_str_returns_octal() {
+        let tmp = TempDir::new().unwrap();
+        let file = tmp.path().join("test_file");
+        fs::write(&file, "data").unwrap();
+        fs::set_permissions(&file, fs::Permissions::from_mode(0o644)).unwrap();
+
+        let perms = SshKeysConfigurator::current_perms_str(&file);
+        assert_eq!(perms, Some("644".to_string()));
+    }
+
+    #[test]
+    fn current_perms_str_nonexistent_returns_none() {
+        let perms = SshKeysConfigurator::current_perms_str(Path::new("/nonexistent/file"));
+        assert_eq!(perms, None);
+    }
+
+    // --- current_state ---
+
+    #[test]
+    fn current_state_is_empty_sequence() {
+        let c = SshKeysConfigurator;
+        let state = c.current_state().unwrap();
+        assert!(state.is_sequence());
+        assert!(state.as_sequence().unwrap().is_empty());
+    }
+
+    // --- diff with multiple keys ---
+
+    #[test]
+    fn diff_multiple_keys_reports_all_missing() {
+        let tmp = TempDir::new().unwrap();
+        let key1 = tmp.path().join("id_ed25519");
+        let key2 = tmp.path().join("id_rsa");
+
+        let desired = make_desired(&[
+            ("key1", "ed25519", Some(&key1.display().to_string())),
+            ("key2", "rsa", Some(&key2.display().to_string())),
+        ]);
+
+        let c = SshKeysConfigurator;
+        let drifts = c.diff(&desired).unwrap();
+
+        let exists_drifts: Vec<_> = drifts
+            .iter()
+            .filter(|d| d.key.ends_with(".exists"))
+            .collect();
+        assert_eq!(
+            exists_drifts.len(),
+            2,
+            "both missing keys should be reported"
+        );
+    }
 }

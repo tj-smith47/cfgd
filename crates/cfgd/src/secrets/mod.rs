@@ -1315,4 +1315,168 @@ AGE-SECRET-KEY-1STUFF\n";
             "whitespace-only key should be rejected"
         );
     }
+
+    // --- SopsBackend ---
+
+    #[test]
+    fn sops_backend_with_age_key_path() {
+        let backend = SopsBackend::new(Some(PathBuf::from("/custom/age.txt")));
+        assert_eq!(backend.name(), "sops");
+        assert_eq!(backend.age_key_path, Some(PathBuf::from("/custom/age.txt")));
+    }
+
+    #[test]
+    fn sops_backend_with_config_dir_existing_sops_yaml() {
+        let dir = tempfile::tempdir().unwrap();
+        let sops_yaml = dir.path().join(".sops.yaml");
+        std::fs::write(&sops_yaml, "creation_rules:\n  - age: 'age1test'\n").unwrap();
+
+        let backend = SopsBackend::new(None).with_config_dir(dir.path());
+        assert_eq!(backend.sops_config, Some(sops_yaml));
+    }
+
+    #[test]
+    fn sops_backend_with_config_dir_no_sops_yaml() {
+        let dir = tempfile::tempdir().unwrap();
+        // No .sops.yaml created
+
+        let backend = SopsBackend::new(None).with_config_dir(dir.path());
+        assert_eq!(backend.sops_config, None);
+    }
+
+    // --- AgeBackend ---
+
+    #[test]
+    fn age_backend_not_available_without_key_file() {
+        let backend = AgeBackend::new(PathBuf::from("/nonexistent/age-key.txt"));
+        assert!(!backend.is_available());
+    }
+
+    #[test]
+    fn age_backend_recipient_from_nonexistent_key_errors() {
+        let backend = AgeBackend::new(PathBuf::from("/nonexistent/age-key.txt"));
+        let result = backend.recipient_from_key();
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn age_backend_recipient_from_valid_key() {
+        let dir = tempfile::tempdir().unwrap();
+        let key_path = dir.path().join("age-key.txt");
+        std::fs::write(
+            &key_path,
+            "# created: 2024-01-01\n# public key: age1abc123\nAGE-SECRET-KEY-1TEST\n",
+        )
+        .unwrap();
+
+        let backend = AgeBackend::new(key_path);
+        let recipient = backend.recipient_from_key().unwrap();
+        assert_eq!(recipient, "age1abc123");
+    }
+
+    #[test]
+    fn age_backend_recipient_from_key_without_public_line() {
+        let dir = tempfile::tempdir().unwrap();
+        let key_path = dir.path().join("age-key.txt");
+        std::fs::write(&key_path, "# created: 2024-01-01\nAGE-SECRET-KEY-1TEST\n").unwrap();
+
+        let backend = AgeBackend::new(key_path);
+        let result = backend.recipient_from_key();
+        assert!(result.is_err());
+    }
+
+    // --- build_secret_backend with config_dir ---
+
+    #[test]
+    fn build_sops_backend_with_config_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        let backend = build_secret_backend("sops", None, Some(dir.path()));
+        assert_eq!(backend.name(), "sops");
+    }
+
+    #[test]
+    fn build_age_backend_ignores_config_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        let backend =
+            build_secret_backend("age", Some(PathBuf::from("/tmp/key.txt")), Some(dir.path()));
+        assert_eq!(backend.name(), "age");
+    }
+
+    // --- SecretProvider names ---
+
+    #[test]
+    fn one_password_provider_name() {
+        assert_eq!(OnePasswordProvider.name(), "1password");
+    }
+
+    #[test]
+    fn bitwarden_provider_name() {
+        assert_eq!(BitwardenProvider.name(), "bitwarden");
+    }
+
+    #[test]
+    fn lastpass_provider_name() {
+        assert_eq!(LastPassProvider.name(), "lastpass");
+    }
+
+    #[test]
+    fn vault_provider_name() {
+        assert_eq!(VaultProvider.name(), "vault");
+    }
+
+    // --- check_secrets_health ---
+
+    #[test]
+    fn check_secrets_health_with_custom_age_key_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let custom_key = dir.path().join("custom-age.txt");
+        // Don't create the file — test that health reports existence correctly
+        let health = check_secrets_health(dir.path(), Some(custom_key.as_path()));
+        assert!(!health.age_key_exists);
+        assert_eq!(health.age_key_path, Some(custom_key));
+    }
+
+    #[test]
+    fn check_secrets_health_sops_config_detection() {
+        let dir = tempfile::tempdir().unwrap();
+        // No .sops.yaml
+        let health1 = check_secrets_health(dir.path(), None);
+        assert!(!health1.sops_config_exists);
+
+        // Create .sops.yaml
+        std::fs::write(dir.path().join(".sops.yaml"), "creation_rules: []\n").unwrap();
+        let health2 = check_secrets_health(dir.path(), None);
+        assert!(health2.sops_config_exists);
+        assert_eq!(
+            health2.sops_config_path,
+            Some(dir.path().join(".sops.yaml"))
+        );
+    }
+
+    #[test]
+    fn check_secrets_health_provider_count() {
+        let dir = tempfile::tempdir().unwrap();
+        let health = check_secrets_health(dir.path(), None);
+        // Should report all 4 providers
+        assert_eq!(health.providers.len(), 4);
+        let names: Vec<&str> = health.providers.iter().map(|(n, _)| n.as_str()).collect();
+        assert!(names.contains(&"1password"));
+        assert!(names.contains(&"bitwarden"));
+        assert!(names.contains(&"lastpass"));
+        assert!(names.contains(&"vault"));
+    }
+
+    // --- resolve_secret_refs with nested markers ---
+
+    #[test]
+    fn resolve_secret_refs_marker_without_scheme_not_a_file() {
+        // A reference that isn't a provider scheme and doesn't exist as a file
+        let result = resolve_secret_refs(
+            "x=${secret:nonexistent_file.yaml}",
+            &[],
+            None,
+            Path::new("."),
+        );
+        assert!(result.is_err());
+    }
 }
