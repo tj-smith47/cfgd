@@ -2527,4 +2527,356 @@ mod tests {
         let store = StateStore::open_in_memory().unwrap();
         assert!(store.get_compliance_snapshot(999).unwrap().is_none());
     }
+
+    // --- Module state CRUD ---
+
+    #[test]
+    fn module_state_upsert_and_retrieve() {
+        let store = StateStore::open_in_memory().unwrap();
+
+        // Create apply records first (foreign key constraint)
+        let apply1 = store
+            .record_apply("default", "h1", ApplyStatus::Success, None)
+            .unwrap();
+
+        store
+            .upsert_module_state(
+                "nvim",
+                Some(apply1),
+                "pkg-hash-1",
+                "file-hash-1",
+                None,
+                "installed",
+            )
+            .unwrap();
+        store
+            .upsert_module_state(
+                "tmux",
+                None,
+                "pkg-hash-2",
+                "file-hash-2",
+                Some("https://github.com/example/tmux.git@abc123"),
+                "installed",
+            )
+            .unwrap();
+
+        let states = store.module_states().unwrap();
+        assert_eq!(states.len(), 2);
+        // Ordered by module_name
+        assert_eq!(states[0].module_name, "nvim");
+        assert_eq!(states[0].packages_hash, "pkg-hash-1");
+        assert_eq!(states[0].files_hash, "file-hash-1");
+        assert_eq!(states[0].status, "installed");
+        assert_eq!(states[0].last_applied, Some(apply1));
+        assert!(states[0].git_sources.is_none());
+
+        assert_eq!(states[1].module_name, "tmux");
+        assert!(states[1].last_applied.is_none());
+        assert_eq!(
+            states[1].git_sources.as_deref(),
+            Some("https://github.com/example/tmux.git@abc123")
+        );
+    }
+
+    #[test]
+    fn module_state_by_name_found_and_not_found() {
+        let store = StateStore::open_in_memory().unwrap();
+
+        let apply_id = store
+            .record_apply("default", "h", ApplyStatus::Success, None)
+            .unwrap();
+
+        store
+            .upsert_module_state("shell", Some(apply_id), "h1", "h2", None, "installed")
+            .unwrap();
+
+        let found = store.module_state_by_name("shell").unwrap();
+        assert!(found.is_some());
+        let rec = found.unwrap();
+        assert_eq!(rec.module_name, "shell");
+        assert_eq!(rec.last_applied, Some(apply_id));
+
+        let not_found = store.module_state_by_name("nonexistent").unwrap();
+        assert!(not_found.is_none());
+    }
+
+    #[test]
+    fn module_state_upsert_updates_on_conflict() {
+        let store = StateStore::open_in_memory().unwrap();
+
+        let apply1 = store
+            .record_apply("default", "h1", ApplyStatus::Success, None)
+            .unwrap();
+        let apply2 = store
+            .record_apply("default", "h2", ApplyStatus::Success, None)
+            .unwrap();
+
+        store
+            .upsert_module_state(
+                "nvim",
+                Some(apply1),
+                "old-pkg",
+                "old-file",
+                None,
+                "installed",
+            )
+            .unwrap();
+        store
+            .upsert_module_state("nvim", Some(apply2), "new-pkg", "new-file", None, "updated")
+            .unwrap();
+
+        let states = store.module_states().unwrap();
+        assert_eq!(
+            states.len(),
+            1,
+            "upsert should update, not insert duplicate"
+        );
+        assert_eq!(states[0].packages_hash, "new-pkg");
+        assert_eq!(states[0].files_hash, "new-file");
+        assert_eq!(states[0].status, "updated");
+        assert_eq!(states[0].last_applied, Some(apply2));
+    }
+
+    #[test]
+    fn module_state_remove() {
+        let store = StateStore::open_in_memory().unwrap();
+
+        store
+            .upsert_module_state("nvim", None, "h1", "h2", None, "installed")
+            .unwrap();
+        store
+            .upsert_module_state("tmux", None, "h3", "h4", None, "installed")
+            .unwrap();
+
+        assert_eq!(store.module_states().unwrap().len(), 2);
+
+        store.remove_module_state("nvim").unwrap();
+        let states = store.module_states().unwrap();
+        assert_eq!(states.len(), 1);
+        assert_eq!(states[0].module_name, "tmux");
+
+        // Removing nonexistent module should not error
+        store.remove_module_state("nonexistent").unwrap();
+        assert_eq!(store.module_states().unwrap().len(), 1);
+    }
+
+    // --- record_source_apply ---
+
+    #[test]
+    fn record_source_apply_links_to_source() {
+        let store = StateStore::open_in_memory().unwrap();
+
+        // Create a source first
+        store
+            .upsert_config_source(
+                "acme",
+                "https://github.com/acme/config.git",
+                "main",
+                None,
+                None,
+                None,
+            )
+            .unwrap();
+
+        // Record an apply
+        let apply_id = store
+            .record_apply("default", "plan-hash-1", ApplyStatus::Success, None)
+            .unwrap();
+        store
+            .record_source_apply("acme", apply_id, "abc123def")
+            .unwrap();
+
+        // Verify the source exists and was linked
+        let source = store.config_source_by_name("acme").unwrap();
+        assert!(source.is_some());
+    }
+
+    #[test]
+    fn record_source_apply_nonexistent_source_is_noop() {
+        let store = StateStore::open_in_memory().unwrap();
+
+        let apply_id = store
+            .record_apply("default", "plan-hash-1", ApplyStatus::Success, None)
+            .unwrap();
+
+        // Recording for a nonexistent source should be a no-op (not an error)
+        store
+            .record_source_apply("nonexistent", apply_id, "abc123")
+            .unwrap();
+    }
+
+    // --- file_backups_after_apply ---
+
+    #[test]
+    fn file_backups_after_apply_returns_earliest_per_path() {
+        let store = StateStore::open_in_memory().unwrap();
+
+        let apply1 = store
+            .record_apply("default", "hash1", ApplyStatus::Success, None)
+            .unwrap();
+        let apply2 = store
+            .record_apply("default", "hash2", ApplyStatus::Success, None)
+            .unwrap();
+        let apply3 = store
+            .record_apply("default", "hash3", ApplyStatus::Success, None)
+            .unwrap();
+
+        // Backup same file at apply2 and apply3
+        let state_v1 = crate::FileState {
+            content: b"version1".to_vec(),
+            content_hash: "hash-v1".into(),
+            permissions: None,
+            is_symlink: false,
+            symlink_target: None,
+            oversized: false,
+        };
+        let state_v2 = crate::FileState {
+            content: b"version2".to_vec(),
+            content_hash: "hash-v2".into(),
+            permissions: None,
+            is_symlink: false,
+            symlink_target: None,
+            oversized: false,
+        };
+
+        store
+            .store_file_backup(apply2, "/etc/config", &state_v1)
+            .unwrap();
+        store
+            .store_file_backup(apply3, "/etc/config", &state_v2)
+            .unwrap();
+
+        // Backups after apply1 should return the EARLIEST backup per path (apply2's version)
+        let backups = store.file_backups_after_apply(apply1).unwrap();
+        assert_eq!(backups.len(), 1);
+        assert_eq!(backups[0].file_path, "/etc/config");
+        assert_eq!(backups[0].apply_id, apply2);
+        assert_eq!(backups[0].content_hash, "hash-v1");
+
+        // Backups after apply2 should return apply3's version
+        let backups_after_2 = store.file_backups_after_apply(apply2).unwrap();
+        assert_eq!(backups_after_2.len(), 1);
+        assert_eq!(backups_after_2[0].apply_id, apply3);
+        assert_eq!(backups_after_2[0].content_hash, "hash-v2");
+
+        // Backups after apply3 should be empty
+        let backups_after_3 = store.file_backups_after_apply(apply3).unwrap();
+        assert!(backups_after_3.is_empty());
+    }
+
+    // --- journal_entries_after_apply ---
+
+    #[test]
+    fn journal_entries_after_apply_returns_completed_desc() {
+        let store = StateStore::open_in_memory().unwrap();
+
+        let apply1 = store
+            .record_apply("default", "hash1", ApplyStatus::Success, None)
+            .unwrap();
+        let apply2 = store
+            .record_apply("default", "hash2", ApplyStatus::Success, None)
+            .unwrap();
+
+        // Journal entries for apply2
+        let j1 = store
+            .journal_begin(apply2, 0, "Packages", "install", "brew:curl", None)
+            .unwrap();
+        store.journal_complete(j1, None, None).unwrap();
+        let j2 = store
+            .journal_begin(apply2, 1, "Packages", "install", "brew:wget", None)
+            .unwrap();
+        store.journal_complete(j2, None, None).unwrap();
+        // A failed entry should NOT be returned
+        let j3 = store
+            .journal_begin(apply2, 2, "Packages", "install", "brew:vim", None)
+            .unwrap();
+        store.journal_fail(j3, "package not found").unwrap();
+
+        let entries = store.journal_entries_after_apply(apply1).unwrap();
+        assert_eq!(
+            entries.len(),
+            2,
+            "should return only completed entries, not failed"
+        );
+        // Results are ordered by apply_id DESC, action_index DESC
+        assert_eq!(entries[0].resource_id, "brew:wget");
+        assert_eq!(entries[1].resource_id, "brew:curl");
+        assert_eq!(entries[0].status, "completed");
+        assert_eq!(entries[1].status, "completed");
+    }
+
+    // --- concurrent in-memory stores ---
+
+    #[test]
+    fn concurrent_in_memory_stores_are_independent() {
+        let store_a = StateStore::open_in_memory().unwrap();
+        let store_b = StateStore::open_in_memory().unwrap();
+
+        store_a
+            .record_apply("default", "hash-a", ApplyStatus::Success, None)
+            .unwrap();
+
+        // store_b should be empty — separate database
+        assert!(store_b.last_apply().unwrap().is_none());
+        assert_eq!(store_a.history(10).unwrap().len(), 1);
+        assert_eq!(store_b.history(10).unwrap().len(), 0);
+    }
+
+    // --- schema migration ---
+
+    #[test]
+    fn schema_version_after_open() {
+        let store = StateStore::open_in_memory().unwrap();
+        let version = store.schema_version();
+        assert!(
+            version >= 4,
+            "schema version should be at least 4 after migrations: got {version}"
+        );
+    }
+
+    // --- get_apply by id ---
+
+    #[test]
+    fn get_apply_existing_and_nonexistent() {
+        let store = StateStore::open_in_memory().unwrap();
+
+        let apply_id = store
+            .record_apply(
+                "default",
+                "plan-hash",
+                ApplyStatus::Success,
+                Some("{\"summary\": true}"),
+            )
+            .unwrap();
+
+        let found = store.get_apply(apply_id).unwrap();
+        assert!(found.is_some());
+        let rec = found.unwrap();
+        assert_eq!(rec.id, apply_id);
+        assert_eq!(rec.plan_hash, "plan-hash");
+        assert_eq!(rec.status, ApplyStatus::Success);
+        assert_eq!(rec.summary.as_deref(), Some("{\"summary\": true}"));
+
+        let not_found = store.get_apply(99999).unwrap();
+        assert!(not_found.is_none());
+    }
+
+    // --- update_apply_status ---
+
+    #[test]
+    fn update_apply_status_changes_status() {
+        let store = StateStore::open_in_memory().unwrap();
+
+        let apply_id = store
+            .record_apply("default", "hash", ApplyStatus::InProgress, None)
+            .unwrap();
+
+        store
+            .update_apply_status(apply_id, ApplyStatus::Success, Some("{\"total\": 5}"))
+            .unwrap();
+
+        let rec = store.get_apply(apply_id).unwrap().unwrap();
+        assert_eq!(rec.status, ApplyStatus::Success);
+        assert_eq!(rec.summary.as_deref(), Some("{\"total\": 5}"));
+    }
 }

@@ -3983,8 +3983,6 @@ spec:
     #[test]
     fn dependency_order_deep_chain_within_limit() {
         // Build a chain of 50 modules (MAX_DEPENDENCY_DEPTH = 50)
-        let mut specs: Vec<(&str, Vec<&str>)> = Vec::new();
-        // We need static strings for the test, so use a different approach
         let names: Vec<String> = (0..50).map(|i| format!("mod{i:03}")).collect();
         let mut modules = HashMap::new();
         for (i, name) in names.iter().enumerate() {
