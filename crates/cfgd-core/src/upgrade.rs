@@ -602,7 +602,16 @@ mod tests {
 
     #[test]
     fn current_version_is_valid_semver() {
-        let _v = current_version().expect("CARGO_PKG_VERSION should be valid semver");
+        let v = current_version().expect("CARGO_PKG_VERSION should be valid semver");
+        assert_eq!(
+            v.to_string(),
+            env!("CARGO_PKG_VERSION"),
+            "parsed version should round-trip to the compiled version string"
+        );
+        assert!(
+            v.major > 0 || v.minor > 0 || v.patch > 0,
+            "version should be non-zero: {v}"
+        );
     }
 
     #[test]
@@ -667,7 +676,11 @@ mod tests {
     #[test]
     fn parse_release_json_missing_tag() {
         let json = r#"{"assets": []}"#;
-        assert!(parse_release_json(json).is_err());
+        let err = parse_release_json(json).unwrap_err().to_string();
+        assert!(
+            err.contains("missing tag_name"),
+            "error should mention missing tag_name: {err}"
+        );
     }
 
     #[test]
@@ -716,8 +729,13 @@ mod tests {
             }],
         };
 
-        let result = find_asset_for_platform(&release);
-        assert!(result.is_err());
+        let err = find_asset_for_platform(&release).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains(std::env::consts::OS.replace("macos", "darwin").as_str())
+                || msg.contains(std::env::consts::ARCH),
+            "error should mention the current platform: {msg}"
+        );
     }
 
     #[test]
@@ -1097,7 +1115,12 @@ mod tests {
         let result = find_asset_for_platform(&release);
         // Unless we're running on mips, this should fail
         if std::env::consts::ARCH != "mips" {
-            assert!(result.is_err());
+            let err = result.unwrap_err();
+            let msg = err.to_string();
+            assert!(
+                msg.contains(std::env::consts::ARCH),
+                "error should mention the current arch: {msg}"
+            );
         }
     }
 

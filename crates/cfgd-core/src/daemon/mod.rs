@@ -5808,7 +5808,11 @@ mod tests {
     fn git_pull_non_repo_returns_error() {
         let tmp = tempfile::TempDir::new().unwrap();
         let result = git_pull(tmp.path());
-        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            err.contains("open repo"),
+            "expected 'open repo' error, got: {err}"
+        );
     }
 
     // --- git_auto_commit_push: non-git directory returns error ---
@@ -5817,7 +5821,11 @@ mod tests {
     fn git_auto_commit_push_non_repo_returns_error() {
         let tmp = tempfile::TempDir::new().unwrap();
         let result = git_auto_commit_push(tmp.path());
-        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            err.contains("open repo"),
+            "expected 'open repo' error, got: {err}"
+        );
     }
 
     // --- handle_sync: updates daemon state timestamps ---
@@ -7037,7 +7045,11 @@ mod tests {
     fn git_pull_sync_non_repo_returns_error() {
         let tmp = tempfile::TempDir::new().unwrap();
         let result = git_pull_sync(tmp.path());
-        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            err.contains("open repo"),
+            "expected 'open repo' error, got: {err}"
+        );
     }
 
     #[test]
@@ -7082,12 +7094,24 @@ mod tests {
 
     #[test]
     fn notifier_all_methods_construct() {
-        let _stdout = Notifier::new(NotifyMethod::Stdout, None);
-        let _desktop = Notifier::new(NotifyMethod::Desktop, None);
-        let _webhook_none = Notifier::new(NotifyMethod::Webhook, None);
-        let _webhook_url = Notifier::new(
+        let stdout = Notifier::new(NotifyMethod::Stdout, None);
+        assert!(matches!(stdout.method, NotifyMethod::Stdout));
+        assert!(stdout.webhook_url.is_none());
+
+        let desktop = Notifier::new(NotifyMethod::Desktop, None);
+        assert!(matches!(desktop.method, NotifyMethod::Desktop));
+
+        let webhook_none = Notifier::new(NotifyMethod::Webhook, None);
+        assert!(matches!(webhook_none.method, NotifyMethod::Webhook));
+        assert!(webhook_none.webhook_url.is_none());
+
+        let webhook_url = Notifier::new(
             NotifyMethod::Webhook,
             Some("https://example.com/hook".into()),
+        );
+        assert_eq!(
+            webhook_url.webhook_url.as_deref(),
+            Some("https://example.com/hook")
         );
     }
 

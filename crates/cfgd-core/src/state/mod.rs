@@ -1896,6 +1896,30 @@ mod tests {
                 Some("team requirement"),
             )
             .unwrap();
+
+        // Verify the conflict was actually persisted
+        let count: i64 = store
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM source_conflicts WHERE source_name = ?1",
+                params!["acme"],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 1, "one conflict should be recorded");
+
+        let (resource_type, resource_id, resolution, detail): (String, String, String, Option<String>) = store
+            .conn
+            .query_row(
+                "SELECT resource_type, resource_id, resolution, detail FROM source_conflicts WHERE source_name = ?1",
+                params!["acme"],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .unwrap();
+        assert_eq!(resource_type, "package");
+        assert_eq!(resource_id, "git-secrets (brew)");
+        assert_eq!(resolution, "REQUIRED");
+        assert_eq!(detail.as_deref(), Some("team requirement"));
     }
 
     #[test]
@@ -2703,6 +2727,20 @@ mod tests {
         store
             .record_source_apply("nonexistent", apply_id, "abc123")
             .unwrap();
+
+        // Verify no rows were inserted into source_applies
+        let count: i64 = store
+            .conn
+            .query_row("SELECT COUNT(*) FROM source_applies", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(
+            count, 0,
+            "no source_applies row should exist for nonexistent source"
+        );
+
+        // Verify the source still doesn't exist
+        let source = store.config_source_by_name("nonexistent").unwrap();
+        assert!(source.is_none(), "nonexistent source should not be created");
     }
 
     // --- file_backups_after_apply ---

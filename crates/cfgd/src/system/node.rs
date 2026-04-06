@@ -71,7 +71,10 @@ impl SysctlConfigurator {
     }
 
     fn persist_all_sysctls(entries: &BTreeMap<&str, String>) -> Result<()> {
-        let conf_dir = Path::new("/etc/sysctl.d");
+        Self::persist_all_sysctls_to(Path::new("/etc/sysctl.d"), entries)
+    }
+
+    fn persist_all_sysctls_to(conf_dir: &Path, entries: &BTreeMap<&str, String>) -> Result<()> {
         if !conf_dir.exists() {
             fs::create_dir_all(conf_dir)?;
         }
@@ -207,7 +210,10 @@ impl KernelModuleConfigurator {
     }
 
     fn persist_modules(desired_modules: &[&str]) -> Result<()> {
-        let conf_dir = Path::new("/etc/modules-load.d");
+        Self::persist_modules_to(Path::new("/etc/modules-load.d"), desired_modules)
+    }
+
+    fn persist_modules_to(conf_dir: &Path, desired_modules: &[&str]) -> Result<()> {
         if !conf_dir.exists() {
             fs::create_dir_all(conf_dir)?;
         }
@@ -1708,8 +1714,13 @@ SystemdCgroup = true
         let dir = tempdir().unwrap();
         let config = dir.path().join("config.toml");
         fs::write(&config, "this is not valid toml [[[").unwrap();
-        let result = ContainerdConfigurator::read_current_config(&config);
-        assert!(result.is_err());
+        let err = ContainerdConfigurator::read_current_config(&config)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("failed to parse containerd config"),
+            "expected containerd parse error, got: {err}"
+        );
     }
 
     #[test]
@@ -1884,8 +1895,13 @@ SystemdCgroup = true
         let dir = tempdir().unwrap();
         let config = dir.path().join("config.yaml");
         fs::write(&config, ":\n  - :\n    bad: [[[").unwrap();
-        let result = KubeletConfigurator::read_current_config(&config);
-        assert!(result.is_err());
+        let err = KubeletConfigurator::read_current_config(&config)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("failed to parse kubelet config"),
+            "expected kubelet parse error, got: {err}"
+        );
     }
 
     #[test]
@@ -2727,10 +2743,10 @@ SystemdCgroup = true
 
     #[test]
     fn yaml_to_toml_float_conversion() {
-        let val = serde_yaml::Value::Number(serde_yaml::Number::from(3.14_f64));
+        let val = serde_yaml::Value::Number(serde_yaml::Number::from(1.234_f64));
         let result = yaml_to_toml_value(&val);
         match result {
-            toml::Value::Float(f) => assert!((f - 3.14).abs() < 0.001),
+            toml::Value::Float(f) => assert!((f - 1.234).abs() < 0.001),
             _ => panic!("expected Float, got {:?}", result),
         }
     }
@@ -2760,8 +2776,8 @@ SystemdCgroup = true
 
     #[test]
     fn toml_value_to_string_float() {
-        let result = toml_value_to_string(&toml::Value::Float(3.14));
-        assert!(result.starts_with("3.14"));
+        let result = toml_value_to_string(&toml::Value::Float(1.234));
+        assert!(result.starts_with("1.234"));
     }
 
     #[test]
@@ -3264,5 +3280,149 @@ SystemdCgroup = true
             ),
             Some("true".to_string())
         );
+    }
+
+    // --- persist_all_sysctls_to: file content verification ---
+
+    #[test]
+    fn persist_sysctls_writes_sorted_conf_file() {
+        let dir = tempdir().unwrap();
+        let conf_dir = dir.path().join("sysctl.d");
+
+        let mut entries = BTreeMap::new();
+        entries.insert("net.ipv4.ip_forward", "1".to_string());
+        entries.insert("vm.max_map_count", "262144".to_string());
+        entries.insert("net.bridge.bridge-nf-call-iptables", "1".to_string());
+
+        SysctlConfigurator::persist_all_sysctls_to(&conf_dir, &entries).unwrap();
+
+        let content = fs::read_to_string(conf_dir.join("99-cfgd.conf")).unwrap();
+        assert!(
+            content.starts_with("# Managed by cfgd"),
+            "missing header comment"
+        );
+        // BTreeMap iterates in sorted order
+        assert!(content.contains("net.bridge.bridge-nf-call-iptables = 1\n"));
+        assert!(content.contains("net.ipv4.ip_forward = 1\n"));
+        assert!(content.contains("vm.max_map_count = 262144\n"));
+        // Verify net.bridge comes before net.ipv4 (sorted)
+        let bridge_pos = content.find("net.bridge").unwrap();
+        let ipv4_pos = content.find("net.ipv4").unwrap();
+        assert!(bridge_pos < ipv4_pos, "entries should be in sorted order");
+    }
+
+    #[test]
+    fn persist_sysctls_creates_conf_dir_if_missing() {
+        let dir = tempdir().unwrap();
+        let conf_dir = dir.path().join("nonexistent").join("sysctl.d");
+        assert!(!conf_dir.exists());
+
+        let mut entries = BTreeMap::new();
+        entries.insert("net.ipv4.ip_forward", "1".to_string());
+
+        SysctlConfigurator::persist_all_sysctls_to(&conf_dir, &entries).unwrap();
+        assert!(conf_dir.join("99-cfgd.conf").exists());
+    }
+
+    #[test]
+    fn persist_sysctls_empty_entries_removes_conf_file() {
+        let dir = tempdir().unwrap();
+        let conf_dir = dir.path().join("sysctl.d");
+        fs::create_dir_all(&conf_dir).unwrap();
+        let conf_path = conf_dir.join("99-cfgd.conf");
+        fs::write(&conf_path, "old content").unwrap();
+        assert!(conf_path.exists());
+
+        let entries: BTreeMap<&str, String> = BTreeMap::new();
+        SysctlConfigurator::persist_all_sysctls_to(&conf_dir, &entries).unwrap();
+        assert!(!conf_path.exists(), "empty entries should remove the file");
+    }
+
+    #[test]
+    fn persist_sysctls_overwrites_existing_content() {
+        let dir = tempdir().unwrap();
+        let conf_dir = dir.path().join("sysctl.d");
+        fs::create_dir_all(&conf_dir).unwrap();
+        fs::write(conf_dir.join("99-cfgd.conf"), "old.key = old_value\n").unwrap();
+
+        let mut entries = BTreeMap::new();
+        entries.insert("new.key", "new_value".to_string());
+
+        SysctlConfigurator::persist_all_sysctls_to(&conf_dir, &entries).unwrap();
+
+        let content = fs::read_to_string(conf_dir.join("99-cfgd.conf")).unwrap();
+        assert!(content.contains("new.key = new_value"));
+        assert!(
+            !content.contains("old.key"),
+            "old content should be replaced"
+        );
+    }
+
+    // --- persist_modules_to: file content verification ---
+
+    #[test]
+    fn persist_modules_writes_one_per_line() {
+        let dir = tempdir().unwrap();
+        let conf_dir = dir.path().join("modules-load.d");
+
+        KernelModuleConfigurator::persist_modules_to(
+            &conf_dir,
+            &["br_netfilter", "overlay", "ip_vs"],
+        )
+        .unwrap();
+
+        let content = fs::read_to_string(conf_dir.join("cfgd.conf")).unwrap();
+        assert!(
+            content.starts_with("# Managed by cfgd"),
+            "missing header comment"
+        );
+        assert!(content.contains("br_netfilter\n"));
+        assert!(content.contains("overlay\n"));
+        assert!(content.contains("ip_vs\n"));
+        // Verify each module is on its own line (not space-separated)
+        let module_lines: Vec<&str> = content
+            .lines()
+            .filter(|l| !l.starts_with('#') && !l.is_empty())
+            .collect();
+        assert_eq!(module_lines.len(), 3);
+    }
+
+    #[test]
+    fn persist_modules_creates_dir_if_missing() {
+        let dir = tempdir().unwrap();
+        let conf_dir = dir.path().join("deep").join("modules-load.d");
+        assert!(!conf_dir.exists());
+
+        KernelModuleConfigurator::persist_modules_to(&conf_dir, &["overlay"]).unwrap();
+        assert!(conf_dir.join("cfgd.conf").exists());
+    }
+
+    #[test]
+    fn persist_modules_empty_removes_conf_file() {
+        let dir = tempdir().unwrap();
+        let conf_dir = dir.path().join("modules-load.d");
+        fs::create_dir_all(&conf_dir).unwrap();
+        let conf_path = conf_dir.join("cfgd.conf");
+        fs::write(&conf_path, "old content").unwrap();
+
+        KernelModuleConfigurator::persist_modules_to(&conf_dir, &[]).unwrap();
+        assert!(
+            !conf_path.exists(),
+            "empty modules should remove the conf file"
+        );
+    }
+
+    #[test]
+    fn persist_modules_overwrites_existing() {
+        let dir = tempdir().unwrap();
+        let conf_dir = dir.path().join("modules-load.d");
+        fs::create_dir_all(&conf_dir).unwrap();
+        fs::write(conf_dir.join("cfgd.conf"), "old_module\n").unwrap();
+
+        KernelModuleConfigurator::persist_modules_to(&conf_dir, &["new_module"]).unwrap();
+
+        let content = fs::read_to_string(conf_dir.join("cfgd.conf")).unwrap();
+        assert!(content.contains("new_module"));
+        assert!(!content.contains("old_module"));
     }
 }

@@ -3037,7 +3037,16 @@ patches:
     #[test]
     fn load_config_missing_file() {
         let result = load_config(std::path::Path::new("/nonexistent-12345/cfgd.yaml"));
-        assert!(result.is_err());
+        let err = result.unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("config file not found"),
+            "expected 'config file not found' in error, got: {msg}"
+        );
+        assert!(
+            msg.contains("/nonexistent-12345/cfgd.yaml"),
+            "expected path in error, got: {msg}"
+        );
     }
 
     // --- resolve_profile deeper inheritance ---
@@ -3413,7 +3422,13 @@ target: ~/.config/app/credentials
             backend: None,
             envs: None,
         }];
-        assert!(validate_secret_specs(&specs).is_ok());
+        validate_secret_specs(&specs).expect("validation should pass for spec with target");
+        assert_eq!(specs[0].source, "secrets/key.enc");
+        assert_eq!(
+            specs[0].target.as_deref(),
+            Some(std::path::Path::new("~/.ssh/key"))
+        );
+        assert!(specs[0].envs.is_none());
     }
 
     #[test]
@@ -3425,7 +3440,12 @@ target: ~/.config/app/credentials
             backend: None,
             envs: Some(vec!["SECRET_KEY".to_string()]),
         }];
-        assert!(validate_secret_specs(&specs).is_ok());
+        validate_secret_specs(&specs).expect("validation should pass for spec with envs");
+        assert_eq!(specs[0].source, "op://vault/item");
+        assert!(specs[0].target.is_none());
+        let envs = specs[0].envs.as_ref().expect("envs should be Some");
+        assert_eq!(envs.len(), 1);
+        assert_eq!(envs[0], "SECRET_KEY");
     }
 
     #[test]

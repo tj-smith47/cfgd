@@ -169,8 +169,15 @@ async fn node_unpublish_volume_nonexistent_target_succeeds() {
             volume_id: "vol-1".to_string(),
             target_path: target.to_str().unwrap().to_string(),
         })
-        .await;
-    assert!(resp.is_ok());
+        .await
+        .expect("unpublish of nonexistent target should succeed per CSI idempotency");
+    // NodeUnpublishVolumeResponse is intentionally empty per CSI spec;
+    // verify the target was not spuriously created
+    let _ = resp.into_inner();
+    assert!(
+        !target.exists(),
+        "nonexistent target path should remain absent after unpublish"
+    );
 }
 
 #[tokio::test]

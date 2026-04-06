@@ -3815,7 +3815,9 @@ mod tests {
     fn add_package_unknown_manager_errors() {
         let mut packages = PackagesSpec::default();
         let result = add_package("unknown", "pkg", &mut packages);
-        assert!(result.is_err());
+        let err = result.unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("'unknown' not available"), "got: {msg}");
     }
 
     #[test]
@@ -3885,7 +3887,9 @@ mod tests {
     fn remove_package_unknown_manager_errors() {
         let mut packages = PackagesSpec::default();
         let result = remove_package("unknown", "pkg", &mut packages);
-        assert!(result.is_err());
+        let err = result.unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("'unknown' not available"), "got: {msg}");
     }
 
     #[test]
@@ -4629,7 +4633,9 @@ version = "0.1.0"
         let mgr = ScriptedManager::from_spec(&spec);
         let printer = Printer::new(cfgd_core::output::Verbosity::Quiet);
         let result = mgr.install(&["pkg".to_string()], &printer);
-        assert!(result.is_err());
+        let err = result.unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("failpm install failed"), "got: {msg}");
     }
 
     #[test]
@@ -6173,7 +6179,12 @@ Git        Git.Git     2.43.0\n\
         let mgr = ScriptedManager::from_spec(&spec);
         let printer = Printer::new(cfgd_core::output::Verbosity::Quiet);
         let result = mgr.update(&printer);
-        assert!(result.is_err());
+        let err = result.unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("failup") && msg.contains("install failed"),
+            "got: {msg}"
+        );
     }
 
     // --- remove_package for snap (classic + packages) ---
@@ -6490,7 +6501,9 @@ Git        Git.Git     2.43.0\n\
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("nonexistent");
         let result = parse_brewfile(&path);
-        assert!(result.is_err());
+        let err = result.unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("failed to read Brewfile"), "got: {msg}");
     }
 
     #[test]
@@ -6535,7 +6548,9 @@ Git        Git.Git     2.43.0\n\
         std::fs::write(&path, "not json").unwrap();
 
         let result = parse_npm_package_json(&path);
-        assert!(result.is_err());
+        let err = result.unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("failed to parse package.json"), "got: {msg}");
     }
 
     // --- parse_cargo_toml edge cases ---
@@ -6547,7 +6562,9 @@ Git        Git.Git     2.43.0\n\
         std::fs::write(&path, "[invalid").unwrap();
 
         let result = parse_cargo_toml(&path);
-        assert!(result.is_err());
+        let err = result.unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("failed to parse Cargo.toml"), "got: {msg}");
     }
 
     // --- resolve_manifest_packages edge cases ---
@@ -7768,7 +7785,9 @@ PowerShell            Microsoft.PowerShell      7.4.0                 winget\n";
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("nonexistent");
         let result = parse_apt_manifest(&path);
-        assert!(result.is_err());
+        let err = result.unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("failed to read apt manifest"), "got: {msg}");
     }
 
     #[test]
@@ -7788,7 +7807,9 @@ PowerShell            Microsoft.PowerShell      7.4.0                 winget\n";
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("nonexistent.json");
         let result = parse_npm_package_json(&path);
-        assert!(result.is_err());
+        let err = result.unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("failed to read package.json"), "got: {msg}");
     }
 
     #[test]
@@ -7814,7 +7835,9 @@ PowerShell            Microsoft.PowerShell      7.4.0                 winget\n";
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("nonexistent.toml");
         let result = parse_cargo_toml(&path);
-        assert!(result.is_err());
+        let err = result.unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("failed to read Cargo.toml"), "got: {msg}");
     }
 
     #[test]
@@ -8389,5 +8412,598 @@ ripgrep      14.1.0        main    2024-01-10 08:15:00
         assert!(packages.contains("fd"));
         assert!(packages.contains("git"));
         assert!(packages.contains("ripgrep"));
+    }
+
+    // =========================================================================
+    // Phase 3a: Additional coverage tests — output verification, error paths
+    // =========================================================================
+
+    // --- print_caveats output verification ---
+
+    #[test]
+    fn print_caveats_outputs_subheader_and_warnings() {
+        let (printer, buf) = Printer::for_test();
+        let notes = vec![
+            PostInstallNote {
+                manager: "brew".to_string(),
+                message: "Add /opt/homebrew/bin to PATH".to_string(),
+            },
+            PostInstallNote {
+                manager: "npm".to_string(),
+                message: "npm warn deprecated request@2.88.2".to_string(),
+            },
+        ];
+        print_caveats(&printer, &notes);
+        let output = buf.lock().unwrap();
+        assert!(
+            output.contains("Post-install notes"),
+            "missing subheader, got: {}",
+            *output
+        );
+        assert!(
+            output.contains("[brew] Add /opt/homebrew/bin to PATH"),
+            "missing brew caveat, got: {}",
+            *output
+        );
+        assert!(
+            output.contains("[npm] npm warn deprecated request@2.88.2"),
+            "missing npm caveat, got: {}",
+            *output
+        );
+    }
+
+    #[test]
+    fn print_caveats_empty_produces_no_output() {
+        let (printer, buf) = Printer::for_test();
+        print_caveats(&printer, &[]);
+        let output = buf.lock().unwrap();
+        assert!(output.is_empty(), "expected no output, got: {}", *output);
+    }
+
+    // --- ScriptedManager error variants ---
+
+    #[test]
+    fn scripted_manager_uninstall_failure_reports_correct_error() {
+        let spec = cfgd_core::config::CustomManagerSpec {
+            name: "failrm".to_string(),
+            check: "true".to_string(),
+            list_installed: "echo".to_string(),
+            install: "echo".to_string(),
+            uninstall: "exit 1".to_string(),
+            update: None,
+            packages: vec![],
+        };
+        let mgr = ScriptedManager::from_spec(&spec);
+        let printer = Printer::new(cfgd_core::output::Verbosity::Quiet);
+        let result = mgr.uninstall(&["pkg".to_string()], &printer);
+        let err = result.unwrap_err();
+        let msg = err.to_string();
+        // run_pkg_cmd_msg with error_kind "uninstall" maps to UninstallFailed
+        assert!(
+            msg.contains("failrm") && msg.contains("uninstall failed"),
+            "got: {msg}"
+        );
+    }
+
+    #[test]
+    fn scripted_manager_list_failure_reports_correct_error() {
+        let spec = cfgd_core::config::CustomManagerSpec {
+            name: "faillist".to_string(),
+            check: "true".to_string(),
+            list_installed: "exit 1".to_string(),
+            install: "echo".to_string(),
+            uninstall: "echo".to_string(),
+            update: None,
+            packages: vec![],
+        };
+        let mgr = ScriptedManager::from_spec(&spec);
+        let result = mgr.installed_packages();
+        let err = result.unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("faillist") && msg.contains("list"),
+            "expected list error, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn scripted_manager_per_package_error_includes_package_name_as_prefix() {
+        // {package} template → run_pkg_cmd_msg with msg_prefix = the package name
+        // Verifies that the per-package error message includes both the manager
+        // name AND the specific package that failed (via msg_prefix in run_pkg_cmd_msg)
+        let spec = cfgd_core::config::CustomManagerSpec {
+            name: "prefixpm".to_string(),
+            check: "true".to_string(),
+            list_installed: "echo".to_string(),
+            install: "sh -c 'echo dependency-conflict >&2; exit 1' # {package}".to_string(),
+            uninstall: "echo".to_string(),
+            update: None,
+            packages: vec![],
+        };
+        let mgr = ScriptedManager::from_spec(&spec);
+        let printer = Printer::new(cfgd_core::output::Verbosity::Quiet);
+        let result = mgr.install(&["my-pkg".to_string()], &printer);
+        let err = result.unwrap_err();
+        let msg = err.to_string();
+        // The error should contain the package name as prefix AND the stderr content
+        assert!(
+            msg.contains("my-pkg") && msg.contains("dependency-conflict"),
+            "expected package name prefix and stderr in error, got: {msg}"
+        );
+    }
+
+    // --- run_pkg_cmd error kind dispatch ---
+    // We test all error_kind paths through ScriptedManager since it calls
+    // run_pkg_cmd_msg (for {package} mode) and run_pkg_cmd (for batch mode)
+
+    #[test]
+    fn scripted_manager_batch_install_failure_is_install_error() {
+        let spec = cfgd_core::config::CustomManagerSpec {
+            name: "batchfail".to_string(),
+            check: "true".to_string(),
+            list_installed: "echo".to_string(),
+            install: "exit 1".to_string(), // no {package}/{packages} → batch mode → run_pkg_cmd
+            uninstall: "echo".to_string(),
+            update: None,
+            packages: vec![],
+        };
+        let mgr = ScriptedManager::from_spec(&spec);
+        let printer = Printer::new(cfgd_core::output::Verbosity::Quiet);
+        let result = mgr.install(&["pkg".to_string()], &printer);
+        let err = result.unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("install failed"),
+            "expected install error, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn scripted_manager_batch_uninstall_failure() {
+        let spec = cfgd_core::config::CustomManagerSpec {
+            name: "batchrmfail".to_string(),
+            check: "true".to_string(),
+            list_installed: "echo".to_string(),
+            install: "echo".to_string(),
+            uninstall: "exit 1".to_string(), // no {package}/{packages} → batch mode
+            update: None,
+            packages: vec![],
+        };
+        let mgr = ScriptedManager::from_spec(&spec);
+        let printer = Printer::new(cfgd_core::output::Verbosity::Quiet);
+        let result = mgr.uninstall(&["pkg".to_string()], &printer);
+        let err = result.unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("uninstall failed"),
+            "expected uninstall error, got: {msg}"
+        );
+    }
+
+    // --- apply_packages output verification ---
+
+    #[test]
+    fn apply_packages_skip_prints_warning() {
+        let (printer, buf) = Printer::for_test();
+        let actions = vec![PackageAction::Skip {
+            manager: "snap".into(),
+            reason: "'snap' not available — cannot auto-install on this platform".into(),
+            origin: "local".into(),
+        }];
+        apply_packages(&actions, &[], &printer).unwrap();
+        let output = buf.lock().unwrap();
+        assert!(
+            output.contains("snap") && output.contains("cannot auto-install"),
+            "expected skip warning, got: {}",
+            *output
+        );
+    }
+
+    // --- ScriptedManager with stderr error messages ---
+
+    #[test]
+    fn scripted_manager_install_stderr_in_error_message() {
+        let spec = cfgd_core::config::CustomManagerSpec {
+            name: "stderrpm".to_string(),
+            check: "true".to_string(),
+            list_installed: "echo".to_string(),
+            install: "sh -c 'echo custom-error-text >&2; exit 1'".to_string(),
+            uninstall: "echo".to_string(),
+            update: None,
+            packages: vec![],
+        };
+        let mgr = ScriptedManager::from_spec(&spec);
+        let printer = Printer::new(cfgd_core::output::Verbosity::Quiet);
+        let result = mgr.install(&["pkg".to_string()], &printer);
+        let err = result.unwrap_err();
+        let msg = err.to_string();
+        // run_pkg_cmd captures stderr and includes it in the error message
+        assert!(
+            msg.contains("custom-error-text"),
+            "expected stderr in error, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn scripted_manager_list_stderr_in_error_message() {
+        let spec = cfgd_core::config::CustomManagerSpec {
+            name: "stderrlist".to_string(),
+            check: "true".to_string(),
+            list_installed: "sh -c 'echo list-error-text >&2; exit 1'".to_string(),
+            install: "echo".to_string(),
+            uninstall: "echo".to_string(),
+            update: None,
+            packages: vec![],
+        };
+        let mgr = ScriptedManager::from_spec(&spec);
+        let result = mgr.installed_packages();
+        let err = result.unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("list-error-text"),
+            "expected stderr in list error, got: {msg}"
+        );
+    }
+
+    // --- extract_caveats with combined stdout+stderr ---
+
+    #[test]
+    fn extract_caveats_brew_caveats_in_both_stdout_and_stderr() {
+        let output = test_cmd_output(
+            "==> Caveats\nStdout caveat here\n==> Done\n",
+            "==> Caveats\nStderr caveat here\n",
+        );
+        let notes = extract_caveats("brew", &output);
+        assert_eq!(notes.len(), 2);
+        assert!(notes.iter().any(|n| n.message.contains("Stdout caveat")));
+        assert!(notes.iter().any(|n| n.message.contains("Stderr caveat")));
+    }
+
+    #[test]
+    fn extract_caveats_pip_in_both_streams() {
+        let output = test_cmd_output("WARNING: outdated pip\n", "WARNING: venv path conflict\n");
+        let notes = extract_caveats("pip", &output);
+        assert_eq!(notes.len(), 2);
+    }
+
+    #[test]
+    fn extract_caveats_npm_warn_uppercase_and_lowercase() {
+        let output = test_cmd_output("npm warn old-dep\nnpm WARN peer issue\n", "");
+        let notes = extract_caveats("npm", &output);
+        assert_eq!(notes.len(), 2);
+        assert!(notes.iter().all(|n| n.manager == "npm"));
+    }
+
+    #[test]
+    fn extract_caveats_brew_multiline_caveat_content() {
+        let output = test_cmd_output(
+            "==> Caveats\nLine 1 of caveat\nLine 2 of caveat\nLine 3 of caveat\n==> Summary\n",
+            "",
+        );
+        let notes = extract_caveats("brew", &output);
+        assert_eq!(notes.len(), 1);
+        assert!(notes[0].message.contains("Line 1"));
+        assert!(notes[0].message.contains("Line 2"));
+        assert!(notes[0].message.contains("Line 3"));
+    }
+
+    // --- parse helpers with realistic multi-line edge cases ---
+
+    #[test]
+    fn parse_apk_lines_real_world() {
+        // Real apk list output format
+        let output = "alpine-baselayout-3.4.3-r2 x86_64 {alpine-baselayout}\nbusybox-1.36.1-r19 x86_64 {busybox}\ncurl-8.5.0-r0 x86_64 {curl}\n";
+        let result = parse_apk_lines(output);
+        assert!(result.contains("alpine-baselayout"));
+        assert!(result.contains("busybox"));
+        assert!(result.contains("curl"));
+    }
+
+    #[test]
+    fn parse_zypper_lines_real_world_with_many_columns() {
+        let output = "\
+S  | Name           | Type     | Version        | Arch   | Repository
+---+----------------+----------+----------------+--------+-----------
+i+ | bash           | package  | 5.1.16-2.1     | x86_64 | Main
+i  | coreutils      | package  | 9.1-2.2        | x86_64 | Main
+i  | gcc            | package  | 13.2.0-1.1     | x86_64 | Main
+i  | glibc          | package  | 2.38-3.1       | x86_64 | Main
+i  | python3        | package  | 3.12.1-1.1     | x86_64 | Main
+";
+        let result = parse_zypper_lines(output);
+        assert_eq!(result.len(), 5);
+        assert!(result.contains("bash"));
+        assert!(result.contains("python3"));
+    }
+
+    #[test]
+    fn parse_dnf_lines_real_world_with_multi_word_repos() {
+        let input = "\
+Installed Packages
+NetworkManager.x86_64             1.44.2-3.fc39        @anaconda
+bash.x86_64                       5.2.21-2.fc39        @anaconda
+dnf.noarch                        4.18.2-2.fc39        @anaconda
+Last metadata expiration check: 2:15:33 ago on Mon 01 Jan 2024 12:00:00 PM UTC.
+";
+        let result = parse_dnf_lines(input);
+        assert_eq!(result.len(), 3);
+        assert!(result.contains("NetworkManager"));
+        assert!(result.contains("bash"));
+        assert!(result.contains("dnf"));
+    }
+
+    // --- winget parse with Unicode characters ---
+
+    #[test]
+    fn parse_winget_list_unicode_names() {
+        let output = "\
+Name                Id                  Version
+-------------------------------------------------
+テスト App          Test.App            1.0.0
+Git                 Git.Git             2.43.0
+";
+        let packages = parse_winget_list(output);
+        assert!(packages.contains("Test.App"));
+        assert!(packages.contains("Git.Git"));
+    }
+
+    // --- parse_tab_separated with edge cases ---
+
+    #[test]
+    fn parse_tab_separated_versions_preserves_epoch_in_version() {
+        // apt/rpm versions can have epoch: "2:8.2.4328"
+        let output = "vim\t2:8.2.4328\ngit\t1:2.39.0\n";
+        let pkgs = parse_tab_separated_versions(output);
+        assert_eq!(pkgs.len(), 2);
+        let vim = pkgs.iter().find(|p| p.name == "vim").unwrap();
+        assert_eq!(vim.version, "2:8.2.4328");
+        let git = pkgs.iter().find(|p| p.name == "git").unwrap();
+        assert_eq!(git.version, "1:2.39.0");
+    }
+
+    // --- parse_brew_versions with special package names ---
+
+    #[test]
+    fn parse_brew_versions_scoped_package_names() {
+        let output = "python@3.11 3.11.7\nnode@20 20.10.0\nopenjdk@17 17.0.9\n";
+        let pkgs = parse_brew_versions(output);
+        assert_eq!(pkgs.len(), 3);
+        assert!(
+            pkgs.iter()
+                .any(|p| p.name == "python@3.11" && p.version == "3.11.7")
+        );
+        assert!(
+            pkgs.iter()
+                .any(|p| p.name == "node@20" && p.version == "20.10.0")
+        );
+        assert!(
+            pkgs.iter()
+                .any(|p| p.name == "openjdk@17" && p.version == "17.0.9")
+        );
+    }
+
+    // --- cargo install list with path-based installs ---
+
+    #[test]
+    fn parse_cargo_install_list_path_installed() {
+        // Path-based installs show (path) instead of version
+        let output = "my-tool v0.1.0 (/home/user/projects/my-tool):\n    my-tool\nripgrep v14.1.0:\n    rg\n";
+        let pkgs = parse_cargo_install_list(output);
+        assert_eq!(pkgs.len(), 2);
+        // The first entry keeps the full "v0.1.0" after stripping 'v'
+        let my_tool = pkgs.iter().find(|p| p.name == "my-tool").unwrap();
+        assert_eq!(my_tool.version, "0.1.0 (/home/user/projects/my-tool)");
+    }
+
+    // --- pipx venvs with nested metadata ---
+
+    #[test]
+    fn parse_pipx_list_versions_with_injected_packages() {
+        let json = serde_json::json!({
+            "venvs": {
+                "black": {
+                    "metadata": {
+                        "main_package": {"package_version": "24.1.1"},
+                        "injected_packages": {
+                            "black[jupyter]": {"package_version": "24.1.1"}
+                        }
+                    }
+                }
+            }
+        });
+        let pkgs = parse_pipx_list_versions(&json);
+        // Only main_package is extracted, not injected
+        assert_eq!(pkgs.len(), 1);
+        assert_eq!(pkgs[0].name, "black");
+        assert_eq!(pkgs[0].version, "24.1.1");
+    }
+
+    // --- npm list with overrides ---
+
+    #[test]
+    fn parse_npm_list_versions_with_extra_fields() {
+        let json = serde_json::json!({
+            "version": "1.0.0",
+            "dependencies": {
+                "express": {
+                    "version": "4.18.2",
+                    "resolved": "https://registry.npmjs.org/express/-/express-4.18.2.tgz",
+                    "overridden": false
+                }
+            }
+        });
+        let pkgs = parse_npm_list_versions(&json);
+        assert_eq!(pkgs.len(), 1);
+        assert_eq!(pkgs[0].name, "express");
+        assert_eq!(pkgs[0].version, "4.18.2");
+    }
+
+    // --- choco list with .extension packages ---
+
+    #[test]
+    fn chocolatey_parse_list_extension_packages() {
+        let output = "Chocolatey v2.2.2\n\
+                      chocolatey 2.2.2\n\
+                      chocolatey-core.extension 1.4.0\n\
+                      chocolatey-windowsupdate.extension 1.0.5\n\
+                      dotnetfx 4.8.0.20220524\n\
+                      4 packages installed.";
+        let packages = parse_choco_list(output);
+        assert_eq!(packages.len(), 4);
+        assert!(packages.contains("chocolatey-core.extension"));
+        assert!(packages.contains("chocolatey-windowsupdate.extension"));
+        assert!(packages.contains("dotnetfx"));
+    }
+
+    // --- resolve_manifest_packages with dedup across inline+file ---
+
+    #[test]
+    fn resolve_manifest_packages_apt_dedup() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("pkgs.txt"), "curl\nwget\ngit\n").unwrap();
+
+        let mut packages = PackagesSpec {
+            apt: Some(cfgd_core::config::AptSpec {
+                file: Some("pkgs.txt".into()),
+                // "curl" already inline — should not duplicate
+                packages: vec!["curl".into(), "vim".into()],
+            }),
+            ..Default::default()
+        };
+
+        resolve_manifest_packages(&mut packages, dir.path()).unwrap();
+        let apt = packages.apt.as_ref().unwrap();
+        let curl_count = apt.packages.iter().filter(|p| *p == "curl").count();
+        assert_eq!(curl_count, 1, "curl should not be duplicated");
+        assert!(apt.packages.contains(&"wget".to_string()));
+        assert!(apt.packages.contains(&"git".to_string()));
+        assert!(apt.packages.contains(&"vim".to_string()));
+    }
+
+    #[test]
+    fn resolve_manifest_packages_cargo_dedup() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("Cargo.toml"),
+            "[dependencies]\nserde = \"1\"\ntokio = \"1\"\n",
+        )
+        .unwrap();
+
+        let mut packages = PackagesSpec {
+            cargo: Some(cfgd_core::config::CargoSpec {
+                file: Some("Cargo.toml".into()),
+                packages: vec!["serde".into(), "clap".into()],
+            }),
+            ..Default::default()
+        };
+
+        resolve_manifest_packages(&mut packages, dir.path()).unwrap();
+        let cargo = packages.cargo.as_ref().unwrap();
+        let serde_count = cargo.packages.iter().filter(|p| *p == "serde").count();
+        assert_eq!(serde_count, 1, "serde should not be duplicated");
+        assert!(cargo.packages.contains(&"tokio".to_string()));
+        assert!(cargo.packages.contains(&"clap".to_string()));
+    }
+
+    #[test]
+    fn resolve_manifest_packages_npm_dedup() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("package.json"),
+            r#"{"dependencies": {"express": "^4", "lodash": "^4"}}"#,
+        )
+        .unwrap();
+
+        let mut packages = PackagesSpec {
+            npm: Some(cfgd_core::config::NpmSpec {
+                file: Some("package.json".into()),
+                global: vec!["express".into(), "typescript".into()],
+            }),
+            ..Default::default()
+        };
+
+        resolve_manifest_packages(&mut packages, dir.path()).unwrap();
+        let npm = packages.npm.as_ref().unwrap();
+        let express_count = npm.global.iter().filter(|p| *p == "express").count();
+        assert_eq!(express_count, 1, "express should not be duplicated");
+        assert!(npm.global.contains(&"lodash".to_string()));
+        assert!(npm.global.contains(&"typescript".to_string()));
+    }
+
+    // --- ScriptedManager with update command that has stderr ---
+
+    #[test]
+    fn scripted_manager_update_failure_includes_stderr() {
+        let spec = cfgd_core::config::CustomManagerSpec {
+            name: "upfail".to_string(),
+            check: "true".to_string(),
+            list_installed: "echo".to_string(),
+            install: "echo".to_string(),
+            uninstall: "echo".to_string(),
+            update: Some("sh -c 'echo update-err >&2; exit 1'".to_string()),
+            packages: vec![],
+        };
+        let mgr = ScriptedManager::from_spec(&spec);
+        let printer = Printer::new(cfgd_core::output::Verbosity::Quiet);
+        let result = mgr.update(&printer);
+        let err = result.unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("update-err"),
+            "expected stderr in update error, got: {msg}"
+        );
+    }
+
+    // --- plan_packages with sub-manager that has no parent bootstrapping ---
+
+    #[test]
+    fn plan_sub_manager_skips_when_parent_not_bootstrapping() {
+        // brew-cask is unavailable, brew is NOT being bootstrapped → cask should Skip
+        let brew = MockPackageManager::new("brew", true, vec!["ripgrep"]); // available
+        let cask = MockPackageManager::new("brew-cask", false, vec![]); // unavailable, can't bootstrap
+
+        let profile = test_profile(PackagesSpec {
+            brew: Some(cfgd_core::config::BrewSpec {
+                formulae: vec!["ripgrep".into()],
+                casks: vec!["firefox".into()],
+                ..Default::default()
+            }),
+            ..Default::default()
+        });
+
+        let managers: Vec<&dyn PackageManager> = vec![&brew, &cask];
+        let actions = plan_packages(&profile, &managers).unwrap();
+
+        // brew-cask is unavailable and non-bootstrappable, and parent is not being bootstrapped
+        assert!(actions.iter().any(|a| matches!(
+            a,
+            PackageAction::Skip { manager, .. } if manager == "brew-cask"
+        )));
+    }
+
+    // --- plan_packages with brew-cask bootstrapping through brew ---
+
+    #[test]
+    fn plan_brew_cask_installs_when_brew_bootstrapping() {
+        let brew = MockPackageManager::new("brew", false, vec![]).with_bootstrap();
+        let cask = MockPackageManager::new("brew-cask", false, vec![]);
+
+        let profile = test_profile(PackagesSpec {
+            brew: Some(cfgd_core::config::BrewSpec {
+                formulae: vec!["ripgrep".into()],
+                casks: vec!["firefox".into()],
+                ..Default::default()
+            }),
+            ..Default::default()
+        });
+
+        let managers: Vec<&dyn PackageManager> = vec![&brew, &cask];
+        let actions = plan_packages(&profile, &managers).unwrap();
+
+        // brew-cask should get Install (not Skip) because brew parent is being bootstrapped
+        assert!(actions.iter().any(|a| matches!(
+            a,
+            PackageAction::Install { manager, .. } if manager == "brew-cask"
+        )));
     }
 }

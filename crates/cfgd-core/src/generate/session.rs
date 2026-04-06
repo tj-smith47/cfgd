@@ -219,6 +219,10 @@ mod tests {
         let yaml =
             "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: nvim\nspec: {}\n";
         let result = session.write_profile_yaml("nvim", yaml);
-        assert!(result.is_err());
+        let err_msg = format!("{}", result.unwrap_err());
+        assert!(
+            err_msg.contains("Invalid profile YAML"),
+            "expected validation error about wrong kind, got: {err_msg}"
+        );
     }
 }

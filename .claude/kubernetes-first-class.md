@@ -1006,7 +1006,7 @@ Endpoint: `POST /convert`. Implementation: add `conversion: Webhook` to CRD spec
 
 - Unit tests: CRD validation (36), controllers (13), gateway DB (11), fleet (2), server_client (14)
 - E2E: operator (T01-T10), full-stack, CLI, node — all in CI
-- CI: fmt, clippy, test with tarpaulin coverage, audit script
+- CI: fmt, clippy, test with llvm-cov coverage, audit script
 
 ### Gaps
 

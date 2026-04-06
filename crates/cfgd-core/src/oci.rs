@@ -2459,7 +2459,15 @@ mod tests {
     #[test]
     fn parse_platform_target_no_slash_fails() {
         let result = parse_platform_target("linuxamd64");
-        assert!(result.is_err());
+        assert!(
+            matches!(result, Err(OciError::BuildError { .. })),
+            "expected BuildError, got: {result:?}"
+        );
+        let err_msg = format!("{}", result.unwrap_err());
+        assert!(
+            err_msg.contains("invalid platform target"),
+            "expected 'invalid platform target' message, got: {err_msg}"
+        );
     }
 
     // --- sha256_digest ---
@@ -2539,7 +2547,7 @@ mod tests {
         let head_mock = server
             .mock(
                 "HEAD",
-                mockito::Matcher::Regex(format!(r"/v2/test/mod/blobs/sha256:.*")),
+                mockito::Matcher::Regex(r"/v2/test/mod/blobs/sha256:.*".to_string()),
             )
             .with_status(404)
             .create();
@@ -2889,9 +2897,9 @@ mod tests {
     fn authenticated_request_handles_401_token_exchange() {
         let mut server = mockito::Server::new();
 
+        let token_url = format!("{}/token", server.url());
         let www_auth = format!(
-            r#"Bearer realm="{}",service="test.io",scope="repository:test/repo:pull""#,
-            format!("{}/token", server.url())
+            r#"Bearer realm="{token_url}",service="test.io",scope="repository:test/repo:pull""#,
         );
 
         // First request returns 401 with Www-Authenticate
@@ -2983,7 +2991,8 @@ mod tests {
 
         let url = format!("{}/v2/test/repo/tags/list", server.url());
         let result = authenticated_request(&agent, "GET", &url, Some(&auth), None, None, None);
-        assert!(result.is_ok());
+        let resp = result.expect("authenticated request should succeed with basic auth");
+        assert_eq!(resp.status(), 200);
     }
 
     #[test]
@@ -3107,7 +3116,7 @@ mod tests {
             .build();
 
         let result = check_signature_exists(&agent, &oci_ref, None);
-        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), (), "signature check should return Ok(())");
     }
 
     #[test]
@@ -3156,7 +3165,11 @@ mod tests {
             .build();
 
         let result = check_signature_exists(&agent, &oci_ref, None);
-        assert!(result.is_ok());
+        assert_eq!(
+            result.unwrap(),
+            (),
+            "digest-referenced signature check should return Ok(())"
+        );
     }
 
     #[test]
@@ -3185,7 +3198,8 @@ mod tests {
             Some("application/vnd.oci.image.manifest.v1+json"),
             Some(body_content),
         );
-        assert!(result.is_ok());
+        let resp = result.expect("PUT with body should succeed");
+        assert_eq!(resp.status(), 201);
     }
 
     #[test]

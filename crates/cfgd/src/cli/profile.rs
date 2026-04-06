@@ -1247,17 +1247,29 @@ mod tests {
 
     #[test]
     fn parse_manager_package_missing_colon() {
-        assert!(parse_manager_package("brewcurl").is_err());
+        let err = parse_manager_package("brewcurl").unwrap_err();
+        assert!(
+            err.to_string().contains("expected manager:package"),
+            "should mention expected format, got: {err}"
+        );
     }
 
     #[test]
     fn parse_manager_package_empty_manager() {
-        assert!(parse_manager_package(":curl").is_err());
+        let err = parse_manager_package(":curl").unwrap_err();
+        assert!(
+            err.to_string().contains("cannot be empty"),
+            "should mention empty manager, got: {err}"
+        );
     }
 
     #[test]
     fn parse_manager_package_empty_package() {
-        assert!(parse_manager_package("brew:").is_err());
+        let err = parse_manager_package("brew:").unwrap_err();
+        assert!(
+            err.to_string().contains("cannot be empty"),
+            "should mention empty package, got: {err}"
+        );
     }
 
     // --- parse_secret_spec ---
@@ -1282,17 +1294,29 @@ mod tests {
 
     #[test]
     fn parse_secret_spec_missing_colon() {
-        assert!(parse_secret_spec("noseparator").is_err());
+        let err = parse_secret_spec("noseparator").unwrap_err();
+        assert!(
+            err.to_string().contains("expected source:target"),
+            "should mention expected format, got: {err}"
+        );
     }
 
     #[test]
     fn parse_secret_spec_empty_source() {
-        assert!(parse_secret_spec(":target").is_err());
+        let err = parse_secret_spec(":target").unwrap_err();
+        assert!(
+            err.to_string().contains("cannot be empty"),
+            "should mention empty source, got: {err}"
+        );
     }
 
     #[test]
     fn parse_secret_spec_empty_target() {
-        assert!(parse_secret_spec("source:").is_err());
+        let err = parse_secret_spec("source:").unwrap_err();
+        assert!(
+            err.to_string().contains("cannot be empty"),
+            "should mention empty target, got: {err}"
+        );
     }
 
     // --- update_script_list ---
@@ -1584,13 +1608,17 @@ spec:
     fn profile_show_named_profile() {
         let dir = setup_config_dir();
         let cli = test_cli(dir.path());
-        let printer = make_printer();
+        let (printer, buf) = Printer::for_test();
 
-        let result = cmd_profile_show(&cli, &printer, Some("default"));
+        cmd_profile_show(&cli, &printer, Some("default")).unwrap();
+        let output = buf.lock().unwrap();
         assert!(
-            result.is_ok(),
-            "cmd_profile_show should succeed: {:?}",
-            result.err()
+            output.contains("Resolved Profile"),
+            "should show resolved profile header, got: {output}"
+        );
+        assert!(
+            output.contains("EDITOR"),
+            "should show EDITOR env var from default profile, got: {output}"
         );
     }
 
@@ -1598,14 +1626,18 @@ spec:
     fn profile_show_active_profile() {
         let dir = setup_config_dir();
         let cli = test_cli(dir.path());
-        let printer = make_printer();
+        let (printer, buf) = Printer::for_test();
 
         // None means "show the active profile" — reads from cfgd.yaml
-        let result = cmd_profile_show(&cli, &printer, None);
+        cmd_profile_show(&cli, &printer, None).unwrap();
+        let output = buf.lock().unwrap();
         assert!(
-            result.is_ok(),
-            "cmd_profile_show(None) should use active profile: {:?}",
-            result.err()
+            output.contains("Resolved Profile"),
+            "should show resolved profile header, got: {output}"
+        );
+        assert!(
+            output.contains("EDITOR"),
+            "active profile (default) should contain EDITOR env var, got: {output}"
         );
     }
 
@@ -1613,14 +1645,22 @@ spec:
     fn profile_show_inherited_profile_resolves_layers() {
         let dir = setup_config_dir();
         let cli = test_cli(dir.path());
-        let printer = make_printer();
+        let (printer, buf) = Printer::for_test();
 
         // work inherits from default, should resolve both layers
-        let result = cmd_profile_show(&cli, &printer, Some("work"));
+        cmd_profile_show(&cli, &printer, Some("work")).unwrap();
+        let output = buf.lock().unwrap();
         assert!(
-            result.is_ok(),
-            "showing inherited profile should succeed: {:?}",
-            result.err()
+            output.contains("Layers"),
+            "should show Layers section, got: {output}"
+        );
+        assert!(
+            output.contains("default"),
+            "should list 'default' as an inherited layer, got: {output}"
+        );
+        assert!(
+            output.contains("work"),
+            "should list 'work' layer, got: {output}"
         );
     }
 
@@ -1630,8 +1670,11 @@ spec:
         let cli = test_cli(dir.path());
         let printer = make_printer();
 
-        let result = cmd_profile_show(&cli, &printer, Some("nonexistent"));
-        assert!(result.is_err(), "showing nonexistent profile should fail");
+        let err = cmd_profile_show(&cli, &printer, Some("nonexistent")).unwrap_err();
+        assert!(
+            err.to_string().contains("not found"),
+            "should mention profile not found, got: {err}"
+        );
     }
 
     #[test]
@@ -1641,10 +1684,10 @@ spec:
         let printer = make_printer();
 
         // No cfgd.yaml — showing active profile should fail
-        let result = cmd_profile_show(&cli, &printer, None);
+        let err = cmd_profile_show(&cli, &printer, None).unwrap_err();
         assert!(
-            result.is_err(),
-            "cmd_profile_show with no config should fail"
+            err.to_string().contains("not found"),
+            "should mention config not found, got: {err}"
         );
     }
 
@@ -1654,13 +1697,17 @@ spec:
     fn profile_list_shows_profiles() {
         let dir = setup_config_dir();
         let cli = test_cli(dir.path());
-        let printer = make_printer();
+        let (printer, buf) = Printer::for_test();
 
-        let result = cmd_profile_list(&cli, &printer);
+        cmd_profile_list(&cli, &printer).unwrap();
+        let output = buf.lock().unwrap();
         assert!(
-            result.is_ok(),
-            "cmd_profile_list should succeed: {:?}",
-            result.err()
+            output.contains("default"),
+            "should list 'default' profile, got: {output}"
+        );
+        assert!(
+            output.contains("work"),
+            "should list 'work' profile, got: {output}"
         );
     }
 
@@ -1670,13 +1717,13 @@ spec:
         std::fs::write(dir.path().join("cfgd.yaml"), TEST_CONFIG_YAML).unwrap();
         // Don't create profiles dir
         let cli = test_cli(dir.path());
-        let printer = make_printer();
+        let (printer, buf) = Printer::for_test();
 
-        let result = cmd_profile_list(&cli, &printer);
+        cmd_profile_list(&cli, &printer).unwrap();
+        let output = buf.lock().unwrap();
         assert!(
-            result.is_ok(),
-            "cmd_profile_list with no profiles dir should succeed: {:?}",
-            result.err()
+            output.contains("not found"),
+            "should warn about missing profiles dir, got: {output}"
         );
     }
 
@@ -1687,13 +1734,13 @@ spec:
         std::fs::create_dir_all(dir.path().join("profiles")).unwrap();
 
         let cli = test_cli(dir.path());
-        let printer = make_printer();
+        let (printer, buf) = Printer::for_test();
 
-        let result = cmd_profile_list(&cli, &printer);
+        cmd_profile_list(&cli, &printer).unwrap();
+        let output = buf.lock().unwrap();
         assert!(
-            result.is_ok(),
-            "cmd_profile_list with empty profiles dir should succeed: {:?}",
-            result.err()
+            output.contains("No profiles found"),
+            "should indicate no profiles found, got: {output}"
         );
     }
 
@@ -1743,8 +1790,11 @@ spec:
         let cli = test_cli(dir.path());
         let printer = make_printer();
 
-        let result = cmd_profile_switch(&cli, "default", &printer);
-        assert!(result.is_err(), "switch with no config should fail");
+        let err = cmd_profile_switch(&cli, "default", &printer).unwrap_err();
+        assert!(
+            err.to_string().contains("No cfgd.yaml found"),
+            "should mention missing config, got: {err}"
+        );
     }
 
     #[test]
@@ -1913,20 +1963,28 @@ spec:
     fn profile_create_with_system_settings() {
         let dir = setup_config_dir();
         let cli = test_cli(dir.path());
-        let printer = make_printer();
+        let (printer, buf) = Printer::for_test();
 
         let mut args = make_profile_create_args("sys-test");
         args.system = vec!["sysctl=net.core.somaxconn".to_string()];
 
-        let result = cmd_profile_create(&cli, &printer, &args);
-        assert!(
-            result.is_ok(),
-            "cmd_profile_create with system should succeed: {:?}",
-            result.err()
-        );
+        cmd_profile_create(&cli, &printer, &args).unwrap();
 
         let doc = config::load_profile(&dir.path().join("profiles").join("sys-test.yaml")).unwrap();
-        assert!(doc.spec.system.contains_key("sysctl"));
+        assert!(
+            doc.spec.system.contains_key("sysctl"),
+            "profile should have sysctl system setting"
+        );
+        assert_eq!(
+            doc.spec.system["sysctl"],
+            serde_yaml::Value::String("net.core.somaxconn".to_string()),
+            "sysctl value should match"
+        );
+        let output = buf.lock().unwrap();
+        assert!(
+            output.contains("Created profile"),
+            "should confirm profile creation, got: {output}"
+        );
     }
 
     #[test]
@@ -1989,10 +2047,10 @@ spec:
 
         let mut args = make_profile_create_args(".hidden");
         args.env = vec!["X=1".to_string()]; // avoid interactive
-        let result = cmd_profile_create(&cli, &printer, &args);
+        let err = cmd_profile_create(&cli, &printer, &args).unwrap_err();
         assert!(
-            result.is_err(),
-            "profile with leading dot should fail validation"
+            err.to_string().contains("cannot start with '.' or '-'"),
+            "should reject leading dot in name, got: {err}"
         );
     }
 
@@ -2002,24 +2060,29 @@ spec:
     fn profile_update_add_env() {
         let dir = setup_config_dir();
         let cli = test_cli(dir.path());
-        let printer = make_printer();
+        let (printer, buf) = Printer::for_test();
 
         let mut args = make_profile_update_args();
         args.env = vec!["NEW_VAR=hello".to_string()];
 
-        let result = cmd_profile_update(&cli, &printer, "default", &args);
-        assert!(
-            result.is_ok(),
-            "cmd_profile_update should succeed: {:?}",
-            result.err()
-        );
+        cmd_profile_update(&cli, &printer, "default", &args).unwrap();
 
         let doc = config::load_profile(&dir.path().join("profiles").join("default.yaml")).unwrap();
         assert!(
             doc.spec
                 .env
                 .iter()
-                .any(|e| e.name == "NEW_VAR" && e.value == "hello")
+                .any(|e| e.name == "NEW_VAR" && e.value == "hello"),
+            "NEW_VAR=hello should be in the profile env"
+        );
+        let output = buf.lock().unwrap();
+        assert!(
+            output.contains("Set env: NEW_VAR=hello"),
+            "should confirm env was set, got: {output}"
+        );
+        assert!(
+            output.contains("Updated profile"),
+            "should confirm profile updated, got: {output}"
         );
     }
 
@@ -2027,22 +2090,26 @@ spec:
     fn profile_update_remove_env() {
         let dir = setup_config_dir();
         let cli = test_cli(dir.path());
-        let printer = make_printer();
+        let (printer, buf) = Printer::for_test();
 
         let mut args = make_profile_update_args();
         args.env = vec!["-EDITOR".to_string()];
 
-        let result = cmd_profile_update(&cli, &printer, "default", &args);
-        assert!(
-            result.is_ok(),
-            "removing env should succeed: {:?}",
-            result.err()
-        );
+        cmd_profile_update(&cli, &printer, "default", &args).unwrap();
 
         let doc = config::load_profile(&dir.path().join("profiles").join("default.yaml")).unwrap();
         assert!(
             !doc.spec.env.iter().any(|e| e.name == "EDITOR"),
             "EDITOR should be removed"
+        );
+        let output = buf.lock().unwrap();
+        assert!(
+            output.contains("Removed env: EDITOR"),
+            "should confirm env removal, got: {output}"
+        );
+        assert!(
+            output.contains("Updated profile"),
+            "should confirm profile updated, got: {output}"
         );
     }
 
@@ -2050,24 +2117,29 @@ spec:
     fn profile_update_add_alias() {
         let dir = setup_config_dir();
         let cli = test_cli(dir.path());
-        let printer = make_printer();
+        let (printer, buf) = Printer::for_test();
 
         let mut args = make_profile_update_args();
         args.aliases = vec!["gs=git status".to_string()];
 
-        let result = cmd_profile_update(&cli, &printer, "default", &args);
-        assert!(
-            result.is_ok(),
-            "adding alias should succeed: {:?}",
-            result.err()
-        );
+        cmd_profile_update(&cli, &printer, "default", &args).unwrap();
 
         let doc = config::load_profile(&dir.path().join("profiles").join("default.yaml")).unwrap();
         assert!(
             doc.spec
                 .aliases
                 .iter()
-                .any(|a| a.name == "gs" && a.command == "git status")
+                .any(|a| a.name == "gs" && a.command == "git status"),
+            "gs alias should be added to profile"
+        );
+        let output = buf.lock().unwrap();
+        assert!(
+            output.contains("Set alias: gs=git status"),
+            "should confirm alias was set, got: {output}"
+        );
+        assert!(
+            output.contains("Updated profile"),
+            "should confirm profile updated, got: {output}"
         );
     }
 
@@ -2188,20 +2260,32 @@ spec:
     fn profile_update_add_system_setting() {
         let dir = setup_config_dir();
         let cli = test_cli(dir.path());
-        let printer = make_printer();
+        let (printer, buf) = Printer::for_test();
 
         let mut args = make_profile_update_args();
         args.system = vec!["sysctl=net.core.somaxconn".to_string()];
 
-        let result = cmd_profile_update(&cli, &printer, "default", &args);
-        assert!(
-            result.is_ok(),
-            "adding system should succeed: {:?}",
-            result.err()
-        );
+        cmd_profile_update(&cli, &printer, "default", &args).unwrap();
 
         let doc = config::load_profile(&dir.path().join("profiles").join("default.yaml")).unwrap();
-        assert!(doc.spec.system.contains_key("sysctl"));
+        assert!(
+            doc.spec.system.contains_key("sysctl"),
+            "profile should have sysctl system setting"
+        );
+        assert_eq!(
+            doc.spec.system["sysctl"],
+            serde_yaml::Value::String("net.core.somaxconn".to_string()),
+            "sysctl value should match"
+        );
+        let output = buf.lock().unwrap();
+        assert!(
+            output.contains("Set system: sysctl=net.core.somaxconn"),
+            "should confirm system setting was set, got: {output}"
+        );
+        assert!(
+            output.contains("Updated profile"),
+            "should confirm profile updated, got: {output}"
+        );
     }
 
     #[test]
@@ -2339,14 +2423,19 @@ spec:
     fn profile_update_no_changes_succeeds() {
         let dir = setup_config_dir();
         let cli = test_cli(dir.path());
-        let printer = make_printer();
+        let (printer, buf) = Printer::for_test();
 
         let args = make_profile_update_args();
-        let result = cmd_profile_update(&cli, &printer, "default", &args);
+        cmd_profile_update(&cli, &printer, "default", &args).unwrap();
+
+        let output = buf.lock().unwrap();
         assert!(
-            result.is_ok(),
-            "update with no changes should succeed: {:?}",
-            result.err()
+            output.contains("No changes specified"),
+            "should report no changes, got: {output}"
+        );
+        assert!(
+            !output.contains("Updated profile"),
+            "should NOT report profile updated when no changes were made, got: {output}"
         );
     }
 
@@ -2357,10 +2446,10 @@ spec:
         let printer = make_printer();
 
         let args = make_profile_update_args();
-        let result = cmd_profile_update(&cli, &printer, ".bad-name", &args);
+        let err = cmd_profile_update(&cli, &printer, ".bad-name", &args).unwrap_err();
         assert!(
-            result.is_err(),
-            "invalid profile name should fail validation"
+            err.to_string().contains("cannot start with '.' or '-'"),
+            "should reject leading dot in name, got: {err}"
         );
     }
 
@@ -2392,18 +2481,18 @@ spec:
     fn profile_delete_with_yes_flag() {
         let dir = setup_config_dir();
         let cli = test_cli(dir.path());
-        let printer = make_printer();
+        let (printer, buf) = Printer::for_test();
 
         // Delete 'work' (not active, not inherited by others)
-        let result = cmd_profile_delete(&cli, &printer, "work", true);
-        assert!(
-            result.is_ok(),
-            "cmd_profile_delete should succeed: {:?}",
-            result.err()
-        );
+        cmd_profile_delete(&cli, &printer, "work", true).unwrap();
 
         let profile_path = dir.path().join("profiles").join("work.yaml");
         assert!(!profile_path.exists(), "profile file should be deleted");
+        let output = buf.lock().unwrap();
+        assert!(
+            output.contains("Deleted profile 'work'"),
+            "should confirm deletion, got: {output}"
+        );
     }
 
     #[test]
@@ -2487,10 +2576,302 @@ spec:
         let cli = test_cli(dir.path());
         let printer = make_printer();
 
-        let result = cmd_profile_delete(&cli, &printer, "-bad", true);
+        let err = cmd_profile_delete(&cli, &printer, "-bad", true).unwrap_err();
         assert!(
-            result.is_err(),
-            "invalid profile name should fail validation"
+            err.to_string().contains("cannot start with '.' or '-'"),
+            "should reject leading dash in name, got: {err}"
         );
+    }
+
+    // --- JSON output tests ─────────────────────────────────────
+
+    fn test_cli_json(dir: &Path) -> super::super::Cli {
+        super::super::Cli {
+            output: super::super::OutputFormatArg(cfgd_core::output::OutputFormat::Json),
+            ..test_cli(dir)
+        }
+    }
+
+    #[test]
+    fn profile_show_json_schema() {
+        let dir = setup_config_dir();
+        let cli = test_cli_json(dir.path());
+        let (printer, buf) = Printer::for_test_with_format(cfgd_core::output::OutputFormat::Json);
+
+        cmd_profile_show(&cli, &printer, Some("default")).unwrap();
+
+        let output = buf.lock().unwrap();
+        // JSON output may have preamble text (key_value lines) — find first '{'
+        let start = output.find('{').expect("should have JSON object in output");
+        let json: serde_json::Value = serde_json::from_str(output[start..].trim()).unwrap();
+        assert!(
+            json.get("layers").is_some(),
+            "JSON should have layers field, got: {json}"
+        );
+        assert!(
+            json.get("merged").is_some(),
+            "JSON should have merged field, got: {json}"
+        );
+    }
+
+    #[test]
+    fn profile_list_json_schema() {
+        let dir = setup_config_dir();
+        let cli = test_cli_json(dir.path());
+        let (printer, buf) = Printer::for_test_with_format(cfgd_core::output::OutputFormat::Json);
+
+        cmd_profile_list(&cli, &printer).unwrap();
+
+        let output = buf.lock().unwrap();
+        let json: serde_json::Value = serde_json::from_str(output.trim()).unwrap();
+        assert!(json.is_array(), "should be an array");
+        let arr = json.as_array().unwrap();
+        assert_eq!(arr.len(), 2, "should list default and work profiles");
+
+        for entry in arr {
+            assert!(entry.get("name").is_some(), "each entry should have name");
+            assert!(
+                entry.get("active").is_some(),
+                "each entry should have active"
+            );
+            assert!(
+                entry.get("moduleCount").is_some(),
+                "each entry should have moduleCount"
+            );
+        }
+
+        // Verify one is active
+        let active_count = arr.iter().filter(|e| e["active"] == true).count();
+        assert_eq!(active_count, 1, "exactly one profile should be active");
+    }
+
+    #[test]
+    fn profile_list_json_empty() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("cfgd.yaml"), TEST_CONFIG_YAML).unwrap();
+        std::fs::create_dir_all(dir.path().join("profiles")).unwrap();
+
+        let cli = test_cli_json(dir.path());
+        let (printer, buf) = Printer::for_test_with_format(cfgd_core::output::OutputFormat::Json);
+
+        cmd_profile_list(&cli, &printer).unwrap();
+
+        let output = buf.lock().unwrap();
+        let json: serde_json::Value = serde_json::from_str(output.trim()).unwrap();
+        assert!(json.is_array());
+        assert_eq!(json.as_array().unwrap().len(), 0);
+    }
+
+    #[test]
+    fn profile_list_json_no_profiles_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("cfgd.yaml"), TEST_CONFIG_YAML).unwrap();
+
+        let cli = test_cli_json(dir.path());
+        let (printer, buf) = Printer::for_test_with_format(cfgd_core::output::OutputFormat::Json);
+
+        cmd_profile_list(&cli, &printer).unwrap();
+
+        let output = buf.lock().unwrap();
+        let json: serde_json::Value = serde_json::from_str(output.trim()).unwrap();
+        assert!(json.is_array());
+        assert_eq!(json.as_array().unwrap().len(), 0);
+    }
+
+    // --- cmd_profile_show — content sections ────────────────────
+
+    #[test]
+    fn profile_show_displays_files_section() {
+        let dir = setup_config_dir();
+        // Write a profile with files
+        let profile_with_files = r#"apiVersion: cfgd.io/v1alpha1
+kind: Profile
+metadata:
+  name: files-test
+spec:
+  files:
+    managed:
+      - source: profiles/files-test/files/vimrc
+        target: ~/.vimrc
+"#;
+        std::fs::write(
+            dir.path().join("profiles").join("files-test.yaml"),
+            profile_with_files,
+        )
+        .unwrap();
+
+        let cli = test_cli(dir.path());
+        let (printer, buf) = Printer::for_test();
+
+        cmd_profile_show(&cli, &printer, Some("files-test")).unwrap();
+
+        let output = buf.lock().unwrap();
+        assert!(
+            output.contains("Files"),
+            "should show Files section, got: {output}"
+        );
+        assert!(
+            output.contains("vimrc"),
+            "should show the file entry, got: {output}"
+        );
+    }
+
+    #[test]
+    fn profile_show_displays_packages_section() {
+        let dir = setup_config_dir();
+        // 'default' profile has cargo packages — verify they show up
+        let cli = test_cli(dir.path());
+        let (printer, buf) = Printer::for_test();
+
+        cmd_profile_show(&cli, &printer, Some("default")).unwrap();
+
+        let output = buf.lock().unwrap();
+        assert!(
+            output.contains("Packages"),
+            "should show Packages section, got: {output}"
+        );
+        assert!(
+            output.contains("cargo"),
+            "should show cargo packages, got: {output}"
+        );
+    }
+
+    #[test]
+    fn profile_show_displays_secrets_section() {
+        let dir = setup_config_dir();
+        let profile_with_secrets = r#"apiVersion: cfgd.io/v1alpha1
+kind: Profile
+metadata:
+  name: secret-show
+spec:
+  secrets:
+    - source: secrets/api-key.enc
+      target: ~/.config/app/key
+"#;
+        std::fs::write(
+            dir.path().join("profiles").join("secret-show.yaml"),
+            profile_with_secrets,
+        )
+        .unwrap();
+
+        let cli = test_cli(dir.path());
+        let (printer, buf) = Printer::for_test();
+
+        cmd_profile_show(&cli, &printer, Some("secret-show")).unwrap();
+
+        let output = buf.lock().unwrap();
+        assert!(
+            output.contains("Secrets"),
+            "should show Secrets section, got: {output}"
+        );
+        assert!(
+            output.contains("api-key.enc"),
+            "should show the secret source, got: {output}"
+        );
+    }
+
+    #[test]
+    fn profile_show_displays_system_section() {
+        let dir = setup_config_dir();
+        let profile_with_system = r#"apiVersion: cfgd.io/v1alpha1
+kind: Profile
+metadata:
+  name: sys-show
+spec:
+  system:
+    shell: /bin/zsh
+"#;
+        std::fs::write(
+            dir.path().join("profiles").join("sys-show.yaml"),
+            profile_with_system,
+        )
+        .unwrap();
+
+        let cli = test_cli(dir.path());
+        let (printer, buf) = Printer::for_test();
+
+        cmd_profile_show(&cli, &printer, Some("sys-show")).unwrap();
+
+        let output = buf.lock().unwrap();
+        assert!(
+            output.contains("System"),
+            "should show System section, got: {output}"
+        );
+        assert!(
+            output.contains("shell"),
+            "should show the shell system setting, got: {output}"
+        );
+    }
+
+    // --- cmd_profile_switch — output message ────────────────────
+
+    #[test]
+    fn profile_switch_shows_transition() {
+        let dir = setup_config_dir();
+        let cli = test_cli(dir.path());
+        let (printer, buf) = Printer::for_test();
+
+        cmd_profile_switch(&cli, "work", &printer).unwrap();
+
+        let output = buf.lock().unwrap();
+        assert!(
+            output.contains("default") && output.contains("work"),
+            "should show transition from default to work, got: {output}"
+        );
+    }
+
+    // --- cmd_profile_create — output messages ───────────────────
+
+    #[test]
+    fn profile_create_output_messages() {
+        let dir = setup_config_dir();
+        let cli = test_cli(dir.path());
+        let (printer, buf) = Printer::for_test();
+
+        let mut args = make_profile_create_args("fancy");
+        args.inherits = vec!["default".to_string()];
+        args.modules = vec!["shell".to_string()];
+
+        cmd_profile_create(&cli, &printer, &args).unwrap();
+
+        let output = buf.lock().unwrap();
+        assert!(
+            output.contains("Created profile 'fancy'"),
+            "should confirm creation, got: {output}"
+        );
+        assert!(
+            output.contains("Inherits"),
+            "should show inheritance info, got: {output}"
+        );
+        assert!(
+            output.contains("Modules"),
+            "should show modules info, got: {output}"
+        );
+        assert!(
+            output.contains("cfgd profile switch fancy"),
+            "should show activation hint, got: {output}"
+        );
+    }
+
+    // --- cmd_profile_update — add/remove multiple scripts ───────
+
+    #[test]
+    fn profile_update_add_multiple_script_hooks() {
+        let dir = setup_config_dir();
+        let cli = test_cli(dir.path());
+        let printer = make_printer();
+
+        let mut args = make_profile_update_args();
+        args.pre_reconcile = vec!["validate.sh".to_string()];
+        args.post_reconcile = vec!["notify.sh".to_string()];
+        args.on_change = vec!["reload.sh".to_string()];
+
+        cmd_profile_update(&cli, &printer, "default", &args).unwrap();
+
+        let doc = config::load_profile(&dir.path().join("profiles").join("default.yaml")).unwrap();
+        let scripts = doc.spec.scripts.unwrap();
+        assert_eq!(scripts.pre_reconcile.len(), 1);
+        assert_eq!(scripts.post_reconcile.len(), 1);
+        assert_eq!(scripts.on_change.len(), 1);
     }
 }

@@ -757,8 +757,11 @@ mod tests {
     fn remove_nonexistent_source() {
         let dir = tempfile::tempdir().unwrap();
         let mut mgr = SourceManager::new(dir.path());
-        let result = mgr.remove_source("nonexistent");
-        assert!(result.is_err());
+        let err = mgr.remove_source("nonexistent").unwrap_err();
+        assert!(
+            err.to_string().contains("not found"),
+            "expected 'not found' error, got: {err}"
+        );
     }
 
     #[test]
@@ -803,8 +806,11 @@ spec:
     fn detect_source_manifest_invalid() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join(SOURCE_MANIFEST_FILE), "not: valid: yaml: [").unwrap();
-        let result = detect_source_manifest(dir.path());
-        assert!(result.is_err());
+        let err = detect_source_manifest(dir.path()).unwrap_err();
+        assert!(
+            err.to_string().contains("invalid") || err.to_string().contains("ConfigSource"),
+            "expected manifest parse error, got: {err}"
+        );
     }
 
     #[test]
@@ -868,9 +874,13 @@ spec:
             },
         };
 
-        assert!(mgr.check_version_pin("test", &manifest, "~2").is_ok());
-        assert!(mgr.check_version_pin("test", &manifest, "^2").is_ok());
-        assert!(mgr.check_version_pin("test", &manifest, "~2.1").is_ok());
+        // All three pins should match version 2.1.0 — unwrap to prove success
+        mgr.check_version_pin("test", &manifest, "~2")
+            .expect("~2 should match 2.1.0");
+        mgr.check_version_pin("test", &manifest, "^2")
+            .expect("^2 should match 2.1.0");
+        mgr.check_version_pin("test", &manifest, "~2.1")
+            .expect("~2.1 should match 2.1.0");
     }
 
     #[test]
@@ -892,8 +902,12 @@ spec:
             },
         };
 
-        let result = mgr.check_version_pin("test", &manifest, "~2");
-        assert!(result.is_err());
+        let err = mgr.check_version_pin("test", &manifest, "~2").unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("3.0.0") && msg.contains("~2"),
+            "expected version mismatch with '3.0.0' and '~2', got: {msg}"
+        );
     }
 
     #[test]
@@ -901,10 +915,16 @@ spec:
         let dir = tempfile::tempdir().unwrap();
         let mgr = SourceManager::new(dir.path());
         let constraints = crate::config::SourceConstraints::default();
-        // require_signed_commits defaults to false — should pass without any repo
         assert!(
-            mgr.verify_commit_signature("test", dir.path(), &constraints)
-                .is_ok()
+            !constraints.require_signed_commits,
+            "default should be false"
+        );
+        // require_signed_commits defaults to false — should return Ok(()) without any repo
+        let result = mgr.verify_commit_signature("test", dir.path(), &constraints);
+        assert_eq!(
+            result.unwrap(),
+            (),
+            "expected Ok(()) when signatures not required"
         );
     }
 
@@ -917,10 +937,17 @@ spec:
             require_signed_commits: true,
             ..Default::default()
         };
-        // Even though require_signed_commits is true, allow_unsigned bypasses it
+        assert!(mgr.allow_unsigned, "allow_unsigned should be set");
         assert!(
-            mgr.verify_commit_signature("test", dir.path(), &constraints)
-                .is_ok()
+            constraints.require_signed_commits,
+            "require_signed_commits should be true"
+        );
+        // Even though require_signed_commits is true, allow_unsigned bypasses it
+        let result = mgr.verify_commit_signature("test", dir.path(), &constraints);
+        assert_eq!(
+            result.unwrap(),
+            (),
+            "expected Ok(()) when allow_unsigned bypasses verification"
         );
     }
 
@@ -1054,9 +1081,15 @@ spec:
         };
 
         // ~0 matches 0.0.0
-        assert!(mgr.check_version_pin("test", &manifest, "~0").is_ok());
+        mgr.check_version_pin("test", &manifest, "~0")
+            .expect("~0 should match defaulted version 0.0.0");
         // ~1 does NOT match 0.0.0
-        assert!(mgr.check_version_pin("test", &manifest, "~1").is_err());
+        let err = mgr.check_version_pin("test", &manifest, "~1").unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("0.0.0") && msg.contains("~1"),
+            "expected version mismatch with '0.0.0' and '~1', got: {msg}"
+        );
     }
 
     #[test]
@@ -1106,8 +1139,14 @@ spec:
             },
         };
 
-        let result = mgr.check_version_pin("test", &manifest, "not-a-pin");
-        assert!(result.is_err());
+        let err = mgr
+            .check_version_pin("test", &manifest, "not-a-pin")
+            .unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("not-a-pin") && msg.contains("version"),
+            "expected version mismatch error mentioning 'not-a-pin', got: {msg}"
+        );
     }
 
     #[test]
@@ -1156,8 +1195,11 @@ spec:
         .unwrap();
 
         // detect_source_manifest delegates to read_manifest which should fail
-        let result = detect_source_manifest(dir.path());
-        assert!(result.is_err());
+        let err = detect_source_manifest(dir.path()).unwrap_err();
+        assert!(
+            err.to_string().contains("no profiles") || err.to_string().contains("NoProfiles"),
+            "expected no-profiles error, got: {err}"
+        );
     }
 
     #[test]
@@ -1310,14 +1352,22 @@ spec:
         assert!(mgr.get("test-source").is_some());
 
         // Remove the source
-        let result = mgr.remove_source("test-source");
-        assert!(result.is_ok());
+        mgr.remove_source("test-source")
+            .expect("remove_source should succeed for existing cached source");
 
         // Verify it was removed from the map
         assert!(mgr.get("test-source").is_none());
+        assert!(
+            mgr.all_sources().is_empty(),
+            "sources map should be empty after removal"
+        );
 
-        // Verify the directory was removed from disk
-        assert!(!source_path.exists());
+        // Verify the directory and its contents were removed from disk
+        assert!(!source_path.exists(), "source directory should be deleted");
+        assert!(
+            !source_path.join("marker.txt").exists(),
+            "files within source directory should be deleted"
+        );
     }
 
     /// Helper: insert a fake CachedSource into a SourceManager for testing
@@ -1507,9 +1557,13 @@ spec:
         let mut mgr = SourceManager::new(dir.path());
         let printer = crate::output::Printer::new(crate::output::Verbosity::Quiet);
 
-        // Empty list should succeed
-        let result = mgr.load_sources(&[], &printer);
-        assert!(result.is_ok());
+        // Empty list should succeed and leave no sources loaded
+        mgr.load_sources(&[], &printer)
+            .expect("load_sources with empty list should succeed");
+        assert!(
+            mgr.all_sources().is_empty(),
+            "no sources should be loaded from empty list"
+        );
     }
 
     #[test]
@@ -1531,10 +1585,25 @@ spec:
 
         let clone_path = dir.path().join("clone");
         let printer = crate::output::Printer::new(crate::output::Verbosity::Quiet);
-        let result =
-            git_clone_with_fallback(&origin_path.display().to_string(), &clone_path, &printer);
-        assert!(result.is_ok(), "clone failed: {:?}", result.err());
-        assert!(clone_path.join("file.txt").exists());
+        git_clone_with_fallback(&origin_path.display().to_string(), &clone_path, &printer)
+            .expect("clone of local repo should succeed");
+
+        // Verify the cloned file exists with the correct content
+        assert!(
+            clone_path.join("file.txt").exists(),
+            "cloned file should exist"
+        );
+        let content = std::fs::read_to_string(clone_path.join("file.txt")).unwrap();
+        assert_eq!(
+            content, "hello\n",
+            "cloned file should have original content"
+        );
+
+        // Verify it is a valid git repo
+        assert!(
+            clone_path.join(".git").exists(),
+            "cloned directory should be a git repo"
+        );
     }
 
     #[test]
@@ -1544,8 +1613,12 @@ spec:
         std::fs::create_dir_all(&target).unwrap();
 
         let printer = crate::output::Printer::new(crate::output::Verbosity::Quiet);
-        let result = git_clone_with_fallback("file:///nonexistent/path/repo", &target, &printer);
-        assert!(result.is_err());
+        let err = git_clone_with_fallback("file:///nonexistent/path/repo", &target, &printer)
+            .unwrap_err();
+        assert!(
+            err.contains("Failed to clone") || err.contains("nonexistent"),
+            "expected clone failure message, got: {err}"
+        );
     }
 
     #[test]
@@ -1558,11 +1631,36 @@ spec:
         let mut mgr = SourceManager::new(dir.path());
         insert_fake_source(&mut mgr, "removable", source_path.clone());
 
-        assert!(source_path.exists());
-        let result = mgr.remove_source("removable");
-        assert!(result.is_ok());
-        assert!(!source_path.exists());
-        assert!(mgr.get("removable").is_none());
+        // Pre-conditions: source exists on disk and in cache
+        assert!(
+            source_path.exists(),
+            "source directory should exist before removal"
+        );
+        assert!(
+            source_path.join("data.txt").exists(),
+            "data file should exist before removal"
+        );
+        assert!(
+            mgr.get("removable").is_some(),
+            "source should be in cache before removal"
+        );
+
+        mgr.remove_source("removable")
+            .expect("remove_source should succeed for existing cached source");
+
+        // Post-conditions: both directory and cache entry are gone
+        assert!(
+            !source_path.exists(),
+            "source directory should be deleted after removal"
+        );
+        assert!(
+            mgr.get("removable").is_none(),
+            "source should be removed from cache"
+        );
+        assert!(
+            mgr.all_sources().is_empty(),
+            "sources map should be empty after removal"
+        );
     }
 
     #[test]

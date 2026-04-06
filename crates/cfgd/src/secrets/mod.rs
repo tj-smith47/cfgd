@@ -773,7 +773,15 @@ mod tests {
     fn resolve_secret_refs_unresolvable() {
         let result =
             resolve_secret_refs("password=${secret:nonexistent}", &[], None, Path::new("."));
-        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("nonexistent"),
+            "error should mention the unresolvable reference: {err}"
+        );
+        assert!(
+            err.contains("unresolvable"),
+            "error should indicate the ref is unresolvable: {err}"
+        );
     }
 
     #[test]
@@ -1094,7 +1102,15 @@ AGE-SECRET-KEY-1STUFF\n";
         // No providers registered at all, but reference uses a provider scheme
         let result =
             resolve_secret_refs("x=${secret:unknown://something}", &[], None, Path::new("."));
-        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("unknown://something"),
+            "error should mention the unresolvable reference: {err}"
+        );
+        assert!(
+            err.contains("unresolvable"),
+            "error should indicate the reference is unresolvable: {err}"
+        );
     }
 
     #[test]
@@ -1245,9 +1261,10 @@ AGE-SECRET-KEY-1STUFF\n";
             None,
             Path::new("."),
         );
+        let err = result.unwrap_err().to_string();
         assert!(
-            result.is_err(),
-            "provider failure should propagate as error"
+            err.contains("secret/path"),
+            "error should mention the secret reference: {err}"
         );
     }
 
@@ -1356,7 +1373,11 @@ AGE-SECRET-KEY-1STUFF\n";
     fn age_backend_recipient_from_nonexistent_key_errors() {
         let backend = AgeBackend::new(PathBuf::from("/nonexistent/age-key.txt"));
         let result = backend.recipient_from_key();
-        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("age key not found") || err.contains("/nonexistent/age-key.txt"),
+            "error should mention the missing key file: {err}"
+        );
     }
 
     #[test]
@@ -1380,9 +1401,13 @@ AGE-SECRET-KEY-1STUFF\n";
         let key_path = dir.path().join("age-key.txt");
         std::fs::write(&key_path, "# created: 2024-01-01\nAGE-SECRET-KEY-1TEST\n").unwrap();
 
-        let backend = AgeBackend::new(key_path);
+        let backend = AgeBackend::new(key_path.clone());
         let result = backend.recipient_from_key();
-        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("age key not found") || err.contains(key_path.to_str().unwrap()),
+            "error should mention the key file path: {err}"
+        );
     }
 
     // --- build_secret_backend with config_dir ---
@@ -1477,6 +1502,14 @@ AGE-SECRET-KEY-1STUFF\n";
             None,
             Path::new("."),
         );
-        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("nonexistent_file.yaml"),
+            "error should mention the unresolvable reference: {err}"
+        );
+        assert!(
+            err.contains("unresolvable"),
+            "error should indicate the ref is unresolvable: {err}"
+        );
     }
 }

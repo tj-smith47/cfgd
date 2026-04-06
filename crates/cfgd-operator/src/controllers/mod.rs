@@ -3496,13 +3496,11 @@ mod tests {
         let action = Action::requeue(std::time::Duration::from_secs(60));
         let result: ReconcileResult<MachineConfig> = Ok((obj_ref.clone(), action));
 
-        // Verify the closure returns Ready<()> (resolves immediately)
+        // log_reconcile is a logging-only callback — it returns ().
+        // We verify both Ok and Err paths complete without panic.
         let future = log_fn(result);
-        let output = futures::executor::block_on(future);
-        // log_reconcile returns () — verify it completed (type-level assertion)
-        let _: () = output;
+        futures::executor::block_on(future);
 
-        // Also verify the Err path does not panic
         let log_fn_err = log_reconcile::<MachineConfig>("MachineConfig");
         let err_result: ReconcileResult<MachineConfig> =
             Err(kube::runtime::controller::Error::ReconcilerFailed(
@@ -3510,8 +3508,8 @@ mod tests {
                 obj_ref.erase(),
             ));
         let err_future = log_fn_err(err_result);
-        let err_output = futures::executor::block_on(err_future);
-        let _: () = err_output;
+        futures::executor::block_on(err_future);
+        // Both paths completed without panic — that's the behavioral contract.
     }
 
     // -----------------------------------------------------------------------

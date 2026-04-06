@@ -3401,8 +3401,10 @@ mod tests {
             modules: vec!["corp-vpn".into()],
             ..Default::default()
         };
-        let mut merged = MergedProfile::default();
-        merged.modules = vec!["corp-vpn".into()];
+        let merged = MergedProfile {
+            modules: vec!["corp-vpn".into()],
+            ..Default::default()
+        };
         // No file conflict — locked only has modules, not files
         assert!(check_locked_violations("corp", &locked, &merged).is_ok());
     }

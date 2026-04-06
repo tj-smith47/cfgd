@@ -923,8 +923,11 @@ mod tests {
             "packages": [{"name": ""}]
         }));
         let req = extract_req(review);
-        let result = validate_object_spec::<ConfigPolicySpec>(&req);
-        assert!(result.is_err());
+        let err = validate_object_spec::<ConfigPolicySpec>(&req).unwrap_err();
+        assert!(
+            err.contains("packages[0].name must not be empty"),
+            "expected error about empty package name, got: {err}"
+        );
     }
 
     #[test]
@@ -1882,8 +1885,11 @@ mod tests {
             "requiredModules": [{"name": ""}]
         }));
         let req = extract_req(review);
-        let result = validate_object_spec::<ConfigPolicySpec>(&req);
-        assert!(result.is_err());
+        let err = validate_object_spec::<ConfigPolicySpec>(&req).unwrap_err();
+        assert!(
+            err.contains("requiredModules[0].name must not be empty"),
+            "expected error about empty module name, got: {err}"
+        );
     }
 
     #[test]
@@ -1911,8 +1917,11 @@ mod tests {
             "packages": [{"name": ""}]
         }));
         let req = extract_req(review);
-        let result = validate_object_spec::<ClusterConfigPolicySpec>(&req);
-        assert!(result.is_err());
+        let err = validate_object_spec::<ClusterConfigPolicySpec>(&req).unwrap_err();
+        assert!(
+            err.contains("packages[0].name must not be empty"),
+            "expected error about empty package name, got: {err}"
+        );
     }
 
     #[test]
@@ -2186,8 +2195,11 @@ mod tests {
         // hostname and profile are strings in the schema; passing wrong types
         // serde should still deserialize them (42 -> "42" doesn't work for strict types)
         // Actually, serde_json will fail to deserialize a number as a String
-        let result = validate_object_spec::<MachineConfigSpec>(&req);
-        assert!(result.is_err());
+        let err = validate_object_spec::<MachineConfigSpec>(&req).unwrap_err();
+        assert!(
+            err.contains("invalid spec:"),
+            "expected serde deserialization error, got: {err}"
+        );
     }
 
     #[test]

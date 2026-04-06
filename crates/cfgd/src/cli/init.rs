@@ -1227,8 +1227,11 @@ mod tests {
         std::fs::create_dir_all(&profiles_dir).unwrap();
 
         let printer = Printer::new(cfgd_core::output::Verbosity::Quiet);
-        let result = pick_profile(&profiles_dir, &printer);
-        assert!(result.is_err());
+        let err = pick_profile(&profiles_dir, &printer).unwrap_err();
+        assert!(
+            err.to_string().contains("No profiles found"),
+            "should report no profiles, got: {err}"
+        );
     }
 
     #[test]
@@ -1238,8 +1241,11 @@ mod tests {
         // Don't create the dir
 
         let printer = Printer::new(cfgd_core::output::Verbosity::Quiet);
-        let result = pick_profile(&profiles_dir, &printer);
-        assert!(result.is_err());
+        let err = pick_profile(&profiles_dir, &printer).unwrap_err();
+        assert!(
+            err.to_string().contains("No profiles directory"),
+            "should report missing dir, got: {err}"
+        );
     }
 
     #[test]
@@ -1345,11 +1351,23 @@ mod tests {
         let result = cmd_init(&printer, &args);
         assert!(result.is_ok(), "cmd_init failed: {:?}", result.err());
 
-        // Verify scaffolded files
-        assert!(target.join("cfgd.yaml").exists());
+        // Verify scaffolded files exist and have expected content
+        let cfg = std::fs::read_to_string(target.join("cfgd.yaml")).unwrap();
+        assert!(
+            cfg.contains("name: test-init"),
+            "cfgd.yaml should contain the name"
+        );
+        assert!(
+            cfg.contains("cfgd.io/v1alpha1"),
+            "cfgd.yaml should have apiVersion"
+        );
         assert!(target.join("profiles").is_dir());
         assert!(target.join("modules").is_dir());
-        assert!(target.join(".gitignore").exists());
+        let gitignore = std::fs::read_to_string(target.join(".gitignore")).unwrap();
+        assert!(
+            gitignore.contains("!cfgd.yaml"),
+            ".gitignore should allow cfgd.yaml"
+        );
         assert!(target.join("README.md").exists());
 
         // Verify git repo was initialized
@@ -1443,11 +1461,18 @@ mod tests {
         let target = dir.path().join("clone");
         std::fs::create_dir_all(&target).unwrap();
 
-        let printer = Printer::new(cfgd_core::output::Verbosity::Quiet);
-        let result = clone_into(&target, &origin.display().to_string(), "master", &printer);
-        assert!(result.is_ok(), "clone_into failed: {:?}", result.err());
-        assert!(target.join("cfgd.yaml").exists());
-        assert!(target.join(".git").exists());
+        let (printer, buf) = Printer::for_test();
+        clone_into(&target, &origin.display().to_string(), "master", &printer).unwrap();
+
+        assert!(target.join(".git").exists(), "should create .git directory");
+        let cfg = std::fs::read_to_string(target.join("cfgd.yaml")).unwrap();
+        assert!(
+            cfg.contains("name: test"),
+            "cloned cfgd.yaml should contain the name"
+        );
+
+        let output = buf.lock().unwrap();
+        assert!(output.contains("Cloned"), "should report successful clone");
     }
 
     #[test]
@@ -1456,15 +1481,21 @@ mod tests {
         let target = dir.path().join("clone");
         std::fs::create_dir_all(target.join(".git")).unwrap();
 
-        let printer = Printer::new(cfgd_core::output::Verbosity::Quiet);
+        let (printer, buf) = Printer::for_test();
         // Should return Ok without actually cloning
-        let result = clone_into(
+        clone_into(
             &target,
             "https://example.com/nonexistent",
             "master",
             &printer,
+        )
+        .unwrap();
+
+        let output = buf.lock().unwrap();
+        assert!(
+            output.contains("already exists"),
+            "should report repo already exists, got: {output}"
         );
-        assert!(result.is_ok());
     }
 
     #[test]
@@ -1495,9 +1526,15 @@ mod tests {
             Some(&target),
             "master",
             &printer,
+        )
+        .unwrap();
+
+        assert_eq!(result, target, "should return the target path");
+        let cfg = std::fs::read_to_string(target.join("cfgd.yaml")).unwrap();
+        assert!(
+            cfg.contains("name: test"),
+            "cloned cfgd.yaml should have the source content"
         );
-        assert!(result.is_ok(), "resolve_from failed: {:?}", result.err());
-        assert!(target.join("cfgd.yaml").exists());
     }
 
     #[test]
@@ -1561,7 +1598,8 @@ mod tests {
         scaffold(dir.path(), Some("test"), None, &printer).unwrap();
 
         let workflow_path = dir.path().join(".github/workflows/cfgd-release.yml");
-        assert!(workflow_path.exists());
+        let workflow = std::fs::read_to_string(&workflow_path).unwrap();
+        assert!(workflow.contains("cfgd"), "workflow should reference cfgd");
     }
 
     #[test]
@@ -1575,7 +1613,7 @@ mod tests {
         )
         .unwrap();
 
-        let printer = Printer::new(cfgd_core::output::Verbosity::Quiet);
+        let (printer, buf) = Printer::for_test();
         let source_str = source.display().to_string();
         let args = InitArgs {
             path: None,
@@ -1591,11 +1629,12 @@ mod tests {
             apply_modules: &[],
         };
 
-        let result = cmd_init(&printer, &args);
+        cmd_init(&printer, &args).unwrap();
+
+        let output = buf.lock().unwrap();
         assert!(
-            result.is_ok(),
-            "cmd_init with --from local path failed: {:?}",
-            result.err()
+            output.contains("Initialize") || output.contains("Initialized"),
+            "should show init header, got: {output}"
         );
     }
 
@@ -1638,5 +1677,442 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(count_packages(&spec), 2);
+    }
+
+    // ─── cmd_init — scaffold to new directory ──────────────────
+
+    #[test]
+    fn cmd_init_scaffold_to_new_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("new-config");
+
+        let (printer, buf) = Printer::for_test();
+        let target_str = target.display().to_string();
+        let args = InitArgs {
+            path: Some(&target_str),
+            from: None,
+            branch: "master",
+            name: Some("my-machine"),
+            apply: false,
+            dry_run: false,
+            yes: false,
+            install_daemon: false,
+            theme: None,
+            apply_profile: None,
+            apply_modules: &[],
+        };
+
+        cmd_init(&printer, &args).unwrap();
+
+        // Verify scaffolded structure
+        assert!(target.join("cfgd.yaml").exists(), "should create cfgd.yaml");
+        assert!(target.join("profiles").exists(), "should create profiles/");
+        assert!(target.join("modules").exists(), "should create modules/");
+        assert!(
+            target.join(".gitignore").exists(),
+            "should create .gitignore"
+        );
+
+        let config = std::fs::read_to_string(target.join("cfgd.yaml")).unwrap();
+        assert!(
+            config.contains("my-machine"),
+            "config should contain the name, got: {config}"
+        );
+
+        let output = buf.lock().unwrap();
+        assert!(
+            output.contains("Initialized"),
+            "should show init success, got: {output}"
+        );
+    }
+
+    #[test]
+    fn cmd_init_already_initialized() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("existing");
+        std::fs::create_dir_all(&target).unwrap();
+        std::fs::write(
+            target.join("cfgd.yaml"),
+            "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: existing\nspec: {}\n",
+        )
+        .unwrap();
+
+        let (printer, buf) = Printer::for_test();
+        let target_str = target.display().to_string();
+        let args = InitArgs {
+            path: Some(&target_str),
+            from: None,
+            branch: "master",
+            name: None,
+            apply: false,
+            dry_run: false,
+            yes: false,
+            install_daemon: false,
+            theme: None,
+            apply_profile: None,
+            apply_modules: &[],
+        };
+
+        cmd_init(&printer, &args).unwrap();
+
+        let output = buf.lock().unwrap();
+        assert!(
+            output.contains("Already initialized"),
+            "should report already initialized, got: {output}"
+        );
+    }
+
+    #[test]
+    fn cmd_init_with_theme() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("themed");
+
+        let (printer, _buf) = Printer::for_test();
+        let target_str = target.display().to_string();
+        let args = InitArgs {
+            path: Some(&target_str),
+            from: None,
+            branch: "master",
+            name: None,
+            apply: false,
+            dry_run: false,
+            yes: false,
+            install_daemon: false,
+            theme: Some("nord"),
+            apply_profile: None,
+            apply_modules: &[],
+        };
+
+        cmd_init(&printer, &args).unwrap();
+
+        let config = std::fs::read_to_string(target.join("cfgd.yaml")).unwrap();
+        assert!(
+            config.contains("nord"),
+            "config should contain the theme, got: {config}"
+        );
+    }
+
+    // ─── resolve_from — local path variants ────────────────────
+
+    #[test]
+    fn resolve_from_local_path_valid() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("cfgd.yaml"),
+            "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: test\nspec: {}\n",
+        )
+        .unwrap();
+
+        let printer = Printer::new(cfgd_core::output::Verbosity::Quiet);
+        let result =
+            resolve_from(&dir.path().display().to_string(), None, "master", &printer).unwrap();
+        assert_eq!(result, dir.path());
+    }
+
+    #[test]
+    fn resolve_from_local_path_no_config_fails() {
+        let dir = tempfile::tempdir().unwrap();
+        let printer = Printer::new(cfgd_core::output::Verbosity::Quiet);
+
+        let err =
+            resolve_from(&dir.path().display().to_string(), None, "master", &printer).unwrap_err();
+        assert!(
+            err.to_string().contains("No cfgd.yaml"),
+            "should report missing cfgd.yaml, got: {err}"
+        );
+    }
+
+    #[test]
+    fn resolve_from_nonexistent_path_fails() {
+        let printer = Printer::new(cfgd_core::output::Verbosity::Quiet);
+        let err = resolve_from("/nonexistent/path/xyz", None, "master", &printer).unwrap_err();
+        assert!(
+            err.to_string().contains("does not exist"),
+            "should report path does not exist, got: {err}"
+        );
+    }
+
+    // ─── is_git_source — comprehensive coverage ────────────────
+
+    #[test]
+    fn is_git_source_https() {
+        assert!(is_git_source("https://github.com/user/repo"));
+        assert!(is_git_source("https://github.com/user/repo.git"));
+    }
+
+    #[test]
+    fn is_git_source_ssh() {
+        assert!(is_git_source("ssh://git@github.com/user/repo"));
+        assert!(is_git_source("git@github.com:user/repo.git"));
+    }
+
+    #[test]
+    fn is_git_source_git_protocol() {
+        assert!(is_git_source("git://github.com/user/repo"));
+    }
+
+    #[test]
+    fn is_git_source_dot_git_suffix() {
+        assert!(is_git_source("anything.git"));
+    }
+
+    #[test]
+    fn is_git_source_local_plain_dir_not_git() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(
+            !is_git_source(&dir.path().display().to_string()),
+            "plain directory without .git should not be a git source"
+        );
+    }
+
+    #[test]
+    fn is_git_source_local_git_repo() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join(".git")).unwrap();
+        assert!(
+            is_git_source(&dir.path().display().to_string()),
+            "directory with .git should be a git source"
+        );
+    }
+
+    // ─── scaffold — content verification ───────────────────────
+
+    #[test]
+    fn scaffold_gitignore_content() {
+        let dir = tempfile::tempdir().unwrap();
+        let printer = Printer::new(cfgd_core::output::Verbosity::Quiet);
+
+        scaffold(dir.path(), Some("test"), None, &printer).unwrap();
+
+        let gitignore = std::fs::read_to_string(dir.path().join(".gitignore")).unwrap();
+        assert!(
+            gitignore.contains("!profiles/**"),
+            "should unignore profiles"
+        );
+        assert!(gitignore.contains("!modules/**"), "should unignore modules");
+        assert!(gitignore.contains("!.github/"), "should unignore .github");
+    }
+
+    #[test]
+    fn scaffold_config_content() {
+        let dir = tempfile::tempdir().unwrap();
+        let printer = Printer::new(cfgd_core::output::Verbosity::Quiet);
+
+        scaffold(dir.path(), Some("my-dots"), Some("catppuccin"), &printer).unwrap();
+
+        let config = std::fs::read_to_string(dir.path().join("cfgd.yaml")).unwrap();
+        assert!(config.contains("my-dots"), "should use custom name");
+        assert!(config.contains("catppuccin"), "should use custom theme");
+        assert!(
+            config.contains("Symlink"),
+            "should set default file strategy"
+        );
+    }
+
+    #[test]
+    fn scaffold_uses_dir_name_when_no_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("cool-dotfiles");
+        std::fs::create_dir_all(&target).unwrap();
+        let printer = Printer::new(cfgd_core::output::Verbosity::Quiet);
+
+        scaffold(&target, None, None, &printer).unwrap();
+
+        let config = std::fs::read_to_string(target.join("cfgd.yaml")).unwrap();
+        assert!(
+            config.contains("cool-dotfiles"),
+            "should use directory name, got: {config}"
+        );
+    }
+
+    // ─── pick_profile — edge cases ─────────────────────────────
+
+    #[test]
+    fn pick_profile_single_profile_auto_selects() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path()).unwrap();
+        std::fs::write(
+            dir.path().join("default.yaml"),
+            "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec: {}\n",
+        )
+        .unwrap();
+
+        let (printer, buf) = Printer::for_test();
+        let result = pick_profile(dir.path(), &printer).unwrap();
+        assert_eq!(result, "default");
+
+        let output = buf.lock().unwrap();
+        assert!(
+            output.contains("Using only available profile: default"),
+            "should auto-select single profile, got: {output}"
+        );
+    }
+
+    #[test]
+    fn pick_profile_no_dir_fails() {
+        let dir = tempfile::tempdir().unwrap();
+        let nonexistent = dir.path().join("nope");
+        let (printer, _buf) = Printer::for_test();
+
+        let err = pick_profile(&nonexistent, &printer).unwrap_err();
+        assert!(
+            err.to_string().contains("No profiles directory"),
+            "should report no profiles dir, got: {err}"
+        );
+    }
+
+    #[test]
+    fn pick_profile_empty_dir_fails() {
+        let dir = tempfile::tempdir().unwrap();
+        let (printer, _buf) = Printer::for_test();
+
+        let err = pick_profile(dir.path(), &printer).unwrap_err();
+        assert!(
+            err.to_string().contains("No profiles found"),
+            "should report no profiles, got: {err}"
+        );
+    }
+
+    // ─── regenerate_workflow ────────────────────────────────────
+
+    #[test]
+    fn regenerate_workflow_skips_empty() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("profiles")).unwrap();
+        std::fs::create_dir_all(dir.path().join("modules")).unwrap();
+        let (printer, _buf) = Printer::for_test();
+
+        regenerate_workflow(dir.path(), &printer).unwrap();
+
+        // No workflow should be generated for empty project
+        assert!(
+            !dir.path()
+                .join(".github/workflows/cfgd-release.yml")
+                .exists(),
+            "should not create workflow for empty project"
+        );
+    }
+
+    #[test]
+    fn regenerate_workflow_creates_for_content() {
+        let dir = tempfile::tempdir().unwrap();
+        let profiles_dir = dir.path().join("profiles");
+        std::fs::create_dir_all(&profiles_dir).unwrap();
+        std::fs::write(
+            profiles_dir.join("default.yaml"),
+            "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec: {}\n",
+        )
+        .unwrap();
+        std::fs::create_dir_all(dir.path().join("modules")).unwrap();
+
+        let (printer, _buf) = Printer::for_test();
+        regenerate_workflow(dir.path(), &printer).unwrap();
+
+        let workflow_path = dir.path().join(".github/workflows/cfgd-release.yml");
+        assert!(workflow_path.exists(), "should create workflow");
+        let content = std::fs::read_to_string(&workflow_path).unwrap();
+        assert!(content.contains("cfgd"), "workflow should reference cfgd");
+    }
+
+    // ─── ensure_config_file — branch and origin ────────────────
+
+    #[test]
+    fn ensure_config_file_with_origin() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("cfgd.yaml");
+
+        ensure_config_file(
+            dir.path(),
+            &config_path,
+            "work",
+            Some("https://github.com/team/config"),
+            "main",
+            None,
+        )
+        .unwrap();
+
+        let contents = std::fs::read_to_string(&config_path).unwrap();
+        assert!(contents.contains("profile: work"), "should set profile");
+        assert!(
+            contents.contains("origin:"),
+            "should have origin section for git URL"
+        );
+        assert!(
+            contents.contains("https://github.com/team/config"),
+            "should contain the URL"
+        );
+        assert!(
+            contents.contains("branch: main"),
+            "should contain the branch"
+        );
+    }
+
+    #[test]
+    fn ensure_config_file_with_theme() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("cfgd.yaml");
+
+        ensure_config_file(
+            dir.path(),
+            &config_path,
+            "default",
+            None,
+            "master",
+            Some("dracula"),
+        )
+        .unwrap();
+
+        let contents = std::fs::read_to_string(&config_path).unwrap();
+        assert!(
+            contents.contains("dracula"),
+            "should use custom theme, got: {contents}"
+        );
+    }
+
+    // ─── count_packages — additional cases ─────────────────────
+
+    #[test]
+    fn count_packages_no_packages_spec() {
+        let spec = config::ProfileSpec {
+            packages: None,
+            ..Default::default()
+        };
+        assert_eq!(count_packages(&spec), 0);
+    }
+
+    #[test]
+    fn count_packages_brew_formulae_and_casks() {
+        let spec = config::ProfileSpec {
+            packages: Some(config::PackagesSpec {
+                brew: Some(config::BrewSpec {
+                    file: None,
+                    taps: vec![],
+                    formulae: vec!["curl".into(), "vim".into()],
+                    casks: vec!["firefox".into()],
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        assert_eq!(count_packages(&spec), 3);
+    }
+
+    #[test]
+    fn count_packages_apt_and_cargo() {
+        let spec = config::ProfileSpec {
+            packages: Some(config::PackagesSpec {
+                apt: Some(config::AptSpec {
+                    packages: vec!["build-essential".into()],
+                    ..Default::default()
+                }),
+                cargo: Some(config::CargoSpec {
+                    file: None,
+                    packages: vec!["ripgrep".into(), "fd-find".into()],
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        assert_eq!(count_packages(&spec), 3);
     }
 }

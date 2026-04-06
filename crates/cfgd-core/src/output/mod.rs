@@ -11,7 +11,7 @@ use syntect::util::as_24_bit_terminal_escaped;
 
 use std::collections::VecDeque;
 use std::io::BufRead;
-use std::sync::mpsc;
+use std::sync::{Arc, Mutex, mpsc};
 use std::time::{Duration, Instant};
 
 use crate::config::ThemeConfig;
@@ -500,6 +500,9 @@ pub struct Printer {
     theme_set: ThemeSet,
     verbosity: Verbosity,
     output_format: OutputFormat,
+    /// Optional buffer for capturing output in tests. When set, all output
+    /// methods append plain text here regardless of verbosity level.
+    test_buf: Option<Arc<Mutex<String>>>,
 }
 
 impl Printer {
@@ -536,6 +539,7 @@ impl Printer {
             theme_set: ThemeSet::load_defaults(),
             verbosity,
             output_format,
+            test_buf: None,
         }
     }
 
@@ -543,7 +547,50 @@ impl Printer {
         self.verbosity
     }
 
+    /// Create a Printer that captures all output to a shared buffer.
+    /// Use in tests to verify output content regardless of verbosity.
+    pub fn for_test() -> (Self, Arc<Mutex<String>>) {
+        let buf = Arc::new(Mutex::new(String::new()));
+        let printer = Self {
+            theme: Theme::from_config(None),
+            term: Term::stderr(),
+            multi_progress: MultiProgress::new(),
+            syntax_set: SyntaxSet::load_defaults_newlines(),
+            theme_set: ThemeSet::load_defaults(),
+            verbosity: Verbosity::Quiet,
+            output_format: OutputFormat::Table,
+            test_buf: Some(buf.clone()),
+        };
+        (printer, buf)
+    }
+
+    /// Create a Printer with a specific output format that captures to a buffer.
+    pub fn for_test_with_format(output_format: OutputFormat) -> (Self, Arc<Mutex<String>>) {
+        let buf = Arc::new(Mutex::new(String::new()));
+        let printer = Self {
+            theme: Theme::from_config(None),
+            term: Term::stderr(),
+            multi_progress: MultiProgress::new(),
+            syntax_set: SyntaxSet::load_defaults_newlines(),
+            theme_set: ThemeSet::load_defaults(),
+            verbosity: Verbosity::Quiet,
+            output_format,
+            test_buf: Some(buf.clone()),
+        };
+        (printer, buf)
+    }
+
+    /// Append a line to the test buffer (no-op when buffer is absent).
+    fn capture(&self, text: &str) {
+        if let Some(ref buf) = self.test_buf {
+            let mut b = buf.lock().unwrap();
+            b.push_str(text);
+            b.push('\n');
+        }
+    }
+
     pub fn header(&self, text: &str) {
+        self.capture(&format!("=== {} ===", text));
         if self.verbosity == Verbosity::Quiet {
             return;
         }
@@ -552,6 +599,7 @@ impl Printer {
     }
 
     pub fn subheader(&self, text: &str) {
+        self.capture(text);
         if self.verbosity == Verbosity::Quiet {
             return;
         }
@@ -560,6 +608,7 @@ impl Printer {
     }
 
     pub fn success(&self, text: &str) {
+        self.capture(text);
         if self.verbosity == Verbosity::Quiet {
             return;
         }
@@ -568,6 +617,7 @@ impl Printer {
     }
 
     pub fn warning(&self, text: &str) {
+        self.capture(text);
         if self.verbosity == Verbosity::Quiet {
             return;
         }
@@ -577,12 +627,14 @@ impl Printer {
     }
 
     pub fn error(&self, text: &str) {
+        self.capture(text);
         let icon = self.theme.error.apply_to(&self.theme.icon_error);
         let styled_text = self.theme.error.apply_to(text);
         let _ = self.term.write_line(&format!("{} {}", icon, styled_text));
     }
 
     pub fn info(&self, text: &str) {
+        self.capture(text);
         if self.verbosity == Verbosity::Quiet {
             return;
         }
@@ -592,6 +644,7 @@ impl Printer {
     }
 
     pub fn key_value(&self, key: &str, value: &str) {
+        self.capture(&format!("{}: {}", key, value));
         if self.verbosity == Verbosity::Quiet {
             return;
         }
@@ -602,6 +655,17 @@ impl Printer {
     }
 
     pub fn diff(&self, old: &str, new: &str) {
+        if self.test_buf.is_some() {
+            let diff = TextDiff::from_lines(old, new);
+            for change in diff.iter_all_changes() {
+                let sign = match change.tag() {
+                    ChangeTag::Delete => "-",
+                    ChangeTag::Insert => "+",
+                    ChangeTag::Equal => " ",
+                };
+                self.capture(&format!("{}{}", sign, change.to_string().trim_end()));
+            }
+        }
         if self.verbosity == Verbosity::Quiet {
             return;
         }
@@ -685,6 +749,10 @@ impl Printer {
     }
 
     pub fn plan_phase(&self, name: &str, items: &[String]) {
+        self.capture(&format!("Phase: {}", name));
+        for item in items {
+            self.capture(&format!("  {}", item));
+        }
         if self.verbosity == Verbosity::Quiet {
             return;
         }
@@ -703,6 +771,12 @@ impl Printer {
     }
 
     pub fn table(&self, headers: &[&str], rows: &[Vec<String>]) {
+        if self.test_buf.is_some() {
+            self.capture(&headers.join("\t"));
+            for row in rows {
+                self.capture(&row.join("\t"));
+            }
+        }
         if self.verbosity == Verbosity::Quiet {
             return;
         }
@@ -784,6 +858,7 @@ impl Printer {
     /// Write a line to stdout (for machine-readable data output, not UI).
     /// Used by commands like `config get` whose output may be captured by scripts.
     pub fn stdout_line(&self, text: &str) {
+        self.capture(text);
         let stdout = Term::stdout();
         let _ = stdout.write_line(text);
     }
@@ -1261,7 +1336,10 @@ mod tests {
             &mut std::process::Command::new("/nonexistent/binary"),
             "test spawn error",
         );
-        assert!(result.is_err());
+        match result {
+            Err(err) => assert_eq!(err.kind(), std::io::ErrorKind::NotFound),
+            Ok(_) => panic!("expected spawn error for nonexistent binary"),
+        }
     }
 
     // --- OutputFormat and write_structured tests ---
@@ -1652,8 +1730,8 @@ mod tests {
     fn format_jsonpath_result_number() {
         let num = serde_json::json!(42);
         assert_eq!(format_jsonpath_result(&num), "42");
-        let float = serde_json::json!(3.14);
-        assert_eq!(format_jsonpath_result(&float), "3.14");
+        let float = serde_json::json!(1.234);
+        assert_eq!(format_jsonpath_result(&float), "1.234");
     }
 
     #[test]

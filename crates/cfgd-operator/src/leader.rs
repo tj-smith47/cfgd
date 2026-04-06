@@ -319,8 +319,10 @@ mod tests {
             Duration::from_secs(1)
         );
         // Edge: renew_deadline=0 -> 0/2=0, clamped to 1
+        #[allow(clippy::erasing_op)]
+        let zero_halved = 0u64 / 2;
         assert_eq!(
-            Duration::from_secs(std::cmp::max(1, 0u64 / 2)),
+            Duration::from_secs(std::cmp::max(1, zero_halved)),
             Duration::from_secs(1)
         );
         // renew_deadline=3 -> 3/2=1 (integer division), stays 1

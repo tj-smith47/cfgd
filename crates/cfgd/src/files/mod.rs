@@ -1823,7 +1823,16 @@ mod tests {
 
         let fm = CfgdFileManager::new(config_dir, &resolved).unwrap();
         let result = fm.plan(&resolved.merged);
-        assert!(result.is_err());
+        let err = result.unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("source file not found"),
+            "error should mention missing source file, got: {msg}"
+        );
+        assert!(
+            msg.contains("nonexistent.txt"),
+            "error should mention the missing filename, got: {msg}"
+        );
     }
 
     // --- is_tera_template ---
@@ -1871,9 +1880,14 @@ mod tests {
             },
         );
 
-        let printer = cfgd_core::output::Printer::new(cfgd_core::output::Verbosity::Quiet);
+        let (printer, buf) = cfgd_core::output::Printer::for_test();
         let fm = CfgdFileManager::new(config_dir, &resolved).unwrap();
         assert!(fm.diff(&resolved.merged, &printer).is_ok());
+        let output = buf.lock().unwrap();
+        assert!(
+            output.contains("All files match desired state"),
+            "output should contain no-changes success message, got: {output}"
+        );
     }
 
     #[test]
@@ -1906,10 +1920,18 @@ mod tests {
             },
         );
 
-        let printer = cfgd_core::output::Printer::new(cfgd_core::output::Verbosity::Quiet);
+        let (printer, buf) = cfgd_core::output::Printer::for_test();
         let fm = CfgdFileManager::new(config_dir, &resolved).unwrap();
-        // Should succeed (diff is displayed, not an error)
         assert!(fm.diff(&resolved.merged, &printer).is_ok());
+        let output = buf.lock().unwrap();
+        assert!(
+            output.contains("test.txt"),
+            "diff output should reference the changed file, got: {output}"
+        );
+        assert!(
+            !output.contains("All files match desired state"),
+            "diff output should NOT say all files match when content differs, got: {output}"
+        );
     }
 
     #[test]
@@ -1939,9 +1961,22 @@ mod tests {
             },
         );
 
-        let printer = cfgd_core::output::Printer::new(cfgd_core::output::Verbosity::Quiet);
+        let (printer, buf) = cfgd_core::output::Printer::for_test();
         let fm = CfgdFileManager::new(config_dir, &resolved).unwrap();
         assert!(fm.diff(&resolved.merged, &printer).is_ok());
+        let output = buf.lock().unwrap();
+        assert!(
+            output.contains("new.txt"),
+            "diff output should reference the new file, got: {output}"
+        );
+        assert!(
+            output.contains("new file"),
+            "diff output should indicate the file is new, got: {output}"
+        );
+        assert!(
+            !output.contains("All files match desired state"),
+            "diff output should NOT say all files match for a new file, got: {output}"
+        );
     }
 
     // --- render_template_for_display ---
@@ -2651,7 +2686,16 @@ other: data
         let fm = CfgdFileManager::new(config_dir, &resolved).unwrap();
 
         let result = fm.render_template_for_display(&tpl);
-        assert!(result.is_err(), "undefined variable should cause an error");
+        let err = result.unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("nonexistent_variable"),
+            "error should mention the undefined variable name, got: {msg}"
+        );
+        assert!(
+            msg.contains("not found in context"),
+            "error should explain the variable was not found in context, got: {msg}"
+        );
     }
 
     #[test]

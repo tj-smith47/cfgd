@@ -564,7 +564,11 @@ mod tests {
         let printer = test_printer();
         fm.set_fail_apply(true);
         let result = fm.apply(&[], &printer);
-        assert!(result.is_err());
+        let err_msg = format!("{}", result.unwrap_err());
+        assert!(
+            err_msg.contains("mock-failure"),
+            "expected mock-failure path in error, got: {err_msg}"
+        );
     }
 
     #[test]
@@ -580,7 +584,11 @@ mod tests {
         let backend = MockSecretBackend::new("sops");
         backend.set_fail_decrypt(true);
         let result = backend.decrypt_file(Path::new("/tmp/secret.enc"));
-        assert!(result.is_err());
+        let err_msg = format!("{}", result.unwrap_err());
+        assert!(
+            err_msg.contains("mock decrypt failure"),
+            "expected 'mock decrypt failure' in error, got: {err_msg}"
+        );
     }
 
     #[test]
@@ -596,7 +604,11 @@ mod tests {
         let provider = MockSecretProvider::new("1password");
         provider.set_fail_resolve(true);
         let result = provider.resolve("vault/item/field");
-        assert!(result.is_err());
+        let err_msg = format!("{}", result.unwrap_err());
+        assert!(
+            err_msg.contains("vault/item/field"),
+            "expected reference in error, got: {err_msg}"
+        );
     }
 
     #[test]
@@ -634,7 +646,11 @@ mod tests {
         let printer = test_printer();
         sc.set_fail_apply(true);
         let result = sc.apply(&serde_yaml::Value::Null, &printer);
-        assert!(result.is_err());
+        let err_msg = format!("{}", result.unwrap_err());
+        assert!(
+            err_msg.contains("mock system apply failure"),
+            "expected 'mock system apply failure' in error, got: {err_msg}"
+        );
     }
 
     #[test]

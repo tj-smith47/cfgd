@@ -7451,8 +7451,259 @@ fn cmd_decide(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Arc, Mutex};
 
     const TEST_CONFIG_YAML: &str = "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec:\n  profile: default\n";
+
+    const DEFAULT_PROFILE_YAML: &str = r#"apiVersion: cfgd.io/v1alpha1
+kind: Profile
+metadata:
+  name: default
+spec:
+  env:
+    - name: editor
+      value: vim
+  packages:
+    cargo:
+      - bat
+"#;
+
+    const WORK_PROFILE_YAML: &str = r#"apiVersion: cfgd.io/v1alpha1
+kind: Profile
+metadata:
+  name: work
+spec:
+  inherits:
+    - default
+  env:
+    - name: editor
+      value: code
+  packages:
+    cargo:
+      - exa
+"#;
+
+    const SIMPLE_MODULE_YAML: &str = "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: test-mod\nspec:\n  packages: []\n";
+
+    const RICH_CONFIG_YAML: &str = r#"apiVersion: cfgd.io/v1alpha1
+kind: Config
+metadata:
+  name: my-machine
+spec:
+  profile: default
+  sources:
+    - name: team-config
+      origin:
+        url: https://github.com/team/config
+        branch: main
+        type: Git
+      subscription:
+        priority: 100
+  daemon:
+    enabled: true
+    reconcile:
+      interval: 5m
+      onChange: true
+      autoApply: false
+    sync:
+      interval: 10m
+  secrets:
+    backend: age
+"#;
+
+    // -----------------------------------------------------------------------
+    // CliTestHarness — builder for isolated CLI test environments
+    // -----------------------------------------------------------------------
+
+    struct CliTestHarnessBuilder {
+        config_yaml: String,
+        profiles: Vec<(String, String)>,
+        modules: Vec<(String, String)>,
+        output_format: cfgd_core::output::OutputFormat,
+    }
+
+    impl CliTestHarnessBuilder {
+        fn new() -> Self {
+            Self {
+                config_yaml: TEST_CONFIG_YAML.to_string(),
+                profiles: vec![
+                    ("default.yaml".into(), DEFAULT_PROFILE_YAML.into()),
+                    ("work.yaml".into(), WORK_PROFILE_YAML.into()),
+                ],
+                modules: Vec::new(),
+                output_format: cfgd_core::output::OutputFormat::Table,
+            }
+        }
+
+        fn config(mut self, yaml: &str) -> Self {
+            self.config_yaml = yaml.to_string();
+            self
+        }
+
+        fn rich_config(self) -> Self {
+            self.config(RICH_CONFIG_YAML)
+        }
+
+        fn profile(mut self, name: &str, content: &str) -> Self {
+            self.profiles
+                .push((format!("{name}.yaml"), content.to_string()));
+            self
+        }
+
+        fn module(mut self, name: &str, content: &str) -> Self {
+            self.modules.push((name.to_string(), content.to_string()));
+            self
+        }
+
+        fn json(mut self) -> Self {
+            self.output_format = cfgd_core::output::OutputFormat::Json;
+            self
+        }
+
+        fn build(self) -> CliTestHarness {
+            let config_dir = tempfile::tempdir().unwrap();
+            let state_dir = tempfile::tempdir().unwrap();
+
+            std::fs::write(config_dir.path().join("cfgd.yaml"), &self.config_yaml).unwrap();
+
+            let profiles_dir = config_dir.path().join("profiles");
+            std::fs::create_dir_all(&profiles_dir).unwrap();
+            for (name, content) in &self.profiles {
+                std::fs::write(profiles_dir.join(name), content).unwrap();
+            }
+
+            let modules_dir = config_dir.path().join("modules");
+            std::fs::create_dir_all(&modules_dir).unwrap();
+            for (name, content) in &self.modules {
+                let mod_dir = modules_dir.join(name);
+                std::fs::create_dir_all(mod_dir.join("files")).unwrap();
+                std::fs::write(mod_dir.join("module.yaml"), content).unwrap();
+            }
+
+            let (printer, buf) = if self.output_format == cfgd_core::output::OutputFormat::Table {
+                Printer::for_test()
+            } else {
+                Printer::for_test_with_format(self.output_format.clone())
+            };
+
+            CliTestHarness {
+                config_dir,
+                state_dir,
+                printer,
+                buf,
+                output_format: self.output_format,
+            }
+        }
+    }
+
+    struct CliTestHarness {
+        config_dir: tempfile::TempDir,
+        state_dir: tempfile::TempDir,
+        printer: Printer,
+        buf: Arc<Mutex<String>>,
+        output_format: cfgd_core::output::OutputFormat,
+    }
+
+    impl CliTestHarness {
+        fn builder() -> CliTestHarnessBuilder {
+            CliTestHarnessBuilder::new()
+        }
+
+        fn cli(&self) -> Cli {
+            Cli {
+                config: self.config_dir.path().join("cfgd.yaml"),
+                profile: None,
+                no_color: true,
+                verbose: false,
+                quiet: true,
+                output: OutputFormatArg(self.output_format.clone()),
+                jsonpath: None,
+                state_dir: Some(self.state_dir.path().to_path_buf()),
+                command: Command::Status { module: None },
+            }
+        }
+
+        fn cli_with_command(&self, command: Command) -> Cli {
+            Cli {
+                command,
+                ..self.cli()
+            }
+        }
+
+        fn printer(&self) -> &Printer {
+            &self.printer
+        }
+
+        fn config_path(&self) -> &Path {
+            self.config_dir.path()
+        }
+
+        fn state_path(&self) -> &Path {
+            self.state_dir.path()
+        }
+
+        fn output(&self) -> String {
+            self.buf.lock().unwrap().clone()
+        }
+
+        fn json_output(&self) -> serde_json::Value {
+            extract_json(&self.output())
+        }
+
+        fn assert_output_contains(&self, expected: &str) {
+            let output = self.output();
+            assert!(
+                output.contains(expected),
+                "expected output to contain '{expected}', got:\n{output}"
+            );
+        }
+
+        fn assert_header(&self, header: &str) {
+            self.assert_output_contains(header);
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Free-standing assertion helpers
+    // -----------------------------------------------------------------------
+
+    fn assert_json_has_fields(json: &serde_json::Value, fields: &[&str]) {
+        for field in fields {
+            assert!(
+                json.get(*field).is_some(),
+                "JSON missing required field '{field}', got: {json}"
+            );
+        }
+    }
+
+    fn assert_json_field_type(json: &serde_json::Value, field: &str, type_name: &str) {
+        let val = json
+            .get(field)
+            .unwrap_or_else(|| panic!("JSON missing field '{field}', got: {json}"));
+        let matches = match type_name {
+            "string" => val.is_string(),
+            "number" | "u64" | "i64" | "f64" => val.is_number(),
+            "bool" | "boolean" => val.is_boolean(),
+            "array" => val.is_array(),
+            "object" => val.is_object(),
+            "null" => val.is_null(),
+            _ => panic!("unknown type check '{type_name}'"),
+        };
+        assert!(matches, "expected '{field}' to be {type_name}, got: {val}");
+    }
+
+    fn assert_error_contains(result: &anyhow::Result<()>, expected: &str) {
+        match result {
+            Ok(_) => panic!("expected error containing '{expected}', but got Ok"),
+            Err(e) => {
+                let msg = e.to_string();
+                assert!(
+                    msg.contains(expected),
+                    "expected error to contain '{expected}', got: {msg}"
+                );
+            }
+        }
+    }
 
     fn create_test_config_dir() -> tempfile::TempDir {
         let dir = tempfile::tempdir().unwrap();
@@ -7840,6 +8091,19 @@ spec:
 
     fn test_printer() -> Printer {
         Printer::new(cfgd_core::output::Verbosity::Quiet)
+    }
+
+    /// Extract JSON object or array from captured output that may contain
+    /// preamble text (e.g. key_value lines from load_config_and_profile).
+    fn extract_json(output: &str) -> serde_json::Value {
+        // Find first '{' or '['
+        let start = output
+            .find('{')
+            .or_else(|| output.find('['))
+            .unwrap_or_else(|| panic!("no JSON found in output: {output}"));
+        let json_str = output[start..].trim();
+        serde_json::from_str(json_str)
+            .unwrap_or_else(|e| panic!("invalid JSON at offset {start}: {e}, got: {output}"))
     }
 
     fn test_profile_create_args(name: &str) -> ProfileCreateArgs {
@@ -8577,18 +8841,19 @@ spec:
         )
         .unwrap();
 
-        // Verify config is loadable before testing cmd_config_show
-        let cfg = config::load_config(&dir.path().join("cfgd.yaml")).unwrap();
-        assert_eq!(cfg.metadata.name, "test-config");
-        assert_eq!(cfg.spec.profile.as_deref(), Some("default"));
-
         let cli = test_cli(dir.path());
-        let printer = test_printer();
+        let (printer, buf) = Printer::for_test();
         let result = cmd_config_show(&cli, &printer);
+        assert!(result.is_ok(), "config show failed: {:?}", result.err());
+
+        let output = buf.lock().unwrap();
         assert!(
-            result.is_ok(),
-            "config show should succeed with valid config: {:?}",
-            result.err()
+            output.contains("Configuration"),
+            "output should contain header 'Configuration', got: {output}"
+        );
+        assert!(
+            output.contains("default"),
+            "output should show profile name 'default', got: {output}"
         );
     }
 
@@ -8598,7 +8863,12 @@ spec:
         let cli = test_cli(dir.path());
         let printer = test_printer();
         let result = cmd_config_show(&cli, &printer);
-        assert!(result.is_err());
+        let err = result.unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("No cfgd.yaml found"),
+            "expected 'No cfgd.yaml found' error, got: {msg}"
+        );
     }
 
     // --- Source CRUD tests ---
@@ -8754,7 +9024,7 @@ spec:
         std::fs::write(dir.path().join("cfgd.yaml"), TEST_CONFIG_YAML).unwrap();
 
         let cli = test_cli(dir.path());
-        let printer = test_printer();
+        let (printer, buf) = Printer::for_test();
 
         // No profiles or modules — should warn and return Ok
         let result = cmd_workflow_generate(&cli, &printer, false);
@@ -8769,7 +9039,16 @@ spec:
             .join(".github")
             .join("workflows")
             .join("cfgd-release.yml");
-        assert!(!workflow_path.exists());
+        assert!(
+            !workflow_path.exists(),
+            "no workflow file should be created for empty repo"
+        );
+
+        let output = buf.lock().unwrap();
+        assert!(
+            output.contains("No profiles") || output.contains("nothing to generate"),
+            "should warn about no profiles/modules, got: {output}"
+        );
     }
 
     #[test]
@@ -8786,26 +9065,12 @@ spec:
 
     #[test]
     fn test_validate_resource_name_valid() {
-        assert!(
-            validate_resource_name("my-module", "Module").is_ok(),
-            "\"my-module\" should be a valid Module name"
-        );
-        assert!(
-            validate_resource_name("my_module", "Module").is_ok(),
-            "\"my_module\" should be a valid Module name"
-        );
-        assert!(
-            validate_resource_name("Module123", "Module").is_ok(),
-            "\"Module123\" should be a valid Module name"
-        );
-        assert!(
-            validate_resource_name("a", "Module").is_ok(),
-            "\"a\" should be a valid Module name"
-        );
-        assert!(
-            validate_resource_name("foo.bar", "Module").is_ok(),
-            "\"foo.bar\" should be a valid Module name"
-        );
+        // Each call must succeed (unwrap ensures no silent failures)
+        validate_resource_name("my-module", "Module").unwrap();
+        validate_resource_name("my_module", "Module").unwrap();
+        validate_resource_name("Module123", "Module").unwrap();
+        validate_resource_name("a", "Module").unwrap();
+        validate_resource_name("foo.bar", "Module").unwrap();
     }
 
     #[test]
@@ -8955,15 +9220,27 @@ spec:
         .unwrap();
 
         let cli = test_cli(dir.path());
-        let printer = test_printer();
+        let (printer, buf) = Printer::for_test();
 
-        // Should not error even with all sections populated
         let result = cmd_config_show(&cli, &printer);
+        assert!(result.is_ok(), "config show failed: {:?}", result.err());
+
+        let output = buf.lock().unwrap();
+        assert!(output.contains("Configuration"), "missing header");
+        assert!(output.contains("Origins"), "missing Origins section");
+        assert!(output.contains("Sources"), "missing Sources section");
+        assert!(output.contains("team-config"), "missing source name");
         assert!(
-            result.is_ok(),
-            "config show should handle all config sections (origin, sources, modules, daemon, secrets, theme): {:?}",
-            result.err()
+            output.contains("Module Registries"),
+            "missing Module Registries section"
         );
+        assert!(output.contains("community"), "missing registry name");
+        assert!(output.contains("Daemon"), "missing Daemon section");
+        assert!(output.contains("Enabled: yes"), "missing daemon enabled");
+        assert!(output.contains("Secrets"), "missing Secrets section");
+        assert!(output.contains("sops-age"), "missing secrets backend");
+        assert!(output.contains("Theme"), "missing Theme section");
+        assert!(output.contains("ocean"), "missing theme name");
     }
 
     // --- Alias expansion tests ---
@@ -9279,12 +9556,23 @@ spec:
         let mut raw: serde_yaml::Value = serde_yaml::from_str(&contents).unwrap();
         let spec = raw.get_mut("spec").unwrap();
 
+        // Verify theme exists before removal
+        assert!(
+            walk_yaml_path(spec, "theme").is_ok(),
+            "theme key should exist before unset"
+        );
+
         let (parent, key) = walk_yaml_path_mut(spec, "theme").unwrap();
         let yaml_key = serde_yaml::Value::String(key);
-        assert!(parent.remove(&yaml_key).is_some());
+        let removed = parent.remove(&yaml_key);
+        assert!(removed.is_some(), "remove should return the removed value");
 
+        // Verify theme is actually gone
         let spec = raw.get("spec").unwrap();
-        assert!(walk_yaml_path(spec, "theme").is_err());
+        assert!(
+            walk_yaml_path(spec, "theme").is_err(),
+            "theme key should not exist after unset"
+        );
     }
 
     #[test]
@@ -9295,14 +9583,24 @@ spec:
         let mut raw: serde_yaml::Value = serde_yaml::from_str(&contents).unwrap();
         let spec = raw.get_mut("spec").unwrap();
 
+        // Verify deploy alias exists before removal
+        assert!(
+            walk_yaml_path(spec, "aliases.deploy").is_ok(),
+            "deploy alias should exist before unset"
+        );
+
         let (parent, key) = walk_yaml_path_mut(spec, "aliases.deploy").unwrap();
         let yaml_key = serde_yaml::Value::String(key);
-        assert!(parent.remove(&yaml_key).is_some());
+        let removed = parent.remove(&yaml_key);
+        assert!(removed.is_some(), "remove should return the removed value");
 
-        // "add" alias should still exist
+        // "add" alias should still exist, "deploy" should be gone
         let spec = raw.get("spec").unwrap();
-        assert!(walk_yaml_path(spec, "aliases.add").is_ok());
-        assert!(walk_yaml_path(spec, "aliases.deploy").is_err());
+        walk_yaml_path(spec, "aliases.add").unwrap();
+        assert!(
+            walk_yaml_path(spec, "aliases.deploy").is_err(),
+            "deploy alias should not exist after unset"
+        );
     }
 
     #[test]
@@ -9499,7 +9797,11 @@ spec:
     fn scan_profile_names_empty_dir() {
         let dir = tempfile::tempdir().unwrap();
         let names = super::scan_profile_names(dir.path()).unwrap();
-        assert!(names.is_empty());
+        assert_eq!(
+            names,
+            Vec::<String>::new(),
+            "empty dir should yield empty profile list"
+        );
     }
 
     #[test]
@@ -9519,7 +9821,11 @@ spec:
     fn scan_module_names_nonexistent() {
         let dir = tempfile::tempdir().unwrap();
         let names = super::scan_module_names(&dir.path().join("nope")).unwrap();
-        assert!(names.is_empty());
+        assert_eq!(
+            names,
+            Vec::<String>::new(),
+            "nonexistent dir should yield empty module list"
+        );
     }
 
     // --- copy_files_to_dir ---
@@ -9545,7 +9851,12 @@ spec:
     fn copy_files_to_dir_nonexistent_source_errors() {
         let dir = tempfile::tempdir().unwrap();
         let result = super::copy_files_to_dir(&["/nonexistent-12345/file".into()], dir.path());
-        assert!(result.is_err());
+        let err = result.unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("File not found"),
+            "expected 'File not found' error, got: {msg}"
+        );
     }
 
     // --- generate_release_workflow_yaml ---
@@ -9694,11 +10005,21 @@ spec:
             config: config_path,
             ..test_cli(dir.path())
         };
-        let printer = test_printer();
+        let (printer, buf) = Printer::for_test();
 
         assert!(
             super::cmd_config_show(&cli, &printer).is_ok(),
             "config show should succeed when cfgd.yaml exists and is valid"
+        );
+
+        let output = buf.lock().unwrap();
+        assert!(
+            output.contains("Configuration"),
+            "output should contain header, got: {output}"
+        );
+        assert!(
+            output.contains("default"),
+            "output should show profile, got: {output}"
         );
     }
 
@@ -9901,7 +10222,11 @@ spec:
     #[test]
     fn builtin_aliases_returns_map() {
         let aliases = super::builtin_aliases();
-        assert!(aliases.is_empty());
+        assert_eq!(
+            aliases.len(),
+            0,
+            "builtin_aliases should return an empty map (no built-in aliases yet)"
+        );
     }
 
     // --- cmd_doctor basic ---
@@ -9911,21 +10236,18 @@ spec:
         let dir = create_test_config_dir();
         std::fs::write(dir.path().join("cfgd.yaml"), TEST_CONFIG_YAML).unwrap();
 
-        // Verify config is actually valid before testing doctor
-        let cfg = config::load_config(&dir.path().join("cfgd.yaml")).unwrap();
-        assert!(
-            cfg.spec.profile.is_some(),
-            "precondition: test config should specify a profile"
-        );
-
         let cli = test_cli(dir.path());
-        let printer = test_printer();
+        let (printer, buf) = Printer::for_test();
 
         let result = super::cmd_doctor(&cli, &printer);
+        assert!(result.is_ok(), "doctor failed: {:?}", result.err());
+
+        let output = buf.lock().unwrap();
+        assert!(output.contains("Doctor"), "missing Doctor header");
+        assert!(output.contains("Config file"), "missing config file status");
         assert!(
-            result.is_ok(),
-            "doctor should complete health checks with valid config: {:?}",
-            result.err()
+            output.contains("Package Managers"),
+            "missing Package Managers section"
         );
     }
 
@@ -9933,23 +10255,21 @@ spec:
     fn cmd_doctor_without_config() {
         let dir = tempfile::tempdir().unwrap();
         let config_path = dir.path().join("nonexistent.yaml");
-        assert!(
-            !config_path.exists(),
-            "precondition: config file must not exist"
-        );
 
         let cli = Cli {
             config: config_path,
             ..test_cli(dir.path())
         };
-        let printer = test_printer();
+        let (printer, buf) = Printer::for_test();
 
-        // Should still succeed (doctor reports missing config, doesn't fail)
         let result = super::cmd_doctor(&cli, &printer);
+        assert!(result.is_ok(), "doctor failed: {:?}", result.err());
+
+        let output = buf.lock().unwrap();
+        assert!(output.contains("Doctor"), "missing Doctor header");
         assert!(
-            result.is_ok(),
-            "doctor should handle missing config gracefully (reports issues, does not error): {:?}",
-            result.err()
+            output.contains("not found"),
+            "should report config not found, got: {output}"
         );
     }
 
@@ -9975,117 +10295,54 @@ spec:
 
     #[test]
     fn cmd_status_with_empty_state() {
-        let (config_dir, state_dir) = setup_test_env();
-
-        let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
-        let printer = test_printer();
-
-        let result = super::cmd_status(&cli, &printer, None);
-        assert!(
-            result.is_ok(),
-            "status with empty state should succeed: {:?}",
-            result.err()
-        );
-
-        // Verify the state store has no last_apply record
-        let state = StateStore::open(&state_dir.path().join("cfgd.db")).unwrap();
-        assert!(state.last_apply().unwrap().is_none());
+        let h = CliTestHarness::builder().build();
+        super::cmd_status(&h.cli(), h.printer(), None).unwrap();
+        h.assert_header("Status");
+        h.assert_output_contains("No applies recorded yet");
     }
 
     #[test]
     fn cmd_status_module_not_found() {
-        let (config_dir, state_dir) = setup_test_env();
-
-        let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
-        let printer = test_printer();
-
-        // Nonexistent module should succeed gracefully (empty status, exit 0)
-        let result = super::cmd_status(&cli, &printer, Some("nonexistent"));
-        assert!(
-            result.is_ok(),
-            "status should handle nonexistent module gracefully (empty status, not an error): {:?}",
-            result.err()
-        );
+        let h = CliTestHarness::builder().build();
+        super::cmd_status(&h.cli(), h.printer(), Some("nonexistent")).unwrap();
+        h.assert_output_contains("nonexistent");
     }
 
     #[test]
     fn cmd_status_module_found() {
-        let (config_dir, state_dir) = setup_test_env();
-
-        // Create a module
-        let mod_dir = config_dir.path().join("modules").join("test-mod");
-        std::fs::create_dir_all(&mod_dir).unwrap();
-        std::fs::write(
-            mod_dir.join("module.yaml"),
-            "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: test-mod\nspec:\n  packages: []\n",
-        )
-        .unwrap();
-
-        // Verify module YAML is valid before testing status
-        let module =
-            config::parse_module(&std::fs::read_to_string(mod_dir.join("module.yaml")).unwrap())
-                .unwrap();
-        assert_eq!(module.metadata.name, "test-mod");
-
-        let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
-        let printer = test_printer();
-
-        let result = super::cmd_status(&cli, &printer, Some("test-mod"));
-        assert!(
-            result.is_ok(),
-            "status should succeed when the specified module exists in config dir: {:?}",
-            result.err()
-        );
+        let h = CliTestHarness::builder()
+            .module("test-mod", SIMPLE_MODULE_YAML)
+            .build();
+        super::cmd_status(&h.cli(), h.printer(), Some("test-mod")).unwrap();
+        h.assert_output_contains("test-mod");
     }
 
     #[test]
     fn cmd_verify_module() {
-        let (config_dir, state_dir) = setup_test_env();
-
-        // Create a module with no packages (so verify succeeds trivially)
-        let mod_dir = config_dir.path().join("modules").join("test-mod");
-        std::fs::create_dir_all(&mod_dir).unwrap();
-        std::fs::write(
-            mod_dir.join("module.yaml"),
-            "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: test-mod\nspec:\n  packages: []\n",
-        )
-        .unwrap();
-
-        let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
-        let printer = test_printer();
-
-        let result = super::cmd_verify(&cli, &printer, Some("test-mod"));
+        let h = CliTestHarness::builder()
+            .module("test-mod", SIMPLE_MODULE_YAML)
+            .build();
+        super::cmd_verify(&h.cli(), h.printer(), Some("test-mod")).unwrap();
+        h.assert_header("Verify");
+        h.assert_output_contains("test-mod");
+        let output = h.output();
         assert!(
-            result.is_ok(),
-            "verify should succeed for module with no packages (trivial verification): {:?}",
-            result.err()
+            output.contains("match desired state") || output.contains("healthy"),
+            "should report verification result, got: {output}"
         );
     }
 
     #[test]
     fn cmd_log_with_empty_state() {
-        let (_config_dir, state_dir) = setup_test_env();
-
-        let printer = test_printer();
-
-        let result = super::cmd_log(&printer, 10, None, Some(state_dir.path()));
-        assert!(
-            result.is_ok(),
-            "log with empty state should succeed: {:?}",
-            result.err()
-        );
-
-        // Verify the state store has no apply history
-        let state = StateStore::open(&state_dir.path().join("cfgd.db")).unwrap();
-        assert!(state.history(10).unwrap().is_empty());
+        let h = CliTestHarness::builder().build();
+        super::cmd_log(h.printer(), 10, None, Some(h.state_path())).unwrap();
+        h.assert_header("Apply History");
+        h.assert_output_contains("No applies recorded yet");
     }
 
     #[test]
     fn cmd_apply_dry_run_empty_profile() {
-        let (config_dir, state_dir) = setup_test_env();
-
-        let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
-        let printer = test_printer();
+        let h = CliTestHarness::builder().build();
         let args = ApplyArgs {
             from: None,
             dry_run: true,
@@ -10097,15 +10354,16 @@ spec:
             skip_scripts: false,
         };
 
-        let result = super::cmd_apply(&cli, &printer, &args);
+        super::cmd_apply(&h.cli(), h.printer(), &args).unwrap();
+        h.assert_header("Plan");
+        let output = h.output();
         assert!(
-            result.is_ok(),
-            "dry-run apply should succeed with empty profile (nothing to do): {:?}",
-            result.err()
+            output.contains("Nothing to do") || output.contains("action(s) planned"),
+            "should indicate plan result, got: {output}"
         );
 
         // Dry-run should NOT create any state store records
-        let state = StateStore::open(&state_dir.path().join("cfgd.db")).unwrap();
+        let state = StateStore::open(&h.state_path().join("cfgd.db")).unwrap();
         assert!(
             state.last_apply().unwrap().is_none(),
             "dry-run should not create apply records in state store"
@@ -10146,10 +10404,7 @@ spec:
 
     #[test]
     fn cmd_apply_dry_run_with_phase_filter() {
-        let (config_dir, state_dir) = setup_test_env();
-
-        let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
-        let printer = test_printer();
+        let h = CliTestHarness::builder().build();
         let args = ApplyArgs {
             from: None,
             dry_run: true,
@@ -10160,28 +10415,18 @@ spec:
             module: None,
             skip_scripts: false,
         };
-
-        let result = super::cmd_apply(&cli, &printer, &args);
+        super::cmd_apply(&h.cli(), h.printer(), &args).unwrap();
+        h.assert_header("Plan");
+        let output = h.output();
         assert!(
-            result.is_ok(),
-            "dry-run apply should succeed with --phase packages filter: {:?}",
-            result.err()
-        );
-
-        // Dry-run should NOT create any state store records
-        let state = StateStore::open(&state_dir.path().join("cfgd.db")).unwrap();
-        assert!(
-            state.last_apply().unwrap().is_none(),
-            "dry-run with phase filter should not create apply records"
+            output.contains("Nothing to do") || output.contains("Packages"),
+            "should mention nothing-to-do or the filtered phase, got: {output}"
         );
     }
 
     #[test]
     fn cmd_apply_dry_run_invalid_phase() {
-        let (config_dir, state_dir) = setup_test_env();
-
-        let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
-        let printer = test_printer();
+        let h = CliTestHarness::builder().build();
         let args = ApplyArgs {
             from: None,
             dry_run: true,
@@ -10192,18 +10437,13 @@ spec:
             module: None,
             skip_scripts: false,
         };
-
-        let result = super::cmd_apply(&cli, &printer, &args);
-        assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("Unknown phase"));
+        let result = super::cmd_apply(&h.cli(), h.printer(), &args);
+        assert_error_contains(&result, "Unknown phase");
     }
 
     #[test]
     fn cmd_apply_dry_run_with_skip() {
-        let (config_dir, state_dir) = setup_test_env();
-
-        let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
-        let printer = test_printer();
+        let h = CliTestHarness::builder().build();
         let args = ApplyArgs {
             from: None,
             dry_run: true,
@@ -10214,28 +10454,18 @@ spec:
             module: None,
             skip_scripts: false,
         };
-
-        let result = super::cmd_apply(&cli, &printer, &args);
+        super::cmd_apply(&h.cli(), h.printer(), &args).unwrap();
+        h.assert_header("Plan");
+        let output = h.output();
         assert!(
-            result.is_ok(),
-            "dry-run apply should succeed with --skip packages filter: {:?}",
-            result.err()
-        );
-
-        // Dry-run should NOT create any state store records
-        let state = StateStore::open(&state_dir.path().join("cfgd.db")).unwrap();
-        assert!(
-            state.last_apply().unwrap().is_none(),
-            "dry-run with skip filter should not create apply records"
+            output.contains("Nothing to do") || output.contains("Phase:"),
+            "should mention plan or nothing to do, got: {output}"
         );
     }
 
     #[test]
     fn cmd_apply_dry_run_with_only() {
-        let (config_dir, state_dir) = setup_test_env();
-
-        let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
-        let printer = test_printer();
+        let h = CliTestHarness::builder().build();
         let args = ApplyArgs {
             from: None,
             dry_run: true,
@@ -10246,38 +10476,21 @@ spec:
             module: None,
             skip_scripts: false,
         };
-
-        let result = super::cmd_apply(&cli, &printer, &args);
+        super::cmd_apply(&h.cli(), h.printer(), &args).unwrap();
+        h.assert_header("Plan");
+        let output = h.output();
         assert!(
-            result.is_ok(),
-            "dry-run apply should succeed with --only files filter: {:?}",
-            result.err()
-        );
-
-        // Dry-run should NOT create any state store records
-        let state = StateStore::open(&state_dir.path().join("cfgd.db")).unwrap();
-        assert!(
-            state.last_apply().unwrap().is_none(),
-            "dry-run with only filter should not create apply records"
+            output.contains("Nothing to do") || output.contains("Phase:"),
+            "should mention plan or nothing to do, got: {output}"
         );
     }
 
     #[test]
     fn cmd_apply_real_with_empty_profile() {
-        let (config_dir, state_dir) = setup_test_env();
-
-        // Use a profile with no packages/files so apply does nothing
-        let empty_profile = "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: empty\nspec:\n  inherits: []\n  modules: []\n";
-        std::fs::write(
-            config_dir.path().join("profiles").join("empty.yaml"),
-            empty_profile,
-        )
-        .unwrap();
-        let empty_config = "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec:\n  profile: empty\n";
-        std::fs::write(config_dir.path().join("cfgd.yaml"), empty_config).unwrap();
-
-        let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
-        let printer = test_printer();
+        let h = CliTestHarness::builder()
+            .config("apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec:\n  profile: empty\n")
+            .profile("empty", "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: empty\nspec:\n  inherits: []\n  modules: []\n")
+            .build();
         let args = ApplyArgs {
             from: None,
             dry_run: false,
@@ -10288,17 +10501,11 @@ spec:
             module: None,
             skip_scripts: false,
         };
+        super::cmd_apply(&h.cli(), h.printer(), &args).unwrap();
+        h.assert_header("Apply");
+        h.assert_output_contains("Nothing to do");
 
-        let result = super::cmd_apply(&cli, &printer, &args);
-        assert!(
-            result.is_ok(),
-            "real apply should succeed with empty profile (nothing to apply): {:?}",
-            result.err()
-        );
-
-        // Empty profile has no actions, so apply returns early ("Nothing to do")
-        // and no apply record is created
-        let state = StateStore::open(&state_dir.path().join("cfgd.db")).unwrap();
+        let state = StateStore::open(&h.state_path().join("cfgd.db")).unwrap();
         assert!(
             state.last_apply().unwrap().is_none(),
             "empty profile apply should not create apply records (nothing to do)"
@@ -10307,22 +10514,19 @@ spec:
 
     #[test]
     fn cmd_status_after_apply() {
+        // The harness doesn't support buffer clearing, so use raw setup for multi-step tests
         let (config_dir, state_dir) = setup_test_env();
-
-        // Apply with empty profile
         let empty_profile = "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: empty\nspec:\n  inherits: []\n  modules: []\n";
         std::fs::write(
             config_dir.path().join("profiles").join("empty.yaml"),
             empty_profile,
         )
         .unwrap();
-        let empty_config = "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec:\n  profile: empty\n";
-        std::fs::write(config_dir.path().join("cfgd.yaml"), empty_config).unwrap();
+        std::fs::write(config_dir.path().join("cfgd.yaml"), "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec:\n  profile: empty\n").unwrap();
 
         let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
-        let printer = test_printer();
+        let (printer, buf) = Printer::for_test();
 
-        // Apply first
         let args = ApplyArgs {
             from: None,
             dry_run: false,
@@ -10334,38 +10538,30 @@ spec:
             skip_scripts: false,
         };
         super::cmd_apply(&cli, &printer, &args).unwrap();
+        buf.lock().unwrap().clear();
 
-        // Status should show last apply
-        let result = super::cmd_status(&cli, &printer, None);
+        super::cmd_status(&cli, &printer, None).unwrap();
+        let output = buf.lock().unwrap();
         assert!(
-            result.is_ok(),
-            "status after apply should succeed: {:?}",
-            result.err()
+            output.contains("Status"),
+            "should contain Status header, got: {output}"
         );
-
-        // Empty profile has no actions, so apply returns early ("Nothing to do")
-        // and no apply record is created — verify the state store reflects this
-        let state = StateStore::open(&state_dir.path().join("cfgd.db")).unwrap();
-        assert!(state.last_apply().unwrap().is_none());
     }
 
     #[test]
     fn cmd_log_after_apply() {
         let (config_dir, state_dir) = setup_test_env();
-
         let empty_profile = "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: empty\nspec:\n  inherits: []\n  modules: []\n";
         std::fs::write(
             config_dir.path().join("profiles").join("empty.yaml"),
             empty_profile,
         )
         .unwrap();
-        let empty_config = "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec:\n  profile: empty\n";
-        std::fs::write(config_dir.path().join("cfgd.yaml"), empty_config).unwrap();
+        std::fs::write(config_dir.path().join("cfgd.yaml"), "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec:\n  profile: empty\n").unwrap();
 
         let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
-        let printer = test_printer();
+        let (printer, buf) = Printer::for_test();
 
-        // Apply
         let args = ApplyArgs {
             from: None,
             dry_run: false,
@@ -10377,75 +10573,32 @@ spec:
             skip_scripts: false,
         };
         super::cmd_apply(&cli, &printer, &args).unwrap();
+        buf.lock().unwrap().clear();
 
-        // Log should show one entry
-        let result = super::cmd_log(&printer, 10, None, Some(state_dir.path()));
+        super::cmd_log(&printer, 10, None, Some(state_dir.path())).unwrap();
+        let output = buf.lock().unwrap();
         assert!(
-            result.is_ok(),
-            "log after apply should succeed: {:?}",
-            result.err()
+            output.contains("Apply History"),
+            "should contain Apply History header, got: {output}"
         );
-
-        // Empty profile has no actions, so apply returns early ("Nothing to do")
-        // and no history record is created — verify the state store reflects this
-        let state = StateStore::open(&state_dir.path().join("cfgd.db")).unwrap();
-        assert!(state.history(10).unwrap().is_empty());
+        assert!(
+            output.contains("No applies recorded yet"),
+            "empty profile creates no history records, got: {output}"
+        );
     }
 
     #[test]
     fn cmd_verify_empty_profile() {
-        let (config_dir, state_dir) = setup_test_env();
-
-        // Verify the config and profile resolve successfully
-        let cfg = config::load_config(&config_dir.path().join("cfgd.yaml")).unwrap();
-        let profile_name = cfg.spec.profile.as_deref().unwrap();
-        let resolved =
-            config::resolve_profile(profile_name, &config_dir.path().join("profiles")).unwrap();
-        assert_eq!(
-            profile_name, "default",
-            "precondition: config should use the default profile"
-        );
-        // Default test profile has env vars and cargo packages — verify is about
-        // checking that the resolved profile can be verified without errors
-        assert!(
-            !resolved.merged.env.is_empty(),
-            "precondition: default profile should have env vars configured"
-        );
-
-        let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
-        let printer = test_printer();
-
-        let result = super::cmd_verify(&cli, &printer, None);
-        assert!(
-            result.is_ok(),
-            "verify should succeed with default test profile: {:?}",
-            result.err()
-        );
+        let h = CliTestHarness::builder().build();
+        super::cmd_verify(&h.cli(), h.printer(), None).unwrap();
+        h.assert_header("Verify");
     }
 
     #[test]
     fn cmd_diff_empty_profile() {
-        let (config_dir, state_dir) = setup_test_env();
-
-        // Verify the test config resolves to a profile with no resources
-        let cfg = config::load_config(&config_dir.path().join("cfgd.yaml")).unwrap();
-        let profile_name = cfg.spec.profile.as_deref().unwrap();
-        let resolved =
-            config::resolve_profile(profile_name, &config_dir.path().join("profiles")).unwrap();
-        assert!(
-            resolved.merged.files.managed.is_empty(),
-            "precondition: default profile should have no managed files"
-        );
-
-        let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
-        let printer = test_printer();
-
-        let result = super::cmd_diff(&cli, &printer, None);
-        assert!(
-            result.is_ok(),
-            "diff should succeed with empty profile (no resources to diff): {:?}",
-            result.err()
-        );
+        let h = CliTestHarness::builder().build();
+        super::cmd_diff(&h.cli(), h.printer(), None).unwrap();
+        h.assert_header("Diff");
     }
 
     #[test]
@@ -10473,7 +10626,7 @@ spec:
         std::fs::write(config_dir.path().join("cfgd.yaml"), config).unwrap();
 
         let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
-        let printer = test_printer();
+        let (printer, buf) = Printer::for_test();
         let args = ApplyArgs {
             from: None,
             dry_run: true,
@@ -10493,6 +10646,16 @@ spec:
         );
         // File should NOT be created (dry-run)
         assert!(!target.exists());
+
+        let output = buf.lock().unwrap();
+        assert!(
+            output.contains("Plan"),
+            "should contain Plan header, got: {output}"
+        );
+        assert!(
+            output.contains("create") || output.contains("test.txt"),
+            "should show file plan action, got: {output}"
+        );
     }
 
     #[test]
@@ -10564,7 +10727,7 @@ spec:
         std::fs::write(config_dir.path().join("cfgd.yaml"), config).unwrap();
 
         let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
-        let printer = test_printer();
+        let (printer, buf) = Printer::for_test();
         let args = ApplyArgs {
             from: None,
             dry_run: false,
@@ -10580,12 +10743,21 @@ spec:
         super::cmd_apply(&cli, &printer, &args).unwrap();
         assert!(target.exists());
 
+        // Clear buffer before second apply
+        buf.lock().unwrap().clear();
+
         // Second apply — should succeed with nothing to do
         let result = super::cmd_apply(&cli, &printer, &args);
         assert!(
             result.is_ok(),
             "second apply (idempotent) should succeed with nothing to do: {:?}",
             result.err()
+        );
+
+        let output = buf.lock().unwrap();
+        assert!(
+            output.contains("Nothing to do"),
+            "second apply should say nothing to do, got: {output}"
         );
     }
 
@@ -10615,275 +10787,164 @@ spec:
         std::fs::write(config_dir.path().join("cfgd.yaml"), config).unwrap();
 
         let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
-        let printer = test_printer();
+        let (printer, buf) = Printer::for_test();
 
         let result = super::cmd_diff(&cli, &printer, None);
+        assert!(result.is_ok(), "diff failed: {:?}", result.err());
+
+        let output = buf.lock().unwrap();
+        assert!(output.contains("Diff"), "missing Diff header");
         assert!(
-            result.is_ok(),
-            "diff should succeed when profile has files with differing content on disk: {:?}",
-            result.err()
+            output.contains("-current content") || output.contains("+desired content"),
+            "output should contain diff lines showing content change, got: {output}"
         );
     }
 
     #[test]
     fn cmd_status_structured_output() {
-        let (config_dir, state_dir) = setup_test_env();
-
-        let cli = Cli {
-            output: OutputFormatArg(cfgd_core::output::OutputFormat::Json),
-            ..test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()))
-        };
-        let printer = Printer::new(cfgd_core::output::Verbosity::Quiet);
-
-        let result = super::cmd_status(&cli, &printer, None);
+        let h = CliTestHarness::builder().json().build();
+        super::cmd_status(&h.cli(), h.printer(), None).unwrap();
+        let parsed = h.json_output();
         assert!(
-            result.is_ok(),
-            "status should succeed with JSON output format: {:?}",
-            result.err()
+            parsed.get("lastApply").is_some() || parsed.get("modules").is_some(),
+            "JSON should contain status fields, got: {parsed}"
         );
     }
 
     #[test]
     fn cmd_log_structured_output() {
-        let (_config_dir, state_dir) = setup_test_env();
-
-        let printer = Printer::new(cfgd_core::output::Verbosity::Quiet);
-
-        let result = super::cmd_log(&printer, 5, None, Some(state_dir.path()));
-        assert!(
-            result.is_ok(),
-            "log should succeed with JSON structured output format: {:?}",
-            result.err()
+        let h = CliTestHarness::builder().json().build();
+        super::cmd_log(h.printer(), 5, None, Some(h.state_path())).unwrap();
+        let parsed = h.json_output();
+        assert_eq!(
+            parsed,
+            serde_json::json!({"entries": []}),
+            "fresh state should produce exactly {{entries: []}}"
         );
     }
 
     #[test]
     fn execute_status_command() {
-        let (config_dir, state_dir) = setup_test_env();
-
-        let cli = Cli {
-            command: Command::Status { module: None },
-            ..test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()))
-        };
-        let printer = test_printer();
-
-        let result = super::execute(&cli, &printer);
-        assert!(
-            result.is_ok(),
-            "execute should dispatch Status command successfully: {:?}",
-            result.err()
-        );
+        let h = CliTestHarness::builder().build();
+        let cli = h.cli_with_command(Command::Status { module: None });
+        super::execute(&cli, h.printer()).unwrap();
+        h.assert_header("Status");
     }
 
     #[test]
     fn execute_log_command() {
-        let (_config_dir, state_dir) = setup_test_env();
-
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("cfgd.yaml"), TEST_CONFIG_YAML).unwrap();
-        std::fs::create_dir_all(dir.path().join("profiles")).unwrap();
-        std::fs::write(
-            dir.path().join("profiles").join("default.yaml"),
-            "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec:\n  modules: []\n",
-        )
-        .unwrap();
-
-        let cli = Cli {
-            command: Command::Log {
-                limit: 10,
-                show_output: None,
-            },
-            ..test_cli_with_state(dir.path(), Some(state_dir.path().to_path_buf()))
-        };
-        let printer = test_printer();
-
-        let result = super::execute(&cli, &printer);
+        let h = CliTestHarness::builder().build();
+        let cli = h.cli_with_command(Command::Log {
+            limit: 10,
+            show_output: None,
+        });
+        super::execute(&cli, h.printer()).unwrap();
+        let output = h.output();
         assert!(
-            result.is_ok(),
-            "execute should dispatch Log command successfully: {:?}",
-            result.err()
+            output.contains("Apply History") || output.contains("No applies"),
+            "execute Log should show history, got: {output}"
         );
     }
 
     #[test]
     fn execute_verify_command() {
-        let (config_dir, state_dir) = setup_test_env();
-
-        let cli = Cli {
-            command: Command::Verify { module: None },
-            ..test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()))
-        };
-        let printer = test_printer();
-
-        let result = super::execute(&cli, &printer);
-        assert!(
-            result.is_ok(),
-            "execute should dispatch Verify command successfully: {:?}",
-            result.err()
-        );
+        let h = CliTestHarness::builder().build();
+        let cli = h.cli_with_command(Command::Verify { module: None });
+        super::execute(&cli, h.printer()).unwrap();
+        h.assert_header("Verify");
     }
 
     #[test]
     fn execute_diff_command() {
-        let (config_dir, state_dir) = setup_test_env();
-
-        let cli = Cli {
-            command: Command::Diff { module: None },
-            ..test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()))
-        };
-        let printer = test_printer();
-
-        let result = super::execute(&cli, &printer);
-        assert!(
-            result.is_ok(),
-            "execute should dispatch Diff command successfully: {:?}",
-            result.err()
-        );
+        let h = CliTestHarness::builder().build();
+        let cli = h.cli_with_command(Command::Diff { module: None });
+        super::execute(&cli, h.printer()).unwrap();
+        h.assert_header("Diff");
     }
 
     #[test]
     fn execute_doctor_command() {
-        let (config_dir, state_dir) = setup_test_env();
-
-        let cli = Cli {
-            command: Command::Doctor,
-            ..test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()))
-        };
-        let printer = test_printer();
-
-        let result = super::execute(&cli, &printer);
-        assert!(
-            result.is_ok(),
-            "execute should dispatch Doctor command successfully: {:?}",
-            result.err()
-        );
+        let h = CliTestHarness::builder().build();
+        let cli = h.cli_with_command(Command::Doctor);
+        super::execute(&cli, h.printer()).unwrap();
+        h.assert_header("Doctor");
     }
 
     #[test]
     fn execute_profile_list() {
-        let (config_dir, state_dir) = setup_test_env();
-
-        let cli = Cli {
-            command: Command::Profile {
-                command: ProfileCommand::List,
-            },
-            ..test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()))
-        };
-        let printer = test_printer();
-
-        assert!(
-            super::execute(&cli, &printer).is_ok(),
-            "execute should dispatch Profile List command successfully"
-        );
+        let h = CliTestHarness::builder().build();
+        let cli = h.cli_with_command(Command::Profile {
+            command: ProfileCommand::List,
+        });
+        super::execute(&cli, h.printer()).unwrap();
+        h.assert_output_contains("default");
     }
 
     #[test]
     fn execute_profile_show() {
-        let (config_dir, state_dir) = setup_test_env();
-
-        let cli = Cli {
-            command: Command::Profile {
-                command: ProfileCommand::Show { name: None },
-            },
-            ..test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()))
-        };
-        let printer = test_printer();
-
-        assert!(
-            super::execute(&cli, &printer).is_ok(),
-            "execute should dispatch Profile Show command successfully"
-        );
+        let h = CliTestHarness::builder().build();
+        let cli = h.cli_with_command(Command::Profile {
+            command: ProfileCommand::Show { name: None },
+        });
+        super::execute(&cli, h.printer()).unwrap();
+        h.assert_output_contains("default");
     }
 
     #[test]
     fn execute_config_show() {
-        let (config_dir, state_dir) = setup_test_env();
-
-        let cli = Cli {
-            command: Command::Config {
-                command: ConfigCommand::Show,
-            },
-            ..test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()))
-        };
-        let printer = test_printer();
-
-        assert!(
-            super::execute(&cli, &printer).is_ok(),
-            "execute should dispatch Config Show command successfully"
-        );
+        let h = CliTestHarness::builder().build();
+        let cli = h.cli_with_command(Command::Config {
+            command: ConfigCommand::Show,
+        });
+        super::execute(&cli, h.printer()).unwrap();
+        h.assert_header("Configuration");
     }
 
     #[test]
     fn execute_config_get() {
-        let (config_dir, state_dir) = setup_test_env();
-
-        let cli = Cli {
-            command: Command::Config {
-                command: ConfigCommand::Get {
-                    key: "profile".to_string(),
-                },
+        let h = CliTestHarness::builder().build();
+        let cli = h.cli_with_command(Command::Config {
+            command: ConfigCommand::Get {
+                key: "profile".to_string(),
             },
-            ..test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()))
-        };
-        let printer = test_printer();
-
-        assert!(
-            super::execute(&cli, &printer).is_ok(),
-            "execute should dispatch Config Get command successfully"
-        );
+        });
+        super::execute(&cli, h.printer()).unwrap();
+        h.assert_output_contains("default");
     }
 
     #[test]
     fn execute_config_set() {
-        let (config_dir, state_dir) = setup_test_env();
-
-        let cli = Cli {
-            command: Command::Config {
-                command: ConfigCommand::Set {
-                    key: "profile".to_string(),
-                    value: "work".to_string(),
-                },
+        let h = CliTestHarness::builder().build();
+        let cli = h.cli_with_command(Command::Config {
+            command: ConfigCommand::Set {
+                key: "profile".to_string(),
+                value: "work".to_string(),
             },
-            ..test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()))
-        };
-        let printer = test_printer();
+        });
+        super::execute(&cli, h.printer()).unwrap();
 
-        assert!(
-            super::execute(&cli, &printer).is_ok(),
-            "execute should dispatch Config Set command successfully"
-        );
-
-        // Verify the config file was actually updated with the new profile value
-        let cfg = config::load_config(&config_dir.path().join("cfgd.yaml")).unwrap();
-        assert_eq!(
-            cfg.spec.profile.as_deref(),
-            Some("work"),
-            "config file should have profile set to 'work' after config set"
-        );
+        let cfg = config::load_config(&h.config_path().join("cfgd.yaml")).unwrap();
+        assert_eq!(cfg.spec.profile.as_deref(), Some("work"));
     }
 
     #[test]
     fn execute_apply_dry_run() {
-        let (config_dir, state_dir) = setup_test_env();
-
-        let cli = Cli {
-            command: Command::Apply(ApplyArgs {
-                from: None,
-                dry_run: true,
-                phase: None,
-                yes: true,
-                skip: vec![],
-                only: vec![],
-                module: None,
-                skip_scripts: false,
-            }),
-            ..test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()))
-        };
-        let printer = test_printer();
-
+        let h = CliTestHarness::builder().build();
+        let cli = h.cli_with_command(Command::Apply(ApplyArgs {
+            from: None,
+            dry_run: true,
+            phase: None,
+            yes: true,
+            skip: vec![],
+            only: vec![],
+            module: None,
+            skip_scripts: false,
+        }));
+        super::execute(&cli, h.printer()).unwrap();
+        let output = h.output();
         assert!(
-            super::execute(&cli, &printer).is_ok(),
-            "execute should dispatch Apply dry-run command successfully"
+            output.contains("Plan") || output.contains("Nothing"),
+            "execute Apply dry-run should show plan or nothing-to-do, got: {output}"
         );
     }
 
@@ -10896,11 +10957,14 @@ spec:
             },
             ..test_cli(dir.path())
         };
+        // Completions write directly to stdout via clap_complete, not through Printer.
+        // We verify execution succeeds; output content is clap_complete's responsibility.
         let printer = test_printer();
-
+        let result = super::execute(&cli, &printer);
         assert!(
-            super::execute(&cli, &printer).is_ok(),
-            "execute should dispatch Completions Bash command successfully"
+            result.is_ok(),
+            "bash completions failed: {:?}",
+            result.err()
         );
     }
 
@@ -10914,11 +10978,8 @@ spec:
             ..test_cli(dir.path())
         };
         let printer = test_printer();
-
-        assert!(
-            super::execute(&cli, &printer).is_ok(),
-            "execute should dispatch Completions Zsh command successfully"
-        );
+        let result = super::execute(&cli, &printer);
+        assert!(result.is_ok(), "zsh completions failed: {:?}", result.err());
     }
 
     #[test]
@@ -10931,10 +10992,11 @@ spec:
             ..test_cli(dir.path())
         };
         let printer = test_printer();
-
+        let result = super::execute(&cli, &printer);
         assert!(
-            super::execute(&cli, &printer).is_ok(),
-            "execute should dispatch Completions Fish command successfully"
+            result.is_ok(),
+            "fish completions failed: {:?}",
+            result.err()
         );
     }
 
@@ -10948,11 +11010,13 @@ spec:
             },
             ..test_cli(dir.path())
         };
-        let printer = test_printer();
+        let (printer, buf) = Printer::for_test();
 
+        super::execute(&cli, &printer).unwrap();
+        let output = buf.lock().unwrap();
         assert!(
-            super::execute(&cli, &printer).is_ok(),
-            "execute should dispatch Explain config command successfully"
+            output.contains("Config") || output.contains("cfgd.yaml"),
+            "explain config should describe config resource, got: {output}"
         );
     }
 
@@ -10966,11 +11030,13 @@ spec:
             },
             ..test_cli(dir.path())
         };
-        let printer = test_printer();
+        let (printer, buf) = Printer::for_test();
 
+        super::execute(&cli, &printer).unwrap();
+        let output = buf.lock().unwrap();
         assert!(
-            super::execute(&cli, &printer).is_ok(),
-            "execute should dispatch Explain profile command successfully"
+            output.contains("Profile") || output.contains("profile"),
+            "explain profile should describe profile resource, got: {output}"
         );
     }
 
@@ -10984,11 +11050,13 @@ spec:
             },
             ..test_cli(dir.path())
         };
-        let printer = test_printer();
+        let (printer, buf) = Printer::for_test();
 
+        super::execute(&cli, &printer).unwrap();
+        let output = buf.lock().unwrap();
         assert!(
-            super::execute(&cli, &printer).is_ok(),
-            "execute should dispatch Explain module command successfully"
+            output.contains("Module") || output.contains("module"),
+            "explain module should describe module resource, got: {output}"
         );
     }
 
@@ -11002,11 +11070,15 @@ spec:
             },
             ..test_cli(dir.path())
         };
-        let printer = test_printer();
+        let (printer, buf) = Printer::for_test();
 
+        super::execute(&cli, &printer).unwrap();
+        let output = buf.lock().unwrap();
         assert!(
-            super::execute(&cli, &printer).is_ok(),
-            "execute should dispatch Explain (no resource) command successfully"
+            output.contains("Available resource types")
+                || output.contains("NAME")
+                || output.contains("config"),
+            "explain (all resources) should list available resource types, got: {output}"
         );
     }
 
@@ -11030,7 +11102,7 @@ spec:
         .unwrap();
 
         let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
-        let printer = test_printer();
+        let (printer, buf) = Printer::for_test();
         let args = ApplyArgs {
             from: None,
             dry_run: true,
@@ -11043,10 +11115,12 @@ spec:
         };
 
         let result = super::cmd_apply(&cli, &printer, &args);
+        assert!(result.is_ok(), "apply failed: {:?}", result.err());
+
+        let output = buf.lock().unwrap();
         assert!(
-            result.is_ok(),
-            "dry-run apply should succeed when filtering to a specific module: {:?}",
-            result.err()
+            output.contains("Plan") || output.contains("test-mod") || output.contains("Nothing"),
+            "apply with module filter should reference module or show plan, got: {output}"
         );
     }
 
@@ -11063,7 +11137,7 @@ spec:
         .unwrap();
 
         let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
-        let printer = test_printer();
+        let (printer, buf) = Printer::for_test();
         let args = ApplyArgs {
             from: None,
             dry_run: false,
@@ -11081,6 +11155,18 @@ spec:
             "apply should succeed when profile contains env vars: {:?}",
             result.err()
         );
+
+        {
+            let output = buf.lock().unwrap();
+            assert!(
+                output.contains("Apply"),
+                "should contain Apply header, got: {output}"
+            );
+            assert!(
+                output.contains("Phase:") || output.contains("Nothing to do"),
+                "should mention plan phases or nothing to do, got: {output}"
+            );
+        }
 
         // Verify the profile was loaded with env vars by loading config+profile
         let (_, resolved) = super::load_config_and_profile(&cli, &printer).unwrap();
@@ -11112,11 +11198,18 @@ spec:
         .unwrap();
 
         let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
-        let printer = test_printer();
+        let (printer, buf) = Printer::for_test();
 
         assert!(
             super::cmd_status(&cli, &printer, None).is_ok(),
             "status should succeed when profile references modules"
+        );
+
+        let output = buf.lock().unwrap();
+        assert!(output.contains("Status"), "missing Status header");
+        assert!(
+            output.contains("test-mod"),
+            "output should list module test-mod, got: {output}"
         );
     }
 
@@ -11124,7 +11217,6 @@ spec:
     fn cmd_status_with_drift_events() {
         let (config_dir, state_dir) = setup_test_env();
 
-        // Apply first to create state
         let empty_profile = "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: empty\nspec:\n  inherits: []\n  modules: []\n";
         std::fs::write(
             config_dir.path().join("profiles").join("empty.yaml"),
@@ -11135,9 +11227,8 @@ spec:
         std::fs::write(config_dir.path().join("cfgd.yaml"), empty_config).unwrap();
 
         let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
-        let printer = test_printer();
+        let (printer, buf) = Printer::for_test();
 
-        // Apply, then record a drift event manually
         let args = ApplyArgs {
             from: None,
             dry_run: false,
@@ -11162,12 +11253,16 @@ spec:
             )
             .unwrap();
 
-        // Status should show the drift
-        assert!(super::cmd_status(&cli, &printer, None).is_ok());
+        // Clear buffer before status call
+        buf.lock().unwrap().clear();
 
-        // Verify drift events exist in state
-        let events = state.unresolved_drift().unwrap();
-        assert!(!events.is_empty());
+        super::cmd_status(&cli, &printer, None).unwrap();
+
+        let output = buf.lock().unwrap();
+        assert!(
+            output.contains("curl"),
+            "drift output should mention resource 'curl', got: {output}"
+        );
     }
 
     // --- Source command tests ---
@@ -11177,11 +11272,17 @@ spec:
         let (config_dir, state_dir) = setup_test_env();
 
         let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
-        let printer = test_printer();
+        let (printer, buf) = Printer::for_test();
 
         assert!(
             super::cmd_source_list(&cli, &printer).is_ok(),
             "source list should succeed when no sources are configured"
+        );
+
+        let output = buf.lock().unwrap();
+        assert!(
+            output.contains("Sources") || output.contains("No sources"),
+            "output should show Sources header or no-sources message, got: {output}"
         );
     }
 
@@ -11194,11 +11295,17 @@ spec:
             config: dir.path().join("nonexistent.yaml"),
             ..test_cli_with_state(dir.path(), Some(state_dir.path().to_path_buf()))
         };
-        let printer = test_printer();
+        let (printer, buf) = Printer::for_test();
 
         assert!(
             super::cmd_source_list(&cli, &printer).is_ok(),
             "source list should succeed even without cfgd.yaml"
+        );
+
+        let output = buf.lock().unwrap();
+        assert!(
+            output.contains("Sources") || output.contains("No sources"),
+            "output should show sources info even without config, got: {output}"
         );
     }
 
@@ -11208,21 +11315,19 @@ spec:
     fn cmd_decide_accept_all_empty() {
         let (_config_dir, state_dir) = setup_test_env();
 
-        let printer = test_printer();
+        let (printer, buf) = Printer::for_test();
 
         let result =
             super::cmd_decide(&printer, "accept", None, None, true, Some(state_dir.path()));
-        assert!(
-            result.is_ok(),
-            "decide accept-all should succeed with no pending decisions: {:?}",
-            result.err()
-        );
+        assert!(result.is_ok(), "decide failed: {:?}", result.err());
 
-        // Verify state store has no pending decisions
         let state = super::open_state_store(Some(state_dir.path())).unwrap();
+        assert!(state.pending_decisions().unwrap().is_empty());
+
+        let output = buf.lock().unwrap();
         assert!(
-            state.pending_decisions().unwrap().is_empty(),
-            "state store should have no pending decisions"
+            output.contains("No pending") || output.contains("0 decision"),
+            "should report no pending decisions, got: {output}"
         );
     }
 
@@ -11230,21 +11335,19 @@ spec:
     fn cmd_decide_reject_all_empty() {
         let (_config_dir, state_dir) = setup_test_env();
 
-        let printer = test_printer();
+        let (printer, buf) = Printer::for_test();
 
         let result =
             super::cmd_decide(&printer, "reject", None, None, true, Some(state_dir.path()));
-        assert!(
-            result.is_ok(),
-            "decide reject-all should succeed with no pending decisions: {:?}",
-            result.err()
-        );
+        assert!(result.is_ok(), "decide failed: {:?}", result.err());
 
-        // Verify state store has no pending decisions
         let state = super::open_state_store(Some(state_dir.path())).unwrap();
+        assert!(state.pending_decisions().unwrap().is_empty());
+
+        let output = buf.lock().unwrap();
         assert!(
-            state.pending_decisions().unwrap().is_empty(),
-            "state store should have no pending decisions"
+            output.contains("No pending") || output.contains("0 decision"),
+            "should report no pending decisions, got: {output}"
         );
     }
 
@@ -11270,9 +11373,8 @@ spec:
     fn cmd_decide_accept_specific_resource() {
         let (_config_dir, state_dir) = setup_test_env();
 
-        let printer = test_printer();
+        let (printer, buf) = Printer::for_test();
 
-        // No pending decisions, but should not error
         let result = super::cmd_decide(
             &printer,
             "accept",
@@ -11281,17 +11383,18 @@ spec:
             false,
             Some(state_dir.path()),
         );
-        assert!(
-            result.is_ok(),
-            "decide accept should succeed for specific resource (no-op when nothing pending): {:?}",
-            result.err()
-        );
+        assert!(result.is_ok(), "decide failed: {:?}", result.err());
 
-        // No pending decisions existed, so state should still be empty
         let state = super::open_state_store(Some(state_dir.path())).unwrap();
+        let pending = state.pending_decisions().unwrap();
+        assert_eq!(pending.len(), 0, "no decisions should remain pending");
+
+        let output = buf.lock().unwrap();
         assert!(
-            state.pending_decisions().unwrap().is_empty(),
-            "state store should remain empty when accepting non-pending resource"
+            output.contains("No pending decision")
+                || output.contains("ACCEPTED")
+                || output.contains("reconcile"),
+            "decide accept should mention acceptance or no-pending state, got: {output}"
         );
     }
 
@@ -11299,7 +11402,7 @@ spec:
     fn cmd_decide_reject_by_source() {
         let (_config_dir, state_dir) = setup_test_env();
 
-        let printer = test_printer();
+        let (printer, buf) = Printer::for_test();
 
         let result = super::cmd_decide(
             &printer,
@@ -11315,11 +11418,20 @@ spec:
             result.err()
         );
 
-        // No pending decisions existed for 'acme', so state should still be empty
         let state = super::open_state_store(Some(state_dir.path())).unwrap();
+        let pending = state.pending_decisions().unwrap();
+        assert_eq!(
+            pending.len(),
+            0,
+            "no decisions should remain pending after reject"
+        );
+
+        let output = buf.lock().unwrap();
         assert!(
-            state.pending_decisions().unwrap().is_empty(),
-            "state store should remain empty when rejecting non-pending source"
+            output.contains("No pending decisions")
+                || output.contains("REJECTED")
+                || output.contains("acme"),
+            "decide reject should mention rejection or source name, got: {output}"
         );
     }
 
@@ -11362,11 +11474,13 @@ spec:
             },
             ..test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()))
         };
-        let printer = test_printer();
+        let (printer, buf) = Printer::for_test();
 
+        super::execute(&cli, &printer).unwrap();
+        let output = buf.lock().unwrap();
         assert!(
-            super::execute(&cli, &printer).is_ok(),
-            "execute should dispatch Module List command successfully"
+            output.contains("Modules") || output.contains("No modules"),
+            "module list should show modules header, got: {output}"
         );
     }
 
@@ -11380,11 +11494,16 @@ spec:
             },
             ..test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()))
         };
-        let printer = test_printer();
+        let (printer, buf) = Printer::for_test();
 
+        super::execute(&cli, &printer).unwrap();
+        let output = buf.lock().unwrap();
         assert!(
-            super::execute(&cli, &printer).is_ok(),
-            "execute should dispatch Workflow Generate command successfully"
+            output.contains("workflow")
+                || output.contains("Workflow")
+                || output.contains("Generated")
+                || output.contains("No profiles"),
+            "workflow generate should mention workflow or generation result, got: {output}"
         );
     }
 
@@ -11394,21 +11513,15 @@ spec:
     fn cmd_sync_no_sources() {
         let (config_dir, state_dir) = setup_test_env();
 
-        // Verify config has no sources configured
-        let cfg = config::load_config(&config_dir.path().join("cfgd.yaml")).unwrap();
-        assert!(
-            cfg.spec.sources.is_empty(),
-            "precondition: test config should have no sources"
-        );
-
         let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
-        let printer = test_printer();
+        let (printer, buf) = Printer::for_test();
 
-        let result = super::cmd_sync(&cli, &printer);
+        super::cmd_sync(&cli, &printer).unwrap();
+
+        let output = buf.lock().unwrap();
         assert!(
-            result.is_ok(),
-            "sync should succeed as no-op when no sources are configured: {:?}",
-            result.err()
+            output.contains("No sources") || output.contains("Sync"),
+            "sync with no sources should report no-sources or show header, got: {output}"
         );
     }
 
@@ -11416,21 +11529,17 @@ spec:
     fn cmd_pull_no_sources() {
         let (config_dir, state_dir) = setup_test_env();
 
-        // Verify config has no sources configured
-        let cfg = config::load_config(&config_dir.path().join("cfgd.yaml")).unwrap();
-        assert!(
-            cfg.spec.sources.is_empty(),
-            "precondition: test config should have no sources"
-        );
-
         let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
-        let printer = test_printer();
+        let (printer, buf) = Printer::for_test();
 
-        let result = super::cmd_pull(&cli, &printer);
+        super::cmd_pull(&cli, &printer).unwrap();
+
+        let output = buf.lock().unwrap();
         assert!(
-            result.is_ok(),
-            "pull should succeed as no-op when no sources are configured: {:?}",
-            result.err()
+            output.contains("No sources")
+                || output.contains("Pull")
+                || output.contains("no origin"),
+            "pull with no sources should report no-sources, got: {output}"
         );
     }
 
@@ -11441,9 +11550,9 @@ spec:
         let (config_dir, state_dir) = setup_test_env();
 
         let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
-        let printer = test_printer();
+        let (printer, _buf) = Printer::for_test();
 
-        for phase in &[
+        let all_phases = [
             "pre-scripts",
             "env",
             "modules",
@@ -11452,7 +11561,8 @@ spec:
             "files",
             "secrets",
             "post-scripts",
-        ] {
+        ];
+        for phase in &all_phases {
             let args = ApplyArgs {
                 from: None,
                 dry_run: true,
@@ -11466,6 +11576,8 @@ spec:
             let result = super::cmd_apply(&cli, &printer, &args);
             assert!(result.is_ok(), "dry-run failed for phase: {}", phase);
         }
+        // Verify all 8 phase names are accepted (no unknown-phase errors)
+        assert_eq!(all_phases.len(), 8);
     }
 
     // --- Verify after real apply ---
@@ -11482,9 +11594,8 @@ spec:
         .unwrap();
 
         let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
-        let printer = test_printer();
+        let (printer, buf) = Printer::for_test();
 
-        // Apply
         let args = ApplyArgs {
             from: None,
             dry_run: false,
@@ -11497,10 +11608,13 @@ spec:
         };
         super::cmd_apply(&cli, &printer, &args).unwrap();
 
-        // Verify
+        buf.lock().unwrap().clear();
+        super::cmd_verify(&cli, &printer, None).unwrap();
+
+        let output = buf.lock().unwrap();
         assert!(
-            super::cmd_verify(&cli, &printer, None).is_ok(),
-            "verify should succeed after applying profile with env vars"
+            output.contains("Verify"),
+            "verify after apply should show Verify header, got: {output}"
         );
     }
 
@@ -11557,7 +11671,7 @@ spec:
         let (config_dir, state_dir) = setup_test_env();
 
         let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
-        let printer = test_printer();
+        let (printer, buf) = Printer::for_test();
         let args = PlanArgs {
             phase: None,
             skip: vec![],
@@ -11567,11 +11681,12 @@ spec:
             context: "apply".to_string(),
         };
 
-        let result = super::cmd_plan(&cli, &printer, &args);
+        super::cmd_plan(&cli, &printer, &args).unwrap();
+
+        let output = buf.lock().unwrap();
         assert!(
-            result.is_ok(),
-            "plan should succeed with empty profile (no actions to plan): {:?}",
-            result.err()
+            output.contains("Plan") || output.contains("Phase"),
+            "plan should show Plan header or phase info, got: {output}"
         );
     }
 
@@ -11580,7 +11695,7 @@ spec:
         let (config_dir, state_dir) = setup_test_env();
 
         let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
-        let printer = test_printer();
+        let (printer, buf) = Printer::for_test();
         let args = PlanArgs {
             phase: None,
             skip: vec![],
@@ -11590,11 +11705,12 @@ spec:
             context: "reconcile".to_string(),
         };
 
-        let result = super::cmd_plan(&cli, &printer, &args);
+        super::cmd_plan(&cli, &printer, &args).unwrap();
+
+        let output = buf.lock().unwrap();
         assert!(
-            result.is_ok(),
-            "plan should succeed with reconcile context: {:?}",
-            result.err()
+            output.contains("Plan") || output.contains("Phase"),
+            "plan with reconcile context should show plan info, got: {output}"
         );
     }
 
@@ -11623,7 +11739,7 @@ spec:
         let (config_dir, state_dir) = setup_test_env();
 
         let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
-        let printer = test_printer();
+        let (printer, buf) = Printer::for_test();
         let args = PlanArgs {
             phase: Some("packages".to_string()),
             skip: vec![],
@@ -11633,9 +11749,11 @@ spec:
             context: "apply".to_string(),
         };
 
+        super::cmd_plan(&cli, &printer, &args).unwrap();
+        let output = buf.lock().unwrap();
         assert!(
-            super::cmd_plan(&cli, &printer, &args).is_ok(),
-            "plan should succeed with --phase packages filter"
+            output.contains("Plan") || output.contains("Packages"),
+            "plan with phase filter should show plan, got: {output}"
         );
     }
 
@@ -11664,7 +11782,7 @@ spec:
         let (config_dir, state_dir) = setup_test_env();
 
         let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
-        let printer = test_printer();
+        let (printer, buf) = Printer::for_test();
         let args = PlanArgs {
             phase: None,
             skip: vec!["packages".to_string()],
@@ -11674,9 +11792,11 @@ spec:
             context: "apply".to_string(),
         };
 
+        super::cmd_plan(&cli, &printer, &args).unwrap();
+        let output = buf.lock().unwrap();
         assert!(
-            super::cmd_plan(&cli, &printer, &args).is_ok(),
-            "plan should succeed with --skip packages filter"
+            output.contains("Plan") || output.contains("Phase"),
+            "plan with skip filter should show plan, got: {output}"
         );
     }
 
@@ -11685,7 +11805,7 @@ spec:
         let (config_dir, state_dir) = setup_test_env();
 
         let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
-        let printer = test_printer();
+        let (printer, buf) = Printer::for_test();
         let args = PlanArgs {
             phase: None,
             skip: vec![],
@@ -11695,9 +11815,11 @@ spec:
             context: "apply".to_string(),
         };
 
+        super::cmd_plan(&cli, &printer, &args).unwrap();
+        let output = buf.lock().unwrap();
         assert!(
-            super::cmd_plan(&cli, &printer, &args).is_ok(),
-            "plan should succeed with --only files filter"
+            output.contains("Plan") || output.contains("Phase"),
+            "plan with only filter should show plan, got: {output}"
         );
     }
 
@@ -11706,7 +11828,7 @@ spec:
         let (config_dir, state_dir) = setup_test_env();
 
         let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
-        let printer = test_printer();
+        let (printer, buf) = Printer::for_test();
         let args = PlanArgs {
             phase: None,
             skip: vec![],
@@ -11716,9 +11838,11 @@ spec:
             context: "apply".to_string(),
         };
 
+        super::cmd_plan(&cli, &printer, &args).unwrap();
+        let output = buf.lock().unwrap();
         assert!(
-            super::cmd_plan(&cli, &printer, &args).is_ok(),
-            "plan should succeed with --skip-scripts flag"
+            output.contains("Plan") || output.contains("Phase"),
+            "plan with skip-scripts should show plan, got: {output}"
         );
     }
 
@@ -11733,7 +11857,7 @@ spec:
         );
 
         let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
-        let printer = test_printer();
+        let (printer, buf) = Printer::for_test();
         let args = PlanArgs {
             phase: None,
             skip: vec![],
@@ -11743,9 +11867,11 @@ spec:
             context: "apply".to_string(),
         };
 
+        super::cmd_plan(&cli, &printer, &args).unwrap();
+        let output = buf.lock().unwrap();
         assert!(
-            super::cmd_plan(&cli, &printer, &args).is_ok(),
-            "plan should succeed when filtering to a specific module"
+            output.contains("Plan") || output.contains("plan-mod"),
+            "plan with module filter should reference module, got: {output}"
         );
     }
 
@@ -11784,7 +11910,7 @@ spec:
         std::fs::write(config_dir.path().join("cfgd.yaml"), config).unwrap();
 
         let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
-        let printer = test_printer();
+        let (printer, buf) = Printer::for_test();
 
         // Apply to create the file
         let args = ApplyArgs {
@@ -11803,17 +11929,28 @@ spec:
         // Get the apply ID from history
         let state = super::open_state_store(Some(state_dir.path())).unwrap();
         let history = state.history(1).unwrap();
-        if !history.is_empty() {
-            let apply_id = history[0].id;
+        assert!(
+            !history.is_empty(),
+            "apply should have created a history entry"
+        );
+        let apply_id = history[0].id;
 
-            // Rollback
-            let result = super::cmd_rollback(&printer, apply_id, true, Some(state_dir.path()));
-            assert!(
-                result.is_ok(),
-                "rollback should succeed for valid apply ID: {:?}",
-                result.err()
-            );
-        }
+        // Clear buffer before rollback
+        buf.lock().unwrap().clear();
+
+        // Rollback
+        let result = super::cmd_rollback(&printer, apply_id, true, Some(state_dir.path()));
+        assert!(
+            result.is_ok(),
+            "rollback should succeed for valid apply ID: {:?}",
+            result.err()
+        );
+
+        let output = buf.lock().unwrap();
+        assert!(
+            output.contains("Rollback") || output.contains("restore"),
+            "rollback output should mention rollback or restoration, got: {output}"
+        );
     }
 
     // --- cmd_compliance tests ---
@@ -11823,12 +11960,12 @@ spec:
         let (config_dir, state_dir) = setup_test_env();
 
         let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
-        let printer = test_printer();
+        let (printer, buf) = Printer::for_test();
 
         let result = super::cmd_compliance_snapshot(&cli, &printer);
         assert!(
             result.is_ok(),
-            "compliance snapshot should succeed and create a record in state store: {:?}",
+            "compliance snapshot should succeed: {:?}",
             result.err()
         );
 
@@ -11839,6 +11976,12 @@ spec:
             !entries.is_empty(),
             "compliance snapshot should create a history entry in state store"
         );
+
+        let output = buf.lock().unwrap();
+        assert!(
+            output.contains("Compliance") || output.contains("Snapshot"),
+            "compliance snapshot should mention compliance or snapshot, got: {output}"
+        );
     }
 
     #[test]
@@ -11846,13 +11989,19 @@ spec:
         let (config_dir, state_dir) = setup_test_env();
 
         let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
-        let printer = test_printer();
+        let (printer, buf) = Printer::for_test();
 
         let result = super::cmd_compliance_export(&cli, &printer);
         assert!(
             result.is_ok(),
-            "compliance export should succeed with empty state: {:?}",
+            "compliance export failed: {:?}",
             result.err()
+        );
+
+        let output = buf.lock().unwrap();
+        assert!(
+            output.contains("Compliance") || output.contains("compliance") || !output.is_empty(),
+            "compliance export should produce output, got: {output}"
         );
     }
 
@@ -11861,7 +12010,7 @@ spec:
         let (config_dir, state_dir) = setup_test_env();
 
         let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
-        let printer = test_printer();
+        let (printer, buf) = Printer::for_test();
 
         let result = super::cmd_compliance_history(&cli, &printer, None);
         assert!(
@@ -11873,9 +12022,18 @@ spec:
         // Verify state store has no compliance entries
         let state = super::open_state_store(Some(state_dir.path())).unwrap();
         let entries = state.compliance_history(None, 10).unwrap();
-        assert!(
-            entries.is_empty(),
+        assert_eq!(
+            entries.len(),
+            0,
             "compliance history should be empty when no snapshots have been taken"
+        );
+
+        let output = buf.lock().unwrap();
+        assert!(
+            output.contains("No compliance snapshots")
+                || output.contains("History")
+                || output.contains("Compliance"),
+            "compliance history should mention no snapshots or show header, got: {output}"
         );
     }
 
@@ -11884,13 +12042,19 @@ spec:
         let (config_dir, state_dir) = setup_test_env();
 
         let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
-        let printer = test_printer();
+        let (printer, buf) = Printer::for_test();
 
         let result = super::cmd_compliance_history(&cli, &printer, Some("7d"));
         assert!(
             result.is_ok(),
             "compliance history should succeed with --since 7d time filter: {:?}",
             result.err()
+        );
+
+        let output = buf.lock().unwrap();
+        assert!(
+            output.contains("Compliance") || output.contains("History") || output.contains("No"),
+            "compliance history with --since should produce output, got: {output}"
         );
     }
 
@@ -11902,7 +12066,12 @@ spec:
         let printer = test_printer();
 
         let result = super::cmd_compliance_history(&cli, &printer, Some("invalid-duration"));
-        assert!(result.is_err());
+        let err = result.unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("invalid --since value"),
+            "expected 'invalid --since value' error, got: {msg}"
+        );
     }
 
     #[test]
@@ -11949,10 +12118,13 @@ spec:
         let (config_dir, state_dir) = setup_test_env();
 
         let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
-        let printer = test_printer();
+        let (printer, buf) = Printer::for_test();
 
         // Create a snapshot first
         super::cmd_compliance_snapshot(&cli, &printer).unwrap();
+
+        // Clear buffer before checking history
+        buf.lock().unwrap().clear();
 
         // History should show at least one entry
         let result = super::cmd_compliance_history(&cli, &printer, None);
@@ -11964,7 +12136,17 @@ spec:
 
         let state = super::open_state_store(Some(state_dir.path())).unwrap();
         let entries = state.compliance_history(None, 10).unwrap();
-        assert!(!entries.is_empty());
+        assert_eq!(
+            entries.len(),
+            1,
+            "should have exactly 1 compliance history entry after one snapshot"
+        );
+
+        let output = buf.lock().unwrap();
+        assert!(
+            output.contains("Compliance") || output.contains("History"),
+            "compliance history should display history header, got: {output}"
+        );
     }
 
     // --- empty_resolved_profile tests ---
@@ -11999,7 +12181,7 @@ spec:
         let (config_dir, state_dir) = setup_test_env();
 
         let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
-        let printer = test_printer();
+        let (printer, buf) = Printer::for_test();
         let args = ApplyArgs {
             from: None,
             dry_run: true,
@@ -12011,9 +12193,20 @@ spec:
             skip_scripts: true,
         };
 
+        let result = super::cmd_apply(&cli, &printer, &args);
         assert!(
-            super::cmd_apply(&cli, &printer, &args).is_ok(),
-            "dry-run apply should succeed with --skip-scripts flag"
+            result.is_ok(),
+            "dry-run apply should succeed with --skip-scripts flag: {:?}",
+            result.err()
+        );
+
+        let output = buf.lock().unwrap();
+        assert!(
+            output.contains("Apply")
+                || output.contains("Plan")
+                || output.contains("Nothing")
+                || output.contains("dry"),
+            "dry-run apply with skip-scripts should produce output, got: {output}"
         );
     }
 
@@ -12034,11 +12227,13 @@ spec:
             }),
             ..test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()))
         };
-        let printer = test_printer();
+        let (printer, buf) = Printer::for_test();
 
+        super::execute(&cli, &printer).unwrap();
+        let output = buf.lock().unwrap();
         assert!(
-            super::execute(&cli, &printer).is_ok(),
-            "execute should dispatch Plan command successfully"
+            output.contains("Plan") || output.contains("Phase"),
+            "execute Plan should show plan info, got: {output}"
         );
     }
 
@@ -12050,11 +12245,13 @@ spec:
             command: Command::Compliance { command: None },
             ..test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()))
         };
-        let printer = test_printer();
+        let (printer, buf) = Printer::for_test();
 
+        super::execute(&cli, &printer).unwrap();
+        let output = buf.lock().unwrap();
         assert!(
-            super::execute(&cli, &printer).is_ok(),
-            "execute should dispatch Compliance snapshot command successfully"
+            output.contains("Compliance") || output.contains("snapshot"),
+            "execute Compliance should show compliance info, got: {output}"
         );
     }
 
@@ -12068,11 +12265,15 @@ spec:
             },
             ..test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()))
         };
-        let printer = test_printer();
+        let (printer, buf) = Printer::for_test();
 
+        super::execute(&cli, &printer).unwrap();
+        let output = buf.lock().unwrap();
         assert!(
-            super::execute(&cli, &printer).is_ok(),
-            "execute should dispatch Compliance Export command successfully"
+            output.contains("Compliance")
+                || output.contains("compliance")
+                || output.contains("Snapshot"),
+            "compliance export should contain compliance data, got: {output}"
         );
     }
 
@@ -12086,11 +12287,13 @@ spec:
             },
             ..test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()))
         };
-        let printer = test_printer();
+        let (printer, buf) = Printer::for_test();
 
+        super::execute(&cli, &printer).unwrap();
+        let output = buf.lock().unwrap();
         assert!(
-            super::execute(&cli, &printer).is_ok(),
-            "execute should dispatch Compliance History command successfully"
+            output.contains("Compliance") || output.contains("History") || output.contains("No"),
+            "compliance history should show info, got: {output}"
         );
     }
 
@@ -12109,7 +12312,12 @@ spec:
         let printer = test_printer();
 
         let result = super::execute(&cli, &printer);
-        assert!(result.is_err());
+        let err = result.unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("no apply found with ID 9999"),
+            "expected 'no apply found with ID 9999' error, got: {msg}"
+        );
     }
 
     // --- secret_backend_from_config with config ---
@@ -12150,7 +12358,7 @@ spec:
             output: OutputFormatArg(cfgd_core::output::OutputFormat::Json),
             ..test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()))
         };
-        let printer = Printer::new(cfgd_core::output::Verbosity::Quiet);
+        let (printer, buf) = Printer::for_test_with_format(cfgd_core::output::OutputFormat::Json);
 
         let args = PlanArgs {
             phase: None,
@@ -12161,9 +12369,27 @@ spec:
             context: "apply".to_string(),
         };
 
+        super::cmd_plan(&cli, &printer, &args).unwrap();
+
+        let output = buf.lock().unwrap();
+        let parsed = extract_json(&output);
         assert!(
-            super::cmd_plan(&cli, &printer, &args).is_ok(),
-            "plan should succeed with JSON output format"
+            parsed.get("context").is_some(),
+            "plan JSON should have 'context'"
+        );
+        assert_eq!(parsed["context"], "apply", "plan context should be 'apply'");
+        assert!(
+            parsed.get("phases").is_some(),
+            "plan JSON should have 'phases'"
+        );
+        assert!(parsed["phases"].is_array(), "phases should be an array");
+        assert!(
+            parsed.get("totalActions").is_some(),
+            "plan JSON should have 'totalActions'"
+        );
+        assert!(
+            parsed["totalActions"].is_u64(),
+            "totalActions should be a numeric value"
         );
     }
 
@@ -12175,11 +12401,31 @@ spec:
             output: OutputFormatArg(cfgd_core::output::OutputFormat::Json),
             ..test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()))
         };
-        let printer = Printer::new(cfgd_core::output::Verbosity::Quiet);
+        let (printer, buf) = Printer::for_test_with_format(cfgd_core::output::OutputFormat::Json);
 
+        super::cmd_verify(&cli, &printer, None).unwrap();
+
+        let output = buf.lock().unwrap();
+        let parsed = extract_json(&output);
         assert!(
-            super::cmd_verify(&cli, &printer, None).is_ok(),
-            "verify should succeed with JSON output format"
+            parsed.get("results").is_some(),
+            "verify JSON should have 'results'"
+        );
+        assert!(
+            parsed.get("passCount").is_some(),
+            "verify JSON should have 'passCount'"
+        );
+        assert!(
+            parsed.get("failCount").is_some(),
+            "verify JSON should have 'failCount'"
+        );
+        let results = parsed["results"].as_array().unwrap();
+        let pass_count = parsed["passCount"].as_u64().unwrap();
+        let fail_count = parsed["failCount"].as_u64().unwrap();
+        assert_eq!(
+            pass_count + fail_count,
+            results.len() as u64,
+            "passCount + failCount should equal results array length"
         );
     }
 
@@ -12191,9 +12437,33 @@ spec:
             output: OutputFormatArg(cfgd_core::output::OutputFormat::Json),
             ..test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()))
         };
-        let printer = Printer::new(cfgd_core::output::Verbosity::Quiet);
+        let (printer, buf) = Printer::for_test_with_format(cfgd_core::output::OutputFormat::Json);
 
-        assert!(super::cmd_doctor(&cli, &printer).is_ok());
+        super::cmd_doctor(&cli, &printer).unwrap();
+
+        let output = buf.lock().unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&output)
+            .unwrap_or_else(|e| panic!("invalid JSON: {e}, got: {output}"));
+        assert!(
+            parsed.get("config").is_some(),
+            "doctor JSON should have 'config' field, got: {parsed}"
+        );
+        assert_eq!(
+            parsed["config"]["valid"], true,
+            "config should be valid in doctor output"
+        );
+        assert!(
+            parsed.get("git").is_some(),
+            "doctor JSON should have 'git' field"
+        );
+        assert!(
+            parsed.get("packageManagers").is_some(),
+            "doctor JSON should have 'packageManagers' field"
+        );
+        assert!(
+            parsed["packageManagers"].is_array(),
+            "packageManagers should be an array"
+        );
     }
 
     #[test]
@@ -12204,11 +12474,32 @@ spec:
             output: OutputFormatArg(cfgd_core::output::OutputFormat::Json),
             ..test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()))
         };
-        let printer = Printer::new(cfgd_core::output::Verbosity::Quiet);
+        let (printer, buf) = Printer::for_test_with_format(cfgd_core::output::OutputFormat::Json);
 
+        super::cmd_compliance_snapshot(&cli, &printer).unwrap();
+
+        let output = buf.lock().unwrap();
+        let parsed = extract_json(&output);
         assert!(
-            super::cmd_compliance_snapshot(&cli, &printer).is_ok(),
-            "compliance snapshot should succeed with JSON output format"
+            parsed.get("snapshot").is_some(),
+            "compliance snapshot JSON should have 'snapshot' field, got: {parsed}"
+        );
+        let snapshot = &parsed["snapshot"];
+        assert!(
+            snapshot["timestamp"].is_string(),
+            "snapshot.timestamp should be a string"
+        );
+        assert_eq!(
+            snapshot["profile"], "default",
+            "snapshot.profile should be 'default'"
+        );
+        assert!(
+            snapshot["checks"].is_array(),
+            "snapshot.checks should be an array"
+        );
+        assert!(
+            snapshot["summary"].is_object(),
+            "snapshot.summary should be an object"
         );
     }
 
@@ -12220,11 +12511,17 @@ spec:
             output: OutputFormatArg(cfgd_core::output::OutputFormat::Json),
             ..test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()))
         };
-        let printer = Printer::new(cfgd_core::output::Verbosity::Quiet);
+        let (printer, buf) = Printer::for_test_with_format(cfgd_core::output::OutputFormat::Json);
 
-        assert!(
-            super::cmd_compliance_history(&cli, &printer, None).is_ok(),
-            "compliance history should succeed with JSON output format"
+        super::cmd_compliance_history(&cli, &printer, None).unwrap();
+
+        let output = buf.lock().unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&output)
+            .unwrap_or_else(|e| panic!("invalid JSON: {e}, got: {output}"));
+        assert_eq!(
+            parsed,
+            serde_json::json!({"entries": []}),
+            "fresh state should produce exactly {{entries: []}}"
         );
     }
 
@@ -12241,11 +12538,19 @@ spec:
         );
 
         let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
-        let printer = test_printer();
+        let (printer, buf) = Printer::for_test();
 
+        let result = super::cmd_diff(&cli, &printer, Some("diff-mod"));
         assert!(
-            super::cmd_diff(&cli, &printer, Some("diff-mod")).is_ok(),
-            "diff should succeed when filtering to a specific module"
+            result.is_ok(),
+            "diff should succeed when filtering to a specific module: {:?}",
+            result.err()
+        );
+
+        let output = buf.lock().unwrap();
+        assert!(
+            output.contains("Diff") || output.contains("diff-mod"),
+            "diff with module filter should mention the module, got: {output}"
         );
     }
 
@@ -12256,14 +12561,20 @@ spec:
         let (config_dir, state_dir) = setup_test_env();
 
         let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
-        let printer = test_printer();
+        let (printer, buf) = Printer::for_test();
 
         // Nonexistent module should succeed gracefully (empty results, exit 0)
         let result = super::cmd_verify(&cli, &printer, Some("nonexistent"));
         assert!(
             result.is_ok(),
-            "verify should handle nonexistent module gracefully (empty results, not an error): {:?}",
+            "verify should handle nonexistent module gracefully: {:?}",
             result.err()
+        );
+
+        let output = buf.lock().unwrap();
+        assert!(
+            output.contains("Verify") || output.contains("No managed"),
+            "verify for nonexistent module should mention verify or no managed resources, got: {output}"
         );
     }
 
@@ -12287,7 +12598,7 @@ spec:
         .unwrap();
 
         let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
-        let printer = test_printer();
+        let (printer, buf) = Printer::for_test();
         let args = PlanArgs {
             phase: None,
             skip: vec![],
@@ -12297,9 +12608,20 @@ spec:
             context: "apply".to_string(),
         };
 
+        let result = super::cmd_plan(&cli, &printer, &args);
         assert!(
-            super::cmd_plan(&cli, &printer, &args).is_ok(),
-            "plan should succeed when module contains packages"
+            result.is_ok(),
+            "plan should succeed when module contains packages: {:?}",
+            result.err()
+        );
+
+        let output = buf.lock().unwrap();
+        assert!(
+            output.contains("Plan")
+                || output.contains("Phase")
+                || output.contains("Package")
+                || output.contains("curl"),
+            "plan output should contain plan info or package actions, got: {output}"
         );
     }
 
@@ -12315,17 +12637,27 @@ spec:
             "open_state_store should create nested directories: {:?}",
             result.err()
         );
-        assert!(subdir.exists());
+        assert!(subdir.exists(), "nested state directory should be created");
+        assert!(
+            subdir.join("cfgd.db").exists(),
+            "DB file should exist in the created directory"
+        );
     }
 
     #[test]
     fn open_state_store_default() {
-        // Just verify the default path variant does not panic
+        // Verify the default path variant does not panic and creates a DB
         let result = super::open_state_store(None);
         assert!(
             result.is_ok(),
             "open_state_store with default path should not panic: {:?}",
             result.err()
+        );
+        // Verify we can actually use the store
+        let state = result.unwrap();
+        assert!(
+            state.history(1).is_ok(),
+            "state store should be functional after opening"
         );
     }
 
@@ -12334,18 +12666,45 @@ spec:
     #[test]
     fn build_registry_has_package_managers() {
         let registry = super::build_registry();
-        assert!(
-            !registry.package_managers.is_empty(),
-            "registry should have at least one package manager"
+        assert_eq!(
+            registry.package_managers.len(),
+            20,
+            "registry should have all 20 package managers"
         );
+        let names: Vec<&str> = registry.package_managers.iter().map(|m| m.name()).collect();
+        assert!(names.contains(&"brew"), "should include brew");
+        assert!(names.contains(&"cargo"), "should include cargo");
+        assert!(names.contains(&"apt"), "should include apt");
+        assert!(names.contains(&"npm"), "should include npm");
     }
 
     #[test]
     fn build_registry_has_system_configurators() {
         let registry = super::build_registry();
+        // On Linux we get: shell, systemd, gsettings, kdeConfig, xfconf, environment, sshKeys,
+        // plus conditionally gpg and git (both available in CI/dev). At minimum we should have
+        // the unconditional ones.
         assert!(
-            !registry.system_configurators.is_empty(),
-            "registry should have system configurators"
+            registry.system_configurators.len() >= 6,
+            "registry should have at least 6 system configurators on Linux, got: {}",
+            registry.system_configurators.len()
+        );
+        let names: Vec<&str> = registry
+            .system_configurators
+            .iter()
+            .map(|c| c.name())
+            .collect();
+        assert!(
+            names.contains(&"shell"),
+            "should include shell configurator"
+        );
+        assert!(
+            names.contains(&"sshKeys"),
+            "should include sshKeys configurator"
+        );
+        assert!(
+            names.contains(&"environment"),
+            "should include environment configurator"
         );
     }
 
@@ -12355,6 +12714,11 @@ spec:
         assert!(
             registry.secret_backend.is_some(),
             "registry should have a secret backend"
+        );
+        assert_eq!(
+            registry.secret_backend.as_ref().unwrap().name(),
+            "sops",
+            "default secret backend should be 'sops'"
         );
     }
 
@@ -12390,13 +12754,14 @@ spec:
         std::fs::create_dir_all(dir.path().join("modules")).unwrap();
         let state_dir = dir.path().join("state");
         let cli = test_cli_with_state(dir.path(), Some(state_dir));
-        let printer = test_printer();
+        let (printer, buf) = Printer::for_test();
 
-        let result = module::cmd_module_list(&cli, &printer);
+        module::cmd_module_list(&cli, &printer).unwrap();
+
+        let output = buf.lock().unwrap();
         assert!(
-            result.is_ok(),
-            "module list should succeed with empty modules directory: {:?}",
-            result.err()
+            output.contains("Modules") || output.contains("No modules"),
+            "module list with empty dir should show header or no-modules, got: {output}"
         );
     }
 
@@ -12414,63 +12779,42 @@ spec:
             "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: git\nspec:\n  packages:\n    - name: git\n    - name: git-lfs\n",
         );
 
-        // Verify modules exist on disk and are parseable
-        let modules_dir = dir.path().join("modules");
-        assert!(modules_dir.join("vim").join("module.yaml").exists());
-        assert!(modules_dir.join("git").join("module.yaml").exists());
-        let vim_mod = config::parse_module(
-            &std::fs::read_to_string(modules_dir.join("vim").join("module.yaml")).unwrap(),
-        )
-        .unwrap();
-        assert_eq!(vim_mod.metadata.name, "vim");
-        assert_eq!(vim_mod.spec.packages.len(), 1);
-        let git_mod = config::parse_module(
-            &std::fs::read_to_string(modules_dir.join("git").join("module.yaml")).unwrap(),
-        )
-        .unwrap();
-        assert_eq!(git_mod.metadata.name, "git");
-        assert_eq!(git_mod.spec.packages.len(), 2);
-
         let state_dir = dir.path().join("state");
         let cli = test_cli_with_state(dir.path(), Some(state_dir));
-        let printer = test_printer();
+        let (printer, buf) = Printer::for_test();
 
-        let result = module::cmd_module_list(&cli, &printer);
-        assert!(
-            result.is_ok(),
-            "module list should succeed when modules exist on disk: {:?}",
-            result.err()
-        );
+        module::cmd_module_list(&cli, &printer).unwrap();
+
+        let output = buf.lock().unwrap();
+        assert!(output.contains("vim"), "module list should contain 'vim'");
+        assert!(output.contains("git"), "module list should contain 'git'");
     }
 
     #[test]
     fn module_list_no_modules_dir() {
-        // No modules/ directory at all — should report "no modules found"
         let dir = tempfile::tempdir().unwrap();
         let state_dir = dir.path().join("state");
         let cli = test_cli_with_state(dir.path(), Some(state_dir));
-        let printer = test_printer();
+        let (printer, buf) = Printer::for_test();
 
-        let result = module::cmd_module_list(&cli, &printer);
+        module::cmd_module_list(&cli, &printer).unwrap();
+
+        let output = buf.lock().unwrap();
         assert!(
-            result.is_ok(),
-            "module list should succeed when modules directory does not exist: {:?}",
-            result.err()
+            output.contains("No modules") || output.contains("Modules"),
+            "module list without modules dir should show header or no-modules, got: {output}"
         );
     }
 
     #[test]
     fn module_list_with_config_and_profile() {
         let dir = create_test_config_dir();
-        // Write cfgd.yaml
         std::fs::write(dir.path().join("cfgd.yaml"), TEST_CONFIG_YAML).unwrap();
-        // Add a module referenced in the profile
         create_module_in_dir(
             dir.path(),
             "bat",
             "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: bat\nspec:\n  packages:\n    - name: bat\n",
         );
-        // Update profile to reference module
         let profile_path = dir.path().join("profiles").join("default.yaml");
         let mut doc = config::load_profile(&profile_path).unwrap();
         doc.spec.modules.push("bat".to_string());
@@ -12479,14 +12823,12 @@ spec:
 
         let state_dir = dir.path().join("state");
         let cli = test_cli_with_state(dir.path(), Some(state_dir));
-        let printer = test_printer();
+        let (printer, buf) = Printer::for_test();
 
-        let result = module::cmd_module_list(&cli, &printer);
-        assert!(
-            result.is_ok(),
-            "module list should succeed with config, profile, and module references: {:?}",
-            result.err()
-        );
+        module::cmd_module_list(&cli, &printer).unwrap();
+
+        let output = buf.lock().unwrap();
+        assert!(output.contains("bat"), "module list should contain 'bat'");
     }
 
     // --- cmd_module_show ---
@@ -12557,14 +12899,24 @@ spec:
 
         let state_dir = dir.path().join("state");
         let cli = test_cli_with_state(dir.path(), Some(state_dir));
-        let printer = test_printer();
+        let (printer, buf) = Printer::for_test();
 
-        let result = module::cmd_module_show(&cli, &printer, "dev-tools", false);
+        module::cmd_module_show(&cli, &printer, "dev-tools", false).unwrap();
+
+        let output = buf.lock().unwrap();
         assert!(
-            result.is_ok(),
-            "module show should succeed for module with packages, files, env, aliases, and dependencies: {:?}",
-            result.err()
+            output.contains("dev-tools"),
+            "show should contain module name"
         );
+        assert!(
+            output.contains("ripgrep"),
+            "show should list package ripgrep"
+        );
+        assert!(
+            output.contains("config.toml"),
+            "show should list file config.toml"
+        );
+        assert!(output.contains("EDITOR"), "show should list env var EDITOR");
     }
 
     #[test]
@@ -12586,21 +12938,21 @@ spec:
 
         let state_dir = dir.path().join("state");
         let cli = test_cli_with_state(dir.path(), Some(state_dir));
-        let printer = test_printer();
+        let (printer, buf) = Printer::for_test();
 
-        // show_values=false (default) should work
-        let result = module::cmd_module_show(&cli, &printer, "secrets-mod", false);
+        module::cmd_module_show(&cli, &printer, "secrets-mod", false).unwrap();
+        {
+            let output = buf.lock().unwrap();
+            assert!(output.contains("API_KEY"), "show should list env var name");
+        }
+
+        // With show_values=true
+        buf.lock().unwrap().clear();
+        module::cmd_module_show(&cli, &printer, "secrets-mod", true).unwrap();
+        let output = buf.lock().unwrap();
         assert!(
-            result.is_ok(),
-            "module show with show_values=false should succeed: {:?}",
-            result.err()
-        );
-        // show_values=true should also work
-        let result = module::cmd_module_show(&cli, &printer, "secrets-mod", true);
-        assert!(
-            result.is_ok(),
-            "module show with show_values=true should succeed: {:?}",
-            result.err()
+            output.contains("API_KEY"),
+            "show with values should list env"
         );
     }
 
@@ -12642,13 +12994,19 @@ spec:
 
         let state_dir = dir.path().join("state");
         let cli = test_cli_with_state(dir.path(), Some(state_dir));
-        let printer = test_printer();
+        let (printer, buf) = Printer::for_test();
 
-        let result = module::cmd_module_show(&cli, &printer, "scripted", false);
+        module::cmd_module_show(&cli, &printer, "scripted", false).unwrap();
+
+        let output = buf.lock().unwrap();
         assert!(
-            result.is_ok(),
-            "module show should succeed for module with post-apply scripts: {:?}",
-            result.err()
+            output.contains("scripted"),
+            "show should contain module name"
+        );
+        assert!(output.contains("curl"), "show should list package curl");
+        assert!(
+            output.contains("Scripts") || output.contains("postApply"),
+            "show should mention scripts, got: {output}"
         );
     }
 
@@ -12748,7 +13106,12 @@ spec:
 
         let args = test_module_create_args(".bad-name");
         let result = module::cmd_module_create(&cli, &printer, &args);
-        assert!(result.is_err());
+        let err = result.unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("cannot start with '.' or '-'"),
+            "expected name validation error, got: {msg}"
+        );
     }
 
     #[test]
@@ -13003,7 +13366,12 @@ spec:
 
         let args = empty_module_update_args("nonexistent");
         let result = module::cmd_module_update_local(&cli, &printer, &args);
-        assert!(result.is_err());
+        let err = result.unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("Module 'nonexistent' not found"),
+            "expected module not found error, got: {msg}"
+        );
     }
 
     #[test]
@@ -13074,7 +13442,11 @@ spec:
         module::cmd_module_update_local(&cli, &printer, &args).unwrap();
 
         let (doc, _) = module::load_module_document(dir.path(), "rm-file-mod").unwrap();
-        assert!(doc.spec.files.is_empty());
+        assert_eq!(
+            doc.spec.files.len(),
+            0,
+            "module spec should have no files after removal"
+        );
         // Source file should also be removed
         assert!(
             !dir.path()
@@ -13162,11 +13534,18 @@ modules:
         module::cmd_module_delete(&cli, &printer, "remote-mod", true, false).unwrap();
 
         // Module directory should be gone
-        assert!(!dir.path().join("modules").join("remote-mod").exists());
+        assert!(
+            !dir.path().join("modules").join("remote-mod").exists(),
+            "module directory should be removed after delete"
+        );
 
         // Lockfile should no longer contain the module
         let lockfile = cfgd_core::modules::load_lockfile(dir.path()).unwrap();
-        assert!(lockfile.modules.is_empty());
+        assert_eq!(
+            lockfile.modules.len(),
+            0,
+            "lockfile should have no module entries after delete"
+        );
     }
 
     #[test]
@@ -13243,13 +13622,27 @@ spec:
             "module export devcontainer should succeed: {:?}",
             result.err()
         );
-        assert!(output.path().join("export-mod").join("install.sh").exists());
+
+        let install_sh = output.path().join("export-mod").join("install.sh");
+        assert!(install_sh.exists(), "install.sh should be created");
+        let install_content = std::fs::read_to_string(&install_sh).unwrap();
         assert!(
-            output
-                .path()
-                .join("export-mod")
-                .join("devcontainer-feature.json")
-                .exists()
+            !install_content.is_empty(),
+            "install.sh should have content"
+        );
+
+        let feature_json = output
+            .path()
+            .join("export-mod")
+            .join("devcontainer-feature.json");
+        assert!(
+            feature_json.exists(),
+            "devcontainer-feature.json should be created"
+        );
+        let feature_content = std::fs::read_to_string(&feature_json).unwrap();
+        assert!(
+            feature_content.contains("export-mod"),
+            "devcontainer-feature.json should reference the module name"
         );
     }
 
@@ -13267,7 +13660,12 @@ spec:
             &ExportFormat::Devcontainer,
             None,
         );
-        assert!(result.is_err());
+        let err = result.unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("Module 'nonexistent' not found"),
+            "expected module not found error, got: {msg}"
+        );
     }
 
     #[test]
@@ -13336,15 +13734,15 @@ spec:
     #[test]
     fn module_registry_list_no_config() {
         let dir = tempfile::tempdir().unwrap();
-        // No cfgd.yaml
         let cli = test_cli(dir.path());
-        let printer = test_printer();
+        let (printer, buf) = Printer::for_test();
 
-        let result = module::cmd_module_registry_list(&cli, &printer);
+        module::cmd_module_registry_list(&cli, &printer).unwrap();
+
+        let output = buf.lock().unwrap();
         assert!(
-            result.is_ok(),
-            "module registry list should succeed without cfgd.yaml: {:?}",
-            result.err()
+            output.contains("No registries") || output.contains("Registries"),
+            "registry list without config should show message, got: {output}"
         );
     }
 
@@ -13354,13 +13752,14 @@ spec:
         std::fs::write(dir.path().join("cfgd.yaml"), TEST_CONFIG_YAML).unwrap();
 
         let cli = test_cli(dir.path());
-        let printer = test_printer();
+        let (printer, buf) = Printer::for_test();
 
-        let result = module::cmd_module_registry_list(&cli, &printer);
+        module::cmd_module_registry_list(&cli, &printer).unwrap();
+
+        let output = buf.lock().unwrap();
         assert!(
-            result.is_ok(),
-            "module registry list should succeed with no registries in config: {:?}",
-            result.err()
+            output.contains("Registries") || output.contains("No registries"),
+            "registry list with none should report no registries, got: {output}"
         );
     }
 
@@ -13386,13 +13785,18 @@ spec:
         .unwrap();
 
         let cli = test_cli(dir.path());
-        let printer = test_printer();
+        let (printer, buf) = Printer::for_test();
 
-        let result = module::cmd_module_registry_list(&cli, &printer);
+        module::cmd_module_registry_list(&cli, &printer).unwrap();
+
+        let output = buf.lock().unwrap();
         assert!(
-            result.is_ok(),
-            "module registry list should succeed with multiple registries configured: {:?}",
-            result.err()
+            output.contains("community"),
+            "registry list should contain 'community'"
+        );
+        assert!(
+            output.contains("private"),
+            "registry list should contain 'private'"
         );
     }
 
@@ -13525,7 +13929,12 @@ spec:
         let printer = test_printer();
 
         let result = module::cmd_module_registry_remove(&cli, &printer, "community");
-        assert!(result.is_err());
+        let err = result.unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("No cfgd.yaml found"),
+            "expected 'No cfgd.yaml found' error, got: {msg}"
+        );
     }
 
     #[test]
@@ -13566,14 +13975,16 @@ spec:
         std::fs::write(dir.path().join("cfgd.yaml"), TEST_CONFIG_YAML).unwrap();
 
         let cli = test_cli(dir.path());
-        let printer = test_printer();
+        let (printer, buf) = Printer::for_test();
 
-        // Removing a non-existent registry should not error (just info)
-        let result = module::cmd_module_registry_remove(&cli, &printer, "nonexistent");
+        module::cmd_module_registry_remove(&cli, &printer, "nonexistent").unwrap();
+
+        let output = buf.lock().unwrap();
         assert!(
-            result.is_ok(),
-            "module registry remove should succeed for non-existent registry (info-only): {:?}",
-            result.err()
+            output.contains("not found")
+                || output.contains("nonexistent")
+                || output.contains("No module registries"),
+            "removing non-existent registry should note it, got: {output}"
         );
     }
 
@@ -13613,14 +14024,21 @@ spec:
         .unwrap();
 
         let cli = test_cli(dir.path());
-        let printer = test_printer();
+        let (printer, buf) = Printer::for_test();
 
-        // Should succeed but issue a warning about the reference
-        let result = module::cmd_module_registry_remove(&cli, &printer, "community");
+        module::cmd_module_registry_remove(&cli, &printer, "community").unwrap();
+
+        let output = buf.lock().unwrap();
         assert!(
-            result.is_ok(),
-            "module registry remove should succeed and warn about profile references to removed registry: {:?}",
-            result.err()
+            output.contains("community"),
+            "output should mention removed registry name, got: {output}"
+        );
+        // Verify registry was actually removed from config
+        let cfg = config::load_config(&dir.path().join("cfgd.yaml")).unwrap();
+        let registries = cfg.spec.modules.map(|m| m.registries).unwrap_or_default();
+        assert!(
+            registries.is_empty(),
+            "registry should be removed from config"
         );
     }
 
@@ -13760,37 +14178,40 @@ spec:
         let printer = test_printer();
 
         let result = module::cmd_module_registry_rename(&cli, &printer, "old", "new");
-        assert!(result.is_err());
+        let err = result.unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("No cfgd.yaml found"),
+            "expected 'No cfgd.yaml found' error, got: {msg}"
+        );
     }
 
     // --- cmd_module_keys_list ---
 
     #[test]
     fn module_keys_list_no_keys() {
-        // Run in a temp dir where no cosign keys exist
-        let printer = test_printer();
-        let result = module::cmd_module_keys_list(&printer);
+        let (printer, buf) = Printer::for_test();
+        module::cmd_module_keys_list(&printer).unwrap();
+
+        let output = buf.lock().unwrap();
         assert!(
-            result.is_ok(),
-            "module keys list should succeed when no cosign keys exist: {:?}",
-            result.err()
+            output.contains("Keys") || output.contains("No") || output.contains("cosign"),
+            "keys list should show key info or no-keys, got: {output}"
         );
     }
 
     #[test]
     fn module_keys_list_with_pub_key() {
         let dir = tempfile::tempdir().unwrap();
-        // Create a fake cosign.pub in the current directory
         std::fs::write(dir.path().join("cosign.pub"), "fake pub key").unwrap();
 
-        // We need to chdir temporarily since the function looks at ./cosign.pub
-        // Instead, since the function uses hardcoded paths, we just verify it doesn't crash
-        let printer = test_printer();
-        let result = module::cmd_module_keys_list(&printer);
+        let (printer, buf) = Printer::for_test();
+        module::cmd_module_keys_list(&printer).unwrap();
+
+        let output = buf.lock().unwrap();
         assert!(
-            result.is_ok(),
-            "module keys list should succeed (function checks hardcoded paths, not temp dir): {:?}",
-            result.err()
+            output.contains("Keys") || output.contains("cosign"),
+            "keys list should show key info, got: {output}"
         );
     }
 
@@ -13824,18 +14245,14 @@ spec:
         std::fs::create_dir_all(dir.path().join("modules")).unwrap();
         let state_dir = dir.path().join("state");
         let cli = test_cli_with_state(dir.path(), Some(state_dir));
-        let printer = Printer::with_format(
-            cfgd_core::output::Verbosity::Quiet,
-            None,
-            cfgd_core::output::OutputFormat::Json,
-        );
+        let (printer, buf) = Printer::for_test_with_format(cfgd_core::output::OutputFormat::Json);
 
-        let result = module::cmd_module_list(&cli, &printer);
-        assert!(
-            result.is_ok(),
-            "module list should succeed with JSON output format for empty modules: {:?}",
-            result.err()
-        );
+        module::cmd_module_list(&cli, &printer).unwrap();
+
+        let output = buf.lock().unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&output)
+            .unwrap_or_else(|e| panic!("invalid JSON output: {e}, got: {output}"));
+        assert!(parsed.is_array(), "JSON should be an array");
     }
 
     #[test]
@@ -13848,18 +14265,14 @@ spec:
         );
         let state_dir = dir.path().join("state");
         let cli = test_cli_with_state(dir.path(), Some(state_dir));
-        let printer = Printer::with_format(
-            cfgd_core::output::Verbosity::Quiet,
-            None,
-            cfgd_core::output::OutputFormat::Json,
-        );
+        let (printer, buf) = Printer::for_test_with_format(cfgd_core::output::OutputFormat::Json);
 
-        let result = module::cmd_module_show(&cli, &printer, "json-mod", false);
-        assert!(
-            result.is_ok(),
-            "module show should succeed with JSON output format: {:?}",
-            result.err()
-        );
+        module::cmd_module_show(&cli, &printer, "json-mod", false).unwrap();
+
+        let output = buf.lock().unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&output)
+            .unwrap_or_else(|e| panic!("invalid JSON: {e}, got: {output}"));
+        assert_eq!(parsed["name"], "json-mod", "JSON should have module name");
     }
 
     #[test]
@@ -13882,18 +14295,15 @@ spec:
         .unwrap();
 
         let cli = test_cli(dir.path());
-        let printer = Printer::with_format(
-            cfgd_core::output::Verbosity::Quiet,
-            None,
-            cfgd_core::output::OutputFormat::Json,
-        );
+        let (printer, buf) = Printer::for_test_with_format(cfgd_core::output::OutputFormat::Json);
 
-        let result = module::cmd_module_registry_list(&cli, &printer);
-        assert!(
-            result.is_ok(),
-            "module registry list should succeed with JSON output format: {:?}",
-            result.err()
-        );
+        module::cmd_module_registry_list(&cli, &printer).unwrap();
+
+        let output = buf.lock().unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&output)
+            .unwrap_or_else(|e| panic!("invalid JSON: {e}, got: {output}"));
+        assert!(parsed.is_array(), "JSON should be an array of registries");
+        assert_eq!(parsed[0]["name"], "community");
     }
 
     // ===================================================================
@@ -13951,7 +14361,12 @@ spec:
         let printer = test_printer();
 
         let result = super::load_config_and_profile(&cli, &printer);
-        assert!(result.is_err());
+        let err = result.unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("config file not found"),
+            "expected 'config file not found' error, got: {msg}"
+        );
     }
 
     #[test]
@@ -13967,7 +14382,12 @@ spec:
         let printer = test_printer();
 
         let result = super::load_config_and_profile(&cli, &printer);
-        assert!(result.is_err());
+        let err = result.unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("profile not found: nonexistent"),
+            "expected 'profile not found: nonexistent' error, got: {msg}"
+        );
     }
 
     // --- print_apply_result for InProgress status ---
@@ -14653,17 +15073,28 @@ spec:
     fn cmd_source_list_structured_output() {
         let (config_dir, state_dir) = setup_test_env();
 
+        // Write config with a source so we can verify the source name appears in output
+        let config_with_source = "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec:\n  profile: default\n  sources:\n    - name: team-config\n      origin:\n        url: https://github.com/team/config\n        branch: main\n        type: Git\n      subscription:\n        priority: 100\n";
+        std::fs::write(config_dir.path().join("cfgd.yaml"), config_with_source).unwrap();
+
         let cli = Cli {
             output: OutputFormatArg(cfgd_core::output::OutputFormat::Json),
             ..test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()))
         };
-        let printer = Printer::new(cfgd_core::output::Verbosity::Quiet);
+        let (printer, buf) = Printer::for_test_with_format(cfgd_core::output::OutputFormat::Json);
 
-        let result = super::cmd_source_list(&cli, &printer);
-        assert!(
-            result.is_ok(),
-            "source list should succeed with JSON output format: {:?}",
-            result.err()
+        super::cmd_source_list(&cli, &printer).unwrap();
+
+        let output = buf.lock().unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&output)
+            .unwrap_or_else(|e| panic!("invalid JSON: {e}, got: {output}"));
+        let arr = parsed
+            .as_array()
+            .expect("source list JSON should be an array");
+        assert_eq!(arr.len(), 1, "should have exactly one source");
+        assert_eq!(
+            arr[0]["name"], "team-config",
+            "source name should be 'team-config'"
         );
     }
 
@@ -14710,13 +15141,14 @@ spec:
         );
 
         let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
-        let printer = test_printer();
+        let (printer, buf) = Printer::for_test();
 
-        let result = super::cmd_source_show(&cli, &printer, "team-config");
+        super::cmd_source_show(&cli, &printer, "team-config").unwrap();
+
+        let output = buf.lock().unwrap();
         assert!(
-            result.is_ok(),
-            "source show should succeed for a configured source: {:?}",
-            result.err()
+            output.contains("team-config"),
+            "source show should display source name, got: {output}"
         );
     }
 
@@ -14860,13 +15292,14 @@ spec:
         std::fs::write(config_dir.path().join("cfgd.yaml"), config_with_source).unwrap();
 
         let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
-        let printer = test_printer();
+        let (printer, buf) = Printer::for_test();
 
-        let result = super::cmd_source_priority(&cli, &printer, "team", None);
+        super::cmd_source_priority(&cli, &printer, "team", None).unwrap();
+
+        let output = buf.lock().unwrap();
         assert!(
-            result.is_ok(),
-            "source priority should succeed when viewing current priority (no update): {:?}",
-            result.err()
+            output.contains("team") || output.contains("200"),
+            "source priority should show source name or priority, got: {output}"
         );
     }
 
@@ -14912,27 +15345,29 @@ spec:
     #[test]
     fn cmd_decide_no_args_shows_pending() {
         let state_dir = tempfile::tempdir().unwrap();
-        let printer = test_printer();
+        let (printer, buf) = Printer::for_test();
 
-        let result = super::cmd_decide(
+        super::cmd_decide(
             &printer,
             "accept",
             None,
             None,
             false,
             Some(state_dir.path()),
-        );
+        )
+        .unwrap();
+
+        let output = buf.lock().unwrap();
         assert!(
-            result.is_ok(),
-            "decide accept with no resource/source/all should succeed (shows pending list): {:?}",
-            result.err()
+            output.contains("No pending") || output.contains("Pending"),
+            "decide should show pending decisions info, got: {output}"
         );
     }
 
     #[test]
     fn cmd_decide_with_pending_decision() {
         let state_dir = tempfile::tempdir().unwrap();
-        let printer = test_printer();
+        let (printer, buf) = Printer::for_test();
 
         let state = super::open_state_store(Some(state_dir.path())).unwrap();
         state
@@ -14959,18 +15394,23 @@ spec:
             result.err()
         );
 
-        // Verify the decision was resolved (no longer pending)
         let pending = state.pending_decisions().unwrap();
         assert!(
             pending.is_empty(),
-            "accepted decision should be removed from pending list"
+            "accepted decision should no longer be pending"
+        );
+
+        let output = buf.lock().unwrap();
+        assert!(
+            output.contains("curl") || output.contains("Accepted"),
+            "output should mention the accepted resource, got: {output}"
         );
     }
 
     #[test]
     fn cmd_decide_accept_all_with_pending() {
         let state_dir = tempfile::tempdir().unwrap();
-        let printer = test_printer();
+        let (printer, buf) = Printer::for_test();
 
         let state = super::open_state_store(Some(state_dir.path())).unwrap();
         state
@@ -14994,15 +15434,20 @@ spec:
             result.err()
         );
 
-        // All decisions should now be resolved
         let pending = state.pending_decisions().unwrap();
         assert!(pending.is_empty());
+
+        let output = buf.lock().unwrap();
+        assert!(
+            output.contains("ACCEPTED") || output.contains("2 item"),
+            "accept-all should mention accepted decisions, got: {output}"
+        );
     }
 
     #[test]
     fn cmd_decide_reject_by_source_with_pending() {
         let state_dir = tempfile::tempdir().unwrap();
-        let printer = test_printer();
+        let (printer, _buf) = Printer::for_test();
 
         let state = super::open_state_store(Some(state_dir.path())).unwrap();
         state
@@ -15089,13 +15534,17 @@ spec:
             output: OutputFormatArg(cfgd_core::output::OutputFormat::Json),
             ..test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()))
         };
-        let printer = Printer::new(cfgd_core::output::Verbosity::Quiet);
+        let (printer, buf) = Printer::for_test_with_format(cfgd_core::output::OutputFormat::Json);
 
-        let result = super::cmd_compliance_history(&cli, &printer, None);
-        assert!(
-            result.is_ok(),
-            "compliance history should succeed with JSON structured output format: {:?}",
-            result.err()
+        super::cmd_compliance_history(&cli, &printer, None).unwrap();
+
+        let output = buf.lock().unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&output)
+            .unwrap_or_else(|e| panic!("invalid JSON: {e}, got: {output}"));
+        assert_eq!(
+            parsed,
+            serde_json::json!({"entries": []}),
+            "fresh state should produce exactly {{entries: []}}"
         );
     }
 
@@ -15135,7 +15584,7 @@ spec:
         );
 
         let cli = test_cli_with_state(dir.path(), Some(state_dir.path().to_path_buf()));
-        let printer = test_printer();
+        let (printer, buf) = Printer::for_test();
         let args = ApplyArgs {
             from: None,
             dry_run: true,
@@ -15152,6 +15601,14 @@ spec:
             result.is_ok(),
             "dry-run apply should succeed with --module flag and no profile configured: {:?}",
             result.err()
+        );
+
+        let output = buf.lock().unwrap();
+        assert!(
+            output.contains("standalone-mod")
+                || output.contains("Apply")
+                || output.contains("Nothing"),
+            "apply with module-only should mention the module, got: {output}"
         );
     }
 
@@ -15175,7 +15632,7 @@ spec:
         );
 
         let cli = test_cli_with_state(dir.path(), Some(state_dir.path().to_path_buf()));
-        let printer = test_printer();
+        let (printer, buf) = Printer::for_test();
         let args = PlanArgs {
             phase: None,
             skip: vec![],
@@ -15190,6 +15647,12 @@ spec:
             result.is_ok(),
             "plan should succeed with --module flag and no profile configured: {:?}",
             result.err()
+        );
+
+        let output = buf.lock().unwrap();
+        assert!(
+            output.contains("Plan") || output.contains("solo") || output.contains("Nothing"),
+            "plan with module-only should mention the module or plan, got: {output}"
         );
     }
 
@@ -15288,11 +15751,13 @@ spec:
             },
             ..test_cli(dir.path())
         };
-        let printer = test_printer();
+        let (printer, buf) = Printer::for_test();
 
+        super::execute(&cli, &printer).unwrap();
+        let output = buf.lock().unwrap();
         assert!(
-            super::execute(&cli, &printer).is_ok(),
-            "execute should dispatch Explain recursive command successfully"
+            output.contains("Config") || output.contains("config") || output.contains("spec"),
+            "explain recursive for config should describe config resource, got: {output}"
         );
     }
 
@@ -15304,11 +15769,13 @@ spec:
             command: Command::Compliance { command: None },
             ..test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()))
         };
-        let printer = test_printer();
+        let (printer, buf) = Printer::for_test();
 
+        super::execute(&cli, &printer).unwrap();
+        let output = buf.lock().unwrap();
         assert!(
-            super::execute(&cli, &printer).is_ok(),
-            "execute should dispatch Compliance (default=snapshot) command successfully"
+            output.contains("Compliance") || output.contains("snapshot"),
+            "compliance dispatch should produce output, got: {output}"
         );
     }
 
@@ -15322,11 +15789,13 @@ spec:
             },
             ..test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()))
         };
-        let printer = test_printer();
+        let (printer, buf) = Printer::for_test();
 
+        super::execute(&cli, &printer).unwrap();
+        let output = buf.lock().unwrap();
         assert!(
-            super::execute(&cli, &printer).is_ok(),
-            "execute should dispatch Source List command successfully"
+            output.contains("Sources") || output.contains("No sources"),
+            "source list should produce output, got: {output}"
         );
     }
 
@@ -15345,11 +15814,15 @@ spec:
             state_dir: Some(state_dir.path().to_path_buf()),
             ..test_cli(dir.path())
         };
-        let printer = test_printer();
+        let (printer, buf) = Printer::for_test();
 
+        super::execute(&cli, &printer).unwrap();
+        let output = buf.lock().unwrap();
         assert!(
-            super::execute(&cli, &printer).is_ok(),
-            "execute should dispatch Decide accept-all command successfully"
+            output.contains("No pending")
+                || output.contains("0 decision")
+                || output.contains("ACCEPTED"),
+            "decide dispatch should produce output, got: {output}"
         );
     }
 
@@ -15361,11 +15834,13 @@ spec:
             command: Command::Sync,
             ..test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()))
         };
-        let printer = test_printer();
+        let (printer, buf) = Printer::for_test();
 
+        super::execute(&cli, &printer).unwrap();
+        let output = buf.lock().unwrap();
         assert!(
-            super::execute(&cli, &printer).is_ok(),
-            "execute should dispatch Sync command successfully"
+            output.contains("Sync") || output.contains("No sources"),
+            "sync dispatch should produce output, got: {output}"
         );
     }
 
@@ -15377,11 +15852,15 @@ spec:
             command: Command::Pull,
             ..test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()))
         };
-        let printer = test_printer();
+        let (printer, buf) = Printer::for_test();
 
+        super::execute(&cli, &printer).unwrap();
+        let output = buf.lock().unwrap();
         assert!(
-            super::execute(&cli, &printer).is_ok(),
-            "execute should dispatch Pull command successfully"
+            output.contains("Pull")
+                || output.contains("No sources")
+                || output.contains("no origin"),
+            "pull dispatch should produce output, got: {output}"
         );
     }
 
@@ -15399,7 +15878,7 @@ spec:
         .unwrap();
 
         let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
-        let printer = test_printer();
+        let (printer, buf) = Printer::for_test();
         let args = ApplyArgs {
             from: None,
             dry_run: true,
@@ -15416,6 +15895,16 @@ spec:
             result.is_ok(),
             "dry-run apply should succeed when profile contains shell aliases: {:?}",
             result.err()
+        );
+
+        let output = buf.lock().unwrap();
+        assert!(
+            output.contains("Plan"),
+            "should contain Plan header, got: {output}"
+        );
+        assert!(
+            output.contains("Phase:") || output.contains("Nothing to do"),
+            "should mention plan phases or nothing to do, got: {output}"
         );
     }
 
@@ -15437,14 +15926,18 @@ spec:
             output: OutputFormatArg(cfgd_core::output::OutputFormat::Json),
             ..test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()))
         };
-        let printer = Printer::new(cfgd_core::output::Verbosity::Quiet);
+        let (printer, buf) = Printer::for_test_with_format(cfgd_core::output::OutputFormat::Json);
 
-        let result = super::cmd_status(&cli, &printer, Some("json-mod"));
-        assert!(
-            result.is_ok(),
-            "status should succeed with JSON output format for specific module: {:?}",
-            result.err()
+        super::cmd_status(&cli, &printer, Some("json-mod")).unwrap();
+
+        let output = buf.lock().unwrap();
+        let parsed = extract_json(&output);
+        assert_eq!(parsed["name"], "json-mod", "should contain module name");
+        assert_eq!(
+            parsed["status"], "not applied",
+            "fresh module should be 'not applied'"
         );
+        assert_eq!(parsed["packages"], 0, "empty module should have 0 packages");
     }
 
     // --- cmd_verify structured output ---
@@ -15457,13 +15950,29 @@ spec:
             output: OutputFormatArg(cfgd_core::output::OutputFormat::Json),
             ..test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()))
         };
-        let printer = Printer::new(cfgd_core::output::Verbosity::Quiet);
+        let (printer, buf) = Printer::for_test_with_format(cfgd_core::output::OutputFormat::Json);
 
-        let result = super::cmd_verify(&cli, &printer, None);
+        super::cmd_verify(&cli, &printer, None).unwrap();
+
+        let output = buf.lock().unwrap();
+        let parsed = extract_json(&output);
         assert!(
-            result.is_ok(),
-            "verify should succeed with JSON structured output format: {:?}",
-            result.err()
+            parsed.get("results").is_some(),
+            "verify JSON should have 'results'"
+        );
+        assert!(
+            parsed.get("passCount").is_some(),
+            "verify JSON should have 'passCount'"
+        );
+        assert!(
+            parsed.get("failCount").is_some(),
+            "verify JSON should have 'failCount'"
+        );
+        let total = parsed["passCount"].as_u64().unwrap() + parsed["failCount"].as_u64().unwrap();
+        assert_eq!(
+            total,
+            parsed["results"].as_array().unwrap().len() as u64,
+            "pass + fail should equal total results"
         );
     }
 
@@ -15477,7 +15986,7 @@ spec:
             output: OutputFormatArg(cfgd_core::output::OutputFormat::Json),
             ..test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()))
         };
-        let printer = Printer::new(cfgd_core::output::Verbosity::Quiet);
+        let (printer, buf) = Printer::for_test_with_format(cfgd_core::output::OutputFormat::Json);
         let args = PlanArgs {
             phase: None,
             skip: vec![],
@@ -15487,11 +15996,22 @@ spec:
             context: "apply".to_string(),
         };
 
-        let result = super::cmd_plan(&cli, &printer, &args);
+        super::cmd_plan(&cli, &printer, &args).unwrap();
+
+        let output = buf.lock().unwrap();
+        let parsed = extract_json(&output);
         assert!(
-            result.is_ok(),
-            "plan should succeed with JSON structured output format: {:?}",
-            result.err()
+            parsed.get("context").is_some(),
+            "plan JSON should have 'context'"
+        );
+        assert_eq!(parsed["context"], "apply", "plan context should be 'apply'");
+        assert!(
+            parsed.get("totalActions").is_some(),
+            "plan JSON should have 'totalActions'"
+        );
+        assert!(
+            parsed["totalActions"].is_u64(),
+            "totalActions should be a numeric value"
         );
     }
 
@@ -15523,10 +16043,8 @@ spec:
 
     #[test]
     fn validate_resource_name_underscores_and_dots() {
-        assert!(
-            super::validate_resource_name("my_module.v2", "Module").is_ok(),
-            "\"my_module.v2\" with underscores and dots should be a valid Module name"
-        );
+        // Unwrap to ensure success; not just is_ok()
+        super::validate_resource_name("my_module.v2", "Module").unwrap();
     }
 
     // --- display_plan_table ---
@@ -15537,12 +16055,14 @@ spec:
             phases: vec![],
             warnings: vec![],
         };
-        assert!(plan.phases.is_empty(), "precondition: plan has no phases");
-        let printer = test_printer();
-        // display_plan_table is a void display function — verify it handles empty plan
+        let (printer, buf) = Printer::for_test();
         super::display_plan_table(&plan, &printer, None);
-        // Plan is still intact after display (not consumed)
-        assert!(plan.phases.is_empty());
+
+        let output = buf.lock().unwrap();
+        assert!(
+            output.contains("Plan") || output.contains("Nothing") || output.is_empty(),
+            "empty plan should show plan header or nothing, got: {output}"
+        );
     }
 
     #[test]
@@ -15564,17 +16084,16 @@ spec:
             ],
             warnings: vec![],
         };
-        assert_eq!(plan.phases.len(), 2, "precondition: plan has 2 phases");
-        assert_eq!(plan.phases[0].name, reconciler::PhaseName::Packages);
-        assert_eq!(plan.phases[0].actions.len(), 1);
-        assert_eq!(plan.phases[1].name, reconciler::PhaseName::Files);
-        assert!(plan.phases[1].actions.is_empty());
 
-        let printer = test_printer();
-        // Filter to Files phase only — Packages phase should be skipped
+        let (printer, buf) = Printer::for_test();
         super::display_plan_table(&plan, &printer, Some(&reconciler::PhaseName::Files));
-        // Verify plan wasn't mutated by display
-        assert_eq!(plan.phases.len(), 2);
+
+        let output = buf.lock().unwrap();
+        // Packages phase should be filtered out
+        assert!(
+            !output.contains("curl"),
+            "filtered plan should not show curl from Packages phase, got: {output}"
+        );
     }
 
     // --- infer_source_name edge cases ---
@@ -15660,7 +16179,16 @@ spec:
         profile::cmd_profile_update(&cli, &printer, "default", &args).unwrap();
 
         let doc = config::load_profile(&dir.path().join("profiles").join("default.yaml")).unwrap();
-        assert!(!doc.spec.files.as_ref().unwrap().managed.is_empty());
+        let managed = &doc.spec.files.as_ref().unwrap().managed;
+        assert_eq!(
+            managed.len(),
+            1,
+            "profile should have exactly 1 managed file after add"
+        );
+        assert!(
+            managed[0].source.contains("testfile.conf"),
+            "managed file source should reference testfile.conf"
+        );
 
         // Remove file from profile
         let target_path = dir.path().join("deploy").join("testfile.conf");
@@ -15671,7 +16199,16 @@ spec:
         profile::cmd_profile_update(&cli, &printer, "default", &args).unwrap();
 
         let doc = config::load_profile(&dir.path().join("profiles").join("default.yaml")).unwrap();
-        assert!(doc.spec.files.is_none() || doc.spec.files.as_ref().unwrap().managed.is_empty());
+        let file_count = doc
+            .spec
+            .files
+            .as_ref()
+            .map(|f| f.managed.len())
+            .unwrap_or(0);
+        assert_eq!(
+            file_count, 0,
+            "profile should have no managed files after removal"
+        );
     }
 
     // --- Profile update env add/remove ---
@@ -16017,7 +16554,7 @@ spec:
         let (config_dir, state_dir) = setup_test_env();
 
         let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
-        let printer = test_printer();
+        let (printer, buf) = Printer::for_test();
         let args = ApplyArgs {
             from: None,
             dry_run: true,
@@ -16042,6 +16579,15 @@ spec:
             state.last_apply().unwrap().is_none(),
             "dry-run with skip+only filters should not create apply records"
         );
+
+        let output = buf.lock().unwrap();
+        assert!(
+            output.contains("Apply")
+                || output.contains("Plan")
+                || output.contains("Nothing")
+                || output.contains("dry"),
+            "dry-run apply with skip+only should produce output, got: {output}"
+        );
     }
 
     // --- cmd_plan with module filter and structured output ---
@@ -16060,7 +16606,7 @@ spec:
             output: OutputFormatArg(cfgd_core::output::OutputFormat::Json),
             ..test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()))
         };
-        let printer = Printer::new(cfgd_core::output::Verbosity::Quiet);
+        let (printer, buf) = Printer::for_test_with_format(cfgd_core::output::OutputFormat::Json);
         let args = PlanArgs {
             phase: None,
             skip: vec![],
@@ -16070,41 +16616,23 @@ spec:
             context: "apply".to_string(),
         };
 
-        let result = super::cmd_plan(&cli, &printer, &args);
+        super::cmd_plan(&cli, &printer, &args).unwrap();
+
+        let output = buf.lock().unwrap();
+        let parsed = extract_json(&output);
         assert!(
-            result.is_ok(),
-            "plan should succeed with JSON output format and module filter: {:?}",
-            result.err()
+            parsed.get("context").is_some(),
+            "plan JSON should have 'context'"
         );
+        assert_eq!(parsed["context"], "apply", "plan context should be 'apply'");
+        assert!(
+            parsed.get("phases").is_some(),
+            "plan JSON should have 'phases'"
+        );
+        assert!(parsed["phases"].is_array(), "phases should be an array");
     }
 
     // --- Phase 1: New test coverage ---
-
-    const RICH_CONFIG_YAML: &str = r#"apiVersion: cfgd.io/v1alpha1
-kind: Config
-metadata:
-  name: my-machine
-spec:
-  profile: default
-  sources:
-    - name: team-config
-      origin:
-        url: https://github.com/team/config
-        branch: main
-        type: Git
-      subscription:
-        priority: 100
-  daemon:
-    enabled: true
-    reconcile:
-      interval: 5m
-      onChange: true
-      autoApply: false
-    sync:
-      interval: 10m
-  secrets:
-    backend: age
-"#;
 
     fn setup_rich_test_env() -> (tempfile::TempDir, tempfile::TempDir) {
         let (config_dir, state_dir) = setup_test_env();
@@ -16118,14 +16646,17 @@ spec:
     fn cmd_config_show_with_rich_config() {
         let (config_dir, state_dir) = setup_rich_test_env();
         let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
-        let printer = test_printer();
+        let (printer, buf) = Printer::for_test();
 
-        let result = super::cmd_config_show(&cli, &printer);
+        super::cmd_config_show(&cli, &printer).unwrap();
+
+        let output = buf.lock().unwrap();
         assert!(
-            result.is_ok(),
-            "config show should succeed with rich config: {:?}",
-            result.err()
+            output.contains("Configuration"),
+            "missing Configuration header"
         );
+        assert!(output.contains("team-config"), "missing source name");
+        assert!(output.contains("Daemon"), "missing Daemon section");
     }
 
     #[test]
@@ -16135,17 +16666,20 @@ spec:
             output: OutputFormatArg(cfgd_core::output::OutputFormat::Json),
             ..test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()))
         };
-        let printer = Printer::with_format(
-            cfgd_core::output::Verbosity::Quiet,
-            None,
-            cfgd_core::output::OutputFormat::Json,
-        );
+        let (printer, buf) = Printer::for_test_with_format(cfgd_core::output::OutputFormat::Json);
 
-        let result = super::cmd_config_show(&cli, &printer);
+        super::cmd_config_show(&cli, &printer).unwrap();
+
+        let output = buf.lock().unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&output)
+            .unwrap_or_else(|e| panic!("invalid JSON: {e}, got: {output}"));
+        assert_eq!(
+            parsed["metadata"]["name"], "my-machine",
+            "config show JSON should include metadata.name"
+        );
         assert!(
-            result.is_ok(),
-            "config show JSON should succeed: {:?}",
-            result.err()
+            parsed.get("spec").is_some(),
+            "config show JSON should include spec"
         );
     }
 
@@ -16166,13 +16700,14 @@ spec:
     fn cmd_config_get_reads_profile() {
         let (config_dir, state_dir) = setup_test_env();
         let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
-        let printer = test_printer();
+        let (printer, buf) = Printer::for_test();
 
-        let result = super::cmd_config_get(&cli, &printer, "profile");
+        super::cmd_config_get(&cli, &printer, "profile").unwrap();
+
+        let output = buf.lock().unwrap();
         assert!(
-            result.is_ok(),
-            "config get profile should succeed: {:?}",
-            result.err()
+            output.contains("default"),
+            "config get profile should return 'default', got: {output}"
         );
     }
 
@@ -16180,13 +16715,14 @@ spec:
     fn cmd_config_get_nested_key() {
         let (config_dir, state_dir) = setup_rich_test_env();
         let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
-        let printer = test_printer();
+        let (printer, buf) = Printer::for_test();
 
-        let result = super::cmd_config_get(&cli, &printer, "daemon.enabled");
+        super::cmd_config_get(&cli, &printer, "daemon.enabled").unwrap();
+
+        let output = buf.lock().unwrap();
         assert!(
-            result.is_ok(),
-            "config get daemon.enabled should succeed: {:?}",
-            result.err()
+            output.contains("true"),
+            "config get daemon.enabled should return 'true', got: {output}"
         );
     }
 
@@ -16197,18 +16733,14 @@ spec:
             output: OutputFormatArg(cfgd_core::output::OutputFormat::Json),
             ..test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()))
         };
-        let printer = Printer::with_format(
-            cfgd_core::output::Verbosity::Quiet,
-            None,
-            cfgd_core::output::OutputFormat::Json,
-        );
+        let (printer, buf) = Printer::for_test_with_format(cfgd_core::output::OutputFormat::Json);
 
-        let result = super::cmd_config_get(&cli, &printer, "profile");
-        assert!(
-            result.is_ok(),
-            "config get JSON should succeed: {:?}",
-            result.err()
-        );
+        super::cmd_config_get(&cli, &printer, "profile").unwrap();
+
+        let output = buf.lock().unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&output)
+            .unwrap_or_else(|e| panic!("invalid JSON: {e}, got: {output}"));
+        assert_eq!(parsed, "default", "profile should be 'default'");
     }
 
     #[test]
@@ -16218,7 +16750,12 @@ spec:
         let printer = test_printer();
 
         let result = super::cmd_config_get(&cli, &printer, "nonexistent.path");
-        assert!(result.is_err());
+        let err = result.unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("not found in config"),
+            "expected 'not found in config' error, got: {msg}"
+        );
     }
 
     #[test]
@@ -16258,7 +16795,12 @@ spec:
         let printer = test_printer();
 
         let result = super::cmd_config_set(&cli, &printer, "profile", "work");
-        assert!(result.is_err());
+        let err = result.unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("No cfgd.yaml found"),
+            "expected 'No cfgd.yaml found' error, got: {msg}"
+        );
     }
 
     // --- cmd_config_unset ---
@@ -16281,7 +16823,12 @@ spec:
         let printer = test_printer();
 
         let result = super::cmd_config_unset(&cli, &printer, "profile");
-        assert!(result.is_err());
+        let err = result.unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("No cfgd.yaml found"),
+            "expected 'No cfgd.yaml found' error, got: {msg}"
+        );
     }
 
     // --- cmd_doctor ---
@@ -16291,27 +16838,27 @@ spec:
         let dir = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(dir.path().join("profiles")).unwrap();
         let cli = test_cli(dir.path());
-        let printer = test_printer();
+        let (printer, buf) = Printer::for_test();
 
-        let result = super::cmd_doctor(&cli, &printer);
-        assert!(
-            result.is_ok(),
-            "doctor should succeed without config: {:?}",
-            result.err()
-        );
+        super::cmd_doctor(&cli, &printer).unwrap();
+
+        let output = buf.lock().unwrap();
+        assert!(output.contains("Doctor"), "missing Doctor header");
     }
 
     #[test]
     fn cmd_doctor_with_rich_config() {
         let (config_dir, state_dir) = setup_rich_test_env();
         let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
-        let printer = test_printer();
+        let (printer, buf) = Printer::for_test();
 
-        let result = super::cmd_doctor(&cli, &printer);
+        super::cmd_doctor(&cli, &printer).unwrap();
+
+        let output = buf.lock().unwrap();
+        assert!(output.contains("Doctor"), "missing Doctor header");
         assert!(
-            result.is_ok(),
-            "doctor should succeed with rich config: {:?}",
-            result.err()
+            output.contains("Package Managers"),
+            "missing Package Managers section"
         );
     }
 
@@ -16341,7 +16888,12 @@ spec:
         let printer = test_printer();
 
         let result = super::load_config_and_profile(&cli, &printer);
-        assert!(result.is_err());
+        let err = result.unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("profile not found: nonexistent"),
+            "expected 'profile not found: nonexistent' error, got: {msg}"
+        );
     }
 
     // --- expand_aliases ---
@@ -16361,10 +16913,7 @@ spec:
 
     #[test]
     fn cmd_plan_invalid_phase_name_fails() {
-        let (config_dir, state_dir) = setup_test_env();
-        let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
-        let printer = test_printer();
-
+        let h = CliTestHarness::builder().build();
         let args = PlanArgs {
             phase: Some("invalid_phase".to_string()),
             skip: vec![],
@@ -16373,18 +16922,13 @@ spec:
             skip_scripts: false,
             context: "apply".to_string(),
         };
-
-        let result = super::cmd_plan(&cli, &printer, &args);
-        assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("Unknown phase"));
+        let result = super::cmd_plan(&h.cli(), h.printer(), &args);
+        assert_error_contains(&result, "Unknown phase");
     }
 
     #[test]
     fn cmd_plan_invalid_context_fails() {
-        let (config_dir, state_dir) = setup_test_env();
-        let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
-        let printer = test_printer();
-
+        let h = CliTestHarness::builder().build();
         let args = PlanArgs {
             phase: None,
             skip: vec![],
@@ -16393,18 +16937,13 @@ spec:
             skip_scripts: false,
             context: "invalid".to_string(),
         };
-
-        let result = super::cmd_plan(&cli, &printer, &args);
-        assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("Unknown context"));
+        let result = super::cmd_plan(&h.cli(), h.printer(), &args);
+        assert_error_contains(&result, "Unknown context");
     }
 
     #[test]
     fn cmd_plan_with_skip_filters_actions() {
-        let (config_dir, state_dir) = setup_test_env();
-        let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
-        let printer = test_printer();
-
+        let h = CliTestHarness::builder().build();
         let args = PlanArgs {
             phase: None,
             skip: vec!["packages".to_string()],
@@ -16413,12 +16952,11 @@ spec:
             skip_scripts: false,
             context: "apply".to_string(),
         };
-
-        let result = super::cmd_plan(&cli, &printer, &args);
+        super::cmd_plan(&h.cli(), h.printer(), &args).unwrap();
+        let output = h.output();
         assert!(
-            result.is_ok(),
-            "plan with skip should succeed: {:?}",
-            result.err()
+            output.contains("Plan") || output.contains("Phase"),
+            "plan with skip should show plan, got: {output}"
         );
     }
 
@@ -16426,34 +16964,25 @@ spec:
 
     #[test]
     fn cmd_diff_module_not_found_succeeds() {
-        let (config_dir, state_dir) = setup_test_env();
-        let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
-        let printer = test_printer();
-
-        let result = super::cmd_diff(&cli, &printer, Some("nonexistent"));
+        let h = CliTestHarness::builder().build();
+        super::cmd_diff(&h.cli(), h.printer(), Some("nonexistent")).unwrap();
+        let output = h.output();
         assert!(
-            result.is_ok(),
-            "diff nonexistent module should succeed: {:?}",
-            result.err()
+            output.contains("not found") || output.contains("Diff"),
+            "diff nonexistent module should show not-found or diff header, got: {output}"
         );
     }
 
     #[test]
     fn cmd_diff_with_module() {
-        let (config_dir, state_dir) = setup_test_env();
-        create_module_in_dir(
-            config_dir.path(),
-            "diff-mod",
-            "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: diff-mod\nspec:\n  packages: []\n",
-        );
-        let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
-        let printer = test_printer();
-
-        let result = super::cmd_diff(&cli, &printer, Some("diff-mod"));
+        let h = CliTestHarness::builder()
+            .module("diff-mod", "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: diff-mod\nspec:\n  packages: []\n")
+            .build();
+        super::cmd_diff(&h.cli(), h.printer(), Some("diff-mod")).unwrap();
+        let output = h.output();
         assert!(
-            result.is_ok(),
-            "diff with module should succeed: {:?}",
-            result.err()
+            output.contains("Diff") || output.contains("diff-mod"),
+            "diff with module should show diff header or module name, got: {output}"
         );
     }
 
@@ -16461,20 +16990,14 @@ spec:
 
     #[test]
     fn cmd_verify_with_module_filter() {
-        let (config_dir, state_dir) = setup_test_env();
-        create_module_in_dir(
-            config_dir.path(),
-            "verify-mod",
-            "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: verify-mod\nspec:\n  packages: []\n",
-        );
-        let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
-        let printer = test_printer();
-
-        let result = super::cmd_verify(&cli, &printer, Some("verify-mod"));
+        let h = CliTestHarness::builder()
+            .module("verify-mod", "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: verify-mod\nspec:\n  packages: []\n")
+            .build();
+        super::cmd_verify(&h.cli(), h.printer(), Some("verify-mod")).unwrap();
+        let output = h.output();
         assert!(
-            result.is_ok(),
-            "verify with module should succeed: {:?}",
-            result.err()
+            output.contains("Verify") || output.contains("verify-mod"),
+            "verify with module should show header, got: {output}"
         );
     }
 
@@ -16482,31 +17005,25 @@ spec:
 
     #[test]
     fn cmd_log_empty_state_succeeds() {
-        let state_dir = tempfile::tempdir().unwrap();
-        let printer = test_printer();
-
-        let result = super::cmd_log(&printer, 10, None, Some(state_dir.path()));
+        let h = CliTestHarness::builder().build();
+        super::cmd_log(h.printer(), 10, None, Some(h.state_path())).unwrap();
+        let output = h.output();
         assert!(
-            result.is_ok(),
-            "log empty state should succeed: {:?}",
-            result.err()
+            output.contains("Apply History") || output.contains("No applies"),
+            "log empty state should show history header, got: {output}"
         );
     }
 
     #[test]
     fn cmd_log_structured_json_output() {
-        let state_dir = tempfile::tempdir().unwrap();
-        let printer = Printer::with_format(
-            cfgd_core::output::Verbosity::Quiet,
-            None,
-            cfgd_core::output::OutputFormat::Json,
-        );
-
-        let result = super::cmd_log(&printer, 10, None, Some(state_dir.path()));
-        assert!(
-            result.is_ok(),
-            "log JSON should succeed: {:?}",
-            result.err()
+        let h = CliTestHarness::builder().json().build();
+        super::cmd_log(h.printer(), 10, None, Some(h.state_path())).unwrap();
+        let parsed = h.json_output();
+        assert_json_has_fields(&parsed, &["entries"]);
+        assert_eq!(
+            parsed["entries"],
+            serde_json::json!([]),
+            "fresh state should have no log entries"
         );
     }
 
@@ -16514,10 +17031,7 @@ spec:
 
     #[test]
     fn cmd_apply_real_records_state() {
-        let (config_dir, state_dir) = setup_test_env();
-        let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
-        let printer = test_printer();
-
+        let h = CliTestHarness::builder().build();
         let args = ApplyArgs {
             dry_run: false,
             yes: true,
@@ -16528,26 +17042,23 @@ spec:
             from: None,
             skip_scripts: false,
         };
+        super::cmd_apply(&h.cli(), h.printer(), &args).unwrap();
 
-        let result = super::cmd_apply(&cli, &printer, &args);
-        assert!(
-            result.is_ok(),
-            "apply empty profile should succeed: {:?}",
-            result.err()
-        );
-
-        // Verify state store recorded the apply
-        let state = StateStore::open(&state_dir.path().join("cfgd.db")).unwrap();
+        let state = StateStore::open(&h.state_path().join("cfgd.db")).unwrap();
         let last = state.last_apply().unwrap();
         assert!(last.is_some(), "should have recorded an apply in state");
+        let record = last.unwrap();
+        assert_eq!(record.profile, "default");
+        assert!(
+            matches!(record.status, cfgd_core::state::ApplyStatus::Success),
+            "apply record status should be Success, got: {:?}",
+            record.status
+        );
     }
 
     #[test]
     fn cmd_apply_invalid_phase_fails() {
-        let (config_dir, state_dir) = setup_test_env();
-        let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
-        let printer = test_printer();
-
+        let h = CliTestHarness::builder().build();
         let args = ApplyArgs {
             dry_run: true,
             yes: true,
@@ -16558,18 +17069,13 @@ spec:
             from: None,
             skip_scripts: false,
         };
-
-        let result = super::cmd_apply(&cli, &printer, &args);
-        assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("Unknown phase"));
+        let result = super::cmd_apply(&h.cli(), h.printer(), &args);
+        assert_error_contains(&result, "Unknown phase");
     }
 
     #[test]
     fn cmd_apply_with_skip_and_only() {
-        let (config_dir, state_dir) = setup_test_env();
-        let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
-        let printer = test_printer();
-
+        let h = CliTestHarness::builder().build();
         let args = ApplyArgs {
             dry_run: true,
             yes: true,
@@ -16580,21 +17086,20 @@ spec:
             from: None,
             skip_scripts: false,
         };
-
-        let result = super::cmd_apply(&cli, &printer, &args);
+        super::cmd_apply(&h.cli(), h.printer(), &args).unwrap();
+        let output = h.output();
         assert!(
-            result.is_ok(),
-            "apply dry-run with skip should succeed: {:?}",
-            result.err()
+            output.contains("Apply")
+                || output.contains("Plan")
+                || output.contains("Nothing")
+                || output.contains("dry"),
+            "apply dry-run with skip should produce output, got: {output}"
         );
     }
 
     #[test]
     fn cmd_apply_skip_scripts_flag() {
-        let (config_dir, state_dir) = setup_test_env();
-        let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
-        let printer = test_printer();
-
+        let h = CliTestHarness::builder().build();
         let args = ApplyArgs {
             dry_run: true,
             yes: true,
@@ -16605,12 +17110,14 @@ spec:
             from: None,
             skip_scripts: true,
         };
-
-        let result = super::cmd_apply(&cli, &printer, &args);
+        super::cmd_apply(&h.cli(), h.printer(), &args).unwrap();
+        let output = h.output();
         assert!(
-            result.is_ok(),
-            "apply dry-run with skip_scripts: {:?}",
-            result.err()
+            output.contains("Apply")
+                || output.contains("Plan")
+                || output.contains("Nothing")
+                || output.contains("dry"),
+            "apply dry-run with skip-scripts should produce output, got: {output}"
         );
     }
 
@@ -16618,23 +17125,16 @@ spec:
 
     #[test]
     fn cmd_compliance_history_invalid_since_fails() {
-        let (config_dir, state_dir) = setup_test_env();
-        let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
-        let printer = test_printer();
-
-        let result = super::cmd_compliance_history(&cli, &printer, Some("invalid"));
-        assert!(result.is_err());
+        let h = CliTestHarness::builder().build();
+        let result = super::cmd_compliance_history(&h.cli(), h.printer(), Some("invalid"));
+        assert_error_contains(&result, "invalid --since value");
     }
 
     #[test]
     fn cmd_compliance_diff_missing_snapshots_fails() {
-        let (config_dir, state_dir) = setup_test_env();
-        let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
-        let printer = test_printer();
-
-        let result = super::cmd_compliance_diff(&cli, &printer, 1, 2);
-        assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("not found"));
+        let h = CliTestHarness::builder().build();
+        let result = super::cmd_compliance_diff(&h.cli(), h.printer(), 1, 2);
+        assert_error_contains(&result, "not found");
     }
 
     // --- cmd_decide ---
@@ -16685,7 +17185,12 @@ spec:
         let printer = test_printer();
 
         let result = super::cmd_source_remove(&cli, &printer, "nonexistent", false, true);
-        assert!(result.is_err());
+        let err = result.unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("Source 'nonexistent' not found"),
+            "expected 'Source not found' error, got: {msg}"
+        );
     }
 
     // --- cmd_source_override ---
@@ -16694,34 +17199,46 @@ spec:
     fn cmd_source_override_reject_succeeds() {
         let (config_dir, state_dir) = setup_rich_test_env();
         let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
-        let printer = test_printer();
+        let (printer, buf) = Printer::for_test();
 
-        let result = super::cmd_source_override(
+        super::cmd_source_override(
             &cli,
             &printer,
             "team-config",
             "reject",
             "packages.brew",
             None,
+        )
+        .unwrap();
+
+        let output = buf.lock().unwrap();
+        assert!(
+            output.contains("Rejected") && output.contains("packages.brew"),
+            "should confirm rejection of packages.brew, got: {output}"
         );
-        assert!(result.is_ok(), "source override reject: {:?}", result.err());
     }
 
     #[test]
     fn cmd_source_override_set_succeeds() {
         let (config_dir, state_dir) = setup_rich_test_env();
         let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
-        let printer = test_printer();
+        let (printer, buf) = Printer::for_test();
 
-        let result = super::cmd_source_override(
+        super::cmd_source_override(
             &cli,
             &printer,
             "team-config",
             "set",
             "packages.brew.ripgrep",
             Some("true"),
+        )
+        .unwrap();
+
+        let output = buf.lock().unwrap();
+        assert!(
+            output.contains("Override set") && output.contains("packages.brew.ripgrep"),
+            "should confirm override set for packages.brew.ripgrep, got: {output}"
         );
-        assert!(result.is_ok(), "source override set: {:?}", result.err());
     }
 
     #[test]
@@ -16756,7 +17273,12 @@ spec:
             "packages.brew",
             None,
         );
-        assert!(result.is_err());
+        let err = result.unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("Source 'nonexistent' not found"),
+            "expected 'Source not found' error, got: {msg}"
+        );
     }
 
     // --- cmd_source_priority ---
@@ -16768,7 +17290,12 @@ spec:
         let printer = test_printer();
 
         let result = super::cmd_source_priority(&cli, &printer, "nonexistent", None);
-        assert!(result.is_err());
+        let err = result.unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("source 'nonexistent' not found"),
+            "expected 'source not found' error, got: {msg}"
+        );
     }
 
     #[test]
@@ -16790,13 +17317,19 @@ spec:
     fn cmd_source_show_exists() {
         let (config_dir, state_dir) = setup_rich_test_env();
         let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
-        let printer = test_printer();
+        let (printer, buf) = Printer::for_test();
 
         let result = super::cmd_source_show(&cli, &printer, "team-config");
         assert!(
             result.is_ok(),
             "source show should succeed: {:?}",
             result.err()
+        );
+
+        let output = buf.lock().unwrap();
+        assert!(
+            output.contains("team-config") || output.contains("Source"),
+            "source show should display source info, got: {output}"
         );
     }
 
@@ -16807,14 +17340,16 @@ spec:
             output: OutputFormatArg(cfgd_core::output::OutputFormat::Json),
             ..test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()))
         };
-        let printer = Printer::with_format(
-            cfgd_core::output::Verbosity::Quiet,
-            None,
-            cfgd_core::output::OutputFormat::Json,
-        );
+        let (printer, buf) = Printer::for_test_with_format(cfgd_core::output::OutputFormat::Json);
 
-        let result = super::cmd_source_show(&cli, &printer, "team-config");
-        assert!(result.is_ok(), "source show JSON: {:?}", result.err());
+        super::cmd_source_show(&cli, &printer, "team-config").unwrap();
+
+        let output = buf.lock().unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&output)
+            .unwrap_or_else(|e| panic!("invalid JSON: {e}, got: {output}"));
+        assert_eq!(parsed["name"], "team-config");
+        assert_eq!(parsed["url"], "https://github.com/team/config");
+        assert_eq!(parsed["priority"], 100);
     }
 
     // --- cmd_source_create ---
@@ -16839,8 +17374,14 @@ spec:
             result.err()
         );
 
-        // Verify the manifest file was created
-        assert!(config_dir.path().join("cfgd-source.yaml").exists());
+        // Verify the manifest file was created with expected content
+        let manifest_path = config_dir.path().join("cfgd-source.yaml");
+        assert!(manifest_path.exists(), "cfgd-source.yaml should be created");
+        let content = std::fs::read_to_string(&manifest_path).unwrap();
+        assert!(
+            content.contains("my-source"),
+            "manifest should contain source name, got: {content}"
+        );
     }
 
     // --- cmd_source_list ---
@@ -16849,13 +17390,19 @@ spec:
     fn cmd_source_list_with_sources_shows_entries() {
         let (config_dir, state_dir) = setup_rich_test_env();
         let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
-        let printer = test_printer();
+        let (printer, buf) = Printer::for_test();
 
         let result = super::cmd_source_list(&cli, &printer);
         assert!(
             result.is_ok(),
             "source list with sources: {:?}",
             result.err()
+        );
+
+        let output = buf.lock().unwrap();
+        assert!(
+            output.contains("team-config") || output.contains("Config Sources"),
+            "source list should show source entries, got: {output}"
         );
     }
 
@@ -16866,14 +17413,19 @@ spec:
             output: OutputFormatArg(cfgd_core::output::OutputFormat::Json),
             ..test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()))
         };
-        let printer = Printer::with_format(
-            cfgd_core::output::Verbosity::Quiet,
-            None,
-            cfgd_core::output::OutputFormat::Json,
-        );
+        let (printer, buf) = Printer::for_test_with_format(cfgd_core::output::OutputFormat::Json);
 
-        let result = super::cmd_source_list(&cli, &printer);
-        assert!(result.is_ok(), "source list JSON: {:?}", result.err());
+        super::cmd_source_list(&cli, &printer).unwrap();
+
+        let output = buf.lock().unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&output)
+            .unwrap_or_else(|e| panic!("invalid JSON: {e}, got: {output}"));
+        let arr = parsed
+            .as_array()
+            .expect("source list JSON should be an array");
+        assert_eq!(arr.len(), 1, "rich config has one source");
+        assert_eq!(arr[0]["name"], "team-config");
+        assert_eq!(arr[0]["url"], "https://github.com/team/config");
     }
 
     // --- cmd_workflow_generate ---
@@ -16888,13 +17440,26 @@ spec:
             .ok();
 
         let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
-        let printer = test_printer();
+        let (printer, buf) = Printer::for_test();
 
         let result = super::cmd_workflow_generate(&cli, &printer, true);
-        if result.is_ok() {
-            let workflow_dir = config_dir.path().join(".github").join("workflows");
-            assert!(workflow_dir.exists());
-        }
+        assert!(
+            result.is_ok(),
+            "workflow generate with git repo should succeed: {:?}",
+            result.err()
+        );
+
+        let workflow_dir = config_dir.path().join(".github").join("workflows");
+        assert!(
+            workflow_dir.exists(),
+            "workflow directory should be created"
+        );
+
+        let output = buf.lock().unwrap();
+        assert!(
+            output.contains("Generated") || output.contains("workflow"),
+            "workflow generate should mention generated workflow, got: {output}"
+        );
     }
 
     // --- cmd_rollback ---
@@ -16921,7 +17486,12 @@ spec:
             result.err()
         );
 
-        assert!(state_dir.path().join("cfgd.db").exists());
+        let db_path = state_dir.path().join("cfgd.db");
+        assert!(db_path.exists(), "cfgd.db file should be created");
+        assert!(
+            std::fs::metadata(&db_path).unwrap().len() > 0,
+            "cfgd.db should not be empty"
+        );
     }
 
     // --- module commands ---
@@ -16933,14 +17503,19 @@ spec:
         let printer = test_printer();
 
         let result = module::cmd_module_search(&cli, &printer, "test");
-        assert!(result.is_err());
+        let err = result.unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("No config found"),
+            "expected 'No config found' error, got: {msg}"
+        );
     }
 
     #[test]
     fn cmd_module_search_no_registries() {
         let (config_dir, state_dir) = setup_test_env();
         let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
-        let printer = test_printer();
+        let (printer, buf) = Printer::for_test();
 
         // Config exists but has no module registries
         let result = module::cmd_module_search(&cli, &printer, "test");
@@ -16948,6 +17523,12 @@ spec:
             result.is_ok(),
             "search with no registries should succeed: {:?}",
             result.err()
+        );
+
+        let output = buf.lock().unwrap();
+        assert!(
+            output.contains("No module registries") || output.contains("Search"),
+            "search with no registries should say no registries, got: {output}"
         );
     }
 
@@ -16958,18 +17539,15 @@ spec:
             output: OutputFormatArg(cfgd_core::output::OutputFormat::Json),
             ..test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()))
         };
-        let printer = Printer::with_format(
-            cfgd_core::output::Verbosity::Quiet,
-            None,
-            cfgd_core::output::OutputFormat::Json,
-        );
+        let (printer, buf) = Printer::for_test_with_format(cfgd_core::output::OutputFormat::Json);
 
-        let result = module::cmd_module_search(&cli, &printer, "test");
-        assert!(
-            result.is_ok(),
-            "search JSON with no registries: {:?}",
-            result.err()
-        );
+        module::cmd_module_search(&cli, &printer, "test").unwrap();
+
+        let output = buf.lock().unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&output)
+            .unwrap_or_else(|e| panic!("invalid JSON: {e}, got: {output}"));
+        let arr = parsed.as_array().expect("search JSON should be an array");
+        assert_eq!(arr.len(), 0, "no registries should yield zero results");
     }
 
     #[test]
@@ -17028,7 +17606,12 @@ spec:
 
         let result =
             module::cmd_module_add_from_registry(&cli, &printer, "myregistry/mymod", false, false);
-        assert!(result.is_err());
+        let err = result.unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("No cfgd.yaml found"),
+            "expected 'No cfgd.yaml found' error, got: {msg}"
+        );
     }
 
     #[test]
@@ -17049,18 +17632,371 @@ spec:
 
     #[test]
     fn cmd_module_add_from_registry_not_configured_fails() {
-        let (config_dir, state_dir) = setup_test_env();
-        let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
-        let printer = test_printer();
-
+        let h = CliTestHarness::builder().build();
         let result = module::cmd_module_add_from_registry(
-            &cli,
-            &printer,
+            &h.cli(),
+            h.printer(),
             "myregistry/mymod@v1.0",
             false,
             false,
         );
+        assert_error_contains(&result, "not configured");
+    }
+
+    // -----------------------------------------------------------------------
+    // New coverage: cmd_status_module
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn cmd_status_module_not_found_output() {
+        let h = CliTestHarness::builder().build();
+        super::cmd_status_module(&h.cli(), h.printer(), "nonexistent").unwrap();
+        h.assert_output_contains("nonexistent");
+        h.assert_output_contains("not found");
+    }
+
+    #[test]
+    fn cmd_status_module_not_found_json() {
+        let h = CliTestHarness::builder().json().build();
+        super::cmd_status_module(&h.cli(), h.printer(), "ghost-mod").unwrap();
+        let parsed = h.json_output();
+        assert_eq!(parsed["name"], "ghost-mod");
+        assert_eq!(parsed["status"], "not found");
+        assert_eq!(parsed["packages"], 0);
+        assert_eq!(parsed["files"], 0);
+    }
+
+    #[test]
+    fn cmd_status_module_found_output() {
+        let h = CliTestHarness::builder()
+            .module("my-mod", "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: my-mod\nspec:\n  packages:\n    - name: ripgrep\n  files: []\n")
+            .build();
+        super::cmd_status_module(&h.cli(), h.printer(), "my-mod").unwrap();
+        h.assert_output_contains("my-mod");
+        // Status shows package count, not individual package names
+        h.assert_output_contains("1");
+    }
+
+    #[test]
+    fn cmd_status_module_found_json() {
+        let h = CliTestHarness::builder()
+            .json()
+            .module("my-mod", "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: my-mod\nspec:\n  packages:\n    - name: ripgrep\n  files: []\n  depends:\n    - base\n")
+            .build();
+        super::cmd_status_module(&h.cli(), h.printer(), "my-mod").unwrap();
+        let parsed = h.json_output();
+        assert_eq!(parsed["name"], "my-mod");
+        assert_eq!(parsed["packages"], 1);
+        assert_eq!(parsed["files"], 0);
+        assert_eq!(parsed["status"], "not applied");
+        assert_json_has_fields(
+            &parsed,
+            &[
+                "name",
+                "packages",
+                "files",
+                "depends",
+                "status",
+                "lastApplied",
+            ],
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // New coverage: cmd_source_add error paths
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn cmd_source_add_duplicate_fails() {
+        let h = CliTestHarness::builder().rich_config().build();
+        let args = SourceAddArgs {
+            url: "https://github.com/team/config".to_string(),
+            name: Some("team-config".to_string()),
+            branch: None,
+            profile: None,
+            accept_recommended: false,
+            priority: None,
+            opt_in: vec![],
+            sync_interval: None,
+            auto_apply: false,
+            pin_version: None,
+            yes: true,
+        };
+        let result = super::cmd_source_add(&h.cli(), h.printer(), &args);
+        assert_error_contains(&result, "already exists");
+    }
+
+    // -----------------------------------------------------------------------
+    // New coverage: cmd_pull / cmd_sync output
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn cmd_pull_non_git_dir_shows_warning() {
+        let h = CliTestHarness::builder().build();
+        // config dir is not a git repo, so git_pull_sync will fail gracefully
+        super::cmd_pull(&h.cli(), h.printer()).unwrap();
+        h.assert_header("Pull");
+        // Should either show "up to date" or "Pull failed" — both are OK
+        let output = h.output();
+        assert!(
+            output.contains("Pull failed") || output.contains("up to date"),
+            "pull in non-git dir should warn or show up-to-date, got: {output}"
+        );
+    }
+
+    #[test]
+    fn cmd_sync_non_git_dir_shows_output() {
+        let h = CliTestHarness::builder().build();
+        super::cmd_sync(&h.cli(), h.printer()).unwrap();
+        h.assert_header("Sync");
+    }
+
+    // -----------------------------------------------------------------------
+    // New coverage: cmd_config_edit error path
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn cmd_config_edit_no_config_fails() {
+        let dir = tempfile::tempdir().unwrap();
+        let cli = test_cli(dir.path());
+        let printer = test_printer();
+        let result = super::cmd_config_edit(&cli, &printer);
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("not configured"));
+        assert_error_contains(&result, "No cfgd.yaml");
+    }
+
+    // -----------------------------------------------------------------------
+    // New coverage: cmd_source_update error paths
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn cmd_source_update_no_sources_succeeds() {
+        let h = CliTestHarness::builder().build();
+        super::cmd_source_update(&h.cli(), h.printer(), None).unwrap();
+        h.assert_header("Update Sources");
+        h.assert_output_contains("No sources configured");
+    }
+
+    #[test]
+    fn cmd_source_update_named_not_found_fails() {
+        // Need a config with sources so it doesn't take the "no sources" early return
+        let h = CliTestHarness::builder().rich_config().build();
+        let result = super::cmd_source_update(&h.cli(), h.printer(), Some("nonexistent"));
+        assert_error_contains(&result, "not found");
+    }
+
+    // -----------------------------------------------------------------------
+    // New coverage: cmd_source_replace error path
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn cmd_source_replace_nonexistent_fails() {
+        let h = CliTestHarness::builder().build();
+        let result = super::cmd_source_replace(
+            &h.cli(),
+            h.printer(),
+            "nonexistent",
+            "https://github.com/new/config.git",
+        );
+        assert_error_contains(&result, "not found");
+    }
+
+    // -----------------------------------------------------------------------
+    // New coverage: cmd_compliance_snapshot / cmd_compliance_export
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn cmd_compliance_snapshot_empty_state() {
+        let h = CliTestHarness::builder().build();
+        super::cmd_compliance_snapshot(&h.cli(), h.printer()).unwrap();
+        let output = h.output();
+        assert!(
+            output.contains("Compliance") || output.contains("Snapshot"),
+            "compliance snapshot should produce compliance-related output, got: {output}"
+        );
+    }
+
+    #[test]
+    fn cmd_compliance_export_empty_state() {
+        let h = CliTestHarness::builder().build();
+        super::cmd_compliance_export(&h.cli(), h.printer()).unwrap();
+        // export writes to a file and prints success message
+        let output = h.output();
+        assert!(
+            output.contains("snapshot") || output.contains("Compliance"),
+            "compliance export should mention snapshot, got: {output}"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // New coverage: cmd_compliance structured output
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn cmd_compliance_snapshot_json() {
+        let h = CliTestHarness::builder().json().build();
+        super::cmd_compliance_snapshot(&h.cli(), h.printer()).unwrap();
+        let parsed = h.json_output();
+        // Compliance snapshot JSON wraps a snapshot object
+        assert_json_has_fields(&parsed, &["snapshot"]);
+    }
+
+    #[test]
+    fn cmd_compliance_history_json() {
+        let h = CliTestHarness::builder().json().build();
+        super::cmd_compliance_history(&h.cli(), h.printer(), None).unwrap();
+        let output = h.output();
+        // History output may be an array or object — just verify it's valid JSON
+        let _parsed: serde_json::Value = serde_json::from_str(&output)
+            .unwrap_or_else(|e| panic!("invalid JSON: {e}, got: {output}"));
+    }
+
+    // -----------------------------------------------------------------------
+    // New coverage: execute dispatch for remaining commands
+    // -----------------------------------------------------------------------
+
+    // execute dispatch tests for plan/sync/pull/compliance already exist above
+
+    // -----------------------------------------------------------------------
+    // JSON schema tests for --output json commands
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn json_schema_status() {
+        let h = CliTestHarness::builder().json().build();
+        super::cmd_status(&h.cli(), h.printer(), None).unwrap();
+        let parsed = h.json_output();
+        assert_json_has_fields(
+            &parsed,
+            &[
+                "lastApply",
+                "drift",
+                "modules",
+                "sources",
+                "pendingDecisions",
+            ],
+        );
+        assert_json_field_type(&parsed, "modules", "array");
+        assert_json_field_type(&parsed, "sources", "array");
+        assert_json_field_type(&parsed, "pendingDecisions", "array");
+    }
+
+    #[test]
+    fn json_schema_status_module() {
+        // Module dir name must match metadata.name in module.yaml
+        let h = CliTestHarness::builder()
+            .json()
+            .module("test-mod", SIMPLE_MODULE_YAML)
+            .build();
+        super::cmd_status_module(&h.cli(), h.printer(), "test-mod").unwrap();
+        let parsed = h.json_output();
+        assert_json_has_fields(
+            &parsed,
+            &[
+                "name",
+                "packages",
+                "files",
+                "depends",
+                "status",
+                "lastApplied",
+            ],
+        );
+        assert_json_field_type(&parsed, "name", "string");
+        assert_json_field_type(&parsed, "packages", "number");
+        assert_json_field_type(&parsed, "files", "number");
+        assert_json_field_type(&parsed, "depends", "array");
+        assert_json_field_type(&parsed, "status", "string");
+    }
+
+    #[test]
+    fn json_schema_log() {
+        let h = CliTestHarness::builder().json().build();
+        super::cmd_log(h.printer(), 10, None, Some(h.state_path())).unwrap();
+        let parsed = h.json_output();
+        assert_json_has_fields(&parsed, &["entries"]);
+        assert_json_field_type(&parsed, "entries", "array");
+    }
+
+    #[test]
+    fn json_schema_plan() {
+        let h = CliTestHarness::builder().json().build();
+        let args = PlanArgs {
+            phase: None,
+            skip: vec![],
+            only: vec![],
+            module: None,
+            skip_scripts: false,
+            context: "apply".to_string(),
+        };
+        super::cmd_plan(&h.cli(), h.printer(), &args).unwrap();
+        let parsed = h.json_output();
+        assert_json_has_fields(&parsed, &["context", "phases", "totalActions"]);
+        assert_json_field_type(&parsed, "context", "string");
+        assert_json_field_type(&parsed, "phases", "array");
+        assert_json_field_type(&parsed, "totalActions", "number");
+    }
+
+    #[test]
+    fn json_schema_config_show() {
+        let h = CliTestHarness::builder().json().rich_config().build();
+        super::cmd_config_show(&h.cli(), h.printer()).unwrap();
+        let parsed = h.json_output();
+        assert_json_has_fields(&parsed, &["metadata", "spec"]);
+        assert_json_field_type(&parsed, "metadata", "object");
+        assert_json_field_type(&parsed, "spec", "object");
+    }
+
+    #[test]
+    fn json_schema_doctor() {
+        let h = CliTestHarness::builder().json().build();
+        super::cmd_doctor(&h.cli(), h.printer()).unwrap();
+        let parsed = h.json_output();
+        assert_json_has_fields(
+            &parsed,
+            &["config", "packageManagers", "systemConfigurators"],
+        );
+        assert_json_field_type(&parsed, "config", "object");
+        assert_json_field_type(&parsed, "packageManagers", "array");
+        assert_json_field_type(&parsed, "systemConfigurators", "array");
+    }
+
+    #[test]
+    fn json_schema_verify() {
+        let h = CliTestHarness::builder().json().build();
+        super::cmd_verify(&h.cli(), h.printer(), None).unwrap();
+        let parsed = h.json_output();
+        assert_json_has_fields(&parsed, &["passCount", "failCount", "results"]);
+        assert_json_field_type(&parsed, "passCount", "number");
+        assert_json_field_type(&parsed, "failCount", "number");
+        assert_json_field_type(&parsed, "results", "array");
+    }
+
+    #[test]
+    fn json_schema_source_list() {
+        let h = CliTestHarness::builder().json().rich_config().build();
+        super::cmd_source_list(&h.cli(), h.printer()).unwrap();
+        let output = h.output();
+        // Source list writes a JSON array; output may have trailing newlines from capture()
+        // Use serde_json::from_str on trimmed output, finding the JSON portion
+        let start = output
+            .find('[')
+            .unwrap_or_else(|| panic!("no JSON array in output: {output}"));
+        // Find the matching closing bracket
+        let json_substr = &output[start..];
+        let end = json_substr.rfind(']').expect("no closing ] in JSON") + 1;
+        let parsed: serde_json::Value = serde_json::from_str(&json_substr[..end])
+            .unwrap_or_else(|e| panic!("invalid JSON: {e}, got: {json_substr}"));
+        assert!(parsed.is_array(), "source list JSON should be an array");
+        let arr = parsed.as_array().unwrap();
+        assert_eq!(arr.len(), 1, "rich config has 1 source");
+        assert_json_has_fields(&arr[0], &["name", "url", "priority", "status"]);
+    }
+
+    #[test]
+    fn json_schema_source_show() {
+        let h = CliTestHarness::builder().json().rich_config().build();
+        super::cmd_source_show(&h.cli(), h.printer(), "team-config").unwrap();
+        let parsed = h.json_output();
+        assert_json_has_fields(&parsed, &["name", "url"]);
     }
 }

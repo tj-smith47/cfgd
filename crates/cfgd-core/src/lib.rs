@@ -1518,7 +1518,12 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         // /tmp itself exists and is outside our tempdir
         let result = validate_path_within(std::path::Path::new("/tmp"), dir.path());
-        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::PermissionDenied);
+        assert!(
+            err.to_string().contains("escapes root"),
+            "expected 'escapes root' message, got: {err}"
+        );
     }
 
     #[test]

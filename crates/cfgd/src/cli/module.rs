@@ -2715,25 +2715,41 @@ mod tests {
     #[test]
     fn apply_set_invalid_no_equals() {
         let mut doc = make_module_doc(vec![make_pkg("curl")]);
-        assert!(apply_module_sets(&["noequals".into()], &mut doc).is_err());
+        let err = apply_module_sets(&["noequals".into()], &mut doc).unwrap_err();
+        assert!(
+            err.to_string().contains("expected key=value"),
+            "unexpected error: {err}"
+        );
     }
 
     #[test]
     fn apply_set_invalid_path_too_short() {
         let mut doc = make_module_doc(vec![make_pkg("curl")]);
-        assert!(apply_module_sets(&["foo=bar".into()], &mut doc).is_err());
+        let err = apply_module_sets(&["foo=bar".into()], &mut doc).unwrap_err();
+        assert!(
+            err.to_string().contains("expected package."),
+            "unexpected error: {err}"
+        );
     }
 
     #[test]
     fn apply_set_unknown_field() {
         let mut doc = make_module_doc(vec![make_pkg("curl")]);
-        assert!(apply_module_sets(&["package.curl.unknown=val".into()], &mut doc).is_err());
+        let err = apply_module_sets(&["package.curl.unknown=val".into()], &mut doc).unwrap_err();
+        assert!(
+            err.to_string().contains("Unknown package field"),
+            "unexpected error: {err}"
+        );
     }
 
     #[test]
     fn apply_set_package_not_found() {
         let mut doc = make_module_doc(vec![make_pkg("curl")]);
-        assert!(apply_module_sets(&["package.vim.minVersion=9.0".into()], &mut doc).is_err());
+        let err = apply_module_sets(&["package.vim.minVersion=9.0".into()], &mut doc).unwrap_err();
+        assert!(
+            err.to_string().contains("not found in module"),
+            "unexpected error: {err}"
+        );
     }
 
     // --- load_module_document ---
@@ -2755,7 +2771,11 @@ mod tests {
     #[test]
     fn load_module_document_missing_dir() {
         let dir = tempfile::tempdir().unwrap();
-        assert!(load_module_document(dir.path(), "nope").is_err());
+        let err = load_module_document(dir.path(), "nope").unwrap_err();
+        assert!(
+            err.to_string().contains("not found"),
+            "unexpected error: {err}"
+        );
     }
 
     #[test]
@@ -2763,7 +2783,11 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let module_dir = dir.path().join("modules").join("empty-mod");
         std::fs::create_dir_all(&module_dir).unwrap();
-        assert!(load_module_document(dir.path(), "empty-mod").is_err());
+        let err = load_module_document(dir.path(), "empty-mod").unwrap_err();
+        assert!(
+            err.to_string().contains("not found"),
+            "unexpected error: {err}"
+        );
     }
 
     // --- save_module_document ---
@@ -2890,5 +2914,1131 @@ spec:
         let parsed: serde_json::Value = serde_json::from_str(&feature_json).unwrap();
         assert_eq!(parsed["id"], "test-tool");
         assert!(parsed["options"]["EDITOR"].is_object());
+    }
+
+    // ─── helpers for harness-style tests ────────────────────────
+
+    fn test_cli(dir: &std::path::Path) -> super::Cli {
+        super::Cli {
+            command: super::Command::Status { module: None },
+            config: dir.join("cfgd.yaml"),
+            profile: None,
+            verbose: false,
+            quiet: true,
+            no_color: true,
+            output: super::OutputFormatArg(cfgd_core::output::OutputFormat::Table),
+            jsonpath: None,
+            state_dir: None,
+        }
+    }
+
+    fn test_cli_json(dir: &std::path::Path) -> super::Cli {
+        super::Cli {
+            output: super::OutputFormatArg(cfgd_core::output::OutputFormat::Json),
+            ..test_cli(dir)
+        }
+    }
+
+    fn setup_config_dir() -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        let profiles_dir = dir.path().join("profiles");
+        std::fs::create_dir_all(&profiles_dir).unwrap();
+        std::fs::write(
+            profiles_dir.join("default.yaml"),
+            "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec:\n  modules: []\n",
+        ).unwrap();
+        std::fs::write(
+            dir.path().join("cfgd.yaml"),
+            "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec:\n  profile: default\n",
+        ).unwrap();
+        std::fs::create_dir_all(dir.path().join("modules")).unwrap();
+        dir
+    }
+
+    fn make_module(dir: &std::path::Path, name: &str, yaml: &str) {
+        let mod_dir = dir.join("modules").join(name);
+        std::fs::create_dir_all(mod_dir.join("files")).unwrap();
+        std::fs::write(mod_dir.join("module.yaml"), yaml).unwrap();
+    }
+
+    const RICH_MODULE_YAML: &str = r#"apiVersion: cfgd.io/v1alpha1
+kind: Module
+metadata:
+  name: devtools
+  description: Dev tools module
+spec:
+  depends:
+    - base
+  packages:
+    - name: ripgrep
+    - name: fd-find
+  files:
+    - source: files/config.toml
+      target: ~/.config/app/config.toml
+  env:
+    - name: EDITOR
+      value: nvim
+  aliases:
+    - name: ll
+      command: ls -la
+  scripts:
+    postApply:
+      - echo done
+"#;
+
+    // ─── cmd_module_list ────────────────────────────────────────
+
+    #[test]
+    fn cmd_module_list_empty() {
+        let dir = setup_config_dir();
+        let cli = test_cli(dir.path());
+        let (printer, buf) = cfgd_core::output::Printer::for_test();
+
+        cmd_module_list(&cli, &printer).unwrap();
+
+        let output = buf.lock().unwrap();
+        assert!(
+            output.contains("No modules found"),
+            "should report no modules, got: {output}"
+        );
+    }
+
+    #[test]
+    fn cmd_module_list_shows_modules() {
+        let dir = setup_config_dir();
+        make_module(
+            dir.path(),
+            "alpha",
+            "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: alpha\nspec:\n  packages:\n    - name: curl\n",
+        );
+        make_module(
+            dir.path(),
+            "beta",
+            "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: beta\nspec:\n  packages: []\n",
+        );
+
+        let cli = test_cli(dir.path());
+        let (printer, buf) = cfgd_core::output::Printer::for_test();
+
+        cmd_module_list(&cli, &printer).unwrap();
+
+        let output = buf.lock().unwrap();
+        assert!(output.contains("alpha"), "should list alpha, got: {output}");
+        assert!(output.contains("beta"), "should list beta, got: {output}");
+    }
+
+    #[test]
+    fn cmd_module_list_json_empty() {
+        let dir = setup_config_dir();
+        let cli = test_cli_json(dir.path());
+        let (printer, buf) =
+            cfgd_core::output::Printer::for_test_with_format(cfgd_core::output::OutputFormat::Json);
+
+        cmd_module_list(&cli, &printer).unwrap();
+
+        let output = buf.lock().unwrap();
+        let json: serde_json::Value = serde_json::from_str(output.trim()).unwrap();
+        assert!(json.is_array());
+        assert_eq!(json.as_array().unwrap().len(), 0);
+    }
+
+    #[test]
+    fn cmd_module_list_json_with_modules() {
+        let dir = setup_config_dir();
+        make_module(
+            dir.path(),
+            "alpha",
+            "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: alpha\nspec:\n  packages:\n    - name: curl\n    - name: vim\n",
+        );
+
+        let cli = test_cli_json(dir.path());
+        let (printer, buf) =
+            cfgd_core::output::Printer::for_test_with_format(cfgd_core::output::OutputFormat::Json);
+
+        cmd_module_list(&cli, &printer).unwrap();
+
+        let output = buf.lock().unwrap();
+        // JSON may have preamble text from load_config_and_profile — find first '['
+        let start = output.find('[').expect("should have JSON array in output");
+        let json: serde_json::Value = serde_json::from_str(output[start..].trim()).unwrap();
+        assert!(json.is_array());
+        let arr = json.as_array().unwrap();
+        assert_eq!(arr.len(), 1);
+        assert_eq!(arr[0]["name"], "alpha");
+        assert_eq!(arr[0]["packages"], 2);
+        assert_eq!(arr[0]["source"], "local");
+    }
+
+    // ─── cmd_module_show ────────────────────────────────────────
+
+    #[test]
+    fn cmd_module_show_not_found() {
+        let dir = setup_config_dir();
+        let cli = test_cli(dir.path());
+        let (printer, _buf) = cfgd_core::output::Printer::for_test();
+
+        let err = cmd_module_show(&cli, &printer, "ghost", false).unwrap_err();
+        assert!(
+            err.to_string().contains("not found"),
+            "should report not found, got: {err}"
+        );
+    }
+
+    #[test]
+    fn cmd_module_show_displays_details() {
+        let dir = setup_config_dir();
+        make_module(dir.path(), "devtools", RICH_MODULE_YAML);
+        // Create the source file so the file entry is valid
+        std::fs::write(
+            dir.path()
+                .join("modules/devtools/files/config.toml")
+                .to_path_buf(),
+            "# config",
+        )
+        .unwrap();
+
+        let cli = test_cli(dir.path());
+        let (printer, buf) = cfgd_core::output::Printer::for_test();
+
+        cmd_module_show(&cli, &printer, "devtools", false).unwrap();
+
+        let output = buf.lock().unwrap();
+        assert!(
+            output.contains("Module: devtools"),
+            "should show module header, got: {output}"
+        );
+        assert!(
+            output.contains("base"),
+            "should show dependencies, got: {output}"
+        );
+        assert!(
+            output.contains("local"),
+            "should show source as local, got: {output}"
+        );
+        assert!(
+            output.contains("Packages"),
+            "should have packages section, got: {output}"
+        );
+    }
+
+    #[test]
+    fn cmd_module_show_with_available_hint() {
+        let dir = setup_config_dir();
+        make_module(
+            dir.path(),
+            "existing",
+            "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: existing\nspec:\n  packages: []\n",
+        );
+
+        let cli = test_cli(dir.path());
+        let (printer, buf) = cfgd_core::output::Printer::for_test();
+
+        let err = cmd_module_show(&cli, &printer, "missing", false).unwrap_err();
+        let output = buf.lock().unwrap();
+        assert!(
+            output.contains("existing"),
+            "should hint available modules, got: {output}"
+        );
+        assert!(
+            err.to_string().contains("not found"),
+            "should report not found, got: {err}"
+        );
+    }
+
+    #[test]
+    fn cmd_module_show_env_masking() {
+        let dir = setup_config_dir();
+        let yaml = "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: secrets-mod\nspec:\n  env:\n    - name: API_KEY\n      value: super-secret-token\n";
+        make_module(dir.path(), "secrets-mod", yaml);
+
+        let cli = test_cli(dir.path());
+        let (printer, buf) = cfgd_core::output::Printer::for_test();
+
+        // Without --show-values, env values should be masked
+        cmd_module_show(&cli, &printer, "secrets-mod", false).unwrap();
+        let output = buf.lock().unwrap();
+        assert!(
+            output.contains("***"),
+            "env values should be masked, got: {output}"
+        );
+        assert!(
+            !output.contains("super-secret-token"),
+            "actual value should not appear when masked, got: {output}"
+        );
+    }
+
+    #[test]
+    fn cmd_module_show_env_unmasked() {
+        let dir = setup_config_dir();
+        let yaml = "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: env-mod\nspec:\n  env:\n    - name: GREETING\n      value: hello-world\n";
+        make_module(dir.path(), "env-mod", yaml);
+
+        let cli = test_cli(dir.path());
+        let (printer, buf) = cfgd_core::output::Printer::for_test();
+
+        cmd_module_show(&cli, &printer, "env-mod", true).unwrap();
+        let output = buf.lock().unwrap();
+        assert!(
+            output.contains("hello-world"),
+            "actual value should appear with show_values=true, got: {output}"
+        );
+    }
+
+    #[test]
+    fn cmd_module_show_json_schema() {
+        let dir = setup_config_dir();
+        make_module(
+            dir.path(),
+            "jmod",
+            "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: jmod\nspec:\n  packages:\n    - name: bat\n",
+        );
+
+        let cli = test_cli_json(dir.path());
+        let (printer, buf) =
+            cfgd_core::output::Printer::for_test_with_format(cfgd_core::output::OutputFormat::Json);
+
+        cmd_module_show(&cli, &printer, "jmod", false).unwrap();
+
+        let output = buf.lock().unwrap();
+        let json: serde_json::Value = serde_json::from_str(output.trim()).unwrap();
+        assert!(json.get("name").is_some(), "JSON should have name field");
+        assert_eq!(json["name"], "jmod");
+        assert!(
+            json.get("directory").is_some(),
+            "JSON should have directory field"
+        );
+        assert!(
+            json.get("source").is_some(),
+            "JSON should have source field"
+        );
+        assert_eq!(json["source"], "local");
+        assert!(json.get("spec").is_some(), "JSON should have spec field");
+    }
+
+    // ─── local test factory helpers ──────────────────────────────
+
+    fn make_module_update_args(name: &str) -> super::ModuleUpdateArgs {
+        super::ModuleUpdateArgs {
+            name: name.to_string(),
+            packages: vec![],
+            files: vec![],
+            env: vec![],
+            aliases: vec![],
+            depends: vec![],
+            post_apply: vec![],
+            private: false,
+            description: None,
+            sets: vec![],
+        }
+    }
+
+    fn make_module_create_args(name: &str) -> super::ModuleCreateArgs {
+        super::ModuleCreateArgs {
+            name: name.to_string(),
+            description: None,
+            depends: vec![],
+            packages: vec![],
+            files: vec![],
+            env: vec![],
+            aliases: vec![],
+            private: false,
+            post_apply: vec![],
+            sets: vec![],
+            apply: false,
+            yes: false,
+        }
+    }
+
+    // ─── cmd_module_update_local — env, aliases, deps, scripts ─
+
+    #[test]
+    fn cmd_module_update_add_env() {
+        let dir = tempfile::tempdir().unwrap();
+        make_module(
+            dir.path(),
+            "mod1",
+            "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: mod1\nspec:\n  packages: []\n",
+        );
+
+        let cli = test_cli(dir.path());
+        let (printer, _buf) = cfgd_core::output::Printer::for_test();
+
+        let args = super::ModuleUpdateArgs {
+            env: vec!["EDITOR=nvim".to_string()],
+            ..make_module_update_args("mod1")
+        };
+        cmd_module_update_local(&cli, &printer, &args).unwrap();
+
+        let (doc, _) = load_module_document(dir.path(), "mod1").unwrap();
+        assert_eq!(doc.spec.env.len(), 1);
+        assert_eq!(doc.spec.env[0].name, "EDITOR");
+        assert_eq!(doc.spec.env[0].value, "nvim");
+    }
+
+    #[test]
+    fn cmd_module_update_remove_env() {
+        let dir = tempfile::tempdir().unwrap();
+        make_module(
+            dir.path(),
+            "mod1",
+            "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: mod1\nspec:\n  env:\n    - name: EDITOR\n      value: vim\n    - name: PAGER\n      value: less\n",
+        );
+
+        let cli = test_cli(dir.path());
+        let (printer, _buf) = cfgd_core::output::Printer::for_test();
+
+        let args = super::ModuleUpdateArgs {
+            env: vec!["-EDITOR".to_string()],
+            ..make_module_update_args("mod1")
+        };
+        cmd_module_update_local(&cli, &printer, &args).unwrap();
+
+        let (doc, _) = load_module_document(dir.path(), "mod1").unwrap();
+        assert_eq!(doc.spec.env.len(), 1);
+        assert_eq!(doc.spec.env[0].name, "PAGER");
+    }
+
+    #[test]
+    fn cmd_module_update_add_alias() {
+        let dir = tempfile::tempdir().unwrap();
+        make_module(
+            dir.path(),
+            "mod1",
+            "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: mod1\nspec:\n  packages: []\n",
+        );
+
+        let cli = test_cli(dir.path());
+        let (printer, _buf) = cfgd_core::output::Printer::for_test();
+
+        let args = super::ModuleUpdateArgs {
+            aliases: vec!["ll=ls -la".to_string()],
+            ..make_module_update_args("mod1")
+        };
+        cmd_module_update_local(&cli, &printer, &args).unwrap();
+
+        let (doc, _) = load_module_document(dir.path(), "mod1").unwrap();
+        assert_eq!(doc.spec.aliases.len(), 1);
+        assert_eq!(doc.spec.aliases[0].name, "ll");
+        assert_eq!(doc.spec.aliases[0].command, "ls -la");
+    }
+
+    #[test]
+    fn cmd_module_update_remove_alias() {
+        let dir = tempfile::tempdir().unwrap();
+        make_module(
+            dir.path(),
+            "mod1",
+            "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: mod1\nspec:\n  aliases:\n    - name: ll\n      command: ls -la\n    - name: gs\n      command: git status\n",
+        );
+
+        let cli = test_cli(dir.path());
+        let (printer, _buf) = cfgd_core::output::Printer::for_test();
+
+        let args = super::ModuleUpdateArgs {
+            aliases: vec!["-ll".to_string()],
+            ..make_module_update_args("mod1")
+        };
+        cmd_module_update_local(&cli, &printer, &args).unwrap();
+
+        let (doc, _) = load_module_document(dir.path(), "mod1").unwrap();
+        assert_eq!(doc.spec.aliases.len(), 1);
+        assert_eq!(doc.spec.aliases[0].name, "gs");
+    }
+
+    #[test]
+    fn cmd_module_update_add_depends() {
+        let dir = tempfile::tempdir().unwrap();
+        make_module(
+            dir.path(),
+            "mod1",
+            "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: mod1\nspec:\n  packages: []\n",
+        );
+
+        let cli = test_cli(dir.path());
+        let (printer, _buf) = cfgd_core::output::Printer::for_test();
+
+        let args = super::ModuleUpdateArgs {
+            depends: vec!["base".to_string(), "core".to_string()],
+            ..make_module_update_args("mod1")
+        };
+        cmd_module_update_local(&cli, &printer, &args).unwrap();
+
+        let (doc, _) = load_module_document(dir.path(), "mod1").unwrap();
+        assert_eq!(doc.spec.depends, vec!["base", "core"]);
+    }
+
+    #[test]
+    fn cmd_module_update_remove_depends() {
+        let dir = tempfile::tempdir().unwrap();
+        make_module(
+            dir.path(),
+            "mod1",
+            "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: mod1\nspec:\n  depends:\n    - base\n    - core\n",
+        );
+
+        let cli = test_cli(dir.path());
+        let (printer, buf) = cfgd_core::output::Printer::for_test();
+
+        let args = super::ModuleUpdateArgs {
+            depends: vec!["-base".to_string()],
+            ..make_module_update_args("mod1")
+        };
+        cmd_module_update_local(&cli, &printer, &args).unwrap();
+
+        let (doc, _) = load_module_document(dir.path(), "mod1").unwrap();
+        assert_eq!(doc.spec.depends, vec!["core"]);
+
+        let output = buf.lock().unwrap();
+        assert!(
+            output.contains("Removed dependency: base"),
+            "should confirm removal, got: {output}"
+        );
+    }
+
+    #[test]
+    fn cmd_module_update_add_post_apply_script() {
+        let dir = tempfile::tempdir().unwrap();
+        make_module(
+            dir.path(),
+            "mod1",
+            "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: mod1\nspec:\n  packages: []\n",
+        );
+
+        let cli = test_cli(dir.path());
+        let (printer, _buf) = cfgd_core::output::Printer::for_test();
+
+        let args = super::ModuleUpdateArgs {
+            post_apply: vec!["echo hello".to_string()],
+            ..make_module_update_args("mod1")
+        };
+        cmd_module_update_local(&cli, &printer, &args).unwrap();
+
+        let (doc, _) = load_module_document(dir.path(), "mod1").unwrap();
+        let scripts = doc.spec.scripts.unwrap();
+        assert_eq!(scripts.post_apply.len(), 1);
+        assert_eq!(scripts.post_apply[0].run_str(), "echo hello");
+    }
+
+    #[test]
+    fn cmd_module_update_remove_post_apply_script() {
+        let dir = tempfile::tempdir().unwrap();
+        make_module(
+            dir.path(),
+            "mod1",
+            "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: mod1\nspec:\n  scripts:\n    postApply:\n      - echo hello\n      - echo bye\n",
+        );
+
+        let cli = test_cli(dir.path());
+        let (printer, _buf) = cfgd_core::output::Printer::for_test();
+
+        let args = super::ModuleUpdateArgs {
+            post_apply: vec!["-echo hello".to_string()],
+            ..make_module_update_args("mod1")
+        };
+        cmd_module_update_local(&cli, &printer, &args).unwrap();
+
+        let (doc, _) = load_module_document(dir.path(), "mod1").unwrap();
+        let scripts = doc.spec.scripts.unwrap();
+        assert_eq!(scripts.post_apply.len(), 1);
+        assert_eq!(scripts.post_apply[0].run_str(), "echo bye");
+    }
+
+    #[test]
+    fn cmd_module_update_description() {
+        let dir = tempfile::tempdir().unwrap();
+        make_module(
+            dir.path(),
+            "mod1",
+            "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: mod1\nspec:\n  packages: []\n",
+        );
+
+        let cli = test_cli(dir.path());
+        let (printer, _buf) = cfgd_core::output::Printer::for_test();
+
+        let args = super::ModuleUpdateArgs {
+            description: Some("Updated description".to_string()),
+            ..make_module_update_args("mod1")
+        };
+        cmd_module_update_local(&cli, &printer, &args).unwrap();
+
+        let (doc, _) = load_module_document(dir.path(), "mod1").unwrap();
+        assert_eq!(
+            doc.metadata.description,
+            Some("Updated description".to_string())
+        );
+    }
+
+    #[test]
+    fn cmd_module_update_no_changes_reports() {
+        let dir = tempfile::tempdir().unwrap();
+        make_module(
+            dir.path(),
+            "mod1",
+            "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: mod1\nspec:\n  packages: []\n",
+        );
+
+        let cli = test_cli(dir.path());
+        let (printer, buf) = cfgd_core::output::Printer::for_test();
+
+        let args = make_module_update_args("mod1");
+        cmd_module_update_local(&cli, &printer, &args).unwrap();
+
+        let output = buf.lock().unwrap();
+        assert!(
+            output.contains("No changes specified"),
+            "should report no changes, got: {output}"
+        );
+    }
+
+    #[test]
+    fn cmd_module_update_nonexistent_fails() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("modules")).unwrap();
+
+        let cli = test_cli(dir.path());
+        let (printer, _buf) = cfgd_core::output::Printer::for_test();
+
+        let args = make_module_update_args("ghost");
+        let err = cmd_module_update_local(&cli, &printer, &args).unwrap_err();
+        assert!(
+            err.to_string().contains("not found"),
+            "should report not found, got: {err}"
+        );
+    }
+
+    // ─── cmd_module_create — non-interactive flags ─────────────
+
+    #[test]
+    fn cmd_module_create_with_env_and_aliases() {
+        let dir = setup_config_dir();
+        let cli = test_cli(dir.path());
+        let (printer, buf) = cfgd_core::output::Printer::for_test();
+
+        let args = super::ModuleCreateArgs {
+            description: Some("Test module".to_string()),
+            env: vec!["EDITOR=nvim".to_string()],
+            aliases: vec!["ll=ls -la".to_string()],
+            ..make_module_create_args("env-mod")
+        };
+        cmd_module_create(&cli, &printer, &args).unwrap();
+
+        let (doc, _) = load_module_document(dir.path(), "env-mod").unwrap();
+        assert_eq!(doc.spec.env.len(), 1);
+        assert_eq!(doc.spec.env[0].name, "EDITOR");
+        assert_eq!(doc.spec.aliases.len(), 1);
+        assert_eq!(doc.spec.aliases[0].name, "ll");
+
+        let output = buf.lock().unwrap();
+        assert!(
+            output.contains("Created module 'env-mod'"),
+            "should confirm creation, got: {output}"
+        );
+    }
+
+    #[test]
+    fn cmd_module_create_with_depends_and_scripts() {
+        let dir = setup_config_dir();
+        let cli = test_cli(dir.path());
+        let (printer, _buf) = cfgd_core::output::Printer::for_test();
+
+        let args = super::ModuleCreateArgs {
+            depends: vec!["base".to_string()],
+            post_apply: vec!["echo setup".to_string()],
+            ..make_module_create_args("dep-mod")
+        };
+        cmd_module_create(&cli, &printer, &args).unwrap();
+
+        let (doc, _) = load_module_document(dir.path(), "dep-mod").unwrap();
+        assert_eq!(doc.spec.depends, vec!["base"]);
+        assert!(doc.spec.scripts.is_some());
+        let scripts = doc.spec.scripts.unwrap();
+        assert_eq!(scripts.post_apply.len(), 1);
+    }
+
+    #[test]
+    fn cmd_module_create_invalid_name_fails() {
+        let dir = setup_config_dir();
+        let cli = test_cli(dir.path());
+        let (printer, _buf) = cfgd_core::output::Printer::for_test();
+
+        let args = make_module_create_args(".bad-name");
+        let err = cmd_module_create(&cli, &printer, &args).unwrap_err();
+        assert!(
+            err.to_string().contains("cannot start with"),
+            "should reject invalid name, got: {err}"
+        );
+    }
+
+    // ─── cmd_module_delete — edge cases ────────────────────────
+
+    #[test]
+    fn cmd_module_delete_nonexistent_fails() {
+        let dir = setup_config_dir();
+        let cli = test_cli(dir.path());
+        let (printer, _buf) = cfgd_core::output::Printer::for_test();
+
+        let err = cmd_module_delete(&cli, &printer, "ghost", true, false).unwrap_err();
+        assert!(
+            err.to_string().contains("not found"),
+            "should report not found, got: {err}"
+        );
+    }
+
+    #[test]
+    fn cmd_module_delete_invalid_name_fails() {
+        let dir = setup_config_dir();
+        let cli = test_cli(dir.path());
+        let (printer, _buf) = cfgd_core::output::Printer::for_test();
+
+        let err = cmd_module_delete(&cli, &printer, "-bad", true, false).unwrap_err();
+        assert!(
+            err.to_string().contains("cannot start with"),
+            "should reject invalid name, got: {err}"
+        );
+    }
+
+    // ─── cmd_module_registry_add ────────────────────────────────
+
+    #[test]
+    fn cmd_module_registry_add_creates_entry() {
+        let dir = setup_config_dir();
+        let cli = test_cli(dir.path());
+        let (printer, buf) = cfgd_core::output::Printer::for_test();
+
+        cmd_module_registry_add(
+            &cli,
+            &printer,
+            "https://github.com/team/modules.git",
+            Some("team"),
+        )
+        .unwrap();
+
+        let output = buf.lock().unwrap();
+        assert!(
+            output.contains("Added module registry 'team'"),
+            "should confirm add, got: {output}"
+        );
+
+        // Verify config was updated
+        let contents = std::fs::read_to_string(dir.path().join("cfgd.yaml")).unwrap();
+        assert!(
+            contents.contains("team"),
+            "config should contain registry name, got: {contents}"
+        );
+    }
+
+    #[test]
+    fn cmd_module_registry_add_duplicate_is_noop() {
+        let dir = setup_config_dir();
+        let cli = test_cli(dir.path());
+        let (printer, _buf) = cfgd_core::output::Printer::for_test();
+
+        cmd_module_registry_add(
+            &cli,
+            &printer,
+            "https://github.com/team/modules.git",
+            Some("team"),
+        )
+        .unwrap();
+
+        // Second add should be a no-op
+        let (printer2, buf2) = cfgd_core::output::Printer::for_test();
+        cmd_module_registry_add(
+            &cli,
+            &printer2,
+            "https://github.com/team/other.git",
+            Some("team"),
+        )
+        .unwrap();
+
+        let output = buf2.lock().unwrap();
+        assert!(
+            output.contains("already configured"),
+            "should report already configured, got: {output}"
+        );
+    }
+
+    #[test]
+    fn cmd_module_registry_add_no_config_fails() {
+        let dir = tempfile::tempdir().unwrap();
+        let cli = test_cli(dir.path());
+        let (printer, _buf) = cfgd_core::output::Printer::for_test();
+
+        let err =
+            cmd_module_registry_add(&cli, &printer, "https://example.com/reg.git", Some("test"))
+                .unwrap_err();
+        assert!(
+            err.to_string().contains("cfgd.yaml"),
+            "should fail without config, got: {err}"
+        );
+    }
+
+    // ─── cmd_module_registry_remove ─────────────────────────────
+
+    #[test]
+    fn cmd_module_registry_remove_existing() {
+        let dir = setup_config_dir();
+        let cli = test_cli(dir.path());
+        let (printer, _buf) = cfgd_core::output::Printer::for_test();
+
+        // Add first
+        cmd_module_registry_add(
+            &cli,
+            &printer,
+            "https://example.com/reg.git",
+            Some("myrepo"),
+        )
+        .unwrap();
+
+        // Remove
+        let (printer2, buf2) = cfgd_core::output::Printer::for_test();
+        cmd_module_registry_remove(&cli, &printer2, "myrepo").unwrap();
+
+        let output = buf2.lock().unwrap();
+        assert!(
+            output.contains("Removed module registry 'myrepo'"),
+            "should confirm removal, got: {output}"
+        );
+    }
+
+    #[test]
+    fn cmd_module_registry_remove_not_found() {
+        let dir = setup_config_dir();
+        let cli = test_cli(dir.path());
+        let (printer, buf) = cfgd_core::output::Printer::for_test();
+
+        cmd_module_registry_remove(&cli, &printer, "nonexistent").unwrap();
+
+        let output = buf.lock().unwrap();
+        assert!(
+            output.contains("No module registries") || output.contains("not found"),
+            "should report not found or no registries, got: {output}"
+        );
+    }
+
+    // ─── cmd_module_registry_rename ─────────────────────────────
+
+    #[test]
+    fn cmd_module_registry_rename_success() {
+        let dir = setup_config_dir();
+        let cli = test_cli(dir.path());
+        let (printer, _buf) = cfgd_core::output::Printer::for_test();
+
+        cmd_module_registry_add(
+            &cli,
+            &printer,
+            "https://example.com/reg.git",
+            Some("old-name"),
+        )
+        .unwrap();
+
+        let (printer2, buf2) = cfgd_core::output::Printer::for_test();
+        cmd_module_registry_rename(&cli, &printer2, "old-name", "new-name").unwrap();
+
+        let output = buf2.lock().unwrap();
+        assert!(
+            output.contains("Renamed registry 'old-name' to 'new-name'"),
+            "should confirm rename, got: {output}"
+        );
+
+        // Verify config
+        let contents = std::fs::read_to_string(dir.path().join("cfgd.yaml")).unwrap();
+        assert!(contents.contains("new-name"));
+        assert!(!contents.contains("old-name"));
+    }
+
+    #[test]
+    fn cmd_module_registry_rename_not_found_fails() {
+        let dir = setup_config_dir();
+        let cli = test_cli(dir.path());
+        let (printer, _buf) = cfgd_core::output::Printer::for_test();
+
+        let err = cmd_module_registry_rename(&cli, &printer, "ghost", "new").unwrap_err();
+        assert!(
+            err.to_string().contains("not found"),
+            "should report not found, got: {err}"
+        );
+    }
+
+    #[test]
+    fn cmd_module_registry_rename_target_exists_fails() {
+        let dir = setup_config_dir();
+        let cli = test_cli(dir.path());
+        let (printer, _buf) = cfgd_core::output::Printer::for_test();
+
+        cmd_module_registry_add(&cli, &printer, "https://example.com/a.git", Some("alpha"))
+            .unwrap();
+        cmd_module_registry_add(&cli, &printer, "https://example.com/b.git", Some("beta")).unwrap();
+
+        let (printer2, _buf2) = cfgd_core::output::Printer::for_test();
+        let err = cmd_module_registry_rename(&cli, &printer2, "alpha", "beta").unwrap_err();
+        assert!(
+            err.to_string().contains("already exists"),
+            "should report already exists, got: {err}"
+        );
+    }
+
+    // ─── cmd_module_registry_list ───────────────────────────────
+
+    #[test]
+    fn cmd_module_registry_list_empty() {
+        let dir = setup_config_dir();
+        let cli = test_cli(dir.path());
+        let (printer, buf) = cfgd_core::output::Printer::for_test();
+
+        cmd_module_registry_list(&cli, &printer).unwrap();
+
+        let output = buf.lock().unwrap();
+        assert!(
+            output.contains("No module registries"),
+            "should report no registries, got: {output}"
+        );
+    }
+
+    #[test]
+    fn cmd_module_registry_list_with_entries() {
+        let dir = setup_config_dir();
+        let cli = test_cli(dir.path());
+        let (printer, _buf) = cfgd_core::output::Printer::for_test();
+
+        cmd_module_registry_add(&cli, &printer, "https://example.com/a.git", Some("alpha"))
+            .unwrap();
+        cmd_module_registry_add(&cli, &printer, "https://example.com/b.git", Some("beta")).unwrap();
+
+        let (printer2, buf2) = cfgd_core::output::Printer::for_test();
+        cmd_module_registry_list(&cli, &printer2).unwrap();
+
+        let output = buf2.lock().unwrap();
+        assert!(output.contains("alpha"), "should list alpha, got: {output}");
+        assert!(output.contains("beta"), "should list beta, got: {output}");
+    }
+
+    #[test]
+    fn cmd_module_registry_list_json() {
+        let dir = setup_config_dir();
+        let cli = test_cli(dir.path());
+        let (printer, _buf) = cfgd_core::output::Printer::for_test();
+
+        cmd_module_registry_add(&cli, &printer, "https://example.com/r.git", Some("team")).unwrap();
+
+        let cli_json = test_cli_json(dir.path());
+        let (printer2, buf2) =
+            cfgd_core::output::Printer::for_test_with_format(cfgd_core::output::OutputFormat::Json);
+        cmd_module_registry_list(&cli_json, &printer2).unwrap();
+
+        let output = buf2.lock().unwrap();
+        let json: serde_json::Value = serde_json::from_str(output.trim()).unwrap();
+        assert!(json.is_array());
+        let arr = json.as_array().unwrap();
+        assert_eq!(arr.len(), 1);
+        assert_eq!(arr[0]["name"], "team");
+        assert!(arr[0]["url"].as_str().unwrap().contains("example.com"));
+    }
+
+    #[test]
+    fn cmd_module_registry_list_no_config() {
+        let dir = tempfile::tempdir().unwrap();
+        let cli = test_cli(dir.path());
+        let (printer, buf) = cfgd_core::output::Printer::for_test();
+
+        cmd_module_registry_list(&cli, &printer).unwrap();
+
+        let output = buf.lock().unwrap();
+        assert!(
+            output.contains("No config found"),
+            "should report no config, got: {output}"
+        );
+    }
+
+    // ─── cmd_module_keys_list ───────────────────────────────────
+
+    #[test]
+    fn cmd_module_keys_list_no_keys() {
+        let (printer, buf) = cfgd_core::output::Printer::for_test();
+        cmd_module_keys_list(&printer).unwrap();
+
+        let output = buf.lock().unwrap();
+        assert!(
+            output.contains("No signing keys found"),
+            "should report no keys, got: {output}"
+        );
+    }
+
+    // ─── cmd_module_search — no registries ──────────────────────
+
+    #[test]
+    fn cmd_module_search_no_config_fails() {
+        let dir = tempfile::tempdir().unwrap();
+        let cli = test_cli(dir.path());
+        let (printer, _buf) = cfgd_core::output::Printer::for_test();
+
+        let err = cmd_module_search(&cli, &printer, "test").unwrap_err();
+        assert!(
+            err.to_string().contains("config"),
+            "should fail without config, got: {err}"
+        );
+    }
+
+    #[test]
+    fn cmd_module_search_no_registries() {
+        let dir = setup_config_dir();
+        let cli = test_cli(dir.path());
+        let (printer, buf) = cfgd_core::output::Printer::for_test();
+
+        cmd_module_search(&cli, &printer, "test").unwrap();
+
+        let output = buf.lock().unwrap();
+        assert!(
+            output.contains("No module registries"),
+            "should report no registries, got: {output}"
+        );
+    }
+
+    #[test]
+    fn cmd_module_search_no_registries_json() {
+        let dir = setup_config_dir();
+        let cli = test_cli_json(dir.path());
+        let (printer, buf) =
+            cfgd_core::output::Printer::for_test_with_format(cfgd_core::output::OutputFormat::Json);
+
+        cmd_module_search(&cli, &printer, "test").unwrap();
+
+        let output = buf.lock().unwrap();
+        let json: serde_json::Value = serde_json::from_str(output.trim()).unwrap();
+        assert!(json.is_array());
+        assert_eq!(json.as_array().unwrap().len(), 0);
+    }
+
+    // ─── cmd_module_keys_generate — no cosign ───────────────────
+
+    #[test]
+    fn cmd_module_keys_generate_no_cosign_fails() {
+        // In test environment, cosign is very unlikely to be available
+        if cfgd_core::command_available("cosign") {
+            return; // skip if cosign is actually installed
+        }
+        let (printer, _buf) = cfgd_core::output::Printer::for_test();
+        let err = cmd_module_keys_generate(&printer, None).unwrap_err();
+        assert!(
+            err.to_string().contains("cosign not found"),
+            "should report cosign missing, got: {err}"
+        );
+    }
+
+    // ─── cmd_module_push / pull — precondition errors ───────────
+
+    #[test]
+    fn cmd_module_push_no_module_yaml_fails() {
+        let dir = tempfile::tempdir().unwrap();
+        let (printer, _buf) = cfgd_core::output::Printer::for_test();
+
+        let opts = PushOptions {
+            platform: None,
+            apply: false,
+            sign: false,
+            key: None,
+            attest: false,
+        };
+        let err = cmd_module_push(
+            &printer,
+            dir.path().to_str().unwrap(),
+            "oci.example.com/test:v1",
+            opts,
+        )
+        .unwrap_err();
+        assert!(
+            err.to_string().contains("does not contain a module.yaml"),
+            "should report missing module.yaml, got: {err}"
+        );
+    }
+
+    #[test]
+    fn cmd_module_build_no_module_yaml_fails() {
+        let dir = tempfile::tempdir().unwrap();
+        let (printer, _buf) = cfgd_core::output::Printer::for_test();
+
+        let err = cmd_module_build(
+            &printer,
+            dir.path().to_str().unwrap(),
+            None,
+            None,
+            None,
+            false,
+            None,
+        )
+        .unwrap_err();
+        assert!(
+            err.to_string().contains("does not contain a module.yaml"),
+            "should report missing module.yaml, got: {err}"
+        );
+    }
+
+    // ─── cmd_module_export — not-found ──────────────────────────
+
+    #[test]
+    fn cmd_module_export_not_found() {
+        let dir = setup_config_dir();
+        let cli = test_cli(dir.path());
+        let (printer, _buf) = cfgd_core::output::Printer::for_test();
+
+        let err = cmd_module_export(
+            &cli,
+            &printer,
+            "ghost",
+            &super::ExportFormat::Devcontainer,
+            None,
+        )
+        .unwrap_err();
+        assert!(
+            err.to_string().contains("not found"),
+            "should report not found, got: {err}"
+        );
+    }
+
+    // ─── profiles_using_module — edge cases ─────────────────────
+
+    #[test]
+    fn profiles_using_module_empty_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        let result = profiles_using_module(dir.path(), "test").unwrap();
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn profiles_using_module_nonexistent_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        let result = profiles_using_module(&dir.path().join("nonexistent"), "test").unwrap();
+        assert!(result.is_empty());
+    }
+
+    // ─── cmd_module_registry_rename cascades to profiles ────────
+
+    #[test]
+    fn cmd_module_registry_rename_cascades_to_profiles() {
+        let dir = setup_config_dir();
+        let cli = test_cli(dir.path());
+        let (printer, _buf) = cfgd_core::output::Printer::for_test();
+
+        cmd_module_registry_add(&cli, &printer, "https://example.com/r.git", Some("old")).unwrap();
+
+        // Add a profile that references old/somemod
+        let profile_path = dir.path().join("profiles").join("default.yaml");
+        let mut pdoc = config::load_profile(&profile_path).unwrap();
+        pdoc.spec.modules.push("old/somemod".to_string());
+        let yaml = serde_yaml::to_string(&pdoc).unwrap();
+        std::fs::write(&profile_path, &yaml).unwrap();
+
+        cmd_module_registry_rename(&cli, &printer, "old", "fresh").unwrap();
+
+        let pdoc = config::load_profile(&profile_path).unwrap();
+        assert!(
+            pdoc.spec.modules.contains(&"fresh/somemod".to_string()),
+            "profile should have updated reference, got: {:?}",
+            pdoc.spec.modules
+        );
+        assert!(
+            !pdoc.spec.modules.contains(&"old/somemod".to_string()),
+            "old reference should be gone"
+        );
     }
 }

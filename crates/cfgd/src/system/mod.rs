@@ -880,7 +880,14 @@ impl EnvironmentConfigurator {
     }
 
     fn linux_write_etc_environment(managed: &BTreeMap<String, String>) -> Result<()> {
-        let existing_content = std::fs::read_to_string(LINUX_ETC_ENVIRONMENT).unwrap_or_default();
+        Self::write_etc_environment_to(std::path::Path::new(LINUX_ETC_ENVIRONMENT), managed)
+    }
+
+    fn write_etc_environment_to(
+        path: &std::path::Path,
+        managed: &BTreeMap<String, String>,
+    ) -> Result<()> {
+        let existing_content = std::fs::read_to_string(path).unwrap_or_default();
         let mut preserved_lines = Vec::new();
         let mut in_cfgd_block = false;
 
@@ -931,19 +938,26 @@ impl EnvironmentConfigurator {
             output.push('\n');
         }
 
-        cfgd_core::atomic_write_str(std::path::Path::new(LINUX_ETC_ENVIRONMENT), &output)
-            .map_err(cfgd_core::errors::CfgdError::Io)?;
+        cfgd_core::atomic_write_str(path, &output).map_err(cfgd_core::errors::CfgdError::Io)?;
         Ok(())
     }
 
     fn linux_write_profile_d(managed: &BTreeMap<String, String>) -> Result<()> {
-        let profile_d = Path::new("/etc/profile.d");
-        if !profile_d.exists() {
-            std::fs::create_dir_all(profile_d).map_err(cfgd_core::errors::CfgdError::Io)?;
+        Self::write_profile_d_to(std::path::Path::new(LINUX_PROFILE_D), managed)
+    }
+
+    fn write_profile_d_to(
+        path: &std::path::Path,
+        managed: &BTreeMap<String, String>,
+    ) -> Result<()> {
+        if let Some(parent) = path.parent()
+            && !parent.exists()
+        {
+            std::fs::create_dir_all(parent).map_err(cfgd_core::errors::CfgdError::Io)?;
         }
 
         if managed.is_empty() {
-            let _ = std::fs::remove_file(LINUX_PROFILE_D);
+            let _ = std::fs::remove_file(path);
             return Ok(());
         }
 
@@ -956,8 +970,7 @@ impl EnvironmentConfigurator {
             ));
         }
 
-        cfgd_core::atomic_write_str(std::path::Path::new(LINUX_PROFILE_D), &content)
-            .map_err(cfgd_core::errors::CfgdError::Io)?;
+        cfgd_core::atomic_write_str(path, &content).map_err(cfgd_core::errors::CfgdError::Io)?;
         Ok(())
     }
 
@@ -3507,10 +3520,10 @@ org.gnome.desktop.wm.preferences:
 
     #[test]
     fn yaml_value_to_defaults_type_float() {
-        let float_val = serde_yaml::Value::Number(serde_yaml::Number::from(3.14_f64));
+        let float_val = serde_yaml::Value::Number(serde_yaml::Number::from(1.234_f64));
         let (t, v) = yaml_value_to_defaults_type(&float_val);
         assert_eq!(t, "float");
-        assert!(v.starts_with("3.14"));
+        assert!(v.starts_with("1.234"));
     }
 
     #[test]
@@ -4226,9 +4239,9 @@ schema1:
 
     #[test]
     fn yaml_value_with_numeric_bools_float() {
-        let float_val = serde_yaml::Value::Number(serde_yaml::Number::from(3.14_f64));
+        let float_val = serde_yaml::Value::Number(serde_yaml::Number::from(1.234_f64));
         let result = yaml_value_with_numeric_bools(&float_val);
-        assert!(result.starts_with("3.14"));
+        assert!(result.starts_with("1.234"));
     }
 
     // --- EnvironmentConfigurator diff with matching current value ---
@@ -4251,5 +4264,257 @@ schema1:
         let yaml = serde_yaml::Value::String("not a mapping".into());
         let drifts = ec.diff(&yaml).unwrap();
         assert!(drifts.is_empty());
+    }
+
+    // --- write_etc_environment_to: file content and block management ---
+
+    #[test]
+    fn write_etc_environment_creates_managed_block() {
+        let dir = tempfile::tempdir().unwrap();
+        let env_path = dir.path().join("environment");
+
+        let mut managed = BTreeMap::new();
+        managed.insert("EDITOR".to_string(), "vim".to_string());
+        managed.insert("LANG".to_string(), "en_US.UTF-8".to_string());
+
+        EnvironmentConfigurator::write_etc_environment_to(&env_path, &managed).unwrap();
+
+        let content = std::fs::read_to_string(&env_path).unwrap();
+        assert!(
+            content.contains(CFGD_BLOCK_BEGIN),
+            "missing block begin marker"
+        );
+        assert!(content.contains(CFGD_BLOCK_END), "missing block end marker");
+        assert!(content.contains("EDITOR=vim\n"));
+        assert!(content.contains("LANG=en_US.UTF-8\n"));
+    }
+
+    #[test]
+    fn write_etc_environment_preserves_existing_non_managed_lines() {
+        let dir = tempfile::tempdir().unwrap();
+        let env_path = dir.path().join("environment");
+        // Pre-existing content that should be preserved
+        std::fs::write(&env_path, "PATH=/usr/bin\nHOME=/root\n").unwrap();
+
+        let mut managed = BTreeMap::new();
+        managed.insert("EDITOR".to_string(), "vim".to_string());
+
+        EnvironmentConfigurator::write_etc_environment_to(&env_path, &managed).unwrap();
+
+        let content = std::fs::read_to_string(&env_path).unwrap();
+        assert!(content.contains("PATH=/usr/bin"), "existing PATH preserved");
+        assert!(content.contains("HOME=/root"), "existing HOME preserved");
+        assert!(content.contains("EDITOR=vim"), "managed var added");
+    }
+
+    #[test]
+    fn write_etc_environment_replaces_existing_managed_block() {
+        let dir = tempfile::tempdir().unwrap();
+        let env_path = dir.path().join("environment");
+        // Pre-existing file with an old cfgd block
+        std::fs::write(
+            &env_path,
+            format!(
+                "PATH=/usr/bin\n{}\nOLD_VAR=old\n{}\n",
+                CFGD_BLOCK_BEGIN, CFGD_BLOCK_END
+            ),
+        )
+        .unwrap();
+
+        let mut managed = BTreeMap::new();
+        managed.insert("NEW_VAR".to_string(), "new".to_string());
+
+        EnvironmentConfigurator::write_etc_environment_to(&env_path, &managed).unwrap();
+
+        let content = std::fs::read_to_string(&env_path).unwrap();
+        assert!(
+            !content.contains("OLD_VAR"),
+            "old managed var should be replaced"
+        );
+        assert!(content.contains("NEW_VAR=new"), "new managed var added");
+        assert!(content.contains("PATH=/usr/bin"), "non-managed preserved");
+        // Only one block begin/end pair
+        assert_eq!(
+            content.matches(CFGD_BLOCK_BEGIN).count(),
+            1,
+            "should have exactly one begin marker"
+        );
+    }
+
+    #[test]
+    fn write_etc_environment_removes_managed_keys_outside_block() {
+        let dir = tempfile::tempdir().unwrap();
+        let env_path = dir.path().join("environment");
+        // EDITOR exists outside the block — should be removed when managed
+        std::fs::write(&env_path, "EDITOR=nano\nPATH=/usr/bin\n").unwrap();
+
+        let mut managed = BTreeMap::new();
+        managed.insert("EDITOR".to_string(), "vim".to_string());
+
+        EnvironmentConfigurator::write_etc_environment_to(&env_path, &managed).unwrap();
+
+        let content = std::fs::read_to_string(&env_path).unwrap();
+        assert!(
+            !content.contains("EDITOR=nano"),
+            "old EDITOR outside block should be removed"
+        );
+        assert!(content.contains("EDITOR=vim"), "managed EDITOR in block");
+        assert!(content.contains("PATH=/usr/bin"), "unmanaged preserved");
+    }
+
+    #[test]
+    fn write_etc_environment_quotes_values_with_special_chars() {
+        let dir = tempfile::tempdir().unwrap();
+        let env_path = dir.path().join("environment");
+
+        let mut managed = BTreeMap::new();
+        managed.insert("OPTS".to_string(), "has spaces".to_string());
+        managed.insert("COMMENT".to_string(), "has#hash".to_string());
+        managed.insert("EXPAND".to_string(), "$HOME/bin".to_string());
+        managed.insert("SIMPLE".to_string(), "noquotes".to_string());
+
+        EnvironmentConfigurator::write_etc_environment_to(&env_path, &managed).unwrap();
+
+        let content = std::fs::read_to_string(&env_path).unwrap();
+        assert!(
+            content.contains("OPTS=\"has spaces\""),
+            "space-containing value should be quoted, got: {}",
+            content
+        );
+        assert!(
+            content.contains("COMMENT=\"has#hash\""),
+            "hash-containing value should be quoted"
+        );
+        assert!(
+            content.contains("EXPAND=\"$HOME/bin\""),
+            "dollar-containing value should be quoted"
+        );
+        assert!(
+            content.contains("SIMPLE=noquotes\n"),
+            "simple value should NOT be quoted"
+        );
+    }
+
+    #[test]
+    fn write_etc_environment_empty_managed_removes_block() {
+        let dir = tempfile::tempdir().unwrap();
+        let env_path = dir.path().join("environment");
+        std::fs::write(
+            &env_path,
+            format!(
+                "PATH=/usr/bin\n{}\nVAR=val\n{}\n",
+                CFGD_BLOCK_BEGIN, CFGD_BLOCK_END
+            ),
+        )
+        .unwrap();
+
+        let managed = BTreeMap::new();
+        EnvironmentConfigurator::write_etc_environment_to(&env_path, &managed).unwrap();
+
+        let content = std::fs::read_to_string(&env_path).unwrap();
+        assert!(
+            !content.contains(CFGD_BLOCK_BEGIN),
+            "empty managed should remove block"
+        );
+        assert!(content.contains("PATH=/usr/bin"), "non-managed preserved");
+    }
+
+    #[test]
+    fn write_etc_environment_escapes_backslashes_and_quotes_in_values() {
+        let dir = tempfile::tempdir().unwrap();
+        let env_path = dir.path().join("environment");
+
+        let mut managed = BTreeMap::new();
+        managed.insert(
+            "TRICKY".to_string(),
+            r#"has "quotes" and \ slashes"#.to_string(),
+        );
+
+        EnvironmentConfigurator::write_etc_environment_to(&env_path, &managed).unwrap();
+
+        let content = std::fs::read_to_string(&env_path).unwrap();
+        // The value has both " and space, so it gets quoted with escaping
+        assert!(
+            content.contains(r#"TRICKY="has \"quotes\" and \\ slashes""#),
+            "backslashes and quotes should be escaped, got: {}",
+            content
+        );
+    }
+
+    // --- write_profile_d_to: shell export file ---
+
+    #[test]
+    fn write_profile_d_creates_shell_exports() {
+        let dir = tempfile::tempdir().unwrap();
+        let profile_path = dir.path().join("cfgd-env.sh");
+
+        let mut managed = BTreeMap::new();
+        managed.insert("EDITOR".to_string(), "vim".to_string());
+        managed.insert("LANG".to_string(), "en_US.UTF-8".to_string());
+
+        EnvironmentConfigurator::write_profile_d_to(&profile_path, &managed).unwrap();
+
+        let content = std::fs::read_to_string(&profile_path).unwrap();
+        assert!(content.starts_with("#!/bin/sh\n"), "missing shebang");
+        assert!(
+            content.contains("# Managed by cfgd"),
+            "missing header comment"
+        );
+        // shell_escape_value always quotes values
+        assert!(
+            content.contains("export EDITOR=") && content.contains("vim"),
+            "missing EDITOR export, got: {}",
+            content
+        );
+        assert!(
+            content.contains("export LANG=") && content.contains("en_US.UTF-8"),
+            "missing LANG export, got: {}",
+            content
+        );
+    }
+
+    #[test]
+    fn write_profile_d_shell_escapes_values() {
+        let dir = tempfile::tempdir().unwrap();
+        let profile_path = dir.path().join("cfgd-env.sh");
+
+        let mut managed = BTreeMap::new();
+        managed.insert("OPTS".to_string(), "has spaces and $vars".to_string());
+
+        EnvironmentConfigurator::write_profile_d_to(&profile_path, &managed).unwrap();
+
+        let content = std::fs::read_to_string(&profile_path).unwrap();
+        // shell_escape_value should single-quote values with metacharacters
+        assert!(
+            content.contains("export OPTS='has spaces and $vars'"),
+            "value with metacharacters should be shell-escaped, got: {}",
+            content
+        );
+    }
+
+    #[test]
+    fn write_profile_d_creates_parent_dirs() {
+        let dir = tempfile::tempdir().unwrap();
+        let profile_path = dir.path().join("deep").join("nested").join("cfgd-env.sh");
+
+        let mut managed = BTreeMap::new();
+        managed.insert("KEY".to_string(), "val".to_string());
+
+        EnvironmentConfigurator::write_profile_d_to(&profile_path, &managed).unwrap();
+        assert!(profile_path.exists());
+    }
+
+    #[test]
+    fn write_profile_d_empty_managed_removes_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let profile_path = dir.path().join("cfgd-env.sh");
+        std::fs::write(&profile_path, "old content").unwrap();
+
+        let managed = BTreeMap::new();
+        EnvironmentConfigurator::write_profile_d_to(&profile_path, &managed).unwrap();
+        assert!(
+            !profile_path.exists(),
+            "empty managed should remove the file"
+        );
     }
 }

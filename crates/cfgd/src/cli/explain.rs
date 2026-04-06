@@ -2138,53 +2138,124 @@ mod tests {
 
     #[test]
     fn explain_cmd_no_args_lists_types() {
-        let printer = Printer::new(cfgd_core::output::Verbosity::Quiet);
-        // Should not error when no resource is given
-        let result = cmd_explain(&printer, None, false);
-        assert!(result.is_ok());
+        let (printer, buf) = Printer::for_test();
+        cmd_explain(&printer, None, false).unwrap();
+        let output = buf.lock().unwrap();
+        assert!(
+            output.contains("Available resource types"),
+            "expected header listing resource types, got: {output}"
+        );
+        assert!(
+            output.contains("Module"),
+            "expected Module in resource list, got: {output}"
+        );
+        assert!(
+            output.contains("Profile"),
+            "expected Profile in resource list, got: {output}"
+        );
+        assert!(
+            output.contains("CfgdConfig"),
+            "expected CfgdConfig in resource list, got: {output}"
+        );
     }
 
     #[test]
     fn explain_cmd_known_resource() {
-        let printer = Printer::new(cfgd_core::output::Verbosity::Quiet);
-        let result = cmd_explain(&printer, Some("module"), false);
-        assert!(result.is_ok());
+        let (printer, buf) = Printer::for_test();
+        cmd_explain(&printer, Some("module"), false).unwrap();
+        let output = buf.lock().unwrap();
+        assert!(
+            output.contains("Module"),
+            "expected Module name in output, got: {output}"
+        );
+        assert!(
+            output.contains("packages"),
+            "expected packages field in module output, got: {output}"
+        );
+        assert!(
+            output.contains("FIELDS"),
+            "expected FIELDS section header, got: {output}"
+        );
     }
 
     #[test]
     fn explain_cmd_field_path() {
-        let printer = Printer::new(cfgd_core::output::Verbosity::Quiet);
-        let result = cmd_explain(&printer, Some("module.packages"), false);
-        assert!(result.is_ok());
+        let (printer, buf) = Printer::for_test();
+        cmd_explain(&printer, Some("module.packages"), false).unwrap();
+        let output = buf.lock().unwrap();
+        assert!(
+            output.contains("module.spec.packages"),
+            "expected field path header, got: {output}"
+        );
+        // packages has children like brew, apt, cargo etc.
+        assert!(
+            output.contains("brew") || output.contains("apt") || output.contains("cargo"),
+            "expected package manager children in output, got: {output}"
+        );
     }
 
     #[test]
     fn explain_cmd_spec_prefix_stripped() {
-        let printer = Printer::new(cfgd_core::output::Verbosity::Quiet);
-        // "module.spec.packages" should work the same as "module.packages"
-        let result = cmd_explain(&printer, Some("module.spec.packages"), false);
-        assert!(result.is_ok());
+        // "module.spec.packages" should produce identical output to "module.packages"
+        let (printer_a, buf_a) = Printer::for_test();
+        cmd_explain(&printer_a, Some("module.packages"), false).unwrap();
+        let output_a = buf_a.lock().unwrap().clone();
+
+        let (printer_b, buf_b) = Printer::for_test();
+        cmd_explain(&printer_b, Some("module.spec.packages"), false).unwrap();
+        let output_b = buf_b.lock().unwrap().clone();
+
+        assert_eq!(
+            output_a, output_b,
+            "spec prefix should be stripped transparently"
+        );
+        assert!(
+            output_a.contains("module.spec.packages"),
+            "expected field path header, got: {output_a}"
+        );
     }
 
     #[test]
     fn explain_cmd_recursive() {
-        let printer = Printer::new(cfgd_core::output::Verbosity::Quiet);
-        let result = cmd_explain(&printer, Some("profile"), true);
-        assert!(result.is_ok());
+        let (printer, buf) = Printer::for_test();
+        cmd_explain(&printer, Some("profile"), true).unwrap();
+        let output = buf.lock().unwrap();
+        assert!(
+            output.contains("Profile"),
+            "expected Profile resource name, got: {output}"
+        );
+        // Recursive output should expand nested children (no [+] markers)
+        assert!(
+            !output.contains("[+]"),
+            "recursive output should not have unexpanded [+] markers, got: {output}"
+        );
+        // Profile has nested fields like packages.brew etc. that should be expanded
+        assert!(
+            output.contains("inherits"),
+            "expected inherits field in profile output, got: {output}"
+        );
     }
 
     #[test]
     fn explain_cmd_unknown_resource() {
-        let printer = Printer::new(cfgd_core::output::Verbosity::Quiet);
-        let result = cmd_explain(&printer, Some("nonexistent"), false);
-        assert!(result.is_err());
+        let (printer, _buf) = Printer::for_test();
+        let err = cmd_explain(&printer, Some("nonexistent"), false).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("Unknown resource type") && msg.contains("nonexistent"),
+            "expected unknown resource error mentioning 'nonexistent', got: {msg}"
+        );
     }
 
     #[test]
     fn explain_cmd_unknown_field_path() {
-        let printer = Printer::new(cfgd_core::output::Verbosity::Quiet);
-        let result = cmd_explain(&printer, Some("module.nonexistent"), false);
-        assert!(result.is_err());
+        let (printer, _buf) = Printer::for_test();
+        let err = cmd_explain(&printer, Some("module.nonexistent"), false).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("Unknown field path") && msg.contains("nonexistent"),
+            "expected unknown field path error mentioning 'nonexistent', got: {msg}"
+        );
     }
 
     #[test]

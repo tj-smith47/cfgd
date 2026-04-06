@@ -1448,8 +1448,11 @@ mod tests {
             device_id: "dev-1".to_string(),
             username: "jdoe".to_string(),
         };
-        let result = enforce_device_access(&auth, "dev-2");
-        assert!(result.is_err());
+        let err = enforce_device_access(&auth, "dev-2").unwrap_err();
+        assert!(
+            matches!(err, GatewayError::Forbidden(ref msg) if msg.contains("dev-1") && msg.contains("dev-2")),
+            "expected Forbidden error mentioning both device IDs, got: {err}"
+        );
     }
 
     #[test]
@@ -2488,8 +2491,13 @@ mod tests {
             os: "linux".to_string(),
             arch: "x86_64".to_string(),
         };
-        let result = enroll(State(state), Json(req)).await;
-        assert!(result.is_err());
+        let Err(err) = enroll(State(state), Json(req)).await else {
+            panic!("expected error for nonexistent token");
+        };
+        assert!(
+            matches!(err, GatewayError::Unauthorized),
+            "expected Unauthorized for nonexistent token, got: {err}"
+        );
     }
 
     #[tokio::test]

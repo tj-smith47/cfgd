@@ -1999,7 +1999,15 @@ spec: {}
 
         // brew not in managers map → unresolvable
         let result = resolve_package(&entry, "test", &platform, &managers);
-        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("ripgrep"),
+            "error should mention the package name: {err}"
+        );
+        assert!(
+            err.contains("cannot be resolved"),
+            "error should indicate unresolvable: {err}"
+        );
     }
 
     // --- Git URL parsing tests ---
@@ -2066,7 +2074,15 @@ spec: {}
     #[test]
     fn parse_git_source_not_git_url() {
         let result = parse_git_source("config/");
-        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("not a git URL"),
+            "error should say 'not a git URL': {err}"
+        );
+        assert!(
+            err.contains("config/"),
+            "error should include the invalid input: {err}"
+        );
     }
 
     #[test]
@@ -2717,7 +2733,20 @@ spec:
         };
 
         let result = verify_lockfile_integrity(&entry, dir.path());
-        assert!(result.is_ok());
+        assert!(
+            result.is_ok(),
+            "integrity check should pass: {:?}",
+            result.unwrap_err()
+        );
+
+        // Tamper with file and verify integrity now fails
+        std::fs::write(expected_cache_dir.join("module.yaml"), "tampered content\n").unwrap();
+        let tampered_result = verify_lockfile_integrity(&entry, dir.path());
+        let err = tampered_result.unwrap_err().to_string();
+        assert!(
+            err.contains("integrity check failed"),
+            "tampered module should fail integrity: {err}"
+        );
     }
 
     #[test]
@@ -3132,9 +3161,11 @@ spec:
     fn dependency_order_self_dependency_detected() {
         let modules = make_modules(&[("a", &["a"])]);
         let result = resolve_dependency_order(&["a".into()], &modules);
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("cycle"), "error should mention cycle: {err}");
         assert!(
-            result.is_err(),
-            "self-dependency should be detected as a cycle"
+            err.contains("a"),
+            "error should mention the cyclic module: {err}"
         );
     }
 
@@ -3156,7 +3187,15 @@ spec:
 
         let result = resolve_package(&entry, "test", &platform, &managers);
         // brew is the only/native manager on macOS but is denied, so resolution should fail
-        assert!(result.is_err(), "denied manager should not be selected");
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("ripgrep"),
+            "error should mention the package: {err}"
+        );
+        assert!(
+            err.contains("cannot be resolved"),
+            "error should indicate unresolvable: {err}"
+        );
     }
 
     #[test]
@@ -3238,8 +3277,10 @@ spec:
     #[test]
     fn diff_module_specs_added_dependency() {
         let old = make_loaded_module("test", crate::config::ModuleSpec::default());
-        let mut new_spec = crate::config::ModuleSpec::default();
-        new_spec.depends = vec!["core".to_string()];
+        let new_spec = crate::config::ModuleSpec {
+            depends: vec!["core".to_string()],
+            ..Default::default()
+        };
         let new = make_loaded_module("test", new_spec);
         let changes = diff_module_specs(&old, &new);
         assert!(changes.iter().any(|c| c.contains("+ dependency: core")));
@@ -3247,8 +3288,10 @@ spec:
 
     #[test]
     fn diff_module_specs_removed_dependency() {
-        let mut old_spec = crate::config::ModuleSpec::default();
-        old_spec.depends = vec!["core".to_string()];
+        let old_spec = crate::config::ModuleSpec {
+            depends: vec!["core".to_string()],
+            ..Default::default()
+        };
         let old = make_loaded_module("test", old_spec);
         let new = make_loaded_module("test", crate::config::ModuleSpec::default());
         let changes = diff_module_specs(&old, &new);
@@ -3258,11 +3301,13 @@ spec:
     #[test]
     fn diff_module_specs_added_package() {
         let old = make_loaded_module("test", crate::config::ModuleSpec::default());
-        let mut new_spec = crate::config::ModuleSpec::default();
-        new_spec.packages = vec![crate::config::ModulePackageEntry {
-            name: "ripgrep".to_string(),
+        let new_spec = crate::config::ModuleSpec {
+            packages: vec![crate::config::ModulePackageEntry {
+                name: "ripgrep".to_string(),
+                ..Default::default()
+            }],
             ..Default::default()
-        }];
+        };
         let new = make_loaded_module("test", new_spec);
         let changes = diff_module_specs(&old, &new);
         assert!(changes.iter().any(|c| c.contains("+ package: ripgrep")));
@@ -3270,11 +3315,13 @@ spec:
 
     #[test]
     fn diff_module_specs_removed_package() {
-        let mut old_spec = crate::config::ModuleSpec::default();
-        old_spec.packages = vec![crate::config::ModulePackageEntry {
-            name: "vim".to_string(),
+        let old_spec = crate::config::ModuleSpec {
+            packages: vec![crate::config::ModulePackageEntry {
+                name: "vim".to_string(),
+                ..Default::default()
+            }],
             ..Default::default()
-        }];
+        };
         let old = make_loaded_module("test", old_spec);
         let new = make_loaded_module("test", crate::config::ModuleSpec::default());
         let changes = diff_module_specs(&old, &new);
@@ -3283,20 +3330,24 @@ spec:
 
     #[test]
     fn diff_module_specs_package_version_change() {
-        let mut old_spec = crate::config::ModuleSpec::default();
-        old_spec.packages = vec![crate::config::ModulePackageEntry {
-            name: "kubectl".to_string(),
-            min_version: Some("1.28".to_string()),
+        let old_spec = crate::config::ModuleSpec {
+            packages: vec![crate::config::ModulePackageEntry {
+                name: "kubectl".to_string(),
+                min_version: Some("1.28".to_string()),
+                ..Default::default()
+            }],
             ..Default::default()
-        }];
+        };
         let old = make_loaded_module("test", old_spec);
 
-        let mut new_spec = crate::config::ModuleSpec::default();
-        new_spec.packages = vec![crate::config::ModulePackageEntry {
-            name: "kubectl".to_string(),
-            min_version: Some("1.30".to_string()),
+        let new_spec = crate::config::ModuleSpec {
+            packages: vec![crate::config::ModulePackageEntry {
+                name: "kubectl".to_string(),
+                min_version: Some("1.30".to_string()),
+                ..Default::default()
+            }],
             ..Default::default()
-        }];
+        };
         let new = make_loaded_module("test", new_spec);
         let changes = diff_module_specs(&old, &new);
         assert!(
@@ -3309,14 +3360,16 @@ spec:
     #[test]
     fn diff_module_specs_added_file() {
         let old = make_loaded_module("test", crate::config::ModuleSpec::default());
-        let mut new_spec = crate::config::ModuleSpec::default();
-        new_spec.files = vec![crate::config::ModuleFileEntry {
-            source: "zshrc".to_string(),
-            target: "~/.zshrc".to_string(),
-            strategy: None,
-            private: false,
-            encryption: None,
-        }];
+        let new_spec = crate::config::ModuleSpec {
+            files: vec![crate::config::ModuleFileEntry {
+                source: "zshrc".to_string(),
+                target: "~/.zshrc".to_string(),
+                strategy: None,
+                private: false,
+                encryption: None,
+            }],
+            ..Default::default()
+        };
         let new = make_loaded_module("test", new_spec);
         let changes = diff_module_specs(&old, &new);
         assert!(
@@ -3328,20 +3381,24 @@ spec:
 
     #[test]
     fn diff_module_specs_multiple_changes() {
-        let mut old_spec = crate::config::ModuleSpec::default();
-        old_spec.depends = vec!["base".to_string()];
-        old_spec.packages = vec![crate::config::ModulePackageEntry {
-            name: "vim".to_string(),
+        let old_spec = crate::config::ModuleSpec {
+            depends: vec!["base".to_string()],
+            packages: vec![crate::config::ModulePackageEntry {
+                name: "vim".to_string(),
+                ..Default::default()
+            }],
             ..Default::default()
-        }];
+        };
         let old = make_loaded_module("test", old_spec);
 
-        let mut new_spec = crate::config::ModuleSpec::default();
-        new_spec.depends = vec!["core".to_string()];
-        new_spec.packages = vec![crate::config::ModulePackageEntry {
-            name: "neovim".to_string(),
+        let new_spec = crate::config::ModuleSpec {
+            depends: vec!["core".to_string()],
+            packages: vec![crate::config::ModulePackageEntry {
+                name: "neovim".to_string(),
+                ..Default::default()
+            }],
             ..Default::default()
-        }];
+        };
         let new = make_loaded_module("test", new_spec);
         let changes = diff_module_specs(&old, &new);
         // Should have: +dep core, -dep base, +pkg neovim, -pkg vim
