@@ -2035,22 +2035,27 @@ impl PackageManager for SnapManager {
             return Ok(None);
         }
         let stdout = String::from_utf8_lossy(&output.stdout);
-        for line in stdout.lines() {
-            let trimmed = line.trim();
-            // Look for "latest/stable:" or "stable:" channel line
-            if trimmed.starts_with("latest/stable:") || trimmed.starts_with("stable:") {
-                // Format: "latest/stable: 0.10.2 2024-01-01 (1234) 12MB classic"
-                let parts: Vec<&str> = trimmed.splitn(2, ':').collect();
-                if parts.len() == 2 {
-                    let version = parts[1].split_whitespace().next().unwrap_or("");
-                    if !version.is_empty() && version != "^" && version != "--" {
-                        return Ok(Some(version.to_string()));
-                    }
+        Ok(parse_snap_info_version(&stdout))
+    }
+}
+
+/// Parse version from `snap info` output.
+/// Looks for "latest/stable:" or "stable:" channel lines.
+/// Format: "latest/stable: 0.10.2 2024-01-01 (1234) 12MB classic"
+pub(crate) fn parse_snap_info_version(output: &str) -> Option<String> {
+    for line in output.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("latest/stable:") || trimmed.starts_with("stable:") {
+            let parts: Vec<&str> = trimmed.splitn(2, ':').collect();
+            if parts.len() == 2 {
+                let version = parts[1].split_whitespace().next().unwrap_or("");
+                if !version.is_empty() && version != "^" && version != "--" {
+                    return Some(version.to_string());
                 }
             }
         }
-        Ok(None)
     }
+    None
 }
 
 // --- Flatpak ---
@@ -2140,14 +2145,20 @@ impl PackageManager for FlatpakManager {
             return Ok(None);
         }
         let stdout = String::from_utf8_lossy(&output.stdout);
-        for line in stdout.lines() {
-            let trimmed = line.trim();
-            if let Some(rest) = trimmed.strip_prefix("Version:") {
-                return Ok(Some(rest.trim().to_string()));
-            }
-        }
-        Ok(None)
+        Ok(parse_version_field(&stdout))
     }
+}
+
+/// Parse a "Version: X.Y.Z" line from command output.
+/// Used by flatpak, winget, and scoop version queries.
+pub(crate) fn parse_version_field(output: &str) -> Option<String> {
+    for line in output.lines() {
+        let trimmed = line.trim();
+        if let Some(rest) = trimmed.strip_prefix("Version:") {
+            return Some(rest.trim().to_string());
+        }
+    }
+    None
 }
 
 // --- Nix ---
@@ -2305,21 +2316,29 @@ impl PackageManager for NixManager {
                 })?;
             if output.status.success() {
                 let stdout = String::from_utf8_lossy(&output.stdout);
-                if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&stdout)
-                    && let Some(obj) = parsed.as_object()
-                {
-                    for value in obj.values() {
-                        if let Some(version) = value.get("version").and_then(|v| v.as_str())
-                            && !version.is_empty()
-                        {
-                            return Ok(Some(version.to_string()));
-                        }
-                    }
+                if let Some(v) = parse_nix_search_version(&stdout) {
+                    return Ok(Some(v));
                 }
             }
         }
         Ok(None)
     }
+}
+
+/// Parse version from `nix search nixpkgs <pkg> --json` output.
+/// JSON format: `{"nixpkgs.pkg": {"version": "1.2.3", ...}, ...}`
+/// Returns the version of the first result.
+pub(crate) fn parse_nix_search_version(output: &str) -> Option<String> {
+    let parsed: serde_json::Value = serde_json::from_str(output).ok()?;
+    let obj = parsed.as_object()?;
+    for value in obj.values() {
+        if let Some(version) = value.get("version").and_then(|v| v.as_str())
+            && !version.is_empty()
+        {
+            return Some(version.to_string());
+        }
+    }
+    None
 }
 
 // --- Go Install ---
@@ -2475,15 +2494,18 @@ impl PackageManager for GoInstallManager {
             return Ok(None);
         }
         let stdout = String::from_utf8_lossy(&output.stdout);
-        if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&stdout)
-            && let Some(version) = parsed.get("Version").and_then(|v| v.as_str())
-        {
-            // Go versions are prefixed with "v", strip it for consistency
-            let version = version.strip_prefix('v').unwrap_or(version);
-            return Ok(Some(version.to_string()));
-        }
-        Ok(None)
+        Ok(parse_go_module_version(&stdout))
     }
+}
+
+/// Parse version from `go list -m -json pkg@latest` output.
+/// JSON format: `{"Version": "v1.2.3", ...}`
+/// Strips the "v" prefix for consistency.
+pub(crate) fn parse_go_module_version(output: &str) -> Option<String> {
+    let parsed: serde_json::Value = serde_json::from_str(output).ok()?;
+    let version = parsed.get("Version").and_then(|v| v.as_str())?;
+    let version = version.strip_prefix('v').unwrap_or(version);
+    Some(version.to_string())
 }
 
 // --- Windows Package Manager (winget) ---
@@ -2616,12 +2638,7 @@ impl PackageManager for WingetManager {
             return Ok(None);
         }
         let stdout = String::from_utf8_lossy(&output.stdout);
-        for line in stdout.lines() {
-            if let Some(rest) = line.strip_prefix("Version:") {
-                return Ok(Some(rest.trim().to_string()));
-            }
-        }
-        Ok(None)
+        Ok(parse_version_field(&stdout))
     }
 }
 
@@ -2738,15 +2755,21 @@ impl PackageManager for ChocolateyManager {
             return Ok(None);
         }
         let stdout = String::from_utf8_lossy(&output.stdout);
-        for line in stdout.lines() {
-            if let Some(rest) = line.strip_prefix("Title:")
-                && let Some((_name, version)) = rest.rsplit_once('|')
-            {
-                return Ok(Some(version.trim().to_string()));
-            }
-        }
-        Ok(None)
+        Ok(parse_choco_info_version(&stdout))
     }
+}
+
+/// Parse version from `choco info <pkg>` output.
+/// Looks for "Title: name | VERSION" line.
+pub(crate) fn parse_choco_info_version(output: &str) -> Option<String> {
+    for line in output.lines() {
+        if let Some(rest) = line.strip_prefix("Title:")
+            && let Some((_name, version)) = rest.rsplit_once('|')
+        {
+            return Some(version.trim().to_string());
+        }
+    }
+    None
 }
 
 // --- Windows Package Manager (scoop) ---
@@ -2856,12 +2879,7 @@ impl PackageManager for ScoopManager {
             return Ok(None);
         }
         let stdout = String::from_utf8_lossy(&output.stdout);
-        for line in stdout.lines() {
-            if let Some(rest) = line.strip_prefix("Version:") {
-                return Ok(Some(rest.trim().to_string()));
-            }
-        }
-        Ok(None)
+        Ok(parse_version_field(&stdout))
     }
 }
 
@@ -9005,5 +9023,268 @@ Git                 Git.Git             2.43.0
             a,
             PackageAction::Install { manager, .. } if manager == "brew-cask"
         )));
+    }
+
+    // --- parse_snap_info_version ---
+
+    #[test]
+    fn parse_snap_info_version_latest_stable() {
+        let output = "\
+name:      ripgrep
+summary:   Fast recursive search
+publisher: BurntSushi
+store-url: https://snapcraft.io/ripgrep
+license:   MIT
+description: |
+  ripgrep is a line-oriented search tool.
+channels:
+  latest/stable:    14.1.0 2024-03-15 (234) 5MB classic
+  latest/candidate: 14.1.1 2024-04-01 (240) 5MB classic
+  latest/beta:      ↑
+  latest/edge:      ↑";
+        assert_eq!(parse_snap_info_version(output), Some("14.1.0".to_string()));
+    }
+
+    #[test]
+    fn parse_snap_info_version_stable_without_latest_prefix() {
+        let output = "channels:\n  stable:    2.0.3 2024-01-01 (100) 10MB -\n";
+        assert_eq!(parse_snap_info_version(output), Some("2.0.3".to_string()));
+    }
+
+    #[test]
+    fn parse_snap_info_version_no_stable_channel() {
+        let output = "channels:\n  latest/edge: 0.1.0-dev 2024-01-01 (1) 1MB -\n";
+        assert_eq!(parse_snap_info_version(output), None);
+    }
+
+    #[test]
+    fn parse_snap_info_version_caret_placeholder() {
+        // "^" means "same as above" — not a real version
+        let output = "channels:\n  latest/stable:    ^ 2024-01-01 (1) 1MB -\n";
+        assert_eq!(parse_snap_info_version(output), None);
+    }
+
+    #[test]
+    fn parse_snap_info_version_dash_placeholder() {
+        let output = "channels:\n  latest/stable:    -- 2024-01-01\n";
+        assert_eq!(parse_snap_info_version(output), None);
+    }
+
+    #[test]
+    fn parse_snap_info_version_empty_output() {
+        assert_eq!(parse_snap_info_version(""), None);
+    }
+
+    // --- parse_version_field (flatpak / winget / scoop) ---
+
+    #[test]
+    fn parse_version_field_basic() {
+        let output = "Name: Firefox\nVersion: 124.0.1\nBranch: stable\n";
+        assert_eq!(parse_version_field(output), Some("124.0.1".to_string()));
+    }
+
+    #[test]
+    fn parse_version_field_with_leading_whitespace() {
+        let output = "  Version:   3.2.1  \n";
+        assert_eq!(parse_version_field(output), Some("3.2.1".to_string()));
+    }
+
+    #[test]
+    fn parse_version_field_no_version_line() {
+        let output = "Name: something\nDescription: a package\n";
+        assert_eq!(parse_version_field(output), None);
+    }
+
+    #[test]
+    fn parse_version_field_empty_output() {
+        assert_eq!(parse_version_field(""), None);
+    }
+
+    #[test]
+    fn parse_version_field_first_match_wins() {
+        let output = "Version: 1.0.0\nVersion: 2.0.0\n";
+        assert_eq!(parse_version_field(output), Some("1.0.0".to_string()));
+    }
+
+    // --- parse_nix_search_version ---
+
+    #[test]
+    fn parse_nix_search_version_single_result() {
+        let output = r#"{"legacyPackages.x86_64-linux.ripgrep":{"pname":"ripgrep","version":"14.1.0","description":"A utility that combines the usability of The Silver Searcher with the raw speed of grep"}}"#;
+        assert_eq!(parse_nix_search_version(output), Some("14.1.0".to_string()));
+    }
+
+    #[test]
+    fn parse_nix_search_version_multiple_results() {
+        let output = r#"{"legacyPackages.x86_64-linux.bat":{"version":"0.24.0"},"legacyPackages.x86_64-linux.bat-extras":{"version":"2024.08.24"}}"#;
+        let v = parse_nix_search_version(output);
+        // Returns first result — either is valid since JSON object order is unspecified
+        assert!(v.is_some());
+    }
+
+    #[test]
+    fn parse_nix_search_version_empty_version() {
+        let output = r#"{"legacyPackages.x86_64-linux.thing":{"version":""}}"#;
+        assert_eq!(parse_nix_search_version(output), None);
+    }
+
+    #[test]
+    fn parse_nix_search_version_no_version_field() {
+        let output = r#"{"legacyPackages.x86_64-linux.thing":{"pname":"thing"}}"#;
+        assert_eq!(parse_nix_search_version(output), None);
+    }
+
+    #[test]
+    fn parse_nix_search_version_invalid_json() {
+        assert_eq!(parse_nix_search_version("not json"), None);
+    }
+
+    #[test]
+    fn parse_nix_search_version_empty_object() {
+        assert_eq!(parse_nix_search_version("{}"), None);
+    }
+
+    // --- parse_go_module_version ---
+
+    #[test]
+    fn parse_go_module_version_strips_v_prefix() {
+        let output = r#"{"Path":"golang.org/x/tools/gopls","Version":"v0.15.3"}"#;
+        assert_eq!(parse_go_module_version(output), Some("0.15.3".to_string()));
+    }
+
+    #[test]
+    fn parse_go_module_version_no_v_prefix() {
+        let output = r#"{"Path":"example.com/tool","Version":"1.0.0"}"#;
+        assert_eq!(parse_go_module_version(output), Some("1.0.0".to_string()));
+    }
+
+    #[test]
+    fn parse_go_module_version_no_version_field() {
+        let output = r#"{"Path":"example.com/tool"}"#;
+        assert_eq!(parse_go_module_version(output), None);
+    }
+
+    #[test]
+    fn parse_go_module_version_invalid_json() {
+        assert_eq!(parse_go_module_version("not json"), None);
+    }
+
+    // --- parse_choco_info_version ---
+
+    #[test]
+    fn parse_choco_info_version_basic() {
+        let output = "Title: git | 2.44.0\nPublished: 2024-02-23\n";
+        assert_eq!(parse_choco_info_version(output), Some("2.44.0".to_string()));
+    }
+
+    #[test]
+    fn parse_choco_info_version_with_extra_whitespace() {
+        let output = "Title: Visual Studio Code |  1.87.2 \n";
+        assert_eq!(parse_choco_info_version(output), Some("1.87.2".to_string()));
+    }
+
+    #[test]
+    fn parse_choco_info_version_no_title_line() {
+        let output = "Published: 2024-02-23\nSummary: A tool\n";
+        assert_eq!(parse_choco_info_version(output), None);
+    }
+
+    #[test]
+    fn parse_choco_info_version_no_pipe_separator() {
+        // Title without version separator
+        let output = "Title: some-package\n";
+        assert_eq!(parse_choco_info_version(output), None);
+    }
+
+    // --- parse_winget_list ---
+
+    #[test]
+    fn parse_winget_list_basic() {
+        let output = "\
+Name            Id                  Version\n\
+----------------------------------------------\n\
+Git             Git.Git             2.44.0\n\
+Node.js         OpenJS.NodeJS       20.11.1\n";
+        let result = parse_winget_list(output);
+        assert!(result.contains("Git.Git"));
+        assert!(result.contains("OpenJS.NodeJS"));
+        assert_eq!(result.len(), 2);
+    }
+
+    #[test]
+    fn parse_winget_list_empty_after_header() {
+        let output = "\
+Name            Id                  Version\n\
+----------------------------------------------\n";
+        let result = parse_winget_list(output);
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn parse_winget_list_no_header() {
+        let output = "No installed package found.\n";
+        let result = parse_winget_list(output);
+        assert!(result.is_empty());
+    }
+
+    // --- parse_choco_list ---
+
+    #[test]
+    fn parse_choco_list_filters_meta_lines() {
+        let output = "\
+Chocolatey v2.2.2\n\
+git 2.44.0\n\
+nodejs 20.11.1\n\
+2 packages installed.\n";
+        let result = parse_choco_list(output);
+        assert!(result.contains("git"));
+        assert!(result.contains("nodejs"));
+        assert_eq!(result.len(), 2);
+    }
+
+    #[test]
+    fn parse_choco_list_single_package_line() {
+        let output = "Chocolatey v2.2.2\ngit 2.44.0\n1 package installed.\n";
+        let result = parse_choco_list(output);
+        assert!(result.contains("git"));
+        assert_eq!(result.len(), 1);
+    }
+
+    #[test]
+    fn parse_choco_list_empty() {
+        let output = "Chocolatey v2.2.2\n0 packages installed.\n";
+        let result = parse_choco_list(output);
+        assert!(result.is_empty());
+    }
+
+    // --- parse_scoop_list ---
+
+    #[test]
+    fn parse_scoop_list_basic() {
+        let output = "\
+Name    Version  Source   Updated\n\
+----    -------  ------   -------\n\
+git     2.44.0   main     2024-03-15\n\
+nodejs  20.11.1  main     2024-02-01\n";
+        let result = parse_scoop_list(output);
+        assert!(result.contains("git"));
+        assert!(result.contains("nodejs"));
+        assert_eq!(result.len(), 2);
+    }
+
+    #[test]
+    fn parse_scoop_list_empty_after_header() {
+        let output = "Name    Version\n----    -------\n";
+        let result = parse_scoop_list(output);
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn parse_scoop_list_skips_before_separator() {
+        // Lines before the ---- separator should be ignored
+        let output = "Installed apps:\nName    Version\n----    -------\ngit     2.44.0\n";
+        let result = parse_scoop_list(output);
+        assert!(result.contains("git"));
+        assert_eq!(result.len(), 1);
     }
 }

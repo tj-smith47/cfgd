@@ -9767,4 +9767,1579 @@ mod tests {
             content
         );
     }
+
+    // --- build_script_env additional tests ---
+
+    #[test]
+    fn build_script_env_all_phases() {
+        // Verify that each ScriptPhase variant produces the correct CFGD_PHASE value
+        let phases_and_expected = [
+            (ScriptPhase::PreApply, "preApply"),
+            (ScriptPhase::PostApply, "postApply"),
+            (ScriptPhase::PreReconcile, "preReconcile"),
+            (ScriptPhase::PostReconcile, "postReconcile"),
+            (ScriptPhase::OnDrift, "onDrift"),
+            (ScriptPhase::OnChange, "onChange"),
+        ];
+
+        for (phase, expected_name) in &phases_and_expected {
+            let env = super::build_script_env(
+                std::path::Path::new("/etc/cfgd"),
+                "default",
+                ReconcileContext::Apply,
+                phase,
+                false,
+                None,
+                None,
+            );
+            let map: HashMap<String, String> = env.into_iter().collect();
+            assert_eq!(
+                map.get("CFGD_PHASE").unwrap(),
+                expected_name,
+                "phase {:?} should produce CFGD_PHASE={}",
+                phase,
+                expected_name
+            );
+        }
+    }
+
+    #[test]
+    fn build_script_env_dry_run_true_propagates() {
+        let env = super::build_script_env(
+            std::path::Path::new("/cfg"),
+            "laptop",
+            ReconcileContext::Apply,
+            &ScriptPhase::PreApply,
+            true,
+            None,
+            None,
+        );
+        let map: HashMap<String, String> = env.into_iter().collect();
+        assert_eq!(map.get("CFGD_DRY_RUN").unwrap(), "true");
+    }
+
+    #[test]
+    fn build_script_env_reconcile_context() {
+        let env = super::build_script_env(
+            std::path::Path::new("/cfg"),
+            "server",
+            ReconcileContext::Reconcile,
+            &ScriptPhase::PostReconcile,
+            false,
+            None,
+            None,
+        );
+        let map: HashMap<String, String> = env.into_iter().collect();
+        assert_eq!(map.get("CFGD_CONTEXT").unwrap(), "reconcile");
+        assert_eq!(map.get("CFGD_PHASE").unwrap(), "postReconcile");
+        assert_eq!(map.get("CFGD_PROFILE").unwrap(), "server");
+    }
+
+    #[test]
+    fn build_script_env_module_name_without_dir() {
+        // module_name provided but module_dir is None
+        let env = super::build_script_env(
+            std::path::Path::new("/cfg"),
+            "default",
+            ReconcileContext::Apply,
+            &ScriptPhase::PreApply,
+            false,
+            Some("zsh"),
+            None,
+        );
+        let map: HashMap<String, String> = env.into_iter().collect();
+        assert_eq!(map.get("CFGD_MODULE_NAME").unwrap(), "zsh");
+        assert!(
+            !map.contains_key("CFGD_MODULE_DIR"),
+            "CFGD_MODULE_DIR should not be set when module_dir is None"
+        );
+    }
+
+    #[test]
+    fn build_script_env_count_base_vars() {
+        // Without module info, should have exactly 5 base vars
+        let env = super::build_script_env(
+            std::path::Path::new("/x"),
+            "p",
+            ReconcileContext::Apply,
+            &ScriptPhase::PreApply,
+            false,
+            None,
+            None,
+        );
+        assert_eq!(env.len(), 5, "base env should have 5 entries");
+
+        // With both module name and dir, should have 7
+        let env_with_module = super::build_script_env(
+            std::path::Path::new("/x"),
+            "p",
+            ReconcileContext::Apply,
+            &ScriptPhase::PreApply,
+            false,
+            Some("m"),
+            Some(std::path::Path::new("/modules/m")),
+        );
+        assert_eq!(
+            env_with_module.len(),
+            7,
+            "env with module info should have 7 entries"
+        );
+    }
+
+    // --- verify additional tests ---
+
+    #[test]
+    fn verify_empty_profile_returns_no_results() {
+        let state = StateStore::open_in_memory().unwrap();
+        let registry = ProviderRegistry::new();
+        let resolved = make_empty_resolved();
+        let printer = Printer::new(crate::output::Verbosity::Quiet);
+
+        let results = verify(&resolved, &registry, &state, &printer, &[]).unwrap();
+        assert!(
+            results.is_empty(),
+            "empty profile with no modules should produce no verify results, got: {:?}",
+            results
+        );
+    }
+
+    #[test]
+    fn verify_file_target_exists() {
+        let state = StateStore::open_in_memory().unwrap();
+        let registry = ProviderRegistry::new();
+        let printer = Printer::new(crate::output::Verbosity::Quiet);
+        let tmp = tempfile::tempdir().unwrap();
+
+        // Create a file that exists
+        let target_path = tmp.path().join("existing.conf");
+        std::fs::write(&target_path, "content").unwrap();
+
+        let mut resolved = make_empty_resolved();
+        resolved.merged.files.managed.push(ManagedFileSpec {
+            source: "source.conf".to_string(),
+            target: target_path.clone(),
+            strategy: None,
+            private: false,
+            origin: None,
+            encryption: None,
+            permissions: None,
+        });
+
+        let results = verify(&resolved, &registry, &state, &printer, &[]).unwrap();
+        let file_result = results
+            .iter()
+            .find(|r| r.resource_type == "file")
+            .expect("should have a file verify result");
+        assert!(file_result.matches, "existing file should match");
+        assert_eq!(file_result.expected, "present");
+        assert_eq!(file_result.actual, "present");
+    }
+
+    #[test]
+    fn verify_file_target_missing() {
+        let state = StateStore::open_in_memory().unwrap();
+        let registry = ProviderRegistry::new();
+        let printer = Printer::new(crate::output::Verbosity::Quiet);
+
+        let mut resolved = make_empty_resolved();
+        resolved.merged.files.managed.push(ManagedFileSpec {
+            source: "source.conf".to_string(),
+            target: PathBuf::from("/tmp/cfgd-test-nonexistent-file-39485738"),
+            strategy: None,
+            private: false,
+            origin: None,
+            encryption: None,
+            permissions: None,
+        });
+
+        let results = verify(&resolved, &registry, &state, &printer, &[]).unwrap();
+        let file_result = results
+            .iter()
+            .find(|r| r.resource_type == "file")
+            .expect("should have a file verify result");
+        assert!(!file_result.matches, "missing file should not match");
+        assert_eq!(file_result.expected, "present");
+        assert_eq!(file_result.actual, "missing");
+    }
+
+    #[test]
+    fn verify_module_file_target_missing_causes_drift() {
+        let state = StateStore::open_in_memory().unwrap();
+        let registry = ProviderRegistry::new();
+        let printer = Printer::new(crate::output::Verbosity::Quiet);
+        let resolved = make_empty_resolved();
+
+        let modules = vec![ResolvedModule {
+            name: "test-mod".to_string(),
+            packages: vec![],
+            files: vec![ResolvedFile {
+                source: PathBuf::from("/src/config"),
+                target: PathBuf::from("/tmp/cfgd-test-nonexistent-module-file-29384"),
+                is_git_source: false,
+                strategy: None,
+                encryption: None,
+            }],
+            env: vec![],
+            aliases: vec![],
+            post_apply_scripts: vec![],
+            pre_apply_scripts: Vec::new(),
+            pre_reconcile_scripts: Vec::new(),
+            post_reconcile_scripts: Vec::new(),
+            on_change_scripts: Vec::new(),
+            system: HashMap::new(),
+            depends: vec![],
+            dir: PathBuf::from("."),
+        }];
+
+        let results = verify(&resolved, &registry, &state, &printer, &modules).unwrap();
+
+        // Should have drift for the missing file
+        let drift = results
+            .iter()
+            .find(|r| r.resource_type == "module" && !r.matches);
+        assert!(
+            drift.is_some(),
+            "missing module file target should cause drift"
+        );
+        let d = drift.unwrap();
+        assert_eq!(d.expected, "present");
+        assert_eq!(d.actual, "missing");
+        assert!(d.resource_id.contains("test-mod"));
+    }
+
+    #[test]
+    fn verify_module_file_target_exists_no_drift() {
+        let state = StateStore::open_in_memory().unwrap();
+        let registry = ProviderRegistry::new();
+        let printer = Printer::new(crate::output::Verbosity::Quiet);
+        let resolved = make_empty_resolved();
+        let tmp = tempfile::tempdir().unwrap();
+
+        let target_path = tmp.path().join("module-config");
+        std::fs::write(&target_path, "content").unwrap();
+
+        let modules = vec![ResolvedModule {
+            name: "files-mod".to_string(),
+            packages: vec![],
+            files: vec![ResolvedFile {
+                source: PathBuf::from("/src/config"),
+                target: target_path,
+                is_git_source: false,
+                strategy: None,
+                encryption: None,
+            }],
+            env: vec![],
+            aliases: vec![],
+            post_apply_scripts: vec![],
+            pre_apply_scripts: Vec::new(),
+            pre_reconcile_scripts: Vec::new(),
+            post_reconcile_scripts: Vec::new(),
+            on_change_scripts: Vec::new(),
+            system: HashMap::new(),
+            depends: vec![],
+            dir: PathBuf::from("."),
+        }];
+
+        let results = verify(&resolved, &registry, &state, &printer, &modules).unwrap();
+
+        // Module should be healthy
+        let healthy = results
+            .iter()
+            .find(|r| r.resource_type == "module" && r.resource_id == "files-mod");
+        assert!(healthy.is_some(), "module should have a healthy result");
+        assert!(healthy.unwrap().matches);
+    }
+
+    #[test]
+    fn verify_multiple_packages_mixed_status() {
+        let state = StateStore::open_in_memory().unwrap();
+        let mut registry = ProviderRegistry::new();
+
+        // Only "git" installed, "tmux" missing
+        registry.package_managers.push(Box::new(
+            MockPackageManager::new("apt").with_installed(&["git"]),
+        ));
+
+        let mut resolved = make_empty_resolved();
+        resolved.merged.packages.apt = Some(crate::config::AptSpec {
+            file: None,
+            packages: vec!["git".to_string(), "tmux".to_string()],
+        });
+
+        let printer = Printer::new(crate::output::Verbosity::Quiet);
+        let results = verify(&resolved, &registry, &state, &printer, &[]).unwrap();
+
+        let git_result = results
+            .iter()
+            .find(|r| r.resource_id == "apt:git")
+            .expect("should have git result");
+        assert!(git_result.matches);
+        assert_eq!(git_result.expected, "installed");
+        assert_eq!(git_result.actual, "installed");
+
+        let tmux_result = results
+            .iter()
+            .find(|r| r.resource_id == "apt:tmux")
+            .expect("should have tmux result");
+        assert!(!tmux_result.matches);
+        assert_eq!(tmux_result.expected, "installed");
+        assert_eq!(tmux_result.actual, "missing");
+    }
+
+    // --- format_action_description additional tests ---
+
+    #[test]
+    fn format_action_description_env_write_file() {
+        let action = Action::Env(EnvAction::WriteEnvFile {
+            path: PathBuf::from("/home/user/.cfgd.env"),
+            content: "export FOO=bar\n".to_string(),
+        });
+        let desc = format_action_description(&action);
+        assert_eq!(desc, "env:write:/home/user/.cfgd.env");
+    }
+
+    #[test]
+    fn format_action_description_env_inject_source() {
+        let action = Action::Env(EnvAction::InjectSourceLine {
+            rc_path: PathBuf::from("/home/user/.zshrc"),
+            line: "source ~/.cfgd.env".to_string(),
+        });
+        let desc = format_action_description(&action);
+        assert_eq!(desc, "env:inject:/home/user/.zshrc");
+    }
+
+    #[test]
+    fn format_action_description_script_run_entry() {
+        let action = Action::Script(ScriptAction::Run {
+            entry: ScriptEntry::Simple("echo hello".to_string()),
+            phase: ScriptPhase::PreApply,
+            origin: "local".to_string(),
+        });
+        let desc = format_action_description(&action);
+        assert_eq!(desc, "script:preApply:echo hello");
+    }
+
+    #[test]
+    fn format_action_description_system_set_value_sysctl() {
+        let action = Action::System(SystemAction::SetValue {
+            configurator: "sysctl".to_string(),
+            key: "net.ipv4.ip_forward".to_string(),
+            desired: "1".to_string(),
+            current: "0".to_string(),
+            origin: "local".to_string(),
+        });
+        let desc = format_action_description(&action);
+        assert_eq!(desc, "system:sysctl.net.ipv4.ip_forward");
+    }
+
+    #[test]
+    fn format_action_description_system_skip_sysctl() {
+        let action = Action::System(SystemAction::Skip {
+            configurator: "sysctl".to_string(),
+            reason: "not available".to_string(),
+            origin: "local".to_string(),
+        });
+        let desc = format_action_description(&action);
+        assert_eq!(desc, "system:sysctl:skip");
+    }
+
+    #[test]
+    fn format_action_description_module_install_multiple_packages() {
+        let action = Action::Module(ModuleAction {
+            module_name: "neovim".to_string(),
+            kind: ModuleActionKind::InstallPackages {
+                resolved: vec![
+                    ResolvedPackage {
+                        canonical_name: "neovim".to_string(),
+                        resolved_name: "neovim".to_string(),
+                        manager: "brew".to_string(),
+                        version: None,
+                        script: None,
+                    },
+                    ResolvedPackage {
+                        canonical_name: "ripgrep".to_string(),
+                        resolved_name: "ripgrep".to_string(),
+                        manager: "brew".to_string(),
+                        version: None,
+                        script: None,
+                    },
+                ],
+            },
+        });
+        let desc = format_action_description(&action);
+        assert_eq!(desc, "module:neovim:packages:neovim,ripgrep");
+    }
+
+    #[test]
+    fn format_action_description_module_deploy_two_files() {
+        let action = Action::Module(ModuleAction {
+            module_name: "nvim".to_string(),
+            kind: ModuleActionKind::DeployFiles {
+                files: vec![
+                    ResolvedFile {
+                        source: PathBuf::from("/src/init.lua"),
+                        target: PathBuf::from("/home/.config/nvim/init.lua"),
+                        is_git_source: false,
+                        strategy: None,
+                        encryption: None,
+                    },
+                    ResolvedFile {
+                        source: PathBuf::from("/src/plugins.lua"),
+                        target: PathBuf::from("/home/.config/nvim/plugins.lua"),
+                        is_git_source: false,
+                        strategy: None,
+                        encryption: None,
+                    },
+                ],
+            },
+        });
+        let desc = format_action_description(&action);
+        assert_eq!(desc, "module:nvim:files:2");
+    }
+
+    #[test]
+    fn format_action_description_module_run_post_apply_script() {
+        let action = Action::Module(ModuleAction {
+            module_name: "rust".to_string(),
+            kind: ModuleActionKind::RunScript {
+                script: ScriptEntry::Simple("./setup.sh".to_string()),
+                phase: ScriptPhase::PostApply,
+            },
+        });
+        let desc = format_action_description(&action);
+        assert_eq!(desc, "module:rust:script");
+    }
+
+    #[test]
+    fn format_action_description_module_skip_dependency() {
+        let action = Action::Module(ModuleAction {
+            module_name: "rust".to_string(),
+            kind: ModuleActionKind::Skip {
+                reason: "dependency not met".to_string(),
+            },
+        });
+        let desc = format_action_description(&action);
+        assert_eq!(desc, "module:rust:skip");
+    }
+
+    #[test]
+    fn format_action_description_package_bootstrap() {
+        let action = Action::Package(PackageAction::Bootstrap {
+            manager: "brew".to_string(),
+            method: "curl".to_string(),
+            origin: "local".to_string(),
+        });
+        let desc = format_action_description(&action);
+        assert_eq!(desc, "package:brew:bootstrap");
+    }
+
+    #[test]
+    fn format_action_description_package_uninstall() {
+        let action = Action::Package(PackageAction::Uninstall {
+            manager: "apt".to_string(),
+            packages: vec!["vim".to_string(), "nano".to_string()],
+            origin: "local".to_string(),
+        });
+        let desc = format_action_description(&action);
+        assert_eq!(desc, "package:apt:uninstall:vim,nano");
+    }
+
+    #[test]
+    fn format_action_description_file_set_permissions() {
+        let action = Action::File(FileAction::SetPermissions {
+            target: PathBuf::from("/etc/config.yaml"),
+            mode: 0o600,
+            origin: "local".to_string(),
+        });
+        let desc = format_action_description(&action);
+        assert_eq!(desc, "file:chmod:0o600:/etc/config.yaml");
+    }
+
+    // --- PhaseName tests ---
+
+    #[test]
+    fn phase_name_all_variants_roundtrip() {
+        let variants = [
+            ("pre-scripts", PhaseName::PreScripts, "Pre-Scripts"),
+            ("env", PhaseName::Env, "Environment"),
+            ("modules", PhaseName::Modules, "Modules"),
+            ("packages", PhaseName::Packages, "Packages"),
+            ("system", PhaseName::System, "System"),
+            ("files", PhaseName::Files, "Files"),
+            ("secrets", PhaseName::Secrets, "Secrets"),
+            ("post-scripts", PhaseName::PostScripts, "Post-Scripts"),
+        ];
+
+        for (s, expected_variant, display) in &variants {
+            let parsed = PhaseName::from_str(s).unwrap();
+            assert_eq!(&parsed, expected_variant);
+            assert_eq!(parsed.as_str(), *s);
+            assert_eq!(parsed.display_name(), *display);
+        }
+    }
+
+    #[test]
+    fn phase_name_unknown_returns_err() {
+        let result = PhaseName::from_str("unknown-phase");
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            err.contains("unknown phase"),
+            "error should mention unknown phase: {}",
+            err
+        );
+    }
+
+    // --- ScriptPhase display_name tests ---
+
+    #[test]
+    fn script_phase_display_names() {
+        assert_eq!(ScriptPhase::PreApply.display_name(), "preApply");
+        assert_eq!(ScriptPhase::PostApply.display_name(), "postApply");
+        assert_eq!(ScriptPhase::PreReconcile.display_name(), "preReconcile");
+        assert_eq!(ScriptPhase::PostReconcile.display_name(), "postReconcile");
+        assert_eq!(ScriptPhase::OnDrift.display_name(), "onDrift");
+        assert_eq!(ScriptPhase::OnChange.display_name(), "onChange");
+    }
+
+    // --- verify_env_file tests ---
+
+    #[test]
+    fn verify_env_file_matches_when_content_equal() {
+        let state = StateStore::open_in_memory().unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let env_path = tmp.path().join("test.env");
+        let expected = "export FOO=\"bar\"\n";
+        std::fs::write(&env_path, expected).unwrap();
+
+        let mut results = Vec::new();
+        super::verify_env_file(&env_path, expected, &state, &mut results);
+
+        assert_eq!(results.len(), 1);
+        assert!(results[0].matches);
+        assert_eq!(results[0].resource_type, "env");
+        assert_eq!(results[0].expected, "current");
+        assert_eq!(results[0].actual, "current");
+    }
+
+    #[test]
+    fn verify_env_file_stale_when_content_differs() {
+        let state = StateStore::open_in_memory().unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let env_path = tmp.path().join("test.env");
+        std::fs::write(&env_path, "old content").unwrap();
+
+        let mut results = Vec::new();
+        super::verify_env_file(&env_path, "new content", &state, &mut results);
+
+        assert_eq!(results.len(), 1);
+        assert!(!results[0].matches);
+        assert_eq!(results[0].expected, "current");
+        assert_eq!(results[0].actual, "stale");
+    }
+
+    #[test]
+    fn verify_env_file_missing_when_file_absent() {
+        let state = StateStore::open_in_memory().unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let env_path = tmp.path().join("nonexistent.env");
+
+        let mut results = Vec::new();
+        super::verify_env_file(&env_path, "expected content", &state, &mut results);
+
+        assert_eq!(results.len(), 1);
+        assert!(!results[0].matches);
+        assert_eq!(results[0].expected, "present");
+        assert_eq!(results[0].actual, "missing");
+    }
+
+    // --- merge_module_env_aliases tests ---
+
+    #[test]
+    fn merge_module_env_aliases_empty() {
+        let (env, aliases) = super::merge_module_env_aliases(&[], &[], &[]);
+        assert!(env.is_empty());
+        assert!(aliases.is_empty());
+    }
+
+    #[test]
+    fn merge_module_env_aliases_combines_profile_and_modules() {
+        let profile_env = vec![crate::config::EnvVar {
+            name: "EDITOR".into(),
+            value: "vim".into(),
+        }];
+        let profile_aliases = vec![crate::config::ShellAlias {
+            name: "g".into(),
+            command: "git".into(),
+        }];
+        let modules = vec![ResolvedModule {
+            name: "test".to_string(),
+            packages: vec![],
+            files: vec![],
+            env: vec![crate::config::EnvVar {
+                name: "PAGER".into(),
+                value: "less".into(),
+            }],
+            aliases: vec![crate::config::ShellAlias {
+                name: "ll".into(),
+                command: "ls -la".into(),
+            }],
+            post_apply_scripts: vec![],
+            pre_apply_scripts: Vec::new(),
+            pre_reconcile_scripts: Vec::new(),
+            post_reconcile_scripts: Vec::new(),
+            on_change_scripts: Vec::new(),
+            system: HashMap::new(),
+            depends: vec![],
+            dir: PathBuf::from("."),
+        }];
+
+        let (env, aliases) =
+            super::merge_module_env_aliases(&profile_env, &profile_aliases, &modules);
+        assert_eq!(env.len(), 2);
+        assert_eq!(aliases.len(), 2);
+
+        // Check that both profile and module values are present
+        assert!(env.iter().any(|e| e.name == "EDITOR"));
+        assert!(env.iter().any(|e| e.name == "PAGER"));
+        assert!(aliases.iter().any(|a| a.name == "g"));
+        assert!(aliases.iter().any(|a| a.name == "ll"));
+    }
+
+    #[test]
+    fn merge_module_env_aliases_module_overrides_profile() {
+        let profile_env = vec![crate::config::EnvVar {
+            name: "EDITOR".into(),
+            value: "vim".into(),
+        }];
+        let modules = vec![ResolvedModule {
+            name: "test".to_string(),
+            packages: vec![],
+            files: vec![],
+            env: vec![crate::config::EnvVar {
+                name: "EDITOR".into(),
+                value: "nvim".into(),
+            }],
+            aliases: vec![],
+            post_apply_scripts: vec![],
+            pre_apply_scripts: Vec::new(),
+            pre_reconcile_scripts: Vec::new(),
+            post_reconcile_scripts: Vec::new(),
+            on_change_scripts: Vec::new(),
+            system: HashMap::new(),
+            depends: vec![],
+            dir: PathBuf::from("."),
+        }];
+
+        let (env, _) = super::merge_module_env_aliases(&profile_env, &[], &modules);
+        // merge_env deduplicates by name, last wins
+        let editor = env.iter().find(|e| e.name == "EDITOR").unwrap();
+        assert_eq!(
+            editor.value, "nvim",
+            "module should override profile env var"
+        );
+    }
+
+    // --- Module deploy files: hardlink strategy ---
+
+    #[test]
+    fn apply_module_deploy_files_hardlink_strategy() {
+        let dir = tempfile::tempdir().unwrap();
+        let source_file = dir.path().join("source.txt");
+        let target_file = dir.path().join("hardlink-target.txt");
+        std::fs::write(&source_file, "hardlinked content").unwrap();
+
+        let state = StateStore::open_in_memory().unwrap();
+        let mut registry = ProviderRegistry::new();
+        registry.default_file_strategy = crate::config::FileStrategy::Hardlink;
+
+        let reconciler = Reconciler::new(&registry, &state);
+        let resolved = make_empty_resolved();
+
+        let plan = Plan {
+            phases: vec![Phase {
+                name: PhaseName::Modules,
+                actions: vec![Action::Module(ModuleAction {
+                    module_name: "hardmod".to_string(),
+                    kind: ModuleActionKind::DeployFiles {
+                        files: vec![ResolvedFile {
+                            source: source_file.clone(),
+                            target: target_file.clone(),
+                            is_git_source: false,
+                            strategy: Some(crate::config::FileStrategy::Hardlink),
+                            encryption: None,
+                        }],
+                    },
+                })],
+            }],
+            warnings: vec![],
+        };
+
+        let modules = vec![ResolvedModule {
+            name: "hardmod".to_string(),
+            packages: vec![],
+            files: vec![ResolvedFile {
+                source: source_file.clone(),
+                target: target_file.clone(),
+                is_git_source: false,
+                strategy: Some(crate::config::FileStrategy::Hardlink),
+                encryption: None,
+            }],
+            env: vec![],
+            aliases: vec![],
+            post_apply_scripts: vec![],
+            pre_apply_scripts: Vec::new(),
+            pre_reconcile_scripts: Vec::new(),
+            post_reconcile_scripts: Vec::new(),
+            on_change_scripts: Vec::new(),
+            system: HashMap::new(),
+            depends: vec![],
+            dir: dir.path().to_path_buf(),
+        }];
+
+        let printer = Printer::new(crate::output::Verbosity::Quiet);
+        let result = reconciler
+            .apply(
+                &plan,
+                &resolved,
+                dir.path(),
+                &printer,
+                Some(&PhaseName::Modules),
+                &modules,
+                ReconcileContext::Apply,
+                false,
+            )
+            .unwrap();
+
+        assert_eq!(result.status, ApplyStatus::Success);
+        assert!(
+            !target_file.is_symlink(),
+            "hardlink should not be a symlink"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&target_file).unwrap(),
+            "hardlinked content"
+        );
+        // Verify it's a hardlink by checking inode (Unix)
+        #[cfg(unix)]
+        {
+            assert!(
+                crate::is_same_inode(&source_file, &target_file),
+                "source and target should share the same inode"
+            );
+        }
+    }
+
+    // --- Module deploy files: copy strategy ---
+
+    #[test]
+    fn apply_module_deploy_files_copy_strategy() {
+        let dir = tempfile::tempdir().unwrap();
+        let source_file = dir.path().join("source.txt");
+        let target_file = dir.path().join("copy-target.txt");
+        std::fs::write(&source_file, "copied content").unwrap();
+
+        let state = StateStore::open_in_memory().unwrap();
+        let mut registry = ProviderRegistry::new();
+        registry.default_file_strategy = crate::config::FileStrategy::Copy;
+
+        let reconciler = Reconciler::new(&registry, &state);
+        let resolved = make_empty_resolved();
+
+        let plan = Plan {
+            phases: vec![Phase {
+                name: PhaseName::Modules,
+                actions: vec![Action::Module(ModuleAction {
+                    module_name: "copymod".to_string(),
+                    kind: ModuleActionKind::DeployFiles {
+                        files: vec![ResolvedFile {
+                            source: source_file.clone(),
+                            target: target_file.clone(),
+                            is_git_source: false,
+                            strategy: Some(crate::config::FileStrategy::Copy),
+                            encryption: None,
+                        }],
+                    },
+                })],
+            }],
+            warnings: vec![],
+        };
+
+        let modules = vec![ResolvedModule {
+            name: "copymod".to_string(),
+            packages: vec![],
+            files: vec![ResolvedFile {
+                source: source_file.clone(),
+                target: target_file.clone(),
+                is_git_source: false,
+                strategy: Some(crate::config::FileStrategy::Copy),
+                encryption: None,
+            }],
+            env: vec![],
+            aliases: vec![],
+            post_apply_scripts: vec![],
+            pre_apply_scripts: Vec::new(),
+            pre_reconcile_scripts: Vec::new(),
+            post_reconcile_scripts: Vec::new(),
+            on_change_scripts: Vec::new(),
+            system: HashMap::new(),
+            depends: vec![],
+            dir: dir.path().to_path_buf(),
+        }];
+
+        let printer = Printer::new(crate::output::Verbosity::Quiet);
+        let result = reconciler
+            .apply(
+                &plan,
+                &resolved,
+                dir.path(),
+                &printer,
+                Some(&PhaseName::Modules),
+                &modules,
+                ReconcileContext::Apply,
+                false,
+            )
+            .unwrap();
+
+        assert_eq!(result.status, ApplyStatus::Success);
+        assert!(!target_file.is_symlink(), "copy should not be a symlink");
+        assert_eq!(
+            std::fs::read_to_string(&target_file).unwrap(),
+            "copied content"
+        );
+        // Verify it's NOT a hardlink (independent copy)
+        #[cfg(unix)]
+        {
+            assert!(
+                !crate::is_same_inode(&source_file, &target_file),
+                "copy should have a different inode"
+            );
+        }
+    }
+
+    // --- Module deploy files: directory with symlink vs copy ---
+
+    #[test]
+    fn apply_module_deploy_files_directory_copy_strategy() {
+        let dir = tempfile::tempdir().unwrap();
+        let source_dir = dir.path().join("src-dir");
+        std::fs::create_dir(&source_dir).unwrap();
+        std::fs::write(source_dir.join("a.txt"), "aaa").unwrap();
+        std::fs::write(source_dir.join("b.txt"), "bbb").unwrap();
+
+        let target_dir = dir.path().join("target-dir");
+
+        let state = StateStore::open_in_memory().unwrap();
+        let mut registry = ProviderRegistry::new();
+        registry.default_file_strategy = crate::config::FileStrategy::Copy;
+
+        let reconciler = Reconciler::new(&registry, &state);
+        let resolved = make_empty_resolved();
+
+        let plan = Plan {
+            phases: vec![Phase {
+                name: PhaseName::Modules,
+                actions: vec![Action::Module(ModuleAction {
+                    module_name: "dirmod".to_string(),
+                    kind: ModuleActionKind::DeployFiles {
+                        files: vec![ResolvedFile {
+                            source: source_dir.clone(),
+                            target: target_dir.clone(),
+                            is_git_source: false,
+                            strategy: Some(crate::config::FileStrategy::Copy),
+                            encryption: None,
+                        }],
+                    },
+                })],
+            }],
+            warnings: vec![],
+        };
+
+        let modules = vec![ResolvedModule {
+            name: "dirmod".to_string(),
+            packages: vec![],
+            files: vec![ResolvedFile {
+                source: source_dir.clone(),
+                target: target_dir.clone(),
+                is_git_source: false,
+                strategy: Some(crate::config::FileStrategy::Copy),
+                encryption: None,
+            }],
+            env: vec![],
+            aliases: vec![],
+            post_apply_scripts: vec![],
+            pre_apply_scripts: Vec::new(),
+            pre_reconcile_scripts: Vec::new(),
+            post_reconcile_scripts: Vec::new(),
+            on_change_scripts: Vec::new(),
+            system: HashMap::new(),
+            depends: vec![],
+            dir: dir.path().to_path_buf(),
+        }];
+
+        let printer = Printer::new(crate::output::Verbosity::Quiet);
+        let result = reconciler
+            .apply(
+                &plan,
+                &resolved,
+                dir.path(),
+                &printer,
+                Some(&PhaseName::Modules),
+                &modules,
+                ReconcileContext::Apply,
+                false,
+            )
+            .unwrap();
+
+        assert_eq!(result.status, ApplyStatus::Success);
+        assert!(target_dir.is_dir(), "target should be a directory");
+        assert!(!target_dir.is_symlink(), "copy should not be a symlink");
+        assert_eq!(
+            std::fs::read_to_string(target_dir.join("a.txt")).unwrap(),
+            "aaa"
+        );
+        assert_eq!(
+            std::fs::read_to_string(target_dir.join("b.txt")).unwrap(),
+            "bbb"
+        );
+    }
+
+    // --- Module deploy files: overwrites existing target ---
+
+    #[test]
+    fn apply_module_deploy_files_overwrites_existing_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let source_file = dir.path().join("source.txt");
+        let target_file = dir.path().join("target.txt");
+        std::fs::write(&source_file, "new content").unwrap();
+        std::fs::write(&target_file, "old content").unwrap();
+
+        let state = StateStore::open_in_memory().unwrap();
+        let mut registry = ProviderRegistry::new();
+        registry.default_file_strategy = crate::config::FileStrategy::Copy;
+
+        let reconciler = Reconciler::new(&registry, &state);
+        let resolved = make_empty_resolved();
+
+        let plan = Plan {
+            phases: vec![Phase {
+                name: PhaseName::Modules,
+                actions: vec![Action::Module(ModuleAction {
+                    module_name: "overmod".to_string(),
+                    kind: ModuleActionKind::DeployFiles {
+                        files: vec![ResolvedFile {
+                            source: source_file.clone(),
+                            target: target_file.clone(),
+                            is_git_source: false,
+                            strategy: Some(crate::config::FileStrategy::Copy),
+                            encryption: None,
+                        }],
+                    },
+                })],
+            }],
+            warnings: vec![],
+        };
+
+        let modules = vec![ResolvedModule {
+            name: "overmod".to_string(),
+            packages: vec![],
+            files: vec![],
+            env: vec![],
+            aliases: vec![],
+            post_apply_scripts: vec![],
+            pre_apply_scripts: Vec::new(),
+            pre_reconcile_scripts: Vec::new(),
+            post_reconcile_scripts: Vec::new(),
+            on_change_scripts: Vec::new(),
+            system: HashMap::new(),
+            depends: vec![],
+            dir: dir.path().to_path_buf(),
+        }];
+
+        let printer = Printer::new(crate::output::Verbosity::Quiet);
+        let result = reconciler
+            .apply(
+                &plan,
+                &resolved,
+                dir.path(),
+                &printer,
+                Some(&PhaseName::Modules),
+                &modules,
+                ReconcileContext::Apply,
+                false,
+            )
+            .unwrap();
+
+        assert_eq!(result.status, ApplyStatus::Success);
+        assert_eq!(
+            std::fs::read_to_string(&target_file).unwrap(),
+            "new content",
+            "existing file should be overwritten"
+        );
+    }
+
+    // --- Module-level onChange script runs when module changes ---
+
+    #[test]
+    #[cfg(unix)]
+    fn apply_module_on_change_script_runs_when_module_has_changes() {
+        let dir = tempfile::tempdir().unwrap();
+        let source_file = dir.path().join("source.txt");
+        let target_file = dir.path().join("target.txt");
+        std::fs::write(&source_file, "content").unwrap();
+        let marker = dir.path().join("onchange-ran");
+
+        let state = StateStore::open_in_memory().unwrap();
+        let mut registry = ProviderRegistry::new();
+        registry.default_file_strategy = crate::config::FileStrategy::Copy;
+
+        let reconciler = Reconciler::new(&registry, &state);
+        let resolved = make_empty_resolved();
+
+        let plan = Plan {
+            phases: vec![Phase {
+                name: PhaseName::Modules,
+                actions: vec![Action::Module(ModuleAction {
+                    module_name: "changemod".to_string(),
+                    kind: ModuleActionKind::DeployFiles {
+                        files: vec![ResolvedFile {
+                            source: source_file.clone(),
+                            target: target_file.clone(),
+                            is_git_source: false,
+                            strategy: Some(crate::config::FileStrategy::Copy),
+                            encryption: None,
+                        }],
+                    },
+                })],
+            }],
+            warnings: vec![],
+        };
+
+        let modules = vec![ResolvedModule {
+            name: "changemod".to_string(),
+            packages: vec![],
+            files: vec![],
+            env: vec![],
+            aliases: vec![],
+            post_apply_scripts: vec![],
+            pre_apply_scripts: Vec::new(),
+            pre_reconcile_scripts: Vec::new(),
+            post_reconcile_scripts: Vec::new(),
+            on_change_scripts: vec![crate::config::ScriptEntry::Simple(format!(
+                "touch {}",
+                marker.display()
+            ))],
+            system: HashMap::new(),
+            depends: vec![],
+            dir: dir.path().to_path_buf(),
+        }];
+
+        let printer = Printer::new(crate::output::Verbosity::Quiet);
+        let result = reconciler
+            .apply(
+                &plan,
+                &resolved,
+                dir.path(),
+                &printer,
+                None, // no phase filter — run everything including onChange
+                &modules,
+                ReconcileContext::Apply,
+                false,
+            )
+            .unwrap();
+
+        assert_eq!(result.status, ApplyStatus::Success);
+        assert!(
+            marker.exists(),
+            "module onChange script should have created marker file"
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn apply_module_on_change_script_does_not_run_when_no_changes() {
+        let dir = tempfile::tempdir().unwrap();
+        let marker = dir.path().join("onchange-ran");
+
+        let state = StateStore::open_in_memory().unwrap();
+        let registry = ProviderRegistry::new();
+        let reconciler = Reconciler::new(&registry, &state);
+        let resolved = make_empty_resolved();
+
+        // Empty plan — no actions, so no module changes
+        let plan = Plan {
+            phases: vec![],
+            warnings: vec![],
+        };
+
+        let modules = vec![ResolvedModule {
+            name: "nochangemod".to_string(),
+            packages: vec![],
+            files: vec![],
+            env: vec![],
+            aliases: vec![],
+            post_apply_scripts: vec![],
+            pre_apply_scripts: Vec::new(),
+            pre_reconcile_scripts: Vec::new(),
+            post_reconcile_scripts: Vec::new(),
+            on_change_scripts: vec![crate::config::ScriptEntry::Simple(format!(
+                "touch {}",
+                marker.display()
+            ))],
+            system: HashMap::new(),
+            depends: vec![],
+            dir: dir.path().to_path_buf(),
+        }];
+
+        let printer = Printer::new(crate::output::Verbosity::Quiet);
+        let result = reconciler
+            .apply(
+                &plan,
+                &resolved,
+                dir.path(),
+                &printer,
+                None,
+                &modules,
+                ReconcileContext::Apply,
+                false,
+            )
+            .unwrap();
+
+        assert_eq!(result.status, ApplyStatus::Success);
+        assert!(
+            !marker.exists(),
+            "module onChange should NOT run when module had no changes"
+        );
+    }
+
+    // --- Rollback restores file to correct content ---
+
+    #[test]
+    fn rollback_restores_file_with_correct_content() {
+        let dir = tempfile::tempdir().unwrap();
+        let file_path = dir.path().join("managed.txt");
+
+        let state = StateStore::open_in_memory().unwrap();
+        let registry = ProviderRegistry::new();
+        let reconciler = Reconciler::new(&registry, &state);
+
+        // Record a first apply with a file backup
+        let file_state = crate::FileState {
+            content: b"original content".to_vec(),
+            content_hash: crate::sha256_hex(b"original content"),
+            permissions: Some(0o644),
+            is_symlink: false,
+            symlink_target: None,
+            oversized: false,
+        };
+        let apply_id_1 = state
+            .record_apply("default", "plan-hash-1", ApplyStatus::InProgress, None)
+            .unwrap();
+        state
+            .store_file_backup(apply_id_1, &file_path.display().to_string(), &file_state)
+            .unwrap();
+        state
+            .update_apply_status(apply_id_1, ApplyStatus::Success, Some("{}"))
+            .unwrap();
+
+        // Record a second apply that changed the file
+        let new_state = crate::FileState {
+            content: b"modified content".to_vec(),
+            content_hash: crate::sha256_hex(b"modified content"),
+            permissions: Some(0o644),
+            is_symlink: false,
+            symlink_target: None,
+            oversized: false,
+        };
+        let apply_id_2 = state
+            .record_apply("default", "plan-hash-2", ApplyStatus::InProgress, None)
+            .unwrap();
+        state
+            .store_file_backup(apply_id_2, &file_path.display().to_string(), &new_state)
+            .unwrap();
+        state
+            .update_apply_status(apply_id_2, ApplyStatus::Success, Some("{}"))
+            .unwrap();
+
+        // Write the current file with apply-2 content
+        std::fs::write(&file_path, "modified content").unwrap();
+
+        let printer = Printer::new(crate::output::Verbosity::Quiet);
+        let result = reconciler.rollback_apply(apply_id_1, &printer).unwrap();
+
+        assert!(
+            result.files_restored > 0,
+            "should restore at least one file"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&file_path).unwrap(),
+            "original content",
+            "file should be restored to apply-1 state"
+        );
+    }
+
+    // --- Rollback Phase 3: removes files created after target ---
+
+    #[test]
+    fn rollback_removes_file_created_after_target_apply() {
+        let dir = tempfile::tempdir().unwrap();
+        let created_file = dir.path().join("new-file.txt");
+
+        let state = StateStore::open_in_memory().unwrap();
+        let registry = ProviderRegistry::new();
+        let reconciler = Reconciler::new(&registry, &state);
+
+        // Apply 1: a simple apply that didn't touch new-file.txt
+        let apply_id_1 = state
+            .record_apply("default", "hash-1", ApplyStatus::InProgress, None)
+            .unwrap();
+        state
+            .update_apply_status(apply_id_1, ApplyStatus::Success, None)
+            .unwrap();
+
+        // Apply 2: creates new-file.txt (file didn't exist before)
+        let apply_id_2 = state
+            .record_apply("default", "hash-2", ApplyStatus::InProgress, None)
+            .unwrap();
+        let j_id = state
+            .journal_begin(
+                apply_id_2,
+                0,
+                "files",
+                "file",
+                &format!("file:create:{}", created_file.display()),
+                None,
+            )
+            .unwrap();
+        state.journal_complete(j_id, None, None).unwrap();
+        state
+            .update_apply_status(apply_id_2, ApplyStatus::Success, None)
+            .unwrap();
+
+        // Write the file to disk (simulating what apply 2 did)
+        std::fs::write(&created_file, "new content").unwrap();
+        assert!(created_file.exists());
+
+        // Rollback to apply 1 — file didn't exist then, should be removed
+        let printer = Printer::new(crate::output::Verbosity::Quiet);
+        let result = reconciler.rollback_apply(apply_id_1, &printer).unwrap();
+
+        assert!(
+            !created_file.exists(),
+            "file created after target apply should be removed"
+        );
+        assert!(
+            result.files_removed > 0,
+            "files_removed should reflect the deletion"
+        );
+    }
+
+    #[test]
+    fn rollback_keeps_file_that_existed_at_target_apply() {
+        let dir = tempfile::tempdir().unwrap();
+        let existing_file = dir.path().join("existing.txt");
+
+        let state = StateStore::open_in_memory().unwrap();
+        let registry = ProviderRegistry::new();
+        let reconciler = Reconciler::new(&registry, &state);
+
+        // Apply 1: creates existing.txt (journal records file:create:...)
+        let apply_id_1 = state
+            .record_apply("default", "hash-1", ApplyStatus::InProgress, None)
+            .unwrap();
+        let j_id = state
+            .journal_begin(
+                apply_id_1,
+                0,
+                "files",
+                "file",
+                &format!("file:create:{}", existing_file.display()),
+                None,
+            )
+            .unwrap();
+        state.journal_complete(j_id, None, None).unwrap();
+        // Store backup so phase 1 handles it
+        let file_state = crate::FileState {
+            content: b"original".to_vec(),
+            content_hash: crate::sha256_hex(b"original"),
+            permissions: Some(0o644),
+            is_symlink: false,
+            symlink_target: None,
+            oversized: false,
+        };
+        state
+            .store_file_backup(
+                apply_id_1,
+                &existing_file.display().to_string(),
+                &file_state,
+            )
+            .unwrap();
+        state
+            .update_apply_status(apply_id_1, ApplyStatus::Success, None)
+            .unwrap();
+
+        // Apply 2: updates existing.txt
+        let apply_id_2 = state
+            .record_apply("default", "hash-2", ApplyStatus::InProgress, None)
+            .unwrap();
+        let j_id = state
+            .journal_begin(
+                apply_id_2,
+                0,
+                "files",
+                "file",
+                &format!("file:create:{}", existing_file.display()),
+                None,
+            )
+            .unwrap();
+        state.journal_complete(j_id, None, None).unwrap();
+        state
+            .update_apply_status(apply_id_2, ApplyStatus::Success, None)
+            .unwrap();
+
+        // Write current state
+        std::fs::write(&existing_file, "modified").unwrap();
+
+        // Rollback to apply 1 — file existed at apply 1, should be restored not removed
+        let printer = Printer::new(crate::output::Verbosity::Quiet);
+        let result = reconciler.rollback_apply(apply_id_1, &printer).unwrap();
+
+        assert!(
+            existing_file.exists(),
+            "file that existed at target apply should NOT be removed"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&existing_file).unwrap(),
+            "original",
+            "file should be restored to target apply state"
+        );
+        assert!(result.files_restored > 0);
+    }
+
+    #[test]
+    fn rollback_collects_non_file_actions_from_subsequent_applies() {
+        let state = StateStore::open_in_memory().unwrap();
+        let registry = ProviderRegistry::new();
+        let reconciler = Reconciler::new(&registry, &state);
+
+        // Apply 1: base state
+        let apply_id_1 = state
+            .record_apply("default", "hash-1", ApplyStatus::InProgress, None)
+            .unwrap();
+        state
+            .update_apply_status(apply_id_1, ApplyStatus::Success, None)
+            .unwrap();
+
+        // Apply 2: installs a package and runs a script
+        let apply_id_2 = state
+            .record_apply("default", "hash-2", ApplyStatus::InProgress, None)
+            .unwrap();
+        let j1 = state
+            .journal_begin(apply_id_2, 0, "Packages", "install", "brew:ripgrep", None)
+            .unwrap();
+        state.journal_complete(j1, None, None).unwrap();
+        let j2 = state
+            .journal_begin(
+                apply_id_2,
+                1,
+                "PostScripts",
+                "script",
+                "script:post:setup.sh",
+                None,
+            )
+            .unwrap();
+        state.journal_complete(j2, None, None).unwrap();
+        state
+            .update_apply_status(apply_id_2, ApplyStatus::Success, None)
+            .unwrap();
+
+        // Rollback to apply 1
+        let printer = Printer::new(crate::output::Verbosity::Quiet);
+        let result = reconciler.rollback_apply(apply_id_1, &printer).unwrap();
+
+        // Non-file actions from subsequent applies should be listed for manual review
+        assert!(
+            result
+                .non_file_actions
+                .contains(&"brew:ripgrep".to_string()),
+            "should list package action for manual review: {:?}",
+            result.non_file_actions
+        );
+        assert!(
+            result
+                .non_file_actions
+                .contains(&"script:post:setup.sh".to_string()),
+            "should list script action for manual review: {:?}",
+            result.non_file_actions
+        );
+    }
+
+    // --- Verify: system configurator drift detection ---
+
+    #[test]
+    fn verify_system_configurator_reports_drift() {
+        struct DriftingConfigurator;
+
+        impl crate::providers::SystemConfigurator for DriftingConfigurator {
+            fn name(&self) -> &str {
+                "sysctl"
+            }
+            fn is_available(&self) -> bool {
+                true
+            }
+            fn current_state(&self) -> crate::errors::Result<serde_yaml::Value> {
+                Ok(serde_yaml::Value::Null)
+            }
+            fn diff(
+                &self,
+                _: &serde_yaml::Value,
+            ) -> crate::errors::Result<Vec<crate::providers::SystemDrift>> {
+                Ok(vec![
+                    crate::providers::SystemDrift {
+                        key: "vm.swappiness".to_string(),
+                        expected: "10".to_string(),
+                        actual: "60".to_string(),
+                    },
+                    crate::providers::SystemDrift {
+                        key: "net.ipv4.ip_forward".to_string(),
+                        expected: "1".to_string(),
+                        actual: "0".to_string(),
+                    },
+                ])
+            }
+            fn apply(&self, _: &serde_yaml::Value, _: &Printer) -> crate::errors::Result<()> {
+                Ok(())
+            }
+        }
+
+        let state = StateStore::open_in_memory().unwrap();
+        let mut registry = ProviderRegistry::new();
+        registry
+            .system_configurators
+            .push(Box::new(DriftingConfigurator));
+
+        let mut system = HashMap::new();
+        system.insert(
+            "sysctl".to_string(),
+            serde_yaml::to_value(&serde_yaml::Mapping::new()).unwrap(),
+        );
+        let merged = crate::config::MergedProfile {
+            system,
+            ..Default::default()
+        };
+        let resolved = crate::config::ResolvedProfile {
+            layers: vec![crate::config::ProfileLayer {
+                source: "local".to_string(),
+                profile_name: "default".to_string(),
+                priority: 0,
+                policy: crate::config::LayerPolicy::Local,
+                spec: Default::default(),
+            }],
+            merged,
+        };
+
+        let printer = Printer::new(crate::output::Verbosity::Quiet);
+        let results = verify(&resolved, &registry, &state, &printer, &[]).unwrap();
+
+        // Should have per-key drift entries with resource_type "system"
+        let drift_results: Vec<_> = results
+            .iter()
+            .filter(|r| r.resource_type == "system" && !r.matches)
+            .collect();
+        assert_eq!(
+            drift_results.len(),
+            2,
+            "should report drift for each sysctl key, got: {:?}",
+            drift_results
+        );
+        assert!(
+            drift_results
+                .iter()
+                .any(|r| r.resource_id == "sysctl.vm.swappiness"),
+            "should report sysctl.vm.swappiness drift"
+        );
+        assert!(
+            drift_results
+                .iter()
+                .any(|r| r.resource_id == "sysctl.net.ipv4.ip_forward"),
+            "should report sysctl.net.ipv4.ip_forward drift"
+        );
+        // Verify the expected/actual values are correct
+        let swap = drift_results
+            .iter()
+            .find(|r| r.resource_id == "sysctl.vm.swappiness")
+            .unwrap();
+        assert_eq!(swap.expected, "10");
+        assert_eq!(swap.actual, "60");
+    }
+
+    #[test]
+    fn verify_system_configurator_reports_healthy_when_no_drift() {
+        struct HealthyConfigurator;
+
+        impl crate::providers::SystemConfigurator for HealthyConfigurator {
+            fn name(&self) -> &str {
+                "sysctl"
+            }
+            fn is_available(&self) -> bool {
+                true
+            }
+            fn current_state(&self) -> crate::errors::Result<serde_yaml::Value> {
+                Ok(serde_yaml::Value::Null)
+            }
+            fn diff(
+                &self,
+                _: &serde_yaml::Value,
+            ) -> crate::errors::Result<Vec<crate::providers::SystemDrift>> {
+                Ok(vec![])
+            }
+            fn apply(&self, _: &serde_yaml::Value, _: &Printer) -> crate::errors::Result<()> {
+                Ok(())
+            }
+        }
+
+        let state = StateStore::open_in_memory().unwrap();
+        let mut registry = ProviderRegistry::new();
+        registry
+            .system_configurators
+            .push(Box::new(HealthyConfigurator));
+
+        let mut system = HashMap::new();
+        system.insert(
+            "sysctl".to_string(),
+            serde_yaml::to_value(&serde_yaml::Mapping::new()).unwrap(),
+        );
+        let merged = crate::config::MergedProfile {
+            system,
+            ..Default::default()
+        };
+        let resolved = crate::config::ResolvedProfile {
+            layers: vec![crate::config::ProfileLayer {
+                source: "local".to_string(),
+                profile_name: "default".to_string(),
+                priority: 0,
+                policy: crate::config::LayerPolicy::Local,
+                spec: Default::default(),
+            }],
+            merged,
+        };
+
+        let printer = Printer::new(crate::output::Verbosity::Quiet);
+        let results = verify(&resolved, &registry, &state, &printer, &[]).unwrap();
+
+        let sysctl_results: Vec<_> = results
+            .iter()
+            .filter(|r| r.resource_type == "system")
+            .collect();
+        assert_eq!(
+            sysctl_results.len(),
+            1,
+            "should have one healthy result for sysctl"
+        );
+        assert!(
+            sysctl_results[0].matches,
+            "sysctl should report as matching (no drift)"
+        );
+        assert_eq!(sysctl_results[0].resource_id, "sysctl");
+    }
 }

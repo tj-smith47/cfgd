@@ -60,7 +60,16 @@ pub fn current_version() -> std::result::Result<Version, UpgradeError> {
 
 /// Query the GitHub Releases API for the latest release.
 pub fn fetch_latest_release(repo: &str, printer: Option<&Printer>) -> Result<ReleaseInfo> {
-    let url = format!("{}/repos/{}/releases/latest", GITHUB_API_BASE, repo);
+    fetch_latest_release_from(GITHUB_API_BASE, repo, printer)
+}
+
+/// Query a releases API for the latest release (testable with custom base URL).
+fn fetch_latest_release_from(
+    api_base: &str,
+    repo: &str,
+    printer: Option<&Printer>,
+) -> Result<ReleaseInfo> {
+    let url = format!("{}/repos/{}/releases/latest", api_base, repo);
 
     let spinner = printer.map(|p| p.spinner("Checking for latest release..."));
 
@@ -1190,5 +1199,463 @@ mod tests {
     fn version_check_interval_matches_cache_ttl() {
         let interval = version_check_interval();
         assert_eq!(interval, Duration::from_secs(CACHE_TTL_SECS));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn extract_tarball_multiple_files_and_dirs() {
+        use flate2::Compression;
+        use flate2::write::GzEncoder;
+
+        let dir = tempfile::tempdir().unwrap();
+        let archive_path = dir.path().join("multi.tar.gz");
+        let dest = dir.path().join("extracted");
+        std::fs::create_dir_all(&dest).unwrap();
+
+        {
+            let file = std::fs::File::create(&archive_path).unwrap();
+            let enc = GzEncoder::new(file, Compression::default());
+            let mut tar_builder = tar::Builder::new(enc);
+
+            // Add a top-level file
+            let content_a = b"file A content";
+            let mut header_a = tar::Header::new_gnu();
+            header_a.set_size(content_a.len() as u64);
+            header_a.set_mode(0o644);
+            header_a.set_cksum();
+            tar_builder
+                .append_data(&mut header_a, "file_a.txt", &content_a[..])
+                .unwrap();
+
+            // Add a file in a subdirectory
+            let content_b = b"nested file B";
+            let mut header_b = tar::Header::new_gnu();
+            header_b.set_size(content_b.len() as u64);
+            header_b.set_mode(0o755);
+            header_b.set_cksum();
+            tar_builder
+                .append_data(&mut header_b, "subdir/file_b.txt", &content_b[..])
+                .unwrap();
+
+            // Add an empty file
+            let mut header_c = tar::Header::new_gnu();
+            header_c.set_size(0);
+            header_c.set_mode(0o644);
+            header_c.set_cksum();
+            tar_builder
+                .append_data(&mut header_c, "empty.txt", &[][..])
+                .unwrap();
+
+            tar_builder.finish().unwrap();
+        }
+
+        extract_tarball(&archive_path, &dest).unwrap();
+
+        // Verify all files extracted correctly
+        let a_content = std::fs::read_to_string(dest.join("file_a.txt")).unwrap();
+        assert_eq!(a_content, "file A content");
+
+        let b_content = std::fs::read_to_string(dest.join("subdir/file_b.txt")).unwrap();
+        assert_eq!(b_content, "nested file B");
+
+        let c_content = std::fs::read_to_string(dest.join("empty.txt")).unwrap();
+        assert!(c_content.is_empty(), "empty file should have no content");
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn extract_tarball_nonexistent_archive_fails() {
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().join("out");
+        std::fs::create_dir_all(&dest).unwrap();
+
+        let result = extract_tarball(&dir.path().join("does-not-exist.tar.gz"), &dest);
+        assert!(result.is_err(), "should fail for nonexistent archive");
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn extract_tarball_invalid_gz_fails() {
+        let dir = tempfile::tempdir().unwrap();
+        let archive_path = dir.path().join("bad.tar.gz");
+        let dest = dir.path().join("out");
+        std::fs::create_dir_all(&dest).unwrap();
+
+        // Write garbage data that isn't valid gzip
+        std::fs::write(&archive_path, b"this is not a gzip file").unwrap();
+
+        let result = extract_tarball(&archive_path, &dest);
+        assert!(result.is_err(), "should fail for invalid gzip data");
+    }
+
+    #[test]
+    fn find_checksums_asset_picks_checksums_txt_over_other_assets() {
+        let release = ReleaseInfo {
+            tag: "v1.0.0".into(),
+            version: Version::new(1, 0, 0),
+            assets: vec![
+                ReleaseAsset {
+                    name: "cfgd-1.0.0-linux-x86_64.tar.gz".into(),
+                    download_url: "https://example.com/binary".into(),
+                    size: 10000,
+                },
+                ReleaseAsset {
+                    name: "SHA256SUMS".into(),
+                    download_url: "https://example.com/sha256sums".into(),
+                    size: 512,
+                },
+                ReleaseAsset {
+                    name: "cfgd-1.0.0-checksums.txt".into(),
+                    download_url: "https://example.com/checksums".into(),
+                    size: 256,
+                },
+            ],
+        };
+
+        let asset = find_checksums_asset(&release);
+        assert!(asset.is_some());
+        // find_checksums_asset looks for names ending in "-checksums.txt"
+        assert_eq!(asset.unwrap().name, "cfgd-1.0.0-checksums.txt");
+        assert_eq!(asset.unwrap().download_url, "https://example.com/checksums");
+    }
+
+    #[test]
+    fn find_checksums_asset_returns_none_for_non_matching_names() {
+        // SHA256SUMS does not match the -checksums.txt suffix pattern
+        let release = ReleaseInfo {
+            tag: "v2.0.0".into(),
+            version: Version::new(2, 0, 0),
+            assets: vec![
+                ReleaseAsset {
+                    name: "cfgd-2.0.0-linux-x86_64.tar.gz".into(),
+                    download_url: "https://example.com/binary".into(),
+                    size: 10000,
+                },
+                ReleaseAsset {
+                    name: "SHA256SUMS".into(),
+                    download_url: "https://example.com/sha256sums".into(),
+                    size: 512,
+                },
+            ],
+        };
+
+        let asset = find_checksums_asset(&release);
+        assert!(
+            asset.is_none(),
+            "SHA256SUMS does not end with -checksums.txt, so should not match"
+        );
+    }
+
+    #[test]
+    fn find_checksums_asset_empty_assets() {
+        let release = ReleaseInfo {
+            tag: "v1.0.0".into(),
+            version: Version::new(1, 0, 0),
+            assets: vec![],
+        };
+        assert!(find_checksums_asset(&release).is_none());
+    }
+
+    #[test]
+    fn invalidate_cache_removes_file_if_present() {
+        // Write a fake cache file into the real cache dir, then invalidate.
+        // Skip if the cache dir is unavailable or not writable (CI environments).
+        let dir = match directories::ProjectDirs::from("dev", "cfgd", "cfgd") {
+            Some(d) => d,
+            None => return,
+        };
+        if fs::create_dir_all(dir.cache_dir()).is_err() {
+            return; // skip if dir can't be created
+        }
+        let cache_path = dir.cache_dir().join(CACHE_FILENAME);
+        let data = r#"{"checkedAtSecs":0,"latestTag":"v0","latestVersion":"0.0.0","currentVersion":"0.0.0"}"#;
+        if fs::write(&cache_path, data).is_err() {
+            return; // skip if not writable
+        }
+        // Another parallel test may race and invalidate the cache between write
+        // and this check; skip if the file disappeared (test is still valid).
+        if !cache_path.exists() {
+            return;
+        }
+
+        invalidate_cache();
+
+        assert!(
+            !cache_path.exists(),
+            "cache file should be removed after invalidation"
+        );
+    }
+
+    #[test]
+    fn invalidate_cache_no_panic_when_no_file() {
+        // Ensure calling invalidate when no cache file exists does not panic
+        invalidate_cache();
+        invalidate_cache(); // double-call should be safe
+    }
+
+    #[test]
+    fn restart_daemon_if_running_returns_false_when_no_daemon() {
+        // In test environments, no daemon is running, so this should return false
+        let result = restart_daemon_if_running();
+        assert!(
+            !result,
+            "restart_daemon_if_running should return false when no daemon is running"
+        );
+    }
+
+    #[test]
+    fn update_check_fields_are_coherent() {
+        // Construct an UpdateCheck manually and verify field semantics
+        let check = UpdateCheck {
+            current: Version::new(0, 1, 0),
+            latest: Version::new(0, 2, 0),
+            update_available: true,
+            release: None,
+        };
+        assert!(check.update_available);
+        assert!(check.latest > check.current);
+        assert!(check.release.is_none());
+
+        let no_update = UpdateCheck {
+            current: Version::new(0, 2, 0),
+            latest: Version::new(0, 2, 0),
+            update_available: false,
+            release: None,
+        };
+        assert!(!no_update.update_available);
+        assert_eq!(no_update.current, no_update.latest);
+    }
+
+    #[test]
+    fn version_cache_write_and_read_roundtrip() {
+        // Test write_version_cache + read_version_cache via the real cache dir
+        let cache = VersionCache {
+            checked_at_secs: SystemTime::now()
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .unwrap()
+                .as_secs(),
+            latest_tag: "v99.99.99".into(),
+            latest_version: "99.99.99".into(),
+            current_version: env!("CARGO_PKG_VERSION").into(),
+        };
+
+        // Write the cache
+        let write_result = write_version_cache(&cache);
+        if write_result.is_ok() {
+            // Read it back
+            let read = read_version_cache();
+            assert!(read.is_some(), "should be able to read back written cache");
+            let read = read.unwrap();
+            assert_eq!(read.latest_tag, "v99.99.99");
+            assert_eq!(read.latest_version, "99.99.99");
+            assert_eq!(read.current_version, env!("CARGO_PKG_VERSION"));
+
+            // Clean up by invalidating
+            invalidate_cache();
+        }
+    }
+
+    #[test]
+    fn read_version_cache_returns_none_after_invalidation() {
+        invalidate_cache();
+        // After invalidation, the cache should be gone (or nonexistent)
+        // We can't guarantee it was there before, but we can verify the function
+        // doesn't panic and returns None when no file
+        let result = read_version_cache();
+        assert!(
+            result.is_none(),
+            "read_version_cache should return None after invalidation"
+        );
+    }
+
+    #[test]
+    fn cleanup_old_binary_does_not_panic() {
+        // Just verify it doesn't panic on any platform
+        cleanup_old_binary();
+    }
+
+    // --- fetch_latest_release_from with mockito ---
+
+    #[test]
+    fn fetch_latest_release_from_parses_github_response() {
+        let mut server = mockito::Server::new();
+        let mock = server
+            .mock("GET", "/repos/test/repo/releases/latest")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                r#"{
+                    "tag_name": "v1.2.3",
+                    "assets": [
+                        {
+                            "name": "cfgd-1.2.3-linux-x86_64.tar.gz",
+                            "browser_download_url": "https://example.com/download/cfgd-1.2.3-linux-x86_64.tar.gz",
+                            "size": 5000000
+                        },
+                        {
+                            "name": "checksums.txt",
+                            "browser_download_url": "https://example.com/download/checksums.txt",
+                            "size": 512
+                        }
+                    ]
+                }"#,
+            )
+            .create();
+
+        let result = fetch_latest_release_from(&server.url(), "test/repo", None);
+        mock.assert();
+
+        let release = result.unwrap();
+        assert_eq!(release.tag, "v1.2.3");
+        assert_eq!(release.version, Version::new(1, 2, 3));
+        assert_eq!(release.assets.len(), 2);
+        assert_eq!(release.assets[0].name, "cfgd-1.2.3-linux-x86_64.tar.gz");
+        assert_eq!(release.assets[0].size, 5000000);
+        assert_eq!(release.assets[1].name, "checksums.txt");
+    }
+
+    #[test]
+    fn fetch_latest_release_from_handles_api_error() {
+        let mut server = mockito::Server::new();
+        let mock = server
+            .mock("GET", "/repos/test/repo/releases/latest")
+            .with_status(404)
+            .with_body(r#"{"message": "Not Found"}"#)
+            .create();
+
+        let result = fetch_latest_release_from(&server.url(), "test/repo", None);
+        mock.assert();
+
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        let err_str = err.to_string();
+        assert!(
+            err_str.contains("404")
+                || err_str.contains("Not Found")
+                || err_str.contains("status code"),
+            "error should indicate API failure: {}",
+            err_str
+        );
+    }
+
+    #[test]
+    fn fetch_latest_release_from_handles_invalid_json() {
+        let mut server = mockito::Server::new();
+        let mock = server
+            .mock("GET", "/repos/test/repo/releases/latest")
+            .with_status(200)
+            .with_body("this is not json")
+            .create();
+
+        let result = fetch_latest_release_from(&server.url(), "test/repo", None);
+        mock.assert();
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn fetch_latest_release_from_handles_missing_tag_name() {
+        let mut server = mockito::Server::new();
+        let mock = server
+            .mock("GET", "/repos/test/repo/releases/latest")
+            .with_status(200)
+            .with_body(r#"{"name": "Release", "assets": []}"#)
+            .create();
+
+        let result = fetch_latest_release_from(&server.url(), "test/repo", None);
+        mock.assert();
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn fetch_latest_release_from_handles_no_assets() {
+        let mut server = mockito::Server::new();
+        let mock = server
+            .mock("GET", "/repos/test/repo/releases/latest")
+            .with_status(200)
+            .with_body(r#"{"tag_name": "v2.0.0"}"#)
+            .create();
+
+        let result = fetch_latest_release_from(&server.url(), "test/repo", None);
+        mock.assert();
+
+        let release = result.unwrap();
+        assert_eq!(release.version, Version::new(2, 0, 0));
+        assert!(release.assets.is_empty());
+    }
+
+    #[test]
+    fn fetch_latest_release_from_handles_tag_without_v_prefix() {
+        let mut server = mockito::Server::new();
+        let mock = server
+            .mock("GET", "/repos/test/repo/releases/latest")
+            .with_status(200)
+            .with_body(r#"{"tag_name": "3.0.1", "assets": []}"#)
+            .create();
+
+        let result = fetch_latest_release_from(&server.url(), "test/repo", None);
+        mock.assert();
+
+        let release = result.unwrap();
+        assert_eq!(release.tag, "3.0.1");
+        assert_eq!(release.version, Version::new(3, 0, 1));
+    }
+
+    #[test]
+    fn fetch_latest_release_from_handles_prerelease_version() {
+        let mut server = mockito::Server::new();
+        let mock = server
+            .mock("GET", "/repos/test/repo/releases/latest")
+            .with_status(200)
+            .with_body(r#"{"tag_name": "v4.0.0-beta.1", "assets": []}"#)
+            .create();
+
+        let result = fetch_latest_release_from(&server.url(), "test/repo", None);
+        mock.assert();
+
+        let release = result.unwrap();
+        assert_eq!(release.version, Version::parse("4.0.0-beta.1").unwrap());
+    }
+
+    // --- download_to_file with mockito ---
+
+    #[test]
+    fn download_to_file_writes_content_to_path() {
+        let mut server = mockito::Server::new();
+        let mock = server
+            .mock("GET", "/download/test-file")
+            .with_status(200)
+            .with_body(b"file content here")
+            .create();
+
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().join("downloaded.bin");
+        let url = format!("{}/download/test-file", server.url());
+
+        let result = download_to_file(&url, &dest, None);
+        mock.assert();
+
+        assert!(result.is_ok());
+        assert_eq!(std::fs::read_to_string(&dest).unwrap(), "file content here");
+    }
+
+    #[test]
+    fn download_to_file_returns_error_on_http_failure() {
+        let mut server = mockito::Server::new();
+        let mock = server
+            .mock("GET", "/download/missing")
+            .with_status(404)
+            .create();
+
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().join("should-not-exist.bin");
+        let url = format!("{}/download/missing", server.url());
+
+        let result = download_to_file(&url, &dest, None);
+        mock.assert();
+
+        assert!(result.is_err());
+        assert!(!dest.exists(), "file should not be created on failure");
     }
 }

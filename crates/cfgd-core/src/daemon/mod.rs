@@ -392,27 +392,22 @@ fn try_server_checkin(config: &CfgdConfig, resolved: &ResolvedProfile) -> bool {
     }
 }
 
-// --- Main Daemon Entry Point ---
+// --- Parsed Daemon Config ---
 
-pub async fn run_daemon(
-    config_path: PathBuf,
-    profile_override: Option<String>,
-    printer: Arc<Printer>,
-    hooks: Arc<dyn DaemonHooks>,
-) -> Result<()> {
-    printer.header("Daemon");
-    printer.info("Starting cfgd daemon...");
+/// Parsed daemon configuration values with defaults applied.
+struct ParsedDaemonConfig {
+    reconcile_interval: Duration,
+    sync_interval: Duration,
+    auto_pull: bool,
+    auto_push: bool,
+    on_change_reconcile: bool,
+    notify_on_drift: bool,
+    notify_method: NotifyMethod,
+    webhook_url: Option<String>,
+    auto_apply: bool,
+}
 
-    // Load config to get daemon settings
-    let cfg = config::load_config(&config_path)?;
-    let daemon_cfg = cfg.spec.daemon.clone().unwrap_or(config::DaemonConfig {
-        enabled: true,
-        reconcile: None,
-        sync: None,
-        notify: None,
-    });
-
-    // Parse intervals
+fn parse_daemon_config(daemon_cfg: &config::DaemonConfig) -> ParsedDaemonConfig {
     let reconcile_interval = daemon_cfg
         .reconcile
         .as_ref()
@@ -456,7 +451,181 @@ pub async fn run_daemon(
         .as_ref()
         .and_then(|n| n.webhook_url.clone());
 
-    let notifier = Arc::new(Notifier::new(notify_method, webhook_url));
+    let auto_apply = daemon_cfg
+        .reconcile
+        .as_ref()
+        .map(|r| r.auto_apply)
+        .unwrap_or(false);
+
+    ParsedDaemonConfig {
+        reconcile_interval,
+        sync_interval,
+        auto_pull,
+        auto_push,
+        on_change_reconcile,
+        notify_on_drift,
+        notify_method,
+        webhook_url,
+        auto_apply,
+    }
+}
+
+/// Build the list of per-module and default reconcile tasks from daemon config and resolved profile.
+///
+/// For each module in the resolved profile, checks if reconcile patches produce effective
+/// settings that differ from the global config. If so, creates a dedicated per-module task.
+/// Always appends a `__default__` task for non-patched resources.
+fn build_reconcile_tasks(
+    daemon_cfg: &config::DaemonConfig,
+    resolved: Option<&config::ResolvedProfile>,
+    profile_chain: &[&str],
+    reconcile_interval: Duration,
+    auto_apply: bool,
+) -> Vec<ReconcileTask> {
+    let reconcile_patches = daemon_cfg
+        .reconcile
+        .as_ref()
+        .map(|r| &r.patches[..])
+        .unwrap_or(&[]);
+
+    let mut tasks: Vec<ReconcileTask> = Vec::new();
+
+    if !reconcile_patches.is_empty() {
+        // Warn on duplicate patches
+        let mut seen_patches: HashMap<(String, Option<String>), usize> = HashMap::new();
+        for (i, patch) in reconcile_patches.iter().enumerate() {
+            let key = (format!("{:?}", patch.kind), patch.name.clone());
+            if let Some(prev) = seen_patches.insert(key, i) {
+                tracing::warn!(
+                    kind = ?patch.kind,
+                    name = %patch.name.as_deref().unwrap_or("(all)"),
+                    prev_position = prev,
+                    position = i,
+                    "duplicate reconcile patch — last wins"
+                );
+            }
+        }
+
+        // Build per-module tasks for modules that have effective overrides
+        if let Some(resolved) = resolved
+            && let Some(reconcile_cfg) = daemon_cfg.reconcile.as_ref()
+        {
+            for mod_ref in &resolved.merged.modules {
+                let mod_name = crate::modules::resolve_profile_module_name(mod_ref);
+                let eff =
+                    crate::resolve_effective_reconcile(mod_name, profile_chain, reconcile_cfg);
+
+                // Only create a dedicated task if the effective settings differ from global
+                if eff.interval != reconcile_cfg.interval
+                    || eff.auto_apply != reconcile_cfg.auto_apply
+                    || eff.drift_policy != reconcile_cfg.drift_policy
+                {
+                    tasks.push(ReconcileTask {
+                        entity: mod_name.to_string(),
+                        interval: parse_duration_or_default(&eff.interval),
+                        auto_apply: eff.auto_apply,
+                        drift_policy: eff.drift_policy,
+                        last_reconciled: None,
+                    });
+                }
+            }
+        }
+    }
+
+    // Default task for everything not covered by module-specific tasks
+    tasks.push(ReconcileTask {
+        entity: "__default__".to_string(),
+        interval: reconcile_interval,
+        auto_apply,
+        drift_policy: daemon_cfg
+            .reconcile
+            .as_ref()
+            .map(|r| r.drift_policy.clone())
+            .unwrap_or_default(),
+        last_reconciled: None,
+    });
+
+    tasks
+}
+
+/// Build sync tasks for local config and each configured source.
+///
+/// Creates one task for the local config directory (always present), plus one task
+/// per configured source whose cache directory exists on disk.
+fn build_sync_tasks(
+    config_dir: &Path,
+    parsed: &ParsedDaemonConfig,
+    sources: &[config::SourceSpec],
+    allow_unsigned: bool,
+    source_cache_dir: &Path,
+    manifest_detector: impl Fn(&Path) -> Option<bool>,
+) -> Vec<SyncTask> {
+    let mut tasks: Vec<SyncTask> = vec![SyncTask {
+        source_name: "local".to_string(),
+        repo_path: config_dir.to_path_buf(),
+        auto_pull: parsed.auto_pull,
+        auto_push: parsed.auto_push,
+        auto_apply: true,
+        interval: parsed.sync_interval,
+        last_synced: None,
+        require_signed_commits: false,
+        allow_unsigned,
+    }];
+
+    for source_spec in sources {
+        let source_dir = source_cache_dir.join(&source_spec.name);
+        if source_dir.exists() {
+            let require_signed = manifest_detector(&source_dir).unwrap_or(false);
+            tasks.push(SyncTask {
+                source_name: source_spec.name.clone(),
+                repo_path: source_dir,
+                auto_pull: true,
+                auto_push: false,
+                auto_apply: source_spec.sync.auto_apply,
+                interval: parse_duration_or_default(&source_spec.sync.interval),
+                last_synced: None,
+                require_signed_commits: require_signed,
+                allow_unsigned,
+            });
+        }
+    }
+
+    tasks
+}
+
+// --- Main Daemon Entry Point ---
+
+pub async fn run_daemon(
+    config_path: PathBuf,
+    profile_override: Option<String>,
+    printer: Arc<Printer>,
+    hooks: Arc<dyn DaemonHooks>,
+) -> Result<()> {
+    printer.header("Daemon");
+    printer.info("Starting cfgd daemon...");
+
+    // Load config to get daemon settings
+    let cfg = config::load_config(&config_path)?;
+    let daemon_cfg = cfg.spec.daemon.clone().unwrap_or(config::DaemonConfig {
+        enabled: true,
+        reconcile: None,
+        sync: None,
+        notify: None,
+    });
+
+    // Parse daemon config into resolved values with defaults
+    let parsed = parse_daemon_config(&daemon_cfg);
+    let reconcile_interval = parsed.reconcile_interval;
+    let sync_interval = parsed.sync_interval;
+    let auto_pull = parsed.auto_pull;
+    let auto_push = parsed.auto_push;
+    let on_change_reconcile = parsed.on_change_reconcile;
+    let notify_on_drift = parsed.notify_on_drift;
+
+    let notifier = Arc::new(Notifier::new(
+        parsed.notify_method.clone(),
+        parsed.webhook_url.clone(),
+    ));
     let state = Arc::new(Mutex::new(DaemonState::new()));
 
     // Parse compliance snapshot config
@@ -474,44 +643,21 @@ pub async fn run_daemon(
 
     let allow_unsigned = cfg.spec.security.as_ref().is_some_and(|s| s.allow_unsigned);
 
-    let mut sync_tasks: Vec<SyncTask> = vec![SyncTask {
-        source_name: "local".to_string(),
-        repo_path: config_dir.clone(),
-        auto_pull,
-        auto_push,
-        auto_apply: true,
-        interval: sync_interval,
-        last_synced: None,
-        require_signed_commits: false,
-        allow_unsigned,
-    }];
-
-    // Add sync tasks for each configured source
     let source_cache_dir = crate::sources::SourceManager::default_cache_dir()
         .unwrap_or_else(|_| config_dir.join(".cfgd-sources"));
-    for source_spec in &cfg.spec.sources {
-        let source_dir = source_cache_dir.join(&source_spec.name);
-        if source_dir.exists() {
-            // Read manifest to determine if signed commits are required
-            let require_signed = crate::sources::detect_source_manifest(&source_dir)
+    let mut sync_tasks = build_sync_tasks(
+        &config_dir,
+        &parsed,
+        &cfg.spec.sources,
+        allow_unsigned,
+        &source_cache_dir,
+        |source_dir| {
+            crate::sources::detect_source_manifest(source_dir)
                 .ok()
                 .flatten()
                 .map(|m| m.spec.policy.constraints.require_signed_commits)
-                .unwrap_or(false);
-
-            sync_tasks.push(SyncTask {
-                source_name: source_spec.name.clone(),
-                repo_path: source_dir,
-                auto_pull: true, // Sources are always pull-only
-                auto_push: false,
-                auto_apply: source_spec.sync.auto_apply,
-                interval: parse_duration_or_default(&source_spec.sync.interval),
-                last_synced: None,
-                require_signed_commits: require_signed,
-                allow_unsigned,
-            });
-        }
-    }
+        },
+    );
 
     // Initialize per-source status entries
     {
@@ -641,88 +787,25 @@ pub async fn run_daemon(
     }
 
     // Build per-module reconcile tasks from patches
-    let reconcile_patches = daemon_cfg
-        .reconcile
+    let profiles_dir = config_dir.join("profiles");
+    let profile_name = profile_override
+        .as_deref()
+        .or(cfg.spec.profile.as_deref())
+        .unwrap_or("default");
+    let resolved_profile = config::resolve_profile(profile_name, &profiles_dir).ok();
+    let profile_chain: Vec<String> = resolved_profile
         .as_ref()
-        .map(|r| &r.patches[..])
-        .unwrap_or(&[]);
+        .map(|r| r.layers.iter().map(|l| l.profile_name.clone()).collect())
+        .unwrap_or_else(|| vec![profile_name.to_string()]);
+    let chain_refs: Vec<&str> = profile_chain.iter().map(|s| s.as_str()).collect();
 
-    let mut reconcile_tasks: Vec<ReconcileTask> = Vec::new();
-    if !reconcile_patches.is_empty() {
-        // Resolve the profile chain for patch resolution
-        let profiles_dir = config_dir.join("profiles");
-        let profile_name = profile_override
-            .as_deref()
-            .or(cfg.spec.profile.as_deref())
-            .unwrap_or("default");
-        let profile_chain: Vec<String> =
-            if let Ok(resolved) = config::resolve_profile(profile_name, &profiles_dir) {
-                resolved
-                    .layers
-                    .iter()
-                    .map(|l| l.profile_name.clone())
-                    .collect()
-            } else {
-                vec![profile_name.to_string()]
-            };
-        let chain_refs: Vec<&str> = profile_chain.iter().map(|s| s.as_str()).collect();
-
-        // Warn on duplicate patches
-        let mut seen_patches: HashMap<(String, Option<String>), usize> = HashMap::new();
-        for (i, patch) in reconcile_patches.iter().enumerate() {
-            let key = (format!("{:?}", patch.kind), patch.name.clone());
-            if let Some(prev) = seen_patches.insert(key, i) {
-                tracing::warn!(
-                    kind = ?patch.kind,
-                    name = %patch.name.as_deref().unwrap_or("(all)"),
-                    prev_position = prev,
-                    position = i,
-                    "duplicate reconcile patch — last wins"
-                );
-            }
-        }
-
-        // Build per-module tasks for modules that have effective overrides
-        if let Ok(resolved) = config::resolve_profile(profile_name, &profiles_dir)
-            && let Some(reconcile_cfg) = daemon_cfg.reconcile.as_ref()
-        {
-            for mod_ref in &resolved.merged.modules {
-                let mod_name = crate::modules::resolve_profile_module_name(mod_ref);
-                let eff = crate::resolve_effective_reconcile(mod_name, &chain_refs, reconcile_cfg);
-
-                // Only create a dedicated task if the effective settings differ from global
-                if eff.interval != reconcile_cfg.interval
-                    || eff.auto_apply != reconcile_cfg.auto_apply
-                    || eff.drift_policy != reconcile_cfg.drift_policy
-                {
-                    reconcile_tasks.push(ReconcileTask {
-                        entity: mod_name.to_string(),
-                        interval: parse_duration_or_default(&eff.interval),
-                        auto_apply: eff.auto_apply,
-                        drift_policy: eff.drift_policy,
-                        last_reconciled: None,
-                    });
-                }
-            }
-        }
-    }
-
-    // Default task for everything not covered by module-specific tasks
-    reconcile_tasks.push(ReconcileTask {
-        entity: "__default__".to_string(),
-        interval: reconcile_interval,
-        auto_apply: daemon_cfg
-            .reconcile
-            .as_ref()
-            .map(|r| r.auto_apply)
-            .unwrap_or(false),
-        drift_policy: daemon_cfg
-            .reconcile
-            .as_ref()
-            .map(|r| r.drift_policy.clone())
-            .unwrap_or_default(),
-        last_reconciled: None,
-    });
+    let mut reconcile_tasks = build_reconcile_tasks(
+        &daemon_cfg,
+        resolved_profile.as_ref(),
+        &chain_refs,
+        reconcile_interval,
+        parsed.auto_apply,
+    );
 
     // Debounce tracking for file events
     let mut last_change: HashMap<PathBuf, Instant> = HashMap::new();
@@ -816,7 +899,7 @@ pub async fn run_daemon(
                     let notify_drift = notify_on_drift;
                     let hk = Arc::clone(&hooks);
                     tokio::task::spawn_blocking(move || {
-                        handle_reconcile(&cp, po.as_deref(), &st, &nt, notify_drift, &*hk);
+                        handle_reconcile(&cp, po.as_deref(), &st, &nt, notify_drift, &*hk, None);
                     }).await.map_err(|e| DaemonError::WatchError {
                         message: format!("reconcile task failed: {}", e),
                     })?;
@@ -846,7 +929,7 @@ pub async fn run_daemon(
                         let notify_drift = notify_on_drift;
                         let hk = Arc::clone(&hooks);
                         tokio::task::spawn_blocking(move || {
-                            handle_reconcile(&cp, po.as_deref(), &st, &nt, notify_drift, &*hk);
+                            handle_reconcile(&cp, po.as_deref(), &st, &nt, notify_drift, &*hk, None);
                         }).await.map_err(|e| DaemonError::WatchError {
                             message: format!("reconcile task failed: {}", e),
                         })?;
@@ -1115,17 +1198,21 @@ fn handle_reconcile(
     notifier: &Arc<Notifier>,
     notify_on_drift: bool,
     hooks: &dyn DaemonHooks,
+    state_dir_override: Option<&Path>,
 ) {
     tracing::info!("running reconciliation check");
 
     // Try to acquire the apply lock (non-blocking). If a CLI apply is in
     // progress, skip this reconciliation tick.
-    let state_dir = match crate::state::default_state_dir() {
-        Ok(d) => d,
-        Err(e) => {
-            tracing::error!(error = %e, "reconcile: cannot determine state directory");
-            return;
-        }
+    let state_dir = match state_dir_override {
+        Some(d) => d.to_path_buf(),
+        None => match crate::state::default_state_dir() {
+            Ok(d) => d,
+            Err(e) => {
+                tracing::error!(error = %e, "reconcile: cannot determine state directory");
+                return;
+            }
+        },
     };
     let _lock = match crate::acquire_apply_lock(&state_dir) {
         Ok(guard) => guard,
@@ -1173,12 +1260,24 @@ fn handle_reconcile(
     // Check for drift by generating a plan
     let mut registry = hooks.build_registry(&cfg);
     hooks.extend_registry_custom_managers(&mut registry, &resolved.merged.packages);
-    let store = match StateStore::open_default() {
-        Ok(s) => s,
-        Err(e) => {
-            tracing::error!(error = %e, "reconcile: state store error");
-            return;
+    let store = match state_dir_override {
+        Some(d) => {
+            std::fs::create_dir_all(d).ok();
+            match StateStore::open(&d.join("cfgd.db")) {
+                Ok(s) => s,
+                Err(e) => {
+                    tracing::error!(error = %e, "reconcile: state store error");
+                    return;
+                }
+            }
         }
+        None => match StateStore::open_default() {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::error!(error = %e, "reconcile: state store error");
+                return;
+            }
+        },
     };
 
     // Process auto-apply decisions for source items
@@ -2332,15 +2431,7 @@ where
 
 // --- Record drift for a specific file ---
 
-fn record_file_drift(path: &Path) -> bool {
-    let store = match StateStore::open_default() {
-        Ok(s) => s,
-        Err(e) => {
-            tracing::warn!(error = %e, "cannot open state store for drift recording");
-            return false;
-        }
-    };
-
+fn record_file_drift_to(store: &StateStore, path: &Path) -> bool {
     match store.record_drift(
         "file",
         &path.display().to_string(),
@@ -2354,6 +2445,17 @@ fn record_file_drift(path: &Path) -> bool {
             false
         }
     }
+}
+
+fn record_file_drift(path: &Path) -> bool {
+    let store = match StateStore::open_default() {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::warn!(error = %e, "cannot open state store for drift recording");
+            return false;
+        }
+    };
+    record_file_drift_to(&store, path)
 }
 
 // --- Service Management ---
@@ -2663,23 +2765,19 @@ fn windows_service_main() -> std::result::Result<(), Box<dyn std::error::Error>>
     Ok(())
 }
 
+/// Generate launchd plist content for the daemon service.
 #[cfg(unix)]
-fn install_launchd_service(binary: &Path, config_path: &Path, profile: Option<&str>) -> Result<()> {
-    let home = crate::expand_tilde(Path::new("~"));
-    let plist_dir = home.join(LAUNCHD_AGENTS_DIR);
-    std::fs::create_dir_all(&plist_dir).map_err(|e| DaemonError::ServiceInstallFailed {
-        message: format!("create LaunchAgents dir: {}", e),
-    })?;
-
-    let plist_path = plist_dir.join(format!("{}.plist", LAUNCHD_LABEL));
-    let config_abs =
-        std::fs::canonicalize(config_path).unwrap_or_else(|_| config_path.to_path_buf());
-
+fn generate_launchd_plist(
+    binary: &Path,
+    config_path: &Path,
+    profile: Option<&str>,
+    home: &Path,
+) -> String {
     let mut args = vec![
         format!("<string>{}</string>", binary.display()),
-        format!("<string>--config</string>"),
-        format!("<string>{}</string>", config_abs.display()),
-        format!("<string>daemon</string>"),
+        "<string>--config</string>".to_string(),
+        format!("<string>{}</string>", config_path.display()),
+        "<string>daemon</string>".to_string(),
     ];
 
     if let Some(p) = profile {
@@ -2691,7 +2789,7 @@ fn install_launchd_service(binary: &Path, config_path: &Path, profile: Option<&s
     let label = LAUNCHD_LABEL;
     let home_display = home.display();
 
-    let plist = format!(
+    format!(
         r#"<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -2712,7 +2810,22 @@ fn install_launchd_service(binary: &Path, config_path: &Path, profile: Option<&s
     <string>{home_display}/Library/Logs/cfgd.err</string>
 </dict>
 </plist>"#
-    );
+    )
+}
+
+#[cfg(unix)]
+fn install_launchd_service(binary: &Path, config_path: &Path, profile: Option<&str>) -> Result<()> {
+    let home = crate::expand_tilde(Path::new("~"));
+    let plist_dir = home.join(LAUNCHD_AGENTS_DIR);
+    std::fs::create_dir_all(&plist_dir).map_err(|e| DaemonError::ServiceInstallFailed {
+        message: format!("create LaunchAgents dir: {}", e),
+    })?;
+
+    let plist_path = plist_dir.join(format!("{}.plist", LAUNCHD_LABEL));
+    let config_abs =
+        std::fs::canonicalize(config_path).unwrap_or_else(|_| config_path.to_path_buf());
+
+    let plist = generate_launchd_plist(binary, &config_abs, profile, &home);
 
     crate::atomic_write_str(&plist_path, &plist).map_err(|e| {
         DaemonError::ServiceInstallFailed {
@@ -2741,33 +2854,24 @@ fn uninstall_launchd_service() -> Result<()> {
     Ok(())
 }
 
+/// Generate systemd unit file content for the daemon service.
 #[cfg(unix)]
-fn install_systemd_service(binary: &Path, config_path: &Path, profile: Option<&str>) -> Result<()> {
-    let home = crate::expand_tilde(Path::new("~"));
-    let unit_dir = home.join(SYSTEMD_USER_DIR);
-    std::fs::create_dir_all(&unit_dir).map_err(|e| DaemonError::ServiceInstallFailed {
-        message: format!("create systemd user dir: {}", e),
-    })?;
-
-    let unit_path = unit_dir.join("cfgd.service");
-    let config_abs =
-        std::fs::canonicalize(config_path).unwrap_or_else(|_| config_path.to_path_buf());
-
+fn generate_systemd_unit(binary: &Path, config_path: &Path, profile: Option<&str>) -> String {
     let mut exec_start = format!(
         "{} --config {} daemon",
         binary.display(),
-        config_abs.display()
+        config_path.display()
     );
     if let Some(p) = profile {
         exec_start = format!(
             "{} --config {} --profile {} daemon",
             binary.display(),
-            config_abs.display(),
+            config_path.display(),
             p
         );
     }
 
-    let unit = format!(
+    format!(
         r#"[Unit]
 Description=cfgd configuration daemon
 After=network.target
@@ -2780,7 +2884,22 @@ RestartSec=10
 
 [Install]
 WantedBy=default.target"#
-    );
+    )
+}
+
+#[cfg(unix)]
+fn install_systemd_service(binary: &Path, config_path: &Path, profile: Option<&str>) -> Result<()> {
+    let home = crate::expand_tilde(Path::new("~"));
+    let unit_dir = home.join(SYSTEMD_USER_DIR);
+    std::fs::create_dir_all(&unit_dir).map_err(|e| DaemonError::ServiceInstallFailed {
+        message: format!("create systemd user dir: {}", e),
+    })?;
+
+    let unit_path = unit_dir.join("cfgd.service");
+    let config_abs =
+        std::fs::canonicalize(config_path).unwrap_or_else(|_| config_path.to_path_buf());
+
+    let unit = generate_systemd_unit(binary, &config_abs, profile);
 
     crate::atomic_write_str(&unit_path, &unit).map_err(|e| DaemonError::ServiceInstallFailed {
         message: format!("write unit file: {}", e),
@@ -7267,5 +7386,850 @@ mod tests {
             hash_a, hash_b,
             "compute_config_hash should only hash packages, not env vars"
         );
+    }
+
+    // --- generate_launchd_plist tests ---
+
+    #[cfg(unix)]
+    #[test]
+    fn generate_launchd_plist_contains_correct_structure() {
+        let binary = Path::new("/usr/local/bin/cfgd");
+        let config = Path::new("/Users/testuser/.config/cfgd/config.yaml");
+        let home = Path::new("/Users/testuser");
+
+        let plist = generate_launchd_plist(binary, config, None, home);
+
+        assert!(
+            plist.contains("<?xml version=\"1.0\""),
+            "plist should have XML declaration"
+        );
+        assert!(
+            plist.contains(&format!("<string>{}</string>", LAUNCHD_LABEL)),
+            "plist should contain the launchd label"
+        );
+        assert!(
+            plist.contains("<string>/usr/local/bin/cfgd</string>"),
+            "plist should contain binary path"
+        );
+        assert!(
+            plist.contains("<string>/Users/testuser/.config/cfgd/config.yaml</string>"),
+            "plist should contain config path"
+        );
+        assert!(
+            plist.contains("<string>daemon</string>"),
+            "plist should contain daemon subcommand"
+        );
+        assert!(
+            plist.contains("<key>RunAtLoad</key>"),
+            "plist should enable run at load"
+        );
+        assert!(
+            plist.contains("<key>KeepAlive</key>"),
+            "plist should enable keep alive"
+        );
+        assert!(
+            plist.contains("/Users/testuser/Library/Logs/cfgd.log"),
+            "plist should set stdout log path under home"
+        );
+        assert!(
+            plist.contains("/Users/testuser/Library/Logs/cfgd.err"),
+            "plist should set stderr log path under home"
+        );
+        // Without profile, no --profile argument should appear
+        assert!(
+            !plist.contains("--profile"),
+            "plist without profile should not contain --profile"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn generate_launchd_plist_with_profile() {
+        let binary = Path::new("/usr/local/bin/cfgd");
+        let config = Path::new("/home/user/.config/cfgd/config.yaml");
+        let home = Path::new("/home/user");
+
+        let plist = generate_launchd_plist(binary, config, Some("work"), home);
+
+        assert!(
+            plist.contains("<string>--profile</string>"),
+            "plist with profile should contain --profile argument"
+        );
+        assert!(
+            plist.contains("<string>work</string>"),
+            "plist with profile should contain the profile name"
+        );
+        // Verify order: --config before daemon before --profile
+        let config_pos = plist.find("<string>--config</string>").unwrap();
+        let daemon_pos = plist.find("<string>daemon</string>").unwrap();
+        let profile_pos = plist.find("<string>--profile</string>").unwrap();
+        assert!(
+            config_pos < daemon_pos,
+            "--config should appear before daemon"
+        );
+        assert!(
+            daemon_pos < profile_pos,
+            "daemon should appear before --profile"
+        );
+    }
+
+    // --- generate_systemd_unit tests ---
+
+    #[cfg(unix)]
+    #[test]
+    fn generate_systemd_unit_contains_correct_structure() {
+        let binary = Path::new("/usr/local/bin/cfgd");
+        let config = Path::new("/home/user/.config/cfgd/config.yaml");
+
+        let unit = generate_systemd_unit(binary, config, None);
+
+        assert!(
+            unit.contains("[Unit]"),
+            "unit file should have [Unit] section"
+        );
+        assert!(
+            unit.contains("Description=cfgd configuration daemon"),
+            "unit file should have correct description"
+        );
+        assert!(
+            unit.contains("After=network.target"),
+            "unit file should depend on network.target"
+        );
+        assert!(
+            unit.contains("[Service]"),
+            "unit file should have [Service] section"
+        );
+        assert!(
+            unit.contains("Type=simple"),
+            "unit file should use simple service type"
+        );
+        assert!(
+            unit.contains(
+                "ExecStart=/usr/local/bin/cfgd --config /home/user/.config/cfgd/config.yaml daemon"
+            ),
+            "unit file should have correct ExecStart"
+        );
+        assert!(
+            unit.contains("Restart=on-failure"),
+            "unit file should restart on failure"
+        );
+        assert!(
+            unit.contains("RestartSec=10"),
+            "unit file should have 10s restart delay"
+        );
+        assert!(
+            unit.contains("[Install]"),
+            "unit file should have [Install] section"
+        );
+        assert!(
+            unit.contains("WantedBy=default.target"),
+            "unit file should be wanted by default.target"
+        );
+        // Without profile, no --profile should appear
+        assert!(
+            !unit.contains("--profile"),
+            "unit without profile should not contain --profile"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn generate_systemd_unit_with_profile() {
+        let binary = Path::new("/opt/bin/cfgd");
+        let config = Path::new("/etc/cfgd/config.yaml");
+
+        let unit = generate_systemd_unit(binary, config, Some("server"));
+
+        assert!(
+            unit.contains(
+                "ExecStart=/opt/bin/cfgd --config /etc/cfgd/config.yaml --profile server daemon"
+            ),
+            "unit file with profile should include --profile in ExecStart"
+        );
+    }
+
+    // --- record_file_drift_to tests ---
+
+    #[test]
+    fn record_file_drift_to_records_event() {
+        let store = StateStore::open_in_memory().unwrap();
+        let path = Path::new("/home/user/.bashrc");
+
+        let result = record_file_drift_to(&store, path);
+        assert!(result, "record_file_drift_to should return true on success");
+
+        let events = store.unresolved_drift().unwrap();
+        assert_eq!(events.len(), 1, "should have exactly one drift event");
+        assert_eq!(events[0].resource_id, "/home/user/.bashrc");
+    }
+
+    #[test]
+    fn record_file_drift_to_records_correct_type() {
+        let store = StateStore::open_in_memory().unwrap();
+        let path = Path::new("/etc/config.yaml");
+
+        record_file_drift_to(&store, path);
+
+        let events = store.unresolved_drift().unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(
+            events[0].resource_type, "file",
+            "drift event should have resource_type 'file'"
+        );
+        assert_eq!(
+            events[0].source, "local",
+            "drift event should have source 'local'"
+        );
+        assert_eq!(
+            events[0].actual.as_deref(),
+            Some("modified"),
+            "drift event should have actual value 'modified'"
+        );
+        assert!(
+            events[0].expected.is_none(),
+            "drift event should have no expected value"
+        );
+    }
+
+    // --- discover_managed_paths tests ---
+
+    #[test]
+    fn discover_managed_paths_with_no_config_returns_empty() {
+        use std::path::Path;
+
+        struct TestHooks;
+        impl DaemonHooks for TestHooks {
+            fn build_registry(&self, _: &CfgdConfig) -> ProviderRegistry {
+                ProviderRegistry::new()
+            }
+            fn plan_files(
+                &self,
+                _: &Path,
+                _: &ResolvedProfile,
+            ) -> crate::errors::Result<Vec<FileAction>> {
+                Ok(vec![])
+            }
+            fn plan_packages(
+                &self,
+                _: &MergedProfile,
+                _: &[&dyn PackageManager],
+            ) -> crate::errors::Result<Vec<PackageAction>> {
+                Ok(vec![])
+            }
+            fn extend_registry_custom_managers(
+                &self,
+                _: &mut ProviderRegistry,
+                _: &config::PackagesSpec,
+            ) {
+            }
+            fn expand_tilde(&self, path: &Path) -> PathBuf {
+                crate::expand_tilde(path)
+            }
+        }
+
+        let hooks = TestHooks;
+        // Non-existent config file should return empty paths
+        let paths = discover_managed_paths(Path::new("/nonexistent/config.yaml"), None, &hooks);
+        assert!(
+            paths.is_empty(),
+            "non-existent config should return no managed paths"
+        );
+    }
+
+    // --- parse_daemon_config tests ---
+
+    #[test]
+    fn parse_daemon_config_defaults() {
+        let daemon_cfg = config::DaemonConfig {
+            enabled: true,
+            reconcile: None,
+            sync: None,
+            notify: None,
+        };
+        let parsed = parse_daemon_config(&daemon_cfg);
+        assert_eq!(
+            parsed.reconcile_interval,
+            Duration::from_secs(DEFAULT_RECONCILE_SECS)
+        );
+        assert_eq!(parsed.sync_interval, Duration::from_secs(DEFAULT_SYNC_SECS));
+        assert!(!parsed.auto_pull);
+        assert!(!parsed.auto_push);
+        assert!(!parsed.on_change_reconcile);
+        assert!(!parsed.notify_on_drift);
+        assert!(matches!(parsed.notify_method, NotifyMethod::Stdout));
+        assert!(parsed.webhook_url.is_none());
+        assert!(!parsed.auto_apply);
+    }
+
+    #[test]
+    fn parse_daemon_config_custom_intervals() {
+        let daemon_cfg = config::DaemonConfig {
+            enabled: true,
+            reconcile: Some(config::ReconcileConfig {
+                interval: "10m".to_string(),
+                on_change: false,
+                auto_apply: false,
+                policy: None,
+                drift_policy: config::DriftPolicy::default(),
+                patches: vec![],
+            }),
+            sync: Some(config::SyncConfig {
+                auto_pull: false,
+                auto_push: false,
+                interval: "30s".to_string(),
+            }),
+            notify: None,
+        };
+        let parsed = parse_daemon_config(&daemon_cfg);
+        assert_eq!(parsed.reconcile_interval, Duration::from_secs(600));
+        assert_eq!(parsed.sync_interval, Duration::from_secs(30));
+    }
+
+    #[test]
+    fn parse_daemon_config_notification_settings() {
+        let daemon_cfg = config::DaemonConfig {
+            enabled: true,
+            reconcile: None,
+            sync: None,
+            notify: Some(config::NotifyConfig {
+                drift: true,
+                method: NotifyMethod::Webhook,
+                webhook_url: Some("https://hooks.example.com/drift".to_string()),
+            }),
+        };
+        let parsed = parse_daemon_config(&daemon_cfg);
+        assert!(parsed.notify_on_drift);
+        assert!(matches!(parsed.notify_method, NotifyMethod::Webhook));
+        assert_eq!(
+            parsed.webhook_url.as_deref(),
+            Some("https://hooks.example.com/drift")
+        );
+    }
+
+    #[test]
+    fn parse_daemon_config_sync_flags() {
+        let daemon_cfg = config::DaemonConfig {
+            enabled: true,
+            reconcile: None,
+            sync: Some(config::SyncConfig {
+                auto_pull: true,
+                auto_push: true,
+                interval: "5m".to_string(),
+            }),
+            notify: None,
+        };
+        let parsed = parse_daemon_config(&daemon_cfg);
+        assert!(parsed.auto_pull);
+        assert!(parsed.auto_push);
+    }
+
+    #[test]
+    fn parse_daemon_config_on_change_enabled() {
+        let daemon_cfg = config::DaemonConfig {
+            enabled: true,
+            reconcile: Some(config::ReconcileConfig {
+                interval: "5m".to_string(),
+                on_change: true,
+                auto_apply: false,
+                policy: None,
+                drift_policy: config::DriftPolicy::default(),
+                patches: vec![],
+            }),
+            sync: None,
+            notify: None,
+        };
+        let parsed = parse_daemon_config(&daemon_cfg);
+        assert!(parsed.on_change_reconcile);
+        assert!(!parsed.auto_apply);
+    }
+
+    #[test]
+    fn parse_daemon_config_auto_apply_enabled() {
+        let daemon_cfg = config::DaemonConfig {
+            enabled: true,
+            reconcile: Some(config::ReconcileConfig {
+                interval: "5m".to_string(),
+                on_change: false,
+                auto_apply: true,
+                policy: None,
+                drift_policy: config::DriftPolicy::Auto,
+                patches: vec![],
+            }),
+            sync: None,
+            notify: None,
+        };
+        let parsed = parse_daemon_config(&daemon_cfg);
+        assert!(parsed.auto_apply);
+    }
+
+    #[test]
+    fn handle_reconcile_with_no_config_file() {
+        let state = Arc::new(Mutex::new(DaemonState::new()));
+        let notifier = Arc::new(Notifier::new(NotifyMethod::Stdout, None));
+
+        struct NoopHooks;
+        impl DaemonHooks for NoopHooks {
+            fn build_registry(&self, _: &CfgdConfig) -> ProviderRegistry {
+                ProviderRegistry::new()
+            }
+            fn plan_files(
+                &self,
+                _: &Path,
+                _: &ResolvedProfile,
+            ) -> crate::errors::Result<Vec<FileAction>> {
+                Ok(vec![])
+            }
+            fn plan_packages(
+                &self,
+                _: &MergedProfile,
+                _: &[&dyn PackageManager],
+            ) -> crate::errors::Result<Vec<PackageAction>> {
+                Ok(vec![])
+            }
+            fn extend_registry_custom_managers(
+                &self,
+                _: &mut ProviderRegistry,
+                _: &config::PackagesSpec,
+            ) {
+            }
+            fn expand_tilde(&self, path: &Path) -> PathBuf {
+                crate::expand_tilde(path)
+            }
+        }
+
+        let tmp = tempfile::tempdir().unwrap();
+        let state_dir = tmp.path().to_path_buf();
+
+        // Passing a nonexistent config path should return gracefully (no panic)
+        handle_reconcile(
+            Path::new("/nonexistent/path/config.yaml"),
+            None,
+            &state,
+            &notifier,
+            false,
+            &NoopHooks,
+            Some(&state_dir),
+        );
+        // If we got here without panic, the function handled the missing config gracefully.
+        // Verify the state wasn't updated (no reconciliation occurred).
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let guard = rt.block_on(state.lock());
+        assert!(
+            guard.last_reconcile.is_none(),
+            "no reconcile should have occurred with missing config"
+        );
+    }
+
+    #[test]
+    fn handle_reconcile_with_no_profile() {
+        let state = Arc::new(Mutex::new(DaemonState::new()));
+        let notifier = Arc::new(Notifier::new(NotifyMethod::Stdout, None));
+
+        struct NoopHooks;
+        impl DaemonHooks for NoopHooks {
+            fn build_registry(&self, _: &CfgdConfig) -> ProviderRegistry {
+                ProviderRegistry::new()
+            }
+            fn plan_files(
+                &self,
+                _: &Path,
+                _: &ResolvedProfile,
+            ) -> crate::errors::Result<Vec<FileAction>> {
+                Ok(vec![])
+            }
+            fn plan_packages(
+                &self,
+                _: &MergedProfile,
+                _: &[&dyn PackageManager],
+            ) -> crate::errors::Result<Vec<PackageAction>> {
+                Ok(vec![])
+            }
+            fn extend_registry_custom_managers(
+                &self,
+                _: &mut ProviderRegistry,
+                _: &config::PackagesSpec,
+            ) {
+            }
+            fn expand_tilde(&self, path: &Path) -> PathBuf {
+                crate::expand_tilde(path)
+            }
+        }
+
+        let tmp = tempfile::tempdir().unwrap();
+        let state_dir = tmp.path().to_path_buf();
+
+        // Write a valid config with NO profile set
+        let config_path = tmp.path().join("config.yaml");
+        std::fs::write(
+            &config_path,
+            "apiVersion: cfgd.io/v1alpha1\nkind: CfgdConfig\nmetadata:\n  name: test\nspec: {}\n",
+        )
+        .unwrap();
+
+        // No profile override and no profile in config — should return gracefully
+        handle_reconcile(
+            &config_path,
+            None,
+            &state,
+            &notifier,
+            false,
+            &NoopHooks,
+            Some(&state_dir),
+        );
+        // Should not have updated state since no profile was available
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let guard = rt.block_on(state.lock());
+        assert!(
+            guard.last_reconcile.is_none(),
+            "no reconcile should have occurred without a profile"
+        );
+    }
+
+    // --- build_reconcile_tasks ---
+
+    #[test]
+    fn build_reconcile_tasks_default_only_when_no_patches() {
+        let daemon_cfg = config::DaemonConfig {
+            enabled: true,
+            reconcile: Some(config::ReconcileConfig {
+                interval: "60s".to_string(),
+                on_change: false,
+                auto_apply: false,
+                policy: None,
+                drift_policy: config::DriftPolicy::NotifyOnly,
+                patches: vec![],
+            }),
+            sync: None,
+            notify: None,
+        };
+        let tasks = build_reconcile_tasks(&daemon_cfg, None, &[], Duration::from_secs(60), false);
+        assert_eq!(tasks.len(), 1);
+        assert_eq!(tasks[0].entity, "__default__");
+        assert_eq!(tasks[0].interval, Duration::from_secs(60));
+        assert!(!tasks[0].auto_apply);
+        assert_eq!(tasks[0].drift_policy, config::DriftPolicy::NotifyOnly);
+    }
+
+    #[test]
+    fn build_reconcile_tasks_default_inherits_global_drift_policy() {
+        let daemon_cfg = config::DaemonConfig {
+            enabled: true,
+            reconcile: Some(config::ReconcileConfig {
+                interval: "120s".to_string(),
+                on_change: false,
+                auto_apply: true,
+                policy: None,
+                drift_policy: config::DriftPolicy::Auto,
+                patches: vec![],
+            }),
+            sync: None,
+            notify: None,
+        };
+        let tasks = build_reconcile_tasks(&daemon_cfg, None, &[], Duration::from_secs(120), true);
+        assert_eq!(tasks.len(), 1);
+        assert_eq!(tasks[0].drift_policy, config::DriftPolicy::Auto);
+        assert!(tasks[0].auto_apply);
+    }
+
+    #[test]
+    fn build_reconcile_tasks_no_reconcile_config_uses_defaults() {
+        let daemon_cfg = config::DaemonConfig {
+            enabled: true,
+            reconcile: None,
+            sync: None,
+            notify: None,
+        };
+        let tasks = build_reconcile_tasks(&daemon_cfg, None, &[], Duration::from_secs(300), false);
+        assert_eq!(tasks.len(), 1);
+        assert_eq!(tasks[0].entity, "__default__");
+        assert_eq!(tasks[0].interval, Duration::from_secs(300));
+        // Default drift policy is NotifyOnly
+        assert_eq!(tasks[0].drift_policy, config::DriftPolicy::default());
+    }
+
+    #[test]
+    fn build_reconcile_tasks_patches_without_resolved_profile_skips_modules() {
+        // Patches exist but no resolved profile — should still get only __default__
+        let daemon_cfg = config::DaemonConfig {
+            enabled: true,
+            reconcile: Some(config::ReconcileConfig {
+                interval: "60s".to_string(),
+                on_change: false,
+                auto_apply: false,
+                policy: None,
+                drift_policy: config::DriftPolicy::NotifyOnly,
+                patches: vec![config::ReconcilePatch {
+                    kind: config::ReconcilePatchKind::Module,
+                    name: Some("vim".to_string()),
+                    interval: Some("10s".to_string()),
+                    auto_apply: Some(true),
+                    drift_policy: None,
+                }],
+            }),
+            sync: None,
+            notify: None,
+        };
+        let tasks = build_reconcile_tasks(
+            &daemon_cfg,
+            None, // no resolved profile
+            &["default"],
+            Duration::from_secs(60),
+            false,
+        );
+        // Only default task — no module tasks since profile isn't resolved
+        assert_eq!(tasks.len(), 1);
+        assert_eq!(tasks[0].entity, "__default__");
+    }
+
+    #[test]
+    fn build_reconcile_tasks_module_with_overridden_interval_gets_dedicated_task() {
+        // Build a resolved profile with a module
+        let merged = config::MergedProfile {
+            modules: vec!["vim".to_string()],
+            ..Default::default()
+        };
+        let resolved = config::ResolvedProfile {
+            layers: vec![config::ProfileLayer {
+                source: "local".to_string(),
+                profile_name: "default".to_string(),
+                priority: 0,
+                policy: config::LayerPolicy::Local,
+                spec: Default::default(),
+            }],
+            merged,
+        };
+
+        let daemon_cfg = config::DaemonConfig {
+            enabled: true,
+            reconcile: Some(config::ReconcileConfig {
+                interval: "60s".to_string(),
+                on_change: false,
+                auto_apply: false,
+                policy: None,
+                drift_policy: config::DriftPolicy::NotifyOnly,
+                patches: vec![config::ReconcilePatch {
+                    kind: config::ReconcilePatchKind::Module,
+                    name: Some("vim".to_string()),
+                    interval: Some("10s".to_string()),
+                    auto_apply: None,
+                    drift_policy: None,
+                }],
+            }),
+            sync: None,
+            notify: None,
+        };
+
+        let tasks = build_reconcile_tasks(
+            &daemon_cfg,
+            Some(&resolved),
+            &["default"],
+            Duration::from_secs(60),
+            false,
+        );
+        // Should have 2 tasks: one for "vim" with 10s interval, one for __default__
+        assert_eq!(tasks.len(), 2);
+        let vim_task = tasks.iter().find(|t| t.entity == "vim").unwrap();
+        assert_eq!(vim_task.interval, Duration::from_secs(10));
+        assert!(!vim_task.auto_apply);
+        let default_task = tasks.iter().find(|t| t.entity == "__default__").unwrap();
+        assert_eq!(default_task.interval, Duration::from_secs(60));
+    }
+
+    #[test]
+    fn build_reconcile_tasks_module_matching_global_gets_no_dedicated_task() {
+        // When a module's effective settings match global, no dedicated task is created
+        let merged = config::MergedProfile {
+            modules: vec!["vim".to_string()],
+            ..Default::default()
+        };
+        let resolved = config::ResolvedProfile {
+            layers: vec![config::ProfileLayer {
+                source: "local".to_string(),
+                profile_name: "default".to_string(),
+                priority: 0,
+                policy: config::LayerPolicy::Local,
+                spec: Default::default(),
+            }],
+            merged,
+        };
+
+        let daemon_cfg = config::DaemonConfig {
+            enabled: true,
+            reconcile: Some(config::ReconcileConfig {
+                interval: "60s".to_string(),
+                on_change: false,
+                auto_apply: false,
+                policy: None,
+                drift_policy: config::DriftPolicy::NotifyOnly,
+                // Patch that produces same values as global
+                patches: vec![config::ReconcilePatch {
+                    kind: config::ReconcilePatchKind::Module,
+                    name: Some("vim".to_string()),
+                    interval: None,     // inherits "60s"
+                    auto_apply: None,   // inherits false
+                    drift_policy: None, // inherits NotifyOnly
+                }],
+            }),
+            sync: None,
+            notify: None,
+        };
+
+        let tasks = build_reconcile_tasks(
+            &daemon_cfg,
+            Some(&resolved),
+            &["default"],
+            Duration::from_secs(60),
+            false,
+        );
+        // Only __default__ — vim's effective settings match global
+        assert_eq!(tasks.len(), 1);
+        assert_eq!(tasks[0].entity, "__default__");
+    }
+
+    // --- build_sync_tasks ---
+
+    #[test]
+    fn build_sync_tasks_local_only_when_no_sources() {
+        let parsed = ParsedDaemonConfig {
+            reconcile_interval: Duration::from_secs(60),
+            sync_interval: Duration::from_secs(300),
+            auto_pull: true,
+            auto_push: false,
+            on_change_reconcile: false,
+            notify_on_drift: false,
+            notify_method: NotifyMethod::Stdout,
+            webhook_url: None,
+            auto_apply: false,
+        };
+        let tmp = tempfile::tempdir().unwrap();
+        let tasks = build_sync_tasks(tmp.path(), &parsed, &[], false, tmp.path(), |_| None);
+        assert_eq!(tasks.len(), 1);
+        assert_eq!(tasks[0].source_name, "local");
+        assert!(tasks[0].auto_pull);
+        assert!(!tasks[0].auto_push);
+        assert!(tasks[0].auto_apply);
+        assert_eq!(tasks[0].interval, Duration::from_secs(300));
+        assert!(!tasks[0].require_signed_commits);
+    }
+
+    #[test]
+    fn build_sync_tasks_includes_source_when_dir_exists() {
+        let parsed = ParsedDaemonConfig {
+            reconcile_interval: Duration::from_secs(60),
+            sync_interval: Duration::from_secs(300),
+            auto_pull: false,
+            auto_push: false,
+            on_change_reconcile: false,
+            notify_on_drift: false,
+            notify_method: NotifyMethod::Stdout,
+            webhook_url: None,
+            auto_apply: false,
+        };
+        let tmp = tempfile::tempdir().unwrap();
+        let cache_dir = tmp.path().join("sources");
+        std::fs::create_dir_all(cache_dir.join("team-config")).unwrap();
+
+        let sources = vec![config::SourceSpec {
+            name: "team-config".to_string(),
+            origin: config::OriginSpec {
+                origin_type: config::OriginType::Git,
+                url: "https://github.com/team/config.git".to_string(),
+                branch: "main".to_string(),
+                auth: None,
+                ssh_strict_host_key_checking: Default::default(),
+            },
+            subscription: Default::default(),
+            sync: config::SourceSyncSpec {
+                interval: "120s".to_string(),
+                auto_apply: true,
+                pin_version: None,
+            },
+        }];
+
+        let tasks = build_sync_tasks(
+            tmp.path(),
+            &parsed,
+            &sources,
+            false,
+            &cache_dir,
+            |_| Some(true), // manifest requires signed commits
+        );
+        assert_eq!(tasks.len(), 2);
+        let source_task = tasks
+            .iter()
+            .find(|t| t.source_name == "team-config")
+            .unwrap();
+        assert!(source_task.auto_pull);
+        assert!(!source_task.auto_push);
+        assert!(source_task.auto_apply);
+        assert_eq!(source_task.interval, Duration::from_secs(120));
+        assert!(source_task.require_signed_commits);
+    }
+
+    #[test]
+    fn build_sync_tasks_skips_source_when_dir_missing() {
+        let parsed = ParsedDaemonConfig {
+            reconcile_interval: Duration::from_secs(60),
+            sync_interval: Duration::from_secs(300),
+            auto_pull: false,
+            auto_push: false,
+            on_change_reconcile: false,
+            notify_on_drift: false,
+            notify_method: NotifyMethod::Stdout,
+            webhook_url: None,
+            auto_apply: false,
+        };
+        let tmp = tempfile::tempdir().unwrap();
+        let cache_dir = tmp.path().join("sources");
+        // Intentionally don't create the source directory
+
+        let sources = vec![config::SourceSpec {
+            name: "missing-source".to_string(),
+            origin: config::OriginSpec {
+                origin_type: config::OriginType::Git,
+                url: "https://github.com/team/config.git".to_string(),
+                branch: "main".to_string(),
+                auth: None,
+                ssh_strict_host_key_checking: Default::default(),
+            },
+            subscription: Default::default(),
+            sync: Default::default(),
+        }];
+
+        let tasks = build_sync_tasks(tmp.path(), &parsed, &sources, false, &cache_dir, |_| None);
+        // Only local task — source dir doesn't exist
+        assert_eq!(tasks.len(), 1);
+        assert_eq!(tasks[0].source_name, "local");
+    }
+
+    #[test]
+    fn build_sync_tasks_propagates_allow_unsigned() {
+        let parsed = ParsedDaemonConfig {
+            reconcile_interval: Duration::from_secs(60),
+            sync_interval: Duration::from_secs(300),
+            auto_pull: true,
+            auto_push: true,
+            on_change_reconcile: false,
+            notify_on_drift: false,
+            notify_method: NotifyMethod::Stdout,
+            webhook_url: None,
+            auto_apply: false,
+        };
+        let tmp = tempfile::tempdir().unwrap();
+        let tasks = build_sync_tasks(
+            tmp.path(),
+            &parsed,
+            &[],
+            true, // allow_unsigned
+            tmp.path(),
+            |_| None,
+        );
+        assert!(tasks[0].allow_unsigned);
     }
 }
