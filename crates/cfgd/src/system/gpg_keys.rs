@@ -85,11 +85,7 @@ impl KeyringEntry {
             return true;
         }
         if self.expiry_ts > 0 {
-            let now = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_secs())
-                .unwrap_or(0);
-            return self.expiry_ts < now;
+            return self.expiry_ts < cfgd_core::unix_secs_now();
         }
         false
     }

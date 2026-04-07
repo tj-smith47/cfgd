@@ -510,10 +510,7 @@ async fn create_token(
     let token_hash = hash_token(&token);
 
     // Calculate expiration
-    let now_secs = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs();
+    let now_secs = cfgd_core::unix_secs_now();
     let expires_at = cfgd_core::unix_secs_to_iso8601(now_secs + req.expires_in);
 
     let db = state.db.lock().await;
@@ -874,7 +871,8 @@ fn verify_ssh_signature(
         // Write allowed_signers file: "username key_type key_data"
         // The public_key field is the full OpenSSH public key line (e.g. "ssh-ed25519 AAAA... comment")
         let signer_line = format!("{} {}", key.username, key.public_key);
-        if std::fs::write(&signers_path, &signer_line).is_err() {
+        if let Err(e) = std::fs::write(&signers_path, &signer_line) {
+            tracing::warn!(error = %e, key_user = %key.username, "ssh verify: failed to write allowed_signers");
             continue;
         }
 
@@ -947,22 +945,26 @@ fn verify_gpg_signature(
     let sig_path = tmp_dir.path().join("challenge.txt.asc");
     let key_path = tmp_dir.path().join("pubkey.asc");
 
-    if std::fs::write(&data_path, nonce).is_err() {
+    if let Err(e) = std::fs::write(&data_path, nonce) {
+        tracing::error!(error = %e, "gpg verify: failed to write challenge data");
         return false;
     }
-    if std::fs::write(&sig_path, signature_armored).is_err() {
+    if let Err(e) = std::fs::write(&sig_path, signature_armored) {
+        tracing::error!(error = %e, "gpg verify: failed to write signature");
         return false;
     }
 
     let gpg_home = tmp_dir.path().join("gnupg");
-    if std::fs::create_dir_all(&gpg_home).is_err() {
+    if let Err(e) = std::fs::create_dir_all(&gpg_home) {
+        tracing::error!(error = %e, "gpg verify: failed to create gnupg homedir");
         return false;
     }
     // GPG requires restrictive permissions on its homedir
     let _ = cfgd_core::set_file_permissions(&gpg_home, 0o700);
 
     for key in keys {
-        if std::fs::write(&key_path, &key.public_key).is_err() {
+        if let Err(e) = std::fs::write(&key_path, &key.public_key) {
+            tracing::warn!(error = %e, key_user = %key.username, "gpg verify: failed to write public key");
             continue;
         }
 
@@ -2527,13 +2529,7 @@ mod tests {
         // Create a bootstrap token in the DB
         let token_plaintext = "cfgd_bs_test_enrollment_token_abcdef1234567890";
         let token_hash = hash_token(token_plaintext);
-        let expires_at = cfgd_core::unix_secs_to_iso8601(
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_secs()
-                + 3600,
-        );
+        let expires_at = cfgd_core::unix_secs_to_iso8601(cfgd_core::unix_secs_now() + 3600);
         {
             let db = state.db.lock().await;
             db.create_bootstrap_token(&token_hash, "testuser", Some("platform"), &expires_at)
@@ -2585,13 +2581,7 @@ mod tests {
 
         let token_plaintext = "cfgd_bs_reuse_test_token";
         let token_hash = hash_token(token_plaintext);
-        let expires_at = cfgd_core::unix_secs_to_iso8601(
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_secs()
-                + 3600,
-        );
+        let expires_at = cfgd_core::unix_secs_to_iso8601(cfgd_core::unix_secs_now() + 3600);
         {
             let db = state.db.lock().await;
             db.create_bootstrap_token(&token_hash, "testuser", None, &expires_at)

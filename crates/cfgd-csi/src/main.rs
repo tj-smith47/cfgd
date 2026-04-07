@@ -28,10 +28,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let socket_path = env_or("CSI_ENDPOINT", "/csi/csi.sock");
     let cache_dir = PathBuf::from(env_or("CACHE_DIR", "/var/lib/cfgd-csi/cache"));
-    let cache_max: u64 = env_or("CACHE_MAX_BYTES", "5368709120")
-        .parse()
-        .unwrap_or(5_368_709_120);
-    let metrics_port: u16 = env_or("METRICS_PORT", "9090").parse().unwrap_or(9090);
+    let cache_max_str = env_or("CACHE_MAX_BYTES", "5368709120");
+    let cache_max: u64 = cache_max_str.parse().unwrap_or_else(|e| {
+        tracing::warn!(value = %cache_max_str, error = %e, "invalid CACHE_MAX_BYTES, using default 5GB");
+        5_368_709_120
+    });
+    let metrics_port_str = env_or("METRICS_PORT", "9090");
+    let metrics_port: u16 = metrics_port_str.parse().unwrap_or_else(|e| {
+        tracing::warn!(value = %metrics_port_str, error = %e, "invalid METRICS_PORT, using default 9090");
+        9090
+    });
 
     let node_id = cfgd_core::hostname_string();
 
@@ -68,9 +74,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
             }),
         );
-        let listener = tokio::net::TcpListener::bind(("0.0.0.0", metrics_port))
-            .await
-            .expect("failed to bind metrics port");
+        let listener = match tokio::net::TcpListener::bind(("0.0.0.0", metrics_port)).await {
+            Ok(l) => l,
+            Err(e) => {
+                tracing::error!(port = metrics_port, error = %e, "failed to bind metrics port");
+                return;
+            }
+        };
         tracing::info!(port = metrics_port, "metrics server listening");
         if let Err(e) = axum::serve(listener, app).await {
             tracing::error!(error = %e, "metrics server failed");

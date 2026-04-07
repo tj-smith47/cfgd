@@ -2101,10 +2101,7 @@ fn handle_compliance_snapshot(
 
     // Prune old snapshots based on retention
     if let Ok(retention_dur) = crate::parse_duration_str(&compliance_cfg.retention) {
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default();
-        let cutoff_secs = now.as_secs().saturating_sub(retention_dur.as_secs());
+        let cutoff_secs = crate::unix_secs_now().saturating_sub(retention_dur.as_secs());
         let cutoff_str = crate::unix_secs_to_iso8601(cutoff_secs);
         match store.prune_compliance_snapshots(&cutoff_str) {
             Ok(deleted) if deleted > 0 => {

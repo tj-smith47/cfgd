@@ -35,6 +35,37 @@ fn run_provider_cmd(
     Ok(SecretString::from(cfgd_core::stdout_lossy_trimmed(&output)))
 }
 
+/// Split an EDITOR value respecting single and double quotes.
+/// e.g. `"/path/to my/editor" --wait` → ["/path/to my/editor", "--wait"]
+fn shell_split_editor(input: &str) -> Vec<String> {
+    let mut tokens = Vec::new();
+    let mut current = String::new();
+    let mut chars = input.chars();
+    while let Some(c) = chars.next() {
+        match c {
+            '\'' | '"' => {
+                let quote = c;
+                for qc in chars.by_ref() {
+                    if qc == quote {
+                        break;
+                    }
+                    current.push(qc);
+                }
+            }
+            c if c.is_whitespace() => {
+                if !current.is_empty() {
+                    tokens.push(std::mem::take(&mut current));
+                }
+            }
+            _ => current.push(c),
+        }
+    }
+    if !current.is_empty() {
+        tokens.push(current);
+    }
+    tokens
+}
+
 /// Extract the age public key from a key file's `# public key: age1...` comment.
 fn extract_age_recipient(content: &str) -> Option<String> {
     content.lines().find_map(|line| {
@@ -294,9 +325,9 @@ impl SecretBackend for AgeBackend {
         })?;
 
         let editor = std::env::var("EDITOR").unwrap_or_else(|_| "vi".to_string());
-        let mut parts = editor.split_whitespace();
-        let editor_cmd = parts.next().unwrap_or("vi");
-        let editor_args: Vec<&str> = parts.collect();
+        let parsed = shell_split_editor(&editor);
+        let editor_cmd = parsed.first().map(|s| s.as_str()).unwrap_or("vi");
+        let editor_args: Vec<&str> = parsed.iter().skip(1).map(|s| s.as_str()).collect();
         let status = std::process::Command::new(editor_cmd)
             .args(&editor_args)
             .arg(&temp_file)

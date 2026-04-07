@@ -260,8 +260,13 @@ fn check_trusted_registries(spec: &ModuleSpec, registries: &[String]) -> Result<
         let matches = registries.iter().any(|pattern| {
             if let Some(prefix) = pattern.strip_suffix('*') {
                 oci_ref.starts_with(prefix)
+            } else if pattern.ends_with('/') {
+                // Pattern already has path boundary (e.g. "ghcr.io/myorg/")
+                oci_ref.starts_with(pattern.as_str())
             } else {
-                oci_ref.starts_with(pattern)
+                // Exact registry match: require full match or path-prefix boundary
+                // to prevent "ghcr.io/myorg" matching "ghcr.io/myorgEVIL/image"
+                oci_ref == pattern || oci_ref.starts_with(&format!("{}/", pattern))
             }
         });
         if !matches {
@@ -1708,7 +1713,7 @@ mod tests {
             oci_artifact: Some(oci_ref.to_string()),
             ..Default::default()
         };
-        // Without wildcard suffix, starts_with check still works
+        // Trailing-slash pattern acts as path-prefix match
         let registries = vec!["trusted.io/".to_string()];
         let result = check_trusted_registries(&spec, &registries);
         assert!(

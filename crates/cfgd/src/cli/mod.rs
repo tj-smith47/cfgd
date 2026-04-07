@@ -3309,10 +3309,7 @@ fn cmd_compliance_history(cli: &Cli, printer: &Printer, since: Option<&str>) -> 
         .map(|s| {
             let dur = cfgd_core::parse_duration_str(s)
                 .map_err(|e| anyhow::anyhow!("invalid --since value '{}': {}", s, e))?;
-            let now = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default();
-            let cutoff_secs = now.as_secs().saturating_sub(dur.as_secs());
+            let cutoff_secs = cfgd_core::unix_secs_now().saturating_sub(dur.as_secs());
             Ok::<String, anyhow::Error>(cfgd_core::unix_secs_to_iso8601(cutoff_secs))
         })
         .transpose()?;

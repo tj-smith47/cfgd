@@ -28,20 +28,19 @@ pub const MODULES_ANNOTATION: &str = "cfgd.io/modules";
 
 /// Returns the current UTC time as an ISO 8601 / RFC 3339 string.
 pub fn utc_now_iso8601() -> String {
-    let duration = std::time::SystemTime::now()
+    let secs = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default();
-    let secs = duration.as_secs();
+        .unwrap_or_default()
+        .as_secs();
+    unix_secs_to_iso8601(secs)
+}
 
-    let days = secs / 86400;
-    let time_of_day = secs % 86400;
-    let hours = time_of_day / 3600;
-    let minutes = (time_of_day % 3600) / 60;
-    let seconds = time_of_day % 60;
-
-    let (year, month, day) = days_to_ymd(days);
-
-    format!("{year:04}-{month:02}-{day:02}T{hours:02}:{minutes:02}:{seconds:02}Z")
+/// Returns the current time as seconds since the Unix epoch.
+pub fn unix_secs_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
 }
 
 /// Converts a Unix timestamp (seconds since epoch) to an ISO 8601 UTC string.

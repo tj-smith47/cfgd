@@ -7,7 +7,6 @@ mod leader;
 mod metrics;
 mod webhook;
 
-use std::io::Write;
 use std::path::Path;
 use std::sync::Arc;
 
@@ -37,10 +36,13 @@ async fn main() -> Result<()> {
     let client = Client::try_default().await?;
 
     let health_state = health::HealthState::new();
-    let health_port: u16 = std::env::var("HEALTH_PORT")
-        .unwrap_or_else(|_| "8081".to_string())
-        .parse()
-        .unwrap_or(8081);
+    let health_port: u16 = match std::env::var("HEALTH_PORT") {
+        Ok(val) => val.parse().unwrap_or_else(|e| {
+            tracing::warn!(value = %val, error = %e, "invalid HEALTH_PORT, using default 8081");
+            8081
+        }),
+        Err(_) => 8081,
+    };
 
     let mut health_handle = tokio::spawn({
         let hs = health_state.clone();
@@ -55,10 +57,13 @@ async fn main() -> Result<()> {
     let metrics = metrics::Metrics::new(&mut registry);
     let registry = Arc::new(Mutex::new(registry));
 
-    let metrics_port: u16 = std::env::var("METRICS_PORT")
-        .unwrap_or_else(|_| "8443".to_string())
-        .parse()
-        .unwrap_or(8443);
+    let metrics_port: u16 = match std::env::var("METRICS_PORT") {
+        Ok(val) => val.parse().unwrap_or_else(|e| {
+            tracing::warn!(value = %val, error = %e, "invalid METRICS_PORT, using default 8443");
+            8443
+        }),
+        Err(_) => 8443,
+    };
 
     let mut metrics_handle = tokio::spawn({
         let reg = registry.clone();
@@ -71,10 +76,13 @@ async fn main() -> Result<()> {
 
     let cert_dir = std::env::var("WEBHOOK_CERT_DIR")
         .unwrap_or_else(|_| "/tmp/k8s-webhook-server/serving-certs".to_string());
-    let webhook_port: u16 = std::env::var("WEBHOOK_PORT")
-        .unwrap_or_else(|_| "9443".to_string())
-        .parse()
-        .unwrap_or(9443);
+    let webhook_port: u16 = match std::env::var("WEBHOOK_PORT") {
+        Ok(val) => val.parse().unwrap_or_else(|e| {
+            tracing::warn!(value = %val, error = %e, "invalid WEBHOOK_PORT, using default 9443");
+            9443
+        }),
+        Err(_) => 9443,
+    };
 
     if Path::new(&cert_dir).join("tls.crt").exists() {
         tracing::info!(cert_dir = %cert_dir, port = webhook_port, "starting webhook server");
@@ -260,11 +268,8 @@ fn init_tracing() {
                 return;
             }
             Err(e) => {
-                // Tracing not yet initialized; write directly to stderr
-                let _ = writeln!(
-                    std::io::stderr(),
-                    "Failed to initialize OpenTelemetry: {e}, falling back to fmt only"
-                );
+                // Tracing not yet initialized for structured output; log to stderr
+                eprintln!("Failed to initialize OpenTelemetry: {e}, falling back to fmt only");
             }
         }
     }

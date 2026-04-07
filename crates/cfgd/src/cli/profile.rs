@@ -781,27 +781,56 @@ pub(super) fn cmd_profile_update(
                                 if let Ok(Some(backup)) = state.latest_backup_for_path(&f.file_path)
                                 {
                                     if backup.was_symlink {
-                                        let _ = std::fs::remove_file(path);
-                                        if let Some(ref link_target) = backup.symlink_target {
-                                            let _ = cfgd_core::create_symlink(
+                                        if let Err(e) = std::fs::remove_file(path) {
+                                            printer.warning(&format!(
+                                                "  rollback: failed to remove {}: {}",
+                                                f.file_path, e
+                                            ));
+                                        }
+                                        if let Some(ref link_target) = backup.symlink_target
+                                            && let Err(e) = cfgd_core::create_symlink(
                                                 std::path::Path::new(link_target),
                                                 path,
-                                            );
+                                            )
+                                        {
+                                            printer.warning(&format!(
+                                                "  rollback: failed to restore symlink {}: {}",
+                                                f.file_path, e
+                                            ));
                                         }
                                         printer
                                             .info(&format!("  Restored symlink: {}", f.file_path));
                                     } else if !backup.oversized && !backup.content.is_empty() {
-                                        let _ = cfgd_core::atomic_write(path, &backup.content);
-                                        printer.info(&format!("  Restored: {}", f.file_path));
+                                        if let Err(e) =
+                                            cfgd_core::atomic_write(path, &backup.content)
+                                        {
+                                            printer.warning(&format!(
+                                                "  rollback: failed to restore {}: {}",
+                                                f.file_path, e
+                                            ));
+                                        } else {
+                                            printer.info(&format!("  Restored: {}", f.file_path));
+                                        }
                                     }
                                 } else if path.exists() || path.symlink_metadata().is_ok() {
-                                    let _ = std::fs::remove_file(path);
-                                    printer.info(&format!("  Removed: {}", f.file_path));
+                                    if let Err(e) = std::fs::remove_file(path) {
+                                        printer.warning(&format!(
+                                            "  rollback: failed to remove {}: {}",
+                                            f.file_path, e
+                                        ));
+                                    } else {
+                                        printer.info(&format!("  Removed: {}", f.file_path));
+                                    }
                                 }
                             }
                         }
                     }
-                    let _ = state.delete_module_files(m);
+                    if let Err(e) = state.delete_module_files(m) {
+                        printer.warning(&format!(
+                            "  rollback: failed to clean module files for {}: {}",
+                            m, e
+                        ));
+                    }
                 }
 
                 if let Err(e) = state.remove_module_state(m) {

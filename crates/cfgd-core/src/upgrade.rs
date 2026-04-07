@@ -16,6 +16,11 @@ const DEFAULT_REPO: &str = "tj-smith47/cfgd";
 const CACHE_TTL_SECS: u64 = 86400; // 24 hours
 const CACHE_FILENAME: &str = "version-check.json";
 
+/// Strip leading 'v' from a git tag to get the bare version string.
+fn strip_tag_prefix(tag: &str) -> &str {
+    tag.strip_prefix('v').unwrap_or(tag)
+}
+
 /// Information about a GitHub release.
 #[derive(Debug, Clone)]
 pub struct ReleaseInfo {
@@ -109,7 +114,7 @@ fn parse_release_json(body: &str) -> Result<ReleaseInfo> {
         })?
         .to_string();
 
-    let version_str = tag.strip_prefix('v').unwrap_or(&tag);
+    let version_str = strip_tag_prefix(&tag);
     let version = Version::parse(version_str).map_err(|e| UpgradeError::VersionParse {
         message: format!("cannot parse release version '{}': {}", tag, e),
     })?;
@@ -149,7 +154,7 @@ pub fn find_asset_for_platform(
     };
 
     // Look for: cfgd-<version>-<os>-<arch>.tar.gz (Unix) or .zip (Windows)
-    let version_str = release.tag.strip_prefix('v').unwrap_or(&release.tag);
+    let version_str = strip_tag_prefix(&release.tag);
     #[cfg(unix)]
     let archive_suffix = ".tar.gz";
     #[cfg(windows)]

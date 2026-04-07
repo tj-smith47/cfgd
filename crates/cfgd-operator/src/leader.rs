@@ -15,10 +15,7 @@ const LEASE_NAME: &str = "cfgd-operator-leader";
 fn parse_duration_secs(env_var: &str, default: u64) -> u64 {
     std::env::var(env_var)
         .ok()
-        .and_then(|v| {
-            let v = v.trim_end_matches('s');
-            v.parse().ok()
-        })
+        .and_then(|v| cfgd_core::parse_duration_str(&v).map(|d| d.as_secs()).ok())
         .unwrap_or(default)
 }
 

@@ -67,7 +67,8 @@ impl Cache {
         }
 
         // Atomic move — if another thread already placed the entry, discard ours
-        if std::fs::rename(&tmp_dir, &entry_dir).is_err() {
+        if let Err(e) = std::fs::rename(&tmp_dir, &entry_dir) {
+            tracing::warn!(module = %module, version = %version, error = %e, "cache rename race, discarding duplicate pull");
             let _ = std::fs::remove_dir_all(&tmp_dir);
         }
 
@@ -192,10 +193,7 @@ impl Cache {
 
 /// Write a marker file with the current unix timestamp for LRU tracking.
 fn touch_atime(path: &Path) {
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs();
+    let now = cfgd_core::unix_secs_now();
     let _ = cfgd_core::atomic_write_str(&path.join(LAST_ACCESS_FILE), &now.to_string());
 }
 

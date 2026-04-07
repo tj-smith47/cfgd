@@ -91,6 +91,18 @@ impl SourceManager {
                 message: format!("invalid source name: {e}"),
             }
         })?;
+
+        // Reject local file URLs to prevent local filesystem access from composed sources
+        let url_lower = spec.origin.url.to_lowercase();
+        if url_lower.starts_with("file://") || url_lower.starts_with('/') {
+            return Err(SourceError::GitError {
+                name: spec.name.clone(),
+                message: "local file:// URLs and absolute paths are not allowed as source origins"
+                    .to_string(),
+            }
+            .into());
+        }
+
         let source_dir = self.cache_dir.join(&spec.name);
 
         if source_dir.exists() {

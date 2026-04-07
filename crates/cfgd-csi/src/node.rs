@@ -193,20 +193,29 @@ impl Node for CfgdNode {
         std::fs::create_dir_all(target_path)
             .map_err(|e| Status::internal(format!("cannot create target dir: {e}")))?;
 
-        let result = bind_mount_readonly(&source, target);
-        let result_str = if result.is_ok() { "success" } else { "error" };
-        self.metrics
-            .volume_publish_total
-            .get_or_create(&PublishLabels {
-                module: module.to_string(),
-                result: result_str.to_string(),
-            })
-            .inc();
-        if result.is_err() {
-            // Clean up the target directory we created if mount failed
-            let _ = std::fs::remove_dir(target);
+        match bind_mount_readonly(&source, target) {
+            Ok(()) => {
+                self.metrics
+                    .volume_publish_total
+                    .get_or_create(&PublishLabels {
+                        module: module.to_string(),
+                        result: "success".to_string(),
+                    })
+                    .inc();
+            }
+            Err(e) => {
+                self.metrics
+                    .volume_publish_total
+                    .get_or_create(&PublishLabels {
+                        module: module.to_string(),
+                        result: "error".to_string(),
+                    })
+                    .inc();
+                // Clean up the target directory we created if mount failed
+                let _ = std::fs::remove_dir(target);
+                return Err(e);
+            }
         }
-        result?;
 
         Ok(Response::new(NodePublishVolumeResponse {}))
     }

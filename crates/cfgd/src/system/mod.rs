@@ -499,7 +499,7 @@ impl SystemConfigurator for SystemdUnitConfigurator {
                 .args(["is-enabled", name])
                 .output()
                 .ok()
-                .map(|o| String::from_utf8_lossy(&o.stdout).trim() == "enabled")
+                .map(|o| cfgd_core::stdout_lossy_trimmed(&o) == "enabled")
                 .unwrap_or(false);
 
             if is_enabled != desired_enabled {

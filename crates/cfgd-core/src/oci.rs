@@ -239,10 +239,10 @@ impl RegistryAuth {
 
     /// Returns the HTTP Basic auth header value.
     fn basic_auth_header(&self) -> String {
-        use std::io::Write;
-        let mut buf = Vec::new();
-        write!(buf, "{}:{}", self.username, self.password).ok();
-        format!("Basic {}", base64_encode(&buf))
+        format!(
+            "Basic {}",
+            base64_encode(format!("{}:{}", self.username, self.password).as_bytes())
+        )
     }
 }
 
@@ -333,7 +333,7 @@ fn resolve_from_credential_helper(helper_name: &str, registry: &str) -> Option<R
                     Ok(None) if start.elapsed() >= timeout => {
                         let _ = child.kill();
                         let _ = child.wait();
-                        tracing::debug!("credential helper {helper_bin} timed out");
+                        tracing::warn!(helper = %helper_bin, "credential helper timed out after {}s", timeout.as_secs());
                         return None;
                     }
                     Ok(None) => std::thread::sleep(std::time::Duration::from_millis(50)),

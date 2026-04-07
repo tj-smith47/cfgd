@@ -471,8 +471,11 @@ impl SystemConfigurator for ContainerdConfigurator {
                 && !state.oversized
             {
                 printer.warning("containerd restart failed — restoring previous config");
-                let _ = cfgd_core::atomic_write(&config_path, &state.content);
-                let _ = Self::restart_containerd();
+                if let Err(re) = cfgd_core::atomic_write(&config_path, &state.content) {
+                    printer.warning(&format!("rollback: failed to restore config: {}", re));
+                } else if let Err(re) = Self::restart_containerd() {
+                    printer.warning(&format!("rollback: containerd restart also failed: {}", re));
+                }
             }
             return Err(e);
         }
@@ -649,8 +652,11 @@ impl SystemConfigurator for KubeletConfigurator {
                 && !state.oversized
             {
                 printer.warning("kubelet restart failed — restoring previous config");
-                let _ = cfgd_core::atomic_write(&config_path, &state.content);
-                let _ = Self::restart_kubelet();
+                if let Err(re) = cfgd_core::atomic_write(&config_path, &state.content) {
+                    printer.warning(&format!("rollback: failed to restore config: {}", re));
+                } else if let Err(re) = Self::restart_kubelet() {
+                    printer.warning(&format!("rollback: kubelet restart also failed: {}", re));
+                }
             }
             return Err(e);
         }

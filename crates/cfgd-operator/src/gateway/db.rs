@@ -858,10 +858,7 @@ impl ServerDb {
     ) -> Result<EnrollmentChallenge, GatewayError> {
         let (os, arch) = os_arch;
         let id = uuid::Uuid::new_v4().to_string();
-        let now_secs = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
+        let now_secs = cfgd_core::unix_secs_now();
         let created_at = cfgd_core::unix_secs_to_iso8601(now_secs);
         let expires_at = cfgd_core::unix_secs_to_iso8601(now_secs + ttl_secs);
 
@@ -954,10 +951,8 @@ impl ServerDb {
     /// Delete drift and checkin events older than `max_age_days`.
     pub fn cleanup_old_events(&self, max_age_days: u32) -> Result<usize, GatewayError> {
         let cutoff = {
-            let now = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default();
-            let cutoff_secs = now.as_secs().saturating_sub(max_age_days as u64 * 86400);
+            let cutoff_secs =
+                cfgd_core::unix_secs_now().saturating_sub(max_age_days as u64 * 86400);
             cfgd_core::unix_secs_to_iso8601(cutoff_secs)
         };
 
@@ -1256,19 +1251,11 @@ mod tests {
     // --- Bootstrap Token Tests ---
 
     fn future_expiry() -> String {
-        let now_secs = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_secs();
-        cfgd_core::unix_secs_to_iso8601(now_secs + 3600) // 1 hour from now
+        cfgd_core::unix_secs_to_iso8601(cfgd_core::unix_secs_now() + 3600) // 1 hour from now
     }
 
     fn past_expiry() -> String {
-        let now_secs = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_secs();
-        cfgd_core::unix_secs_to_iso8601(now_secs.saturating_sub(3600)) // 1 hour ago
+        cfgd_core::unix_secs_to_iso8601(cfgd_core::unix_secs_now().saturating_sub(3600)) // 1 hour ago
     }
 
     #[test]
