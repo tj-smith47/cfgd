@@ -3047,4 +3047,491 @@ spec:
             "should show (none) for empty packages: {output}"
         );
     }
+
+    // --- profile show: secrets display variants ---
+
+    #[test]
+    fn profile_show_secrets_envs_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let profiles_dir = dir.path().join("profiles");
+        std::fs::create_dir_all(&profiles_dir).unwrap();
+        std::fs::write(
+            dir.path().join("cfgd.yaml"),
+            "apiVersion: cfgd.io/v1alpha1\nkind: CfgdConfig\nmetadata:\n  name: test\nspec:\n  profile: env-secret\n",
+        ).unwrap();
+        std::fs::write(
+            profiles_dir.join("env-secret.yaml"),
+            r#"apiVersion: cfgd.io/v1alpha1
+kind: Profile
+metadata:
+  name: env-secret
+spec:
+  secrets:
+    - source: op://vault/api-key
+      envs:
+        - API_KEY
+        - API_SECRET
+"#,
+        )
+        .unwrap();
+
+        let cli = test_cli(dir.path());
+        let (printer, buf) = Printer::for_test();
+        cmd_profile_show(&cli, &printer, Some("env-secret")).unwrap();
+        let output = buf.lock().unwrap();
+        assert!(
+            output.contains("Secrets"),
+            "should show Secrets section, got: {output}"
+        );
+        assert!(
+            output.contains("envs: API_KEY, API_SECRET"),
+            "should show envs for secret without target, got: {output}"
+        );
+    }
+
+    #[test]
+    fn profile_show_secrets_target_and_envs() {
+        let dir = tempfile::tempdir().unwrap();
+        let profiles_dir = dir.path().join("profiles");
+        std::fs::create_dir_all(&profiles_dir).unwrap();
+        std::fs::write(
+            dir.path().join("cfgd.yaml"),
+            "apiVersion: cfgd.io/v1alpha1\nkind: CfgdConfig\nmetadata:\n  name: test\nspec:\n  profile: both-secret\n",
+        ).unwrap();
+        std::fs::write(
+            profiles_dir.join("both-secret.yaml"),
+            r#"apiVersion: cfgd.io/v1alpha1
+kind: Profile
+metadata:
+  name: both-secret
+spec:
+  secrets:
+    - source: secrets/key.enc
+      target: /tmp/key
+      envs:
+        - KEY_VAR
+"#,
+        )
+        .unwrap();
+
+        let cli = test_cli(dir.path());
+        let (printer, buf) = Printer::for_test();
+        cmd_profile_show(&cli, &printer, Some("both-secret")).unwrap();
+        let output = buf.lock().unwrap();
+        assert!(
+            output.contains("Secrets"),
+            "should show Secrets section, got: {output}"
+        );
+        assert!(
+            output.contains("/tmp/key") && output.contains("KEY_VAR"),
+            "should show both target and envs, got: {output}"
+        );
+    }
+
+    // --- profile list: wide format ---
+
+    fn test_cli_wide(dir: &Path) -> super::super::Cli {
+        super::super::Cli {
+            output: super::super::OutputFormatArg(cfgd_core::output::OutputFormat::Wide),
+            ..test_cli(dir)
+        }
+    }
+
+    #[test]
+    fn profile_list_wide_format() {
+        let dir = setup_config_dir();
+        let cli = test_cli_wide(dir.path());
+        let (printer, buf) = Printer::for_test_with_format(cfgd_core::output::OutputFormat::Wide);
+
+        cmd_profile_list(&cli, &printer).unwrap();
+        let output = buf.lock().unwrap();
+        // Wide format uses table with columns
+        assert!(
+            output.contains("Profile") && output.contains("Active") && output.contains("Modules"),
+            "wide list should show table headers, got: {output}"
+        );
+        assert!(
+            output.contains("default") && output.contains("work"),
+            "wide list should show profile names, got: {output}"
+        );
+    }
+
+    // --- profile show: no env displays (none) ---
+
+    #[test]
+    fn profile_show_no_env_displays_none() {
+        let dir = tempfile::tempdir().unwrap();
+        let profiles_dir = dir.path().join("profiles");
+        std::fs::create_dir_all(&profiles_dir).unwrap();
+        std::fs::write(
+            dir.path().join("cfgd.yaml"),
+            "apiVersion: cfgd.io/v1alpha1\nkind: CfgdConfig\nmetadata:\n  name: test\nspec:\n  profile: noenv\n",
+        ).unwrap();
+        std::fs::write(
+            profiles_dir.join("noenv.yaml"),
+            "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: noenv\nspec:\n  modules: []\n",
+        ).unwrap();
+
+        let cli = test_cli(dir.path());
+        let (printer, buf) = Printer::for_test();
+        cmd_profile_show(&cli, &printer, Some("noenv")).unwrap();
+        let output = buf.lock().unwrap();
+        assert!(
+            output.contains("Env"),
+            "should show Env section, got: {output}"
+        );
+        // The Env section should show "(none)" since there are no env vars
+        // But the "(none)" could also come from packages or files - let's just verify it exists
+        assert!(
+            output.contains("(none)"),
+            "should show (none) for empty env/packages/files, got: {output}"
+        );
+    }
+
+    // --- profile show: no files displays (none) ---
+
+    #[test]
+    fn profile_show_no_files_displays_none() {
+        let dir = tempfile::tempdir().unwrap();
+        let profiles_dir = dir.path().join("profiles");
+        std::fs::create_dir_all(&profiles_dir).unwrap();
+        std::fs::write(
+            dir.path().join("cfgd.yaml"),
+            "apiVersion: cfgd.io/v1alpha1\nkind: CfgdConfig\nmetadata:\n  name: test\nspec:\n  profile: nofiles\n",
+        ).unwrap();
+        std::fs::write(
+            profiles_dir.join("nofiles.yaml"),
+            "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: nofiles\nspec:\n  env:\n    - name: X\n      value: y\n",
+        ).unwrap();
+
+        let cli = test_cli(dir.path());
+        let (printer, buf) = Printer::for_test();
+        cmd_profile_show(&cli, &printer, Some("nofiles")).unwrap();
+        let output = buf.lock().unwrap();
+        assert!(
+            output.contains("Files"),
+            "should show Files section, got: {output}"
+        );
+    }
+
+    // --- profile update: add and remove packages ---
+
+    #[test]
+    fn profile_update_add_package() {
+        let dir = setup_config_dir();
+        let cli = test_cli(dir.path());
+        let (printer, buf) = Printer::for_test();
+
+        let mut args = make_profile_update_args();
+        args.packages = vec!["brew:neovim".to_string()];
+
+        cmd_profile_update(&cli, &printer, "default", &args).unwrap();
+
+        let doc = config::load_profile(&dir.path().join("profiles").join("default.yaml")).unwrap();
+        let pkgs = doc.spec.packages.unwrap();
+        assert!(
+            pkgs.brew
+                .as_ref()
+                .is_some_and(|b| b.formulae.contains(&"neovim".to_string())),
+            "brew formulae should contain neovim"
+        );
+        let output = buf.lock().unwrap();
+        assert!(
+            output.contains("Added package: neovim"),
+            "should confirm package addition, got: {output}"
+        );
+    }
+
+    #[test]
+    fn profile_update_remove_package() {
+        let dir = setup_config_dir();
+        let cli = test_cli(dir.path());
+        let printer = make_printer();
+
+        // Default profile has cargo: [bat], remove it
+        let mut args = make_profile_update_args();
+        args.packages = vec!["-cargo:bat".to_string()];
+
+        cmd_profile_update(&cli, &printer, "default", &args).unwrap();
+
+        let doc = config::load_profile(&dir.path().join("profiles").join("default.yaml")).unwrap();
+        if let Some(pkgs) = &doc.spec.packages {
+            if let Some(cargo) = &pkgs.cargo {
+                assert!(
+                    !cargo.packages.contains(&"bat".to_string()),
+                    "bat should be removed from cargo packages"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn profile_update_remove_nonexistent_package() {
+        let dir = setup_config_dir();
+        let cli = test_cli(dir.path());
+        let (printer, buf) = Printer::for_test();
+
+        let mut args = make_profile_update_args();
+        args.packages = vec!["-brew:nonexistent-pkg".to_string()];
+
+        cmd_profile_update(&cli, &printer, "default", &args).unwrap();
+
+        let output = buf.lock().unwrap();
+        assert!(
+            output.contains("not found"),
+            "should warn about package not found, got: {output}"
+        );
+    }
+
+    // --- profile update: env warnings ---
+
+    #[test]
+    fn profile_update_remove_nonexistent_env() {
+        let dir = setup_config_dir();
+        let cli = test_cli(dir.path());
+        let (printer, buf) = Printer::for_test();
+
+        let mut args = make_profile_update_args();
+        args.env = vec!["-NONEXISTENT_VAR".to_string()];
+
+        cmd_profile_update(&cli, &printer, "default", &args).unwrap();
+
+        let output = buf.lock().unwrap();
+        assert!(
+            output.contains("not found"),
+            "should warn about nonexistent env var, got: {output}"
+        );
+    }
+
+    // --- profile update: alias warnings ---
+
+    #[test]
+    fn profile_update_remove_nonexistent_alias() {
+        let dir = setup_config_dir();
+        let cli = test_cli(dir.path());
+        let (printer, buf) = Printer::for_test();
+
+        let mut args = make_profile_update_args();
+        args.aliases = vec!["-nonexistent-alias".to_string()];
+
+        cmd_profile_update(&cli, &printer, "default", &args).unwrap();
+
+        let output = buf.lock().unwrap();
+        assert!(
+            output.contains("not found"),
+            "should warn about nonexistent alias, got: {output}"
+        );
+    }
+
+    // --- profile update: system setting warnings ---
+
+    #[test]
+    fn profile_update_remove_nonexistent_system_setting() {
+        let dir = setup_config_dir();
+        let cli = test_cli(dir.path());
+        let (printer, buf) = Printer::for_test();
+
+        let mut args = make_profile_update_args();
+        args.system = vec!["-nonexistent-setting".to_string()];
+
+        cmd_profile_update(&cli, &printer, "default", &args).unwrap();
+
+        let output = buf.lock().unwrap();
+        assert!(
+            output.contains("not found"),
+            "should warn about nonexistent system setting, got: {output}"
+        );
+    }
+
+    // --- profile update: secret warnings ---
+
+    #[test]
+    fn profile_update_remove_nonexistent_secret() {
+        let dir = setup_config_dir();
+        let cli = test_cli(dir.path());
+        let (printer, buf) = Printer::for_test();
+
+        let mut args = make_profile_update_args();
+        args.secrets = vec!["-/tmp/nonexistent-secret".to_string()];
+
+        cmd_profile_update(&cli, &printer, "default", &args).unwrap();
+
+        let output = buf.lock().unwrap();
+        assert!(
+            output.contains("not found"),
+            "should warn about nonexistent secret target, got: {output}"
+        );
+    }
+
+    // --- profile update: duplicate inherits ---
+
+    #[test]
+    fn profile_update_add_duplicate_inherits() {
+        let dir = setup_config_dir();
+        let cli = test_cli(dir.path());
+        let (printer, buf) = Printer::for_test();
+
+        // work already inherits default, try adding it again
+        let mut args = make_profile_update_args();
+        args.inherits = vec!["default".to_string()];
+
+        cmd_profile_update(&cli, &printer, "work", &args).unwrap();
+
+        let output = buf.lock().unwrap();
+        assert!(
+            output.contains("already inherits"),
+            "should warn about duplicate inherits, got: {output}"
+        );
+    }
+
+    // --- profile update: remove nonexistent inherits ---
+
+    #[test]
+    fn profile_update_remove_nonexistent_inherits() {
+        let dir = setup_config_dir();
+        let cli = test_cli(dir.path());
+        let (printer, buf) = Printer::for_test();
+
+        let mut args = make_profile_update_args();
+        args.inherits = vec!["-nonexistent-parent".to_string()];
+
+        cmd_profile_update(&cli, &printer, "default", &args).unwrap();
+
+        let output = buf.lock().unwrap();
+        assert!(
+            output.contains("not found"),
+            "should warn about nonexistent inherits, got: {output}"
+        );
+    }
+
+    // --- profile update: add duplicate secret ---
+
+    #[test]
+    fn profile_update_add_duplicate_secret() {
+        let dir = setup_config_dir();
+        let cli = test_cli(dir.path());
+        let printer = make_printer();
+
+        // Add a secret
+        let mut args = make_profile_update_args();
+        args.secrets = vec!["source:~/target".to_string()];
+        cmd_profile_update(&cli, &printer, "default", &args).unwrap();
+
+        // Try adding the same secret again
+        let (printer2, buf2) = Printer::for_test();
+        let mut args2 = make_profile_update_args();
+        args2.secrets = vec!["other-source:~/target".to_string()];
+        cmd_profile_update(&cli, &printer2, "default", &args2).unwrap();
+
+        let output = buf2.lock().unwrap();
+        assert!(
+            output.contains("already exists"),
+            "should warn about duplicate secret target, got: {output}"
+        );
+    }
+
+    // --- profile create: with packages ---
+
+    #[test]
+    fn profile_create_with_packages() {
+        let dir = setup_config_dir();
+        let cli = test_cli(dir.path());
+        let printer = make_printer();
+
+        let mut args = make_profile_create_args("pkg-test");
+        args.packages = vec!["brew:ripgrep".to_string()];
+
+        cmd_profile_create(&cli, &printer, &args).unwrap();
+
+        let doc = config::load_profile(&dir.path().join("profiles").join("pkg-test.yaml")).unwrap();
+        let pkgs = doc.spec.packages.unwrap();
+        assert!(
+            pkgs.brew
+                .as_ref()
+                .is_some_and(|b| b.formulae.contains(&"ripgrep".to_string())),
+            "brew formulae should contain ripgrep"
+        );
+    }
+
+    // --- profile update: on_drift script ---
+
+    #[test]
+    fn profile_update_add_and_remove_on_drift() {
+        let dir = setup_config_dir();
+        let cli = test_cli(dir.path());
+        let printer = make_printer();
+
+        let mut args = make_profile_update_args();
+        args.on_drift = vec!["alert.sh".to_string()];
+        cmd_profile_update(&cli, &printer, "default", &args).unwrap();
+
+        let doc = config::load_profile(&dir.path().join("profiles").join("default.yaml")).unwrap();
+        let scripts = doc.spec.scripts.unwrap();
+        assert_eq!(scripts.on_drift.len(), 1);
+        assert_eq!(scripts.on_drift[0].run_str(), "alert.sh");
+
+        // Remove it
+        let mut args2 = make_profile_update_args();
+        args2.on_drift = vec!["-alert.sh".to_string()];
+        cmd_profile_update(&cli, &printer, "default", &args2).unwrap();
+
+        let doc2 = config::load_profile(&dir.path().join("profiles").join("default.yaml")).unwrap();
+        if let Some(scripts2) = doc2.spec.scripts {
+            assert!(
+                scripts2.on_drift.is_empty(),
+                "on_drift should be empty after removal"
+            );
+        }
+    }
+
+    // --- profile update: invalid system setting format ---
+
+    #[test]
+    fn profile_update_invalid_system_setting_format() {
+        let dir = setup_config_dir();
+        let cli = test_cli(dir.path());
+        let printer = make_printer();
+
+        let mut args = make_profile_update_args();
+        args.system = vec!["no-equals-sign".to_string()];
+
+        let result = cmd_profile_update(&cli, &printer, "default", &args);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("expected key=value"),
+            "should mention expected format, got: {err}"
+        );
+    }
+
+    // --- profile create: with pre_reconcile and post_reconcile scripts ---
+
+    #[test]
+    fn profile_create_with_all_script_types() {
+        let dir = setup_config_dir();
+        let cli = test_cli(dir.path());
+        let printer = make_printer();
+
+        let mut args = make_profile_create_args("all-scripts");
+        args.pre_apply = vec!["pre.sh".to_string()];
+        args.post_apply = vec!["post.sh".to_string()];
+        args.pre_reconcile = vec!["pre-recon.sh".to_string()];
+        args.post_reconcile = vec!["post-recon.sh".to_string()];
+        args.on_change = vec!["change.sh".to_string()];
+        args.on_drift = vec!["drift.sh".to_string()];
+
+        cmd_profile_create(&cli, &printer, &args).unwrap();
+
+        let doc =
+            config::load_profile(&dir.path().join("profiles").join("all-scripts.yaml")).unwrap();
+        let scripts = doc.spec.scripts.unwrap();
+        assert_eq!(scripts.pre_apply.len(), 1);
+        assert_eq!(scripts.post_apply.len(), 1);
+        assert_eq!(scripts.pre_reconcile.len(), 1);
+        assert_eq!(scripts.post_reconcile.len(), 1);
+        assert_eq!(scripts.on_change.len(), 1);
+        assert_eq!(scripts.on_drift.len(), 1);
+        assert_eq!(scripts.pre_reconcile[0].run_str(), "pre-recon.sh");
+        assert_eq!(scripts.post_reconcile[0].run_str(), "post-recon.sh");
+    }
 }

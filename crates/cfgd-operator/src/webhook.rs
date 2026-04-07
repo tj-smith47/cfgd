@@ -2238,4 +2238,445 @@ mod tests {
         let p = ptr("");
         assert_eq!(p.to_string(), "");
     }
+
+    // --- TLS cert loading with real PEM data ---
+
+    #[test]
+    fn load_certs_valid_pem_parses_successfully() {
+        let dir = tempfile::tempdir().unwrap();
+        let cert_path = dir.path().join("tls.crt");
+        std::fs::write(
+            &cert_path,
+            concat!(
+                "-----BEGIN CERTIFICATE-----\n",
+                "MIIBdDCCARmgAwIBAgIUNuMsDdMhSJGSo8OAK7sjwgfOMf8wCgYIKoZIzj0EAwIw\n",
+                "DzENMAsGA1UEAwwEdGVzdDAeFw0yNjA0MDcyMjI2NDhaFw0yNjA0MDgyMjI2NDha\n",
+                "MA8xDTALBgNVBAMMBHRlc3QwWTATBgcqhkjOPQIBBggqhkjOPQMBBwNCAAR6OpUd\n",
+                "KpU3veAXvpMtRlaobAfv15zMVUBq/Ykf/sveBO+h+09KlFAwgDoBfpeQni8dxRrW\n",
+                "2/AGxYF06hExdOxQo1MwUTAdBgNVHQ4EFgQU8rFClDYwDjpB8VbQflo71ab3zOsw\n",
+                "HwYDVR0jBBgwFoAU8rFClDYwDjpB8VbQflo71ab3zOswDwYDVR0TAQH/BAUwAwEB\n",
+                "/zAKBggqhkjOPQQDAgNJADBGAiEAz+QOBYTjfOS3vgOcR7RUi1zBJR14xxRHMjaf\n",
+                "vHDA2tACIQD/5WbK+daL6bityvosRvLt1y2zMIa+n9mn1nc5aMnpFg==\n",
+                "-----END CERTIFICATE-----\n"
+            ),
+        )
+        .unwrap();
+        let certs = load_certs(&cert_path).unwrap();
+        assert_eq!(certs.len(), 1, "should parse exactly 1 certificate");
+    }
+
+    #[test]
+    fn load_certs_multiple_certs_in_chain() {
+        let dir = tempfile::tempdir().unwrap();
+        let cert_path = dir.path().join("chain.crt");
+        // Write two copies of the same cert (simulating a cert chain)
+        let single_cert = concat!(
+            "-----BEGIN CERTIFICATE-----\n",
+            "MIIBdDCCARmgAwIBAgIUNuMsDdMhSJGSo8OAK7sjwgfOMf8wCgYIKoZIzj0EAwIw\n",
+            "DzENMAsGA1UEAwwEdGVzdDAeFw0yNjA0MDcyMjI2NDhaFw0yNjA0MDgyMjI2NDha\n",
+            "MA8xDTALBgNVBAMMBHRlc3QwWTATBgcqhkjOPQIBBggqhkjOPQMBBwNCAAR6OpUd\n",
+            "KpU3veAXvpMtRlaobAfv15zMVUBq/Ykf/sveBO+h+09KlFAwgDoBfpeQni8dxRrW\n",
+            "2/AGxYF06hExdOxQo1MwUTAdBgNVHQ4EFgQU8rFClDYwDjpB8VbQflo71ab3zOsw\n",
+            "HwYDVR0jBBgwFoAU8rFClDYwDjpB8VbQflo71ab3zOswDwYDVR0TAQH/BAUwAwEB\n",
+            "/zAKBggqhkjOPQQDAgNJADBGAiEAz+QOBYTjfOS3vgOcR7RUi1zBJR14xxRHMjaf\n",
+            "vHDA2tACIQD/5WbK+daL6bityvosRvLt1y2zMIa+n9mn1nc5aMnpFg==\n",
+            "-----END CERTIFICATE-----\n"
+        );
+        let chain = format!("{single_cert}{single_cert}");
+        std::fs::write(&cert_path, chain).unwrap();
+        let certs = load_certs(&cert_path).unwrap();
+        assert_eq!(
+            certs.len(),
+            2,
+            "should parse 2 certificates from a chain file"
+        );
+    }
+
+    #[test]
+    fn load_private_key_valid_pem_parses_successfully() {
+        let dir = tempfile::tempdir().unwrap();
+        let key_path = dir.path().join("tls.key");
+        std::fs::write(
+            &key_path,
+            concat!(
+                "-----BEGIN PRIVATE KEY-----\n",
+                "MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQga3KUJ4hz1zMz6GHC\n",
+                "Ez1DepmVH1duH9pbtd+sHCkfAh2hRANCAAR6OpUdKpU3veAXvpMtRlaobAfv15zM\n",
+                "VUBq/Ykf/sveBO+h+09KlFAwgDoBfpeQni8dxRrW2/AGxYF06hExdOxQ\n",
+                "-----END PRIVATE KEY-----\n"
+            ),
+        )
+        .unwrap();
+        let key = load_private_key(&key_path);
+        assert!(
+            key.is_ok(),
+            "should successfully parse a valid EC private key: {:?}",
+            key.err()
+        );
+    }
+
+    #[test]
+    fn load_private_key_empty_file_returns_no_key_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let key_path = dir.path().join("empty.key");
+        std::fs::write(&key_path, "").unwrap();
+        let result = load_private_key(&key_path);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("no private key found"),
+            "expected 'no private key found' error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn load_private_key_garbage_data_returns_no_key_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let key_path = dir.path().join("garbage.key");
+        std::fs::write(&key_path, "this is not a PEM key at all\n").unwrap();
+        let result = load_private_key(&key_path);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("no private key found"),
+            "expected 'no private key found' error, got: {err}"
+        );
+    }
+
+    // --- record_webhook_metrics — direct tests ---
+
+    #[test]
+    fn record_webhook_metrics_increments_counter_and_histogram() {
+        let metrics = test_metrics();
+        let start = std::time::Instant::now();
+        record_webhook_metrics(&metrics, "validate_machineconfig", "allowed", start);
+
+        let labels = crate::metrics::WebhookLabels {
+            operation: "validate_machineconfig".to_string(),
+            result: "allowed".to_string(),
+        };
+        let count = metrics.webhook_requests_total.get_or_create(&labels).get();
+        assert_eq!(count, 1, "webhook counter should be 1 after one call");
+    }
+
+    #[test]
+    fn record_webhook_metrics_different_results_are_independent() {
+        let metrics = test_metrics();
+        let start = std::time::Instant::now();
+        record_webhook_metrics(&metrics, "validate_module", "allowed", start);
+        record_webhook_metrics(&metrics, "validate_module", "denied", start);
+        record_webhook_metrics(&metrics, "validate_module", "allowed", start);
+        record_webhook_metrics(&metrics, "validate_module", "error", start);
+
+        let allowed = crate::metrics::WebhookLabels {
+            operation: "validate_module".to_string(),
+            result: "allowed".to_string(),
+        };
+        let denied = crate::metrics::WebhookLabels {
+            operation: "validate_module".to_string(),
+            result: "denied".to_string(),
+        };
+        let errored = crate::metrics::WebhookLabels {
+            operation: "validate_module".to_string(),
+            result: "error".to_string(),
+        };
+        assert_eq!(
+            metrics.webhook_requests_total.get_or_create(&allowed).get(),
+            2
+        );
+        assert_eq!(
+            metrics.webhook_requests_total.get_or_create(&denied).get(),
+            1
+        );
+        assert_eq!(
+            metrics.webhook_requests_total.get_or_create(&errored).get(),
+            1
+        );
+    }
+
+    #[test]
+    fn record_webhook_metrics_different_operations_are_independent() {
+        let metrics = test_metrics();
+        let start = std::time::Instant::now();
+        record_webhook_metrics(&metrics, "validate_machineconfig", "allowed", start);
+        record_webhook_metrics(&metrics, "mutate_pods", "patched", start);
+
+        let mc_labels = crate::metrics::WebhookLabels {
+            operation: "validate_machineconfig".to_string(),
+            result: "allowed".to_string(),
+        };
+        let pod_labels = crate::metrics::WebhookLabels {
+            operation: "mutate_pods".to_string(),
+            result: "patched".to_string(),
+        };
+        assert_eq!(
+            metrics
+                .webhook_requests_total
+                .get_or_create(&mc_labels)
+                .get(),
+            1
+        );
+        assert_eq!(
+            metrics
+                .webhook_requests_total
+                .get_or_create(&pod_labels)
+                .get(),
+            1
+        );
+    }
+
+    // --- check_trusted_registries — exact match branch (no wildcard, no trailing slash) ---
+
+    #[test]
+    fn check_trusted_registries_exact_match_without_trailing_slash() {
+        let oci_ref = "ghcr.io/myorg/image:v1";
+        let spec = ModuleSpec {
+            oci_artifact: Some(oci_ref.to_string()),
+            ..Default::default()
+        };
+        // Pattern without wildcard or trailing slash — uses exact/path-prefix match
+        let registries = vec!["ghcr.io/myorg".to_string()];
+        let result = check_trusted_registries(&spec, &registries);
+        assert!(
+            result.is_ok(),
+            "OCI ref '{}' should match exact registry 'ghcr.io/myorg' (path-prefix boundary): {:?}",
+            oci_ref,
+            result.err()
+        );
+    }
+
+    #[test]
+    fn check_trusted_registries_exact_match_full_ref() {
+        // Exact full match: the OCI ref IS the pattern
+        let oci_ref = "ghcr.io/myorg/image:v1";
+        let spec = ModuleSpec {
+            oci_artifact: Some(oci_ref.to_string()),
+            ..Default::default()
+        };
+        let registries = vec![oci_ref.to_string()];
+        let result = check_trusted_registries(&spec, &registries);
+        assert!(
+            result.is_ok(),
+            "OCI ref should match when pattern is the exact same string: {:?}",
+            result.err()
+        );
+    }
+
+    #[test]
+    fn check_trusted_registries_exact_match_prevents_org_spoofing() {
+        // "ghcr.io/myorg" must NOT match "ghcr.io/myorgEVIL/image:v1"
+        let oci_ref = "ghcr.io/myorgEVIL/image:v1";
+        let spec = ModuleSpec {
+            oci_artifact: Some(oci_ref.to_string()),
+            ..Default::default()
+        };
+        let registries = vec!["ghcr.io/myorg".to_string()];
+        let result = check_trusted_registries(&spec, &registries);
+        assert!(
+            result.is_err(),
+            "OCI ref '{}' should NOT match 'ghcr.io/myorg' (no path boundary)",
+            oci_ref
+        );
+    }
+
+    // --- validate_object_spec edge cases ---
+
+    #[test]
+    fn validate_cluster_config_policy_empty_module_name_denied() {
+        let review = make_review(serde_json::json!({
+            "requiredModules": [{"name": ""}]
+        }));
+        let req = extract_req(review);
+        let err = validate_object_spec::<ClusterConfigPolicySpec>(&req).unwrap_err();
+        assert!(
+            err.contains("requiredModules[0].name must not be empty"),
+            "expected error about empty module name, got: {err}"
+        );
+    }
+
+    #[test]
+    fn validate_cluster_config_policy_with_security_block_valid() {
+        // Verify a valid security block with trustedRegistries and allowUnsigned passes
+        let review = make_review(serde_json::json!({
+            "security": {
+                "trustedRegistries": ["ghcr.io/myorg/*"],
+                "allowUnsigned": false
+            },
+            "requiredModules": [{"name": "base", "required": true}]
+        }));
+        let req = extract_req(review);
+        let result = validate_object_spec::<ClusterConfigPolicySpec>(&req);
+        assert!(
+            result.is_ok(),
+            "valid ClusterConfigPolicySpec with security block should pass: {:?}",
+            result.err()
+        );
+    }
+
+    #[test]
+    fn validate_cluster_config_policy_invalid_version_requirement_denied() {
+        let review = make_review(serde_json::json!({
+            "packages": [{"name": "vim", "version": "not-semver!!!"}]
+        }));
+        let req = extract_req(review);
+        let err = validate_object_spec::<ClusterConfigPolicySpec>(&req).unwrap_err();
+        assert!(
+            err.contains("semver"),
+            "expected error about invalid semver requirement, got: {err}"
+        );
+    }
+
+    #[test]
+    fn validate_config_policy_invalid_version_requirement_denied() {
+        let review = make_review(serde_json::json!({
+            "packages": [{"name": "vim", "version": "abc"}]
+        }));
+        let req = extract_req(review);
+        let err = validate_object_spec::<ConfigPolicySpec>(&req).unwrap_err();
+        assert!(
+            err.contains("semver"),
+            "expected error about invalid semver requirement, got: {err}"
+        );
+    }
+
+    #[test]
+    fn validate_config_policy_valid_version_requirement_passes() {
+        let review = make_review(serde_json::json!({
+            "packages": [{"name": "vim", "version": ">=1.0"}]
+        }));
+        let req = extract_req(review);
+        let result = validate_object_spec::<ConfigPolicySpec>(&req);
+        assert!(
+            result.is_ok(),
+            "valid semver requirement should pass: {:?}",
+            result.err()
+        );
+    }
+
+    // --- handle_validate with completely malformed review ---
+
+    #[test]
+    fn handle_validate_malformed_review_returns_error_response() {
+        let metrics = test_metrics();
+        // Build a review that is missing the "request" field entirely,
+        // which will cause AdmissionReview::try_into to fail
+        let bad_review: AdmissionReview<DynamicObject> =
+            serde_json::from_value(serde_json::json!({
+                "apiVersion": "admission.k8s.io/v1",
+                "kind": "AdmissionReview"
+            }))
+            .expect("construct minimal review");
+        let result = handle_validate::<MachineConfigSpec>("test_op", &metrics, bad_review);
+        let review_resp: serde_json::Value =
+            serde_json::to_value(result.0).expect("serialize response");
+        // Should return a response (not panic), and the metrics should record "error"
+        let allowed = review_resp["response"]["allowed"].as_bool();
+        // Either the response has allowed=false or it has a status message
+        if let Some(false) = allowed {
+            // good, request was denied
+        } else {
+            // check that there's an error status
+            let status = &review_resp["response"]["status"];
+            assert!(
+                status.is_object(),
+                "malformed review should produce error status or denied response: {review_resp}"
+            );
+        }
+        // Verify error metric was recorded
+        let labels = crate::metrics::WebhookLabels {
+            operation: "test_op".to_string(),
+            result: "error".to_string(),
+        };
+        let count = metrics.webhook_requests_total.get_or_create(&labels).get();
+        assert_eq!(count, 1, "malformed review should record error metric");
+    }
+
+    // --- ptr helper edge cases ---
+
+    #[test]
+    fn ptr_helper_nested_path() {
+        let p = ptr("/spec/containers/0/volumeMounts/-");
+        assert_eq!(p.to_string(), "/spec/containers/0/volumeMounts/-");
+    }
+
+    #[test]
+    fn ptr_helper_root_pointer() {
+        let p = ptr("/");
+        assert_eq!(p.to_string(), "/");
+    }
+
+    // --- build_injection_patches — multiple modules with scripts ---
+
+    #[test]
+    fn build_patches_multiple_modules_with_scripts_share_scripts_emptydir() {
+        let pod = serde_json::json!({
+            "spec": {
+                "containers": [
+                    {"name": "app", "image": "busybox"}
+                ]
+            }
+        });
+        let modules = vec![
+            (
+                "mod-a".to_string(),
+                "1.0".to_string(),
+                ModuleSpec {
+                    scripts: crate::crds::ModuleScripts {
+                        post_apply: Some("a.sh".to_string()),
+                    },
+                    ..Default::default()
+                },
+            ),
+            (
+                "mod-b".to_string(),
+                "2.0".to_string(),
+                ModuleSpec {
+                    scripts: crate::crds::ModuleScripts {
+                        post_apply: Some("b.sh".to_string()),
+                    },
+                    ..Default::default()
+                },
+            ),
+        ];
+        let patches = build_injection_patches(&pod, &modules);
+        let patch_json = serde_json::to_string(&patches).unwrap();
+        // Both should have init containers
+        assert!(patch_json.contains("cfgd-init-mod-a"));
+        assert!(patch_json.contains("cfgd-init-mod-b"));
+        // Should have only ONE cfgd-scripts emptyDir volume
+        let scripts_count = patch_json.matches("cfgd-scripts").count();
+        // The volume definition + each init container's volumeMount reference it
+        // Volume: 1, mod-a mount: 1, mod-b mount: 1 = 3 total mentions
+        assert!(
+            scripts_count >= 3,
+            "cfgd-scripts should appear in volume + init container mounts: found {} mentions",
+            scripts_count
+        );
+    }
+
+    #[test]
+    fn build_patches_default_post_apply_script_path() {
+        // When post_apply script is specified, the command should use that path
+        let pod = serde_json::json!({
+            "spec": {
+                "containers": [{"name": "app", "image": "busybox"}]
+            }
+        });
+        let modules = vec![(
+            "mymod".to_string(),
+            "1.0".to_string(),
+            ModuleSpec {
+                scripts: crate::crds::ModuleScripts {
+                    post_apply: Some("custom-setup.sh".to_string()),
+                },
+                ..Default::default()
+            },
+        )];
+        let patches = build_injection_patches(&pod, &modules);
+        let patch_json = serde_json::to_string(&patches).unwrap();
+        assert!(
+            patch_json.contains("custom-setup.sh"),
+            "should use the specified postApply script path"
+        );
+    }
 }

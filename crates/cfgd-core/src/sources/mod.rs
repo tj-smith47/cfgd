@@ -2078,4 +2078,224 @@ spec:
         assert_eq!(doc.metadata.name, "details-only");
         assert_eq!(doc.spec.provides.profile_details.len(), 1);
     }
+
+    // --- load_source: local file URL rejection ---
+
+    #[test]
+    fn load_source_rejects_file_url() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut mgr = SourceManager::new(dir.path());
+        let printer = test_printer();
+
+        let spec = crate::config::SourceSpec {
+            name: "local-bad".into(),
+            origin: crate::config::OriginSpec {
+                origin_type: OriginType::Git,
+                url: "file:///etc/shadow".into(),
+                branch: "main".into(),
+                auth: None,
+                ssh_strict_host_key_checking: Default::default(),
+            },
+            subscription: Default::default(),
+            sync: Default::default(),
+        };
+
+        let result = mgr.load_source(&spec, &printer);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("local file://") || err.contains("not allowed"),
+            "expected file:// rejection, got: {err}"
+        );
+    }
+
+    #[test]
+    fn load_source_rejects_absolute_path_url() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut mgr = SourceManager::new(dir.path());
+        let printer = test_printer();
+
+        let spec = crate::config::SourceSpec {
+            name: "abs-bad".into(),
+            origin: crate::config::OriginSpec {
+                origin_type: OriginType::Git,
+                url: "/tmp/local-repo".into(),
+                branch: "main".into(),
+                auth: None,
+                ssh_strict_host_key_checking: Default::default(),
+            },
+            subscription: Default::default(),
+            sync: Default::default(),
+        };
+
+        let result = mgr.load_source(&spec, &printer);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("not allowed") || err.contains("absolute path"),
+            "expected absolute path rejection, got: {err}"
+        );
+    }
+
+    #[test]
+    fn load_source_rejects_file_url_case_insensitive() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut mgr = SourceManager::new(dir.path());
+        let printer = test_printer();
+
+        let spec = crate::config::SourceSpec {
+            name: "case-bad".into(),
+            origin: crate::config::OriginSpec {
+                origin_type: OriginType::Git,
+                url: "FILE:///etc/passwd".into(),
+                branch: "main".into(),
+                auth: None,
+                ssh_strict_host_key_checking: Default::default(),
+            },
+            subscription: Default::default(),
+            sync: Default::default(),
+        };
+
+        let result = mgr.load_source(&spec, &printer);
+        assert!(result.is_err(), "FILE:// should also be rejected");
+    }
+
+    // --- remove_source: already-deleted directory ---
+
+    #[test]
+    fn remove_source_missing_directory_still_removes_cache_entry() {
+        let dir = tempfile::tempdir().unwrap();
+        let missing_path = dir.path().join("already-gone");
+        // Do NOT create the directory — simulate it being deleted externally
+
+        let mut mgr = SourceManager::new(dir.path());
+        insert_fake_source(&mut mgr, "already-gone", missing_path.clone());
+
+        // Should succeed even though directory doesn't exist
+        mgr.remove_source("already-gone")
+            .expect("remove should succeed when directory is already gone");
+        assert!(mgr.get("already-gone").is_none());
+    }
+
+    // --- check_version_pin: exact version match ---
+
+    #[test]
+    fn check_version_pin_exact_match() {
+        let dir = tempfile::tempdir().unwrap();
+        let mgr = SourceManager::new(dir.path());
+
+        let manifest = ConfigSourceDocument {
+            api_version: crate::API_VERSION.into(),
+            kind: "ConfigSource".into(),
+            metadata: crate::config::ConfigSourceMetadata {
+                name: "test".into(),
+                version: Some("1.2.3".into()),
+                description: None,
+            },
+            spec: crate::config::ConfigSourceSpec {
+                provides: Default::default(),
+                policy: Default::default(),
+            },
+        };
+
+        mgr.check_version_pin("test", &manifest, "=1.2.3")
+            .expect("exact version should match");
+    }
+
+    #[test]
+    fn check_version_pin_exact_mismatch() {
+        let dir = tempfile::tempdir().unwrap();
+        let mgr = SourceManager::new(dir.path());
+
+        let manifest = ConfigSourceDocument {
+            api_version: crate::API_VERSION.into(),
+            kind: "ConfigSource".into(),
+            metadata: crate::config::ConfigSourceMetadata {
+                name: "test".into(),
+                version: Some("1.2.3".into()),
+                description: None,
+            },
+            spec: crate::config::ConfigSourceSpec {
+                provides: Default::default(),
+                policy: Default::default(),
+            },
+        };
+
+        let result = mgr.check_version_pin("test", &manifest, "=2.0.0");
+        assert!(result.is_err());
+    }
+
+    // --- verify_commit_signature: constraints control ---
+
+    #[test]
+    fn verify_signature_required_but_allow_unsigned_skips() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut mgr = SourceManager::new(dir.path());
+        mgr.set_allow_unsigned(true);
+
+        let constraints = crate::config::SourceConstraints {
+            require_signed_commits: true,
+            ..Default::default()
+        };
+
+        // Even though require_signed_commits is true, allow_unsigned bypasses it
+        // This should succeed without even checking the repo
+        let result = mgr.verify_commit_signature("test", dir.path(), &constraints);
+        assert!(result.is_ok());
+    }
+
+    // --- head_commit: empty repo ---
+
+    #[test]
+    fn head_commit_empty_repo_returns_none() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo_dir = dir.path().join("empty-repo");
+        git2::Repository::init(&repo_dir).unwrap();
+        // No commits yet
+        let result = SourceManager::head_commit(&repo_dir);
+        assert!(
+            result.is_none(),
+            "empty repo with no commits should return None"
+        );
+    }
+
+    // --- SourceManager: multiple operations ---
+
+    #[test]
+    fn source_manager_get_and_all_sources_consistent() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut mgr = SourceManager::new(dir.path());
+
+        assert!(mgr.all_sources().is_empty());
+        assert!(mgr.get("nonexistent").is_none());
+
+        let path = dir.path().join("src");
+        std::fs::create_dir_all(&path).unwrap();
+        insert_fake_source(&mut mgr, "src", path);
+
+        assert_eq!(mgr.all_sources().len(), 1);
+        assert!(mgr.get("src").is_some());
+        assert!(mgr.get("other").is_none());
+    }
+
+    // --- load_source_profile: missing profile file variant ---
+
+    #[test]
+    fn load_source_profile_no_profiles_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let source_path = dir.path().join("src-no-profiles");
+        std::fs::create_dir_all(&source_path).unwrap();
+        // Don't create the profiles subdirectory
+
+        let mut mgr = SourceManager::new(dir.path());
+        insert_fake_source(&mut mgr, "src-no-profiles", source_path);
+
+        let result = mgr.load_source_profile("src-no-profiles", "default");
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("not found") || err.contains("ProfileNotFound"),
+            "expected profile not found error, got: {err}"
+        );
+    }
 }

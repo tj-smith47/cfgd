@@ -1768,4 +1768,349 @@ mod tests {
         assert_eq!(apply_jsonpath(&val, "{.items[*]}"), "");
         assert_eq!(apply_jsonpath(&val, "{.items[0:5]}"), "");
     }
+
+    // --- Printer::for_test capture behavior ---
+
+    #[test]
+    fn for_test_captures_header_text() {
+        let (printer, buf) = Printer::for_test();
+        printer.header("Test Header");
+        let output = buf.lock().unwrap();
+        assert!(output.contains("Test Header"), "should capture header text");
+    }
+
+    #[test]
+    fn for_test_captures_success_text() {
+        let (printer, buf) = Printer::for_test();
+        printer.success("Operation passed");
+        let output = buf.lock().unwrap();
+        assert!(
+            output.contains("Operation passed"),
+            "should capture success text"
+        );
+    }
+
+    #[test]
+    fn for_test_captures_warning_text() {
+        let (printer, buf) = Printer::for_test();
+        printer.warning("Careful now");
+        let output = buf.lock().unwrap();
+        assert!(
+            output.contains("Careful now"),
+            "should capture warning text"
+        );
+    }
+
+    #[test]
+    fn for_test_captures_error_text() {
+        let (printer, buf) = Printer::for_test();
+        printer.error("Something broke");
+        let output = buf.lock().unwrap();
+        assert!(
+            output.contains("Something broke"),
+            "should capture error text"
+        );
+    }
+
+    #[test]
+    fn for_test_captures_info_text() {
+        let (printer, buf) = Printer::for_test();
+        printer.info("FYI message");
+        let output = buf.lock().unwrap();
+        assert!(output.contains("FYI message"), "should capture info text");
+    }
+
+    #[test]
+    fn for_test_captures_key_value() {
+        let (printer, buf) = Printer::for_test();
+        printer.key_value("Profile", "developer");
+        let output = buf.lock().unwrap();
+        assert!(
+            output.contains("Profile") && output.contains("developer"),
+            "should capture key and value"
+        );
+    }
+
+    #[test]
+    fn for_test_captures_subheader() {
+        let (printer, buf) = Printer::for_test();
+        printer.subheader("Subsection");
+        let output = buf.lock().unwrap();
+        assert!(
+            output.contains("Subsection"),
+            "should capture subheader text"
+        );
+    }
+
+    #[test]
+    fn for_test_captures_plan_phase() {
+        let (printer, buf) = Printer::for_test();
+        printer.plan_phase("Install", &["neovim".to_string(), "tmux".to_string()]);
+        let output = buf.lock().unwrap();
+        assert!(
+            output.contains("Phase: Install"),
+            "should capture phase name"
+        );
+        assert!(
+            output.contains("neovim") && output.contains("tmux"),
+            "should capture phase items"
+        );
+    }
+
+    #[test]
+    fn for_test_captures_plan_phase_empty() {
+        let (printer, buf) = Printer::for_test();
+        printer.plan_phase("Cleanup", &[]);
+        let output = buf.lock().unwrap();
+        assert!(
+            output.contains("Phase: Cleanup"),
+            "should capture empty phase name"
+        );
+    }
+
+    #[test]
+    fn for_test_captures_table() {
+        let (printer, buf) = Printer::for_test();
+        let rows = vec![
+            vec!["nvim".to_string(), "installed".to_string()],
+            vec!["tmux".to_string(), "missing".to_string()],
+        ];
+        printer.table(&["NAME", "STATUS"], &rows);
+        let output = buf.lock().unwrap();
+        assert!(
+            output.contains("NAME") && output.contains("STATUS"),
+            "should capture table headers"
+        );
+        assert!(
+            output.contains("nvim") && output.contains("installed"),
+            "should capture table rows"
+        );
+        assert!(
+            output.contains("tmux") && output.contains("missing"),
+            "should capture second row"
+        );
+    }
+
+    #[test]
+    fn for_test_captures_diff() {
+        let (printer, buf) = Printer::for_test();
+        printer.diff("line1\nold\nline3\n", "line1\nnew\nline3\n");
+        let output = buf.lock().unwrap();
+        assert!(output.contains("-old"), "should capture removed line");
+        assert!(output.contains("+new"), "should capture added line");
+        assert!(
+            output.contains(" line1"),
+            "should capture unchanged context"
+        );
+    }
+
+    #[test]
+    fn for_test_captures_diff_identical() {
+        let (printer, buf) = Printer::for_test();
+        printer.diff("same\n", "same\n");
+        let output = buf.lock().unwrap();
+        assert!(
+            output.contains(" same"),
+            "identical diff should show context line"
+        );
+        assert!(
+            !output.contains("-same") && !output.contains("+same"),
+            "identical diff should have no add/remove markers"
+        );
+    }
+
+    #[test]
+    fn for_test_captures_stdout_line() {
+        let (printer, buf) = Printer::for_test();
+        printer.stdout_line("data output");
+        let output = buf.lock().unwrap();
+        assert!(
+            output.contains("data output"),
+            "should capture stdout_line text"
+        );
+    }
+
+    // --- write_structured with for_test ---
+
+    #[test]
+    fn for_test_write_structured_json() {
+        let (printer, buf) = Printer::for_test_with_format(OutputFormat::Json);
+        let val = serde_json::json!({"key": "value"});
+        let wrote = printer.write_structured(&val);
+        assert!(wrote, "should return true for JSON format");
+        let output = buf.lock().unwrap();
+        assert!(
+            output.contains("key") && output.contains("value"),
+            "should capture JSON output"
+        );
+    }
+
+    #[test]
+    fn for_test_write_structured_yaml() {
+        let (printer, buf) = Printer::for_test_with_format(OutputFormat::Yaml);
+        let val = serde_json::json!({"name": "test"});
+        let wrote = printer.write_structured(&val);
+        assert!(wrote, "should return true for YAML format");
+        let output = buf.lock().unwrap();
+        assert!(
+            output.contains("name") && output.contains("test"),
+            "should capture YAML output"
+        );
+    }
+
+    #[test]
+    fn for_test_write_structured_name() {
+        let (printer, buf) = Printer::for_test_with_format(OutputFormat::Name);
+        let val = serde_json::json!({"name": "my-profile"});
+        let wrote = printer.write_structured(&val);
+        assert!(wrote, "should return true for Name format");
+        let output = buf.lock().unwrap();
+        assert!(output.contains("my-profile"), "should capture name output");
+    }
+
+    #[test]
+    fn for_test_write_structured_name_array_items() {
+        let (printer, buf) = Printer::for_test_with_format(OutputFormat::Name);
+        let val = serde_json::json!([
+            {"name": "alpha"},
+            {"name": "beta"}
+        ]);
+        let wrote = printer.write_structured(&val);
+        assert!(wrote);
+        let output = buf.lock().unwrap();
+        assert!(output.contains("alpha"), "should capture first name");
+        assert!(output.contains("beta"), "should capture second name");
+    }
+
+    #[test]
+    fn for_test_write_structured_jsonpath_captures() {
+        let (printer, buf) =
+            Printer::for_test_with_format(OutputFormat::Jsonpath("{.name}".to_string()));
+        let val = serde_json::json!({"name": "cfgd", "version": "2.0"});
+        let wrote = printer.write_structured(&val);
+        assert!(wrote);
+        let output = buf.lock().unwrap();
+        assert!(output.contains("cfgd"), "should capture jsonpath result");
+    }
+
+    #[test]
+    fn for_test_write_structured_template_captures() {
+        let (printer, buf) =
+            Printer::for_test_with_format(OutputFormat::Template("Hello {{ name }}!".to_string()));
+        let val = serde_json::json!({"name": "world"});
+        let wrote = printer.write_structured(&val);
+        assert!(wrote);
+        let output = buf.lock().unwrap();
+        assert!(
+            output.contains("Hello world!"),
+            "should capture rendered template"
+        );
+    }
+
+    // --- ansi256_from_rgb edge cases ---
+
+    #[test]
+    fn ansi256_from_rgb_pure_black() {
+        // r==g==b==0, r < 8 -> should return 16
+        assert_eq!(ansi256_from_rgb(0, 0, 0), 16);
+    }
+
+    #[test]
+    fn ansi256_from_rgb_near_white() {
+        // r==g==b==255, r > 248 -> should return 231
+        assert_eq!(ansi256_from_rgb(255, 255, 255), 231);
+    }
+
+    #[test]
+    fn ansi256_from_rgb_grayscale_midrange() {
+        // r==g==b, 8 <= r <= 248 -> grayscale ramp 232-255
+        let idx = ansi256_from_rgb(128, 128, 128);
+        assert!(
+            idx >= 232 && idx <= 255,
+            "midrange gray should be in grayscale ramp: {idx}"
+        );
+    }
+
+    #[test]
+    fn ansi256_from_rgb_color_cube() {
+        // r!=g or g!=b -> 6x6x6 color cube (16-231)
+        let idx = ansi256_from_rgb(255, 0, 0); // pure red
+        assert!(
+            idx >= 16 && idx <= 231,
+            "pure red should map to color cube: {idx}"
+        );
+    }
+
+    #[test]
+    fn ansi256_from_rgb_various_colors() {
+        // Verify no panics and range validity for several colors
+        let colors: &[(u8, u8, u8)] = &[
+            (0, 255, 0),    // green
+            (0, 0, 255),    // blue
+            (128, 64, 0),   // brown
+            (200, 200, 50), // yellow-ish (not all equal -> cube)
+        ];
+        for (r, g, b) in colors {
+            let idx = ansi256_from_rgb(*r, *g, *b);
+            assert!(
+                idx >= 16 && idx <= 231,
+                "color ({r},{g},{b}) should map to cube or grayscale: {idx}"
+            );
+        }
+    }
+
+    // --- Template rendering error paths ---
+
+    #[test]
+    fn write_structured_invalid_template_syntax() {
+        let (printer, buf) = Printer::for_test_with_format(OutputFormat::Template(
+            "{{ invalid {% endfor }".to_string(),
+        ));
+        let val = serde_json::json!({"name": "test"});
+        let wrote = printer.write_structured(&val);
+        assert!(wrote, "should still return true");
+        let output = buf.lock().unwrap();
+        assert!(
+            output.contains("invalid template"),
+            "should capture template error message, got: {output}"
+        );
+    }
+
+    // --- OutputFormat variant coverage ---
+
+    #[test]
+    fn output_format_auto_quiets_structured() {
+        // When structured output is active, verbosity should be set to Quiet
+        let printer = Printer::with_format(Verbosity::Normal, None, OutputFormat::Json);
+        assert_eq!(printer.verbosity(), Verbosity::Quiet);
+    }
+
+    #[test]
+    fn output_format_table_preserves_verbosity() {
+        let printer = Printer::with_format(Verbosity::Normal, None, OutputFormat::Table);
+        assert_eq!(printer.verbosity(), Verbosity::Normal);
+    }
+
+    #[test]
+    fn output_format_wide_preserves_verbosity() {
+        let printer = Printer::with_format(Verbosity::Verbose, None, OutputFormat::Wide);
+        assert_eq!(printer.verbosity(), Verbosity::Verbose);
+    }
+
+    // --- name_from_value additional fields ---
+
+    #[test]
+    fn name_from_value_url_field() {
+        let val = serde_json::json!({"url": "https://example.com"});
+        assert_eq!(
+            name_from_value(&val),
+            Some("https://example.com".to_string())
+        );
+    }
+
+    #[test]
+    fn name_from_value_resource_type_field() {
+        let val = serde_json::json!({"resourceType": "MachineConfig"});
+        assert_eq!(name_from_value(&val), Some("MachineConfig".to_string()));
+    }
 }

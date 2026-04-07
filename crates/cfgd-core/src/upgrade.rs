@@ -1642,4 +1642,486 @@ mod tests {
         assert!(result.is_err());
         assert!(!dest.exists(), "file should not be created on failure");
     }
+
+    // --- parse_release_json: comprehensive edge cases ---
+
+    #[test]
+    fn parse_release_json_assets_missing_fields_skipped() {
+        // Assets with missing name or download_url are filtered out by filter_map
+        let json = r#"{
+            "tag_name": "v1.0.0",
+            "assets": [
+                {
+                    "name": "valid.tar.gz",
+                    "browser_download_url": "https://example.com/valid.tar.gz",
+                    "size": 1024
+                },
+                {
+                    "browser_download_url": "https://example.com/noname.tar.gz",
+                    "size": 512
+                },
+                {
+                    "name": "nourl.tar.gz",
+                    "size": 256
+                }
+            ]
+        }"#;
+        let release = parse_release_json(json).unwrap();
+        assert_eq!(
+            release.assets.len(),
+            1,
+            "only the valid asset should be included"
+        );
+        assert_eq!(release.assets[0].name, "valid.tar.gz");
+    }
+
+    #[test]
+    fn parse_release_json_asset_size_defaults_to_zero() {
+        let json = r#"{
+            "tag_name": "v1.0.0",
+            "assets": [
+                {
+                    "name": "nosize.tar.gz",
+                    "browser_download_url": "https://example.com/nosize.tar.gz"
+                }
+            ]
+        }"#;
+        let release = parse_release_json(json).unwrap();
+        assert_eq!(release.assets.len(), 1);
+        assert_eq!(
+            release.assets[0].size, 0,
+            "missing size should default to 0"
+        );
+    }
+
+    #[test]
+    fn parse_release_json_prerelease_tag() {
+        let json = r#"{
+            "tag_name": "v2.0.0-rc.1",
+            "assets": []
+        }"#;
+        let release = parse_release_json(json).unwrap();
+        assert_eq!(release.tag, "v2.0.0-rc.1");
+        assert_eq!(release.version, Version::parse("2.0.0-rc.1").unwrap());
+    }
+
+    #[test]
+    fn parse_release_json_build_metadata() {
+        let json = r#"{
+            "tag_name": "v1.0.0+build.123",
+            "assets": []
+        }"#;
+        let release = parse_release_json(json).unwrap();
+        assert_eq!(release.version.major, 1);
+        assert_eq!(release.version.minor, 0);
+        assert_eq!(release.version.patch, 0);
+    }
+
+    #[test]
+    fn parse_release_json_invalid_version_tag() {
+        let json = r#"{
+            "tag_name": "not-semver",
+            "assets": []
+        }"#;
+        let result = parse_release_json(json);
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(
+            msg.contains("cannot parse release version"),
+            "should mention version parse error: {msg}"
+        );
+    }
+
+    #[test]
+    fn parse_release_json_null_assets_treated_as_empty() {
+        let json = r#"{
+            "tag_name": "v1.0.0",
+            "assets": null
+        }"#;
+        let release = parse_release_json(json).unwrap();
+        assert!(release.assets.is_empty());
+    }
+
+    #[test]
+    fn parse_release_json_no_assets_field() {
+        let json = r#"{"tag_name": "v1.0.0"}"#;
+        let release = parse_release_json(json).unwrap();
+        assert!(release.assets.is_empty());
+    }
+
+    // --- find_asset_for_platform: empty assets ---
+
+    #[test]
+    fn find_asset_empty_assets_returns_error() {
+        let release = ReleaseInfo {
+            tag: "v1.0.0".into(),
+            version: Version::new(1, 0, 0),
+            assets: vec![],
+        };
+        assert!(find_asset_for_platform(&release).is_err());
+    }
+
+    // --- find_checksums_asset: various patterns ---
+
+    #[test]
+    fn find_checksums_asset_matches_version_prefixed() {
+        let release = ReleaseInfo {
+            tag: "v3.0.0".into(),
+            version: Version::new(3, 0, 0),
+            assets: vec![
+                ReleaseAsset {
+                    name: "cfgd-3.0.0-linux-x86_64.tar.gz".into(),
+                    download_url: "https://example.com/bin".into(),
+                    size: 5000,
+                },
+                ReleaseAsset {
+                    name: "cfgd-3.0.0-checksums.txt".into(),
+                    download_url: "https://example.com/sums".into(),
+                    size: 128,
+                },
+            ],
+        };
+        let asset = find_checksums_asset(&release).unwrap();
+        assert_eq!(asset.name, "cfgd-3.0.0-checksums.txt");
+        assert_eq!(asset.download_url, "https://example.com/sums");
+    }
+
+    // --- extract_tarball: additional scenarios ---
+
+    #[test]
+    #[cfg(unix)]
+    fn extract_tarball_empty_archive() {
+        use flate2::Compression;
+        use flate2::write::GzEncoder;
+
+        let dir = tempfile::tempdir().unwrap();
+        let archive_path = dir.path().join("empty.tar.gz");
+        let dest = dir.path().join("out");
+        std::fs::create_dir_all(&dest).unwrap();
+
+        // Create an empty tarball
+        {
+            let file = std::fs::File::create(&archive_path).unwrap();
+            let enc = GzEncoder::new(file, Compression::default());
+            let mut tar_builder = tar::Builder::new(enc);
+            tar_builder.finish().unwrap();
+        }
+
+        extract_tarball(&archive_path, &dest).unwrap();
+        // dest should still exist but be empty (besides . and ..)
+        let entries: Vec<_> = std::fs::read_dir(&dest).unwrap().collect();
+        assert!(
+            entries.is_empty(),
+            "empty tarball should extract to empty dir"
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn extract_tarball_preserves_binary_content() {
+        use flate2::Compression;
+        use flate2::write::GzEncoder;
+
+        let dir = tempfile::tempdir().unwrap();
+        let archive_path = dir.path().join("binary.tar.gz");
+        let dest = dir.path().join("out");
+        std::fs::create_dir_all(&dest).unwrap();
+
+        // Binary data (not valid UTF-8)
+        let binary_data: Vec<u8> = (0..=255).collect();
+
+        {
+            let file = std::fs::File::create(&archive_path).unwrap();
+            let enc = GzEncoder::new(file, Compression::default());
+            let mut tar_builder = tar::Builder::new(enc);
+            let mut header = tar::Header::new_gnu();
+            header.set_size(binary_data.len() as u64);
+            header.set_mode(0o755);
+            header.set_cksum();
+            tar_builder
+                .append_data(&mut header, "binary.bin", &binary_data[..])
+                .unwrap();
+            tar_builder.finish().unwrap();
+        }
+
+        extract_tarball(&archive_path, &dest).unwrap();
+        let extracted = std::fs::read(dest.join("binary.bin")).unwrap();
+        assert_eq!(
+            extracted, binary_data,
+            "binary data should be preserved exactly"
+        );
+    }
+
+    // --- atomic_replace: edge cases ---
+
+    #[test]
+    fn atomic_replace_with_large_content() {
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("source");
+        let tgt = dir.path().join("target");
+
+        // Create a ~1MB file
+        let large_content: Vec<u8> = vec![0xAB; 1024 * 1024];
+        std::fs::write(&src, &large_content).unwrap();
+        std::fs::write(&tgt, b"old small content").unwrap();
+
+        atomic_replace(&src, &tgt).unwrap();
+        let result = std::fs::read(&tgt).unwrap();
+        assert_eq!(result.len(), large_content.len());
+        assert_eq!(result, large_content);
+    }
+
+    #[test]
+    fn atomic_replace_target_parent_must_exist() {
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("source");
+        std::fs::write(&src, "content").unwrap();
+
+        // Target in a non-existent directory
+        let tgt = dir.path().join("nonexistent").join("subdir").join("target");
+        let result = atomic_replace(&src, &tgt);
+        assert!(
+            result.is_err(),
+            "should fail when target parent doesn't exist"
+        );
+    }
+
+    // --- version_cache serialization/deserialization ---
+
+    #[test]
+    fn version_cache_with_prerelease() {
+        let cache = VersionCache {
+            checked_at_secs: 1700000000,
+            latest_tag: "v2.0.0-beta.3".into(),
+            latest_version: "2.0.0-beta.3".into(),
+            current_version: "1.9.0".into(),
+        };
+
+        let json = serde_json::to_string(&cache).unwrap();
+        let restored: VersionCache = serde_json::from_str(&json).unwrap();
+        assert_eq!(restored.latest_tag, "v2.0.0-beta.3");
+        assert_eq!(restored.latest_version, "2.0.0-beta.3");
+
+        // Verify the prerelease version parses and compares correctly
+        let latest = Version::parse(&restored.latest_version).unwrap();
+        let current = Version::parse(&restored.current_version).unwrap();
+        assert!(latest > current, "2.0.0-beta.3 > 1.9.0");
+    }
+
+    #[test]
+    fn version_cache_tolerates_extra_json_fields() {
+        // Forward compatibility: ignore unknown fields
+        let json = r#"{"checkedAtSecs":100,"latestTag":"v1","latestVersion":"1.0.0","currentVersion":"0.9.0","extraField":"ignored"}"#;
+        let cache: VersionCache = serde_json::from_str(json).unwrap();
+        assert_eq!(cache.checked_at_secs, 100);
+        assert_eq!(cache.latest_version, "1.0.0");
+    }
+
+    // --- cache TTL: zero elapsed ---
+
+    #[test]
+    fn cache_ttl_zero_seconds_ago_is_fresh() {
+        let now_secs = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+
+        let elapsed = now_secs.saturating_sub(now_secs);
+        assert!(
+            elapsed < CACHE_TTL_SECS,
+            "zero-elapsed cache should be fresh"
+        );
+    }
+
+    #[test]
+    fn cache_ttl_exactly_at_boundary_is_fresh() {
+        let now_secs = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+
+        // Exactly at TTL boundary (== CACHE_TTL_SECS) should NOT be fresh (uses <, not <=)
+        let at_boundary = now_secs - CACHE_TTL_SECS;
+        let elapsed = now_secs.saturating_sub(at_boundary);
+        assert!(
+            elapsed >= CACHE_TTL_SECS,
+            "cache exactly at TTL boundary should be expired (uses strict <)"
+        );
+    }
+
+    // --- strip_tag_prefix ---
+
+    #[test]
+    fn strip_tag_prefix_with_v() {
+        assert_eq!(strip_tag_prefix("v1.2.3"), "1.2.3");
+    }
+
+    #[test]
+    fn strip_tag_prefix_without_v() {
+        assert_eq!(strip_tag_prefix("1.2.3"), "1.2.3");
+    }
+
+    #[test]
+    fn strip_tag_prefix_empty() {
+        assert_eq!(strip_tag_prefix(""), "");
+    }
+
+    #[test]
+    fn strip_tag_prefix_only_v() {
+        assert_eq!(strip_tag_prefix("v"), "");
+    }
+
+    #[test]
+    fn strip_tag_prefix_double_v() {
+        // Only strips one leading 'v'
+        assert_eq!(strip_tag_prefix("vv1.0.0"), "v1.0.0");
+    }
+
+    // --- parse_checksums edge cases ---
+
+    #[test]
+    fn parse_checksums_extra_whitespace_between_fields() {
+        let content = "abc123    file.tar.gz\n";
+        let map = parse_checksums(content);
+        assert_eq!(map.len(), 1);
+        // split_whitespace handles multiple spaces
+        assert_eq!(map.get("file.tar.gz").unwrap(), "abc123");
+    }
+
+    #[test]
+    fn parse_checksums_tab_separated() {
+        let content = "abc123\tfile.tar.gz\n";
+        let map = parse_checksums(content);
+        assert_eq!(map.len(), 1);
+        assert_eq!(map.get("file.tar.gz").unwrap(), "abc123");
+    }
+
+    #[test]
+    fn parse_checksums_duplicate_filename_last_wins() {
+        let content = "first_hash  file.tar.gz\nsecond_hash  file.tar.gz\n";
+        let map = parse_checksums(content);
+        assert_eq!(map.len(), 1);
+        assert_eq!(
+            map.get("file.tar.gz").unwrap(),
+            "second_hash",
+            "last occurrence should win in HashMap"
+        );
+    }
+
+    // --- download_to_file with content-length header ---
+
+    #[test]
+    fn download_to_file_with_content_length() {
+        let mut server = mockito::Server::new();
+        let body = "known length content";
+        let mock = server
+            .mock("GET", "/sized-file")
+            .with_status(200)
+            .with_header("content-length", &body.len().to_string())
+            .with_body(body)
+            .create();
+
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().join("sized.bin");
+        let url = format!("{}/sized-file", server.url());
+
+        download_to_file(&url, &dest, None).unwrap();
+        mock.assert();
+
+        let content = std::fs::read_to_string(&dest).unwrap();
+        assert_eq!(content, "known length content");
+    }
+
+    #[test]
+    fn download_to_file_binary_content() {
+        let mut server = mockito::Server::new();
+        let binary_data: Vec<u8> = (0..=127).collect();
+        let mock = server
+            .mock("GET", "/binary")
+            .with_status(200)
+            .with_body(&binary_data)
+            .create();
+
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().join("binary.bin");
+        let url = format!("{}/binary", server.url());
+
+        download_to_file(&url, &dest, None).unwrap();
+        mock.assert();
+
+        let content = std::fs::read(&dest).unwrap();
+        assert_eq!(content, binary_data);
+    }
+
+    // --- sha256_file edge cases ---
+
+    #[test]
+    fn sha256_file_empty_file() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        // Write nothing (empty file)
+        let hash = sha256_file(tmp.path()).unwrap();
+        // SHA256 of empty string
+        assert_eq!(
+            hash,
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        );
+    }
+
+    #[test]
+    fn sha256_file_nonexistent_returns_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let result = sha256_file(&dir.path().join("does-not-exist"));
+        assert!(result.is_err(), "nonexistent file should error");
+    }
+
+    // --- fetch_latest_release_from: additional error scenarios ---
+
+    #[test]
+    fn fetch_latest_release_from_handles_server_error() {
+        let mut server = mockito::Server::new();
+        let mock = server
+            .mock("GET", "/repos/test/repo/releases/latest")
+            .with_status(500)
+            .with_body("Internal Server Error")
+            .create();
+
+        let result = fetch_latest_release_from(&server.url(), "test/repo", None);
+        mock.assert();
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn fetch_latest_release_from_with_many_assets() {
+        let mut server = mockito::Server::new();
+        let mock = server
+            .mock("GET", "/repos/test/repo/releases/latest")
+            .with_status(200)
+            .with_body(
+                r#"{
+                    "tag_name": "v5.0.0",
+                    "assets": [
+                        {"name": "cfgd-5.0.0-linux-x86_64.tar.gz", "browser_download_url": "https://dl/linux-x64", "size": 10000},
+                        {"name": "cfgd-5.0.0-linux-aarch64.tar.gz", "browser_download_url": "https://dl/linux-arm64", "size": 9000},
+                        {"name": "cfgd-5.0.0-darwin-x86_64.tar.gz", "browser_download_url": "https://dl/darwin-x64", "size": 11000},
+                        {"name": "cfgd-5.0.0-darwin-aarch64.tar.gz", "browser_download_url": "https://dl/darwin-arm64", "size": 10500},
+                        {"name": "cfgd-5.0.0-windows-x86_64.zip", "browser_download_url": "https://dl/windows-x64", "size": 12000},
+                        {"name": "cfgd-5.0.0-checksums.txt", "browser_download_url": "https://dl/checksums", "size": 512}
+                    ]
+                }"#,
+            )
+            .create();
+
+        let result = fetch_latest_release_from(&server.url(), "test/repo", None);
+        mock.assert();
+
+        let release = result.unwrap();
+        assert_eq!(release.version, Version::new(5, 0, 0));
+        assert_eq!(release.assets.len(), 6, "should parse all 6 assets");
+
+        // Verify specific assets
+        let checksums = release.assets.iter().find(|a| a.name.contains("checksums"));
+        assert!(checksums.is_some());
+        assert_eq!(checksums.unwrap().size, 512);
+    }
 }

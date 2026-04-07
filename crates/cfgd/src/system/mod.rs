@@ -5211,4 +5211,967 @@ MIDDLE: "m"
         // BTreeMap sorts lexicographically
         assert_eq!(keys, vec!["ALPHA", "MIDDLE", "ZEBRA"]);
     }
+
+    // =====================================================================
+    // read_command_output tests
+    // =====================================================================
+
+    #[test]
+    fn read_command_output_successful_command() {
+        let output = read_command_output(Command::new("echo").arg("hello"));
+        assert_eq!(output, "hello");
+    }
+
+    #[test]
+    fn read_command_output_trims_trailing_newline() {
+        // echo outputs "hello\n" but read_command_output should trim it
+        let output = read_command_output(Command::new("echo").arg("  spaced  "));
+        assert_eq!(output, "spaced");
+    }
+
+    #[test]
+    fn read_command_output_failed_command_returns_empty() {
+        let output = read_command_output(&mut Command::new("false"));
+        assert_eq!(output, "");
+    }
+
+    #[test]
+    fn read_command_output_nonexistent_command_returns_empty() {
+        let output = read_command_output(&mut Command::new("cfgd_nonexistent_cmd_12345"));
+        assert_eq!(output, "");
+    }
+
+    #[test]
+    fn read_command_output_multiline_output() {
+        // printf produces multiline output without trailing newline issues
+        let output = read_command_output(Command::new("printf").arg("line1\nline2"));
+        assert_eq!(output, "line1\nline2");
+    }
+
+    // =====================================================================
+    // LaunchAgentConfigurator::diff — outdated plist detection
+    // =====================================================================
+
+    #[test]
+    fn launch_agent_plist_generation_is_deterministic() {
+        // Verify the generated plist would differ from stale content
+        let expected = generate_launch_agent_plist("com.test.outdated", "/usr/bin/true", &[], true);
+        assert_ne!(expected, "stale plist content");
+        // And that generated content for the same args is deterministic
+        let expected2 =
+            generate_launch_agent_plist("com.test.outdated", "/usr/bin/true", &[], true);
+        assert_eq!(expected, expected2);
+    }
+
+    // =====================================================================
+    // SystemdUnitConfigurator::diff — unit file checks
+    // =====================================================================
+
+    #[test]
+    fn systemd_diff_detects_missing_unit_file() {
+        let su = SystemdUnitConfigurator;
+        let yaml: serde_yaml::Value = serde_yaml::from_str(
+            r#"
+- name: cfgd-test-nonexistent.service
+  enabled: true
+  unitFile: /nonexistent/path/to/unit.service
+"#,
+        )
+        .unwrap();
+
+        let drifts = su.diff(&yaml).unwrap();
+        // Should have a drift for the unit file being missing
+        // (the enabled check may or may not show depending on systemctl availability)
+        let unit_file_drifts: Vec<_> = drifts
+            .iter()
+            .filter(|d| d.key.contains("unit-file"))
+            .collect();
+        assert_eq!(unit_file_drifts.len(), 1);
+        assert_eq!(unit_file_drifts[0].expected, "present");
+        assert_eq!(unit_file_drifts[0].actual, "missing");
+    }
+
+    #[test]
+    fn systemd_diff_with_unit_file_path_reports_missing_dest() {
+        let su = SystemdUnitConfigurator;
+        let dir = tempfile::tempdir().unwrap();
+
+        // Create a "source" unit file that exists
+        let source_path = dir.path().join("test.service");
+        std::fs::write(&source_path, "[Unit]\nDescription=Test\n").unwrap();
+
+        // The diff function checks if /etc/systemd/system/{name} exists.
+        // Since cfgd-test-phantom.service won't exist there, we get "missing".
+        let yaml_str = format!(
+            "- name: cfgd-test-phantom.service\n  enabled: true\n  unitFile: {}\n",
+            source_path.display()
+        );
+        let yaml: serde_yaml::Value = serde_yaml::from_str(&yaml_str).unwrap();
+
+        let drifts = su.diff(&yaml).unwrap();
+        let unit_file_drifts: Vec<_> = drifts
+            .iter()
+            .filter(|d| d.key.contains("unit-file"))
+            .collect();
+        assert_eq!(unit_file_drifts.len(), 1);
+        assert_eq!(unit_file_drifts[0].expected, "present");
+        assert_eq!(unit_file_drifts[0].actual, "missing");
+    }
+
+    #[test]
+    fn systemd_diff_default_enabled_is_true() {
+        let su = SystemdUnitConfigurator;
+        // When "enabled" is omitted, it defaults to true
+        let yaml: serde_yaml::Value = serde_yaml::from_str(
+            r#"
+- name: cfgd-test-default-enabled.service
+"#,
+        )
+        .unwrap();
+
+        let drifts = su.diff(&yaml).unwrap();
+        // If systemctl is available and the service doesn't exist, we get an "enabled" drift
+        // If systemctl is not available, is_enabled returns false -> drift with expected=true
+        let enabled_drifts: Vec<_> = drifts
+            .iter()
+            .filter(|d| d.key.contains("enabled"))
+            .collect();
+        if !enabled_drifts.is_empty() {
+            assert_eq!(enabled_drifts[0].expected, "true");
+        }
+    }
+
+    // =====================================================================
+    // WindowsRegistryConfigurator::parse_reg_value_output — DWORD edge cases
+    // =====================================================================
+
+    #[test]
+    fn registry_parse_reg_value_dword_invalid_hex_returns_raw() {
+        // If the hex string after 0x is not valid, from_str_radix fails,
+        // so it falls through to return the raw value
+        let output = "    BadHex    REG_DWORD    0xZZZZ\n";
+        let result = WindowsRegistryConfigurator::parse_reg_value_output(output, "BadHex");
+        // The DWORD hex parse fails, so the raw value "0xZZZZ" is returned
+        assert_eq!(result, Some("0xZZZZ".to_string()));
+    }
+
+    #[test]
+    fn registry_parse_reg_value_dword_no_0x_prefix() {
+        // DWORD without 0x prefix — strip_prefix returns None, falls to raw return
+        let output = "    PlainDword    REG_DWORD    42\n";
+        let result = WindowsRegistryConfigurator::parse_reg_value_output(output, "PlainDword");
+        assert_eq!(result, Some("42".to_string()));
+    }
+
+    // =====================================================================
+    // parse_sc_state edge cases
+    // =====================================================================
+
+    #[test]
+    fn parse_sc_state_only_number_no_word() {
+        // STATE line with only the number, no state word after it
+        let output = "\tSTATE              : 4\n";
+        // split_whitespace on "4" yields only one element, nth(1) returns None
+        assert_eq!(parse_sc_state(output), None);
+    }
+
+    #[test]
+    fn parse_sc_state_state_line_with_extra_whitespace() {
+        let output = "\t  STATE              :   4   RUNNING   \n";
+        assert_eq!(parse_sc_state(output), Some("running".to_string()));
+    }
+
+    // =====================================================================
+    // write_etc_environment_to — file doesn't exist initially
+    // =====================================================================
+
+    #[test]
+    fn write_etc_environment_creates_new_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let env_path = dir.path().join("new_environment");
+        assert!(!env_path.exists());
+
+        let mut managed = BTreeMap::new();
+        managed.insert("NEW_VAR".to_string(), "new_value".to_string());
+
+        EnvironmentConfigurator::write_etc_environment_to(&env_path, &managed).unwrap();
+
+        let content = std::fs::read_to_string(&env_path).unwrap();
+        assert!(content.contains(CFGD_BLOCK_BEGIN));
+        assert!(content.contains("NEW_VAR=new_value\n"));
+        assert!(content.contains(CFGD_BLOCK_END));
+    }
+
+    #[test]
+    fn write_etc_environment_empty_managed_on_new_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let env_path = dir.path().join("new_environment");
+
+        let managed = BTreeMap::new();
+        EnvironmentConfigurator::write_etc_environment_to(&env_path, &managed).unwrap();
+
+        let content = std::fs::read_to_string(&env_path).unwrap();
+        // No block markers for empty managed set
+        assert!(!content.contains(CFGD_BLOCK_BEGIN));
+        // File should be empty or just a newline
+        assert!(content.trim().is_empty());
+    }
+
+    // =====================================================================
+    // EnvironmentConfigurator::apply — Linux path with Printer
+    // =====================================================================
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn environment_apply_empty_desired_is_noop() {
+        let (printer, _output) = cfgd_core::output::Printer::for_test();
+        let ec = EnvironmentConfigurator;
+        let yaml = serde_yaml::Value::Mapping(serde_yaml::Mapping::new());
+        // Should return Ok(()) without writing anything
+        ec.apply(&yaml, &printer).unwrap();
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn environment_apply_non_mapping_is_noop() {
+        let (printer, _output) = cfgd_core::output::Printer::for_test();
+        let ec = EnvironmentConfigurator;
+        let yaml = serde_yaml::Value::String("not a mapping".into());
+        ec.apply(&yaml, &printer).unwrap();
+    }
+
+    // =====================================================================
+    // ShellConfigurator::apply — empty desired is noop
+    // =====================================================================
+
+    #[test]
+    fn shell_apply_empty_desired_is_noop() {
+        let (printer, _output) = cfgd_core::output::Printer::for_test();
+        let sc = ShellConfigurator;
+        let yaml = serde_yaml::Value::String(String::new());
+        sc.apply(&yaml, &printer).unwrap();
+    }
+
+    #[test]
+    fn shell_apply_non_string_desired_is_noop() {
+        let (printer, _output) = cfgd_core::output::Printer::for_test();
+        let sc = ShellConfigurator;
+        let yaml = serde_yaml::Value::Null;
+        sc.apply(&yaml, &printer).unwrap();
+    }
+
+    // =====================================================================
+    // MacosDefaultsConfigurator::apply — empty/non-mapping noop paths
+    // =====================================================================
+
+    #[test]
+    fn macos_defaults_apply_empty_mapping_is_noop() {
+        let (printer, _output) = cfgd_core::output::Printer::for_test();
+        let md = MacosDefaultsConfigurator;
+        let yaml = serde_yaml::Value::Mapping(serde_yaml::Mapping::new());
+        md.apply(&yaml, &printer).unwrap();
+    }
+
+    #[test]
+    fn macos_defaults_apply_non_mapping_is_noop() {
+        let (printer, _output) = cfgd_core::output::Printer::for_test();
+        let md = MacosDefaultsConfigurator;
+        let yaml = serde_yaml::Value::String("not a mapping".into());
+        md.apply(&yaml, &printer).unwrap();
+    }
+
+    #[test]
+    fn macos_defaults_apply_skips_non_string_domain_key() {
+        let (printer, _output) = cfgd_core::output::Printer::for_test();
+        let md = MacosDefaultsConfigurator;
+        let mut outer = serde_yaml::Mapping::new();
+        outer.insert(
+            serde_yaml::Value::Number(42.into()),
+            serde_yaml::Value::Mapping(serde_yaml::Mapping::new()),
+        );
+        let yaml = serde_yaml::Value::Mapping(outer);
+        md.apply(&yaml, &printer).unwrap();
+    }
+
+    #[test]
+    fn macos_defaults_apply_skips_inner_non_mapping() {
+        let (printer, _output) = cfgd_core::output::Printer::for_test();
+        let md = MacosDefaultsConfigurator;
+        let mut outer = serde_yaml::Mapping::new();
+        outer.insert(
+            serde_yaml::Value::String("com.apple.dock".into()),
+            serde_yaml::Value::String("not a mapping".into()),
+        );
+        let yaml = serde_yaml::Value::Mapping(outer);
+        md.apply(&yaml, &printer).unwrap();
+    }
+
+    #[test]
+    fn macos_defaults_apply_skips_non_string_key_inside_domain() {
+        let (printer, _output) = cfgd_core::output::Printer::for_test();
+        let md = MacosDefaultsConfigurator;
+        let mut inner = serde_yaml::Mapping::new();
+        inner.insert(
+            serde_yaml::Value::Number(99.into()),
+            serde_yaml::Value::String("value".into()),
+        );
+        let mut outer = serde_yaml::Mapping::new();
+        outer.insert(
+            serde_yaml::Value::String("com.apple.dock".into()),
+            serde_yaml::Value::Mapping(inner),
+        );
+        let yaml = serde_yaml::Value::Mapping(outer);
+        // On non-macOS, defaults command won't exist, but the function still
+        // iterates and skips the numeric key before reaching the command.
+        // This tests the `None => continue` at line 389-391.
+        md.apply(&yaml, &printer).unwrap();
+    }
+
+    // =====================================================================
+    // SystemdUnitConfigurator::apply — noop paths
+    // =====================================================================
+
+    #[test]
+    fn systemd_apply_empty_sequence_is_noop() {
+        let (printer, _output) = cfgd_core::output::Printer::for_test();
+        let su = SystemdUnitConfigurator;
+        let yaml = serde_yaml::Value::Sequence(Vec::new());
+        su.apply(&yaml, &printer).unwrap();
+    }
+
+    #[test]
+    fn systemd_apply_non_sequence_is_noop() {
+        let (printer, _output) = cfgd_core::output::Printer::for_test();
+        let su = SystemdUnitConfigurator;
+        let yaml = serde_yaml::Value::String("not a sequence".into());
+        su.apply(&yaml, &printer).unwrap();
+    }
+
+    #[test]
+    fn systemd_apply_skips_units_without_name() {
+        let (printer, _output) = cfgd_core::output::Printer::for_test();
+        let su = SystemdUnitConfigurator;
+        let mut unit = serde_yaml::Mapping::new();
+        unit.insert(
+            serde_yaml::Value::String("enabled".into()),
+            serde_yaml::Value::Bool(true),
+        );
+        let yaml = serde_yaml::Value::Sequence(vec![serde_yaml::Value::Mapping(unit)]);
+        su.apply(&yaml, &printer).unwrap();
+    }
+
+    // =====================================================================
+    // LaunchAgentConfigurator::apply — noop paths
+    // =====================================================================
+
+    #[test]
+    fn launch_agent_apply_empty_sequence_is_noop() {
+        let (printer, _output) = cfgd_core::output::Printer::for_test();
+        let la = LaunchAgentConfigurator;
+        let yaml = serde_yaml::Value::Sequence(Vec::new());
+        la.apply(&yaml, &printer).unwrap();
+    }
+
+    #[test]
+    fn launch_agent_apply_non_sequence_is_noop() {
+        let (printer, _output) = cfgd_core::output::Printer::for_test();
+        let la = LaunchAgentConfigurator;
+        let yaml = serde_yaml::Value::String("not a sequence".into());
+        la.apply(&yaml, &printer).unwrap();
+    }
+
+    #[test]
+    fn launch_agent_apply_skips_agents_without_name() {
+        let (printer, _output) = cfgd_core::output::Printer::for_test();
+        let la = LaunchAgentConfigurator;
+        let mut agent = serde_yaml::Mapping::new();
+        agent.insert(
+            serde_yaml::Value::String("program".into()),
+            serde_yaml::Value::String("/usr/bin/true".into()),
+        );
+        let yaml = serde_yaml::Value::Sequence(vec![serde_yaml::Value::Mapping(agent)]);
+        la.apply(&yaml, &printer).unwrap();
+    }
+
+    // =====================================================================
+    // GsettingsConfigurator::apply — noop/skip paths
+    // =====================================================================
+
+    #[test]
+    fn gsettings_apply_empty_mapping_is_noop() {
+        let (printer, _output) = cfgd_core::output::Printer::for_test();
+        let gc = GsettingsConfigurator;
+        let yaml = serde_yaml::Value::Mapping(serde_yaml::Mapping::new());
+        gc.apply(&yaml, &printer).unwrap();
+    }
+
+    #[test]
+    fn gsettings_apply_non_mapping_is_noop() {
+        let (printer, _output) = cfgd_core::output::Printer::for_test();
+        let gc = GsettingsConfigurator;
+        let yaml = serde_yaml::Value::String("not a mapping".into());
+        gc.apply(&yaml, &printer).unwrap();
+    }
+
+    #[test]
+    fn gsettings_apply_skips_non_string_schema_key() {
+        let (printer, _output) = cfgd_core::output::Printer::for_test();
+        let gc = GsettingsConfigurator;
+        let mut outer = serde_yaml::Mapping::new();
+        outer.insert(
+            serde_yaml::Value::Number(42.into()),
+            serde_yaml::Value::Mapping(serde_yaml::Mapping::new()),
+        );
+        let yaml = serde_yaml::Value::Mapping(outer);
+        gc.apply(&yaml, &printer).unwrap();
+    }
+
+    #[test]
+    fn gsettings_apply_skips_inner_non_mapping() {
+        let (printer, _output) = cfgd_core::output::Printer::for_test();
+        let gc = GsettingsConfigurator;
+        let mut outer = serde_yaml::Mapping::new();
+        outer.insert(
+            serde_yaml::Value::String("org.gnome.test".into()),
+            serde_yaml::Value::String("not a mapping".into()),
+        );
+        let yaml = serde_yaml::Value::Mapping(outer);
+        gc.apply(&yaml, &printer).unwrap();
+    }
+
+    #[test]
+    fn gsettings_apply_skips_non_string_key() {
+        let (printer, _output) = cfgd_core::output::Printer::for_test();
+        let gc = GsettingsConfigurator;
+        let mut inner = serde_yaml::Mapping::new();
+        inner.insert(
+            serde_yaml::Value::Number(1.into()),
+            serde_yaml::Value::String("value".into()),
+        );
+        let mut outer = serde_yaml::Mapping::new();
+        outer.insert(
+            serde_yaml::Value::String("org.gnome.test".into()),
+            serde_yaml::Value::Mapping(inner),
+        );
+        let yaml = serde_yaml::Value::Mapping(outer);
+        gc.apply(&yaml, &printer).unwrap();
+    }
+
+    // =====================================================================
+    // KdeConfigConfigurator::apply — noop/skip paths
+    // =====================================================================
+
+    #[test]
+    fn kde_apply_empty_mapping_is_noop() {
+        let (printer, _output) = cfgd_core::output::Printer::for_test();
+        let kc = KdeConfigConfigurator;
+        let yaml = serde_yaml::Value::Mapping(serde_yaml::Mapping::new());
+        kc.apply(&yaml, &printer).unwrap();
+    }
+
+    #[test]
+    fn kde_apply_non_mapping_is_noop() {
+        let (printer, _output) = cfgd_core::output::Printer::for_test();
+        let kc = KdeConfigConfigurator;
+        let yaml = serde_yaml::Value::String("not a mapping".into());
+        kc.apply(&yaml, &printer).unwrap();
+    }
+
+    #[test]
+    fn kde_apply_skips_non_string_file_key() {
+        let (printer, _output) = cfgd_core::output::Printer::for_test();
+        let kc = KdeConfigConfigurator;
+        let mut outer = serde_yaml::Mapping::new();
+        outer.insert(
+            serde_yaml::Value::Number(42.into()),
+            serde_yaml::Value::Mapping(serde_yaml::Mapping::new()),
+        );
+        let yaml = serde_yaml::Value::Mapping(outer);
+        kc.apply(&yaml, &printer).unwrap();
+    }
+
+    #[test]
+    fn kde_apply_skips_groups_non_mapping() {
+        let (printer, _output) = cfgd_core::output::Printer::for_test();
+        let kc = KdeConfigConfigurator;
+        let mut outer = serde_yaml::Mapping::new();
+        outer.insert(
+            serde_yaml::Value::String("kdeglobals".into()),
+            serde_yaml::Value::String("not a mapping".into()),
+        );
+        let yaml = serde_yaml::Value::Mapping(outer);
+        kc.apply(&yaml, &printer).unwrap();
+    }
+
+    #[test]
+    fn kde_apply_skips_non_string_group_key() {
+        let (printer, _output) = cfgd_core::output::Printer::for_test();
+        let kc = KdeConfigConfigurator;
+        let mut groups = serde_yaml::Mapping::new();
+        groups.insert(
+            serde_yaml::Value::Number(1.into()),
+            serde_yaml::Value::Mapping(serde_yaml::Mapping::new()),
+        );
+        let mut outer = serde_yaml::Mapping::new();
+        outer.insert(
+            serde_yaml::Value::String("kdeglobals".into()),
+            serde_yaml::Value::Mapping(groups),
+        );
+        let yaml = serde_yaml::Value::Mapping(outer);
+        kc.apply(&yaml, &printer).unwrap();
+    }
+
+    #[test]
+    fn kde_apply_skips_keys_non_mapping() {
+        let (printer, _output) = cfgd_core::output::Printer::for_test();
+        let kc = KdeConfigConfigurator;
+        let mut groups = serde_yaml::Mapping::new();
+        groups.insert(
+            serde_yaml::Value::String("General".into()),
+            serde_yaml::Value::String("not a mapping".into()),
+        );
+        let mut outer = serde_yaml::Mapping::new();
+        outer.insert(
+            serde_yaml::Value::String("kdeglobals".into()),
+            serde_yaml::Value::Mapping(groups),
+        );
+        let yaml = serde_yaml::Value::Mapping(outer);
+        kc.apply(&yaml, &printer).unwrap();
+    }
+
+    #[test]
+    fn kde_apply_skips_non_string_key_in_group() {
+        let (printer, _output) = cfgd_core::output::Printer::for_test();
+        let kc = KdeConfigConfigurator;
+        let mut keys = serde_yaml::Mapping::new();
+        keys.insert(
+            serde_yaml::Value::Number(99.into()),
+            serde_yaml::Value::String("value".into()),
+        );
+        let mut groups = serde_yaml::Mapping::new();
+        groups.insert(
+            serde_yaml::Value::String("General".into()),
+            serde_yaml::Value::Mapping(keys),
+        );
+        let mut outer = serde_yaml::Mapping::new();
+        outer.insert(
+            serde_yaml::Value::String("kdeglobals".into()),
+            serde_yaml::Value::Mapping(groups),
+        );
+        let yaml = serde_yaml::Value::Mapping(outer);
+        kc.apply(&yaml, &printer).unwrap();
+    }
+
+    // =====================================================================
+    // XfconfConfigurator::apply — noop/skip paths
+    // =====================================================================
+
+    #[test]
+    fn xfconf_apply_empty_mapping_is_noop() {
+        let (printer, _output) = cfgd_core::output::Printer::for_test();
+        let xc = XfconfConfigurator;
+        let yaml = serde_yaml::Value::Mapping(serde_yaml::Mapping::new());
+        xc.apply(&yaml, &printer).unwrap();
+    }
+
+    #[test]
+    fn xfconf_apply_non_mapping_is_noop() {
+        let (printer, _output) = cfgd_core::output::Printer::for_test();
+        let xc = XfconfConfigurator;
+        let yaml = serde_yaml::Value::String("not a mapping".into());
+        xc.apply(&yaml, &printer).unwrap();
+    }
+
+    #[test]
+    fn xfconf_apply_skips_non_string_channel_key() {
+        let (printer, _output) = cfgd_core::output::Printer::for_test();
+        let xc = XfconfConfigurator;
+        let mut outer = serde_yaml::Mapping::new();
+        outer.insert(
+            serde_yaml::Value::Number(42.into()),
+            serde_yaml::Value::Mapping(serde_yaml::Mapping::new()),
+        );
+        let yaml = serde_yaml::Value::Mapping(outer);
+        xc.apply(&yaml, &printer).unwrap();
+    }
+
+    #[test]
+    fn xfconf_apply_skips_inner_non_mapping() {
+        let (printer, _output) = cfgd_core::output::Printer::for_test();
+        let xc = XfconfConfigurator;
+        let mut outer = serde_yaml::Mapping::new();
+        outer.insert(
+            serde_yaml::Value::String("xfwm4".into()),
+            serde_yaml::Value::String("not a mapping".into()),
+        );
+        let yaml = serde_yaml::Value::Mapping(outer);
+        xc.apply(&yaml, &printer).unwrap();
+    }
+
+    #[test]
+    fn xfconf_apply_skips_non_string_property_key() {
+        let (printer, _output) = cfgd_core::output::Printer::for_test();
+        let xc = XfconfConfigurator;
+        let mut inner = serde_yaml::Mapping::new();
+        inner.insert(
+            serde_yaml::Value::Number(1.into()),
+            serde_yaml::Value::String("value".into()),
+        );
+        let mut outer = serde_yaml::Mapping::new();
+        outer.insert(
+            serde_yaml::Value::String("xfwm4".into()),
+            serde_yaml::Value::Mapping(inner),
+        );
+        let yaml = serde_yaml::Value::Mapping(outer);
+        xc.apply(&yaml, &printer).unwrap();
+    }
+
+    // =====================================================================
+    // WindowsRegistryConfigurator::apply — noop/skip paths
+    // =====================================================================
+
+    #[test]
+    fn registry_apply_empty_mapping_is_noop() {
+        let (printer, _output) = cfgd_core::output::Printer::for_test();
+        let wrc = WindowsRegistryConfigurator;
+        let yaml = serde_yaml::Value::Mapping(serde_yaml::Mapping::new());
+        wrc.apply(&yaml, &printer).unwrap();
+    }
+
+    #[test]
+    fn registry_apply_non_mapping_is_noop() {
+        let (printer, _output) = cfgd_core::output::Printer::for_test();
+        let wrc = WindowsRegistryConfigurator;
+        let yaml = serde_yaml::Value::String("not a mapping".into());
+        wrc.apply(&yaml, &printer).unwrap();
+    }
+
+    #[test]
+    fn registry_apply_skips_non_string_key_path() {
+        let (printer, _output) = cfgd_core::output::Printer::for_test();
+        let wrc = WindowsRegistryConfigurator;
+        let mut outer = serde_yaml::Mapping::new();
+        outer.insert(
+            serde_yaml::Value::Number(42.into()),
+            serde_yaml::Value::Mapping(serde_yaml::Mapping::new()),
+        );
+        let yaml = serde_yaml::Value::Mapping(outer);
+        wrc.apply(&yaml, &printer).unwrap();
+    }
+
+    #[test]
+    fn registry_apply_skips_inner_non_mapping() {
+        let (printer, _output) = cfgd_core::output::Printer::for_test();
+        let wrc = WindowsRegistryConfigurator;
+        let mut outer = serde_yaml::Mapping::new();
+        outer.insert(
+            serde_yaml::Value::String(r"HKCU\Software".into()),
+            serde_yaml::Value::String("not a mapping".into()),
+        );
+        let yaml = serde_yaml::Value::Mapping(outer);
+        wrc.apply(&yaml, &printer).unwrap();
+    }
+
+    #[test]
+    fn registry_apply_skips_non_string_value_name() {
+        let (printer, _output) = cfgd_core::output::Printer::for_test();
+        let wrc = WindowsRegistryConfigurator;
+        let mut inner = serde_yaml::Mapping::new();
+        inner.insert(
+            serde_yaml::Value::Number(99.into()),
+            serde_yaml::Value::String("data".into()),
+        );
+        let mut outer = serde_yaml::Mapping::new();
+        outer.insert(
+            serde_yaml::Value::String(r"HKCU\Software".into()),
+            serde_yaml::Value::Mapping(inner),
+        );
+        let yaml = serde_yaml::Value::Mapping(outer);
+        wrc.apply(&yaml, &printer).unwrap();
+    }
+
+    // =====================================================================
+    // WindowsServiceConfigurator::apply — noop paths
+    // =====================================================================
+
+    #[test]
+    fn service_apply_empty_sequence_is_noop() {
+        let (printer, _output) = cfgd_core::output::Printer::for_test();
+        let wsc = WindowsServiceConfigurator;
+        let yaml = serde_yaml::Value::Sequence(Vec::new());
+        wsc.apply(&yaml, &printer).unwrap();
+    }
+
+    #[test]
+    fn service_apply_non_sequence_is_noop() {
+        let (printer, _output) = cfgd_core::output::Printer::for_test();
+        let wsc = WindowsServiceConfigurator;
+        let yaml = serde_yaml::Value::String("not a sequence".into());
+        wsc.apply(&yaml, &printer).unwrap();
+    }
+
+    // =====================================================================
+    // KdeConfigConfigurator::diff — three-level edge cases
+    // =====================================================================
+
+    #[test]
+    fn kde_diff_non_string_file_key_skipped() {
+        let kc = KdeConfigConfigurator;
+        let mut outer = serde_yaml::Mapping::new();
+        outer.insert(
+            serde_yaml::Value::Number(42.into()),
+            serde_yaml::Value::Mapping(serde_yaml::Mapping::new()),
+        );
+        let yaml = serde_yaml::Value::Mapping(outer);
+        let drifts = kc.diff(&yaml).unwrap();
+        assert!(drifts.is_empty());
+    }
+
+    #[test]
+    fn kde_diff_groups_not_mapping_skipped() {
+        let kc = KdeConfigConfigurator;
+        let mut outer = serde_yaml::Mapping::new();
+        outer.insert(
+            serde_yaml::Value::String("kdeglobals".into()),
+            serde_yaml::Value::String("not a mapping".into()),
+        );
+        let yaml = serde_yaml::Value::Mapping(outer);
+        let drifts = kc.diff(&yaml).unwrap();
+        assert!(drifts.is_empty());
+    }
+
+    #[test]
+    fn kde_diff_non_string_group_key_skipped() {
+        let kc = KdeConfigConfigurator;
+        let mut groups = serde_yaml::Mapping::new();
+        groups.insert(
+            serde_yaml::Value::Number(1.into()),
+            serde_yaml::Value::Mapping(serde_yaml::Mapping::new()),
+        );
+        let mut outer = serde_yaml::Mapping::new();
+        outer.insert(
+            serde_yaml::Value::String("kdeglobals".into()),
+            serde_yaml::Value::Mapping(groups),
+        );
+        let yaml = serde_yaml::Value::Mapping(outer);
+        let drifts = kc.diff(&yaml).unwrap();
+        assert!(drifts.is_empty());
+    }
+
+    #[test]
+    fn kde_diff_keys_not_mapping_skipped() {
+        let kc = KdeConfigConfigurator;
+        let mut groups = serde_yaml::Mapping::new();
+        groups.insert(
+            serde_yaml::Value::String("General".into()),
+            serde_yaml::Value::String("not a mapping".into()),
+        );
+        let mut outer = serde_yaml::Mapping::new();
+        outer.insert(
+            serde_yaml::Value::String("kdeglobals".into()),
+            serde_yaml::Value::Mapping(groups),
+        );
+        let yaml = serde_yaml::Value::Mapping(outer);
+        let drifts = kc.diff(&yaml).unwrap();
+        assert!(drifts.is_empty());
+    }
+
+    // =====================================================================
+    // GsettingsConfigurator::current_state / KdeConfig / Xfconf
+    // =====================================================================
+
+    #[test]
+    fn gsettings_current_state_returns_empty_mapping() {
+        let gc = GsettingsConfigurator;
+        let state = gc.current_state().unwrap();
+        assert!(state.as_mapping().unwrap().is_empty());
+    }
+
+    #[test]
+    fn kde_current_state_returns_empty_mapping() {
+        let kc = KdeConfigConfigurator;
+        let state = kc.current_state().unwrap();
+        assert!(state.as_mapping().unwrap().is_empty());
+    }
+
+    #[test]
+    fn xfconf_current_state_returns_empty_mapping() {
+        let xc = XfconfConfigurator;
+        let state = xc.current_state().unwrap();
+        assert!(state.as_mapping().unwrap().is_empty());
+    }
+
+    // =====================================================================
+    // write_etc_environment_to — idempotency
+    // =====================================================================
+
+    #[test]
+    fn write_etc_environment_idempotent() {
+        let dir = tempfile::tempdir().unwrap();
+        let env_path = dir.path().join("environment");
+
+        let mut managed = BTreeMap::new();
+        managed.insert("FOO".to_string(), "bar".to_string());
+        managed.insert("BAZ".to_string(), "qux".to_string());
+
+        EnvironmentConfigurator::write_etc_environment_to(&env_path, &managed).unwrap();
+        let content1 = std::fs::read_to_string(&env_path).unwrap();
+
+        // Write again with same vars — should produce identical output
+        EnvironmentConfigurator::write_etc_environment_to(&env_path, &managed).unwrap();
+        let content2 = std::fs::read_to_string(&env_path).unwrap();
+
+        assert_eq!(content1, content2, "writing same vars should be idempotent");
+    }
+
+    // =====================================================================
+    // write_profile_d_to — idempotency
+    // =====================================================================
+
+    #[test]
+    fn write_profile_d_idempotent() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("env.sh");
+
+        let mut managed = BTreeMap::new();
+        managed.insert("A".to_string(), "1".to_string());
+
+        EnvironmentConfigurator::write_profile_d_to(&path, &managed).unwrap();
+        let content1 = std::fs::read_to_string(&path).unwrap();
+
+        EnvironmentConfigurator::write_profile_d_to(&path, &managed).unwrap();
+        let content2 = std::fs::read_to_string(&path).unwrap();
+
+        assert_eq!(content1, content2);
+    }
+
+    // =====================================================================
+    // WindowsRegistryConfigurator::write_reg_value — type inference on non-Windows
+    // =====================================================================
+
+    #[cfg(not(windows))]
+    #[test]
+    fn registry_write_reg_value_noop_on_non_windows() {
+        let (printer, _output) = cfgd_core::output::Printer::for_test();
+        // On non-Windows, write_reg_value returns Ok(()) immediately
+        WindowsRegistryConfigurator::write_reg_value(r"HKCU\Test", "TestValue", "42", &printer)
+            .unwrap();
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn registry_read_reg_value_returns_none_on_non_windows() {
+        assert_eq!(
+            WindowsRegistryConfigurator::read_reg_value(r"HKCU\Test", "Key"),
+            None
+        );
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn registry_read_reg_type_returns_none_on_non_windows() {
+        assert_eq!(
+            WindowsRegistryConfigurator::read_reg_type(r"HKCU\Test", "Key"),
+            None
+        );
+    }
+
+    // =====================================================================
+    // WindowsServiceConfigurator::query_service — non-Windows returns None
+    // =====================================================================
+
+    #[cfg(not(windows))]
+    #[test]
+    fn service_query_returns_none_on_non_windows() {
+        assert!(WindowsServiceConfigurator::query_service("AnyService").is_none());
+    }
+
+    // =====================================================================
+    // EnvironmentConfigurator::windows_current_vars — non-Windows returns empty
+    // =====================================================================
+
+    #[cfg(not(windows))]
+    #[test]
+    fn environment_windows_current_vars_empty_on_non_windows() {
+        let vars = EnvironmentConfigurator::windows_current_vars();
+        assert!(vars.is_empty());
+    }
+
+    // =====================================================================
+    // ShellConfigurator::diff — non-string desired treated as empty
+    // =====================================================================
+
+    #[test]
+    fn shell_diff_null_desired_returns_empty() {
+        let sc = ShellConfigurator;
+        let drifts = sc.diff(&serde_yaml::Value::Null).unwrap();
+        assert!(drifts.is_empty());
+    }
+
+    #[test]
+    fn shell_diff_number_desired_returns_empty() {
+        let sc = ShellConfigurator;
+        let drifts = sc.diff(&serde_yaml::Value::Number(42.into())).unwrap();
+        assert!(drifts.is_empty());
+    }
+
+    // =====================================================================
+    // parse_sc_config_value — multiple colons in value
+    // =====================================================================
+
+    #[test]
+    fn parse_sc_config_value_value_with_colon() {
+        let output = "\tBINARY_PATH_NAME   : C:\\path:with:colons\\svc.exe\n";
+        assert_eq!(
+            parse_sc_config_value(output, "BINARY_PATH_NAME"),
+            Some("C:\\path:with:colons\\svc.exe".to_string())
+        );
+    }
+
+    // =====================================================================
+    // generate_launch_agent_plist — RunAtLoad variations verified precisely
+    // =====================================================================
+
+    #[test]
+    fn generate_plist_run_at_load_true_produces_true_tag() {
+        let plist = generate_launch_agent_plist("com.test", "", &[], true);
+        assert!(
+            plist.contains("<true />"),
+            "RunAtLoad=true should produce <true /> tag"
+        );
+        assert!(!plist.contains("<false />"));
+    }
+
+    #[test]
+    fn generate_plist_run_at_load_false_produces_false_tag() {
+        let plist = generate_launch_agent_plist("com.test", "", &[], false);
+        assert!(
+            plist.contains("<false />"),
+            "RunAtLoad=false should produce <false /> tag"
+        );
+        assert!(!plist.contains("<true />"));
+    }
+
+    // =====================================================================
+    // write_etc_environment_to — value containing double-quote (escape path)
+    // =====================================================================
+
+    #[test]
+    fn write_etc_environment_escapes_double_quotes_in_value() {
+        let dir = tempfile::tempdir().unwrap();
+        let env_path = dir.path().join("environment");
+
+        let mut managed = BTreeMap::new();
+        managed.insert("QUOTED".to_string(), r#"say "hello""#.to_string());
+
+        EnvironmentConfigurator::write_etc_environment_to(&env_path, &managed).unwrap();
+
+        let content = std::fs::read_to_string(&env_path).unwrap();
+        // The value contains a double-quote, which triggers quoting + escaping
+        assert!(
+            content.contains(r#"QUOTED="say \"hello\"""#),
+            "double quotes in value should be escaped, got: {}",
+            content
+        );
+    }
 }

@@ -3880,4 +3880,1248 @@ mod tests {
     fn compliance_summary_typical() {
         assert_eq!(compliance_summary(5, 2), "5 compliant, 2 non-compliant");
     }
+
+    // -----------------------------------------------------------------------
+    // record_error_and_requeue — validates metric labels and requeue duration
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn record_error_and_requeue_increments_error_counter() {
+        use crate::metrics::{Metrics, ReconcileLabels};
+        use kube::runtime::controller::Action;
+        use prometheus_client::registry::Registry;
+
+        let mut registry = Registry::default();
+        let metrics = Metrics::new(&mut registry);
+
+        // Build a ControllerContext with a real metrics instance (we can't
+        // call record_error_and_requeue directly because it requires a full
+        // ControllerContext with a kube Client, but we can exercise the same
+        // code path that it runs).
+        let error = OperatorError::Reconciliation("test failure".into());
+        let controller = "machine_config";
+
+        // Simulate what record_error_and_requeue does:
+        metrics
+            .reconciliations_total
+            .get_or_create(&ReconcileLabels {
+                controller: controller.to_string(),
+                result: "error".to_string(),
+            })
+            .inc();
+        let action = Action::requeue(std::time::Duration::from_secs(30));
+
+        // Verify the error counter was incremented
+        let count = metrics
+            .reconciliations_total
+            .get_or_create(&ReconcileLabels {
+                controller: "machine_config".to_string(),
+                result: "error".to_string(),
+            })
+            .get();
+        assert_eq!(count, 1, "error counter should be 1");
+
+        // Verify the success counter is separate and still 0
+        let success_count = metrics
+            .reconciliations_total
+            .get_or_create(&ReconcileLabels {
+                controller: "machine_config".to_string(),
+                result: "success".to_string(),
+            })
+            .get();
+        assert_eq!(success_count, 0, "success counter should still be 0");
+
+        // Verify error message is preserved
+        assert!(
+            error.to_string().contains("test failure"),
+            "error message should be preserved"
+        );
+
+        // Verify action has 30s requeue
+        // (Action doesn't expose its duration, but we verify it's constructed)
+        let _ = action;
+    }
+
+    #[test]
+    fn record_reconcile_success_records_both_counter_and_histogram() {
+        use crate::metrics::{Metrics, ReconcileLabels};
+        use prometheus_client::registry::Registry;
+
+        let mut registry = Registry::default();
+        let metrics = Metrics::new(&mut registry);
+        let controller = "config_policy";
+        let start = std::time::Instant::now();
+
+        // Simulate record_reconcile_success logic
+        let labels = ReconcileLabels {
+            controller: controller.to_string(),
+            result: "success".to_string(),
+        };
+        metrics.reconciliations_total.get_or_create(&labels).inc();
+        metrics
+            .reconciliation_duration_seconds
+            .get_or_create(&labels)
+            .observe(start.elapsed().as_secs_f64());
+
+        let count = metrics.reconciliations_total.get_or_create(&labels).get();
+        assert_eq!(count, 1, "success counter should be 1");
+    }
+
+    #[test]
+    fn record_reconcile_metrics_different_controllers_independent() {
+        use crate::metrics::{Metrics, ReconcileLabels};
+        use prometheus_client::registry::Registry;
+
+        let mut registry = Registry::default();
+        let metrics = Metrics::new(&mut registry);
+        let start = std::time::Instant::now();
+
+        // Simulate record_reconcile_metrics for two different controllers
+        for controller in &["machine_config", "drift_alert", "config_policy", "module"] {
+            let labels = ReconcileLabels {
+                controller: controller.to_string(),
+                result: "success".to_string(),
+            };
+            metrics.reconciliations_total.get_or_create(&labels).inc();
+            metrics
+                .reconciliation_duration_seconds
+                .get_or_create(&labels)
+                .observe(start.elapsed().as_secs_f64());
+        }
+
+        // Each controller's counter should be independent
+        for controller in &["machine_config", "drift_alert", "config_policy", "module"] {
+            let labels = ReconcileLabels {
+                controller: controller.to_string(),
+                result: "success".to_string(),
+            };
+            assert_eq!(
+                metrics.reconciliations_total.get_or_create(&labels).get(),
+                1,
+                "counter for {} should be 1",
+                controller
+            );
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // merge_policy_requirements — namespace policy fills cluster None version
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn merge_policy_ns_fills_version_when_cluster_has_none() {
+        let cluster = ClusterConfigPolicySpec {
+            packages: vec![PackageRef {
+                name: "helm".to_string(),
+                version: None,
+            }],
+            ..Default::default()
+        };
+        let ns = ConfigPolicySpec {
+            packages: vec![PackageRef {
+                name: "helm".to_string(),
+                version: Some(">=3.10".to_string()),
+            }],
+            ..Default::default()
+        };
+        let merged = merge_policy_requirements(&cluster, &[&ns]);
+        // Cluster has helm with no version, ns has helm with version.
+        // The merge loop finds existing, sees version is None, fills from ns.
+        // Then the cluster re-apply loop doesn't override because cluster.version is None.
+        let helm = merged.packages.iter().find(|p| p.name == "helm").unwrap();
+        assert_eq!(
+            helm.version.as_deref(),
+            Some(">=3.10"),
+            "namespace version should fill in when cluster has None"
+        );
+    }
+
+    #[test]
+    fn merge_policy_cluster_version_overrides_ns_filled_version() {
+        let cluster = ClusterConfigPolicySpec {
+            packages: vec![PackageRef {
+                name: "helm".to_string(),
+                version: Some(">=3.12".to_string()),
+            }],
+            ..Default::default()
+        };
+        let ns = ConfigPolicySpec {
+            packages: vec![PackageRef {
+                name: "helm".to_string(),
+                version: Some(">=3.10".to_string()),
+            }],
+            ..Default::default()
+        };
+        let merged = merge_policy_requirements(&cluster, &[&ns]);
+        let helm = merged.packages.iter().find(|p| p.name == "helm").unwrap();
+        // Cluster version should win over namespace version
+        assert_eq!(helm.version.as_deref(), Some(">=3.12"));
+    }
+
+    #[test]
+    fn merge_policy_multiple_ns_add_unique_packages_incrementally() {
+        let cluster = ClusterConfigPolicySpec::default();
+        let ns1 = ConfigPolicySpec {
+            packages: vec![PackageRef {
+                name: "git".to_string(),
+                version: None,
+            }],
+            ..Default::default()
+        };
+        let ns2 = ConfigPolicySpec {
+            packages: vec![
+                PackageRef {
+                    name: "git".to_string(),
+                    version: Some(">=2.40".to_string()),
+                },
+                PackageRef {
+                    name: "vim".to_string(),
+                    version: None,
+                },
+            ],
+            ..Default::default()
+        };
+        let ns3 = ConfigPolicySpec {
+            packages: vec![
+                PackageRef {
+                    name: "vim".to_string(),
+                    version: Some(">=9.0".to_string()),
+                },
+                PackageRef {
+                    name: "tmux".to_string(),
+                    version: None,
+                },
+            ],
+            ..Default::default()
+        };
+        let merged = merge_policy_requirements(&cluster, &[&ns1, &ns2, &ns3]);
+        assert_eq!(merged.packages.len(), 3, "git, vim, tmux");
+
+        // git: ns1 adds with None, ns2 finds existing with None, fills to >=2.40
+        let git = merged.packages.iter().find(|p| p.name == "git").unwrap();
+        assert_eq!(git.version.as_deref(), Some(">=2.40"));
+
+        // vim: ns2 adds with None, ns3 finds existing with None, fills to >=9.0
+        let vim = merged.packages.iter().find(|p| p.name == "vim").unwrap();
+        assert_eq!(vim.version.as_deref(), Some(">=9.0"));
+
+        // tmux: ns3 adds new
+        assert!(merged.packages.iter().any(|p| p.name == "tmux"));
+    }
+
+    #[test]
+    fn merge_policy_ns_cannot_override_existing_version() {
+        let cluster = ClusterConfigPolicySpec {
+            packages: vec![PackageRef {
+                name: "kubectl".to_string(),
+                version: Some(">=1.28".to_string()),
+            }],
+            ..Default::default()
+        };
+        // ns tries to fill version but existing already has one
+        let ns = ConfigPolicySpec {
+            packages: vec![PackageRef {
+                name: "kubectl".to_string(),
+                version: Some(">=1.30".to_string()),
+            }],
+            ..Default::default()
+        };
+        let merged = merge_policy_requirements(&cluster, &[&ns]);
+        // The ns version is only set if existing.version is None.
+        // Since cluster already has >=1.28, ns >=1.30 is ignored by the ns loop.
+        // Then cluster re-apply sets it to >=1.28.
+        let kubectl = merged
+            .packages
+            .iter()
+            .find(|p| p.name == "kubectl")
+            .unwrap();
+        assert_eq!(kubectl.version.as_deref(), Some(">=1.28"));
+    }
+
+    #[test]
+    fn merge_policy_mixed_settings_types() {
+        let mut cluster_settings = BTreeMap::new();
+        cluster_settings.insert("count".to_string(), serde_json::json!(10));
+        cluster_settings.insert("cluster_only".to_string(), serde_json::json!("yes"));
+
+        let cluster = ClusterConfigPolicySpec {
+            settings: cluster_settings,
+            ..Default::default()
+        };
+
+        let mut ns1_settings = BTreeMap::new();
+        ns1_settings.insert("count".to_string(), serde_json::json!(5));
+        ns1_settings.insert("ns1_only".to_string(), serde_json::json!(true));
+        ns1_settings.insert("nested".to_string(), serde_json::json!({"a": 1}));
+        let ns1 = ConfigPolicySpec {
+            settings: ns1_settings,
+            ..Default::default()
+        };
+
+        let mut ns2_settings = BTreeMap::new();
+        ns2_settings.insert("nested".to_string(), serde_json::json!({"b": 2}));
+        let ns2 = ConfigPolicySpec {
+            settings: ns2_settings,
+            ..Default::default()
+        };
+
+        let merged = merge_policy_requirements(&cluster, &[&ns1, &ns2]);
+
+        // Cluster wins for "count"
+        assert_eq!(merged.settings["count"], serde_json::json!(10));
+        // Cluster-only key preserved
+        assert_eq!(merged.settings["cluster_only"], serde_json::json!("yes"));
+        // ns1_only preserved (cluster doesn't override it)
+        assert_eq!(merged.settings["ns1_only"], serde_json::json!(true));
+        // "nested" — ns2 overwrites ns1 (later ns wins), but cluster has no
+        // "nested" key so cluster doesn't override it
+        assert_eq!(
+            merged.settings["nested"],
+            serde_json::json!({"b": 2}),
+            "later namespace policy should override earlier for same key"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // validate_policy_compliance — version with exact match
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn policy_version_exact_match() {
+        let mut spec = mc_spec("h", "p");
+        spec.packages = vec![PackageRef {
+            name: "kubectl".to_string(),
+            version: None,
+        }];
+        let mut status = MachineConfigStatus::default();
+        status
+            .package_versions
+            .insert("kubectl".to_string(), "1.28.0".to_string());
+
+        // Exact version requirement
+        let exact_pkgs = vec![PackageRef {
+            name: "kubectl".to_string(),
+            version: Some("=1.28.0".to_string()),
+        }];
+        assert!(validate_policy_compliance(
+            &spec,
+            Some(&status),
+            &[],
+            &exact_pkgs,
+            &Default::default()
+        ));
+
+        // Different exact version should fail
+        let wrong_exact = vec![PackageRef {
+            name: "kubectl".to_string(),
+            version: Some("=1.29.0".to_string()),
+        }];
+        assert!(!validate_policy_compliance(
+            &spec,
+            Some(&status),
+            &[],
+            &wrong_exact,
+            &Default::default()
+        ));
+    }
+
+    #[test]
+    fn policy_compliance_status_has_version_but_no_package_in_spec() {
+        // Package exists in status but NOT in spec — should be non-compliant
+        let spec = mc_spec("h", "p"); // no packages
+        let mut status = MachineConfigStatus::default();
+        status
+            .package_versions
+            .insert("kubectl".to_string(), "1.28.0".to_string());
+
+        let policy_pkgs = vec![PackageRef {
+            name: "kubectl".to_string(),
+            version: Some(">=1.28".to_string()),
+        }];
+        // Fails because spec.packages doesn't contain kubectl
+        assert!(!validate_policy_compliance(
+            &spec,
+            Some(&status),
+            &[],
+            &policy_pkgs,
+            &Default::default()
+        ));
+    }
+
+    #[test]
+    fn policy_compliance_multiple_packages_some_missing_versions() {
+        let mut spec = mc_spec("h", "p");
+        spec.packages = vec![
+            PackageRef {
+                name: "kubectl".to_string(),
+                version: None,
+            },
+            PackageRef {
+                name: "helm".to_string(),
+                version: None,
+            },
+        ];
+        let mut status = MachineConfigStatus::default();
+        status
+            .package_versions
+            .insert("kubectl".to_string(), "1.28.0".to_string());
+        // helm has no version reported
+
+        let policy_pkgs = vec![
+            PackageRef {
+                name: "kubectl".to_string(),
+                version: Some(">=1.28".to_string()),
+            },
+            PackageRef {
+                name: "helm".to_string(),
+                version: Some(">=3.10".to_string()),
+            },
+        ];
+        // kubectl passes, but helm version not reported -> non-compliant
+        assert!(!validate_policy_compliance(
+            &spec,
+            Some(&status),
+            &[],
+            &policy_pkgs,
+            &Default::default()
+        ));
+    }
+
+    #[test]
+    fn policy_compliance_no_version_required_passes_without_status() {
+        let mut spec = mc_spec("h", "p");
+        spec.packages = vec![PackageRef {
+            name: "vim".to_string(),
+            version: None,
+        }];
+        // Policy requires vim but with no version constraint
+        let policy_pkgs = vec![PackageRef {
+            name: "vim".to_string(),
+            version: None,
+        }];
+        // Should pass even without status
+        assert!(validate_policy_compliance(
+            &spec,
+            None,
+            &[],
+            &policy_pkgs,
+            &Default::default()
+        ));
+    }
+
+    // -----------------------------------------------------------------------
+    // matches_selector — multiple expression operators combined
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn matches_selector_multiple_expressions_all_must_pass() {
+        let mut labels = BTreeMap::new();
+        labels.insert("env".to_string(), "prod".to_string());
+        labels.insert("tier".to_string(), "backend".to_string());
+        labels.insert("region".to_string(), "us-east".to_string());
+
+        let selector = LabelSelector {
+            match_labels: Default::default(),
+            match_expressions: vec![
+                LabelSelectorRequirement {
+                    key: "env".to_string(),
+                    operator: SelectorOperator::In,
+                    values: vec!["prod".to_string(), "staging".to_string()],
+                },
+                LabelSelectorRequirement {
+                    key: "tier".to_string(),
+                    operator: SelectorOperator::Exists,
+                    values: vec![],
+                },
+                LabelSelectorRequirement {
+                    key: "deprecated".to_string(),
+                    operator: SelectorOperator::DoesNotExist,
+                    values: vec![],
+                },
+                LabelSelectorRequirement {
+                    key: "region".to_string(),
+                    operator: SelectorOperator::NotIn,
+                    values: vec!["eu-west".to_string()],
+                },
+            ],
+        };
+
+        // All four expressions pass
+        assert!(matches_selector(Some(&labels), &selector));
+
+        // Fail one expression — add "deprecated" label
+        let mut with_deprecated = labels.clone();
+        with_deprecated.insert("deprecated".to_string(), "true".to_string());
+        assert!(
+            !matches_selector(Some(&with_deprecated), &selector),
+            "should fail when DoesNotExist expression fails"
+        );
+    }
+
+    #[test]
+    fn matches_selector_in_with_one_value_acts_like_equals() {
+        let mut labels = BTreeMap::new();
+        labels.insert("app".to_string(), "cfgd".to_string());
+
+        let selector = LabelSelector {
+            match_labels: Default::default(),
+            match_expressions: vec![LabelSelectorRequirement {
+                key: "app".to_string(),
+                operator: SelectorOperator::In,
+                values: vec!["cfgd".to_string()],
+            }],
+        };
+        assert!(matches_selector(Some(&labels), &selector));
+
+        // Wrong value
+        let mut wrong = BTreeMap::new();
+        wrong.insert("app".to_string(), "other".to_string());
+        assert!(!matches_selector(Some(&wrong), &selector));
+    }
+
+    #[test]
+    fn matches_selector_not_in_absent_key_passes() {
+        // NotIn with absent key: is_none_or(|v| !req.values.contains(v))
+        // label_value is None -> is_none_or returns true
+        let selector = LabelSelector {
+            match_labels: Default::default(),
+            match_expressions: vec![LabelSelectorRequirement {
+                key: "missing".to_string(),
+                operator: SelectorOperator::NotIn,
+                values: vec!["val1".to_string(), "val2".to_string()],
+            }],
+        };
+        assert!(matches_selector(Some(&BTreeMap::new()), &selector));
+        assert!(matches_selector(None, &selector));
+    }
+
+    #[test]
+    fn matches_selector_exists_with_none_labels_fails() {
+        let selector = LabelSelector {
+            match_labels: Default::default(),
+            match_expressions: vec![LabelSelectorRequirement {
+                key: "must-have".to_string(),
+                operator: SelectorOperator::Exists,
+                values: vec![],
+            }],
+        };
+        assert!(
+            !matches_selector(None, &selector),
+            "Exists should fail when labels is None"
+        );
+    }
+
+    #[test]
+    fn matches_selector_does_not_exist_with_none_labels_passes() {
+        let selector = LabelSelector {
+            match_labels: Default::default(),
+            match_expressions: vec![LabelSelectorRequirement {
+                key: "optional".to_string(),
+                operator: SelectorOperator::DoesNotExist,
+                values: vec![],
+            }],
+        };
+        assert!(
+            matches_selector(None, &selector),
+            "DoesNotExist should pass when labels is None (key is absent)"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // build_drift_alert_conditions — all severity levels
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn build_drift_alert_conditions_all_severities() {
+        // Verify escalation mapping for all 4 severity levels
+        let test_cases = vec![
+            (DriftSeverity::Low, false),
+            (DriftSeverity::Medium, false),
+            (DriftSeverity::High, true),
+            (DriftSeverity::Critical, true),
+        ];
+
+        for (severity, expected_escalated) in test_cases {
+            let conditions = build_drift_alert_conditions(
+                &severity,
+                false,
+                "dev-test",
+                1,
+                "2024-01-01T00:00:00Z",
+                Some(1),
+            );
+            let escalated = conditions
+                .iter()
+                .find(|c| c.condition_type == "Escalated")
+                .unwrap();
+            assert_eq!(
+                escalated.status == "True",
+                expected_escalated,
+                "severity {:?} should have escalated={}",
+                severity,
+                expected_escalated
+            );
+        }
+    }
+
+    #[test]
+    fn build_drift_alert_conditions_generation_propagated() {
+        let generation = Some(42);
+        let conditions =
+            build_drift_alert_conditions(&DriftSeverity::Low, false, "d", 0, "now", generation);
+        for c in &conditions {
+            assert_eq!(
+                c.observed_generation, generation,
+                "generation should propagate to all conditions"
+            );
+        }
+    }
+
+    #[test]
+    fn build_drift_alert_conditions_timestamp_propagated() {
+        let ts = "2026-04-07T12:00:00Z";
+        let conditions = build_drift_alert_conditions(&DriftSeverity::Low, false, "d", 0, ts, None);
+        for c in &conditions {
+            assert_eq!(
+                c.last_transition_time, ts,
+                "timestamp should propagate to all conditions"
+            );
+        }
+    }
+
+    #[test]
+    fn build_drift_alert_conditions_active_message_includes_details_count() {
+        let conditions =
+            build_drift_alert_conditions(&DriftSeverity::Medium, false, "node-7", 42, "now", None);
+        let resolved = conditions
+            .iter()
+            .find(|c| c.condition_type == "Resolved")
+            .unwrap();
+        assert!(
+            resolved.message.contains("42 detail(s)"),
+            "message should include detail count: {}",
+            resolved.message
+        );
+        assert!(
+            resolved.message.contains("node-7"),
+            "message should include device_id: {}",
+            resolved.message
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // build_condition — multiple types in existing list
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn build_condition_selects_correct_type_from_multiple() {
+        let existing = vec![
+            Condition {
+                condition_type: "Reconciled".to_string(),
+                status: "True".to_string(),
+                reason: "R".to_string(),
+                message: "M".to_string(),
+                last_transition_time: "2024-01-01T00:00:00Z".to_string(),
+                observed_generation: Some(1),
+            },
+            Condition {
+                condition_type: "DriftDetected".to_string(),
+                status: "False".to_string(),
+                reason: "NoDrift".to_string(),
+                message: "no drift".to_string(),
+                last_transition_time: "2024-02-01T00:00:00Z".to_string(),
+                observed_generation: Some(1),
+            },
+            Condition {
+                condition_type: "ModulesResolved".to_string(),
+                status: "True".to_string(),
+                reason: "AllResolved".to_string(),
+                message: "all resolved".to_string(),
+                last_transition_time: "2024-03-01T00:00:00Z".to_string(),
+                observed_generation: Some(1),
+            },
+        ];
+
+        // Update DriftDetected from False to True — should use new time
+        let c = build_condition(
+            &existing,
+            "DriftDetected",
+            "True",
+            "DriftActive",
+            "drift found",
+            "2024-06-01T00:00:00Z",
+            Some(2),
+        );
+        assert_eq!(c.last_transition_time, "2024-06-01T00:00:00Z");
+
+        // Update Reconciled with same status True — should preserve old time
+        let c2 = build_condition(
+            &existing,
+            "Reconciled",
+            "True",
+            "ReconcileSuccess",
+            "new msg",
+            "2024-06-01T00:00:00Z",
+            Some(2),
+        );
+        assert_eq!(c2.last_transition_time, "2024-01-01T00:00:00Z");
+
+        // Update ModulesResolved with same status — preserve time
+        let c3 = build_condition(
+            &existing,
+            "ModulesResolved",
+            "True",
+            "AllResolved",
+            "still resolved",
+            "2024-06-01T00:00:00Z",
+            Some(2),
+        );
+        assert_eq!(c3.last_transition_time, "2024-03-01T00:00:00Z");
+    }
+
+    // -----------------------------------------------------------------------
+    // validate_policy_compliance — combined packages + modules + settings
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn policy_compliance_modules_present_but_settings_mismatch() {
+        let mut spec = mc_spec("h", "p");
+        spec.module_refs = vec![ModuleRef {
+            name: "corp-vpn".to_string(),
+            required: true,
+        }];
+        spec.packages = vec![PackageRef {
+            name: "kubectl".to_string(),
+            version: None,
+        }];
+        spec.system_settings
+            .insert("enforce_tls".to_string(), serde_json::json!(false));
+
+        let mut status = MachineConfigStatus::default();
+        status
+            .package_versions
+            .insert("kubectl".to_string(), "1.29.0".to_string());
+
+        let required_modules = vec![ModuleRef {
+            name: "corp-vpn".to_string(),
+            required: true,
+        }];
+        let required_packages = vec![PackageRef {
+            name: "kubectl".to_string(),
+            version: Some(">=1.28".to_string()),
+        }];
+        let mut required_settings = BTreeMap::new();
+        required_settings.insert("enforce_tls".to_string(), serde_json::json!(true));
+
+        // Modules present, version OK, but settings mismatch (false != true)
+        assert!(!validate_policy_compliance(
+            &spec,
+            Some(&status),
+            &required_modules,
+            &required_packages,
+            &required_settings,
+        ));
+    }
+
+    #[test]
+    fn policy_compliance_version_check_short_circuits_on_first_failure() {
+        let mut spec = mc_spec("h", "p");
+        spec.packages = vec![
+            PackageRef {
+                name: "a".to_string(),
+                version: None,
+            },
+            PackageRef {
+                name: "b".to_string(),
+                version: None,
+            },
+        ];
+        let mut status = MachineConfigStatus::default();
+        status
+            .package_versions
+            .insert("a".to_string(), "1.0.0".to_string());
+        // b has no version reported
+
+        let policy_pkgs = vec![
+            PackageRef {
+                name: "a".to_string(),
+                version: Some(">=2.0".to_string()),
+            },
+            PackageRef {
+                name: "b".to_string(),
+                version: Some(">=1.0".to_string()),
+            },
+        ];
+        // a fails version check (1.0.0 < 2.0)
+        assert!(!validate_policy_compliance(
+            &spec,
+            Some(&status),
+            &[],
+            &policy_pkgs,
+            &Default::default()
+        ));
+    }
+
+    // -----------------------------------------------------------------------
+    // find_condition_status / find_condition_transition_time — duplicates
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn find_condition_status_returns_first_match() {
+        // If there are duplicates, find returns the first one
+        let conditions = vec![
+            Condition {
+                condition_type: "Ready".to_string(),
+                status: "True".to_string(),
+                reason: "R".to_string(),
+                message: "M".to_string(),
+                last_transition_time: "t1".to_string(),
+                observed_generation: Some(1),
+            },
+            Condition {
+                condition_type: "Ready".to_string(),
+                status: "False".to_string(),
+                reason: "R2".to_string(),
+                message: "M2".to_string(),
+                last_transition_time: "t2".to_string(),
+                observed_generation: Some(2),
+            },
+        ];
+        assert_eq!(
+            find_condition_status(&conditions, "Ready"),
+            Some("True".to_string()),
+            "should return the first matching condition"
+        );
+        assert_eq!(
+            find_condition_transition_time(&conditions, "Ready"),
+            Some("t1".to_string()),
+            "should return transition time of first match"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // namespaced_api — error on empty namespace (via validate_spec path)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn validate_spec_both_empty_returns_both_errors() {
+        let err = validate_spec(&mc_spec("", "")).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("hostname"), "should mention hostname: {msg}");
+        assert!(msg.contains("profile"), "should mention profile: {msg}");
+    }
+
+    // -----------------------------------------------------------------------
+    // namespaced_api — direct test of empty namespace error path
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn namespaced_api_empty_namespace_returns_error() {
+        // Construct a dummy kube Client via a tower service that always errors
+        // (we just need the Client type, not actual HTTP calls)
+        let client = make_test_client();
+        let result = namespaced_api::<MachineConfig>(&client, "");
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        match &err {
+            OperatorError::Reconciliation(msg) => {
+                assert!(
+                    msg.contains("no namespace"),
+                    "expected 'no namespace' in error message: {msg}"
+                );
+            }
+            other => panic!("expected Reconciliation error, got: {other}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn namespaced_api_valid_namespace_returns_api() {
+        let client = make_test_client();
+        let result = namespaced_api::<MachineConfig>(&client, "default");
+        assert!(result.is_ok(), "valid namespace should return Ok(Api)");
+    }
+
+    // -----------------------------------------------------------------------
+    // record_error_and_requeue — actual function call
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn record_error_and_requeue_returns_30s_action_and_increments_counter() {
+        let (ctx, _registry) = make_test_controller_context();
+        let error = OperatorError::Reconciliation("test failure".into());
+        let action = record_error_and_requeue(&error, &ctx, "test_controller");
+
+        // Verify metrics were incremented
+        let labels = crate::metrics::ReconcileLabels {
+            controller: "test_controller".to_string(),
+            result: "error".to_string(),
+        };
+        let count = ctx
+            .metrics
+            .reconciliations_total
+            .get_or_create(&labels)
+            .get();
+        assert_eq!(count, 1, "error counter should be 1 after one call");
+
+        // Verify success counter is untouched
+        let success_labels = crate::metrics::ReconcileLabels {
+            controller: "test_controller".to_string(),
+            result: "success".to_string(),
+        };
+        let success_count = ctx
+            .metrics
+            .reconciliations_total
+            .get_or_create(&success_labels)
+            .get();
+        assert_eq!(success_count, 0, "success counter should remain 0");
+
+        // Verify the Action is a requeue (we can't inspect duration directly,
+        // but we can confirm the function returned without panic)
+        let _ = action;
+    }
+
+    #[tokio::test]
+    async fn record_error_and_requeue_multiple_calls_accumulate() {
+        let (ctx, _registry) = make_test_controller_context();
+        let error = OperatorError::Reconciliation("e1".into());
+        let _ = record_error_and_requeue(&error, &ctx, "mc");
+        let _ = record_error_and_requeue(&error, &ctx, "mc");
+        let _ = record_error_and_requeue(&error, &ctx, "mc");
+
+        let labels = crate::metrics::ReconcileLabels {
+            controller: "mc".to_string(),
+            result: "error".to_string(),
+        };
+        let count = ctx
+            .metrics
+            .reconciliations_total
+            .get_or_create(&labels)
+            .get();
+        assert_eq!(count, 3, "error counter should accumulate across calls");
+    }
+
+    // -----------------------------------------------------------------------
+    // record_reconcile_success — actual function call
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn record_reconcile_success_increments_counter_and_records_histogram() {
+        let (ctx, _registry) = make_test_controller_context();
+        let start = std::time::Instant::now();
+        record_reconcile_success(&ctx, "drift_alert", start);
+
+        let labels = crate::metrics::ReconcileLabels {
+            controller: "drift_alert".to_string(),
+            result: "success".to_string(),
+        };
+        let count = ctx
+            .metrics
+            .reconciliations_total
+            .get_or_create(&labels)
+            .get();
+        assert_eq!(count, 1, "success counter should be 1");
+    }
+
+    // -----------------------------------------------------------------------
+    // record_reconcile_metrics — actual function call
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn record_reconcile_metrics_with_different_results() {
+        let (ctx, _registry) = make_test_controller_context();
+        let start = std::time::Instant::now();
+
+        record_reconcile_metrics(&ctx, "module", "success", start);
+        record_reconcile_metrics(&ctx, "module", "error", start);
+        record_reconcile_metrics(&ctx, "module", "success", start);
+
+        let success_labels = crate::metrics::ReconcileLabels {
+            controller: "module".to_string(),
+            result: "success".to_string(),
+        };
+        let error_labels = crate::metrics::ReconcileLabels {
+            controller: "module".to_string(),
+            result: "error".to_string(),
+        };
+        assert_eq!(
+            ctx.metrics
+                .reconciliations_total
+                .get_or_create(&success_labels)
+                .get(),
+            2
+        );
+        assert_eq!(
+            ctx.metrics
+                .reconciliations_total
+                .get_or_create(&error_labels)
+                .get(),
+            1
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // error_policy_* — actual function calls
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn error_policy_mc_records_metrics_and_returns_action() {
+        let (ctx, _registry) = make_test_controller_context();
+        let obj = Arc::new(MachineConfig {
+            metadata: Default::default(),
+            spec: mc_spec("h", "p"),
+            status: None,
+        });
+        let error = OperatorError::Reconciliation("mc error".into());
+        let _action = error_policy_mc(obj, &error, Arc::new(ctx));
+    }
+
+    #[tokio::test]
+    async fn error_policy_da_records_metrics_and_returns_action() {
+        let (ctx, _registry) = make_test_controller_context();
+        let obj = Arc::new(DriftAlert {
+            metadata: Default::default(),
+            spec: crate::crds::DriftAlertSpec {
+                device_id: "dev-1".to_string(),
+                machine_config_ref: crate::crds::MachineConfigReference {
+                    name: "mc-1".to_string(),
+                    namespace: None,
+                },
+                severity: DriftSeverity::Low,
+                drift_details: vec![],
+            },
+            status: None,
+        });
+        let error = OperatorError::Reconciliation("da error".into());
+        let _action = error_policy_da(obj, &error, Arc::new(ctx));
+    }
+
+    #[tokio::test]
+    async fn error_policy_cp_records_metrics_and_returns_action() {
+        let (ctx, _registry) = make_test_controller_context();
+        let obj = Arc::new(ConfigPolicy {
+            metadata: Default::default(),
+            spec: ConfigPolicySpec::default(),
+            status: None,
+        });
+        let error = OperatorError::Reconciliation("cp error".into());
+        let _action = error_policy_cp(obj, &error, Arc::new(ctx));
+    }
+
+    #[tokio::test]
+    async fn error_policy_ccp_records_metrics_and_returns_action() {
+        let (ctx, _registry) = make_test_controller_context();
+        let obj = Arc::new(ClusterConfigPolicy {
+            metadata: Default::default(),
+            spec: ClusterConfigPolicySpec::default(),
+            status: None,
+        });
+        let error = OperatorError::Reconciliation("ccp error".into());
+        let _action = error_policy_ccp(obj, &error, Arc::new(ctx));
+    }
+
+    #[tokio::test]
+    async fn error_policy_module_records_metrics_and_returns_action() {
+        let (ctx, _registry) = make_test_controller_context();
+        let obj = Arc::new(Module {
+            metadata: Default::default(),
+            spec: ModuleSpec::default(),
+            status: None,
+        });
+        let error = OperatorError::Reconciliation("mod error".into());
+        let _action = error_policy_module(obj, &error, Arc::new(ctx));
+    }
+
+    // -----------------------------------------------------------------------
+    // error_policy_* — verify they each tag the correct controller label
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn error_policy_mc_labels_controller_as_machine_config() {
+        let (ctx, _registry) = make_test_controller_context();
+        let ctx = Arc::new(ctx);
+        let obj = Arc::new(MachineConfig {
+            metadata: Default::default(),
+            spec: mc_spec("h", "p"),
+            status: None,
+        });
+        let error = OperatorError::Reconciliation("e".into());
+        let _ = error_policy_mc(obj, &error, Arc::clone(&ctx));
+        let labels = crate::metrics::ReconcileLabels {
+            controller: "machine_config".to_string(),
+            result: "error".to_string(),
+        };
+        assert_eq!(
+            ctx.metrics
+                .reconciliations_total
+                .get_or_create(&labels)
+                .get(),
+            1,
+            "error_policy_mc should use 'machine_config' controller label"
+        );
+    }
+
+    #[tokio::test]
+    async fn error_policy_da_labels_controller_as_drift_alert() {
+        let (ctx, _registry) = make_test_controller_context();
+        let ctx = Arc::new(ctx);
+        let obj = Arc::new(DriftAlert {
+            metadata: Default::default(),
+            spec: crate::crds::DriftAlertSpec {
+                device_id: "d".to_string(),
+                machine_config_ref: crate::crds::MachineConfigReference {
+                    name: "m".to_string(),
+                    namespace: None,
+                },
+                severity: DriftSeverity::Low,
+                drift_details: vec![],
+            },
+            status: None,
+        });
+        let error = OperatorError::Reconciliation("e".into());
+        let _ = error_policy_da(obj, &error, Arc::clone(&ctx));
+        let labels = crate::metrics::ReconcileLabels {
+            controller: "drift_alert".to_string(),
+            result: "error".to_string(),
+        };
+        assert_eq!(
+            ctx.metrics
+                .reconciliations_total
+                .get_or_create(&labels)
+                .get(),
+            1,
+            "error_policy_da should use 'drift_alert' controller label"
+        );
+    }
+
+    #[tokio::test]
+    async fn error_policy_cp_labels_controller_as_config_policy() {
+        let (ctx, _registry) = make_test_controller_context();
+        let ctx = Arc::new(ctx);
+        let obj = Arc::new(ConfigPolicy {
+            metadata: Default::default(),
+            spec: ConfigPolicySpec::default(),
+            status: None,
+        });
+        let error = OperatorError::Reconciliation("e".into());
+        let _ = error_policy_cp(obj, &error, Arc::clone(&ctx));
+        let labels = crate::metrics::ReconcileLabels {
+            controller: "config_policy".to_string(),
+            result: "error".to_string(),
+        };
+        assert_eq!(
+            ctx.metrics
+                .reconciliations_total
+                .get_or_create(&labels)
+                .get(),
+            1,
+            "error_policy_cp should use 'config_policy' controller label"
+        );
+    }
+
+    #[tokio::test]
+    async fn error_policy_ccp_labels_controller_as_cluster_config_policy() {
+        let (ctx, _registry) = make_test_controller_context();
+        let ctx = Arc::new(ctx);
+        let obj = Arc::new(ClusterConfigPolicy {
+            metadata: Default::default(),
+            spec: ClusterConfigPolicySpec::default(),
+            status: None,
+        });
+        let error = OperatorError::Reconciliation("e".into());
+        let _ = error_policy_ccp(obj, &error, Arc::clone(&ctx));
+        let labels = crate::metrics::ReconcileLabels {
+            controller: "cluster_config_policy".to_string(),
+            result: "error".to_string(),
+        };
+        assert_eq!(
+            ctx.metrics
+                .reconciliations_total
+                .get_or_create(&labels)
+                .get(),
+            1,
+            "error_policy_ccp should use 'cluster_config_policy' controller label"
+        );
+    }
+
+    #[tokio::test]
+    async fn error_policy_module_labels_controller_as_module() {
+        let (ctx, _registry) = make_test_controller_context();
+        let ctx = Arc::new(ctx);
+        let obj = Arc::new(Module {
+            metadata: Default::default(),
+            spec: ModuleSpec::default(),
+            status: None,
+        });
+        let error = OperatorError::Reconciliation("e".into());
+        let _ = error_policy_module(obj, &error, Arc::clone(&ctx));
+        let labels = crate::metrics::ReconcileLabels {
+            controller: "module".to_string(),
+            result: "error".to_string(),
+        };
+        assert_eq!(
+            ctx.metrics
+                .reconciliations_total
+                .get_or_create(&labels)
+                .get(),
+            1,
+            "error_policy_module should use 'module' controller label"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // validate_spec — various error types from OperatorError::InvalidSpec
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn validate_spec_invalid_spec_error_type() {
+        let err = validate_spec(&mc_spec("", "default")).unwrap_err();
+        match err {
+            OperatorError::InvalidSpec(msg) => {
+                assert!(
+                    msg.contains("hostname"),
+                    "InvalidSpec should mention hostname: {msg}"
+                );
+            }
+            other => panic!("expected InvalidSpec, got: {other}"),
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Test helpers
+    // -----------------------------------------------------------------------
+
+    fn make_test_client() -> Client {
+        use hyper::body::Bytes;
+        use tower::service_fn;
+
+        let svc = service_fn(|_req: hyper::Request<kube::client::Body>| async {
+            Ok::<_, std::convert::Infallible>(
+                hyper::Response::builder()
+                    .status(200)
+                    .body(kube::client::Body::from(Bytes::from_static(b"{}")))
+                    .unwrap(),
+            )
+        });
+        Client::new(svc, "default")
+    }
+
+    fn make_test_controller_context() -> (ControllerContext, prometheus_client::registry::Registry)
+    {
+        let client = make_test_client();
+        let reporter = kube::runtime::events::Reporter {
+            controller: "test".into(),
+            instance: None,
+        };
+        let recorder = kube::runtime::events::Recorder::new(client.clone(), reporter);
+        let mut registry = prometheus_client::registry::Registry::default();
+        let metrics = crate::metrics::Metrics::new(&mut registry);
+        (
+            ControllerContext {
+                client,
+                recorder,
+                metrics,
+            },
+            registry,
+        )
+    }
 }

@@ -8817,4 +8817,623 @@ mod tests {
         let paths = pending_resource_paths(&store);
         assert!(paths.is_empty());
     }
+
+    // --- generate_launchd_plist: detailed content verification ---
+
+    #[test]
+    #[cfg(unix)]
+    fn generate_launchd_plist_xml_structure_complete() {
+        let binary = Path::new("/usr/local/bin/cfgd");
+        let config = Path::new("/Users/alice/.config/cfgd/config.yaml");
+        let home = Path::new("/Users/alice");
+
+        let plist = generate_launchd_plist(binary, config, None, home);
+
+        // Verify required XML structure
+        assert!(
+            plist.contains("<?xml version=\"1.0\""),
+            "should start with XML declaration"
+        );
+        assert!(
+            plist.contains("<!DOCTYPE plist"),
+            "should contain plist DOCTYPE"
+        );
+        assert!(
+            plist.contains(&format!("<string>{}</string>", LAUNCHD_LABEL)),
+            "should contain the label"
+        );
+        assert!(
+            plist.contains("<string>/usr/local/bin/cfgd</string>"),
+            "should contain binary path"
+        );
+        assert!(
+            plist.contains("<string>--config</string>"),
+            "should contain --config flag"
+        );
+        assert!(
+            plist.contains("<string>/Users/alice/.config/cfgd/config.yaml</string>"),
+            "should contain config path"
+        );
+        assert!(
+            plist.contains("<string>daemon</string>"),
+            "should contain daemon subcommand"
+        );
+        assert!(
+            plist.contains("<key>RunAtLoad</key>"),
+            "should set RunAtLoad"
+        );
+        assert!(
+            plist.contains("<key>KeepAlive</key>"),
+            "should set KeepAlive"
+        );
+        assert!(
+            plist.contains("/Users/alice/Library/Logs/cfgd.log"),
+            "stdout log should be under home Library/Logs"
+        );
+        assert!(
+            plist.contains("/Users/alice/Library/Logs/cfgd.err"),
+            "stderr log should be under home Library/Logs"
+        );
+        // Should NOT contain --profile when None
+        assert!(
+            !plist.contains("--profile"),
+            "should not contain --profile when None"
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn generate_launchd_plist_includes_profile_flag() {
+        let binary = Path::new("/usr/local/bin/cfgd");
+        let config = Path::new("/home/user/config.yaml");
+        let home = Path::new("/home/user");
+
+        let plist = generate_launchd_plist(binary, config, Some("work"), home);
+
+        assert!(
+            plist.contains("<string>--profile</string>"),
+            "should contain --profile flag"
+        );
+        assert!(
+            plist.contains("<string>work</string>"),
+            "should contain profile name"
+        );
+    }
+
+    // --- generate_systemd_unit: detailed content verification ---
+
+    #[test]
+    #[cfg(unix)]
+    fn generate_systemd_unit_complete_structure() {
+        let binary = Path::new("/usr/local/bin/cfgd");
+        let config = Path::new("/home/user/.config/cfgd/config.yaml");
+
+        let unit = generate_systemd_unit(binary, config, None);
+
+        assert!(unit.contains("[Unit]"), "should contain [Unit] section");
+        assert!(
+            unit.contains("[Service]"),
+            "should contain [Service] section"
+        );
+        assert!(
+            unit.contains("[Install]"),
+            "should contain [Install] section"
+        );
+        assert!(
+            unit.contains("Description=cfgd configuration daemon"),
+            "should have description"
+        );
+        assert!(
+            unit.contains("After=network.target"),
+            "should require network"
+        );
+        assert!(
+            unit.contains("Type=simple"),
+            "should be simple service type"
+        );
+        assert!(
+            unit.contains("Restart=on-failure"),
+            "should restart on failure"
+        );
+        assert!(unit.contains("RestartSec=10"), "should have restart delay");
+        assert!(
+            unit.contains("WantedBy=default.target"),
+            "should be wanted by default.target"
+        );
+
+        // Verify ExecStart format: binary --config path daemon
+        let expected_exec = format!(
+            "ExecStart={} --config {} daemon",
+            binary.display(),
+            config.display()
+        );
+        assert!(
+            unit.contains(&expected_exec),
+            "ExecStart should be '{expected_exec}', got unit:\n{unit}"
+        );
+        // Should NOT contain --profile
+        assert!(
+            !unit.contains("--profile"),
+            "should not contain --profile when None"
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn generate_systemd_unit_includes_profile() {
+        let binary = Path::new("/opt/cfgd/cfgd");
+        let config = Path::new("/etc/cfgd/config.yaml");
+
+        let unit = generate_systemd_unit(binary, config, Some("server"));
+
+        let expected_exec = format!(
+            "ExecStart={} --config {} --profile {} daemon",
+            binary.display(),
+            config.display(),
+            "server"
+        );
+        assert!(
+            unit.contains(&expected_exec),
+            "ExecStart with profile should be '{expected_exec}', got:\n{unit}"
+        );
+    }
+
+    // --- record_file_drift_to: actual drift recording ---
+
+    #[test]
+    fn record_file_drift_to_stores_event_in_db() {
+        let store = test_state();
+        let path = Path::new("/home/user/.bashrc");
+
+        let result = record_file_drift_to(&store, path);
+        assert!(result, "record_file_drift_to should return true on success");
+
+        // Verify the drift event was actually stored
+        let events = store.unresolved_drift().unwrap();
+        assert_eq!(events.len(), 1, "should have exactly one drift event");
+        assert_eq!(events[0].resource_type, "file");
+        assert_eq!(events[0].resource_id, "/home/user/.bashrc");
+    }
+
+    #[test]
+    fn record_file_drift_to_multiple_files() {
+        let store = test_state();
+
+        record_file_drift_to(&store, Path::new("/etc/hosts"));
+        record_file_drift_to(&store, Path::new("/etc/resolv.conf"));
+        record_file_drift_to(&store, Path::new("/home/user/.zshrc"));
+
+        let events = store.unresolved_drift().unwrap();
+        assert_eq!(events.len(), 3, "should have three drift events");
+
+        let ids: Vec<&str> = events.iter().map(|e| e.resource_id.as_str()).collect();
+        assert!(ids.contains(&"/etc/hosts"));
+        assert!(ids.contains(&"/etc/resolv.conf"));
+        assert!(ids.contains(&"/home/user/.zshrc"));
+    }
+
+    // --- parse_daemon_config: comprehensive config parsing ---
+
+    #[test]
+    fn parse_daemon_config_all_defaults() {
+        let cfg = config::DaemonConfig {
+            enabled: true,
+            reconcile: None,
+            sync: None,
+            notify: None,
+        };
+
+        let parsed = parse_daemon_config(&cfg);
+        assert_eq!(
+            parsed.reconcile_interval,
+            Duration::from_secs(DEFAULT_RECONCILE_SECS)
+        );
+        assert_eq!(parsed.sync_interval, Duration::from_secs(DEFAULT_SYNC_SECS));
+        assert!(!parsed.auto_pull);
+        assert!(!parsed.auto_push);
+        assert!(!parsed.on_change_reconcile);
+        assert!(!parsed.notify_on_drift);
+        assert!(matches!(parsed.notify_method, NotifyMethod::Stdout));
+        assert!(parsed.webhook_url.is_none());
+        assert!(!parsed.auto_apply);
+    }
+
+    #[test]
+    fn parse_daemon_config_with_all_settings() {
+        let cfg = config::DaemonConfig {
+            enabled: true,
+            reconcile: Some(config::ReconcileConfig {
+                interval: "60s".into(),
+                on_change: true,
+                auto_apply: true,
+                policy: None,
+                drift_policy: config::DriftPolicy::Auto,
+                patches: vec![],
+            }),
+            sync: Some(config::SyncConfig {
+                auto_pull: true,
+                auto_push: true,
+                interval: "120s".into(),
+            }),
+            notify: Some(config::NotifyConfig {
+                drift: true,
+                method: NotifyMethod::Webhook,
+                webhook_url: Some("https://hooks.example.com/notify".into()),
+            }),
+        };
+
+        let parsed = parse_daemon_config(&cfg);
+        assert_eq!(parsed.reconcile_interval, Duration::from_secs(60));
+        assert_eq!(parsed.sync_interval, Duration::from_secs(120));
+        assert!(parsed.auto_pull);
+        assert!(parsed.auto_push);
+        assert!(parsed.on_change_reconcile);
+        assert!(parsed.notify_on_drift);
+        assert!(matches!(parsed.notify_method, NotifyMethod::Webhook));
+        assert_eq!(
+            parsed.webhook_url.as_deref(),
+            Some("https://hooks.example.com/notify")
+        );
+        assert!(parsed.auto_apply);
+    }
+
+    #[test]
+    fn parse_daemon_config_with_minute_interval() {
+        let cfg = config::DaemonConfig {
+            enabled: true,
+            reconcile: Some(config::ReconcileConfig {
+                interval: "10m".into(),
+                on_change: false,
+                auto_apply: false,
+                policy: None,
+                drift_policy: config::DriftPolicy::default(),
+                patches: vec![],
+            }),
+            sync: Some(config::SyncConfig {
+                auto_pull: false,
+                auto_push: false,
+                interval: "30m".into(),
+            }),
+            notify: None,
+        };
+
+        let parsed = parse_daemon_config(&cfg);
+        assert_eq!(parsed.reconcile_interval, Duration::from_secs(600));
+        assert_eq!(parsed.sync_interval, Duration::from_secs(1800));
+    }
+
+    // --- build_sync_tasks: comprehensive sync task building ---
+
+    #[test]
+    fn build_sync_tasks_propagates_source_sync_interval() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_dir = dir.path();
+        let source_cache = dir.path().join("sources");
+        std::fs::create_dir_all(source_cache.join("team-tools")).unwrap();
+
+        let parsed = ParsedDaemonConfig {
+            reconcile_interval: Duration::from_secs(300),
+            sync_interval: Duration::from_secs(300),
+            auto_pull: true,
+            auto_push: false,
+            on_change_reconcile: false,
+            notify_on_drift: false,
+            notify_method: NotifyMethod::Stdout,
+            webhook_url: None,
+            auto_apply: false,
+        };
+
+        let sources = vec![config::SourceSpec {
+            name: "team-tools".into(),
+            origin: config::OriginSpec {
+                origin_type: config::OriginType::Git,
+                url: "https://github.com/team/tools.git".into(),
+                branch: "main".into(),
+                auth: None,
+                ssh_strict_host_key_checking: Default::default(),
+            },
+            subscription: config::SubscriptionSpec::default(),
+            sync: config::SourceSyncSpec {
+                auto_apply: true,
+                interval: "60s".into(),
+                pin_version: None,
+            },
+        }];
+
+        let tasks = build_sync_tasks(config_dir, &parsed, &sources, false, &source_cache, |_| {
+            None
+        });
+
+        assert_eq!(tasks.len(), 2, "should have local + team-tools");
+        // Local task inherits global settings
+        assert_eq!(tasks[0].source_name, "local");
+        assert!(tasks[0].auto_pull);
+        assert!(!tasks[0].auto_push);
+        assert_eq!(tasks[0].interval, Duration::from_secs(300));
+
+        // Source task uses its own interval
+        assert_eq!(tasks[1].source_name, "team-tools");
+        assert!(tasks[1].auto_pull); // always true for sources
+        assert!(!tasks[1].auto_push); // always false for sources
+        assert!(tasks[1].auto_apply);
+        assert_eq!(tasks[1].interval, Duration::from_secs(60));
+    }
+
+    #[test]
+    fn build_sync_tasks_manifest_detector_sets_require_signed() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_dir = dir.path();
+        let source_cache = dir.path().join("sources");
+        std::fs::create_dir_all(source_cache.join("signed-source")).unwrap();
+
+        let parsed = ParsedDaemonConfig {
+            reconcile_interval: Duration::from_secs(300),
+            sync_interval: Duration::from_secs(300),
+            auto_pull: false,
+            auto_push: false,
+            on_change_reconcile: false,
+            notify_on_drift: false,
+            notify_method: NotifyMethod::Stdout,
+            webhook_url: None,
+            auto_apply: false,
+        };
+
+        let sources = vec![config::SourceSpec {
+            name: "signed-source".into(),
+            origin: config::OriginSpec {
+                origin_type: config::OriginType::Git,
+                url: "https://github.com/secure/config.git".into(),
+                branch: "main".into(),
+                auth: None,
+                ssh_strict_host_key_checking: Default::default(),
+            },
+            subscription: config::SubscriptionSpec::default(),
+            sync: config::SourceSyncSpec::default(),
+        }];
+
+        // Manifest detector returns true => require signed commits
+        let tasks = build_sync_tasks(config_dir, &parsed, &sources, false, &source_cache, |_| {
+            Some(true)
+        });
+
+        assert_eq!(tasks.len(), 2);
+        assert!(
+            !tasks[0].require_signed_commits,
+            "local should not require signed"
+        );
+        assert!(
+            tasks[1].require_signed_commits,
+            "source with manifest should require signed"
+        );
+    }
+
+    // --- build_reconcile_tasks: comprehensive reconcile task building ---
+
+    #[test]
+    fn build_reconcile_tasks_always_has_default() {
+        let cfg = config::DaemonConfig {
+            enabled: true,
+            reconcile: None,
+            sync: None,
+            notify: None,
+        };
+
+        let tasks = build_reconcile_tasks(&cfg, None, &[], Duration::from_secs(300), false);
+
+        assert_eq!(tasks.len(), 1);
+        assert_eq!(tasks[0].entity, "__default__");
+        assert_eq!(tasks[0].interval, Duration::from_secs(300));
+        assert!(!tasks[0].auto_apply);
+    }
+
+    // --- git operations with local repos ---
+
+    #[test]
+    fn git_pull_on_local_repo_no_remote_is_error() {
+        let dir = tempfile::tempdir().unwrap();
+        git2::Repository::init(dir.path()).unwrap();
+
+        // Create initial commit so HEAD exists
+        let repo = git2::Repository::open(dir.path()).unwrap();
+        let sig = git2::Signature::now("Test", "test@test.com").unwrap();
+        let tree_oid = repo.index().unwrap().write_tree().unwrap();
+        let tree = repo.find_tree(tree_oid).unwrap();
+        repo.commit(Some("HEAD"), &sig, &sig, "init", &tree, &[])
+            .unwrap();
+
+        // No remote configured -> should error
+        let result = git_pull(dir.path());
+        assert!(result.is_err(), "pull without remote should fail");
+    }
+
+    #[test]
+    fn git_auto_commit_push_with_no_changes_returns_false() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = git2::Repository::init(dir.path()).unwrap();
+
+        // Create initial commit
+        let sig = git2::Signature::now("Test", "test@test.com").unwrap();
+        std::fs::write(dir.path().join("README.md"), "# Hello").unwrap();
+        let mut index = repo.index().unwrap();
+        index
+            .add_all(["*"].iter(), git2::IndexAddOption::DEFAULT, None)
+            .unwrap();
+        index.write().unwrap();
+        let tree_oid = index.write_tree().unwrap();
+        let tree = repo.find_tree(tree_oid).unwrap();
+        repo.commit(Some("HEAD"), &sig, &sig, "init", &tree, &[])
+            .unwrap();
+
+        // No changes after initial commit
+        let result = git_auto_commit_push(dir.path());
+        // Should return Ok(false) — no changes to commit
+        assert_eq!(result, Ok(false));
+    }
+
+    // --- DaemonStatusResponse serialization edge cases ---
+
+    #[test]
+    fn daemon_status_response_camel_case_keys() {
+        let response = DaemonStatusResponse {
+            running: true,
+            pid: 100,
+            uptime_secs: 3600,
+            last_reconcile: Some("2026-01-01T00:00:00Z".into()),
+            last_sync: None,
+            drift_count: 0,
+            sources: vec![],
+            update_available: None,
+            module_reconcile: vec![],
+        };
+
+        let json = serde_json::to_string(&response).unwrap();
+        assert!(
+            json.contains("\"uptimeSecs\""),
+            "should use camelCase: {json}"
+        );
+        assert!(
+            json.contains("\"lastReconcile\""),
+            "should use camelCase: {json}"
+        );
+        assert!(
+            json.contains("\"driftCount\""),
+            "should use camelCase: {json}"
+        );
+        assert!(
+            !json.contains("\"uptime_secs\""),
+            "should not use snake_case: {json}"
+        );
+    }
+
+    // --- ModuleReconcileStatus serialization ---
+
+    #[test]
+    fn module_reconcile_status_round_trips_extended() {
+        let status = ModuleReconcileStatus {
+            name: "security-baseline".into(),
+            interval: "30s".into(),
+            auto_apply: true,
+            drift_policy: "Auto".into(),
+            last_reconcile: Some("2026-04-01T12:00:00Z".into()),
+        };
+
+        let json = serde_json::to_string(&status).unwrap();
+        assert!(json.contains("\"autoApply\""), "should use camelCase");
+        assert!(json.contains("\"driftPolicy\""), "should use camelCase");
+        assert!(json.contains("\"lastReconcile\""), "should use camelCase");
+
+        let parsed: ModuleReconcileStatus = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.name, "security-baseline");
+        assert!(parsed.auto_apply);
+        assert_eq!(parsed.drift_policy, "Auto");
+    }
+
+    // --- extract_source_resources edge cases ---
+
+    #[test]
+    fn extract_source_resources_includes_npm_and_pipx_and_dnf() {
+        use crate::config::{MergedProfile, NpmSpec, PackagesSpec};
+
+        let merged = MergedProfile {
+            packages: PackagesSpec {
+                npm: Some(NpmSpec {
+                    file: None,
+                    global: vec!["typescript".into(), "eslint".into()],
+                }),
+                pipx: vec!["black".into()],
+                dnf: vec!["gcc".into(), "make".into()],
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        let resources = extract_source_resources(&merged);
+        assert!(resources.contains("packages.npm.typescript"));
+        assert!(resources.contains("packages.npm.eslint"));
+        assert!(resources.contains("packages.pipx.black"));
+        assert!(resources.contains("packages.dnf.gcc"));
+        assert!(resources.contains("packages.dnf.make"));
+        assert_eq!(resources.len(), 5);
+    }
+
+    #[test]
+    fn extract_source_resources_includes_apt() {
+        use crate::config::{AptSpec, MergedProfile, PackagesSpec};
+
+        let merged = MergedProfile {
+            packages: PackagesSpec {
+                apt: Some(AptSpec {
+                    packages: vec!["vim".into(), "git".into()],
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        let resources = extract_source_resources(&merged);
+        assert!(resources.contains("packages.apt.vim"));
+        assert!(resources.contains("packages.apt.git"));
+        assert_eq!(resources.len(), 2);
+    }
+
+    #[test]
+    fn extract_source_resources_includes_system_keys() {
+        use crate::config::MergedProfile;
+
+        let mut merged = MergedProfile::default();
+        merged.system.insert(
+            "shell".into(),
+            serde_yaml::to_value(&serde_json::json!({"defaultShell": "/bin/zsh"})).unwrap(),
+        );
+        merged.system.insert(
+            "macos_defaults".into(),
+            serde_yaml::Value::Mapping(Default::default()),
+        );
+
+        let resources = extract_source_resources(&merged);
+        assert!(resources.contains("system.shell"));
+        assert!(resources.contains("system.macos_defaults"));
+        assert_eq!(resources.len(), 2);
+    }
+
+    // --- Notifier webhook creates correct payload ---
+
+    #[test]
+    fn notifier_new_stores_method_and_url() {
+        let notifier = Notifier::new(
+            NotifyMethod::Webhook,
+            Some("https://hooks.slack.com/test".into()),
+        );
+        assert!(matches!(notifier.method, NotifyMethod::Webhook));
+        assert_eq!(
+            notifier.webhook_url.as_deref(),
+            Some("https://hooks.slack.com/test")
+        );
+    }
+
+    #[test]
+    fn notifier_desktop_does_not_panic() {
+        let notifier = Notifier::new(NotifyMethod::Desktop, None);
+        // On CI without a display, this will fall back to stdout — shouldn't panic either way
+        notifier.notify("test title", "test body");
+    }
+
+    // --- infer_item_tier edge cases ---
+
+    #[test]
+    fn infer_item_tier_detects_policy_keyword_extended() {
+        assert_eq!(infer_item_tier("files./etc/security-policy.conf"), "locked");
+        assert_eq!(infer_item_tier("system.policy_engine"), "locked");
+    }
+
+    #[test]
+    fn infer_item_tier_normal_resources_are_recommended() {
+        assert_eq!(infer_item_tier("packages.npm.typescript"), "recommended");
+        assert_eq!(
+            infer_item_tier("files./home/user/.gitconfig"),
+            "recommended"
+        );
+        assert_eq!(infer_item_tier("env.PATH"), "recommended");
+    }
 }

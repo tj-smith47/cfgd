@@ -1057,4 +1057,186 @@ usage: encrypt
         // The entries are unparseable so no drift from them
         assert!(drifts.is_empty());
     }
+
+    // --- KeyringEntry::is_expired: timestamp-based expiry ---
+
+    #[test]
+    fn keyring_entry_expired_by_timestamp() {
+        // validity is 'u' (ultimate trust), but expiry_ts is in the past
+        let entry = KeyringEntry {
+            fingerprint: "OLDKEY".to_string(),
+            email: "old@test.com".to_string(),
+            validity: 'u',
+            expiry_ts: 1, // Unix epoch + 1 second: 1970-01-01T00:00:01Z
+            capabilities: "SC".to_string(),
+        };
+        assert!(entry.is_expired(), "key with expiry_ts=1 should be expired");
+    }
+
+    #[test]
+    fn keyring_entry_not_expired_validity_u_far_future() {
+        let entry = KeyringEntry {
+            fingerprint: "FUTURE".to_string(),
+            email: "future@test.com".to_string(),
+            validity: 'u',
+            expiry_ts: u64::MAX - 1,
+            capabilities: "E".to_string(),
+        };
+        assert!(!entry.is_expired());
+    }
+
+    // --- parse_gpg_colon_output: missing field coverage ---
+
+    #[test]
+    fn parse_colon_pub_missing_expiry_field() {
+        // pub record with fewer fields than expected (no expiry)
+        let output = "\
+pub:u:255:22:AAAA:1700000000\n\
+fpr:::::::::SHORTFPR:\n\
+uid:u::::1700000000::HASH::Short User <short@example.com>::::::::::0:\n\
+";
+        let entries = parse_gpg_colon_output(output);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(
+            entries[0].expiry_ts, 0,
+            "missing expiry field should default to 0"
+        );
+        assert!(
+            entries[0].capabilities.is_empty(),
+            "missing capabilities field should be empty"
+        );
+    }
+
+    #[test]
+    fn parse_colon_pub_missing_validity_char() {
+        // pub record with empty validity field
+        let output = "\
+pub::255:22:AAAA:1700000000:0::u:::SC:::23::\n\
+fpr:::::::::FPR:\n\
+uid:u::::1700000000::HASH::User <user@example.com>::::::::::0:\n\
+";
+        let entries = parse_gpg_colon_output(output);
+        assert_eq!(entries.len(), 1);
+        // Empty validity field means chars().next() returns None, defaults to '-'
+        assert_eq!(entries[0].validity, '-');
+    }
+
+    #[test]
+    fn parse_colon_uid_without_email() {
+        // uid record that doesn't contain angle brackets
+        let output = "\
+pub:u:255:22:AAAA:1700000000:0::u:::SC:::23::\n\
+fpr:::::::::FPR_NOEMAIL:\n\
+uid:u::::1700000000::HASH::Just A Name Without Email::::::::::0:\n\
+";
+        let entries = parse_gpg_colon_output(output);
+        assert_eq!(entries.len(), 1);
+        assert!(
+            entries[0].email.is_empty(),
+            "uid without angle brackets should produce empty email"
+        );
+    }
+
+    #[test]
+    fn parse_colon_multiple_uids_uses_first() {
+        // First uid has an email, second has a different one; should capture first
+        let output = "\
+pub:u:255:22:AAAA:1700000000:0::u:::SC:::23::\n\
+fpr:::::::::MULTIUID:\n\
+uid:u::::1700000000::HASH1::Primary <primary@example.com>::::::::::0:\n\
+uid:u::::1700000000::HASH2::Secondary <secondary@example.com>::::::::::0:\n\
+";
+        let entries = parse_gpg_colon_output(output);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(
+            entries[0].email, "primary@example.com",
+            "should use the first uid email"
+        );
+    }
+
+    #[test]
+    fn parse_colon_non_pub_fpr_uid_lines_ignored() {
+        // Lines with unknown record types should be ignored
+        let output = "\
+tru::1:1700000000:0:3:1:5\n\
+pub:u:255:22:AAAA:1700000000:0::u:::SC:::23::\n\
+fpr:::::::::FPROK:\n\
+uid:u::::1700000000::HASH::User <user@ok.com>::::::::::0:\n\
+grp:::::::::0123456789ABCDEF0123456789ABCDEF:\n\
+";
+        let entries = parse_gpg_colon_output(output);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].email, "user@ok.com");
+    }
+
+    // --- build_param_file: verify RSA structure ---
+
+    #[test]
+    fn build_param_file_rsa_has_no_curve() {
+        let spec = GpgKeySpec {
+            name: "rsa-nocurve".to_string(),
+            key_type: GpgKeyType::Rsa4096,
+            real_name: "RSA Test".to_string(),
+            email: "rsa@test.com".to_string(),
+            expiry: "6m".to_string(),
+            usage: "sign,encrypt".to_string(),
+        };
+        let param = build_param_file(&spec);
+        assert!(param.contains("Key-Type: rsa"));
+        assert!(param.contains("Key-Length: 4096"));
+        assert!(
+            !param.contains("Key-Curve"),
+            "RSA should not have Key-Curve"
+        );
+        assert!(param.contains("Key-Usage: sign encrypt"));
+        assert!(param.contains("Expire-Date: 6m"));
+    }
+
+    // --- GpgKeysConfigurator trait methods ---
+
+    #[test]
+    fn configurator_name_is_gpg_keys() {
+        let c = GpgKeysConfigurator;
+        assert_eq!(c.name(), "gpgKeys");
+    }
+
+    // --- apply with non-sequence desired ---
+
+    #[test]
+    fn apply_non_sequence_is_noop() {
+        let c = GpgKeysConfigurator;
+        let (printer, _) = cfgd_core::output::Printer::for_test();
+        let desired = serde_yaml::Value::String("not a sequence".into());
+        let result = c.apply(&desired, &printer);
+        assert!(
+            result.is_ok(),
+            "apply with non-sequence should succeed as no-op"
+        );
+    }
+
+    #[test]
+    fn apply_empty_sequence_is_noop() {
+        let c = GpgKeysConfigurator;
+        let (printer, _) = cfgd_core::output::Printer::for_test();
+        let desired = serde_yaml::Value::Sequence(Vec::new());
+        let result = c.apply(&desired, &printer);
+        assert!(
+            result.is_ok(),
+            "apply with empty sequence should succeed as no-op"
+        );
+    }
+
+    #[test]
+    fn apply_unparseable_entries_skipped() {
+        let c = GpgKeysConfigurator;
+        let (printer, _) = cfgd_core::output::Printer::for_test();
+        let desired: serde_yaml::Value = serde_yaml::from_str(
+            r#"
+- displayName: "Missing required fields"
+"#,
+        )
+        .unwrap();
+        let result = c.apply(&desired, &printer);
+        assert!(result.is_ok(), "apply should skip unparseable entries");
+    }
 }

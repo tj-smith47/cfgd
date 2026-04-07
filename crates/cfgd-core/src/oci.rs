@@ -4434,4 +4434,653 @@ mod tests {
         let d2 = sha256_digest(b"input two");
         assert_ne!(d1, d2);
     }
+
+    // --- build_dockerfile: comprehensive generation ---
+
+    #[test]
+    fn build_dockerfile_ubuntu_with_packages_cleans_apt_lists() {
+        let df = build_dockerfile("ubuntu:24.04", &["git", "curl", "make"]);
+        assert_eq!(df.lines().count(), 4, "FROM + RUN + WORKDIR + COPY");
+        assert!(df.starts_with("FROM ubuntu:24.04"));
+        assert!(df.contains("apt-get update && apt-get install -y git curl make"));
+        assert!(df.contains("rm -rf /var/lib/apt/lists/*"));
+        assert!(df.contains("WORKDIR /build"));
+        assert!(df.contains("COPY . /build/"));
+    }
+
+    #[test]
+    fn build_dockerfile_debian_uses_apt() {
+        let df = build_dockerfile("debian:bookworm", &["vim"]);
+        assert!(df.contains("apt-get"), "debian should use apt-get");
+        assert!(df.contains("rm -rf /var/lib/apt/lists/*"));
+    }
+
+    #[test]
+    fn build_dockerfile_alpine_uses_apk() {
+        let df = build_dockerfile("alpine:3.20", &["bash", "coreutils"]);
+        assert!(df.contains("apk add --no-cache bash coreutils"));
+        assert!(!df.contains("apt-get"));
+        assert!(!df.contains("rm -rf"));
+    }
+
+    #[test]
+    fn build_dockerfile_fedora_uses_dnf() {
+        let df = build_dockerfile("fedora:41", &["gcc", "gdb"]);
+        assert!(df.contains("dnf install -y gcc gdb"));
+    }
+
+    #[test]
+    fn build_dockerfile_rockylinux_uses_dnf() {
+        let df = build_dockerfile("rockylinux:9.3", &["python3"]);
+        assert!(df.contains("dnf install -y python3"));
+    }
+
+    #[test]
+    fn build_dockerfile_almalinux_uses_dnf() {
+        let df = build_dockerfile("almalinux:9", &["wget"]);
+        assert!(df.contains("dnf install -y wget"));
+    }
+
+    #[test]
+    fn build_dockerfile_centos_uses_yum() {
+        let df = build_dockerfile("centos:7", &["nmap"]);
+        assert!(df.contains("yum install -y nmap"));
+    }
+
+    #[test]
+    fn build_dockerfile_archlinux_uses_pacman() {
+        let df = build_dockerfile("archlinux:base", &["neovim"]);
+        assert!(df.contains("pacman -Sy --noconfirm neovim"));
+    }
+
+    #[test]
+    fn build_dockerfile_registry_prefixed_alpine_custom() {
+        let df = build_dockerfile("ghcr.io/custom/alpine:edge", &["jq"]);
+        assert!(df.contains("apk add --no-cache jq"));
+        assert!(df.starts_with("FROM ghcr.io/custom/alpine:edge"));
+    }
+
+    #[test]
+    fn build_dockerfile_registry_prefixed_fedora() {
+        let df = build_dockerfile("quay.io/fedora/fedora:40", &["strace"]);
+        assert!(df.contains("dnf install -y strace"));
+    }
+
+    #[test]
+    fn build_dockerfile_empty_packages_has_no_run() {
+        let df = build_dockerfile("scratch", &[]);
+        assert_eq!(df.lines().count(), 3, "FROM + WORKDIR + COPY, no RUN");
+        assert!(!df.contains("RUN"));
+    }
+
+    #[test]
+    fn build_dockerfile_single_package() {
+        let df = build_dockerfile("ubuntu:22.04", &["curl"]);
+        assert!(df.contains("curl"));
+        // Should only have one RUN line
+        let run_count = df.lines().filter(|l| l.starts_with("RUN")).count();
+        assert_eq!(run_count, 1);
+    }
+
+    // --- detect_pkg_install_cmd: all mappings ---
+
+    #[test]
+    fn detect_pkg_install_cmd_alpine() {
+        assert_eq!(detect_pkg_install_cmd("alpine:3.19"), "apk add --no-cache");
+    }
+
+    #[test]
+    fn detect_pkg_install_cmd_ubuntu() {
+        let cmd = detect_pkg_install_cmd("ubuntu:22.04");
+        assert!(
+            cmd.starts_with("apt-get"),
+            "ubuntu should use apt-get: {cmd}"
+        );
+    }
+
+    #[test]
+    fn detect_pkg_install_cmd_debian() {
+        let cmd = detect_pkg_install_cmd("debian:12");
+        assert!(
+            cmd.starts_with("apt-get"),
+            "debian should use apt-get: {cmd}"
+        );
+    }
+
+    #[test]
+    fn detect_pkg_install_cmd_case_insensitive() {
+        // The function lowercases the image name
+        assert_eq!(detect_pkg_install_cmd("ALPINE:3.19"), "apk add --no-cache");
+        assert_eq!(detect_pkg_install_cmd("Fedora:39"), "dnf install -y");
+    }
+
+    // --- generate_slsa_provenance: detailed JSON structure ---
+
+    #[test]
+    fn generate_slsa_provenance_complete_structure() {
+        let prov = generate_slsa_provenance(
+            "ghcr.io/org/mod:v2.0.0",
+            "sha256:deadbeef1234",
+            "https://github.com/org/config",
+            "abc123def456",
+        )
+        .unwrap();
+
+        let parsed: serde_json::Value = serde_json::from_str(&prov).unwrap();
+
+        // Top-level fields
+        assert_eq!(
+            parsed["_type"], "https://in-toto.io/Statement/v1",
+            "should be in-toto v1 statement"
+        );
+        assert_eq!(
+            parsed["predicateType"], "https://slsa.dev/provenance/v1",
+            "should be SLSA v1 provenance"
+        );
+
+        // Subject
+        let subject = &parsed["subject"][0];
+        assert_eq!(subject["name"], "ghcr.io/org/mod:v2.0.0");
+        assert_eq!(
+            subject["digest"]["sha256"], "deadbeef1234",
+            "sha256: prefix should be stripped"
+        );
+
+        // Predicate
+        let predicate = &parsed["predicate"];
+        assert_eq!(
+            predicate["buildDefinition"]["buildType"],
+            "https://cfgd.io/ModuleBuild/v1"
+        );
+        assert_eq!(
+            predicate["buildDefinition"]["externalParameters"]["source"]["uri"],
+            "https://github.com/org/config"
+        );
+        assert_eq!(
+            predicate["buildDefinition"]["externalParameters"]["source"]["digest"]["gitCommit"],
+            "abc123def456"
+        );
+        assert_eq!(
+            predicate["runDetails"]["builder"]["id"],
+            "https://cfgd.io/builder/v1"
+        );
+
+        // Metadata timestamps should be non-empty
+        let invocation_id = predicate["runDetails"]["metadata"]["invocationId"]
+            .as_str()
+            .unwrap();
+        assert!(
+            !invocation_id.is_empty(),
+            "invocationId should not be empty"
+        );
+    }
+
+    #[test]
+    fn generate_slsa_provenance_strips_sha256_prefix_v2() {
+        let prov =
+            generate_slsa_provenance("ghcr.io/test:v1", "sha256:abcdef", "repo", "commit").unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&prov).unwrap();
+        assert_eq!(
+            parsed["subject"][0]["digest"]["sha256"], "abcdef",
+            "sha256: prefix should be stripped from digest"
+        );
+    }
+
+    #[test]
+    fn generate_slsa_provenance_bare_digest() {
+        let prov = generate_slsa_provenance("ghcr.io/test:v1", "abcdef", "repo", "commit").unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&prov).unwrap();
+        assert_eq!(
+            parsed["subject"][0]["digest"]["sha256"], "abcdef",
+            "bare digest should pass through as-is"
+        );
+    }
+
+    // --- OCI manifest construction ---
+
+    #[test]
+    fn oci_manifest_round_trip_with_annotations() {
+        let mut annotations = HashMap::new();
+        annotations.insert("cfgd.io/platform".to_string(), "linux/amd64".to_string());
+        annotations.insert(
+            "org.opencontainers.image.created".to_string(),
+            "2026-01-01T00:00:00Z".to_string(),
+        );
+
+        let manifest = OciManifest {
+            schema_version: 2,
+            media_type: MEDIA_TYPE_OCI_MANIFEST.to_string(),
+            config: OciDescriptor {
+                media_type: MEDIA_TYPE_MODULE_CONFIG.to_string(),
+                digest: "sha256:configdigest123".to_string(),
+                size: 512,
+                annotations: HashMap::new(),
+            },
+            layers: vec![OciDescriptor {
+                media_type: MEDIA_TYPE_MODULE_LAYER.to_string(),
+                digest: "sha256:layer1digest".to_string(),
+                size: 4096,
+                annotations: HashMap::new(),
+            }],
+            annotations: annotations.clone(),
+        };
+
+        let json = serde_json::to_string_pretty(&manifest).unwrap();
+        let parsed: OciManifest = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(parsed.schema_version, 2);
+        assert_eq!(parsed.media_type, MEDIA_TYPE_OCI_MANIFEST);
+        assert_eq!(parsed.config.size, 512);
+        assert_eq!(parsed.layers.len(), 1);
+        assert_eq!(parsed.layers[0].size, 4096);
+        assert_eq!(parsed.annotations.len(), 2);
+        assert_eq!(
+            parsed.annotations.get("cfgd.io/platform").unwrap(),
+            "linux/amd64"
+        );
+    }
+
+    #[test]
+    fn oci_manifest_camel_case_keys() {
+        let manifest = OciManifest {
+            schema_version: 2,
+            media_type: MEDIA_TYPE_OCI_MANIFEST.to_string(),
+            config: OciDescriptor {
+                media_type: MEDIA_TYPE_MODULE_CONFIG.to_string(),
+                digest: "sha256:abc".to_string(),
+                size: 100,
+                annotations: HashMap::new(),
+            },
+            layers: vec![],
+            annotations: HashMap::new(),
+        };
+
+        let json = serde_json::to_string(&manifest).unwrap();
+        assert!(
+            json.contains("\"schemaVersion\""),
+            "should use camelCase: {json}"
+        );
+        assert!(
+            json.contains("\"mediaType\""),
+            "should use camelCase: {json}"
+        );
+        assert!(
+            !json.contains("\"schema_version\""),
+            "should not use snake_case: {json}"
+        );
+    }
+
+    // --- Docker config parsing: additional coverage ---
+
+    #[test]
+    fn docker_config_with_empty_auth_field() {
+        let config_json = r#"{
+            "auths": {
+                "ghcr.io": {
+                    "auth": ""
+                }
+            }
+        }"#;
+        let config: DockerConfig = serde_json::from_str(config_json).unwrap();
+        // Empty auth string should decode to empty Vec, which has no colon, so None
+        let auth = resolve_from_docker_auths(&config.auths, "ghcr.io");
+        assert!(auth.is_none(), "empty auth field should not resolve");
+    }
+
+    #[test]
+    fn docker_config_index_docker_io_fallback() {
+        let config_json = r#"{
+            "auths": {
+                "index.docker.io": {
+                    "auth": "dXNlcjpwYXNz"
+                }
+            }
+        }"#;
+        let config: DockerConfig = serde_json::from_str(config_json).unwrap();
+        // Querying for "docker.io" should fall back to checking index.docker.io
+        let auth = resolve_from_docker_auths(&config.auths, "docker.io");
+        assert!(
+            auth.is_some(),
+            "docker.io should fall back to index.docker.io"
+        );
+        assert_eq!(auth.unwrap().username, "user");
+    }
+
+    #[test]
+    fn docker_config_v1_suffix_match() {
+        let config_json = r#"{
+            "auths": {
+                "https://ghcr.io/v1/": {
+                    "auth": "dXNlcjpwYXNz"
+                }
+            }
+        }"#;
+        let config: DockerConfig = serde_json::from_str(config_json).unwrap();
+        let auth = resolve_from_docker_auths(&config.auths, "ghcr.io");
+        assert!(auth.is_some(), "should match https://ghcr.io/v1/");
+    }
+
+    // --- base64 edge cases ---
+
+    #[test]
+    fn base64_encode_padding_one_byte() {
+        // "a" -> "YQ==" (requires 2 padding chars)
+        let encoded = base64_encode(b"a");
+        assert_eq!(encoded, "YQ==");
+        let decoded = base64_decode(&encoded).unwrap();
+        assert_eq!(decoded, b"a");
+    }
+
+    #[test]
+    fn base64_encode_padding_two_bytes() {
+        // "ab" -> "YWI=" (requires 1 padding char)
+        let encoded = base64_encode(b"ab");
+        assert_eq!(encoded, "YWI=");
+        let decoded = base64_decode(&encoded).unwrap();
+        assert_eq!(decoded, b"ab");
+    }
+
+    #[test]
+    fn base64_encode_no_padding_three_bytes() {
+        // "abc" -> "YWJj" (no padding needed)
+        let encoded = base64_encode(b"abc");
+        assert_eq!(encoded, "YWJj");
+        let decoded = base64_decode(&encoded).unwrap();
+        assert_eq!(decoded, b"abc");
+    }
+
+    #[test]
+    fn base64_decode_invalid_length_short() {
+        // Not a multiple of 4
+        let result = base64_decode("abc");
+        assert!(result.is_none(), "invalid length should fail");
+    }
+
+    #[test]
+    fn base64_decode_invalid_chars_special() {
+        let result = base64_decode("!!!!");
+        assert!(result.is_none(), "invalid base64 characters should fail");
+    }
+
+    #[test]
+    fn base64_roundtrip_binary_data() {
+        let data: Vec<u8> = (0..=255).collect();
+        let encoded = base64_encode(&data);
+        let decoded = base64_decode(&encoded).unwrap();
+        assert_eq!(decoded, data);
+    }
+
+    // --- RegistryAuth basic_auth_header ---
+
+    #[test]
+    fn registry_auth_basic_header_format() {
+        let auth = RegistryAuth {
+            username: "myuser".to_string(),
+            password: "mypass".to_string(),
+        };
+        let header = auth.basic_auth_header();
+        assert!(header.starts_with("Basic "), "should start with 'Basic '");
+
+        // Decode and verify
+        let encoded = header.strip_prefix("Basic ").unwrap();
+        let decoded = base64_decode(encoded).unwrap();
+        let cred = String::from_utf8(decoded).unwrap();
+        assert_eq!(cred, "myuser:mypass");
+    }
+
+    // --- OCI reference edge cases ---
+
+    #[test]
+    fn parse_reference_whitespace_rejected() {
+        assert!(OciReference::parse("ghcr.io/repo name:v1").is_err());
+        assert!(OciReference::parse("ghcr.io/repo\tname:v1").is_err());
+    }
+
+    #[test]
+    fn parse_reference_host_port_no_repo_rejected() {
+        // "localhost:5000" without a repo path and with a numeric "tag" = port
+        let result = OciReference::parse("localhost:5000");
+        // This should be treated as host:port with no repo
+        assert!(
+            result.is_err(),
+            "bare host:port without repo should be rejected, got: {result:?}"
+        );
+    }
+
+    #[test]
+    fn reference_str_returns_tag_or_digest() {
+        let tag_ref = OciReference {
+            registry: "ghcr.io".to_string(),
+            repository: "test".to_string(),
+            reference: ReferenceKind::Tag("v1.0.0".to_string()),
+        };
+        assert_eq!(tag_ref.reference_str(), "v1.0.0");
+
+        let digest_ref = OciReference {
+            registry: "ghcr.io".to_string(),
+            repository: "test".to_string(),
+            reference: ReferenceKind::Digest("sha256:abc".to_string()),
+        };
+        assert_eq!(digest_ref.reference_str(), "sha256:abc");
+    }
+
+    // --- tar gz with symlinks skipped ---
+
+    #[test]
+    fn create_tar_gz_skips_symlinks() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("real.txt"), "real content").unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink("real.txt", dir.path().join("link.txt")).unwrap();
+
+        let archive = create_tar_gz(dir.path()).unwrap();
+        assert!(!archive.is_empty());
+
+        // Extract and verify symlink was skipped
+        let out = tempfile::tempdir().unwrap();
+        extract_tar_gz(&archive, out.path()).unwrap();
+        assert!(out.path().join("real.txt").exists());
+        // Symlink should NOT be in the extracted output
+        assert!(
+            !out.path().join("link.txt").exists(),
+            "symlinks should be skipped in create_tar_gz"
+        );
+    }
+
+    // --- extract_tar_gz rejects symlinks ---
+
+    #[test]
+    fn extract_tar_gz_skips_symlinks_in_archive() {
+        // Build a tar.gz that contains a symlink entry
+        use flate2::write::GzEncoder;
+
+        let buf = Vec::new();
+        let encoder = GzEncoder::new(buf, flate2::Compression::default());
+        let mut archive = tar::Builder::new(encoder);
+
+        // Add a normal file
+        let content = b"normal file";
+        let mut header = tar::Header::new_gnu();
+        header.set_size(content.len() as u64);
+        header.set_mode(0o644);
+        header.set_cksum();
+        archive
+            .append_data(&mut header, "normal.txt", &content[..])
+            .unwrap();
+
+        // Add a symlink entry
+        let mut sym_header = tar::Header::new_gnu();
+        sym_header.set_entry_type(tar::EntryType::Symlink);
+        sym_header.set_size(0);
+        sym_header.set_mode(0o777);
+        sym_header.set_cksum();
+        archive
+            .append_link(&mut sym_header, "evil-link", "/etc/passwd")
+            .unwrap();
+
+        let encoder = archive.into_inner().unwrap();
+        let compressed = encoder.finish().unwrap();
+
+        let out = tempfile::tempdir().unwrap();
+        extract_tar_gz(&compressed, out.path()).unwrap();
+
+        assert!(out.path().join("normal.txt").exists());
+        assert!(
+            !out.path().join("evil-link").exists(),
+            "symlinks should be skipped during extraction"
+        );
+    }
+
+    // --- extract_auth_param edge cases ---
+
+    #[test]
+    fn extract_auth_param_missing_param() {
+        let header = r#"Bearer realm="https://auth.example.com/token""#;
+        assert!(extract_auth_param(header, "service").is_none());
+        assert!(extract_auth_param(header, "scope").is_none());
+        assert!(extract_auth_param(header, "realm").is_some());
+    }
+
+    #[test]
+    fn extract_auth_param_empty_value_parsed() {
+        let header = r#"Bearer realm="",service="svc""#;
+        assert_eq!(extract_auth_param(header, "realm"), Some(""));
+        assert_eq!(extract_auth_param(header, "service"), Some("svc"));
+    }
+
+    // --- validate_verify_options ---
+
+    #[test]
+    fn validate_verify_options_key_only_passes() {
+        let opts = VerifyOptions {
+            key: Some("cosign.pub"),
+            identity: None,
+            issuer: None,
+        };
+        assert!(validate_verify_options(&opts).is_ok());
+    }
+
+    #[test]
+    fn validate_verify_options_identity_only_passes() {
+        let opts = VerifyOptions {
+            key: None,
+            identity: Some("user@example.com"),
+            issuer: None,
+        };
+        assert!(validate_verify_options(&opts).is_ok());
+    }
+
+    #[test]
+    fn validate_verify_options_issuer_only_passes() {
+        let opts = VerifyOptions {
+            key: None,
+            identity: None,
+            issuer: Some("https://accounts.google.com"),
+        };
+        assert!(validate_verify_options(&opts).is_ok());
+    }
+
+    #[test]
+    fn validate_verify_options_all_none_fails() {
+        let opts = VerifyOptions {
+            key: None,
+            identity: None,
+            issuer: None,
+        };
+        let result = validate_verify_options(&opts);
+        assert!(result.is_err());
+        let msg = format!("{}", result.unwrap_err());
+        assert!(
+            msg.contains("keyless verification requires"),
+            "should explain the requirement: {msg}"
+        );
+    }
+
+    // --- is_insecure_registry ---
+
+    #[test]
+    fn is_insecure_registry_without_env_var() {
+        // When OCI_INSECURE_REGISTRIES is not set (or empty), nothing is insecure
+        let prev = std::env::var("OCI_INSECURE_REGISTRIES").ok();
+        unsafe {
+            std::env::remove_var("OCI_INSECURE_REGISTRIES");
+        }
+        assert!(!is_insecure_registry("localhost:5000"));
+        assert!(!is_insecure_registry("ghcr.io"));
+
+        // Restore
+        unsafe {
+            if let Some(v) = prev {
+                std::env::set_var("OCI_INSECURE_REGISTRIES", v);
+            }
+        }
+    }
+
+    // --- OCI index round-trip with platform details ---
+
+    #[test]
+    fn oci_index_camel_case_and_round_trip() {
+        let index = OciIndex {
+            schema_version: 2,
+            media_type: MEDIA_TYPE_OCI_INDEX.to_string(),
+            manifests: vec![OciPlatformManifest {
+                media_type: MEDIA_TYPE_OCI_MANIFEST.to_string(),
+                digest: "sha256:abc".to_string(),
+                size: 100,
+                platform: OciPlatform {
+                    os: "linux".to_string(),
+                    architecture: "amd64".to_string(),
+                },
+            }],
+        };
+
+        let json = serde_json::to_string(&index).unwrap();
+        assert!(json.contains("\"schemaVersion\""));
+        assert!(json.contains("\"mediaType\""));
+        assert!(!json.contains("\"schema_version\""));
+
+        let parsed: OciIndex = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.manifests[0].platform.os, "linux");
+        assert_eq!(parsed.manifests[0].platform.architecture, "amd64");
+    }
+
+    // --- decode_docker_auth: password with special chars ---
+
+    #[test]
+    fn decode_docker_auth_with_token_password() {
+        // Simulate a PAT token as password: "ghp_abc123xyz"
+        let input = "user:ghp_abc123xyz";
+        let encoded = base64_encode(input.as_bytes());
+        let result = decode_docker_auth(&encoded);
+        assert!(result.is_some());
+        let auth = result.unwrap();
+        assert_eq!(auth.username, "user");
+        assert_eq!(auth.password, "ghp_abc123xyz");
+    }
+
+    // --- apply_verify_args: verify args are set correctly ---
+
+    #[test]
+    fn apply_verify_args_with_key_only() {
+        let mut cmd = std::process::Command::new("echo");
+        let opts = VerifyOptions {
+            key: Some("/path/to/cosign.pub"),
+            identity: None,
+            issuer: None,
+        };
+        apply_verify_args(&mut cmd, &opts);
+        // Can't easily inspect Command args, but verify it doesn't panic
+    }
+
+    #[test]
+    fn apply_verify_args_keyless_defaults() {
+        let mut cmd = std::process::Command::new("echo");
+        let opts = VerifyOptions {
+            key: None,
+            identity: None,
+            issuer: Some("https://issuer.example.com"),
+        };
+        apply_verify_args(&mut cmd, &opts);
+        // Again, just verify no panic; the defaults for identity are ".*"
+    }
 }

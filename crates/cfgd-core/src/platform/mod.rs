@@ -511,4 +511,234 @@ VERSION_ID="7"
         assert!(p.matches_any(&["ubuntu".into(), "fedora".into()]));
         assert!(!p.matches_any(&["macos".into(), "freebsd".into()]));
     }
+
+    // --- native_manager: additional distro mappings ---
+
+    #[test]
+    fn native_manager_centos_7_uses_yum() {
+        let p = Platform {
+            os: Os::Linux,
+            distro: Distro::CentOS,
+            version: "7.9".into(),
+            arch: Arch::X86_64,
+        };
+        assert_eq!(p.native_manager(), "yum");
+    }
+
+    #[test]
+    fn native_manager_centos_8_uses_dnf() {
+        let p = Platform {
+            os: Os::Linux,
+            distro: Distro::CentOS,
+            version: "8.5".into(),
+            arch: Arch::X86_64,
+        };
+        assert_eq!(p.native_manager(), "dnf");
+    }
+
+    #[test]
+    fn native_manager_manjaro() {
+        let p = Platform {
+            os: Os::Linux,
+            distro: Distro::Manjaro,
+            version: "23.0".into(),
+            arch: Arch::X86_64,
+        };
+        assert_eq!(p.native_manager(), "pacman");
+    }
+
+    #[test]
+    fn native_manager_windows() {
+        let p = Platform {
+            os: Os::Windows,
+            distro: Distro::Windows,
+            version: String::new(),
+            arch: Arch::X86_64,
+        };
+        assert_eq!(p.native_manager(), "winget");
+    }
+
+    #[test]
+    fn native_manager_unknown_defaults_to_apt() {
+        let p = Platform {
+            os: Os::Linux,
+            distro: Distro::Unknown,
+            version: String::new(),
+            arch: Arch::X86_64,
+        };
+        assert_eq!(p.native_manager(), "apt");
+    }
+
+    // --- distro_from_os_release_content: ID_LIKE derivative detection ---
+
+    #[test]
+    fn parse_os_release_debian_only_derivative() {
+        // A distro with ID_LIKE=debian (not ubuntu)
+        let content = r#"
+NAME="Raspberry Pi OS"
+ID=raspbian
+ID_LIKE=debian
+VERSION_ID="11"
+"#;
+        let (distro, version) = distro_from_os_release_content(content);
+        assert_eq!(distro, Distro::Debian);
+        assert_eq!(version, "11");
+    }
+
+    #[test]
+    fn parse_os_release_fedora_derivative() {
+        // A distro with ID_LIKE containing fedora
+        let content = r#"
+NAME="Nobara"
+ID=nobara
+ID_LIKE="fedora"
+VERSION_ID="38"
+"#;
+        let (distro, version) = distro_from_os_release_content(content);
+        assert_eq!(distro, Distro::Fedora);
+        assert_eq!(version, "38");
+    }
+
+    #[test]
+    fn parse_os_release_rhel_derivative() {
+        // A distro with ID_LIKE containing rhel
+        let content = r#"
+NAME="Rocky Linux"
+ID=rocky
+ID_LIKE="rhel centos fedora"
+VERSION_ID="9.2"
+"#;
+        let (distro, version) = distro_from_os_release_content(content);
+        assert_eq!(distro, Distro::Fedora);
+        assert_eq!(version, "9.2");
+    }
+
+    #[test]
+    fn parse_os_release_arch_derivative() {
+        // A distro with ID_LIKE containing arch
+        let content = r#"
+NAME="EndeavourOS"
+ID=endeavouros
+ID_LIKE=arch
+VERSION_ID="2023.11.17"
+"#;
+        let (distro, version) = distro_from_os_release_content(content);
+        assert_eq!(distro, Distro::Arch);
+        assert_eq!(version, "2023.11.17");
+    }
+
+    #[test]
+    fn parse_os_release_suse_derivative() {
+        // A distro with ID_LIKE containing suse
+        let content = r#"
+NAME="GeckoLinux"
+ID=geckolinux
+ID_LIKE="suse opensuse"
+VERSION_ID="999"
+"#;
+        let (distro, version) = distro_from_os_release_content(content);
+        assert_eq!(distro, Distro::OpenSUSE);
+        assert_eq!(version, "999");
+    }
+
+    #[test]
+    fn parse_os_release_unknown_distro() {
+        let content = r#"
+NAME="Exotic Linux"
+ID=exotic
+VERSION_ID="1.0"
+"#;
+        let (distro, version) = distro_from_os_release_content(content);
+        assert_eq!(distro, Distro::Unknown);
+        assert_eq!(version, "1.0");
+    }
+
+    #[test]
+    fn parse_os_release_rhel_id() {
+        let content = "ID=rhel\nVERSION_ID=9.2\n";
+        let (distro, version) = distro_from_os_release_content(content);
+        assert_eq!(distro, Distro::RHEL);
+        assert_eq!(version, "9.2");
+    }
+
+    #[test]
+    fn parse_os_release_redhat_id() {
+        let content = "ID=redhat\nVERSION_ID=8\n";
+        let (distro, version) = distro_from_os_release_content(content);
+        assert_eq!(distro, Distro::RHEL);
+        assert_eq!(version, "8");
+    }
+
+    #[test]
+    fn parse_os_release_archlinux_id() {
+        let content = "ID=archlinux\n";
+        let (distro, _) = distro_from_os_release_content(content);
+        assert_eq!(distro, Distro::Arch);
+    }
+
+    #[test]
+    fn parse_os_release_opensuse_tumbleweed() {
+        let content = "ID=opensuse-tumbleweed\nVERSION_ID=20231201\n";
+        let (distro, version) = distro_from_os_release_content(content);
+        assert_eq!(distro, Distro::OpenSUSE);
+        assert_eq!(version, "20231201");
+    }
+
+    #[test]
+    fn parse_os_release_manjaro() {
+        let content = "ID=manjaro\nVERSION_ID=23.0\n";
+        let (distro, version) = distro_from_os_release_content(content);
+        assert_eq!(distro, Distro::Manjaro);
+        assert_eq!(version, "23.0");
+    }
+
+    // --- parse_os_release_content: edge cases ---
+
+    #[test]
+    fn parse_os_release_content_handles_comments_and_blanks() {
+        let content =
+            "# This is a comment\n\nID=ubuntu\n\n# Another comment\nVERSION_ID=\"22.04\"\n";
+        let fields = parse_os_release_content(content);
+        assert_eq!(fields.get("ID").unwrap(), "ubuntu");
+        assert_eq!(fields.get("VERSION_ID").unwrap(), "22.04");
+    }
+
+    #[test]
+    fn parse_os_release_content_handles_single_quotes() {
+        let content = "ID='fedora'\nVERSION_ID='39'\n";
+        let fields = parse_os_release_content(content);
+        assert_eq!(fields.get("ID").unwrap(), "fedora");
+        assert_eq!(fields.get("VERSION_ID").unwrap(), "39");
+    }
+
+    #[test]
+    fn parse_os_release_content_no_equals() {
+        let content = "NOEQUALS\nID=test\n";
+        let fields = parse_os_release_content(content);
+        assert!(fields.get("NOEQUALS").is_none());
+        assert_eq!(fields.get("ID").unwrap(), "test");
+    }
+
+    // --- Display and as_str coverage ---
+
+    #[test]
+    fn os_windows_display() {
+        assert_eq!(format!("{}", Os::Windows), "windows");
+    }
+
+    #[test]
+    fn distro_display_all_variants() {
+        let cases: &[(Distro, &str)] = &[
+            (Distro::CentOS, "centos"),
+            (Distro::Manjaro, "manjaro"),
+            (Distro::FreeBSD, "freebsd"),
+            (Distro::MacOS, "macos"),
+            (Distro::Windows, "windows"),
+            (Distro::Unknown, "unknown"),
+        ];
+        for (distro, expected) in cases {
+            assert_eq!(distro.as_str(), *expected);
+            assert_eq!(format!("{}", distro), *expected);
+        }
+    }
 }

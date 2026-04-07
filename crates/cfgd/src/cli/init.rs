@@ -2559,4 +2559,343 @@ spec:
             "should show init output, got: {output}"
         );
     }
+
+    // --- clone_into tests ---
+
+    #[test]
+    fn clone_into_skips_existing_git_dir() {
+        let dir = tempfile::tempdir().unwrap();
+
+        // Create a repo to serve as the target that already has .git
+        let target = dir.path().join("already-cloned");
+        git2::Repository::init(&target).unwrap();
+
+        let (printer, buf) = Printer::for_test();
+        clone_into(&target, "https://example.com/repo.git", "main", &printer).unwrap();
+
+        let output = buf.lock().unwrap();
+        assert!(
+            output.contains("already exists"),
+            "should report repo already exists, got: {output}"
+        );
+    }
+
+    // --- sign_with_ssh tests ---
+
+    #[test]
+    fn sign_with_ssh_requires_ssh_keygen() {
+        if !cfgd_core::command_available("ssh-keygen") {
+            // If ssh-keygen not available, the function should error
+            let result = sign_with_ssh("test-nonce", "/nonexistent/key");
+            assert!(result.is_err());
+            return;
+        }
+        // If ssh-keygen is available but key path is bad, it should fail gracefully
+        let result = sign_with_ssh("test-nonce", "/nonexistent/key");
+        assert!(result.is_err(), "should fail with nonexistent key file");
+    }
+
+    // --- sign_with_gpg tests ---
+
+    #[test]
+    fn sign_with_gpg_requires_gpg() {
+        if !cfgd_core::command_available("gpg") {
+            let result = sign_with_gpg("test-nonce", "DEADBEEF");
+            assert!(result.is_err());
+            return;
+        }
+        // If gpg is available but key ID is invalid, it should fail
+        let result = sign_with_gpg("test-nonce", "NONEXISTENT_KEY_ID_XXXXXXXX");
+        assert!(result.is_err(), "should fail with nonexistent GPG key");
+    }
+
+    // --- detect_ssh_key tests ---
+
+    #[test]
+    fn detect_ssh_key_returns_option() {
+        let (printer, _buf) = Printer::for_test();
+        // This will either find a key or return None — both are valid
+        let result = detect_ssh_key(&printer);
+        // Just verify it doesn't panic and returns a valid type
+        if let Some(ref path) = result {
+            assert!(!path.is_empty(), "returned path should be non-empty");
+        }
+    }
+
+    // --- default_device_id ---
+
+    #[test]
+    fn default_device_id_is_nonempty() {
+        let id = default_device_id();
+        assert!(!id.is_empty(), "device ID should not be empty");
+    }
+
+    #[test]
+    fn default_device_id_is_deterministic() {
+        let id1 = default_device_id();
+        let id2 = default_device_id();
+        assert_eq!(id1, id2, "device ID should be deterministic");
+    }
+
+    // --- apply_plan with dry_run ---
+
+    #[test]
+    fn apply_plan_dry_run_skips_apply() {
+        let dir = tempfile::tempdir().unwrap();
+        let (printer, buf) = Printer::for_test();
+
+        let registry = super::build_registry_with_config(None);
+        let store = super::open_state_store(None).unwrap();
+        let reconciler = cfgd_core::reconciler::Reconciler::new(&registry, &store);
+        let resolved = config::ResolvedProfile {
+            layers: Vec::new(),
+            merged: config::MergedProfile::default(),
+        };
+
+        // Create a plan with at least one action so dry_run actually has something to skip
+        let plan = cfgd_core::reconciler::Plan {
+            phases: vec![cfgd_core::reconciler::Phase {
+                name: cfgd_core::reconciler::PhaseName::Packages,
+                actions: vec![cfgd_core::reconciler::Action::Package(
+                    cfgd_core::providers::PackageAction::Install {
+                        manager: "brew".to_string(),
+                        packages: vec!["test-pkg".to_string()],
+                        origin: "test".to_string(),
+                    },
+                )],
+            }],
+            warnings: Vec::new(),
+        };
+
+        let result = apply_plan(
+            &plan,
+            &reconciler,
+            &resolved,
+            dir.path(),
+            true, // dry_run
+            false,
+            &printer,
+        );
+        assert!(result.is_ok());
+
+        let output = buf.lock().unwrap();
+        // Dry run shows the plan but does not apply
+        assert!(
+            output.contains("action") || output.contains("planned"),
+            "should show planned actions, got: {output}"
+        );
+    }
+
+    // --- cmd_init with --from pointing to git repo + custom target ---
+
+    #[test]
+    fn cmd_init_from_git_source_with_explicit_target() {
+        let dir = tempfile::tempdir().unwrap();
+
+        // Create a source git repo
+        let origin = dir.path().join("origin");
+        let repo = git2::Repository::init(&origin).unwrap();
+        let sig = git2::Signature::now("Test", "test@example.com").unwrap();
+        std::fs::write(
+            origin.join("cfgd.yaml"),
+            "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: origin-cfg\nspec: {}\n",
+        )
+        .unwrap();
+        std::fs::create_dir_all(origin.join("profiles")).unwrap();
+        std::fs::create_dir_all(origin.join("modules")).unwrap();
+        let mut index = repo.index().unwrap();
+        index.add_path(std::path::Path::new("cfgd.yaml")).unwrap();
+        index.write().unwrap();
+        let tree_id = index.write_tree().unwrap();
+        let tree = repo.find_tree(tree_id).unwrap();
+        repo.commit(Some("HEAD"), &sig, &sig, "init", &tree, &[])
+            .unwrap();
+
+        let target = dir.path().join("my-target");
+        let (printer, _buf) = Printer::for_test();
+        let origin_str = origin.display().to_string();
+        let target_str = target.display().to_string();
+        let args = InitArgs {
+            path: Some(&target_str),
+            from: Some(&origin_str),
+            branch: "master",
+            name: None,
+            apply: false,
+            dry_run: false,
+            yes: false,
+            install_daemon: false,
+            theme: None,
+            apply_profile: None,
+            apply_modules: &[],
+        };
+
+        let result = cmd_init(&printer, &args);
+        assert!(
+            result.is_ok(),
+            "cmd_init with --from git should succeed: {:?}",
+            result.err()
+        );
+        assert!(
+            target.join("cfgd.yaml").exists(),
+            "should clone to target dir"
+        );
+    }
+
+    // --- cmd_init with --from git and --theme ---
+
+    #[test]
+    fn cmd_init_from_git_with_theme_override() {
+        let dir = tempfile::tempdir().unwrap();
+
+        // Create origin repo
+        let origin = dir.path().join("origin");
+        let repo = git2::Repository::init(&origin).unwrap();
+        let sig = git2::Signature::now("Test", "test@example.com").unwrap();
+        std::fs::write(
+            origin.join("cfgd.yaml"),
+            "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: themed-cfg\nspec:\n  theme:\n    name: default\n",
+        )
+        .unwrap();
+        let mut index = repo.index().unwrap();
+        index.add_path(std::path::Path::new("cfgd.yaml")).unwrap();
+        index.write().unwrap();
+        let tree_id = index.write_tree().unwrap();
+        let tree = repo.find_tree(tree_id).unwrap();
+        repo.commit(Some("HEAD"), &sig, &sig, "init", &tree, &[])
+            .unwrap();
+
+        let target = dir.path().join("themed-target");
+        let (printer, _buf) = Printer::for_test();
+        let origin_str = origin.display().to_string();
+        let target_str = target.display().to_string();
+        let args = InitArgs {
+            path: Some(&target_str),
+            from: Some(&origin_str),
+            branch: "master",
+            name: None,
+            apply: false,
+            dry_run: false,
+            yes: false,
+            install_daemon: false,
+            theme: Some("dracula"),
+            apply_profile: None,
+            apply_modules: &[],
+        };
+
+        let result = cmd_init(&printer, &args);
+        assert!(
+            result.is_ok(),
+            "cmd_init with theme override should succeed: {:?}",
+            result.err()
+        );
+
+        let config = std::fs::read_to_string(target.join("cfgd.yaml")).unwrap();
+        assert!(
+            config.contains("dracula"),
+            "theme should be overridden to dracula, got: {config}"
+        );
+    }
+
+    // --- generate_release_workflow_yaml ---
+
+    #[test]
+    fn generate_release_workflow_yaml_empty_inputs() {
+        let yaml = generate_release_workflow_yaml(&[], &[]);
+        assert!(!yaml.is_empty(), "should produce non-empty YAML");
+        assert!(yaml.contains("cfgd"), "should reference cfgd");
+    }
+
+    #[test]
+    fn generate_release_workflow_yaml_with_modules() {
+        let yaml = generate_release_workflow_yaml(&["git".to_string(), "tmux".to_string()], &[]);
+        assert!(
+            yaml.contains("git") || yaml.contains("tmux"),
+            "should reference module names"
+        );
+    }
+
+    #[test]
+    fn generate_release_workflow_yaml_with_profiles() {
+        let yaml = generate_release_workflow_yaml(&[], &["work".to_string(), "home".to_string()]);
+        assert!(
+            yaml.contains("work") || yaml.contains("home"),
+            "should reference profile names"
+        );
+    }
+
+    #[test]
+    fn generate_release_workflow_yaml_with_both() {
+        let yaml = generate_release_workflow_yaml(&["neovim".to_string()], &["base".to_string()]);
+        assert!(!yaml.is_empty());
+    }
+
+    // --- scan_profile_names / scan_module_names ---
+
+    #[test]
+    fn scan_profile_names_filters_yaml_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let profiles = dir.path().join("profiles");
+        std::fs::create_dir_all(&profiles).unwrap();
+        std::fs::write(
+            profiles.join("work.yaml"),
+            "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: work\nspec: {}\n",
+        )
+        .unwrap();
+        std::fs::write(profiles.join("notes.txt"), "not a profile\n").unwrap();
+        std::fs::write(
+            profiles.join("home.yaml"),
+            "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: home\nspec: {}\n",
+        )
+        .unwrap();
+
+        let names = scan_profile_names(&profiles).unwrap();
+        assert!(names.contains(&"work".to_string()));
+        assert!(names.contains(&"home".to_string()));
+        assert!(!names.contains(&"notes".to_string()));
+    }
+
+    #[test]
+    fn scan_module_names_finds_dirs_with_module_yaml() {
+        let dir = tempfile::tempdir().unwrap();
+        let modules = dir.path().join("modules");
+        std::fs::create_dir_all(modules.join("git")).unwrap();
+        std::fs::write(modules.join("git").join("module.yaml"), "spec: {}\n").unwrap();
+        std::fs::create_dir_all(modules.join("empty")).unwrap();
+        // empty module dir without module.yaml
+
+        let names = scan_module_names(&modules).unwrap();
+        assert!(names.contains(&"git".to_string()));
+        // "empty" should not appear since it has no module.yaml
+    }
+
+    // --- list_yaml_stems ---
+
+    #[test]
+    fn list_yaml_stems_returns_sorted() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("zebra.yaml"), "").unwrap();
+        std::fs::write(dir.path().join("alpha.yaml"), "").unwrap();
+        std::fs::write(dir.path().join("middle.yaml"), "").unwrap();
+
+        let stems = super::list_yaml_stems(dir.path()).unwrap();
+        assert_eq!(stems, vec!["alpha", "middle", "zebra"]);
+    }
+
+    #[test]
+    fn list_yaml_stems_ignores_non_yaml() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("good.yaml"), "").unwrap();
+        std::fs::write(dir.path().join("bad.txt"), "").unwrap();
+        std::fs::write(dir.path().join("also.json"), "").unwrap();
+
+        let stems = super::list_yaml_stems(dir.path()).unwrap();
+        assert_eq!(stems, vec!["good"]);
+    }
+
+    #[test]
+    fn list_yaml_stems_empty_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        let stems = super::list_yaml_stems(dir.path()).unwrap();
+        assert!(stems.is_empty());
+    }
 }

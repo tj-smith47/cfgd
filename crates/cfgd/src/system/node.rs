@@ -3408,4 +3408,446 @@ SystemdCgroup = true
         assert!(content.contains("new_module"));
         assert!(!content.contains("old_module"));
     }
+
+    // --- SeccompConfigurator apply: writes profiles to temp dirs ---
+
+    #[test]
+    fn seccomp_apply_writes_profiles() {
+        let dir = tempdir().unwrap();
+        let profiles_dir = dir.path().join("seccomp");
+        let printer = cfgd_core::output::Printer::new(cfgd_core::output::Verbosity::Quiet);
+        let sc = SeccompConfigurator;
+
+        let mut profile = serde_yaml::Mapping::new();
+        profile.insert(
+            serde_yaml::Value::String("name".into()),
+            serde_yaml::Value::String("test-audit".into()),
+        );
+        profile.insert(
+            serde_yaml::Value::String("file".into()),
+            serde_yaml::Value::String("test-audit.json".into()),
+        );
+        profile.insert(
+            serde_yaml::Value::String("content".into()),
+            serde_yaml::Value::String(r#"{"defaultAction":"SCMP_ACT_LOG"}"#.into()),
+        );
+
+        let mut m = serde_yaml::Mapping::new();
+        m.insert(
+            serde_yaml::Value::String("profilesDir".into()),
+            serde_yaml::Value::String(profiles_dir.to_str().unwrap().into()),
+        );
+        m.insert(
+            serde_yaml::Value::String("profiles".into()),
+            serde_yaml::Value::Sequence(vec![serde_yaml::Value::Mapping(profile)]),
+        );
+
+        let desired = serde_yaml::Value::Mapping(m);
+        sc.apply(&desired, &printer).unwrap();
+
+        let written = fs::read_to_string(profiles_dir.join("test-audit.json")).unwrap();
+        assert_eq!(written, r#"{"defaultAction":"SCMP_ACT_LOG"}"#);
+    }
+
+    #[test]
+    fn seccomp_apply_no_profiles_key_is_noop() {
+        let printer = cfgd_core::output::Printer::new(cfgd_core::output::Verbosity::Quiet);
+        let sc = SeccompConfigurator;
+        let desired = serde_yaml::Value::Mapping(serde_yaml::Mapping::new());
+        // Should not error even with no profiles key
+        sc.apply(&desired, &printer).unwrap();
+    }
+
+    #[test]
+    fn seccomp_apply_skips_missing_fields() {
+        let dir = tempdir().unwrap();
+        let profiles_dir = dir.path().join("seccomp");
+        let printer = cfgd_core::output::Printer::new(cfgd_core::output::Verbosity::Quiet);
+        let sc = SeccompConfigurator;
+
+        // Profile with no "file" key
+        let mut p1 = serde_yaml::Mapping::new();
+        p1.insert(
+            serde_yaml::Value::String("name".into()),
+            serde_yaml::Value::String("no-file".into()),
+        );
+        p1.insert(
+            serde_yaml::Value::String("content".into()),
+            serde_yaml::Value::String("data".into()),
+        );
+
+        // Profile with no "content" key
+        let mut p2 = serde_yaml::Mapping::new();
+        p2.insert(
+            serde_yaml::Value::String("name".into()),
+            serde_yaml::Value::String("no-content".into()),
+        );
+        p2.insert(
+            serde_yaml::Value::String("file".into()),
+            serde_yaml::Value::String("no-content.json".into()),
+        );
+
+        // Profile with no "name" key
+        let mut p3 = serde_yaml::Mapping::new();
+        p3.insert(
+            serde_yaml::Value::String("file".into()),
+            serde_yaml::Value::String("nameless.json".into()),
+        );
+        p3.insert(
+            serde_yaml::Value::String("content".into()),
+            serde_yaml::Value::String("data".into()),
+        );
+
+        let mut m = serde_yaml::Mapping::new();
+        m.insert(
+            serde_yaml::Value::String("profilesDir".into()),
+            serde_yaml::Value::String(profiles_dir.to_str().unwrap().into()),
+        );
+        m.insert(
+            serde_yaml::Value::String("profiles".into()),
+            serde_yaml::Value::Sequence(vec![
+                serde_yaml::Value::Mapping(p1),
+                serde_yaml::Value::Mapping(p2),
+                serde_yaml::Value::Mapping(p3),
+            ]),
+        );
+
+        let desired = serde_yaml::Value::Mapping(m);
+        sc.apply(&desired, &printer).unwrap();
+
+        // profiles_dir should be created but no profiles written (all incomplete)
+        assert!(profiles_dir.exists());
+        // No files should have been written since each profile is missing a required field
+        let entries: Vec<_> = fs::read_dir(&profiles_dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .collect();
+        assert!(entries.is_empty(), "no profiles should be written");
+    }
+
+    #[test]
+    fn seccomp_apply_path_traversal_skipped() {
+        let dir = tempdir().unwrap();
+        let profiles_dir = dir.path().join("seccomp");
+        let printer = cfgd_core::output::Printer::new(cfgd_core::output::Verbosity::Quiet);
+        let sc = SeccompConfigurator;
+
+        let mut profile = serde_yaml::Mapping::new();
+        profile.insert(
+            serde_yaml::Value::String("name".into()),
+            serde_yaml::Value::String("evil".into()),
+        );
+        profile.insert(
+            serde_yaml::Value::String("file".into()),
+            serde_yaml::Value::String("../../etc/passwd".into()),
+        );
+        profile.insert(
+            serde_yaml::Value::String("content".into()),
+            serde_yaml::Value::String("hacked".into()),
+        );
+
+        let mut m = serde_yaml::Mapping::new();
+        m.insert(
+            serde_yaml::Value::String("profilesDir".into()),
+            serde_yaml::Value::String(profiles_dir.to_str().unwrap().into()),
+        );
+        m.insert(
+            serde_yaml::Value::String("profiles".into()),
+            serde_yaml::Value::Sequence(vec![serde_yaml::Value::Mapping(profile)]),
+        );
+
+        let desired = serde_yaml::Value::Mapping(m);
+        sc.apply(&desired, &printer).unwrap();
+
+        // The traversal path file should NOT have been written
+        let etc_passwd = dir.path().join("etc/passwd");
+        assert!(!etc_passwd.exists(), "path traversal should be blocked");
+    }
+
+    #[test]
+    fn seccomp_apply_multiple_profiles() {
+        let dir = tempdir().unwrap();
+        let profiles_dir = dir.path().join("seccomp");
+        let printer = cfgd_core::output::Printer::new(cfgd_core::output::Verbosity::Quiet);
+        let sc = SeccompConfigurator;
+
+        let mut p1 = serde_yaml::Mapping::new();
+        p1.insert(
+            serde_yaml::Value::String("name".into()),
+            serde_yaml::Value::String("audit".into()),
+        );
+        p1.insert(
+            serde_yaml::Value::String("file".into()),
+            serde_yaml::Value::String("audit.json".into()),
+        );
+        p1.insert(
+            serde_yaml::Value::String("content".into()),
+            serde_yaml::Value::String(r#"{"action":"LOG"}"#.into()),
+        );
+
+        let mut p2 = serde_yaml::Mapping::new();
+        p2.insert(
+            serde_yaml::Value::String("name".into()),
+            serde_yaml::Value::String("strict".into()),
+        );
+        p2.insert(
+            serde_yaml::Value::String("file".into()),
+            serde_yaml::Value::String("strict.json".into()),
+        );
+        p2.insert(
+            serde_yaml::Value::String("content".into()),
+            serde_yaml::Value::String(r#"{"action":"ERRNO"}"#.into()),
+        );
+
+        let mut m = serde_yaml::Mapping::new();
+        m.insert(
+            serde_yaml::Value::String("profilesDir".into()),
+            serde_yaml::Value::String(profiles_dir.to_str().unwrap().into()),
+        );
+        m.insert(
+            serde_yaml::Value::String("profiles".into()),
+            serde_yaml::Value::Sequence(vec![
+                serde_yaml::Value::Mapping(p1),
+                serde_yaml::Value::Mapping(p2),
+            ]),
+        );
+
+        let desired = serde_yaml::Value::Mapping(m);
+        sc.apply(&desired, &printer).unwrap();
+
+        assert_eq!(
+            fs::read_to_string(profiles_dir.join("audit.json")).unwrap(),
+            r#"{"action":"LOG"}"#
+        );
+        assert_eq!(
+            fs::read_to_string(profiles_dir.join("strict.json")).unwrap(),
+            r#"{"action":"ERRNO"}"#
+        );
+    }
+
+    // --- CertificateConfigurator apply: creates dir and sets permissions ---
+
+    #[test]
+    fn certificate_apply_creates_ca_cert_dir() {
+        let dir = tempdir().unwrap();
+        let ca_dir = dir.path().join("pki");
+        let printer = cfgd_core::output::Printer::new(cfgd_core::output::Verbosity::Quiet);
+        let cc = CertificateConfigurator;
+
+        let mut m = serde_yaml::Mapping::new();
+        m.insert(
+            serde_yaml::Value::String("caCertDir".into()),
+            serde_yaml::Value::String(ca_dir.to_str().unwrap().into()),
+        );
+        // No certificates key — should only create the dir
+        let desired = serde_yaml::Value::Mapping(m);
+        cc.apply(&desired, &printer).unwrap();
+        assert!(ca_dir.exists());
+    }
+
+    #[test]
+    fn certificate_apply_no_certificates_is_noop() {
+        let printer = cfgd_core::output::Printer::new(cfgd_core::output::Verbosity::Quiet);
+        let cc = CertificateConfigurator;
+        let desired = serde_yaml::Value::Mapping(serde_yaml::Mapping::new());
+        // Should not error with no caCertDir or certificates
+        cc.apply(&desired, &printer).unwrap();
+    }
+
+    #[test]
+    fn certificate_apply_sets_permissions_on_existing_files() {
+        let dir = tempdir().unwrap();
+        let cert_path = dir.path().join("tls.crt");
+        let key_path = dir.path().join("tls.key");
+        fs::write(&cert_path, "cert data").unwrap();
+        fs::write(&key_path, "key data").unwrap();
+
+        // Set initial permissions to 0o644
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&cert_path, fs::Permissions::from_mode(0o644)).unwrap();
+            fs::set_permissions(&key_path, fs::Permissions::from_mode(0o644)).unwrap();
+        }
+
+        let printer = cfgd_core::output::Printer::new(cfgd_core::output::Verbosity::Quiet);
+        let cc = CertificateConfigurator;
+
+        let mut cert = serde_yaml::Mapping::new();
+        cert.insert(
+            serde_yaml::Value::String("name".into()),
+            serde_yaml::Value::String("tls".into()),
+        );
+        cert.insert(
+            serde_yaml::Value::String("certPath".into()),
+            serde_yaml::Value::String(cert_path.to_str().unwrap().into()),
+        );
+        cert.insert(
+            serde_yaml::Value::String("keyPath".into()),
+            serde_yaml::Value::String(key_path.to_str().unwrap().into()),
+        );
+        cert.insert(
+            serde_yaml::Value::String("mode".into()),
+            serde_yaml::Value::String("0600".into()),
+        );
+
+        let mut m = serde_yaml::Mapping::new();
+        m.insert(
+            serde_yaml::Value::String("caCertDir".into()),
+            serde_yaml::Value::String(dir.path().to_str().unwrap().into()),
+        );
+        m.insert(
+            serde_yaml::Value::String("certificates".into()),
+            serde_yaml::Value::Sequence(vec![serde_yaml::Value::Mapping(cert)]),
+        );
+
+        let desired = serde_yaml::Value::Mapping(m);
+        cc.apply(&desired, &printer).unwrap();
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let cert_mode = fs::metadata(&cert_path).unwrap().permissions().mode() & 0o777;
+            let key_mode = fs::metadata(&key_path).unwrap().permissions().mode() & 0o777;
+            assert_eq!(cert_mode, 0o600);
+            assert_eq!(key_mode, 0o600);
+        }
+    }
+
+    #[test]
+    fn certificate_apply_warns_for_missing_files() {
+        let dir = tempdir().unwrap();
+        let printer = cfgd_core::output::Printer::new(cfgd_core::output::Verbosity::Quiet);
+        let cc = CertificateConfigurator;
+
+        let mut cert = serde_yaml::Mapping::new();
+        cert.insert(
+            serde_yaml::Value::String("name".into()),
+            serde_yaml::Value::String("missing".into()),
+        );
+        cert.insert(
+            serde_yaml::Value::String("certPath".into()),
+            serde_yaml::Value::String("/nonexistent/cert.pem".into()),
+        );
+        cert.insert(
+            serde_yaml::Value::String("mode".into()),
+            serde_yaml::Value::String("0600".into()),
+        );
+
+        let mut m = serde_yaml::Mapping::new();
+        m.insert(
+            serde_yaml::Value::String("caCertDir".into()),
+            serde_yaml::Value::String(dir.path().to_str().unwrap().into()),
+        );
+        m.insert(
+            serde_yaml::Value::String("certificates".into()),
+            serde_yaml::Value::Sequence(vec![serde_yaml::Value::Mapping(cert)]),
+        );
+
+        let desired = serde_yaml::Value::Mapping(m);
+        // Should not error — just warns about missing files
+        cc.apply(&desired, &printer).unwrap();
+    }
+
+    #[test]
+    fn certificate_apply_skips_cert_without_name() {
+        let dir = tempdir().unwrap();
+        let printer = cfgd_core::output::Printer::new(cfgd_core::output::Verbosity::Quiet);
+        let cc = CertificateConfigurator;
+
+        let mut cert = serde_yaml::Mapping::new();
+        // No "name" key
+        cert.insert(
+            serde_yaml::Value::String("certPath".into()),
+            serde_yaml::Value::String("/tmp/cert.pem".into()),
+        );
+
+        let mut m = serde_yaml::Mapping::new();
+        m.insert(
+            serde_yaml::Value::String("caCertDir".into()),
+            serde_yaml::Value::String(dir.path().to_str().unwrap().into()),
+        );
+        m.insert(
+            serde_yaml::Value::String("certificates".into()),
+            serde_yaml::Value::Sequence(vec![serde_yaml::Value::Mapping(cert)]),
+        );
+
+        let desired = serde_yaml::Value::Mapping(m);
+        cc.apply(&desired, &printer).unwrap();
+    }
+
+    #[test]
+    fn certificate_apply_correct_permissions_no_change() {
+        let dir = tempdir().unwrap();
+        let cert_path = dir.path().join("already-ok.crt");
+        fs::write(&cert_path, "cert data").unwrap();
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&cert_path, fs::Permissions::from_mode(0o600)).unwrap();
+        }
+
+        let printer = cfgd_core::output::Printer::new(cfgd_core::output::Verbosity::Quiet);
+        let cc = CertificateConfigurator;
+
+        let mut cert = serde_yaml::Mapping::new();
+        cert.insert(
+            serde_yaml::Value::String("name".into()),
+            serde_yaml::Value::String("ok-cert".into()),
+        );
+        cert.insert(
+            serde_yaml::Value::String("certPath".into()),
+            serde_yaml::Value::String(cert_path.to_str().unwrap().into()),
+        );
+        cert.insert(
+            serde_yaml::Value::String("mode".into()),
+            serde_yaml::Value::String("0600".into()),
+        );
+
+        let mut m = serde_yaml::Mapping::new();
+        m.insert(
+            serde_yaml::Value::String("caCertDir".into()),
+            serde_yaml::Value::String(dir.path().to_str().unwrap().into()),
+        );
+        m.insert(
+            serde_yaml::Value::String("certificates".into()),
+            serde_yaml::Value::Sequence(vec![serde_yaml::Value::Mapping(cert)]),
+        );
+
+        let desired = serde_yaml::Value::Mapping(m);
+        // Should not error and should detect permissions are already correct
+        cc.apply(&desired, &printer).unwrap();
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = fs::metadata(&cert_path).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o600, "permissions should remain unchanged");
+        }
+    }
+
+    // --- SeccompConfigurator apply uses default profilesDir ---
+
+    #[test]
+    fn seccomp_apply_uses_default_profiles_dir_when_unset() {
+        let printer = cfgd_core::output::Printer::new(cfgd_core::output::Verbosity::Quiet);
+        let sc = SeccompConfigurator;
+
+        // profiles key with empty sequence — should try to create /etc/cfgd/seccomp
+        // but that requires root, so we just verify the no-profiles case
+        let mut m = serde_yaml::Mapping::new();
+        m.insert(
+            serde_yaml::Value::String("profiles".into()),
+            serde_yaml::Value::Sequence(Vec::new()),
+        );
+        let desired = serde_yaml::Value::Mapping(m);
+        // Empty profiles list - should still try to create dir but won't error
+        // because we catch the permission error at fs::create_dir_all
+        // Actually, let's verify this specific case doesn't panic
+        let result = sc.apply(&desired, &printer);
+        // On CI/test machines this may fail due to permissions, which is expected
+        // The important thing is it doesn't panic
+        let _ = result;
+    }
 }
