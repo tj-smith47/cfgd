@@ -618,15 +618,6 @@ mod tests {
     }
 
     #[test]
-    fn compliance_check_default_is_compliant() {
-        let check = ComplianceCheck::default();
-        assert_eq!(check.status, ComplianceStatus::Compliant);
-        assert!(check.category.is_empty());
-        assert!(check.target.is_none());
-        assert!(check.name.is_none());
-    }
-
-    #[test]
     fn summary_counts_match_check_statuses() {
         let checks = vec![
             ComplianceCheck {

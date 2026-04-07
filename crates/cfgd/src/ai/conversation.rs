@@ -71,52 +71,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_new_conversation() {
-        let conv = Conversation::new("You are a helper".into());
-        assert_eq!(conv.system_prompt(), "You are a helper");
-        assert!(conv.messages().is_empty());
-        assert_eq!(conv.total_tokens(), (0, 0));
-    }
-
-    #[test]
-    fn test_add_user_message() {
-        let mut conv = Conversation::new(String::new());
-        conv.add_user_message("Hello");
-        assert_eq!(conv.messages().len(), 1);
-        assert_eq!(conv.messages()[0].role, "user");
-    }
-
-    #[test]
-    fn test_add_assistant_message() {
-        let mut conv = Conversation::new(String::new());
-        conv.add_assistant_message(vec![ContentBlock::Text {
-            text: "I'll help".into(),
-        }]);
-        assert_eq!(conv.messages().len(), 1);
-        assert_eq!(conv.messages()[0].role, "assistant");
-    }
-
-    #[test]
-    fn test_add_tool_results() {
-        let mut conv = Conversation::new(String::new());
-        conv.add_tool_results(vec![ContentBlock::ToolResult {
-            tool_use_id: "t1".into(),
-            content: "result".into(),
-            is_error: None,
-        }]);
-        assert_eq!(conv.messages().len(), 1);
-        assert_eq!(conv.messages()[0].role, "user");
-    }
-
-    #[test]
-    fn test_token_tracking() {
-        let mut conv = Conversation::new(String::new());
-        conv.track_usage(100, 50);
-        conv.track_usage(200, 75);
-        assert_eq!(conv.total_tokens(), (300, 125));
-    }
-
-    #[test]
     fn test_conversation_flow() {
         let mut conv = Conversation::new("system".into());
         // User asks

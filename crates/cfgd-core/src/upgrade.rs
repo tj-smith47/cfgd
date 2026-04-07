@@ -760,27 +760,6 @@ mod tests {
     }
 
     #[test]
-    fn version_cache_round_trip() {
-        let cache = VersionCache {
-            checked_at_secs: 1000,
-            latest_tag: "v0.2.0".into(),
-            latest_version: "0.2.0".into(),
-            current_version: "0.1.0".into(),
-        };
-        let json = serde_json::to_string(&cache).expect("serialize");
-        let restored: VersionCache = serde_json::from_str(&json).expect("deserialize");
-        assert_eq!(restored.latest_version, "0.2.0");
-        assert_eq!(restored.checked_at_secs, 1000);
-    }
-
-    #[test]
-    fn update_check_detects_newer() {
-        let current = Version::new(0, 1, 0);
-        let latest = Version::new(0, 2, 0);
-        assert!(latest > current, "newer version should compare greater");
-    }
-
-    #[test]
     fn atomic_replace_overwrites_target() {
         let dir = tempfile::tempdir().unwrap();
         let src = dir.path().join("source");

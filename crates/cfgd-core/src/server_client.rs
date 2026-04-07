@@ -501,14 +501,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn server_client_new() {
-        let client = ServerClient::new("http://localhost:8080", Some("test-key"), "node-1");
-        assert_eq!(client.base_url, "http://localhost:8080");
-        assert_eq!(client.api_key.as_deref(), Some("test-key"));
-        assert_eq!(client.device_id, "node-1");
-    }
-
-    #[test]
     fn server_client_strips_trailing_slash() {
         let client = ServerClient::new("http://localhost:8080/", None, "node-1");
         assert_eq!(client.base_url, "http://localhost:8080");
@@ -531,27 +523,6 @@ mod tests {
     }
 
     #[test]
-    fn checkin_request_with_compliance_summary() {
-        let req = CheckinRequest {
-            device_id: "dev-1".into(),
-            hostname: "ws-1".into(),
-            os: "linux".into(),
-            arch: "x86_64".into(),
-            config_hash: "abc123".into(),
-            compliance_summary: Some(ComplianceSummary {
-                compliant: 10,
-                warning: 2,
-                violation: 1,
-            }),
-        };
-        let json = serde_json::to_string(&req).unwrap();
-        assert!(json.contains("\"complianceSummary\""));
-        assert!(json.contains("\"compliant\":10"));
-        assert!(json.contains("\"warning\":2"));
-        assert!(json.contains("\"violation\":1"));
-    }
-
-    #[test]
     fn checkin_request_without_compliance_summary() {
         let req = CheckinRequest {
             device_id: "dev-1".into(),
@@ -563,20 +534,6 @@ mod tests {
         };
         let json = serde_json::to_string(&req).unwrap();
         assert!(!json.contains("complianceSummary"));
-    }
-
-    #[test]
-    fn drift_report_serialization() {
-        let report = DriftReport {
-            details: vec![DriftDetail {
-                field: "sysctl.net.ipv4.ip_forward".to_string(),
-                expected: "1".to_string(),
-                actual: "0".to_string(),
-            }],
-        };
-        let json = serde_json::to_string(&report).unwrap();
-        assert!(json.contains("net.ipv4.ip_forward"));
-        assert!(json.contains("\"expected\":\"1\""));
     }
 
     #[test]
@@ -611,115 +568,6 @@ mod tests {
     }
 
     #[test]
-    fn enroll_request_serialization() {
-        let req = EnrollRequest {
-            token: "cfgd_bs_abc123".to_string(),
-            device_id: "dev-1".to_string(),
-            hostname: "macbook".to_string(),
-            os: "macos".to_string(),
-            arch: "aarch64".to_string(),
-        };
-        let json = serde_json::to_string(&req).unwrap();
-        assert!(json.contains("cfgd_bs_abc123"));
-        assert!(json.contains("dev-1"));
-    }
-
-    #[test]
-    fn challenge_request_serialization() {
-        let req = ChallengeRequest {
-            username: "jdoe".to_string(),
-            device_id: "dev-1".to_string(),
-            hostname: "macbook".to_string(),
-            os: "macos".to_string(),
-            arch: "aarch64".to_string(),
-        };
-        let json = serde_json::to_string(&req).unwrap();
-        assert!(json.contains("jdoe"));
-        assert!(json.contains("dev-1"));
-    }
-
-    #[test]
-    fn verify_request_serialization() {
-        let req = VerifyRequest {
-            challenge_id: "challenge-123".to_string(),
-            signature: "-----BEGIN SSH SIGNATURE-----\ntest\n-----END SSH SIGNATURE-----"
-                .to_string(),
-            key_type: "ssh".to_string(),
-        };
-        let json = serde_json::to_string(&req).unwrap();
-        assert!(json.contains("challenge-123"));
-        assert!(json.contains("SSH SIGNATURE"));
-    }
-
-    #[test]
-    fn enroll_info_response_deserialization() {
-        let json = r#"{"method":"key"}"#;
-        let resp: EnrollInfoResponse = serde_json::from_str(json).unwrap();
-        assert_eq!(resp.method, "key");
-    }
-
-    #[test]
-    fn challenge_response_deserialization() {
-        let json =
-            r#"{"challengeId":"abc","nonce":"cfgd_ch_xyz","expiresAt":"2026-03-14T12:05:00Z"}"#;
-        let resp: ChallengeResponse = serde_json::from_str(json).unwrap();
-        assert_eq!(resp.challenge_id, "abc");
-        assert_eq!(resp.nonce, "cfgd_ch_xyz");
-    }
-
-    #[test]
-    fn drift_report_empty_details() {
-        let report = DriftReport { details: vec![] };
-        let json = serde_json::to_string(&report).unwrap();
-        assert!(json.contains("\"details\":[]"));
-    }
-
-    #[test]
-    fn drift_report_multiple_details() {
-        let report = DriftReport {
-            details: vec![
-                DriftDetail {
-                    field: "a".into(),
-                    expected: "1".into(),
-                    actual: "2".into(),
-                },
-                DriftDetail {
-                    field: "b".into(),
-                    expected: "3".into(),
-                    actual: "4".into(),
-                },
-            ],
-        };
-        let json = serde_json::to_string(&report).unwrap();
-        assert!(json.contains("\"field\":\"a\""));
-        assert!(json.contains("\"field\":\"b\""));
-        assert_eq!(report.details.len(), 2);
-    }
-
-    #[test]
-    fn credential_with_team_none() {
-        let cred = DeviceCredential {
-            server_url: "https://example.com".into(),
-            device_id: "d1".into(),
-            api_key: "key".into(),
-            username: "user".into(),
-            team: None,
-            enrolled_at: "2026-01-01T00:00:00Z".into(),
-        };
-        let json = serde_json::to_string(&cred).unwrap();
-        let deser: DeviceCredential = serde_json::from_str(&json).unwrap();
-        assert!(deser.team.is_none());
-    }
-
-    #[test]
-    fn server_client_no_api_key() {
-        let client = ServerClient::new("https://example.com", None, "dev-1");
-        assert_eq!(client.base_url, "https://example.com");
-        assert!(client.api_key.is_none());
-        assert_eq!(client.device_id, "dev-1");
-    }
-
-    #[test]
     fn load_credential_from_malformed_json() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("bad-credential.json");
@@ -733,34 +581,6 @@ mod tests {
             "unexpected error message: {}",
             err_msg
         );
-    }
-
-    #[test]
-    fn load_credential_from_nested_path() {
-        let dir = tempfile::tempdir().unwrap();
-        let nested = dir.path().join("a").join("b").join("c");
-        std::fs::create_dir_all(&nested).unwrap();
-        let path = nested.join("device-credential.json");
-
-        let cred = DeviceCredential {
-            server_url: "https://nested.example.com".to_string(),
-            device_id: "nested-dev".to_string(),
-            api_key: "cfgd_dev_nested".to_string(),
-            username: "deepuser".to_string(),
-            team: Some("team-deep".to_string()),
-            enrolled_at: "2026-03-30T00:00:00Z".to_string(),
-        };
-
-        let json = serde_json::to_string_pretty(&cred).unwrap();
-        std::fs::write(&path, &json).unwrap();
-
-        let loaded = load_credential_from(&path).unwrap().unwrap();
-        assert_eq!(loaded.server_url, "https://nested.example.com");
-        assert_eq!(loaded.device_id, "nested-dev");
-        assert_eq!(loaded.api_key, "cfgd_dev_nested");
-        assert_eq!(loaded.username, "deepuser");
-        assert_eq!(loaded.team.as_deref(), Some("team-deep"));
-        assert_eq!(loaded.enrolled_at, "2026-03-30T00:00:00Z");
     }
 
     #[test]

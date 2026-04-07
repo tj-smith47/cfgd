@@ -502,91 +502,61 @@ mod tests {
 
     // --- name() ---
 
-    #[test]
-    fn name_returns_gpg_keys() {
-        assert_eq!(GpgKeysConfigurator.name(), "gpgKeys");
-    }
-
-    // --- is_available() ---
-
-    #[test]
-    fn is_available_reflects_command_available() {
-        // This tests the function call itself. In CI without gpg this returns false,
-        // in environments with gpg it returns true. Either way is correct.
-        let avail = GpgKeysConfigurator.is_available();
-        assert_eq!(avail, cfgd_core::command_available("gpg"));
-    }
-
     // --- extract_email_from_uid ---
 
     #[test]
-    fn extract_email_standard_uid() {
-        assert_eq!(
-            extract_email_from_uid("Jane Doe (work) <jane@work.com>"),
-            Some("jane@work.com".to_string())
-        );
-    }
-
-    #[test]
-    fn extract_email_no_angle_brackets() {
-        assert_eq!(extract_email_from_uid("Jane Doe"), None);
-    }
-
-    #[test]
-    fn extract_email_empty_brackets() {
-        assert_eq!(extract_email_from_uid("Jane <>"), None);
-    }
-
-    #[test]
-    fn extract_email_no_comment() {
-        assert_eq!(
-            extract_email_from_uid("Jane Doe <jane@example.com>"),
-            Some("jane@example.com".to_string())
-        );
+    fn extract_email_from_uid_cases() {
+        let cases: &[(&str, Option<&str>)] = &[
+            ("Jane Doe (work) <jane@work.com>", Some("jane@work.com")),
+            ("Jane Doe <jane@example.com>", Some("jane@example.com")),
+            ("Jane Doe", None),
+            ("Jane <>", None),
+        ];
+        for (input, expected) in cases {
+            assert_eq!(
+                extract_email_from_uid(input),
+                expected.map(String::from),
+                "failed for {input:?}",
+            );
+        }
     }
 
     // --- required_capabilities ---
 
     #[test]
-    fn required_caps_sign() {
-        assert_eq!(required_capabilities("sign"), vec!['S']);
-    }
-
-    #[test]
-    fn required_caps_encrypt() {
-        assert_eq!(required_capabilities("encrypt"), vec!['E']);
-    }
-
-    #[test]
-    fn required_caps_sign_encrypt() {
-        assert_eq!(required_capabilities("sign,encrypt"), vec!['S', 'E']);
-    }
-
-    #[test]
-    fn required_caps_auth() {
-        assert_eq!(required_capabilities("auth"), vec!['A']);
-    }
-
-    #[test]
-    fn required_caps_unknown_ignored() {
-        assert_eq!(required_capabilities("certify"), Vec::<char>::new());
+    fn required_capabilities_mapping() {
+        let cases: &[(&str, &[char])] = &[
+            ("sign", &['S']),
+            ("encrypt", &['E']),
+            ("sign,encrypt", &['S', 'E']),
+            ("auth", &['A']),
+            ("certify", &[]),
+        ];
+        for (input, expected) in cases {
+            assert_eq!(
+                required_capabilities(input),
+                *expected,
+                "failed for {input:?}"
+            );
+        }
     }
 
     // --- GpgKeyType::from_str ---
 
     #[test]
-    fn key_type_ed25519() {
-        assert_eq!(GpgKeyType::from_str("ed25519"), Some(GpgKeyType::Ed25519));
-    }
-
-    #[test]
-    fn key_type_rsa4096() {
-        assert_eq!(GpgKeyType::from_str("rsa4096"), Some(GpgKeyType::Rsa4096));
-    }
-
-    #[test]
-    fn key_type_unknown() {
-        assert_eq!(GpgKeyType::from_str("dsa"), None);
+    fn key_type_from_str_cases() {
+        let cases: &[(&str, Option<GpgKeyType>)] = &[
+            ("ed25519", Some(GpgKeyType::Ed25519)),
+            ("rsa4096", Some(GpgKeyType::Rsa4096)),
+            ("dsa", None),
+        ];
+        for (input, expected) in cases {
+            assert_eq!(
+                GpgKeyType::from_str(input),
+                *expected,
+                "failed for {input:?}"
+            );
+        }
     }
 
     // --- build_param_file ---

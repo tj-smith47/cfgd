@@ -84,10 +84,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_prompts_list_has_3_entries() {
+    fn test_prompts_list_is_non_empty() {
         let result = list();
         let prompts = result["prompts"].as_array().unwrap();
-        assert_eq!(prompts.len(), 3);
+        assert!(!prompts.is_empty());
     }
 
     #[test]

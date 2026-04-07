@@ -312,113 +312,34 @@ mod tests {
     }
 
     #[test]
-    fn native_manager_macos() {
-        let p = Platform {
-            os: Os::MacOS,
-            distro: Distro::MacOS,
-            version: "14.0".into(),
-            arch: Arch::Aarch64,
-        };
-        assert_eq!(p.native_manager(), "brew");
-    }
-
-    #[test]
-    fn native_manager_ubuntu() {
-        let p = Platform {
-            os: Os::Linux,
-            distro: Distro::Ubuntu,
-            version: "22.04".into(),
-            arch: Arch::X86_64,
-        };
-        assert_eq!(p.native_manager(), "apt");
-    }
-
-    #[test]
-    fn native_manager_debian() {
-        let p = Platform {
-            os: Os::Linux,
-            distro: Distro::Debian,
-            version: "12".into(),
-            arch: Arch::X86_64,
-        };
-        assert_eq!(p.native_manager(), "apt");
-    }
-
-    #[test]
-    fn native_manager_fedora() {
-        let p = Platform {
-            os: Os::Linux,
-            distro: Distro::Fedora,
-            version: "39".into(),
-            arch: Arch::X86_64,
-        };
-        assert_eq!(p.native_manager(), "dnf");
-    }
-
-    #[test]
-    fn native_manager_rhel7_uses_yum() {
-        let p = Platform {
-            os: Os::Linux,
-            distro: Distro::RHEL,
-            version: "7.9".into(),
-            arch: Arch::X86_64,
-        };
-        assert_eq!(p.native_manager(), "yum");
-    }
-
-    #[test]
-    fn native_manager_rhel8_uses_dnf() {
-        let p = Platform {
-            os: Os::Linux,
-            distro: Distro::RHEL,
-            version: "8.9".into(),
-            arch: Arch::X86_64,
-        };
-        assert_eq!(p.native_manager(), "dnf");
-    }
-
-    #[test]
-    fn native_manager_arch() {
-        let p = Platform {
-            os: Os::Linux,
-            distro: Distro::Arch,
-            version: String::new(),
-            arch: Arch::X86_64,
-        };
-        assert_eq!(p.native_manager(), "pacman");
-    }
-
-    #[test]
-    fn native_manager_alpine() {
-        let p = Platform {
-            os: Os::Linux,
-            distro: Distro::Alpine,
-            version: "3.19".into(),
-            arch: Arch::X86_64,
-        };
-        assert_eq!(p.native_manager(), "apk");
-    }
-
-    #[test]
-    fn native_manager_opensuse() {
-        let p = Platform {
-            os: Os::Linux,
-            distro: Distro::OpenSUSE,
-            version: "15.5".into(),
-            arch: Arch::X86_64,
-        };
-        assert_eq!(p.native_manager(), "zypper");
-    }
-
-    #[test]
-    fn native_manager_freebsd() {
-        let p = Platform {
-            os: Os::FreeBSD,
-            distro: Distro::FreeBSD,
-            version: "14.0".into(),
-            arch: Arch::X86_64,
-        };
-        assert_eq!(p.native_manager(), "pkg");
+    fn native_manager_mapping() {
+        let cases: &[(Os, Distro, &str, &str)] = &[
+            (Os::MacOS, Distro::MacOS, "14.0", "brew"),
+            (Os::Linux, Distro::Ubuntu, "22.04", "apt"),
+            (Os::Linux, Distro::Debian, "12", "apt"),
+            (Os::Linux, Distro::Fedora, "39", "dnf"),
+            (Os::Linux, Distro::RHEL, "7.9", "yum"),
+            (Os::Linux, Distro::RHEL, "8.9", "dnf"),
+            (Os::Linux, Distro::Arch, "", "pacman"),
+            (Os::Linux, Distro::Alpine, "3.19", "apk"),
+            (Os::Linux, Distro::OpenSUSE, "15.5", "zypper"),
+            (Os::FreeBSD, Distro::FreeBSD, "14.0", "pkg"),
+        ];
+        for (os, distro, version, expected) in cases {
+            let p = Platform {
+                os: os.clone(),
+                distro: distro.clone(),
+                version: version.to_string(),
+                arch: Arch::X86_64,
+            };
+            assert_eq!(
+                p.native_manager(),
+                *expected,
+                "failed for {:?}/{:?}",
+                os,
+                distro
+            );
+        }
     }
 
     #[test]
@@ -509,21 +430,16 @@ VERSION_ID="7"
     }
 
     #[test]
-    fn arch_display() {
+    fn enum_display_formatting() {
+        // Arch
         assert_eq!(format!("{}", Arch::X86_64), "x86_64");
         assert_eq!(format!("{}", Arch::Aarch64), "aarch64");
         assert_eq!(format!("{}", Arch::Other("riscv64".into())), "riscv64");
-    }
-
-    #[test]
-    fn os_display() {
+        // Os
         assert_eq!(format!("{}", Os::Linux), "linux");
         assert_eq!(format!("{}", Os::MacOS), "macos");
         assert_eq!(format!("{}", Os::FreeBSD), "freebsd");
-    }
-
-    #[test]
-    fn distro_display() {
+        // Distro
         assert_eq!(format!("{}", Distro::Ubuntu), "ubuntu");
         assert_eq!(format!("{}", Distro::RHEL), "rhel");
         assert_eq!(format!("{}", Distro::OpenSUSE), "opensuse");
@@ -594,26 +510,5 @@ VERSION_ID="7"
         assert!(p.matches_any(&["macos".into(), "linux".into()]));
         assert!(p.matches_any(&["ubuntu".into(), "fedora".into()]));
         assert!(!p.matches_any(&["macos".into(), "freebsd".into()]));
-    }
-
-    #[test]
-    fn os_as_str() {
-        assert_eq!(Os::Linux.as_str(), "linux");
-        assert_eq!(Os::MacOS.as_str(), "macos");
-        assert_eq!(Os::FreeBSD.as_str(), "freebsd");
-    }
-
-    #[test]
-    fn distro_as_str() {
-        assert_eq!(Distro::Ubuntu.as_str(), "ubuntu");
-        assert_eq!(Distro::RHEL.as_str(), "rhel");
-        assert_eq!(Distro::OpenSUSE.as_str(), "opensuse");
-    }
-
-    #[test]
-    fn arch_as_str() {
-        assert_eq!(Arch::X86_64.as_str(), "x86_64");
-        assert_eq!(Arch::Aarch64.as_str(), "aarch64");
-        assert_eq!(Arch::Other("riscv64".into()).as_str(), "riscv64");
     }
 }

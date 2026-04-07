@@ -129,30 +129,6 @@ mod tests {
     use tempfile::TempDir;
 
     #[test]
-    fn test_session_new() {
-        let tmp = TempDir::new().unwrap();
-        let session = GenerateSession::new(tmp.path().to_path_buf());
-        assert_eq!(session.repo_root(), tmp.path());
-        assert!(session.list_generated().is_empty());
-    }
-
-    #[test]
-    fn test_get_existing_modules_empty() {
-        let tmp = TempDir::new().unwrap();
-        let session = GenerateSession::new(tmp.path().to_path_buf());
-        let modules = session.get_existing_modules().unwrap();
-        assert!(modules.is_empty());
-    }
-
-    #[test]
-    fn test_get_existing_profiles_empty() {
-        let tmp = TempDir::new().unwrap();
-        let session = GenerateSession::new(tmp.path().to_path_buf());
-        let profiles = session.get_existing_profiles().unwrap();
-        assert!(profiles.is_empty());
-    }
-
-    #[test]
     fn test_get_existing_modules_finds_modules() {
         let tmp = TempDir::new().unwrap();
         let nvim_dir = tmp.path().join("modules").join("nvim");

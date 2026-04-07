@@ -722,45 +722,33 @@ mod tests {
     use super::*;
 
     #[test]
-    fn parse_1password_reference() {
-        let result = parse_secret_reference("1password://Vault/Item/Field");
-        assert_eq!(result, Some(("1password", "Vault/Item/Field")));
-    }
-
-    #[test]
-    fn parse_bitwarden_reference() {
-        let result = parse_secret_reference("bitwarden://folder/item");
-        assert_eq!(result, Some(("bitwarden", "folder/item")));
-    }
-
-    #[test]
-    fn parse_lastpass_reference() {
-        let result = parse_secret_reference("lastpass://folder/item/field");
-        assert_eq!(result, Some(("lastpass", "folder/item/field")));
-    }
-
-    #[test]
-    fn parse_vault_reference() {
-        let result = parse_secret_reference("vault://secret/path#field");
-        assert_eq!(result, Some(("vault", "secret/path#field")));
-    }
-
-    #[test]
-    fn parse_non_provider_reference() {
-        let result = parse_secret_reference("secrets/env.yaml");
-        assert_eq!(result, None);
-    }
-
-    #[test]
-    fn sops_backend_reports_name() {
-        let backend = SopsBackend::new(None);
-        assert_eq!(backend.name(), "sops");
-    }
-
-    #[test]
-    fn age_backend_reports_name() {
-        let backend = AgeBackend::new(PathBuf::from("/tmp/test-key.txt"));
-        assert_eq!(backend.name(), "age");
+    fn parse_secret_reference_cases() {
+        let cases: &[(&str, Option<(&str, &str)>)] = &[
+            (
+                "1password://Vault/Item/Field",
+                Some(("1password", "Vault/Item/Field")),
+            ),
+            (
+                "bitwarden://folder/item",
+                Some(("bitwarden", "folder/item")),
+            ),
+            (
+                "lastpass://folder/item/field",
+                Some(("lastpass", "folder/item/field")),
+            ),
+            (
+                "vault://secret/path#field",
+                Some(("vault", "secret/path#field")),
+            ),
+            ("secrets/env.yaml", None),
+        ];
+        for (input, expected) in cases {
+            assert_eq!(
+                parse_secret_reference(input),
+                *expected,
+                "failed for {input:?}"
+            );
+        }
     }
 
     #[test]

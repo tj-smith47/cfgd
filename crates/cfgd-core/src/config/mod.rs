@@ -2448,15 +2448,6 @@ spec:
     }
 
     #[test]
-    fn config_source_default_constraints() {
-        let constraints = SourceConstraints::default();
-        assert!(constraints.no_scripts);
-        assert!(constraints.no_secrets_read);
-        assert!(constraints.allowed_target_paths.is_empty());
-        assert!(!constraints.allow_system_changes);
-    }
-
-    #[test]
     fn source_spec_defaults() {
         let yaml = r#"
 name: test-source
@@ -2758,14 +2749,6 @@ VERSION_ID="22.04"
             modules: vec![],
         };
         assert_eq!(source_profile_names(&provides), vec!["alpha", "beta"]);
-    }
-
-    #[test]
-    fn auto_apply_policy_defaults() {
-        let policy = AutoApplyPolicyConfig::default();
-        assert_eq!(policy.new_recommended, PolicyAction::Notify);
-        assert_eq!(policy.new_optional, PolicyAction::Ignore);
-        assert_eq!(policy.locked_conflict, PolicyAction::Notify);
     }
 
     #[test]

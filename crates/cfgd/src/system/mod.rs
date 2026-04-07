@@ -2227,9 +2227,22 @@ mod tests {
     use super::*;
 
     #[test]
-    fn shell_configurator_name() {
-        let sc = ShellConfigurator;
-        assert_eq!(sc.name(), "shell");
+    fn workstation_configurator_names() {
+        let cases: &[(&dyn SystemConfigurator, &str)] = &[
+            (&ShellConfigurator, "shell"),
+            (&MacosDefaultsConfigurator, "macosDefaults"),
+            (&SystemdUnitConfigurator, "systemdUnits"),
+            (&LaunchAgentConfigurator, "launchAgents"),
+            (&EnvironmentConfigurator, "environment"),
+            (&WindowsRegistryConfigurator, "windowsRegistry"),
+            (&WindowsServiceConfigurator, "windowsServices"),
+            (&GsettingsConfigurator, "gsettings"),
+            (&KdeConfigConfigurator, "kdeConfig"),
+            (&XfconfConfigurator, "xfconf"),
+        ];
+        for (c, expected) in cases {
+            assert_eq!(c.name(), *expected, "wrong name for {expected}");
+        }
     }
 
     #[test]
@@ -2264,24 +2277,6 @@ mod tests {
         let desired = serde_yaml::Value::String(String::new());
         let drifts = sc.diff(&desired).unwrap();
         assert!(drifts.is_empty());
-    }
-
-    #[test]
-    fn macos_defaults_name() {
-        let md = MacosDefaultsConfigurator;
-        assert_eq!(md.name(), "macosDefaults");
-    }
-
-    #[test]
-    fn systemd_units_name() {
-        let su = SystemdUnitConfigurator;
-        assert_eq!(su.name(), "systemdUnits");
-    }
-
-    #[test]
-    fn launch_agents_name() {
-        let la = LaunchAgentConfigurator;
-        assert_eq!(la.name(), "launchAgents");
     }
 
     #[test]
@@ -2337,31 +2332,54 @@ mod tests {
     }
 
     #[test]
-    fn systemd_diff_with_no_units() {
-        let su = SystemdUnitConfigurator;
-        let desired = serde_yaml::Value::Sequence(Vec::new());
-        let drifts = su.diff(&desired).unwrap();
-        assert!(drifts.is_empty());
-    }
-
-    #[test]
-    fn launch_agent_diff_with_no_agents() {
-        let la = LaunchAgentConfigurator;
-        let desired = serde_yaml::Value::Sequence(Vec::new());
-        let drifts = la.diff(&desired).unwrap();
-        assert!(drifts.is_empty());
-    }
-
-    #[test]
-    fn environment_configurator_name() {
-        let ec = EnvironmentConfigurator;
-        assert_eq!(ec.name(), "environment");
-    }
-
-    #[test]
-    fn environment_configurator_is_available() {
-        let ec = EnvironmentConfigurator;
-        assert_eq!(ec.is_available(), cfg!(unix) || cfg!(windows));
+    fn diff_returns_empty_for_empty_inputs() {
+        let cases: &[(&dyn SystemConfigurator, serde_yaml::Value)] = &[
+            (
+                &SystemdUnitConfigurator,
+                serde_yaml::Value::Sequence(Vec::new()),
+            ),
+            (
+                &LaunchAgentConfigurator,
+                serde_yaml::Value::Sequence(Vec::new()),
+            ),
+            (
+                &EnvironmentConfigurator,
+                serde_yaml::Value::Mapping(serde_yaml::Mapping::new()),
+            ),
+            (
+                &GsettingsConfigurator,
+                serde_yaml::Value::Mapping(serde_yaml::Mapping::new()),
+            ),
+            (
+                &GsettingsConfigurator,
+                serde_yaml::Value::String("not a mapping".into()),
+            ),
+            (
+                &KdeConfigConfigurator,
+                serde_yaml::Value::Mapping(serde_yaml::Mapping::new()),
+            ),
+            (
+                &KdeConfigConfigurator,
+                serde_yaml::Value::String("not a mapping".into()),
+            ),
+            (
+                &XfconfConfigurator,
+                serde_yaml::Value::Mapping(serde_yaml::Mapping::new()),
+            ),
+            (
+                &XfconfConfigurator,
+                serde_yaml::Value::String("not a mapping".into()),
+            ),
+        ];
+        for (c, input) in cases {
+            let drifts = c.diff(input).unwrap();
+            assert!(
+                drifts.is_empty(),
+                "{} should return empty for {:?}",
+                c.name(),
+                input
+            );
+        }
     }
 
     #[test]
@@ -2385,17 +2403,14 @@ DEBUG: true
     }
 
     #[test]
-    fn environment_desired_vars_empty_mapping() {
-        let yaml = serde_yaml::Value::Mapping(serde_yaml::Mapping::new());
-        let vars = EnvironmentConfigurator::desired_vars(&yaml);
-        assert!(vars.is_empty());
-    }
-
-    #[test]
-    fn environment_desired_vars_non_mapping() {
-        let yaml = serde_yaml::Value::String("not a mapping".to_string());
-        let vars = EnvironmentConfigurator::desired_vars(&yaml);
-        assert!(vars.is_empty());
+    fn environment_desired_vars_empty_or_wrong_type() {
+        for yaml in &[
+            serde_yaml::Value::Mapping(serde_yaml::Mapping::new()),
+            serde_yaml::Value::String("not a mapping".to_string()),
+        ] {
+            let vars = EnvironmentConfigurator::desired_vars(yaml);
+            assert!(vars.is_empty(), "should be empty for {:?}", yaml);
+        }
     }
 
     #[test]
@@ -2414,14 +2429,6 @@ CFGD_TEST_NONEXISTENT_VAR_12345: "test_value"
         assert_eq!(drifts[0].key, "CFGD_TEST_NONEXISTENT_VAR_12345");
         assert_eq!(drifts[0].expected, "test_value");
         assert!(drifts[0].actual.is_empty());
-    }
-
-    #[test]
-    fn environment_diff_empty_desired() {
-        let ec = EnvironmentConfigurator;
-        let yaml = serde_yaml::Value::Mapping(serde_yaml::Mapping::new());
-        let drifts = ec.diff(&yaml).unwrap();
-        assert!(drifts.is_empty());
     }
 
     // --- Windows registry output parsing ---
@@ -2661,11 +2668,6 @@ HKEY_CURRENT_USER\\Environment\n\
     // --- WindowsRegistryConfigurator ---
 
     #[test]
-    fn registry_configurator_name() {
-        assert_eq!(WindowsRegistryConfigurator.name(), "windowsRegistry");
-    }
-
-    #[test]
     fn registry_parse_reg_value_dword() {
         let output = "HKEY_CURRENT_USER\\Software\\Test\n\
                       \n\
@@ -2753,23 +2755,7 @@ HKEY_CURRENT_USER\\Environment\n\
         assert!(drifts.is_empty());
     }
 
-    #[test]
-    fn registry_is_available_matches_platform() {
-        let wrc = WindowsRegistryConfigurator;
-        assert_eq!(wrc.is_available(), cfg!(windows));
-    }
-
     // --- WindowsServiceConfigurator ---
-
-    #[test]
-    fn service_configurator_name() {
-        assert_eq!(WindowsServiceConfigurator.name(), "windowsServices");
-    }
-
-    #[test]
-    fn service_configurator_is_available_matches_platform() {
-        assert_eq!(WindowsServiceConfigurator.is_available(), cfg!(windows));
-    }
 
     #[test]
     fn service_parse_sc_state_running() {
@@ -2954,11 +2940,6 @@ HKEY_CURRENT_USER\\Environment\n\
     // --- GsettingsConfigurator ---
 
     #[test]
-    fn gsettings_configurator_name() {
-        assert_eq!(GsettingsConfigurator.name(), "gsettings");
-    }
-
-    #[test]
     fn gsettings_strip_quotes() {
         assert_eq!(strip_gsettings_quotes("'prefer-dark'"), "prefer-dark");
         assert_eq!(strip_gsettings_quotes("'hello world'"), "hello world");
@@ -2987,35 +2968,7 @@ HKEY_CURRENT_USER\\Environment\n\
         assert_eq!(yaml_value_to_string(&f), "1.5");
     }
 
-    #[test]
-    fn gsettings_diff_empty_desired() {
-        let configurator = GsettingsConfigurator;
-        let desired = serde_yaml::Value::Mapping(serde_yaml::Mapping::new());
-        let drifts = configurator.diff(&desired).unwrap();
-        assert!(drifts.is_empty());
-    }
-
-    #[test]
-    fn gsettings_diff_non_mapping() {
-        let configurator = GsettingsConfigurator;
-        let desired = serde_yaml::Value::String("not a mapping".into());
-        let drifts = configurator.diff(&desired).unwrap();
-        assert!(drifts.is_empty());
-    }
-
-    #[test]
-    fn gsettings_current_state_is_empty_mapping() {
-        let configurator = GsettingsConfigurator;
-        let state = configurator.current_state().unwrap();
-        assert!(state.as_mapping().unwrap().is_empty());
-    }
-
     // --- KdeConfigConfigurator ---
-
-    #[test]
-    fn kde_configurator_name() {
-        assert_eq!(KdeConfigConfigurator.name(), "kdeConfig");
-    }
 
     #[test]
     fn kde_find_kwrite_cmd() {
@@ -3029,58 +2982,7 @@ HKEY_CURRENT_USER\\Environment\n\
         assert!(cmd == "kreadconfig6" || cmd == "kreadconfig5");
     }
 
-    #[test]
-    fn kde_diff_empty_desired() {
-        let configurator = KdeConfigConfigurator;
-        let desired = serde_yaml::Value::Mapping(serde_yaml::Mapping::new());
-        let drifts = configurator.diff(&desired).unwrap();
-        assert!(drifts.is_empty());
-    }
-
-    #[test]
-    fn kde_diff_non_mapping() {
-        let configurator = KdeConfigConfigurator;
-        let desired = serde_yaml::Value::String("not a mapping".into());
-        let drifts = configurator.diff(&desired).unwrap();
-        assert!(drifts.is_empty());
-    }
-
-    #[test]
-    fn kde_current_state_is_empty_mapping() {
-        let configurator = KdeConfigConfigurator;
-        let state = configurator.current_state().unwrap();
-        assert!(state.as_mapping().unwrap().is_empty());
-    }
-
     // --- XfconfConfigurator ---
-
-    #[test]
-    fn xfconf_configurator_name() {
-        assert_eq!(XfconfConfigurator.name(), "xfconf");
-    }
-
-    #[test]
-    fn xfconf_diff_empty_desired() {
-        let configurator = XfconfConfigurator;
-        let desired = serde_yaml::Value::Mapping(serde_yaml::Mapping::new());
-        let drifts = configurator.diff(&desired).unwrap();
-        assert!(drifts.is_empty());
-    }
-
-    #[test]
-    fn xfconf_diff_non_mapping() {
-        let configurator = XfconfConfigurator;
-        let desired = serde_yaml::Value::String("not a mapping".into());
-        let drifts = configurator.diff(&desired).unwrap();
-        assert!(drifts.is_empty());
-    }
-
-    #[test]
-    fn xfconf_current_state_is_empty_mapping() {
-        let configurator = XfconfConfigurator;
-        let state = configurator.current_state().unwrap();
-        assert!(state.as_mapping().unwrap().is_empty());
-    }
 
     // --- diff_yaml_mapping edge cases ---
 

@@ -7122,32 +7122,26 @@ mod tests {
     // --- Pure function / decision logic tests to cover uncovered lines ---
 
     #[test]
-    fn parse_resource_from_description_three_parts() {
-        let (rtype, rid) = super::parse_resource_from_description("file:create:/home/user/.config");
-        assert_eq!(rtype, "file");
-        assert_eq!(rid, "/home/user/.config");
-    }
-
-    #[test]
-    fn parse_resource_from_description_two_parts() {
-        let (rtype, rid) = super::parse_resource_from_description("system:skip");
-        assert_eq!(rtype, "system");
-        assert_eq!(rid, "skip");
-    }
-
-    #[test]
-    fn parse_resource_from_description_one_part() {
-        let (rtype, rid) = super::parse_resource_from_description("unknown-action");
-        assert_eq!(rtype, "unknown");
-        assert_eq!(rid, "unknown-action");
-    }
-
-    #[test]
-    fn parse_resource_preserves_colons_in_resource_id() {
-        let (rtype, rid) =
-            super::parse_resource_from_description("secret:resolve:vault:path/to/secret");
-        assert_eq!(rtype, "secret");
-        assert_eq!(rid, "vault:path/to/secret");
+    fn parse_resource_from_description_cases() {
+        let cases: &[(&str, &str, &str)] = &[
+            (
+                "file:create:/home/user/.config",
+                "file",
+                "/home/user/.config",
+            ),
+            ("system:skip", "system", "skip"),
+            ("unknown-action", "unknown", "unknown-action"),
+            (
+                "secret:resolve:vault:path/to/secret",
+                "secret",
+                "vault:path/to/secret",
+            ),
+        ];
+        for (input, expected_type, expected_id) in cases {
+            let (rtype, rid) = super::parse_resource_from_description(input);
+            assert_eq!(rtype, *expected_type, "wrong type for {input:?}");
+            assert_eq!(rid, *expected_id, "wrong id for {input:?}");
+        }
     }
 
     #[test]

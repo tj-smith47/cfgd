@@ -724,30 +724,6 @@ mod tests {
     }
 
     #[test]
-    fn condition_has_observed_generation() {
-        let c = Condition {
-            condition_type: "Ready".to_string(),
-            status: "True".to_string(),
-            reason: "Test".to_string(),
-            message: "test".to_string(),
-            last_transition_time: "2024-01-01T00:00:00Z".to_string(),
-            observed_generation: Some(1),
-        };
-        assert_eq!(c.observed_generation, Some(1));
-    }
-
-    #[test]
-    fn package_ref_serialization() {
-        let pr = PackageRef {
-            name: "vim".to_string(),
-            version: Some("1.0.0".to_string()),
-        };
-        let json = serde_json::to_value(&pr).unwrap();
-        assert_eq!(json["name"], "vim");
-        assert_eq!(json["version"], "1.0.0");
-    }
-
-    #[test]
     fn package_ref_omits_none_version() {
         let pr = PackageRef {
             name: "vim".to_string(),
@@ -789,53 +765,6 @@ mod tests {
             ..Default::default()
         };
         assert!(spec.validate().is_err());
-    }
-
-    #[test]
-    fn label_selector_empty_matches_all() {
-        let sel = LabelSelector::default();
-        assert!(sel.match_labels.is_empty());
-        assert!(sel.match_expressions.is_empty());
-    }
-
-    #[test]
-    fn mc_reconciled_condition_set_on_success() {
-        let status = MachineConfigStatus {
-            last_reconciled: Some("2024-01-01T00:00:00Z".to_string()),
-            observed_generation: Some(1),
-            package_versions: Default::default(),
-            conditions: vec![
-                Condition {
-                    condition_type: "Reconciled".to_string(),
-                    status: "True".to_string(),
-                    reason: "ReconcileSuccess".to_string(),
-                    message: "Reconciled successfully".to_string(),
-                    last_transition_time: "2024-01-01T00:00:00Z".to_string(),
-                    observed_generation: Some(1),
-                },
-                Condition {
-                    condition_type: "DriftDetected".to_string(),
-                    status: "False".to_string(),
-                    reason: "NoDrift".to_string(),
-                    message: "No drift detected".to_string(),
-                    last_transition_time: "2024-01-01T00:00:00Z".to_string(),
-                    observed_generation: Some(1),
-                },
-            ],
-        };
-        assert_eq!(status.conditions.len(), 2);
-        assert_eq!(status.conditions[0].condition_type, "Reconciled");
-    }
-
-    #[test]
-    fn machine_config_reference_serialization() {
-        let r = MachineConfigReference {
-            name: "mc-1".to_string(),
-            namespace: Some("team-a".to_string()),
-        };
-        let json = serde_json::to_value(&r).unwrap();
-        assert_eq!(json["name"], "mc-1");
-        assert_eq!(json["namespace"], "team-a");
     }
 
     #[test]
@@ -1129,15 +1058,5 @@ mod tests {
         assert!(!is_valid_pem_public_key(
             "-----BEGIN PRIVATE KEY-----\ndata\n-----END PRIVATE KEY-----"
         ));
-    }
-
-    #[test]
-    fn module_status_defaults() {
-        let status = ModuleStatus::default();
-        assert!(!status.verified);
-        assert!(status.available_platforms.is_empty());
-        assert!(status.resolved_artifact.is_none());
-        assert!(status.signature_digest.is_none());
-        assert!(status.attestations.is_empty());
     }
 }

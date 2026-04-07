@@ -845,28 +845,17 @@ mod tests {
     // --- status_to_class ---
 
     #[test]
-    fn status_to_class_healthy() {
-        assert_eq!(status_to_class("healthy"), "healthy");
-    }
-
-    #[test]
-    fn status_to_class_drifted() {
-        assert_eq!(status_to_class("drifted"), "drifted");
-    }
-
-    #[test]
-    fn status_to_class_pending_reconcile() {
-        assert_eq!(status_to_class("pending-reconcile"), "pending-reconcile");
-    }
-
-    #[test]
-    fn status_to_class_offline() {
-        assert_eq!(status_to_class("offline"), "offline");
-    }
-
-    #[test]
-    fn status_to_class_unknown_defaults_to_offline() {
-        assert_eq!(status_to_class("something-else"), "offline");
+    fn status_to_class_mapping() {
+        let cases: &[(&str, &str)] = &[
+            ("healthy", "healthy"),
+            ("drifted", "drifted"),
+            ("pending-reconcile", "pending-reconcile"),
+            ("offline", "offline"),
+            ("something-else", "offline"),
+        ];
+        for (input, expected) in cases {
+            assert_eq!(status_to_class(input), *expected, "failed for {input:?}");
+        }
     }
 
     // --- dashboard ---

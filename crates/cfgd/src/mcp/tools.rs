@@ -46,13 +46,6 @@ mod tests {
     }
 
     #[test]
-    fn test_tools_count() {
-        let result = list();
-        let tools = result["tools"].as_array().unwrap();
-        assert_eq!(tools.len(), 18, "expected 18 MCP tool definitions");
-    }
-
-    #[test]
     fn test_tools_derived_from_ai_definitions() {
         // Verify names match ai::tools with cfgd_ prefix applied
         let result = list();

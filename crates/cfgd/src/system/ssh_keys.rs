@@ -374,19 +374,6 @@ mod tests {
     }
 
     #[test]
-    fn name_returns_ssh_keys() {
-        let c = SshKeysConfigurator;
-        assert_eq!(c.name(), "sshKeys");
-    }
-
-    #[test]
-    fn is_available_returns_true() {
-        // ssh-keygen is present on all supported platforms
-        let c = SshKeysConfigurator;
-        assert!(c.is_available());
-    }
-
-    #[test]
     fn diff_detects_missing_key() {
         let tmp = TempDir::new().unwrap();
         let key_path = tmp.path().join("id_ed25519");

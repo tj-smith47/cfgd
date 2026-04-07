@@ -203,32 +203,20 @@ mod tests {
     // ---------------------------------------------------------------------------
 
     #[test]
-    fn test_name() {
-        assert_eq!(GitConfigurator.name(), "git");
-    }
-
-    #[test]
-    fn test_is_available() {
-        let expected = cfgd_core::command_available("git");
-        assert_eq!(GitConfigurator.is_available(), expected);
-    }
-
-    #[test]
-    fn test_value_to_git_string_bool_true() {
-        let v = serde_yaml::Value::Bool(true);
-        assert_eq!(value_to_git_string(&v), "true");
-    }
-
-    #[test]
-    fn test_value_to_git_string_bool_false() {
-        let v = serde_yaml::Value::Bool(false);
-        assert_eq!(value_to_git_string(&v), "false");
-    }
-
-    #[test]
-    fn test_value_to_git_string_number() {
-        let v: serde_yaml::Value = serde_yaml::from_str("42").unwrap();
-        assert_eq!(value_to_git_string(&v), "42");
+    fn value_to_git_string_conversions() {
+        let cases: &[(serde_yaml::Value, &str)] = &[
+            (serde_yaml::Value::Bool(true), "true"),
+            (serde_yaml::Value::Bool(false), "false"),
+            (serde_yaml::from_str("42").unwrap(), "42"),
+        ];
+        for (input, expected) in cases {
+            assert_eq!(
+                value_to_git_string(input),
+                *expected,
+                "failed for {:?}",
+                input
+            );
+        }
     }
 
     #[test]

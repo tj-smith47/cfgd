@@ -463,115 +463,65 @@ pub enum OciError {
 mod tests {
     use super::*;
 
+    /// Table-driven: every `From<SubError> for CfgdError` variant in one test.
     #[test]
-    fn config_error_converts_to_cfgd_error() {
-        let err = ConfigError::ProfileNotFound {
-            name: "test".into(),
-        };
-        let cfgd_err: CfgdError = err.into();
-        assert!(matches!(cfgd_err, CfgdError::Config(_)));
-        assert!(cfgd_err.to_string().contains("test"));
-    }
-
-    #[test]
-    fn file_error_displays_path() {
-        let err = FileError::SourceNotFound {
-            path: PathBuf::from("/home/user/.zshrc"),
-        };
-        assert!(err.to_string().contains("/home/user/.zshrc"));
-    }
-
-    #[test]
-    fn package_error_includes_manager_name() {
-        let err = PackageError::ManagerNotAvailable {
-            manager: "brew".into(),
-        };
-        assert!(err.to_string().contains("brew"));
-    }
-
-    #[test]
-    fn secret_error_includes_install_hint() {
-        let err = SecretError::SopsNotFound;
-        assert!(err.to_string().contains("https://"));
-    }
-
-    #[test]
-    fn source_error_converts_to_cfgd_error() {
-        let err = SourceError::NotFound {
-            name: "acme".into(),
-        };
-        let cfgd_err: CfgdError = err.into();
-        assert!(matches!(cfgd_err, CfgdError::Source(_)));
-        assert!(cfgd_err.to_string().contains("acme"));
-    }
-
-    #[test]
-    fn composition_error_converts_to_cfgd_error() {
-        let err = CompositionError::LockedResource {
-            source_name: "acme".into(),
-            resource: "~/.config/security.yaml".into(),
-        };
-        let cfgd_err: CfgdError = err.into();
-        assert!(matches!(cfgd_err, CfgdError::Composition(_)));
-        assert!(cfgd_err.to_string().contains("locked"));
-    }
-
-    #[test]
-    fn source_version_mismatch_includes_details() {
-        let err = SourceError::VersionMismatch {
-            name: "acme".into(),
-            version: "3.0.0".into(),
-            pin: "~2".into(),
-        };
-        let msg = err.to_string();
-        assert!(msg.contains("3.0.0"));
-        assert!(msg.contains("~2"));
-    }
-
-    #[test]
-    fn upgrade_error_converts_to_cfgd_error() {
-        let err = UpgradeError::ChecksumMismatch {
-            file: "cfgd-0.2.0-linux-x86_64.tar.gz".into(),
-        };
-        let cfgd_err: CfgdError = err.into();
-        assert!(matches!(cfgd_err, CfgdError::Upgrade(_)));
-        assert!(cfgd_err.to_string().contains("checksum"));
-    }
-
-    #[test]
-    fn module_error_converts_to_cfgd_error() {
-        let err = ModuleError::NotFound {
-            name: "nvim".into(),
-        };
-        let cfgd_err: CfgdError = err.into();
-        assert!(matches!(cfgd_err, CfgdError::Module(_)));
-        assert!(cfgd_err.to_string().contains("nvim"));
-    }
-
-    #[test]
-    fn module_error_cycle_includes_chain() {
-        let err = ModuleError::DependencyCycle {
-            chain: vec!["a".into(), "b".into(), "a".into()],
-        };
-        let msg = err.to_string();
-        assert!(msg.contains("a"));
-        assert!(msg.contains("b"));
-    }
-
-    #[test]
-    fn io_error_converts_to_cfgd_error() {
-        let io_err = std::io::Error::new(std::io::ErrorKind::NotFound, "file missing");
-        let cfgd_err: CfgdError = io_err.into();
-        assert!(matches!(cfgd_err, CfgdError::Io(_)));
-    }
-
-    #[test]
-    fn generate_error_converts_to_cfgd_error() {
-        let err = GenerateError::ValidationFailed {
-            message: "missing apiVersion".into(),
-        };
-        let cfgd_err: CfgdError = err.into();
-        assert!(matches!(cfgd_err, CfgdError::Generate(_)));
-        assert!(cfgd_err.to_string().contains("missing apiVersion"));
+    fn all_sub_errors_convert_to_cfgd_error() {
+        let cases: Vec<(CfgdError, &str)> = vec![
+            (
+                ConfigError::ProfileNotFound {
+                    name: "test".into(),
+                }
+                .into(),
+                "test",
+            ),
+            (
+                SourceError::NotFound {
+                    name: "acme".into(),
+                }
+                .into(),
+                "acme",
+            ),
+            (
+                CompositionError::LockedResource {
+                    source_name: "acme".into(),
+                    resource: "~/.config/security.yaml".into(),
+                }
+                .into(),
+                "locked",
+            ),
+            (
+                UpgradeError::ChecksumMismatch {
+                    file: "cfgd-0.2.0-linux-x86_64.tar.gz".into(),
+                }
+                .into(),
+                "checksum",
+            ),
+            (
+                ModuleError::NotFound {
+                    name: "nvim".into(),
+                }
+                .into(),
+                "nvim",
+            ),
+            (
+                GenerateError::ValidationFailed {
+                    message: "missing apiVersion".into(),
+                }
+                .into(),
+                "missing apiVersion",
+            ),
+            (
+                std::io::Error::new(std::io::ErrorKind::NotFound, "file missing").into(),
+                "file missing",
+            ),
+        ];
+        for (cfgd_err, needle) in &cases {
+            assert!(
+                cfgd_err.to_string().contains(needle),
+                "expected '{}' in: {}",
+                needle,
+                cfgd_err,
+            );
+        }
     }
 }

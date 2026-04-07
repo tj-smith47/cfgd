@@ -3154,31 +3154,6 @@ mod tests {
     }
 
     #[test]
-    fn daemon_status_response_serializes() {
-        let response = DaemonStatusResponse {
-            running: true,
-            pid: 12345,
-            uptime_secs: 3600,
-            last_reconcile: Some("2026-01-01T00:00:00Z".to_string()),
-            last_sync: None,
-            drift_count: 0,
-            sources: vec![SourceStatus {
-                name: "local".to_string(),
-                last_sync: None,
-                last_reconcile: None,
-                drift_count: 0,
-                status: "active".to_string(),
-            }],
-            update_available: None,
-            module_reconcile: vec![],
-        };
-        let json = serde_json::to_string(&response).unwrap();
-        let parsed: DaemonStatusResponse = serde_json::from_str(&json).unwrap();
-        assert_eq!(parsed.pid, 12345);
-        assert_eq!(parsed.uptime_secs, 3600);
-    }
-
-    #[test]
     #[cfg(unix)]
     fn systemd_unit_path() {
         let home = "/home/testuser";

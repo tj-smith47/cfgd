@@ -1184,14 +1184,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn default_theme_has_icons() {
-        let theme = Theme::default();
-        assert!(!theme.icon_success.is_empty());
-        assert!(!theme.icon_warning.is_empty());
-        assert!(!theme.icon_error.is_empty());
-    }
-
-    #[test]
     fn printer_respects_quiet_verbosity() {
         let printer = Printer::new(Verbosity::Quiet);
         assert_eq!(printer.verbosity(), Verbosity::Quiet);
@@ -1208,12 +1200,6 @@ mod tests {
         // so we verify it doesn't panic when called at Quiet verbosity.
         let printer = Printer::new(Verbosity::Quiet);
         printer.error("this is an error");
-    }
-
-    #[test]
-    fn verbosity_returns_correct_level() {
-        let printer = Printer::new(Verbosity::Verbose);
-        assert_eq!(printer.verbosity(), Verbosity::Verbose);
     }
 
     #[test]
@@ -1250,12 +1236,6 @@ mod tests {
     }
 
     #[test]
-    fn unknown_preset_falls_back_to_default() {
-        let theme = Theme::from_preset("nonexistent");
-        assert_eq!(theme.icon_success, "✓");
-    }
-
-    #[test]
     fn from_config_with_overrides() {
         let config = ThemeConfig {
             name: "default".into(),
@@ -1267,20 +1247,6 @@ mod tests {
         };
         let theme = Theme::from_config(Some(&config));
         assert_eq!(theme.icon_success, "OK");
-    }
-
-    #[test]
-    fn from_config_none_gives_default() {
-        let theme = Theme::from_config(None);
-        assert_eq!(theme.icon_success, "✓");
-    }
-
-    #[test]
-    fn minimal_theme_uses_ascii_icons() {
-        let theme = Theme::from_preset("minimal");
-        assert_eq!(theme.icon_success, "+");
-        assert_eq!(theme.icon_error, "x");
-        assert_eq!(theme.icon_arrow, ">");
     }
 
     #[test]
@@ -1367,95 +1333,53 @@ mod tests {
         assert!(printer.write_structured(&"hello"));
     }
 
-    #[test]
-    fn structured_mode_sets_quiet_verbosity() {
-        let printer = Printer::with_format(Verbosity::Normal, None, OutputFormat::Json);
-        assert_eq!(printer.verbosity(), Verbosity::Quiet);
-    }
-
     // --- jsonpath tests ---
 
     #[test]
-    fn jsonpath_simple_key() {
-        let val = serde_json::json!({"name": "cfgd", "version": "1.0"});
-        assert_eq!(apply_jsonpath(&val, "{.name}"), "cfgd");
-        assert_eq!(apply_jsonpath(&val, "{.version}"), "1.0");
-    }
+    fn apply_jsonpath_cases() {
+        let obj = serde_json::json!({"name": "cfgd", "version": "1.0"});
+        let nested = serde_json::json!({"status": {"phase": "running", "ready": true}});
+        let arr = serde_json::json!({"items": ["a", "b", "c"]});
+        let arr_obj = serde_json::json!({"items": [{"name": "a"}, {"name": "b"}]});
+        let arr_num = serde_json::json!({"items": [1, 2, 3, 4, 5]});
+        let arr_short = serde_json::json!({"items": [1, 2]});
+        let arr3 = serde_json::json!({"items": [1, 2, 3]});
+        let null_val = serde_json::json!({"key": null});
+        let small = serde_json::json!({"a": 1});
 
-    #[test]
-    fn jsonpath_nested_key() {
-        let val = serde_json::json!({"status": {"phase": "running", "ready": true}});
-        assert_eq!(apply_jsonpath(&val, "{.status.phase}"), "running");
-        assert_eq!(apply_jsonpath(&val, "{.status.ready}"), "true");
-    }
+        // Simple scalar lookups
+        let cases: &[(&serde_json::Value, &str, &str)] = &[
+            (&obj, "{.name}", "cfgd"),
+            (&obj, "{.version}", "1.0"),
+            (&nested, "{.status.phase}", "running"),
+            (&nested, "{.status.ready}", "true"),
+            (&arr, "{.items[0]}", "a"),
+            (&arr, "{.items[2]}", "c"),
+            (&arr_obj, "{.items[*].name}", "a\nb"),
+            (&arr_num, "{.items[1:3]}", "2\n3"),
+            (&obj, "{.missing}", ""),
+            (&obj, ".name", "cfgd"),
+            (&arr_short, "{.items[5]}", ""),
+            (&arr3, "{.items[10:20]}", ""),
+            (&arr3, "{.items[5:2]}", ""),
+            (&null_val, "{.key}", ""),
+        ];
+        for (val, expr, expected) in cases {
+            assert_eq!(
+                apply_jsonpath(val, expr),
+                *expected,
+                "failed for expr {expr:?}"
+            );
+        }
 
-    #[test]
-    fn jsonpath_array_index() {
-        let val = serde_json::json!({"items": ["a", "b", "c"]});
-        assert_eq!(apply_jsonpath(&val, "{.items[0]}"), "a");
-        assert_eq!(apply_jsonpath(&val, "{.items[2]}"), "c");
-    }
-
-    #[test]
-    fn jsonpath_array_wildcard() {
-        let val = serde_json::json!({"items": [{"name": "a"}, {"name": "b"}]});
-        assert_eq!(apply_jsonpath(&val, "{.items[*].name}"), "a\nb");
-    }
-
-    #[test]
-    fn jsonpath_array_slice() {
-        let val = serde_json::json!({"items": [1, 2, 3, 4, 5]});
-        let result = apply_jsonpath(&val, "{.items[1:3]}");
-        assert_eq!(result, "2\n3");
-    }
-
-    #[test]
-    fn jsonpath_missing_key_returns_empty() {
-        let val = serde_json::json!({"name": "cfgd"});
-        assert_eq!(apply_jsonpath(&val, "{.missing}"), "");
-    }
-
-    #[test]
-    fn jsonpath_no_braces() {
-        let val = serde_json::json!({"name": "cfgd"});
-        assert_eq!(apply_jsonpath(&val, ".name"), "cfgd");
-    }
-
-    #[test]
-    fn jsonpath_object_result() {
-        let val = serde_json::json!({"status": {"phase": "running"}});
-        let result = apply_jsonpath(&val, "{.status}");
-        let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
+        // Object/full-value results (need JSON parsing)
+        let status_json = apply_jsonpath(&nested, "{.status}");
+        let parsed: serde_json::Value = serde_json::from_str(&status_json).unwrap();
         assert_eq!(parsed["phase"], "running");
-    }
 
-    #[test]
-    fn jsonpath_empty_expr_returns_full_value() {
-        let val = serde_json::json!({"a": 1});
-        let result = apply_jsonpath(&val, "{}");
-        let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
+        let full = apply_jsonpath(&small, "{}");
+        let parsed: serde_json::Value = serde_json::from_str(&full).unwrap();
         assert_eq!(parsed["a"], 1);
-    }
-
-    #[test]
-    fn jsonpath_out_of_bounds_returns_empty() {
-        let val = serde_json::json!({"items": [1, 2]});
-        assert_eq!(apply_jsonpath(&val, "{.items[5]}"), "");
-    }
-
-    #[test]
-    fn jsonpath_slice_out_of_bounds_no_panic() {
-        let val = serde_json::json!({"items": [1, 2, 3]});
-        // start > len: should return empty, not panic
-        assert_eq!(apply_jsonpath(&val, "{.items[10:20]}"), "");
-        // start > end after clamping: should return empty
-        assert_eq!(apply_jsonpath(&val, "{.items[5:2]}"), "");
-    }
-
-    #[test]
-    fn jsonpath_null_value() {
-        let val = serde_json::json!({"key": null});
-        assert_eq!(apply_jsonpath(&val, "{.key}"), "");
     }
 
     #[test]
@@ -1508,12 +1432,6 @@ mod tests {
         // write_structured in non-structured mode
         let data = serde_json::json!({"key": "value"});
         printer.write_structured(&data);
-    }
-
-    #[test]
-    fn printer_is_structured_false_by_default() {
-        let printer = Printer::new(Verbosity::Normal);
-        assert!(!printer.is_structured());
     }
 
     // --- write_structured format variants ---

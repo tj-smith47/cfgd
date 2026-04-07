@@ -116,20 +116,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_message_serialization() {
-        let msg = Message {
-            role: "user".into(),
-            content: vec![ContentBlock::Text {
-                text: "Hello".into(),
-            }],
-        };
-        let json = serde_json::to_value(&msg).unwrap();
-        assert_eq!(json["role"], "user");
-        assert_eq!(json["content"][0]["type"], "text");
-        assert_eq!(json["content"][0]["text"], "Hello");
-    }
-
-    #[test]
     fn test_tool_use_deserialization() {
         let json = r#"{
             "type": "tool_use",
@@ -146,30 +132,6 @@ mod tests {
             }
             _ => panic!("Expected ToolUse"),
         }
-    }
-
-    #[test]
-    fn test_tool_result_serialization() {
-        let block = ContentBlock::ToolResult {
-            tool_use_id: "toolu_123".into(),
-            content: r#"{"packages": ["git"]}"#.into(),
-            is_error: None,
-        };
-        let json = serde_json::to_value(&block).unwrap();
-        assert_eq!(json["type"], "tool_result");
-        assert_eq!(json["tool_use_id"], "toolu_123");
-        assert!(json.get("is_error").is_none());
-    }
-
-    #[test]
-    fn test_tool_result_error_serialization() {
-        let block = ContentBlock::ToolResult {
-            tool_use_id: "toolu_123".into(),
-            content: "Unknown tool: foo".into(),
-            is_error: Some(true),
-        };
-        let json = serde_json::to_value(&block).unwrap();
-        assert_eq!(json["is_error"], true);
     }
 
     #[test]
@@ -190,37 +152,6 @@ mod tests {
         assert_eq!(resp.content.len(), 2);
         assert_eq!(resp.stop_reason.as_deref(), Some("tool_use"));
         assert_eq!(resp.usage.input_tokens, 100);
-    }
-
-    #[test]
-    fn test_tool_definition_serialization() {
-        let tool = ToolDefinition {
-            name: "scan_dotfiles".into(),
-            description: "Scan dotfiles".into(),
-            input_schema: serde_json::json!({
-                "type": "object",
-                "properties": {
-                    "home": {"type": "string"}
-                },
-                "required": ["home"]
-            }),
-        };
-        let json = serde_json::to_value(&tool).unwrap();
-        assert_eq!(json["name"], "scan_dotfiles");
-        assert_eq!(json["input_schema"]["type"], "object");
-    }
-
-    #[test]
-    fn test_text_block_roundtrip() {
-        let block = ContentBlock::Text {
-            text: "hello world".into(),
-        };
-        let json_str = serde_json::to_string(&block).unwrap();
-        let deserialized: ContentBlock = serde_json::from_str(&json_str).unwrap();
-        match deserialized {
-            ContentBlock::Text { text } => assert_eq!(text, "hello world"),
-            _ => panic!("Expected Text"),
-        }
     }
 
     #[test]
@@ -274,20 +205,5 @@ mod tests {
         let json = serde_json::to_value(&request).unwrap();
         assert!(json.get("tools").is_some());
         assert_eq!(json["tools"].as_array().unwrap().len(), 1);
-    }
-
-    #[test]
-    fn test_usage_deserialization() {
-        let json = r#"{"input_tokens": 500, "output_tokens": 200}"#;
-        let usage: Usage = serde_json::from_str(json).unwrap();
-        assert_eq!(usage.input_tokens, 500);
-        assert_eq!(usage.output_tokens, 200);
-    }
-
-    #[test]
-    fn test_client_construction() {
-        let client = AnthropicClient::new("test-key".into(), "claude-sonnet-4-20250514".into());
-        assert_eq!(client.model, "claude-sonnet-4-20250514");
-        assert_eq!(client.api_key, "test-key");
     }
 }

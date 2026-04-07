@@ -1252,45 +1252,19 @@ mod tests {
     use tempfile::tempdir;
 
     #[test]
-    fn sysctl_configurator_name() {
-        let sc = SysctlConfigurator;
-        assert_eq!(sc.name(), "sysctl");
-    }
-
-    #[test]
-    fn kernel_module_configurator_name() {
-        let km = KernelModuleConfigurator;
-        assert_eq!(km.name(), "kernelModules");
-    }
-
-    #[test]
-    fn containerd_configurator_name() {
-        let cc = ContainerdConfigurator;
-        assert_eq!(cc.name(), "containerd");
-    }
-
-    #[test]
-    fn kubelet_configurator_name() {
-        let kc = KubeletConfigurator;
-        assert_eq!(kc.name(), "kubelet");
-    }
-
-    #[test]
-    fn apparmor_configurator_name() {
-        let ac = AppArmorConfigurator;
-        assert_eq!(ac.name(), "apparmor");
-    }
-
-    #[test]
-    fn seccomp_configurator_name() {
-        let sc = SeccompConfigurator;
-        assert_eq!(sc.name(), "seccomp");
-    }
-
-    #[test]
-    fn certificate_configurator_name() {
-        let cc = CertificateConfigurator;
-        assert_eq!(cc.name(), "certificates");
+    fn node_configurator_names() {
+        let cases: &[(&dyn SystemConfigurator, &str)] = &[
+            (&SysctlConfigurator, "sysctl"),
+            (&KernelModuleConfigurator, "kernelModules"),
+            (&ContainerdConfigurator, "containerd"),
+            (&KubeletConfigurator, "kubelet"),
+            (&AppArmorConfigurator, "apparmor"),
+            (&SeccompConfigurator, "seccomp"),
+            (&CertificateConfigurator, "certificates"),
+        ];
+        for (c, expected) in cases {
+            assert_eq!(c.name(), *expected, "wrong name for {expected}");
+        }
     }
 
     #[test]
@@ -1307,27 +1281,30 @@ mod tests {
     }
 
     #[test]
-    fn sysctl_diff_with_empty_mapping() {
-        let sc = SysctlConfigurator;
-        let desired = serde_yaml::Value::Mapping(serde_yaml::Mapping::new());
-        let drifts = sc.diff(&desired).unwrap();
-        assert!(drifts.is_empty());
-    }
-
-    #[test]
-    fn sysctl_diff_with_non_mapping() {
-        let sc = SysctlConfigurator;
-        let desired = serde_yaml::Value::String("invalid".into());
-        let drifts = sc.diff(&desired).unwrap();
-        assert!(drifts.is_empty());
-    }
-
-    #[test]
-    fn kernel_module_diff_with_empty_sequence() {
-        let km = KernelModuleConfigurator;
-        let desired = serde_yaml::Value::Sequence(Vec::new());
-        let drifts = km.diff(&desired).unwrap();
-        assert!(drifts.is_empty());
+    fn diff_returns_empty_for_empty_or_wrong_type_input() {
+        let cases: &[(&dyn SystemConfigurator, serde_yaml::Value)] = &[
+            (
+                &SysctlConfigurator,
+                serde_yaml::Value::Mapping(serde_yaml::Mapping::new()),
+            ),
+            (
+                &SysctlConfigurator,
+                serde_yaml::Value::String("invalid".into()),
+            ),
+            (
+                &KernelModuleConfigurator,
+                serde_yaml::Value::Sequence(Vec::new()),
+            ),
+        ];
+        for (c, input) in cases {
+            let drifts = c.diff(input).unwrap();
+            assert!(
+                drifts.is_empty(),
+                "{} should return empty for {:?}",
+                c.name(),
+                input
+            );
+        }
     }
 
     #[test]
