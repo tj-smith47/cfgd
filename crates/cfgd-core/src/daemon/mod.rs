@@ -8232,4 +8232,616 @@ mod tests {
         );
         assert!(tasks[0].allow_unsigned);
     }
+
+    // --- handle_reconcile: deeper paths ---
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn handle_reconcile_with_valid_config_records_drift_events() {
+        // Set up a tmpdir with config.yaml + profiles/default.yaml containing packages.
+        // DaemonHooks that returns a PackageAction::Install so the plan has drift.
+        let tmp = tempfile::tempdir().unwrap();
+        let state_dir = tmp.path().join("state");
+        std::fs::create_dir_all(&state_dir).unwrap();
+
+        // Write config
+        let config_path = tmp.path().join("config.yaml");
+        std::fs::write(
+            &config_path,
+            "apiVersion: cfgd.io/v1alpha1\nkind: CfgdConfig\nmetadata:\n  name: test\nspec:\n  profile: default\n",
+        )
+        .unwrap();
+
+        // Write profile
+        let profiles_dir = tmp.path().join("profiles");
+        std::fs::create_dir_all(&profiles_dir).unwrap();
+        std::fs::write(
+            profiles_dir.join("default.yaml"),
+            "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec:\n  packages:\n    cargo:\n      packages:\n        - bat\n",
+        )
+        .unwrap();
+
+        struct DriftHooks;
+        impl DaemonHooks for DriftHooks {
+            fn build_registry(&self, _: &CfgdConfig) -> ProviderRegistry {
+                ProviderRegistry::new()
+            }
+            fn plan_files(
+                &self,
+                _: &Path,
+                _: &ResolvedProfile,
+            ) -> crate::errors::Result<Vec<FileAction>> {
+                Ok(vec![])
+            }
+            fn plan_packages(
+                &self,
+                _: &MergedProfile,
+                _: &[&dyn PackageManager],
+            ) -> crate::errors::Result<Vec<PackageAction>> {
+                // Return a package install action to create drift
+                Ok(vec![PackageAction::Install {
+                    manager: "cargo".into(),
+                    packages: vec!["bat".into()],
+                    origin: "local".into(),
+                }])
+            }
+            fn extend_registry_custom_managers(
+                &self,
+                _: &mut ProviderRegistry,
+                _: &config::PackagesSpec,
+            ) {
+            }
+            fn expand_tilde(&self, path: &Path) -> PathBuf {
+                crate::expand_tilde(path)
+            }
+        }
+
+        let state = Arc::new(Mutex::new(DaemonState::new()));
+        let notifier = Arc::new(Notifier::new(NotifyMethod::Stdout, None));
+
+        let st = Arc::clone(&state);
+        let not = Arc::clone(&notifier);
+        let sd = state_dir.clone();
+        let cp = config_path.clone();
+        tokio::task::spawn_blocking(move || {
+            handle_reconcile(&cp, None, &st, &not, false, &DriftHooks, Some(&sd));
+        })
+        .await
+        .unwrap();
+
+        // Verify drift events were recorded in the state store
+        let store = StateStore::open(&state_dir.join("cfgd.db")).unwrap();
+        let drift_events = store.unresolved_drift().unwrap();
+        assert!(
+            !drift_events.is_empty(),
+            "drift events should have been recorded"
+        );
+        // The drift should be for the package install action
+        let pkg_drift = drift_events.iter().find(|e| e.resource_type == "package");
+        assert!(
+            pkg_drift.is_some(),
+            "should have a package drift event; events: {:?}",
+            drift_events
+        );
+        assert_eq!(pkg_drift.unwrap().resource_id, "cargo:bat");
+
+        // Verify daemon state was updated
+        let guard = state.lock().await;
+        assert!(
+            guard.last_reconcile.is_some(),
+            "last_reconcile should have been set"
+        );
+        assert!(
+            guard.drift_count > 0,
+            "drift_count should have been incremented"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn handle_reconcile_notify_only_drift_policy_does_not_apply() {
+        // Verify that with NotifyOnly drift policy, drift is recorded but no apply happens.
+        let tmp = tempfile::tempdir().unwrap();
+        let state_dir = tmp.path().join("state");
+        std::fs::create_dir_all(&state_dir).unwrap();
+
+        let config_path = tmp.path().join("config.yaml");
+        std::fs::write(
+            &config_path,
+            "apiVersion: cfgd.io/v1alpha1\nkind: CfgdConfig\nmetadata:\n  name: test\nspec:\n  profile: default\n  daemon:\n    enabled: true\n    reconcile:\n      interval: 60s\n      onChange: false\n      autoApply: false\n      driftPolicy: NotifyOnly\n",
+        )
+        .unwrap();
+
+        let profiles_dir = tmp.path().join("profiles");
+        std::fs::create_dir_all(&profiles_dir).unwrap();
+        std::fs::write(
+            profiles_dir.join("default.yaml"),
+            "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec:\n  packages:\n    cargo:\n      packages:\n        - bat\n",
+        )
+        .unwrap();
+
+        struct NotifyOnlyHooks;
+        impl DaemonHooks for NotifyOnlyHooks {
+            fn build_registry(&self, _: &CfgdConfig) -> ProviderRegistry {
+                ProviderRegistry::new()
+            }
+            fn plan_files(
+                &self,
+                _: &Path,
+                _: &ResolvedProfile,
+            ) -> crate::errors::Result<Vec<FileAction>> {
+                Ok(vec![])
+            }
+            fn plan_packages(
+                &self,
+                _: &MergedProfile,
+                _: &[&dyn PackageManager],
+            ) -> crate::errors::Result<Vec<PackageAction>> {
+                Ok(vec![PackageAction::Install {
+                    manager: "cargo".into(),
+                    packages: vec!["ripgrep".into()],
+                    origin: "local".into(),
+                }])
+            }
+            fn extend_registry_custom_managers(
+                &self,
+                _: &mut ProviderRegistry,
+                _: &config::PackagesSpec,
+            ) {
+            }
+            fn expand_tilde(&self, path: &Path) -> PathBuf {
+                crate::expand_tilde(path)
+            }
+        }
+
+        let state = Arc::new(Mutex::new(DaemonState::new()));
+        let notifier = Arc::new(Notifier::new(NotifyMethod::Stdout, None));
+
+        let st = Arc::clone(&state);
+        let not = Arc::clone(&notifier);
+        let sd = state_dir.clone();
+        let cp = config_path.clone();
+        tokio::task::spawn_blocking(move || {
+            handle_reconcile(&cp, None, &st, &not, false, &NotifyOnlyHooks, Some(&sd));
+        })
+        .await
+        .unwrap();
+
+        // Drift should be recorded
+        let store = StateStore::open(&state_dir.join("cfgd.db")).unwrap();
+        let drift_events = store.unresolved_drift().unwrap();
+        assert!(
+            !drift_events.is_empty(),
+            "drift events should be recorded even with NotifyOnly policy"
+        );
+
+        // Verify state reflects drift
+        let guard = state.lock().await;
+        assert!(guard.drift_count > 0);
+        assert!(guard.last_reconcile.is_some());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn handle_reconcile_no_drift_when_no_actions() {
+        // When plan has no actions, no drift events should be recorded.
+        let tmp = tempfile::tempdir().unwrap();
+        let state_dir = tmp.path().join("state");
+        std::fs::create_dir_all(&state_dir).unwrap();
+
+        let config_path = tmp.path().join("config.yaml");
+        std::fs::write(
+            &config_path,
+            "apiVersion: cfgd.io/v1alpha1\nkind: CfgdConfig\nmetadata:\n  name: test\nspec:\n  profile: default\n",
+        )
+        .unwrap();
+
+        let profiles_dir = tmp.path().join("profiles");
+        std::fs::create_dir_all(&profiles_dir).unwrap();
+        std::fs::write(
+            profiles_dir.join("default.yaml"),
+            "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec: {}\n",
+        )
+        .unwrap();
+
+        struct NoDriftHooks;
+        impl DaemonHooks for NoDriftHooks {
+            fn build_registry(&self, _: &CfgdConfig) -> ProviderRegistry {
+                ProviderRegistry::new()
+            }
+            fn plan_files(
+                &self,
+                _: &Path,
+                _: &ResolvedProfile,
+            ) -> crate::errors::Result<Vec<FileAction>> {
+                Ok(vec![])
+            }
+            fn plan_packages(
+                &self,
+                _: &MergedProfile,
+                _: &[&dyn PackageManager],
+            ) -> crate::errors::Result<Vec<PackageAction>> {
+                Ok(vec![])
+            }
+            fn extend_registry_custom_managers(
+                &self,
+                _: &mut ProviderRegistry,
+                _: &config::PackagesSpec,
+            ) {
+            }
+            fn expand_tilde(&self, path: &Path) -> PathBuf {
+                crate::expand_tilde(path)
+            }
+        }
+
+        let state = Arc::new(Mutex::new(DaemonState::new()));
+        let notifier = Arc::new(Notifier::new(NotifyMethod::Stdout, None));
+
+        let st = Arc::clone(&state);
+        let not = Arc::clone(&notifier);
+        let sd = state_dir.clone();
+        let cp = config_path.clone();
+        tokio::task::spawn_blocking(move || {
+            handle_reconcile(&cp, None, &st, &not, false, &NoDriftHooks, Some(&sd));
+        })
+        .await
+        .unwrap();
+
+        // No drift events should have been recorded
+        let store = StateStore::open(&state_dir.join("cfgd.db")).unwrap();
+        let drift_events = store.unresolved_drift().unwrap();
+        assert!(
+            drift_events.is_empty(),
+            "no drift events should be recorded when plan has no actions"
+        );
+
+        // State should reflect a reconciliation occurred
+        let guard = state.lock().await;
+        assert!(guard.last_reconcile.is_some());
+        assert_eq!(guard.drift_count, 0);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn handle_reconcile_with_profile_override() {
+        // Test that profile_override is used instead of config's profile field.
+        let tmp = tempfile::tempdir().unwrap();
+        let state_dir = tmp.path().join("state");
+        std::fs::create_dir_all(&state_dir).unwrap();
+
+        // Config with profile "other" but we override to "default"
+        let config_path = tmp.path().join("config.yaml");
+        std::fs::write(
+            &config_path,
+            "apiVersion: cfgd.io/v1alpha1\nkind: CfgdConfig\nmetadata:\n  name: test\nspec:\n  profile: nonexistent\n",
+        )
+        .unwrap();
+
+        let profiles_dir = tmp.path().join("profiles");
+        std::fs::create_dir_all(&profiles_dir).unwrap();
+        std::fs::write(
+            profiles_dir.join("default.yaml"),
+            "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec: {}\n",
+        )
+        .unwrap();
+
+        struct EmptyHooks;
+        impl DaemonHooks for EmptyHooks {
+            fn build_registry(&self, _: &CfgdConfig) -> ProviderRegistry {
+                ProviderRegistry::new()
+            }
+            fn plan_files(
+                &self,
+                _: &Path,
+                _: &ResolvedProfile,
+            ) -> crate::errors::Result<Vec<FileAction>> {
+                Ok(vec![])
+            }
+            fn plan_packages(
+                &self,
+                _: &MergedProfile,
+                _: &[&dyn PackageManager],
+            ) -> crate::errors::Result<Vec<PackageAction>> {
+                Ok(vec![])
+            }
+            fn extend_registry_custom_managers(
+                &self,
+                _: &mut ProviderRegistry,
+                _: &config::PackagesSpec,
+            ) {
+            }
+            fn expand_tilde(&self, path: &Path) -> PathBuf {
+                crate::expand_tilde(path)
+            }
+        }
+
+        let state = Arc::new(Mutex::new(DaemonState::new()));
+        let notifier = Arc::new(Notifier::new(NotifyMethod::Stdout, None));
+
+        let st = Arc::clone(&state);
+        let not = Arc::clone(&notifier);
+        let sd = state_dir.clone();
+        let cp = config_path.clone();
+        // Override profile to "default" which exists
+        tokio::task::spawn_blocking(move || {
+            handle_reconcile(
+                &cp,
+                Some("default"),
+                &st,
+                &not,
+                false,
+                &EmptyHooks,
+                Some(&sd),
+            );
+        })
+        .await
+        .unwrap();
+
+        // Should have completed successfully with the overridden profile
+        let guard = state.lock().await;
+        assert!(
+            guard.last_reconcile.is_some(),
+            "reconciliation should succeed with profile override"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn handle_reconcile_multiple_actions_records_all_drift() {
+        // Verify that all drift-producing actions are recorded as separate events.
+        let tmp = tempfile::tempdir().unwrap();
+        let state_dir = tmp.path().join("state");
+        std::fs::create_dir_all(&state_dir).unwrap();
+
+        let config_path = tmp.path().join("config.yaml");
+        std::fs::write(
+            &config_path,
+            "apiVersion: cfgd.io/v1alpha1\nkind: CfgdConfig\nmetadata:\n  name: test\nspec:\n  profile: default\n",
+        )
+        .unwrap();
+
+        let profiles_dir = tmp.path().join("profiles");
+        std::fs::create_dir_all(&profiles_dir).unwrap();
+        std::fs::write(
+            profiles_dir.join("default.yaml"),
+            "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec:\n  packages:\n    cargo:\n      packages:\n        - bat\n        - ripgrep\n        - fd-find\n",
+        )
+        .unwrap();
+
+        struct MultiDriftHooks;
+        impl DaemonHooks for MultiDriftHooks {
+            fn build_registry(&self, _: &CfgdConfig) -> ProviderRegistry {
+                ProviderRegistry::new()
+            }
+            fn plan_files(
+                &self,
+                _: &Path,
+                _: &ResolvedProfile,
+            ) -> crate::errors::Result<Vec<FileAction>> {
+                // Also include a file action
+                Ok(vec![FileAction::Create {
+                    source: PathBuf::from("/src/.zshrc"),
+                    target: PathBuf::from("/home/user/.zshrc"),
+                    origin: "local".into(),
+                    strategy: crate::config::FileStrategy::default(),
+                    source_hash: None,
+                }])
+            }
+            fn plan_packages(
+                &self,
+                _: &MergedProfile,
+                _: &[&dyn PackageManager],
+            ) -> crate::errors::Result<Vec<PackageAction>> {
+                Ok(vec![
+                    PackageAction::Install {
+                        manager: "cargo".into(),
+                        packages: vec!["bat".into(), "ripgrep".into()],
+                        origin: "local".into(),
+                    },
+                    PackageAction::Install {
+                        manager: "cargo".into(),
+                        packages: vec!["fd-find".into()],
+                        origin: "local".into(),
+                    },
+                ])
+            }
+            fn extend_registry_custom_managers(
+                &self,
+                _: &mut ProviderRegistry,
+                _: &config::PackagesSpec,
+            ) {
+            }
+            fn expand_tilde(&self, path: &Path) -> PathBuf {
+                crate::expand_tilde(path)
+            }
+        }
+
+        let state = Arc::new(Mutex::new(DaemonState::new()));
+        let notifier = Arc::new(Notifier::new(NotifyMethod::Stdout, None));
+
+        let st = Arc::clone(&state);
+        let not = Arc::clone(&notifier);
+        let sd = state_dir.clone();
+        let cp = config_path.clone();
+        tokio::task::spawn_blocking(move || {
+            handle_reconcile(&cp, None, &st, &not, false, &MultiDriftHooks, Some(&sd));
+        })
+        .await
+        .unwrap();
+
+        let store = StateStore::open(&state_dir.join("cfgd.db")).unwrap();
+        let drift_events = store.unresolved_drift().unwrap();
+        // Should have drift events for all actions:
+        // 1 file create + 2 package install actions = 3 drift events
+        assert_eq!(
+            drift_events.len(),
+            3,
+            "should have drift events for all actions; got: {:?}",
+            drift_events
+        );
+
+        let resource_types: Vec<&str> = drift_events
+            .iter()
+            .map(|e| e.resource_type.as_str())
+            .collect();
+        assert!(
+            resource_types.contains(&"file"),
+            "should have a file drift event"
+        );
+        assert!(
+            resource_types.contains(&"package"),
+            "should have package drift events"
+        );
+    }
+
+    // --- discover_managed_paths ---
+
+    #[test]
+    fn discover_managed_paths_returns_targets_from_profile() {
+        let tmp = tempfile::tempdir().unwrap();
+
+        let config_path = tmp.path().join("config.yaml");
+        std::fs::write(
+            &config_path,
+            "apiVersion: cfgd.io/v1alpha1\nkind: CfgdConfig\nmetadata:\n  name: test\nspec:\n  profile: default\n",
+        )
+        .unwrap();
+
+        let profiles_dir = tmp.path().join("profiles");
+        std::fs::create_dir_all(&profiles_dir).unwrap();
+        std::fs::write(
+            profiles_dir.join("default.yaml"),
+            "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec:\n  files:\n    managed:\n      - source: src/zshrc\n        target: /home/user/.zshrc\n      - source: src/vimrc\n        target: /home/user/.vimrc\n",
+        )
+        .unwrap();
+
+        struct TestHooks;
+        impl DaemonHooks for TestHooks {
+            fn build_registry(&self, _: &CfgdConfig) -> ProviderRegistry {
+                ProviderRegistry::new()
+            }
+            fn plan_files(
+                &self,
+                _: &Path,
+                _: &ResolvedProfile,
+            ) -> crate::errors::Result<Vec<FileAction>> {
+                Ok(vec![])
+            }
+            fn plan_packages(
+                &self,
+                _: &MergedProfile,
+                _: &[&dyn PackageManager],
+            ) -> crate::errors::Result<Vec<PackageAction>> {
+                Ok(vec![])
+            }
+            fn extend_registry_custom_managers(
+                &self,
+                _: &mut ProviderRegistry,
+                _: &config::PackagesSpec,
+            ) {
+            }
+            fn expand_tilde(&self, path: &Path) -> PathBuf {
+                path.to_path_buf()
+            }
+        }
+
+        let paths = discover_managed_paths(&config_path, None, &TestHooks);
+        assert_eq!(paths.len(), 2);
+        assert!(paths.contains(&PathBuf::from("/home/user/.zshrc")));
+        assert!(paths.contains(&PathBuf::from("/home/user/.vimrc")));
+    }
+
+    #[test]
+    fn discover_managed_paths_returns_empty_for_missing_config() {
+        struct TestHooks;
+        impl DaemonHooks for TestHooks {
+            fn build_registry(&self, _: &CfgdConfig) -> ProviderRegistry {
+                ProviderRegistry::new()
+            }
+            fn plan_files(
+                &self,
+                _: &Path,
+                _: &ResolvedProfile,
+            ) -> crate::errors::Result<Vec<FileAction>> {
+                Ok(vec![])
+            }
+            fn plan_packages(
+                &self,
+                _: &MergedProfile,
+                _: &[&dyn PackageManager],
+            ) -> crate::errors::Result<Vec<PackageAction>> {
+                Ok(vec![])
+            }
+            fn extend_registry_custom_managers(
+                &self,
+                _: &mut ProviderRegistry,
+                _: &config::PackagesSpec,
+            ) {
+            }
+            fn expand_tilde(&self, path: &Path) -> PathBuf {
+                path.to_path_buf()
+            }
+        }
+
+        let paths = discover_managed_paths(Path::new("/nonexistent/config.yaml"), None, &TestHooks);
+        assert!(paths.is_empty());
+    }
+
+    #[test]
+    fn discover_managed_paths_with_profile_override() {
+        let tmp = tempfile::tempdir().unwrap();
+
+        let config_path = tmp.path().join("config.yaml");
+        std::fs::write(
+            &config_path,
+            "apiVersion: cfgd.io/v1alpha1\nkind: CfgdConfig\nmetadata:\n  name: test\nspec: {}\n",
+        )
+        .unwrap();
+
+        let profiles_dir = tmp.path().join("profiles");
+        std::fs::create_dir_all(&profiles_dir).unwrap();
+        std::fs::write(
+            profiles_dir.join("custom.yaml"),
+            "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: custom\nspec:\n  files:\n    managed:\n      - source: src/bashrc\n        target: /home/user/.bashrc\n",
+        )
+        .unwrap();
+
+        struct TestHooks;
+        impl DaemonHooks for TestHooks {
+            fn build_registry(&self, _: &CfgdConfig) -> ProviderRegistry {
+                ProviderRegistry::new()
+            }
+            fn plan_files(
+                &self,
+                _: &Path,
+                _: &ResolvedProfile,
+            ) -> crate::errors::Result<Vec<FileAction>> {
+                Ok(vec![])
+            }
+            fn plan_packages(
+                &self,
+                _: &MergedProfile,
+                _: &[&dyn PackageManager],
+            ) -> crate::errors::Result<Vec<PackageAction>> {
+                Ok(vec![])
+            }
+            fn extend_registry_custom_managers(
+                &self,
+                _: &mut ProviderRegistry,
+                _: &config::PackagesSpec,
+            ) {
+            }
+            fn expand_tilde(&self, path: &Path) -> PathBuf {
+                path.to_path_buf()
+            }
+        }
+
+        let paths = discover_managed_paths(&config_path, Some("custom"), &TestHooks);
+        assert_eq!(paths.len(), 1);
+        assert_eq!(paths[0], PathBuf::from("/home/user/.bashrc"));
+    }
+
+    // --- pending_resource_paths ---
+
+    #[test]
+    fn pending_resource_paths_returns_empty_for_no_decisions() {
+        let store = StateStore::open_in_memory().unwrap();
+        let paths = pending_resource_paths(&store);
+        assert!(paths.is_empty());
+    }
 }

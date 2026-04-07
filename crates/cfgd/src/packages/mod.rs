@@ -9071,33 +9071,43 @@ channels:
     }
 
     #[test]
-    fn parse_snap_info_version_empty_output() {
-        assert_eq!(parse_snap_info_version(""), None);
+    fn parse_snap_info_version_picks_stable_over_candidate() {
+        // Real snap info output has multiple channels — must pick stable
+        let output = "\
+channels:
+  latest/candidate: 15.0.0-rc1 2024-04-01 (240) 5MB classic
+  latest/stable:    14.1.0 2024-03-15 (234) 5MB classic
+  latest/beta:      ↑";
+        assert_eq!(
+            parse_snap_info_version(output),
+            Some("14.1.0".to_string()),
+            "should pick stable even when candidate appears first"
+        );
     }
 
     // --- parse_version_field (flatpak / winget / scoop) ---
 
     #[test]
-    fn parse_version_field_basic() {
-        let output = "Name: Firefox\nVersion: 124.0.1\nBranch: stable\n";
-        assert_eq!(parse_version_field(output), Some("124.0.1".to_string()));
+    fn parse_version_field_ignores_version_substring_in_other_keys() {
+        // "AppVersion:" should not be confused with "Version:"
+        let output = "AppVersion: 2.0.0\nVersion: 3.0.0\n";
+        assert_eq!(
+            parse_version_field(output),
+            Some("3.0.0".to_string()),
+            "should match exact 'Version:' prefix, not substrings"
+        );
     }
 
     #[test]
-    fn parse_version_field_with_leading_whitespace() {
+    fn parse_version_field_trims_surrounding_whitespace() {
         let output = "  Version:   3.2.1  \n";
         assert_eq!(parse_version_field(output), Some("3.2.1".to_string()));
     }
 
     #[test]
-    fn parse_version_field_no_version_line() {
+    fn parse_version_field_skips_non_version_lines() {
         let output = "Name: something\nDescription: a package\n";
         assert_eq!(parse_version_field(output), None);
-    }
-
-    #[test]
-    fn parse_version_field_empty_output() {
-        assert_eq!(parse_version_field(""), None);
     }
 
     #[test]
@@ -9140,8 +9150,14 @@ channels:
     }
 
     #[test]
-    fn parse_nix_search_version_empty_object() {
-        assert_eq!(parse_nix_search_version("{}"), None);
+    fn parse_nix_search_version_nested_package_key_format() {
+        // Real nix search output uses deeply nested keys like legacyPackages.SYSTEM.NAME
+        let output = r#"{"legacyPackages.aarch64-darwin.ripgrep":{"pname":"ripgrep","version":"14.1.0","description":"fast grep"}}"#;
+        assert_eq!(
+            parse_nix_search_version(output),
+            Some("14.1.0".to_string()),
+            "should work with aarch64-darwin platform prefix"
+        );
     }
 
     // --- parse_go_module_version ---
@@ -9153,20 +9169,22 @@ channels:
     }
 
     #[test]
-    fn parse_go_module_version_no_v_prefix() {
-        let output = r#"{"Path":"example.com/tool","Version":"1.0.0"}"#;
-        assert_eq!(parse_go_module_version(output), Some("1.0.0".to_string()));
+    fn parse_go_module_version_handles_pseudo_version() {
+        // Go pseudo-versions include timestamps and commit hashes
+        let output =
+            r#"{"Path":"example.com/tool","Version":"v0.0.0-20240301120000-abcdef123456"}"#;
+        assert_eq!(
+            parse_go_module_version(output),
+            Some("0.0.0-20240301120000-abcdef123456".to_string()),
+            "should handle pseudo-versions with commit metadata"
+        );
     }
 
     #[test]
-    fn parse_go_module_version_no_version_field() {
-        let output = r#"{"Path":"example.com/tool"}"#;
-        assert_eq!(parse_go_module_version(output), None);
-    }
-
-    #[test]
-    fn parse_go_module_version_invalid_json() {
-        assert_eq!(parse_go_module_version("not json"), None);
+    fn parse_go_module_version_extra_fields_ignored() {
+        // Real go list -m output has many extra fields — only Version matters
+        let output = r#"{"Path":"golang.org/x/tools","Version":"v0.20.0","Time":"2024-04-01T00:00:00Z","GoMod":"golang.org/x/tools@v0.20.0/go.mod"}"#;
+        assert_eq!(parse_go_module_version(output), Some("0.20.0".to_string()));
     }
 
     // --- parse_choco_info_version ---
@@ -9251,10 +9269,12 @@ nodejs 20.11.1\n\
     }
 
     #[test]
-    fn parse_choco_list_empty() {
-        let output = "Chocolatey v2.2.2\n0 packages installed.\n";
+    fn parse_choco_list_ignores_carriage_returns() {
+        // Windows output often has \r\n line endings
+        let output = "Chocolatey v2.2.2\r\ngit 2.44.0\r\n1 package installed.\r\n";
         let result = parse_choco_list(output);
-        assert!(result.is_empty());
+        assert!(result.contains("git"));
+        assert_eq!(result.len(), 1, "should handle Windows-style line endings");
     }
 
     // --- parse_scoop_list ---

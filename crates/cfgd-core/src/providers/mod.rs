@@ -312,6 +312,7 @@ pub(crate) struct StubPackageManager {
     pub available: bool,
     pub installed: HashSet<String>,
     pub versions: std::collections::HashMap<String, String>,
+    pub bootstrap_capable: bool,
 }
 
 #[cfg(test)]
@@ -322,11 +323,17 @@ impl StubPackageManager {
             available: true,
             installed: HashSet::new(),
             versions: std::collections::HashMap::new(),
+            bootstrap_capable: false,
         }
     }
 
     pub fn unavailable(mut self) -> Self {
         self.available = false;
+        self
+    }
+
+    pub fn bootstrappable(mut self) -> Self {
+        self.bootstrap_capable = true;
         self
     }
 
@@ -352,7 +359,7 @@ impl PackageManager for StubPackageManager {
         self.available
     }
     fn can_bootstrap(&self) -> bool {
-        false
+        self.bootstrap_capable
     }
     fn bootstrap(&self, _printer: &Printer) -> Result<()> {
         Ok(())

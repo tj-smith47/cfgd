@@ -3206,4 +3206,320 @@ other: data
             "error should mention encryption: {err_msg}"
         );
     }
+
+    // -----------------------------------------------------------------------
+    // Direct diff() method tests — all 5 branches
+    // -----------------------------------------------------------------------
+
+    /// Call the trait's diff method (not the inherent CfgdFileManager::diff which
+    /// has a different signature).
+    fn trait_diff(
+        fm: &CfgdFileManager,
+        source: &FileTree,
+        target: &FileTree,
+    ) -> cfgd_core::errors::Result<Vec<FileDiff>> {
+        <CfgdFileManager as cfgd_core::providers::FileManager>::diff(fm, source, target)
+    }
+
+    fn make_entry(hash: &str, perms: Option<u32>, source: &str) -> FileEntry {
+        FileEntry {
+            content_hash: hash.to_string(),
+            permissions: perms,
+            is_template: false,
+            source_path: PathBuf::from(source),
+            origin_source: "local".to_string(),
+        }
+    }
+
+    #[test]
+    fn diff_modified_when_hashes_differ() {
+        let dir = tempfile::tempdir().unwrap();
+        let resolved = make_resolved_profile(vec![], FilesSpec::default());
+        let fm = CfgdFileManager::new(dir.path(), &resolved).unwrap();
+
+        let target_path = PathBuf::from("/home/user/.config/test.txt");
+        let source_path = PathBuf::from("/opt/cfgd/files/test.txt");
+
+        let mut source = FileTree {
+            files: BTreeMap::new(),
+        };
+        source.files.insert(
+            target_path.clone(),
+            make_entry("aaaa", Some(0o644), "/opt/cfgd/files/test.txt"),
+        );
+
+        let mut target = FileTree {
+            files: BTreeMap::new(),
+        };
+        target.files.insert(
+            target_path.clone(),
+            make_entry("bbbb", Some(0o644), &target_path.display().to_string()),
+        );
+
+        let diffs = trait_diff(&fm, &source, &target).unwrap();
+        assert_eq!(diffs.len(), 1);
+        assert!(
+            matches!(
+                &diffs[0].kind,
+                FileDiffKind::Modified { source: s, .. } if *s == source_path
+            ),
+            "expected Modified diff, got: {:?}",
+            diffs[0].kind
+        );
+        assert_eq!(diffs[0].target, target_path);
+    }
+
+    #[test]
+    fn diff_permissions_changed_when_hashes_match() {
+        let dir = tempfile::tempdir().unwrap();
+        let resolved = make_resolved_profile(vec![], FilesSpec::default());
+        let fm = CfgdFileManager::new(dir.path(), &resolved).unwrap();
+
+        let target_path = PathBuf::from("/home/user/.bashrc");
+
+        let mut source = FileTree {
+            files: BTreeMap::new(),
+        };
+        source.files.insert(
+            target_path.clone(),
+            make_entry("samehash", Some(0o755), "/opt/cfgd/files/.bashrc"),
+        );
+
+        let mut target = FileTree {
+            files: BTreeMap::new(),
+        };
+        target.files.insert(
+            target_path.clone(),
+            make_entry("samehash", Some(0o644), &target_path.display().to_string()),
+        );
+
+        let diffs = trait_diff(&fm, &source, &target).unwrap();
+        assert_eq!(diffs.len(), 1);
+        assert!(
+            matches!(
+                &diffs[0].kind,
+                FileDiffKind::PermissionsChanged {
+                    current: 0o644,
+                    desired: 0o755
+                }
+            ),
+            "expected PermissionsChanged diff, got: {:?}",
+            diffs[0].kind
+        );
+    }
+
+    #[test]
+    fn diff_unchanged_when_hash_and_perms_match() {
+        let dir = tempfile::tempdir().unwrap();
+        let resolved = make_resolved_profile(vec![], FilesSpec::default());
+        let fm = CfgdFileManager::new(dir.path(), &resolved).unwrap();
+
+        let target_path = PathBuf::from("/home/user/.vimrc");
+
+        let mut source = FileTree {
+            files: BTreeMap::new(),
+        };
+        source.files.insert(
+            target_path.clone(),
+            make_entry("unchanged", Some(0o644), "/opt/cfgd/files/.vimrc"),
+        );
+
+        let mut target = FileTree {
+            files: BTreeMap::new(),
+        };
+        target.files.insert(
+            target_path.clone(),
+            make_entry("unchanged", Some(0o644), &target_path.display().to_string()),
+        );
+
+        let diffs = trait_diff(&fm, &source, &target).unwrap();
+        assert_eq!(diffs.len(), 1);
+        assert!(
+            matches!(&diffs[0].kind, FileDiffKind::Unchanged),
+            "expected Unchanged diff, got: {:?}",
+            diffs[0].kind
+        );
+    }
+
+    #[test]
+    fn diff_created_when_in_source_not_target() {
+        let dir = tempfile::tempdir().unwrap();
+        let resolved = make_resolved_profile(vec![], FilesSpec::default());
+        let fm = CfgdFileManager::new(dir.path(), &resolved).unwrap();
+
+        let target_path = PathBuf::from("/home/user/.new_config");
+        let source_path = PathBuf::from("/opt/cfgd/files/.new_config");
+
+        let mut source = FileTree {
+            files: BTreeMap::new(),
+        };
+        source.files.insert(
+            target_path.clone(),
+            make_entry("newhash", Some(0o644), &source_path.display().to_string()),
+        );
+
+        let target = FileTree {
+            files: BTreeMap::new(),
+        };
+
+        let diffs = trait_diff(&fm, &source, &target).unwrap();
+        assert_eq!(diffs.len(), 1);
+        assert!(
+            matches!(
+                &diffs[0].kind,
+                FileDiffKind::Created { source: s } if *s == source_path
+            ),
+            "expected Created diff, got: {:?}",
+            diffs[0].kind
+        );
+    }
+
+    #[test]
+    fn diff_deleted_when_in_target_not_source() {
+        let dir = tempfile::tempdir().unwrap();
+        let resolved = make_resolved_profile(vec![], FilesSpec::default());
+        let fm = CfgdFileManager::new(dir.path(), &resolved).unwrap();
+
+        let target_path = PathBuf::from("/home/user/.old_config");
+
+        let source = FileTree {
+            files: BTreeMap::new(),
+        };
+
+        let mut target = FileTree {
+            files: BTreeMap::new(),
+        };
+        target.files.insert(
+            target_path.clone(),
+            make_entry("oldhash", Some(0o644), &target_path.display().to_string()),
+        );
+
+        let diffs = trait_diff(&fm, &source, &target).unwrap();
+        assert_eq!(diffs.len(), 1);
+        assert!(
+            matches!(&diffs[0].kind, FileDiffKind::Deleted),
+            "expected Deleted diff, got: {:?}",
+            diffs[0].kind
+        );
+        assert_eq!(diffs[0].target, target_path);
+    }
+
+    #[test]
+    fn diff_mixed_all_kinds() {
+        let dir = tempfile::tempdir().unwrap();
+        let resolved = make_resolved_profile(vec![], FilesSpec::default());
+        let fm = CfgdFileManager::new(dir.path(), &resolved).unwrap();
+
+        let mut source = FileTree {
+            files: BTreeMap::new(),
+        };
+        source.files.insert(
+            PathBuf::from("/a"),
+            make_entry("new", Some(0o644), "/src/a"),
+        );
+        source.files.insert(
+            PathBuf::from("/b"),
+            make_entry("same", Some(0o644), "/src/b"),
+        );
+        source.files.insert(
+            PathBuf::from("/c"),
+            make_entry("created", Some(0o644), "/src/c"),
+        );
+
+        let mut target = FileTree {
+            files: BTreeMap::new(),
+        };
+        target
+            .files
+            .insert(PathBuf::from("/a"), make_entry("old", Some(0o644), "/a"));
+        target
+            .files
+            .insert(PathBuf::from("/b"), make_entry("same", Some(0o644), "/b"));
+        target.files.insert(
+            PathBuf::from("/d"),
+            make_entry("deleted", Some(0o644), "/d"),
+        );
+
+        let diffs = trait_diff(&fm, &source, &target).unwrap();
+        assert_eq!(diffs.len(), 4, "expected 4 diffs, got: {diffs:?}");
+
+        let kinds: Vec<_> = diffs.iter().map(|d| (&d.target, &d.kind)).collect();
+        assert!(
+            kinds
+                .iter()
+                .any(|(t, k)| **t == PathBuf::from("/a")
+                    && matches!(k, FileDiffKind::Modified { .. })),
+            "expected /a to be Modified"
+        );
+        assert!(
+            kinds
+                .iter()
+                .any(|(t, k)| **t == PathBuf::from("/b") && matches!(k, FileDiffKind::Unchanged)),
+            "expected /b to be Unchanged"
+        );
+        assert!(
+            kinds
+                .iter()
+                .any(|(t, k)| **t == PathBuf::from("/c")
+                    && matches!(k, FileDiffKind::Created { .. })),
+            "expected /c to be Created"
+        );
+        assert!(
+            kinds
+                .iter()
+                .any(|(t, k)| **t == PathBuf::from("/d") && matches!(k, FileDiffKind::Deleted)),
+            "expected /d to be Deleted"
+        );
+    }
+
+    #[test]
+    fn diff_permissions_none_source_produces_no_entry() {
+        // When source has None permissions and target has Some, the permissions
+        // differ (None != Some), but the PermissionsChanged branch requires both
+        // to be Some. The if-let fails, so NO diff entry is produced for this file.
+        let dir = tempfile::tempdir().unwrap();
+        let resolved = make_resolved_profile(vec![], FilesSpec::default());
+        let fm = CfgdFileManager::new(dir.path(), &resolved).unwrap();
+
+        let target_path = PathBuf::from("/home/user/.config");
+
+        let mut source = FileTree {
+            files: BTreeMap::new(),
+        };
+        source
+            .files
+            .insert(target_path.clone(), make_entry("eq", None, "/src"));
+
+        let mut target = FileTree {
+            files: BTreeMap::new(),
+        };
+        target.files.insert(
+            target_path.clone(),
+            make_entry("eq", Some(0o644), &target_path.display().to_string()),
+        );
+
+        let diffs = trait_diff(&fm, &source, &target).unwrap();
+        // The file is silently skipped: perms differ but both must be Some for a diff
+        assert!(
+            diffs.is_empty(),
+            "expected no diff when source perms is None, got: {diffs:?}"
+        );
+    }
+
+    #[test]
+    fn diff_empty_trees_produces_empty_diffs() {
+        let dir = tempfile::tempdir().unwrap();
+        let resolved = make_resolved_profile(vec![], FilesSpec::default());
+        let fm = CfgdFileManager::new(dir.path(), &resolved).unwrap();
+
+        let source = FileTree {
+            files: BTreeMap::new(),
+        };
+        let target = FileTree {
+            files: BTreeMap::new(),
+        };
+
+        let diffs = trait_diff(&fm, &source, &target).unwrap();
+        assert!(diffs.is_empty());
+    }
 }

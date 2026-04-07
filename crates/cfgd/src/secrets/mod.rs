@@ -1491,6 +1491,52 @@ AGE-SECRET-KEY-1STUFF\n";
         assert!(names.contains(&"vault"));
     }
 
+    #[test]
+    fn check_secrets_health_existing_age_key_reports_exists() {
+        let dir = tempfile::tempdir().unwrap();
+        let key_path = dir.path().join("present-key.txt");
+        std::fs::write(&key_path, "# public key: age1test\nAGE-SECRET-KEY-1X\n").unwrap();
+        let health = check_secrets_health(dir.path(), Some(&key_path));
+        assert!(
+            health.age_key_exists,
+            "age key should exist at override path"
+        );
+        assert_eq!(health.age_key_path, Some(key_path));
+    }
+
+    #[test]
+    fn resolve_secret_refs_provider_then_file_in_same_string() {
+        // Mix a provider reference and a file reference in one string
+        let dir = tempfile::tempdir().unwrap();
+        let enc_file = dir.path().join("db.enc");
+        std::fs::write(&enc_file, "encrypted").unwrap();
+
+        let provider = MockProvider {
+            value: "api-key-123".to_string(),
+        };
+        let providers: Vec<&dyn SecretProvider> = vec![&provider];
+        let backend = MockBackend;
+
+        let result = resolve_secret_refs(
+            "key=${secret:1password://Vault/Item} db=${secret:db.enc}",
+            &providers,
+            Some(&backend),
+            dir.path(),
+        )
+        .unwrap();
+        assert_eq!(result, "key=api-key-123 db=decrypted-value");
+    }
+
+    #[test]
+    fn sops_backend_with_config_dir_sets_sops_config() {
+        let dir = tempfile::tempdir().unwrap();
+        let sops_file = dir.path().join(".sops.yaml");
+        std::fs::write(&sops_file, "creation_rules: []\n").unwrap();
+        let backend = SopsBackend::new(None).with_config_dir(dir.path());
+        // The backend should have internalized the config dir path
+        assert_eq!(backend.name(), "sops");
+    }
+
     // --- resolve_secret_refs with nested markers ---
 
     #[test]

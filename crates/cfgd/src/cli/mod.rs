@@ -17999,4 +17999,4259 @@ spec:
         let parsed = h.json_output();
         assert_json_has_fields(&parsed, &["name", "url"]);
     }
+
+    // -----------------------------------------------------------------------
+    // format_bytes — pure function boundary tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn format_bytes_zero() {
+        assert_eq!(super::format_bytes(0), "0 B");
+    }
+
+    #[test]
+    fn format_bytes_small_value() {
+        assert_eq!(super::format_bytes(512), "512 B");
+    }
+
+    #[test]
+    fn format_bytes_just_below_kb_boundary() {
+        assert_eq!(super::format_bytes(1023), "1023 B");
+    }
+
+    #[test]
+    fn format_bytes_exact_kb_boundary() {
+        assert_eq!(super::format_bytes(1024), "1.0 KB");
+    }
+
+    #[test]
+    fn format_bytes_fractional_kb() {
+        // 1536 bytes = 1.5 KB
+        assert_eq!(super::format_bytes(1536), "1.5 KB");
+    }
+
+    #[test]
+    fn format_bytes_just_below_mb_boundary() {
+        // 1024*1024 - 1 = 1048575
+        assert_eq!(super::format_bytes(1048575), "1024.0 KB");
+    }
+
+    #[test]
+    fn format_bytes_exact_mb_boundary() {
+        assert_eq!(super::format_bytes(1024 * 1024), "1.0 MB");
+    }
+
+    #[test]
+    fn format_bytes_large_mb_value() {
+        // 52428800 = 50 MB
+        assert_eq!(super::format_bytes(52_428_800), "50.0 MB");
+    }
+
+    #[test]
+    fn format_bytes_fractional_mb() {
+        // 1.5 MB = 1572864
+        assert_eq!(super::format_bytes(1_572_864), "1.5 MB");
+    }
+
+    // -----------------------------------------------------------------------
+    // cmd_secret_init — creates age key and .sops.yaml
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn secret_init_prints_header_and_key_path() {
+        // cmd_secret_init calls secrets::init_age_key which shells out to age-keygen.
+        // If age-keygen is not installed, the error message should mention it.
+        let h = CliTestHarness::builder().build();
+        let result = super::cmd_secret_init(&h.cli(), h.printer());
+
+        match result {
+            Ok(()) => {
+                // age-keygen was available: verify output mentions key path and completion
+                let output = h.output();
+                assert!(
+                    output.contains("Secret Init"),
+                    "expected 'Secret Init' header, got: {output}"
+                );
+                assert!(
+                    output.contains("Age key:"),
+                    "expected key path in output, got: {output}"
+                );
+                assert!(
+                    output.contains("Secrets setup complete"),
+                    "expected completion message, got: {output}"
+                );
+            }
+            Err(e) => {
+                // age-keygen not installed: error should mention it
+                let msg = e.to_string();
+                assert!(
+                    msg.contains("age-keygen"),
+                    "expected error mentioning age-keygen, got: {msg}"
+                );
+            }
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // resolve_secret_backend / get_secret_backend — error paths
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn resolve_secret_backend_file_not_found() {
+        let h = CliTestHarness::builder().rich_config().build();
+        let nonexistent = h.config_path().join("does-not-exist.yaml");
+        let result = super::resolve_secret_backend(&h.cli(), &nonexistent);
+        assert_error_contains(&result.map(|_| ()), "File not found");
+    }
+
+    #[test]
+    fn get_secret_backend_file_not_found() {
+        let h = CliTestHarness::builder().rich_config().build();
+        let nonexistent = h.config_path().join("nonexistent-secret.yaml");
+        let result = super::get_secret_backend(&h.cli(), &nonexistent);
+        assert_error_contains(&result.map(|_| ()), "File not found");
+    }
+
+    #[test]
+    fn resolve_secret_backend_no_config_file_errors() {
+        // When no config file exists, resolve_secret_backend should fail because
+        // load_config can't find the config file.
+        let dir = tempfile::tempdir().unwrap();
+        let cli = test_cli(dir.path());
+        let nonexistent = dir.path().join("secret.enc.yaml");
+        let result = super::resolve_secret_backend(&cli, &nonexistent);
+        // Config file missing: load_config will fail
+        match result {
+            Ok(_) => panic!("expected error when config file is missing"),
+            Err(e) => {
+                let msg = e.to_string();
+                assert!(
+                    msg.contains("config file not found") || msg.contains("File not found"),
+                    "expected config or file error, got: {msg}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn cmd_secret_encrypt_file_not_found() {
+        let h = CliTestHarness::builder().rich_config().build();
+        let nonexistent = h.config_path().join("missing.enc.yaml");
+        let result = super::cmd_secret_encrypt(&h.cli(), h.printer(), &nonexistent);
+        assert_error_contains(&result, "File not found");
+    }
+
+    #[test]
+    fn cmd_secret_decrypt_file_not_found() {
+        let h = CliTestHarness::builder().rich_config().build();
+        let nonexistent = h.config_path().join("missing.enc.yaml");
+        let result = super::cmd_secret_decrypt(&h.cli(), h.printer(), &nonexistent);
+        assert_error_contains(&result, "File not found");
+    }
+
+    // -----------------------------------------------------------------------
+    // cmd_daemon_status — no daemon running
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn daemon_status_no_daemon_running_human_output() {
+        let h = CliTestHarness::builder().build();
+        super::cmd_daemon_status(h.printer()).unwrap();
+        let output = h.output();
+        assert!(
+            output.contains("Daemon Status"),
+            "expected 'Daemon Status' header, got: {output}"
+        );
+        assert!(
+            output.contains("not running"),
+            "expected 'not running' message, got: {output}"
+        );
+        assert!(
+            output.contains("cfgd daemon"),
+            "expected start hint, got: {output}"
+        );
+        assert!(
+            output.contains("cfgd daemon install"),
+            "expected install hint, got: {output}"
+        );
+    }
+
+    #[test]
+    fn daemon_status_no_daemon_running_json_output() {
+        let h = CliTestHarness::builder().json().build();
+        super::cmd_daemon_status(h.printer()).unwrap();
+        let parsed = h.json_output();
+        assert_json_has_fields(
+            &parsed,
+            &["running", "pid", "uptimeSecs", "driftCount", "sources"],
+        );
+        assert_json_field_type(&parsed, "running", "bool");
+        assert_eq!(
+            parsed.get("running").unwrap().as_bool().unwrap(),
+            false,
+            "running should be false when no daemon is present"
+        );
+        assert_eq!(
+            parsed.get("pid").unwrap().as_u64().unwrap(),
+            0,
+            "pid should be 0 when no daemon is present"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // cmd_daemon_uninstall — output and completion
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn daemon_uninstall_prints_platform_info_and_succeeds() {
+        let (printer, buf) = Printer::for_test();
+        // On Linux (CI/test env), uninstall_service just removes the unit file
+        // if present; in a clean test env there is nothing to remove, so it succeeds.
+        let result = super::cmd_daemon_uninstall(&printer);
+        let output = buf.lock().unwrap().clone();
+
+        assert!(
+            output.contains("Uninstall Daemon Service"),
+            "expected header, got: {output}"
+        );
+
+        // On Linux, the function prints the systemctl stop message
+        #[cfg(target_os = "linux")]
+        assert!(
+            output.contains("systemctl --user disable --now cfgd.service"),
+            "expected systemctl uninstall message on Linux, got: {output}"
+        );
+
+        // The call should succeed (no unit file to remove in test env)
+        assert!(result.is_ok(), "expected success, got: {:?}", result.err());
+
+        // After success, the completion message is printed
+        let output_after = buf.lock().unwrap().clone();
+        assert!(
+            output_after.contains("Daemon service removed"),
+            "expected completion message, got: {output_after}"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // print_daemon_install_success — platform-specific messages
+    // -----------------------------------------------------------------------
+
+    #[cfg(unix)]
+    #[test]
+    fn print_daemon_install_success_linux_messages() {
+        let (printer, buf) = Printer::for_test();
+        super::print_daemon_install_success(&printer);
+        let output = buf.lock().unwrap().clone();
+
+        if cfg!(target_os = "macos") {
+            assert!(
+                output.contains("launchd service"),
+                "expected launchd message on macOS, got: {output}"
+            );
+            assert!(
+                output.contains("launchctl load"),
+                "expected launchctl load hint on macOS, got: {output}"
+            );
+        } else {
+            assert!(
+                output.contains("systemd user service"),
+                "expected systemd message on Linux, got: {output}"
+            );
+            assert!(
+                output.contains("systemctl --user enable --now cfgd.service"),
+                "expected systemctl enable hint on Linux, got: {output}"
+            );
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // cmd_checkin — error when config has no profile
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn checkin_fails_when_no_profile_configured() {
+        let no_profile_config =
+            "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec: {}\n";
+        let h = CliTestHarness::builder().config(no_profile_config).build();
+        let result = super::cmd_checkin(&h.cli(), h.printer(), "http://localhost:8080", None, None);
+        assert_error_contains(&result, "no profile configured");
+    }
+
+    #[test]
+    fn checkin_fails_when_config_file_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        // Don't write any config file
+        let cli = test_cli(dir.path());
+        let printer = test_printer();
+        let result = super::cmd_checkin(&cli, &printer, "http://localhost:8080", None, None);
+        assert_error_contains(&result, "config file not found");
+    }
+
+    #[test]
+    fn checkin_fails_when_profile_does_not_exist() {
+        let bad_profile_config = "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec:\n  profile: nonexistent\n";
+        let h = CliTestHarness::builder().config(bad_profile_config).build();
+        let result = super::cmd_checkin(&h.cli(), h.printer(), "http://localhost:8080", None, None);
+        let err = result.unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("profile not found: nonexistent"),
+            "expected 'profile not found' error, got: {msg}"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // display_policy_items tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn display_policy_items_shows_packages() {
+        let (printer, buf) = Printer::for_test();
+        let items = config::PolicyItems {
+            packages: Some(config::PackagesSpec {
+                brew: Some(config::BrewSpec {
+                    file: None,
+                    taps: vec![],
+                    formulae: vec!["git".into(), "curl".into()],
+                    casks: vec!["firefox".into()],
+                }),
+                apt: Some(config::AptSpec {
+                    file: None,
+                    packages: vec!["build-essential".into()],
+                }),
+                cargo: Some(config::CargoSpec {
+                    file: None,
+                    packages: vec!["ripgrep".into()],
+                }),
+                pipx: vec!["black".into()],
+                dnf: vec!["vim".into()],
+                npm: Some(config::NpmSpec {
+                    file: None,
+                    global: vec!["typescript".into()],
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        super::display_policy_items(&printer, &items, "  ");
+        let output = buf.lock().unwrap().clone();
+        assert!(
+            output.contains("brew formula: git"),
+            "missing 'brew formula: git' in: {output}"
+        );
+        assert!(
+            output.contains("brew formula: curl"),
+            "missing 'brew formula: curl' in: {output}"
+        );
+        assert!(
+            output.contains("brew cask: firefox"),
+            "missing 'brew cask: firefox' in: {output}"
+        );
+        assert!(
+            output.contains("apt: build-essential"),
+            "missing 'apt: build-essential' in: {output}"
+        );
+        assert!(
+            output.contains("cargo: ripgrep"),
+            "missing 'cargo: ripgrep' in: {output}"
+        );
+        assert!(
+            output.contains("pipx: black"),
+            "missing 'pipx: black' in: {output}"
+        );
+        assert!(
+            output.contains("dnf: vim"),
+            "missing 'dnf: vim' in: {output}"
+        );
+        assert!(
+            output.contains("npm: typescript"),
+            "missing 'npm: typescript' in: {output}"
+        );
+    }
+
+    #[test]
+    fn display_policy_items_shows_files_env_system() {
+        let (printer, buf) = Printer::for_test();
+        let mut system = std::collections::HashMap::new();
+        system.insert("sysctl".into(), serde_yaml::Value::Null);
+        let items = config::PolicyItems {
+            files: vec![config::ManagedFileSpec {
+                source: "bashrc".into(),
+                target: std::path::PathBuf::from("/home/user/.bashrc"),
+                strategy: None,
+                private: false,
+                origin: None,
+                encryption: None,
+                permissions: None,
+            }],
+            env: vec![config::EnvVar {
+                name: "EDITOR".into(),
+                value: "vim".into(),
+            }],
+            system,
+            ..Default::default()
+        };
+        super::display_policy_items(&printer, &items, "");
+        let output = buf.lock().unwrap().clone();
+        assert!(
+            output.contains("file: /home/user/.bashrc"),
+            "missing file line in: {output}"
+        );
+        assert!(
+            output.contains("env: EDITOR"),
+            "missing env line in: {output}"
+        );
+        assert!(
+            output.contains("system: sysctl"),
+            "missing system line in: {output}"
+        );
+    }
+
+    #[test]
+    fn display_policy_items_empty_prints_nothing() {
+        let (printer, buf) = Printer::for_test();
+        let items = config::PolicyItems::default();
+        super::display_policy_items(&printer, &items, "  ");
+        let output = buf.lock().unwrap().clone();
+        assert!(
+            output.is_empty(),
+            "expected empty output for empty items, got: {output}"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // display_pending_decisions tests
+    // -----------------------------------------------------------------------
+
+    fn make_decision(
+        id: i64,
+        source: &str,
+        resource: &str,
+        tier: &str,
+        action: &str,
+        summary: &str,
+    ) -> cfgd_core::state::PendingDecision {
+        cfgd_core::state::PendingDecision {
+            id,
+            source: source.into(),
+            resource: resource.into(),
+            tier: tier.into(),
+            action: action.into(),
+            summary: summary.into(),
+            created_at: "2026-01-01T00:00:00Z".into(),
+            resolved_at: None,
+            resolution: None,
+        }
+    }
+
+    #[test]
+    fn display_pending_decisions_groups_by_source() {
+        let (printer, buf) = Printer::for_test();
+        let decisions = vec![
+            make_decision(1, "alpha", "pkg/git", "required", "install", "Install git"),
+            make_decision(
+                2,
+                "alpha",
+                "pkg/curl",
+                "recommended",
+                "install",
+                "Install curl",
+            ),
+            make_decision(3, "beta", "env/EDITOR", "optional", "set", "Set EDITOR"),
+        ];
+        super::display_pending_decisions(&printer, &decisions);
+        let output = buf.lock().unwrap().clone();
+        // alpha has 2 items (plural)
+        assert!(
+            output.contains("alpha: 2 pending items"),
+            "missing 'alpha: 2 pending items' in: {output}"
+        );
+        // beta has 1 item (singular)
+        assert!(
+            output.contains("beta: 1 pending item"),
+            "missing 'beta: 1 pending item' in: {output}"
+        );
+        // Check individual items are listed
+        assert!(
+            output.contains("required pkg/git"),
+            "missing 'required pkg/git' in: {output}"
+        );
+        assert!(
+            output.contains("recommended pkg/curl"),
+            "missing 'recommended pkg/curl' in: {output}"
+        );
+        assert!(
+            output.contains("optional env/EDITOR"),
+            "missing 'optional env/EDITOR' in: {output}"
+        );
+        // Verify summary and action format
+        assert!(
+            output.contains("Install git (install)"),
+            "missing decision detail in: {output}"
+        );
+        assert!(
+            output.contains("Set EDITOR (set)"),
+            "missing decision detail in: {output}"
+        );
+    }
+
+    #[test]
+    fn display_pending_decisions_single_item_singular() {
+        let (printer, buf) = Printer::for_test();
+        let decisions = vec![make_decision(
+            1,
+            "solo-source",
+            "file/bashrc",
+            "required",
+            "create",
+            "Create bashrc",
+        )];
+        super::display_pending_decisions(&printer, &decisions);
+        let output = buf.lock().unwrap().clone();
+        assert!(
+            output.contains("solo-source: 1 pending item\n")
+                || output.contains("solo-source: 1 pending item"),
+            "expected singular 'item' not 'items' in: {output}"
+        );
+        assert!(
+            !output.contains("pending items"),
+            "should not contain plural 'items' in: {output}"
+        );
+        assert!(
+            output.contains("required file/bashrc"),
+            "missing item detail in: {output}"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // add_source_to_config tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn add_source_to_config_appends_to_existing_sources() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("cfgd.yaml");
+        std::fs::write(
+            &config_path,
+            r#"apiVersion: cfgd.io/v1alpha1
+kind: Config
+metadata:
+  name: test
+spec:
+  profile: default
+  sources:
+    - name: existing
+      origin:
+        type: Git
+        url: https://example.com/existing
+        branch: main
+"#,
+        )
+        .unwrap();
+
+        let source = config::SourceSpec {
+            name: "new-source".into(),
+            origin: config::OriginSpec {
+                origin_type: config::OriginType::Git,
+                url: "https://example.com/new".into(),
+                branch: "main".into(),
+                auth: None,
+                ssh_strict_host_key_checking: config::SshHostKeyPolicy::AcceptNew,
+            },
+            subscription: config::SubscriptionSpec::default(),
+            sync: config::SourceSyncSpec::default(),
+        };
+
+        let result = super::add_source_to_config(&config_path, &source);
+        assert!(
+            result.is_ok(),
+            "add_source_to_config failed: {:?}",
+            result.err()
+        );
+
+        let written = std::fs::read_to_string(&config_path).unwrap();
+        let parsed: serde_yaml::Value = serde_yaml::from_str(&written).unwrap();
+        let sources = parsed["spec"]["sources"].as_sequence().unwrap();
+        assert_eq!(
+            sources.len(),
+            2,
+            "expected 2 sources after append, got {}",
+            sources.len()
+        );
+        assert_eq!(sources[0]["name"].as_str().unwrap(), "existing");
+        assert_eq!(sources[1]["name"].as_str().unwrap(), "new-source");
+        assert_eq!(
+            sources[1]["origin"]["url"].as_str().unwrap(),
+            "https://example.com/new"
+        );
+    }
+
+    #[test]
+    fn add_source_to_config_errors_on_missing_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("nonexistent.yaml");
+        let source = config::SourceSpec {
+            name: "test".into(),
+            origin: config::OriginSpec {
+                origin_type: config::OriginType::Git,
+                url: "https://example.com".into(),
+                branch: "main".into(),
+                auth: None,
+                ssh_strict_host_key_checking: config::SshHostKeyPolicy::AcceptNew,
+            },
+            subscription: config::SubscriptionSpec::default(),
+            sync: config::SourceSyncSpec::default(),
+        };
+
+        let result = super::add_source_to_config(&config_path, &source);
+        assert!(result.is_err(), "expected error for missing file");
+        let msg = result.unwrap_err().to_string();
+        assert!(
+            msg.contains("Config file not found"),
+            "expected 'Config file not found', got: {msg}"
+        );
+    }
+
+    #[test]
+    fn add_source_to_config_creates_sources_array_when_absent() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("cfgd.yaml");
+        std::fs::write(
+            &config_path,
+            r#"apiVersion: cfgd.io/v1alpha1
+kind: Config
+metadata:
+  name: test
+spec:
+  profile: default
+"#,
+        )
+        .unwrap();
+
+        let source = config::SourceSpec {
+            name: "first-source".into(),
+            origin: config::OriginSpec {
+                origin_type: config::OriginType::Git,
+                url: "https://example.com/repo".into(),
+                branch: "master".into(),
+                auth: None,
+                ssh_strict_host_key_checking: config::SshHostKeyPolicy::AcceptNew,
+            },
+            subscription: config::SubscriptionSpec::default(),
+            sync: config::SourceSyncSpec::default(),
+        };
+
+        let result = super::add_source_to_config(&config_path, &source);
+        assert!(
+            result.is_ok(),
+            "add_source_to_config failed: {:?}",
+            result.err()
+        );
+
+        let written = std::fs::read_to_string(&config_path).unwrap();
+        let parsed: serde_yaml::Value = serde_yaml::from_str(&written).unwrap();
+        let sources = parsed["spec"]["sources"].as_sequence().unwrap();
+        assert_eq!(sources.len(), 1, "expected 1 source, got {}", sources.len());
+        assert_eq!(sources[0]["name"].as_str().unwrap(), "first-source");
+        assert_eq!(
+            sources[0]["origin"]["url"].as_str().unwrap(),
+            "https://example.com/repo"
+        );
+    }
+
+    #[test]
+    fn add_source_to_config_errors_when_spec_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("cfgd.yaml");
+        std::fs::write(
+            &config_path,
+            "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: test\n",
+        )
+        .unwrap();
+
+        let source = config::SourceSpec {
+            name: "src".into(),
+            origin: config::OriginSpec {
+                origin_type: config::OriginType::Git,
+                url: "https://example.com".into(),
+                branch: "main".into(),
+                auth: None,
+                ssh_strict_host_key_checking: config::SshHostKeyPolicy::AcceptNew,
+            },
+            subscription: config::SubscriptionSpec::default(),
+            sync: config::SourceSyncSpec::default(),
+        };
+
+        let result = super::add_source_to_config(&config_path, &source);
+        assert!(result.is_err(), "expected error when spec is missing");
+        let msg = result.unwrap_err().to_string();
+        assert!(
+            msg.contains("config missing 'spec'"),
+            "expected 'config missing spec', got: {msg}"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // WorkstationDaemonHooks tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn workstation_daemon_hooks_build_registry_returns_populated_registry() {
+        use cfgd_core::daemon::DaemonHooks;
+        let hooks = super::WorkstationDaemonHooks;
+        let cfg = cfgd_core::config::CfgdConfig {
+            api_version: cfgd_core::API_VERSION.into(),
+            kind: "Config".into(),
+            metadata: cfgd_core::config::ConfigMetadata {
+                name: "test".into(),
+            },
+            spec: cfgd_core::config::ConfigSpec::default(),
+        };
+        let registry = hooks.build_registry(&cfg);
+        assert!(
+            !registry.package_managers.is_empty(),
+            "build_registry should return a registry with at least one package manager"
+        );
+        assert!(
+            !registry.system_configurators.is_empty(),
+            "build_registry should return a registry with at least one system configurator"
+        );
+    }
+
+    #[test]
+    fn workstation_daemon_hooks_expand_tilde() {
+        use cfgd_core::daemon::DaemonHooks;
+        let hooks = super::WorkstationDaemonHooks;
+        let expanded = hooks.expand_tilde(std::path::Path::new("~/test/file"));
+        // Should not start with ~ after expansion
+        assert!(
+            !expanded.to_string_lossy().starts_with('~'),
+            "expand_tilde should expand ~ to home directory, got: {}",
+            expanded.display()
+        );
+        // Should end with the path suffix
+        assert!(
+            expanded.to_string_lossy().ends_with("test/file"),
+            "expand_tilde should preserve path suffix, got: {}",
+            expanded.display()
+        );
+    }
+
+    #[test]
+    fn workstation_daemon_hooks_expand_tilde_absolute_unchanged() {
+        use cfgd_core::daemon::DaemonHooks;
+        let hooks = super::WorkstationDaemonHooks;
+        let abs = std::path::Path::new("/absolute/path");
+        let expanded = hooks.expand_tilde(abs);
+        assert_eq!(
+            expanded, abs,
+            "expand_tilde should not modify absolute paths"
+        );
+    }
+
+    #[test]
+    fn workstation_daemon_hooks_plan_files_empty_profile() {
+        use cfgd_core::daemon::DaemonHooks;
+        let hooks = super::WorkstationDaemonHooks;
+        let dir = tempfile::tempdir().unwrap();
+        // Write a minimal config so load_config succeeds
+        std::fs::write(dir.path().join("cfgd.yaml"), TEST_CONFIG_YAML).unwrap();
+        let profiles_dir = dir.path().join("profiles");
+        std::fs::create_dir_all(&profiles_dir).unwrap();
+        std::fs::write(profiles_dir.join("default.yaml"), DEFAULT_PROFILE_YAML).unwrap();
+
+        let resolved = cfgd_core::config::ResolvedProfile {
+            layers: vec![],
+            merged: cfgd_core::config::MergedProfile::default(),
+        };
+        let result = hooks.plan_files(dir.path(), &resolved);
+        assert!(
+            result.is_ok(),
+            "plan_files with empty profile should succeed: {:?}",
+            result.err()
+        );
+        let actions = result.unwrap();
+        assert!(
+            actions.is_empty(),
+            "plan_files with empty profile should produce no actions, got {}",
+            actions.len()
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // backup_file — exercises rename + printer output
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn backup_file_renames_and_prints_success() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("my-config.conf");
+        std::fs::write(&target, "original content").unwrap();
+
+        let (printer, buf) = Printer::for_test();
+        let result = super::backup_file(&target, &printer);
+        assert!(
+            result.is_ok(),
+            "backup_file should succeed: {:?}",
+            result.err()
+        );
+
+        // Original file should no longer exist
+        assert!(
+            !target.exists(),
+            "original file should be removed after backup"
+        );
+
+        // Backup file should exist with original content
+        let backup = dir.path().join("my-config.conf.cfgd-backup");
+        assert!(backup.exists(), "backup file should exist at .cfgd-backup");
+        let content = std::fs::read_to_string(&backup).unwrap();
+        assert_eq!(
+            content, "original content",
+            "backup should preserve original content"
+        );
+
+        // Printer should have success message with backup path
+        let output = buf.lock().unwrap().clone();
+        assert!(
+            output.contains("Backed up to"),
+            "expected 'Backed up to' in output, got: {output}"
+        );
+        assert!(
+            output.contains(".cfgd-backup"),
+            "expected backup path in output, got: {output}"
+        );
+    }
+
+    #[test]
+    fn backup_file_errors_on_missing_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("nonexistent.txt");
+
+        let (printer, _buf) = Printer::for_test();
+        let result = super::backup_file(&target, &printer);
+        assert!(result.is_err(), "backup_file should fail for missing file");
+        let msg = result.unwrap_err().to_string();
+        assert!(
+            msg.contains("Failed to backup"),
+            "error should mention 'Failed to backup', got: {msg}"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // apply_backup_choice — exercises skip and backup branches
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn apply_backup_choice_skip_converts_action_to_skip() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("file.txt");
+        std::fs::write(&target, "data").unwrap();
+        let source = dir.path().join("source.txt");
+        std::fs::write(&source, "new data").unwrap();
+
+        let (printer, _buf) = Printer::for_test();
+        let mut action = reconciler::Action::File(FileAction::Create {
+            source: source.clone(),
+            target: target.clone(),
+            origin: "profile".to_string(),
+            strategy: config::FileStrategy::Symlink,
+            source_hash: None,
+        });
+
+        let result = super::apply_backup_choice("Skip this file", &target, &mut action, &printer);
+        assert!(result.is_ok(), "skip choice should succeed");
+
+        // Action should now be a Skip
+        match &action {
+            reconciler::Action::File(FileAction::Skip { reason, origin, .. }) => {
+                assert!(
+                    reason.contains("skipped by user"),
+                    "reason should indicate user skip, got: {reason}"
+                );
+                assert_eq!(origin, "profile", "origin should be preserved from Create");
+            }
+            other => panic!("expected Skip action, got: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn apply_backup_choice_backup_moves_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("managed.conf");
+        std::fs::write(&target, "existing config").unwrap();
+        let source = dir.path().join("src.conf");
+        std::fs::write(&source, "new config").unwrap();
+
+        let (printer, buf) = Printer::for_test();
+        let mut action = reconciler::Action::File(FileAction::Update {
+            source: source.clone(),
+            target: target.clone(),
+            diff: "diff text".into(),
+            origin: "module-x".to_string(),
+            strategy: config::FileStrategy::Copy,
+            source_hash: None,
+        });
+
+        let result =
+            super::apply_backup_choice("Backup and continue", &target, &mut action, &printer);
+        assert!(result.is_ok(), "backup choice should succeed");
+
+        // Original file should be moved
+        assert!(!target.exists(), "original file should be renamed");
+        let backup = dir.path().join("managed.conf.cfgd-backup");
+        assert!(backup.exists(), "backup should exist");
+        assert_eq!(std::fs::read_to_string(&backup).unwrap(), "existing config");
+
+        let output = buf.lock().unwrap().clone();
+        assert!(
+            output.contains("Backed up to"),
+            "should print backup success, got: {output}"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // print_apply_result — all four status branches
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn print_apply_result_success_message() {
+        let (printer, buf) = Printer::for_test();
+        let result = cfgd_core::reconciler::ApplyResult {
+            action_results: vec![
+                cfgd_core::reconciler::ActionResult {
+                    phase: "packages".into(),
+                    description: "install cargo ripgrep".into(),
+                    success: true,
+                    error: None,
+                    changed: true,
+                },
+                cfgd_core::reconciler::ActionResult {
+                    phase: "files".into(),
+                    description: "create ~/.bashrc".into(),
+                    success: true,
+                    error: None,
+                    changed: true,
+                },
+            ],
+            status: cfgd_core::state::ApplyStatus::Success,
+            apply_id: 1,
+        };
+        let status = super::print_apply_result(&result, &printer);
+        assert!(
+            matches!(status, cfgd_core::state::ApplyStatus::Success),
+            "should return Success status"
+        );
+        let output = buf.lock().unwrap().clone();
+        assert!(
+            output.contains("Apply complete") && output.contains("2 action(s) succeeded"),
+            "expected success message with count, got: {output}"
+        );
+    }
+
+    #[test]
+    fn print_apply_result_partial_message() {
+        let (printer, buf) = Printer::for_test();
+        let result = cfgd_core::reconciler::ApplyResult {
+            action_results: vec![
+                cfgd_core::reconciler::ActionResult {
+                    phase: "packages".into(),
+                    description: "install brew foo".into(),
+                    success: true,
+                    error: None,
+                    changed: true,
+                },
+                cfgd_core::reconciler::ActionResult {
+                    phase: "files".into(),
+                    description: "create /tmp/fail".into(),
+                    success: false,
+                    error: Some("permission denied".into()),
+                    changed: false,
+                },
+            ],
+            status: cfgd_core::state::ApplyStatus::Partial,
+            apply_id: 2,
+        };
+        let status = super::print_apply_result(&result, &printer);
+        assert!(
+            matches!(status, cfgd_core::state::ApplyStatus::Partial),
+            "should return Partial status"
+        );
+        let output = buf.lock().unwrap().clone();
+        assert!(
+            output.contains("partially complete")
+                && output.contains("1 succeeded")
+                && output.contains("1 failed"),
+            "expected partial message, got: {output}"
+        );
+    }
+
+    #[test]
+    fn print_apply_result_failed_message() {
+        let (printer, buf) = Printer::for_test();
+        let result = cfgd_core::reconciler::ApplyResult {
+            action_results: vec![cfgd_core::reconciler::ActionResult {
+                phase: "system".into(),
+                description: "set sysctl".into(),
+                success: false,
+                error: Some("not root".into()),
+                changed: false,
+            }],
+            status: cfgd_core::state::ApplyStatus::Failed,
+            apply_id: 3,
+        };
+        let status = super::print_apply_result(&result, &printer);
+        assert!(
+            matches!(status, cfgd_core::state::ApplyStatus::Failed),
+            "should return Failed status"
+        );
+        let output = buf.lock().unwrap().clone();
+        assert!(
+            output.contains("Apply failed") && output.contains("1 action(s) failed"),
+            "expected failed message, got: {output}"
+        );
+    }
+
+    #[test]
+    fn print_apply_result_in_progress_message() {
+        let (printer, buf) = Printer::for_test();
+        let result = cfgd_core::reconciler::ApplyResult {
+            action_results: vec![],
+            status: cfgd_core::state::ApplyStatus::InProgress,
+            apply_id: 4,
+        };
+        let status = super::print_apply_result(&result, &printer);
+        assert!(
+            matches!(status, cfgd_core::state::ApplyStatus::InProgress),
+            "should return InProgress status"
+        );
+        let output = buf.lock().unwrap().clone();
+        assert!(
+            output.contains("still in progress"),
+            "expected in-progress warning, got: {output}"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // validate_resource_name — all validation branches
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn validate_resource_name_valid_names() {
+        assert!(super::validate_resource_name("my-module", "Module").is_ok());
+        assert!(super::validate_resource_name("mod_v2", "Module").is_ok());
+        assert!(super::validate_resource_name("a.b.c", "Module").is_ok());
+        assert!(super::validate_resource_name("X", "Module").is_ok());
+        assert!(super::validate_resource_name("a123", "Module").is_ok());
+    }
+
+    #[test]
+    fn validate_resource_name_empty_fails() {
+        let result = super::validate_resource_name("", "Module");
+        assert!(result.is_err());
+        assert!(
+            result.unwrap_err().to_string().contains("cannot be empty"),
+            "should mention empty name"
+        );
+    }
+
+    #[test]
+    fn validate_resource_name_too_long_fails() {
+        let name = "a".repeat(129);
+        let result = super::validate_resource_name(&name, "Module");
+        assert!(result.is_err());
+        assert!(
+            result.unwrap_err().to_string().contains("too long"),
+            "should mention too long"
+        );
+    }
+
+    #[test]
+    fn validate_resource_name_leading_dot_fails() {
+        let result = super::validate_resource_name(".hidden", "Profile");
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("cannot start with"),
+            "should mention leading character restriction"
+        );
+    }
+
+    #[test]
+    fn validate_resource_name_leading_hyphen_fails() {
+        let result = super::validate_resource_name("-bad", "Profile");
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("cannot start with"),
+            "should mention leading character restriction"
+        );
+    }
+
+    #[test]
+    fn validate_resource_name_invalid_chars_fails() {
+        let result = super::validate_resource_name("my module!", "Module");
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(
+            msg.contains("invalid characters"),
+            "should mention invalid characters, got: {msg}"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // scan_profile_names and scan_module_names
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn scan_profile_names_finds_all_profiles() {
+        let dir = tempfile::tempdir().unwrap();
+        let profiles_dir = dir.path().join("profiles");
+        std::fs::create_dir_all(&profiles_dir).unwrap();
+
+        std::fs::write(profiles_dir.join("default.yaml"), DEFAULT_PROFILE_YAML).unwrap();
+        std::fs::write(profiles_dir.join("work.yaml"), WORK_PROFILE_YAML).unwrap();
+        // Non-yaml file should be ignored
+        std::fs::write(profiles_dir.join("readme.txt"), "not a profile").unwrap();
+
+        let names = super::scan_profile_names(&profiles_dir).unwrap();
+        assert!(
+            names.contains(&"default".to_string()),
+            "should find default profile, got: {:?}",
+            names
+        );
+        assert!(
+            names.contains(&"work".to_string()),
+            "should find work profile, got: {:?}",
+            names
+        );
+        assert!(
+            !names.contains(&"readme".to_string()),
+            "should not include non-yaml files"
+        );
+    }
+
+    #[test]
+    fn scan_profile_names_nonexistent_dir_returns_empty() {
+        let dir = tempfile::tempdir().unwrap();
+        let profiles_dir = dir.path().join("no-such-dir");
+        let names = super::scan_profile_names(&profiles_dir).unwrap();
+        assert!(
+            names.is_empty(),
+            "nonexistent profiles dir should return empty list"
+        );
+    }
+
+    #[test]
+    fn scan_module_names_finds_modules() {
+        let dir = tempfile::tempdir().unwrap();
+        let modules_dir = dir.path().join("modules");
+        std::fs::create_dir_all(&modules_dir).unwrap();
+
+        // Create two valid modules
+        create_module_in_dir(dir.path(), "alpha-mod", SIMPLE_MODULE_YAML);
+        create_module_in_dir(dir.path(), "beta-mod", SIMPLE_MODULE_YAML);
+
+        // Create a dir without module.yaml (should be ignored)
+        std::fs::create_dir_all(modules_dir.join("not-a-module")).unwrap();
+
+        let names = super::scan_module_names(&modules_dir).unwrap();
+        assert_eq!(
+            names.len(),
+            2,
+            "should find exactly 2 modules, got: {:?}",
+            names
+        );
+        assert_eq!(names[0], "alpha-mod", "should be sorted alphabetically");
+        assert_eq!(names[1], "beta-mod", "should be sorted alphabetically");
+    }
+
+    #[test]
+    fn scan_module_names_nonexistent_dir_returns_empty() {
+        let dir = tempfile::tempdir().unwrap();
+        let modules_dir = dir.path().join("no-modules");
+        let names = super::scan_module_names(&modules_dir).unwrap();
+        assert!(
+            names.is_empty(),
+            "nonexistent modules dir should return empty list"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // walk_yaml_path — exercises all branches including error paths
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn walk_yaml_path_root_dot_returns_whole_value() {
+        let val: serde_yaml::Value = serde_yaml::from_str("foo: bar\nbaz: 42").unwrap();
+        let result = super::walk_yaml_path(&val, ".").unwrap();
+        assert!(result.is_mapping(), "root should be a mapping");
+    }
+
+    #[test]
+    fn walk_yaml_path_nested_key() {
+        let val: serde_yaml::Value = serde_yaml::from_str("a:\n  b:\n    c: hello").unwrap();
+        let result = super::walk_yaml_path(&val, "a.b.c").unwrap();
+        assert_eq!(
+            result.as_str().unwrap(),
+            "hello",
+            "should reach nested value"
+        );
+    }
+
+    #[test]
+    fn walk_yaml_path_missing_key_errors() {
+        let val: serde_yaml::Value = serde_yaml::from_str("a:\n  b: 1").unwrap();
+        let result = super::walk_yaml_path(&val, "a.z");
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(
+            msg.contains("not found"),
+            "should report key not found, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn walk_yaml_path_empty_segment_errors() {
+        let val: serde_yaml::Value = serde_yaml::from_str("a: 1").unwrap();
+        let result = super::walk_yaml_path(&val, "a..b");
+        assert!(result.is_err());
+        assert!(
+            result.unwrap_err().to_string().contains("empty segment"),
+            "should report empty segment"
+        );
+    }
+
+    #[test]
+    fn walk_yaml_path_traverse_into_scalar_errors() {
+        let val: serde_yaml::Value = serde_yaml::from_str("a: 1").unwrap();
+        let result = super::walk_yaml_path(&val, "a.b");
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(
+            msg.contains("not a mapping"),
+            "should report not a mapping, got: {msg}"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // walk_yaml_path_mut — creates intermediate mappings
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn walk_yaml_path_mut_creates_intermediate_maps() {
+        let mut val: serde_yaml::Value = serde_yaml::from_str("root: {}").unwrap();
+        let (parent, leaf) = super::walk_yaml_path_mut(&mut val, "root.new.nested.key").unwrap();
+        assert_eq!(leaf, "key");
+        // Insert a value to verify parent is the right map
+        parent.insert(
+            serde_yaml::Value::String(leaf),
+            serde_yaml::Value::String("value".into()),
+        );
+        let result = super::walk_yaml_path(&val, "root.new.nested.key").unwrap();
+        assert_eq!(result.as_str().unwrap(), "value");
+    }
+
+    #[test]
+    fn walk_yaml_path_mut_empty_path_errors() {
+        let mut val: serde_yaml::Value = serde_yaml::from_str("a: 1").unwrap();
+        let result = super::walk_yaml_path_mut(&mut val, "");
+        assert!(result.is_err());
+        assert!(
+            result.unwrap_err().to_string().contains("empty segment"),
+            "should reject empty path"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // parse_yaml_value — type inference branches
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn parse_yaml_value_all_types() {
+        assert_eq!(
+            super::parse_yaml_value("true"),
+            serde_yaml::Value::Bool(true)
+        );
+        assert_eq!(
+            super::parse_yaml_value("false"),
+            serde_yaml::Value::Bool(false)
+        );
+        assert_eq!(super::parse_yaml_value("null"), serde_yaml::Value::Null);
+        assert_eq!(super::parse_yaml_value("~"), serde_yaml::Value::Null);
+        assert_eq!(
+            super::parse_yaml_value("42"),
+            serde_yaml::Value::Number(42i64.into())
+        );
+        assert_eq!(
+            super::parse_yaml_value("hello"),
+            serde_yaml::Value::String("hello".into())
+        );
+        // Float
+        let float_val = super::parse_yaml_value("3.14");
+        assert!(float_val.is_number(), "3.14 should parse as number");
+    }
+
+    // -----------------------------------------------------------------------
+    // compose_with_sources — no-sources early return
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn compose_with_sources_no_sources_returns_local_profile() {
+        let h = CliTestHarness::builder().build();
+        let cfg = config::load_config(&h.config_path().join("cfgd.yaml")).unwrap();
+        let resolved =
+            config::resolve_profile("default", &h.config_path().join("profiles")).unwrap();
+
+        let result = super::compose_with_sources(&h.cli(), &cfg, &resolved, h.printer());
+        assert!(
+            result.is_ok(),
+            "compose_with_sources with no sources should succeed: {:?}",
+            result.err()
+        );
+        let composition = result.unwrap();
+        assert!(
+            composition.conflicts.is_empty(),
+            "no conflicts expected when no sources"
+        );
+        assert!(
+            composition.source_env.is_empty(),
+            "no source_env expected when no sources"
+        );
+        assert!(
+            composition.source_commits.is_empty(),
+            "no source_commits expected when no sources"
+        );
+        // resolved profile should be the same as local
+        assert_eq!(
+            composition.resolved.merged.modules.len(),
+            resolved.merged.modules.len(),
+            "resolved should match local profile"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // filter_plan — skip and only filters on package and non-package actions
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn filter_plan_skip_removes_matching_packages() {
+        use cfgd_core::reconciler::{Action, Phase, Plan};
+
+        let mut plan = Plan {
+            phases: vec![Phase {
+                name: PhaseName::Packages,
+                actions: vec![
+                    Action::Package(PackageAction::Install {
+                        manager: "brew".into(),
+                        packages: vec!["ripgrep".into(), "fd".into(), "bat".into()],
+                        origin: "profile".into(),
+                    }),
+                    Action::Package(PackageAction::Install {
+                        manager: "cargo".into(),
+                        packages: vec!["tokei".into()],
+                        origin: "profile".into(),
+                    }),
+                ],
+            }],
+            warnings: vec![],
+        };
+
+        super::filter_plan(&mut plan, &["packages.brew.fd".to_string()], &[]);
+
+        // brew install should remain but without fd
+        let brew_action = &plan.phases[0].actions[0];
+        match brew_action {
+            Action::Package(PackageAction::Install { packages, .. }) => {
+                assert!(
+                    !packages.contains(&"fd".to_string()),
+                    "fd should be filtered out"
+                );
+                assert!(
+                    packages.contains(&"ripgrep".to_string()),
+                    "ripgrep should remain"
+                );
+                assert!(packages.contains(&"bat".to_string()), "bat should remain");
+            }
+            other => panic!("expected Install action, got: {:?}", other),
+        }
+        // cargo should be untouched
+        assert_eq!(
+            plan.phases[0].actions.len(),
+            2,
+            "cargo action should remain"
+        );
+    }
+
+    #[test]
+    fn filter_plan_only_keeps_matching_phase() {
+        use cfgd_core::reconciler::{Action, Phase, Plan};
+
+        let mut plan = Plan {
+            phases: vec![
+                Phase {
+                    name: PhaseName::Packages,
+                    actions: vec![Action::Package(PackageAction::Install {
+                        manager: "brew".into(),
+                        packages: vec!["git".into()],
+                        origin: "profile".into(),
+                    })],
+                },
+                Phase {
+                    name: PhaseName::Files,
+                    actions: vec![Action::File(FileAction::Create {
+                        source: PathBuf::from("/src"),
+                        target: PathBuf::from("/dst"),
+                        origin: "profile".into(),
+                        strategy: config::FileStrategy::Copy,
+                        source_hash: None,
+                    })],
+                },
+            ],
+            warnings: vec![],
+        };
+
+        super::filter_plan(&mut plan, &[], &["packages".to_string()]);
+
+        // Packages phase should keep its action
+        assert_eq!(
+            plan.phases[0].actions.len(),
+            1,
+            "packages phase should retain action"
+        );
+        // Files phase should have its action removed by only filter
+        assert_eq!(
+            plan.phases[1].actions.len(),
+            0,
+            "files phase should be empty after only=packages"
+        );
+    }
+
+    #[test]
+    fn filter_plan_skip_uninstall_packages_env() {
+        use cfgd_core::reconciler::{Action, Phase, Plan};
+
+        let mut plan = Plan {
+            phases: vec![Phase {
+                name: PhaseName::Packages,
+                actions: vec![Action::Package(PackageAction::Uninstall {
+                    manager: "npm".into(),
+                    packages: vec!["left-pad".into(), "is-odd".into()],
+                    origin: "profile".into(),
+                })],
+            }],
+            warnings: vec![],
+        };
+
+        super::filter_plan(&mut plan, &["packages.npm.left-pad".to_string()], &[]);
+
+        match &plan.phases[0].actions[0] {
+            Action::Package(PackageAction::Uninstall { packages, .. }) => {
+                assert_eq!(packages, &vec!["is-odd".to_string()]);
+            }
+            other => panic!("expected Uninstall, got: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn filter_plan_empty_filters_is_noop() {
+        use cfgd_core::reconciler::{Action, Phase, Plan};
+
+        let mut plan = Plan {
+            phases: vec![Phase {
+                name: PhaseName::Packages,
+                actions: vec![Action::Package(PackageAction::Install {
+                    manager: "apt".into(),
+                    packages: vec!["vim".into()],
+                    origin: "profile".into(),
+                })],
+            }],
+            warnings: vec![],
+        };
+
+        super::filter_plan(&mut plan, &[], &[]);
+
+        assert_eq!(
+            plan.phases[0].actions.len(),
+            1,
+            "empty filters should not change anything"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // strip_scripts_from_plan — removes script phases and module script actions
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn strip_scripts_from_plan_removes_script_phases() {
+        use cfgd_core::reconciler::{Action, Phase, Plan};
+
+        let mut plan = Plan {
+            phases: vec![
+                Phase {
+                    name: PhaseName::PreScripts,
+                    actions: vec![],
+                },
+                Phase {
+                    name: PhaseName::Packages,
+                    actions: vec![Action::Package(PackageAction::Install {
+                        manager: "brew".into(),
+                        packages: vec!["git".into()],
+                        origin: "profile".into(),
+                    })],
+                },
+                Phase {
+                    name: PhaseName::PostScripts,
+                    actions: vec![],
+                },
+            ],
+            warnings: vec![],
+        };
+
+        super::strip_scripts_from_plan(&mut plan);
+
+        assert_eq!(
+            plan.phases.len(),
+            1,
+            "should only have packages phase remaining"
+        );
+        assert_eq!(
+            plan.phases[0].name,
+            PhaseName::Packages,
+            "remaining phase should be Packages"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // action_path — all action type variants
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn action_path_package_install() {
+        let action = reconciler::Action::Package(PackageAction::Install {
+            manager: "brew".into(),
+            packages: vec!["git".into()],
+            origin: "profile".into(),
+        });
+        let path = super::action_path(&PhaseName::Packages, &action);
+        assert_eq!(path, "packages.brew");
+    }
+
+    #[test]
+    fn action_path_file_create() {
+        let action = reconciler::Action::File(FileAction::Create {
+            source: PathBuf::from("/src/bashrc"),
+            target: PathBuf::from("/home/user/.bashrc"),
+            origin: "profile".into(),
+            strategy: config::FileStrategy::Copy,
+            source_hash: None,
+        });
+        let path = super::action_path(&PhaseName::Files, &action);
+        assert_eq!(path, "files:/home/user/.bashrc");
+    }
+
+    #[test]
+    fn action_path_module() {
+        let action = reconciler::Action::Module(reconciler::ModuleAction {
+            module_name: "dev-tools".into(),
+            kind: reconciler::ModuleActionKind::InstallPackages { resolved: vec![] },
+        });
+        let path = super::action_path(&PhaseName::Modules, &action);
+        assert_eq!(path, "modules.dev-tools");
+    }
+
+    #[test]
+    fn action_path_env_write() {
+        let action = reconciler::Action::Env(reconciler::EnvAction::WriteEnvFile {
+            path: PathBuf::from("/home/user/.config/cfgd/env.sh"),
+            content: String::new(),
+        });
+        let path = super::action_path(&PhaseName::Env, &action);
+        assert_eq!(path, "env:/home/user/.config/cfgd/env.sh");
+    }
+
+    // -----------------------------------------------------------------------
+    // print_package_drift — exercises all PackageAction display branches
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn print_package_drift_no_drift() {
+        let (printer, buf) = Printer::for_test();
+        let actions = vec![PackageAction::Skip {
+            manager: "brew".into(),
+            reason: "up to date".into(),
+            origin: "profile".into(),
+        }];
+        super::print_package_drift(&actions, &printer);
+        let output = buf.lock().unwrap().clone();
+        assert!(
+            output.contains("No package drift"),
+            "all-skip should show no drift, got: {output}"
+        );
+    }
+
+    #[test]
+    fn print_package_drift_missing_packages() {
+        let (printer, buf) = Printer::for_test();
+        let actions = vec![
+            PackageAction::Install {
+                manager: "cargo".into(),
+                packages: vec!["ripgrep".into(), "fd-find".into()],
+                origin: "profile".into(),
+            },
+            PackageAction::Uninstall {
+                manager: "npm".into(),
+                packages: vec!["left-pad".into()],
+                origin: "profile".into(),
+            },
+            PackageAction::Bootstrap {
+                manager: "pipx".into(),
+                method: "pip install pipx".into(),
+                origin: "profile".into(),
+            },
+        ];
+        super::print_package_drift(&actions, &printer);
+        let output = buf.lock().unwrap().clone();
+        assert!(
+            output.contains("cargo: missing") && output.contains("ripgrep"),
+            "should show missing cargo packages, got: {output}"
+        );
+        assert!(
+            output.contains("npm: extra") && output.contains("left-pad"),
+            "should show extra npm packages, got: {output}"
+        );
+        assert!(
+            output.contains("pipx: not installed") && output.contains("bootstrap"),
+            "should show bootstrap need, got: {output}"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // cmd_plan with module containing packages, env, and files
+    // Exercises: module loading, plan generation, display_plan_preview
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn cmd_plan_rich_module_with_packages_env_and_files() {
+        let rich_module = r#"apiVersion: cfgd.io/v1alpha1
+kind: Module
+metadata:
+  name: dev-tools
+spec:
+  packages:
+    - name: ripgrep
+      manager: cargo
+    - name: fd-find
+      manager: cargo
+    - name: bat
+  env:
+    - name: EDITOR
+      value: nvim
+    - name: PAGER
+      value: less
+  files:
+    - source: gitconfig
+      target: /tmp/cfgd-test-gitconfig
+"#;
+        let profile_with_module = r#"apiVersion: cfgd.io/v1alpha1
+kind: Profile
+metadata:
+  name: default
+spec:
+  env:
+    - name: SHELL
+      value: /bin/zsh
+  packages:
+    cargo:
+      - tokei
+  modules:
+    - dev-tools
+"#;
+
+        let h = CliTestHarness::builder()
+            .profile("default", profile_with_module)
+            .module("dev-tools", rich_module)
+            .build();
+
+        // Create the module file referenced by the module
+        let module_files_dir = h
+            .config_path()
+            .join("modules")
+            .join("dev-tools")
+            .join("files");
+        std::fs::write(
+            module_files_dir.join("gitconfig"),
+            "[user]\n  name = Test\n",
+        )
+        .unwrap();
+
+        let cli = h.cli_with_command(Command::Plan(PlanArgs {
+            phase: None,
+            skip: vec![],
+            only: vec![],
+            module: None,
+            skip_scripts: false,
+            context: "apply".to_string(),
+        }));
+        let result = super::cmd_plan(
+            &cli,
+            h.printer(),
+            &PlanArgs {
+                phase: None,
+                skip: vec![],
+                only: vec![],
+                module: None,
+                skip_scripts: false,
+                context: "apply".to_string(),
+            },
+        );
+        assert!(
+            result.is_ok(),
+            "cmd_plan with rich module should succeed: {:?}",
+            result.err()
+        );
+
+        let output = h.output();
+        assert!(
+            output.contains("Plan"),
+            "should show Plan header, got: {output}"
+        );
+        // Should mention actions or nothing-to-do
+        assert!(
+            output.contains("action(s) planned")
+                || output.contains("Nothing to do")
+                || output.contains("Phase"),
+            "should show plan summary, got: {output}"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // cmd_plan with --module filter (module-only mode)
+    // Exercises: module-only path, empty_resolved_profile, module resolution
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn cmd_plan_module_only_mode() {
+        let module_yaml = r#"apiVersion: cfgd.io/v1alpha1
+kind: Module
+metadata:
+  name: standalone
+spec:
+  packages:
+    - name: jq
+    - name: yq
+"#;
+        let h = CliTestHarness::builder()
+            .module("standalone", module_yaml)
+            .build();
+
+        let args = PlanArgs {
+            phase: None,
+            skip: vec![],
+            only: vec![],
+            module: Some("standalone".to_string()),
+            skip_scripts: false,
+            context: "apply".to_string(),
+        };
+        let result = super::cmd_plan(&h.cli(), h.printer(), &args);
+        assert!(
+            result.is_ok(),
+            "module-only plan should succeed: {:?}",
+            result.err()
+        );
+
+        let output = h.output();
+        assert!(
+            output.contains("Plan"),
+            "should show Plan header, got: {output}"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // cmd_plan JSON structured output with module
+    // Exercises: build_plan_output, structured serialization
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn cmd_plan_json_output_with_module() {
+        let module_yaml = r#"apiVersion: cfgd.io/v1alpha1
+kind: Module
+metadata:
+  name: json-mod
+spec:
+  packages:
+    - name: curl
+    - name: wget
+"#;
+        let profile_yaml = r#"apiVersion: cfgd.io/v1alpha1
+kind: Profile
+metadata:
+  name: default
+spec:
+  modules:
+    - json-mod
+  packages:
+    cargo:
+      - bat
+"#;
+        let h = CliTestHarness::builder()
+            .json()
+            .profile("default", profile_yaml)
+            .module("json-mod", module_yaml)
+            .build();
+
+        let args = PlanArgs {
+            phase: None,
+            skip: vec![],
+            only: vec![],
+            module: None,
+            skip_scripts: false,
+            context: "apply".to_string(),
+        };
+        let result = super::cmd_plan(&h.cli(), h.printer(), &args);
+        assert!(
+            result.is_ok(),
+            "JSON plan should succeed: {:?}",
+            result.err()
+        );
+
+        let json = h.json_output();
+        assert_json_has_fields(&json, &["context", "totalActions", "phases"]);
+        assert_json_field_type(&json, "totalActions", "number");
+        assert_json_field_type(&json, "phases", "array");
+    }
+
+    // -----------------------------------------------------------------------
+    // cmd_status with module configured — exercises module status display
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn cmd_status_with_module_displays_module_info() {
+        let module_yaml = r#"apiVersion: cfgd.io/v1alpha1
+kind: Module
+metadata:
+  name: status-mod
+spec:
+  packages:
+    - name: git
+    - name: curl
+  files:
+    - source: config.txt
+      target: /tmp/cfgd-test-config.txt
+  depends:
+    - base-mod
+"#;
+        let profile_yaml = r#"apiVersion: cfgd.io/v1alpha1
+kind: Profile
+metadata:
+  name: default
+spec:
+  modules:
+    - status-mod
+"#;
+        let h = CliTestHarness::builder()
+            .profile("default", profile_yaml)
+            .module("status-mod", module_yaml)
+            .build();
+
+        // Also create the base-mod so dependency display works
+        create_module_in_dir(
+            h.config_path(),
+            "base-mod",
+            "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: base-mod\nspec:\n  packages: []\n",
+        );
+
+        let result = super::cmd_status_module(&h.cli(), h.printer(), "status-mod");
+        assert!(
+            result.is_ok(),
+            "cmd_status_module should succeed: {:?}",
+            result.err()
+        );
+
+        let output = h.output();
+        assert!(
+            output.contains("Status: status-mod"),
+            "should show module name in header, got: {output}"
+        );
+        assert!(
+            output.contains("Packages") && output.contains("2"),
+            "should show package count, got: {output}"
+        );
+        assert!(
+            output.contains("Files") && output.contains("1"),
+            "should show file count, got: {output}"
+        );
+        assert!(
+            output.contains("Dependencies") && output.contains("base-mod"),
+            "should show dependencies, got: {output}"
+        );
+        assert!(
+            output.contains("not applied"),
+            "should show 'not applied' status, got: {output}"
+        );
+    }
+
+    #[test]
+    fn cmd_status_module_json_output_found() {
+        let module_yaml = r#"apiVersion: cfgd.io/v1alpha1
+kind: Module
+metadata:
+  name: json-status-mod
+spec:
+  packages:
+    - name: vim
+  files:
+    - source: vimrc
+      target: /tmp/cfgd-test-vimrc
+  depends:
+    - core
+"#;
+        let h = CliTestHarness::builder()
+            .json()
+            .module("json-status-mod", module_yaml)
+            .build();
+
+        let result = super::cmd_status_module(&h.cli(), h.printer(), "json-status-mod");
+        assert!(
+            result.is_ok(),
+            "JSON module status should succeed: {:?}",
+            result.err()
+        );
+
+        let json = h.json_output();
+        assert_json_has_fields(&json, &["name", "packages", "files", "depends", "status"]);
+        assert_eq!(json["name"].as_str().unwrap(), "json-status-mod");
+        assert_eq!(json["packages"].as_u64().unwrap(), 1);
+        assert_eq!(json["files"].as_u64().unwrap(), 1);
+        assert_eq!(json["status"].as_str().unwrap(), "not applied");
+        let depends = json["depends"].as_array().unwrap();
+        assert_eq!(depends.len(), 1);
+        assert_eq!(depends[0].as_str().unwrap(), "core");
+    }
+
+    #[test]
+    fn cmd_status_module_json_output_not_found() {
+        let h = CliTestHarness::builder().json().build();
+
+        let result = super::cmd_status_module(&h.cli(), h.printer(), "nonexistent-mod");
+        assert!(result.is_ok(), "missing module JSON status should succeed");
+
+        let json = h.json_output();
+        assert_eq!(json["name"].as_str().unwrap(), "nonexistent-mod");
+        assert_eq!(json["status"].as_str().unwrap(), "not found");
+        assert_eq!(json["packages"].as_u64().unwrap(), 0);
+    }
+
+    // -----------------------------------------------------------------------
+    // cmd_config_show — exercises all branches (origins, sources, daemon, etc.)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn cmd_config_show_with_rich_config_full() {
+        let h = CliTestHarness::builder().rich_config().build();
+
+        let result = super::cmd_config_show(&h.cli(), h.printer());
+        assert!(
+            result.is_ok(),
+            "config show should succeed: {:?}",
+            result.err()
+        );
+
+        let output = h.output();
+        assert!(
+            output.contains("Configuration"),
+            "should show Configuration header, got: {output}"
+        );
+        assert!(
+            output.contains("Profile") && output.contains("default"),
+            "should show profile name, got: {output}"
+        );
+        // Should show sources section
+        assert!(
+            output.contains("Sources") && output.contains("team-config"),
+            "should show source names, got: {output}"
+        );
+        // Should show daemon section
+        assert!(
+            output.contains("Daemon") && output.contains("yes"),
+            "should show daemon enabled, got: {output}"
+        );
+        assert!(
+            output.contains("Reconcile interval") && output.contains("5m"),
+            "should show reconcile interval, got: {output}"
+        );
+        // Should show secrets
+        assert!(
+            output.contains("Secrets") && output.contains("age"),
+            "should show secrets backend, got: {output}"
+        );
+    }
+
+    #[test]
+    fn cmd_config_show_missing_file_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        let cli = test_cli_with_state(dir.path(), None);
+        let printer = test_printer();
+        let result = super::cmd_config_show(&cli, &printer);
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("No cfgd.yaml found"),
+            "should report missing config"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // cmd_config_get — exercises walk_yaml_path through config
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn cmd_config_get_string_value() {
+        let h = CliTestHarness::builder().build();
+        let result = super::cmd_config_get(&h.cli(), h.printer(), "profile");
+        assert!(
+            result.is_ok(),
+            "config get profile should succeed: {:?}",
+            result.err()
+        );
+        let output = h.output();
+        assert!(
+            output.contains("default"),
+            "should output 'default' profile, got: {output}"
+        );
+    }
+
+    #[test]
+    fn cmd_config_get_missing_key_errors_no_config() {
+        let h = CliTestHarness::builder().build();
+        let result = super::cmd_config_get(&h.cli(), h.printer(), "nonexistent.key");
+        assert!(result.is_err(), "missing key should error");
+        assert!(
+            result.unwrap_err().to_string().contains("not found"),
+            "should report key not found"
+        );
+    }
+
+    #[test]
+    fn cmd_config_get_json_output() {
+        let h = CliTestHarness::builder().json().build();
+        let result = super::cmd_config_get(&h.cli(), h.printer(), "profile");
+        assert!(result.is_ok(), "JSON config get should succeed");
+        let output = h.output();
+        // JSON output should contain the value
+        assert!(
+            output.contains("default"),
+            "JSON should contain profile value, got: {output}"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // build_registry_with_config_and_packages — with custom packages spec
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn build_registry_with_config_populates_secret_backend() {
+        let cfg = config::CfgdConfig {
+            api_version: cfgd_core::API_VERSION.into(),
+            kind: "Config".into(),
+            metadata: config::ConfigMetadata {
+                name: "test".into(),
+            },
+            spec: config::ConfigSpec {
+                secrets: Some(config::SecretsConfig {
+                    backend: "age".into(),
+                    sops: None,
+                    integrations: vec![],
+                }),
+                ..config::ConfigSpec::default()
+            },
+        };
+        let registry = super::build_registry_with_config_and_packages(Some(&cfg), None);
+        assert!(
+            registry.secret_backend.is_some(),
+            "should have a secret backend configured"
+        );
+        assert!(
+            !registry.package_managers.is_empty(),
+            "should have package managers"
+        );
+        assert!(
+            !registry.system_configurators.is_empty(),
+            "should have system configurators"
+        );
+    }
+
+    #[test]
+    fn build_registry_with_no_config_uses_defaults() {
+        let registry = super::build_registry_with_config_and_packages(None, None);
+        assert!(
+            !registry.package_managers.is_empty(),
+            "should have default package managers even without config"
+        );
+        assert!(
+            registry.secret_backend.is_some(),
+            "should have default secret backend"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // cmd_diff empty profile — exercises file, package, and system diff display
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn cmd_diff_full_profile_shows_all_sections() {
+        let h = CliTestHarness::builder().build();
+        let result = super::cmd_diff(&h.cli(), h.printer(), None);
+        assert!(
+            result.is_ok(),
+            "diff with default profile should succeed: {:?}",
+            result.err()
+        );
+
+        let output = h.output();
+        assert!(
+            output.contains("Diff"),
+            "should show Diff header, got: {output}"
+        );
+        assert!(
+            output.contains("Files"),
+            "should show Files section, got: {output}"
+        );
+        assert!(
+            output.contains("Packages"),
+            "should show Packages section, got: {output}"
+        );
+        assert!(
+            output.contains("System"),
+            "should show System section, got: {output}"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // cmd_diff with module filter — module-only diff path
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn cmd_diff_module_not_found_shows_info() {
+        let h = CliTestHarness::builder().build();
+        let result = super::cmd_diff(&h.cli(), h.printer(), Some("nonexistent-mod"));
+        assert!(
+            result.is_ok(),
+            "diff with missing module should succeed gracefully"
+        );
+        let output = h.output();
+        assert!(
+            output.contains("not found"),
+            "should indicate module not found, got: {output}"
+        );
+    }
+
+    #[test]
+    fn cmd_diff_module_with_files_shows_file_and_package_sections() {
+        let module_yaml = r#"apiVersion: cfgd.io/v1alpha1
+kind: Module
+metadata:
+  name: diff-mod
+spec:
+  packages:
+    - name: curl
+  files:
+    - source: my-config
+      target: /tmp/cfgd-diff-test-target
+"#;
+        let h = CliTestHarness::builder()
+            .module("diff-mod", module_yaml)
+            .build();
+
+        // Create source file in module
+        let module_files = h
+            .config_path()
+            .join("modules")
+            .join("diff-mod")
+            .join("files");
+        std::fs::write(module_files.join("my-config"), "new config content\n").unwrap();
+
+        let result = super::cmd_diff(&h.cli(), h.printer(), Some("diff-mod"));
+        assert!(
+            result.is_ok(),
+            "module diff should succeed: {:?}",
+            result.err()
+        );
+
+        let output = h.output();
+        assert!(
+            output.contains("Module") && output.contains("diff-mod"),
+            "should show module name, got: {output}"
+        );
+        assert!(
+            output.contains("Files"),
+            "should show Files section, got: {output}"
+        );
+        assert!(
+            output.contains("Packages"),
+            "should show Packages section, got: {output}"
+        );
+        // Target doesn't exist, so should show "missing"
+        assert!(
+            output.contains("missing"),
+            "should show missing target file, got: {output}"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // cmd_status full profile with sources — exercises source display
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn cmd_status_with_sources_shows_source_section() {
+        let h = CliTestHarness::builder().rich_config().build();
+        let result = super::cmd_status(&h.cli(), h.printer(), None);
+        assert!(
+            result.is_ok(),
+            "status with sources should succeed: {:?}",
+            result.err()
+        );
+
+        let output = h.output();
+        assert!(
+            output.contains("Status"),
+            "should show Status header, got: {output}"
+        );
+        assert!(
+            output.contains("Config Sources"),
+            "should show Config Sources section, got: {output}"
+        );
+        assert!(
+            output.contains("team-config"),
+            "should show source name, got: {output}"
+        );
+        assert!(
+            output.contains("not yet fetched"),
+            "unfetched source should show 'not yet fetched', got: {output}"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // display_plan_table — exercises formatted table display
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn display_plan_table_shows_phase_names() {
+        use cfgd_core::reconciler::{Action, Phase, Plan};
+
+        let (printer, buf) = Printer::for_test();
+        let plan = Plan {
+            phases: vec![
+                Phase {
+                    name: PhaseName::Packages,
+                    actions: vec![Action::Package(PackageAction::Install {
+                        manager: "brew".into(),
+                        packages: vec!["git".into(), "curl".into()],
+                        origin: "profile".into(),
+                    })],
+                },
+                Phase {
+                    name: PhaseName::Env,
+                    actions: vec![],
+                },
+            ],
+            warnings: vec![],
+        };
+
+        super::display_plan_table(&plan, &printer, None);
+
+        let output = buf.lock().unwrap().clone();
+        assert!(
+            output.contains("Packages") || output.contains("packages"),
+            "should show Packages phase, got: {output}"
+        );
+    }
+
+    #[test]
+    fn display_plan_table_with_phase_filter_packages() {
+        use cfgd_core::reconciler::{Action, Phase, Plan};
+
+        let (printer, buf) = Printer::for_test();
+        let plan = Plan {
+            phases: vec![
+                Phase {
+                    name: PhaseName::Packages,
+                    actions: vec![Action::Package(PackageAction::Install {
+                        manager: "brew".into(),
+                        packages: vec!["git".into()],
+                        origin: "profile".into(),
+                    })],
+                },
+                Phase {
+                    name: PhaseName::Files,
+                    actions: vec![Action::File(FileAction::Create {
+                        source: PathBuf::from("/src"),
+                        target: PathBuf::from("/dst"),
+                        origin: "profile".into(),
+                        strategy: config::FileStrategy::Copy,
+                        source_hash: None,
+                    })],
+                },
+            ],
+            warnings: vec![],
+        };
+
+        // Filter to only files phase
+        super::display_plan_table(&plan, &printer, Some(&PhaseName::Files));
+
+        let output = buf.lock().unwrap().clone();
+        // Files phase should be shown
+        assert!(
+            output.contains("Files") || output.contains("files") || output.contains("/dst"),
+            "should show Files phase content, got: {output}"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // action_path — remaining variants not covered above
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn action_path_file_update() {
+        let action = reconciler::Action::File(FileAction::Update {
+            source: PathBuf::from("/src/bashrc"),
+            target: PathBuf::from("/home/user/.bashrc"),
+            diff: "diff contents".into(),
+            origin: "profile".into(),
+            strategy: config::FileStrategy::Copy,
+            source_hash: None,
+        });
+        let path = super::action_path(&PhaseName::Files, &action);
+        assert_eq!(path, "files:/home/user/.bashrc");
+    }
+
+    #[test]
+    fn action_path_file_delete() {
+        let action = reconciler::Action::File(FileAction::Delete {
+            target: PathBuf::from("/home/user/.obsolete"),
+            origin: "profile".into(),
+        });
+        let path = super::action_path(&PhaseName::Files, &action);
+        assert_eq!(path, "files:/home/user/.obsolete");
+    }
+
+    #[test]
+    fn action_path_file_permissions() {
+        let action = reconciler::Action::File(FileAction::SetPermissions {
+            target: PathBuf::from("/home/user/.ssh/config"),
+            mode: 0o600,
+            origin: "profile".into(),
+        });
+        let path = super::action_path(&PhaseName::Files, &action);
+        assert_eq!(path, "files:/home/user/.ssh/config");
+    }
+
+    #[test]
+    fn action_path_file_skip() {
+        let action = reconciler::Action::File(FileAction::Skip {
+            target: PathBuf::from("/home/user/.gitconfig"),
+            reason: "up to date".into(),
+            origin: "profile".into(),
+        });
+        let path = super::action_path(&PhaseName::Files, &action);
+        assert_eq!(path, "files:/home/user/.gitconfig");
+    }
+
+    #[test]
+    fn action_path_package_uninstall() {
+        let action = reconciler::Action::Package(PackageAction::Uninstall {
+            manager: "npm".into(),
+            packages: vec!["left-pad".into()],
+            origin: "profile".into(),
+        });
+        let path = super::action_path(&PhaseName::Packages, &action);
+        assert_eq!(path, "packages.npm");
+    }
+
+    #[test]
+    fn action_path_package_bootstrap() {
+        let action = reconciler::Action::Package(PackageAction::Bootstrap {
+            manager: "brew".into(),
+            method: "curl install".into(),
+            origin: "profile".into(),
+        });
+        let path = super::action_path(&PhaseName::Packages, &action);
+        assert_eq!(path, "packages.brew");
+    }
+
+    #[test]
+    fn action_path_package_skip() {
+        let action = reconciler::Action::Package(PackageAction::Skip {
+            manager: "cargo".into(),
+            reason: "already installed".into(),
+            origin: "profile".into(),
+        });
+        let path = super::action_path(&PhaseName::Packages, &action);
+        assert_eq!(path, "packages.cargo");
+    }
+
+    #[test]
+    fn action_path_script_run() {
+        let entry = config::ScriptEntry::Simple("scripts/setup.sh".into());
+        let action = reconciler::Action::Script(reconciler::ScriptAction::Run {
+            entry,
+            phase: reconciler::ScriptPhase::PreApply,
+            origin: "profile".into(),
+        });
+        let path = super::action_path(&PhaseName::PreScripts, &action);
+        assert_eq!(path, "pre-scripts:scripts/setup.sh");
+    }
+
+    #[test]
+    fn action_path_script_run_full_entry() {
+        let entry = config::ScriptEntry::Full {
+            run: "echo hello".into(),
+            timeout: None,
+            idle_timeout: None,
+            continue_on_error: None,
+        };
+        let action = reconciler::Action::Script(reconciler::ScriptAction::Run {
+            entry,
+            phase: reconciler::ScriptPhase::PostApply,
+            origin: "profile".into(),
+        });
+        let path = super::action_path(&PhaseName::PostScripts, &action);
+        assert_eq!(path, "post-scripts:echo hello");
+    }
+
+    #[test]
+    fn action_path_system_set_value() {
+        let action = reconciler::Action::System(reconciler::SystemAction::SetValue {
+            configurator: "sysctl".into(),
+            key: "vm.swappiness".into(),
+            desired: "10".into(),
+            current: "60".into(),
+            origin: "profile".into(),
+        });
+        let path = super::action_path(&PhaseName::System, &action);
+        assert_eq!(path, "system.sysctl.vm.swappiness");
+    }
+
+    #[test]
+    fn action_path_system_skip() {
+        let action = reconciler::Action::System(reconciler::SystemAction::Skip {
+            configurator: "macosDefaults".into(),
+            reason: "not on macOS".into(),
+            origin: "profile".into(),
+        });
+        let path = super::action_path(&PhaseName::System, &action);
+        assert_eq!(path, "system.macosDefaults");
+    }
+
+    #[test]
+    fn action_path_env_inject_source_line() {
+        let action = reconciler::Action::Env(reconciler::EnvAction::InjectSourceLine {
+            rc_path: PathBuf::from("/home/user/.zshrc"),
+            line: "source ~/.cfgd.env".into(),
+        });
+        let path = super::action_path(&PhaseName::Env, &action);
+        assert_eq!(path, "env:/home/user/.zshrc");
+    }
+
+    #[test]
+    fn action_path_secret_decrypt() {
+        let action = reconciler::Action::Secret(SecretAction::Decrypt {
+            source: PathBuf::from("/repo/secrets/api.enc"),
+            target: PathBuf::from("/home/user/.config/api-key"),
+            backend: "sops".into(),
+            origin: "profile".into(),
+        });
+        let path = super::action_path(&PhaseName::Secrets, &action);
+        assert_eq!(path, "secrets:/home/user/.config/api-key");
+    }
+
+    #[test]
+    fn action_path_secret_resolve() {
+        let action = reconciler::Action::Secret(SecretAction::Resolve {
+            provider: "1password".into(),
+            reference: "op://vault/item/field".into(),
+            target: PathBuf::from("/home/user/.token"),
+            origin: "profile".into(),
+        });
+        let path = super::action_path(&PhaseName::Secrets, &action);
+        assert_eq!(path, "secrets.1password.op://vault/item/field");
+    }
+
+    #[test]
+    fn action_path_secret_resolve_env() {
+        let action = reconciler::Action::Secret(SecretAction::ResolveEnv {
+            provider: "vault".into(),
+            reference: "secret/data/app".into(),
+            envs: vec!["API_KEY".into(), "DB_PASS".into()],
+            origin: "profile".into(),
+        });
+        let path = super::action_path(&PhaseName::Secrets, &action);
+        assert_eq!(path, "secrets.vault.secret/data/app:[API_KEY,DB_PASS]");
+    }
+
+    #[test]
+    fn action_path_secret_skip() {
+        let action = reconciler::Action::Secret(SecretAction::Skip {
+            source: "old-secret".into(),
+            reason: "not needed".into(),
+            origin: "profile".into(),
+        });
+        let path = super::action_path(&PhaseName::Secrets, &action);
+        assert_eq!(path, "secrets.old-secret");
+    }
+
+    // -----------------------------------------------------------------------
+    // generate_release_workflow_yaml — deeper content verification
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn generate_release_workflow_multiple_modules() {
+        let yaml = super::generate_release_workflow_yaml(
+            &["shell-tools".into(), "git-config".into()],
+            &[],
+        );
+        // Both module paths should appear
+        assert!(yaml.contains("modules/shell-tools/**"));
+        assert!(yaml.contains("modules/git-config/**"));
+        // Both should have matrix entries in detect-changes outputs
+        assert!(yaml.contains("module_shell_tools"));
+        assert!(yaml.contains("module_git_config"));
+        // Should have tag-modules job but not tag-profiles
+        assert!(yaml.contains("tag-modules:"));
+        assert!(!yaml.contains("tag-profiles:"));
+    }
+
+    #[test]
+    fn generate_release_workflow_hyphenated_names_become_underscored() {
+        let yaml = super::generate_release_workflow_yaml(
+            &["my-cool-tools".into()],
+            &["work-laptop".into()],
+        );
+        // Hyphens in names become underscores in output variable names
+        assert!(yaml.contains("module_my_cool_tools"));
+        assert!(yaml.contains("profile_work_laptop"));
+    }
+
+    #[test]
+    fn generate_release_workflow_empty_has_placeholder_job() {
+        let yaml = super::generate_release_workflow_yaml(&[], &[]);
+        // Should have commented-out paths section
+        assert!(yaml.contains("# paths:"));
+        // Should have placeholder job
+        assert!(yaml.contains("placeholder:"));
+        assert!(yaml.contains("No modules or profiles to tag yet"));
+        // Should NOT have detect-changes or tag jobs
+        assert!(!yaml.contains("detect-changes:"));
+        assert!(!yaml.contains("tag-modules:"));
+        assert!(!yaml.contains("tag-profiles:"));
+    }
+
+    #[test]
+    fn generate_release_workflow_profiles_only() {
+        let yaml =
+            super::generate_release_workflow_yaml(&[], &["personal".into(), "server".into()]);
+        assert!(yaml.contains("profiles/personal.yaml"));
+        assert!(yaml.contains("profiles/personal.yml"));
+        assert!(yaml.contains("profiles/server.yaml"));
+        assert!(yaml.contains("profiles/server.yml"));
+        assert!(yaml.contains("tag-profiles:"));
+        assert!(!yaml.contains("tag-modules:"));
+        assert!(yaml.contains("detect-changes:"));
+    }
+
+    // -----------------------------------------------------------------------
+    // set_nested_yaml_value — top-level key
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn set_nested_yaml_value_top_level_key() {
+        let mut root = serde_yaml::Value::Mapping(serde_yaml::Mapping::new());
+        super::set_nested_yaml_value(&mut root, "name", &serde_yaml::Value::String("test".into()))
+            .unwrap();
+
+        let val = root.get("name").and_then(|v| v.as_str());
+        assert_eq!(val, Some("test"));
+    }
+
+    #[test]
+    fn set_nested_yaml_value_three_level_path() {
+        let mut root = serde_yaml::Value::Mapping(serde_yaml::Mapping::new());
+        super::set_nested_yaml_value(
+            &mut root,
+            "a.b.c",
+            &serde_yaml::Value::String("value".into()),
+        )
+        .unwrap();
+
+        let val = root
+            .get("a")
+            .and_then(|v| v.get("b"))
+            .and_then(|v| v.get("c"))
+            .and_then(|v| v.as_str());
+        assert_eq!(val, Some("value"));
+        // Intermediate nodes should be mappings
+        assert!(root.get("a").unwrap().is_mapping());
+        assert!(root.get("a").unwrap().get("b").unwrap().is_mapping());
+    }
+
+    #[test]
+    fn set_nested_yaml_value_preserves_siblings() {
+        let mut root: serde_yaml::Value = serde_yaml::from_str("a:\n  existing: kept\n").unwrap();
+        super::set_nested_yaml_value(
+            &mut root,
+            "a.new_key",
+            &serde_yaml::Value::String("added".into()),
+        )
+        .unwrap();
+
+        // Existing sibling should be preserved
+        let existing = root
+            .get("a")
+            .and_then(|v| v.get("existing"))
+            .and_then(|v| v.as_str());
+        assert_eq!(existing, Some("kept"));
+        // New key should be present
+        let new_key = root
+            .get("a")
+            .and_then(|v| v.get("new_key"))
+            .and_then(|v| v.as_str());
+        assert_eq!(new_key, Some("added"));
+    }
+
+    #[test]
+    fn set_nested_yaml_value_numeric_value() {
+        let mut root = serde_yaml::Value::Mapping(serde_yaml::Mapping::new());
+        super::set_nested_yaml_value(
+            &mut root,
+            "spec.replicas",
+            &serde_yaml::Value::Number(serde_yaml::Number::from(3)),
+        )
+        .unwrap();
+
+        let val = root
+            .get("spec")
+            .and_then(|v| v.get("replicas"))
+            .and_then(|v| v.as_u64());
+        assert_eq!(val, Some(3));
+    }
+
+    // -----------------------------------------------------------------------
+    // pattern_matches — additional cases
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn pattern_matches_no_match() {
+        assert!(!super::pattern_matches("files", "packages.brew.ripgrep"));
+    }
+
+    #[test]
+    fn pattern_matches_longer_pattern_than_path() {
+        assert!(!super::pattern_matches(
+            "packages.brew.ripgrep.extra",
+            "packages.brew.ripgrep"
+        ));
+    }
+
+    #[test]
+    fn pattern_matches_secrets_colon() {
+        assert!(super::pattern_matches(
+            "secrets",
+            "secrets:/home/user/.token"
+        ));
+    }
+
+    #[test]
+    fn pattern_matches_env_colon() {
+        assert!(super::pattern_matches("env", "env:/home/user/.zshrc"));
+    }
+
+    #[test]
+    fn pattern_matches_exact_colon_path() {
+        assert!(super::pattern_matches(
+            "files:/home/user/.bashrc",
+            "files:/home/user/.bashrc"
+        ));
+    }
+
+    #[test]
+    fn pattern_matches_empty_pattern() {
+        // Empty pattern should not match non-empty paths
+        assert!(!super::pattern_matches("", "packages.brew"));
+    }
+
+    // -----------------------------------------------------------------------
+    // copy_files_to_dir — additional forbidden prefix tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn copy_files_to_dir_rejects_usr_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo_dir = dir.path().join("repo");
+        if std::path::Path::new("/usr/bin/env").exists() {
+            let result = super::copy_files_to_dir(&["/usr/bin/env".into()], &repo_dir);
+            assert!(result.is_err());
+            let msg = result.unwrap_err().to_string();
+            assert!(
+                msg.contains("system directory"),
+                "expected 'system directory' error, got: {msg}"
+            );
+        }
+    }
+
+    #[test]
+    fn copy_files_to_dir_rejects_bin_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo_dir = dir.path().join("repo");
+        if std::path::Path::new("/bin/sh").exists() {
+            let result = super::copy_files_to_dir(&["/bin/sh".into()], &repo_dir);
+            assert!(result.is_err());
+            let msg = result.unwrap_err().to_string();
+            assert!(
+                msg.contains("system directory"),
+                "expected 'system directory' error, got: {msg}"
+            );
+        }
+    }
+
+    #[test]
+    fn copy_files_to_dir_rejects_var_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo_dir = dir.path().join("repo");
+        if std::path::Path::new("/var/log/syslog").exists() {
+            let result = super::copy_files_to_dir(&["/var/log/syslog".into()], &repo_dir);
+            assert!(result.is_err());
+            let msg = result.unwrap_err().to_string();
+            assert!(
+                msg.contains("system directory"),
+                "expected 'system directory' error, got: {msg}"
+            );
+        }
+    }
+
+    #[test]
+    fn copy_files_to_dir_allows_home_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        // Create a file in a temp directory (not a system directory)
+        let source = dir.path().join("safe-file.txt");
+        std::fs::write(&source, "safe content").unwrap();
+        let repo_dir = dir.path().join("repo");
+
+        let results = super::copy_files_to_dir(&[source.display().to_string()], &repo_dir).unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].0, "safe-file.txt");
+        assert!(repo_dir.join("safe-file.txt").exists());
+        assert_eq!(
+            std::fs::read_to_string(repo_dir.join("safe-file.txt")).unwrap(),
+            "safe content"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // cmd_source_list — table columns with state info
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn cmd_source_list_table_shows_status_and_priority() {
+        let h = CliTestHarness::builder().rich_config().build();
+        // Populate state with source info so the table columns have values
+        let state = super::open_state_store(Some(h.state_path())).unwrap();
+        state
+            .upsert_config_source(
+                "team-config",
+                "https://github.com/team/config",
+                "main",
+                Some("abc123"),
+                Some("1.2.0"),
+                None,
+            )
+            .unwrap();
+
+        super::cmd_source_list(&h.cli(), h.printer()).unwrap();
+
+        let output = h.output();
+        // Table should include the source name, URL, priority, version, and status
+        assert!(
+            output.contains("team-config"),
+            "table should show source name, got: {output}"
+        );
+        assert!(
+            output.contains("100"),
+            "table should show priority 100, got: {output}"
+        );
+    }
+
+    #[test]
+    fn cmd_source_list_structured_json_includes_state_info() {
+        let h = CliTestHarness::builder().rich_config().json().build();
+        let state = super::open_state_store(Some(h.state_path())).unwrap();
+        state
+            .upsert_config_source(
+                "team-config",
+                "https://github.com/team/config",
+                "main",
+                Some("abc123def"),
+                Some("2.0.0"),
+                None,
+            )
+            .unwrap();
+
+        super::cmd_source_list(&h.cli(), h.printer()).unwrap();
+
+        let output = h.output();
+        let parsed: serde_json::Value = serde_json::from_str(output.trim())
+            .unwrap_or_else(|e| panic!("invalid JSON: {e}, got: {output}"));
+        let arr = parsed.as_array().expect("should be an array");
+        assert_eq!(arr.len(), 1);
+        assert_eq!(arr[0]["name"], "team-config");
+        assert_eq!(arr[0]["version"], "2.0.0");
+        assert!(
+            arr[0]["lastFetched"].is_string(),
+            "lastFetched should be populated after upsert"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // cmd_source_show — verify key fields displayed with state + resources
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn cmd_source_show_displays_all_key_fields() {
+        let h = CliTestHarness::builder().rich_config().build();
+
+        super::cmd_source_show(&h.cli(), h.printer(), "team-config").unwrap();
+
+        let output = h.output();
+        assert!(
+            output.contains("URL"),
+            "should display URL label, got: {output}"
+        );
+        assert!(
+            output.contains("https://github.com/team/config"),
+            "should display URL value, got: {output}"
+        );
+        assert!(
+            output.contains("Branch"),
+            "should display Branch label, got: {output}"
+        );
+        assert!(
+            output.contains("main"),
+            "should display branch value, got: {output}"
+        );
+        assert!(
+            output.contains("Priority"),
+            "should display Priority label, got: {output}"
+        );
+        assert!(
+            output.contains("100"),
+            "should display priority value, got: {output}"
+        );
+        assert!(
+            output.contains("Sync Interval"),
+            "should display Sync Interval label, got: {output}"
+        );
+        assert!(
+            output.contains("Auto Apply"),
+            "should display Auto Apply label, got: {output}"
+        );
+    }
+
+    #[test]
+    fn cmd_source_show_with_state_shows_status_section() {
+        let h = CliTestHarness::builder().rich_config().build();
+        let state = super::open_state_store(Some(h.state_path())).unwrap();
+        state
+            .upsert_config_source(
+                "team-config",
+                "https://github.com/team/config",
+                "main",
+                Some("deadbeef1234"),
+                Some("3.1.0"),
+                None,
+            )
+            .unwrap();
+
+        super::cmd_source_show(&h.cli(), h.printer(), "team-config").unwrap();
+
+        let output = h.output();
+        assert!(
+            output.contains("State"),
+            "should display State section, got: {output}"
+        );
+        assert!(
+            output.contains("Status"),
+            "should display Status within State section, got: {output}"
+        );
+        assert!(
+            output.contains("Last Fetched"),
+            "should display Last Fetched, got: {output}"
+        );
+        // Last Commit should be truncated to 12 chars
+        assert!(
+            output.contains("deadbeef1234"),
+            "should display truncated commit hash, got: {output}"
+        );
+        assert!(
+            output.contains("3.1.0"),
+            "should display version, got: {output}"
+        );
+    }
+
+    #[test]
+    fn cmd_source_show_with_managed_resources_shows_table() {
+        let h = CliTestHarness::builder().rich_config().build();
+        let state = super::open_state_store(Some(h.state_path())).unwrap();
+        state
+            .upsert_managed_resource("package", "brew/curl", "team-config", None, None)
+            .unwrap();
+        state
+            .upsert_managed_resource("file", "~/.bashrc", "team-config", None, None)
+            .unwrap();
+
+        super::cmd_source_show(&h.cli(), h.printer(), "team-config").unwrap();
+
+        let output = h.output();
+        assert!(
+            output.contains("Managed Resources"),
+            "should display Managed Resources section, got: {output}"
+        );
+        assert!(
+            output.contains("brew/curl"),
+            "should list brew/curl resource, got: {output}"
+        );
+        assert!(
+            output.contains("~/.bashrc"),
+            "should list ~/.bashrc resource, got: {output}"
+        );
+    }
+
+    #[test]
+    fn cmd_source_show_json_includes_managed_resources() {
+        let h = CliTestHarness::builder().rich_config().json().build();
+        let state = super::open_state_store(Some(h.state_path())).unwrap();
+        state
+            .upsert_managed_resource("env", "EDITOR", "team-config", None, None)
+            .unwrap();
+
+        super::cmd_source_show(&h.cli(), h.printer(), "team-config").unwrap();
+
+        let parsed = h.json_output();
+        assert_eq!(parsed["name"], "team-config");
+        let resources = parsed["managedResources"]
+            .as_array()
+            .expect("should be array");
+        assert_eq!(resources.len(), 1);
+        assert_eq!(resources[0]["resourceType"], "env");
+        assert_eq!(resources[0]["resourceId"], "EDITOR");
+    }
+
+    // -----------------------------------------------------------------------
+    // cmd_source_remove — keep_all reassigns resources to local
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn cmd_source_remove_keep_all_reassigns_resources_to_local() {
+        let h = CliTestHarness::builder().rich_config().build();
+        let state = super::open_state_store(Some(h.state_path())).unwrap();
+        // Pre-populate managed resources owned by team-config
+        state
+            .upsert_managed_resource("package", "brew/curl", "team-config", Some("hash1"), None)
+            .unwrap();
+        state
+            .upsert_managed_resource("env", "EDITOR", "team-config", Some("hash2"), None)
+            .unwrap();
+
+        let result = super::cmd_source_remove(&h.cli(), h.printer(), "team-config", true, false);
+        assert!(result.is_ok(), "remove with keep_all: {:?}", result.err());
+
+        // Source should be gone from config
+        let cfg = config::load_config(&h.config_path().join("cfgd.yaml")).unwrap();
+        assert!(
+            cfg.spec.sources.is_empty(),
+            "source should be removed from config"
+        );
+
+        // Resources should now be owned by "local"
+        let resources = state.managed_resources_by_source("local").unwrap();
+        assert_eq!(
+            resources.len(),
+            2,
+            "both resources should be reassigned to local"
+        );
+        let resource_ids: Vec<&str> = resources.iter().map(|r| r.resource_id.as_str()).collect();
+        assert!(resource_ids.contains(&"brew/curl"));
+        assert!(resource_ids.contains(&"EDITOR"));
+
+        // team-config should have no resources left
+        let team_resources = state.managed_resources_by_source("team-config").unwrap();
+        assert!(team_resources.is_empty());
+    }
+
+    #[test]
+    fn cmd_source_remove_remove_all_does_not_reassign() {
+        let h = CliTestHarness::builder().rich_config().build();
+        let state = super::open_state_store(Some(h.state_path())).unwrap();
+        state
+            .upsert_managed_resource("package", "brew/curl", "team-config", None, None)
+            .unwrap();
+
+        let result = super::cmd_source_remove(&h.cli(), h.printer(), "team-config", false, true);
+        assert!(result.is_ok(), "remove with remove_all: {:?}", result.err());
+
+        // Source should be gone from config
+        let cfg = config::load_config(&h.config_path().join("cfgd.yaml")).unwrap();
+        assert!(cfg.spec.sources.is_empty());
+
+        // Resources should NOT be reassigned to local (they stay with team-config
+        // but the source state record is deleted, so they're effectively orphaned)
+        let local_resources = state.managed_resources_by_source("local").unwrap();
+        assert!(
+            local_resources.is_empty(),
+            "remove_all should not reassign resources to local"
+        );
+
+        h.assert_output_contains("removed");
+    }
+
+    #[test]
+    fn cmd_source_remove_prints_success_message() {
+        let h = CliTestHarness::builder().rich_config().build();
+
+        super::cmd_source_remove(&h.cli(), h.printer(), "team-config", false, true).unwrap();
+
+        h.assert_output_contains("Source 'team-config' removed");
+    }
+
+    // -----------------------------------------------------------------------
+    // cmd_compliance_diff — actual differences between snapshots
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn cmd_compliance_diff_identical_snapshots_reports_no_differences() {
+        let h = CliTestHarness::builder().build();
+
+        // Create two identical snapshots
+        super::cmd_compliance_snapshot(&h.cli(), h.printer()).unwrap();
+        super::cmd_compliance_snapshot(&h.cli(), h.printer()).unwrap();
+
+        let state = super::open_state_store(Some(h.state_path())).unwrap();
+        let entries = state.compliance_history(None, 10).unwrap();
+        assert_eq!(entries.len(), 2);
+
+        // Clear output before diff
+        h.buf.lock().unwrap().clear();
+
+        super::cmd_compliance_diff(&h.cli(), h.printer(), entries[1].id, entries[0].id).unwrap();
+
+        h.assert_output_contains("No differences");
+    }
+
+    #[test]
+    fn cmd_compliance_diff_with_changes_shows_added_and_removed() {
+        let h = CliTestHarness::builder().build();
+        let state = super::open_state_store(Some(h.state_path())).unwrap();
+
+        // Create first snapshot with one check
+        let snap1 = cfgd_core::compliance::ComplianceSnapshot {
+            timestamp: "2026-01-01T00:00:00Z".into(),
+            machine: cfgd_core::compliance::MachineInfo {
+                hostname: "test".into(),
+                os: "linux".into(),
+                arch: "x86_64".into(),
+            },
+            profile: "default".into(),
+            sources: vec![],
+            checks: vec![cfgd_core::compliance::ComplianceCheck {
+                category: "packages".into(),
+                target: Some("brew/curl".into()),
+                status: cfgd_core::compliance::ComplianceStatus::Compliant,
+                ..Default::default()
+            }],
+            summary: cfgd_core::compliance::ComplianceSummary {
+                compliant: 1,
+                warning: 0,
+                violation: 0,
+            },
+        };
+        state.store_compliance_snapshot(&snap1, "hash1").unwrap();
+
+        // Create second snapshot with a different check (curl removed, git added)
+        let snap2 = cfgd_core::compliance::ComplianceSnapshot {
+            timestamp: "2026-01-02T00:00:00Z".into(),
+            machine: cfgd_core::compliance::MachineInfo {
+                hostname: "test".into(),
+                os: "linux".into(),
+                arch: "x86_64".into(),
+            },
+            profile: "default".into(),
+            sources: vec![],
+            checks: vec![cfgd_core::compliance::ComplianceCheck {
+                category: "packages".into(),
+                target: Some("brew/git".into()),
+                status: cfgd_core::compliance::ComplianceStatus::Warning,
+                ..Default::default()
+            }],
+            summary: cfgd_core::compliance::ComplianceSummary {
+                compliant: 0,
+                warning: 1,
+                violation: 0,
+            },
+        };
+        state.store_compliance_snapshot(&snap2, "hash2").unwrap();
+
+        let entries = state.compliance_history(None, 10).unwrap();
+        assert_eq!(entries.len(), 2);
+        // entries are DESC order, so entries[0] is snap2 (id=2), entries[1] is snap1 (id=1)
+        let id1 = entries[1].id;
+        let id2 = entries[0].id;
+
+        super::cmd_compliance_diff(&h.cli(), h.printer(), id1, id2).unwrap();
+
+        let output = h.output();
+        assert!(
+            output.contains("Added"),
+            "should show Added section for brew/git, got: {output}"
+        );
+        assert!(
+            output.contains("Removed"),
+            "should show Removed section for brew/curl, got: {output}"
+        );
+        assert!(
+            output.contains("brew/git"),
+            "should mention added check brew/git, got: {output}"
+        );
+        assert!(
+            output.contains("brew/curl"),
+            "should mention removed check brew/curl, got: {output}"
+        );
+    }
+
+    #[test]
+    fn cmd_compliance_diff_with_status_change_shows_changed() {
+        let h = CliTestHarness::builder().build();
+        let state = super::open_state_store(Some(h.state_path())).unwrap();
+
+        let snap1 = cfgd_core::compliance::ComplianceSnapshot {
+            timestamp: "2026-01-01T00:00:00Z".into(),
+            machine: cfgd_core::compliance::MachineInfo {
+                hostname: "test".into(),
+                os: "linux".into(),
+                arch: "x86_64".into(),
+            },
+            profile: "default".into(),
+            sources: vec![],
+            checks: vec![cfgd_core::compliance::ComplianceCheck {
+                category: "packages".into(),
+                target: Some("brew/curl".into()),
+                status: cfgd_core::compliance::ComplianceStatus::Compliant,
+                detail: None,
+                ..Default::default()
+            }],
+            summary: cfgd_core::compliance::ComplianceSummary {
+                compliant: 1,
+                warning: 0,
+                violation: 0,
+            },
+        };
+        state.store_compliance_snapshot(&snap1, "hash1").unwrap();
+
+        // Same check but status changed from Compliant to Violation
+        let snap2 = cfgd_core::compliance::ComplianceSnapshot {
+            timestamp: "2026-01-02T00:00:00Z".into(),
+            machine: cfgd_core::compliance::MachineInfo {
+                hostname: "test".into(),
+                os: "linux".into(),
+                arch: "x86_64".into(),
+            },
+            profile: "default".into(),
+            sources: vec![],
+            checks: vec![cfgd_core::compliance::ComplianceCheck {
+                category: "packages".into(),
+                target: Some("brew/curl".into()),
+                status: cfgd_core::compliance::ComplianceStatus::Violation,
+                detail: Some("package not installed".into()),
+                ..Default::default()
+            }],
+            summary: cfgd_core::compliance::ComplianceSummary {
+                compliant: 0,
+                warning: 0,
+                violation: 1,
+            },
+        };
+        state.store_compliance_snapshot(&snap2, "hash2").unwrap();
+
+        let entries = state.compliance_history(None, 10).unwrap();
+        let id1 = entries[1].id;
+        let id2 = entries[0].id;
+
+        super::cmd_compliance_diff(&h.cli(), h.printer(), id1, id2).unwrap();
+
+        let output = h.output();
+        assert!(
+            output.contains("Changed"),
+            "should show Changed section, got: {output}"
+        );
+        assert!(
+            output.contains("Compliant") && output.contains("Violation"),
+            "should show status transition, got: {output}"
+        );
+        assert!(
+            output.contains("package not installed"),
+            "should show detail for changed check, got: {output}"
+        );
+    }
+
+    #[test]
+    fn cmd_compliance_diff_structured_json_with_changes() {
+        let h = CliTestHarness::builder().json().build();
+        let state = super::open_state_store(Some(h.state_path())).unwrap();
+
+        let snap1 = cfgd_core::compliance::ComplianceSnapshot {
+            timestamp: "2026-01-01T00:00:00Z".into(),
+            machine: cfgd_core::compliance::MachineInfo {
+                hostname: "test".into(),
+                os: "linux".into(),
+                arch: "x86_64".into(),
+            },
+            profile: "default".into(),
+            sources: vec![],
+            checks: vec![cfgd_core::compliance::ComplianceCheck {
+                category: "env".into(),
+                target: Some("EDITOR".into()),
+                status: cfgd_core::compliance::ComplianceStatus::Compliant,
+                ..Default::default()
+            }],
+            summary: cfgd_core::compliance::ComplianceSummary {
+                compliant: 1,
+                warning: 0,
+                violation: 0,
+            },
+        };
+        state.store_compliance_snapshot(&snap1, "hash1").unwrap();
+
+        let snap2 = cfgd_core::compliance::ComplianceSnapshot {
+            timestamp: "2026-01-02T00:00:00Z".into(),
+            machine: cfgd_core::compliance::MachineInfo {
+                hostname: "test".into(),
+                os: "linux".into(),
+                arch: "x86_64".into(),
+            },
+            profile: "default".into(),
+            sources: vec![],
+            checks: vec![
+                cfgd_core::compliance::ComplianceCheck {
+                    category: "env".into(),
+                    target: Some("EDITOR".into()),
+                    status: cfgd_core::compliance::ComplianceStatus::Warning,
+                    ..Default::default()
+                },
+                cfgd_core::compliance::ComplianceCheck {
+                    category: "packages".into(),
+                    target: Some("brew/jq".into()),
+                    status: cfgd_core::compliance::ComplianceStatus::Compliant,
+                    ..Default::default()
+                },
+            ],
+            summary: cfgd_core::compliance::ComplianceSummary {
+                compliant: 1,
+                warning: 1,
+                violation: 0,
+            },
+        };
+        state.store_compliance_snapshot(&snap2, "hash2").unwrap();
+
+        let entries = state.compliance_history(None, 10).unwrap();
+        let id1 = entries[1].id;
+        let id2 = entries[0].id;
+
+        super::cmd_compliance_diff(&h.cli(), h.printer(), id1, id2).unwrap();
+
+        let parsed = h.json_output();
+        assert_eq!(parsed["id1"], id1);
+        assert_eq!(parsed["id2"], id2);
+        let added = parsed["added"].as_array().expect("added should be array");
+        assert_eq!(added.len(), 1, "one check was added (brew/jq)");
+        assert_eq!(added[0]["target"], "brew/jq");
+        let changed = parsed["changed"]
+            .as_array()
+            .expect("changed should be array");
+        assert_eq!(changed.len(), 1, "one check changed status (EDITOR)");
+        assert_eq!(changed[0]["oldStatus"], "Compliant");
+        assert_eq!(changed[0]["newStatus"], "Warning");
+        let removed = parsed["removed"]
+            .as_array()
+            .expect("removed should be array");
+        assert!(removed.is_empty(), "nothing was removed");
+    }
+
+    // -----------------------------------------------------------------------
+    // cmd_compliance_history — with snapshots populated
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn cmd_compliance_history_with_entries_shows_table() {
+        let h = CliTestHarness::builder().build();
+
+        // Create a snapshot to populate history
+        super::cmd_compliance_snapshot(&h.cli(), h.printer()).unwrap();
+
+        h.buf.lock().unwrap().clear();
+
+        super::cmd_compliance_history(&h.cli(), h.printer(), None).unwrap();
+
+        let output = h.output();
+        assert!(
+            output.contains("Compliance History"),
+            "should show Compliance History header, got: {output}"
+        );
+        // Table should have columns
+        assert!(
+            output.contains("Compliant"),
+            "should have Compliant column, got: {output}"
+        );
+        assert!(
+            output.contains("Warning"),
+            "should have Warning column, got: {output}"
+        );
+        assert!(
+            output.contains("Violation"),
+            "should have Violation column, got: {output}"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // cmd_doctor — invalid config, JSON fields, modules section
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn cmd_doctor_with_invalid_config_shows_error_but_succeeds() {
+        let h = CliTestHarness::builder()
+            .config("this is not valid yaml: [[[")
+            .build();
+
+        let result = super::cmd_doctor(&h.cli(), h.printer());
+        assert!(
+            result.is_ok(),
+            "doctor should succeed even with invalid config"
+        );
+
+        let output = h.output();
+        assert!(
+            output.contains("Doctor"),
+            "should show Doctor header, got: {output}"
+        );
+        // The config check should report invalid
+        assert!(
+            output.contains("not found") || output.contains("Config file"),
+            "should mention config file status, got: {output}"
+        );
+    }
+
+    #[test]
+    fn cmd_doctor_json_has_all_top_level_fields() {
+        let h = CliTestHarness::builder().json().build();
+
+        super::cmd_doctor(&h.cli(), h.printer()).unwrap();
+
+        let parsed = h.json_output();
+        assert_json_has_fields(
+            &parsed,
+            &[
+                "config",
+                "git",
+                "secrets",
+                "packageManagers",
+                "modules",
+                "systemConfigurators",
+            ],
+        );
+        assert_json_field_type(&parsed, "config", "object");
+        assert_json_field_type(&parsed, "git", "boolean");
+        assert_json_field_type(&parsed, "secrets", "object");
+        assert_json_field_type(&parsed, "packageManagers", "array");
+        assert_json_field_type(&parsed, "modules", "array");
+        assert_json_field_type(&parsed, "systemConfigurators", "array");
+    }
+
+    #[test]
+    fn cmd_doctor_json_config_section_has_expected_fields() {
+        let h = CliTestHarness::builder().json().build();
+
+        super::cmd_doctor(&h.cli(), h.printer()).unwrap();
+
+        let parsed = h.json_output();
+        let config = &parsed["config"];
+        assert_json_has_fields(config, &["valid", "path"]);
+        assert_eq!(config["valid"], true);
+        assert!(
+            config["name"].is_string(),
+            "name should be present for valid config"
+        );
+    }
+
+    #[test]
+    fn cmd_doctor_with_module_in_profile() {
+        let profile_with_module = r#"apiVersion: cfgd.io/v1alpha1
+kind: Profile
+metadata:
+  name: default
+spec:
+  modules:
+    - test-mod
+  packages:
+    cargo:
+      - bat
+"#;
+        let h = CliTestHarness::builder()
+            .profile("default", profile_with_module)
+            .module("test-mod", SIMPLE_MODULE_YAML)
+            .build();
+
+        super::cmd_doctor(&h.cli(), h.printer()).unwrap();
+
+        let output = h.output();
+        assert!(
+            output.contains("Modules"),
+            "should show Modules section when modules declared, got: {output}"
+        );
+        assert!(
+            output.contains("test-mod"),
+            "should list the test-mod module, got: {output}"
+        );
+    }
+
+    #[test]
+    fn cmd_doctor_with_missing_module_reports_not_found() {
+        let profile_with_missing_module = r#"apiVersion: cfgd.io/v1alpha1
+kind: Profile
+metadata:
+  name: default
+spec:
+  modules:
+    - nonexistent-mod
+  packages:
+    cargo:
+      - bat
+"#;
+        let h = CliTestHarness::builder()
+            .profile("default", profile_with_missing_module)
+            .build();
+
+        super::cmd_doctor(&h.cli(), h.printer()).unwrap();
+
+        let output = h.output();
+        assert!(
+            output.contains("nonexistent-mod"),
+            "should mention the missing module, got: {output}"
+        );
+        assert!(
+            output.contains("not found"),
+            "should report module not found, got: {output}"
+        );
+    }
+
+    #[test]
+    fn cmd_doctor_json_with_missing_module_shows_error() {
+        let profile_with_missing_module = r#"apiVersion: cfgd.io/v1alpha1
+kind: Profile
+metadata:
+  name: default
+spec:
+  modules:
+    - ghost-mod
+  packages:
+    cargo:
+      - bat
+"#;
+        let h = CliTestHarness::builder()
+            .profile("default", profile_with_missing_module)
+            .json()
+            .build();
+
+        super::cmd_doctor(&h.cli(), h.printer()).unwrap();
+
+        let parsed = h.json_output();
+        let modules = parsed["modules"]
+            .as_array()
+            .expect("modules should be array");
+        assert_eq!(modules.len(), 1);
+        assert_eq!(modules[0]["name"], "ghost-mod");
+        assert_eq!(modules[0]["valid"], false);
+        assert!(
+            modules[0]["error"].is_string(),
+            "error should be set for missing module"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // cmd_decide — exercise decision resolution logic with state verification
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn cmd_decide_no_args_no_pending_shows_info() {
+        let state_dir = tempfile::tempdir().unwrap();
+        let (printer, buf) = Printer::for_test();
+
+        // With no resource, no source, and all=false, should show pending list
+        super::cmd_decide(
+            &printer,
+            "accept",
+            None,
+            None,
+            false,
+            Some(state_dir.path()),
+        )
+        .unwrap();
+
+        let output = buf.lock().unwrap().clone();
+        assert!(
+            output.contains("No pending decisions"),
+            "should report no pending decisions, got: {output}"
+        );
+    }
+
+    #[test]
+    fn cmd_decide_no_args_with_pending_shows_list() {
+        let state_dir = tempfile::tempdir().unwrap();
+        let (printer, buf) = Printer::for_test();
+        let state = super::open_state_store(Some(state_dir.path())).unwrap();
+
+        state
+            .upsert_pending_decision("alpha", "pkg/git", "required", "install", "Install git")
+            .unwrap();
+        state
+            .upsert_pending_decision("beta", "env/EDITOR", "recommended", "set", "Set EDITOR")
+            .unwrap();
+
+        // No resource/source/all — should display pending decisions
+        super::cmd_decide(
+            &printer,
+            "accept",
+            None,
+            None,
+            false,
+            Some(state_dir.path()),
+        )
+        .unwrap();
+
+        let output = buf.lock().unwrap().clone();
+        assert!(
+            output.contains("Pending Decisions"),
+            "should show Pending Decisions header, got: {output}"
+        );
+        assert!(
+            output.contains("alpha"),
+            "should list alpha source, got: {output}"
+        );
+        assert!(
+            output.contains("beta"),
+            "should list beta source, got: {output}"
+        );
+        assert!(
+            output.contains("pkg/git"),
+            "should list pkg/git resource, got: {output}"
+        );
+        assert!(
+            output.contains("env/EDITOR"),
+            "should list env/EDITOR resource, got: {output}"
+        );
+        // Usage hint
+        assert!(
+            output.contains("cfgd decide accept"),
+            "should show usage hint, got: {output}"
+        );
+
+        // Decisions should still be pending (not resolved by just viewing)
+        let pending = state.pending_decisions().unwrap();
+        assert_eq!(pending.len(), 2, "viewing should not resolve decisions");
+    }
+
+    #[test]
+    fn cmd_decide_reject_specific_resource_verifies_resolution() {
+        let state_dir = tempfile::tempdir().unwrap();
+        let (printer, buf) = Printer::for_test();
+        let state = super::open_state_store(Some(state_dir.path())).unwrap();
+
+        state
+            .upsert_pending_decision(
+                "team",
+                "packages.brew.jq",
+                "recommended",
+                "install",
+                "Install jq",
+            )
+            .unwrap();
+
+        super::cmd_decide(
+            &printer,
+            "reject",
+            Some("packages.brew.jq"),
+            None,
+            false,
+            Some(state_dir.path()),
+        )
+        .unwrap();
+
+        let output = buf.lock().unwrap().clone();
+        assert!(
+            output.contains("REJECTED"),
+            "should confirm rejection, got: {output}"
+        );
+        assert!(
+            output.contains("packages.brew.jq"),
+            "should mention resource name, got: {output}"
+        );
+        assert!(
+            output.contains("not be applied"),
+            "rejected resource should mention 'not be applied', got: {output}"
+        );
+
+        let pending = state.pending_decisions().unwrap();
+        assert!(pending.is_empty(), "decision should be resolved");
+    }
+
+    #[test]
+    fn cmd_decide_accept_specific_resource_verifies_messaging() {
+        let state_dir = tempfile::tempdir().unwrap();
+        let (printer, buf) = Printer::for_test();
+        let state = super::open_state_store(Some(state_dir.path())).unwrap();
+
+        state
+            .upsert_pending_decision("team", "file/bashrc", "required", "create", "Create bashrc")
+            .unwrap();
+
+        super::cmd_decide(
+            &printer,
+            "accept",
+            Some("file/bashrc"),
+            None,
+            false,
+            Some(state_dir.path()),
+        )
+        .unwrap();
+
+        let output = buf.lock().unwrap().clone();
+        assert!(
+            output.contains("ACCEPTED"),
+            "should confirm acceptance, got: {output}"
+        );
+        assert!(
+            output.contains("file/bashrc"),
+            "should mention resource name, got: {output}"
+        );
+        assert!(
+            output.contains("be applied"),
+            "accepted resource should mention 'be applied', got: {output}"
+        );
+    }
+
+    #[test]
+    fn cmd_decide_accept_nonexistent_resource_warns() {
+        let state_dir = tempfile::tempdir().unwrap();
+        let (printer, buf) = Printer::for_test();
+
+        super::cmd_decide(
+            &printer,
+            "accept",
+            Some("no.such.resource"),
+            None,
+            false,
+            Some(state_dir.path()),
+        )
+        .unwrap();
+
+        let output = buf.lock().unwrap().clone();
+        assert!(
+            output.contains("No pending decision found"),
+            "should warn about nonexistent resource, got: {output}"
+        );
+        assert!(
+            output.contains("no.such.resource"),
+            "should mention the resource name, got: {output}"
+        );
+    }
+
+    #[test]
+    fn cmd_decide_accept_all_reports_count() {
+        let state_dir = tempfile::tempdir().unwrap();
+        let (printer, buf) = Printer::for_test();
+        let state = super::open_state_store(Some(state_dir.path())).unwrap();
+
+        for i in 0..3 {
+            state
+                .upsert_pending_decision(
+                    "src",
+                    &format!("pkg/{i}"),
+                    "recommended",
+                    "install",
+                    &format!("Install pkg {i}"),
+                )
+                .unwrap();
+        }
+
+        super::cmd_decide(&printer, "accept", None, None, true, Some(state_dir.path())).unwrap();
+
+        let output = buf.lock().unwrap().clone();
+        assert!(
+            output.contains("ACCEPTED"),
+            "should confirm acceptance, got: {output}"
+        );
+        assert!(
+            output.contains("3 items"),
+            "should report count of 3 items, got: {output}"
+        );
+        assert!(
+            output.contains("next reconcile"),
+            "should mention next reconcile, got: {output}"
+        );
+
+        let pending = state.pending_decisions().unwrap();
+        assert!(pending.is_empty(), "all decisions should be resolved");
+    }
+
+    #[test]
+    fn cmd_decide_reject_by_source_preserves_other_sources() {
+        let state_dir = tempfile::tempdir().unwrap();
+        let (printer, buf) = Printer::for_test();
+        let state = super::open_state_store(Some(state_dir.path())).unwrap();
+
+        state
+            .upsert_pending_decision("alpha", "pkg/a", "recommended", "install", "A")
+            .unwrap();
+        state
+            .upsert_pending_decision("alpha", "pkg/b", "recommended", "install", "B")
+            .unwrap();
+        state
+            .upsert_pending_decision("beta", "env/X", "required", "set", "X")
+            .unwrap();
+
+        super::cmd_decide(
+            &printer,
+            "reject",
+            None,
+            Some("alpha"),
+            false,
+            Some(state_dir.path()),
+        )
+        .unwrap();
+
+        let output = buf.lock().unwrap().clone();
+        assert!(
+            output.contains("REJECTED"),
+            "should confirm rejection, got: {output}"
+        );
+        assert!(
+            output.contains("2 items"),
+            "should report 2 items rejected from alpha, got: {output}"
+        );
+        assert!(
+            output.contains("alpha"),
+            "should mention source name, got: {output}"
+        );
+
+        // Only beta's decision should remain
+        let pending = state.pending_decisions().unwrap();
+        assert_eq!(pending.len(), 1, "only beta's decision should remain");
+        assert_eq!(pending[0].source, "beta");
+        assert_eq!(pending[0].resource, "env/X");
+    }
+
+    #[test]
+    fn cmd_decide_reject_by_source_with_no_matching_decisions() {
+        let state_dir = tempfile::tempdir().unwrap();
+        let (printer, buf) = Printer::for_test();
+        let state = super::open_state_store(Some(state_dir.path())).unwrap();
+
+        state
+            .upsert_pending_decision("alpha", "pkg/a", "recommended", "install", "A")
+            .unwrap();
+
+        super::cmd_decide(
+            &printer,
+            "reject",
+            None,
+            Some("nonexistent-source"),
+            false,
+            Some(state_dir.path()),
+        )
+        .unwrap();
+
+        let output = buf.lock().unwrap().clone();
+        assert!(
+            output.contains("No pending decisions for source"),
+            "should report no decisions for this source, got: {output}"
+        );
+
+        // Alpha's decision should be untouched
+        let pending = state.pending_decisions().unwrap();
+        assert_eq!(pending.len(), 1);
+    }
+
+    #[test]
+    fn cmd_decide_accept_single_item_singular_message() {
+        let state_dir = tempfile::tempdir().unwrap();
+        let (printer, buf) = Printer::for_test();
+        let state = super::open_state_store(Some(state_dir.path())).unwrap();
+
+        state
+            .upsert_pending_decision("src", "pkg/only", "recommended", "install", "Only pkg")
+            .unwrap();
+
+        super::cmd_decide(&printer, "accept", None, None, true, Some(state_dir.path())).unwrap();
+
+        let output = buf.lock().unwrap().clone();
+        // When exactly 1 item, the message should use singular "item" not "items"
+        assert!(
+            output.contains("1 item"),
+            "should report singular '1 item', got: {output}"
+        );
+        assert!(
+            !output.contains("1 items"),
+            "should NOT use plural '1 items', got: {output}"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Coverage: cmd_source_update error display path
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn cmd_source_update_load_failure_displays_error() {
+        // Config has a source pointing to a non-existent git URL.
+        // load_source will fail, exercising the Err(e) branch that
+        // calls printer.error and state.update_config_source_status.
+        let config_with_source = r#"apiVersion: cfgd.io/v1alpha1
+kind: Config
+metadata:
+  name: t
+spec:
+  profile: default
+  sources:
+    - name: my-source
+      origin:
+        url: file:///nonexistent/repo.git
+        branch: main
+        type: Git
+      subscription:
+        priority: 300
+"#;
+        let h = CliTestHarness::builder().config(config_with_source).build();
+        // The update should succeed overall (errors per source are printed, not propagated)
+        super::cmd_source_update(&h.cli(), h.printer(), None).unwrap();
+        h.assert_header("Update Sources");
+        h.assert_output_contains("Failed to update source 'my-source'");
+    }
+
+    #[test]
+    fn cmd_source_update_named_load_failure_displays_error() {
+        let config_with_source = r#"apiVersion: cfgd.io/v1alpha1
+kind: Config
+metadata:
+  name: t
+spec:
+  profile: default
+  sources:
+    - name: alpha
+      origin:
+        url: file:///nonexistent/alpha.git
+        branch: main
+        type: Git
+      subscription:
+        priority: 100
+    - name: beta
+      origin:
+        url: file:///nonexistent/beta.git
+        branch: main
+        type: Git
+      subscription:
+        priority: 200
+"#;
+        let h = CliTestHarness::builder().config(config_with_source).build();
+        // Update only 'alpha'; 'beta' should not appear in output
+        super::cmd_source_update(&h.cli(), h.printer(), Some("alpha")).unwrap();
+        h.assert_output_contains("Failed to update source 'alpha'");
+        let output = h.output();
+        assert!(
+            !output.contains("beta"),
+            "should not attempt to update 'beta' when 'alpha' was specified, got: {output}"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Coverage: cmd_source_replace — replace removes old and adds new
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn cmd_source_replace_existing_source() {
+        // Set up a config with a source, then replace it.
+        // The replacement will fail at the "add" step (can't clone the new URL),
+        // but the remove step will succeed, exercising the replace flow.
+        let config_with_source = r#"apiVersion: cfgd.io/v1alpha1
+kind: Config
+metadata:
+  name: t
+spec:
+  profile: default
+  sources:
+    - name: old-source
+      origin:
+        url: https://github.com/old/config
+        branch: main
+        type: Git
+      subscription:
+        priority: 400
+"#;
+        let h = CliTestHarness::builder().config(config_with_source).build();
+        // Replace will display the header and remove old source, then fail on clone
+        let result = super::cmd_source_replace(
+            &h.cli(),
+            h.printer(),
+            "old-source",
+            "file:///nonexistent/new-config.git",
+        );
+        // The header should be printed regardless of success/failure
+        h.assert_output_contains("Replace Source: old-source");
+        h.assert_output_contains("Remove Source: old-source");
+        // The add step will fail (can't clone), so the overall result should be Err
+        assert!(
+            result.is_err(),
+            "replace should fail when new source URL is unreachable"
+        );
+        // Verify old source was removed from config
+        let cfg = config::load_config(&h.config_path().join("cfgd.yaml")).unwrap();
+        assert!(
+            !cfg.spec.sources.iter().any(|s| s.name == "old-source"),
+            "old source should have been removed from config"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Coverage: cmd_source_priority — view displays key_value fields
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn cmd_source_priority_view_displays_fields() {
+        let config_with_source = r#"apiVersion: cfgd.io/v1alpha1
+kind: Config
+metadata:
+  name: t
+spec:
+  profile: default
+  sources:
+    - name: team-src
+      origin:
+        url: https://github.com/team/config
+        branch: main
+        type: Git
+      subscription:
+        priority: 750
+"#;
+        let h = CliTestHarness::builder().config(config_with_source).build();
+        super::cmd_source_priority(&h.cli(), h.printer(), "team-src", None).unwrap();
+        // View mode should display source name and priority value
+        h.assert_output_contains("team-src");
+        h.assert_output_contains("750");
+        h.assert_output_contains("Local config priority is 1000");
+    }
+
+    #[test]
+    fn cmd_source_priority_update_displays_change() {
+        let config_with_source = r#"apiVersion: cfgd.io/v1alpha1
+kind: Config
+metadata:
+  name: t
+spec:
+  profile: default
+  sources:
+    - name: team-src
+      origin:
+        url: https://github.com/team/config
+        branch: main
+        type: Git
+      subscription:
+        priority: 750
+"#;
+        let h = CliTestHarness::builder().config(config_with_source).build();
+        super::cmd_source_priority(&h.cli(), h.printer(), "team-src", Some(100)).unwrap();
+        // Should display the old->new priority change
+        h.assert_output_contains("priority updated: 750 -> 100");
+        // Verify the file was actually updated
+        let cfg = config::load_config(&h.config_path().join("cfgd.yaml")).unwrap();
+        let source = cfg
+            .spec
+            .sources
+            .iter()
+            .find(|s| s.name == "team-src")
+            .unwrap();
+        assert_eq!(source.subscription.priority, 100);
+    }
+
+    // -----------------------------------------------------------------------
+    // Coverage: cmd_checkin — server unreachable exercises config loading,
+    // hash computation, and server client construction paths
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn cmd_checkin_server_unreachable() {
+        let h = CliTestHarness::builder().build();
+        let result = super::cmd_checkin(
+            &h.cli(),
+            h.printer(),
+            "http://127.0.0.1:19999",
+            Some("test-api-key"),
+            Some("test-device-42"),
+        );
+        // The call should fail because the server is unreachable
+        assert!(
+            result.is_err(),
+            "checkin should fail with unreachable server"
+        );
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("checkin failed")
+                || err_msg.contains("Connection refused")
+                || err_msg.contains("connection"),
+            "error should mention connection failure, got: {err_msg}"
+        );
+    }
+
+    #[test]
+    fn cmd_checkin_with_compliance_config_server_unreachable() {
+        // Config with compliance enabled — exercises the compliance snapshot
+        // collection branch before the checkin HTTP call fails.
+        let config_with_compliance = r#"apiVersion: cfgd.io/v1alpha1
+kind: Config
+metadata:
+  name: t
+spec:
+  profile: default
+  compliance:
+    enabled: true
+    scope:
+      packages: true
+      files: true
+"#;
+        let h = CliTestHarness::builder()
+            .config(config_with_compliance)
+            .build();
+        let result =
+            super::cmd_checkin(&h.cli(), h.printer(), "http://127.0.0.1:19999", None, None);
+        assert!(
+            result.is_err(),
+            "checkin should fail with unreachable server"
+        );
+        // The compliance snapshot collection path was exercised before the failure
+        let output = h.output();
+        assert!(
+            output.contains("Compliance:") || output.contains("Checking in"),
+            "should show compliance or checkin info before failing, got: {output}"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Coverage: cmd_compliance_export — snapshot stored then exported to file
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn cmd_compliance_export_writes_file_and_displays_path() {
+        let h = CliTestHarness::builder().build();
+        super::cmd_compliance_export(&h.cli(), h.printer()).unwrap();
+        let output = h.output();
+        // export writes a file and prints the path in a success message
+        assert!(
+            output.contains("Compliance snapshot written to"),
+            "should confirm file was written, got: {output}"
+        );
+        // The output should also include the summary table
+        assert!(
+            output.contains("Compliance Snapshot"),
+            "should display the compliance summary header, got: {output}"
+        );
+    }
+
+    #[test]
+    fn cmd_compliance_export_json_returns_snapshot_object() {
+        let h = CliTestHarness::builder().json().build();
+        super::cmd_compliance_export(&h.cli(), h.printer()).unwrap();
+        let parsed = h.json_output();
+        // Structured output should contain the snapshot wrapper
+        assert_json_has_fields(&parsed, &["snapshot"]);
+        let snapshot = &parsed["snapshot"];
+        assert_json_has_fields(snapshot, &["timestamp", "profile", "summary"]);
+    }
+
+    // -----------------------------------------------------------------------
+    // Coverage: cmd_sync — displays pull result and source sync header
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn cmd_sync_non_git_shows_pull_warning_and_sync_header() {
+        // A tempdir is not a git repo, so git_pull_sync will fail with a
+        // warning. The test verifies both the header and the pull-failure warning path.
+        let h = CliTestHarness::builder().build();
+        super::cmd_sync(&h.cli(), h.printer()).unwrap();
+        h.assert_header("Sync");
+        let output = h.output();
+        // git_pull_sync on a non-git dir returns Err, displayed as a warning
+        assert!(
+            output.contains("Syncing local repo with remote"),
+            "should display sync progress message, got: {output}"
+        );
+        assert!(
+            output.contains("Pull failed") || output.contains("up to date"),
+            "should show pull result (failure or up-to-date), got: {output}"
+        );
+    }
+
+    #[test]
+    fn cmd_sync_with_sources_shows_source_section() {
+        let config_with_source = r#"apiVersion: cfgd.io/v1alpha1
+kind: Config
+metadata:
+  name: t
+spec:
+  profile: default
+  sources:
+    - name: team-config
+      origin:
+        url: file:///nonexistent/repo.git
+        branch: main
+        type: Git
+      subscription:
+        priority: 100
+"#;
+        let h = CliTestHarness::builder().config(config_with_source).build();
+        super::cmd_sync(&h.cli(), h.printer()).unwrap();
+        h.assert_header("Sync");
+        // When sources are configured, the Sources subheader should appear
+        h.assert_output_contains("Sources");
+        h.assert_output_contains("Syncing source 'team-config'");
+        // The source sync will fail because the URL is non-existent
+        h.assert_output_contains("Failed to sync 'team-config'");
+    }
+
+    // -----------------------------------------------------------------------
+    // Coverage: Command dispatch match arms via execute()
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn execute_dispatch_checkin() {
+        let h = CliTestHarness::builder().build();
+        let cli = h.cli_with_command(Command::Checkin {
+            server_url: "http://127.0.0.1:19999".to_string(),
+            api_key: None,
+            device_id: Some("test-device".to_string()),
+        });
+        let result = super::execute(&cli, h.printer());
+        // Checkin fails because server is unreachable, but dispatch arm was exercised
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("checkin") || err_msg.contains("Connection"),
+            "dispatch should route to cmd_checkin, got error: {err_msg}"
+        );
+    }
+
+    #[test]
+    fn execute_dispatch_source_update() {
+        let config_with_source = r#"apiVersion: cfgd.io/v1alpha1
+kind: Config
+metadata:
+  name: t
+spec:
+  profile: default
+  sources:
+    - name: src1
+      origin:
+        url: file:///nonexistent/repo.git
+        branch: main
+        type: Git
+      subscription:
+        priority: 100
+"#;
+        let h = CliTestHarness::builder().config(config_with_source).build();
+        let cli = h.cli_with_command(Command::Source {
+            command: SourceCommand::Update { name: None },
+        });
+        super::execute(&cli, h.printer()).unwrap();
+        h.assert_header("Update Sources");
+        // Source load fails, error is displayed but command succeeds
+        h.assert_output_contains("Failed to update source 'src1'");
+    }
+
+    #[test]
+    fn execute_dispatch_source_priority() {
+        let config_with_source = r#"apiVersion: cfgd.io/v1alpha1
+kind: Config
+metadata:
+  name: t
+spec:
+  profile: default
+  sources:
+    - name: my-source
+      origin:
+        url: https://github.com/org/config
+        branch: main
+        type: Git
+      subscription:
+        priority: 500
+"#;
+        let h = CliTestHarness::builder().config(config_with_source).build();
+        let cli = h.cli_with_command(Command::Source {
+            command: SourceCommand::Priority {
+                name: "my-source".to_string(),
+                value: None,
+            },
+        });
+        super::execute(&cli, h.printer()).unwrap();
+        h.assert_output_contains("my-source");
+        h.assert_output_contains("500");
+    }
+
+    #[test]
+    fn execute_dispatch_source_replace() {
+        let config_with_source = r#"apiVersion: cfgd.io/v1alpha1
+kind: Config
+metadata:
+  name: t
+spec:
+  profile: default
+  sources:
+    - name: replaceable
+      origin:
+        url: https://github.com/old/config
+        branch: main
+        type: Git
+      subscription:
+        priority: 600
+"#;
+        let h = CliTestHarness::builder().config(config_with_source).build();
+        let cli = h.cli_with_command(Command::Source {
+            command: SourceCommand::Replace {
+                old_name: "replaceable".to_string(),
+                new_url: "file:///nonexistent/new.git".to_string(),
+            },
+        });
+        // Dispatches through execute -> cmd_source_replace
+        let result = super::execute(&cli, h.printer());
+        // Replace will fail on the add step, but dispatch arm is exercised
+        assert!(result.is_err());
+        h.assert_output_contains("Replace Source: replaceable");
+    }
+
+    #[test]
+    fn execute_dispatch_compliance_export() {
+        let h = CliTestHarness::builder().build();
+        let cli = h.cli_with_command(Command::Compliance {
+            command: Some(ComplianceCommand::Export),
+        });
+        super::execute(&cli, h.printer()).unwrap();
+        h.assert_output_contains("Compliance snapshot written to");
+    }
 }

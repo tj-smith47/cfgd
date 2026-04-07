@@ -1681,4 +1681,388 @@ spec:
         assert!(all.contains_key("src-a"));
         assert!(all.contains_key("src-b"));
     }
+
+    // ─── build_source_spec — field verification ──────────────────
+
+    #[test]
+    fn build_source_spec_ssh_url() {
+        let spec = SourceManager::build_source_spec("corp", "git@gitlab.com:corp/config.git", None);
+        assert_eq!(spec.name, "corp");
+        assert_eq!(spec.origin.url, "git@gitlab.com:corp/config.git");
+        assert_eq!(spec.origin.branch, "master");
+        assert!(matches!(spec.origin.origin_type, OriginType::Git));
+        assert!(spec.origin.auth.is_none());
+        assert!(spec.subscription.profile.is_none());
+        assert!(!spec.subscription.accept_recommended);
+        assert!(spec.subscription.opt_in.is_empty());
+        assert!(!spec.sync.auto_apply);
+        assert!(spec.sync.pin_version.is_none());
+    }
+
+    #[test]
+    fn build_source_spec_with_profile_sets_subscription() {
+        let spec = SourceManager::build_source_spec(
+            "team",
+            "https://github.com/team/dotfiles.git",
+            Some("devops"),
+        );
+        assert_eq!(spec.subscription.profile.as_deref(), Some("devops"));
+        assert_eq!(spec.subscription.priority, 500);
+        assert_eq!(spec.sync.interval, "1h");
+    }
+
+    #[test]
+    fn build_source_spec_preserves_url_verbatim() {
+        let url = "ssh://git@internal.host:2222/repo.git";
+        let spec = SourceManager::build_source_spec("internal", url, None);
+        assert_eq!(spec.origin.url, url);
+    }
+
+    // ─── parse_manifest — profile_details support ────────────────
+
+    #[test]
+    fn parse_manifest_with_profile_details() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join(SOURCE_MANIFEST_FILE),
+            r#"
+apiVersion: cfgd.io/v1alpha1
+kind: ConfigSource
+metadata:
+  name: detailed-source
+  version: "2.0.0"
+  description: "A source with profile details"
+spec:
+  provides:
+    profiles: []
+    profileDetails:
+      - name: backend
+        description: "Backend developer profile"
+        inherits:
+          - base
+      - name: frontend
+        description: "Frontend developer profile"
+    modules:
+      - docker
+      - kubernetes
+  policy: {}
+"#,
+        )
+        .unwrap();
+
+        let mgr = SourceManager::new(dir.path());
+        let manifest = mgr.parse_manifest("detailed", dir.path()).unwrap();
+        assert_eq!(manifest.metadata.name, "detailed-source");
+        assert_eq!(manifest.metadata.version.as_deref(), Some("2.0.0"));
+        assert_eq!(
+            manifest.metadata.description.as_deref(),
+            Some("A source with profile details")
+        );
+        assert_eq!(manifest.spec.provides.profile_details.len(), 2);
+        assert_eq!(manifest.spec.provides.profile_details[0].name, "backend");
+        assert_eq!(
+            manifest.spec.provides.profile_details[0]
+                .description
+                .as_deref(),
+            Some("Backend developer profile")
+        );
+        assert_eq!(
+            manifest.spec.provides.profile_details[0].inherits,
+            vec!["base"]
+        );
+        assert_eq!(manifest.spec.provides.profile_details[1].name, "frontend");
+        assert_eq!(manifest.spec.provides.modules, vec!["docker", "kubernetes"]);
+    }
+
+    #[test]
+    fn parse_manifest_with_platform_profiles() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join(SOURCE_MANIFEST_FILE),
+            r#"
+apiVersion: cfgd.io/v1alpha1
+kind: ConfigSource
+metadata:
+  name: platform-source
+spec:
+  provides:
+    profiles:
+      - base
+    platformProfiles:
+      macos: macos-base
+      linux: linux-base
+  policy: {}
+"#,
+        )
+        .unwrap();
+
+        let mgr = SourceManager::new(dir.path());
+        let manifest = mgr.parse_manifest("plat", dir.path()).unwrap();
+        assert_eq!(
+            manifest.spec.provides.platform_profiles.get("macos"),
+            Some(&"macos-base".to_string())
+        );
+        assert_eq!(
+            manifest.spec.provides.platform_profiles.get("linux"),
+            Some(&"linux-base".to_string())
+        );
+    }
+
+    // ─── ConfigSourceDocument serialization roundtrip ─────────────
+
+    #[test]
+    fn config_source_document_serde_roundtrip() {
+        let doc = ConfigSourceDocument {
+            api_version: crate::API_VERSION.into(),
+            kind: "ConfigSource".into(),
+            metadata: crate::config::ConfigSourceMetadata {
+                name: "roundtrip-test".into(),
+                version: Some("1.2.3".into()),
+                description: Some("Test description".into()),
+            },
+            spec: crate::config::ConfigSourceSpec {
+                provides: crate::config::ConfigSourceProvides {
+                    profiles: vec!["base".into(), "dev".into()],
+                    profile_details: vec![crate::config::ConfigSourceProfileEntry {
+                        name: "base".into(),
+                        description: Some("Base profile".into()),
+                        path: None,
+                        inherits: vec![],
+                    }],
+                    platform_profiles: {
+                        let mut m = HashMap::new();
+                        m.insert("macos".into(), "macos-base".into());
+                        m
+                    },
+                    modules: vec!["git".into()],
+                },
+                policy: Default::default(),
+            },
+        };
+
+        let yaml = serde_yaml::to_string(&doc).expect("serialize should succeed");
+        let parsed: ConfigSourceDocument =
+            serde_yaml::from_str(&yaml).expect("deserialize should succeed");
+
+        assert_eq!(parsed.metadata.name, "roundtrip-test");
+        assert_eq!(parsed.metadata.version.as_deref(), Some("1.2.3"));
+        assert_eq!(
+            parsed.metadata.description.as_deref(),
+            Some("Test description")
+        );
+        assert_eq!(parsed.spec.provides.profiles, vec!["base", "dev"]);
+        assert_eq!(parsed.spec.provides.profile_details.len(), 1);
+        assert_eq!(parsed.spec.provides.profile_details[0].name, "base");
+        assert_eq!(
+            parsed
+                .spec
+                .provides
+                .platform_profiles
+                .get("macos")
+                .map(String::as_str),
+            Some("macos-base")
+        );
+        assert_eq!(parsed.spec.provides.modules, vec!["git"]);
+    }
+
+    #[test]
+    fn config_source_document_deserialize_minimal() {
+        let yaml = r#"
+apiVersion: cfgd.io/v1alpha1
+kind: ConfigSource
+metadata:
+  name: minimal
+spec:
+  provides:
+    profiles:
+      - default
+"#;
+        let doc: ConfigSourceDocument =
+            serde_yaml::from_str(yaml).expect("minimal manifest should parse");
+        assert_eq!(doc.metadata.name, "minimal");
+        assert!(doc.metadata.version.is_none());
+        assert!(doc.metadata.description.is_none());
+        assert_eq!(doc.spec.provides.profiles, vec!["default"]);
+        assert!(doc.spec.provides.profile_details.is_empty());
+        assert!(doc.spec.provides.platform_profiles.is_empty());
+        assert!(doc.spec.provides.modules.is_empty());
+        // Policy defaults
+        assert!(!doc.spec.policy.constraints.require_signed_commits);
+    }
+
+    // ─── read_manifest — additional edge cases ───────────────────
+
+    #[test]
+    fn read_manifest_unreadable_yaml_content() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join(SOURCE_MANIFEST_FILE),
+            "this is not yaml at all: [[[",
+        )
+        .unwrap();
+
+        let err = read_manifest("bad-yaml", dir.path()).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("bad-yaml") || msg.contains("invalid") || msg.contains("ConfigSource"),
+            "expected manifest parse error mentioning the source name, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn read_manifest_wrong_kind_in_yaml() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join(SOURCE_MANIFEST_FILE),
+            r#"
+apiVersion: cfgd.io/v1alpha1
+kind: Config
+metadata:
+  name: wrong-kind
+spec: {}
+"#,
+        )
+        .unwrap();
+
+        // parse_config_source validates the kind field — this should fail
+        let result = read_manifest("wrong-kind", dir.path());
+        assert!(
+            result.is_err(),
+            "wrong kind should be rejected by parse_config_source"
+        );
+    }
+
+    #[test]
+    fn parse_manifest_with_policy_constraints() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join(SOURCE_MANIFEST_FILE),
+            r#"
+apiVersion: cfgd.io/v1alpha1
+kind: ConfigSource
+metadata:
+  name: constrained-source
+spec:
+  provides:
+    profiles:
+      - secure
+  policy:
+    constraints:
+      requireSignedCommits: true
+      noScripts: true
+      noSecretsRead: false
+      allowSystemChanges: true
+"#,
+        )
+        .unwrap();
+
+        let mgr = SourceManager::new(dir.path());
+        let manifest = mgr.parse_manifest("constrained", dir.path()).unwrap();
+        assert!(manifest.spec.policy.constraints.require_signed_commits);
+        assert!(manifest.spec.policy.constraints.no_scripts);
+        assert!(!manifest.spec.policy.constraints.no_secrets_read);
+        assert!(manifest.spec.policy.constraints.allow_system_changes);
+    }
+
+    // ─── CachedSource field verification ─────────────────────────
+
+    #[test]
+    fn cached_source_fields_via_get() {
+        let dir = tempfile::tempdir().unwrap();
+        let source_path = dir.path().join("my-src");
+        std::fs::create_dir_all(&source_path).unwrap();
+
+        let mut mgr = SourceManager::new(dir.path());
+        insert_fake_source(&mut mgr, "my-src", source_path.clone());
+
+        let cached = mgr.get("my-src").expect("source should be cached");
+        assert_eq!(cached.name, "my-src");
+        assert_eq!(cached.origin_url, "https://example.com/config.git");
+        assert_eq!(cached.origin_branch, "main");
+        assert_eq!(cached.local_path, source_path);
+        assert_eq!(cached.manifest.kind, "ConfigSource");
+        assert!(cached.last_commit.is_none());
+        assert!(cached.last_fetched.is_none());
+    }
+
+    // ─── normalize_semver_pin — more edge cases ──────────────────
+
+    #[test]
+    fn normalize_semver_pin_tilde_three_part() {
+        // Full three-part tilde passed through unchanged
+        assert_eq!(normalize_semver_pin("~1.2.3"), "~1.2.3");
+    }
+
+    #[test]
+    fn normalize_semver_pin_caret_three_part() {
+        assert_eq!(normalize_semver_pin("^0.1.2"), "^0.1.2");
+    }
+
+    #[test]
+    fn normalize_semver_pin_comparison_operators() {
+        // Operators other than ~ and ^ are passed through
+        assert_eq!(normalize_semver_pin(">1.0.0"), ">1.0.0");
+        assert_eq!(normalize_semver_pin("<=2.0.0"), "<=2.0.0");
+        assert_eq!(normalize_semver_pin(">=1.5.0, <2.0.0"), ">=1.5.0, <2.0.0");
+    }
+
+    #[test]
+    fn normalize_semver_pin_wildcard() {
+        assert_eq!(normalize_semver_pin("*"), "*");
+    }
+
+    // ─── SourceSpec serialization ────────────────────────────────
+
+    #[test]
+    fn source_spec_serde_roundtrip() {
+        let spec = SourceManager::build_source_spec(
+            "my-source",
+            "https://github.com/org/config.git",
+            Some("engineering"),
+        );
+        let yaml = serde_yaml::to_string(&spec).expect("serialize should succeed");
+        let parsed: crate::config::SourceSpec =
+            serde_yaml::from_str(&yaml).expect("deserialize should succeed");
+
+        assert_eq!(parsed.name, "my-source");
+        assert_eq!(parsed.origin.url, "https://github.com/org/config.git");
+        assert_eq!(parsed.origin.branch, "master");
+        assert_eq!(parsed.subscription.profile.as_deref(), Some("engineering"));
+        assert_eq!(parsed.subscription.priority, 500);
+        assert_eq!(parsed.sync.interval, "1h");
+        assert!(!parsed.sync.auto_apply);
+    }
+
+    // ─── detect_source_manifest — with profile_details ───────────
+
+    #[test]
+    fn detect_source_manifest_with_profile_details_only() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join(SOURCE_MANIFEST_FILE),
+            r#"
+apiVersion: cfgd.io/v1alpha1
+kind: ConfigSource
+metadata:
+  name: details-only
+spec:
+  provides:
+    profiles: []
+    profileDetails:
+      - name: dev
+        description: "Developer profile"
+  policy: {}
+"#,
+        )
+        .unwrap();
+
+        let result = detect_source_manifest(dir.path()).unwrap();
+        assert!(
+            result.is_some(),
+            "should accept profile_details as valid profiles"
+        );
+        let doc = result.unwrap();
+        assert_eq!(doc.metadata.name, "details-only");
+        assert_eq!(doc.spec.provides.profile_details.len(), 1);
+    }
 }

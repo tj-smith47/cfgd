@@ -2874,4 +2874,148 @@ spec:
         assert_eq!(scripts.post_reconcile.len(), 1);
         assert_eq!(scripts.on_change.len(), 1);
     }
+
+    #[test]
+    fn profile_show_displays_all_package_manager_sections() {
+        let dir = tempfile::tempdir().unwrap();
+        let profiles_dir = dir.path().join("profiles");
+        std::fs::create_dir_all(&profiles_dir).unwrap();
+        std::fs::write(
+            dir.path().join("cfgd.yaml"),
+            "apiVersion: cfgd.io/v1alpha1\nkind: CfgdConfig\nmetadata:\n  name: test\nspec:\n  profile: rich\n",
+        ).unwrap();
+        std::fs::write(
+            profiles_dir.join("rich.yaml"),
+            r#"apiVersion: cfgd.io/v1alpha1
+kind: Profile
+metadata:
+  name: rich
+spec:
+  env:
+    - name: PAGER
+      value: less
+  aliases:
+    - name: ll
+      command: ls -la
+  packages:
+    brew:
+      taps: [homebrew/cask-fonts]
+      formulae: [ripgrep, fd, bat]
+      casks: [firefox, iterm2]
+    apt:
+      packages: [curl, git, jq]
+    npm:
+      global: [prettier, eslint]
+    cargo: [tokei, hyperfine]
+    pipx: [black, ruff]
+    dnf: [vim-enhanced]
+    snap:
+      packages: [code]
+    flatpak:
+      packages: [org.signal.Signal]
+    nix: [direnv]
+    go: [golang.org/x/tools/gopls@latest]
+    winget: [Microsoft.VisualStudioCode]
+    chocolatey: [git]
+    scoop: [extras/vcredist2022]
+  files:
+    managed:
+      - source: dotfiles/.bashrc
+        target: ~/.bashrc
+  system:
+    macosDefaults:
+      NSGlobalDomain:
+        AppleShowAllExtensions: true
+"#,
+        )
+        .unwrap();
+
+        let cli = test_cli(dir.path());
+        let (printer, buf) = Printer::for_test();
+
+        cmd_profile_show(&cli, &printer, Some("rich")).unwrap();
+        let output = buf.lock().unwrap();
+
+        // Verify all package manager display branches are exercised
+        assert!(
+            output.contains("brew taps"),
+            "should show brew taps: {output}"
+        );
+        assert!(
+            output.contains("brew formulae"),
+            "should show brew formulae: {output}"
+        );
+        assert!(
+            output.contains("brew casks"),
+            "should show brew casks: {output}"
+        );
+        assert!(output.contains("apt"), "should show apt packages: {output}");
+        assert!(
+            output.contains("npm"),
+            "should show npm global packages: {output}"
+        );
+        assert!(
+            output.contains("cargo"),
+            "should show cargo packages: {output}"
+        );
+        assert!(
+            output.contains("pipx"),
+            "should show pipx packages: {output}"
+        );
+
+        // Verify env is displayed
+        assert!(
+            output.contains("PAGER"),
+            "should show PAGER env var: {output}"
+        );
+
+        // Verify files section
+        assert!(
+            output.contains("Files"),
+            "should show files section: {output}"
+        );
+        assert!(
+            output.contains(".bashrc"),
+            "should show .bashrc file target: {output}"
+        );
+
+        // Verify system section
+        assert!(
+            output.contains("System"),
+            "should show system section: {output}"
+        );
+        assert!(
+            output.contains("macosDefaults"),
+            "should show macosDefaults configurator: {output}"
+        );
+    }
+
+    #[test]
+    fn profile_show_no_packages_displays_none() {
+        let dir = tempfile::tempdir().unwrap();
+        let profiles_dir = dir.path().join("profiles");
+        std::fs::create_dir_all(&profiles_dir).unwrap();
+        std::fs::write(
+            dir.path().join("cfgd.yaml"),
+            "apiVersion: cfgd.io/v1alpha1\nkind: CfgdConfig\nmetadata:\n  name: test\nspec:\n  profile: bare\n",
+        ).unwrap();
+        std::fs::write(
+            profiles_dir.join("bare.yaml"),
+            "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: bare\nspec:\n  env:\n    - name: LANG\n      value: en_US.UTF-8\n",
+        ).unwrap();
+
+        let cli = test_cli(dir.path());
+        let (printer, buf) = Printer::for_test();
+        cmd_profile_show(&cli, &printer, Some("bare")).unwrap();
+        let output = buf.lock().unwrap();
+
+        assert!(
+            output.contains("Packages"),
+            "should show Packages section: {output}"
+        );
+        assert!(
+            output.contains("(none)"),
+            "should show (none) for empty packages: {output}"
+        );
+    }
 }

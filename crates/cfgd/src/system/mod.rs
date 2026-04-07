@@ -4517,4 +4517,796 @@ schema1:
             "empty managed should remove the file"
         );
     }
+
+    // --- generate_launch_agent_plist ---
+
+    #[test]
+    fn generate_launch_agent_plist_basic_with_program() {
+        let plist = generate_launch_agent_plist("com.test.agent", "/usr/bin/test", &[], true);
+        assert!(
+            plist.contains("<?xml version=\"1.0\""),
+            "should have XML declaration"
+        );
+        assert!(
+            plist.contains("<string>com.test.agent</string>"),
+            "should contain label"
+        );
+        assert!(
+            plist.contains("<string>/usr/bin/test</string>"),
+            "should contain program"
+        );
+        assert!(plist.contains("<true />"), "should have RunAtLoad=true");
+        assert!(
+            plist.contains("ProgramArguments"),
+            "should have ProgramArguments key"
+        );
+    }
+
+    #[test]
+    fn generate_launch_agent_plist_with_args() {
+        let plist = generate_launch_agent_plist(
+            "com.test.daemon",
+            "/usr/local/bin/cfgd",
+            &["--config", "/etc/cfgd.yaml", "daemon"],
+            false,
+        );
+        assert!(plist.contains("<string>/usr/local/bin/cfgd</string>"));
+        assert!(plist.contains("<string>--config</string>"));
+        assert!(plist.contains("<string>/etc/cfgd.yaml</string>"));
+        assert!(plist.contains("<string>daemon</string>"));
+        assert!(plist.contains("<false />"), "should have RunAtLoad=false");
+    }
+
+    #[test]
+    fn generate_launch_agent_plist_no_program_no_args() {
+        let plist = generate_launch_agent_plist("com.test.empty", "", &[], true);
+        assert!(
+            !plist.contains("ProgramArguments"),
+            "should not have ProgramArguments when both empty"
+        );
+        assert!(plist.contains("<string>com.test.empty</string>"));
+    }
+
+    #[test]
+    fn generate_launch_agent_plist_xml_escaping() {
+        let plist =
+            generate_launch_agent_plist("com.test.<special>&", "/bin/test", &["--flag=a&b"], true);
+        assert!(
+            plist.contains("com.test.&lt;special&gt;&amp;"),
+            "label should be XML-escaped"
+        );
+        assert!(
+            plist.contains("--flag=a&amp;b"),
+            "args should be XML-escaped"
+        );
+    }
+
+    #[test]
+    fn generate_launch_agent_plist_args_only_no_program() {
+        let plist = generate_launch_agent_plist("com.test.argsonly", "", &["arg1", "arg2"], false);
+        assert!(
+            plist.contains("ProgramArguments"),
+            "should have ProgramArguments with args"
+        );
+        assert!(plist.contains("<string>arg1</string>"));
+        assert!(plist.contains("<string>arg2</string>"));
+        // Empty program string should not generate a string element
+        // (the function only adds program if !program.is_empty())
+    }
+
+    // --- launch_agent_plist_path ---
+
+    #[test]
+    fn launch_agent_plist_path_contains_label() {
+        let path = launch_agent_plist_path("com.cfgd.test");
+        let path_str = path.display().to_string();
+        assert!(
+            path_str.contains("Library/LaunchAgents"),
+            "should be in LaunchAgents dir"
+        );
+        assert!(
+            path_str.ends_with("com.cfgd.test.plist"),
+            "should end with label.plist"
+        );
+    }
+
+    // --- WindowsServiceConfigurator::parse_services ---
+
+    #[test]
+    fn parse_services_single_full_entry() {
+        let yaml: serde_yaml::Value = serde_yaml::from_str(
+            r#"
+- name: MyService
+  displayName: My Service Display
+  binaryPath: C:\Program Files\svc.exe
+  startType: auto
+  state: running
+"#,
+        )
+        .unwrap();
+        let entries = WindowsServiceConfigurator::parse_services(&yaml);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].name, "MyService");
+        assert_eq!(
+            entries[0].display_name.as_deref(),
+            Some("My Service Display")
+        );
+        assert_eq!(
+            entries[0].binary_path.as_deref(),
+            Some("C:\\Program Files\\svc.exe")
+        );
+        assert_eq!(entries[0].start_type.as_deref(), Some("auto"));
+        assert_eq!(entries[0].state.as_deref(), Some("running"));
+    }
+
+    #[test]
+    fn parse_services_multiple_entries() {
+        let yaml: serde_yaml::Value = serde_yaml::from_str(
+            r#"
+- name: svc1
+  binaryPath: /bin/svc1
+- name: svc2
+  startType: manual
+- name: svc3
+"#,
+        )
+        .unwrap();
+        let entries = WindowsServiceConfigurator::parse_services(&yaml);
+        assert_eq!(entries.len(), 3);
+        assert_eq!(entries[0].name, "svc1");
+        assert!(entries[0].binary_path.is_some());
+        assert_eq!(entries[1].name, "svc2");
+        assert_eq!(entries[1].start_type.as_deref(), Some("manual"));
+        assert_eq!(entries[2].name, "svc3");
+        assert!(entries[2].binary_path.is_none());
+    }
+
+    #[test]
+    fn parse_services_non_sequence_returns_empty() {
+        let yaml = serde_yaml::Value::String("not a sequence".into());
+        let entries = WindowsServiceConfigurator::parse_services(&yaml);
+        assert!(entries.is_empty());
+    }
+
+    #[test]
+    fn parse_services_entries_without_name_skipped() {
+        let yaml: serde_yaml::Value = serde_yaml::from_str(
+            r#"
+- binaryPath: /bin/noname
+- name: valid
+- displayName: orphan
+"#,
+        )
+        .unwrap();
+        let entries = WindowsServiceConfigurator::parse_services(&yaml);
+        assert_eq!(
+            entries.len(),
+            1,
+            "only the entry with 'name' should be included"
+        );
+        assert_eq!(entries[0].name, "valid");
+    }
+
+    #[test]
+    fn parse_services_null_input() {
+        let yaml = serde_yaml::Value::Null;
+        let entries = WindowsServiceConfigurator::parse_services(&yaml);
+        assert!(entries.is_empty());
+    }
+
+    #[test]
+    fn parse_services_optional_fields_all_none() {
+        let yaml: serde_yaml::Value = serde_yaml::from_str("- name: bare\n").unwrap();
+        let entries = WindowsServiceConfigurator::parse_services(&yaml);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].name, "bare");
+        assert!(entries[0].display_name.is_none());
+        assert!(entries[0].binary_path.is_none());
+        assert!(entries[0].start_type.is_none());
+        assert!(entries[0].state.is_none());
+    }
+
+    // =====================================================================
+    // Additional pure-function behavioral tests
+    // =====================================================================
+
+    // --- diff_yaml_mapping: converter function selection matters ---
+
+    #[test]
+    fn diff_yaml_mapping_numeric_bools_true_matches_1() {
+        let mut desired = serde_yaml::Mapping::new();
+        desired.insert(
+            serde_yaml::Value::String("toggle".into()),
+            serde_yaml::Value::Bool(true),
+        );
+        // With yaml_value_with_numeric_bools, true becomes "1"
+        let drifts = diff_yaml_mapping(&desired, "", yaml_value_with_numeric_bools, |_| {
+            "1".to_string()
+        });
+        assert!(
+            drifts.is_empty(),
+            "true should match '1' with numeric bools converter"
+        );
+    }
+
+    #[test]
+    fn diff_yaml_mapping_string_bools_true_does_not_match_1() {
+        let mut desired = serde_yaml::Mapping::new();
+        desired.insert(
+            serde_yaml::Value::String("toggle".into()),
+            serde_yaml::Value::Bool(true),
+        );
+        // With yaml_value_to_string, true becomes "true" which does not match "1"
+        let drifts = diff_yaml_mapping(&desired, "", yaml_value_to_string, |_| "1".to_string());
+        assert_eq!(
+            drifts.len(),
+            1,
+            "true should NOT match '1' with yaml_value_to_string"
+        );
+        assert_eq!(drifts[0].expected, "true");
+        assert_eq!(drifts[0].actual, "1");
+    }
+
+    #[test]
+    fn diff_yaml_mapping_all_keys_drift() {
+        let mut desired = serde_yaml::Mapping::new();
+        desired.insert(
+            serde_yaml::Value::String("a".into()),
+            serde_yaml::Value::String("x".into()),
+        );
+        desired.insert(
+            serde_yaml::Value::String("b".into()),
+            serde_yaml::Value::String("y".into()),
+        );
+        desired.insert(
+            serde_yaml::Value::String("c".into()),
+            serde_yaml::Value::String("z".into()),
+        );
+
+        let drifts = diff_yaml_mapping(&desired, "prefix", yaml_value_to_string, |_| String::new());
+        assert_eq!(drifts.len(), 3);
+        // All drift keys should have the prefix
+        for d in &drifts {
+            assert!(
+                d.key.starts_with("prefix."),
+                "drift key '{}' missing prefix",
+                d.key
+            );
+        }
+    }
+
+    #[test]
+    fn diff_yaml_mapping_get_actual_receives_bare_key() {
+        // Verify the get_actual closure receives the raw key, not prefixed
+        let mut desired = serde_yaml::Mapping::new();
+        desired.insert(
+            serde_yaml::Value::String("mykey".into()),
+            serde_yaml::Value::String("val".into()),
+        );
+
+        let drifts = diff_yaml_mapping(&desired, "ns", yaml_value_to_string, |k| {
+            // Echo back the key we received to verify it's the raw key
+            assert_eq!(k, "mykey", "get_actual should receive the bare key");
+            "val".to_string()
+        });
+        assert!(drifts.is_empty());
+    }
+
+    // --- diff_nested_mapping: multiple outer sections produce independent drifts ---
+
+    #[test]
+    fn diff_nested_mapping_two_schemas_all_drift() {
+        let yaml: serde_yaml::Value = serde_yaml::from_str(
+            r#"
+schema-a:
+  key1: expected1
+schema-b:
+  key2: expected2
+"#,
+        )
+        .unwrap();
+
+        let drifts = diff_nested_mapping(&yaml, |_, _| "wrong".to_string()).unwrap();
+        assert_eq!(drifts.len(), 2);
+        let keys: Vec<&str> = drifts.iter().map(|d| d.key.as_str()).collect();
+        assert!(keys.contains(&"schema-a.key1"));
+        assert!(keys.contains(&"schema-b.key2"));
+    }
+
+    #[test]
+    fn diff_nested_mapping_mixed_matching_across_schemas() {
+        let yaml: serde_yaml::Value = serde_yaml::from_str(
+            r#"
+schemaA:
+  k1: v1
+  k2: v2
+schemaB:
+  k3: v3
+"#,
+        )
+        .unwrap();
+
+        let drifts = diff_nested_mapping(&yaml, |schema, key| {
+            // schemaA.k1 matches, everything else drifts
+            if schema == "schemaA" && key == "k1" {
+                "v1".to_string()
+            } else {
+                "mismatch".to_string()
+            }
+        })
+        .unwrap();
+
+        assert_eq!(drifts.len(), 2);
+        let keys: Vec<&str> = drifts.iter().map(|d| d.key.as_str()).collect();
+        assert!(keys.contains(&"schemaA.k2"));
+        assert!(keys.contains(&"schemaB.k3"));
+    }
+
+    // --- parse_reg_line: various HKEY prefixes ---
+
+    #[test]
+    fn parse_reg_line_hkey_classes_root() {
+        assert_eq!(
+            parse_reg_line("HKEY_CLASSES_ROOT\\.txt"),
+            None,
+            "HKEY_CLASSES_ROOT lines should be filtered"
+        );
+    }
+
+    #[test]
+    fn parse_reg_line_hkey_users() {
+        assert_eq!(
+            parse_reg_line("HKEY_USERS\\.DEFAULT"),
+            None,
+            "HKEY_USERS lines should be filtered"
+        );
+    }
+
+    #[test]
+    fn parse_reg_line_expand_sz_type() {
+        let line = "    Path    REG_EXPAND_SZ    %SystemRoot%\\system32";
+        let result = parse_reg_line(line);
+        assert_eq!(
+            result,
+            Some(("Path", "REG_EXPAND_SZ", "%SystemRoot%\\system32"))
+        );
+    }
+
+    #[test]
+    fn parse_reg_line_multi_sz_type() {
+        let line = "    MultiVal    REG_MULTI_SZ    val1\\0val2";
+        let result = parse_reg_line(line);
+        assert_eq!(result, Some(("MultiVal", "REG_MULTI_SZ", "val1\\0val2")));
+    }
+
+    // --- parse_reg_query_output: preserves value types as raw strings ---
+
+    #[test]
+    fn parse_reg_query_output_multiple_types_preserved() {
+        let output = "\
+HKEY_CURRENT_USER\\Environment\n\
+\n\
+    Editor    REG_SZ    vim\n\
+    NumProcs    REG_DWORD    0x4\n\
+    ExpandPath    REG_EXPAND_SZ    %HOME%\\bin\n";
+
+        let vars = EnvironmentConfigurator::parse_reg_query_output(output);
+        assert_eq!(vars.len(), 3);
+        assert_eq!(vars["Editor"], "vim");
+        // parse_reg_query_output preserves raw DWORD hex
+        assert_eq!(vars["NumProcs"], "0x4");
+        assert_eq!(vars["ExpandPath"], "%HOME%\\bin");
+    }
+
+    // --- parse_reg_value_output: edge cases ---
+
+    #[test]
+    fn parse_reg_value_output_dword_max_value() {
+        let output = "    MaxVal    REG_DWORD    0xffffffff\n";
+        assert_eq!(
+            WindowsRegistryConfigurator::parse_reg_value_output(output, "MaxVal"),
+            Some("4294967295".to_string()),
+        );
+    }
+
+    #[test]
+    fn parse_reg_value_output_sz_with_spaces() {
+        let output = "    Description    REG_SZ    A long description with spaces\n";
+        assert_eq!(
+            WindowsRegistryConfigurator::parse_reg_value_output(output, "Description"),
+            Some("A long description with spaces".to_string()),
+        );
+    }
+
+    #[test]
+    fn parse_reg_value_output_selects_first_match() {
+        // If the same name appears twice, the first one wins
+        let output = "\
+    Dup    REG_SZ    first\n\
+    Dup    REG_SZ    second\n";
+        assert_eq!(
+            WindowsRegistryConfigurator::parse_reg_value_output(output, "Dup"),
+            Some("first".to_string()),
+        );
+    }
+
+    // --- parse_sc_state: various state strings ---
+
+    #[test]
+    fn parse_sc_state_continue_pending() {
+        let output = "\tSTATE              : 5  CONTINUE_PENDING\n";
+        assert_eq!(parse_sc_state(output), Some("continue-pending".to_string()));
+    }
+
+    #[test]
+    fn parse_sc_state_pause_pending() {
+        let output = "\tSTATE              : 6  PAUSE_PENDING\n";
+        assert_eq!(parse_sc_state(output), Some("pause-pending".to_string()));
+    }
+
+    #[test]
+    fn parse_sc_state_underscores_become_hyphens() {
+        // The function replaces '_' with '-' via .replace('_', "-")
+        let output = "\tSTATE              : 2  START_PENDING\n";
+        let state = parse_sc_state(output).unwrap();
+        assert!(
+            !state.contains('_'),
+            "underscores should be converted to hyphens"
+        );
+        assert_eq!(state, "start-pending");
+    }
+
+    #[test]
+    fn parse_sc_state_full_output_with_extra_lines() {
+        let output = "\
+SERVICE_NAME: W32Time\n\
+\tTYPE               : 30  WIN32\n\
+\tSTATE              : 4  RUNNING\n\
+\t\t\t\t\t(STOPPABLE, NOT_PAUSABLE, ACCEPTS_SHUTDOWN)\n\
+\tWIN32_EXIT_CODE    : 0  (0x0)\n\
+\tSERVICE_EXIT_CODE  : 0  (0x0)\n\
+\tCHECKPOINT         : 0x0\n\
+\tWAIT_HINT          : 0x0\n";
+        assert_eq!(parse_sc_state(output), Some("running".to_string()));
+    }
+
+    // --- parse_sc_start_type: case handling ---
+
+    #[test]
+    fn parse_sc_start_type_lowercase_input_still_works() {
+        // The function uppercases the rest before checking .contains()
+        let output = "\tSTART_TYPE         : 2   auto_start\n";
+        assert_eq!(parse_sc_start_type(output), Some("auto".to_string()));
+    }
+
+    #[test]
+    fn parse_sc_start_type_full_qc_output() {
+        let output = "\
+[SC] QueryServiceConfig SUCCESS\n\
+\n\
+SERVICE_NAME: Spooler\n\
+\tTYPE               : 110  WIN32_OWN_PROCESS  (interactive)\n\
+\tSTART_TYPE         : 2   AUTO_START\n\
+\tERROR_CONTROL      : 1   NORMAL\n\
+\tBINARY_PATH_NAME   : C:\\Windows\\System32\\spoolsv.exe\n\
+\tLOAD_ORDER_GROUP   : SpoolerGroup\n\
+\tTAG                : 0\n\
+\tDISPLAY_NAME       : Print Spooler\n\
+\tDEPENDENCIES       : RPCSS\n\
+\t                   : http\n\
+\tSERVICE_START_NAME : LocalSystem\n";
+        assert_eq!(parse_sc_start_type(output), Some("auto".to_string()));
+    }
+
+    // --- sc_start_type: verify mapping directions ---
+
+    #[test]
+    fn sc_start_type_case_sensitive() {
+        // Function is case-sensitive — "Auto" is not "auto"
+        assert_eq!(sc_start_type("Auto"), None);
+        assert_eq!(sc_start_type("Manual"), None);
+        assert_eq!(sc_start_type("Disabled"), None);
+    }
+
+    // --- yaml_value_with_numeric_bools: comprehensive ---
+
+    #[test]
+    fn yaml_value_with_numeric_bools_mapping_uses_debug() {
+        let mapping = serde_yaml::Value::Mapping(serde_yaml::Mapping::new());
+        let result = yaml_value_with_numeric_bools(&mapping);
+        // The Debug format for an empty mapping
+        assert!(!result.is_empty());
+    }
+
+    #[test]
+    fn yaml_value_with_numeric_bools_empty_string() {
+        assert_eq!(
+            yaml_value_with_numeric_bools(&serde_yaml::Value::String(String::new())),
+            ""
+        );
+    }
+
+    #[test]
+    fn yaml_value_with_numeric_bools_negative_number() {
+        let n = serde_yaml::Value::Number(serde_yaml::Number::from(-5));
+        assert_eq!(yaml_value_with_numeric_bools(&n), "-5");
+    }
+
+    // --- yaml_value_to_defaults_type: comprehensive ---
+
+    #[test]
+    fn yaml_value_to_defaults_type_integer_zero() {
+        let (t, v) = yaml_value_to_defaults_type(&serde_yaml::Value::Number(0.into()));
+        assert_eq!(t, "int");
+        assert_eq!(v, "0");
+    }
+
+    #[test]
+    fn yaml_value_to_defaults_type_negative_int() {
+        let (t, v) =
+            yaml_value_to_defaults_type(&serde_yaml::Value::Number(serde_yaml::Number::from(-1)));
+        assert_eq!(t, "int");
+        assert_eq!(v, "-1");
+    }
+
+    #[test]
+    fn yaml_value_to_defaults_type_empty_string() {
+        let (t, v) = yaml_value_to_defaults_type(&serde_yaml::Value::String(String::new()));
+        assert_eq!(t, "string");
+        assert_eq!(v, "");
+    }
+
+    #[test]
+    fn yaml_value_to_defaults_type_float_zero() {
+        let float_val = serde_yaml::Value::Number(serde_yaml::Number::from(0.0_f64));
+        let (t, v) = yaml_value_to_defaults_type(&float_val);
+        assert_eq!(t, "float");
+        assert_eq!(v, "0.0");
+    }
+
+    // --- yaml_value_to_string: comprehensive ---
+
+    #[test]
+    fn yaml_value_to_string_mapping_uses_debug() {
+        let mut m = serde_yaml::Mapping::new();
+        m.insert(
+            serde_yaml::Value::String("k".into()),
+            serde_yaml::Value::String("v".into()),
+        );
+        let result = yaml_value_to_string(&serde_yaml::Value::Mapping(m));
+        // Debug format includes the key and value
+        assert!(result.contains("k"));
+        assert!(result.contains("v"));
+    }
+
+    #[test]
+    fn yaml_value_to_string_empty_string() {
+        assert_eq!(
+            yaml_value_to_string(&serde_yaml::Value::String(String::new())),
+            ""
+        );
+    }
+
+    #[test]
+    fn yaml_value_to_string_negative_number() {
+        let n = serde_yaml::Value::Number(serde_yaml::Number::from(-42));
+        assert_eq!(yaml_value_to_string(&n), "-42");
+    }
+
+    #[test]
+    fn yaml_value_to_string_float() {
+        let f = serde_yaml::Value::Number(serde_yaml::Number::from(3.14_f64));
+        let result = yaml_value_to_string(&f);
+        assert!(result.starts_with("3.14"));
+    }
+
+    // --- strip_gsettings_quotes: additional edge cases ---
+
+    #[test]
+    fn strip_gsettings_quotes_only_closing_quote() {
+        // No opening quote — returned as-is
+        assert_eq!(strip_gsettings_quotes("no-opening'"), "no-opening'");
+    }
+
+    #[test]
+    fn strip_gsettings_quotes_nested_quotes() {
+        // Outer single quotes stripped, inner content preserved
+        assert_eq!(strip_gsettings_quotes("'it''s'"), "it''s");
+    }
+
+    #[test]
+    fn strip_gsettings_quotes_single_char_value() {
+        assert_eq!(strip_gsettings_quotes("'x'"), "x");
+    }
+
+    #[test]
+    fn strip_gsettings_quotes_number_string_unchanged() {
+        assert_eq!(strip_gsettings_quotes("100"), "100");
+    }
+
+    // --- parse_env_file: additional edge cases ---
+
+    #[test]
+    fn parse_env_file_lines_without_equals_skipped() {
+        let dir = tempfile::tempdir().unwrap();
+        let env_path = dir.path().join("env");
+        std::fs::write(&env_path, "VALID=yes\nNO_EQUALS_HERE\nALSO_VALID=true\n").unwrap();
+
+        let vars = EnvironmentConfigurator::parse_env_file(env_path.to_str().unwrap());
+        assert_eq!(vars.len(), 2);
+        assert_eq!(vars["VALID"], "yes");
+        assert_eq!(vars["ALSO_VALID"], "true");
+    }
+
+    #[test]
+    fn parse_env_file_whitespace_around_key_and_value() {
+        let dir = tempfile::tempdir().unwrap();
+        let env_path = dir.path().join("env");
+        std::fs::write(&env_path, "  KEY  =  value  \n").unwrap();
+
+        let vars = EnvironmentConfigurator::parse_env_file(env_path.to_str().unwrap());
+        assert_eq!(vars["KEY"], "value");
+    }
+
+    #[test]
+    fn parse_env_file_empty_value() {
+        let dir = tempfile::tempdir().unwrap();
+        let env_path = dir.path().join("env");
+        std::fs::write(&env_path, "EMPTY=\n").unwrap();
+
+        let vars = EnvironmentConfigurator::parse_env_file(env_path.to_str().unwrap());
+        assert_eq!(vars["EMPTY"], "");
+    }
+
+    #[test]
+    fn parse_env_file_only_comments() {
+        let dir = tempfile::tempdir().unwrap();
+        let env_path = dir.path().join("env");
+        std::fs::write(&env_path, "# comment 1\n# comment 2\n").unwrap();
+
+        let vars = EnvironmentConfigurator::parse_env_file(env_path.to_str().unwrap());
+        assert!(vars.is_empty());
+    }
+
+    // --- parse_export_file: additional edge cases ---
+
+    #[test]
+    fn parse_export_file_empty_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let file_path = dir.path().join("env.sh");
+        std::fs::write(&file_path, "").unwrap();
+
+        let vars = EnvironmentConfigurator::parse_export_file(file_path.to_str().unwrap());
+        assert!(vars.is_empty());
+    }
+
+    #[test]
+    fn parse_export_file_mixed_quote_styles() {
+        let dir = tempfile::tempdir().unwrap();
+        let file_path = dir.path().join("env.sh");
+        std::fs::write(
+            &file_path,
+            "export DOUBLE=\"double_val\"\nexport SINGLE='single_val'\nexport NONE=bare_val\n",
+        )
+        .unwrap();
+
+        let vars = EnvironmentConfigurator::parse_export_file(file_path.to_str().unwrap());
+        assert_eq!(vars.len(), 3);
+        assert_eq!(vars["DOUBLE"], "double_val");
+        assert_eq!(vars["SINGLE"], "single_val");
+        assert_eq!(vars["NONE"], "bare_val");
+    }
+
+    #[test]
+    fn parse_export_file_value_with_equals_sign() {
+        let dir = tempfile::tempdir().unwrap();
+        let file_path = dir.path().join("env.sh");
+        std::fs::write(&file_path, "export OPTS=\"--key=value\"\n").unwrap();
+
+        let vars = EnvironmentConfigurator::parse_export_file(file_path.to_str().unwrap());
+        assert_eq!(vars["OPTS"], "--key=value");
+    }
+
+    #[test]
+    fn parse_export_file_ignores_comments_and_blank_lines() {
+        let dir = tempfile::tempdir().unwrap();
+        let file_path = dir.path().join("env.sh");
+        std::fs::write(
+            &file_path,
+            "#!/bin/sh\n# a comment\n\nexport REAL=\"yes\"\n\n# tail\n",
+        )
+        .unwrap();
+
+        let vars = EnvironmentConfigurator::parse_export_file(file_path.to_str().unwrap());
+        assert_eq!(vars.len(), 1);
+        assert_eq!(vars["REAL"], "yes");
+    }
+
+    // --- desired_vars: additional edge cases ---
+
+    #[test]
+    fn desired_vars_null_values_skipped() {
+        let yaml: serde_yaml::Value = serde_yaml::from_str(
+            r#"
+VALID: "value"
+NULL_KEY: null
+"#,
+        )
+        .unwrap();
+
+        let vars = EnvironmentConfigurator::desired_vars(&yaml);
+        assert_eq!(vars.len(), 1);
+        assert_eq!(vars["VALID"], "value");
+        assert!(
+            !vars.contains_key("NULL_KEY"),
+            "null values should be skipped"
+        );
+    }
+
+    #[test]
+    fn desired_vars_bool_converted_to_string() {
+        let yaml: serde_yaml::Value = serde_yaml::from_str(
+            r#"
+FLAG_TRUE: true
+FLAG_FALSE: false
+"#,
+        )
+        .unwrap();
+
+        let vars = EnvironmentConfigurator::desired_vars(&yaml);
+        assert_eq!(vars["FLAG_TRUE"], "true");
+        assert_eq!(vars["FLAG_FALSE"], "false");
+    }
+
+    #[test]
+    fn desired_vars_number_types() {
+        let yaml: serde_yaml::Value = serde_yaml::from_str(
+            r#"
+INT_VAR: 42
+FLOAT_VAR: 3.14
+NEGATIVE: -10
+"#,
+        )
+        .unwrap();
+
+        let vars = EnvironmentConfigurator::desired_vars(&yaml);
+        assert_eq!(vars["INT_VAR"], "42");
+        assert!(vars["FLOAT_VAR"].starts_with("3.14"));
+        assert_eq!(vars["NEGATIVE"], "-10");
+    }
+
+    #[test]
+    fn desired_vars_sequence_and_mapping_skipped() {
+        let yaml: serde_yaml::Value = serde_yaml::from_str(
+            r#"
+GOOD: "ok"
+LIST_VAL:
+  - "item1"
+MAP_VAL:
+  nested: "inner"
+"#,
+        )
+        .unwrap();
+
+        let vars = EnvironmentConfigurator::desired_vars(&yaml);
+        assert_eq!(vars.len(), 1);
+        assert_eq!(vars["GOOD"], "ok");
+    }
+
+    #[test]
+    fn desired_vars_preserves_insertion_order_via_btreemap() {
+        let yaml: serde_yaml::Value = serde_yaml::from_str(
+            r#"
+ZEBRA: "z"
+ALPHA: "a"
+MIDDLE: "m"
+"#,
+        )
+        .unwrap();
+
+        let vars = EnvironmentConfigurator::desired_vars(&yaml);
+        let keys: Vec<&String> = vars.keys().collect();
+        // BTreeMap sorts lexicographically
+        assert_eq!(keys, vec!["ALPHA", "MIDDLE", "ZEBRA"]);
+    }
 }

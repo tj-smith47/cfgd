@@ -1294,4 +1294,316 @@ mod tests {
             );
         }
     }
+
+    // ---- strip_quotes tests ----
+
+    #[test]
+    fn test_strip_quotes_single() {
+        assert_eq!(strip_quotes("'hello world'"), "hello world");
+    }
+
+    #[test]
+    fn test_strip_quotes_double() {
+        assert_eq!(strip_quotes("\"hello world\""), "hello world");
+    }
+
+    #[test]
+    fn test_strip_quotes_no_quotes() {
+        assert_eq!(strip_quotes("hello"), "hello");
+    }
+
+    #[test]
+    fn test_strip_quotes_mismatched_not_stripped() {
+        assert_eq!(strip_quotes("'hello\""), "'hello\"");
+    }
+
+    #[test]
+    fn test_strip_quotes_trims_whitespace_before_checking() {
+        assert_eq!(strip_quotes("  'trimmed'  "), "trimmed");
+    }
+
+    #[test]
+    fn test_strip_quotes_empty_string() {
+        assert_eq!(strip_quotes(""), "");
+    }
+
+    #[test]
+    fn test_strip_quotes_single_char_quoted() {
+        // "''" is a valid single-quoted empty string
+        assert_eq!(strip_quotes("''"), "");
+    }
+
+    // ---- strip_inline_comment tests ----
+
+    #[test]
+    fn test_strip_inline_comment_basic() {
+        assert_eq!(
+            strip_inline_comment("alias ll='ls -la' # list"),
+            "alias ll='ls -la'"
+        );
+    }
+
+    #[test]
+    fn test_strip_inline_comment_hash_inside_single_quotes() {
+        assert_eq!(
+            strip_inline_comment("echo 'color is #red'"),
+            "echo 'color is #red'"
+        );
+    }
+
+    #[test]
+    fn test_strip_inline_comment_hash_inside_double_quotes() {
+        assert_eq!(
+            strip_inline_comment("echo \"#not a comment\""),
+            "echo \"#not a comment\""
+        );
+    }
+
+    #[test]
+    fn test_strip_inline_comment_no_comment() {
+        assert_eq!(strip_inline_comment("export FOO=bar"), "export FOO=bar");
+    }
+
+    #[test]
+    fn test_strip_inline_comment_starts_with_hash() {
+        assert_eq!(strip_inline_comment("# full line comment"), "");
+    }
+
+    #[test]
+    fn test_strip_inline_comment_hash_after_quotes() {
+        assert_eq!(
+            strip_inline_comment("alias x='y' # comment after"),
+            "alias x='y'"
+        );
+    }
+
+    // ---- detect_plugin_manager tests ----
+
+    #[test]
+    fn test_detect_plugin_manager_oh_my_zsh() {
+        assert_eq!(
+            detect_plugin_manager("source $ZSH/oh-my-zsh.sh"),
+            Some("oh-my-zsh")
+        );
+    }
+
+    #[test]
+    fn test_detect_plugin_manager_zinit() {
+        assert_eq!(
+            detect_plugin_manager("source ~/.zinit/bin/zinit.zsh"),
+            Some("zinit")
+        );
+    }
+
+    #[test]
+    fn test_detect_plugin_manager_zplug() {
+        assert_eq!(
+            detect_plugin_manager("source ~/.zplug/init.zsh"),
+            Some("zplug")
+        );
+    }
+
+    #[test]
+    fn test_detect_plugin_manager_antibody() {
+        assert_eq!(
+            detect_plugin_manager("source <(antibody init)"),
+            Some("antibody")
+        );
+    }
+
+    #[test]
+    fn test_detect_plugin_manager_antigen() {
+        assert_eq!(
+            detect_plugin_manager("source ~/antigen.zsh"),
+            Some("antigen")
+        );
+    }
+
+    #[test]
+    fn test_detect_plugin_manager_sheldon() {
+        assert_eq!(
+            detect_plugin_manager("eval $(sheldon source)"),
+            Some("sheldon")
+        );
+    }
+
+    #[test]
+    fn test_detect_plugin_manager_fisher() {
+        assert_eq!(
+            detect_plugin_manager("if not functions -q fisher; curl fish | source"),
+            Some("fisher")
+        );
+    }
+
+    #[test]
+    fn test_detect_plugin_manager_prezto() {
+        assert_eq!(
+            detect_plugin_manager("source prezto/init.zsh"),
+            Some("prezto")
+        );
+    }
+
+    #[test]
+    fn test_detect_plugin_manager_zim() {
+        assert_eq!(detect_plugin_manager("source ~/.zim/init.zsh"), Some("zim"));
+    }
+
+    #[test]
+    fn test_detect_plugin_manager_none() {
+        assert_eq!(detect_plugin_manager("export PATH=/usr/bin"), None);
+    }
+
+    #[test]
+    fn test_detect_plugin_manager_fisher_matches_because_contains_fish() {
+        // "fisher" contains "fish" as a substring, so this matches
+        assert_eq!(detect_plugin_manager("fisher install"), Some("fisher"));
+    }
+
+    // ---- shell_config_files tests ----
+
+    #[test]
+    fn test_shell_config_files_zsh() {
+        let home = Path::new("/home/test");
+        let files = shell_config_files("zsh", home);
+        assert_eq!(files.len(), 4);
+        assert!(files.contains(&home.join(".zshrc")));
+        assert!(files.contains(&home.join(".zshenv")));
+        assert!(files.contains(&home.join(".zprofile")));
+        assert!(files.contains(&home.join(".zlogin")));
+    }
+
+    #[test]
+    fn test_shell_config_files_bash() {
+        let home = Path::new("/home/test");
+        let files = shell_config_files("bash", home);
+        assert_eq!(files.len(), 4);
+        assert!(files.contains(&home.join(".bashrc")));
+        assert!(files.contains(&home.join(".bash_profile")));
+        assert!(files.contains(&home.join(".profile")));
+    }
+
+    #[test]
+    fn test_shell_config_files_fish() {
+        let home = Path::new("/home/test");
+        let files = shell_config_files("fish", home);
+        assert_eq!(files.len(), 1);
+        assert!(files.contains(&home.join(".config").join("fish").join("config.fish")));
+    }
+
+    #[test]
+    fn test_shell_config_files_sh() {
+        let home = Path::new("/home/test");
+        let files = shell_config_files("sh", home);
+        assert_eq!(files.len(), 1);
+        assert!(files.contains(&home.join(".profile")));
+    }
+
+    #[test]
+    fn test_shell_config_files_dash() {
+        let home = Path::new("/home/test");
+        let files = shell_config_files("dash", home);
+        assert_eq!(files.len(), 1);
+        assert!(files.contains(&home.join(".profile")));
+    }
+
+    #[test]
+    fn test_shell_config_files_unknown_shell_returns_empty() {
+        let home = Path::new("/home/test");
+        let files = shell_config_files("tcsh", home);
+        assert!(files.is_empty());
+    }
+
+    // ---- scan_shell_config: fish_add_path ----
+
+    #[test]
+    fn test_scan_shell_config_fish_add_path() {
+        let tmp = TempDir::new().unwrap();
+        let home = tmp.path();
+
+        let fish_dir = home.join(".config").join("fish");
+        fs::create_dir_all(&fish_dir).unwrap();
+        fs::write(
+            fish_dir.join("config.fish"),
+            "fish_add_path ~/.local/bin\nfish_add_path /opt/homebrew/bin\n",
+        )
+        .unwrap();
+
+        let result = scan_shell_config("fish", home).unwrap();
+        assert_eq!(result.shell, "fish");
+        assert_eq!(result.path_additions.len(), 2);
+        assert!(
+            result
+                .path_additions
+                .iter()
+                .any(|p| p.contains(".local/bin"))
+        );
+        assert!(
+            result
+                .path_additions
+                .iter()
+                .any(|p| p.contains("/opt/homebrew/bin"))
+        );
+    }
+
+    // ---- scan_shell_config: inline comment stripping in real config ----
+
+    #[test]
+    fn test_scan_shell_config_inline_comments_stripped() {
+        let tmp = TempDir::new().unwrap();
+        let home = tmp.path();
+
+        fs::write(
+            home.join(".zshrc"),
+            "alias ll='ls -la' # list all files\nexport EDITOR=vim # default editor\n",
+        )
+        .unwrap();
+
+        let result = scan_shell_config("zsh", home).unwrap();
+        let ll = result.aliases.iter().find(|a| a.name == "ll").unwrap();
+        assert_eq!(ll.command, "ls -la");
+        let editor = result.exports.iter().find(|e| e.name == "EDITOR").unwrap();
+        assert_eq!(editor.value, "vim");
+    }
+
+    // ---- scan_shell_config: zsh path+= syntax ----
+
+    #[test]
+    fn test_scan_shell_config_zsh_path_plus_syntax() {
+        let tmp = TempDir::new().unwrap();
+        let home = tmp.path();
+
+        fs::write(
+            home.join(".zshrc"),
+            "path+=($HOME/.local/bin)\npath=($HOME/bin $path)\n",
+        )
+        .unwrap();
+
+        let result = scan_shell_config("zsh", home).unwrap();
+        assert_eq!(
+            result.path_additions.len(),
+            2,
+            "expected 2 path additions from zsh path+= syntax, got: {:?}",
+            result.path_additions
+        );
+    }
+
+    // ---- scan_dotfiles: symlink detection ----
+
+    #[cfg(unix)]
+    #[test]
+    fn test_scan_dotfiles_symlink_entry_type() {
+        let tmp = TempDir::new().unwrap();
+        let home = tmp.path();
+
+        // Create a real file and a symlink to it
+        fs::write(home.join(".real_config"), "content").unwrap();
+        std::os::unix::fs::symlink(home.join(".real_config"), home.join(".linked_config")).unwrap();
+
+        let entries = scan_dotfiles(home).unwrap();
+        let linked = entries
+            .iter()
+            .find(|e| e.path == home.join(".linked_config"))
+            .expect("should find .linked_config");
+        assert_eq!(linked.entry_type, "symlink");
+    }
 }
