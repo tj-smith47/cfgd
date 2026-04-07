@@ -1996,58 +1996,13 @@ pub fn source_profile_names(provides: &ConfigSourceProvides) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn sample_config_yaml() -> &'static str {
-        r#"
-apiVersion: cfgd.io/v1alpha1
-kind: Config
-metadata:
-  name: test-config
-spec:
-  profile: default
-  origin:
-    type: Git
-    url: https://github.com/test/repo.git
-    branch: master
-"#
-    }
-
-    fn sample_config_no_origin() -> &'static str {
-        r#"
-apiVersion: cfgd.io/v1alpha1
-kind: Config
-metadata:
-  name: test-config
-spec:
-  profile: default
-"#
-    }
-
-    fn sample_profile_yaml() -> &'static str {
-        r#"
-apiVersion: cfgd.io/v1alpha1
-kind: Profile
-metadata:
-  name: base
-spec:
-  env:
-    - name: editor
-      value: vim
-    - name: shell
-      value: /bin/zsh
-  packages:
-    brew:
-      formulae:
-        - ripgrep
-        - fd
-    cargo:
-      - bat
-"#
-    }
+    use crate::test_helpers::{
+        SAMPLE_CONFIG_NO_ORIGIN_YAML, SAMPLE_CONFIG_YAML, SAMPLE_PROFILE_YAML,
+    };
 
     #[test]
     fn parse_yaml_config() {
-        let config = parse_config(sample_config_yaml(), Path::new("cfgd.yaml")).unwrap();
+        let config = parse_config(SAMPLE_CONFIG_YAML, Path::new("cfgd.yaml")).unwrap();
         assert_eq!(config.metadata.name, "test-config");
         assert_eq!(config.spec.profile.as_deref(), Some("default"));
         assert_eq!(config.spec.origin.len(), 1);
@@ -2060,14 +2015,14 @@ spec:
 
     #[test]
     fn parse_config_without_origin() {
-        let config = parse_config(sample_config_no_origin(), Path::new("cfgd.yaml")).unwrap();
+        let config = parse_config(SAMPLE_CONFIG_NO_ORIGIN_YAML, Path::new("cfgd.yaml")).unwrap();
         assert!(config.spec.origin.is_empty());
         assert!(config.spec.sources.is_empty());
     }
 
     #[test]
     fn parse_profile_yaml() {
-        let doc: ProfileDocument = serde_yaml::from_str(sample_profile_yaml()).unwrap();
+        let doc: ProfileDocument = serde_yaml::from_str(SAMPLE_PROFILE_YAML).unwrap();
         assert_eq!(doc.metadata.name, "base");
         assert_eq!(doc.spec.env.len(), 2);
         let pkgs = doc.spec.packages.as_ref().unwrap();

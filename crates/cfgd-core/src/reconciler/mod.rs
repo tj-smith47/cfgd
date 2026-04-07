@@ -3652,23 +3652,13 @@ mod tests {
     use crate::providers::PackageManager;
 
     use crate::providers::StubPackageManager as MockPackageManager;
-
-    fn make_empty_resolved() -> ResolvedProfile {
-        ResolvedProfile {
-            layers: vec![ProfileLayer {
-                source: "local".to_string(),
-                profile_name: "test".to_string(),
-                priority: 1000,
-                policy: LayerPolicy::Local,
-                spec: ProfileSpec::default(),
-            }],
-            merged: MergedProfile::default(),
-        }
-    }
+    use crate::test_helpers::{
+        make_empty_resolved, make_resolved_module, test_printer, test_state,
+    };
 
     #[test]
     fn empty_plan_has_eight_phases() {
-        let state = StateStore::open_in_memory().unwrap();
+        let state = test_state();
         let registry = ProviderRegistry::new();
         let reconciler = Reconciler::new(&registry, &state);
         let resolved = make_empty_resolved();
@@ -3689,7 +3679,7 @@ mod tests {
 
     #[test]
     fn plan_includes_package_actions() {
-        let state = StateStore::open_in_memory().unwrap();
+        let state = test_state();
         let registry = ProviderRegistry::new();
         let reconciler = Reconciler::new(&registry, &state);
         let resolved = make_empty_resolved();
@@ -3716,7 +3706,7 @@ mod tests {
 
     #[test]
     fn plan_includes_file_actions() {
-        let state = StateStore::open_in_memory().unwrap();
+        let state = test_state();
         let registry = ProviderRegistry::new();
         let reconciler = Reconciler::new(&registry, &state);
         let resolved = make_empty_resolved();
@@ -3745,7 +3735,7 @@ mod tests {
 
     #[test]
     fn plan_includes_script_actions() {
-        let state = StateStore::open_in_memory().unwrap();
+        let state = test_state();
         let registry = ProviderRegistry::new();
         let reconciler = Reconciler::new(&registry, &state);
 
@@ -3784,7 +3774,7 @@ mod tests {
 
     #[test]
     fn apply_empty_plan_records_success() {
-        let state = StateStore::open_in_memory().unwrap();
+        let state = test_state();
         let registry = ProviderRegistry::new();
         let reconciler = Reconciler::new(&registry, &state);
         let resolved = make_empty_resolved();
@@ -3799,7 +3789,7 @@ mod tests {
             )
             .unwrap();
 
-        let printer = Printer::new(crate::output::Verbosity::Quiet);
+        let printer = test_printer();
         let result = reconciler
             .apply(
                 &plan,
@@ -3862,7 +3852,7 @@ mod tests {
 
     #[test]
     fn verify_returns_results() {
-        let state = StateStore::open_in_memory().unwrap();
+        let state = test_state();
         let mut registry = ProviderRegistry::new();
 
         registry.package_managers.push(Box::new(
@@ -3875,7 +3865,7 @@ mod tests {
             packages: vec!["ripgrep".to_string(), "bat".to_string()],
         });
 
-        let printer = Printer::new(crate::output::Verbosity::Quiet);
+        let printer = test_printer();
         let results = verify(&resolved, &registry, &state, &printer, &[]).unwrap();
 
         // ripgrep should be present, bat should be missing
@@ -3945,42 +3935,9 @@ mod tests {
 
     use crate::modules::{ResolvedFile, ResolvedModule, ResolvedPackage};
 
-    fn make_resolved_module(name: &str) -> ResolvedModule {
-        ResolvedModule {
-            name: name.to_string(),
-            packages: vec![
-                ResolvedPackage {
-                    canonical_name: "neovim".to_string(),
-                    resolved_name: "neovim".to_string(),
-                    manager: "brew".to_string(),
-                    version: Some("0.10.2".to_string()),
-                    script: None,
-                },
-                ResolvedPackage {
-                    canonical_name: "ripgrep".to_string(),
-                    resolved_name: "ripgrep".to_string(),
-                    manager: "brew".to_string(),
-                    version: Some("14.1.0".to_string()),
-                    script: None,
-                },
-            ],
-            files: vec![],
-            env: vec![],
-            aliases: vec![],
-            post_apply_scripts: vec![],
-            pre_apply_scripts: Vec::new(),
-            pre_reconcile_scripts: Vec::new(),
-            post_reconcile_scripts: Vec::new(),
-            on_change_scripts: Vec::new(),
-            system: HashMap::new(),
-            depends: vec![],
-            dir: PathBuf::from("."),
-        }
-    }
-
     #[test]
     fn plan_includes_module_phase() {
-        let state = StateStore::open_in_memory().unwrap();
+        let state = test_state();
         let registry = ProviderRegistry::new();
         let reconciler = Reconciler::new(&registry, &state);
         let resolved = make_empty_resolved();
@@ -4019,7 +3976,7 @@ mod tests {
 
     #[test]
     fn plan_module_with_files() {
-        let state = StateStore::open_in_memory().unwrap();
+        let state = test_state();
         let registry = ProviderRegistry::new();
         let reconciler = Reconciler::new(&registry, &state);
         let resolved = make_empty_resolved();
@@ -4077,7 +4034,7 @@ mod tests {
 
     #[test]
     fn plan_module_with_scripts() {
-        let state = StateStore::open_in_memory().unwrap();
+        let state = test_state();
         let registry = ProviderRegistry::new();
         let reconciler = Reconciler::new(&registry, &state);
         let resolved = make_empty_resolved();
@@ -4133,7 +4090,7 @@ mod tests {
 
     #[test]
     fn plan_multiple_modules_in_dependency_order() {
-        let state = StateStore::open_in_memory().unwrap();
+        let state = test_state();
         let registry = ProviderRegistry::new();
         let reconciler = Reconciler::new(&registry, &state);
         let resolved = make_empty_resolved();
@@ -4313,7 +4270,7 @@ mod tests {
 
     #[test]
     fn module_state_stored_after_apply() {
-        let state = StateStore::open_in_memory().unwrap();
+        let state = test_state();
         let mut registry = ProviderRegistry::new();
 
         registry.package_managers.push(Box::new(
@@ -4334,7 +4291,7 @@ mod tests {
             )
             .unwrap();
 
-        let printer = Printer::new(crate::output::Verbosity::Quiet);
+        let printer = test_printer();
         let _result = reconciler
             .apply(
                 &plan,
@@ -4360,7 +4317,7 @@ mod tests {
 
     #[test]
     fn module_state_upsert_and_remove() {
-        let state = StateStore::open_in_memory().unwrap();
+        let state = test_state();
 
         state
             .upsert_module_state("nvim", None, "hash1", "hash2", None, "installed")
@@ -4398,7 +4355,7 @@ mod tests {
 
     #[test]
     fn verify_module_drift_packages() {
-        let state = StateStore::open_in_memory().unwrap();
+        let state = test_state();
         let mut registry = ProviderRegistry::new();
 
         // ripgrep is NOT installed — should drift
@@ -4407,7 +4364,7 @@ mod tests {
         ));
 
         let resolved = make_empty_resolved();
-        let printer = Printer::new(crate::output::Verbosity::Quiet);
+        let printer = test_printer();
 
         let modules = vec![make_resolved_module("nvim")];
         let results = verify(&resolved, &registry, &state, &printer, &modules).unwrap();
@@ -4464,7 +4421,7 @@ mod tests {
 
     #[test]
     fn verify_module_healthy_when_all_installed() {
-        let state = StateStore::open_in_memory().unwrap();
+        let state = test_state();
         let mut registry = ProviderRegistry::new();
 
         registry.package_managers.push(Box::new(
@@ -4472,7 +4429,7 @@ mod tests {
         ));
 
         let resolved = make_empty_resolved();
-        let printer = Printer::new(crate::output::Verbosity::Quiet);
+        let printer = test_printer();
 
         let modules = vec![make_resolved_module("nvim")];
         let results = verify(&resolved, &registry, &state, &printer, &modules).unwrap();
@@ -4497,11 +4454,11 @@ mod tests {
     fn verify_module_script_packages_not_false_drift() {
         // Script-based packages should not cause false drift reports since
         // "script" isn't a registered package manager in the registry.
-        let state = StateStore::open_in_memory().unwrap();
+        let state = test_state();
         let registry = ProviderRegistry::new(); // no managers
 
         let resolved = make_empty_resolved();
-        let printer = Printer::new(crate::output::Verbosity::Quiet);
+        let printer = test_printer();
 
         let modules = vec![ResolvedModule {
             name: "rustup".to_string(),
@@ -4545,7 +4502,7 @@ mod tests {
 
     #[test]
     fn plan_module_with_script_packages() {
-        let state = StateStore::open_in_memory().unwrap();
+        let state = test_state();
         let registry = ProviderRegistry::new();
         let reconciler = Reconciler::new(&registry, &state);
         let resolved = make_empty_resolved();
@@ -4632,7 +4589,7 @@ mod tests {
 
     #[test]
     fn empty_modules_produces_empty_phase() {
-        let state = StateStore::open_in_memory().unwrap();
+        let state = test_state();
         let registry = ProviderRegistry::new();
         let reconciler = Reconciler::new(&registry, &state);
         let resolved = make_empty_resolved();
@@ -5082,7 +5039,7 @@ mod tests {
 
     #[test]
     fn plan_secrets_envs_only_produces_resolve_env() {
-        let state = StateStore::open_in_memory().unwrap();
+        let state = test_state();
         let mut registry = ProviderRegistry::new();
         registry.secret_providers.push(Box::new(MockSecretProvider {
             provider_name: "vault".into(),
@@ -5113,7 +5070,7 @@ mod tests {
 
     #[test]
     fn plan_secrets_target_and_envs_produces_both_actions() {
-        let state = StateStore::open_in_memory().unwrap();
+        let state = test_state();
         let mut registry = ProviderRegistry::new();
         registry.secret_providers.push(Box::new(MockSecretProvider {
             provider_name: "1password".into(),
@@ -5444,7 +5401,7 @@ mod tests {
 
     #[test]
     fn apply_package_install_calls_mock_and_records_state() {
-        let state = StateStore::open_in_memory().unwrap();
+        let state = test_state();
         let mut registry = ProviderRegistry::new();
         registry
             .package_managers
@@ -5469,7 +5426,7 @@ mod tests {
             )
             .unwrap();
 
-        let printer = Printer::new(crate::output::Verbosity::Quiet);
+        let printer = test_printer();
         let result = reconciler
             .apply(
                 &plan,
@@ -5498,7 +5455,7 @@ mod tests {
 
     #[test]
     fn apply_package_uninstall_calls_mock() {
-        let state = StateStore::open_in_memory().unwrap();
+        let state = test_state();
         let mut registry = ProviderRegistry::new();
         registry
             .package_managers
@@ -5526,7 +5483,7 @@ mod tests {
             )
             .unwrap();
 
-        let printer = Printer::new(crate::output::Verbosity::Quiet);
+        let printer = test_printer();
         let result = reconciler
             .apply(
                 &plan,
@@ -5552,7 +5509,7 @@ mod tests {
 
     #[test]
     fn apply_empty_plan_records_success_in_state_store() {
-        let state = StateStore::open_in_memory().unwrap();
+        let state = test_state();
         let registry = ProviderRegistry::new();
         let reconciler = Reconciler::new(&registry, &state);
         let resolved = make_empty_resolved();
@@ -5567,7 +5524,7 @@ mod tests {
             )
             .unwrap();
 
-        let printer = Printer::new(crate::output::Verbosity::Quiet);
+        let printer = test_printer();
         let result = reconciler
             .apply(
                 &plan,
@@ -5595,7 +5552,7 @@ mod tests {
 
     #[test]
     fn apply_records_correct_apply_id() {
-        let state = StateStore::open_in_memory().unwrap();
+        let state = test_state();
         let registry = ProviderRegistry::new();
         let reconciler = Reconciler::new(&registry, &state);
         let resolved = make_empty_resolved();
@@ -5609,7 +5566,7 @@ mod tests {
                 ReconcileContext::Apply,
             )
             .unwrap();
-        let printer = Printer::new(crate::output::Verbosity::Quiet);
+        let printer = test_printer();
 
         // First apply
         let result1 = reconciler
@@ -5669,7 +5626,7 @@ mod tests {
             content: content.clone(),
         };
 
-        let printer = Printer::new(crate::output::Verbosity::Quiet);
+        let printer = test_printer();
         let desc = Reconciler::apply_env_action(&action, &printer).unwrap();
 
         // Verify file was written
@@ -5699,7 +5656,7 @@ mod tests {
             content,
         };
 
-        let printer = Printer::new(crate::output::Verbosity::Quiet);
+        let printer = test_printer();
         let desc = Reconciler::apply_env_action(&action, &printer).unwrap();
 
         // Should report skipped
@@ -5716,7 +5673,7 @@ mod tests {
             line: "[ -f ~/.cfgd.env ] && source ~/.cfgd.env".to_string(),
         };
 
-        let printer = Printer::new(crate::output::Verbosity::Quiet);
+        let printer = test_printer();
         let desc = Reconciler::apply_env_action(&action, &printer).unwrap();
 
         let written = std::fs::read_to_string(&rc_path).unwrap();
@@ -5741,7 +5698,7 @@ mod tests {
             line: "[ -f ~/.cfgd.env ] && source ~/.cfgd.env".to_string(),
         };
 
-        let printer = Printer::new(crate::output::Verbosity::Quiet);
+        let printer = test_printer();
         let desc = Reconciler::apply_env_action(&action, &printer).unwrap();
 
         assert!(desc.contains("skipped"), "Expected skip: {}", desc);
@@ -5759,7 +5716,7 @@ mod tests {
             line: "[ -f ~/.cfgd.env ] && source ~/.cfgd.env".to_string(),
         };
 
-        let printer = Printer::new(crate::output::Verbosity::Quiet);
+        let printer = test_printer();
         Reconciler::apply_env_action(&action, &printer).unwrap();
 
         let written = std::fs::read_to_string(&rc_path).unwrap();
@@ -5770,7 +5727,7 @@ mod tests {
 
     #[test]
     fn apply_full_flow_plan_apply_verify_consistent() {
-        let state = StateStore::open_in_memory().unwrap();
+        let state = test_state();
         let mut registry = ProviderRegistry::new();
         registry
             .package_managers
@@ -5801,7 +5758,7 @@ mod tests {
         assert!(!plan.is_empty());
 
         // Apply
-        let printer = Printer::new(crate::output::Verbosity::Quiet);
+        let printer = test_printer();
         let result = reconciler
             .apply(
                 &plan,
@@ -5835,7 +5792,7 @@ mod tests {
 
     #[test]
     fn apply_records_summary_json() {
-        let state = StateStore::open_in_memory().unwrap();
+        let state = test_state();
         let mut registry = ProviderRegistry::new();
         registry
             .package_managers
@@ -5859,7 +5816,7 @@ mod tests {
                 ReconcileContext::Apply,
             )
             .unwrap();
-        let printer = Printer::new(crate::output::Verbosity::Quiet);
+        let printer = test_printer();
         let result = reconciler
             .apply(
                 &plan,
@@ -5885,7 +5842,7 @@ mod tests {
 
     #[test]
     fn apply_with_phase_filter_only_runs_matching_phase() {
-        let state = StateStore::open_in_memory().unwrap();
+        let state = test_state();
         let mut registry = ProviderRegistry::new();
         registry
             .package_managers
@@ -5911,7 +5868,7 @@ mod tests {
             )
             .unwrap();
 
-        let printer = Printer::new(crate::output::Verbosity::Quiet);
+        let printer = test_printer();
 
         // Apply with filter set to Env phase — should skip Packages
         let result = reconciler
@@ -5934,7 +5891,7 @@ mod tests {
 
     #[test]
     fn apply_with_phase_filter_runs_only_packages() {
-        let state = StateStore::open_in_memory().unwrap();
+        let state = test_state();
         let mut registry = ProviderRegistry::new();
         registry
             .package_managers
@@ -5959,7 +5916,7 @@ mod tests {
             )
             .unwrap();
 
-        let printer = Printer::new(crate::output::Verbosity::Quiet);
+        let printer = test_printer();
 
         // Apply with filter set to Packages phase — should run the install
         let result = reconciler
@@ -5987,7 +5944,7 @@ mod tests {
         let target = dir.path().join("subdir/target.txt");
         std::fs::write(&source, "hello world").unwrap();
 
-        let state = StateStore::open_in_memory().unwrap();
+        let state = test_state();
         let mut registry = ProviderRegistry::new();
         registry.default_file_strategy = crate::config::FileStrategy::Copy;
 
@@ -6012,7 +5969,7 @@ mod tests {
             )
             .unwrap();
 
-        let printer = Printer::new(crate::output::Verbosity::Quiet);
+        let printer = test_printer();
         let result = reconciler
             .apply(
                 &plan,
@@ -6038,7 +5995,7 @@ mod tests {
 
     #[test]
     fn apply_multiple_package_actions_all_succeed() {
-        let state = StateStore::open_in_memory().unwrap();
+        let state = test_state();
         let mut registry = ProviderRegistry::new();
         registry
             .package_managers
@@ -6073,7 +6030,7 @@ mod tests {
             )
             .unwrap();
 
-        let printer = Printer::new(crate::output::Verbosity::Quiet);
+        let printer = test_printer();
         let result = reconciler
             .apply(
                 &plan,
@@ -6101,7 +6058,7 @@ mod tests {
 
     #[test]
     fn apply_package_skip_action_succeeds() {
-        let state = StateStore::open_in_memory().unwrap();
+        let state = test_state();
         let registry = ProviderRegistry::new();
         let reconciler = Reconciler::new(&registry, &state);
         let resolved = make_empty_resolved();
@@ -6122,7 +6079,7 @@ mod tests {
             )
             .unwrap();
 
-        let printer = Printer::new(crate::output::Verbosity::Quiet);
+        let printer = test_printer();
         let result = reconciler
             .apply(
                 &plan,
@@ -6162,7 +6119,7 @@ mod tests {
             content: content.clone(),
         };
 
-        let printer = Printer::new(crate::output::Verbosity::Quiet);
+        let printer = test_printer();
         Reconciler::apply_env_action(&action, &printer).unwrap();
 
         let written = std::fs::read_to_string(&env_path).unwrap();
@@ -6271,7 +6228,7 @@ mod tests {
 
     #[test]
     fn plan_scripts_with_apply_context_uses_pre_post_apply() {
-        let state = StateStore::open_in_memory().unwrap();
+        let state = test_state();
         let registry = ProviderRegistry::new();
         let reconciler = Reconciler::new(&registry, &state);
 
@@ -6321,7 +6278,7 @@ mod tests {
 
     #[test]
     fn plan_scripts_carries_full_entry() {
-        let state = StateStore::open_in_memory().unwrap();
+        let state = test_state();
         let registry = ProviderRegistry::new();
         let reconciler = Reconciler::new(&registry, &state);
 
@@ -6411,7 +6368,7 @@ mod tests {
 
     #[test]
     fn execute_script_inline_command() {
-        let printer = Printer::new(crate::output::Verbosity::Quiet);
+        let printer = test_printer();
         let entry = ScriptEntry::Simple("echo hello".to_string());
         let dir = tempfile::tempdir().unwrap();
         let (desc, changed, output) = super::execute_script(
@@ -6429,7 +6386,7 @@ mod tests {
 
     #[test]
     fn execute_script_failure_returns_error() {
-        let printer = Printer::new(crate::output::Verbosity::Quiet);
+        let printer = test_printer();
         let entry = ScriptEntry::Simple("exit 1".to_string());
         let dir = tempfile::tempdir().unwrap();
         let result = super::execute_script(
@@ -6449,7 +6406,7 @@ mod tests {
 
     #[test]
     fn execute_script_with_timeout_override() {
-        let printer = Printer::new(crate::output::Verbosity::Quiet);
+        let printer = test_printer();
         let entry = ScriptEntry::Full {
             run: "echo fast".to_string(),
             timeout: Some("5s".to_string()),
@@ -6471,7 +6428,7 @@ mod tests {
     #[test]
     #[cfg(unix)]
     fn execute_script_injects_env_vars() {
-        let printer = Printer::new(crate::output::Verbosity::Quiet);
+        let printer = test_printer();
         let entry = ScriptEntry::Simple("echo $MY_VAR".to_string());
         let dir = tempfile::tempdir().unwrap();
         let env = vec![("MY_VAR".to_string(), "test_value".to_string())];
@@ -6496,7 +6453,7 @@ mod tests {
             use std::os::unix::fs::PermissionsExt;
             std::fs::set_permissions(&script_path, std::fs::Permissions::from_mode(0o755)).unwrap();
         }
-        let printer = Printer::new(crate::output::Verbosity::Quiet);
+        let printer = test_printer();
         let entry = ScriptEntry::Simple("test.sh".to_string());
         let (_, _, output) = super::execute_script(
             &entry,
@@ -6519,7 +6476,7 @@ mod tests {
             use std::os::unix::fs::PermissionsExt;
             std::fs::set_permissions(&script_path, std::fs::Permissions::from_mode(0o644)).unwrap();
         }
-        let printer = Printer::new(crate::output::Verbosity::Quiet);
+        let printer = test_printer();
         let entry = ScriptEntry::Simple("noexec.sh".to_string());
         let result = super::execute_script(
             &entry,
@@ -6539,7 +6496,7 @@ mod tests {
     #[test]
     #[cfg(unix)]
     fn execute_script_idle_timeout_kills_idle_process() {
-        let printer = Printer::new(crate::output::Verbosity::Quiet);
+        let printer = test_printer();
         // Script prints once then sleeps forever — idle timeout should kill it
         let entry = ScriptEntry::Full {
             run: "echo started; sleep 60".to_string(),
@@ -6574,7 +6531,7 @@ mod tests {
         // Rollback restores to the state AFTER the target apply.
         // Setup: apply 1 writes "v1 content", apply 2 modifies to "v2 content"
         // (capturing "v1 content" as backup). Rollback to apply 1 → "v1 content".
-        let state = StateStore::open_in_memory().unwrap();
+        let state = test_state();
 
         // Apply 1: creates file with v1 content
         let apply_id_1 = state
@@ -6605,7 +6562,7 @@ mod tests {
         // Rollback to apply 1 — should restore v1 content
         let registry = ProviderRegistry::new();
         let reconciler = Reconciler::new(&registry, &state);
-        let printer = Printer::new(crate::output::Verbosity::Quiet);
+        let printer = test_printer();
         let rollback_result = reconciler.rollback_apply(apply_id_1, &printer).unwrap();
 
         assert_eq!(rollback_result.files_restored, 1);
@@ -6620,14 +6577,14 @@ mod tests {
     fn rollback_no_changes_when_at_latest_apply() {
         // Rollback to the most recent apply with no subsequent applies
         // should produce no changes (system is already at that state).
-        let state = StateStore::open_in_memory().unwrap();
+        let state = test_state();
         let apply_id = state
             .record_apply("test", "hash1", ApplyStatus::Success, None)
             .unwrap();
 
         let registry = ProviderRegistry::new();
         let reconciler = Reconciler::new(&registry, &state);
-        let printer = Printer::new(crate::output::Verbosity::Quiet);
+        let printer = test_printer();
         let rollback_result = reconciler.rollback_apply(apply_id, &printer).unwrap();
 
         assert_eq!(rollback_result.files_restored, 0);
@@ -6637,7 +6594,7 @@ mod tests {
 
     #[test]
     fn rollback_lists_non_file_actions() {
-        let state = StateStore::open_in_memory().unwrap();
+        let state = test_state();
         let apply_id_1 = state
             .record_apply("test", "hash1", ApplyStatus::Success, None)
             .unwrap();
@@ -6660,7 +6617,7 @@ mod tests {
 
         let registry = ProviderRegistry::new();
         let reconciler = Reconciler::new(&registry, &state);
-        let printer = Printer::new(crate::output::Verbosity::Quiet);
+        let printer = test_printer();
         let rollback_result = reconciler.rollback_apply(apply_id_1, &printer).unwrap();
 
         assert_eq!(rollback_result.files_restored, 0);
@@ -6671,14 +6628,14 @@ mod tests {
 
     #[test]
     fn rollback_records_new_apply_entry() {
-        let state = StateStore::open_in_memory().unwrap();
+        let state = test_state();
         let apply_id = state
             .record_apply("test", "hash1", ApplyStatus::Success, None)
             .unwrap();
 
         let registry = ProviderRegistry::new();
         let reconciler = Reconciler::new(&registry, &state);
-        let printer = Printer::new(crate::output::Verbosity::Quiet);
+        let printer = test_printer();
         reconciler.rollback_apply(apply_id, &printer).unwrap();
 
         // The rollback should have created a new apply entry
@@ -6738,7 +6695,7 @@ mod tests {
 
     #[test]
     fn apply_partial_when_some_actions_fail() {
-        let state = StateStore::open_in_memory().unwrap();
+        let state = test_state();
         let mut registry = ProviderRegistry::new();
 
         // One working manager, one failing
@@ -6775,7 +6732,7 @@ mod tests {
             )
             .unwrap();
 
-        let printer = Printer::new(crate::output::Verbosity::Quiet);
+        let printer = test_printer();
         let result = reconciler
             .apply(
                 &plan,
@@ -6800,7 +6757,7 @@ mod tests {
 
     #[test]
     fn apply_failed_when_all_actions_fail() {
-        let state = StateStore::open_in_memory().unwrap();
+        let state = test_state();
         let mut registry = ProviderRegistry::new();
 
         registry
@@ -6826,7 +6783,7 @@ mod tests {
             )
             .unwrap();
 
-        let printer = Printer::new(crate::output::Verbosity::Quiet);
+        let printer = test_printer();
         let result = reconciler
             .apply(
                 &plan,
@@ -6855,7 +6812,7 @@ mod tests {
     #[cfg(unix)]
     fn apply_continue_on_error_post_script_continues() {
         // A post-apply script with continueOnError=true should not abort the apply
-        let state = StateStore::open_in_memory().unwrap();
+        let state = test_state();
         let mut registry = ProviderRegistry::new();
         registry
             .package_managers
@@ -6888,7 +6845,7 @@ mod tests {
             )
             .unwrap();
 
-        let printer = Printer::new(crate::output::Verbosity::Quiet);
+        let printer = test_printer();
         let result = reconciler
             .apply(
                 &plan,
@@ -6920,7 +6877,7 @@ mod tests {
     #[cfg(unix)]
     fn apply_continue_on_error_false_pre_script_aborts() {
         // A pre-apply script with continueOnError=false should abort the entire apply
-        let state = StateStore::open_in_memory().unwrap();
+        let state = test_state();
         let registry = ProviderRegistry::new();
         let reconciler = Reconciler::new(&registry, &state);
 
@@ -6942,7 +6899,7 @@ mod tests {
             )
             .unwrap();
 
-        let printer = Printer::new(crate::output::Verbosity::Quiet);
+        let printer = test_printer();
         let result = reconciler.apply(
             &plan,
             &resolved,
@@ -6967,7 +6924,7 @@ mod tests {
     #[cfg(unix)]
     fn apply_continue_on_error_default_post_script_continues() {
         // Post-apply scripts default to continueOnError=true (no explicit flag)
-        let state = StateStore::open_in_memory().unwrap();
+        let state = test_state();
         let registry = ProviderRegistry::new();
         let reconciler = Reconciler::new(&registry, &state);
 
@@ -6985,7 +6942,7 @@ mod tests {
             )
             .unwrap();
 
-        let printer = Printer::new(crate::output::Verbosity::Quiet);
+        let printer = test_printer();
         let result = reconciler
             .apply(
                 &plan,
@@ -7016,7 +6973,7 @@ mod tests {
 
         std::fs::write(&source, "hello").unwrap();
 
-        let state = StateStore::open_in_memory().unwrap();
+        let state = test_state();
         let mut registry = ProviderRegistry::new();
         registry.default_file_strategy = crate::config::FileStrategy::Copy;
 
@@ -7045,7 +7002,7 @@ mod tests {
             )
             .unwrap();
 
-        let printer = Printer::new(crate::output::Verbosity::Quiet);
+        let printer = test_printer();
         let result = reconciler
             .apply(
                 &plan,
@@ -7078,7 +7035,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let marker = dir.path().join("on_change_marker_noop");
 
-        let state = StateStore::open_in_memory().unwrap();
+        let state = test_state();
         let registry = ProviderRegistry::new();
         let reconciler = Reconciler::new(&registry, &state);
 
@@ -7097,7 +7054,7 @@ mod tests {
             )
             .unwrap();
 
-        let printer = Printer::new(crate::output::Verbosity::Quiet);
+        let printer = test_printer();
         let result = reconciler
             .apply(
                 &plan,
@@ -7473,7 +7430,7 @@ mod tests {
             }
         }
 
-        let state = StateStore::open_in_memory().unwrap();
+        let state = test_state();
         let mut registry = ProviderRegistry::new();
         registry.secret_backend = Some(Box::new(MockSopsBackend));
         let reconciler = Reconciler::new(&registry, &state);
@@ -7502,7 +7459,7 @@ mod tests {
 
     #[test]
     fn plan_secrets_no_backend_skips() {
-        let state = StateStore::open_in_memory().unwrap();
+        let state = test_state();
         let registry = ProviderRegistry::new(); // no backend, no providers
         let reconciler = Reconciler::new(&registry, &state);
 
@@ -7530,7 +7487,7 @@ mod tests {
 
     #[test]
     fn plan_secrets_envs_only_without_provider_skips() {
-        let state = StateStore::open_in_memory().unwrap();
+        let state = test_state();
         let registry = ProviderRegistry::new(); // no providers, no backend
         let reconciler = Reconciler::new(&registry, &state);
 
@@ -7558,7 +7515,7 @@ mod tests {
 
     #[test]
     fn plan_secrets_provider_not_available_skips() {
-        let state = StateStore::open_in_memory().unwrap();
+        let state = test_state();
         let registry = ProviderRegistry::new(); // no providers registered
         let reconciler = Reconciler::new(&registry, &state);
 
@@ -7607,7 +7564,7 @@ mod tests {
             }
         }
 
-        let state = StateStore::open_in_memory().unwrap();
+        let state = test_state();
         let mut registry = ProviderRegistry::new();
         registry.secret_backend = Some(Box::new(MockSopsBackend));
         let reconciler = Reconciler::new(&registry, &state);
@@ -7641,7 +7598,7 @@ mod tests {
 
     #[test]
     fn plan_secrets_provider_no_target_no_envs_skips() {
-        let state = StateStore::open_in_memory().unwrap();
+        let state = test_state();
         let mut registry = ProviderRegistry::new();
         registry.secret_providers.push(Box::new(MockSecretProvider {
             provider_name: "vault".into(),
@@ -7670,7 +7627,7 @@ mod tests {
 
     #[test]
     fn plan_modules_reconcile_context_uses_pre_post_reconcile() {
-        let state = StateStore::open_in_memory().unwrap();
+        let state = test_state();
         let registry = ProviderRegistry::new();
         let reconciler = Reconciler::new(&registry, &state);
 
@@ -8016,7 +7973,7 @@ mod tests {
 
         std::fs::write(&source, "data").unwrap();
 
-        let state = StateStore::open_in_memory().unwrap();
+        let state = test_state();
         let mut registry = ProviderRegistry::new();
         registry.default_file_strategy = crate::config::FileStrategy::Copy;
 
@@ -8043,7 +8000,7 @@ mod tests {
             )
             .unwrap();
 
-        let printer = Printer::new(crate::output::Verbosity::Quiet);
+        let printer = test_printer();
         // skip_scripts = true
         let result = reconciler
             .apply(
@@ -8128,7 +8085,7 @@ mod tests {
 
     #[test]
     fn apply_package_bootstrap_makes_manager_available() {
-        let state = StateStore::open_in_memory().unwrap();
+        let state = test_state();
         let mut registry = ProviderRegistry::new();
         registry
             .package_managers
@@ -8149,7 +8106,7 @@ mod tests {
             warnings: vec![],
         };
 
-        let printer = Printer::new(crate::output::Verbosity::Quiet);
+        let printer = test_printer();
         let result = reconciler
             .apply(
                 &plan,
@@ -8178,7 +8135,7 @@ mod tests {
 
     #[test]
     fn apply_package_bootstrap_unknown_manager_errors() {
-        let state = StateStore::open_in_memory().unwrap();
+        let state = test_state();
         let registry = ProviderRegistry::new(); // no managers
         let reconciler = Reconciler::new(&registry, &state);
         let resolved = make_empty_resolved();
@@ -8195,7 +8152,7 @@ mod tests {
             warnings: vec![],
         };
 
-        let printer = Printer::new(crate::output::Verbosity::Quiet);
+        let printer = test_printer();
         let result = reconciler
             .apply(
                 &plan,
@@ -8217,7 +8174,7 @@ mod tests {
 
     #[test]
     fn apply_package_install_unknown_manager_errors() {
-        let state = StateStore::open_in_memory().unwrap();
+        let state = test_state();
         let registry = ProviderRegistry::new(); // no managers
         let reconciler = Reconciler::new(&registry, &state);
         let resolved = make_empty_resolved();
@@ -8234,7 +8191,7 @@ mod tests {
             warnings: vec![],
         };
 
-        let printer = Printer::new(crate::output::Verbosity::Quiet);
+        let printer = test_printer();
         let result = reconciler
             .apply(
                 &plan,
@@ -8254,7 +8211,7 @@ mod tests {
 
     #[test]
     fn apply_package_uninstall_unknown_manager_errors() {
-        let state = StateStore::open_in_memory().unwrap();
+        let state = test_state();
         let registry = ProviderRegistry::new();
         let reconciler = Reconciler::new(&registry, &state);
         let resolved = make_empty_resolved();
@@ -8271,7 +8228,7 @@ mod tests {
             warnings: vec![],
         };
 
-        let printer = Printer::new(crate::output::Verbosity::Quiet);
+        let printer = test_printer();
         let result = reconciler
             .apply(
                 &plan,
@@ -8320,7 +8277,7 @@ mod tests {
         let target = dir.path().join("token.txt");
         std::fs::write(&source, "encrypted-data").unwrap();
 
-        let state = StateStore::open_in_memory().unwrap();
+        let state = test_state();
         let mut registry = ProviderRegistry::new();
         registry.secret_backend = Some(Box::new(TestSecretBackend {
             decrypted_value: "my-secret-token".to_string(),
@@ -8342,7 +8299,7 @@ mod tests {
             warnings: vec![],
         };
 
-        let printer = Printer::new(crate::output::Verbosity::Quiet);
+        let printer = test_printer();
         let result = reconciler
             .apply(
                 &plan,
@@ -8377,7 +8334,7 @@ mod tests {
         let target = dir.path().join("token.txt");
         std::fs::write(&source, "encrypted-data").unwrap();
 
-        let state = StateStore::open_in_memory().unwrap();
+        let state = test_state();
         let registry = ProviderRegistry::new(); // no backend
 
         let reconciler = Reconciler::new(&registry, &state);
@@ -8396,7 +8353,7 @@ mod tests {
             warnings: vec![],
         };
 
-        let printer = Printer::new(crate::output::Verbosity::Quiet);
+        let printer = test_printer();
         let result = reconciler
             .apply(
                 &plan,
@@ -8419,7 +8376,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let target = dir.path().join("resolved-secret.txt");
 
-        let state = StateStore::open_in_memory().unwrap();
+        let state = test_state();
         let mut registry = ProviderRegistry::new();
         registry.secret_providers.push(Box::new(MockSecretProvider {
             provider_name: "vault".to_string(),
@@ -8442,7 +8399,7 @@ mod tests {
             warnings: vec![],
         };
 
-        let printer = Printer::new(crate::output::Verbosity::Quiet);
+        let printer = test_printer();
         let result = reconciler
             .apply(
                 &plan,
@@ -8473,7 +8430,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let target = dir.path().join("nope.txt");
 
-        let state = StateStore::open_in_memory().unwrap();
+        let state = test_state();
         let registry = ProviderRegistry::new(); // no providers
 
         let reconciler = Reconciler::new(&registry, &state);
@@ -8492,7 +8449,7 @@ mod tests {
             warnings: vec![],
         };
 
-        let printer = Printer::new(crate::output::Verbosity::Quiet);
+        let printer = test_printer();
         let result = reconciler
             .apply(
                 &plan,
@@ -8512,7 +8469,7 @@ mod tests {
 
     #[test]
     fn apply_secret_resolve_env_collects_env_vars() {
-        let state = StateStore::open_in_memory().unwrap();
+        let state = test_state();
         let mut registry = ProviderRegistry::new();
         registry.secret_providers.push(Box::new(MockSecretProvider {
             provider_name: "vault".to_string(),
@@ -8535,7 +8492,7 @@ mod tests {
             warnings: vec![],
         };
 
-        let printer = Printer::new(crate::output::Verbosity::Quiet);
+        let printer = test_printer();
         let result = reconciler
             .apply(
                 &plan,
@@ -8560,7 +8517,7 @@ mod tests {
 
     #[test]
     fn apply_secret_resolve_env_unknown_provider_errors() {
-        let state = StateStore::open_in_memory().unwrap();
+        let state = test_state();
         let registry = ProviderRegistry::new(); // no providers
 
         let reconciler = Reconciler::new(&registry, &state);
@@ -8579,7 +8536,7 @@ mod tests {
             warnings: vec![],
         };
 
-        let printer = Printer::new(crate::output::Verbosity::Quiet);
+        let printer = test_printer();
         let result = reconciler
             .apply(
                 &plan,
@@ -8599,7 +8556,7 @@ mod tests {
 
     #[test]
     fn apply_secret_skip_succeeds() {
-        let state = StateStore::open_in_memory().unwrap();
+        let state = test_state();
         let registry = ProviderRegistry::new();
         let reconciler = Reconciler::new(&registry, &state);
         let resolved = make_empty_resolved();
@@ -8616,7 +8573,7 @@ mod tests {
             warnings: vec![],
         };
 
-        let printer = Printer::new(crate::output::Verbosity::Quiet);
+        let printer = test_printer();
         let result = reconciler
             .apply(
                 &plan,
@@ -8644,7 +8601,7 @@ mod tests {
         std::fs::write(&target, "delete me").unwrap();
         assert!(target.exists());
 
-        let state = StateStore::open_in_memory().unwrap();
+        let state = test_state();
         let mut registry = ProviderRegistry::new();
         registry.default_file_strategy = crate::config::FileStrategy::Copy;
 
@@ -8662,7 +8619,7 @@ mod tests {
             warnings: vec![],
         };
 
-        let printer = Printer::new(crate::output::Verbosity::Quiet);
+        let printer = test_printer();
         let result = reconciler
             .apply(
                 &plan,
@@ -8692,7 +8649,7 @@ mod tests {
         let target = dir.path().join("script.sh");
         std::fs::write(&target, "#!/bin/sh\necho hi").unwrap();
 
-        let state = StateStore::open_in_memory().unwrap();
+        let state = test_state();
         let registry = ProviderRegistry::new();
         let reconciler = Reconciler::new(&registry, &state);
         let resolved = make_empty_resolved();
@@ -8709,7 +8666,7 @@ mod tests {
             warnings: vec![],
         };
 
-        let printer = Printer::new(crate::output::Verbosity::Quiet);
+        let printer = test_printer();
         let result = reconciler
             .apply(
                 &plan,
@@ -8739,7 +8696,7 @@ mod tests {
 
     #[test]
     fn apply_file_skip_action_succeeds() {
-        let state = StateStore::open_in_memory().unwrap();
+        let state = test_state();
         let registry = ProviderRegistry::new();
         let reconciler = Reconciler::new(&registry, &state);
         let resolved = make_empty_resolved();
@@ -8756,7 +8713,7 @@ mod tests {
             warnings: vec![],
         };
 
-        let printer = Printer::new(crate::output::Verbosity::Quiet);
+        let printer = test_printer();
         let result = reconciler
             .apply(
                 &plan,
@@ -8783,7 +8740,7 @@ mod tests {
         std::fs::write(&source, "updated content").unwrap();
         std::fs::write(&target, "old content").unwrap();
 
-        let state = StateStore::open_in_memory().unwrap();
+        let state = test_state();
         let mut registry = ProviderRegistry::new();
         registry.default_file_strategy = crate::config::FileStrategy::Copy;
 
@@ -8805,7 +8762,7 @@ mod tests {
             warnings: vec![],
         };
 
-        let printer = Printer::new(crate::output::Verbosity::Quiet);
+        let printer = test_printer();
         let result = reconciler
             .apply(
                 &plan,
@@ -8871,7 +8828,7 @@ mod tests {
 
     #[test]
     fn apply_system_set_value_calls_configurator() {
-        let state = StateStore::open_in_memory().unwrap();
+        let state = test_state();
         let mut registry = ProviderRegistry::new();
         registry
             .system_configurators
@@ -8899,7 +8856,7 @@ mod tests {
             warnings: vec![],
         };
 
-        let printer = Printer::new(crate::output::Verbosity::Quiet);
+        let printer = test_printer();
         let result = reconciler
             .apply(
                 &plan,
@@ -8926,7 +8883,7 @@ mod tests {
 
     #[test]
     fn apply_system_skip_logs_warning() {
-        let state = StateStore::open_in_memory().unwrap();
+        let state = test_state();
         let registry = ProviderRegistry::new();
         let reconciler = Reconciler::new(&registry, &state);
         let resolved = make_empty_resolved();
@@ -8943,7 +8900,7 @@ mod tests {
             warnings: vec![],
         };
 
-        let printer = Printer::new(crate::output::Verbosity::Quiet);
+        let printer = test_printer();
         let result = reconciler
             .apply(
                 &plan,
@@ -8968,7 +8925,7 @@ mod tests {
 
     #[test]
     fn plan_system_generates_skip_for_unregistered_configurator() {
-        let state = StateStore::open_in_memory().unwrap();
+        let state = test_state();
         let registry = ProviderRegistry::new(); // no configurators
         let reconciler = Reconciler::new(&registry, &state);
 
@@ -8997,7 +8954,7 @@ mod tests {
 
     #[test]
     fn apply_module_install_packages_calls_manager() {
-        let state = StateStore::open_in_memory().unwrap();
+        let state = test_state();
         let mut registry = ProviderRegistry::new();
         registry
             .package_managers
@@ -9047,7 +9004,7 @@ mod tests {
             warnings: vec![],
         };
 
-        let printer = Printer::new(crate::output::Verbosity::Quiet);
+        let printer = test_printer();
         let result = reconciler
             .apply(
                 &plan,
@@ -9083,7 +9040,7 @@ mod tests {
         let target_file = dir.path().join("subdir/module-target.txt");
         std::fs::write(&source_file, "module content").unwrap();
 
-        let state = StateStore::open_in_memory().unwrap();
+        let state = test_state();
         let mut registry = ProviderRegistry::new();
         registry.default_file_strategy = crate::config::FileStrategy::Copy;
 
@@ -9131,7 +9088,7 @@ mod tests {
             warnings: vec![],
         };
 
-        let printer = Printer::new(crate::output::Verbosity::Quiet);
+        let printer = test_printer();
         let result = reconciler
             .apply(
                 &plan,
@@ -9162,7 +9119,7 @@ mod tests {
         let target_file = dir.path().join("link-target.txt");
         std::fs::write(&source_file, "linked content").unwrap();
 
-        let state = StateStore::open_in_memory().unwrap();
+        let state = test_state();
         let mut registry = ProviderRegistry::new();
         registry.default_file_strategy = crate::config::FileStrategy::Symlink;
 
@@ -9210,7 +9167,7 @@ mod tests {
             warnings: vec![],
         };
 
-        let printer = Printer::new(crate::output::Verbosity::Quiet);
+        let printer = test_printer();
         let result = reconciler
             .apply(
                 &plan,
@@ -9234,7 +9191,7 @@ mod tests {
 
     #[test]
     fn apply_module_skip_reports_skipped() {
-        let state = StateStore::open_in_memory().unwrap();
+        let state = test_state();
         let registry = ProviderRegistry::new();
         let reconciler = Reconciler::new(&registry, &state);
         let resolved = make_empty_resolved();
@@ -9252,7 +9209,7 @@ mod tests {
             warnings: vec![],
         };
 
-        let printer = Printer::new(crate::output::Verbosity::Quiet);
+        let printer = test_printer();
         let result = reconciler
             .apply(
                 &plan,
@@ -9277,7 +9234,7 @@ mod tests {
 
     #[test]
     fn apply_module_install_packages_bootstraps_when_needed() {
-        let state = StateStore::open_in_memory().unwrap();
+        let state = test_state();
         let mut registry = ProviderRegistry::new();
         registry
             .package_managers
@@ -9327,7 +9284,7 @@ mod tests {
             warnings: vec![],
         };
 
-        let printer = Printer::new(crate::output::Verbosity::Quiet);
+        let printer = test_printer();
         let result = reconciler
             .apply(
                 &plan,
@@ -9365,7 +9322,7 @@ mod tests {
         let file_path = target.display().to_string();
         std::fs::write(&link_dest, "link content").unwrap();
 
-        let state = StateStore::open_in_memory().unwrap();
+        let state = test_state();
 
         // Apply 1: creates the symlink
         let apply_id_1 = state
@@ -9402,7 +9359,7 @@ mod tests {
         // Rollback to apply 1 — should restore the symlink
         let registry = ProviderRegistry::new();
         let reconciler = Reconciler::new(&registry, &state);
-        let printer = Printer::new(crate::output::Verbosity::Quiet);
+        let printer = test_printer();
 
         let rollback_result = reconciler.rollback_apply(apply_id_1, &printer).unwrap();
 
@@ -9419,7 +9376,7 @@ mod tests {
 
     #[test]
     fn plan_modules_encryption_always_with_symlink_skips() {
-        let state = StateStore::open_in_memory().unwrap();
+        let state = test_state();
         let mut registry = ProviderRegistry::new();
         registry.default_file_strategy = crate::config::FileStrategy::Symlink;
         let reconciler = Reconciler::new(&registry, &state);
@@ -9477,7 +9434,7 @@ mod tests {
         )
         .unwrap();
 
-        let state = StateStore::open_in_memory().unwrap();
+        let state = test_state();
         let mut registry = ProviderRegistry::new();
         registry.default_file_strategy = crate::config::FileStrategy::Copy;
         let reconciler = Reconciler::new(&registry, &state);
@@ -9528,7 +9485,7 @@ mod tests {
         let source = dir.path().join("plain.txt");
         std::fs::write(&source, "plain text content").unwrap();
 
-        let state = StateStore::open_in_memory().unwrap();
+        let state = test_state();
         let mut registry = ProviderRegistry::new();
         registry.default_file_strategy = crate::config::FileStrategy::Copy;
         let reconciler = Reconciler::new(&registry, &state);
@@ -9583,7 +9540,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let marker = dir.path().join("script-ran");
 
-        let state = StateStore::open_in_memory().unwrap();
+        let state = test_state();
         let registry = ProviderRegistry::new();
         let reconciler = Reconciler::new(&registry, &state);
         let mut resolved = make_empty_resolved();
@@ -9602,7 +9559,7 @@ mod tests {
             )
             .unwrap();
 
-        let printer = Printer::new(crate::output::Verbosity::Quiet);
+        let printer = test_printer();
         let result = reconciler
             .apply(
                 &plan,
@@ -9634,7 +9591,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let marker = dir.path().join("module-script-ran");
 
-        let state = StateStore::open_in_memory().unwrap();
+        let state = test_state();
         let registry = ProviderRegistry::new();
         let reconciler = Reconciler::new(&registry, &state);
         let resolved = make_empty_resolved();
@@ -9669,7 +9626,7 @@ mod tests {
             warnings: vec![],
         };
 
-        let printer = Printer::new(crate::output::Verbosity::Quiet);
+        let printer = test_printer();
         let result = reconciler
             .apply(
                 &plan,
@@ -9884,10 +9841,10 @@ mod tests {
 
     #[test]
     fn verify_empty_profile_returns_no_results() {
-        let state = StateStore::open_in_memory().unwrap();
+        let state = test_state();
         let registry = ProviderRegistry::new();
         let resolved = make_empty_resolved();
-        let printer = Printer::new(crate::output::Verbosity::Quiet);
+        let printer = test_printer();
 
         let results = verify(&resolved, &registry, &state, &printer, &[]).unwrap();
         assert!(
@@ -9899,9 +9856,9 @@ mod tests {
 
     #[test]
     fn verify_file_target_exists() {
-        let state = StateStore::open_in_memory().unwrap();
+        let state = test_state();
         let registry = ProviderRegistry::new();
-        let printer = Printer::new(crate::output::Verbosity::Quiet);
+        let printer = test_printer();
         let tmp = tempfile::tempdir().unwrap();
 
         // Create a file that exists
@@ -9931,9 +9888,9 @@ mod tests {
 
     #[test]
     fn verify_file_target_missing() {
-        let state = StateStore::open_in_memory().unwrap();
+        let state = test_state();
         let registry = ProviderRegistry::new();
-        let printer = Printer::new(crate::output::Verbosity::Quiet);
+        let printer = test_printer();
 
         let mut resolved = make_empty_resolved();
         resolved.merged.files.managed.push(ManagedFileSpec {
@@ -9958,9 +9915,9 @@ mod tests {
 
     #[test]
     fn verify_module_file_target_missing_causes_drift() {
-        let state = StateStore::open_in_memory().unwrap();
+        let state = test_state();
         let registry = ProviderRegistry::new();
-        let printer = Printer::new(crate::output::Verbosity::Quiet);
+        let printer = test_printer();
         let resolved = make_empty_resolved();
 
         let modules = vec![ResolvedModule {
@@ -10003,9 +9960,9 @@ mod tests {
 
     #[test]
     fn verify_module_file_target_exists_no_drift() {
-        let state = StateStore::open_in_memory().unwrap();
+        let state = test_state();
         let registry = ProviderRegistry::new();
-        let printer = Printer::new(crate::output::Verbosity::Quiet);
+        let printer = test_printer();
         let resolved = make_empty_resolved();
         let tmp = tempfile::tempdir().unwrap();
 
@@ -10046,7 +10003,7 @@ mod tests {
 
     #[test]
     fn verify_multiple_packages_mixed_status() {
-        let state = StateStore::open_in_memory().unwrap();
+        let state = test_state();
         let mut registry = ProviderRegistry::new();
 
         // Only "git" installed, "tmux" missing
@@ -10060,7 +10017,7 @@ mod tests {
             packages: vec!["git".to_string(), "tmux".to_string()],
         });
 
-        let printer = Printer::new(crate::output::Verbosity::Quiet);
+        let printer = test_printer();
         let results = verify(&resolved, &registry, &state, &printer, &[]).unwrap();
 
         let git_result = results
@@ -10300,7 +10257,7 @@ mod tests {
 
     #[test]
     fn verify_env_file_matches_when_content_equal() {
-        let state = StateStore::open_in_memory().unwrap();
+        let state = test_state();
         let tmp = tempfile::tempdir().unwrap();
         let env_path = tmp.path().join("test.env");
         let expected = "export FOO=\"bar\"\n";
@@ -10318,7 +10275,7 @@ mod tests {
 
     #[test]
     fn verify_env_file_stale_when_content_differs() {
-        let state = StateStore::open_in_memory().unwrap();
+        let state = test_state();
         let tmp = tempfile::tempdir().unwrap();
         let env_path = tmp.path().join("test.env");
         std::fs::write(&env_path, "old content").unwrap();
@@ -10334,7 +10291,7 @@ mod tests {
 
     #[test]
     fn verify_env_file_missing_when_file_absent() {
-        let state = StateStore::open_in_memory().unwrap();
+        let state = test_state();
         let tmp = tempfile::tempdir().unwrap();
         let env_path = tmp.path().join("nonexistent.env");
 
@@ -10443,7 +10400,7 @@ mod tests {
         let target_file = dir.path().join("hardlink-target.txt");
         std::fs::write(&source_file, "hardlinked content").unwrap();
 
-        let state = StateStore::open_in_memory().unwrap();
+        let state = test_state();
         let mut registry = ProviderRegistry::new();
         registry.default_file_strategy = crate::config::FileStrategy::Hardlink;
 
@@ -10491,7 +10448,7 @@ mod tests {
             dir: dir.path().to_path_buf(),
         }];
 
-        let printer = Printer::new(crate::output::Verbosity::Quiet);
+        let printer = test_printer();
         let result = reconciler
             .apply(
                 &plan,
@@ -10533,7 +10490,7 @@ mod tests {
         let target_file = dir.path().join("copy-target.txt");
         std::fs::write(&source_file, "copied content").unwrap();
 
-        let state = StateStore::open_in_memory().unwrap();
+        let state = test_state();
         let mut registry = ProviderRegistry::new();
         registry.default_file_strategy = crate::config::FileStrategy::Copy;
 
@@ -10581,7 +10538,7 @@ mod tests {
             dir: dir.path().to_path_buf(),
         }];
 
-        let printer = Printer::new(crate::output::Verbosity::Quiet);
+        let printer = test_printer();
         let result = reconciler
             .apply(
                 &plan,
@@ -10623,7 +10580,7 @@ mod tests {
 
         let target_dir = dir.path().join("target-dir");
 
-        let state = StateStore::open_in_memory().unwrap();
+        let state = test_state();
         let mut registry = ProviderRegistry::new();
         registry.default_file_strategy = crate::config::FileStrategy::Copy;
 
@@ -10671,7 +10628,7 @@ mod tests {
             dir: dir.path().to_path_buf(),
         }];
 
-        let printer = Printer::new(crate::output::Verbosity::Quiet);
+        let printer = test_printer();
         let result = reconciler
             .apply(
                 &plan,
@@ -10708,7 +10665,7 @@ mod tests {
         std::fs::write(&source_file, "new content").unwrap();
         std::fs::write(&target_file, "old content").unwrap();
 
-        let state = StateStore::open_in_memory().unwrap();
+        let state = test_state();
         let mut registry = ProviderRegistry::new();
         registry.default_file_strategy = crate::config::FileStrategy::Copy;
 
@@ -10750,7 +10707,7 @@ mod tests {
             dir: dir.path().to_path_buf(),
         }];
 
-        let printer = Printer::new(crate::output::Verbosity::Quiet);
+        let printer = test_printer();
         let result = reconciler
             .apply(
                 &plan,
@@ -10783,7 +10740,7 @@ mod tests {
         std::fs::write(&source_file, "content").unwrap();
         let marker = dir.path().join("onchange-ran");
 
-        let state = StateStore::open_in_memory().unwrap();
+        let state = test_state();
         let mut registry = ProviderRegistry::new();
         registry.default_file_strategy = crate::config::FileStrategy::Copy;
 
@@ -10828,7 +10785,7 @@ mod tests {
             dir: dir.path().to_path_buf(),
         }];
 
-        let printer = Printer::new(crate::output::Verbosity::Quiet);
+        let printer = test_printer();
         let result = reconciler
             .apply(
                 &plan,
@@ -10855,7 +10812,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let marker = dir.path().join("onchange-ran");
 
-        let state = StateStore::open_in_memory().unwrap();
+        let state = test_state();
         let registry = ProviderRegistry::new();
         let reconciler = Reconciler::new(&registry, &state);
         let resolved = make_empty_resolved();
@@ -10885,7 +10842,7 @@ mod tests {
             dir: dir.path().to_path_buf(),
         }];
 
-        let printer = Printer::new(crate::output::Verbosity::Quiet);
+        let printer = test_printer();
         let result = reconciler
             .apply(
                 &plan,
@@ -10913,7 +10870,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let file_path = dir.path().join("managed.txt");
 
-        let state = StateStore::open_in_memory().unwrap();
+        let state = test_state();
         let registry = ProviderRegistry::new();
         let reconciler = Reconciler::new(&registry, &state);
 
@@ -10958,7 +10915,7 @@ mod tests {
         // Write the current file with apply-2 content
         std::fs::write(&file_path, "modified content").unwrap();
 
-        let printer = Printer::new(crate::output::Verbosity::Quiet);
+        let printer = test_printer();
         let result = reconciler.rollback_apply(apply_id_1, &printer).unwrap();
 
         assert!(
@@ -10979,7 +10936,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let created_file = dir.path().join("new-file.txt");
 
-        let state = StateStore::open_in_memory().unwrap();
+        let state = test_state();
         let registry = ProviderRegistry::new();
         let reconciler = Reconciler::new(&registry, &state);
 
@@ -11015,7 +10972,7 @@ mod tests {
         assert!(created_file.exists());
 
         // Rollback to apply 1 — file didn't exist then, should be removed
-        let printer = Printer::new(crate::output::Verbosity::Quiet);
+        let printer = test_printer();
         let result = reconciler.rollback_apply(apply_id_1, &printer).unwrap();
 
         assert!(
@@ -11033,7 +10990,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let existing_file = dir.path().join("existing.txt");
 
-        let state = StateStore::open_in_memory().unwrap();
+        let state = test_state();
         let registry = ProviderRegistry::new();
         let reconciler = Reconciler::new(&registry, &state);
 
@@ -11095,7 +11052,7 @@ mod tests {
         std::fs::write(&existing_file, "modified").unwrap();
 
         // Rollback to apply 1 — file existed at apply 1, should be restored not removed
-        let printer = Printer::new(crate::output::Verbosity::Quiet);
+        let printer = test_printer();
         let result = reconciler.rollback_apply(apply_id_1, &printer).unwrap();
 
         assert!(
@@ -11112,7 +11069,7 @@ mod tests {
 
     #[test]
     fn rollback_collects_non_file_actions_from_subsequent_applies() {
-        let state = StateStore::open_in_memory().unwrap();
+        let state = test_state();
         let registry = ProviderRegistry::new();
         let reconciler = Reconciler::new(&registry, &state);
 
@@ -11148,7 +11105,7 @@ mod tests {
             .unwrap();
 
         // Rollback to apply 1
-        let printer = Printer::new(crate::output::Verbosity::Quiet);
+        let printer = test_printer();
         let result = reconciler.rollback_apply(apply_id_1, &printer).unwrap();
 
         // Non-file actions from subsequent applies should be listed for manual review
@@ -11206,7 +11163,7 @@ mod tests {
             }
         }
 
-        let state = StateStore::open_in_memory().unwrap();
+        let state = test_state();
         let mut registry = ProviderRegistry::new();
         registry
             .system_configurators
@@ -11232,7 +11189,7 @@ mod tests {
             merged,
         };
 
-        let printer = Printer::new(crate::output::Verbosity::Quiet);
+        let printer = test_printer();
         let results = verify(&resolved, &registry, &state, &printer, &[]).unwrap();
 
         // Should have per-key drift entries with resource_type "system"
@@ -11292,7 +11249,7 @@ mod tests {
             }
         }
 
-        let state = StateStore::open_in_memory().unwrap();
+        let state = test_state();
         let mut registry = ProviderRegistry::new();
         registry
             .system_configurators
@@ -11318,7 +11275,7 @@ mod tests {
             merged,
         };
 
-        let printer = Printer::new(crate::output::Verbosity::Quiet);
+        let printer = test_printer();
         let results = verify(&resolved, &registry, &state, &printer, &[]).unwrap();
 
         let sysctl_results: Vec<_> = results

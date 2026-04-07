@@ -1535,35 +1535,9 @@ mod tests {
 
     use crate::config::ModuleFileEntry;
     use crate::providers::StubPackageManager as MockManager;
-
-    // --- Test helpers ---
-
-    fn make_manager_map<'a>(
-        entries: &[(&str, &'a dyn PackageManager)],
-    ) -> HashMap<String, &'a dyn PackageManager> {
-        entries
-            .iter()
-            .map(|(name, mgr)| (name.to_string(), *mgr))
-            .collect()
-    }
-
-    fn linux_ubuntu_platform() -> Platform {
-        Platform {
-            os: crate::platform::Os::Linux,
-            distro: crate::platform::Distro::Ubuntu,
-            version: "22.04".into(),
-            arch: crate::platform::Arch::X86_64,
-        }
-    }
-
-    fn macos_platform() -> Platform {
-        Platform {
-            os: crate::platform::Os::MacOS,
-            distro: crate::platform::Distro::MacOS,
-            version: "14.0".into(),
-            arch: crate::platform::Arch::Aarch64,
-        }
-    }
+    use crate::test_helpers::{
+        linux_ubuntu_platform, macos_platform, make_manager_map, make_test_modules, test_printer,
+    };
 
     // --- Module loading tests ---
 
@@ -1674,41 +1648,23 @@ spec: {}
 
     // --- Dependency resolution tests ---
 
-    fn make_modules(specs: &[(&str, &[&str])]) -> HashMap<String, LoadedModule> {
-        let mut modules = HashMap::new();
-        for (name, deps) in specs {
-            modules.insert(
-                name.to_string(),
-                LoadedModule {
-                    name: name.to_string(),
-                    spec: ModuleSpec {
-                        depends: deps.iter().map(|s| s.to_string()).collect(),
-                        ..Default::default()
-                    },
-                    dir: PathBuf::from(format!("/fake/{name}")),
-                },
-            );
-        }
-        modules
-    }
-
     #[test]
     fn dependency_order_single_no_deps() {
-        let modules = make_modules(&[("nvim", &[])]);
+        let modules = make_test_modules(&[("nvim", &[])]);
         let order = resolve_dependency_order(&["nvim".into()], &modules).unwrap();
         assert_eq!(order, vec!["nvim"]);
     }
 
     #[test]
     fn dependency_order_linear_chain() {
-        let modules = make_modules(&[("a", &[]), ("b", &["a"]), ("c", &["b"])]);
+        let modules = make_test_modules(&[("a", &[]), ("b", &["a"]), ("c", &["b"])]);
         let order = resolve_dependency_order(&["c".into()], &modules).unwrap();
         assert_eq!(order, vec!["a", "b", "c"]);
     }
 
     #[test]
     fn dependency_order_diamond() {
-        let modules = make_modules(&[
+        let modules = make_test_modules(&[
             ("base", &[]),
             ("left", &["base"]),
             ("right", &["base"]),
@@ -1724,7 +1680,7 @@ spec: {}
 
     #[test]
     fn dependency_order_cycle_detected() {
-        let modules = make_modules(&[("a", &["b"]), ("b", &["a"])]);
+        let modules = make_test_modules(&[("a", &["b"]), ("b", &["a"])]);
         let result = resolve_dependency_order(&["a".into()], &modules);
         assert!(result.is_err());
         let err = result.unwrap_err();
@@ -1733,7 +1689,7 @@ spec: {}
 
     #[test]
     fn dependency_order_missing_dependency() {
-        let modules = make_modules(&[("a", &["missing"])]);
+        let modules = make_test_modules(&[("a", &["missing"])]);
         let result = resolve_dependency_order(&["a".into()], &modules);
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("missing"));
@@ -1749,7 +1705,7 @@ spec: {}
 
     #[test]
     fn dependency_order_multiple_requested() {
-        let modules = make_modules(&[("base", &[]), ("nvim", &["base"]), ("tmux", &["base"])]);
+        let modules = make_test_modules(&[("base", &[]), ("nvim", &["base"]), ("tmux", &["base"])]);
         let order = resolve_dependency_order(&["nvim".into(), "tmux".into()], &modules).unwrap();
         assert_eq!(order[0], "base");
         assert!(order.contains(&"nvim".to_string()));
@@ -1759,7 +1715,7 @@ spec: {}
 
     #[test]
     fn dependency_order_three_node_cycle() {
-        let modules = make_modules(&[("a", &["c"]), ("b", &["a"]), ("c", &["b"])]);
+        let modules = make_test_modules(&[("a", &["c"]), ("b", &["a"]), ("c", &["b"])]);
         let result = resolve_dependency_order(&["a".into()], &modules);
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("cycle"));
@@ -2138,7 +2094,7 @@ spec: {}
         };
 
         let cache_dir = tempfile::tempdir().unwrap();
-        let printer = crate::output::Printer::new(crate::output::Verbosity::Quiet);
+        let printer = test_printer();
         let resolved = resolve_module_files(&module, cache_dir.path(), &printer).unwrap();
         assert_eq!(resolved.len(), 1);
         assert_eq!(resolved[0].source, dir.path().join("config/"));
@@ -2204,7 +2160,7 @@ spec:
         let platform = macos_platform();
 
         let cache_dir = tempfile::tempdir().unwrap();
-        let printer = crate::output::Printer::new(crate::output::Verbosity::Quiet);
+        let printer = test_printer();
 
         let resolved = resolve_modules(
             &["nvim".into()],
@@ -3025,7 +2981,7 @@ spec:
     #[test]
     fn fetch_remote_module_rejects_unpinned() {
         let dir = tempfile::tempdir().unwrap();
-        let printer = crate::output::Printer::new(crate::output::Verbosity::Quiet);
+        let printer = test_printer();
         // URL without @tag or ?ref= — should be rejected
         let result =
             fetch_remote_module("https://github.com/user/module.git", dir.path(), &printer);
@@ -3037,7 +2993,7 @@ spec:
     #[test]
     fn fetch_remote_module_rejects_branch_ref() {
         let dir = tempfile::tempdir().unwrap();
-        let printer = crate::output::Printer::new(crate::output::Verbosity::Quiet);
+        let printer = test_printer();
         // URL with ?ref=main — branches are rejected for security
         let result = fetch_remote_module(
             "https://github.com/user/module.git?ref=main",
@@ -3159,7 +3115,7 @@ spec:
 
     #[test]
     fn dependency_order_self_dependency_detected() {
-        let modules = make_modules(&[("a", &["a"])]);
+        let modules = make_test_modules(&[("a", &["a"])]);
         let result = resolve_dependency_order(&["a".into()], &modules);
         let err = result.unwrap_err().to_string();
         assert!(err.contains("cycle"), "error should mention cycle: {err}");
@@ -3837,7 +3793,7 @@ spec:
             dir: mod_dir.clone(),
         };
 
-        let printer = crate::output::Printer::new(crate::output::Verbosity::Quiet);
+        let printer = test_printer();
         let cache_base = dir.path().join("cache");
         let resolved = resolve_module_files(&module, &cache_base, &printer).unwrap();
 
@@ -3870,7 +3826,7 @@ spec:
             dir: mod_dir,
         };
 
-        let printer = crate::output::Printer::new(crate::output::Verbosity::Quiet);
+        let printer = test_printer();
         let cache_base = dir.path().join("cache");
         let result = resolve_module_files(&module, &cache_base, &printer);
 
@@ -3914,7 +3870,7 @@ spec:
             dir: mod_dir.clone(),
         };
 
-        let printer = crate::output::Printer::new(crate::output::Verbosity::Quiet);
+        let printer = test_printer();
         let cache_base = dir.path().join("cache");
         let resolved = resolve_module_files(&module, &cache_base, &printer).unwrap();
 
@@ -3943,7 +3899,7 @@ spec:
             dir: mod_dir,
         };
 
-        let printer = crate::output::Printer::new(crate::output::Verbosity::Quiet);
+        let printer = test_printer();
         let cache_base = dir.path().join("cache");
         let resolved = resolve_module_files(&module, &cache_base, &printer).unwrap();
         assert!(
@@ -3981,7 +3937,7 @@ spec:
             dir: mod_dir,
         };
 
-        let printer = crate::output::Printer::new(crate::output::Verbosity::Quiet);
+        let printer = test_printer();
         let cache_base = dir.path().join("cache");
         let result = resolve_module_files(&module, &cache_base, &printer);
         assert!(
@@ -3999,14 +3955,14 @@ spec:
 
     #[test]
     fn dependency_order_empty_request() {
-        let modules = make_modules(&[("a", &[])]);
+        let modules = make_test_modules(&[("a", &[])]);
         let order = resolve_dependency_order(&[], &modules).unwrap();
         assert!(order.is_empty(), "empty request should yield empty order");
     }
 
     #[test]
     fn dependency_order_deduplicated_request() {
-        let modules = make_modules(&[("a", &[])]);
+        let modules = make_test_modules(&[("a", &[])]);
         let order = resolve_dependency_order(&["a".into(), "a".into()], &modules).unwrap();
         assert_eq!(
             order,
@@ -4018,14 +3974,15 @@ spec:
     #[test]
     fn dependency_order_request_includes_transitive_dep() {
         // Requesting both "top" and its transitive dep "base" explicitly
-        let modules = make_modules(&[("base", &[]), ("top", &["base"])]);
+        let modules = make_test_modules(&[("base", &[]), ("top", &["base"])]);
         let order = resolve_dependency_order(&["top".into(), "base".into()], &modules).unwrap();
         assert_eq!(order, vec!["base", "top"]);
     }
 
     #[test]
     fn dependency_order_independent_subgraphs() {
-        let modules = make_modules(&[("a1", &[]), ("a2", &["a1"]), ("b1", &[]), ("b2", &["b1"])]);
+        let modules =
+            make_test_modules(&[("a1", &[]), ("a2", &["a1"]), ("b1", &[]), ("b2", &["b1"])]);
         let order = resolve_dependency_order(&["a2".into(), "b2".into()], &modules).unwrap();
         assert_eq!(order.len(), 4);
         // a1 before a2, b1 before b2
@@ -4121,7 +4078,7 @@ spec:
 
         let cache_base = dir.path().join("cache");
         std::fs::create_dir_all(&cache_base).unwrap();
-        let printer = crate::output::Printer::new(crate::output::Verbosity::Quiet);
+        let printer = test_printer();
 
         let modules = load_all_modules(dir.path(), &cache_base, &printer).unwrap();
         assert_eq!(modules.len(), 1);
@@ -4151,7 +4108,7 @@ entries:
         )
         .unwrap();
 
-        let printer = crate::output::Printer::new(crate::output::Verbosity::Quiet);
+        let printer = test_printer();
         // load_all_modules should succeed but remote module won't be in result
         // because its cache directory doesn't exist
         let modules = load_all_modules(dir.path(), &cache_base, &printer).unwrap();
@@ -4273,7 +4230,7 @@ entries:
     fn dependency_order_diamond_deterministic_ordering() {
         // Diamond: top -> left, right; left -> base; right -> base
         // With alphabetical sort, the deterministic order should be: base, left, right, top
-        let modules = make_modules(&[
+        let modules = make_test_modules(&[
             ("base", &[]),
             ("left", &["base"]),
             ("right", &["base"]),
@@ -4290,7 +4247,7 @@ entries:
     #[test]
     fn dependency_order_wide_fan_out() {
         // Single module depending on many independent leaves
-        let modules = make_modules(&[
+        let modules = make_test_modules(&[
             ("leaf_a", &[]),
             ("leaf_b", &[]),
             ("leaf_c", &[]),
@@ -4314,7 +4271,7 @@ entries:
     fn dependency_order_multiple_requested_shared_deps_no_duplicates() {
         // a -> shared; b -> shared; c -> shared
         // Requesting [a, b, c] should include shared exactly once
-        let modules = make_modules(&[
+        let modules = make_test_modules(&[
             ("shared", &[]),
             ("a", &["shared"]),
             ("b", &["shared"]),
@@ -4331,7 +4288,7 @@ entries:
 
     #[test]
     fn dependency_order_missing_dep_error_mentions_both_module_and_dep() {
-        let modules = make_modules(&[("app", &["nonexistent"])]);
+        let modules = make_test_modules(&[("app", &["nonexistent"])]);
         let result = resolve_dependency_order(&["app".into()], &modules);
         let err = result.unwrap_err().to_string();
         assert!(
@@ -4365,7 +4322,7 @@ entries:
 
     #[test]
     fn dependency_order_cycle_error_lists_cycle_members() {
-        let modules = make_modules(&[("x", &["y"]), ("y", &["z"]), ("z", &["x"])]);
+        let modules = make_test_modules(&[("x", &["y"]), ("y", &["z"]), ("z", &["x"])]);
         let result = resolve_dependency_order(&["x".into()], &modules);
         let err = result.unwrap_err().to_string();
         assert!(err.contains("cycle"), "error should mention cycle: {err}");
@@ -4380,7 +4337,8 @@ entries:
     fn dependency_order_partial_cycle_with_non_cyclic_nodes() {
         // d -> c -> b -> c (cycle), a -> d (non-cyclic)
         // But a is requested, so it should fail on the cycle
-        let modules = make_modules(&[("a", &[]), ("b", &["c"]), ("c", &["b"]), ("d", &["a", "b"])]);
+        let modules =
+            make_test_modules(&[("a", &[]), ("b", &["c"]), ("c", &["b"]), ("d", &["a", "b"])]);
         let result = resolve_dependency_order(&["d".into()], &modules);
         let err = result.unwrap_err().to_string();
         assert!(
@@ -4391,7 +4349,7 @@ entries:
 
     #[test]
     fn dependency_order_self_dep_mentions_module_name() {
-        let modules = make_modules(&[("selfref", &["selfref"])]);
+        let modules = make_test_modules(&[("selfref", &["selfref"])]);
         let result = resolve_dependency_order(&["selfref".into()], &modules);
         let err = result.unwrap_err().to_string();
         assert!(
@@ -4408,7 +4366,7 @@ entries:
         //   c -> a, b
         //   b -> a
         //   a -> (none)
-        let modules = make_modules(&[
+        let modules = make_test_modules(&[
             ("a", &[]),
             ("b", &["a"]),
             ("c", &["a", "b"]),

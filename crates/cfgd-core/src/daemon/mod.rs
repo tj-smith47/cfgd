@@ -3067,6 +3067,7 @@ async fn recv_sigterm(_signal: &mut ()) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_helpers::test_state;
 
     #[test]
     fn parse_duration_seconds() {
@@ -3395,7 +3396,7 @@ mod tests {
     #[test]
     fn process_source_decisions_first_run_records_decisions() {
         use crate::config::PackagesSpec;
-        let store = StateStore::open_in_memory().unwrap();
+        let store = test_state();
         let notifier = Notifier::new(NotifyMethod::Stdout, None);
         let policy = AutoApplyPolicyConfig::default(); // new_recommended: Notify
 
@@ -3422,7 +3423,7 @@ mod tests {
     #[test]
     fn process_source_decisions_accept_policy_no_pending() {
         use crate::config::PackagesSpec;
-        let store = StateStore::open_in_memory().unwrap();
+        let store = test_state();
         let notifier = Notifier::new(NotifyMethod::Stdout, None);
         let policy = AutoApplyPolicyConfig {
             new_recommended: PolicyAction::Accept,
@@ -3452,7 +3453,7 @@ mod tests {
 
     #[test]
     fn compliance_snapshot_skips_when_hash_unchanged() {
-        let store = StateStore::open_in_memory().unwrap();
+        let store = test_state();
         let snapshot = crate::compliance::ComplianceSnapshot {
             timestamp: crate::utc_now_iso8601(),
             machine: crate::compliance::MachineInfo {
@@ -3488,7 +3489,7 @@ mod tests {
 
     #[test]
     fn compliance_snapshot_stores_when_hash_changes() {
-        let store = StateStore::open_in_memory().unwrap();
+        let store = test_state();
 
         let snapshot1 = crate::compliance::ComplianceSnapshot {
             timestamp: "2026-01-01T00:00:00Z".into(),
@@ -4108,7 +4109,7 @@ mod tests {
     #[test]
     fn process_source_decisions_no_change_on_second_call() {
         use crate::config::{CargoSpec, PackagesSpec};
-        let store = StateStore::open_in_memory().unwrap();
+        let store = test_state();
         let notifier = Notifier::new(NotifyMethod::Stdout, None);
         let policy = AutoApplyPolicyConfig {
             new_recommended: crate::config::PolicyAction::Accept,
@@ -4141,7 +4142,7 @@ mod tests {
     #[test]
     fn process_source_decisions_detects_new_items_on_change() {
         use crate::config::{CargoSpec, PackagesSpec};
-        let store = StateStore::open_in_memory().unwrap();
+        let store = test_state();
         let notifier = Notifier::new(NotifyMethod::Stdout, None);
         let policy = AutoApplyPolicyConfig::default(); // Notify by default
 
@@ -4445,7 +4446,7 @@ mod tests {
     #[test]
     fn process_source_decisions_reject_policy_silently_skips() {
         use crate::config::{CargoSpec, PackagesSpec};
-        let store = StateStore::open_in_memory().unwrap();
+        let store = test_state();
         let notifier = Notifier::new(NotifyMethod::Stdout, None);
         let policy = AutoApplyPolicyConfig {
             new_recommended: PolicyAction::Reject,
@@ -4581,7 +4582,7 @@ mod tests {
     #[test]
     fn process_source_decisions_ignore_policy_no_pending_no_excluded() {
         use crate::config::{CargoSpec, PackagesSpec};
-        let store = StateStore::open_in_memory().unwrap();
+        let store = test_state();
         let notifier = Notifier::new(NotifyMethod::Stdout, None);
         let policy = AutoApplyPolicyConfig {
             new_recommended: PolicyAction::Ignore,
@@ -4851,14 +4852,14 @@ mod tests {
 
     #[test]
     fn pending_resource_paths_empty_store() {
-        let store = StateStore::open_in_memory().unwrap();
+        let store = test_state();
         let paths = pending_resource_paths(&store);
         assert!(paths.is_empty());
     }
 
     #[test]
     fn pending_resource_paths_with_decisions() {
-        let store = StateStore::open_in_memory().unwrap();
+        let store = test_state();
         store
             .upsert_pending_decision(
                 "acme",
@@ -5021,7 +5022,7 @@ mod tests {
 
     #[test]
     fn process_source_decisions_locked_item_notify_policy() {
-        let store = StateStore::open_in_memory().unwrap();
+        let store = test_state();
         let notifier = Notifier::new(NotifyMethod::Stdout, None);
         let policy = AutoApplyPolicyConfig {
             new_recommended: PolicyAction::Accept,
@@ -5053,7 +5054,7 @@ mod tests {
     #[test]
     fn process_source_decisions_different_sources_independent() {
         use crate::config::{CargoSpec, PackagesSpec};
-        let store = StateStore::open_in_memory().unwrap();
+        let store = test_state();
         let notifier = Notifier::new(NotifyMethod::Stdout, None);
         let policy = AutoApplyPolicyConfig {
             new_recommended: PolicyAction::Accept,
@@ -5097,7 +5098,7 @@ mod tests {
     #[test]
     fn process_source_decisions_removed_items_update_hash() {
         use crate::config::{CargoSpec, PackagesSpec};
-        let store = StateStore::open_in_memory().unwrap();
+        let store = test_state();
         let notifier = Notifier::new(NotifyMethod::Stdout, None);
         let policy = AutoApplyPolicyConfig {
             new_recommended: PolicyAction::Accept,
@@ -5308,7 +5309,7 @@ mod tests {
     fn process_source_decisions_mixed_tiers_accept_recommended_notify_locked() {
         use crate::config::{CargoSpec, PackagesSpec};
 
-        let store = StateStore::open_in_memory().unwrap();
+        let store = test_state();
         let notifier = Notifier::new(NotifyMethod::Stdout, None);
         let policy = AutoApplyPolicyConfig {
             new_recommended: PolicyAction::Accept,
@@ -6866,7 +6867,7 @@ mod tests {
 
     #[test]
     fn process_source_decisions_optional_tier_accept() {
-        let store = StateStore::open_in_memory().unwrap();
+        let store = test_state();
         let notifier = Notifier::new(NotifyMethod::Stdout, None);
         let policy = AutoApplyPolicyConfig {
             new_recommended: PolicyAction::Notify,
@@ -6900,7 +6901,7 @@ mod tests {
 
     #[test]
     fn process_source_decisions_empty_profile_no_decisions() {
-        let store = StateStore::open_in_memory().unwrap();
+        let store = test_state();
         let notifier = Notifier::new(NotifyMethod::Stdout, None);
         let policy = AutoApplyPolicyConfig::default();
 
@@ -7524,7 +7525,7 @@ mod tests {
 
     #[test]
     fn record_file_drift_to_records_event() {
-        let store = StateStore::open_in_memory().unwrap();
+        let store = test_state();
         let path = Path::new("/home/user/.bashrc");
 
         let result = record_file_drift_to(&store, path);
@@ -7537,7 +7538,7 @@ mod tests {
 
     #[test]
     fn record_file_drift_to_records_correct_type() {
-        let store = StateStore::open_in_memory().unwrap();
+        let store = test_state();
         let path = Path::new("/etc/config.yaml");
 
         record_file_drift_to(&store, path);
@@ -8812,7 +8813,7 @@ mod tests {
 
     #[test]
     fn pending_resource_paths_returns_empty_for_no_decisions() {
-        let store = StateStore::open_in_memory().unwrap();
+        let store = test_state();
         let paths = pending_resource_paths(&store);
         assert!(paths.is_empty());
     }

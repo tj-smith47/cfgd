@@ -527,6 +527,197 @@ pub fn test_printer() -> Printer {
 
 pub use crate::config::FileStrategy as TestFileStrategy;
 
+// ---------------------------------------------------------------------------
+// Platform helpers
+// ---------------------------------------------------------------------------
+
+/// A Linux/Ubuntu/x86_64 platform — the most common test platform.
+pub fn linux_ubuntu_platform() -> crate::platform::Platform {
+    crate::platform::Platform {
+        os: crate::platform::Os::Linux,
+        distro: crate::platform::Distro::Ubuntu,
+        version: "22.04".into(),
+        arch: crate::platform::Arch::X86_64,
+    }
+}
+
+/// A macOS/Aarch64 platform for macOS-specific test paths.
+pub fn macos_platform() -> crate::platform::Platform {
+    crate::platform::Platform {
+        os: crate::platform::Os::MacOS,
+        distro: crate::platform::Distro::MacOS,
+        version: "14.0".into(),
+        arch: crate::platform::Arch::Aarch64,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Profile / resolved-profile helpers
+// ---------------------------------------------------------------------------
+
+/// Minimal `ResolvedProfile` with a single local layer and empty merged profile.
+/// The workhorse of reconciler and module tests — used as the baseline resolved state.
+pub fn make_empty_resolved() -> crate::config::ResolvedProfile {
+    crate::config::ResolvedProfile {
+        layers: vec![crate::config::ProfileLayer {
+            source: "local".to_string(),
+            profile_name: "test".to_string(),
+            priority: 1000,
+            policy: crate::config::LayerPolicy::Local,
+            spec: crate::config::ProfileSpec::default(),
+        }],
+        merged: crate::config::MergedProfile::default(),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// State helpers
+// ---------------------------------------------------------------------------
+
+/// Open an in-memory `StateStore` for tests. Panics on failure.
+pub fn test_state() -> crate::state::StateStore {
+    crate::state::StateStore::open_in_memory().expect("open in-memory state store")
+}
+
+// ---------------------------------------------------------------------------
+// Module helpers
+// ---------------------------------------------------------------------------
+
+/// Build a `ResolvedModule` with sample packages and sensible defaults.
+/// Useful for reconciler tests that need a module with real package actions.
+pub fn make_resolved_module(name: &str) -> crate::modules::ResolvedModule {
+    crate::modules::ResolvedModule {
+        name: name.to_string(),
+        packages: vec![
+            crate::modules::ResolvedPackage {
+                canonical_name: "neovim".to_string(),
+                resolved_name: "neovim".to_string(),
+                manager: "brew".to_string(),
+                version: Some("0.10.2".to_string()),
+                script: None,
+            },
+            crate::modules::ResolvedPackage {
+                canonical_name: "ripgrep".to_string(),
+                resolved_name: "ripgrep".to_string(),
+                manager: "brew".to_string(),
+                version: Some("14.1.0".to_string()),
+                script: None,
+            },
+        ],
+        files: vec![],
+        env: vec![],
+        aliases: vec![],
+        post_apply_scripts: vec![],
+        pre_apply_scripts: Vec::new(),
+        pre_reconcile_scripts: Vec::new(),
+        post_reconcile_scripts: Vec::new(),
+        on_change_scripts: Vec::new(),
+        system: std::collections::HashMap::new(),
+        depends: vec![],
+        dir: PathBuf::from("."),
+    }
+}
+
+/// Build a map of `(name, deps)` tuples into `LoadedModule`s for dependency resolution tests.
+pub fn make_test_modules(
+    specs: &[(&str, &[&str])],
+) -> std::collections::HashMap<String, crate::modules::LoadedModule> {
+    let mut modules = std::collections::HashMap::new();
+    for (name, deps) in specs {
+        modules.insert(
+            name.to_string(),
+            crate::modules::LoadedModule {
+                name: name.to_string(),
+                spec: crate::config::ModuleSpec {
+                    depends: deps.iter().map(|s| s.to_string()).collect(),
+                    ..Default::default()
+                },
+                dir: PathBuf::from(format!("/fake/{name}")),
+            },
+        );
+    }
+    modules
+}
+
+/// Build a package-manager lookup map from `(name, &dyn PackageManager)` slices.
+pub fn make_manager_map<'a>(
+    entries: &[(&str, &'a dyn crate::providers::PackageManager)],
+) -> std::collections::HashMap<String, &'a dyn crate::providers::PackageManager> {
+    entries
+        .iter()
+        .map(|(name, mgr)| (name.to_string(), *mgr))
+        .collect()
+}
+
+// ---------------------------------------------------------------------------
+// YAML fixture constants
+// ---------------------------------------------------------------------------
+
+/// A minimal cfgd config with a git origin.
+pub const SAMPLE_CONFIG_YAML: &str = r#"
+apiVersion: cfgd.io/v1alpha1
+kind: Config
+metadata:
+  name: test-config
+spec:
+  profile: default
+  origin:
+    type: Git
+    url: https://github.com/test/repo.git
+    branch: master
+"#;
+
+/// A minimal cfgd config without any origin.
+pub const SAMPLE_CONFIG_NO_ORIGIN_YAML: &str = r#"
+apiVersion: cfgd.io/v1alpha1
+kind: Config
+metadata:
+  name: test-config
+spec:
+  profile: default
+"#;
+
+/// A base profile with env vars and packages.
+pub const SAMPLE_PROFILE_YAML: &str = r#"
+apiVersion: cfgd.io/v1alpha1
+kind: Profile
+metadata:
+  name: base
+spec:
+  env:
+    - name: editor
+      value: vim
+    - name: shell
+      value: /bin/zsh
+  packages:
+    brew:
+      formulae:
+        - ripgrep
+        - fd
+    cargo:
+      - bat
+"#;
+
+/// A minimal module YAML for the "nvim" module.
+pub const SAMPLE_MODULE_YAML: &str = r#"
+apiVersion: cfgd.io/v1alpha1
+kind: Module
+metadata:
+  name: nvim
+spec:
+  depends: [node]
+  packages:
+    - name: neovim
+      minVersion: "0.9"
+      prefer: [brew, snap, apt]
+      aliases:
+        snap: nvim
+    - name: ripgrep
+  files:
+    - source: config/
+      target: ~/.config/nvim/
+"#;
+
 #[cfg(test)]
 mod tests {
     use super::*;

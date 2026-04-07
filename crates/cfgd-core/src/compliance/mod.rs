@@ -772,39 +772,17 @@ mod tests {
 
     #[test]
     fn collect_system_checks_maps_drifts() {
-        use crate::providers::{ProviderRegistry, SystemConfigurator, SystemDrift};
-
-        struct MockConfigurator;
-        impl SystemConfigurator for MockConfigurator {
-            fn name(&self) -> &str {
-                "shell"
-            }
-            fn is_available(&self) -> bool {
-                true
-            }
-            fn current_state(&self) -> Result<serde_yaml::Value> {
-                Ok(serde_yaml::Value::Null)
-            }
-            fn diff(&self, _desired: &serde_yaml::Value) -> Result<Vec<SystemDrift>> {
-                Ok(vec![SystemDrift {
-                    key: "defaultShell".into(),
-                    expected: "/bin/zsh".into(),
-                    actual: "/bin/bash".into(),
-                }])
-            }
-            fn apply(
-                &self,
-                _desired: &serde_yaml::Value,
-                _printer: &crate::output::Printer,
-            ) -> Result<()> {
-                Ok(())
-            }
-        }
+        use crate::providers::{ProviderRegistry, SystemDrift};
+        use crate::test_helpers::MockSystemConfigurator;
 
         let mut registry = ProviderRegistry::new();
-        registry
-            .system_configurators
-            .push(Box::new(MockConfigurator));
+        registry.system_configurators.push(Box::new(
+            MockSystemConfigurator::new("shell").with_drift(vec![SystemDrift {
+                key: "defaultShell".into(),
+                expected: "/bin/zsh".into(),
+                actual: "/bin/bash".into(),
+            }]),
+        ));
 
         let mut system = HashMap::new();
         system.insert(
@@ -826,35 +804,13 @@ mod tests {
 
     #[test]
     fn collect_system_checks_compliant_when_no_drift() {
-        use crate::providers::{ProviderRegistry, SystemConfigurator, SystemDrift};
-
-        struct MockConfigurator;
-        impl SystemConfigurator for MockConfigurator {
-            fn name(&self) -> &str {
-                "shell"
-            }
-            fn is_available(&self) -> bool {
-                true
-            }
-            fn current_state(&self) -> Result<serde_yaml::Value> {
-                Ok(serde_yaml::Value::Null)
-            }
-            fn diff(&self, _desired: &serde_yaml::Value) -> Result<Vec<SystemDrift>> {
-                Ok(vec![])
-            }
-            fn apply(
-                &self,
-                _desired: &serde_yaml::Value,
-                _printer: &crate::output::Printer,
-            ) -> Result<()> {
-                Ok(())
-            }
-        }
+        use crate::providers::ProviderRegistry;
+        use crate::test_helpers::MockSystemConfigurator;
 
         let mut registry = ProviderRegistry::new();
         registry
             .system_configurators
-            .push(Box::new(MockConfigurator));
+            .push(Box::new(MockSystemConfigurator::new("shell")));
 
         let mut system = HashMap::new();
         system.insert(

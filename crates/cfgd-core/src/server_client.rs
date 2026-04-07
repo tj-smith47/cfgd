@@ -499,6 +499,7 @@ pub fn load_credential_from(path: &Path) -> Result<Option<DeviceCredential>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_helpers::test_printer;
 
     #[test]
     fn server_client_strips_trailing_slash() {
@@ -623,7 +624,7 @@ mod tests {
             .create();
 
         let client = ServerClient::new(&server.url(), Some("test-key"), "dev-1");
-        let printer = Printer::new(crate::output::Verbosity::Quiet);
+        let printer = test_printer();
         let result = client.checkin("hash123", None, &printer);
 
         assert!(result.is_ok());
@@ -643,7 +644,7 @@ mod tests {
             .create();
 
         let client = ServerClient::new(&server.url(), Some("key"), "dev-1");
-        let printer = Printer::new(crate::output::Verbosity::Quiet);
+        let printer = test_printer();
         let summary = ComplianceSummary {
             compliant: 5,
             warning: 1,
@@ -666,7 +667,7 @@ mod tests {
             .create();
 
         let client = ServerClient::new(&server.url(), Some("key-1"), "dev-1");
-        let printer = Printer::new(crate::output::Verbosity::Quiet);
+        let printer = test_printer();
         let drift = SystemDrift {
             key: "some.key".into(),
             expected: "foo".into(),
@@ -689,7 +690,7 @@ mod tests {
             .create();
 
         let client = ServerClient::new(&server.url(), None, "dev-1");
-        let printer = Printer::new(crate::output::Verbosity::Quiet);
+        let printer = test_printer();
         let result = client.enroll("bootstrap-token-123", &printer);
         assert!(result.is_ok());
         let resp = result.unwrap();
@@ -711,7 +712,7 @@ mod tests {
             .create();
 
         let client = ServerClient::new(&server.url(), None, "dev-1");
-        let printer = Printer::new(crate::output::Verbosity::Quiet);
+        let printer = test_printer();
         let result = client.request_challenge("testuser", &printer);
         assert!(result.is_ok());
         let resp = result.unwrap();
@@ -732,7 +733,7 @@ mod tests {
             .create();
 
         let client = ServerClient::new(&server.url(), None, "dev-1");
-        let printer = Printer::new(crate::output::Verbosity::Quiet);
+        let printer = test_printer();
         let result = client.submit_verification("ch-1", "sig-data", "ssh-ed25519", &printer);
         assert!(result.is_ok());
         let resp = result.unwrap();
@@ -769,7 +770,7 @@ mod tests {
             .create();
 
         let client = ServerClient::new(&server.url(), Some("key"), "dev-1");
-        let printer = Printer::new(crate::output::Verbosity::Quiet);
+        let printer = test_printer();
         let result = client.checkin("hash", None, &printer);
         assert!(result.is_err());
         mock.assert();
@@ -786,7 +787,7 @@ mod tests {
             .create();
 
         let client = ServerClient::new(&server.url(), Some("bad-key"), "dev-1");
-        let printer = Printer::new(crate::output::Verbosity::Quiet);
+        let printer = test_printer();
         let result = client.checkin("hash", None, &printer);
         assert!(result.is_err());
         mock.assert();
@@ -803,7 +804,7 @@ mod tests {
             .create();
 
         let client = ServerClient::new(&server.url(), None, "dev-1");
-        let printer = Printer::new(crate::output::Verbosity::Quiet);
+        let printer = test_printer();
         let result = client.checkin("hash", None, &printer);
         assert!(result.is_ok());
         mock.assert();

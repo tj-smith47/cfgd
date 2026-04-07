@@ -705,6 +705,7 @@ pub fn git_clone_with_fallback(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_helpers::test_printer;
 
     #[test]
     fn normalize_tilde_pin() {
@@ -1301,7 +1302,7 @@ spec:
     fn load_source_rejects_traversal_name() {
         let dir = tempfile::tempdir().unwrap();
         let mut mgr = SourceManager::new(dir.path());
-        let printer = crate::output::Printer::new(crate::output::Verbosity::Quiet);
+        let printer = test_printer();
 
         let spec = crate::config::SourceSpec {
             name: "../evil".into(),
@@ -1524,7 +1525,7 @@ spec:
     fn load_sources_fails_when_all_sources_fail() {
         let dir = tempfile::tempdir().unwrap();
         let mut mgr = SourceManager::new(dir.path());
-        let printer = crate::output::Printer::new(crate::output::Verbosity::Quiet);
+        let printer = test_printer();
 
         // Create specs that point to non-existent repos
         let specs = vec![
@@ -1567,7 +1568,7 @@ spec:
     fn load_sources_succeeds_with_empty_list() {
         let dir = tempfile::tempdir().unwrap();
         let mut mgr = SourceManager::new(dir.path());
-        let printer = crate::output::Printer::new(crate::output::Verbosity::Quiet);
+        let printer = test_printer();
 
         // Empty list should succeed and leave no sources loaded
         mgr.load_sources(&[], &printer)
@@ -1596,7 +1597,7 @@ spec:
             .unwrap();
 
         let clone_path = dir.path().join("clone");
-        let printer = crate::output::Printer::new(crate::output::Verbosity::Quiet);
+        let printer = test_printer();
         git_clone_with_fallback(&origin_path.display().to_string(), &clone_path, &printer)
             .expect("clone of local repo should succeed");
 
@@ -1624,7 +1625,7 @@ spec:
         let target = dir.path().join("clone");
         std::fs::create_dir_all(&target).unwrap();
 
-        let printer = crate::output::Printer::new(crate::output::Verbosity::Quiet);
+        let printer = test_printer();
         let err = git_clone_with_fallback("file:///nonexistent/path/repo", &target, &printer)
             .unwrap_err();
         assert!(
