@@ -4997,9 +4997,9 @@ SERVICE_NAME: Spooler\n\
 
     #[test]
     fn yaml_value_to_string_float() {
-        let f = serde_yaml::Value::Number(serde_yaml::Number::from(3.14_f64));
+        let f = serde_yaml::Value::Number(serde_yaml::Number::from(1.23_f64));
         let result = yaml_value_to_string(&f);
-        assert!(result.starts_with("3.14"));
+        assert!(result.starts_with("1.23"));
     }
 
     // --- strip_gsettings_quotes: additional edge cases ---

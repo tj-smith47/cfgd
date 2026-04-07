@@ -18186,9 +18186,8 @@ spec:
             &["running", "pid", "uptimeSecs", "driftCount", "sources"],
         );
         assert_json_field_type(&parsed, "running", "bool");
-        assert_eq!(
-            parsed.get("running").unwrap().as_bool().unwrap(),
-            false,
+        assert!(
+            !parsed.get("running").unwrap().as_bool().unwrap(),
             "running should be false when no daemon is present"
         );
         assert_eq!(

@@ -1901,7 +1901,11 @@ mod tests {
 
     #[test]
     fn validate_spec_delegates_to_shared() {
-        assert!(validate_spec(&mc_spec("", "default")).is_err());
+        let err = validate_spec(&mc_spec("", "default")).unwrap_err();
+        assert!(
+            err.to_string().contains("hostname"),
+            "should mention hostname: {err}"
+        );
         assert!(validate_spec(&mc_spec("host1", "default")).is_ok());
     }
 

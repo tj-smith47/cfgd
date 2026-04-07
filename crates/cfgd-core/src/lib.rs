@@ -1294,15 +1294,56 @@ mod tests {
 
     #[test]
     fn parse_duration_str_invalid() {
-        assert!(parse_duration_str("abc").is_err());
-        assert!(parse_duration_str("").is_err());
-        assert!(parse_duration_str("xs").is_err());
+        assert!(
+            parse_duration_str("abc")
+                .unwrap_err()
+                .contains("invalid timeout"),
+            "bare letters should fail with a useful message"
+        );
+        assert!(
+            parse_duration_str("")
+                .unwrap_err()
+                .contains("invalid timeout"),
+            "empty string should fail"
+        );
+        assert!(
+            parse_duration_str("xs")
+                .unwrap_err()
+                .contains("invalid timeout"),
+            "non-numeric prefix should fail"
+        );
+    }
+
+    #[test]
+    fn parse_duration_str_zero() {
+        assert_eq!(
+            parse_duration_str("0s").unwrap(),
+            std::time::Duration::from_secs(0)
+        );
+        assert_eq!(
+            parse_duration_str("0").unwrap(),
+            std::time::Duration::from_secs(0)
+        );
+    }
+
+    #[test]
+    fn parse_duration_str_negative() {
+        assert!(
+            parse_duration_str("-5s").is_err(),
+            "negative durations should be rejected"
+        );
     }
 
     #[test]
     fn parse_loose_version_full_semver() {
-        assert!(parse_loose_version("1.28.3").is_some());
-        assert!(parse_loose_version("0.1.0").is_some());
+        assert_eq!(
+            parse_loose_version("1.28.3"),
+            Some(semver::Version::new(1, 28, 3))
+        );
+        assert_eq!(
+            parse_loose_version("0.1.0"),
+            Some(semver::Version::new(0, 1, 0))
+        );
     }
 
     #[test]
@@ -1322,6 +1363,20 @@ mod tests {
         assert!(parse_loose_version("abc").is_none());
         assert!(parse_loose_version("").is_none());
         assert!(parse_loose_version("1.2.3.4").is_none());
+        assert!(
+            parse_loose_version("-1").is_none(),
+            "negative numbers are not valid versions"
+        );
+    }
+
+    #[test]
+    fn parse_loose_version_preserves_prerelease() {
+        // semver::Version::parse handles pre-release tags
+        let ver = parse_loose_version("1.2.3-beta.1").unwrap();
+        assert_eq!(ver.major, 1);
+        assert_eq!(ver.minor, 2);
+        assert_eq!(ver.patch, 3);
+        assert!(!ver.pre.is_empty(), "pre-release should be preserved");
     }
 
     #[test]
@@ -1756,9 +1811,23 @@ mod tests {
 
     #[test]
     fn shell_escape_value_metacharacters() {
-        let escaped = shell_escape_value("it's a $test");
-        // Should single-quote when metacharacters present
-        assert!(escaped.starts_with('\''));
+        // Contains both single-quote AND $, so must use break-out escaping
+        assert_eq!(shell_escape_value("it's a $test"), "'it'\\''s a $test'");
+    }
+
+    #[test]
+    fn shell_escape_value_backtick() {
+        assert_eq!(shell_escape_value("`cmd`"), "'`cmd`'");
+    }
+
+    #[test]
+    fn shell_escape_value_backslash() {
+        assert_eq!(shell_escape_value("a\\b"), "'a\\b'");
+    }
+
+    #[test]
+    fn shell_escape_value_empty() {
+        assert_eq!(shell_escape_value(""), "\"\"");
     }
 
     #[test]
@@ -2027,13 +2096,22 @@ mod tests {
 
     #[test]
     fn validate_env_var_name_rejects_invalid() {
-        assert!(validate_env_var_name("").is_err());
-        assert!(validate_env_var_name("1STARTS_WITH_DIGIT").is_err());
-        assert!(validate_env_var_name("HAS SPACE").is_err());
-        assert!(validate_env_var_name("HAS;SEMI").is_err());
-        assert!(validate_env_var_name("HAS$DOLLAR").is_err());
-        assert!(validate_env_var_name("HAS-DASH").is_err());
-        assert!(validate_env_var_name("a=b").is_err());
+        let err = validate_env_var_name("").unwrap_err();
+        assert!(err.contains("empty"), "empty should say empty: {err}");
+
+        let err = validate_env_var_name("1STARTS_WITH_DIGIT").unwrap_err();
+        assert!(
+            err.contains("must start with"),
+            "digit-prefix should explain: {err}"
+        );
+
+        // All of these should fail with the "invalid characters" message
+        for bad in ["HAS SPACE", "HAS;SEMI", "HAS$DOLLAR", "HAS-DASH", "a=b"] {
+            assert!(
+                validate_env_var_name(bad).is_err(),
+                "{bad:?} should be rejected"
+            );
+        }
     }
 
     #[test]
@@ -2046,25 +2124,79 @@ mod tests {
 
     #[test]
     fn validate_alias_name_rejects_invalid() {
-        assert!(validate_alias_name("").is_err());
-        assert!(validate_alias_name("has space").is_err());
-        assert!(validate_alias_name("has;semi").is_err());
-        assert!(validate_alias_name("has$dollar").is_err());
-        assert!(validate_alias_name("a=b").is_err());
-        assert!(validate_alias_name("has/slash").is_err());
+        let err = validate_alias_name("").unwrap_err();
+        assert!(err.contains("empty"), "empty should say empty: {err}");
+
+        for bad in ["has space", "has;semi", "has$dollar", "a=b", "has/slash"] {
+            let err = validate_alias_name(bad).unwrap_err();
+            assert!(
+                err.contains("must contain only"),
+                "{bad:?} rejection should explain allowed chars: {err}"
+            );
+        }
     }
 
     #[test]
     fn parse_env_var_validates_name() {
-        assert!(parse_env_var("VALID=value").is_ok());
-        assert!(parse_env_var("1BAD=value").is_err());
+        let ev = parse_env_var("VALID=value").unwrap();
+        assert_eq!(ev.name, "VALID");
+        assert_eq!(ev.value, "value");
+
+        assert!(
+            parse_env_var("1BAD=value")
+                .unwrap_err()
+                .contains("must start with"),
+            "digit-leading name should fail"
+        );
         assert!(parse_env_var("BAD;NAME=value").is_err());
     }
 
     #[test]
+    fn parse_env_var_value_with_equals() {
+        // Values can contain '=' — only the first '=' splits key from value
+        let ev = parse_env_var("PATH=/usr/bin:/bin").unwrap();
+        assert_eq!(ev.name, "PATH");
+        assert_eq!(ev.value, "/usr/bin:/bin");
+
+        let ev2 = parse_env_var("FOO=a=b=c").unwrap();
+        assert_eq!(ev2.name, "FOO");
+        assert_eq!(ev2.value, "a=b=c");
+    }
+
+    #[test]
+    fn parse_env_var_empty_value() {
+        let ev = parse_env_var("EMPTY=").unwrap();
+        assert_eq!(ev.name, "EMPTY");
+        assert_eq!(ev.value, "");
+    }
+
+    #[test]
+    fn parse_env_var_no_equals() {
+        let err = parse_env_var("NOEQUALS").unwrap_err();
+        assert!(
+            err.contains("KEY=VALUE"),
+            "should tell user the expected format, got: {err}"
+        );
+    }
+
+    #[test]
     fn parse_alias_validates_name() {
-        assert!(parse_alias("valid=ls -la").is_ok());
-        assert!(parse_alias("my-alias=git status").is_ok());
+        let a = parse_alias("valid=ls -la").unwrap();
+        assert_eq!(a.name, "valid");
+        assert_eq!(a.command, "ls -la");
+
+        let a2 = parse_alias("my-alias=git status").unwrap();
+        assert_eq!(a2.name, "my-alias");
+        assert_eq!(a2.command, "git status");
+
         assert!(parse_alias("bad;name=cmd").is_err());
+    }
+
+    #[test]
+    fn parse_alias_command_with_equals() {
+        // Command can contain '=' — only the first splits name from command
+        let a = parse_alias("env=FOO=bar baz").unwrap();
+        assert_eq!(a.name, "env");
+        assert_eq!(a.command, "FOO=bar baz");
     }
 }

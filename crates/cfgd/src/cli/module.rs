@@ -3090,9 +3090,7 @@ spec:
         make_module(dir.path(), "devtools", RICH_MODULE_YAML);
         // Create the source file so the file entry is valid
         std::fs::write(
-            dir.path()
-                .join("modules/devtools/files/config.toml")
-                .to_path_buf(),
+            dir.path().join("modules/devtools/files/config.toml"),
             "# config",
         )
         .unwrap();

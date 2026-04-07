@@ -1320,9 +1320,75 @@ mod tests {
             }),
             ..Default::default()
         };
-        let result = validate_constraints("acme", &constraints, &spec);
-        assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("scripts"));
+        let err = validate_constraints("acme", &constraints, &spec).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("acme") && msg.contains("scripts"),
+            "error should mention source name and scripts: {msg}"
+        );
+    }
+
+    #[test]
+    fn validate_constraints_scripts_blocked_all_hooks() {
+        // Verify ALL script hook types are checked, not just pre_reconcile
+        let constraints = SourceConstraints {
+            no_scripts: true,
+            ..Default::default()
+        };
+        for (label, spec) in [
+            (
+                "post_apply",
+                ProfileSpec {
+                    scripts: Some(ScriptSpec {
+                        post_apply: vec![ScriptEntry::Simple("hook.sh".into())],
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                },
+            ),
+            (
+                "on_drift",
+                ProfileSpec {
+                    scripts: Some(ScriptSpec {
+                        on_drift: vec![ScriptEntry::Simple("drift.sh".into())],
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                },
+            ),
+            (
+                "on_change",
+                ProfileSpec {
+                    scripts: Some(ScriptSpec {
+                        on_change: vec![ScriptEntry::Simple("change.sh".into())],
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                },
+            ),
+        ] {
+            assert!(
+                validate_constraints("src", &constraints, &spec).is_err(),
+                "no_scripts should block {label} hooks"
+            );
+        }
+    }
+
+    #[test]
+    fn validate_constraints_scripts_empty_allowed() {
+        // no_scripts=true but spec has Scripts with all empty vecs — should pass
+        let constraints = SourceConstraints {
+            no_scripts: true,
+            ..Default::default()
+        };
+        let spec = ProfileSpec {
+            scripts: Some(ScriptSpec::default()),
+            ..Default::default()
+        };
+        assert!(
+            validate_constraints("acme", &constraints, &spec).is_ok(),
+            "no_scripts with empty script lists should pass"
+        );
     }
 
     #[test]
@@ -1362,9 +1428,12 @@ mod tests {
             }),
             ..Default::default()
         };
-        let result = validate_constraints("acme", &constraints, &spec);
-        assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("allowed paths"));
+        let err = validate_constraints("acme", &constraints, &spec).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("/etc/sudoers") && msg.contains("acme"),
+            "error should mention the offending path and source: {msg}"
+        );
     }
 
     #[test]
@@ -1401,9 +1470,26 @@ mod tests {
             system: HashMap::from([("shell".into(), serde_yaml::Value::String("/bin/zsh".into()))]),
             ..Default::default()
         };
-        let result = validate_constraints("acme", &constraints, &spec);
-        assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("system"));
+        let err = validate_constraints("acme", &constraints, &spec).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("acme") && msg.contains("system setting") && msg.contains("shell"),
+            "error should name source, mention system setting, and name the offending key: {msg}"
+        );
+    }
+
+    #[test]
+    fn validate_constraints_system_changes_allowed() {
+        // allow_system_changes defaults to true
+        let constraints = SourceConstraints {
+            allow_system_changes: true,
+            ..Default::default()
+        };
+        let spec = ProfileSpec {
+            system: HashMap::from([("shell".into(), serde_yaml::Value::String("/bin/zsh".into()))]),
+            ..Default::default()
+        };
+        assert!(validate_constraints("acme", &constraints, &spec).is_ok());
     }
 
     #[test]

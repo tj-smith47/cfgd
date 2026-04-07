@@ -11215,7 +11215,7 @@ mod tests {
         let mut system = HashMap::new();
         system.insert(
             "sysctl".to_string(),
-            serde_yaml::to_value(&serde_yaml::Mapping::new()).unwrap(),
+            serde_yaml::to_value(serde_yaml::Mapping::new()).unwrap(),
         );
         let merged = crate::config::MergedProfile {
             system,
@@ -11301,7 +11301,7 @@ mod tests {
         let mut system = HashMap::new();
         system.insert(
             "sysctl".to_string(),
-            serde_yaml::to_value(&serde_yaml::Mapping::new()).unwrap(),
+            serde_yaml::to_value(serde_yaml::Mapping::new()).unwrap(),
         );
         let merged = crate::config::MergedProfile {
             system,

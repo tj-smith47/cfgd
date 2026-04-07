@@ -654,7 +654,11 @@ mod tests {
             volume_id: "vol-1".to_string(),
             ..Default::default()
         };
-        assert!(node.node_unstage_volume(Request::new(req)).await.is_ok());
+        // unstage is a no-op (cache persists) — just verify it returns Ok
+        let _resp = node
+            .node_unstage_volume(Request::new(req))
+            .await
+            .expect("unstage should succeed for a valid volume_id");
     }
 
     #[tokio::test]
@@ -670,6 +674,11 @@ mod tests {
             .await
             .unwrap_err();
         assert_eq!(err.code(), tonic::Code::InvalidArgument);
+        assert!(
+            err.message().contains("volume_id"),
+            "error should mention volume_id: {}",
+            err.message()
+        );
     }
 
     #[tokio::test]
@@ -955,14 +964,20 @@ mod tests {
 
     #[test]
     fn require_volume_id_accepts_nonempty() {
-        assert!(require_volume_id("vol-1").is_ok());
+        // Should return Ok(()) for any non-empty string
+        require_volume_id("vol-1").expect("non-empty volume_id should be accepted");
+        require_volume_id("a").expect("single-char volume_id should be accepted");
     }
 
     #[test]
     fn require_volume_id_rejects_empty() {
         let err = require_volume_id("").unwrap_err();
         assert_eq!(err.code(), tonic::Code::InvalidArgument);
-        assert!(err.message().contains("volume_id"));
+        assert!(
+            err.message().contains("volume_id"),
+            "error should mention volume_id: {}",
+            err.message()
+        );
     }
 
     #[test]

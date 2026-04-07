@@ -622,24 +622,35 @@ mod tests {
 
     #[test]
     fn mc_validate_rejects_empty_hostname() {
-        assert!(minimal_mc_spec("", "default").validate().is_err());
+        let errs = minimal_mc_spec("", "default").validate().unwrap_err();
+        assert!(
+            errs.iter().any(|e| e.contains("hostname")),
+            "should mention hostname: {errs:?}"
+        );
     }
 
     #[test]
     fn mc_validate_rejects_empty_profile() {
-        assert!(minimal_mc_spec("host1", "").validate().is_err());
+        let errs = minimal_mc_spec("host1", "").validate().unwrap_err();
+        assert!(
+            errs.iter().any(|e| e.contains("profile")),
+            "should mention profile: {errs:?}"
+        );
     }
 
     #[test]
-    fn mc_validate_rejects_file_without_content_or_source() {
-        let mut spec = minimal_mc_spec("host1", "default");
-        spec.files.push(FileSpec {
-            path: "/etc/foo".to_string(),
-            content: None,
-            source: None,
-            mode: "0644".to_string(),
-        });
-        assert!(spec.validate().is_err());
+    fn mc_validate_collects_all_errors() {
+        // Both hostname and profile empty — should report BOTH, not just first
+        let errs = minimal_mc_spec("", "").validate().unwrap_err();
+        assert!(
+            errs.iter().any(|e| e.contains("hostname")),
+            "should mention hostname: {errs:?}"
+        );
+        assert!(
+            errs.iter().any(|e| e.contains("profile")),
+            "should mention profile: {errs:?}"
+        );
+        assert!(errs.len() >= 2, "should report at least 2 errors: {errs:?}");
     }
 
     #[test]
@@ -651,7 +662,12 @@ mod tests {
             source: None,
             mode: "9999".to_string(),
         });
-        assert!(spec.validate().is_err());
+        let errs = spec.validate().unwrap_err();
+        assert!(
+            errs.iter()
+                .any(|e| e.contains("9999") && e.contains("octal")),
+            "should mention the bad mode and that octal is expected: {errs:?}"
+        );
     }
 
     #[test]
@@ -666,7 +682,46 @@ mod tests {
             name: String::new(),
             version: None,
         });
-        assert!(spec.validate().is_err());
+        let errs = spec.validate().unwrap_err();
+        assert!(
+            errs.iter()
+                .any(|e| e.contains("packages") && e.contains("name")),
+            "should mention packages and name: {errs:?}"
+        );
+    }
+
+    #[test]
+    fn mc_validate_rejects_path_traversal() {
+        let mut spec = minimal_mc_spec("host1", "default");
+        spec.files.push(FileSpec {
+            path: "/etc/../shadow".to_string(),
+            content: Some("data".to_string()),
+            source: None,
+            mode: "0644".to_string(),
+        });
+        let errs = spec.validate().unwrap_err();
+        assert!(
+            errs.iter()
+                .any(|e| e.contains("..") && e.contains("traversal")),
+            "should reject path traversal: {errs:?}"
+        );
+    }
+
+    #[test]
+    fn mc_validate_rejects_file_without_content_or_source() {
+        let mut spec = minimal_mc_spec("host1", "default");
+        spec.files.push(FileSpec {
+            path: "/etc/foo".to_string(),
+            content: None,
+            source: None,
+            mode: "0644".to_string(),
+        });
+        let errs = spec.validate().unwrap_err();
+        assert!(
+            errs.iter()
+                .any(|e| e.contains("content") && e.contains("source")),
+            "should require content or source: {errs:?}"
+        );
     }
 
     #[test]
@@ -678,7 +733,12 @@ mod tests {
             }],
             ..Default::default()
         };
-        assert!(spec.validate().is_err());
+        let errs = spec.validate().unwrap_err();
+        assert!(
+            errs.iter()
+                .any(|e| e.contains("packages") && e.contains("name")),
+            "should mention packages and name: {errs:?}"
+        );
     }
 
     #[test]
@@ -690,7 +750,12 @@ mod tests {
             }],
             ..Default::default()
         };
-        assert!(spec.validate().is_err());
+        let errs = spec.validate().unwrap_err();
+        assert!(
+            errs.iter()
+                .any(|e| e.contains("requiredModules") || e.contains("name")),
+            "should mention required modules or name: {errs:?}"
+        );
     }
 
     #[test]
@@ -702,7 +767,11 @@ mod tests {
             }],
             ..Default::default()
         };
-        assert!(spec.validate().is_err());
+        let errs = spec.validate().unwrap_err();
+        assert!(
+            errs.iter().any(|e| e.contains("not valid")),
+            "should mention the invalid version string: {errs:?}"
+        );
     }
 
     #[test]
@@ -764,7 +833,11 @@ mod tests {
             }],
             ..Default::default()
         };
-        assert!(spec.validate().is_err());
+        let errs = spec.validate().unwrap_err();
+        assert!(
+            errs.iter().any(|e| e.contains("not valid")),
+            "should mention the invalid version string: {errs:?}"
+        );
     }
 
     #[test]

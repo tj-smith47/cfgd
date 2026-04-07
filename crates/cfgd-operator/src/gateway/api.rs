@@ -1430,7 +1430,9 @@ mod tests {
     #[test]
     fn enforce_device_access_admin_allows_any() {
         let auth = AuthContext::Admin;
+        // Admin should be able to access ANY device ID
         assert!(enforce_device_access(&auth, "any-device").is_ok());
+        assert!(enforce_device_access(&auth, "another-device").is_ok());
     }
 
     #[test]
@@ -1440,6 +1442,24 @@ mod tests {
             username: "jdoe".to_string(),
         };
         assert!(enforce_device_access(&auth, "dev-1").is_ok());
+    }
+
+    #[test]
+    fn enforce_device_access_device_denies_other_specific_error() {
+        // Verify the error is specifically Forbidden (not some other variant)
+        // and that the username doesn't leak into the error
+        let auth = AuthContext::Device {
+            device_id: "dev-1".to_string(),
+            username: "jdoe".to_string(),
+        };
+        let err = enforce_device_access(&auth, "dev-999").unwrap_err();
+        match &err {
+            GatewayError::Forbidden(msg) => {
+                assert!(msg.contains("dev-1"), "should mention requester: {msg}");
+                assert!(msg.contains("dev-999"), "should mention target: {msg}");
+            }
+            other => panic!("expected Forbidden, got: {other}"),
+        }
     }
 
     #[test]

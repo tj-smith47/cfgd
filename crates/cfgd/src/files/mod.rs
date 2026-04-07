@@ -3444,30 +3444,32 @@ other: data
         assert_eq!(diffs.len(), 4, "expected 4 diffs, got: {diffs:?}");
 
         let kinds: Vec<_> = diffs.iter().map(|d| (&d.target, &d.kind)).collect();
+        let a = Path::new("/a");
+        let b = Path::new("/b");
+        let c = Path::new("/c");
+        let d = Path::new("/d");
         assert!(
             kinds
                 .iter()
-                .any(|(t, k)| **t == PathBuf::from("/a")
-                    && matches!(k, FileDiffKind::Modified { .. })),
+                .any(|(t, k)| **t == a && matches!(k, FileDiffKind::Modified { .. })),
             "expected /a to be Modified"
         );
         assert!(
             kinds
                 .iter()
-                .any(|(t, k)| **t == PathBuf::from("/b") && matches!(k, FileDiffKind::Unchanged)),
+                .any(|(t, k)| **t == b && matches!(k, FileDiffKind::Unchanged)),
             "expected /b to be Unchanged"
         );
         assert!(
             kinds
                 .iter()
-                .any(|(t, k)| **t == PathBuf::from("/c")
-                    && matches!(k, FileDiffKind::Created { .. })),
+                .any(|(t, k)| **t == c && matches!(k, FileDiffKind::Created { .. })),
             "expected /c to be Created"
         );
         assert!(
             kinds
                 .iter()
-                .any(|(t, k)| **t == PathBuf::from("/d") && matches!(k, FileDiffKind::Deleted)),
+                .any(|(t, k)| **t == d && matches!(k, FileDiffKind::Deleted)),
             "expected /d to be Deleted"
         );
     }
