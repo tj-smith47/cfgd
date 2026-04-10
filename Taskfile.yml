@@ -94,9 +94,7 @@ tasks:
     desc: Dry-run release pipeline (single target, no publish) using anodize
     deps: [build]
     cmds:
-      # Workspace-scoped: cfgd config has multiple anodize workspaces, and the
-      # snapshot template needs Version from a specific workspace's tag.
-      - anodize release --snapshot --single-target --clean --dry-run --workspace cfgd
+      - anodize release --snapshot --single-target --clean --dry-run
 
   # --- Pre-commit pipeline (mirrors anodize/Taskfile.yml) ---
 

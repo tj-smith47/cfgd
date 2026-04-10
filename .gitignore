@@ -39,11 +39,12 @@
 !ecosystem/**
 
 # CI, tasks, and release config
-!Taskfile.yml
-!cliff.toml
 !.anodize.yaml
+!cliff.toml
+/dist/
 !scripts/
 !scripts/**
+!Taskfile.yml
 
 # Claude project config (plans, scripts, skills, hooks)
 !.claude/
