@@ -26,6 +26,12 @@ tasks:
 
   build:
     desc: Build all binaries in release mode
+    sources:
+      - "crates/**/src/**/*.rs"
+      - "Cargo.toml"
+      - "Cargo.lock"
+    generates:
+      - "target/release/cfgd"
     cmds:
       - cargo build --release
 
@@ -78,6 +84,51 @@ tasks:
     desc: Run project-specific code quality audit
     cmds:
       - bash .claude/scripts/audit.sh
+
+  package:
+    desc: Dry-run package all publishable crates
+    cmds:
+      - cargo package --workspace --no-verify --allow-dirty
+
+  snapshot:
+    desc: Dry-run release pipeline (single target, no publish) using anodize
+    deps: [build]
+    cmds:
+      # Workspace-scoped: cfgd config has multiple anodize workspaces, and the
+      # snapshot template needs Version from a specific workspace's tag.
+      - anodize release --snapshot --single-target --clean --dry-run --workspace cfgd
+
+  # --- Pre-commit pipeline (mirrors anodize/Taskfile.yml) ---
+
+  tidy:
+    desc: Format code (fmt:fix)
+    cmds:
+      - task: fmt:fix
+
+  lint:
+    desc: Local pre-commit check (tidy, clippy, build, snapshot dry-run)
+    cmds:
+      - task: tidy
+      - task: clippy
+      - task: build
+      - task: snapshot
+
+  commit:
+    desc: "Lint, then commit. Usage: task commit -- -m 'my message'"
+    preconditions:
+      - sh: git diff --cached --quiet || test -n "$(git diff --cached --name-only)"
+        msg: "Nothing staged. Stage files with git add before running task commit."
+    cmds:
+      - task: lint
+      - git commit {{.CLI_ARGS}}
+
+  ci:
+    desc: Run all CI checks (everything except cross-platform builds)
+    cmds:
+      - task: fmt
+      - task: clippy
+      - task: test
+      - task: package
 
   # --- E2E ---
 

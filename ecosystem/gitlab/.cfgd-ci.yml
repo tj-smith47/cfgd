@@ -20,7 +20,7 @@
 .cfgd-install: &cfgd_install
   - |
     if ! command -v cfgd &>/dev/null; then
-      curl -fsSL https://raw.githubusercontent.com/tj-smith47/cfgd/master/install.sh | bash
+      curl -fsSL https://github.com/tj-smith47/cfgd/releases/latest/download/install.sh | bash
     fi
     cfgd --version
 

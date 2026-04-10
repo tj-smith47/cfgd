@@ -6,7 +6,6 @@
 
 Declare your entire machine — packages, dotfiles, system settings, secrets — with composable profiles and shareable, cross-platform modules.
 
-[![AutoTag](https://github.com/tj-smith47/cfgd/actions/workflows/auto-tag.yml/badge.svg)](https://github.com/tj-smith47/cfgd/actions/workflows/auto-tag.yml)
 [![CI](https://github.com/tj-smith47/cfgd/actions/workflows/ci.yml/badge.svg)](https://github.com/tj-smith47/cfgd/actions/workflows/ci.yml)
 [![E2E](https://github.com/tj-smith47/cfgd/actions/workflows/e2e.yml/badge.svg)](https://github.com/tj-smith47/cfgd/actions/workflows/e2e.yml)
 [![Release](https://github.com/tj-smith47/cfgd/actions/workflows/release.yml/badge.svg)](https://github.com/tj-smith47/cfgd/actions/workflows/release.yml)
@@ -58,7 +57,7 @@ Most dotfile managers track files. `cfgd` enables you to manage your entire mach
 brew install tj-smith47/tap/cfgd
 
 # Or via install script
-curl -fsSL https://raw.githubusercontent.com/tj-smith47/cfgd/master/install.sh | sh
+curl -fsSL https://github.com/tj-smith47/cfgd/releases/latest/download/install.sh | sh
 
 # Or via cargo
 cargo install cfgd

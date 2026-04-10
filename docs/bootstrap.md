@@ -206,10 +206,10 @@ The install script handles downloading the binary and optionally bootstrapping:
 
 ```sh
 # Just install the binary
-curl -fsSL https://raw.githubusercontent.com/tj-smith47/cfgd/master/install.sh | sh
+curl -fsSL https://github.com/tj-smith47/cfgd/releases/latest/download/install.sh | sh
 
 # Install and bootstrap in one step
-curl -fsSL https://raw.githubusercontent.com/tj-smith47/cfgd/master/install.sh | sh -s -- init --from git@github.com:you/config.git
+curl -fsSL https://github.com/tj-smith47/cfgd/releases/latest/download/install.sh | sh -s -- init --from git@github.com:you/config.git
 ```
 
 The script detects your OS and architecture, downloads the right binary from GitHub releases, verifies the SHA256 checksum, and places it in your PATH.

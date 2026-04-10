@@ -1,454 +1,187 @@
 name: Release
 
 on:
-  # Triggered by AutoTag workflow completion
-  workflow_run:
-    workflows:
-      - "AutoTag"
-    branches:
-      - master
-    types:
-      - completed
-  # Also triggered by manual tag push (for RC releases)
   push:
-    tags: ["v*"]
-  workflow_dispatch:
-
-concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+    tags:
+      - "v*"
+      - "core-v*"
+      - "operator-v*"
+      - "csi-v*"
 
 permissions:
   contents: write
   packages: write
+  actions: read  # cross-workflow artifact download
+
+concurrency:
+  group: release
+  cancel-in-progress: false
 
 env:
-  REGISTRY: ghcr.io
+  CARGO_TERM_COLOR: always
 
 jobs:
-  prepare:
-    runs-on: ubuntu-latest
-    if: ${{ github.event_name == 'push' || github.event.workflow_run.conclusion == 'success' }}
-    outputs:
-      tag: ${{ steps.get-tag.outputs.tag }}
-      version: ${{ steps.get-tag.outputs.version }}
-      should_run: ${{ steps.get-tag.outputs.should_run }}
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-          # Pin to the exact commit AutoTag processed so later pushes
-          # don't move HEAD past the tagged commit.
-          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
-
-      - name: Get tag
-        id: get-tag
-        run: |
-          should_run=true
-          if [ "${{ github.event_name }}" = "push" ]; then
-            TAG="${{ github.ref_name }}"
-          else
-            # For workflow_run events, check if a tag exists at the AutoTag commit
-            if ! git tag --points-at HEAD | grep -q .; then
-              echo "No tag at HEAD - AutoTag likely skipped (commit has #none)"
-              should_run=false
-              TAG=""
-            else
-              TAG=$(git tag --points-at HEAD | grep '^v' | sort -V | tail -1)
-            fi
-          fi
-          echo "tag=${TAG}" >> $GITHUB_OUTPUT
-          echo "version=${TAG#v}" >> $GITHUB_OUTPUT
-          echo "should_run=${should_run}" >> $GITHUB_OUTPUT
-
   build:
-    needs: prepare
-    if: ${{ needs.prepare.outputs.should_run == 'true' }}
+    name: Build (${{ matrix.os }})
     strategy:
       fail-fast: false
       matrix:
         include:
-          - target: x86_64-unknown-linux-gnu
-            os: arc-cfgd
-            name: linux-x86_64
-          - target: aarch64-unknown-linux-gnu
-            os: arc-cfgd
-            name: linux-aarch64
-          - target: x86_64-apple-darwin
-            os: macos-latest
-            name: darwin-x86_64
-          - target: aarch64-apple-darwin
-            os: macos-14
-            name: darwin-aarch64
-          - target: x86_64-pc-windows-msvc
-            os: windows-latest
-            name: windows-x86_64
-          - target: aarch64-pc-windows-msvc
-            os: windows-latest
-            name: windows-aarch64
-
+          - os: ubuntu-latest
+            targets: x86_64-unknown-linux-gnu,aarch64-unknown-linux-gnu
+          - os: macos-latest
+            targets: x86_64-apple-darwin,aarch64-apple-darwin
+          - os: windows-latest
+            targets: x86_64-pc-windows-msvc,aarch64-pc-windows-msvc
     runs-on: ${{ matrix.os }}
-
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - uses: dtolnay/rust-toolchain@stable
         with:
-          targets: ${{ matrix.target }}
+          targets: ${{ matrix.targets }}
 
-      - name: Install aarch64 target (Windows)
-        if: matrix.target == 'aarch64-pc-windows-msvc'
-        run: rustup target add aarch64-pc-windows-msvc
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: release-${{ matrix.os }}
 
-      - name: Install protoc
-        if: runner.os != 'Linux'
-        uses: arduino/setup-protoc@v3
+      - uses: arduino/setup-protoc@v3
         with:
           version: "25.x"
           repo-token: ${{ github.token }}
 
-      - name: Build cfgd
-        env:
-          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
-          CC_aarch64_unknown_linux_gnu: aarch64-linux-gnu-gcc
-          CXX_aarch64_unknown_linux_gnu: aarch64-linux-gnu-g++
-          AR_aarch64_unknown_linux_gnu: aarch64-linux-gnu-ar
-        run: cargo build --release --target ${{ matrix.target }} --bin cfgd
-
-      - name: Build cfgd-operator and cfgd-csi (Linux only, for Docker images)
+      # Linux reuses the CI-built cfgd binary; macOS/Windows must build the
+      # tool from source.  Both paths flow through anodize-action so the
+      # release workflow has a single entry point.
+      - name: Run anodize release --split (Linux — bootstrap from CI)
         if: runner.os == 'Linux'
-        env:
-          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
-          CC_aarch64_unknown_linux_gnu: aarch64-linux-gnu-gcc
-          CXX_aarch64_unknown_linux_gnu: aarch64-linux-gnu-g++
-          AR_aarch64_unknown_linux_gnu: aarch64-linux-gnu-ar
-        run: cargo build --release --target ${{ matrix.target }} --bin cfgd-operator --bin cfgd-csi
-
-      - name: Package cfgd
-        if: runner.os != 'Windows'
-        run: |
-          VERSION="${{ needs.prepare.outputs.version }}"
-          ARCHIVE="cfgd-${VERSION}-${{ matrix.name }}.tar.gz"
-          tar -czf "$ARCHIVE" -C target/${{ matrix.target }}/release cfgd
-          if command -v sha256sum &>/dev/null; then
-            sha256sum "$ARCHIVE" > "${ARCHIVE}.sha256"
-          else
-            shasum -a 256 "$ARCHIVE" > "${ARCHIVE}.sha256"
-          fi
-
-      - name: Package cfgd (Windows)
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          $VERSION = "${{ needs.prepare.outputs.version }}"
-          $ARCHIVE = "cfgd-${VERSION}-${{ matrix.name }}.zip"
-          Compress-Archive -Path "target/${{ matrix.target }}/release/cfgd.exe" -DestinationPath "$ARCHIVE"
-          $HASH = (Get-FileHash "$ARCHIVE" -Algorithm SHA256).Hash.ToLower()
-          "${HASH}  ${ARCHIVE}" | Out-File "${ARCHIVE}.sha256" -Encoding ascii
-
-      - name: Package kubectl-cfgd
-        if: runner.os != 'Windows'
-        run: |
-          VERSION="${{ needs.prepare.outputs.version }}"
-          # kubectl plugin is the same binary, renamed
-          cp target/${{ matrix.target }}/release/cfgd target/${{ matrix.target }}/release/kubectl-cfgd
-          PLUGIN_ARCHIVE="kubectl-cfgd-${VERSION}-${{ matrix.name }}.tar.gz"
-          tar -czf "$PLUGIN_ARCHIVE" -C target/${{ matrix.target }}/release kubectl-cfgd
-          if command -v sha256sum &>/dev/null; then
-            sha256sum "$PLUGIN_ARCHIVE" > "${PLUGIN_ARCHIVE}.sha256"
-          else
-            shasum -a 256 "$PLUGIN_ARCHIVE" > "${PLUGIN_ARCHIVE}.sha256"
-          fi
-
-      - uses: actions/upload-artifact@v4
+        uses: tj-smith47/anodize-action@master
         with:
-          name: cfgd-${{ matrix.name }}
-          path: |
-            cfgd-*.tar.gz
-            cfgd-*.tar.gz.sha256
-            cfgd-*.zip
-            cfgd-*.zip.sha256
-            kubectl-cfgd-*.tar.gz
-            kubectl-cfgd-*.tar.gz.sha256
+          from-artifact: cfgd-linux
+          artifact-run-id: auto
+          artifact-workflow: ci.yml
+          install: zig,cargo-zigbuild,upx
+          args: release --split --clean
+        env:
+          GITHUB_TOKEN: ${{ secrets.GH_PAT }}
 
-      - name: Stage Docker binaries
-        if: runner.os == 'Linux'
-        run: |
-          mkdir -p docker-binaries
-          cp target/${{ matrix.target }}/release/cfgd docker-binaries/
-          cp target/${{ matrix.target }}/release/cfgd-operator docker-binaries/
-          cp target/${{ matrix.target }}/release/cfgd-csi docker-binaries/
+      - name: Run anodize release --split (macOS/Windows — bootstrap from source)
+        if: runner.os != 'Linux'
+        uses: tj-smith47/anodize-action@master
+        with:
+          from-source: true
+          install: zig,cargo-zigbuild,upx
+          args: release --split --clean
+        env:
+          GITHUB_TOKEN: ${{ secrets.GH_PAT }}
 
-      - name: Upload Docker binaries
-        if: runner.os == 'Linux'
+      - name: Upload split artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: docker-binaries-${{ matrix.name }}
-          path: docker-binaries/
+          name: dist-${{ runner.os }}
+          path: dist/
 
-  checksums:
-    needs: [prepare, build]
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/download-artifact@v4
-        with:
-          pattern: cfgd-*
-          merge-multiple: true
-
-      - name: Generate combined checksums
-        run: |
-          VERSION="${{ needs.prepare.outputs.version }}"
-          cat *.sha256 | sort > "cfgd-${VERSION}-checksums.txt"
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: checksums
-          path: "*.txt"
-
-  changelog:
-    needs: prepare
-    if: ${{ needs.prepare.outputs.should_run == 'true' }}
+  release:
+    name: Publish Release
+    needs: build
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Generate changelog
-        uses: orhun/git-cliff-action@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: arduino/setup-protoc@v3
         with:
-          config: cliff.toml
-          args: --latest --strip header
-        env:
-          OUTPUT: RELEASE_NOTES.md
-          GITHUB_REPO: ${{ github.repository }}
+          version: "25.x"
+          repo-token: ${{ github.token }}
 
-      - uses: actions/upload-artifact@v4
+      # Download all split artifacts into dist/ before running anodize --merge.
+      - name: Download split artifacts
+        uses: actions/download-artifact@v4
         with:
-          name: changelog
-          path: RELEASE_NOTES.md
-
-  release:
-    needs: [prepare, build, checksums, changelog]
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/download-artifact@v4
-        with:
+          path: dist/
+          pattern: dist-*
           merge-multiple: true
 
-      - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ needs.prepare.outputs.tag }}
-          body_path: RELEASE_NOTES.md
-          files: |
-            cfgd-*.tar.gz
-            cfgd-*.zip
-            kubectl-cfgd-*.tar.gz
-            *-checksums.txt
-          generate_release_notes: false
+      - name: Verify split artifacts
+        run: |
+          echo "Split contexts found:"
+          find dist -name context.json -type f
+          COUNT=$(find dist -name context.json -type f | wc -l)
+          if [ "$COUNT" -eq 0 ]; then
+            echo "::error::No split context files found in dist/"
+            exit 1
+          fi
+          echo "Found $COUNT split context(s)"
 
-  docker:
-    needs: [prepare, build, release]
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/download-artifact@v4
+      - name: Log in to GHCR for docker stage
+        uses: docker/login-action@v3
         with:
-          name: docker-binaries-linux-x86_64
-          path: binaries/amd64
-      - uses: actions/download-artifact@v4
-        with:
-          name: docker-binaries-linux-aarch64
-          path: binaries/arm64
-      - run: chmod +x binaries/*/cfgd-operator
-
-      - uses: docker/login-action@v3
-        with:
-          registry: ${{ env.REGISTRY }}
+          registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - uses: docker/setup-qemu-action@v3
       - uses: docker/setup-buildx-action@v3
 
-      - name: Extract metadata
-        id: meta
-        uses: docker/metadata-action@v5
+      - name: Run anodize release --merge
+        uses: tj-smith47/anodize-action@master
         with:
-          images: ${{ env.REGISTRY }}/${{ github.repository_owner }}/cfgd-operator
-          tags: |
-            type=raw,value=${{ needs.prepare.outputs.version }}
-            type=raw,value=${{ needs.prepare.outputs.tag }}
-            type=sha
+          from-artifact: cfgd-linux
+          artifact-run-id: auto
+          artifact-workflow: ci.yml
+          install: nfpm,makeself,cosign
+          gpg-private-key: ${{ secrets.GPG_PRIVATE_KEY }}
+          args: release --merge
+        env:
+          GITHUB_TOKEN: ${{ secrets.GH_PAT }}
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+          GPG_FINGERPRINT: ${{ secrets.GPG_FINGERPRINT }}
+          COSIGN_KEY: ${{ secrets.COSIGN_KEY }}
+          COSIGN_PASSWORD: ${{ secrets.COSIGN_PASSWORD }}
+          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          KREW_INDEX_TOKEN: ${{ secrets.KREW_INDEX_TOKEN }}
+          SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
 
-      - uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: Dockerfile.operator.release
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          platforms: linux/amd64,linux/arm64
-
-  docker-agent:
-    needs: [prepare, build, release]
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/download-artifact@v4
-        with:
-          name: docker-binaries-linux-x86_64
-          path: binaries/amd64
-      - uses: actions/download-artifact@v4
-        with:
-          name: docker-binaries-linux-aarch64
-          path: binaries/arm64
-      - run: chmod +x binaries/*/cfgd
-
-      - uses: docker/login-action@v3
-        with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - uses: docker/setup-qemu-action@v3
-      - uses: docker/setup-buildx-action@v3
-
-      - name: Extract metadata
-        id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: ${{ env.REGISTRY }}/${{ github.repository_owner }}/cfgd
-          tags: |
-            type=raw,value=${{ needs.prepare.outputs.version }}
-            type=raw,value=${{ needs.prepare.outputs.tag }}
-            type=sha
-
-      - uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: Dockerfile.agent.release
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          platforms: linux/amd64,linux/arm64
-
-  docker-csi:
-    needs: [prepare, build, release]
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/download-artifact@v4
-        with:
-          name: docker-binaries-linux-x86_64
-          path: binaries/amd64
-      - uses: actions/download-artifact@v4
-        with:
-          name: docker-binaries-linux-aarch64
-          path: binaries/arm64
-      - run: chmod +x binaries/*/cfgd-csi
-
-      - uses: docker/login-action@v3
-        with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - uses: docker/setup-qemu-action@v3
-      - uses: docker/setup-buildx-action@v3
-
-      - name: Extract metadata
-        id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: ${{ env.REGISTRY }}/${{ github.repository_owner }}/cfgd-csi
-          tags: |
-            type=raw,value=${{ needs.prepare.outputs.version }}
-            type=raw,value=${{ needs.prepare.outputs.tag }}
-            type=sha
-
-      - uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: Dockerfile.csi.release
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          platforms: linux/amd64,linux/arm64
-
+  # --- Helm chart publish ---
+  # Anodize doesn't (yet) have a built-in helm publisher, so we publish the
+  # cfgd helm chart in a follow-up job.  When anodize gains helm support this
+  # job can fold into the merge step above.
   helm-chart:
-    needs: [prepare, release]
+    name: Publish Helm chart
+    needs: release
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
-      - name: Install Helm
-        uses: azure/setup-helm@v4
-
+      - uses: azure/setup-helm@v4
       - uses: docker/login-action@v3
         with:
-          registry: ${{ env.REGISTRY }}
+          registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-
       - name: Package and push Helm chart
         run: |
-          VERSION="${{ needs.prepare.outputs.version }}"
+          VERSION="${GITHUB_REF_NAME#v}"
           helm package chart/cfgd --version "$VERSION" --app-version "$VERSION"
-          helm push cfgd-${VERSION}.tgz oci://${{ env.REGISTRY }}/${{ github.repository_owner }}/charts
+          helm push "cfgd-${VERSION}.tgz" oci://ghcr.io/${{ github.repository_owner }}/charts
 
-  krew-manifest:
-    needs: [prepare, build, checksums]
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/download-artifact@v4
-        with:
-          pattern: cfgd-*
-          merge-multiple: true
-
-      - name: Update Krew manifest with real checksums and version
-        run: |
-          VERSION="${{ needs.prepare.outputs.version }}"
-          TAG="${{ needs.prepare.outputs.tag }}"
-
-          LINUX_AMD64_SHA=$(sha256sum kubectl-cfgd-${VERSION}-linux-x86_64.tar.gz | awk '{print $1}')
-          LINUX_ARM64_SHA=$(sha256sum kubectl-cfgd-${VERSION}-linux-aarch64.tar.gz | awk '{print $1}')
-          DARWIN_AMD64_SHA=$(sha256sum kubectl-cfgd-${VERSION}-darwin-x86_64.tar.gz | awk '{print $1}')
-          DARWIN_ARM64_SHA=$(sha256sum kubectl-cfgd-${VERSION}-darwin-aarch64.tar.gz | awk '{print $1}')
-
-          # Update version and download URLs
-          sed -i "s|version: .*|version: \"${TAG}\"|" manifests/krew/cfgd.yaml
-          sed -i "s|download/v0.1.0/kubectl-cfgd-0.1.0-|download/${TAG}/kubectl-cfgd-${VERSION}-|g" manifests/krew/cfgd.yaml
-
-          # Replace sha256 values in order: linux/amd64, linux/arm64, darwin/amd64, darwin/arm64
-          sed -i "0,/POPULATED_BY_RELEASE_WORKFLOW/s|POPULATED_BY_RELEASE_WORKFLOW|${LINUX_AMD64_SHA}|" manifests/krew/cfgd.yaml
-          sed -i "0,/POPULATED_BY_RELEASE_WORKFLOW/s|POPULATED_BY_RELEASE_WORKFLOW|${LINUX_ARM64_SHA}|" manifests/krew/cfgd.yaml
-          sed -i "0,/POPULATED_BY_RELEASE_WORKFLOW/s|POPULATED_BY_RELEASE_WORKFLOW|${DARWIN_AMD64_SHA}|" manifests/krew/cfgd.yaml
-          sed -i "0,/POPULATED_BY_RELEASE_WORKFLOW/s|POPULATED_BY_RELEASE_WORKFLOW|${DARWIN_ARM64_SHA}|" manifests/krew/cfgd.yaml
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: krew-manifest
-          path: manifests/krew/cfgd.yaml
-
+  # --- Crossplane function publish ---
+  # Same story as helm: anodize doesn't yet have a Crossplane xpkg publisher.
   crossplane-function:
-    needs: [prepare, release]
+    name: Publish Crossplane function
+    needs: release
     runs-on: ubuntu-latest
     strategy:
       matrix:
         arch: [amd64, arm64]
     steps:
       - uses: actions/checkout@v4
-
       - uses: docker/setup-qemu-action@v3
-
       - uses: docker/setup-buildx-action@v3
-
       - name: Build runtime image tarball
         uses: docker/build-push-action@v6
         with:
@@ -459,177 +192,66 @@ jobs:
           outputs: type=docker,dest=runtime-${{ matrix.arch }}.tar
           cache-from: type=gha,scope=function-${{ matrix.arch }}
           cache-to: type=gha,mode=max,scope=function-${{ matrix.arch }}
-
       - name: Install Crossplane CLI
         run: curl -sL https://raw.githubusercontent.com/crossplane/crossplane/master/install.sh | sh
-
       - name: Build xpkg
         run: |
           ./crossplane xpkg build \
             --package-file=${{ matrix.arch }}.xpkg \
             --package-root=function-cfgd/package/ \
             --embed-runtime-image-tarball=runtime-${{ matrix.arch }}.tar
-
       - uses: actions/upload-artifact@v4
         with:
           name: xpkg-${{ matrix.arch }}
           path: "*.xpkg"
 
   crossplane-push:
-    needs: [prepare, crossplane-function]
+    name: Push Crossplane function
+    needs: crossplane-function
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4
         with:
           pattern: xpkg-*
           merge-multiple: true
-
       - name: Install Crossplane CLI
         run: curl -sL https://raw.githubusercontent.com/crossplane/crossplane/master/install.sh | sh
-
       - uses: docker/login-action@v3
         with:
-          registry: ${{ env.REGISTRY }}
+          registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-
       - name: Push xpkg
         run: |
-          VERSION="${{ needs.prepare.outputs.version }}"
+          VERSION="${GITHUB_REF_NAME#v}"
           ./crossplane --verbose xpkg push \
             --package-files $(echo *.xpkg | tr ' ' ,) \
-            ${{ env.REGISTRY }}/${{ github.repository_owner }}/function-cfgd:v${VERSION}
+            ghcr.io/${{ github.repository_owner }}/function-cfgd:v${VERSION}
 
-  cargo-publish:
-    needs: [prepare, release]
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: dtolnay/rust-toolchain@stable
-
-      - name: Set Cargo.toml version to match tag
-        run: sed -i "s/^version = .*/version = \"${{ needs.prepare.outputs.version }}\"/" Cargo.toml
-
-      - name: Publish cfgd-core to crates.io
-        env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-        run: cargo publish -p cfgd-core --allow-dirty || echo "cfgd-core publish failed or already published"
-
-      - name: Publish cfgd to crates.io
-        env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-        run: |
-          sleep 30  # Wait for crates.io to index cfgd-core
-          cargo publish -p cfgd --allow-dirty || echo "cfgd publish failed or already published"
-
+  # --- OLM bundle publish ---
+  # Anodize doesn't yet have an OLM bundle publisher.
   olm-bundle:
-    needs: [prepare, docker]
+    name: Publish OLM bundle
+    needs: release
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
       - uses: docker/login-action@v3
         with:
-          registry: ${{ env.REGISTRY }}
+          registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-
       - name: Update CSV version and image references
         run: |
-          VERSION="${{ needs.prepare.outputs.version }}"
-          TAG="${{ needs.prepare.outputs.tag }}"
+          VERSION="${GITHUB_REF_NAME#v}"
+          TAG="${GITHUB_REF_NAME}"
           CSV="ecosystem/olm/manifests/cfgd-operator.clusterserviceversion.yaml"
           sed -i "s|cfgd-operator\.v[0-9.]*|cfgd-operator.${TAG}|g" "$CSV"
           sed -i "s|cfgd-operator:v[0-9.]*|cfgd-operator:${TAG}|g" "$CSV"
-
       - name: Build and push OLM bundle image
         uses: docker/build-push-action@v6
         with:
           context: ecosystem/olm
           file: ecosystem/olm/bundle.Dockerfile
           push: true
-          tags: ${{ env.REGISTRY }}/${{ github.repository_owner }}/cfgd-operator-bundle:${{ needs.prepare.outputs.tag }}
-
-  homebrew:
-    needs: [prepare, release]
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/download-artifact@v4
-        with:
-          name: cfgd-darwin-x86_64
-          path: artifacts/darwin-x86_64/
-
-      - uses: actions/download-artifact@v4
-        with:
-          name: cfgd-darwin-aarch64
-          path: artifacts/darwin-aarch64/
-
-      - uses: actions/download-artifact@v4
-        with:
-          name: cfgd-linux-x86_64
-          path: artifacts/linux-x86_64/
-
-      - uses: actions/download-artifact@v4
-        with:
-          name: cfgd-linux-aarch64
-          path: artifacts/linux-aarch64/
-
-      - name: Update Homebrew tap
-        env:
-          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
-        run: |
-          VERSION="${{ needs.prepare.outputs.version }}"
-          TAG="${{ needs.prepare.outputs.tag }}"
-
-          DARWIN_X86_SHA=$(cat artifacts/darwin-x86_64/cfgd-${VERSION}-darwin-x86_64.tar.gz.sha256 | awk '{print $1}')
-          DARWIN_ARM_SHA=$(cat artifacts/darwin-aarch64/cfgd-${VERSION}-darwin-aarch64.tar.gz.sha256 | awk '{print $1}')
-          LINUX_X86_SHA=$(cat artifacts/linux-x86_64/cfgd-${VERSION}-linux-x86_64.tar.gz.sha256 | awk '{print $1}')
-          LINUX_ARM_SHA=$(cat artifacts/linux-aarch64/cfgd-${VERSION}-linux-aarch64.tar.gz.sha256 | awk '{print $1}')
-
-          git clone "https://${HOMEBREW_TAP_TOKEN}@github.com/tj-smith47/homebrew-tap.git"
-          cd homebrew-tap
-
-          mkdir -p Formula
-          cat > Formula/cfgd.rb << EOF
-          class Cfgd < Formula
-            desc "Declarative, GitOps-style machine configuration management"
-            homepage "https://github.com/tj-smith47/cfgd"
-            license "Apache-2.0"
-            version "${VERSION}"
-
-            if OS.mac?
-              if Hardware::CPU.intel?
-                url "https://github.com/tj-smith47/cfgd/releases/download/${TAG}/cfgd-${VERSION}-darwin-x86_64.tar.gz"
-                sha256 "${DARWIN_X86_SHA}"
-              elsif Hardware::CPU.arm?
-                url "https://github.com/tj-smith47/cfgd/releases/download/${TAG}/cfgd-${VERSION}-darwin-aarch64.tar.gz"
-                sha256 "${DARWIN_ARM_SHA}"
-              end
-            elsif OS.linux?
-              if Hardware::CPU.intel?
-                url "https://github.com/tj-smith47/cfgd/releases/download/${TAG}/cfgd-${VERSION}-linux-x86_64.tar.gz"
-                sha256 "${LINUX_X86_SHA}"
-              elsif Hardware::CPU.arm?
-                url "https://github.com/tj-smith47/cfgd/releases/download/${TAG}/cfgd-${VERSION}-linux-aarch64.tar.gz"
-                sha256 "${LINUX_ARM_SHA}"
-              end
-            end
-
-            def install
-              bin.install "cfgd"
-            end
-
-            test do
-              system "#{bin}/cfgd", "--version"
-            end
-          end
-          EOF
-
-          sed -i 's/^          //' Formula/cfgd.rb
-
-          git config user.name "GitHub Actions"
-          git config user.email "actions@github.com"
-          git add -A Formula/
-          git commit -m "Update cfgd to ${VERSION}" || echo "No changes to commit"
-          git push
+          tags: ghcr.io/${{ github.repository_owner }}/cfgd-operator-bundle:${{ github.ref_name }}

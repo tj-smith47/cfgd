@@ -19,14 +19,18 @@ env:
 
 jobs:
   fmt:
-    name: Format
+    name: Formatting
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt
-      - run: cargo fmt --check
+      - uses: arduino/setup-task@v2
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Check formatting
+        run: task fmt
 
   clippy:
     name: Clippy
@@ -41,11 +45,66 @@ jobs:
         with:
           version: "25.x"
           repo-token: ${{ github.token }}
-      - run: cargo clippy -- -D warnings
+      - uses: arduino/setup-task@v2
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Clippy
+        run: task clippy
 
   test:
-    name: Test
+    name: Tests (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: arduino/setup-protoc@v3
+        with:
+          version: "25.x"
+          repo-token: ${{ github.token }}
+      - uses: arduino/setup-task@v2
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Tests
+        # Windows tests only the cross-platform crates (cfgd-core + cfgd CLI);
+        # the operator and CSI plugins are Linux-only.
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            cargo test -p cfgd-core -p cfgd
+          else
+            task test
+          fi
+      # Build the cfgd CLI on Linux only — used as bootstrap for the release
+      # workflow split jobs and for the snapshot dry-run.
+      - name: Build release binary
+        if: github.ref == 'refs/heads/master' && runner.os == 'Linux'
+        run: task build
+      - name: Upload release binary
+        if: github.ref == 'refs/heads/master' && runner.os == 'Linux'
+        uses: actions/upload-artifact@v4
+        with:
+          name: cfgd-linux
+          path: target/release/cfgd
+
+  audit:
+    name: Code Audit
     runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: bash .claude/scripts/audit.sh
+
+  coverage:
+    name: Coverage
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/master'
+    needs: [test]
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -61,7 +120,6 @@ jobs:
       - name: Run tests with coverage
         run: cargo llvm-cov --cobertura --output-path cobertura.xml
       - name: Update coverage badge
-        if: github.ref == 'refs/heads/master'
         run: |
           COVERAGE=$(grep -oP 'line-rate="\K[^"]+' cobertura.xml | head -1 | awk '{printf "%.1f", $1 * 100}')
           if (( $(echo "$COVERAGE >= 90" | bc -l) )); then COLOR="brightgreen"
@@ -87,33 +145,45 @@ jobs:
           git diff --cached --quiet || git commit -m "Update coverage to ${COVERAGE}%"
           git push origin badges --force
 
-  audit:
-    name: Code Audit
+  snapshot:
+    name: Snapshot (dry-run)
+    if: github.ref == 'refs/heads/master'
+    needs: [test]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - run: bash .claude/scripts/audit.sh
+        with:
+          fetch-depth: 0
+      - name: Validate release pipeline via anodize
+        uses: tj-smith47/anodize-action@master
+        with:
+          from-artifact: cfgd-linux
+          args: release --snapshot --single-target --clean --dry-run
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-  windows:
-    name: Windows Test
-    runs-on: windows-latest
+  tag:
+    name: Auto-tag
+    if: github.ref == 'refs/heads/master' && !contains(github.event.head_commit.message, '#none')
+    needs: [fmt, clippy, test, audit, snapshot]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
         with:
-          key: windows
-
-      - name: Install protoc
-        uses: arduino/setup-protoc@v3
+          fetch-depth: 0
+          token: ${{ secrets.GH_PAT }}
+      - name: Configure git identity
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+      - name: Auto-tag release via anodize
+        uses: tj-smith47/anodize-action@master
         with:
-          version: "25.x"
-
-      - name: Format check
-        run: cargo fmt -p cfgd-core -p cfgd -- --check
-
-      - name: Clippy
-        run: cargo clippy -p cfgd-core -p cfgd -- -D warnings
-
-      - name: Test
-        run: cargo test -p cfgd-core -p cfgd
+          from-artifact: cfgd-linux
+          args: tag
+        env:
+          GITHUB_TOKEN: ${{ secrets.GH_PAT }}
+      - name: Push tags
+        run: git push --tags

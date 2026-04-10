@@ -34,9 +34,9 @@ runs:
       run: |
         VERSION="${{ inputs.version }}"
         if [ "$VERSION" = "latest" ]; then
-          curl -fsSL https://raw.githubusercontent.com/tj-smith47/cfgd/master/install.sh | bash
+          curl -fsSL https://github.com/tj-smith47/cfgd/releases/latest/download/install.sh | bash
         else
-          curl -fsSL https://raw.githubusercontent.com/tj-smith47/cfgd/master/install.sh | bash -s -- --version "$VERSION"
+          curl -fsSL "https://github.com/tj-smith47/cfgd/releases/download/v${VERSION#v}/install.sh" | bash -s -- --version "$VERSION"
         fi
 
     - name: Run cfgd plan
