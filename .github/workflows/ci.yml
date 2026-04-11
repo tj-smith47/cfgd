@@ -159,14 +159,28 @@ jobs:
     if: github.ref == 'refs/heads/master'
     needs: [test]
     runs-on: ubuntu-latest
+    env:
+      # Pin anodize to a specific commit so the cache key stays stable.
+      # Bump this when you need a newer anodize. Temporary until anodize has
+      # tagged GitHub releases and anodize-action's version: latest works.
+      ANODIZE_REV: 6d6ebe9c7d3439889f959995e4aabb4cc6aec855
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - name: Validate release pipeline via anodize
-        uses: tj-smith47/anodize-action@master
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Cache anodize binary
+        id: anodize-cache
+        uses: actions/cache@v4
         with:
-          args: release --snapshot --single-target --clean --dry-run
+          path: ~/.cargo/bin/anodize
+          key: anodize-${{ runner.os }}-${{ env.ANODIZE_REV }}
+      - name: Install anodize
+        if: steps.anodize-cache.outputs.cache-hit != 'true'
+        run: cargo install --git https://github.com/tj-smith47/anodize --rev "$ANODIZE_REV" --locked anodize
+      - name: Validate release pipeline via anodize
+        run: anodize release --snapshot --single-target --clean --dry-run
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -177,19 +191,30 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+    env:
+      ANODIZE_REV: 6d6ebe9c7d3439889f959995e4aabb4cc6aec855
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
           token: ${{ secrets.GH_PAT }}
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Cache anodize binary
+        id: anodize-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/bin/anodize
+          key: anodize-${{ runner.os }}-${{ env.ANODIZE_REV }}
+      - name: Install anodize
+        if: steps.anodize-cache.outputs.cache-hit != 'true'
+        run: cargo install --git https://github.com/tj-smith47/anodize --rev "$ANODIZE_REV" --locked anodize
       - name: Configure git identity
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
       - name: Auto-tag release via anodize
-        uses: tj-smith47/anodize-action@master
-        with:
-          args: tag
+        run: anodize tag
         env:
           GITHUB_TOKEN: ${{ secrets.GH_PAT }}
       - name: Push tags
