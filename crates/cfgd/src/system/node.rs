@@ -1086,12 +1086,12 @@ impl SystemConfigurator for CertificateConfigurator {
             .and_then(|v| v.as_str())
             .unwrap_or("/etc/kubernetes/pki");
 
-        fs::create_dir_all(ca_cert_dir)?;
-
         let certs = match desired.get("certificates").and_then(|v| v.as_sequence()) {
             Some(s) => s,
             None => return Ok(()),
         };
+
+        fs::create_dir_all(ca_cert_dir)?;
 
         for cert in certs {
             let name = match cert.get("name").and_then(|v| v.as_str()) {

@@ -4556,16 +4556,16 @@ fn resolve_secret_backend(cli: &Cli, file: &Path) -> anyhow::Result<ProviderRegi
         Some(&cd),
     ));
 
+    if !file.exists() {
+        anyhow::bail!("File not found: {}", file.display());
+    }
+
     match registry.secret_backend {
         Some(ref backend) if !backend.is_available() => {
             anyhow::bail!("{}: not installed", backend.name());
         }
         None => anyhow::bail!("No secret backend configured"),
         _ => {}
-    }
-
-    if !file.exists() {
-        anyhow::bail!("File not found: {}", file.display());
     }
 
     Ok(registry)
