@@ -63,7 +63,6 @@ ureq = "2"
 
 # Git
 git2 = "0.19"
-openssl = { version = "0.10", features = ["vendored"] }
 
 # Templating (output format)
 tera = "1"
@@ -85,6 +84,11 @@ libc = "0.2"
 
 # Zip extraction (upgrade on Windows)
 zip = { version = "2", default-features = false, features = ["deflate"] }
+
+[target.'cfg(not(windows))'.dependencies]
+# Force vendored OpenSSL for git2/libgit2 on Linux and macOS; avoids needing
+# a system OpenSSL install while keeping SSH and HTTPS support in git2.
+openssl = { version = "0.10", features = ["vendored"] }
 
 [target.'cfg(unix)'.dependencies]
 # Safe wrappers over libc for signals, process control, file locking
