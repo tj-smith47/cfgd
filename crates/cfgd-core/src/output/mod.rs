@@ -2026,7 +2026,7 @@ mod tests {
         // r==g==b, 8 <= r <= 248 -> grayscale ramp 232-255
         let idx = ansi256_from_rgb(128, 128, 128);
         assert!(
-            idx >= 232 && idx <= 255,
+            idx >= 232,
             "midrange gray should be in grayscale ramp: {idx}"
         );
     }
@@ -2036,7 +2036,7 @@ mod tests {
         // r!=g or g!=b -> 6x6x6 color cube (16-231)
         let idx = ansi256_from_rgb(255, 0, 0); // pure red
         assert!(
-            idx >= 16 && idx <= 231,
+            (16..=231).contains(&idx),
             "pure red should map to color cube: {idx}"
         );
     }
@@ -2053,7 +2053,7 @@ mod tests {
         for (r, g, b) in colors {
             let idx = ansi256_from_rgb(*r, *g, *b);
             assert!(
-                idx >= 16 && idx <= 231,
+                (16..=231).contains(&idx),
                 "color ({r},{g},{b}) should map to cube or grayscale: {idx}"
             );
         }

@@ -467,7 +467,7 @@ EOF
 # Wait for MachineConfig to appear
 MC_NAME=""
 for i in $(seq 1 30); do
-    MC_NAME=$(kubectl get mc -A --no-headers 2>/dev/null | grep "profile-team" | awk '{print $2}' | head -1)
+    MC_NAME=$(kubectl get mc -A --no-headers 2>/dev/null | grep "profile-team" | awk '{print $2}' | head -1 || true)
     if [ -n "$MC_NAME" ]; then
         break
     fi

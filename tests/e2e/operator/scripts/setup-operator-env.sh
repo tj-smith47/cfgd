@@ -10,11 +10,14 @@ MANIFESTS="$SCRIPT_DIR/../manifests"
 
 echo "=== cfgd Operator E2E Tests ==="
 
-# --- Verify infrastructure is ready ---
-echo "Verifying persistent infrastructure..."
-kubectl wait --for=condition=available deployment/cfgd-operator \
-    -n cfgd-system --timeout=30s
-echo "Operator is running"
+# --- Ensure latest operator image is running ---
+# Force a rollout restart so the pod always pulls :latest from the registry.
+# Without this, a long-running pod may hold a cached pre-release image that
+# predates the metrics endpoint (causing OP-LC-01 to see 0 cfgd_operator_ metrics).
+echo "Restarting cfgd-operator to ensure latest image..."
+kubectl rollout restart deployment/cfgd-operator -n cfgd-system
+kubectl rollout status deployment/cfgd-operator -n cfgd-system --timeout=120s
+echo "Operator is running on latest image"
 
 kubectl get validatingwebhookconfiguration cfgd-validating-webhooks > /dev/null 2>&1 || {
     echo "ERROR: Webhook configurations not found. Run setup-cluster.sh first."

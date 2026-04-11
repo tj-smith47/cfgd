@@ -715,7 +715,7 @@ VERSION_ID="1.0"
     fn parse_os_release_content_no_equals() {
         let content = "NOEQUALS\nID=test\n";
         let fields = parse_os_release_content(content);
-        assert!(fields.get("NOEQUALS").is_none());
+        assert!(!fields.contains_key("NOEQUALS"));
         assert_eq!(fields.get("ID").unwrap(), "test");
     }
 

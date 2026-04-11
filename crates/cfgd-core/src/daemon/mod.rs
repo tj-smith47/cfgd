@@ -9384,7 +9384,7 @@ mod tests {
         let mut merged = MergedProfile::default();
         merged.system.insert(
             "shell".into(),
-            serde_yaml::to_value(&serde_json::json!({"defaultShell": "/bin/zsh"})).unwrap(),
+            serde_yaml::to_value(serde_json::json!({"defaultShell": "/bin/zsh"})).unwrap(),
         );
         merged.system.insert(
             "macos_defaults".into(),

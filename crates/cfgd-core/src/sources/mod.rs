@@ -92,9 +92,11 @@ impl SourceManager {
             }
         })?;
 
-        // Reject local file URLs to prevent local filesystem access from composed sources
+        // Reject local file URLs to prevent local filesystem access from composed sources.
+        // CFGD_ALLOW_LOCAL_SOURCES bypasses this for dev/test environments only.
         let url_lower = spec.origin.url.to_lowercase();
-        if url_lower.starts_with("file://") || url_lower.starts_with('/') {
+        let allow_local = std::env::var("CFGD_ALLOW_LOCAL_SOURCES").is_ok();
+        if !allow_local && (url_lower.starts_with("file://") || url_lower.starts_with('/')) {
             return Err(SourceError::GitError {
                 name: spec.name.clone(),
                 message: "local file:// URLs and absolute paths are not allowed as source origins"

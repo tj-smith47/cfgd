@@ -3255,13 +3255,13 @@ spec:
         cmd_profile_update(&cli, &printer, "default", &args).unwrap();
 
         let doc = config::load_profile(&dir.path().join("profiles").join("default.yaml")).unwrap();
-        if let Some(pkgs) = &doc.spec.packages {
-            if let Some(cargo) = &pkgs.cargo {
-                assert!(
-                    !cargo.packages.contains(&"bat".to_string()),
-                    "bat should be removed from cargo packages"
-                );
-            }
+        if let Some(pkgs) = &doc.spec.packages
+            && let Some(cargo) = &pkgs.cargo
+        {
+            assert!(
+                !cargo.packages.contains(&"bat".to_string()),
+                "bat should be removed from cargo packages"
+            );
         }
     }
 

@@ -96,6 +96,9 @@ setup_config_dir "$CFG" "$TGT"
 CONF="$CFG/cfgd.yaml"
 C="--config $CONF --state-dir $STATE --no-color"
 
+# Allow file:// source URLs for E2E test repos (dev/test only)
+export CFGD_ALLOW_LOCAL_SOURCES=1
+
 # Source repo (shared across all domain files via CLI_SCRATCH)
 SOURCE_REPO="$CLI_SCRATCH/source-repo"
 if [ ! -d "$SOURCE_REPO/.git" ]; then
