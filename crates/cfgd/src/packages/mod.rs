@@ -224,6 +224,23 @@ fn brew_available() -> bool {
     cfg!(target_os = "linux") && std::path::Path::new(LINUXBREW_PATH).exists()
 }
 
+/// True when a Linux system package manager (apt, dnf, or zypper) is on PATH.
+/// Used by Linux-only managers (snap, flatpak) to decide bootstrappability.
+fn linux_system_manager_available() -> bool {
+    command_available("apt") || command_available("dnf") || command_available("zypper")
+}
+
+/// True when any cross-platform system package manager is available.
+/// Covers brew (macOS/Linux), apt/dnf (Linux), and winget/choco/scoop (Windows).
+fn any_system_manager_available() -> bool {
+    brew_available()
+        || command_available("apt")
+        || command_available("dnf")
+        || command_available("winget")
+        || command_available("choco")
+        || command_available("scoop")
+}
+
 /// After brew bootstrap, add brew's bin directories to the current process PATH
 /// so that brew-installed binaries (and post-apply scripts that use them) work
 /// immediately without requiring a new shell session.
@@ -1950,7 +1967,7 @@ impl PackageManager for SnapManager {
         // On non-Linux platforms it is never available.
         #[cfg(target_os = "linux")]
         {
-            command_available("apt") || command_available("dnf") || command_available("zypper")
+            linux_system_manager_available()
         }
         #[cfg(not(target_os = "linux"))]
         {
@@ -2083,7 +2100,7 @@ impl PackageManager for FlatpakManager {
         // flatpak is a Linux-only package manager; bootstrappable via apt/dnf/zypper.
         #[cfg(target_os = "linux")]
         {
-            command_available("apt") || command_available("dnf") || command_available("zypper")
+            linux_system_manager_available()
         }
         #[cfg(not(target_os = "linux"))]
         {
@@ -2398,13 +2415,7 @@ impl PackageManager for GoInstallManager {
     }
 
     fn can_bootstrap(&self) -> bool {
-        // Go can be bootstrapped via any available system package manager
-        brew_available()
-            || command_available("apt")
-            || command_available("dnf")
-            || command_available("winget")
-            || command_available("choco")
-            || command_available("scoop")
+        any_system_manager_available()
     }
 
     fn bootstrap(&self, printer: &Printer) -> Result<()> {
@@ -10479,19 +10490,19 @@ channels:
     #[test]
     fn snap_manager_can_bootstrap_checks_system_managers() {
         let mgr = SnapManager;
-        let can = mgr.can_bootstrap();
-        let expected =
-            command_available("apt") || command_available("dnf") || command_available("zypper");
-        assert_eq!(can, expected);
+        #[cfg(target_os = "linux")]
+        assert_eq!(mgr.can_bootstrap(), linux_system_manager_available());
+        #[cfg(not(target_os = "linux"))]
+        assert!(!mgr.can_bootstrap());
     }
 
     #[test]
     fn flatpak_manager_can_bootstrap_checks_system_managers() {
         let mgr = FlatpakManager;
-        let can = mgr.can_bootstrap();
-        let expected =
-            command_available("apt") || command_available("dnf") || command_available("zypper");
-        assert_eq!(can, expected);
+        #[cfg(target_os = "linux")]
+        assert_eq!(mgr.can_bootstrap(), linux_system_manager_available());
+        #[cfg(not(target_os = "linux"))]
+        assert!(!mgr.can_bootstrap());
     }
 
     #[test]
@@ -10512,9 +10523,7 @@ channels:
     #[test]
     fn go_install_manager_can_bootstrap_checks_cascade() {
         let mgr = GoInstallManager;
-        let can = mgr.can_bootstrap();
-        let expected = brew_available() || command_available("apt") || command_available("dnf");
-        assert_eq!(can, expected);
+        assert_eq!(mgr.can_bootstrap(), any_system_manager_available());
     }
 
     #[test]
