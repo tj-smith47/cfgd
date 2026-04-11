@@ -104,10 +104,11 @@ tasks:
       - task: fmt
 
   lint:
-    desc: Local pre-commit check (tidy, clippy, build, snapshot dry-run)
+    desc: Local pre-commit check (tidy, clippy, audit, build, snapshot dry-run)
     cmds:
       - task: tidy
       - task: clippy
+      - task: audit
       - task: build
       - task: snapshot
 

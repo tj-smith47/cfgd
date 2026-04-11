@@ -1589,7 +1589,10 @@ spec:
         // Create a bare repo as the origin
         let repo = git2::Repository::init(&origin_path).unwrap();
         let sig = git2::Signature::now("Test", "test@example.com").unwrap();
-        std::fs::write(origin_path.join("file.txt"), "hello\n").unwrap();
+        // Use content without a trailing newline. Git for Windows defaults to
+        // core.autocrlf=true, which rewrites LF → CRLF on checkout and would
+        // make the byte comparison below platform-dependent.
+        std::fs::write(origin_path.join("file.txt"), "hello").unwrap();
         let mut index = repo.index().unwrap();
         index.add_path(std::path::Path::new("file.txt")).unwrap();
         index.write().unwrap();

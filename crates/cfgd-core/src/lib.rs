@@ -1569,9 +1569,11 @@ mod tests {
 
     #[test]
     fn validate_path_within_rejects_escape() {
-        let dir = tempfile::tempdir().unwrap();
-        // /tmp itself exists and is outside our tempdir
-        let result = validate_path_within(std::path::Path::new("/tmp"), dir.path());
+        // Use two independent tempdirs so the target exists on every platform
+        // (/tmp is absent on Windows) and lives outside our designated root.
+        let root = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let result = validate_path_within(outside.path(), root.path());
         let err = result.unwrap_err();
         assert_eq!(err.kind(), std::io::ErrorKind::PermissionDenied);
         assert!(
