@@ -38,6 +38,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          fetch-tags: true
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -52,24 +53,13 @@ jobs:
           version: "25.x"
           repo-token: ${{ github.token }}
 
-      # Linux reuses the anodize binary uploaded by ci.yml's snapshot job
-      # (cross-workflow artifact download).  macOS and Windows cargo-install
-      # anodize inline — the cross-workflow artifact is Linux-only, and
-      # anodize-action can't download it for a different platform anyway.
-      - name: Run anodize release --split (Linux)
-        if: runner.os == 'Linux'
-        uses: tj-smith47/anodize-action@master
-        with:
-          from-artifact: anodize-linux
-          artifact-run-id: auto
-          artifact-workflow: ci.yml
-          install: zig,cargo-zigbuild,upx
-          args: release --split --clean
-        env:
-          GITHUB_TOKEN: ${{ secrets.GH_PAT }}
-
-      - name: Cache anodize binary (macOS/Windows)
-        if: runner.os != 'Linux'
+      # anodize is cargo-installed inline on every platform.  Cross-workflow
+      # artifact download from ci.yml is racy — release.yml triggers on the
+      # tag push from ci.yml's tag job, but at that exact moment the ci.yml
+      # run's conclusion hasn't propagated to the API yet, so auto-resolve
+      # can't find a "successful" run for the tagged commit.  Per-platform
+      # cache keyed on the anodize rev makes subsequent runs fast.
+      - name: Cache anodize binary
         id: anodize-cache
         uses: actions/cache@v4
         with:
@@ -78,10 +68,22 @@ jobs:
             ~/.cargo/bin/anodize.exe
           key: anodize-${{ runner.os }}-6d6ebe9c7d3439889f959995e4aabb4cc6aec855
 
-      - name: Install anodize (macOS/Windows)
-        if: runner.os != 'Linux' && steps.anodize-cache.outputs.cache-hit != 'true'
+      - name: Install anodize
+        if: steps.anodize-cache.outputs.cache-hit != 'true'
         shell: bash
         run: cargo install --git https://github.com/tj-smith47/anodize --rev 6d6ebe9c7d3439889f959995e4aabb4cc6aec855 --locked anodize
+
+      - name: Install release deps (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -yq upx
+          # zig + cargo-zigbuild provide the cross-compile toolchain
+          curl -sSfL https://ziglang.org/download/0.13.0/zig-linux-x86_64-0.13.0.tar.xz -o /tmp/zig.tar.xz
+          sudo mkdir -p /opt/zig
+          sudo tar -xJf /tmp/zig.tar.xz -C /opt/zig --strip-components=1
+          sudo ln -sf /opt/zig/zig /usr/local/bin/zig
+          cargo install --locked cargo-zigbuild
 
       - name: Install release deps (macOS)
         if: runner.os == 'macOS'
@@ -96,8 +98,7 @@ jobs:
           choco install zig upx -y --no-progress
           cargo install --locked cargo-zigbuild
 
-      - name: Run anodize release --split (macOS/Windows)
-        if: runner.os != 'Linux'
+      - name: Run anodize release --split
         shell: bash
         run: anodize release --split --clean
         env:
@@ -117,6 +118,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          fetch-tags: true
 
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
@@ -154,17 +156,35 @@ jobs:
       - uses: docker/setup-qemu-action@v3
       - uses: docker/setup-buildx-action@v3
 
-      # Reuse the anodize binary from ci.yml's snapshot job via cross-workflow
-      # artifact download — no rebuild.
-      - name: Run anodize release --merge
-        uses: tj-smith47/anodize-action@master
+      # Install anodize inline (same approach as the build matrix).
+      - name: Cache anodize binary
+        id: anodize-cache
+        uses: actions/cache@v4
         with:
-          from-artifact: anodize-linux
-          artifact-run-id: auto
-          artifact-workflow: ci.yml
-          install: nfpm,makeself,cosign
-          gpg-private-key: ${{ secrets.GPG_PRIVATE_KEY }}
-          args: release --merge
+          path: ~/.cargo/bin/anodize
+          key: anodize-${{ runner.os }}-6d6ebe9c7d3439889f959995e4aabb4cc6aec855
+
+      - name: Install anodize
+        if: steps.anodize-cache.outputs.cache-hit != 'true'
+        run: cargo install --git https://github.com/tj-smith47/anodize --rev 6d6ebe9c7d3439889f959995e4aabb4cc6aec855 --locked anodize
+
+      - name: Install release deps
+        run: |
+          # nfpm via goreleaser apt repo
+          echo 'deb [trusted=yes] https://repo.goreleaser.com/apt/ /' | sudo tee /etc/apt/sources.list.d/goreleaser.list > /dev/null
+          sudo apt-get update -q
+          sudo apt-get install -yq nfpm makeself
+          # cosign from upstream release
+          curl -sSfL https://github.com/sigstore/cosign/releases/latest/download/cosign-linux-amd64 -o /tmp/cosign
+          sudo install /tmp/cosign /usr/local/bin/cosign
+
+      - name: Import GPG private key
+        env:
+          GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
+        run: echo "$GPG_PRIVATE_KEY" | gpg --batch --import
+
+      - name: Run anodize release --merge
+        run: anodize release --merge
         env:
           GITHUB_TOKEN: ${{ secrets.GH_PAT }}
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
