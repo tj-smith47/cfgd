@@ -1612,10 +1612,7 @@ spec:
             "cloned file should exist"
         );
         let content = std::fs::read_to_string(clone_path.join("file.txt")).unwrap();
-        assert_eq!(
-            content, "hello\n",
-            "cloned file should have original content"
-        );
+        assert_eq!(content, "hello", "cloned file should have original content");
 
         // Verify it is a valid git repo
         assert!(
