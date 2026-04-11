@@ -71,6 +71,10 @@ jobs:
       - uses: arduino/setup-task@v2
         with:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Add Strawberry Perl to PATH (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: echo "C:/Strawberry/perl/bin" >> "$GITHUB_PATH"
       - name: Tests
         # Windows tests only the cross-platform crates (cfgd-core + cfgd CLI);
         # the operator and CSI plugins are Linux-only.
