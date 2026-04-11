@@ -2355,7 +2355,10 @@ mod tests {
         let (printer, buf) = Printer::for_test();
 
         let registry = super::build_registry_with_config(None);
-        let store = super::open_state_store(None).unwrap();
+        // Isolate the state store under the tempdir so parallel tests don't
+        // contend on the shared default state database (SQLite lock contention
+        // manifests as 'database is locked' on slower filesystems, e.g. macOS).
+        let store = super::open_state_store(Some(dir.path())).unwrap();
         let reconciler = cfgd_core::reconciler::Reconciler::new(&registry, &store);
         let resolved = config::ResolvedProfile {
             layers: Vec::new(),
@@ -2645,7 +2648,9 @@ spec:
         let (printer, buf) = Printer::for_test();
 
         let registry = super::build_registry_with_config(None);
-        let store = super::open_state_store(None).unwrap();
+        // Isolate the state store under the tempdir so parallel tests don't
+        // contend on the shared default state database.
+        let store = super::open_state_store(Some(dir.path())).unwrap();
         let reconciler = cfgd_core::reconciler::Reconciler::new(&registry, &store);
         let resolved = config::ResolvedProfile {
             layers: Vec::new(),

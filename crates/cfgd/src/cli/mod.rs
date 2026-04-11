@@ -12668,8 +12668,11 @@ spec:
     }
 
     #[test]
+    #[serial_test::serial(default_state_store)]
     fn open_state_store_default() {
-        // Verify the default path variant does not panic and creates a DB
+        // Verify the default path variant does not panic and creates a DB.
+        // Serialized against other tests that touch the default DB path so
+        // parallel SQLite access doesn't trigger 'database is locked'.
         let result = super::open_state_store(None);
         assert!(
             result.is_ok(),

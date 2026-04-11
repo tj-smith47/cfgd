@@ -40,6 +40,7 @@
 
 # CI, tasks, and release config
 !.anodize.yaml
+!cfgd.spec
 !cliff.toml
 /dist/
 !scripts/

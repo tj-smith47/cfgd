@@ -1,6 +1,7 @@
 # yaml-language-server: $schema=https://tj-smith47.github.io/anodize/schema.json
 # cfgd — declarative, GitOps-style machine configuration management.
-# Uses workspaces for independent release cadences per component.
+# Dogfoods every anodize feature that applies to cfgd's 4-workspace monorepo.
+# Templates use Tera syntax with Go-style compat.
 
 version: 2
 project_name: cfgd
@@ -10,6 +11,7 @@ report_sizes: true
 
 env:
   - REGISTRY=ghcr.io
+  - RELEASE_TYPE=stable
 
 variables:
   repo_url: "https://github.com/tj-smith47/cfgd"
@@ -52,17 +54,20 @@ defaults:
   checksum:
     algorithm: sha256
 
-# UPX compression — shrinks the cfgd CLI binary on Linux/Windows.
-# macOS UPX is broken on aarch64; opt out via target list.
+# UPX compression — shrinks binaries on targets UPX supports.
+# macOS ARM is broken in recent UPX; exclude it.
 upx:
-  enabled: true
-  compress: best
-  lzma: true
-  targets:
-    - x86_64-unknown-linux-gnu
-    - aarch64-unknown-linux-gnu
-    - x86_64-pc-windows-msvc
-    - aarch64-pc-windows-msvc
+  - id: default
+    enabled: true
+    binary: upx
+    args:
+      - "--best"
+      - "--lzma"
+    targets:
+      - x86_64-unknown-linux-gnu
+      - aarch64-unknown-linux-gnu
+      - x86_64-apple-darwin
+      - x86_64-pc-windows-msvc
 
 before:
   hooks:
@@ -74,7 +79,7 @@ after:
   post:
     - echo "Release complete for {{ ProjectName }} {{ Tag }}"
 
-# Independent workspaces for per-component release cadences
+# Independent workspaces for per-component release cadences.
 workspaces:
   # --- cfgd-core: shared library (crates.io only) ---
   - name: cfgd-core
@@ -82,6 +87,9 @@ workspaces:
       - name: cfgd-core
         path: crates/cfgd-core
         tag_template: "core-v{{ Version }}"
+        version_sync:
+          enabled: true
+          mode: cargo
         publish:
           crates:
             enabled: true
@@ -94,6 +102,9 @@ workspaces:
         path: crates/cfgd
         tag_template: "v{{ Version }}"
         depends_on: [cfgd-core]
+        version_sync:
+          enabled: true
+          mode: cargo
         builds:
           - binary: cfgd
             features: []
@@ -110,6 +121,10 @@ workspaces:
         checksum:
           name_template: "{{ ProjectName }}-{{ Version }}-checksums.txt"
           algorithm: sha256
+        # Single fat macOS binary from the two per-arch builds.
+        universal_binaries:
+          - name_template: "{{ ProjectName }}"
+            replace: false
         binstall:
           enabled: true
           pkg_url: "https://github.com/tj-smith47/cfgd/releases/download/v{{ Version }}/cfgd-{{ Version }}-{ target }.tar.gz"
@@ -142,23 +157,77 @@ workspaces:
               bin.install "cfgd"
             test: |
               system "#{bin}/cfgd", "--version"
+          scoop:
+            bucket:
+              owner: tj-smith47
+              name: scoop-bucket
+            description: "Declarative, GitOps-style machine configuration management"
+            license: MIT
+          chocolatey:
+            project_repo:
+              owner: tj-smith47
+              name: cfgd
+            description: "Declarative, GitOps-style machine configuration management"
+            license: MIT
+            tags:
+              - configuration
+              - gitops
+              - reconciliation
+              - rust
+          winget:
+            manifests_repo:
+              owner: tj-smith47
+              name: winget-pkgs
+            description: "Declarative, GitOps-style machine configuration management"
+            license: MIT
+            package_identifier: "TJSmith.cfgd"
+            publisher: "TJ Smith"
+          nix:
+            name: cfgd
+            repository:
+              owner: tj-smith47
+              name: nix-pkgs
+            homepage: "https://github.com/tj-smith47/cfgd"
+            description: "Declarative, GitOps-style machine configuration management"
+            license: mit
+            skip_upload: false
           krew:
             manifests_repo:
               owner: tj-smith47
               name: krew-index
             short_description: "Declarative, GitOps-style machine configuration management"
             homepage: "https://github.com/tj-smith47/cfgd"
-        docker:
+        # Docker V2 image for the cfgd agent (CLI + daemon image).
+        docker_v2:
           - id: cfgd-agent
             dockerfile: Dockerfile.agent.release
-            image_templates:
-              - "ghcr.io/tj-smith47/cfgd:{{ Version }}"
-              - "ghcr.io/tj-smith47/cfgd:v{{ Version }}"
-              - "ghcr.io/tj-smith47/cfgd:latest"
+            images:
+              - "ghcr.io/tj-smith47/cfgd"
+            tags:
+              - "{{ Version }}"
+              - "v{{ Version }}"
+              - "latest"
             platforms:
               - linux/amd64
               - linux/arm64
-            use: buildx
+            annotations:
+              org.opencontainers.image.source: "https://github.com/tj-smith47/cfgd"
+              org.opencontainers.image.description: "Declarative, GitOps-style machine configuration management"
+              org.opencontainers.image.licenses: "MIT"
+            build_args:
+              VERSION: "{{ Version }}"
+            sbom: true
+        docker_manifests:
+          - name_template: "ghcr.io/tj-smith47/cfgd:{{ Version }}"
+            image_templates:
+              - "ghcr.io/tj-smith47/cfgd:{{ Version }}-amd64"
+              - "ghcr.io/tj-smith47/cfgd:{{ Version }}-arm64"
+          - name_template: "ghcr.io/tj-smith47/cfgd:latest"
+            image_templates:
+              - "ghcr.io/tj-smith47/cfgd:latest-amd64"
+              - "ghcr.io/tj-smith47/cfgd:latest-arm64"
+        docker_digest:
+          name_template: "cfgd_{{ .Tag }}.digest"
         nfpm:
           - package_name: cfgd
             formats:
@@ -177,6 +246,25 @@ workspaces:
                 dst: /usr/share/doc/cfgd/LICENSE
               - src: README.md
                 dst: /usr/share/doc/cfgd/README.md
+        snapcrafts:
+          - name: cfgd
+            summary: "Declarative, GitOps-style machine configuration management"
+            description: |
+              cfgd is a declarative, GitOps-style machine configuration state
+              management tool.  It ships a cross-platform CLI, a long-running
+              reconciliation daemon, a Kubernetes operator, and a CSI Node
+              plugin for injecting modules into Kubernetes pods.
+            grade: stable
+            confinement: strict
+            license: MIT
+            publish: true
+            apps:
+              cfgd:
+                command: cfgd
+                plugs:
+                  - home
+                  - network
+                  - network-bind
         # Self-extracting installer for Linux & macOS — bundles the binary
         # with a small bootstrap script that installs it to /usr/local/bin.
         makeselfs:
@@ -192,6 +280,9 @@ workspaces:
         path: crates/cfgd-operator
         tag_template: "operator-v{{ Version }}"
         depends_on: [cfgd-core]
+        version_sync:
+          enabled: true
+          mode: cargo
         builds:
           - binary: cfgd-operator
             features: []
@@ -199,17 +290,36 @@ workspaces:
               - x86_64-unknown-linux-gnu
               - aarch64-unknown-linux-gnu
         archives: false
-        docker:
+        docker_v2:
           - id: cfgd-operator
             dockerfile: Dockerfile.operator.release
-            image_templates:
-              - "ghcr.io/tj-smith47/cfgd-operator:{{ Version }}"
-              - "ghcr.io/tj-smith47/cfgd-operator:v{{ Version }}"
-              - "ghcr.io/tj-smith47/cfgd-operator:latest"
+            images:
+              - "ghcr.io/tj-smith47/cfgd-operator"
+            tags:
+              - "{{ Version }}"
+              - "v{{ Version }}"
+              - "latest"
             platforms:
               - linux/amd64
               - linux/arm64
-            use: buildx
+            annotations:
+              org.opencontainers.image.source: "https://github.com/tj-smith47/cfgd"
+              org.opencontainers.image.description: "Kubernetes operator for cfgd"
+              org.opencontainers.image.licenses: "MIT"
+            build_args:
+              VERSION: "{{ Version }}"
+            sbom: true
+        docker_manifests:
+          - name_template: "ghcr.io/tj-smith47/cfgd-operator:{{ Version }}"
+            image_templates:
+              - "ghcr.io/tj-smith47/cfgd-operator:{{ Version }}-amd64"
+              - "ghcr.io/tj-smith47/cfgd-operator:{{ Version }}-arm64"
+          - name_template: "ghcr.io/tj-smith47/cfgd-operator:latest"
+            image_templates:
+              - "ghcr.io/tj-smith47/cfgd-operator:latest-amd64"
+              - "ghcr.io/tj-smith47/cfgd-operator:latest-arm64"
+        docker_digest:
+          name_template: "cfgd-operator_{{ .Tag }}.digest"
         publish:
           crates:
             enabled: true
@@ -221,6 +331,9 @@ workspaces:
         path: crates/cfgd-csi
         tag_template: "csi-v{{ Version }}"
         depends_on: [cfgd-core]
+        version_sync:
+          enabled: true
+          mode: cargo
         builds:
           - binary: cfgd-csi
             features: []
@@ -228,17 +341,36 @@ workspaces:
               - x86_64-unknown-linux-gnu
               - aarch64-unknown-linux-gnu
         archives: false
-        docker:
+        docker_v2:
           - id: cfgd-csi
             dockerfile: Dockerfile.csi.release
-            image_templates:
-              - "ghcr.io/tj-smith47/cfgd-csi:{{ Version }}"
-              - "ghcr.io/tj-smith47/cfgd-csi:v{{ Version }}"
-              - "ghcr.io/tj-smith47/cfgd-csi:latest"
+            images:
+              - "ghcr.io/tj-smith47/cfgd-csi"
+            tags:
+              - "{{ Version }}"
+              - "v{{ Version }}"
+              - "latest"
             platforms:
               - linux/amd64
               - linux/arm64
-            use: buildx
+            annotations:
+              org.opencontainers.image.source: "https://github.com/tj-smith47/cfgd"
+              org.opencontainers.image.description: "CSI Node plugin for cfgd module injection into Kubernetes pods"
+              org.opencontainers.image.licenses: "MIT"
+            build_args:
+              VERSION: "{{ Version }}"
+            sbom: true
+        docker_manifests:
+          - name_template: "ghcr.io/tj-smith47/cfgd-csi:{{ Version }}"
+            image_templates:
+              - "ghcr.io/tj-smith47/cfgd-csi:{{ Version }}-amd64"
+              - "ghcr.io/tj-smith47/cfgd-csi:{{ Version }}-arm64"
+          - name_template: "ghcr.io/tj-smith47/cfgd-csi:latest"
+            image_templates:
+              - "ghcr.io/tj-smith47/cfgd-csi:latest-amd64"
+              - "ghcr.io/tj-smith47/cfgd-csi:latest-arm64"
+        docker_digest:
+          name_template: "cfgd-csi_{{ .Tag }}.digest"
         publish:
           crates:
             enabled: true
@@ -265,6 +397,7 @@ changelog:
     - title: Others
       order: 999
 
+# GPG signing for archives, checksums, and source tarball.
 signs:
   - id: default
     artifacts: checksum
@@ -289,7 +422,7 @@ signs:
       - "--detach-sig"
       - "{{ Artifact }}"
 
-# Cosign-based binary signing for the cfgd CLI binary itself.
+# Cosign-based binary signing for the cfgd CLI binary.
 binary_signs:
   - id: default
     artifacts: binary
@@ -298,6 +431,17 @@ binary_signs:
       - "sign-blob"
       - "--key=env://COSIGN_KEY"
       - "--bundle={{ Signature }}"
+      - "--yes"
+      - "{{ Artifact }}"
+
+# Cosign-based Docker image signing for all 3 images.
+docker_signs:
+  - id: default
+    artifacts: manifests
+    cmd: cosign
+    args:
+      - "sign"
+      - "--key=env://COSIGN_KEY"
       - "--yes"
       - "{{ Artifact }}"
 
@@ -316,8 +460,15 @@ sbom:
   enabled: true
   format: cyclonedx
 
+# Source RPM (exercised by anodize; dogfooded here too).
+srpm:
+  enabled: true
+  package_name: cfgd
+  spec_file: cfgd.spec
+  file_name_template: "{{ ProjectName }}-{{ RawVersion }}-1.src.rpm"
+
 # Curl-pipe install script — rendered with the version baked in and uploaded
-# as a release asset, so users can `curl ... | sh` to install cfgd.
+# as a release asset.
 template_files:
   - id: install-script
     src: scripts/install.sh.tpl
