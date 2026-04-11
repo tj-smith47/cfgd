@@ -1753,9 +1753,13 @@ fn copy_files_to_dir(
         let forbidden_prefixes: &[&str] = &[
             "/etc", "/usr", "/bin", "/sbin", "/var", "/boot", "/sys", "/proc", "/lib", "/lib64",
             "/dev", "/snap",
+            // macOS resolves /etc → /private/etc, /var → /private/var, etc.
+            "/private/etc", "/private/var",
         ];
         for prefix in forbidden_prefixes {
-            if canonical_source.starts_with(prefix) {
+            // Check both original path and canonical path — on macOS, /etc is a
+            // symlink to /private/etc so the canonical path has the /private prefix.
+            if source.starts_with(prefix) || canonical_source.starts_with(prefix) {
                 anyhow::bail!(
                     "Refusing to import '{}': source is in system directory {}",
                     source.display(),

@@ -1088,7 +1088,14 @@ impl SystemConfigurator for CertificateConfigurator {
 
         let certs = match desired.get("certificates").and_then(|v| v.as_sequence()) {
             Some(s) => s,
-            None => return Ok(()),
+            None => {
+                // Create the directory when caCertDir is explicitly configured
+                // (signals intent to manage the PKI directory) even if no certs are listed yet.
+                if desired.get("caCertDir").is_some() {
+                    fs::create_dir_all(ca_cert_dir)?;
+                }
+                return Ok(());
+            }
         };
 
         fs::create_dir_all(ca_cert_dir)?;

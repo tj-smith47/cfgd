@@ -5242,6 +5242,7 @@ MIDDLE: "m"
     }
 
     #[test]
+    #[cfg(not(windows))] // printf with embedded \n is unreliable on Windows
     fn read_command_output_multiline_output() {
         // printf produces multiline output without trailing newline issues
         let output = read_command_output(Command::new("printf").arg("line1\nline2"));

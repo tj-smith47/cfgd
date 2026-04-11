@@ -1946,8 +1946,16 @@ impl PackageManager for SnapManager {
     }
 
     fn can_bootstrap(&self) -> bool {
-        // snapd is pre-installed on Ubuntu; on other distros, install via system manager
-        command_available("apt") || command_available("dnf") || command_available("zypper")
+        // snap is a Linux-only package manager; bootstrappable via apt/dnf/zypper.
+        // On non-Linux platforms it is never available.
+        #[cfg(target_os = "linux")]
+        {
+            command_available("apt") || command_available("dnf") || command_available("zypper")
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            false
+        }
     }
 
     fn bootstrap(&self, printer: &Printer) -> Result<()> {
@@ -7936,12 +7944,11 @@ PowerShell            Microsoft.PowerShell      7.4.0                 winget\n";
     fn all_package_managers_bootstrap_consistency() {
         let managers = all_package_managers();
         // Managers that should be bootstrappable
-        let bootstrappable: HashSet<&str> = [
+        let mut bootstrappable: HashSet<&str> = [
             "brew",
             "cargo",
             "npm",
             "pipx",
-            "snap",
             "flatpak",
             "nix",
             "go",
@@ -7949,8 +7956,12 @@ PowerShell            Microsoft.PowerShell      7.4.0                 winget\n";
             "scoop",
         ]
         .into();
+        // snap is Linux-only; its can_bootstrap() returns false on other platforms
+        #[cfg(target_os = "linux")]
+        bootstrappable.insert("snap");
+
         // Managers that should NOT be bootstrappable
-        let not_bootstrappable: HashSet<&str> = [
+        let mut not_bootstrappable: HashSet<&str> = [
             "brew-tap",
             "brew-cask",
             "apt",
@@ -7963,6 +7974,8 @@ PowerShell            Microsoft.PowerShell      7.4.0                 winget\n";
             "winget",
         ]
         .into();
+        #[cfg(not(target_os = "linux"))]
+        not_bootstrappable.insert("snap");
 
         for m in &managers {
             if bootstrappable.contains(m.name()) {

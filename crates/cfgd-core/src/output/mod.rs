@@ -583,7 +583,7 @@ impl Printer {
     /// Append a line to the test buffer (no-op when buffer is absent).
     fn capture(&self, text: &str) {
         if let Some(ref buf) = self.test_buf {
-            let mut b = buf.lock().unwrap();
+            let mut b = buf.lock().unwrap_or_else(|e| e.into_inner());
             b.push_str(text);
             b.push('\n');
         }

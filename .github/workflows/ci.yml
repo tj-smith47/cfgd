@@ -101,8 +101,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - run: bash .claude/scripts/audit.sh || true
-        continue-on-error: true
+      - run: bash .claude/scripts/audit.sh
 
   coverage:
     name: Coverage

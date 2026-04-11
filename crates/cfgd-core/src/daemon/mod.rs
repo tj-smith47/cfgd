@@ -2580,11 +2580,15 @@ fn uninstall_windows_service() -> Result<()> {
         })?;
 
     if !output.status.success() {
+        let stdout = crate::stdout_lossy_trimmed(&output);
+        // Error 1060 = "The specified service does not exist as an installed service."
+        // Treat this as a noop — uninstalling a non-existent service is idempotent.
+        if stdout.contains("1060") || stdout.contains("does not exist") {
+            tracing::debug!("cfgd Windows Service not found; nothing to remove");
+            return Ok(());
+        }
         return Err(DaemonError::ServiceInstallFailed {
-            message: format!(
-                "sc.exe delete failed: {}",
-                crate::stdout_lossy_trimmed(&output)
-            ),
+            message: format!("sc.exe delete failed: {}", stdout),
         }
         .into());
     }
