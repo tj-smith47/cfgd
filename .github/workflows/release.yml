@@ -52,13 +52,54 @@ jobs:
           version: "25.x"
           repo-token: ${{ github.token }}
 
-      # Install anodize from its GitHub release (default: latest), then run
-      # release --split which builds cfgd for the matrix target set.
-      - name: Run anodize release --split
+      # Linux reuses the anodize binary uploaded by ci.yml's snapshot job
+      # (cross-workflow artifact download).  macOS and Windows cargo-install
+      # anodize inline — the cross-workflow artifact is Linux-only, and
+      # anodize-action can't download it for a different platform anyway.
+      - name: Run anodize release --split (Linux)
+        if: runner.os == 'Linux'
         uses: tj-smith47/anodize-action@master
         with:
+          from-artifact: anodize-linux
+          artifact-run-id: auto
+          artifact-workflow: ci.yml
           install: zig,cargo-zigbuild,upx
           args: release --split --clean
+        env:
+          GITHUB_TOKEN: ${{ secrets.GH_PAT }}
+
+      - name: Cache anodize binary (macOS/Windows)
+        if: runner.os != 'Linux'
+        id: anodize-cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/anodize
+            ~/.cargo/bin/anodize.exe
+          key: anodize-${{ runner.os }}-6d6ebe9c7d3439889f959995e4aabb4cc6aec855
+
+      - name: Install anodize (macOS/Windows)
+        if: runner.os != 'Linux' && steps.anodize-cache.outputs.cache-hit != 'true'
+        shell: bash
+        run: cargo install --git https://github.com/tj-smith47/anodize --rev 6d6ebe9c7d3439889f959995e4aabb4cc6aec855 --locked anodize
+
+      - name: Install release deps (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          brew install zig upx
+          cargo install --locked cargo-zigbuild
+
+      - name: Install release deps (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          choco install zig upx -y --no-progress
+          cargo install --locked cargo-zigbuild
+
+      - name: Run anodize release --split (macOS/Windows)
+        if: runner.os != 'Linux'
+        shell: bash
+        run: anodize release --split --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GH_PAT }}
 
@@ -113,9 +154,14 @@ jobs:
       - uses: docker/setup-qemu-action@v3
       - uses: docker/setup-buildx-action@v3
 
+      # Reuse the anodize binary from ci.yml's snapshot job via cross-workflow
+      # artifact download — no rebuild.
       - name: Run anodize release --merge
         uses: tj-smith47/anodize-action@master
         with:
+          from-artifact: anodize-linux
+          artifact-run-id: auto
+          artifact-workflow: ci.yml
           install: nfpm,makeself,cosign
           gpg-private-key: ${{ secrets.GPG_PRIVATE_KEY }}
           args: release --merge

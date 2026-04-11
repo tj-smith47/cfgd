@@ -179,6 +179,18 @@ jobs:
       - name: Install anodize
         if: steps.anodize-cache.outputs.cache-hit != 'true'
         run: cargo install --git https://github.com/tj-smith47/anodize --rev "$ANODIZE_REV" --locked anodize
+      # Stage the binary into a clean directory so upload-artifact uploads
+      # exactly one file.  Downstream jobs use anodize-action's from-artifact
+      # which expects a binary literally named `anodize` (or `anodize.exe`).
+      - name: Stage anodize binary for artifact upload
+        run: |
+          mkdir -p anodize-bin
+          cp ~/.cargo/bin/anodize anodize-bin/anodize
+      - name: Upload anodize binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: anodize-linux
+          path: anodize-bin/anodize
       - name: Validate release pipeline via anodize
         run: anodize release --snapshot --single-target --clean --dry-run
         env:
@@ -191,30 +203,23 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
-    env:
-      ANODIZE_REV: 6d6ebe9c7d3439889f959995e4aabb4cc6aec855
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          # GH_PAT (not GITHUB_TOKEN) so the tag push triggers release.yml.
+          # GITHUB_TOKEN-authored pushes don't trigger downstream workflows.
           token: ${{ secrets.GH_PAT }}
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-      - name: Cache anodize binary
-        id: anodize-cache
-        uses: actions/cache@v4
-        with:
-          path: ~/.cargo/bin/anodize
-          key: anodize-${{ runner.os }}-${{ env.ANODIZE_REV }}
-      - name: Install anodize
-        if: steps.anodize-cache.outputs.cache-hit != 'true'
-        run: cargo install --git https://github.com/tj-smith47/anodize --rev "$ANODIZE_REV" --locked anodize
       - name: Configure git identity
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
+      # Reuse the anodize binary uploaded by the snapshot job — no rebuild.
       - name: Auto-tag release via anodize
-        run: anodize tag
+        uses: tj-smith47/anodize-action@master
+        with:
+          from-artifact: anodize-linux
+          args: tag
         env:
           GITHUB_TOKEN: ${{ secrets.GH_PAT }}
       - name: Push tags
