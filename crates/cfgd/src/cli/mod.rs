@@ -1750,12 +1750,16 @@ fn copy_files_to_dir(
         let canonical_source = source
             .canonicalize()
             .unwrap_or_else(|_| source.to_path_buf());
+        // These prefixes are checked against both the original and canonical path.
+        // /var is omitted here because on macOS /var/folders is the user temp
+        // directory — tempfile crates produce paths under /var/folders/… which
+        // must remain importable.  /var on Linux is covered via canonical_source
+        // (Linux does not redirect /var, so original == canonical there).
         let forbidden_prefixes: &[&str] = &[
             "/etc",
             "/usr",
             "/bin",
             "/sbin",
-            "/var",
             "/boot",
             "/sys",
             "/proc",
@@ -1763,13 +1767,10 @@ fn copy_files_to_dir(
             "/lib64",
             "/dev",
             "/snap",
-            // macOS resolves /etc → /private/etc, /var → /private/var, etc.
+            // macOS symlinks /etc → /private/etc; check canonical to catch traversal.
             "/private/etc",
-            "/private/var",
         ];
         for prefix in forbidden_prefixes {
-            // Check both original path and canonical path — on macOS, /etc is a
-            // symlink to /private/etc so the canonical path has the /private prefix.
             if source.starts_with(prefix) || canonical_source.starts_with(prefix) {
                 anyhow::bail!(
                     "Refusing to import '{}': source is in system directory {}",
@@ -1777,6 +1778,16 @@ fn copy_files_to_dir(
                     prefix
                 );
             }
+        }
+        // Check /var against the canonical path only. On Linux canonical == original
+        // so this catches system /var correctly. On macOS /var symlinks to
+        // /private/var, so temp files (/var/folders/…) canonicalize to
+        // /private/var/folders/… which does not start with /var — safe to allow.
+        if canonical_source.starts_with("/var") {
+            anyhow::bail!(
+                "Refusing to import '{}': source is in system directory /var",
+                source.display()
+            );
         }
 
         std::fs::create_dir_all(repo_dir)?;

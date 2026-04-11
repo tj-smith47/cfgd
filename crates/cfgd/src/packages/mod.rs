@@ -2080,7 +2080,15 @@ impl PackageManager for FlatpakManager {
     }
 
     fn can_bootstrap(&self) -> bool {
-        command_available("apt") || command_available("dnf") || command_available("zypper")
+        // flatpak is a Linux-only package manager; bootstrappable via apt/dnf/zypper.
+        #[cfg(target_os = "linux")]
+        {
+            command_available("apt") || command_available("dnf") || command_available("zypper")
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            false
+        }
     }
 
     fn bootstrap(&self, printer: &Printer) -> Result<()> {
@@ -7944,19 +7952,19 @@ PowerShell            Microsoft.PowerShell      7.4.0                 winget\n";
     fn all_package_managers_bootstrap_consistency() {
         let managers = all_package_managers();
 
-        // snap is Linux-only; its can_bootstrap() always returns false elsewhere.
+        // snap and flatpak are Linux-only; can_bootstrap() always returns false elsewhere.
         #[cfg(target_os = "linux")]
         let bootstrappable: HashSet<&str> = [
             "brew",
             "cargo",
             "npm",
             "pipx",
-            "flatpak",
             "nix",
             "go",
             "chocolatey",
             "scoop",
             "snap",
+            "flatpak",
         ]
         .into();
         #[cfg(not(target_os = "linux"))]
@@ -7965,7 +7973,6 @@ PowerShell            Microsoft.PowerShell      7.4.0                 winget\n";
             "cargo",
             "npm",
             "pipx",
-            "flatpak",
             "nix",
             "go",
             "chocolatey",
@@ -8000,6 +8007,7 @@ PowerShell            Microsoft.PowerShell      7.4.0                 winget\n";
             "pkg",
             "winget",
             "snap",
+            "flatpak",
         ]
         .into();
 
