@@ -15,6 +15,12 @@ kubectl get validatingwebhookconfiguration cfgd-validating-webhooks > /dev/null 
     exit 1
 }
 
+# Block until the operator Service has ready endpoints. The webhook server
+# lives behind cfgd-operator:443 — tests that create resources via admission
+# will fail with "no endpoints available for service cfgd-operator" if we
+# run while the Service is transitioning (deployment rollout, node restart).
+wait_for_service_endpoints cfgd-system cfgd-operator 120
+
 # Wrapper: apply YAML and fail the current test (not the whole script) on error.
 # Usage: apply_yaml "T03" <<'EOF' ... EOF
 apply_yaml() {

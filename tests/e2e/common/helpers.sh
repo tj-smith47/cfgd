@@ -257,6 +257,31 @@ wait_for_k8s_field() {
     return 1
 }
 
+# Wait until a Service has ready Endpoints (webhook-backed services need this:
+# Deployment-level Available=True can return before Endpoints repopulate during
+# a rolling update, causing admission webhook calls to fail with
+# "no endpoints available for service"). Poll the Endpoints object for any
+# address in the subsets.addresses list.
+# Usage: wait_for_service_endpoints <namespace> <service> [timeout_seconds]
+wait_for_service_endpoints() {
+    local namespace="$1"
+    local service="$2"
+    local timeout="${3:-120}"
+    local deadline=$((SECONDS + timeout))
+    while [ $SECONDS -lt $deadline ]; do
+        local addrs
+        addrs=$(kubectl get endpoints "$service" -n "$namespace" \
+            -o jsonpath='{.subsets[*].addresses[*].ip}' 2>/dev/null || echo "")
+        if [ -n "$addrs" ]; then
+            return 0
+        fi
+        sleep 2
+    done
+    echo "  ERROR: Service $namespace/$service has no ready endpoints after ${timeout}s"
+    kubectl get endpoints "$service" -n "$namespace" -o yaml 2>&1 | head -20 || true
+    return 1
+}
+
 # --- Build helpers ---
 
 # Ensure the cfgd binary is built (idempotent). Sets CFGD_BIN.

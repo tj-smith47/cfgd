@@ -13,8 +13,13 @@ echo "=== cfgd Full-Stack E2E Tests ==="
 
 # --- Verify infrastructure ---
 echo "Verifying persistent infrastructure..."
-kubectl wait --for=condition=available deployment/cfgd-operator -n cfgd-system --timeout=30s
-kubectl wait --for=condition=available deployment/cfgd-server -n cfgd-system --timeout=30s
+kubectl wait --for=condition=available deployment/cfgd-operator -n cfgd-system --timeout=120s
+kubectl wait --for=condition=available deployment/cfgd-server -n cfgd-system --timeout=120s
+# Deployment Available can flip True before Service Endpoints repopulate during
+# a rolling update, which makes admission webhook calls fail transiently with
+# "no endpoints available for service cfgd-operator". Block on real endpoints.
+wait_for_service_endpoints cfgd-system cfgd-operator 120
+wait_for_service_endpoints cfgd-system cfgd-server 120
 echo "All persistent components running"
 
 # Check CSI driver
