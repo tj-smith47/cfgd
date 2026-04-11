@@ -2398,8 +2398,13 @@ impl PackageManager for GoInstallManager {
     }
 
     fn can_bootstrap(&self) -> bool {
-        // Go can be bootstrapped via system package managers
-        brew_available() || command_available("apt") || command_available("dnf")
+        // Go can be bootstrapped via any available system package manager
+        brew_available()
+            || command_available("apt")
+            || command_available("dnf")
+            || command_available("winget")
+            || command_available("choco")
+            || command_available("scoop")
     }
 
     fn bootstrap(&self, printer: &Printer) -> Result<()> {
