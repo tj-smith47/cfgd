@@ -30,7 +30,7 @@ jobs:
         with:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
       - name: Check formatting
-        run: task fmt
+        run: task fmt:check
 
   clippy:
     name: Clippy
@@ -75,12 +75,11 @@ jobs:
         # Windows tests only the cross-platform crates (cfgd-core + cfgd CLI);
         # the operator and CSI plugins are Linux-only.
         shell: bash
-        env:
-          # Point openssl-sys to the pre-installed OpenSSL on Windows runners
-          # so git2/libgit2 can link against it without a vendored build.
-          OPENSSL_DIR: ${{ runner.os == 'Windows' && 'C:/Program Files/OpenSSL' || '' }}
         run: |
           if [ "$RUNNER_OS" = "Windows" ]; then
+            # Point openssl-sys to the pre-installed OpenSSL on Windows runners
+            # so git2/libgit2 can link against it without a vendored build.
+            export OPENSSL_DIR='C:/Program Files/OpenSSL'
             cargo test -p cfgd-core -p cfgd
           else
             task test

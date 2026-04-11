@@ -48,22 +48,22 @@ tasks:
   # --- Quality ---
 
   check:
-    desc: Run all quality checks (fmt, clippy, test, audit)
+    desc: Run all quality checks (fmt:check, clippy, test, audit)
     cmds:
-      - task: fmt
+      - task: fmt:check
       - task: clippy
       - task: test
       - task: audit
 
   fmt:
-    desc: Check code formatting
-    cmds:
-      - cargo fmt --check
-
-  fmt:fix:
-    desc: Fix code formatting
+    desc: Format code
     cmds:
       - cargo fmt
+
+  fmt:check:
+    desc: Check code formatting (CI)
+    cmds:
+      - cargo fmt --check
 
   clippy:
     desc: Run clippy linter
@@ -99,9 +99,9 @@ tasks:
   # --- Pre-commit pipeline (mirrors anodize/Taskfile.yml) ---
 
   tidy:
-    desc: Format code (fmt:fix)
+    desc: Format code
     cmds:
-      - task: fmt:fix
+      - task: fmt
 
   lint:
     desc: Local pre-commit check (tidy, clippy, build, snapshot dry-run)
@@ -123,7 +123,7 @@ tasks:
   ci:
     desc: Run all CI checks (everything except cross-platform builds)
     cmds:
-      - task: fmt
+      - task: fmt:check
       - task: clippy
       - task: test
       - task: package
