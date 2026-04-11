@@ -226,6 +226,7 @@ fn brew_available() -> bool {
 
 /// True when a Linux system package manager (apt, dnf, or zypper) is on PATH.
 /// Used by Linux-only managers (snap, flatpak) to decide bootstrappability.
+#[cfg(target_os = "linux")]
 fn linux_system_manager_available() -> bool {
     command_available("apt") || command_available("dnf") || command_available("zypper")
 }
