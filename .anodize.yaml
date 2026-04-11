@@ -20,6 +20,7 @@ git:
 
 tag:
   default_bump: patch
+  branch_history: last
   tag_prefix: "v"
   release_branches:
     - master
