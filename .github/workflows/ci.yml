@@ -84,17 +84,6 @@ jobs:
           else
             task test
           fi
-      # Build the cfgd CLI on Linux only — used as bootstrap for the release
-      # workflow split jobs and for the snapshot dry-run.
-      - name: Build release binary
-        if: github.ref == 'refs/heads/master' && runner.os == 'Linux'
-        run: task build
-      - name: Upload release binary
-        if: github.ref == 'refs/heads/master' && runner.os == 'Linux'
-        uses: actions/upload-artifact@v4
-        with:
-          name: cfgd-linux
-          path: target/release/cfgd
 
   audit:
     name: Code Audit
@@ -177,7 +166,6 @@ jobs:
       - name: Validate release pipeline via anodize
         uses: tj-smith47/anodize-action@master
         with:
-          from-artifact: cfgd-linux
           args: release --snapshot --single-target --clean --dry-run
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -201,7 +189,6 @@ jobs:
       - name: Auto-tag release via anodize
         uses: tj-smith47/anodize-action@master
         with:
-          from-artifact: cfgd-linux
           args: tag
         env:
           GITHUB_TOKEN: ${{ secrets.GH_PAT }}

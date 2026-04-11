@@ -52,26 +52,11 @@ jobs:
           version: "25.x"
           repo-token: ${{ github.token }}
 
-      # Linux reuses the CI-built cfgd binary; macOS/Windows must build the
-      # tool from source.  Both paths flow through anodize-action so the
-      # release workflow has a single entry point.
-      - name: Run anodize release --split (Linux — bootstrap from CI)
-        if: runner.os == 'Linux'
+      # Install anodize from its GitHub release (default: latest), then run
+      # release --split which builds cfgd for the matrix target set.
+      - name: Run anodize release --split
         uses: tj-smith47/anodize-action@master
         with:
-          from-artifact: cfgd-linux
-          artifact-run-id: auto
-          artifact-workflow: ci.yml
-          install: zig,cargo-zigbuild,upx
-          args: release --split --clean
-        env:
-          GITHUB_TOKEN: ${{ secrets.GH_PAT }}
-
-      - name: Run anodize release --split (macOS/Windows — bootstrap from source)
-        if: runner.os != 'Linux'
-        uses: tj-smith47/anodize-action@master
-        with:
-          from-source: true
           install: zig,cargo-zigbuild,upx
           args: release --split --clean
         env:
@@ -131,9 +116,6 @@ jobs:
       - name: Run anodize release --merge
         uses: tj-smith47/anodize-action@master
         with:
-          from-artifact: cfgd-linux
-          artifact-run-id: auto
-          artifact-workflow: ci.yml
           install: nfpm,makeself,cosign
           gpg-private-key: ${{ secrets.GPG_PRIVATE_KEY }}
           args: release --merge
