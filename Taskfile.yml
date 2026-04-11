@@ -117,6 +117,8 @@ tasks:
       - sh: git diff --cached --quiet || test -n "$(git diff --cached --name-only)"
         msg: "Nothing staged. Stage files with git add before running task commit."
     cmds:
+      - task: tidy
+      - git add -u
       - task: lint
       - git commit {{.CLI_ARGS}}
 

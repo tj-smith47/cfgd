@@ -1751,10 +1751,21 @@ fn copy_files_to_dir(
             .canonicalize()
             .unwrap_or_else(|_| source.to_path_buf());
         let forbidden_prefixes: &[&str] = &[
-            "/etc", "/usr", "/bin", "/sbin", "/var", "/boot", "/sys", "/proc", "/lib", "/lib64",
-            "/dev", "/snap",
+            "/etc",
+            "/usr",
+            "/bin",
+            "/sbin",
+            "/var",
+            "/boot",
+            "/sys",
+            "/proc",
+            "/lib",
+            "/lib64",
+            "/dev",
+            "/snap",
             // macOS resolves /etc → /private/etc, /var → /private/var, etc.
-            "/private/etc", "/private/var",
+            "/private/etc",
+            "/private/var",
         ];
         for prefix in forbidden_prefixes {
             // Check both original path and canonical path — on macOS, /etc is a

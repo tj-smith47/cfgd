@@ -7943,8 +7943,24 @@ PowerShell            Microsoft.PowerShell      7.4.0                 winget\n";
     #[test]
     fn all_package_managers_bootstrap_consistency() {
         let managers = all_package_managers();
-        // Managers that should be bootstrappable
-        let mut bootstrappable: HashSet<&str> = [
+
+        // snap is Linux-only; its can_bootstrap() always returns false elsewhere.
+        #[cfg(target_os = "linux")]
+        let bootstrappable: HashSet<&str> = [
+            "brew",
+            "cargo",
+            "npm",
+            "pipx",
+            "flatpak",
+            "nix",
+            "go",
+            "chocolatey",
+            "scoop",
+            "snap",
+        ]
+        .into();
+        #[cfg(not(target_os = "linux"))]
+        let bootstrappable: HashSet<&str> = [
             "brew",
             "cargo",
             "npm",
@@ -7956,12 +7972,9 @@ PowerShell            Microsoft.PowerShell      7.4.0                 winget\n";
             "scoop",
         ]
         .into();
-        // snap is Linux-only; its can_bootstrap() returns false on other platforms
-        #[cfg(target_os = "linux")]
-        bootstrappable.insert("snap");
 
-        // Managers that should NOT be bootstrappable
-        let mut not_bootstrappable: HashSet<&str> = [
+        #[cfg(target_os = "linux")]
+        let not_bootstrappable: HashSet<&str> = [
             "brew-tap",
             "brew-cask",
             "apt",
@@ -7975,7 +7988,20 @@ PowerShell            Microsoft.PowerShell      7.4.0                 winget\n";
         ]
         .into();
         #[cfg(not(target_os = "linux"))]
-        not_bootstrappable.insert("snap");
+        let not_bootstrappable: HashSet<&str> = [
+            "brew-tap",
+            "brew-cask",
+            "apt",
+            "dnf",
+            "apk",
+            "pacman",
+            "zypper",
+            "yum",
+            "pkg",
+            "winget",
+            "snap",
+        ]
+        .into();
 
         for m in &managers {
             if bootstrappable.contains(m.name()) {
