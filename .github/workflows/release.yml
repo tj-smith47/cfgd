@@ -87,7 +87,7 @@ jobs:
           artifact-workflow: ci.yml
           install: zig,cargo-zigbuild,upx
           upload-dist: 'true'
-          args: release --split --clean --crate ${{ needs.resolve.outputs.workspace }}
+          args: release --verbose --split --clean --crate ${{ needs.resolve.outputs.workspace }}
         env:
           GITHUB_TOKEN: ${{ secrets.GH_PAT }}
 
@@ -125,7 +125,7 @@ jobs:
           docker-password: ${{ secrets.GITHUB_TOKEN }}
           gpg-private-key: ${{ secrets.GPG_PRIVATE_KEY }}
           args: >-
-            release
+            release --verbose
             ${{ needs.resolve.outputs.has-builds == 'true' && '--merge' || '' }}
             --crate ${{ needs.resolve.outputs.workspace }}
         env:
@@ -136,6 +136,9 @@ jobs:
           COSIGN_KEY: ${{ secrets.COSIGN_KEY }}
           COSIGN_PASSWORD: ${{ secrets.COSIGN_PASSWORD }}
           HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          SCOOP_BUCKET_TOKEN: ${{ secrets.SCOOP_BUCKET_TOKEN }}
+          WINGET_PKGS_TOKEN: ${{ secrets.WINGET_PKGS_TOKEN }}
+          NIX_PKGS_TOKEN: ${{ secrets.NIX_PKGS_TOKEN }}
           KREW_INDEX_TOKEN: ${{ secrets.KREW_INDEX_TOKEN }}
           SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
           SNAPCRAFT_STORE_CREDENTIALS: ${{ secrets.SNAPCRAFT_STORE_CREDENTIALS }}

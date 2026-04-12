@@ -26,7 +26,7 @@ tag:
   tag_prefix: "v"
   release_branches:
     - master
-  initial_version: "0.3.2"
+  initial_version: "0.3.3"
 
 metadata:
   description: "Declarative, GitOps-style machine configuration management"
@@ -68,6 +68,16 @@ upx:
       - aarch64-unknown-linux-gnu
       - x86_64-apple-darwin
       - x86_64-pc-windows-msvc
+
+# Self-extracting installer for Linux & macOS — bundles the binary
+# with a small bootstrap script that installs it to /usr/local/bin.
+# Top-level config (not per-crate); skipped automatically for library
+# crates that produce no binaries.
+makeselfs:
+  - id: default
+    name: "cfgd Installer"
+    script: scripts/makeself-install.sh
+    name_template: "{{ ProjectName }}-{{ Version }}-{{ Os }}-{{ Arch }}-installer.run"
 
 before:
   hooks:
@@ -265,13 +275,6 @@ workspaces:
                   - home
                   - network
                   - network-bind
-        # Self-extracting installer for Linux & macOS — bundles the binary
-        # with a small bootstrap script that installs it to /usr/local/bin.
-        makeselfs:
-          - id: default
-            name: "cfgd Installer"
-            script: scripts/makeself-install.sh
-            name_template: "{{ ProjectName }}-{{ Version }}-{{ Os }}-{{ Arch }}-installer.run"
 
   # --- cfgd-operator: Kubernetes operator (Linux only, Docker + Helm) ---
   - name: cfgd-operator
