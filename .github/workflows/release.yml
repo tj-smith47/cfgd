@@ -21,33 +21,31 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  # Map the triggering tag to the anodize workspace being released.
-  # cfgd is a 4-workspace monorepo; each workspace has its own tag prefix:
-  #   v*          → cfgd (CLI)
-  #   core-v*     → cfgd-core (library)
-  #   operator-v* → cfgd-operator
-  #   csi-v*      → cfgd-csi
-  resolve-workspace:
-    name: Resolve workspace from tag
+  # Resolve tag → crate via anodize resolve-tag (replaces custom shell logic).
+  resolve:
+    name: Resolve workspace
     runs-on: ubuntu-latest
     outputs:
-      workspace: ${{ steps.map.outputs.workspace }}
+      workspace: ${{ steps.anodize.outputs.workspace }}
+      has-builds: ${{ steps.anodize.outputs.has-builds }}
     steps:
-      - id: map
-        run: |
-          case "${GITHUB_REF_NAME}" in
-            core-v*)     crate=cfgd-core ;;
-            operator-v*) crate=cfgd-operator ;;
-            csi-v*)      crate=cfgd-csi ;;
-            v*)          crate=cfgd ;;
-            *)           echo "::error::Unrecognized tag: ${GITHUB_REF_NAME}"; exit 1 ;;
-          esac
-          echo "workspace=$crate" >> "$GITHUB_OUTPUT"
-          echo "::notice::Releasing crate '$crate' for tag ${GITHUB_REF_NAME}"
+      - uses: actions/checkout@v4
+      - name: Resolve workspace from tag
+        id: anodize
+        uses: tj-smith47/anodize-action@master
+        with:
+          from-artifact: anodize-linux
+          artifact-run-id: auto
+          artifact-workflow: ci.yml
+          install-only: 'true'
+          resolve-workspace: 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
 
   build:
     name: Build (${{ matrix.os }})
-    needs: resolve-workspace
+    needs: resolve
+    if: needs.resolve.outputs.has-builds == 'true'
     strategy:
       fail-fast: false
       matrix:
@@ -80,10 +78,6 @@ jobs:
           version: "25.x"
           repo-token: ${{ github.token }}
 
-      # Every platform reuses the anodize binary uploaded by ci.yml's test
-      # matrix via cross-workflow artifact download — no per-platform rebuild.
-      # anodize-action's `install` input handles zig/cargo-zigbuild/upx via
-      # the right native package manager for each OS.
       - name: Run anodize release --split
         uses: tj-smith47/anodize-action@master
         with:
@@ -91,19 +85,16 @@ jobs:
           artifact-run-id: auto
           artifact-workflow: ci.yml
           install: zig,cargo-zigbuild,upx
-          args: release --split --clean --crate ${{ needs.resolve-workspace.outputs.workspace }}
+          upload-dist: 'true'
+          args: release --split --clean --crate ${{ needs.resolve.outputs.workspace }}
         env:
           GITHUB_TOKEN: ${{ secrets.GH_PAT }}
 
-      - name: Upload split artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: dist-${{ runner.os }}
-          path: dist/
-
   release:
     name: Publish Release
-    needs: [resolve-workspace, build]
+    needs: [resolve, build]
+    # Run even when build was skipped (library-only crate).
+    if: ${{ !cancelled() && needs.resolve.result == 'success' && (needs.build.result == 'success' || needs.build.result == 'skipped') }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -117,46 +108,23 @@ jobs:
           version: "25.x"
           repo-token: ${{ github.token }}
 
-      # Download all split artifacts into dist/ before running anodize --merge.
-      - name: Download split artifacts
-        uses: actions/download-artifact@v4
-        with:
-          path: dist/
-          pattern: dist-*
-          merge-multiple: true
-
-      - name: Verify split artifacts
-        run: |
-          echo "Split contexts found:"
-          find dist -name context.json -type f
-          COUNT=$(find dist -name context.json -type f | wc -l)
-          if [ "$COUNT" -eq 0 ]; then
-            echo "::error::No split context files found in dist/"
-            exit 1
-          fi
-          echo "Found $COUNT split context(s)"
-
-      - name: Log in to GHCR for docker stage
-        uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - uses: docker/setup-qemu-action@v3
-      - uses: docker/setup-buildx-action@v3
-
-      # Reuse the anodize binary from ci.yml's test matrix via cross-workflow
-      # artifact download — no rebuild.
-      - name: Run anodize release --merge
+      # --merge is only valid when split build artifacts exist (binary crates).
+      # Library-only crates run the full pipeline in one shot.
+      - name: Run anodize release
         uses: tj-smith47/anodize-action@master
         with:
           from-artifact: anodize-linux
           artifact-run-id: auto
           artifact-workflow: ci.yml
-          install: nfpm,makeself,snapcraft,rpmbuild,cosign
+          install: ${{ needs.resolve.outputs.has-builds == 'true' && 'nfpm,makeself,snapcraft,rpmbuild,cosign' || '' }}
+          download-dist: ${{ needs.resolve.outputs.has-builds }}
+          docker-registry: ${{ needs.resolve.outputs.has-builds == 'true' && 'ghcr.io' || '' }}
+          docker-password: ${{ secrets.GITHUB_TOKEN }}
           gpg-private-key: ${{ secrets.GPG_PRIVATE_KEY }}
-          args: release --merge --crate ${{ needs.resolve-workspace.outputs.workspace }}
+          args: >-
+            release
+            ${{ needs.resolve.outputs.has-builds == 'true' && '--merge' || '' }}
+            --crate ${{ needs.resolve.outputs.workspace }}
         env:
           GITHUB_TOKEN: ${{ secrets.GH_PAT }}
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
@@ -170,13 +138,10 @@ jobs:
           SNAPCRAFT_STORE_CREDENTIALS: ${{ secrets.SNAPCRAFT_STORE_CREDENTIALS }}
 
   # --- Helm chart publish ---
-  # Anodize doesn't (yet) have a built-in helm publisher, so we publish the
-  # cfgd helm chart in a follow-up job.  When anodize gains helm support this
-  # job can fold into the merge step above.
   helm-chart:
     name: Publish Helm chart
-    needs: [resolve-workspace, release]
-    if: needs.resolve-workspace.outputs.workspace == 'cfgd'
+    needs: [resolve, release]
+    if: needs.resolve.outputs.workspace == 'cfgd'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -193,11 +158,10 @@ jobs:
           helm push "cfgd-${VERSION}.tgz" oci://ghcr.io/${{ github.repository_owner }}/charts
 
   # --- Crossplane function publish ---
-  # Same story as helm: anodize doesn't yet have a Crossplane xpkg publisher.
   crossplane-function:
     name: Publish Crossplane function
-    needs: [resolve-workspace, release]
-    if: needs.resolve-workspace.outputs.workspace == 'cfgd'
+    needs: [resolve, release]
+    if: needs.resolve.outputs.workspace == 'cfgd'
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -253,11 +217,10 @@ jobs:
             ghcr.io/${{ github.repository_owner }}/function-cfgd:v${VERSION}
 
   # --- OLM bundle publish ---
-  # Anodize doesn't yet have an OLM bundle publisher.
   olm-bundle:
     name: Publish OLM bundle
-    needs: [resolve-workspace, release]
-    if: needs.resolve-workspace.outputs.workspace == 'cfgd-operator'
+    needs: [resolve, release]
+    if: needs.resolve.outputs.workspace == 'cfgd-operator'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
