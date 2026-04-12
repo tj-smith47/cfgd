@@ -93,7 +93,7 @@ workspaces:
         publish:
           crates:
             enabled: true
-            index_timeout: 300
+            index_timeout: 600
 
   # --- cfgd CLI: cross-platform binary + kubectl plugin ---
   - name: cfgd
@@ -145,7 +145,7 @@ workspaces:
         publish:
           crates:
             enabled: true
-            index_timeout: 300
+            index_timeout: 600
           homebrew:
             tap:
               owner: tj-smith47
