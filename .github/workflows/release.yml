@@ -21,7 +21,7 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  # Resolve tag → crate via anodize resolve-tag (replaces custom shell logic).
+  # Map tag → crate name + whether it has binary builds via anodize resolve-tag.
   resolve:
     name: Resolve workspace
     runs-on: ubuntu-latest
@@ -30,17 +30,18 @@ jobs:
       has-builds: ${{ steps.anodize.outputs.has-builds }}
     steps:
       - uses: actions/checkout@v4
-      - name: Resolve workspace from tag
+        with:
+          fetch-depth: 0
+      - uses: tj-smith47/anodize-action@master
         id: anodize
-        uses: tj-smith47/anodize-action@master
         with:
           from-artifact: anodize-linux
           artifact-run-id: auto
           artifact-workflow: ci.yml
-          install-only: 'true'
           resolve-workspace: 'true'
+          install-only: 'true'
         env:
-          GH_TOKEN: ${{ github.token }}
+          GITHUB_TOKEN: ${{ secrets.GH_PAT }}
 
   build:
     name: Build (${{ matrix.os }})

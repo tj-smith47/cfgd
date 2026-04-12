@@ -256,3 +256,7 @@ jobs:
             echo "--- tagging $crate ---"
             anodize tag --crate "$crate" || true
           done
+          # Push any version_sync commits to master so they're not orphaned.
+          # Without this, tags point to commits that only exist as tag targets
+          # and CI never runs on them, breaking artifact resolution.
+          git push origin master || true
