@@ -154,7 +154,7 @@ jobs:
           from-artifact: anodize-linux
           artifact-run-id: auto
           artifact-workflow: ci.yml
-          install: nfpm,makeself,cosign
+          install: nfpm,makeself,snapcraft,rpmbuild,cosign
           gpg-private-key: ${{ secrets.GPG_PRIVATE_KEY }}
           args: release --merge --crate ${{ needs.resolve-workspace.outputs.workspace }}
         env:
