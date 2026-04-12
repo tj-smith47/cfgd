@@ -45,6 +45,8 @@ jobs:
         with:
           components: clippy
       - uses: Swatinem/rust-cache@v2
+        with:
+          key: ci-clippy
       - uses: arduino/setup-protoc@v3
         with:
           version: "25.x"
@@ -77,6 +79,8 @@ jobs:
           fetch-depth: 0
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+        with:
+          key: ci-test-${{ matrix.os }}
       - uses: arduino/setup-protoc@v3
         with:
           version: "25.x"
@@ -149,6 +153,8 @@ jobs:
         with:
           components: llvm-tools-preview
       - uses: Swatinem/rust-cache@v2
+        with:
+          key: ci-coverage
       - uses: arduino/setup-protoc@v3
         with:
           version: "25.x"
@@ -158,30 +164,7 @@ jobs:
       - name: Run tests with coverage
         run: cargo llvm-cov --cobertura --output-path cobertura.xml
       - name: Update coverage badge
-        run: |
-          COVERAGE=$(grep -oP 'line-rate="\K[^"]+' cobertura.xml | head -1 | awk '{printf "%.1f", $1 * 100}')
-          if (( $(echo "$COVERAGE >= 90" | bc -l) )); then COLOR="brightgreen"
-          elif (( $(echo "$COVERAGE >= 80" | bc -l) )); then COLOR="green"
-          elif (( $(echo "$COVERAGE >= 70" | bc -l) )); then COLOR="yellowgreen"
-          elif (( $(echo "$COVERAGE >= 60" | bc -l) )); then COLOR="yellow"
-          else COLOR="red"; fi
-
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git config user.name "github-actions[bot]"
-          git fetch origin badges:badges 2>/dev/null || true
-          if git show-ref --verify --quiet refs/heads/badges; then
-            git checkout badges
-          else
-            git checkout --orphan badges
-            git rm -rf . > /dev/null 2>&1 || true
-          fi
-
-          BADGE="{\"schemaVersion\":1,\"label\":\"coverage\",\"message\":\"${COVERAGE}%\",\"color\":\"${COLOR}\"}"
-          echo "$BADGE" > coverage.json
-
-          git add coverage.json
-          git diff --cached --quiet || git commit -m "Update coverage to ${COVERAGE}%"
-          git push origin badges --force
+        run: bash .claude/scripts/update-coverage-badge.sh cobertura.xml
 
   package:
     name: Package (dry-run)
@@ -254,7 +237,11 @@ jobs:
           export PATH="/tmp/anodize-bin:$PATH"
           for crate in cfgd-core cfgd cfgd-operator cfgd-csi; do
             echo "--- tagging $crate ---"
-            anodize tag --crate "$crate" || true
+            if anodize tag --crate "$crate"; then
+              echo "::notice::$crate: tagged successfully"
+            else
+              echo "::warning::$crate: tag skipped or failed (exit $?)"
+            fi
           done
           # Push any version_sync commits to master so they're not orphaned.
           # Without this, tags point to commits that only exist as tag targets
