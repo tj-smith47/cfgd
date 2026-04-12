@@ -102,12 +102,12 @@ jobs:
           path: |
             ~/.cargo/bin/anodize
             ~/.cargo/bin/anodize.exe
-          key: anodize-${{ runner.os }}-aaceb419ad9bebb0c2b1494a5b1a776f9e169073
+          key: anodize-${{ runner.os }}-51905543a2237059c0e82554279c5630b9252fa1
 
       - name: Install anodize (macOS/Windows)
         if: runner.os != 'Linux' && steps.anodize-cache.outputs.cache-hit != 'true'
         shell: bash
-        run: cargo install --git https://github.com/tj-smith47/anodize --rev aaceb419ad9bebb0c2b1494a5b1a776f9e169073 --locked anodize
+        run: cargo install --git https://github.com/tj-smith47/anodize --rev 51905543a2237059c0e82554279c5630b9252fa1 --locked anodize
 
       - name: Install release deps (macOS)
         if: runner.os == 'macOS'
