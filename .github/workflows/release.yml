@@ -19,6 +19,10 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
+  # Must stay in sync with ci.yml's ANODIZE_REV so cached anodize binaries
+  # produced by CI (anodize-linux artifact) match the binary release.yml
+  # cargo-installs on macOS/Windows. Bump both together when upgrading.
+  ANODIZE_REV: 68c9ef715071ba9dc44b938a2349731e487312ca
 
 jobs:
   # Map the triggering tag to the anodize workspace being released.
@@ -102,12 +106,12 @@ jobs:
           path: |
             ~/.cargo/bin/anodize
             ~/.cargo/bin/anodize.exe
-          key: anodize-${{ runner.os }}-51905543a2237059c0e82554279c5630b9252fa1
+          key: anodize-${{ runner.os }}-${{ env.ANODIZE_REV }}
 
       - name: Install anodize (macOS/Windows)
         if: runner.os != 'Linux' && steps.anodize-cache.outputs.cache-hit != 'true'
         shell: bash
-        run: cargo install --git https://github.com/tj-smith47/anodize --rev 51905543a2237059c0e82554279c5630b9252fa1 --locked anodize
+        run: cargo install --git https://github.com/tj-smith47/anodize --rev "$ANODIZE_REV" --locked anodize
 
       - name: Install release deps (macOS)
         if: runner.os == 'macOS'
