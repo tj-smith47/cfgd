@@ -19,10 +19,6 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
-  # Must stay in sync with ci.yml's ANODIZE_REV so cached anodize binaries
-  # produced by CI (anodize-linux artifact) match the binary release.yml
-  # cargo-installs on macOS/Windows. Bump both together when upgrading.
-  ANODIZE_REV: 68c9ef715071ba9dc44b938a2349731e487312ca
 
 jobs:
   # Map the triggering tag to the anodize workspace being released.
@@ -58,10 +54,13 @@ jobs:
         include:
           - os: ubuntu-latest
             targets: x86_64-unknown-linux-gnu,aarch64-unknown-linux-gnu
+            anodize_artifact: anodize-linux
           - os: macos-latest
             targets: x86_64-apple-darwin,aarch64-apple-darwin
+            anodize_artifact: anodize-macos
           - os: windows-latest
             targets: x86_64-pc-windows-msvc,aarch64-pc-windows-msvc
+            anodize_artifact: anodize-windows
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -81,58 +80,20 @@ jobs:
           version: "25.x"
           repo-token: ${{ github.token }}
 
-      # Linux reuses the anodize binary uploaded by ci.yml's snapshot job
-      # via cross-workflow artifact download.  macOS and Windows cargo-install
-      # anodize inline — the cross-workflow artifact is Linux-only, and
-      # cfgd isn't the anodize source repo so anodize-action's from-source
-      # path (cargo build -p anodize in workdir) doesn't apply.
-      - name: Run anodize release --split (Linux)
-        if: runner.os == 'Linux'
+      # Every platform reuses the anodize binary uploaded by ci.yml's test
+      # matrix via cross-workflow artifact download — no per-platform rebuild.
+      # anodize-action's `install` input handles zig/cargo-zigbuild/upx via
+      # the right native package manager for each OS.
+      - name: Run anodize release --split
         uses: tj-smith47/anodize-action@master
         with:
-          from-artifact: anodize-linux
+          from-artifact: ${{ matrix.anodize_artifact }}
           artifact-run-id: auto
           artifact-workflow: ci.yml
           install: zig,cargo-zigbuild,upx
           args: release --split --clean --crate ${{ needs.resolve-workspace.outputs.workspace }}
         env:
           GITHUB_TOKEN: ${{ secrets.GH_PAT }}
-
-      - name: Cache anodize binary (macOS/Windows)
-        if: runner.os != 'Linux'
-        id: anodize-cache
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/bin/anodize
-            ~/.cargo/bin/anodize.exe
-          key: anodize-${{ runner.os }}-${{ env.ANODIZE_REV }}
-
-      - name: Install anodize (macOS/Windows)
-        if: runner.os != 'Linux' && steps.anodize-cache.outputs.cache-hit != 'true'
-        shell: bash
-        run: cargo install --git https://github.com/tj-smith47/anodize --rev "$ANODIZE_REV" --locked anodize
-
-      - name: Install release deps (macOS)
-        if: runner.os == 'macOS'
-        run: |
-          brew install zig upx
-          cargo install --locked cargo-zigbuild
-
-      - name: Install release deps (Windows)
-        if: runner.os == 'Windows'
-        shell: bash
-        run: |
-          choco install zig upx -y --no-progress
-          cargo install --locked cargo-zigbuild
-
-      - name: Run anodize release --split (macOS/Windows)
-        if: runner.os != 'Linux'
-        shell: bash
-        run: anodize release --split --clean --crate "${CRATE}"
-        env:
-          GITHUB_TOKEN: ${{ secrets.GH_PAT }}
-          CRATE: ${{ needs.resolve-workspace.outputs.workspace }}
 
       - name: Upload split artifacts
         uses: actions/upload-artifact@v4
@@ -185,7 +146,7 @@ jobs:
       - uses: docker/setup-qemu-action@v3
       - uses: docker/setup-buildx-action@v3
 
-      # Reuse the anodize binary from ci.yml's snapshot job via cross-workflow
+      # Reuse the anodize binary from ci.yml's test matrix via cross-workflow
       # artifact download — no rebuild.
       - name: Run anodize release --merge
         uses: tj-smith47/anodize-action@master

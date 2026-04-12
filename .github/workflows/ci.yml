@@ -60,7 +60,16 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        include:
+          - os: ubuntu-latest
+            anodize_artifact: anodize-linux
+            anodize_bin: anodize
+          - os: macos-latest
+            anodize_artifact: anodize-macos
+            anodize_bin: anodize
+          - os: windows-latest
+            anodize_artifact: anodize-windows
+            anodize_bin: anodize.exe
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -75,6 +84,7 @@ jobs:
       - uses: arduino/setup-task@v2
         with:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Tests
         # Windows tests only the cross-platform crates (cfgd-core + cfgd CLI);
         # the operator and CSI plugins are Linux-only.
@@ -88,6 +98,38 @@ jobs:
           else
             task test
           fi
+
+      # --- Build and upload anodize for downstream consumers. -------------
+      # Every job that needs anodize (snapshot, tag, release.yml) downloads
+      # it via actions/download-artifact or anodize-action's from-artifact
+      # instead of cargo-installing it from scratch. One build per platform
+      # per master push, cached by ANODIZE_REV.
+      - name: Cache anodize binary
+        if: github.ref == 'refs/heads/master'
+        id: anodize-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/bin/${{ matrix.anodize_bin }}
+          key: anodize-${{ runner.os }}-${{ env.ANODIZE_REV }}
+
+      - name: Install anodize
+        if: github.ref == 'refs/heads/master' && steps.anodize-cache.outputs.cache-hit != 'true'
+        shell: bash
+        run: cargo install --git https://github.com/tj-smith47/anodize --rev "$ANODIZE_REV" --locked anodize
+
+      - name: Stage anodize binary for artifact upload
+        if: github.ref == 'refs/heads/master'
+        shell: bash
+        run: |
+          mkdir -p anodize-bin
+          cp ~/.cargo/bin/${{ matrix.anodize_bin }} anodize-bin/${{ matrix.anodize_bin }}
+
+      - name: Upload anodize binary
+        if: github.ref == 'refs/heads/master'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.anodize_artifact }}
+          path: anodize-bin/${{ matrix.anodize_bin }}
 
   audit:
     name: Code Audit
@@ -167,31 +209,12 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-      - name: Cache anodize binary
-        id: anodize-cache
-        uses: actions/cache@v4
-        with:
-          path: ~/.cargo/bin/anodize
-          key: anodize-${{ runner.os }}-${{ env.ANODIZE_REV }}
-      - name: Install anodize
-        if: steps.anodize-cache.outputs.cache-hit != 'true'
-        run: cargo install --git https://github.com/tj-smith47/anodize --rev "$ANODIZE_REV" --locked anodize
-      # Stage the binary into a clean directory so upload-artifact uploads
-      # exactly one file.  Downstream jobs use anodize-action's from-artifact
-      # which expects a binary literally named `anodize` (or `anodize.exe`).
-      - name: Stage anodize binary for artifact upload
-        run: |
-          mkdir -p anodize-bin
-          cp ~/.cargo/bin/anodize anodize-bin/anodize
-      - name: Upload anodize binary
-        uses: actions/upload-artifact@v4
-        with:
-          name: anodize-linux
-          path: anodize-bin/anodize
+      # Reuse the anodize binary uploaded by the test job — no rebuild.
       - name: Validate release pipeline via anodize
-        run: anodize release --snapshot --single-target --clean --dry-run
+        uses: tj-smith47/anodize-action@master
+        with:
+          from-artifact: anodize-linux
+          args: release --snapshot --single-target --clean --dry-run
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
