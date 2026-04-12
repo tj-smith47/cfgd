@@ -235,14 +235,13 @@ jobs:
       - name: Update CSV version and image references
         run: |
           VERSION="${GITHUB_REF_NAME#operator-v}"
-          TAG="${GITHUB_REF_NAME}"
           CSV="ecosystem/olm/manifests/cfgd-operator.clusterserviceversion.yaml"
           if [ ! -f "$CSV" ]; then
             echo "::error::OLM CSV not found: $CSV"
             exit 1
           fi
-          sed -i "s|cfgd-operator\.v[0-9.]*|cfgd-operator.${TAG}|g" "$CSV"
-          sed -i "s|cfgd-operator:v[0-9.]*|cfgd-operator:${TAG}|g" "$CSV"
+          sed -i "s|cfgd-operator\.v[0-9.]*|cfgd-operator.v${VERSION}|g" "$CSV"
+          sed -i "s|cfgd-operator:v[0-9.]*|cfgd-operator:v${VERSION}|g" "$CSV"
       - name: Build and push OLM bundle image
         uses: docker/build-push-action@v6
         with:
