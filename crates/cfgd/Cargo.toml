@@ -16,7 +16,7 @@ name = "cfgd"
 path = "src/main.rs"
 
 [dependencies]
-cfgd-core = { path = "../cfgd-core", version = "0.2.2" }
+cfgd-core = { path = "../cfgd-core", version = "0.3.2" }
 clap = { version = "4", features = ["derive", "env"] }
 clap_complete = "4"
 anyhow = "1"
@@ -54,5 +54,5 @@ windows-service = "0.7"
 [dev-dependencies]
 assert_cmd = "2"
 predicates = "3"
-cfgd-core = { path = "../cfgd-core", version = "0.2.2", features = ["test-helpers"] }
+cfgd-core = { path = "../cfgd-core", version = "0.3.2", features = ["test-helpers"] }
 serial_test = "3"
