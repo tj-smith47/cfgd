@@ -1469,6 +1469,7 @@ mod tests {
     // --- router ---
 
     #[tokio::test]
+    #[serial_test::serial]
     async fn router_wires_routes() {
         let state = test_state();
         let app = router().with_state(state);
