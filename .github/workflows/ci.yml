@@ -19,7 +19,7 @@ env:
   # Pin anodize to a specific commit so the cache key stays stable.
   # Bump this when you need a newer anodize. Temporary until anodize has
   # tagged GitHub releases and anodize-action's version: latest works.
-  ANODIZE_REV: d6b4c72da7d2d1459969222044cc3885e9b8367c
+  ANODIZE_REV: ae4916ebfb684df5b7663d94490a1ef23bbbe926
 
 jobs:
   fmt:

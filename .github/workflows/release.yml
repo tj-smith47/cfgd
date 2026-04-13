@@ -87,7 +87,7 @@ jobs:
           artifact-workflow: ci.yml
           install: zig,cargo-zigbuild,upx
           upload-dist: 'true'
-          args: release --verbose --strict --split --clean --crate ${{ needs.resolve.outputs.workspace }}
+          args: release --verbose --debug --strict --split --clean --crate ${{ needs.resolve.outputs.workspace }}
         env:
           GITHUB_TOKEN: ${{ secrets.GH_PAT }}
 
@@ -125,7 +125,7 @@ jobs:
           docker-password: ${{ secrets.GITHUB_TOKEN }}
           gpg-private-key: ${{ secrets.GPG_PRIVATE_KEY }}
           args: >-
-            release --verbose --strict
+            release --verbose --debug --strict
             ${{ needs.resolve.outputs.has-builds == 'true' && '--merge' || '' }}
             --crate ${{ needs.resolve.outputs.workspace }}
         env:
