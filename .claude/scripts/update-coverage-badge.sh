@@ -10,7 +10,10 @@ if [ ! -f "$XML" ]; then
   exit 1
 fi
 
-COVERAGE=$(grep -oP 'line-rate="\K[^"]+' "$XML" | head -1 | awk '{printf "%.1f", $1 * 100}')
+# Extract line-rate from the first occurrence. Using -m1 avoids the grep|head
+# SIGPIPE that breaks under set -o pipefail.
+LINE_RATE=$(grep -oP -m1 'line-rate="\K[^"]+' "$XML")
+COVERAGE=$(awk "BEGIN {printf \"%.1f\", $LINE_RATE * 100}")
 
 if (( $(echo "$COVERAGE >= 90" | bc -l) )); then COLOR="brightgreen"
 elif (( $(echo "$COVERAGE >= 80" | bc -l) )); then COLOR="green"

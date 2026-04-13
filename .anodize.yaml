@@ -26,7 +26,7 @@ tag:
   tag_prefix: "v"
   release_branches:
     - master
-  initial_version: "0.3.3"
+  initial_version: "0.3.4"
 
 metadata:
   description: "Declarative, GitOps-style machine configuration management"

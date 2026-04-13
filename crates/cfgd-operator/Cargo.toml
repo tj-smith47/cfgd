@@ -1,6 +1,6 @@
 [package]
 name = "cfgd-operator"
-version = "0.3.3"
+version = "0.3.4"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
@@ -25,7 +25,7 @@ path = "src/gen_crds.rs"
 
 [dependencies]
 serde_yaml = "0.9"
-cfgd-core = { path = "../cfgd-core", version = "0.3.3" }
+cfgd-core = { path = "../cfgd-core", version = "0.3.4" }
 kube = { version = "0.98", features = ["runtime", "derive", "client", "admission"] }
 k8s-openapi = { version = "0.24", features = ["latest"] }
 schemars = "0.8"
@@ -63,5 +63,5 @@ opentelemetry-otlp = { version = "0.31", features = ["grpc-tonic", "trace"] }
 tracing-opentelemetry = "0.32"
 
 [dev-dependencies]
-cfgd-core = { path = "../cfgd-core", version = "0.3.3", features = ["test-helpers"] }
+cfgd-core = { path = "../cfgd-core", version = "0.3.4", features = ["test-helpers"] }
 serial_test = "3"
