@@ -93,6 +93,8 @@ after:
 workspaces:
   # --- cfgd-core: shared library (crates.io only) ---
   - name: cfgd-core
+    skip:
+      - announce
     crates:
       - name: cfgd-core
         path: crates/cfgd-core

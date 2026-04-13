@@ -7,8 +7,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 RUN adduser --disabled-password --gecos "" --uid 1000 cfgd
 
+ARG TARGETOS=linux
 ARG TARGETARCH
-COPY binaries/${TARGETARCH}/cfgd /usr/local/bin/cfgd
+COPY ${TARGETOS}/${TARGETARCH}/cfgd /usr/local/bin/cfgd
 
 USER cfgd
 WORKDIR /home/cfgd

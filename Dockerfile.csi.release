@@ -4,7 +4,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
+ARG TARGETOS=linux
 ARG TARGETARCH
-COPY binaries/${TARGETARCH}/cfgd-csi /usr/local/bin/cfgd-csi
+COPY ${TARGETOS}/${TARGETARCH}/cfgd-csi /usr/local/bin/cfgd-csi
 
 ENTRYPOINT ["cfgd-csi"]
