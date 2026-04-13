@@ -325,6 +325,18 @@ workspaces:
               - "ghcr.io/tj-smith47/cfgd-operator:latest-arm64"
         docker_digest:
           name_template: "cfgd-operator_{{ .Tag }}.digest"
+        release:
+          github:
+            owner: tj-smith47
+            name: cfgd
+          draft: false
+          prerelease: auto
+          make_latest: false
+          name_template: "{{ ProjectName }} {{ Tag }}"
+          footer: |
+            ---
+            Released with [anodize](https://github.com/tj-smith47/anodize)
+          include_meta: true
         publish:
           crates:
             enabled: true
@@ -376,6 +388,18 @@ workspaces:
               - "ghcr.io/tj-smith47/cfgd-csi:latest-arm64"
         docker_digest:
           name_template: "cfgd-csi_{{ .Tag }}.digest"
+        release:
+          github:
+            owner: tj-smith47
+            name: cfgd
+          draft: false
+          prerelease: auto
+          make_latest: false
+          name_template: "{{ ProjectName }} {{ Tag }}"
+          footer: |
+            ---
+            Released with [anodize](https://github.com/tj-smith47/anodize)
+          include_meta: true
         publish:
           crates:
             enabled: true
