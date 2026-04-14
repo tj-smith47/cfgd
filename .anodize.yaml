@@ -510,7 +510,7 @@ partial:
 announce:
   webhook:
     enabled: true
-    endpoint_url: "https://jarvispro.io/webhooks/anodize"
+    endpoint_url: "https://tj.jarvispro.io/webhooks/anodize"
     content_type: application/json
     message_template: '{"project":"{{ ProjectName }}","tag":"{{ Tag }}","url":"{{ ReleaseURL }}"}'
   email:
