@@ -418,9 +418,17 @@ impl TestEnvBuilder {
             std::fs::write(&path, content).expect("write file");
         }
 
+        // Install a thread-local HOME override pointing at the tempdir root.
+        // Any code path that later calls `expand_tilde("~")` or
+        // `default_config_dir()` on this thread resolves into this tempdir
+        // instead of the real user home. The guard is dropped with the
+        // TestEnv, restoring the prior override (or clearing it).
+        let home_guard = crate::with_test_home_guard(&root);
+
         self.dir = Some(dir);
 
         TestEnv {
+            _home_guard: home_guard,
             _dir: self.dir.take().unwrap(),
             root,
             config_dir,
@@ -438,8 +446,19 @@ impl Default for TestEnvBuilder {
 }
 
 /// An isolated test environment backed by a temp directory.
-/// Dropping this struct removes all files.
+///
+/// Dropping this struct restores the previous thread-local HOME override AND
+/// removes all files (in that order — see field ordering below).
+///
+/// Field drop order matters: Rust drops struct fields in declaration order,
+/// so `_home_guard` is declared first to run BEFORE `_dir`. That way any
+/// code executed during the tempdir's teardown (e.g. a Drop impl somewhere
+/// that resolves `~`) sees the real `$HOME` rather than a dangling override
+/// pointing at a just-deleted path.
 pub struct TestEnv {
+    /// Restores the prior thread-local HOME override on drop.
+    _home_guard: crate::TestHomeGuard,
+    /// Owns the tempdir — deleted last, after the guard is released.
     _dir: tempfile::TempDir,
     pub root: PathBuf,
     pub config_dir: PathBuf,

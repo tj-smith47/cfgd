@@ -190,9 +190,68 @@ pub fn command_output_with_timeout(
     result
 }
 
+thread_local! {
+    /// Thread-local override for the resolved home directory.
+    ///
+    /// Tests that exercise code paths resolving `~` or `$HOME` must set this
+    /// to a tempdir to prevent real-filesystem mutations (writes to
+    /// `~/.cfgd.env`, injection into `~/.bashrc`, etc.). Production code
+    /// never reads or writes this cell — it only affects `home_dir_var` and
+    /// `default_config_dir` when a test scoped an override.
+    ///
+    /// Use `with_test_home(path, || ...)` to scope an override; the value is
+    /// restored on return even if the closure panics (RAII via the guard).
+    static TEST_HOME_OVERRIDE: std::cell::RefCell<Option<std::path::PathBuf>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// RAII guard returned by [`with_test_home_guard`] — restores the prior
+/// override on drop. Used by test harnesses (like `TestEnvBuilder`) that want
+/// to install an override without wrapping the whole test in a closure.
+#[must_use = "dropping the guard immediately restores the previous override"]
+pub struct TestHomeGuard {
+    prev: Option<std::path::PathBuf>,
+}
+
+impl Drop for TestHomeGuard {
+    fn drop(&mut self) {
+        let prev = self.prev.take();
+        TEST_HOME_OVERRIDE.with(|o| *o.borrow_mut() = prev);
+    }
+}
+
+/// Install a HOME override for the current thread and return a guard that
+/// restores the prior value on drop. Use in test builders that need the
+/// override to outlive a single closure call.
+pub fn with_test_home_guard(home: &std::path::Path) -> TestHomeGuard {
+    let prev = TEST_HOME_OVERRIDE.with(|o| o.replace(Some(home.to_path_buf())));
+    TestHomeGuard { prev }
+}
+
+/// Scope a HOME override for the duration of `f`. The prior value (including
+/// `None`) is restored when `f` returns, whether normally or via panic.
+pub fn with_test_home<F, R>(home: &std::path::Path, f: F) -> R
+where
+    F: FnOnce() -> R,
+{
+    let _guard = with_test_home_guard(home);
+    f()
+}
+
+/// Read the current test HOME override (if any). Only used internally by
+/// `home_dir_var` / `default_config_dir`.
+fn test_home_override() -> Option<std::path::PathBuf> {
+    TEST_HOME_OVERRIDE.with(|o| o.borrow().clone())
+}
+
 /// Default config directory: `~/.config/cfgd` on Unix (respects XDG_CONFIG_HOME),
 /// `AppData\Roaming\cfgd` on Windows.
 pub fn default_config_dir() -> std::path::PathBuf {
+    // Thread-local test override always wins. Lets tests redirect config
+    // lookup to a tempdir without mutating global env state.
+    if let Some(home) = test_home_override() {
+        return home.join(".config").join("cfgd");
+    }
     #[cfg(unix)]
     {
         if let Ok(xdg) = std::env::var("XDG_CONFIG_HOME") {
@@ -223,19 +282,23 @@ pub fn expand_tilde(path: &std::path::Path) -> std::path::PathBuf {
     path.to_path_buf()
 }
 
-/// Resolve the user's home directory from environment variables.
-/// Unix: checks HOME.
-/// Windows: checks USERPROFILE first, then HOME (for WSL/Git Bash contexts).
-#[cfg(unix)]
+/// Resolve the user's home directory, consulting the test override first.
+/// Unix production path: checks HOME.
+/// Windows production path: checks USERPROFILE first, then HOME (for WSL/Git Bash contexts).
 fn home_dir_var() -> Option<String> {
-    std::env::var("HOME").ok()
-}
-
-#[cfg(windows)]
-fn home_dir_var() -> Option<String> {
-    std::env::var("USERPROFILE")
-        .or_else(|_| std::env::var("HOME"))
-        .ok()
+    if let Some(home) = test_home_override() {
+        return Some(home.to_string_lossy().into_owned());
+    }
+    #[cfg(unix)]
+    {
+        std::env::var("HOME").ok()
+    }
+    #[cfg(windows)]
+    {
+        std::env::var("USERPROFILE")
+            .or_else(|_| std::env::var("HOME"))
+            .ok()
+    }
 }
 
 /// Get the system hostname as a String. Returns "unknown" on failure.
@@ -1882,6 +1945,70 @@ mod tests {
     fn expand_tilde_absolute_unchanged() {
         let result = expand_tilde(std::path::Path::new("/absolute/path"));
         assert_eq!(result, std::path::PathBuf::from("/absolute/path"));
+    }
+
+    #[test]
+    fn with_test_home_scopes_override_and_restores() {
+        // Sanity: no override active at start (other tests' guards must have
+        // been released before this one ran on the same thread).
+        assert!(test_home_override().is_none());
+
+        let tmp = tempfile::tempdir().unwrap();
+        let fake_home = tmp.path().to_path_buf();
+
+        let expanded = with_test_home(&fake_home, || {
+            // While scoped, `~` resolves to the tempdir.
+            expand_tilde(std::path::Path::new("~/sub/file"))
+        });
+        assert_eq!(expanded, fake_home.join("sub").join("file"));
+
+        // Override cleared on closure return.
+        assert!(test_home_override().is_none());
+    }
+
+    #[test]
+    fn with_test_home_restores_on_panic() {
+        let tmp = tempfile::tempdir().unwrap();
+        let fake_home = tmp.path().to_path_buf();
+
+        // catch_unwind to observe the panic without aborting the test.
+        let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            with_test_home(&fake_home, || {
+                assert_eq!(test_home_override().as_deref(), Some(fake_home.as_path()));
+                panic!("simulated failure");
+            });
+        }))
+        .is_err();
+        assert!(panicked, "closure should have panicked");
+
+        // Guard must have restored on unwind.
+        assert!(test_home_override().is_none());
+    }
+
+    #[test]
+    fn with_test_home_nests_correctly() {
+        let outer_tmp = tempfile::tempdir().unwrap();
+        let inner_tmp = tempfile::tempdir().unwrap();
+        let outer = outer_tmp.path().to_path_buf();
+        let inner = inner_tmp.path().to_path_buf();
+
+        with_test_home(&outer, || {
+            assert_eq!(test_home_override().as_deref(), Some(outer.as_path()));
+            with_test_home(&inner, || {
+                assert_eq!(test_home_override().as_deref(), Some(inner.as_path()));
+            });
+            // Inner guard dropped — outer restored.
+            assert_eq!(test_home_override().as_deref(), Some(outer.as_path()));
+        });
+        assert!(test_home_override().is_none());
+    }
+
+    #[test]
+    fn default_config_dir_follows_override() {
+        let tmp = tempfile::tempdir().unwrap();
+        let fake_home = tmp.path().to_path_buf();
+        let observed = with_test_home(&fake_home, default_config_dir);
+        assert_eq!(observed, fake_home.join(".config").join("cfgd"));
     }
 
     #[test]
