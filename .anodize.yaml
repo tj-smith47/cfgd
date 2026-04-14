@@ -21,7 +21,14 @@ git:
   tag_sort: "-version:refname"
 
 tag:
-  default_bump: patch
+  # Require an explicit bump signal per commit range. Release-worthy signals
+  # are `#major` / `#minor` / `#patch` tokens OR Conventional Commit markers
+  # (`feat:` -> minor, `fix:` / `perf:` / `revert:` -> patch, `BREAKING CHANGE`
+  # footer or `<type>!:` shorthand -> major). Ranges containing only chore /
+  # docs / style / refactor / test / build / ci commits no-op, so autotag
+  # won't mint a spurious patch bump after a stable crate's test or chore
+  # touch.
+  default_bump: none
   branch_history: last
   tag_prefix: "v"
   release_branches:
