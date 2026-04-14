@@ -29,7 +29,13 @@ tag:
   # won't mint a spurious patch bump after a stable crate's test or chore
   # touch.
   default_bump: none
-  branch_history: last
+  # Scan the full commit range between the last tag and HEAD (per crate path)
+  # so a release-worthy `fix:` / `feat:` / `BREAKING CHANGE` commit further
+  # back in the range still triggers the bump even if the most recent commit
+  # touching that path is a chore. `last` mode only inspects the single most
+  # recent commit per path, which silently drops release signals in monorepo
+  # autotag flows where multiple commits land between tags.
+  branch_history: full
   tag_prefix: "v"
   release_branches:
     - master
