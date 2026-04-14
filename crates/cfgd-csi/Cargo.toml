@@ -17,7 +17,7 @@ name = "cfgd-csi"
 path = "src/main.rs"
 
 [dependencies]
-cfgd-core = { path = "../cfgd-core", version = "0.3.5" }
+cfgd-core = { path = "../cfgd-core", version = "0.3.6" }
 tonic = "0.13"
 prost = "0.13"
 prost-types = "0.13"
