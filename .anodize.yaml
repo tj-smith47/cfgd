@@ -208,6 +208,13 @@ workspaces:
               owner: tj-smith47
               name: krew-index
             short_description: "Declarative, GitOps-style machine configuration management"
+            description: |
+              cfgd is a declarative, GitOps-style machine configuration manager.
+              It reconciles system state (packages, files, services, shell, kernel
+              settings, container runtimes, kubernetes nodes) against a YAML config,
+              detects drift, and applies changes safely. The kubectl plugin exposes
+              cfgd's inject/exec/debug/status/version subcommands for working with
+              cfgd-managed pods and nodes inside a cluster.
             homepage: "https://github.com/tj-smith47/cfgd"
         # Docker V2 image for the cfgd agent (CLI + daemon image).
         docker_v2:

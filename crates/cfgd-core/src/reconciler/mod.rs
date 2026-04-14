@@ -1704,7 +1704,7 @@ impl<'a> Reconciler<'a> {
         }
     }
 
-    fn apply_secret_action(
+    pub(crate) fn apply_secret_action(
         &self,
         action: &SecretAction,
         config_dir: &std::path::Path,
@@ -8469,49 +8469,40 @@ mod tests {
 
     #[test]
     fn apply_secret_resolve_env_collects_env_vars() {
+        // Unit test the collector-population behaviour directly via
+        // `apply_secret_action`. The full `Reconciler::apply` path calls
+        // `plan_env()` which resolves `~` to the real `$HOME` and writes
+        // `~/.cfgd.env` + injects a source line into `~/.bashrc` — tests must
+        // never touch the user's home. See task #37 for the broader audit.
         let state = test_state();
         let mut registry = ProviderRegistry::new();
         registry.secret_providers.push(Box::new(MockSecretProvider {
             provider_name: "vault".to_string(),
             value: "env-secret-value".to_string(),
         }));
-
         let reconciler = Reconciler::new(&registry, &state);
-        let resolved = make_empty_resolved();
+        let printer = test_printer();
+        let tmp = tempfile::tempdir().unwrap();
 
-        let plan = Plan {
-            phases: vec![Phase {
-                name: PhaseName::Secrets,
-                actions: vec![Action::Secret(SecretAction::ResolveEnv {
-                    provider: "vault".to_string(),
-                    reference: "secret/data/gh#token".to_string(),
-                    envs: vec!["GH_TOKEN".to_string(), "GITHUB_TOKEN".to_string()],
-                    origin: "local".to_string(),
-                })],
-            }],
-            warnings: vec![],
+        let mut collector: Vec<(String, String)> = Vec::new();
+        let action = SecretAction::ResolveEnv {
+            provider: "vault".to_string(),
+            reference: "secret/data/gh#token".to_string(),
+            envs: vec!["GH_TOKEN".to_string(), "GITHUB_TOKEN".to_string()],
+            origin: "local".to_string(),
         };
 
-        let printer = test_printer();
-        let result = reconciler
-            .apply(
-                &plan,
-                &resolved,
-                Path::new("."),
-                &printer,
-                Some(&PhaseName::Secrets),
-                &[],
-                ReconcileContext::Apply,
-                false,
-            )
-            .unwrap();
+        let desc = reconciler
+            .apply_secret_action(&action, tmp.path(), &printer, &mut collector)
+            .expect("resolve-env should succeed");
 
-        assert_eq!(result.status, ApplyStatus::Success);
-        assert!(result.action_results[0].success);
-        assert!(
-            result.action_results[0].description.contains("resolve-env"),
-            "desc: {}",
-            result.action_results[0].description
+        assert!(desc.contains("resolve-env"), "desc: {}", desc);
+        assert_eq!(
+            collector,
+            vec![
+                ("GH_TOKEN".to_string(), "env-secret-value".to_string()),
+                ("GITHUB_TOKEN".to_string(), "env-secret-value".to_string()),
+            ]
         );
     }
 
