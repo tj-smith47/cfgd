@@ -19,7 +19,7 @@ env:
   # Pin anodize to a specific commit so the cache key stays stable.
   # Bump this when you need a newer anodize. Temporary until anodize has
   # tagged GitHub releases and anodize-action's version: latest works.
-  ANODIZE_REV: c9fd0596468eb11e057574c1a81b9e13a29c3a53
+  ANODIZE_REV: 86faad2ddcdc273ac10c1ef781d13279306b0ffd
 
 jobs:
   fmt:
@@ -204,7 +204,10 @@ jobs:
 
   tag:
     name: Auto-tag
-    if: github.ref == 'refs/heads/master' && !contains(github.event.head_commit.message, '#none')
+    # Gate on master only. The `#none` whole-token decision lives inside
+    # anodize tag per-crate — doing it here with GitHub Actions' substring
+    # `contains()` mis-fires when a commit body mentions `#none` in prose.
+    if: github.ref == 'refs/heads/master'
     needs: [fmt, clippy, test, audit, package, snapshot]
     runs-on: ubuntu-latest
     permissions:
