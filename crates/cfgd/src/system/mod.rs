@@ -1798,40 +1798,36 @@ impl SystemConfigurator for WindowsServiceConfigurator {
                 // Query current state to avoid redundant start/stop and locale-dependent string matching
                 let current_state = Self::query_service(&entry.name).map(|r| r.state);
                 match desired_state.as_str() {
-                    "running" => {
-                        if current_state.as_deref() != Some("running") {
-                            let output = Command::new("sc.exe")
-                                .args(["start", &entry.name])
-                                .output()
-                                .map_err(cfgd_core::errors::CfgdError::Io)?;
-                            if output.status.success() {
-                                printer.success(&format!("Started service {}", entry.name));
-                            } else {
-                                let stdout = String::from_utf8_lossy(&output.stdout);
-                                printer.warning(&format!(
-                                    "Failed to start {}: {}",
-                                    entry.name,
-                                    stdout.trim()
-                                ));
-                            }
+                    "running" if current_state.as_deref() != Some("running") => {
+                        let output = Command::new("sc.exe")
+                            .args(["start", &entry.name])
+                            .output()
+                            .map_err(cfgd_core::errors::CfgdError::Io)?;
+                        if output.status.success() {
+                            printer.success(&format!("Started service {}", entry.name));
+                        } else {
+                            let stdout = String::from_utf8_lossy(&output.stdout);
+                            printer.warning(&format!(
+                                "Failed to start {}: {}",
+                                entry.name,
+                                stdout.trim()
+                            ));
                         }
                     }
-                    "stopped" => {
-                        if current_state.as_deref() != Some("stopped") {
-                            let output = Command::new("sc.exe")
-                                .args(["stop", &entry.name])
-                                .output()
-                                .map_err(cfgd_core::errors::CfgdError::Io)?;
-                            if output.status.success() {
-                                printer.success(&format!("Stopped service {}", entry.name));
-                            } else {
-                                let stdout = String::from_utf8_lossy(&output.stdout);
-                                printer.warning(&format!(
-                                    "Failed to stop {}: {}",
-                                    entry.name,
-                                    stdout.trim()
-                                ));
-                            }
+                    "stopped" if current_state.as_deref() != Some("stopped") => {
+                        let output = Command::new("sc.exe")
+                            .args(["stop", &entry.name])
+                            .output()
+                            .map_err(cfgd_core::errors::CfgdError::Io)?;
+                        if output.status.success() {
+                            printer.success(&format!("Stopped service {}", entry.name));
+                        } else {
+                            let stdout = String::from_utf8_lossy(&output.stdout);
+                            printer.warning(&format!(
+                                "Failed to stop {}: {}",
+                                entry.name,
+                                stdout.trim()
+                            ));
                         }
                     }
                     _ => {}

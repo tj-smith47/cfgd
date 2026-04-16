@@ -126,7 +126,7 @@ pub fn compose(local: &ResolvedProfile, sources: &[CompositionInput]) -> Result<
     }
 
     // Sort all layers by priority, then merge
-    all_layers.sort_by(|a, b| a.priority.cmp(&b.priority));
+    all_layers.sort_by_key(|a| a.priority);
 
     let mut merged = merge_with_policy(&all_layers, &mut conflicts)?;
 

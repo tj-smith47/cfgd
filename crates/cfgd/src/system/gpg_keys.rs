@@ -144,10 +144,8 @@ fn parse_gpg_colon_output(output: &str) -> Vec<KeyringEntry> {
                 current_fingerprint = String::new();
                 current_email = String::new();
             }
-            "fpr" => {
-                if in_pub && current_fingerprint.is_empty() {
-                    current_fingerprint = fields.get(9).map(|s| s.to_string()).unwrap_or_default();
-                }
+            "fpr" if in_pub && current_fingerprint.is_empty() => {
+                current_fingerprint = fields.get(9).map(|s| s.to_string()).unwrap_or_default();
             }
             "uid" => {
                 // uid validity (field 1), user-id string (field 9)

@@ -90,25 +90,17 @@ fn detect_plugin_system(name: &str, config_paths: &[PathBuf]) -> Option<String> 
         let content = read_config_dir_content(config_path);
 
         match name {
-            "nvim" | "neovim" => {
-                if content.contains("lazy") {
-                    return Some("lazy.nvim".to_string());
-                }
+            "nvim" | "neovim" if content.contains("lazy") => {
+                return Some("lazy.nvim".to_string());
             }
-            "vim" => {
-                if content.contains("plug") {
-                    return Some("vim-plug".to_string());
-                }
+            "vim" if content.contains("plug") => {
+                return Some("vim-plug".to_string());
             }
-            "tmux" => {
-                if content.contains("tpm") {
-                    return Some("tpm".to_string());
-                }
+            "tmux" if content.contains("tpm") => {
+                return Some("tpm".to_string());
             }
-            "zsh" => {
-                if content.contains("oh-my-zsh") {
-                    return Some("oh-my-zsh".to_string());
-                }
+            "zsh" if content.contains("oh-my-zsh") => {
+                return Some("oh-my-zsh".to_string());
             }
             _ => {}
         }
