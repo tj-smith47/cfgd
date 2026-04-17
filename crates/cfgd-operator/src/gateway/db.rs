@@ -410,30 +410,47 @@ pub struct ServerDb {
 
 impl ServerDb {
     pub fn open(path: &str) -> Result<Self, GatewayError> {
-        let manager = SqliteConnectionManager::file(path)
-            .with_flags(OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_CREATE);
-        let readers = Pool::builder()
-            .max_size(reader_pool_size_from_env())
-            .min_idle(Some(2))
-            .connection_timeout(POOL_CONNECTION_TIMEOUT)
-            .connection_customizer(Box::new(ReaderCustomizer))
-            .build(manager)
-            .map_err(|e| GatewayError::Internal(format!("db pool build failed: {e}")))?;
+        Self::open_with_config(path, reader_pool_size_from_env(), POOL_CONNECTION_TIMEOUT)
+    }
 
+    /// Open with explicit reader pool size and connection timeout.
+    /// Exposed for tests that need to trigger pool exhaustion deterministically
+    /// or exercise concurrency shapes that depend on pool sizing.
+    ///
+    /// Ordering: the writer connection is established and migrations run
+    /// BEFORE the reader pool is built. This avoids a race where a short
+    /// `connection_timeout` (e.g. 50 ms for pool-exhaustion tests) would cause
+    /// the initial reader pool connection to time out while SQLite was still
+    /// creating the database file.
+    pub fn open_with_config(
+        path: &str,
+        reader_pool_size: u32,
+        connection_timeout: std::time::Duration,
+    ) -> Result<Self, GatewayError> {
         let mut writer = Connection::open_with_flags(
             path,
             OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_CREATE,
         )
         .map_err(GatewayError::Database)?;
         init_writer(&mut writer).map_err(GatewayError::Database)?;
+        run_migrations_on_conn(&mut writer)?;
 
-        let db = Self {
+        let manager = SqliteConnectionManager::file(path)
+            .with_flags(OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_CREATE);
+        let min_idle = if reader_pool_size >= 2 { Some(2) } else { None };
+        let readers = Pool::builder()
+            .max_size(reader_pool_size)
+            .min_idle(min_idle)
+            .connection_timeout(connection_timeout)
+            .connection_customizer(Box::new(ReaderCustomizer))
+            .build(manager)
+            .map_err(|e| GatewayError::Internal(format!("db pool build failed: {e}")))?;
+
+        Ok(Self {
             readers: Arc::new(readers),
             writer: Arc::new(PlMutex::new(writer)),
             metrics: None,
-        };
-        db.run_migrations_blocking()?;
-        Ok(db)
+        })
     }
 
     pub fn with_metrics(mut self, metrics: Option<Metrics>) -> Self {
@@ -443,49 +460,6 @@ impl ServerDb {
 
     pub fn readers_handle(&self) -> Arc<ReaderPool> {
         self.readers.clone()
-    }
-
-    fn run_migrations_blocking(&self) -> Result<(), GatewayError> {
-        let conn = self.writer.lock();
-        conn.execute_batch("BEGIN IMMEDIATE")?;
-
-        let current_version = match schema_version_inner(&conn) {
-            Ok(v) => v,
-            Err(e) => {
-                let _ = conn.execute_batch("ROLLBACK");
-                return Err(e.into());
-            }
-        };
-
-        for (i, migration) in MIGRATIONS.iter().enumerate() {
-            if i >= current_version {
-                if let Err(e) = conn.execute_batch(migration) {
-                    let is_dup_column = matches!(
-                        &e,
-                        rusqlite::Error::SqliteFailure(_, Some(msg))
-                            if msg.contains("duplicate column name")
-                    );
-                    if !is_dup_column {
-                        let _ = conn.execute_batch("ROLLBACK");
-                        return Err(e.into());
-                    }
-                }
-                let new_version = (i + 1) as i64;
-                if let Err(e) = conn.execute(
-                    "UPDATE schema_version SET version = ?1",
-                    params![new_version],
-                ) {
-                    let _ = conn.execute_batch("ROLLBACK");
-                    return Err(e.into());
-                }
-            }
-        }
-
-        if let Err(e) = conn.execute_batch("COMMIT") {
-            let _ = conn.execute_batch("ROLLBACK");
-            return Err(e.into());
-        }
-        Ok(())
     }
 
     pub async fn with_read_tx<F, R>(&self, f: F) -> Result<R, GatewayError>
@@ -965,6 +939,50 @@ fn schema_version_inner(conn: &Connection) -> std::result::Result<usize, rusqlit
         rusqlite::Error::SqliteFailure(_, Some(ref msg)) if msg.contains("no such table") => Ok(0),
         other => Err(other),
     })
+}
+
+/// Run schema migrations against a writer connection. Called at open time
+/// before the reader pool is built so the schema is in place for readers.
+fn run_migrations_on_conn(conn: &mut Connection) -> Result<(), GatewayError> {
+    conn.execute_batch("BEGIN IMMEDIATE")?;
+
+    let current_version = match schema_version_inner(conn) {
+        Ok(v) => v,
+        Err(e) => {
+            let _ = conn.execute_batch("ROLLBACK");
+            return Err(e.into());
+        }
+    };
+
+    for (i, migration) in MIGRATIONS.iter().enumerate() {
+        if i >= current_version {
+            if let Err(e) = conn.execute_batch(migration) {
+                let is_dup_column = matches!(
+                    &e,
+                    rusqlite::Error::SqliteFailure(_, Some(msg))
+                        if msg.contains("duplicate column name")
+                );
+                if !is_dup_column {
+                    let _ = conn.execute_batch("ROLLBACK");
+                    return Err(e.into());
+                }
+            }
+            let new_version = (i + 1) as i64;
+            if let Err(e) = conn.execute(
+                "UPDATE schema_version SET version = ?1",
+                params![new_version],
+            ) {
+                let _ = conn.execute_batch("ROLLBACK");
+                return Err(e.into());
+            }
+        }
+    }
+
+    if let Err(e) = conn.execute_batch("COMMIT") {
+        let _ = conn.execute_batch("ROLLBACK");
+        return Err(e.into());
+    }
+    Ok(())
 }
 
 // --- Device _tx free functions ---
@@ -2312,5 +2330,227 @@ mod tests {
         let device = db.get_device("dev-1").await.unwrap();
         assert_eq!(device.hostname, "host-1");
         assert!(device.desired_config.is_none());
+    }
+
+    // --- Pool refactor guarantee tests (B1 W-6) ---
+
+    /// Enrollment is wrapped in `with_write_tx`; any step failing inside the
+    /// closure must roll back the whole transaction, including the bootstrap
+    /// token's used_at flag. Regression guard: the pre-pool-refactor enroll
+    /// handler hand-rolled BEGIN IMMEDIATE/COMMIT/ROLLBACK and was easy to
+    /// get wrong.
+    #[tokio::test(flavor = "current_thread")]
+    async fn enroll_transaction_rolls_back_on_credential_failure() {
+        let (db, _tmp) = test_db();
+
+        let expires_at = future_expiry();
+        let token = db
+            .create_bootstrap_token("token-hash-xyz", "alice", None, &expires_at)
+            .await
+            .expect("create bootstrap token");
+
+        // Pre-seed a credential holding api_key_hash = "collide" so the
+        // credential insert inside the tx fails on UNIQUE(api_key_hash).
+        db.register_device("dev-existing", "h", "linux", "x86_64", "x", None)
+            .await
+            .expect("register existing device");
+        db.create_device_credential("dev-existing", "collide", "alice", None)
+            .await
+            .expect("seed credential");
+
+        let res = db
+            .with_write_tx(move |tx| {
+                validate_and_consume_bootstrap_token_tx(tx, "token-hash-xyz", "dev-new")?;
+                register_device_tx(tx, "dev-new", "h", "linux", "x86_64", "x", None)?;
+                // UNIQUE(api_key_hash) on "collide" is already taken → error.
+                create_device_credential_tx(tx, "dev-new", "collide", "alice", None)?;
+                Ok(())
+            })
+            .await;
+        assert!(res.is_err(), "expected tx failure");
+
+        // Bootstrap token must still be unconsumed.
+        let tokens = db.list_bootstrap_tokens().await.expect("list tokens");
+        let t = tokens
+            .iter()
+            .find(|t| t.id == token.id)
+            .expect("token still exists");
+        assert!(
+            t.used_at.is_none(),
+            "token should NOT be consumed after tx rollback"
+        );
+        assert!(t.used_by_device.is_none());
+
+        // The new device must not exist.
+        let err = db
+            .get_device("dev-new")
+            .await
+            .expect_err("dev-new should not exist after rollback");
+        assert!(matches!(err, GatewayError::NotFound(_)));
+    }
+
+    /// Checkin was non-transactional pre-refactor (get/update/record_checkin
+    /// ran on a shared mutex but as three separate ops). Regression guard:
+    /// in the new handler, a failure in record_checkin must roll back the
+    /// preceding update_checkin so the device's config_hash stays consistent.
+    #[tokio::test(flavor = "current_thread")]
+    async fn checkin_is_atomic_across_get_update_record() {
+        let (db, _tmp) = test_db();
+        db.register_device("d", "h", "linux", "x86_64", "hash-1", None)
+            .await
+            .expect("register");
+
+        let res = db
+            .with_write_tx(move |tx| {
+                update_checkin_tx(tx, "d", "hash-2", None)?;
+                // FK violation: device_id must exist in devices.
+                record_checkin_tx(tx, "nonexistent-device", "hash-2", true)?;
+                Ok(())
+            })
+            .await;
+        assert!(res.is_err(), "expected tx failure on FK");
+
+        let d = db.get_device("d").await.expect("get device");
+        assert_eq!(
+            d.config_hash, "hash-1",
+            "update_checkin must have rolled back"
+        );
+    }
+
+    /// With the split-pool model, N concurrent readers should run truly in
+    /// parallel (WAL supports unlimited concurrent readers) and should NOT
+    /// serialize a concurrent writer. Pre-refactor, every call serialized
+    /// on a single `tokio::sync::Mutex<ServerDb>`.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn concurrent_readers_do_not_block_writer() {
+        let (db, _tmp) = test_db();
+        for i in 0..50 {
+            db.register_device(&format!("d{i}"), "h", "linux", "x86_64", "x", None)
+                .await
+                .expect("seed");
+        }
+
+        // Baseline: time a single writer op with no contention.
+        let t0 = std::time::Instant::now();
+        db.register_device("baseline", "h", "linux", "x86_64", "x", None)
+            .await
+            .expect("baseline write");
+        let baseline = t0.elapsed();
+
+        // Launch 16 concurrent reader loops.
+        let mut reader_handles = Vec::new();
+        for i in 0..16 {
+            let db_c = db.clone();
+            reader_handles.push(tokio::spawn(async move {
+                for _ in 0..10 {
+                    let _ = db_c.get_device(&format!("d{}", i % 50)).await;
+                }
+            }));
+        }
+
+        // Give readers a moment to saturate the reader pool.
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+
+        // Time a writer while readers are active.
+        let t_write = std::time::Instant::now();
+        db.register_device("contended", "h", "linux", "x86_64", "x", None)
+            .await
+            .expect("contended write");
+        let write_elapsed = t_write.elapsed();
+
+        for h in reader_handles {
+            h.await.expect("reader join");
+        }
+
+        // Allow up to 10× baseline as a lenient bound — anything worse would
+        // mean readers are blocking the writer (the very bug this removes).
+        // In practice this runs well under 3× on a reasonable machine.
+        assert!(
+            write_elapsed < baseline * 10 + std::time::Duration::from_millis(50),
+            "writer took {write_elapsed:?}, baseline {baseline:?} — readers are blocking writer"
+        );
+    }
+
+    /// `writer_wait_seconds` histogram must record observations when the
+    /// writer mutex is contended. Guards against metric wiring regressions
+    /// that would silently break operator observability of pool pressure.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn writer_contention_metric_observes() {
+        use prometheus_client::registry::Registry;
+
+        let mut reg = Registry::default();
+        let metrics = crate::metrics::Metrics::new(&mut reg);
+
+        let (db, _tmp) = test_db();
+        let db = db.with_metrics(Some(metrics));
+
+        // Four concurrent writers forces the writer mutex to queue at least
+        // three of them.
+        let mut handles = Vec::new();
+        for i in 0..4 {
+            let db_c = db.clone();
+            handles.push(tokio::spawn(async move {
+                db_c.register_device(&format!("c{i}"), "h", "linux", "x86_64", "x", None)
+                    .await
+            }));
+        }
+        for h in handles {
+            h.await.expect("join").expect("write");
+        }
+
+        let mut out = String::new();
+        prometheus_client::encoding::text::encode(&mut out, &reg).expect("encode");
+        // _count line format: `cfgd_operator_gateway_db_writer_wait_seconds_count N`.
+        let count_line = out
+            .lines()
+            .find(|l| l.starts_with("cfgd_operator_gateway_db_writer_wait_seconds_count"))
+            .expect("writer_wait_seconds_count present");
+        let count: u64 = count_line
+            .split_whitespace()
+            .last()
+            .and_then(|n| n.parse().ok())
+            .expect("parse count");
+        assert!(count >= 4, "expected ≥4 observations, got {count}:\n{out}");
+    }
+
+    /// When the reader pool is saturated, `pool.get()` must time out and
+    /// surface as `GatewayError::PoolExhausted` (not a silent hang, not 500).
+    /// This is the HTTP 503 load-shedding path.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn pool_timeout_surfaces_as_pool_exhausted() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let path = tmp.path().join("pool.db");
+        let db = ServerDb::open_with_config(
+            path.to_str().expect("utf8"),
+            1,
+            std::time::Duration::from_millis(50),
+        )
+        .expect("open");
+        db.register_device("d", "h", "linux", "x86_64", "x", None)
+            .await
+            .expect("register");
+
+        // Hold the single reader in a blocking sleep inside a read tx.
+        let db_hold = db.clone();
+        let hold = tokio::spawn(async move {
+            db_hold
+                .with_read_tx(|_tx| {
+                    std::thread::sleep(std::time::Duration::from_millis(400));
+                    Ok(())
+                })
+                .await
+        });
+
+        // Give the holder time to acquire.
+        tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+
+        // Second reader must time out on pool acquisition.
+        let r = db.get_device("d").await;
+        match r {
+            Err(GatewayError::PoolExhausted(_)) => {}
+            other => panic!("expected PoolExhausted, got {other:?}"),
+        }
+
+        hold.await.expect("hold join").expect("hold inner");
     }
 }
