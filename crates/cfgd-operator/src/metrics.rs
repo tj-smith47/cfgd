@@ -35,6 +35,11 @@ pub struct PolicyLabels {
     pub namespace: String,
 }
 
+#[derive(Clone, Hash, PartialEq, Eq, EncodeLabelSet, Debug)]
+pub struct DbPoolLabels {
+    pub role: String,
+}
+
 #[derive(Clone)]
 pub struct Metrics {
     pub reconciliations_total: Family<ReconcileLabels, Counter>,
@@ -44,6 +49,9 @@ pub struct Metrics {
     pub webhook_duration_seconds: Family<WebhookLabels, Histogram>,
     pub devices_compliant: Family<PolicyLabels, Gauge>,
     pub devices_enrolled_total: Counter,
+    pub db_pool_in_use: Family<DbPoolLabels, Gauge>,
+    pub db_pool_wait_seconds: Histogram,
+    pub db_writer_wait_seconds: Histogram,
 }
 
 impl Metrics {
@@ -107,6 +115,33 @@ impl Metrics {
             devices_enrolled_total.clone(),
         );
 
+        let db_pool_in_use = Family::<DbPoolLabels, Gauge>::default();
+        sub.register(
+            "gateway_db_pool_in_use",
+            "Number of in-use gateway DB pool connections",
+            db_pool_in_use.clone(),
+        );
+
+        let db_pool_wait_seconds = {
+            let (start, factor, length) = cfgd_core::DURATION_BUCKETS_SHORT;
+            Histogram::new(exponential_buckets(start, factor, length))
+        };
+        sub.register(
+            "gateway_db_pool_wait_seconds",
+            "Wait time to acquire a gateway DB reader pool connection",
+            db_pool_wait_seconds.clone(),
+        );
+
+        let db_writer_wait_seconds = {
+            let (start, factor, length) = cfgd_core::DURATION_BUCKETS_SHORT;
+            Histogram::new(exponential_buckets(start, factor, length))
+        };
+        sub.register(
+            "gateway_db_writer_wait_seconds",
+            "Wait time to acquire the gateway DB writer mutex",
+            db_writer_wait_seconds.clone(),
+        );
+
         Self {
             reconciliations_total,
             reconciliation_duration_seconds,
@@ -115,6 +150,9 @@ impl Metrics {
             webhook_duration_seconds,
             devices_compliant,
             devices_enrolled_total,
+            db_pool_in_use,
+            db_pool_wait_seconds,
+            db_writer_wait_seconds,
         }
     }
 }

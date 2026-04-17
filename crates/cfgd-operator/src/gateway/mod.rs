@@ -97,7 +97,8 @@ pub struct GatewayConfig {
 /// Returns when the server shuts down or encounters a fatal error.
 pub async fn start_gateway(config: GatewayConfig) -> Result<(), Box<dyn std::error::Error>> {
     let db = ServerDb::open(&config.db_path)
-        .map_err(|e| -> Box<dyn std::error::Error> { Box::new(e) })?;
+        .map_err(|e| -> Box<dyn std::error::Error> { Box::new(e) })?
+        .with_metrics(config.metrics.clone());
 
     if std::env::var("CFGD_API_KEY").is_ok() {
         tracing::info!("device gateway: API key authentication enabled");
@@ -140,6 +141,25 @@ pub async fn start_gateway(config: GatewayConfig) -> Result<(), Box<dyn std::err
             }
         }
     });
+
+    // 1-Hz sampler: publish reader pool in-use gauge while the gateway is running.
+    if let Some(metrics) = state.metrics.clone() {
+        let pool = state.db.readers_handle();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(1));
+            loop {
+                interval.tick().await;
+                let st = pool.state();
+                let in_use = st.connections.saturating_sub(st.idle_connections);
+                metrics
+                    .db_pool_in_use
+                    .get_or_create(&crate::metrics::DbPoolLabels {
+                        role: "reader".to_string(),
+                    })
+                    .set(in_use as i64);
+            }
+        });
+    }
 
     let app = api::router(state.clone())
         .merge(web::router())

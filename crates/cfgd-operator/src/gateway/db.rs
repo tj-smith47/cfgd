@@ -1,15 +1,17 @@
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use parking_lot::Mutex as PlMutex;
-use r2d2::Pool;
+use r2d2::{Pool, PooledConnection};
 use r2d2_sqlite::SqliteConnectionManager;
 use rusqlite::{Connection, OpenFlags, Transaction, TransactionBehavior, params};
 use serde::{Deserialize, Serialize};
 
 use super::errors::GatewayError;
+use crate::metrics::Metrics;
 
 pub(super) type ReaderPool = Pool<SqliteConnectionManager>;
+pub(super) type ReaderConn = PooledConnection<SqliteConnectionManager>;
 
 const DEFAULT_READER_POOL_SIZE: u32 = 16;
 const POOL_CONNECTION_TIMEOUT: Duration = Duration::from_secs(5);
@@ -375,10 +377,35 @@ fn map_pool_err(e: r2d2::Error) -> GatewayError {
     GatewayError::PoolExhausted(e.to_string())
 }
 
+fn acquire_reader(
+    pool: &ReaderPool,
+    metrics: &Option<Metrics>,
+) -> Result<ReaderConn, GatewayError> {
+    let t0 = Instant::now();
+    let conn = pool.get().map_err(map_pool_err)?;
+    if let Some(m) = metrics {
+        m.db_pool_wait_seconds.observe(t0.elapsed().as_secs_f64());
+    }
+    Ok(conn)
+}
+
+fn acquire_writer<'a>(
+    writer: &'a PlMutex<Connection>,
+    metrics: &Option<Metrics>,
+) -> parking_lot::MutexGuard<'a, Connection> {
+    let t0 = Instant::now();
+    let guard = writer.lock();
+    if let Some(m) = metrics {
+        m.db_writer_wait_seconds.observe(t0.elapsed().as_secs_f64());
+    }
+    guard
+}
+
 #[derive(Clone)]
 pub struct ServerDb {
     readers: Arc<ReaderPool>,
     writer: Arc<PlMutex<Connection>>,
+    metrics: Option<Metrics>,
 }
 
 impl ServerDb {
@@ -403,9 +430,19 @@ impl ServerDb {
         let db = Self {
             readers: Arc::new(readers),
             writer: Arc::new(PlMutex::new(writer)),
+            metrics: None,
         };
         db.run_migrations_blocking()?;
         Ok(db)
+    }
+
+    pub fn with_metrics(mut self, metrics: Option<Metrics>) -> Self {
+        self.metrics = metrics;
+        self
+    }
+
+    pub fn readers_handle(&self) -> Arc<ReaderPool> {
+        self.readers.clone()
     }
 
     fn run_migrations_blocking(&self) -> Result<(), GatewayError> {
@@ -457,8 +494,9 @@ impl ServerDb {
         R: Send + 'static,
     {
         let pool = self.readers.clone();
+        let metrics = self.metrics.clone();
         spawn_blocking_db(move || {
-            let mut conn = pool.get().map_err(map_pool_err)?;
+            let mut conn = acquire_reader(&pool, &metrics)?;
             let tx = conn.transaction_with_behavior(TransactionBehavior::Deferred)?;
             let out = f(&tx)?;
             drop(tx);
@@ -473,8 +511,9 @@ impl ServerDb {
         R: Send + 'static,
     {
         let writer = self.writer.clone();
+        let metrics = self.metrics.clone();
         spawn_blocking_db(move || {
-            let mut conn = writer.lock();
+            let mut conn = acquire_writer(&writer, &metrics);
             let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
             let out = f(&tx)?;
             tx.commit()?;
@@ -487,9 +526,10 @@ impl ServerDb {
 
     pub async fn get_device(&self, id: &str) -> Result<Device, GatewayError> {
         let pool = self.readers.clone();
+        let metrics = self.metrics.clone();
         let id = id.to_string();
         spawn_blocking_db(move || {
-            let conn = pool.get().map_err(map_pool_err)?;
+            let conn = acquire_reader(&pool, &metrics)?;
             get_device_tx(&conn, &id)
         })
         .await
@@ -507,8 +547,9 @@ impl ServerDb {
         offset: u32,
     ) -> Result<Vec<Device>, GatewayError> {
         let pool = self.readers.clone();
+        let metrics = self.metrics.clone();
         spawn_blocking_db(move || {
-            let conn = pool.get().map_err(map_pool_err)?;
+            let conn = acquire_reader(&pool, &metrics)?;
             list_devices_paginated_tx(&conn, limit, offset)
         })
         .await
@@ -519,9 +560,10 @@ impl ServerDb {
         device_id: &str,
     ) -> Result<Vec<DriftEvent>, GatewayError> {
         let pool = self.readers.clone();
+        let metrics = self.metrics.clone();
         let device_id = device_id.to_string();
         spawn_blocking_db(move || {
-            let conn = pool.get().map_err(map_pool_err)?;
+            let conn = acquire_reader(&pool, &metrics)?;
             list_drift_events_tx(&conn, &device_id)
         })
         .await
@@ -532,9 +574,10 @@ impl ServerDb {
         device_id: &str,
     ) -> Result<Vec<CheckinEvent>, GatewayError> {
         let pool = self.readers.clone();
+        let metrics = self.metrics.clone();
         let device_id = device_id.to_string();
         spawn_blocking_db(move || {
-            let conn = pool.get().map_err(map_pool_err)?;
+            let conn = acquire_reader(&pool, &metrics)?;
             list_checkin_events_tx(&conn, &device_id)
         })
         .await
@@ -550,8 +593,9 @@ impl ServerDb {
         offset: u32,
     ) -> Result<Vec<FleetEvent>, GatewayError> {
         let pool = self.readers.clone();
+        let metrics = self.metrics.clone();
         spawn_blocking_db(move || {
-            let conn = pool.get().map_err(map_pool_err)?;
+            let conn = acquire_reader(&pool, &metrics)?;
             list_fleet_events_paginated_tx(&conn, limit, offset)
         })
         .await
@@ -559,8 +603,9 @@ impl ServerDb {
 
     pub async fn list_bootstrap_tokens(&self) -> Result<Vec<BootstrapToken>, GatewayError> {
         let pool = self.readers.clone();
+        let metrics = self.metrics.clone();
         spawn_blocking_db(move || {
-            let conn = pool.get().map_err(map_pool_err)?;
+            let conn = acquire_reader(&pool, &metrics)?;
             list_bootstrap_tokens_tx(&conn)
         })
         .await
@@ -571,9 +616,10 @@ impl ServerDb {
         username: &str,
     ) -> Result<Vec<UserPublicKey>, GatewayError> {
         let pool = self.readers.clone();
+        let metrics = self.metrics.clone();
         let username = username.to_string();
         spawn_blocking_db(move || {
-            let conn = pool.get().map_err(map_pool_err)?;
+            let conn = acquire_reader(&pool, &metrics)?;
             list_user_public_keys_tx(&conn, &username)
         })
         .await
@@ -581,8 +627,9 @@ impl ServerDb {
 
     pub async fn get_fleet_status(&self) -> Result<super::fleet::FleetStatus, GatewayError> {
         let pool = self.readers.clone();
+        let metrics = self.metrics.clone();
         spawn_blocking_db(move || {
-            let conn = pool.get().map_err(map_pool_err)?;
+            let conn = acquire_reader(&pool, &metrics)?;
             get_fleet_status_tx(&conn)
         })
         .await
@@ -600,6 +647,7 @@ impl ServerDb {
         compliance_summary: Option<&serde_json::Value>,
     ) -> Result<Device, GatewayError> {
         let writer = self.writer.clone();
+        let metrics = self.metrics.clone();
         let id = id.to_string();
         let hostname = hostname.to_string();
         let os = os.to_string();
@@ -607,7 +655,7 @@ impl ServerDb {
         let config_hash = config_hash.to_string();
         let compliance = compliance_summary.cloned();
         spawn_blocking_db(move || {
-            let conn = writer.lock();
+            let conn = acquire_writer(&writer, &metrics);
             register_device_tx(
                 &conn,
                 &id,
@@ -628,11 +676,12 @@ impl ServerDb {
         compliance_summary: Option<&serde_json::Value>,
     ) -> Result<(), GatewayError> {
         let writer = self.writer.clone();
+        let metrics = self.metrics.clone();
         let id = id.to_string();
         let config_hash = config_hash.to_string();
         let compliance = compliance_summary.cloned();
         spawn_blocking_db(move || {
-            let conn = writer.lock();
+            let conn = acquire_writer(&writer, &metrics);
             update_checkin_tx(&conn, &id, &config_hash, compliance.as_ref())
         })
         .await
@@ -644,10 +693,11 @@ impl ServerDb {
         config: &serde_json::Value,
     ) -> Result<(), GatewayError> {
         let writer = self.writer.clone();
+        let metrics = self.metrics.clone();
         let id = id.to_string();
         let config = config.clone();
         spawn_blocking_db(move || {
-            let conn = writer.lock();
+            let conn = acquire_writer(&writer, &metrics);
             set_device_config_tx(&conn, &id, &config)
         })
         .await
@@ -659,10 +709,11 @@ impl ServerDb {
         details: &str,
     ) -> Result<DriftEvent, GatewayError> {
         let writer = self.writer.clone();
+        let metrics = self.metrics.clone();
         let device_id = device_id.to_string();
         let details = details.to_string();
         spawn_blocking_db(move || {
-            let conn = writer.lock();
+            let conn = acquire_writer(&writer, &metrics);
             record_drift_event_tx(&conn, &device_id, &details)
         })
         .await
@@ -675,10 +726,11 @@ impl ServerDb {
         config_changed: bool,
     ) -> Result<CheckinEvent, GatewayError> {
         let writer = self.writer.clone();
+        let metrics = self.metrics.clone();
         let device_id = device_id.to_string();
         let config_hash = config_hash.to_string();
         spawn_blocking_db(move || {
-            let conn = writer.lock();
+            let conn = acquire_writer(&writer, &metrics);
             record_checkin_tx(&conn, &device_id, &config_hash, config_changed)
         })
         .await
@@ -686,9 +738,10 @@ impl ServerDb {
 
     pub async fn set_force_reconcile(&self, device_id: &str) -> Result<(), GatewayError> {
         let writer = self.writer.clone();
+        let metrics = self.metrics.clone();
         let device_id = device_id.to_string();
         spawn_blocking_db(move || {
-            let conn = writer.lock();
+            let conn = acquire_writer(&writer, &metrics);
             set_force_reconcile_tx(&conn, &device_id)
         })
         .await
@@ -702,12 +755,13 @@ impl ServerDb {
         expires_at: &str,
     ) -> Result<BootstrapToken, GatewayError> {
         let writer = self.writer.clone();
+        let metrics = self.metrics.clone();
         let token_hash = token_hash.to_string();
         let username = username.to_string();
         let team = team.map(|s| s.to_string());
         let expires_at = expires_at.to_string();
         spawn_blocking_db(move || {
-            let conn = writer.lock();
+            let conn = acquire_writer(&writer, &metrics);
             create_bootstrap_token_tx(&conn, &token_hash, &username, team.as_deref(), &expires_at)
         })
         .await
@@ -719,10 +773,11 @@ impl ServerDb {
         device_id: &str,
     ) -> Result<BootstrapToken, GatewayError> {
         let writer = self.writer.clone();
+        let metrics = self.metrics.clone();
         let token_hash = token_hash.to_string();
         let device_id = device_id.to_string();
         spawn_blocking_db(move || {
-            let conn = writer.lock();
+            let conn = acquire_writer(&writer, &metrics);
             validate_and_consume_bootstrap_token_tx(&conn, &token_hash, &device_id)
         })
         .await
@@ -730,9 +785,10 @@ impl ServerDb {
 
     pub async fn delete_bootstrap_token(&self, id: &str) -> Result<(), GatewayError> {
         let writer = self.writer.clone();
+        let metrics = self.metrics.clone();
         let id = id.to_string();
         spawn_blocking_db(move || {
-            let conn = writer.lock();
+            let conn = acquire_writer(&writer, &metrics);
             delete_bootstrap_token_tx(&conn, &id)
         })
         .await
@@ -746,12 +802,13 @@ impl ServerDb {
         team: Option<&str>,
     ) -> Result<DeviceCredential, GatewayError> {
         let writer = self.writer.clone();
+        let metrics = self.metrics.clone();
         let device_id = device_id.to_string();
         let api_key_hash = api_key_hash.to_string();
         let username = username.to_string();
         let team = team.map(|s| s.to_string());
         spawn_blocking_db(move || {
-            let conn = writer.lock();
+            let conn = acquire_writer(&writer, &metrics);
             create_device_credential_tx(
                 &conn,
                 &device_id,
@@ -770,9 +827,10 @@ impl ServerDb {
         api_key_hash: &str,
     ) -> Result<DeviceCredential, GatewayError> {
         let writer = self.writer.clone();
+        let metrics = self.metrics.clone();
         let api_key_hash = api_key_hash.to_string();
         spawn_blocking_db(move || {
-            let conn = writer.lock();
+            let conn = acquire_writer(&writer, &metrics);
             validate_device_credential_tx(&conn, &api_key_hash)
         })
         .await
@@ -780,9 +838,10 @@ impl ServerDb {
 
     pub async fn revoke_device_credential(&self, device_id: &str) -> Result<(), GatewayError> {
         let writer = self.writer.clone();
+        let metrics = self.metrics.clone();
         let device_id = device_id.to_string();
         spawn_blocking_db(move || {
-            let conn = writer.lock();
+            let conn = acquire_writer(&writer, &metrics);
             revoke_device_credential_tx(&conn, &device_id)
         })
         .await
@@ -797,13 +856,14 @@ impl ServerDb {
         label: Option<&str>,
     ) -> Result<UserPublicKey, GatewayError> {
         let writer = self.writer.clone();
+        let metrics = self.metrics.clone();
         let username = username.to_string();
         let key_type = key_type.to_string();
         let public_key = public_key.to_string();
         let fingerprint = fingerprint.to_string();
         let label = label.map(|s| s.to_string());
         spawn_blocking_db(move || {
-            let conn = writer.lock();
+            let conn = acquire_writer(&writer, &metrics);
             add_user_public_key_tx(
                 &conn,
                 &username,
@@ -818,9 +878,10 @@ impl ServerDb {
 
     pub async fn delete_user_public_key(&self, id: &str) -> Result<(), GatewayError> {
         let writer = self.writer.clone();
+        let metrics = self.metrics.clone();
         let id = id.to_string();
         spawn_blocking_db(move || {
-            let conn = writer.lock();
+            let conn = acquire_writer(&writer, &metrics);
             delete_user_public_key_tx(&conn, &id)
         })
         .await
@@ -836,6 +897,7 @@ impl ServerDb {
         ttl_secs: u64,
     ) -> Result<EnrollmentChallenge, GatewayError> {
         let writer = self.writer.clone();
+        let metrics = self.metrics.clone();
         let username = username.to_string();
         let device_id = device_id.to_string();
         let hostname = hostname.to_string();
@@ -843,7 +905,7 @@ impl ServerDb {
         let arch = os_arch.1.to_string();
         let nonce = nonce.to_string();
         spawn_blocking_db(move || {
-            let conn = writer.lock();
+            let conn = acquire_writer(&writer, &metrics);
             create_enrollment_challenge_tx(
                 &conn,
                 &username,
@@ -868,8 +930,9 @@ impl ServerDb {
 
     pub async fn cleanup_old_events(&self, max_age_days: u32) -> Result<usize, GatewayError> {
         let writer = self.writer.clone();
+        let metrics = self.metrics.clone();
         spawn_blocking_db(move || {
-            let conn = writer.lock();
+            let conn = acquire_writer(&writer, &metrics);
             cleanup_old_events_tx(&conn, max_age_days)
         })
         .await
@@ -877,8 +940,9 @@ impl ServerDb {
 
     pub async fn reset_data(&self) -> Result<usize, GatewayError> {
         let writer = self.writer.clone();
+        let metrics = self.metrics.clone();
         spawn_blocking_db(move || {
-            let conn = writer.lock();
+            let conn = acquire_writer(&writer, &metrics);
             reset_data_tx(&conn)
         })
         .await
@@ -886,7 +950,7 @@ impl ServerDb {
 
     #[cfg(test)]
     pub(super) fn schema_version_blocking(&self) -> usize {
-        let conn = self.writer.lock();
+        let conn = acquire_writer(&self.writer, &self.metrics);
         schema_version_inner(&conn).unwrap_or(0)
     }
 }
