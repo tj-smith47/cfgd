@@ -4,6 +4,12 @@ use std::path::PathBuf;
 
 pub type Result<T> = std::result::Result<T, CfgdError>;
 
+// Top-level variants print `"<category>: <inner>"` because `{0}` expands the
+// inner error's Display once. `main.rs` formats with `{}`, which emits this
+// single-layer message. Do NOT switch `main.rs` to `{:#}` — that also walks
+// `source()` (via `#[from]`) and would duplicate the inner text. The
+// Composition variant uses `#[source]` (not `#[from]`) because a manual
+// `From<CompositionError>` impl exists for error-context wrapping.
 #[derive(Debug, thiserror::Error)]
 pub enum CfgdError {
     #[error("config error: {0}")]
@@ -28,7 +34,7 @@ pub enum CfgdError {
     Source(#[from] SourceError),
 
     #[error("composition error: {0}")]
-    Composition(Box<CompositionError>),
+    Composition(#[source] Box<CompositionError>),
 
     #[error("upgrade error: {0}")]
     Upgrade(#[from] UpgradeError),
@@ -316,6 +322,12 @@ pub enum UpgradeError {
 
     #[error("checksum verification failed for {file}")]
     ChecksumMismatch { file: String },
+
+    #[error("{file} is not listed in checksums.txt")]
+    ChecksumMissing { file: String },
+
+    #[error("checksums.txt parsed but empty — release is malformed")]
+    ChecksumsEmpty,
 
     #[error("failed to install binary: {message}")]
     InstallFailed { message: String },

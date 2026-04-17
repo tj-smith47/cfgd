@@ -39,7 +39,8 @@ impl CsiMetrics {
         );
 
         let pull_duration_seconds = Family::<PullLabels, Histogram>::new_with_constructor(|| {
-            Histogram::new(exponential_buckets(0.1, 2.0, 10))
+            let (start, factor, length) = cfgd_core::DURATION_BUCKETS_LONG;
+            Histogram::new(exponential_buckets(start, factor, length))
         });
         registry.register(
             "cfgd_csi_pull_duration_seconds",

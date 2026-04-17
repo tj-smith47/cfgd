@@ -2,6 +2,24 @@ use std::path::Path;
 
 use super::*;
 
+/// Signing-key kind selected during enrollment. Replaces an earlier
+/// `match key_type.as_str() { "ssh" | "gpg" | _ => unreachable!() }` so
+/// the compiler enforces exhaustive handling.
+#[derive(Copy, Clone)]
+enum KeyType {
+    Ssh,
+    Gpg,
+}
+
+impl KeyType {
+    fn as_str(self) -> &'static str {
+        match self {
+            KeyType::Ssh => "ssh",
+            KeyType::Gpg => "gpg",
+        }
+    }
+}
+
 // ─────────────────────────────────────────────────────
 // cfgd init — pure scaffolding
 // ─────────────────────────────────────────────────────
@@ -742,12 +760,12 @@ pub(super) fn cmd_enroll(
 
     // Determine signing method
     let (key_type, key_ref) = if let Some(gpg_id) = gpg_key {
-        ("gpg".to_string(), gpg_id.to_string())
+        (KeyType::Gpg, gpg_id.to_string())
     } else if let Some(ssh_path) = ssh_key {
-        ("ssh".to_string(), ssh_path.to_string())
+        (KeyType::Ssh, ssh_path.to_string())
     } else {
         match detect_ssh_key(printer) {
-            Some(path) => ("ssh".to_string(), path),
+            Some(path) => (KeyType::Ssh, path),
             None => {
                 anyhow::bail!(
                     "no SSH key found — provide --ssh-key <path> or --gpg-key <id>\n\
@@ -759,7 +777,7 @@ pub(super) fn cmd_enroll(
 
     printer.key_value(
         "Signing with",
-        &format!("{} ({})", key_type.to_uppercase(), key_ref),
+        &format!("{} ({})", key_type.as_str().to_uppercase(), key_ref),
     );
     printer.newline();
 
@@ -771,16 +789,20 @@ pub(super) fn cmd_enroll(
     printer.key_value("Challenge ID", &challenge.challenge_id);
     printer.key_value("Expires", &challenge.expires_at);
 
-    let signature = match key_type.as_str() {
-        "ssh" => sign_with_ssh(&challenge.nonce, &key_ref)?,
-        "gpg" => sign_with_gpg(&challenge.nonce, &key_ref)?,
-        _ => unreachable!(),
+    let signature = match key_type {
+        KeyType::Ssh => sign_with_ssh(&challenge.nonce, &key_ref)?,
+        KeyType::Gpg => sign_with_gpg(&challenge.nonce, &key_ref)?,
     };
 
     printer.success("Challenge signed");
 
     let resp = client
-        .submit_verification(&challenge.challenge_id, &signature, &key_type, printer)
+        .submit_verification(
+            &challenge.challenge_id,
+            &signature,
+            key_type.as_str(),
+            printer,
+        )
         .map_err(|e| anyhow::anyhow!("{}", e))?;
 
     finish_enrollment(printer, server_url, &device_id, resp)

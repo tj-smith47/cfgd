@@ -381,13 +381,7 @@ impl SystemConfigurator for ContainerdConfigurator {
     }
 
     fn is_available(&self) -> bool {
-        Command::new("containerd")
-            .arg("--version")
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status()
-            .map(|s| s.success())
-            .unwrap_or(false)
+        cfgd_core::command_available("containerd")
     }
 
     fn current_state(&self) -> Result<serde_yaml::Value> {
@@ -546,13 +540,7 @@ impl SystemConfigurator for KubeletConfigurator {
     }
 
     fn is_available(&self) -> bool {
-        Command::new("kubelet")
-            .arg("--version")
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status()
-            .map(|s| s.success())
-            .unwrap_or(false)
+        cfgd_core::command_available("kubelet")
     }
 
     fn current_state(&self) -> Result<serde_yaml::Value> {
@@ -738,13 +726,7 @@ impl SystemConfigurator for AppArmorConfigurator {
 
     fn is_available(&self) -> bool {
         Path::new("/sys/kernel/security/apparmor").exists()
-            || Command::new("apparmor_parser")
-                .arg("--version")
-                .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::null())
-                .status()
-                .map(|s| s.success())
-                .unwrap_or(false)
+            || cfgd_core::command_available("apparmor_parser")
     }
 
     fn current_state(&self) -> Result<serde_yaml::Value> {

@@ -446,7 +446,12 @@ changelog:
     - title: Others
       order: 999
 
-# GPG signing for archives, checksums, and source tarball.
+# GPG + cosign signing for checksums / source / archives.
+# Cosign signatures on checksums give consumers a publisher-compromise-resistant
+# verification path: `cosign verify-blob --bundle checksums.txt.cosign.bundle
+# --certificate-identity-regexp '...' checksums.txt` then `sha256sum -c` per
+# downloaded artifact. GPG signatures remain for package-manager integrations
+# (Homebrew cask, RPM, etc.) that already consume detached GPG sigs.
 signs:
   - id: default
     artifacts: checksum
@@ -458,6 +463,16 @@ signs:
       - "--output"
       - "{{ Signature }}"
       - "--detach-sig"
+      - "{{ Artifact }}"
+  - id: checksum-cosign
+    artifacts: checksum
+    signature: "{{ .Artifact }}.cosign.bundle"
+    cmd: cosign
+    args:
+      - "sign-blob"
+      - "--key=env://COSIGN_KEY"
+      - "--bundle={{ Signature }}"
+      - "--yes"
       - "{{ Artifact }}"
   - id: source
     artifacts: source

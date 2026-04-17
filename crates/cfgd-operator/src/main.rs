@@ -251,8 +251,7 @@ fn init_tracing() {
     use tracing_subscriber::layer::SubscriberExt;
     use tracing_subscriber::util::SubscriberInitExt;
 
-    let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
+    let env_filter = cfgd_core::tracing_env_filter("info");
     let fmt_layer = tracing_subscriber::fmt::layer();
 
     if std::env::var("OTEL_EXPORTER_OTLP_ENDPOINT").is_ok() {

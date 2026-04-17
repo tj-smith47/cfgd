@@ -1174,7 +1174,6 @@ impl<'a> Reconciler<'a> {
                 profile_name,
                 context,
                 &ScriptPhase::OnChange,
-                false,
                 None,
                 None,
             );
@@ -1236,7 +1235,6 @@ impl<'a> Reconciler<'a> {
                     profile_name,
                     context,
                     &ScriptPhase::OnChange,
-                    false,
                     Some(&module.name),
                     Some(&module.dir),
                 );
@@ -1843,7 +1841,7 @@ impl<'a> Reconciler<'a> {
                     .unwrap_or("unknown");
 
                 let env_vars =
-                    build_script_env(config_dir, profile_name, context, phase, false, None, None);
+                    build_script_env(config_dir, profile_name, context, phase, None, None);
 
                 let (_desc, _changed, captured) = execute_script(
                     entry,
@@ -1900,7 +1898,6 @@ impl<'a> Reconciler<'a> {
                                     profile_name,
                                     context,
                                     &ScriptPhase::PostApply,
-                                    false,
                                     Some(&action.module_name),
                                     module_dir.as_deref(),
                                 );
@@ -2092,7 +2089,6 @@ impl<'a> Reconciler<'a> {
                     profile_name,
                     context,
                     script_phase,
-                    false,
                     Some(&action.module_name),
                     module_dir.as_deref(),
                 );
@@ -2110,6 +2106,27 @@ impl<'a> Reconciler<'a> {
                 Ok(format!("module:{}:skip", action.module_name))
             }
         }
+    }
+}
+
+/// Record a drift event or log a warning if the write fails. Previous sites
+/// used `.ok()` which silently dropped SQLite errors (locked DB, full disk),
+/// leaving `unresolved_drift()` out of sync with observed reality.
+fn record_drift_or_warn(
+    state: &StateStore,
+    resource_type: &str,
+    resource_id: &str,
+    expected: Option<&str>,
+    actual: Option<&str>,
+    source: &str,
+) {
+    if let Err(e) = state.record_drift(resource_type, resource_id, expected, actual, source) {
+        tracing::warn!(
+            error = %e,
+            resource_type = %resource_type,
+            resource_id = %resource_id,
+            "failed to record drift"
+        );
     }
 }
 
@@ -2157,15 +2174,14 @@ pub fn verify(
                     expected: "installed".to_string(),
                     actual: "missing".to_string(),
                 });
-                state
-                    .record_drift(
-                        "module",
-                        &format!("{}/{}", module.name, pkg.resolved_name),
-                        Some("installed"),
-                        Some("missing"),
-                        "local",
-                    )
-                    .ok();
+                record_drift_or_warn(
+                    state,
+                    "module",
+                    &format!("{}/{}", module.name, pkg.resolved_name),
+                    Some("installed"),
+                    Some("missing"),
+                    "local",
+                );
             }
         }
 
@@ -2181,15 +2197,14 @@ pub fn verify(
                     expected: "present".to_string(),
                     actual: "missing".to_string(),
                 });
-                state
-                    .record_drift(
-                        "module",
-                        &format!("{}/{}", module.name, target.display()),
-                        Some("present"),
-                        Some("missing"),
-                        "local",
-                    )
-                    .ok();
+                record_drift_or_warn(
+                    state,
+                    "module",
+                    &format!("{}/{}", module.name, target.display()),
+                    Some("present"),
+                    Some("missing"),
+                    "local",
+                );
             }
         }
 
@@ -2227,15 +2242,14 @@ pub fn verify(
             });
 
             if !ok {
-                state
-                    .record_drift(
-                        "package",
-                        &format!("{}:{}", pm.name(), pkg),
-                        Some("installed"),
-                        Some("missing"),
-                        "local",
-                    )
-                    .ok();
+                record_drift_or_warn(
+                    state,
+                    "package",
+                    &format!("{}:{}", pm.name(), pkg),
+                    Some("installed"),
+                    Some("missing"),
+                    "local",
+                );
             }
         }
     }
@@ -2262,15 +2276,14 @@ pub fn verify(
                         actual: drift.actual.clone(),
                     });
 
-                    state
-                        .record_drift(
-                            "system",
-                            &format!("{}.{}", sc.name(), drift.key),
-                            Some(&drift.expected),
-                            Some(&drift.actual),
-                            "local",
-                        )
-                        .ok();
+                    record_drift_or_warn(
+                        state,
+                        "system",
+                        &format!("{}.{}", sc.name(), drift.key),
+                        Some(&drift.expected),
+                        Some(&drift.actual),
+                        "local",
+                    );
                 }
             }
         }
@@ -2380,15 +2393,14 @@ fn verify_env(
                 },
             });
             if !has_line {
-                state
-                    .record_drift(
-                        "env-rc",
-                        &profile_path.display().to_string(),
-                        Some("source line present"),
-                        Some("source line missing"),
-                        "local",
-                    )
-                    .ok();
+                record_drift_or_warn(
+                    state,
+                    "env-rc",
+                    &profile_path.display().to_string(),
+                    Some("source line present"),
+                    Some("source line missing"),
+                    "local",
+                );
             }
         }
 
@@ -2427,15 +2439,14 @@ fn verify_env(
             },
         });
         if !has_source_line {
-            state
-                .record_drift(
-                    "env-rc",
-                    &rc_path.display().to_string(),
-                    Some("source line present"),
-                    Some("source line missing"),
-                    "local",
-                )
-                .ok();
+            record_drift_or_warn(
+                state,
+                "env-rc",
+                &rc_path.display().to_string(),
+                Some("source line present"),
+                Some("source line missing"),
+                "local",
+            );
         }
     }
 
@@ -2474,15 +2485,14 @@ fn verify_env_file(
                 expected: "current".to_string(),
                 actual: "stale".to_string(),
             });
-            state
-                .record_drift(
-                    "env",
-                    &path.display().to_string(),
-                    Some("current"),
-                    Some("stale"),
-                    "local",
-                )
-                .ok();
+            record_drift_or_warn(
+                state,
+                "env",
+                &path.display().to_string(),
+                Some("current"),
+                Some("stale"),
+                "local",
+            );
         }
         Err(_) => {
             results.push(VerifyResult {
@@ -2492,15 +2502,14 @@ fn verify_env_file(
                 expected: "present".to_string(),
                 actual: "missing".to_string(),
             });
-            state
-                .record_drift(
-                    "env",
-                    &path.display().to_string(),
-                    Some("present"),
-                    Some("missing"),
-                    "local",
-                )
-                .ok();
+            record_drift_or_warn(
+                state,
+                "env",
+                &path.display().to_string(),
+                Some("present"),
+                Some("missing"),
+                "local",
+            );
         }
     }
 }
@@ -2514,12 +2523,19 @@ const MODULE_SCRIPT_TIMEOUT: std::time::Duration = std::time::Duration::from_sec
 const ENV_FILE_HEADER: &str = "# managed by cfgd \u{2014} do not edit";
 
 /// Build environment variables injected into every script invocation.
+//
+// `CFGD_DRY_RUN` is always "false" here because the CLI (see `cli/mod.rs`)
+// short-circuits the dry-run path above `Reconciler::apply`, so `execute_script`
+// never runs in dry-run mode today. The env var is emitted as a forward-compat
+// contract for user scripts; the previously-threaded `dry_run` parameter was
+// structurally dead — no production call site passed anything but `false` —
+// so it was removed. Re-introduce it only as part of a full wire-through that
+// threads a real `dry_run: bool` down `Reconciler::apply`.
 pub(crate) fn build_script_env(
     config_dir: &std::path::Path,
     profile_name: &str,
     context: ReconcileContext,
     phase: &ScriptPhase,
-    dry_run: bool,
     module_name: Option<&str>,
     module_dir: Option<&std::path::Path>,
 ) -> Vec<(String, String)> {
@@ -2537,7 +2553,7 @@ pub(crate) fn build_script_env(
             },
         ),
         ("CFGD_PHASE".to_string(), phase.display_name().to_string()),
-        ("CFGD_DRY_RUN".to_string(), dry_run.to_string()),
+        ("CFGD_DRY_RUN".to_string(), "false".to_string()),
     ];
     if let Some(name) = module_name {
         env.push(("CFGD_MODULE_NAME".to_string(), name.to_string()));
@@ -6331,7 +6347,6 @@ mod tests {
             "default",
             ReconcileContext::Apply,
             &ScriptPhase::PreApply,
-            false,
             None,
             None,
         );
@@ -6355,14 +6370,12 @@ mod tests {
             "work",
             ReconcileContext::Reconcile,
             &ScriptPhase::PostApply,
-            true,
             Some("nvim"),
             Some(std::path::Path::new("/modules/nvim")),
         );
         let map: HashMap<String, String> = env.into_iter().collect();
         assert_eq!(map.get("CFGD_MODULE_NAME").unwrap(), "nvim");
         assert_eq!(map.get("CFGD_MODULE_DIR").unwrap(), "/modules/nvim");
-        assert_eq!(map.get("CFGD_DRY_RUN").unwrap(), "true");
         assert_eq!(map.get("CFGD_CONTEXT").unwrap(), "reconcile");
     }
 
@@ -9730,7 +9743,6 @@ mod tests {
                 "default",
                 ReconcileContext::Apply,
                 phase,
-                false,
                 None,
                 None,
             );
@@ -9746,18 +9758,20 @@ mod tests {
     }
 
     #[test]
-    fn build_script_env_dry_run_true_propagates() {
+    fn build_script_env_dry_run_always_false() {
+        // CFGD_DRY_RUN is currently hardcoded to "false" — the CLI gates dry-run
+        // above `Reconciler::apply`, so execute_script never runs in dry-run mode.
+        // Guards against accidental re-introduction of an un-wired parameter.
         let env = super::build_script_env(
             std::path::Path::new("/cfg"),
             "laptop",
             ReconcileContext::Apply,
             &ScriptPhase::PreApply,
-            true,
             None,
             None,
         );
         let map: HashMap<String, String> = env.into_iter().collect();
-        assert_eq!(map.get("CFGD_DRY_RUN").unwrap(), "true");
+        assert_eq!(map.get("CFGD_DRY_RUN").unwrap(), "false");
     }
 
     #[test]
@@ -9767,7 +9781,6 @@ mod tests {
             "server",
             ReconcileContext::Reconcile,
             &ScriptPhase::PostReconcile,
-            false,
             None,
             None,
         );
@@ -9785,7 +9798,6 @@ mod tests {
             "default",
             ReconcileContext::Apply,
             &ScriptPhase::PreApply,
-            false,
             Some("zsh"),
             None,
         );
@@ -9805,7 +9817,6 @@ mod tests {
             "p",
             ReconcileContext::Apply,
             &ScriptPhase::PreApply,
-            false,
             None,
             None,
         );
@@ -9817,7 +9828,6 @@ mod tests {
             "p",
             ReconcileContext::Apply,
             &ScriptPhase::PreApply,
-            false,
             Some("m"),
             Some(std::path::Path::new("/modules/m")),
         );

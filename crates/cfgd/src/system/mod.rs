@@ -463,13 +463,7 @@ impl SystemConfigurator for SystemdUnitConfigurator {
     }
 
     fn is_available(&self) -> bool {
-        Command::new("systemctl")
-            .arg("--version")
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status()
-            .map(|s| s.success())
-            .unwrap_or(false)
+        cfgd_core::command_available("systemctl")
     }
 
     fn current_state(&self) -> Result<serde_yaml::Value> {

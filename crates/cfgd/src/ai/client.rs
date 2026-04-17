@@ -91,7 +91,11 @@ impl AnthropicClient {
             tools,
         };
 
-        let response = ureq::post("https://api.anthropic.com/v1/messages")
+        // Must use a bounded timeout — the previous `ureq::post(...)` had
+        // none and could hang the CLI indefinitely on a slow / unreachable
+        // api.anthropic.com.
+        let response = cfgd_core::http::http_agent(cfgd_core::http::HTTP_AI_TIMEOUT)
+            .post("https://api.anthropic.com/v1/messages")
             .set("x-api-key", &self.api_key)
             .set("anthropic-version", "2023-06-01")
             .set("content-type", "application/json")
@@ -178,7 +182,7 @@ mod tests {
     #[test]
     fn test_api_request_omits_empty_tools() {
         let request = ApiRequest {
-            model: "claude-sonnet-4-20250514",
+            model: "claude-sonnet-4-6",
             max_tokens: 4096,
             system: "You are helpful.",
             messages: &[],
@@ -196,7 +200,7 @@ mod tests {
             input_schema: serde_json::json!({"type": "object"}),
         }];
         let request = ApiRequest {
-            model: "claude-sonnet-4-20250514",
+            model: "claude-sonnet-4-6",
             max_tokens: 4096,
             system: "You are helpful.",
             messages: &[],

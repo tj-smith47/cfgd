@@ -39,9 +39,13 @@ async fn readyz_handler(
 }
 
 pub async fn run_probe_server(port: u16, state: HealthState) -> Result<(), OperatorError> {
+    // GET-only probes; 8 KiB is a generous safety net against abusive clients.
+    const HEALTH_MAX_BODY_BYTES: usize = 8 * 1024;
+
     let app = axum::Router::new()
         .route("/healthz", axum::routing::get(healthz_handler))
         .route("/readyz", axum::routing::get(readyz_handler))
+        .layer(axum::extract::DefaultBodyLimit::max(HEALTH_MAX_BODY_BYTES))
         .with_state(state);
 
     let addr: std::net::SocketAddr = ([0, 0, 0, 0], port).into();

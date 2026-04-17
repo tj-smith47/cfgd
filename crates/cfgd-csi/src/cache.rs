@@ -66,10 +66,21 @@ impl Cache {
             std::fs::create_dir_all(parent)?;
         }
 
-        // Atomic move — if another thread already placed the entry, discard ours
+        // Atomic move — if another thread already placed the entry, discard ours.
+        // On rename failure, we can't blindly `Ok(entry_dir)` — that's only
+        // correct when the failure was "lost the race" (another thread/process
+        // completed the pull and placed a valid entry). Any other rename error
+        // (destination permission issue, parent removed, dest on a different
+        // filesystem) leaves `entry_dir` non-existent or incomplete; returning
+        // its path would surface later as a confusing "cache entry missing".
         if let Err(e) = std::fs::rename(&tmp_dir, &entry_dir) {
             tracing::warn!(module = %module, version = %version, error = %e, "cache rename race, discarding duplicate pull");
             let _ = std::fs::remove_dir_all(&tmp_dir);
+            if !(entry_dir.is_dir() && is_complete(&entry_dir)) {
+                return Err(CsiError::Io(std::io::Error::other(format!(
+                    "cache rename for {module}:{version} failed and entry is still missing/incomplete after the race: {e}"
+                ))));
+            }
         }
 
         // Best-effort eviction after pull

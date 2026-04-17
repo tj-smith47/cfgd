@@ -4,12 +4,14 @@ pub mod config;
 pub mod daemon;
 pub mod errors;
 pub mod generate;
+pub mod http;
 pub mod modules;
 pub mod oci;
 pub mod output;
 pub mod platform;
 pub mod providers;
 pub mod reconciler;
+pub mod retry;
 pub mod server_client;
 pub mod sources;
 pub mod state;
@@ -429,7 +431,14 @@ pub fn is_same_inode(a: &std::path::Path, b: &std::path::Path) -> bool {
 
     fn file_info(path: &std::path::Path) -> Option<BY_HANDLE_FILE_INFORMATION> {
         let file = std::fs::File::open(path).ok()?;
+        // SAFETY: `BY_HANDLE_FILE_INFORMATION` is a plain-old-data struct of
+        // integer fields; the all-zero bit pattern is a valid initial value
+        // that `GetFileInformationByHandle` will overwrite before we read it.
         let mut info = unsafe { std::mem::zeroed() };
+        // SAFETY: `file.as_raw_handle()` returns a valid, open Win32 file
+        // handle owned by `file`, which outlives the call. `&mut info`
+        // points to sufficient, aligned, writable memory for the out
+        // parameter. No aliasing: `info` is stack-local.
         let ret = unsafe { GetFileInformationByHandle(file.as_raw_handle() as _, &mut info) };
         if ret != 0 { Some(info) } else { None }
     }
@@ -457,6 +466,11 @@ pub fn terminate_process(pid: u32) {
 pub fn terminate_process(pid: u32) {
     use windows_sys::Win32::Foundation::CloseHandle;
     use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_TERMINATE, TerminateProcess};
+    // SAFETY: `OpenProcess` is always sound to call with valid flags; it
+    // returns NULL on failure (checked below) or a valid handle we own. We
+    // call `TerminateProcess` and `CloseHandle` only with that owned
+    // handle, and `CloseHandle` runs exactly once per successful open, so
+    // there is no double-close or use-after-close.
     unsafe {
         let handle = OpenProcess(PROCESS_TERMINATE, 0, pid);
         if !handle.is_null() {
@@ -477,6 +491,8 @@ pub fn is_root() -> bool {
 #[cfg(windows)]
 pub fn is_root() -> bool {
     use windows_sys::Win32::UI::Shell::IsUserAnAdmin;
+    // SAFETY: `IsUserAnAdmin` takes no parameters, has no preconditions,
+    // and returns a BOOL. It is safe to call from any thread at any time.
     unsafe { IsUserAnAdmin() != 0 }
 }
 
@@ -603,6 +619,33 @@ pub fn command_available(cmd: &str) -> bool {
             })
         })
         .unwrap_or(false)
+}
+
+/// Build a `tracing_subscriber::EnvFilter` from `RUST_LOG` if set, falling
+/// back to `default`. Consolidates the four identical
+/// `EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(..))`
+/// scaffolds in `cfgd/main.rs`, `cfgd/cli/plugin.rs`, `cfgd-operator/main.rs`,
+/// and `cfgd-csi/main.rs`.
+pub fn tracing_env_filter(default: &str) -> tracing_subscriber::EnvFilter {
+    tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(default))
+}
+
+/// Check that a CLI tool is available on PATH, returning a unified error
+/// string otherwise. Before this helper, six `if !command_available("X")`
+/// gates across `oci.rs` and `cli/module.rs` each produced a slightly
+/// different "not found" message; strings had diverged in production. Pass
+/// `install_hint` (a short imperative like "install it from https://...")
+/// to make the hint specific; `None` falls back to a generic "install it
+/// or add it to PATH".
+pub fn require_tool(name: &str, install_hint: Option<&str>) -> std::result::Result<(), String> {
+    if command_available(name) {
+        return Ok(());
+    }
+    Err(match install_hint {
+        Some(hint) => format!("{name} not found — {hint}"),
+        None => format!("{name} not found — install it or add it to PATH"),
+    })
 }
 
 /// Merge env vars by name: later entries override earlier ones with the same name.
@@ -749,6 +792,24 @@ use sha2::Digest as _;
 pub fn sha256_hex(data: &[u8]) -> String {
     format!("{:x}", sha2::Sha256::digest(data))
 }
+
+/// Compute an OCI-style `sha256:<hex>` digest string from data.
+pub fn sha256_digest(data: &[u8]) -> String {
+    format!("sha256:{}", sha256_hex(data))
+}
+
+/// Strip the `sha256:` prefix from a digest string, returning the hex body.
+/// Returns the original string unchanged if no prefix is present.
+pub fn strip_sha256_prefix(s: &str) -> &str {
+    s.strip_prefix("sha256:").unwrap_or(s)
+}
+
+/// Named exponential-histogram bucket presets for latency metrics. Kept in
+/// cfgd-core so the SLO-adjacent choice is auditable in one place rather
+/// than divergent inline calls in cfgd-operator and cfgd-csi. Consumers
+/// feed the triple into `prometheus_client::metrics::histogram::exponential_buckets(start, factor, length)`.
+pub const DURATION_BUCKETS_SHORT: (f64, f64, u16) = (0.001, 2.0, 16);
+pub const DURATION_BUCKETS_LONG: (f64, f64, u16) = (0.1, 2.0, 10);
 
 /// Extract stdout from a `Command` output as a trimmed, lossy UTF-8 string.
 pub fn stdout_lossy_trimmed(output: &std::process::Output) -> String {
@@ -1052,7 +1113,9 @@ impl Drop for ApplyLockGuard {
     fn drop(&mut self) {
         // Clear the PID so stale reads aren't confusing.
         // Lock is released when LockFile is dropped.
-        let _ = self._file.set_len(0);
+        if let Err(e) = self._file.set_len(0) {
+            tracing::debug!(path = ?self._path, error = %e, "failed to clear apply-lock PID on drop");
+        }
     }
 }
 
@@ -1118,7 +1181,15 @@ pub fn acquire_apply_lock(state_dir: &std::path::Path) -> errors::Result<ApplyLo
         .open(&lock_path)?;
 
     let handle = file.as_raw_handle() as windows_sys::Win32::Foundation::HANDLE;
+    // SAFETY: `OVERLAPPED` is a plain-old-data struct of integers and a
+    // handle field; the all-zero bit pattern is the documented "no event,
+    // offset 0" initial value for synchronous-style LockFileEx calls.
     let mut overlapped: windows_sys::Win32::System::IO::OVERLAPPED = unsafe { std::mem::zeroed() };
+    // SAFETY: `handle` is a valid, open, owned Win32 file handle derived
+    // from `file`, which outlives the call. `&mut overlapped` points to a
+    // stack-local, aligned, writable OVERLAPPED struct. The lock byte
+    // range (offset 0, length 1) is fixed and valid. Non-blocking lock
+    // (LOCKFILE_FAIL_IMMEDIATELY) avoids indefinite wait.
     let ret = unsafe {
         LockFileEx(
             handle,

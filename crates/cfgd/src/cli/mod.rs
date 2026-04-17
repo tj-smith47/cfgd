@@ -1,6 +1,7 @@
 mod explain;
 pub mod generate;
 mod init;
+mod kubectl;
 mod module;
 pub mod plugin;
 mod profile;
@@ -443,8 +444,8 @@ pub struct ApplyArgs {
     #[arg(long)]
     pub dry_run: bool,
     /// Apply only a specific phase
-    #[arg(long)]
-    pub phase: Option<String>,
+    #[arg(long, value_enum)]
+    pub phase: Option<ApplyPhase>,
     /// Skip confirmation prompt
     #[arg(long, short, env = "CFGD_YES")]
     pub yes: bool,
@@ -465,8 +466,8 @@ pub struct ApplyArgs {
 #[derive(Parser)]
 pub struct PlanArgs {
     /// Plan only a specific phase
-    #[arg(long)]
-    pub phase: Option<String>,
+    #[arg(long, value_enum)]
+    pub phase: Option<ApplyPhase>,
     /// Skip specific items by dot-notation path (e.g., packages.brew.ripgrep, system.sysctl)
     #[arg(long)]
     pub skip: Vec<String>,
@@ -487,6 +488,9 @@ pub struct PlanArgs {
 #[derive(Subcommand)]
 pub enum Command {
     /// Initialize a new cfgd configuration repository
+    #[command(
+        long_about = "Scaffold or clone a cfgd configuration repository.\n\nExamples:\n  cfgd init\n  cfgd init --from https://github.com/acme/cfgd-config\n  cfgd init ~/cfgd --theme solarized-dark --apply"
+    )]
     Init {
         /// Directory to initialize (default: current directory)
         #[arg(value_hint = clap::ValueHint::DirPath)]
@@ -534,12 +538,21 @@ pub enum Command {
     },
 
     /// Apply the configuration (use --dry-run to preview without applying)
+    #[command(
+        long_about = "Apply the active profile to this machine.\n\nExamples:\n  cfgd apply\n  cfgd apply --dry-run\n  cfgd apply --phase packages --yes\n  cfgd apply --module nettools"
+    )]
     Apply(ApplyArgs),
 
     /// Preview the reconciliation plan without applying
+    #[command(
+        long_about = "Render the reconciliation plan without applying it.\n\nExamples:\n  cfgd plan\n  cfgd plan --phase system\n  cfgd plan --skip packages.brew --only files"
+    )]
     Plan(PlanArgs),
 
     /// Show configuration status and drift
+    #[command(
+        long_about = "Show apply status, drift, and pending decisions.\n\nExamples:\n  cfgd status\n  cfgd status --module nettools"
+    )]
     Status {
         /// Show status for a specific module (no profile required)
         #[arg(long)]
@@ -547,6 +560,9 @@ pub enum Command {
     },
 
     /// Show detailed diffs
+    #[command(
+        long_about = "Show line-level diffs between desired and actual state.\n\nExamples:\n  cfgd diff\n  cfgd diff --module nettools"
+    )]
     Diff {
         /// Show diff for a specific module only
         #[arg(long)]
@@ -554,6 +570,9 @@ pub enum Command {
     },
 
     /// Show apply history
+    #[command(
+        long_about = "Show history of past apply operations.\n\nExamples:\n  cfgd log\n  cfgd log -n 50\n  cfgd log --show-output 42"
+    )]
     Log {
         /// Number of entries to show
         #[arg(long, short = 'n', default_value = "20")]
@@ -564,30 +583,46 @@ pub enum Command {
     },
 
     /// Sync with remote
+    #[command(long_about = "Fetch remote config changes and apply.\n\nExamples:\n  cfgd sync")]
     Sync,
 
     /// Pull remote changes
+    #[command(
+        long_about = "Pull remote changes for the config repo without applying.\n\nExamples:\n  cfgd pull"
+    )]
     Pull,
 
     /// Manage the daemon
+    #[command(
+        long_about = "Manage the cfgd reconciliation daemon.\n\nExamples:\n  cfgd daemon status\n  cfgd daemon start\n  cfgd daemon stop"
+    )]
     Daemon {
         #[command(subcommand)]
         command: Option<DaemonCommand>,
     },
 
     /// Manage secrets
+    #[command(
+        long_about = "Manage secret backends and encrypted values.\n\nExamples:\n  cfgd secret list\n  cfgd secret get DATABASE_URL\n  cfgd secret set --backend sops my.secret"
+    )]
     Secret {
         #[command(subcommand)]
         command: SecretCommand,
     },
 
     /// Manage profiles
+    #[command(
+        long_about = "List, inspect, and switch between profiles.\n\nExamples:\n  cfgd profile list\n  cfgd profile use laptop\n  cfgd profile show server"
+    )]
     Profile {
         #[command(subcommand)]
         command: ProfileCommand,
     },
 
     /// Verify all managed resources match desired state
+    #[command(
+        long_about = "Verify managed state matches the applied profile.\n\nExamples:\n  cfgd verify\n  cfgd verify --module nettools"
+    )]
     Verify {
         /// Verify only a specific module (no profile required)
         #[arg(long)]
@@ -595,37 +630,54 @@ pub enum Command {
     },
 
     /// Check system health and dependencies
+    #[command(
+        long_about = "Diagnose environment prerequisites, tool versions, and config validity.\n\nExamples:\n  cfgd doctor\n  cfgd --output json doctor"
+    )]
     Doctor,
 
     /// Manage modules
+    #[command(
+        long_about = "List, add, remove, or publish modules.\n\nExamples:\n  cfgd module list\n  cfgd module add my-org/nettools\n  cfgd module publish ./my-module oci://ghcr.io/me/my-module:1.0.0"
+    )]
     Module {
         #[command(subcommand)]
         command: ModuleCommand,
     },
 
     /// Manage config sources
+    #[command(
+        long_about = "Subscribe to, override, or remove upstream config sources.\n\nExamples:\n  cfgd source add https://github.com/team/config --priority 700\n  cfgd source list\n  cfgd source override team env.EDITOR set vim\n  cfgd source remove team --keep-all"
+    )]
     Source {
         #[command(subcommand)]
         command: SourceCommand,
     },
 
     /// Check for and install updates
+    #[command(
+        long_about = "Check for, download, and install a newer cfgd release.\n\nWith --check, exit codes are:\n  0  already at latest version\n  1  network / IO error\n  2  update available (action needed, not an error)\n\nExamples:\n  cfgd upgrade\n  cfgd upgrade --check"
+    )]
     Upgrade {
-        /// Only check if an update is available (exit 0 = current, exit 1 = update available)
+        /// Only check if an update is available (exit 0 = current, exit 2 = update available, exit 1 = error)
         #[arg(long)]
         check: bool,
     },
 
     /// Accept or reject pending source decisions
+    #[command(
+        long_about = "Accept or reject pending decisions from subscribed sources.\n\nExamples:\n  cfgd decide accept packages.brew.ripgrep\n  cfgd decide reject --source team\n  cfgd decide accept --all"
+    )]
     Decide {
         /// Action: accept or reject
-        action: String,
+        #[arg(value_enum)]
+        action: DecideAction,
 
         /// Resource path to decide on (e.g. packages.brew.k9s). Omit for batch operations.
+        #[arg(conflicts_with_all = ["source", "all"])]
         resource: Option<String>,
 
         /// Apply decision to all pending items from this source
-        #[arg(long)]
+        #[arg(long, conflicts_with = "all")]
         source: Option<String>,
 
         /// Apply decision to all pending items
@@ -634,6 +686,9 @@ pub enum Command {
     },
 
     /// Show schema and field documentation for cfgd resource types
+    #[command(
+        long_about = "Render schema + field docs for a cfgd resource type.\n\nExamples:\n  cfgd explain module\n  cfgd explain profile.spec.packages --recursive"
+    )]
     Explain {
         /// Resource type or field path (e.g., "module", "profile.spec.packages")
         #[arg(value_hint = clap::ValueHint::Other)]
@@ -645,18 +700,27 @@ pub enum Command {
     },
 
     /// View or edit the cfgd configuration
+    #[command(
+        long_about = "Show, edit, get, set, or unset config values.\n\nExamples:\n  cfgd config show\n  cfgd config get spec.theme\n  cfgd config set spec.theme dracula\n  cfgd config unset spec.theme"
+    )]
     Config {
         #[command(subcommand)]
         command: ConfigCommand,
     },
 
     /// Manage GitHub Actions workflows for config repo releases
+    #[command(
+        long_about = "Generate or refresh GitHub Actions workflows for releasing config repo modules.\n\nExamples:\n  cfgd workflow generate\n  cfgd workflow generate --force"
+    )]
     Workflow {
         #[command(subcommand)]
         command: WorkflowCommand,
     },
 
     /// Check in with the device gateway and report status
+    #[command(
+        long_about = "Report compliance status to the device gateway.\n\nExamples:\n  cfgd checkin --server-url https://gateway.example.com\n  CFGD_SERVER_URL=https://gw.example.com cfgd checkin"
+    )]
     Checkin {
         /// Device gateway URL
         #[arg(long, env = "CFGD_SERVER_URL")]
@@ -672,6 +736,9 @@ pub enum Command {
     },
 
     /// Enroll with a device gateway (token or key-based)
+    #[command(
+        long_about = "Enroll this device with a gateway via bootstrap token or SSH/GPG signing key.\n\nExamples:\n  cfgd enroll --server-url https://gw.example.com --token $BOOTSTRAP\n  cfgd enroll --server-url https://gw.example.com --ssh-key ~/.ssh/id_ed25519\n  cfgd enroll --server-url https://gw.example.com --gpg-key 0xABCDEF"
+    )]
     Enroll {
         /// Device gateway URL
         #[arg(long, env = "CFGD_SERVER_URL")]
@@ -695,6 +762,9 @@ pub enum Command {
     },
 
     /// Generate shell completions
+    #[command(
+        long_about = "Emit shell-completion script for bash/zsh/fish/elvish/powershell on stdout.\n\nExamples:\n  cfgd completions bash > /etc/bash_completion.d/cfgd\n  cfgd completions zsh > ~/.zfunc/_cfgd"
+    )]
     Completions {
         /// Shell to generate completions for
         #[arg(value_enum)]
@@ -702,9 +772,15 @@ pub enum Command {
     },
 
     /// AI-guided configuration generation
+    #[command(
+        long_about = "Generate config fragments (profiles, modules) with an LLM backend.\n\nExamples:\n  cfgd generate module --prompt 'kubectl + k9s + kubectx'\n  cfgd generate profile --from ~/dotfiles"
+    )]
     Generate(generate::GenerateArgs),
 
     /// Roll back a previous apply by restoring file backups
+    #[command(
+        long_about = "Restore files to their pre-apply state using captured backups.\n\nExamples:\n  cfgd log\n  cfgd rollback 42 --yes"
+    )]
     Rollback {
         /// Apply ID to roll back (from 'cfgd log')
         apply_id: i64,
@@ -715,10 +791,16 @@ pub enum Command {
     },
 
     /// Start MCP server for AI editor integration
-    #[command(name = "mcp-server")]
+    #[command(
+        name = "mcp-server",
+        long_about = "Run an MCP server on stdio for AI/editor tool integration.\n\nExamples:\n  cfgd mcp-server"
+    )]
     McpServer,
 
     /// Compliance status and evidence export
+    #[command(
+        long_about = "Export or inspect compliance snapshots for audit.\n\nExamples:\n  cfgd compliance export\n  cfgd compliance history --since 7d\n  cfgd compliance diff 42 47"
+    )]
     Compliance {
         #[command(subcommand)]
         command: Option<ComplianceCommand>,
@@ -773,8 +855,8 @@ pub struct SourceAddArgs {
     #[arg(long)]
     pub auto_apply: bool,
     /// Pin to a semver version range (e.g., "~1.0", ">=2.0")
-    #[arg(long)]
-    pub pin_version: Option<String>,
+    #[arg(long = "version-pin", alias = "pin-version")]
+    pub version_pin: Option<String>,
     /// Skip confirmation prompt
     #[arg(long, short, env = "CFGD_YES")]
     pub yes: bool,
@@ -801,11 +883,11 @@ pub enum SourceCommand {
         name: String,
 
         /// Keep all resources from this source as local
-        #[arg(long)]
+        #[arg(long, conflicts_with = "remove_all")]
         keep_all: bool,
 
         /// Remove all resources from this source
-        #[arg(long)]
+        #[arg(long, conflicts_with = "keep_all")]
         remove_all: bool,
 
         /// Skip confirmation prompt (defaults to --keep-all behavior)
@@ -825,7 +907,8 @@ pub enum SourceCommand {
         source: String,
 
         /// Action: set or reject
-        action: String,
+        #[arg(value_enum)]
+        action: SourceOverrideAction,
 
         /// Resource path (e.g., env.EDITOR, packages.brew.formulae)
         path: String,
@@ -936,7 +1019,7 @@ pub enum WorkflowCommand {
     /// Generate or regenerate GitHub Actions workflows for releases
     Generate {
         /// Overwrite existing workflow files
-        #[arg(long)]
+        #[arg(long, short = 'y', alias = "yes", env = "CFGD_YES")]
         force: bool,
     },
 }
@@ -1073,7 +1156,7 @@ pub enum ProfileCommand {
         /// Profile name
         name: String,
         /// Skip confirmation prompt
-        #[arg(short, long, env = "CFGD_YES")]
+        #[arg(long, short, env = "CFGD_YES")]
         yes: bool,
     },
 }
@@ -1177,15 +1260,12 @@ pub enum ModuleCommand {
         /// Module name
         name: String,
         /// Skip confirmation prompt
-        #[arg(short, long, env = "CFGD_YES")]
+        #[arg(long, short, env = "CFGD_YES")]
         yes: bool,
         /// Also remove files deployed by this module to target locations
         #[arg(long)]
         purge: bool,
     },
-    /// Create a new local module (alias for 'create')
-    #[command(hide = true)]
-    Add(Box<ModuleCreateArgs>),
     /// Upgrade a remote module to a new version
     Upgrade {
         /// Module name (must be a locked remote module)
@@ -1194,7 +1274,7 @@ pub enum ModuleCommand {
         #[arg(long)]
         ref_: Option<String>,
         /// Skip confirmation prompt (for non-interactive use)
-        #[arg(short, long, env = "CFGD_YES")]
+        #[arg(long, short, env = "CFGD_YES")]
         yes: bool,
         /// Allow unsigned modules even when require-signatures is enabled
         #[arg(long)]
@@ -1256,7 +1336,7 @@ pub enum ModuleCommand {
         #[arg(long)]
         require_signature: bool,
         /// Verify SLSA provenance attestation on the artifact
-        #[arg(long)]
+        #[arg(long = "verify-attest", alias = "verify-attestation")]
         verify_attestation: bool,
         /// Path to cosign public key for verification (omit for keyless)
         #[arg(long)]
@@ -1321,6 +1401,77 @@ pub enum ModuleKeysCommand {
 pub enum ExportFormat {
     /// DevContainer Feature (install.sh + devcontainer-feature.json)
     Devcontainer,
+}
+
+/// Decide subcommand action.
+#[derive(Clone, Copy, clap::ValueEnum)]
+pub enum DecideAction {
+    Accept,
+    Reject,
+}
+
+impl DecideAction {
+    /// Resolution string persisted in the state store.
+    pub fn resolution(self) -> &'static str {
+        match self {
+            DecideAction::Accept => "accepted",
+            DecideAction::Reject => "rejected",
+        }
+    }
+}
+
+/// `source override` subcommand action.
+#[derive(Clone, Copy, clap::ValueEnum)]
+pub enum SourceOverrideAction {
+    /// Override a source value locally.
+    Set,
+    /// Reject a source recommendation.
+    Reject,
+}
+
+/// Clap-facing phase selector for `apply --phase` / `plan --phase`.
+/// Mirrors `cfgd_core::reconciler::PhaseName`; lives in the CLI layer so
+/// the help text can use kebab-case consistently with the rest of cfgd.
+#[derive(Clone, Copy, clap::ValueEnum)]
+pub enum ApplyPhase {
+    PreScripts,
+    Env,
+    Modules,
+    Packages,
+    System,
+    Files,
+    Secrets,
+    PostScripts,
+}
+
+#[cfg(test)]
+impl ApplyPhase {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ApplyPhase::PreScripts => "pre-scripts",
+            ApplyPhase::Env => "env",
+            ApplyPhase::Modules => "modules",
+            ApplyPhase::Packages => "packages",
+            ApplyPhase::System => "system",
+            ApplyPhase::Files => "files",
+            ApplyPhase::Secrets => "secrets",
+            ApplyPhase::PostScripts => "post-scripts",
+        }
+    }
+}
+
+/// Map a clap-validated ApplyPhase to the reconciler's PhaseName.
+fn apply_phase_to_phase_name(p: ApplyPhase) -> PhaseName {
+    match p {
+        ApplyPhase::PreScripts => PhaseName::PreScripts,
+        ApplyPhase::Env => PhaseName::Env,
+        ApplyPhase::Modules => PhaseName::Modules,
+        ApplyPhase::Packages => PhaseName::Packages,
+        ApplyPhase::System => PhaseName::System,
+        ApplyPhase::Files => PhaseName::Files,
+        ApplyPhase::Secrets => PhaseName::Secrets,
+        ApplyPhase::PostScripts => PhaseName::PostScripts,
+    }
 }
 
 #[derive(Subcommand)]
@@ -1417,7 +1568,6 @@ pub fn execute(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
             ModuleCommand::Delete { name, yes, purge } => {
                 module::cmd_module_delete(cli, printer, name, *yes, *purge)
             }
-            ModuleCommand::Add(args) => module::cmd_module_create(cli, printer, args),
             ModuleCommand::Upgrade {
                 name,
                 ref_,
@@ -1547,7 +1697,7 @@ pub fn execute(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
                 action,
                 path,
                 value,
-            } => cmd_source_override(cli, printer, source, action, path, value.as_deref()),
+            } => cmd_source_override(cli, printer, source, *action, path, value.as_deref()),
             SourceCommand::Replace { old_name, new_url } => {
                 cmd_source_replace(cli, printer, old_name, new_url)
             }
@@ -1576,7 +1726,7 @@ pub fn execute(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
             all,
         } => cmd_decide(
             printer,
-            action,
+            *action,
             resource.as_deref(),
             source.as_deref(),
             *all,
@@ -2114,7 +2264,6 @@ fn cmd_apply(cli: &Cli, printer: &Printer, args: &ApplyArgs) -> anyhow::Result<(
     }
 
     let dry_run = args.dry_run;
-    let phase = args.phase.as_deref();
     let yes = args.yes;
     let skip = &args.skip;
     let only = &args.only;
@@ -2148,20 +2297,8 @@ fn cmd_apply(cli: &Cli, printer: &Printer, args: &ApplyArgs) -> anyhow::Result<(
 
     let mut registry = build_registry_with_config(Some(&cfg));
 
-    // Validate phase name if provided
-    let phase_filter = if let Some(p) = phase {
-        match p.parse::<PhaseName>() {
-            Ok(pn) => Some(pn),
-            Err(_) => {
-                anyhow::bail!(
-                    "Unknown phase '{}'. Valid phases: pre-scripts, env, modules, system, packages, files, secrets, post-scripts",
-                    p
-                );
-            }
-        }
-    } else {
-        None
-    };
+    // `ApplyPhase` (clap ValueEnum) is already validated at parse time.
+    let phase_filter: Option<PhaseName> = args.phase.map(apply_phase_to_phase_name);
 
     // Compose with sources if configured
     let (source_env, source_commits) = if !cfg.spec.sources.is_empty() {
@@ -2618,20 +2755,8 @@ fn cmd_plan(cli: &Cli, printer: &Printer, args: &PlanArgs) -> anyhow::Result<()>
 
     let mut registry = build_registry_with_config(Some(&cfg));
 
-    // Validate phase name if provided
-    let phase_filter = if let Some(ref p) = args.phase {
-        match p.parse::<PhaseName>() {
-            Ok(pn) => Some(pn),
-            Err(_) => {
-                anyhow::bail!(
-                    "Unknown phase '{}'. Valid phases: pre-scripts, env, modules, system, packages, files, secrets, post-scripts",
-                    p
-                );
-            }
-        }
-    } else {
-        None
-    };
+    // `ApplyPhase` (clap ValueEnum) is already validated at parse time.
+    let phase_filter: Option<PhaseName> = args.phase.map(apply_phase_to_phase_name);
 
     // Compose with sources if configured
     let source_env = if !cfg.spec.sources.is_empty() {
@@ -5322,8 +5447,10 @@ fn cmd_upgrade(printer: &Printer, check_only: bool) -> anyhow::Result<()> {
                 check.current, check.latest
             ));
             printer.info("Run 'cfgd upgrade' to install");
-            // Exit code 1 = update available (scriptable)
-            std::process::exit(1);
+            // Exit code 2 = "action needed, not an error" (GNU convention).
+            // Reserves exit code 1 for actual failures so scripts can
+            // distinguish `--check` results from network/IO errors.
+            std::process::exit(2);
         } else {
             printer.success(&format!("cfgd {} is up to date", check.current));
         }
@@ -5653,7 +5780,7 @@ fn cmd_source_add(cli: &Cli, printer: &Printer, args: &SourceAddArgs) -> anyhow:
     let opt_in = &args.opt_in;
     let sync_interval = args.sync_interval.as_deref();
     let auto_apply = args.auto_apply;
-    let pin_version = args.pin_version.as_deref();
+    let pin_version = args.version_pin.as_deref();
     printer.header("Add Config Source");
 
     // Infer name from URL if not provided
@@ -6332,7 +6459,7 @@ fn cmd_source_override(
     cli: &Cli,
     printer: &Printer,
     source_name: &str,
-    action: &str,
+    action: SourceOverrideAction,
     path: &str,
     value: Option<&str>,
 ) -> anyhow::Result<()> {
@@ -6345,7 +6472,7 @@ fn cmd_source_override(
     }
 
     match action {
-        "reject" => {
+        SourceOverrideAction::Reject => {
             printer.info(&format!(
                 "Rejecting '{}' from source '{}'",
                 path, source_name
@@ -6353,7 +6480,7 @@ fn cmd_source_override(
             update_source_rejection(&config_path, source_name, path)?;
             printer.success(&format!("Rejected '{}' from '{}'", path, source_name));
         }
-        "set" => {
+        SourceOverrideAction::Set => {
             let val = value.ok_or_else(|| anyhow::anyhow!("'set' action requires a value"))?;
             printer.info(&format!(
                 "Overriding '{}' = '{}' for source '{}'",
@@ -6364,9 +6491,6 @@ fn cmd_source_override(
                 "Override set: {} = {} for '{}'",
                 path, val, source_name
             ));
-        }
-        other => {
-            anyhow::bail!("Unknown action '{}'. Use 'set' or 'reject'.", other);
         }
     }
 
@@ -6405,7 +6529,7 @@ fn cmd_source_replace(
             opt_in: vec![],
             sync_interval: None,
             auto_apply: false,
-            pin_version: None,
+            version_pin: None,
             yes: true,
         },
     )?;
@@ -7380,19 +7504,13 @@ fn cmd_checkin(
 
 fn cmd_decide(
     printer: &Printer,
-    action: &str,
+    action: DecideAction,
     resource: Option<&str>,
     source: Option<&str>,
     all: bool,
     state_dir: Option<&Path>,
 ) -> anyhow::Result<()> {
-    let resolution = match action {
-        "accept" => "accepted",
-        "reject" => "rejected",
-        other => {
-            anyhow::bail!("Unknown action '{}'. Use 'accept' or 'reject'.", other);
-        }
-    };
+    let resolution = action.resolution();
 
     let state = open_state_store(state_dir)?;
 
@@ -10431,7 +10549,7 @@ spec:
         let args = ApplyArgs {
             from: None,
             dry_run: true,
-            phase: Some("packages".to_string()),
+            phase: Some(ApplyPhase::Packages),
             yes: true,
             skip: vec![],
             only: vec![],
@@ -10447,22 +10565,9 @@ spec:
         );
     }
 
-    #[test]
-    fn cmd_apply_dry_run_invalid_phase() {
-        let h = CliTestHarness::builder().build();
-        let args = ApplyArgs {
-            from: None,
-            dry_run: true,
-            phase: Some("invalid-phase".to_string()),
-            yes: true,
-            skip: vec![],
-            only: vec![],
-            module: None,
-            skip_scripts: false,
-        };
-        let result = super::cmd_apply(&h.cli(), h.printer(), &args);
-        assert_error_contains(&result, "Unknown phase");
-    }
+    // cmd_apply_dry_run_invalid_phase test removed — ApplyPhase is a clap
+    // ValueEnum, so invalid phase names are rejected at parse time and
+    // can no longer reach cmd_apply at runtime.
 
     #[test]
     fn cmd_apply_dry_run_with_skip() {
@@ -11340,8 +11445,14 @@ spec:
 
         let (printer, buf) = Printer::for_test();
 
-        let result =
-            super::cmd_decide(&printer, "accept", None, None, true, Some(state_dir.path()));
+        let result = super::cmd_decide(
+            &printer,
+            super::DecideAction::Accept,
+            None,
+            None,
+            true,
+            Some(state_dir.path()),
+        );
         assert!(result.is_ok(), "decide failed: {:?}", result.err());
 
         let state = super::open_state_store(Some(state_dir.path())).unwrap();
@@ -11360,8 +11471,14 @@ spec:
 
         let (printer, buf) = Printer::for_test();
 
-        let result =
-            super::cmd_decide(&printer, "reject", None, None, true, Some(state_dir.path()));
+        let result = super::cmd_decide(
+            &printer,
+            super::DecideAction::Reject,
+            None,
+            None,
+            true,
+            Some(state_dir.path()),
+        );
         assert!(result.is_ok(), "decide failed: {:?}", result.err());
 
         let state = super::open_state_store(Some(state_dir.path())).unwrap();
@@ -11374,23 +11491,9 @@ spec:
         );
     }
 
-    #[test]
-    fn cmd_decide_invalid_action() {
-        let (_config_dir, state_dir) = setup_test_env();
-
-        let printer = test_printer();
-
-        let result = super::cmd_decide(
-            &printer,
-            "invalid",
-            None,
-            None,
-            false,
-            Some(state_dir.path()),
-        );
-        assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("Unknown action"));
-    }
+    // cmd_decide_invalid_action test removed — invalid actions are now
+    // rejected by clap at parse time via the DecideAction ValueEnum, so
+    // there is no runtime code path for "Unknown action" to exercise.
 
     #[test]
     fn cmd_decide_accept_specific_resource() {
@@ -11400,7 +11503,7 @@ spec:
 
         let result = super::cmd_decide(
             &printer,
-            "accept",
+            super::DecideAction::Accept,
             Some("packages.brew.curl"),
             None,
             false,
@@ -11429,7 +11532,7 @@ spec:
 
         let result = super::cmd_decide(
             &printer,
-            "reject",
+            super::DecideAction::Reject,
             None,
             Some("acme"),
             false,
@@ -11576,20 +11679,20 @@ spec:
         let (printer, _buf) = Printer::for_test();
 
         let all_phases = [
-            "pre-scripts",
-            "env",
-            "modules",
-            "packages",
-            "system",
-            "files",
-            "secrets",
-            "post-scripts",
+            ApplyPhase::PreScripts,
+            ApplyPhase::Env,
+            ApplyPhase::Modules,
+            ApplyPhase::Packages,
+            ApplyPhase::System,
+            ApplyPhase::Files,
+            ApplyPhase::Secrets,
+            ApplyPhase::PostScripts,
         ];
-        for phase in &all_phases {
+        for phase in all_phases {
             let args = ApplyArgs {
                 from: None,
                 dry_run: true,
-                phase: Some(phase.to_string()),
+                phase: Some(phase),
                 yes: true,
                 skip: vec![],
                 only: vec![],
@@ -11597,7 +11700,11 @@ spec:
                 skip_scripts: false,
             };
             let result = super::cmd_apply(&cli, &printer, &args);
-            assert!(result.is_ok(), "dry-run failed for phase: {}", phase);
+            assert!(
+                result.is_ok(),
+                "dry-run failed for phase: {}",
+                phase.as_str()
+            );
         }
         // Verify all 8 phase names are accepted (no unknown-phase errors)
         assert_eq!(all_phases.len(), 8);
@@ -11764,7 +11871,7 @@ spec:
         let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
         let (printer, buf) = Printer::for_test();
         let args = PlanArgs {
-            phase: Some("packages".to_string()),
+            phase: Some(ApplyPhase::Packages),
             skip: vec![],
             only: vec![],
             module: None,
@@ -11780,25 +11887,9 @@ spec:
         );
     }
 
-    #[test]
-    fn cmd_plan_invalid_phase() {
-        let (config_dir, state_dir) = setup_test_env();
-
-        let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
-        let printer = test_printer();
-        let args = PlanArgs {
-            phase: Some("nonexistent-phase".to_string()),
-            skip: vec![],
-            only: vec![],
-            module: None,
-            skip_scripts: false,
-            context: "apply".to_string(),
-        };
-
-        let result = super::cmd_plan(&cli, &printer, &args);
-        assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("Unknown phase"));
-    }
+    // cmd_plan_invalid_phase test removed — ApplyPhase is a clap
+    // ValueEnum, so invalid phase names are rejected at parse time and
+    // can no longer reach cmd_plan at runtime.
 
     #[test]
     fn cmd_plan_with_skip_filter() {
@@ -15218,40 +15309,20 @@ spec:
         let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
         let printer = test_printer();
 
-        let result =
-            super::cmd_source_override(&cli, &printer, "nonexistent", "reject", "env.FOO", None);
+        let result = super::cmd_source_override(
+            &cli,
+            &printer,
+            "nonexistent",
+            super::SourceOverrideAction::Reject,
+            "env.FOO",
+            None,
+        );
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("not found"));
     }
 
-    #[test]
-    fn cmd_source_override_invalid_action() {
-        let (config_dir, state_dir) = setup_test_env();
-
-        let config_with_source = r#"apiVersion: cfgd.io/v1alpha1
-kind: Config
-metadata:
-  name: t
-spec:
-  profile: default
-  sources:
-    - name: team
-      origin:
-        url: https://github.com/team/config
-        branch: main
-        type: Git
-      subscription:
-        priority: 100
-"#;
-        std::fs::write(config_dir.path().join("cfgd.yaml"), config_with_source).unwrap();
-
-        let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
-        let printer = test_printer();
-
-        let result = super::cmd_source_override(&cli, &printer, "team", "invalid", "env.FOO", None);
-        assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("Unknown action"));
-    }
+    // cmd_source_override_invalid_action test removed — SourceOverrideAction
+    // is a clap ValueEnum so invalid strings fail at parse time.
 
     #[test]
     fn cmd_source_override_set_requires_value() {
@@ -15277,7 +15348,14 @@ spec:
         let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
         let printer = test_printer();
 
-        let result = super::cmd_source_override(&cli, &printer, "team", "set", "env.FOO", None);
+        let result = super::cmd_source_override(
+            &cli,
+            &printer,
+            "team",
+            super::SourceOverrideAction::Set,
+            "env.FOO",
+            None,
+        );
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("requires a value"));
     }
@@ -15375,7 +15453,7 @@ spec:
 
         super::cmd_decide(
             &printer,
-            "accept",
+            super::DecideAction::Accept,
             None,
             None,
             false,
@@ -15408,7 +15486,7 @@ spec:
 
         let result = super::cmd_decide(
             &printer,
-            "accept",
+            super::DecideAction::Accept,
             Some("packages.brew.curl"),
             None,
             false,
@@ -15452,8 +15530,14 @@ spec:
             .upsert_pending_decision("team", "env.EDITOR", "recommended", "set", "Set EDITOR")
             .unwrap();
 
-        let result =
-            super::cmd_decide(&printer, "accept", None, None, true, Some(state_dir.path()));
+        let result = super::cmd_decide(
+            &printer,
+            super::DecideAction::Accept,
+            None,
+            None,
+            true,
+            Some(state_dir.path()),
+        );
         assert!(
             result.is_ok(),
             "decide accept-all should succeed and resolve all pending decisions: {:?}",
@@ -15491,7 +15575,7 @@ spec:
 
         let result = super::cmd_decide(
             &printer,
-            "reject",
+            super::DecideAction::Reject,
             None,
             Some("team"),
             false,
@@ -15832,7 +15916,7 @@ spec:
         let dir = tempfile::tempdir().unwrap();
         let cli = Cli {
             command: Command::Decide {
-                action: "accept".to_string(),
+                action: super::DecideAction::Accept,
                 resource: None,
                 source: None,
                 all: true,
@@ -16937,20 +17021,8 @@ spec:
 
     // --- cmd_plan ---
 
-    #[test]
-    fn cmd_plan_invalid_phase_name_fails() {
-        let h = CliTestHarness::builder().build();
-        let args = PlanArgs {
-            phase: Some("invalid_phase".to_string()),
-            skip: vec![],
-            only: vec![],
-            module: None,
-            skip_scripts: false,
-            context: "apply".to_string(),
-        };
-        let result = super::cmd_plan(&h.cli(), h.printer(), &args);
-        assert_error_contains(&result, "Unknown phase");
-    }
+    // cmd_plan_invalid_phase_name_fails test removed — ApplyPhase is a
+    // clap ValueEnum, so invalid phase names are rejected at parse time.
 
     #[test]
     fn cmd_plan_invalid_context_fails() {
@@ -17082,22 +17154,8 @@ spec:
         );
     }
 
-    #[test]
-    fn cmd_apply_invalid_phase_fails() {
-        let h = CliTestHarness::builder().build();
-        let args = ApplyArgs {
-            dry_run: true,
-            yes: true,
-            phase: Some("bogus_phase".to_string()),
-            skip: vec![],
-            only: vec![],
-            module: None,
-            from: None,
-            skip_scripts: false,
-        };
-        let result = super::cmd_apply(&h.cli(), h.printer(), &args);
-        assert_error_contains(&result, "Unknown phase");
-    }
+    // cmd_apply_invalid_phase_fails test removed — ApplyPhase is a clap
+    // ValueEnum, so invalid phase names are rejected at parse time.
 
     #[test]
     fn cmd_apply_with_skip_and_only() {
@@ -17165,22 +17223,9 @@ spec:
 
     // --- cmd_decide ---
 
-    #[test]
-    fn cmd_decide_invalid_action_fails() {
-        let state_dir = tempfile::tempdir().unwrap();
-        let printer = test_printer();
-
-        let result = super::cmd_decide(
-            &printer,
-            "invalid",
-            None,
-            None,
-            true,
-            Some(state_dir.path()),
-        );
-        assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("Unknown action"));
-    }
+    // cmd_decide_invalid_action_fails test removed — DecideAction is a
+    // clap ValueEnum, so "invalid" is rejected at parse time and can no
+    // longer reach cmd_decide at runtime.
 
     // --- cmd_source_remove ---
 
@@ -17231,7 +17276,7 @@ spec:
             &cli,
             &printer,
             "team-config",
-            "reject",
+            super::SourceOverrideAction::Reject,
             "packages.brew",
             None,
         )
@@ -17254,7 +17299,7 @@ spec:
             &cli,
             &printer,
             "team-config",
-            "set",
+            super::SourceOverrideAction::Set,
             "packages.brew.ripgrep",
             Some("true"),
         )
@@ -17267,23 +17312,9 @@ spec:
         );
     }
 
-    #[test]
-    fn cmd_source_override_invalid_action_fails() {
-        let (config_dir, state_dir) = setup_rich_test_env();
-        let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
-        let printer = test_printer();
-
-        let result = super::cmd_source_override(
-            &cli,
-            &printer,
-            "team-config",
-            "invalid",
-            "packages.brew",
-            None,
-        );
-        assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("Unknown action"));
-    }
+    // cmd_source_override_invalid_action_fails test removed —
+    // SourceOverrideAction is a clap ValueEnum so invalid strings fail at
+    // parse time.
 
     #[test]
     fn cmd_source_override_nonexistent_source_fails() {
@@ -17295,7 +17326,7 @@ spec:
             &cli,
             &printer,
             "nonexistent",
-            "reject",
+            super::SourceOverrideAction::Reject,
             "packages.brew",
             None,
         );
@@ -17745,7 +17776,7 @@ spec:
             opt_in: vec![],
             sync_interval: None,
             auto_apply: false,
-            pin_version: None,
+            version_pin: None,
             yes: true,
         };
         let result = super::cmd_source_add(&h.cli(), h.printer(), &args);
@@ -21526,7 +21557,7 @@ spec:
         // With no resource, no source, and all=false, should show pending list
         super::cmd_decide(
             &printer,
-            "accept",
+            super::DecideAction::Accept,
             None,
             None,
             false,
@@ -21557,7 +21588,7 @@ spec:
         // No resource/source/all — should display pending decisions
         super::cmd_decide(
             &printer,
-            "accept",
+            super::DecideAction::Accept,
             None,
             None,
             false,
@@ -21615,7 +21646,7 @@ spec:
 
         super::cmd_decide(
             &printer,
-            "reject",
+            super::DecideAction::Reject,
             Some("packages.brew.jq"),
             None,
             false,
@@ -21653,7 +21684,7 @@ spec:
 
         super::cmd_decide(
             &printer,
-            "accept",
+            super::DecideAction::Accept,
             Some("file/bashrc"),
             None,
             false,
@@ -21683,7 +21714,7 @@ spec:
 
         super::cmd_decide(
             &printer,
-            "accept",
+            super::DecideAction::Accept,
             Some("no.such.resource"),
             None,
             false,
@@ -21720,7 +21751,15 @@ spec:
                 .unwrap();
         }
 
-        super::cmd_decide(&printer, "accept", None, None, true, Some(state_dir.path())).unwrap();
+        super::cmd_decide(
+            &printer,
+            super::DecideAction::Accept,
+            None,
+            None,
+            true,
+            Some(state_dir.path()),
+        )
+        .unwrap();
 
         let output = buf.lock().unwrap().clone();
         assert!(
@@ -21758,7 +21797,7 @@ spec:
 
         super::cmd_decide(
             &printer,
-            "reject",
+            super::DecideAction::Reject,
             None,
             Some("alpha"),
             false,
@@ -21799,7 +21838,7 @@ spec:
 
         super::cmd_decide(
             &printer,
-            "reject",
+            super::DecideAction::Reject,
             None,
             Some("nonexistent-source"),
             false,
@@ -21828,7 +21867,15 @@ spec:
             .upsert_pending_decision("src", "pkg/only", "recommended", "install", "Only pkg")
             .unwrap();
 
-        super::cmd_decide(&printer, "accept", None, None, true, Some(state_dir.path())).unwrap();
+        super::cmd_decide(
+            &printer,
+            super::DecideAction::Accept,
+            None,
+            None,
+            true,
+            Some(state_dir.path()),
+        )
+        .unwrap();
 
         let output = buf.lock().unwrap().clone();
         // When exactly 1 item, the message should use singular "item" not "items"

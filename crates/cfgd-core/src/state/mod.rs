@@ -206,6 +206,7 @@ impl ApplyStatus {
 
 /// A recorded apply operation.
 #[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ApplyRecord {
     pub id: i64,
     pub timestamp: String,
@@ -217,6 +218,7 @@ pub struct ApplyRecord {
 
 /// A recorded drift event.
 #[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct DriftEvent {
     pub id: i64,
     pub timestamp: String,
@@ -230,6 +232,7 @@ pub struct DriftEvent {
 
 /// A managed resource tracked in the state store.
 #[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ManagedResource {
     pub resource_type: String,
     pub resource_id: String,
@@ -240,6 +243,7 @@ pub struct ManagedResource {
 
 /// A tracked config source.
 #[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ConfigSourceRecord {
     pub id: i64,
     pub name: String,
@@ -266,6 +270,7 @@ pub struct SourceConflictRecord {
 
 /// A pending decision for a source item needing user review.
 #[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct PendingDecision {
     pub id: i64,
     pub source: String,

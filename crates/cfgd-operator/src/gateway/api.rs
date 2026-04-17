@@ -217,12 +217,24 @@ const CHALLENGE_TTL_SECS: u64 = 300; // 5 minutes
 // --- Router ---
 
 pub fn router(state: SharedState) -> Router<SharedState> {
+    // Config payloads can legitimately be large (module trees, policy docs).
+    // Relax the gateway-wide 1 MiB cap for this one route only — the `Json`
+    // extractor enforces this limit *before* deserialization, so the
+    // previously-in-handler `.len() > 10 MiB` check at the bottom of
+    // `set_device_config` never fires except as a belt-and-braces fallback.
+    const SET_DEVICE_CONFIG_MAX_BODY_BYTES: usize = 10 * 1024 * 1024;
+
     // Routes that require admin or device auth
     let authenticated_routes = Router::new()
         .route("/api/v1/checkin", post(checkin))
         .route("/api/v1/devices", get(list_devices))
         .route("/api/v1/devices/{id}", get(get_device))
-        .route("/api/v1/devices/{id}/config", put(set_device_config))
+        .route(
+            "/api/v1/devices/{id}/config",
+            put(set_device_config).layer(axum::extract::DefaultBodyLimit::max(
+                SET_DEVICE_CONFIG_MAX_BODY_BYTES,
+            )),
+        )
         .route(
             "/api/v1/devices/{id}/drift",
             get(list_drift_events).post(record_drift_event),
@@ -261,6 +273,57 @@ pub fn router(state: SharedState) -> Router<SharedState> {
     authenticated_routes
         .merge(admin_routes)
         .merge(enrollment_routes)
+}
+
+// Length bounds for device-supplied identifiers. These are enforced on
+// every enrollment / checkin entry point — they defend against log
+// injection (unbounded strings in structured logs), URL traversal (when a
+// device_id lands in a path), and DB-pressure DoS.
+const DEVICE_ID_MAX_LEN: usize = 128;
+const HOSTNAME_MAX_LEN: usize = 253;
+
+fn validate_device_id(s: &str) -> Result<(), GatewayError> {
+    if s.is_empty() {
+        return Err(GatewayError::InvalidRequest(
+            "device_id must not be empty".to_string(),
+        ));
+    }
+    if s.len() > DEVICE_ID_MAX_LEN {
+        return Err(GatewayError::InvalidRequest(format!(
+            "device_id exceeds {DEVICE_ID_MAX_LEN} chars"
+        )));
+    }
+    if !s
+        .bytes()
+        .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_' || b == b'.')
+    {
+        return Err(GatewayError::InvalidRequest(
+            "device_id may only contain [A-Za-z0-9._-]".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_hostname(s: &str) -> Result<(), GatewayError> {
+    if s.is_empty() {
+        return Err(GatewayError::InvalidRequest(
+            "hostname must not be empty".to_string(),
+        ));
+    }
+    if s.len() > HOSTNAME_MAX_LEN {
+        return Err(GatewayError::InvalidRequest(format!(
+            "hostname exceeds {HOSTNAME_MAX_LEN} chars"
+        )));
+    }
+    if !s
+        .bytes()
+        .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_' || b == b'.')
+    {
+        return Err(GatewayError::InvalidRequest(
+            "hostname may only contain [A-Za-z0-9._-]".to_string(),
+        ));
+    }
+    Ok(())
 }
 
 /// Hash a token or API key for storage.
@@ -351,9 +414,13 @@ async fn admin_auth_middleware(
             _ => return Err(GatewayError::Unauthorized),
         }
     } else {
-        return Err(GatewayError::InvalidRequest(
-            "CFGD_API_KEY must be set to manage bootstrap tokens".to_string(),
-        ));
+        // Server misconfig — log at error so the operator notices, but present
+        // as 401 to the client so we don't leak the env-var name.
+        tracing::error!(
+            env = "CFGD_API_KEY",
+            "admin endpoint hit but CFGD_API_KEY is not set — refusing access"
+        );
+        return Err(GatewayError::Unauthorized);
     }
     Ok(next.run(request).await)
 }
@@ -390,11 +457,8 @@ async fn enroll(
                 .to_string(),
         ));
     }
-    if req.device_id.is_empty() {
-        return Err(GatewayError::InvalidRequest(
-            "device_id must not be empty".to_string(),
-        ));
-    }
+    validate_device_id(&req.device_id)?;
+    validate_hostname(&req.hostname)?;
     if req.token.is_empty() {
         return Err(GatewayError::InvalidRequest(
             "token must not be empty".to_string(),
@@ -669,11 +733,8 @@ async fn request_challenge(
             "username must not be empty".to_string(),
         ));
     }
-    if req.device_id.is_empty() {
-        return Err(GatewayError::InvalidRequest(
-            "device_id must not be empty".to_string(),
-        ));
-    }
+    validate_device_id(&req.device_id)?;
+    validate_hostname(&req.hostname)?;
 
     // Verify user has at least one public key registered
     let db = state.db.lock().await;
@@ -954,15 +1015,17 @@ fn verify_gpg_signature(
         return false;
     }
 
-    let gpg_home = tmp_dir.path().join("gnupg");
-    if let Err(e) = std::fs::create_dir_all(&gpg_home) {
-        tracing::error!(error = %e, "gpg verify: failed to create gnupg homedir");
-        return false;
-    }
-    // GPG requires restrictive permissions on its homedir
-    let _ = cfgd_core::set_file_permissions(&gpg_home, 0o700);
+    for (idx, key) in keys.iter().enumerate() {
+        // Per-iteration homedir — sharing one keyring across iterations
+        // lets `gpg --verify` accept a signature from ANY previously-imported
+        // key, breaking the "this key signed the nonce" attribution in logs.
+        let gpg_home = tmp_dir.path().join(format!("gnupg-{idx}"));
+        if let Err(e) = std::fs::create_dir_all(&gpg_home) {
+            tracing::warn!(error = %e, key_user = %key.username, "gpg verify: failed to create per-key homedir");
+            continue;
+        }
+        let _ = cfgd_core::set_file_permissions(&gpg_home, 0o700);
 
-    for key in keys {
         if let Err(e) = std::fs::write(&key_path, &key.public_key) {
             tracing::warn!(error = %e, key_user = %key.username, "gpg verify: failed to write public key");
             continue;
@@ -990,7 +1053,9 @@ fn verify_gpg_signature(
             continue;
         }
 
-        // Verify the signature
+        // Verify the signature against THIS iteration's single-key keyring.
+        // Success here means the signature verifies under exactly `key`,
+        // so the `fingerprint = %key.fingerprint` we log below is truthful.
         let verify = std::process::Command::new("gpg")
             .args([
                 "--homedir",
@@ -1036,11 +1101,8 @@ async fn checkin(
     Extension(auth): Extension<AuthContext>,
     Json(req): Json<CheckinRequest>,
 ) -> Result<impl IntoResponse, GatewayError> {
-    if req.device_id.is_empty() {
-        return Err(GatewayError::InvalidRequest(
-            "device_id must not be empty".to_string(),
-        ));
-    }
+    validate_device_id(&req.device_id)?;
+    validate_hostname(&req.hostname)?;
 
     // Device auth: can only check in as self
     enforce_device_access(&auth, &req.device_id)?;
@@ -1329,13 +1391,13 @@ async fn create_drift_alert_crd(
         ("cfgd.io/device-id".to_string(), device_id.to_string()),
     ]));
 
-    const MAX_RETRIES: u32 = 3;
+    let retry = cfgd_core::retry::BackoffConfig::DEFAULT_TRANSIENT;
     let mut last_err = None;
 
-    for attempt in 0..MAX_RETRIES {
-        if attempt > 0 {
-            let backoff = std::time::Duration::from_millis(500 * 2u64.pow(attempt - 1));
-            tokio::time::sleep(backoff).await;
+    for attempt in 0..retry.max_attempts {
+        let delay = retry.delay_for_attempt(attempt);
+        if !delay.is_zero() {
+            tokio::time::sleep(delay).await;
         }
 
         match alerts.create(&PostParams::default(), &alert).await {
@@ -1358,7 +1420,7 @@ async fn create_drift_alert_crd(
                 tracing::warn!(
                     device_id = %device_id,
                     attempt = attempt + 1,
-                    max_retries = MAX_RETRIES,
+                    max_retries = retry.max_attempts,
                     error = %e,
                     "failed to create DriftAlert CRD, retrying"
                 );
@@ -1371,7 +1433,7 @@ async fn create_drift_alert_crd(
         tracing::error!(
             device_id = %device_id,
             error = %e,
-            attempts = MAX_RETRIES,
+            attempts = retry.max_attempts,
             "failed to create DriftAlert CRD after all attempts — drift recorded in database only"
         );
     }

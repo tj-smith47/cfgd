@@ -521,11 +521,29 @@ impl Printer {
         console::set_colors_enabled_stderr(false);
     }
 
+    /// Routing: status output (`header`, `success`, `warning`, `error`,
+    /// `info`, `key_value`, progress spinners) goes to stderr via
+    /// `Term::stderr()` so pipelines like `cfgd status -o json | jq` keep
+    /// the user-facing decoration off stdout. Structured output
+    /// (`write_structured`, format renderers) writes to stdout. This
+    /// split is hard-wired here — do not change it in call sites.
+    ///
+    /// Respects `NO_COLOR` (per https://no-color.org/) and `TERM=dumb`
+    /// by disabling the `console` crate's styling before the Printer is
+    /// constructed, so every Printer — including ones created by the
+    /// daemon or tests — honors those environment variables without the
+    /// caller having to re-check them.
     pub fn with_format(
         verbosity: Verbosity,
         theme_config: Option<&ThemeConfig>,
         output_format: OutputFormat,
     ) -> Self {
+        if std::env::var_os("NO_COLOR").is_some()
+            || std::env::var_os("TERM").is_some_and(|t| t == "dumb")
+        {
+            Self::disable_colors();
+        }
+
         // Auto-quiet when structured output is active
         let verbosity = match &output_format {
             OutputFormat::Table | OutputFormat::Wide => verbosity,

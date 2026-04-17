@@ -78,9 +78,7 @@ fn fetch_latest_release_from(
 
     let spinner = printer.map(|p| p.spinner("Checking for latest release..."));
 
-    let agent = ureq::AgentBuilder::new()
-        .timeout(std::time::Duration::from_secs(300))
-        .build();
+    let agent = crate::http::http_agent(crate::http::HTTP_UPGRADE_TIMEOUT);
     let response = agent
         .get(&url)
         .set("Accept", "application/vnd.github+json")
@@ -182,15 +180,96 @@ fn find_checksums_asset(release: &ReleaseInfo) -> Option<&ReleaseAsset> {
         .find(|a| a.name.ends_with("-checksums.txt"))
 }
 
+/// Find the cosign signature bundle for the checksums asset. Produced by the
+/// `checksum-cosign` entry in `.anodize.yaml`.
+fn find_cosign_bundle_asset(release: &ReleaseInfo) -> Option<&ReleaseAsset> {
+    release
+        .assets
+        .iter()
+        .find(|a| a.name.ends_with("-checksums.txt.cosign.bundle"))
+}
+
+/// Find a cosign public key asset, if shipped with the release.
+fn find_cosign_public_key_asset(release: &ReleaseInfo) -> Option<&ReleaseAsset> {
+    release
+        .assets
+        .iter()
+        .find(|a| a.name == "cosign.pub" || a.name.ends_with("-cosign.pub"))
+}
+
+/// Verify `checksums_path` against the release's cosign bundle + public key if
+/// all pieces are present and the `cosign` CLI is installed. Returns:
+/// - `Ok(true)` when cosign verify succeeded,
+/// - `Ok(false)` when verification was skipped (no bundle, no pub key, or cosign
+///   not installed) — the caller falls back to SHA256-only with a warning,
+/// - `Err` when all pieces are present but verify explicitly failed —
+///   never proceed in that case.
+fn verify_cosign_bundle(
+    checksums_path: &Path,
+    release: &ReleaseInfo,
+    tmp_dir: &Path,
+    printer: Option<&Printer>,
+) -> std::result::Result<bool, UpgradeError> {
+    let Some(bundle_asset) = find_cosign_bundle_asset(release) else {
+        if let Some(p) = printer {
+            p.warning("no cosign bundle attached to release — falling back to SHA256-only checksum verification. Downgrades publisher-compromise resistance to GitHub Releases trust.");
+        }
+        return Ok(false);
+    };
+    let Some(pub_key_asset) = find_cosign_public_key_asset(release) else {
+        if let Some(p) = printer {
+            p.warning("cosign bundle found but no public key attached to release — cannot verify without cosign.pub. Falling back to SHA256-only.");
+        }
+        return Ok(false);
+    };
+    if !crate::command_available("cosign") {
+        if let Some(p) = printer {
+            p.warning("cosign bundle found but the cosign CLI is not installed — install cosign (https://docs.sigstore.dev/cosign/system_config/installation/) to enable signature verification. Falling back to SHA256-only.");
+        }
+        return Ok(false);
+    }
+
+    let bundle_path = tmp_dir.join(&bundle_asset.name);
+    download_to_file(&bundle_asset.download_url, &bundle_path, printer)?;
+    let pub_key_path = tmp_dir.join(&pub_key_asset.name);
+    download_to_file(&pub_key_asset.download_url, &pub_key_path, printer)?;
+
+    let verify_spinner = printer.map(|p| p.spinner("Verifying cosign signature..."));
+    let output = std::process::Command::new("cosign")
+        .arg("verify-blob")
+        .arg(format!("--key={}", pub_key_path.display()))
+        .arg(format!("--bundle={}", bundle_path.display()))
+        .arg("--")
+        .arg(checksums_path)
+        .output();
+    if let Some(s) = verify_spinner {
+        s.finish_and_clear();
+    }
+
+    match output {
+        Ok(o) if o.status.success() => {
+            tracing::info!(asset = %bundle_asset.name, "cosign signature verified");
+            Ok(true)
+        }
+        Ok(o) => {
+            let stderr = String::from_utf8_lossy(&o.stderr).trim().to_string();
+            Err(UpgradeError::DownloadFailed {
+                message: format!("cosign verify-blob failed: {stderr}"),
+            })
+        }
+        Err(e) => Err(UpgradeError::DownloadFailed {
+            message: format!("cosign invocation failed: {e}"),
+        }),
+    }
+}
+
 /// Download a file from a URL to a local path.
 fn download_to_file(
     url: &str,
     dest: &Path,
     printer: Option<&Printer>,
 ) -> std::result::Result<(), UpgradeError> {
-    let agent = ureq::AgentBuilder::new()
-        .timeout(std::time::Duration::from_secs(300))
-        .build();
+    let agent = crate::http::http_agent(crate::http::HTTP_UPGRADE_TIMEOUT);
     let response = agent
         .get(url)
         .set("User-Agent", "cfgd-self-update")
@@ -309,12 +388,22 @@ pub fn download_and_install(
         let checksums_path = tmp_dir.path().join(&checksums_asset.name);
         download_to_file(&checksums_asset.download_url, &checksums_path, printer)?;
 
+        // Best-effort cosign verification of the checksums file. Bounds
+        // publisher-compromise risk: a malicious release uploader cannot
+        // forge a valid cosign signature over a tampered checksums.txt
+        // without the private key.
+        let _cosign_verified =
+            verify_cosign_bundle(&checksums_path, release, tmp_dir.path(), printer)?;
+
         let checksums_content =
             fs::read_to_string(&checksums_path).map_err(|e| UpgradeError::DownloadFailed {
                 message: format!("read checksums: {}", e),
             })?;
 
         let checksums = parse_checksums(&checksums_content);
+        if checksums.is_empty() {
+            return Err(UpgradeError::ChecksumsEmpty.into());
+        }
         if let Some(expected) = checksums.get(&asset.name) {
             let verify_spinner = printer.map(|p| p.spinner("Verifying checksum..."));
             let actual = sha256_file(&archive_path)?;
@@ -332,13 +421,16 @@ pub fn download_and_install(
             }
             tracing::debug!("checksum verified for {}", asset.name);
         } else {
-            return Err(UpgradeError::ChecksumMismatch {
+            // The archive downloaded fine but checksums.txt does not list it
+            // — distinct from "mismatch" so operators can tell interception /
+            // stripped-line attacks from genuine corruption.
+            return Err(UpgradeError::ChecksumMissing {
                 file: asset.name.clone(),
             }
             .into());
         }
     } else {
-        return Err(UpgradeError::ChecksumMismatch {
+        return Err(UpgradeError::ChecksumMissing {
             file: asset.name.clone(),
         }
         .into());
@@ -450,9 +542,38 @@ fn extract_tarball(archive: &Path, dest: &Path) -> std::result::Result<(), Upgra
     let gz = flate2::read::GzDecoder::new(file);
     let mut tar = tar::Archive::new(gz);
 
-    tar.unpack(dest).map_err(|e| UpgradeError::InstallFailed {
-        message: format!("extract archive: {}", e),
+    fs::create_dir_all(dest).map_err(|e| UpgradeError::InstallFailed {
+        message: format!("create dest {}: {}", dest.display(), e),
     })?;
+
+    // The tar crate rejects `..` and absolute paths by default, but symlinks
+    // can still point outside `dest`. Canonicalize and iterate entries, skipping
+    // symlinks/hardlinks and unpacking each into the canonical dest.
+    let canonical_dest = dest
+        .canonicalize()
+        .map_err(|e| UpgradeError::InstallFailed {
+            message: format!("canonicalize dest {}: {}", dest.display(), e),
+        })?;
+
+    for entry in tar.entries().map_err(|e| UpgradeError::InstallFailed {
+        message: format!("iterate archive entries: {}", e),
+    })? {
+        let mut entry = entry.map_err(|e| UpgradeError::InstallFailed {
+            message: format!("read archive entry: {}", e),
+        })?;
+
+        if entry.header().entry_type().is_symlink() || entry.header().entry_type().is_hard_link() {
+            let path = entry.path().unwrap_or_default();
+            tracing::warn!(path = %path.display(), "skipping symlink/hardlink in upgrade tarball");
+            continue;
+        }
+
+        entry
+            .unpack_in(&canonical_dest)
+            .map_err(|e| UpgradeError::InstallFailed {
+                message: format!("extract archive entry: {}", e),
+            })?;
+    }
 
     Ok(())
 }

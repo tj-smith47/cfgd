@@ -1,6 +1,7 @@
 use std::path::Path;
 use std::sync::Arc;
 
+use axum::extract::DefaultBodyLimit;
 use axum::routing::post;
 use axum::{Json, Router};
 use hyper_util::rt::{TokioExecutor, TokioIo};
@@ -59,6 +60,11 @@ pub async fn run_webhook_server(
 
     let acceptor = TlsAcceptor::from(Arc::new(tls_config));
 
+    // 1 MiB cap on AdmissionReview request bodies. Typical reviews are a few KiB;
+    // the kube-apiserver enforces a ~3 MiB server-side cap, but we bound it
+    // tighter at the webhook to shed DoS load before we spend CPU on JSON.
+    const WEBHOOK_MAX_BODY_BYTES: usize = 1024 * 1024;
+
     let app = Router::new()
         .route(
             "/validate-machineconfig",
@@ -75,7 +81,8 @@ pub async fn run_webhook_server(
         .route("/validate-driftalert", post(handle_validate_drift_alert))
         .route("/validate-module", post(handle_validate_module))
         .route("/mutate-pods", post(handle_mutate_pods))
-        .route("/healthz", axum::routing::get(|| async { "ok" }))
+        .route("/healthz", axum::routing::get(liveness_ok))
+        .layer(DefaultBodyLimit::max(WEBHOOK_MAX_BODY_BYTES))
         .with_state(WebhookState { metrics, client });
 
     let addr: std::net::SocketAddr = ([0, 0, 0, 0], port).into();
@@ -158,6 +165,16 @@ fn handle_validate<S: Validatable + 'static>(
     record_webhook_metrics(metrics, operation, result, start);
 
     Json(resp.into_review())
+}
+
+// Liveness probe for the webhook pod. Kubernetes liveness semantics are
+// "the process is alive and serving" — if we're accepting TCP here we are.
+// Intentionally does not consult `HealthState` (which gates readiness /
+// leader status) because liveness must stay green even when the operator
+// is voluntarily paused. Matches `health::healthz_handler`'s unconditional
+// OK response — keep in sync if that handler ever changes.
+async fn liveness_ok() -> (axum::http::StatusCode, &'static str) {
+    (axum::http::StatusCode::OK, "ok")
 }
 
 async fn handle_validate_machine_config(

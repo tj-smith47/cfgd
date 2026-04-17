@@ -49,6 +49,9 @@ semver = "1"
 tower = { version = "0.5", features = ["util"] }
 tower-http = { version = "0.6", features = ["cors", "trace"] }
 rusqlite = { version = "0.32", features = ["bundled"] }
+r2d2 = "0.8"
+r2d2_sqlite = { version = "0.25", features = ["bundled"] }
+parking_lot = "0.12"
 uuid = { version = "1", features = ["v4"] }
 sha2 = "0.10"
 tokio-stream = { version = "0.1", features = ["sync"] }

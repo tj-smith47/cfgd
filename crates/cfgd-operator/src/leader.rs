@@ -9,7 +9,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::errors::OperatorError;
 
-const FIELD_MANAGER: &str = "cfgd-operator";
+const FIELD_MANAGER_PREFIX: &str = "cfgd-operator-leader";
 const LEASE_NAME: &str = "cfgd-operator-leader";
 
 fn parse_duration_secs(env_var: &str, default: u64) -> u64 {
@@ -40,6 +40,14 @@ impl LeaderElection {
         }
     }
 
+    // SSA field manager must be unique per pod — if two operator pods share
+    // the same field manager they can both "own" `spec.holderIdentity` and
+    // silently split-brain on renewals. Deriving from the pod-scoped
+    // `identity` guarantees distinctness.
+    fn field_manager(&self) -> String {
+        format!("{FIELD_MANAGER_PREFIX}:{}", self.identity)
+    }
+
     pub async fn try_acquire(&self) -> Result<bool, OperatorError> {
         let leases: Api<Lease> = Api::namespaced(self.client.clone(), &self.namespace);
         let now = Utc::now();
@@ -67,19 +75,24 @@ impl LeaderElection {
                 };
 
                 if expired || current_holder == self.identity {
-                    // Patch to renew
+                    let taking_over = expired && current_holder != self.identity;
+                    // SSA apply body must carry apiVersion/kind so the server
+                    // accepts it as an `application/apply-patch+yaml`.
                     let patch = serde_json::json!({
+                        "apiVersion": "coordination.k8s.io/v1",
+                        "kind": "Lease",
+                        "metadata": { "name": LEASE_NAME },
                         "spec": {
                             "holderIdentity": self.identity,
                             "leaseDurationSeconds": self.lease_duration_secs,
                             "renewTime": now.to_rfc3339_opts(chrono::SecondsFormat::Micros, true),
-                            "acquireTime": if expired || current_holder != self.identity {
+                            "acquireTime": if taking_over {
                                 Some(now.to_rfc3339_opts(chrono::SecondsFormat::Micros, true))
                             } else {
                                 spec.and_then(|s| s.acquire_time.as_ref())
                                     .map(|t| t.0.to_rfc3339_opts(chrono::SecondsFormat::Micros, true))
                             },
-                            "leaseTransitions": if expired || current_holder != self.identity {
+                            "leaseTransitions": if taking_over {
                                 spec.and_then(|s| s.lease_transitions).unwrap_or(0) + 1
                             } else {
                                 spec.and_then(|s| s.lease_transitions).unwrap_or(0)
@@ -87,15 +100,33 @@ impl LeaderElection {
                         }
                     });
 
-                    leases
-                        .patch(
-                            LEASE_NAME,
-                            &PatchParams::apply(FIELD_MANAGER),
-                            &Patch::Merge(&patch),
-                        )
-                        .await?;
+                    let field_manager = self.field_manager();
+                    let params = if taking_over {
+                        // Takeover needs force=true to strip the stale
+                        // previous-holder's field manager from spec.*.
+                        PatchParams::apply(&field_manager).force()
+                    } else {
+                        // Self-renewal: we already own the fields; a plain
+                        // SSA apply is a no-conflict renewal. If another pod
+                        // silently took over, SSA returns 409 Conflict and
+                        // we treat that as lost-lease below.
+                        PatchParams::apply(&field_manager)
+                    };
 
-                    Ok(true)
+                    match leases
+                        .patch(LEASE_NAME, &params, &Patch::Apply(&patch))
+                        .await
+                    {
+                        Ok(_) => Ok(true),
+                        Err(kube::Error::Api(ref e)) if e.code == 409 => {
+                            tracing::warn!(
+                                identity = %self.identity,
+                                "SSA conflict on lease apply — another pod owns the field, treating as not-acquired"
+                            );
+                            Ok(false)
+                        }
+                        Err(e) => Err(OperatorError::KubeError(e)),
+                    }
                 } else {
                     Ok(false)
                 }

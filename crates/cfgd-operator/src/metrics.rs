@@ -59,7 +59,8 @@ impl Metrics {
 
         let reconciliation_duration_seconds =
             Family::<ReconcileLabels, Histogram>::new_with_constructor(|| {
-                Histogram::new(exponential_buckets(0.001, 2.0, 16))
+                let (start, factor, length) = cfgd_core::DURATION_BUCKETS_SHORT;
+                Histogram::new(exponential_buckets(start, factor, length))
             });
         sub.register(
             "reconciliation_duration_seconds",
@@ -83,7 +84,8 @@ impl Metrics {
 
         let webhook_duration_seconds =
             Family::<WebhookLabels, Histogram>::new_with_constructor(|| {
-                Histogram::new(exponential_buckets(0.001, 2.0, 16))
+                let (start, factor, length) = cfgd_core::DURATION_BUCKETS_SHORT;
+                Histogram::new(exponential_buckets(start, factor, length))
             });
         sub.register(
             "webhook_duration_seconds",
@@ -150,8 +152,12 @@ pub async fn run_metrics_server(
     port: u16,
     registry: Arc<Mutex<Registry>>,
 ) -> Result<(), OperatorError> {
+    // GET-only surface; 8 KiB is a generous safety net against abusive clients.
+    const METRICS_MAX_BODY_BYTES: usize = 8 * 1024;
+
     let app = axum::Router::new()
         .route("/metrics", axum::routing::get(metrics_handler))
+        .layer(axum::extract::DefaultBodyLimit::max(METRICS_MAX_BODY_BYTES))
         .with_state(registry);
 
     let addr: std::net::SocketAddr = ([0, 0, 0, 0], port).into();

@@ -396,7 +396,10 @@ impl SecretProvider for OnePasswordProvider {
         };
 
         run_provider_cmd(
-            std::process::Command::new("op").arg("read").arg(&op_ref),
+            std::process::Command::new("op")
+                .arg("read")
+                .arg("--")
+                .arg(&op_ref),
             "1password",
             "install the 1Password CLI: https://developer.1password.com/docs/cli/get-started/",
             reference,
@@ -431,6 +434,7 @@ impl SecretProvider for BitwardenProvider {
             std::process::Command::new("bw")
                 .arg("get")
                 .arg("password")
+                .arg("--")
                 .arg(item_name),
             "bitwarden",
             "install the Bitwarden CLI: https://bitwarden.com/help/cli/",
@@ -465,11 +469,13 @@ impl SecretProvider for LastPassProvider {
         let mut cmd = std::process::Command::new("lpass");
         cmd.arg("show");
         if let Some(field) = field {
-            cmd.arg("--field").arg(field);
+            // Equals-form so a user-supplied `field` can't be interpreted as
+            // a separate flag by lpass's arg parser.
+            cmd.arg(format!("--field={field}"));
         } else {
             cmd.arg("--password");
         }
-        cmd.arg(item);
+        cmd.arg("--").arg(item);
 
         run_provider_cmd(
             &mut cmd,
@@ -505,8 +511,10 @@ impl SecretProvider for VaultProvider {
             std::process::Command::new("vault")
                 .arg("kv")
                 .arg("get")
-                .arg("-field")
-                .arg(field)
+                // Equals-form so a user-supplied `field` can't be interpreted
+                // as a separate flag by vault's arg parser.
+                .arg(format!("-field={field}"))
+                .arg("--")
                 .arg(path),
             "vault",
             "install the Vault CLI: https://developer.hashicorp.com/vault/install",

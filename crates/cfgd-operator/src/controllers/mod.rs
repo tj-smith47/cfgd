@@ -1774,8 +1774,7 @@ fn evaluate_module_verification(signature: &Option<ModuleSignature>) -> ModuleVe
                 // Static key mode — validate PEM
                 match &cosign.public_key {
                     Some(pk) if is_valid_pem_public_key(pk) => {
-                        let fingerprint =
-                            format!("sha256:{}", cfgd_core::sha256_hex(pk.as_bytes()));
+                        let fingerprint = cfgd_core::sha256_digest(pk.as_bytes());
                         ModuleVerificationResult {
                             status: "True",
                             reason: "SignatureConfigured",

@@ -19,19 +19,82 @@ use crate::csi::v1::{
 };
 use crate::metrics::{CsiMetrics, ModuleLabels, PublishLabels, PullLabels};
 
+/// Env var holding the registry allow-list for CSI module pulls.
+/// Comma-separated list of host[:port] entries; `*` disables the check.
+/// Unset leaves the check disabled but emits a startup warning.
+pub const ALLOWED_REGISTRIES_ENV: &str = "CFGD_CSI_ALLOWED_REGISTRIES";
+
 pub struct CfgdNode {
     cache: Arc<Cache>,
     metrics: Arc<CsiMetrics>,
     node_id: String,
+    // `None` means "no allow-list configured" (log a startup warn). `Some(empty)`
+    // means "allow-list explicitly empty — refuse every ref" (not a normal
+    // deploy, but useful for fail-closed dev). `Some(non-empty)` means the ref
+    // host must match one of the entries.
+    allowed_registries: Option<Vec<String>>,
 }
 
 impl CfgdNode {
     pub fn new(cache: Arc<Cache>, metrics: Arc<CsiMetrics>, node_id: String) -> Self {
+        let allowed_registries = parse_allowed_registries_from_env();
+        match &allowed_registries {
+            None => tracing::warn!(
+                env = ALLOWED_REGISTRIES_ENV,
+                "CSI registry allow-list is not configured — accepting any ociRef from volume context. In multi-tenant clusters set this env (comma-separated host[:port]) to restrict pulls."
+            ),
+            Some(list) if list.is_empty() => tracing::warn!(
+                env = ALLOWED_REGISTRIES_ENV,
+                "CSI registry allow-list is explicitly empty — all module pulls will be refused."
+            ),
+            Some(list) => tracing::info!(
+                env = ALLOWED_REGISTRIES_ENV,
+                count = list.len(),
+                "CSI registry allow-list active"
+            ),
+        }
         Self {
             cache,
             metrics,
             node_id,
+            allowed_registries,
         }
+    }
+}
+
+fn parse_allowed_registries_from_env() -> Option<Vec<String>> {
+    let raw = std::env::var(ALLOWED_REGISTRIES_ENV).ok()?;
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    if trimmed == "*" {
+        // Wildcard = explicit "any registry"; keep it distinct from "unset"
+        // for log clarity but collapse to no-check here.
+        return None;
+    }
+    Some(
+        trimmed
+            .split(',')
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+            .collect(),
+    )
+}
+
+/// Extract the registry host[:port] from a full `oci_ref` like
+/// `ghcr.io/org/mod:tag` or `myregistry.local:5000/org/mod:tag`. Refs without
+/// an explicit registry (e.g. `cfgd-modules/foo:v1`) return the empty string.
+fn registry_of(oci_ref: &str) -> &str {
+    // An OCI reference has a registry iff its first path segment contains
+    // `.`, `:`, or equals `localhost`.
+    let first_slash = oci_ref.find('/').unwrap_or(oci_ref.len());
+    let head = &oci_ref[..first_slash];
+    if head.contains('.') || head.contains(':') || head == "localhost" {
+        head
+    } else {
+        ""
     }
 }
 
@@ -60,6 +123,31 @@ fn resolve_oci_ref(attrs: &HashMap<String, String>, module: &str, version: &str)
         .unwrap_or_else(|| format!("cfgd-modules/{module}:{version}"))
 }
 
+/// Check whether `oci_ref` is permitted under `allowed_registries`.
+/// `None` (unset) → allow (legacy behavior, with startup warn already emitted).
+/// `Some(list)` → the registry host of the ref must be in `list`. Refs with no
+/// explicit registry (default module namespace) are treated as the reserved
+/// `"cfgd-modules"` namespace and are always allowed — those can't reach the
+/// network without a caller-provided registry anyway.
+fn check_registry_allowed(
+    oci_ref: &str,
+    allowed_registries: Option<&[String]>,
+) -> Result<(), Status> {
+    let Some(list) = allowed_registries else {
+        return Ok(());
+    };
+    let registry = registry_of(oci_ref);
+    if registry.is_empty() {
+        return Ok(());
+    }
+    if list.iter().any(|r| r == registry) {
+        return Ok(());
+    }
+    Err(Status::permission_denied(format!(
+        "registry '{registry}' is not in the CSI allow-list (set {ALLOWED_REGISTRIES_ENV})"
+    )))
+}
+
 #[tonic::async_trait]
 impl Node for CfgdNode {
     async fn node_stage_volume(
@@ -76,6 +164,7 @@ impl Node for CfgdNode {
         let module = require_attr(attrs, "module")?;
         let version = require_attr(attrs, "version")?;
         let oci_ref = resolve_oci_ref(attrs, module, version);
+        check_registry_allowed(&oci_ref, self.allowed_registries.as_deref())?;
 
         tracing::info!(
             module = module,
@@ -185,6 +274,7 @@ impl Node for CfgdNode {
 
         // Get cached content (should have been staged already, but pull if needed)
         let oci_ref = resolve_oci_ref(attrs, module, version);
+        check_registry_allowed(&oci_ref, self.allowed_registries.as_deref())?;
         let source = self
             .cache
             .get_or_pull(module, version, &oci_ref)

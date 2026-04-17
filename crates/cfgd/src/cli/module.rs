@@ -2453,11 +2453,11 @@ pub(super) fn cmd_module_keys_generate(
     printer: &Printer,
     output_dir: Option<&str>,
 ) -> anyhow::Result<()> {
-    if !cfgd_core::command_available("cosign") {
-        anyhow::bail!(
-            "cosign not found — install it from https://docs.sigstore.dev/cosign/installation/"
-        );
-    }
+    cfgd_core::require_tool(
+        "cosign",
+        Some("install it from https://docs.sigstore.dev/cosign/installation/"),
+    )
+    .map_err(|m| anyhow::anyhow!(m))?;
 
     printer.header("Generate Cosign Key Pair");
 
@@ -2553,11 +2553,11 @@ pub(super) fn cmd_module_keys_rotate(
     dir: Option<&str>,
     artifacts: &[String],
 ) -> anyhow::Result<()> {
-    if !cfgd_core::command_available("cosign") {
-        anyhow::bail!(
-            "cosign not found — install it from https://docs.sigstore.dev/cosign/installation/"
-        );
-    }
+    cfgd_core::require_tool(
+        "cosign",
+        Some("install it from https://docs.sigstore.dev/cosign/installation/"),
+    )
+    .map_err(|m| anyhow::anyhow!(m))?;
 
     let key_dir = dir.unwrap_or(".");
     let old_key = Path::new(key_dir).join("cosign.key");

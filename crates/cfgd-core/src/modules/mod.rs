@@ -1040,7 +1040,7 @@ pub fn hash_module_contents(module_dir: &Path) -> Result<String> {
         hasher_input.push(0);
     }
 
-    Ok(format!("sha256:{}", crate::sha256_hex(&hasher_input)))
+    Ok(crate::sha256_digest(&hasher_input))
 }
 
 fn collect_files_for_hash(

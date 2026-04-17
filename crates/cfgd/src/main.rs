@@ -1,5 +1,4 @@
 use clap::Parser;
-use tracing_subscriber::EnvFilter;
 
 mod ai;
 mod cli;
@@ -27,7 +26,10 @@ fn main() -> anyhow::Result<()> {
     let expanded = cli::expand_aliases(raw_args);
     let cli = cli::Cli::parse_from(expanded);
 
-    // Resolve output format with --jsonpath backwards compat
+    // Resolve output format with --jsonpath backwards compat.
+    // NOTE: --jsonpath is deprecated; --output jsonpath=EXPR is canonical.
+    // The deprecation warning is emitted after Printer is constructed.
+    let jsonpath_deprecated = cli.jsonpath.is_some();
     let mut output_format = cli.output.0.clone();
     if let Some(ref expr) = cli.jsonpath {
         match &output_format {
@@ -56,15 +58,15 @@ fn main() -> anyhow::Result<()> {
         cfgd_core::output::Verbosity::Verbose => "debug",
     };
     tracing_subscriber::fmt()
-        .with_env_filter(
-            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(filter)),
-        )
+        .with_env_filter(cfgd_core::tracing_env_filter(filter))
         .with_target(false)
         .without_time()
         .init();
 
-    // Handle --no-color flag or NO_COLOR env var (https://no-color.org/)
-    if cli.no_color || std::env::var_os("NO_COLOR").is_some() {
+    // Handle --no-color flag. NO_COLOR / TERM=dumb are handled inside
+    // Printer::with_format so every Printer (including daemon-owned
+    // ones) honors the convention.
+    if cli.no_color {
         cfgd_core::output::Printer::disable_colors();
     }
 
@@ -77,8 +79,18 @@ fn main() -> anyhow::Result<()> {
     let printer =
         cfgd_core::output::Printer::with_format(verbosity, theme_config.as_ref(), output_format);
 
+    if jsonpath_deprecated {
+        printer.warning(
+            "--jsonpath is deprecated and will be removed in a future release; use --output jsonpath=EXPR instead",
+        );
+    }
+
     if let Err(e) = cli::execute(&cli, &printer) {
-        printer.error(&format!("{:#}", e));
+        // Format with `{}` not `{:#}` — CfgdError templates already include
+        // `{0}` which expands the inner error, so `{:#}` would walk source()
+        // and duplicate the inner text. See errors/mod.rs::CfgdError for the
+        // paired contract.
+        printer.error(&format!("{}", e));
         std::process::exit(1);
     }
 

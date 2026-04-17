@@ -560,9 +560,7 @@ fn authenticated_request(
 // Blob helpers
 // ---------------------------------------------------------------------------
 
-fn sha256_digest(data: &[u8]) -> String {
-    format!("sha256:{}", crate::sha256_hex(data))
-}
+use crate::sha256_digest;
 
 /// Upload a blob to the registry via the monolithic upload flow.
 /// POST /v2/{name}/blobs/uploads/ → PUT with digest.
@@ -773,9 +771,7 @@ pub fn push_module(
 ) -> Result<String, OciError> {
     let oci_ref = OciReference::parse(artifact_ref)?;
     let auth = RegistryAuth::resolve(&oci_ref.registry);
-    let agent = ureq::AgentBuilder::new()
-        .timeout(std::time::Duration::from_secs(300))
-        .build();
+    let agent = crate::http::http_agent(crate::http::HTTP_OCI_TIMEOUT);
     let spinner = printer.map(|p| p.spinner(&format!("Pushing module to {artifact_ref}...")));
     let (digest, _size) = push_module_inner(&agent, dir, &oci_ref, auth.as_ref(), platform)?;
     if let Some(s) = spinner {
@@ -949,9 +945,7 @@ pub fn push_module_multiplatform(
 ) -> Result<String, OciError> {
     let oci_ref = OciReference::parse(artifact_ref)?;
     let auth = RegistryAuth::resolve(&oci_ref.registry);
-    let agent = ureq::AgentBuilder::new()
-        .timeout(std::time::Duration::from_secs(300))
-        .build();
+    let agent = crate::http::http_agent(crate::http::HTTP_OCI_TIMEOUT);
 
     let spinner = printer.map(|p| {
         p.spinner(&format!(
@@ -1133,7 +1127,7 @@ pub fn build_module(
         message: format!("cannot create temp dir: {e}"),
     })?;
     crate::copy_dir_recursive(dir, build_dir.path())?;
-    std::fs::write(build_dir.path().join("Dockerfile"), &dockerfile_content)?;
+    crate::atomic_write_str(&build_dir.path().join("Dockerfile"), &dockerfile_content)?;
 
     // Build the container image
     let tag = format!(
@@ -1237,11 +1231,9 @@ pub fn build_module(
 /// If `key_path` is Some, uses `cosign sign --key <path>`.
 /// If `key_path` is None, uses keyless signing (Fulcio/Rekor via OIDC).
 pub fn sign_artifact(artifact_ref: &str, key_path: Option<&str>) -> Result<(), OciError> {
-    if !crate::command_available("cosign") {
-        return Err(OciError::ToolNotFound {
-            tool: "cosign".to_string(),
-        });
-    }
+    crate::require_tool("cosign", None).map_err(|_| OciError::ToolNotFound {
+        tool: "cosign".to_string(),
+    })?;
 
     let mut cmd = std::process::Command::new("cosign");
     cmd.arg("sign");
@@ -1311,11 +1303,9 @@ fn apply_verify_args(cmd: &mut std::process::Command, opts: &VerifyOptions<'_>) 
 pub fn verify_signature(artifact_ref: &str, opts: &VerifyOptions<'_>) -> Result<(), OciError> {
     validate_verify_options(opts)?;
 
-    if !crate::command_available("cosign") {
-        return Err(OciError::ToolNotFound {
-            tool: "cosign".to_string(),
-        });
-    }
+    crate::require_tool("cosign", None).map_err(|_| OciError::ToolNotFound {
+        tool: "cosign".to_string(),
+    })?;
 
     let mut cmd = std::process::Command::new("cosign");
     cmd.arg("verify");
@@ -1359,7 +1349,7 @@ pub fn generate_slsa_provenance(
         "subject": [{
             "name": artifact_ref,
             "digest": {
-                "sha256": digest.strip_prefix("sha256:").unwrap_or(digest),
+                "sha256": crate::strip_sha256_prefix(digest),
             }
         }],
         "predicate": {
@@ -1394,11 +1384,9 @@ pub fn attach_attestation(
     attestation_path: &str,
     key_path: Option<&str>,
 ) -> Result<(), OciError> {
-    if !crate::command_available("cosign") {
-        return Err(OciError::ToolNotFound {
-            tool: "cosign".to_string(),
-        });
-    }
+    crate::require_tool("cosign", None).map_err(|_| OciError::ToolNotFound {
+        tool: "cosign".to_string(),
+    })?;
 
     let mut cmd = std::process::Command::new("cosign");
     cmd.arg("attest");
@@ -1440,11 +1428,9 @@ pub fn verify_attestation(
 ) -> Result<(), OciError> {
     validate_verify_options(opts)?;
 
-    if !crate::command_available("cosign") {
-        return Err(OciError::ToolNotFound {
-            tool: "cosign".to_string(),
-        });
-    }
+    crate::require_tool("cosign", None).map_err(|_| OciError::ToolNotFound {
+        tool: "cosign".to_string(),
+    })?;
 
     let mut cmd = std::process::Command::new("cosign");
     cmd.arg("verify-attestation");
@@ -1484,9 +1470,7 @@ pub fn pull_module(
 ) -> Result<(), OciError> {
     let oci_ref = OciReference::parse(artifact_ref)?;
     let auth = RegistryAuth::resolve(&oci_ref.registry);
-    let agent = ureq::AgentBuilder::new()
-        .timeout(std::time::Duration::from_secs(300))
-        .build();
+    let agent = crate::http::http_agent(crate::http::HTTP_OCI_TIMEOUT);
 
     let spinner = printer.map(|p| p.spinner(&format!("Pulling module from {artifact_ref}...")));
 
@@ -1709,6 +1693,7 @@ fn base64_decode(input: &str) -> Option<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serial_test::serial;
 
     // --- OCI Reference parsing ---
 
@@ -1937,6 +1922,7 @@ mod tests {
     // --- Registry auth resolution ---
 
     #[test]
+    #[serial]
     fn registry_auth_from_env() {
         // Save and restore env
         let old_user = std::env::var("REGISTRY_USERNAME").ok();
@@ -2237,6 +2223,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn insecure_registry_env_var() {
         // Save and restore env var to avoid affecting other tests
         let prev = std::env::var("OCI_INSECURE_REGISTRIES").ok();
@@ -4066,6 +4053,7 @@ mod tests {
     // --- docker_config_path ---
 
     #[test]
+    #[serial]
     fn docker_config_path_uses_env() {
         let prev = std::env::var("DOCKER_CONFIG").ok();
 
@@ -4999,6 +4987,7 @@ mod tests {
     // --- is_insecure_registry ---
 
     #[test]
+    #[serial]
     fn is_insecure_registry_without_env_var() {
         // When OCI_INSECURE_REGISTRIES is not set (or empty), nothing is insecure
         let prev = std::env::var("OCI_INSECURE_REGISTRIES").ok();

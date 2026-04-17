@@ -1,4 +1,14 @@
 // Daemon — file watchers, reconciliation loop, sync, notifications, health endpoint, service management
+//
+// Locking convention (enforced by code review, not the compiler):
+//   * `DaemonState` lives behind `Arc<tokio::sync::Mutex<_>>`.
+//   * Every `.lock().await` MUST drop the guard before any `.await` on
+//     network / filesystem / subprocess I/O. The pattern is: acquire,
+//     clone out the fields needed, drop the guard, then do work.
+//   * Holding the lock across an await would serialize the daemon onto
+//     one in-flight request and invites deadlock when handlers call
+//     each other. All 19 current `.lock().await` sites follow this rule;
+//     new sites must too.
 
 use std::collections::{HashMap, HashSet};
 use std::io::{BufRead, BufReader, Write as IoWrite};
@@ -140,6 +150,10 @@ struct DaemonState {
     sources: Vec<SourceStatus>,
     update_available: Option<String>,
     module_last_reconcile: HashMap<String, String>,
+    // State DB path the `/drift` endpoint should read. `None` means "no store"
+    // (used in tests so endpoint returns empty events without touching the
+    // user's real `~/.local/share/cfgd/state.db`).
+    store_path: Option<PathBuf>,
 }
 
 impl DaemonState {
@@ -158,7 +172,13 @@ impl DaemonState {
             }],
             update_available: None,
             module_last_reconcile: HashMap::new(),
+            store_path: None,
         }
+    }
+
+    fn with_store_path(mut self, path: PathBuf) -> Self {
+        self.store_path = Some(path);
+        self
     }
 
     fn to_response(&self) -> DaemonStatusResponse {
@@ -236,9 +256,7 @@ impl Notifier {
 
         // Run webhook POST via spawn_blocking (uses tokio's bounded threadpool)
         tokio::task::spawn_blocking(move || {
-            match ureq::AgentBuilder::new()
-                .timeout(std::time::Duration::from_secs(10))
-                .build()
+            match crate::http::http_agent(crate::http::HTTP_WEBHOOK_TIMEOUT)
                 .post(&url)
                 .set("Content-Type", "application/json")
                 .send_string(&body)
@@ -626,7 +644,14 @@ pub async fn run_daemon(
         parsed.notify_method.clone(),
         parsed.webhook_url.clone(),
     ));
-    let state = Arc::new(Mutex::new(DaemonState::new()));
+    let daemon_state = match crate::state::default_state_dir() {
+        Ok(dir) => DaemonState::new().with_store_path(dir.join("state.db")),
+        Err(e) => {
+            tracing::warn!(error = %e, "cannot resolve default state dir; /drift endpoint disabled");
+            DaemonState::new()
+        }
+    };
+    let state = Arc::new(Mutex::new(daemon_state));
 
     // Parse compliance snapshot config
     let compliance_config = cfg.spec.compliance.clone();
@@ -1453,7 +1478,6 @@ fn handle_reconcile(
                 profile_name,
                 crate::reconciler::ReconcileContext::Reconcile,
                 &crate::reconciler::ScriptPhase::OnDrift,
-                false,
                 None,
                 None,
             );
@@ -2383,8 +2407,12 @@ where
             ("200 OK", serde_json::to_string_pretty(&response)?)
         }
         "/drift" => {
-            let store = StateStore::open_default();
-            let drift_events = store.and_then(|s| s.unresolved_drift()).unwrap_or_default();
+            let drift_events = match st.store_path.as_ref() {
+                Some(path) => StateStore::open(path)
+                    .and_then(|s| s.unresolved_drift())
+                    .unwrap_or_default(),
+                None => Vec::new(),
+            };
 
             let drift: Vec<serde_json::Value> = drift_events
                 .iter()

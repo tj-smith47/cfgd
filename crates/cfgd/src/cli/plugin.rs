@@ -80,10 +80,7 @@ pub fn plugin_main() -> anyhow::Result<()> {
     let cli = PluginCli::parse();
 
     tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("warn")),
-        )
+        .with_env_filter(cfgd_core::tracing_env_filter("warn"))
         .with_target(false)
         .without_time()
         .init();
@@ -240,15 +237,9 @@ fn cmd_exec(
 
     printer.info(&format!("Executing in {namespace}/{pod} with modules"));
 
-    let status = std::process::Command::new(&exec_args[0])
-        .args(&exec_args[1..])
-        .stdin(std::process::Stdio::inherit())
-        .stdout(std::process::Stdio::inherit())
-        .stderr(std::process::Stdio::inherit())
-        .status()?;
-
-    if !status.success() {
-        std::process::exit(status.code().unwrap_or(1));
+    let code = super::kubectl::run_argv_inherit(&exec_args)?;
+    if code != 0 {
+        std::process::exit(code);
     }
     Ok(())
 }
@@ -293,24 +284,18 @@ fn cmd_inject(
 
     let patch_str = serde_json::to_string(&patch_json)?;
 
-    let status = std::process::Command::new("kubectl")
-        .args([
-            "patch",
-            kind,
-            name,
-            "-n",
-            namespace,
-            "--type",
-            "strategic",
-            "-p",
-            &patch_str,
-        ])
-        .stdin(std::process::Stdio::inherit())
-        .stdout(std::process::Stdio::inherit())
-        .stderr(std::process::Stdio::inherit())
-        .status()?;
-
-    if !status.success() {
+    let code = super::kubectl::run_inherit(&[
+        "patch",
+        kind,
+        name,
+        "-n",
+        namespace,
+        "--type",
+        "strategic",
+        "-p",
+        &patch_str,
+    ])?;
+    if code != 0 {
         anyhow::bail!("kubectl patch failed");
     }
 

@@ -119,13 +119,35 @@ pub struct DeviceCredential {
     pub enrolled_at: String,
 }
 
-const MAX_RETRIES: u32 = 3;
-const INITIAL_BACKOFF_MS: u64 = 500;
-/// Timeout for API calls (checkin, drift reports, enrollment) — short because these are small JSON payloads.
-const API_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+/// Returns true when `authority` (the part after `http://` — may include port
+/// and path) points at localhost, `127.0.0.1/8`, or `::1`. Used to suppress
+/// the plaintext-scheme warning for loopback dev setups.
+fn is_loopback_host(authority: &str) -> bool {
+    // Strip any path suffix so we compare just the host[:port].
+    let host_port = authority.split('/').next().unwrap_or(authority);
+    // Handle bracketed IPv6 host + port: `[::1]:8080`.
+    let host = if let Some(rest) = host_port.strip_prefix('[') {
+        rest.split(']').next().unwrap_or(rest)
+    } else {
+        host_port.rsplit_once(':').map_or(host_port, |(h, _)| h)
+    };
+    host == "localhost" || host == "127.0.0.1" || host == "::1" || host.starts_with("127.")
+}
 
 impl ServerClient {
     pub fn new(base_url: &str, api_key: Option<&str>, device_id: &str) -> Self {
+        // Plaintext HTTP to a non-loopback host leaks the device API key to
+        // everything on the network path. Tests hit `http://localhost:...` and
+        // `http://127.0.0.1:...` constantly, so only warn on genuinely remote
+        // plaintext URLs.
+        if let Some(rest) = base_url.strip_prefix("http://")
+            && !is_loopback_host(rest)
+        {
+            tracing::warn!(
+                base_url = %base_url,
+                "device gateway URL uses plaintext http:// — the device API key travels in the Authorization header and will be visible to anything on the network path. Use https:// in production."
+            );
+        }
         Self {
             base_url: base_url.trim_end_matches('/').to_string(),
             api_key: api_key.map(String::from),
@@ -134,7 +156,7 @@ impl ServerClient {
     }
 
     fn agent(&self) -> ureq::Agent {
-        ureq::AgentBuilder::new().timeout(API_TIMEOUT).build()
+        crate::http::http_agent(crate::http::HTTP_API_TIMEOUT)
     }
 
     fn build_request(&self, method: &str, path: &str) -> ureq::Request {
@@ -154,12 +176,12 @@ impl ServerClient {
 
     /// Send a POST request with exponential backoff on network failures.
     fn post_with_retry(&self, path: &str, body_json: &str) -> std::result::Result<String, String> {
+        let retry = crate::retry::BackoffConfig::DEFAULT_TRANSIENT;
         let mut last_err = String::new();
-        for attempt in 0..MAX_RETRIES {
-            if attempt > 0 {
-                let backoff =
-                    std::time::Duration::from_millis(INITIAL_BACKOFF_MS * 2u64.pow(attempt - 1));
-                std::thread::sleep(backoff);
+        for attempt in 0..retry.max_attempts {
+            let delay = retry.delay_for_attempt(attempt);
+            if !delay.is_zero() {
+                std::thread::sleep(delay);
             }
 
             match self
@@ -177,7 +199,7 @@ impl ServerClient {
                     last_err = format!("network error: {}", e);
                     tracing::debug!(
                         attempt = attempt + 1,
-                        max = MAX_RETRIES,
+                        max = retry.max_attempts,
                         error = %e,
                         "Request failed, retrying"
                     );
@@ -186,7 +208,7 @@ impl ServerClient {
                     last_err = format!("server error (HTTP {})", code);
                     tracing::debug!(
                         attempt = attempt + 1,
-                        max = MAX_RETRIES,
+                        max = retry.max_attempts,
                         code,
                         "Server error, retrying"
                     );
@@ -198,7 +220,7 @@ impl ServerClient {
         }
         Err(format!(
             "failed after {} attempts: {}",
-            MAX_RETRIES, last_err
+            retry.max_attempts, last_err
         ))
     }
 

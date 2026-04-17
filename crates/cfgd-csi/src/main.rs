@@ -19,10 +19,7 @@ fn env_or(key: &str, default: &str) -> String {
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
-        )
+        .with_env_filter(cfgd_core::tracing_env_filter("info"))
         .json()
         .init();
 
@@ -55,7 +52,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let metrics = Arc::new(CsiMetrics::new(&mut registry));
     let registry = Arc::new(registry);
 
-    // Metrics HTTP server (axum, matching operator pattern)
+    // Metrics HTTP server (axum, matching operator pattern). Handler shape
+    // mirrors `cfgd-operator::metrics::metrics_handler` — same Content-Type
+    // on both success and error so Prometheus scrapers don't see two
+    // different response formats depending on which component they hit.
     let metrics_registry = registry.clone();
     tokio::spawn(async move {
         let app = axum::Router::new().route(
@@ -67,10 +67,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     if prometheus_client::encoding::text::encode(&mut buf, &r).is_err() {
                         return (
                             axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-                            "encoding error".to_string(),
+                            [(
+                                axum::http::header::CONTENT_TYPE,
+                                "text/plain; charset=utf-8",
+                            )],
+                            "Failed to encode metrics".to_string(),
                         );
                     }
-                    (axum::http::StatusCode::OK, buf)
+                    (
+                        axum::http::StatusCode::OK,
+                        [(
+                            axum::http::header::CONTENT_TYPE,
+                            "application/openmetrics-text; version=1.0.0; charset=utf-8",
+                        )],
+                        buf,
+                    )
                 }
             }),
         );

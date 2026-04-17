@@ -7,12 +7,83 @@ pub mod web;
 use std::net::SocketAddr;
 use std::sync::Arc;
 
-use tower_http::cors::CorsLayer;
+use axum::extract::DefaultBodyLimit;
+use axum::http::{HeaderValue, Method};
+use tower_http::cors::{AllowOrigin, CorsLayer};
 use tower_http::trace::TraceLayer;
 
 use crate::gateway::api::AppState;
 use crate::gateway::db::ServerDb;
 use crate::metrics::Metrics;
+
+// 1 MiB request body cap for gateway endpoints. JSON request bodies
+// (enroll / checkin / config) are well under this; anything larger is
+// almost certainly a DoS attempt.
+const GATEWAY_MAX_BODY_BYTES: usize = 1024 * 1024;
+
+// Env var listing allowed browser origins, comma-separated. When unset or
+// empty, the gateway rejects all cross-origin requests (same-origin fetches
+// from the dashboard continue to work). `*` re-enables the legacy permissive
+// behaviour (dev-only). Each entry must be a scheme+host(+port) URL, e.g.
+// `https://fleet.internal,https://ops.example.com`.
+const GATEWAY_ALLOWED_ORIGINS_ENV: &str = "CFGD_GATEWAY_ALLOWED_ORIGINS";
+
+fn build_cors_layer() -> CorsLayer {
+    let raw = std::env::var(GATEWAY_ALLOWED_ORIGINS_ENV).unwrap_or_default();
+    let trimmed = raw.trim();
+
+    let base = CorsLayer::new()
+        .allow_methods([Method::GET, Method::POST, Method::PUT, Method::DELETE])
+        .allow_headers([
+            axum::http::header::AUTHORIZATION,
+            axum::http::header::CONTENT_TYPE,
+        ]);
+
+    if trimmed.is_empty() {
+        tracing::info!(
+            env = GATEWAY_ALLOWED_ORIGINS_ENV,
+            "gateway CORS: no cross-origin browsers allowed (set env to a comma-separated origin list to enable)"
+        );
+        return base.allow_origin(AllowOrigin::list(std::iter::empty::<HeaderValue>()));
+    }
+
+    if trimmed == "*" {
+        tracing::warn!(
+            env = GATEWAY_ALLOWED_ORIGINS_ENV,
+            "gateway CORS: wildcard origin — allowing any browser origin. Restrict in production by setting explicit origins."
+        );
+        return base.allow_origin(AllowOrigin::any());
+    }
+
+    let parsed: Vec<HeaderValue> = trimmed
+        .split(',')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .filter_map(|s| match HeaderValue::from_str(s) {
+            Ok(v) => Some(v),
+            Err(e) => {
+                tracing::warn!(origin = %s, error = %e, "gateway CORS: dropping invalid origin");
+                None
+            }
+        })
+        .collect();
+
+    if parsed.is_empty() {
+        tracing::warn!(
+            env = GATEWAY_ALLOWED_ORIGINS_ENV,
+            raw = %trimmed,
+            "gateway CORS: no valid origins parsed from env; denying cross-origin"
+        );
+        return base.allow_origin(AllowOrigin::list(std::iter::empty::<HeaderValue>()));
+    }
+
+    tracing::info!(
+        env = GATEWAY_ALLOWED_ORIGINS_ENV,
+        count = parsed.len(),
+        "gateway CORS: allowing explicit origins"
+    );
+    base.allow_origin(AllowOrigin::list(parsed))
+}
 
 /// Configuration for the device gateway HTTP server.
 pub struct GatewayConfig {
@@ -74,8 +145,9 @@ pub async fn start_gateway(config: GatewayConfig) -> Result<(), Box<dyn std::err
 
     let app = api::router(state.clone())
         .merge(web::router())
+        .layer(DefaultBodyLimit::max(GATEWAY_MAX_BODY_BYTES))
         .layer(TraceLayer::new_for_http())
-        .layer(CorsLayer::permissive())
+        .layer(build_cors_layer())
         .with_state(state);
 
     let addr = SocketAddr::from(([0, 0, 0, 0], config.port));
