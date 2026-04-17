@@ -5,7 +5,6 @@ pub mod fleet;
 pub mod web;
 
 use std::net::SocketAddr;
-use std::sync::Arc;
 
 use axum::extract::DefaultBodyLimit;
 use axum::http::{HeaderValue, Method};
@@ -109,6 +108,7 @@ pub async fn start_gateway(config: GatewayConfig) -> Result<(), Box<dyn std::err
     }
 
     db.cleanup_old_events(config.retention_days)
+        .await
         .map_err(|e| -> Box<dyn std::error::Error> { Box::new(e) })?;
 
     let (event_tx, _) = tokio::sync::broadcast::channel(256);
@@ -116,7 +116,7 @@ pub async fn start_gateway(config: GatewayConfig) -> Result<(), Box<dyn std::err
     tracing::info!(method = ?enrollment_method, "device gateway: enrollment method configured");
 
     let state = AppState {
-        db: Arc::new(tokio::sync::Mutex::new(db)),
+        db,
         kube_client: config.kube_client,
         event_tx,
         enrollment_method,
@@ -124,20 +124,18 @@ pub async fn start_gateway(config: GatewayConfig) -> Result<(), Box<dyn std::err
     };
 
     // Periodic event cleanup — runs daily to prevent unbounded DB growth
-    let cleanup_state = state.db.clone();
+    let cleanup_db = state.db.clone();
     let retention_days = config.retention_days;
     let cleanup_handle = tokio::spawn(async move {
         let mut interval = tokio::time::interval(std::time::Duration::from_secs(86400));
         interval.tick().await; // skip immediate first tick (cleanup already ran above)
         loop {
             interval.tick().await;
-            let db = cleanup_state.lock().await;
-            match db.cleanup_old_events(retention_days) {
-                Ok(count) => {
-                    if count > 0 {
-                        tracing::info!(deleted = count, "periodic event cleanup completed");
-                    }
+            match cleanup_db.cleanup_old_events(retention_days).await {
+                Ok(count) if count > 0 => {
+                    tracing::info!(deleted = count, "periodic event cleanup completed");
                 }
+                Ok(_) => {}
                 Err(e) => tracing::warn!(error = %e, "periodic event cleanup failed"),
             }
         }

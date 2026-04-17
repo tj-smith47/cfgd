@@ -7,6 +7,12 @@ pub enum GatewayError {
     #[error("database error: {0}")]
     Database(#[from] rusqlite::Error),
 
+    #[error("database pool exhausted: {0}")]
+    PoolExhausted(String),
+
+    #[error("database task panicked")]
+    DatabaseTaskPanicked,
+
     #[error("not found: {0}")]
     NotFound(String),
 
@@ -28,6 +34,20 @@ impl IntoResponse for GatewayError {
         let (status, message) = match &self {
             GatewayError::Database(e) => {
                 tracing::error!("database error: {e}");
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "internal server error".to_string(),
+                )
+            }
+            GatewayError::PoolExhausted(msg) => {
+                tracing::warn!(error = %msg, "db pool exhausted — load shedding");
+                (
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "service overloaded; retry".to_string(),
+                )
+            }
+            GatewayError::DatabaseTaskPanicked => {
+                // Already logged at the spawn_blocking boundary.
                 (
                     StatusCode::INTERNAL_SERVER_ERROR,
                     "internal server error".to_string(),

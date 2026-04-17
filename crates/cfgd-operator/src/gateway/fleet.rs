@@ -1,8 +1,5 @@
 use serde::Serialize;
 
-use super::db::{DeviceStatus, ServerDb};
-use super::errors::GatewayError;
-
 #[derive(Debug, Clone, Serialize)]
 pub struct FleetStatus {
     pub total_devices: usize,
@@ -11,53 +8,39 @@ pub struct FleetStatus {
     pub offline: usize,
 }
 
-pub fn get_fleet_status(db: &ServerDb) -> Result<FleetStatus, GatewayError> {
-    let devices = db.list_devices()?;
-    let total_devices = devices.len();
-    let mut healthy = 0usize;
-    let mut drifted = 0usize;
-    let mut offline = 0usize;
-
-    for device in &devices {
-        match device.status {
-            DeviceStatus::Healthy => healthy += 1,
-            DeviceStatus::Drifted => drifted += 1,
-            DeviceStatus::Offline | DeviceStatus::PendingReconcile => offline += 1,
-        }
-    }
-
-    Ok(FleetStatus {
-        total_devices,
-        healthy,
-        drifted,
-        offline,
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use super::super::db::ServerDb;
-    use super::*;
 
-    #[test]
-    fn fleet_status_empty() {
-        let db = ServerDb::open(":memory:").expect("open db");
-        let status = get_fleet_status(&db).expect("get status");
+    fn test_db() -> (ServerDb, tempfile::TempDir) {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let path = tmp.path().join("test.db");
+        let db = ServerDb::open(path.to_str().expect("utf8")).expect("open");
+        (db, tmp)
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn fleet_status_empty() {
+        let (db, _tmp) = test_db();
+        let status = db.get_fleet_status().await.expect("get status");
         assert_eq!(status.total_devices, 0);
         assert_eq!(status.healthy, 0);
     }
 
-    #[test]
-    fn fleet_status_counts() {
-        let db = ServerDb::open(":memory:").expect("open db");
+    #[tokio::test(flavor = "current_thread")]
+    async fn fleet_status_counts() {
+        let (db, _tmp) = test_db();
         db.register_device("d1", "host1", "linux", "x86_64", "h1", None)
+            .await
             .expect("register");
         db.register_device("d2", "host2", "linux", "x86_64", "h2", None)
+            .await
             .expect("register");
         db.record_drift_event("d2", "something drifted")
+            .await
             .expect("drift");
 
-        let status = get_fleet_status(&db).expect("get status");
+        let status = db.get_fleet_status().await.expect("get status");
         assert_eq!(status.total_devices, 2);
         assert_eq!(status.healthy, 1);
         assert_eq!(status.drifted, 1);

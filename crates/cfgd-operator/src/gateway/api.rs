@@ -1,5 +1,3 @@
-use std::sync::Arc;
-
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::middleware::{self, Next};
@@ -42,7 +40,7 @@ impl EnrollmentMethod {
 /// Shared application state: database + optional Kubernetes client + event broadcast.
 #[derive(Clone)]
 pub struct AppState {
-    pub db: Arc<tokio::sync::Mutex<ServerDb>>,
+    pub db: ServerDb,
     pub kube_client: Option<kube::Client>,
     pub event_tx: tokio::sync::broadcast::Sender<FleetEvent>,
     pub enrollment_method: EnrollmentMethod,
@@ -382,10 +380,7 @@ async fn auth_middleware(
     // downstream handlers run (otherwise every device request serializes through one lock)
     if let Some(ref token) = bearer_token {
         let token_hash = hash_token(token);
-        let cred = {
-            let db = state.db.lock().await;
-            db.validate_device_credential(&token_hash).ok()
-        };
+        let cred = state.db.validate_device_credential(&token_hash).await.ok();
         if let Some(cred) = cred {
             request.extensions_mut().insert(AuthContext::Device {
                 device_id: cred.device_id,
@@ -465,92 +460,75 @@ async fn enroll(
         ));
     }
 
-    let db = state.db.lock().await;
+    // Generate the per-device API key outside the transaction — pure computation.
+    let device_api_key = generate_token("cfgd_dev");
+    let api_key_hash = hash_token(&device_api_key);
+    let token_hash = hash_token(&req.token);
 
-    // Wrap the entire enrollment in a transaction so that token consumption,
-    // device registration, and credential creation are atomic.
-    db.conn
-        .execute_batch("BEGIN IMMEDIATE")
-        .map_err(GatewayError::Database)?;
+    let db = state.db.clone();
+    let device_id = req.device_id.clone();
+    let hostname = req.hostname.clone();
+    let os = req.os.clone();
+    let arch = req.arch.clone();
+    let api_key_hash_c = api_key_hash.clone();
+    let token_hash_c = token_hash.clone();
 
-    let result = (|| -> Result<_, GatewayError> {
-        // Atomically validate and consume the bootstrap token (prevents TOCTOU race)
-        let token_hash = hash_token(&req.token);
-        let bootstrap = db.validate_and_consume_bootstrap_token(&token_hash, &req.device_id)?;
+    let (bootstrap, desired_config) = db
+        .with_write_tx(move |tx| {
+            let bootstrap =
+                super::db::validate_and_consume_bootstrap_token_tx(tx, &token_hash_c, &device_id)?;
+            super::db::register_device_tx(
+                tx,
+                &device_id,
+                &hostname,
+                &os,
+                &arch,
+                "pending-enrollment",
+                None,
+            )?;
+            super::db::create_device_credential_tx(
+                tx,
+                &device_id,
+                &api_key_hash_c,
+                &bootstrap.username,
+                bootstrap.team.as_deref(),
+            )?;
+            let desired = super::db::get_device_tx(tx, &device_id)
+                .ok()
+                .and_then(|d| d.desired_config);
+            Ok((bootstrap, desired))
+        })
+        .await?;
 
-        // Register the device first (so the credential FK is valid)
-        db.register_device(
-            &req.device_id,
-            &req.hostname,
-            &req.os,
-            &req.arch,
-            "pending-enrollment",
-            None,
-        )?;
+    let _ = state.event_tx.send(FleetEvent {
+        timestamp: cfgd_core::utc_now_iso8601(),
+        device_id: req.device_id.clone(),
+        event_type: "enrollment".to_string(),
+        summary: format!("user={} hostname={}", bootstrap.username, req.hostname),
+    });
 
-        // Generate a permanent device API key
-        let device_api_key = generate_token("cfgd_dev");
-        let api_key_hash = hash_token(&device_api_key);
+    tracing::info!(
+        device_id = %req.device_id,
+        hostname = %req.hostname,
+        username = %bootstrap.username,
+        "device enrolled"
+    );
 
-        // Create device credential
-        db.create_device_credential(
-            &req.device_id,
-            &api_key_hash,
-            &bootstrap.username,
-            bootstrap.team.as_deref(),
-        )?;
-
-        // Look up desired config for this device (may have been pre-set via MachineConfig CRD)
-        let desired_config = db
-            .get_device(&req.device_id)
-            .ok()
-            .and_then(|d| d.desired_config);
-
-        Ok((bootstrap, device_api_key, desired_config))
-    })();
-
-    match result {
-        Ok((bootstrap, device_api_key, desired_config)) => {
-            db.conn
-                .execute_batch("COMMIT")
-                .map_err(GatewayError::Database)?;
-
-            // Continue with the successfully enrolled data
-            let _ = state.event_tx.send(FleetEvent {
-                timestamp: cfgd_core::utc_now_iso8601(),
-                device_id: req.device_id.clone(),
-                event_type: "enrollment".to_string(),
-                summary: format!("user={} hostname={}", bootstrap.username, req.hostname),
-            });
-
-            tracing::info!(
-                device_id = %req.device_id,
-                hostname = %req.hostname,
-                username = %bootstrap.username,
-                "device enrolled"
-            );
-
-            if let Some(ref m) = state.metrics {
-                m.devices_enrolled_total.inc();
-            }
-
-            Ok((
-                StatusCode::CREATED,
-                Json(EnrollResponse {
-                    status: "enrolled".to_string(),
-                    device_id: req.device_id,
-                    api_key: device_api_key,
-                    username: bootstrap.username,
-                    team: bootstrap.team,
-                    desired_config,
-                }),
-            ))
-        }
-        Err(e) => {
-            let _ = db.conn.execute_batch("ROLLBACK");
-            Err(e)
-        }
+    if let Some(ref m) = state.metrics {
+        m.devices_enrolled_total.inc();
     }
+
+    Ok((
+        StatusCode::CREATED,
+        Json(EnrollResponse {
+            status: "enrolled".to_string(),
+            device_id: req.device_id,
+            api_key: device_api_key,
+            username: bootstrap.username,
+            team: bootstrap.team,
+            desired_config,
+        }),
+    ))
 }
 
 // --- Admin Token Management ---
@@ -577,9 +555,10 @@ async fn create_token(
     let now_secs = cfgd_core::unix_secs_now();
     let expires_at = cfgd_core::unix_secs_to_iso8601(now_secs + req.expires_in);
 
-    let db = state.db.lock().await;
-    let record =
-        db.create_bootstrap_token(&token_hash, &req.username, req.team.as_deref(), &expires_at)?;
+    let record = state
+        .db
+        .create_bootstrap_token(&token_hash, &req.username, req.team.as_deref(), &expires_at)
+        .await?;
 
     tracing::info!(
         username = %req.username,
@@ -600,8 +579,7 @@ async fn create_token(
 }
 
 async fn list_tokens(State(state): State<SharedState>) -> Result<impl IntoResponse, GatewayError> {
-    let db = state.db.lock().await;
-    let tokens = db.list_bootstrap_tokens()?;
+    let tokens = state.db.list_bootstrap_tokens().await?;
     Ok(Json(tokens))
 }
 
@@ -609,8 +587,7 @@ async fn delete_token(
     State(state): State<SharedState>,
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse, GatewayError> {
-    let db = state.db.lock().await;
-    db.delete_bootstrap_token(&id)?;
+    state.db.delete_bootstrap_token(&id).await?;
 
     tracing::info!(token_id = %id, "bootstrap token deleted");
 
@@ -621,8 +598,7 @@ async fn revoke_credential(
     State(state): State<SharedState>,
     Path(device_id): Path<String>,
 ) -> Result<impl IntoResponse, GatewayError> {
-    let db = state.db.lock().await;
-    db.revoke_device_credential(&device_id)?;
+    state.db.revoke_device_credential(&device_id).await?;
 
     tracing::info!(device_id = %device_id, "device credential revoked");
 
@@ -665,14 +641,16 @@ async fn add_user_key(
         ));
     }
 
-    let db = state.db.lock().await;
-    let key = db.add_user_public_key(
-        &username,
-        &req.key_type,
-        &req.public_key,
-        &req.fingerprint,
-        req.label.as_deref(),
-    )?;
+    let key = state
+        .db
+        .add_user_public_key(
+            &username,
+            &req.key_type,
+            &req.public_key,
+            &req.fingerprint,
+            req.label.as_deref(),
+        )
+        .await?;
 
     tracing::info!(
         username = %username,
@@ -689,8 +667,7 @@ async fn list_user_keys(
     State(state): State<SharedState>,
     Path(username): Path<String>,
 ) -> Result<impl IntoResponse, GatewayError> {
-    let db = state.db.lock().await;
-    let keys = db.list_user_public_keys(&username)?;
+    let keys = state.db.list_user_public_keys(&username).await?;
     Ok(Json(keys))
 }
 
@@ -699,8 +676,7 @@ async fn delete_user_key(
     State(state): State<SharedState>,
     Path((username, id)): Path<(String, String)>,
 ) -> Result<impl IntoResponse, GatewayError> {
-    let db = state.db.lock().await;
-    db.delete_user_public_key(&id)?;
+    state.db.delete_user_public_key(&id).await?;
 
     tracing::info!(username = %username, key_id = %id, "public key deleted");
 
@@ -709,8 +685,7 @@ async fn delete_user_key(
 
 /// Reset all gateway data (admin-only). Wipes devices, events, tokens, credentials.
 async fn admin_reset(State(state): State<SharedState>) -> Result<impl IntoResponse, GatewayError> {
-    let db = state.db.lock().await;
-    let deleted = db.reset_data()?;
+    let deleted = state.db.reset_data().await?;
     Ok(Json(serde_json::json!({
         "status": "ok",
         "rowsDeleted": deleted
@@ -737,8 +712,7 @@ async fn request_challenge(
     validate_hostname(&req.hostname)?;
 
     // Verify user has at least one public key registered
-    let db = state.db.lock().await;
-    let keys = db.list_user_public_keys(&req.username)?;
+    let keys = state.db.list_user_public_keys(&req.username).await?;
     if keys.is_empty() {
         return Err(GatewayError::InvalidRequest(format!(
             "no public keys registered for user '{}' — ask your admin to add your SSH or GPG key",
@@ -748,14 +722,17 @@ async fn request_challenge(
 
     let nonce = generate_token("cfgd_ch");
 
-    let challenge = db.create_enrollment_challenge(
-        &req.username,
-        &req.device_id,
-        &req.hostname,
-        (&req.os, &req.arch),
-        &nonce,
-        CHALLENGE_TTL_SECS,
-    )?;
+    let challenge = state
+        .db
+        .create_enrollment_challenge(
+            &req.username,
+            &req.device_id,
+            &req.hostname,
+            (&req.os, &req.arch),
+            &nonce,
+            CHALLENGE_TTL_SECS,
+        )
+        .await?;
 
     tracing::info!(
         username = %req.username,
@@ -800,13 +777,14 @@ async fn verify_enrollment(
         ));
     }
 
-    let db = state.db.lock().await;
-
     // Atomically consume the challenge
-    let challenge = db.consume_enrollment_challenge(&req.challenge_id)?;
+    let challenge = state
+        .db
+        .consume_enrollment_challenge(&req.challenge_id)
+        .await?;
 
     // Get user's public keys of the matching type
-    let keys = db.list_user_public_keys(&challenge.username)?;
+    let keys = state.db.list_user_public_keys(&challenge.username).await?;
     let matching_keys: Vec<_> = keys.iter().filter(|k| k.key_type == req.key_type).collect();
 
     if matching_keys.is_empty() {
@@ -838,33 +816,45 @@ async fn verify_enrollment(
         return Err(GatewayError::Unauthorized);
     }
 
-    // Signature verified — enroll the device (same flow as bootstrap token enrollment)
-    db.register_device(
-        &challenge.device_id,
-        &challenge.hostname,
-        &challenge.os,
-        &challenge.arch,
-        "pending-enrollment",
-        None,
-    )?;
-
     let device_api_key = generate_token("cfgd_dev");
     let api_key_hash = hash_token(&device_api_key);
 
     // Look up team from TeamConfig/user keys metadata (use first key's data)
     let team: Option<String> = None; // Key-based enrollment doesn't carry team info in the key itself
 
-    db.create_device_credential(
-        &challenge.device_id,
-        &api_key_hash,
-        &challenge.username,
-        team.as_deref(),
-    )?;
-
-    let desired_config = db
-        .get_device(&challenge.device_id)
-        .ok()
-        .and_then(|d| d.desired_config);
+    // Signature verified — enroll the device (same flow as bootstrap token enrollment)
+    let db_clone = state.db.clone();
+    let device_id_c = challenge.device_id.clone();
+    let hostname_c = challenge.hostname.clone();
+    let os_c = challenge.os.clone();
+    let arch_c = challenge.arch.clone();
+    let api_key_hash_c = api_key_hash.clone();
+    let username_c = challenge.username.clone();
+    let team_c = team.clone();
+    let desired_config = db_clone
+        .with_write_tx(move |tx| {
+            super::db::register_device_tx(
+                tx,
+                &device_id_c,
+                &hostname_c,
+                &os_c,
+                &arch_c,
+                "pending-enrollment",
+                None,
+            )?;
+            super::db::create_device_credential_tx(
+                tx,
+                &device_id_c,
+                &api_key_hash_c,
+                &username_c,
+                team_c.as_deref(),
+            )?;
+            let desired = super::db::get_device_tx(tx, &device_id_c)
+                .ok()
+                .and_then(|d| d.desired_config);
+            Ok(desired)
+        })
+        .await?;
 
     let _ = state.event_tx.send(FleetEvent {
         timestamp: cfgd_core::utc_now_iso8601(),
@@ -1107,49 +1097,56 @@ async fn checkin(
     // Device auth: can only check in as self
     enforce_device_access(&auth, &req.device_id)?;
 
-    let db = state.db.lock().await;
+    let db = state.db.clone();
+    let device_id = req.device_id.clone();
+    let hostname = req.hostname.clone();
+    let os = req.os.clone();
+    let arch = req.arch.clone();
+    let config_hash = req.config_hash.clone();
+    let compliance = req.compliance_summary.clone();
 
-    let existing = db.get_device(&req.device_id);
-    let config_changed = match &existing {
-        Ok(device) => device.config_hash != req.config_hash,
-        Err(GatewayError::NotFound(_)) => false,
-        Err(_) => false,
-    };
+    let (config_changed, desired_config) = db
+        .with_write_tx(move |tx| {
+            let existing = super::db::get_device_tx(tx, &device_id);
+            let (config_changed, desired) = match &existing {
+                Ok(device) => (
+                    device.config_hash != config_hash,
+                    if device.config_hash != config_hash {
+                        device.desired_config.clone()
+                    } else {
+                        None
+                    },
+                ),
+                Err(GatewayError::NotFound(_)) => (false, None),
+                Err(_) => (false, None),
+            };
 
-    // Capture desired_config before mutating — avoids a second get_device query
-    let desired_config = if config_changed {
-        existing
-            .as_ref()
-            .ok()
-            .and_then(|d| d.desired_config.clone())
-    } else {
-        None
-    };
+            match &existing {
+                Ok(_) => {
+                    super::db::update_checkin_tx(
+                        tx,
+                        &device_id,
+                        &config_hash,
+                        compliance.as_ref(),
+                    )?;
+                }
+                Err(_) => {
+                    super::db::register_device_tx(
+                        tx,
+                        &device_id,
+                        &hostname,
+                        &os,
+                        &arch,
+                        &config_hash,
+                        compliance.as_ref(),
+                    )?;
+                }
+            }
 
-    match &existing {
-        Ok(_) => {
-            db.update_checkin(
-                &req.device_id,
-                &req.config_hash,
-                req.compliance_summary.as_ref(),
-            )?;
-        }
-        Err(_) => {
-            db.register_device(
-                &req.device_id,
-                &req.hostname,
-                &req.os,
-                &req.arch,
-                &req.config_hash,
-                req.compliance_summary.as_ref(),
-            )?;
-        }
-    }
-
-    // Record checkin event for history
-    if let Err(e) = db.record_checkin(&req.device_id, &req.config_hash, config_changed) {
-        tracing::warn!(device_id = %req.device_id, error = %e, "failed to record checkin event");
-    }
+            super::db::record_checkin_tx(tx, &device_id, &config_hash, config_changed)?;
+            Ok((config_changed, desired))
+        })
+        .await?;
 
     // Broadcast to SSE subscribers
     let event_type = if config_changed {
@@ -1193,13 +1190,14 @@ async fn list_devices(
 ) -> Result<impl IntoResponse, GatewayError> {
     // Device auth: can only list self
     if let AuthContext::Device { ref device_id, .. } = auth {
-        let db = state.db.lock().await;
-        let device = db.get_device(device_id)?;
+        let device = state.db.get_device(device_id).await?;
         return Ok(Json(vec![device]));
     }
     let limit = pagination.limit.min(1000);
-    let db = state.db.lock().await;
-    let devices = db.list_devices_paginated(limit, pagination.offset)?;
+    let devices = state
+        .db
+        .list_devices_paginated(limit, pagination.offset)
+        .await?;
     Ok(Json(devices))
 }
 
@@ -1209,8 +1207,7 @@ async fn get_device(
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse, GatewayError> {
     enforce_device_access(&auth, &id)?;
-    let db = state.db.lock().await;
-    let device = db.get_device(&id)?;
+    let device = state.db.get_device(&id).await?;
     Ok(Json(device))
 }
 
@@ -1235,8 +1232,7 @@ async fn set_device_config(
         ));
     }
 
-    let db = state.db.lock().await;
-    db.set_device_config(&id, &req.config)?;
+    state.db.set_device_config(&id, &req.config).await?;
 
     tracing::info!(device_id = %id, "desired config updated");
 
@@ -1249,8 +1245,7 @@ async fn list_drift_events(
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse, GatewayError> {
     enforce_device_access(&auth, &id)?;
-    let db = state.db.lock().await;
-    let events = db.list_drift_events(&id)?;
+    let events = state.db.list_drift_events(&id).await?;
     Ok(Json(events))
 }
 
@@ -1265,12 +1260,16 @@ async fn record_drift_event(
     let details_str = serde_json::to_string(&req.details)
         .map_err(|e| GatewayError::Internal(format!("failed to serialize drift details: {e}")))?;
 
-    let (event, device_hostname) = {
-        let db = state.db.lock().await;
-        let evt = db.record_drift_event(&id, &details_str)?;
-        let hostname = db.get_device(&id).ok().map(|d| d.hostname);
-        (evt, hostname)
-    };
+    let db = state.db.clone();
+    let id_c = id.clone();
+    let details_c = details_str.clone();
+    let (event, device_hostname) = db
+        .with_write_tx(move |tx| {
+            let device = super::db::get_device_tx(tx, &id_c)?;
+            let evt = super::db::record_drift_event_tx(tx, &id_c, &details_c)?;
+            Ok((evt, Some(device.hostname)))
+        })
+        .await?;
 
     // Broadcast to SSE subscribers
     let _ = state.event_tx.send(FleetEvent {
@@ -1306,8 +1305,7 @@ async fn force_reconcile(
             "only admin can force reconcile".to_string(),
         ));
     }
-    let db = state.db.lock().await;
-    db.set_force_reconcile(&id)?;
+    state.db.set_force_reconcile(&id).await?;
 
     tracing::info!(device_id = %id, "force reconcile requested");
 
@@ -1319,8 +1317,10 @@ async fn list_fleet_events(
     Query(pagination): Query<PaginationParams>,
 ) -> Result<impl IntoResponse, GatewayError> {
     let limit = pagination.limit.min(1000);
-    let db = state.db.lock().await;
-    let events = db.list_fleet_events_paginated(limit, pagination.offset)?;
+    let events = state
+        .db
+        .list_fleet_events_paginated(limit, pagination.offset)
+        .await?;
     Ok(Json(events))
 }
 
@@ -1959,21 +1959,26 @@ mod tests {
 
     // --- Database-backed handler logic tests ---
 
-    fn test_db() -> ServerDb {
-        ServerDb::open(":memory:").expect("failed to open in-memory db")
+    fn test_db() -> (ServerDb, tempfile::TempDir) {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let path = tmp.path().join("test.db");
+        let db = ServerDb::open(path.to_str().expect("utf8")).expect("open db");
+        (db, tmp)
     }
 
-    #[test]
-    fn checkin_config_changed_detection() {
-        let db = test_db();
+    #[tokio::test(flavor = "current_thread")]
+    async fn checkin_config_changed_detection() {
+        let (db, _tmp) = test_db();
         db.register_device("dev-1", "ws-1", "linux", "x86_64", "hash-old", None)
+            .await
             .expect("register failed");
 
         // Set a desired config so config_changed is meaningful
         db.set_device_config("dev-1", &serde_json::json!({"packages": ["vim"]}))
+            .await
             .expect("set config failed");
 
-        let device = db.get_device("dev-1").expect("get failed");
+        let device = db.get_device("dev-1").await.expect("get failed");
         // Simulate checkin with different hash
         let config_changed = device.config_hash != "hash-new";
         assert!(config_changed, "different config_hash should detect change");
@@ -2450,35 +2455,45 @@ mod tests {
 
     // --- Async handler tests ---
 
-    fn test_state() -> SharedState {
-        let db = super::super::db::ServerDb::open(":memory:").expect("open in-memory db");
+    fn test_state() -> (SharedState, tempfile::TempDir) {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let path = tmp.path().join("test.db");
+        let db = super::super::db::ServerDb::open(path.to_str().expect("utf8")).expect("open db");
         let (event_tx, _) = tokio::sync::broadcast::channel(16);
-        AppState {
-            db: Arc::new(tokio::sync::Mutex::new(db)),
-            kube_client: None,
-            event_tx,
-            enrollment_method: EnrollmentMethod::Token,
-            metrics: None,
-        }
+        (
+            AppState {
+                db,
+                kube_client: None,
+                event_tx,
+                enrollment_method: EnrollmentMethod::Token,
+                metrics: None,
+            },
+            tmp,
+        )
     }
 
-    fn test_state_key_enrollment() -> SharedState {
-        let db = super::super::db::ServerDb::open(":memory:").expect("open in-memory db");
+    fn test_state_key_enrollment() -> (SharedState, tempfile::TempDir) {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let path = tmp.path().join("test.db");
+        let db = super::super::db::ServerDb::open(path.to_str().expect("utf8")).expect("open db");
         let (event_tx, _) = tokio::sync::broadcast::channel(16);
-        AppState {
-            db: Arc::new(tokio::sync::Mutex::new(db)),
-            kube_client: None,
-            event_tx,
-            enrollment_method: EnrollmentMethod::Key,
-            metrics: None,
-        }
+        (
+            AppState {
+                db,
+                kube_client: None,
+                event_tx,
+                enrollment_method: EnrollmentMethod::Key,
+                metrics: None,
+            },
+            tmp,
+        )
     }
 
     // --- enroll_info ---
 
     #[tokio::test]
     async fn enroll_info_returns_token_method() {
-        let state = test_state();
+        let (state, _tmp) = test_state();
         let result = enroll_info(State(state)).await;
         assert!(
             result.is_ok(),
@@ -2496,7 +2511,7 @@ mod tests {
 
     #[tokio::test]
     async fn enroll_info_returns_key_method() {
-        let state = test_state_key_enrollment();
+        let (state, _tmp) = test_state_key_enrollment();
         let result = enroll_info(State(state)).await;
         assert!(
             result.is_ok(),
@@ -2516,7 +2531,7 @@ mod tests {
 
     #[tokio::test]
     async fn enroll_rejects_empty_device_id() {
-        let state = test_state();
+        let (state, _tmp) = test_state();
         let req = EnrollRequest {
             token: "cfgd_bs_some_token".to_string(),
             device_id: "".to_string(),
@@ -2533,7 +2548,7 @@ mod tests {
 
     #[tokio::test]
     async fn enroll_rejects_empty_token() {
-        let state = test_state();
+        let (state, _tmp) = test_state();
         let req = EnrollRequest {
             token: "".to_string(),
             device_id: "dev-1".to_string(),
@@ -2550,7 +2565,7 @@ mod tests {
 
     #[tokio::test]
     async fn enroll_rejects_when_key_enrollment_enabled() {
-        let state = test_state_key_enrollment();
+        let (state, _tmp) = test_state_key_enrollment();
         let req = EnrollRequest {
             token: "cfgd_bs_token123".to_string(),
             device_id: "dev-1".to_string(),
@@ -2567,7 +2582,7 @@ mod tests {
 
     #[tokio::test]
     async fn enroll_rejects_invalid_token() {
-        let state = test_state();
+        let (state, _tmp) = test_state();
         let req = EnrollRequest {
             token: "bogus_nonexistent_token".to_string(),
             device_id: "dev-1".to_string(),
@@ -2586,17 +2601,17 @@ mod tests {
 
     #[tokio::test]
     async fn enroll_success_with_valid_bootstrap_token() {
-        let state = test_state();
+        let (state, _tmp) = test_state();
 
         // Create a bootstrap token in the DB
         let token_plaintext = "cfgd_bs_test_enrollment_token_abcdef1234567890";
         let token_hash = hash_token(token_plaintext);
         let expires_at = cfgd_core::unix_secs_to_iso8601(cfgd_core::unix_secs_now() + 3600);
-        {
-            let db = state.db.lock().await;
-            db.create_bootstrap_token(&token_hash, "testuser", Some("platform"), &expires_at)
-                .expect("create token");
-        }
+        state
+            .db
+            .create_bootstrap_token(&token_hash, "testuser", Some("platform"), &expires_at)
+            .await
+            .expect("create token");
 
         let req = EnrollRequest {
             token: token_plaintext.to_string(),
@@ -2630,8 +2645,11 @@ mod tests {
         );
 
         // Verify device was created in DB
-        let db = state.db.lock().await;
-        let device = db.get_device("dev-enroll-1").expect("device should exist");
+        let device = state
+            .db
+            .get_device("dev-enroll-1")
+            .await
+            .expect("device should exist");
         assert_eq!(device.hostname, "ws-enroll");
         assert_eq!(device.os, "linux");
         assert_eq!(device.arch, "x86_64");
@@ -2639,16 +2657,16 @@ mod tests {
 
     #[tokio::test]
     async fn enroll_token_cannot_be_reused() {
-        let state = test_state();
+        let (state, _tmp) = test_state();
 
         let token_plaintext = "cfgd_bs_reuse_test_token";
         let token_hash = hash_token(token_plaintext);
         let expires_at = cfgd_core::unix_secs_to_iso8601(cfgd_core::unix_secs_now() + 3600);
-        {
-            let db = state.db.lock().await;
-            db.create_bootstrap_token(&token_hash, "testuser", None, &expires_at)
-                .expect("create token");
-        }
+        state
+            .db
+            .create_bootstrap_token(&token_hash, "testuser", None, &expires_at)
+            .await
+            .expect("create token");
 
         // First enrollment succeeds
         let req1 = EnrollRequest {
@@ -2681,7 +2699,7 @@ mod tests {
 
     #[tokio::test]
     async fn checkin_rejects_empty_device_id() {
-        let state = test_state();
+        let (state, _tmp) = test_state();
         let auth = AuthContext::Admin;
         let req = CheckinRequest {
             device_id: "".to_string(),
@@ -2700,7 +2718,7 @@ mod tests {
 
     #[tokio::test]
     async fn checkin_registers_new_device() {
-        let state = test_state();
+        let (state, _tmp) = test_state();
         let auth = AuthContext::Admin;
         let req = CheckinRequest {
             device_id: "dev-new".to_string(),
@@ -2725,20 +2743,23 @@ mod tests {
         );
 
         // Verify device was created
-        let db = state.db.lock().await;
-        let device = db.get_device("dev-new").expect("device should exist");
+        let device = state
+            .db
+            .get_device("dev-new")
+            .await
+            .expect("device should exist");
         assert_eq!(device.hostname, "workstation-new");
         assert_eq!(device.config_hash, "hash123");
     }
 
     #[tokio::test]
     async fn checkin_updates_existing_device() {
-        let state = test_state();
-        {
-            let db = state.db.lock().await;
-            db.register_device("dev-1", "ws-1", "linux", "x86_64", "hash-old", None)
-                .expect("register");
-        }
+        let (state, _tmp) = test_state();
+        state
+            .db
+            .register_device("dev-1", "ws-1", "linux", "x86_64", "hash-old", None)
+            .await
+            .expect("register");
 
         let auth = AuthContext::Admin;
         let req = CheckinRequest {
@@ -2764,21 +2785,23 @@ mod tests {
         );
 
         // Verify config hash was updated
-        let db = state.db.lock().await;
-        let device = db.get_device("dev-1").expect("device");
+        let device = state.db.get_device("dev-1").await.expect("device");
         assert_eq!(device.config_hash, "hash-new");
     }
 
     #[tokio::test]
     async fn checkin_detects_config_change() {
-        let state = test_state();
-        {
-            let db = state.db.lock().await;
-            db.register_device("dev-1", "ws-1", "linux", "x86_64", "hash-old", None)
-                .expect("register");
-            db.set_device_config("dev-1", &serde_json::json!({"packages": ["vim"]}))
-                .expect("set config");
-        }
+        let (state, _tmp) = test_state();
+        state
+            .db
+            .register_device("dev-1", "ws-1", "linux", "x86_64", "hash-old", None)
+            .await
+            .expect("register");
+        state
+            .db
+            .set_device_config("dev-1", &serde_json::json!({"packages": ["vim"]}))
+            .await
+            .expect("set config");
 
         let auth = AuthContext::Admin;
         let req = CheckinRequest {
@@ -2810,12 +2833,12 @@ mod tests {
 
     #[tokio::test]
     async fn checkin_no_config_change_when_same_hash() {
-        let state = test_state();
-        {
-            let db = state.db.lock().await;
-            db.register_device("dev-1", "ws-1", "linux", "x86_64", "same-hash", None)
-                .expect("register");
-        }
+        let (state, _tmp) = test_state();
+        state
+            .db
+            .register_device("dev-1", "ws-1", "linux", "x86_64", "same-hash", None)
+            .await
+            .expect("register");
 
         let auth = AuthContext::Admin;
         let req = CheckinRequest {
@@ -2847,7 +2870,7 @@ mod tests {
 
     #[tokio::test]
     async fn checkin_device_auth_can_only_checkin_as_self() {
-        let state = test_state();
+        let (state, _tmp) = test_state();
         let auth = AuthContext::Device {
             device_id: "dev-1".to_string(),
             username: "jdoe".to_string(),
@@ -2869,7 +2892,7 @@ mod tests {
 
     #[tokio::test]
     async fn checkin_with_compliance_summary() {
-        let state = test_state();
+        let (state, _tmp) = test_state();
         let auth = AuthContext::Admin;
         let compliance = serde_json::json!({
             "total": 10,
@@ -2899,15 +2922,14 @@ mod tests {
         assert_eq!(checkin_resp["status"], "ok");
 
         // Verify compliance_summary was stored
-        let db = state.db.lock().await;
-        let device = db.get_device("dev-compliance").expect("device");
+        let device = state.db.get_device("dev-compliance").await.expect("device");
         assert!(device.compliance_summary.is_some());
         assert_eq!(device.compliance_summary.unwrap()["total"], 10);
     }
 
     #[tokio::test]
     async fn checkin_broadcasts_event() {
-        let state = test_state();
+        let (state, _tmp) = test_state();
         let mut rx = state.event_tx.subscribe();
 
         let auth = AuthContext::Admin;
@@ -2938,7 +2960,7 @@ mod tests {
 
     #[tokio::test]
     async fn list_devices_empty() {
-        let state = test_state();
+        let (state, _tmp) = test_state();
         let auth = AuthContext::Admin;
         let pagination = PaginationParams {
             limit: 100,
@@ -2964,14 +2986,17 @@ mod tests {
 
     #[tokio::test]
     async fn list_devices_returns_all_devices_for_admin() {
-        let state = test_state();
-        {
-            let db = state.db.lock().await;
-            db.register_device("dev-1", "ws-1", "linux", "x86_64", "h1", None)
-                .expect("register");
-            db.register_device("dev-2", "ws-2", "darwin", "aarch64", "h2", None)
-                .expect("register");
-        }
+        let (state, _tmp) = test_state();
+        state
+            .db
+            .register_device("dev-1", "ws-1", "linux", "x86_64", "h1", None)
+            .await
+            .expect("register");
+        state
+            .db
+            .register_device("dev-2", "ws-2", "darwin", "aarch64", "h2", None)
+            .await
+            .expect("register");
 
         let auth = AuthContext::Admin;
         let pagination = PaginationParams {
@@ -2998,14 +3023,17 @@ mod tests {
 
     #[tokio::test]
     async fn list_devices_device_auth_returns_only_self() {
-        let state = test_state();
-        {
-            let db = state.db.lock().await;
-            db.register_device("dev-1", "ws-1", "linux", "x86_64", "h1", None)
-                .expect("register");
-            db.register_device("dev-2", "ws-2", "darwin", "aarch64", "h2", None)
-                .expect("register");
-        }
+        let (state, _tmp) = test_state();
+        state
+            .db
+            .register_device("dev-1", "ws-1", "linux", "x86_64", "h1", None)
+            .await
+            .expect("register");
+        state
+            .db
+            .register_device("dev-2", "ws-2", "darwin", "aarch64", "h2", None)
+            .await
+            .expect("register");
 
         let auth = AuthContext::Device {
             device_id: "dev-1".to_string(),
@@ -3034,11 +3062,11 @@ mod tests {
 
     #[tokio::test]
     async fn list_devices_respects_pagination_limit() {
-        let state = test_state();
-        {
-            let db = state.db.lock().await;
-            for i in 0..5 {
-                db.register_device(
+        let (state, _tmp) = test_state();
+        for i in 0..5 {
+            state
+                .db
+                .register_device(
                     &format!("dev-{i}"),
                     &format!("ws-{i}"),
                     "linux",
@@ -3046,8 +3074,8 @@ mod tests {
                     &format!("h{i}"),
                     None,
                 )
+                .await
                 .expect("register");
-            }
         }
 
         let auth = AuthContext::Admin;
@@ -3076,7 +3104,7 @@ mod tests {
 
     #[tokio::test]
     async fn list_devices_caps_limit_at_1000() {
-        let state = test_state();
+        let (state, _tmp) = test_state();
         let auth = AuthContext::Admin;
         let pagination = PaginationParams {
             limit: 5000,
@@ -3097,12 +3125,12 @@ mod tests {
 
     #[tokio::test]
     async fn get_device_existing() {
-        let state = test_state();
-        {
-            let db = state.db.lock().await;
-            db.register_device("dev-get", "ws-get", "linux", "x86_64", "hash-get", None)
-                .expect("register");
-        }
+        let (state, _tmp) = test_state();
+        state
+            .db
+            .register_device("dev-get", "ws-get", "linux", "x86_64", "hash-get", None)
+            .await
+            .expect("register");
 
         let auth = AuthContext::Admin;
         let result = get_device(State(state), Extension(auth), Path("dev-get".to_string())).await;
@@ -3126,7 +3154,7 @@ mod tests {
 
     #[tokio::test]
     async fn get_device_not_found() {
-        let state = test_state();
+        let (state, _tmp) = test_state();
         let auth = AuthContext::Admin;
         let result = get_device(
             State(state),
@@ -3142,12 +3170,12 @@ mod tests {
 
     #[tokio::test]
     async fn get_device_device_auth_allows_self() {
-        let state = test_state();
-        {
-            let db = state.db.lock().await;
-            db.register_device("dev-own", "ws-own", "linux", "x86_64", "hash", None)
-                .expect("register");
-        }
+        let (state, _tmp) = test_state();
+        state
+            .db
+            .register_device("dev-own", "ws-own", "linux", "x86_64", "hash", None)
+            .await
+            .expect("register");
 
         let auth = AuthContext::Device {
             device_id: "dev-own".to_string(),
@@ -3171,12 +3199,12 @@ mod tests {
 
     #[tokio::test]
     async fn get_device_device_auth_denies_other() {
-        let state = test_state();
-        {
-            let db = state.db.lock().await;
-            db.register_device("dev-other", "ws-other", "linux", "x86_64", "hash", None)
-                .expect("register");
-        }
+        let (state, _tmp) = test_state();
+        state
+            .db
+            .register_device("dev-other", "ws-other", "linux", "x86_64", "hash", None)
+            .await
+            .expect("register");
 
         let auth = AuthContext::Device {
             device_id: "dev-own".to_string(),
@@ -3193,12 +3221,12 @@ mod tests {
 
     #[tokio::test]
     async fn set_device_config_admin_success() {
-        let state = test_state();
-        {
-            let db = state.db.lock().await;
-            db.register_device("dev-cfg", "ws-cfg", "linux", "x86_64", "hash", None)
-                .expect("register");
-        }
+        let (state, _tmp) = test_state();
+        state
+            .db
+            .register_device("dev-cfg", "ws-cfg", "linux", "x86_64", "hash", None)
+            .await
+            .expect("register");
 
         let auth = AuthContext::Admin;
         let req = SetConfigRequest {
@@ -3220,20 +3248,19 @@ mod tests {
         assert_eq!(response.status(), StatusCode::NO_CONTENT);
 
         // Verify config was stored
-        let db = state.db.lock().await;
-        let device = db.get_device("dev-cfg").expect("device");
+        let device = state.db.get_device("dev-cfg").await.expect("device");
         assert!(device.desired_config.is_some());
         assert_eq!(device.desired_config.unwrap()["packages"][0], "vim");
     }
 
     #[tokio::test]
     async fn set_device_config_device_auth_forbidden() {
-        let state = test_state();
-        {
-            let db = state.db.lock().await;
-            db.register_device("dev-cfg2", "ws-cfg2", "linux", "x86_64", "hash", None)
-                .expect("register");
-        }
+        let (state, _tmp) = test_state();
+        state
+            .db
+            .register_device("dev-cfg2", "ws-cfg2", "linux", "x86_64", "hash", None)
+            .await
+            .expect("register");
 
         let auth = AuthContext::Device {
             device_id: "dev-cfg2".to_string(),
@@ -3257,7 +3284,7 @@ mod tests {
 
     #[tokio::test]
     async fn set_device_config_not_found() {
-        let state = test_state();
+        let (state, _tmp) = test_state();
         let auth = AuthContext::Admin;
         let req = SetConfigRequest {
             config: serde_json::json!({"packages": ["vim"]}),
@@ -3279,12 +3306,12 @@ mod tests {
 
     #[tokio::test]
     async fn list_drift_events_empty() {
-        let state = test_state();
-        {
-            let db = state.db.lock().await;
-            db.register_device("dev-drift", "ws-drift", "linux", "x86_64", "hash", None)
-                .expect("register");
-        }
+        let (state, _tmp) = test_state();
+        state
+            .db
+            .register_device("dev-drift", "ws-drift", "linux", "x86_64", "hash", None)
+            .await
+            .expect("register");
 
         let auth = AuthContext::Admin;
         let result =
@@ -3308,14 +3335,17 @@ mod tests {
 
     #[tokio::test]
     async fn list_drift_events_with_events() {
-        let state = test_state();
-        {
-            let db = state.db.lock().await;
-            db.register_device("dev-drift2", "ws-drift2", "linux", "x86_64", "hash", None)
-                .expect("register");
-            db.record_drift_event("dev-drift2", "field changed")
-                .expect("record drift");
-        }
+        let (state, _tmp) = test_state();
+        state
+            .db
+            .register_device("dev-drift2", "ws-drift2", "linux", "x86_64", "hash", None)
+            .await
+            .expect("register");
+        state
+            .db
+            .record_drift_event("dev-drift2", "field changed")
+            .await
+            .expect("record drift");
 
         let auth = AuthContext::Admin;
         let result = list_drift_events(
@@ -3342,12 +3372,12 @@ mod tests {
 
     #[tokio::test]
     async fn list_drift_events_device_auth_allows_self() {
-        let state = test_state();
-        {
-            let db = state.db.lock().await;
-            db.register_device("dev-own-drift", "ws", "linux", "x86_64", "hash", None)
-                .expect("register");
-        }
+        let (state, _tmp) = test_state();
+        state
+            .db
+            .register_device("dev-own-drift", "ws", "linux", "x86_64", "hash", None)
+            .await
+            .expect("register");
 
         let auth = AuthContext::Device {
             device_id: "dev-own-drift".to_string(),
@@ -3378,12 +3408,12 @@ mod tests {
 
     #[tokio::test]
     async fn list_drift_events_device_auth_denies_other() {
-        let state = test_state();
-        {
-            let db = state.db.lock().await;
-            db.register_device("dev-victim", "ws", "linux", "x86_64", "hash", None)
-                .expect("register");
-        }
+        let (state, _tmp) = test_state();
+        state
+            .db
+            .register_device("dev-victim", "ws", "linux", "x86_64", "hash", None)
+            .await
+            .expect("register");
 
         let auth = AuthContext::Device {
             device_id: "dev-attacker".to_string(),
@@ -3403,7 +3433,7 @@ mod tests {
 
     #[tokio::test]
     async fn list_drift_events_not_found() {
-        let state = test_state();
+        let (state, _tmp) = test_state();
         let auth = AuthContext::Admin;
         let result = list_drift_events(
             State(state),
@@ -3421,12 +3451,12 @@ mod tests {
 
     #[tokio::test]
     async fn record_drift_event_success() {
-        let state = test_state();
-        {
-            let db = state.db.lock().await;
-            db.register_device("dev-record", "ws-record", "linux", "x86_64", "hash", None)
-                .expect("register");
-        }
+        let (state, _tmp) = test_state();
+        state
+            .db
+            .register_device("dev-record", "ws-record", "linux", "x86_64", "hash", None)
+            .await
+            .expect("register");
 
         let auth = AuthContext::Admin;
         let req = DriftRequest {
@@ -3462,20 +3492,19 @@ mod tests {
         );
 
         // Verify device status changed to drifted
-        let db = state.db.lock().await;
-        let device = db.get_device("dev-record").expect("device");
+        let device = state.db.get_device("dev-record").await.expect("device");
         assert_eq!(device.status, super::super::db::DeviceStatus::Drifted);
     }
 
     #[tokio::test]
     async fn record_drift_event_broadcasts_to_sse() {
-        let state = test_state();
+        let (state, _tmp) = test_state();
         let mut rx = state.event_tx.subscribe();
-        {
-            let db = state.db.lock().await;
-            db.register_device("dev-sse", "ws-sse", "linux", "x86_64", "hash", None)
-                .expect("register");
-        }
+        state
+            .db
+            .register_device("dev-sse", "ws-sse", "linux", "x86_64", "hash", None)
+            .await
+            .expect("register");
 
         let auth = AuthContext::Admin;
         let req = DriftRequest {
@@ -3500,12 +3529,12 @@ mod tests {
 
     #[tokio::test]
     async fn record_drift_event_device_auth_denies_other() {
-        let state = test_state();
-        {
-            let db = state.db.lock().await;
-            db.register_device("dev-target", "ws", "linux", "x86_64", "hash", None)
-                .expect("register");
-        }
+        let (state, _tmp) = test_state();
+        state
+            .db
+            .register_device("dev-target", "ws", "linux", "x86_64", "hash", None)
+            .await
+            .expect("register");
 
         let auth = AuthContext::Device {
             device_id: "dev-attacker".to_string(),
@@ -3533,7 +3562,7 @@ mod tests {
 
     #[tokio::test]
     async fn record_drift_event_nonexistent_device() {
-        let state = test_state();
+        let (state, _tmp) = test_state();
         let auth = AuthContext::Admin;
         let req = DriftRequest {
             details: vec![DriftDetailInput {
@@ -3559,12 +3588,12 @@ mod tests {
 
     #[tokio::test]
     async fn force_reconcile_admin_success() {
-        let state = test_state();
-        {
-            let db = state.db.lock().await;
-            db.register_device("dev-recon", "ws-recon", "linux", "x86_64", "hash", None)
-                .expect("register");
-        }
+        let (state, _tmp) = test_state();
+        state
+            .db
+            .register_device("dev-recon", "ws-recon", "linux", "x86_64", "hash", None)
+            .await
+            .expect("register");
 
         let auth = AuthContext::Admin;
         let result = force_reconcile(
@@ -3582,8 +3611,7 @@ mod tests {
         assert_eq!(response.status(), StatusCode::NO_CONTENT);
 
         // Verify status changed to pending-reconcile
-        let db = state.db.lock().await;
-        let device = db.get_device("dev-recon").expect("device");
+        let device = state.db.get_device("dev-recon").await.expect("device");
         assert_eq!(
             device.status,
             super::super::db::DeviceStatus::PendingReconcile
@@ -3592,12 +3620,12 @@ mod tests {
 
     #[tokio::test]
     async fn force_reconcile_device_auth_forbidden() {
-        let state = test_state();
-        {
-            let db = state.db.lock().await;
-            db.register_device("dev-recon2", "ws", "linux", "x86_64", "hash", None)
-                .expect("register");
-        }
+        let (state, _tmp) = test_state();
+        state
+            .db
+            .register_device("dev-recon2", "ws", "linux", "x86_64", "hash", None)
+            .await
+            .expect("register");
 
         let auth = AuthContext::Device {
             device_id: "dev-recon2".to_string(),
@@ -3617,7 +3645,7 @@ mod tests {
 
     #[tokio::test]
     async fn force_reconcile_not_found() {
-        let state = test_state();
+        let (state, _tmp) = test_state();
         let auth = AuthContext::Admin;
         let result = force_reconcile(
             State(state),
@@ -3635,7 +3663,7 @@ mod tests {
 
     #[tokio::test]
     async fn list_fleet_events_empty() {
-        let state = test_state();
+        let (state, _tmp) = test_state();
         let pagination = PaginationParams {
             limit: 100,
             offset: 0,
@@ -3660,16 +3688,22 @@ mod tests {
 
     #[tokio::test]
     async fn list_fleet_events_with_data() {
-        let state = test_state();
-        {
-            let db = state.db.lock().await;
-            db.register_device("dev-fe", "ws-fe", "linux", "x86_64", "hash", None)
-                .expect("register");
-            db.record_checkin("dev-fe", "hash", false)
-                .expect("record checkin");
-            db.record_drift_event("dev-fe", "drift details")
-                .expect("record drift");
-        }
+        let (state, _tmp) = test_state();
+        state
+            .db
+            .register_device("dev-fe", "ws-fe", "linux", "x86_64", "hash", None)
+            .await
+            .expect("register");
+        state
+            .db
+            .record_checkin("dev-fe", "hash", false)
+            .await
+            .expect("record checkin");
+        state
+            .db
+            .record_drift_event("dev-fe", "drift details")
+            .await
+            .expect("record drift");
 
         let pagination = PaginationParams {
             limit: 100,
@@ -3696,7 +3730,7 @@ mod tests {
 
     #[tokio::test]
     async fn list_fleet_events_caps_limit() {
-        let state = test_state();
+        let (state, _tmp) = test_state();
         let pagination = PaginationParams {
             limit: 5000,
             offset: 0,
@@ -3716,7 +3750,7 @@ mod tests {
 
     #[tokio::test]
     async fn request_challenge_rejects_when_token_mode() {
-        let state = test_state(); // token mode by default
+        let (state, _tmp) = test_state(); // token mode by default
         let req = ChallengeRequest {
             username: "jdoe".to_string(),
             device_id: "dev-1".to_string(),
@@ -3735,7 +3769,7 @@ mod tests {
 
     #[tokio::test]
     async fn request_challenge_rejects_empty_username() {
-        let state = test_state_key_enrollment();
+        let (state, _tmp) = test_state_key_enrollment();
         let req = ChallengeRequest {
             username: "".to_string(),
             device_id: "dev-1".to_string(),
@@ -3752,7 +3786,7 @@ mod tests {
 
     #[tokio::test]
     async fn request_challenge_rejects_empty_device_id() {
-        let state = test_state_key_enrollment();
+        let (state, _tmp) = test_state_key_enrollment();
         let req = ChallengeRequest {
             username: "jdoe".to_string(),
             device_id: "".to_string(),
@@ -3769,7 +3803,7 @@ mod tests {
 
     #[tokio::test]
     async fn request_challenge_rejects_user_without_keys() {
-        let state = test_state_key_enrollment();
+        let (state, _tmp) = test_state_key_enrollment();
         let req = ChallengeRequest {
             username: "unknown-user".to_string(),
             device_id: "dev-1".to_string(),
@@ -3788,18 +3822,18 @@ mod tests {
 
     #[tokio::test]
     async fn request_challenge_success_with_registered_key() {
-        let state = test_state_key_enrollment();
-        {
-            let db = state.db.lock().await;
-            db.add_user_public_key(
+        let (state, _tmp) = test_state_key_enrollment();
+        state
+            .db
+            .add_user_public_key(
                 "jdoe",
                 "ssh",
                 "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIG...",
                 "SHA256:testfp",
                 Some("laptop key"),
             )
+            .await
             .expect("add key");
-        }
 
         let req = ChallengeRequest {
             username: "jdoe".to_string(),
@@ -3838,7 +3872,7 @@ mod tests {
 
     #[tokio::test]
     async fn verify_enrollment_rejects_when_token_mode() {
-        let state = test_state();
+        let (state, _tmp) = test_state();
         let req = VerifyRequest {
             challenge_id: "ch-1".to_string(),
             signature: "sig-data".to_string(),
@@ -3853,7 +3887,7 @@ mod tests {
 
     #[tokio::test]
     async fn verify_enrollment_rejects_empty_challenge_id() {
-        let state = test_state_key_enrollment();
+        let (state, _tmp) = test_state_key_enrollment();
         let req = VerifyRequest {
             challenge_id: "".to_string(),
             signature: "sig-data".to_string(),
@@ -3870,7 +3904,7 @@ mod tests {
 
     #[tokio::test]
     async fn verify_enrollment_rejects_empty_signature() {
-        let state = test_state_key_enrollment();
+        let (state, _tmp) = test_state_key_enrollment();
         let req = VerifyRequest {
             challenge_id: "ch-1".to_string(),
             signature: "".to_string(),
@@ -3885,7 +3919,7 @@ mod tests {
 
     #[tokio::test]
     async fn verify_enrollment_rejects_invalid_key_type() {
-        let state = test_state_key_enrollment();
+        let (state, _tmp) = test_state_key_enrollment();
         let req = VerifyRequest {
             challenge_id: "ch-1".to_string(),
             signature: "sig-data".to_string(),
@@ -3900,7 +3934,7 @@ mod tests {
 
     #[tokio::test]
     async fn verify_enrollment_rejects_nonexistent_challenge() {
-        let state = test_state_key_enrollment();
+        let (state, _tmp) = test_state_key_enrollment();
         let req = VerifyRequest {
             challenge_id: "nonexistent-challenge".to_string(),
             signature: "sig-data".to_string(),
@@ -3917,16 +3951,22 @@ mod tests {
 
     #[tokio::test]
     async fn admin_reset_clears_all_data() {
-        let state = test_state();
-        {
-            let db = state.db.lock().await;
-            db.register_device("dev-1", "ws-1", "linux", "x86_64", "hash", None)
-                .expect("register");
-            db.register_device("dev-2", "ws-2", "darwin", "aarch64", "hash2", None)
-                .expect("register");
-            db.record_drift_event("dev-1", "drift details")
-                .expect("record drift");
-        }
+        let (state, _tmp) = test_state();
+        state
+            .db
+            .register_device("dev-1", "ws-1", "linux", "x86_64", "hash", None)
+            .await
+            .expect("register");
+        state
+            .db
+            .register_device("dev-2", "ws-2", "darwin", "aarch64", "hash2", None)
+            .await
+            .expect("register");
+        state
+            .db
+            .record_drift_event("dev-1", "drift details")
+            .await
+            .expect("record drift");
 
         let result = admin_reset(State(state.clone())).await;
         assert!(
@@ -3947,8 +3987,7 @@ mod tests {
         );
 
         // Verify data was wiped
-        let db = state.db.lock().await;
-        let devices = db.list_devices().expect("list");
+        let devices = state.db.list_devices().await.expect("list");
         assert!(
             devices.is_empty(),
             "all devices should be deleted after reset"
@@ -3959,7 +3998,7 @@ mod tests {
 
     #[tokio::test]
     async fn add_user_key_success() {
-        let state = test_state();
+        let (state, _tmp) = test_state();
         let req = AddKeyRequest {
             key_type: "ssh".to_string(),
             public_key: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIG...".to_string(),
@@ -3987,7 +4026,7 @@ mod tests {
 
     #[tokio::test]
     async fn add_user_key_empty_username() {
-        let state = test_state();
+        let (state, _tmp) = test_state();
         let req = AddKeyRequest {
             key_type: "ssh".to_string(),
             public_key: "ssh-ed25519 ...".to_string(),
@@ -4003,7 +4042,7 @@ mod tests {
 
     #[tokio::test]
     async fn add_user_key_invalid_key_type() {
-        let state = test_state();
+        let (state, _tmp) = test_state();
         let req = AddKeyRequest {
             key_type: "rsa".to_string(),
             public_key: "ssh-rsa ...".to_string(),
@@ -4019,7 +4058,7 @@ mod tests {
 
     #[tokio::test]
     async fn add_user_key_empty_public_key() {
-        let state = test_state();
+        let (state, _tmp) = test_state();
         let req = AddKeyRequest {
             key_type: "ssh".to_string(),
             public_key: "".to_string(),
@@ -4035,7 +4074,7 @@ mod tests {
 
     #[tokio::test]
     async fn add_user_key_empty_fingerprint() {
-        let state = test_state();
+        let (state, _tmp) = test_state();
         let req = AddKeyRequest {
             key_type: "ssh".to_string(),
             public_key: "ssh-ed25519 ...".to_string(),
@@ -4055,7 +4094,7 @@ mod tests {
 
     #[tokio::test]
     async fn list_user_keys_empty() {
-        let state = test_state();
+        let (state, _tmp) = test_state();
         let result = list_user_keys(State(state), Path("jdoe".to_string())).await;
         assert!(
             result.is_ok(),
@@ -4076,20 +4115,23 @@ mod tests {
 
     #[tokio::test]
     async fn list_user_keys_with_keys() {
-        let state = test_state();
-        {
-            let db = state.db.lock().await;
-            db.add_user_public_key(
+        let (state, _tmp) = test_state();
+        state
+            .db
+            .add_user_public_key(
                 "jdoe",
                 "ssh",
                 "ssh-ed25519 AAAA...",
                 "SHA256:a",
                 Some("key1"),
             )
+            .await
             .expect("add key");
-            db.add_user_public_key("jdoe", "gpg", "-----BEGIN PGP...", "DEADBEEF", None)
-                .expect("add key");
-        }
+        state
+            .db
+            .add_user_public_key("jdoe", "gpg", "-----BEGIN PGP...", "DEADBEEF", None)
+            .await
+            .expect("add key");
 
         let result = list_user_keys(State(state), Path("jdoe".to_string())).await;
         assert!(
@@ -4113,15 +4155,13 @@ mod tests {
 
     #[tokio::test]
     async fn delete_user_key_success() {
-        let state = test_state();
-        let key_id;
-        {
-            let db = state.db.lock().await;
-            let key = db
-                .add_user_public_key("jdoe", "ssh", "ssh-ed25519 ...", "SHA256:x", None)
-                .expect("add key");
-            key_id = key.id;
-        }
+        let (state, _tmp) = test_state();
+        let key = state
+            .db
+            .add_user_public_key("jdoe", "ssh", "ssh-ed25519 ...", "SHA256:x", None)
+            .await
+            .expect("add key");
+        let key_id = key.id;
 
         let result = delete_user_key(State(state), Path(("jdoe".to_string(), key_id))).await;
         assert!(
@@ -4135,7 +4175,7 @@ mod tests {
 
     #[tokio::test]
     async fn delete_user_key_not_found() {
-        let state = test_state();
+        let (state, _tmp) = test_state();
         let result = delete_user_key(
             State(state),
             Path(("jdoe".to_string(), "nonexistent".to_string())),
@@ -4151,7 +4191,7 @@ mod tests {
 
     #[tokio::test]
     async fn create_token_success() {
-        let state = test_state();
+        let (state, _tmp) = test_state();
         let req = CreateTokenRequest {
             username: "admin".to_string(),
             team: Some("platform".to_string()),
@@ -4190,7 +4230,7 @@ mod tests {
 
     #[tokio::test]
     async fn create_token_empty_username() {
-        let state = test_state();
+        let (state, _tmp) = test_state();
         let req = CreateTokenRequest {
             username: "".to_string(),
             team: None,
@@ -4205,7 +4245,7 @@ mod tests {
 
     #[tokio::test]
     async fn create_token_zero_expires_in() {
-        let state = test_state();
+        let (state, _tmp) = test_state();
         let req = CreateTokenRequest {
             username: "admin".to_string(),
             team: None,
@@ -4220,7 +4260,7 @@ mod tests {
 
     #[tokio::test]
     async fn create_token_excessive_expires_in() {
-        let state = test_state();
+        let (state, _tmp) = test_state();
         let req = CreateTokenRequest {
             username: "admin".to_string(),
             team: None,
@@ -4237,7 +4277,7 @@ mod tests {
 
     #[tokio::test]
     async fn list_tokens_empty() {
-        let state = test_state();
+        let (state, _tmp) = test_state();
         let result = list_tokens(State(state)).await;
         assert!(
             result.is_ok(),
@@ -4258,12 +4298,12 @@ mod tests {
 
     #[tokio::test]
     async fn list_tokens_with_data() {
-        let state = test_state();
-        {
-            let db = state.db.lock().await;
-            db.create_bootstrap_token("hash1", "admin", None, "2026-12-31T23:59:59Z")
-                .expect("create token");
-        }
+        let (state, _tmp) = test_state();
+        state
+            .db
+            .create_bootstrap_token("hash1", "admin", None, "2026-12-31T23:59:59Z")
+            .await
+            .expect("create token");
 
         let result = list_tokens(State(state)).await;
         assert!(
@@ -4286,15 +4326,13 @@ mod tests {
 
     #[tokio::test]
     async fn delete_token_success() {
-        let state = test_state();
-        let token_id;
-        {
-            let db = state.db.lock().await;
-            let token = db
-                .create_bootstrap_token("hash1", "admin", None, "2026-12-31T23:59:59Z")
-                .expect("create token");
-            token_id = token.id;
-        }
+        let (state, _tmp) = test_state();
+        let token = state
+            .db
+            .create_bootstrap_token("hash1", "admin", None, "2026-12-31T23:59:59Z")
+            .await
+            .expect("create token");
+        let token_id = token.id;
 
         let result = delete_token(State(state), Path(token_id)).await;
         assert!(
@@ -4308,7 +4346,7 @@ mod tests {
 
     #[tokio::test]
     async fn delete_token_not_found() {
-        let state = test_state();
+        let (state, _tmp) = test_state();
         let result = delete_token(State(state), Path("nonexistent".to_string())).await;
         let Err(err) = result else {
             panic!("expected error");
@@ -4320,14 +4358,17 @@ mod tests {
 
     #[tokio::test]
     async fn revoke_credential_success() {
-        let state = test_state();
-        {
-            let db = state.db.lock().await;
-            db.register_device("dev-revoke", "ws", "linux", "x86_64", "hash", None)
-                .expect("register");
-            db.create_device_credential("dev-revoke", "api_hash", "jdoe", None)
-                .expect("create credential");
-        }
+        let (state, _tmp) = test_state();
+        state
+            .db
+            .register_device("dev-revoke", "ws", "linux", "x86_64", "hash", None)
+            .await
+            .expect("register");
+        state
+            .db
+            .create_device_credential("dev-revoke", "api_hash", "jdoe", None)
+            .await
+            .expect("create credential");
 
         let result = revoke_credential(State(state), Path("dev-revoke".to_string())).await;
         assert!(
@@ -4341,7 +4382,7 @@ mod tests {
 
     #[tokio::test]
     async fn revoke_credential_not_found() {
-        let state = test_state();
+        let (state, _tmp) = test_state();
         let result = revoke_credential(State(state), Path("nonexistent".to_string())).await;
         let Err(err) = result else {
             panic!("expected error");
@@ -4353,7 +4394,7 @@ mod tests {
 
     #[tokio::test]
     async fn event_stream_returns_sse() {
-        let state = test_state();
+        let (state, _tmp) = test_state();
         // Just verify it doesn't panic and returns the SSE stream
         let _sse = event_stream(State(state)).await;
     }

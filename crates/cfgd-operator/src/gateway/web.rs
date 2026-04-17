@@ -8,7 +8,6 @@ use cfgd_core::xml_escape;
 
 use super::api::{SharedState, extract_bearer_token};
 use super::errors::GatewayError;
-use super::fleet;
 
 const COMMON_STYLES: &str = r#"
         * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -107,9 +106,14 @@ pub fn router() -> Router<SharedState> {
 }
 
 async fn dashboard(State(state): State<SharedState>) -> Result<Html<String>, GatewayError> {
-    let db = state.db.lock().await;
-    let status = fleet::get_fleet_status(&db)?;
-    let devices = db.list_devices()?;
+    let (status, devices) = state
+        .db
+        .with_read_tx(|tx| {
+            let status = super::db::get_fleet_status_tx(tx)?;
+            let devices = super::db::list_devices_paginated_tx(tx, 1000, 0)?;
+            Ok((status, devices))
+        })
+        .await?;
 
     let mut device_rows = String::new();
     for d in &devices {
@@ -229,10 +233,16 @@ async fn device_detail(
     State(state): State<SharedState>,
     Path(id): Path<String>,
 ) -> Result<Html<String>, GatewayError> {
-    let db = state.db.lock().await;
-    let device = db.get_device(&id)?;
-    let drift_events = db.list_drift_events(&id)?;
-    let checkin_events = db.list_checkin_events(&id)?;
+    let id_c = id.clone();
+    let (device, drift_events, checkin_events) = state
+        .db
+        .with_read_tx(move |tx| {
+            let device = super::db::get_device_tx(tx, &id_c)?;
+            let drifts = super::db::list_drift_events_tx(tx, &id_c)?;
+            let checkins = super::db::list_checkin_events_tx(tx, &id_c)?;
+            Ok((device, drifts, checkins))
+        })
+        .await?;
 
     let status_class = status_to_class(device.status.as_str());
 
@@ -580,8 +590,7 @@ async fn device_detail(
 }
 
 async fn fleet_events(State(state): State<SharedState>) -> Result<Html<String>, GatewayError> {
-    let db = state.db.lock().await;
-    let events = db.list_fleet_events(200)?;
+    let events = state.db.list_fleet_events(200).await?;
 
     let mut event_rows = String::new();
     for e in &events {
@@ -819,7 +828,6 @@ fn status_to_class(status: &str) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Arc;
 
     use axum::body::Body;
     use axum::http::{Request, StatusCode, header};
@@ -830,16 +838,21 @@ mod tests {
     use super::super::api::{AppState, EnrollmentMethod};
     use super::super::db::ServerDb;
 
-    fn test_state() -> SharedState {
-        let db = ServerDb::open(":memory:").expect("open in-memory db");
+    fn test_state() -> (SharedState, tempfile::TempDir) {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let path = tmp.path().join("test.db");
+        let db = ServerDb::open(path.to_str().expect("utf8")).expect("open db");
         let (event_tx, _) = tokio::sync::broadcast::channel(16);
-        AppState {
-            db: Arc::new(tokio::sync::Mutex::new(db)),
-            kube_client: None,
-            event_tx,
-            enrollment_method: EnrollmentMethod::Token,
-            metrics: None,
-        }
+        (
+            AppState {
+                db,
+                kube_client: None,
+                event_tx,
+                enrollment_method: EnrollmentMethod::Token,
+                metrics: None,
+            },
+            tmp,
+        )
     }
 
     // --- status_to_class ---
@@ -862,7 +875,7 @@ mod tests {
 
     #[tokio::test]
     async fn dashboard_empty_device_list() {
-        let state = test_state();
+        let (state, _tmp) = test_state();
         let result = dashboard(State(state)).await;
         assert!(result.is_ok());
         let html = result.unwrap().0;
@@ -882,14 +895,17 @@ mod tests {
 
     #[tokio::test]
     async fn dashboard_with_devices_shows_device_rows() {
-        let state = test_state();
-        {
-            let db = state.db.lock().await;
-            db.register_device("dev-1", "workstation-1", "linux", "x86_64", "abc123", None)
-                .expect("register device");
-            db.register_device("dev-2", "laptop-2", "darwin", "aarch64", "def456", None)
-                .expect("register device");
-        }
+        let (state, _tmp) = test_state();
+        state
+            .db
+            .register_device("dev-1", "workstation-1", "linux", "x86_64", "abc123", None)
+            .await
+            .expect("register device");
+        state
+            .db
+            .register_device("dev-2", "laptop-2", "darwin", "aarch64", "def456", None)
+            .await
+            .expect("register device");
         let result = dashboard(State(state)).await;
         assert!(result.is_ok());
         let html = result.unwrap().0;
@@ -916,16 +932,23 @@ mod tests {
 
     #[tokio::test]
     async fn dashboard_stat_cards_reflect_device_statuses() {
-        let state = test_state();
-        {
-            let db = state.db.lock().await;
-            db.register_device("d1", "host1", "linux", "x86_64", "h1", None)
-                .expect("register");
-            db.register_device("d2", "host2", "linux", "x86_64", "h2", None)
-                .expect("register");
-            // Cause drift on d2
-            db.record_drift_event("d2", "field changed").expect("drift");
-        }
+        let (state, _tmp) = test_state();
+        state
+            .db
+            .register_device("d1", "host1", "linux", "x86_64", "h1", None)
+            .await
+            .expect("register");
+        state
+            .db
+            .register_device("d2", "host2", "linux", "x86_64", "h2", None)
+            .await
+            .expect("register");
+        // Cause drift on d2
+        state
+            .db
+            .record_drift_event("d2", "field changed")
+            .await
+            .expect("drift");
         let result = dashboard(State(state)).await;
         let html = result.unwrap().0;
         // Total = 2, Healthy = 1, Drifted = 1, Offline = 0
@@ -943,10 +966,10 @@ mod tests {
 
     #[tokio::test]
     async fn dashboard_escapes_html_in_device_fields() {
-        let state = test_state();
-        {
-            let db = state.db.lock().await;
-            db.register_device(
+        let (state, _tmp) = test_state();
+        state
+            .db
+            .register_device(
                 "dev-<xss>",
                 "host<script>",
                 "linux&os",
@@ -954,8 +977,8 @@ mod tests {
                 "hash'val",
                 None,
             )
+            .await
             .expect("register");
-        }
         let result = dashboard(State(state)).await;
         let html = result.unwrap().0;
         // XSS characters should be escaped
@@ -973,10 +996,10 @@ mod tests {
 
     #[tokio::test]
     async fn device_detail_existing_device() {
-        let state = test_state();
-        {
-            let db = state.db.lock().await;
-            db.register_device(
+        let (state, _tmp) = test_state();
+        state
+            .db
+            .register_device(
                 "dev-42",
                 "my-workstation",
                 "linux",
@@ -984,8 +1007,8 @@ mod tests {
                 "abc123",
                 None,
             )
+            .await
             .expect("register");
-        }
         let result = device_detail(State(state), Path("dev-42".to_string())).await;
         assert!(result.is_ok());
         let html = result.unwrap().0;
@@ -1008,7 +1031,7 @@ mod tests {
 
     #[tokio::test]
     async fn device_detail_not_found_returns_error() {
-        let state = test_state();
+        let (state, _tmp) = test_state();
         let result = device_detail(State(state), Path("nonexistent".to_string())).await;
         assert!(result.is_err());
         let err = result.unwrap_err();
@@ -1017,17 +1040,20 @@ mod tests {
 
     #[tokio::test]
     async fn device_detail_with_drift_events() {
-        let state = test_state();
-        {
-            let db = state.db.lock().await;
-            db.register_device("dev-1", "host-1", "linux", "x86_64", "h1", None)
-                .expect("register");
-            db.record_drift_event(
+        let (state, _tmp) = test_state();
+        state
+            .db
+            .register_device("dev-1", "host-1", "linux", "x86_64", "h1", None)
+            .await
+            .expect("register");
+        state
+            .db
+            .record_drift_event(
                 "dev-1",
                 r#"[{"field":"packages","expected":"vim","actual":"missing"}]"#,
             )
+            .await
             .expect("drift");
-        }
         let result = device_detail(State(state), Path("dev-1".to_string())).await;
         let html = result.unwrap().0;
         // Should not say "no drift events"
@@ -1042,16 +1068,22 @@ mod tests {
 
     #[tokio::test]
     async fn device_detail_with_checkin_events() {
-        let state = test_state();
-        {
-            let db = state.db.lock().await;
-            db.register_device("dev-1", "host-1", "linux", "x86_64", "h1", None)
-                .expect("register");
-            db.record_checkin("dev-1", "hash-abc", false)
-                .expect("checkin");
-            db.record_checkin("dev-1", "hash-def", true)
-                .expect("checkin changed");
-        }
+        let (state, _tmp) = test_state();
+        state
+            .db
+            .register_device("dev-1", "host-1", "linux", "x86_64", "h1", None)
+            .await
+            .expect("register");
+        state
+            .db
+            .record_checkin("dev-1", "hash-abc", false)
+            .await
+            .expect("checkin");
+        state
+            .db
+            .record_checkin("dev-1", "hash-def", true)
+            .await
+            .expect("checkin changed");
         let result = device_detail(State(state), Path("dev-1".to_string())).await;
         let html = result.unwrap().0;
         // Should not say "no check-in events"
@@ -1069,14 +1101,18 @@ mod tests {
 
     #[tokio::test]
     async fn device_detail_with_desired_config() {
-        let state = test_state();
-        {
-            let db = state.db.lock().await;
-            db.register_device("dev-1", "host-1", "linux", "x86_64", "h1", None)
-                .expect("register");
-            let config = serde_json::json!({"packages": ["vim", "git"]});
-            db.set_device_config("dev-1", &config).expect("set config");
-        }
+        let (state, _tmp) = test_state();
+        state
+            .db
+            .register_device("dev-1", "host-1", "linux", "x86_64", "h1", None)
+            .await
+            .expect("register");
+        let config = serde_json::json!({"packages": ["vim", "git"]});
+        state
+            .db
+            .set_device_config("dev-1", &config)
+            .await
+            .expect("set config");
         let result = device_detail(State(state), Path("dev-1".to_string())).await;
         let html = result.unwrap().0;
         // Desired config section should show the formatted JSON
@@ -1089,12 +1125,12 @@ mod tests {
 
     #[tokio::test]
     async fn device_detail_without_desired_config() {
-        let state = test_state();
-        {
-            let db = state.db.lock().await;
-            db.register_device("dev-1", "host-1", "linux", "x86_64", "h1", None)
-                .expect("register");
-        }
+        let (state, _tmp) = test_state();
+        state
+            .db
+            .register_device("dev-1", "host-1", "linux", "x86_64", "h1", None)
+            .await
+            .expect("register");
         let result = device_detail(State(state), Path("dev-1".to_string())).await;
         let html = result.unwrap().0;
         assert!(html.contains("No desired config set"));
@@ -1102,10 +1138,10 @@ mod tests {
 
     #[tokio::test]
     async fn device_detail_escapes_html_in_fields() {
-        let state = test_state();
-        {
-            let db = state.db.lock().await;
-            db.register_device(
+        let (state, _tmp) = test_state();
+        state
+            .db
+            .register_device(
                 "dev-<id>",
                 "host<name>",
                 "os&type",
@@ -1113,8 +1149,8 @@ mod tests {
                 "hash'v",
                 None,
             )
+            .await
             .expect("register");
-        }
         let result = device_detail(State(state), Path("dev-<id>".to_string())).await;
         let html = result.unwrap().0;
         assert!(html.contains("dev-&lt;id&gt;"));
@@ -1127,7 +1163,7 @@ mod tests {
 
     #[tokio::test]
     async fn fleet_events_empty() {
-        let state = test_state();
+        let (state, _tmp) = test_state();
         let result = fleet_events(State(state)).await;
         assert!(result.is_ok());
         let html = result.unwrap().0;
@@ -1139,14 +1175,17 @@ mod tests {
 
     #[tokio::test]
     async fn fleet_events_with_checkin_events() {
-        let state = test_state();
-        {
-            let db = state.db.lock().await;
-            db.register_device("dev-1", "host-1", "linux", "x86_64", "h1", None)
-                .expect("register");
-            db.record_checkin("dev-1", "hash-abc", false)
-                .expect("checkin");
-        }
+        let (state, _tmp) = test_state();
+        state
+            .db
+            .register_device("dev-1", "host-1", "linux", "x86_64", "h1", None)
+            .await
+            .expect("register");
+        state
+            .db
+            .record_checkin("dev-1", "hash-abc", false)
+            .await
+            .expect("checkin");
         let result = fleet_events(State(state)).await;
         let html = result.unwrap().0;
         // Should have a table, not the empty message
@@ -1162,17 +1201,20 @@ mod tests {
 
     #[tokio::test]
     async fn fleet_events_with_drift_events() {
-        let state = test_state();
-        {
-            let db = state.db.lock().await;
-            db.register_device("dev-1", "host-1", "linux", "x86_64", "h1", None)
-                .expect("register");
-            db.record_drift_event(
+        let (state, _tmp) = test_state();
+        state
+            .db
+            .register_device("dev-1", "host-1", "linux", "x86_64", "h1", None)
+            .await
+            .expect("register");
+        state
+            .db
+            .record_drift_event(
                 "dev-1",
                 r#"[{"field":"sysctl","expected":"1","actual":"0"}]"#,
             )
+            .await
             .expect("drift");
-        }
         let result = fleet_events(State(state)).await;
         let html = result.unwrap().0;
         assert!(html.contains("drift"));
@@ -1185,14 +1227,17 @@ mod tests {
 
     #[tokio::test]
     async fn fleet_events_with_config_changed_events() {
-        let state = test_state();
-        {
-            let db = state.db.lock().await;
-            db.register_device("dev-1", "host-1", "linux", "x86_64", "h1", None)
-                .expect("register");
-            db.record_checkin("dev-1", "new-hash", true)
-                .expect("changed checkin");
-        }
+        let (state, _tmp) = test_state();
+        state
+            .db
+            .register_device("dev-1", "host-1", "linux", "x86_64", "h1", None)
+            .await
+            .expect("register");
+        state
+            .db
+            .record_checkin("dev-1", "new-hash", true)
+            .await
+            .expect("changed checkin");
         let result = fleet_events(State(state)).await;
         let html = result.unwrap().0;
         assert!(html.contains("config-changed"));
@@ -1202,16 +1247,27 @@ mod tests {
 
     #[tokio::test]
     async fn fleet_events_device_filter_dropdown_populated() {
-        let state = test_state();
-        {
-            let db = state.db.lock().await;
-            db.register_device("dev-a", "host-a", "linux", "x86_64", "h1", None)
-                .expect("register");
-            db.register_device("dev-b", "host-b", "linux", "x86_64", "h2", None)
-                .expect("register");
-            db.record_checkin("dev-a", "h1", false).expect("checkin");
-            db.record_checkin("dev-b", "h2", false).expect("checkin");
-        }
+        let (state, _tmp) = test_state();
+        state
+            .db
+            .register_device("dev-a", "host-a", "linux", "x86_64", "h1", None)
+            .await
+            .expect("register");
+        state
+            .db
+            .register_device("dev-b", "host-b", "linux", "x86_64", "h2", None)
+            .await
+            .expect("register");
+        state
+            .db
+            .record_checkin("dev-a", "h1", false)
+            .await
+            .expect("checkin");
+        state
+            .db
+            .record_checkin("dev-b", "h2", false)
+            .await
+            .expect("checkin");
         let result = fleet_events(State(state)).await;
         let html = result.unwrap().0;
         // Device filter dropdown should contain both device IDs as options
@@ -1221,13 +1277,17 @@ mod tests {
 
     #[tokio::test]
     async fn fleet_events_escapes_html_in_device_ids() {
-        let state = test_state();
-        {
-            let db = state.db.lock().await;
-            db.register_device("dev-<x>", "host", "linux", "x86_64", "h", None)
-                .expect("register");
-            db.record_checkin("dev-<x>", "h", false).expect("checkin");
-        }
+        let (state, _tmp) = test_state();
+        state
+            .db
+            .register_device("dev-<x>", "host", "linux", "x86_64", "h", None)
+            .await
+            .expect("register");
+        state
+            .db
+            .record_checkin("dev-<x>", "h", false)
+            .await
+            .expect("checkin");
         let result = fleet_events(State(state)).await;
         let html = result.unwrap().0;
         assert!(html.contains("dev-&lt;x&gt;"));
@@ -1238,7 +1298,7 @@ mod tests {
 
     #[tokio::test]
     async fn fleet_events_contains_sse_badge() {
-        let state = test_state();
+        let (state, _tmp) = test_state();
         let result = fleet_events(State(state)).await;
         let html = result.unwrap().0;
         assert!(html.contains("sse-badge"));
@@ -1471,7 +1531,7 @@ mod tests {
     #[tokio::test]
     #[serial_test::serial]
     async fn router_wires_routes() {
-        let state = test_state();
+        let (state, _tmp) = test_state();
         let app = router().with_state(state);
 
         // Ensure CFGD_API_KEY is not set so auth middleware lets us through
