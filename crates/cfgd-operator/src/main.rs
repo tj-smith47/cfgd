@@ -1,12 +1,3 @@
-mod controllers;
-mod crds;
-mod errors;
-mod gateway;
-mod health;
-mod leader;
-mod metrics;
-mod webhook;
-
 use std::path::Path;
 use std::sync::Arc;
 
@@ -16,11 +7,13 @@ use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
+use cfgd_operator::{controllers, errors, gateway, health, leader, metrics, webhook};
+
 static OTEL_PROVIDER: std::sync::OnceLock<opentelemetry_sdk::trace::SdkTracerProvider> =
     std::sync::OnceLock::new();
 
-use crate::crds::{ClusterConfigPolicy, ConfigPolicy, DriftAlert, MachineConfig, Module};
-use crate::gateway::GatewayConfig;
+use cfgd_operator::crds::{ClusterConfigPolicy, ConfigPolicy, DriftAlert, MachineConfig, Module};
+use cfgd_operator::gateway::GatewayConfig;
 
 #[tokio::main]
 async fn main() -> Result<()> {

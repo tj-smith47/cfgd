@@ -497,7 +497,6 @@ impl ServerDb {
 
     /// Convenience wrapper over [`Self::list_devices_paginated`]; used by tests
     /// and callers that want an unbounded list.
-    #[allow(dead_code)]
     pub async fn list_devices(&self) -> Result<Vec<Device>, GatewayError> {
         self.list_devices_paginated(1000, 0).await
     }
@@ -528,7 +527,6 @@ impl ServerDb {
         .await
     }
 
-    #[allow(dead_code)]
     pub async fn list_checkin_events(
         &self,
         device_id: &str,
@@ -581,7 +579,6 @@ impl ServerDb {
         .await
     }
 
-    #[allow(dead_code)]
     pub async fn get_fleet_status(&self) -> Result<super::fleet::FleetStatus, GatewayError> {
         let pool = self.readers.clone();
         spawn_blocking_db(move || {
@@ -593,7 +590,6 @@ impl ServerDb {
 
     // --- async public methods: writes acquire the writer ---
 
-    #[allow(dead_code)]
     pub async fn register_device(
         &self,
         id: &str,
@@ -625,7 +621,6 @@ impl ServerDb {
         .await
     }
 
-    #[allow(dead_code)]
     pub async fn update_checkin(
         &self,
         id: &str,
@@ -658,7 +653,6 @@ impl ServerDb {
         .await
     }
 
-    #[allow(dead_code)]
     pub async fn record_drift_event(
         &self,
         device_id: &str,
@@ -674,7 +668,6 @@ impl ServerDb {
         .await
     }
 
-    #[allow(dead_code)]
     pub async fn record_checkin(
         &self,
         device_id: &str,
@@ -720,7 +713,6 @@ impl ServerDb {
         .await
     }
 
-    #[allow(dead_code)]
     pub async fn validate_and_consume_bootstrap_token(
         &self,
         token_hash: &str,
@@ -746,7 +738,6 @@ impl ServerDb {
         .await
     }
 
-    #[allow(dead_code)]
     pub async fn create_device_credential(
         &self,
         device_id: &str,
