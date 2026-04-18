@@ -600,3 +600,35 @@ source <(cfgd completions bash)  # .bashrc
 source <(cfgd completions zsh)   # .zshrc
 cfgd completions fish | source   # config.fish
 ```
+
+## Exit Codes
+
+Scripted consumers rely on distinct exit codes to decide follow-up actions without parsing stderr. The taxonomy is stable — breaking changes bump the CLI major version.
+
+| Code | Meaning | Emitted by |
+|---|---|---|
+| `0` | Operation succeeded. | All commands on success. |
+| `1` | Generic failure (network, IO, unclassified internal error). | Any command whose `Result` resolves to a non-config error. |
+| `2` | An upgrade is available but not installed. | `cfgd upgrade --check` only. |
+| `3` | No cfgd config file at the resolved path. | Any command when `--config` points to a missing file. |
+| `4` | Config file exists but failed parse or validation. | Any command when `--config` is malformed, schema-invalid, or references a missing profile. |
+| `5` | Drift detected between actual and desired state. | `cfgd diff --exit-code`, `cfgd status --exit-code`, `cfgd verify --exit-code`. |
+
+The `--exit-code` / `-e` flag on `diff`, `status`, and `verify` follows the `git diff --exit-code` convention: without the flag these commands always exit `0`; with the flag they exit `5` whenever drift is present.
+
+External-process passthrough (e.g. `kubectl exec` invoked by the `kubectl cfgd` plugin) forwards the inner tool's exit code unchanged — those codes are not part of the cfgd taxonomy.
+
+### Use in CI
+
+```sh
+# Fail the build if the machine has drifted from the committed profile.
+cfgd verify --exit-code
+
+# Run upgrade on a schedule but only page humans on real failures.
+if ! cfgd upgrade --check; then
+  case $? in
+    2) echo "Update available — cfgd upgrade to install" ;;
+    *) echo "Upgrade check failed" >&2; exit 1 ;;
+  esac
+fi
+```

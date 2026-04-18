@@ -273,7 +273,11 @@ impl CfgdFileManager {
     }
 
     /// Show diffs for all managed files, with syntax highlighting.
-    pub fn diff(&self, profile: &MergedProfile, printer: &Printer) -> Result<()> {
+    /// Render and print file diffs for the profile. Returns `true` when at
+    /// least one file differs from its target (or is missing); `false` when
+    /// every managed file matches desired state. The caller uses this to
+    /// decide whether to emit `ExitCode::DriftDetected`.
+    pub fn diff(&self, profile: &MergedProfile, printer: &Printer) -> Result<bool> {
         let mut has_diffs = false;
 
         for managed in &profile.files.managed {
@@ -321,7 +325,7 @@ impl CfgdFileManager {
             printer.success("All files match desired state");
         }
 
-        Ok(())
+        Ok(has_diffs)
     }
 
     /// Render a template and return the content for display (e.g., in plan diffs).

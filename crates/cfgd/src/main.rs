@@ -9,6 +9,17 @@ mod packages;
 mod secrets;
 mod system;
 
+/// Map an [`anyhow::Error`] to an exit code by downcasting through the
+/// `CfgdError` boundary. Returns [`ExitCode::Error`] for errors that did
+/// not originate in cfgd's typed domain (e.g. `anyhow::anyhow!(...)` at
+/// a CLI callsite). Lives here (not cfgd-core) because Hard Rule #4
+/// forbids `anyhow` anywhere but the CLI boundary.
+fn exit_code_for_anyhow(err: &anyhow::Error) -> cfgd_core::exit::ExitCode {
+    err.downcast_ref::<cfgd_core::errors::CfgdError>()
+        .map(cfgd_core::exit::exit_code_for_error)
+        .unwrap_or(cfgd_core::exit::ExitCode::Error)
+}
+
 fn main() -> anyhow::Result<()> {
     let _ = rustls::crypto::ring::default_provider().install_default();
 
@@ -91,7 +102,7 @@ fn main() -> anyhow::Result<()> {
         // and duplicate the inner text. See errors/mod.rs::CfgdError for the
         // paired contract.
         printer.error(&format!("{}", e));
-        std::process::exit(1);
+        exit_code_for_anyhow(&e).exit();
     }
 
     Ok(())

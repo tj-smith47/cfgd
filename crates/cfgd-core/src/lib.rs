@@ -3,6 +3,7 @@ pub mod composition;
 pub mod config;
 pub mod daemon;
 pub mod errors;
+pub mod exit;
 pub mod generate;
 pub mod http;
 pub mod modules;

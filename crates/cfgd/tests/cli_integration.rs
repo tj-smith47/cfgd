@@ -1024,3 +1024,105 @@ fn invalid_output_format_shows_error() {
         .assert()
         .failure();
 }
+
+// ─── Exit-code taxonomy (cfgd_core::exit::ExitCode) ─────────────────────
+//
+// These tests lock the wire-level exit codes scripted consumers depend on.
+// Any change to a code number below is a breaking change and must bump
+// the CLI major version + land in release notes.
+
+/// ExitCode::NoConfig = 3 — `cfgd status` with a config path that does
+/// not exist.
+#[test]
+fn exit_code_no_config_is_3() {
+    let dir = tempfile::tempdir().unwrap();
+    let nonexistent = dir.path().join("nonexistent").join("cfgd.yaml");
+
+    Command::cargo_bin("cfgd")
+        .unwrap()
+        .arg("status")
+        .arg("--config")
+        .arg(&nonexistent)
+        .assert()
+        .code(3);
+}
+
+/// ExitCode::ConfigInvalid = 4 — `cfgd status` with malformed YAML.
+#[test]
+fn exit_code_config_invalid_is_4() {
+    let dir = tempfile::tempdir().unwrap();
+    let bad_config = dir.path().join("cfgd.yaml");
+    // Valid YAML that fails schema validation (missing required apiVersion/kind).
+    std::fs::write(&bad_config, "spec: { this is not valid cfgd: true\n").unwrap();
+
+    Command::cargo_bin("cfgd")
+        .unwrap()
+        .arg("status")
+        .arg("--config")
+        .arg(&bad_config)
+        .assert()
+        .code(4);
+}
+
+/// ExitCode::Success = 0 — valid config, no drift, default flags.
+#[test]
+fn exit_code_success_is_0() {
+    let dir = tempfile::tempdir().unwrap();
+    create_valid_config(dir.path());
+    let state_dir = tempfile::tempdir().unwrap();
+
+    Command::cargo_bin("cfgd")
+        .unwrap()
+        .arg("status")
+        .arg("--config")
+        .arg(dir.path().join("cfgd.yaml"))
+        .arg("--state-dir")
+        .arg(state_dir.path())
+        .assert()
+        .code(0);
+}
+
+/// `cfgd status --exit-code` with no drift is still 0 — the flag only
+/// escalates when drift is actually present.
+#[test]
+fn exit_code_flag_with_no_drift_is_0() {
+    let dir = tempfile::tempdir().unwrap();
+    create_valid_config(dir.path());
+    let state_dir = tempfile::tempdir().unwrap();
+
+    Command::cargo_bin("cfgd")
+        .unwrap()
+        .arg("status")
+        .arg("--exit-code")
+        .arg("--config")
+        .arg(dir.path().join("cfgd.yaml"))
+        .arg("--state-dir")
+        .arg(state_dir.path())
+        .assert()
+        .code(0);
+}
+
+/// `cfgd upgrade --help` surfaces the exit-code taxonomy in the long_about
+/// block — catches regressions where someone removes the documentation.
+#[test]
+fn upgrade_help_documents_exit_codes() {
+    Command::cargo_bin("cfgd")
+        .unwrap()
+        .args(["upgrade", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("update available"))
+        .stdout(predicate::str::contains("exit code"));
+}
+
+/// `cfgd status --help` advertises the --exit-code flag.
+#[test]
+fn status_help_documents_exit_code_flag() {
+    Command::cargo_bin("cfgd")
+        .unwrap()
+        .args(["status", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--exit-code"))
+        .stdout(predicate::str::contains("drift"));
+}

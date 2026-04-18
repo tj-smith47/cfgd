@@ -551,22 +551,28 @@ pub enum Command {
 
     /// Show configuration status and drift
     #[command(
-        long_about = "Show apply status, drift, and pending decisions.\n\nExamples:\n  cfgd status\n  cfgd status --module nettools"
+        long_about = "Show apply status, drift, and pending decisions.\n\nWith --exit-code, exit codes are:\n  0  no drift detected\n  1  runtime error\n  5  drift detected\n\nExamples:\n  cfgd status\n  cfgd status --module nettools\n  cfgd status --exit-code"
     )]
     Status {
         /// Show status for a specific module (no profile required)
         #[arg(long)]
         module: Option<String>,
+        /// Exit 5 when drift is detected (for CI gating)
+        #[arg(long = "exit-code", short = 'e')]
+        exit_code: bool,
     },
 
     /// Show detailed diffs
     #[command(
-        long_about = "Show line-level diffs between desired and actual state.\n\nExamples:\n  cfgd diff\n  cfgd diff --module nettools"
+        long_about = "Show line-level diffs between desired and actual state.\n\nWith --exit-code, exit codes are:\n  0  no drift detected\n  1  runtime error\n  5  drift detected\n\nExamples:\n  cfgd diff\n  cfgd diff --module nettools\n  cfgd diff --exit-code"
     )]
     Diff {
         /// Show diff for a specific module only
         #[arg(long)]
         module: Option<String>,
+        /// Exit 5 when drift is detected (for CI gating)
+        #[arg(long = "exit-code", short = 'e')]
+        exit_code: bool,
     },
 
     /// Show apply history
@@ -621,12 +627,15 @@ pub enum Command {
 
     /// Verify all managed resources match desired state
     #[command(
-        long_about = "Verify managed state matches the applied profile.\n\nExamples:\n  cfgd verify\n  cfgd verify --module nettools"
+        long_about = "Verify managed state matches the applied profile.\n\nWith --exit-code, exit codes are:\n  0  all resources match desired state\n  1  runtime error\n  5  one or more resources do not match (drift)\n\nExamples:\n  cfgd verify\n  cfgd verify --module nettools\n  cfgd verify --exit-code"
     )]
     Verify {
         /// Verify only a specific module (no profile required)
         #[arg(long)]
         module: Option<String>,
+        /// Exit 5 when any resource does not match desired state (for CI gating)
+        #[arg(long = "exit-code", short = 'e')]
+        exit_code: bool,
     },
 
     /// Check system health and dependencies
@@ -1506,12 +1515,18 @@ pub fn execute(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
     match &cli.command {
         Command::Apply(args) => cmd_apply(cli, printer, args),
         Command::Plan(args) => cmd_plan(cli, printer, args),
-        Command::Status { module } => cmd_status(cli, printer, module.as_deref()),
-        Command::Diff { module } => cmd_diff(cli, printer, module.as_deref()),
+        Command::Status { module, exit_code } => {
+            cmd_status(cli, printer, module.as_deref(), *exit_code)
+        }
+        Command::Diff { module, exit_code } => {
+            cmd_diff(cli, printer, module.as_deref(), *exit_code)
+        }
         Command::Log { limit, show_output } => {
             cmd_log(printer, *limit, *show_output, cli.state_dir.as_deref())
         }
-        Command::Verify { module } => cmd_verify(cli, printer, module.as_deref()),
+        Command::Verify { module, exit_code } => {
+            cmd_verify(cli, printer, module.as_deref(), *exit_code)
+        }
         Command::Profile { command } => match command {
             ProfileCommand::Show { name } => {
                 profile::cmd_profile_show(cli, printer, name.as_deref())
@@ -2859,7 +2874,12 @@ fn cmd_plan(cli: &Cli, printer: &Printer, args: &PlanArgs) -> anyhow::Result<()>
     Ok(())
 }
 
-fn cmd_status(cli: &Cli, printer: &Printer, module_filter: Option<&str>) -> anyhow::Result<()> {
+fn cmd_status(
+    cli: &Cli,
+    printer: &Printer,
+    module_filter: Option<&str>,
+    exit_code: bool,
+) -> anyhow::Result<()> {
     if let Some(mod_name) = module_filter {
         return cmd_status_module(cli, printer, mod_name);
     }
@@ -2906,6 +2926,8 @@ fn cmd_status(cli: &Cli, printer: &Printer, module_filter: Option<&str>) -> anyh
         })
         .collect();
 
+    let has_drift = !drift_events.is_empty();
+
     if printer.is_structured() {
         printer.write_structured(&StatusOutput {
             last_apply,
@@ -2915,6 +2937,9 @@ fn cmd_status(cli: &Cli, printer: &Printer, module_filter: Option<&str>) -> anyh
             modules: module_entries,
             managed_resources: resources,
         });
+        if exit_code && has_drift {
+            cfgd_core::exit::ExitCode::DriftDetected.exit();
+        }
         return Ok(());
     }
 
@@ -3038,6 +3063,10 @@ fn cmd_status(cli: &Cli, printer: &Printer, module_filter: Option<&str>) -> anyh
                 })
                 .collect::<Vec<_>>(),
         );
+    }
+
+    if exit_code && has_drift {
+        cfgd_core::exit::ExitCode::DriftDetected.exit();
     }
 
     Ok(())
@@ -3263,7 +3292,12 @@ fn print_verify_results(results: &[reconciler::VerifyResult], printer: &Printer)
     (pass_count, fail_count)
 }
 
-fn cmd_verify(cli: &Cli, printer: &Printer, module_filter: Option<&str>) -> anyhow::Result<()> {
+fn cmd_verify(
+    cli: &Cli,
+    printer: &Printer,
+    module_filter: Option<&str>,
+    exit_code: bool,
+) -> anyhow::Result<()> {
     let config_dir = config_dir(cli);
     let state = open_state_store(cli.state_dir.as_deref())?;
 
@@ -3296,11 +3330,15 @@ fn cmd_verify(cli: &Cli, printer: &Printer, module_filter: Option<&str>) -> anyh
     let fail_count = results.iter().filter(|r| !r.matches).count();
 
     if printer.is_structured() {
+        let has_drift = fail_count > 0;
         printer.write_structured(&VerifyOutput {
             results,
             pass_count,
             fail_count,
         });
+        if exit_code && has_drift {
+            cfgd_core::exit::ExitCode::DriftDetected.exit();
+        }
         return Ok(());
     }
 
@@ -3322,6 +3360,10 @@ fn cmd_verify(cli: &Cli, printer: &Printer, module_filter: Option<&str>) -> anyh
         ));
     } else {
         printer.warning(&format!("{} passed, {} failed", pass_count, fail_count));
+    }
+
+    if exit_code && fail_count > 0 {
+        cfgd_core::exit::ExitCode::DriftDetected.exit();
     }
 
     Ok(())
@@ -3677,7 +3719,12 @@ fn print_compliance_summary(
     }
 }
 
-fn cmd_diff(cli: &Cli, printer: &Printer, module_filter: Option<&str>) -> anyhow::Result<()> {
+fn cmd_diff(
+    cli: &Cli,
+    printer: &Printer,
+    module_filter: Option<&str>,
+    exit_code: bool,
+) -> anyhow::Result<()> {
     printer.header("Diff");
 
     let config_dir = config_dir(cli);
@@ -3759,6 +3806,10 @@ fn cmd_diff(cli: &Cli, printer: &Printer, module_filter: Option<&str>) -> anyhow
             printer.success("No package drift");
         }
 
+        if exit_code && (has_file_diff || has_pkg_drift) {
+            cfgd_core::exit::ExitCode::DriftDetected.exit();
+        }
+
         return Ok(());
     }
 
@@ -3774,7 +3825,7 @@ fn cmd_diff(cli: &Cli, printer: &Printer, module_filter: Option<&str>) -> anyhow
     // File diffs
     printer.subheader("Files");
     let fm = CfgdFileManager::new(&config_dir, &resolved)?;
-    fm.diff(&resolved.merged, printer)?;
+    let has_file_diff = fm.diff(&resolved.merged, printer)?;
 
     // Package drift
     printer.newline();
@@ -3785,7 +3836,7 @@ fn cmd_diff(cli: &Cli, printer: &Printer, module_filter: Option<&str>) -> anyhow
         .map(|m| m.as_ref())
         .collect();
     let pkg_actions = packages::plan_packages(&resolved.merged, &all_managers)?;
-    print_package_drift(&pkg_actions, printer);
+    let has_pkg_drift = print_package_drift(&pkg_actions, printer);
 
     // System drift
     printer.newline();
@@ -3818,14 +3869,21 @@ fn cmd_diff(cli: &Cli, printer: &Printer, module_filter: Option<&str>) -> anyhow
         printer.success("No system drift");
     }
 
+    if exit_code && (has_file_diff || has_pkg_drift || has_system_drift) {
+        cfgd_core::exit::ExitCode::DriftDetected.exit();
+    }
+
     Ok(())
 }
 
-fn print_package_drift(pkg_actions: &[PackageAction], printer: &Printer) {
+/// Print package drift to the printer. Returns `true` when at least one
+/// non-Skip action exists (i.e. drift is present).
+fn print_package_drift(pkg_actions: &[PackageAction], printer: &Printer) -> bool {
     let pkg_diffs: Vec<&PackageAction> = pkg_actions
         .iter()
         .filter(|a| !matches!(a, PackageAction::Skip { .. }))
         .collect();
+    let has_drift = !pkg_diffs.is_empty();
     if pkg_diffs.is_empty() {
         printer.success("No package drift");
     } else {
@@ -3853,6 +3911,7 @@ fn print_package_drift(pkg_actions: &[PackageAction], printer: &Printer) {
             }
         }
     }
+    has_drift
 }
 
 // --- Validation helpers ---
@@ -5447,10 +5506,10 @@ fn cmd_upgrade(printer: &Printer, check_only: bool) -> anyhow::Result<()> {
                 check.current, check.latest
             ));
             printer.info("Run 'cfgd upgrade' to install");
-            // Exit code 2 = "action needed, not an error" (GNU convention).
-            // Reserves exit code 1 for actual failures so scripts can
-            // distinguish `--check` results from network/IO errors.
-            std::process::exit(2);
+            // "Action needed, not an error" — reserves Error (1) for
+            // actual failures so scripts can distinguish `--check`
+            // results from network/IO errors.
+            cfgd_core::exit::ExitCode::UpdateAvailable.exit();
         } else {
             printer.success(&format!("cfgd {} is up to date", check.current));
         }
@@ -7760,7 +7819,10 @@ spec:
                 output: OutputFormatArg(self.output_format.clone()),
                 jsonpath: None,
                 state_dir: Some(self.state_dir.path().to_path_buf()),
-                command: Command::Status { module: None },
+                command: Command::Status {
+                    module: None,
+                    exit_code: false,
+                },
             }
         }
 
@@ -8226,7 +8288,10 @@ spec:
             output: OutputFormatArg(cfgd_core::output::OutputFormat::Table),
             jsonpath: None,
             state_dir,
-            command: Command::Status { module: None },
+            command: Command::Status {
+                module: None,
+                exit_code: false,
+            },
         }
     }
 
@@ -10437,7 +10502,7 @@ spec:
     #[test]
     fn cmd_status_with_empty_state() {
         let h = CliTestHarness::builder().build();
-        super::cmd_status(&h.cli(), h.printer(), None).unwrap();
+        super::cmd_status(&h.cli(), h.printer(), None, false).unwrap();
         h.assert_header("Status");
         h.assert_output_contains("No applies recorded yet");
     }
@@ -10445,7 +10510,7 @@ spec:
     #[test]
     fn cmd_status_module_not_found() {
         let h = CliTestHarness::builder().build();
-        super::cmd_status(&h.cli(), h.printer(), Some("nonexistent")).unwrap();
+        super::cmd_status(&h.cli(), h.printer(), Some("nonexistent"), false).unwrap();
         h.assert_output_contains("nonexistent");
     }
 
@@ -10454,7 +10519,7 @@ spec:
         let h = CliTestHarness::builder()
             .module("test-mod", SIMPLE_MODULE_YAML)
             .build();
-        super::cmd_status(&h.cli(), h.printer(), Some("test-mod")).unwrap();
+        super::cmd_status(&h.cli(), h.printer(), Some("test-mod"), false).unwrap();
         h.assert_output_contains("test-mod");
     }
 
@@ -10463,7 +10528,7 @@ spec:
         let h = CliTestHarness::builder()
             .module("test-mod", SIMPLE_MODULE_YAML)
             .build();
-        super::cmd_verify(&h.cli(), h.printer(), Some("test-mod")).unwrap();
+        super::cmd_verify(&h.cli(), h.printer(), Some("test-mod"), false).unwrap();
         h.assert_header("Verify");
         h.assert_output_contains("test-mod");
         let output = h.output();
@@ -10668,7 +10733,7 @@ spec:
         super::cmd_apply(&cli, &printer, &args).unwrap();
         buf.lock().unwrap().clear();
 
-        super::cmd_status(&cli, &printer, None).unwrap();
+        super::cmd_status(&cli, &printer, None, false).unwrap();
         let output = buf.lock().unwrap();
         assert!(
             output.contains("Status"),
@@ -10718,14 +10783,14 @@ spec:
     #[test]
     fn cmd_verify_empty_profile() {
         let h = CliTestHarness::builder().build();
-        super::cmd_verify(&h.cli(), h.printer(), None).unwrap();
+        super::cmd_verify(&h.cli(), h.printer(), None, false).unwrap();
         h.assert_header("Verify");
     }
 
     #[test]
     fn cmd_diff_empty_profile() {
         let h = CliTestHarness::builder().build();
-        super::cmd_diff(&h.cli(), h.printer(), None).unwrap();
+        super::cmd_diff(&h.cli(), h.printer(), None, false).unwrap();
         h.assert_header("Diff");
     }
 
@@ -10917,7 +10982,7 @@ spec:
         let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
         let (printer, buf) = Printer::for_test();
 
-        let result = super::cmd_diff(&cli, &printer, None);
+        let result = super::cmd_diff(&cli, &printer, None, false);
         assert!(result.is_ok(), "diff failed: {:?}", result.err());
 
         let output = buf.lock().unwrap();
@@ -10931,7 +10996,7 @@ spec:
     #[test]
     fn cmd_status_structured_output() {
         let h = CliTestHarness::builder().json().build();
-        super::cmd_status(&h.cli(), h.printer(), None).unwrap();
+        super::cmd_status(&h.cli(), h.printer(), None, false).unwrap();
         let parsed = h.json_output();
         assert!(
             parsed.get("lastApply").is_some() || parsed.get("modules").is_some(),
@@ -10954,7 +11019,10 @@ spec:
     #[test]
     fn execute_status_command() {
         let h = CliTestHarness::builder().build();
-        let cli = h.cli_with_command(Command::Status { module: None });
+        let cli = h.cli_with_command(Command::Status {
+            module: None,
+            exit_code: false,
+        });
         super::execute(&cli, h.printer()).unwrap();
         h.assert_header("Status");
     }
@@ -10977,7 +11045,10 @@ spec:
     #[test]
     fn execute_verify_command() {
         let h = CliTestHarness::builder().build();
-        let cli = h.cli_with_command(Command::Verify { module: None });
+        let cli = h.cli_with_command(Command::Verify {
+            module: None,
+            exit_code: false,
+        });
         super::execute(&cli, h.printer()).unwrap();
         h.assert_header("Verify");
     }
@@ -10985,7 +11056,10 @@ spec:
     #[test]
     fn execute_diff_command() {
         let h = CliTestHarness::builder().build();
-        let cli = h.cli_with_command(Command::Diff { module: None });
+        let cli = h.cli_with_command(Command::Diff {
+            module: None,
+            exit_code: false,
+        });
         super::execute(&cli, h.printer()).unwrap();
         h.assert_header("Diff");
     }
@@ -11329,7 +11403,7 @@ spec:
         let (printer, buf) = Printer::for_test();
 
         assert!(
-            super::cmd_status(&cli, &printer, None).is_ok(),
+            super::cmd_status(&cli, &printer, None, false).is_ok(),
             "status should succeed when profile references modules"
         );
 
@@ -11384,7 +11458,7 @@ spec:
         // Clear buffer before status call
         buf.lock().unwrap().clear();
 
-        super::cmd_status(&cli, &printer, None).unwrap();
+        super::cmd_status(&cli, &printer, None, false).unwrap();
 
         let output = buf.lock().unwrap();
         assert!(
@@ -11739,7 +11813,7 @@ spec:
         super::cmd_apply(&cli, &printer, &args).unwrap();
 
         buf.lock().unwrap().clear();
-        super::cmd_verify(&cli, &printer, None).unwrap();
+        super::cmd_verify(&cli, &printer, None, false).unwrap();
 
         let output = buf.lock().unwrap();
         assert!(
@@ -12517,7 +12591,7 @@ spec:
         };
         let (printer, buf) = Printer::for_test_with_format(cfgd_core::output::OutputFormat::Json);
 
-        super::cmd_verify(&cli, &printer, None).unwrap();
+        super::cmd_verify(&cli, &printer, None, false).unwrap();
 
         let output = buf.lock().unwrap();
         let parsed = extract_json(&output);
@@ -12654,7 +12728,7 @@ spec:
         let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
         let (printer, buf) = Printer::for_test();
 
-        let result = super::cmd_diff(&cli, &printer, Some("diff-mod"));
+        let result = super::cmd_diff(&cli, &printer, Some("diff-mod"), false);
         assert!(
             result.is_ok(),
             "diff should succeed when filtering to a specific module: {:?}",
@@ -12678,7 +12752,7 @@ spec:
         let (printer, buf) = Printer::for_test();
 
         // Nonexistent module should succeed gracefully (empty results, exit 0)
-        let result = super::cmd_verify(&cli, &printer, Some("nonexistent"));
+        let result = super::cmd_verify(&cli, &printer, Some("nonexistent"), false);
         assert!(
             result.is_ok(),
             "verify should handle nonexistent module gracefully: {:?}",
@@ -16038,7 +16112,7 @@ spec:
         };
         let (printer, buf) = Printer::for_test_with_format(cfgd_core::output::OutputFormat::Json);
 
-        super::cmd_status(&cli, &printer, Some("json-mod")).unwrap();
+        super::cmd_status(&cli, &printer, Some("json-mod"), false).unwrap();
 
         let output = buf.lock().unwrap();
         let parsed = extract_json(&output);
@@ -16062,7 +16136,7 @@ spec:
         };
         let (printer, buf) = Printer::for_test_with_format(cfgd_core::output::OutputFormat::Json);
 
-        super::cmd_verify(&cli, &printer, None).unwrap();
+        super::cmd_verify(&cli, &printer, None, false).unwrap();
 
         let output = buf.lock().unwrap();
         let parsed = extract_json(&output);
@@ -17063,7 +17137,7 @@ spec:
     #[test]
     fn cmd_diff_module_not_found_succeeds() {
         let h = CliTestHarness::builder().build();
-        super::cmd_diff(&h.cli(), h.printer(), Some("nonexistent")).unwrap();
+        super::cmd_diff(&h.cli(), h.printer(), Some("nonexistent"), false).unwrap();
         let output = h.output();
         assert!(
             output.contains("not found") || output.contains("Diff"),
@@ -17076,7 +17150,7 @@ spec:
         let h = CliTestHarness::builder()
             .module("diff-mod", "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: diff-mod\nspec:\n  packages: []\n")
             .build();
-        super::cmd_diff(&h.cli(), h.printer(), Some("diff-mod")).unwrap();
+        super::cmd_diff(&h.cli(), h.printer(), Some("diff-mod"), false).unwrap();
         let output = h.output();
         assert!(
             output.contains("Diff") || output.contains("diff-mod"),
@@ -17091,7 +17165,7 @@ spec:
         let h = CliTestHarness::builder()
             .module("verify-mod", "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: verify-mod\nspec:\n  packages: []\n")
             .build();
-        super::cmd_verify(&h.cli(), h.printer(), Some("verify-mod")).unwrap();
+        super::cmd_verify(&h.cli(), h.printer(), Some("verify-mod"), false).unwrap();
         let output = h.output();
         assert!(
             output.contains("Verify") || output.contains("verify-mod"),
@@ -17921,7 +17995,7 @@ spec:
     #[test]
     fn json_schema_status() {
         let h = CliTestHarness::builder().json().build();
-        super::cmd_status(&h.cli(), h.printer(), None).unwrap();
+        super::cmd_status(&h.cli(), h.printer(), None, false).unwrap();
         let parsed = h.json_output();
         assert_json_has_fields(
             &parsed,
@@ -18020,7 +18094,7 @@ spec:
     #[test]
     fn json_schema_verify() {
         let h = CliTestHarness::builder().json().build();
-        super::cmd_verify(&h.cli(), h.printer(), None).unwrap();
+        super::cmd_verify(&h.cli(), h.printer(), None, false).unwrap();
         let parsed = h.json_output();
         assert_json_has_fields(&parsed, &["passCount", "failCount", "results"]);
         assert_json_field_type(&parsed, "passCount", "number");
@@ -20164,7 +20238,7 @@ spec:
     #[test]
     fn cmd_diff_full_profile_shows_all_sections() {
         let h = CliTestHarness::builder().build();
-        let result = super::cmd_diff(&h.cli(), h.printer(), None);
+        let result = super::cmd_diff(&h.cli(), h.printer(), None, false);
         assert!(
             result.is_ok(),
             "diff with default profile should succeed: {:?}",
@@ -20197,7 +20271,7 @@ spec:
     #[test]
     fn cmd_diff_module_not_found_shows_info() {
         let h = CliTestHarness::builder().build();
-        let result = super::cmd_diff(&h.cli(), h.printer(), Some("nonexistent-mod"));
+        let result = super::cmd_diff(&h.cli(), h.printer(), Some("nonexistent-mod"), false);
         assert!(
             result.is_ok(),
             "diff with missing module should succeed gracefully"
@@ -20234,7 +20308,7 @@ spec:
             .join("files");
         std::fs::write(module_files.join("my-config"), "new config content\n").unwrap();
 
-        let result = super::cmd_diff(&h.cli(), h.printer(), Some("diff-mod"));
+        let result = super::cmd_diff(&h.cli(), h.printer(), Some("diff-mod"), false);
         assert!(
             result.is_ok(),
             "module diff should succeed: {:?}",
@@ -20268,7 +20342,7 @@ spec:
     #[test]
     fn cmd_status_with_sources_shows_source_section() {
         let h = CliTestHarness::builder().rich_config().build();
-        let result = super::cmd_status(&h.cli(), h.printer(), None);
+        let result = super::cmd_status(&h.cli(), h.printer(), None, false);
         assert!(
             result.is_ok(),
             "status with sources should succeed: {:?}",
