@@ -275,19 +275,14 @@ pub(super) fn cmd_profile_switch(cli: &Cli, name: &str, printer: &Printer) -> an
 
 pub(super) fn profiles_inheriting(profiles_dir: &Path, name: &str) -> anyhow::Result<Vec<String>> {
     let mut result = Vec::new();
-    if !profiles_dir.exists() {
-        return Ok(result);
-    }
-    for entry in std::fs::read_dir(profiles_dir)? {
-        let entry = entry?;
-        let path = entry.path();
-        if path.extension().is_some_and(|e| e == "yaml" || e == "yml")
-            && let Ok(doc) = config::load_profile(&path)
+    cfgd_core::config::for_each_yaml_file(profiles_dir, |path| {
+        if let Ok(doc) = config::load_profile(path)
             && doc.spec.inherits.contains(&name.to_string())
         {
             result.push(doc.metadata.name.clone());
         }
-    }
+        Ok(())
+    })?;
     Ok(result)
 }
 
@@ -1580,7 +1575,7 @@ spec:
             config: dir.join("cfgd.yaml"),
             profile: None,
             no_color: true,
-            verbose: false,
+            verbose: 0,
             quiet: true,
             output: super::super::OutputFormatArg(cfgd_core::output::OutputFormat::Table),
             jsonpath: None,

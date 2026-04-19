@@ -29,6 +29,15 @@ pub const API_VERSION: &str = "cfgd.io/v1alpha1";
 pub const CSI_DRIVER_NAME: &str = "csi.cfgd.io";
 pub const MODULES_ANNOTATION: &str = "cfgd.io/modules";
 
+/// Kubernetes label key pointing at the `MachineConfig` resource an object
+/// was derived from (e.g. DriftAlert -> MachineConfig).
+pub const LABEL_MACHINE_CONFIG: &str = "cfgd.io/machine-config";
+/// Kubernetes label key identifying the fleet device an object belongs to.
+pub const LABEL_DEVICE_ID: &str = "cfgd.io/device-id";
+/// OCI manifest annotation key carrying the `os/arch` platform string that a
+/// pushed module artifact was built for (parsed by the CSI cache on pull).
+pub const OCI_ANNOTATION_PLATFORM: &str = "cfgd.io/platform";
+
 /// Returns the current UTC time as an ISO 8601 / RFC 3339 string.
 pub fn utc_now_iso8601() -> String {
     let secs = std::time::SystemTime::now()
@@ -159,6 +168,50 @@ pub fn try_git_cmd(
             false
         }
     }
+}
+
+/// Best-effort detection of a local git repo's default branch.
+///
+/// Tries (in order) `origin/HEAD` symbolic-ref (the remote-tracking default),
+/// then the local `HEAD` symbolic-ref. Returns `None` when the directory is not
+/// a git repo, both refs are missing, or the `git` binary is unavailable.
+///
+/// Callers should supply their own fallback (cfgd convention: `"master"`).
+pub fn detect_default_branch(repo_dir: &std::path::Path) -> Option<String> {
+    let dir = repo_dir.display().to_string();
+
+    let mut cmd = git_cmd_safe(None, None);
+    cmd.args([
+        "-C",
+        &dir,
+        "symbolic-ref",
+        "--short",
+        "refs/remotes/origin/HEAD",
+    ])
+    .stdout(std::process::Stdio::piped());
+    if let Ok(output) = cmd.output()
+        && output.status.success()
+    {
+        let raw = stdout_lossy_trimmed(&output);
+        let stripped = raw.strip_prefix("origin/").unwrap_or(&raw);
+        if !stripped.is_empty() {
+            return Some(stripped.to_string());
+        }
+    }
+
+    let mut cmd = git_cmd_safe(None, None);
+    cmd.args(["-C", &dir, "symbolic-ref", "--short", "HEAD"])
+        .stdout(std::process::Stdio::piped());
+    if let Ok(output) = cmd.output()
+        && output.status.success()
+    {
+        let branch = stdout_lossy_trimmed(&output);
+        if !branch.is_empty() {
+            return Some(branch);
+        }
+    }
+
+    None
 }
 
 /// Default timeout for external commands (2 minutes).

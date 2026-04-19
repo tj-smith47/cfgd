@@ -252,7 +252,7 @@ fn verify_cosign_bundle(
             Ok(true)
         }
         Ok(o) => {
-            let stderr = String::from_utf8_lossy(&o.stderr).trim().to_string();
+            let stderr = crate::stderr_lossy_trimmed(&o);
             Err(UpgradeError::DownloadFailed {
                 message: format!("cosign verify-blob failed: {stderr}"),
             })

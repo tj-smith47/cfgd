@@ -53,20 +53,26 @@ fn main() -> anyhow::Result<()> {
         }
     }
 
-    // Determine verbosity
+    // Determine verbosity. `-v` (count=1) → debug; `-vv` or higher → trace.
+    // Verbosity enum stays 3-way (Quiet|Normal|Verbose) — the extra tracing detail
+    // from `-vv` goes into the tracing filter, not the user-facing Printer noise.
     let verbosity = if cli.quiet {
         cfgd_core::output::Verbosity::Quiet
-    } else if cli.verbose {
+    } else if cli.verbose > 0 {
         cfgd_core::output::Verbosity::Verbose
     } else {
         cfgd_core::output::Verbosity::Normal
     };
 
     // Initialize tracing
-    let filter = match verbosity {
-        cfgd_core::output::Verbosity::Quiet => "error",
-        cfgd_core::output::Verbosity::Normal => "info",
-        cfgd_core::output::Verbosity::Verbose => "debug",
+    let filter = if cli.quiet {
+        "error"
+    } else {
+        match cli.verbose {
+            0 => "info",
+            1 => "debug",
+            _ => "trace",
+        }
     };
     tracing_subscriber::fmt()
         .with_env_filter(cfgd_core::tracing_env_filter(filter))

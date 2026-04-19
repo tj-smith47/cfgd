@@ -395,15 +395,16 @@ pub struct Cli {
     #[arg(long, global = true, env = "CFGD_PROFILE")]
     pub profile: Option<String>,
 
-    /// Verbose output
+    /// Verbose output (-v = debug, -vv = trace). Also accepts CFGD_VERBOSE as an on/off flag.
     #[arg(
         long,
         short,
         global = true,
+        action = clap::ArgAction::Count,
         env = "CFGD_VERBOSE",
         conflicts_with = "quiet"
     )]
-    pub verbose: bool,
+    pub verbose: u8,
 
     /// Suppress all non-error output
     #[arg(
@@ -423,8 +424,8 @@ pub struct Cli {
     #[arg(long, short = 'o', global = true, default_value = "table")]
     pub output: OutputFormatArg,
 
-    /// JSONPath expression to extract from structured output
-    #[arg(long, global = true)]
+    /// [DEPRECATED — use --output jsonpath=EXPR] JSONPath expression to extract from structured output
+    #[arg(long, global = true, hide = true)]
     pub jsonpath: Option<String>,
 
     /// Override state directory (default: $CFGD_STATE_DIR or platform data dir)
@@ -465,6 +466,9 @@ pub struct ApplyArgs {
 
 #[derive(Parser)]
 pub struct PlanArgs {
+    /// Config source: git URL to clone, or local path to an existing config directory
+    #[arg(long)]
+    pub from: Option<String>,
     /// Plan only a specific phase
     #[arg(long, value_enum)]
     pub phase: Option<ApplyPhase>,
@@ -500,7 +504,13 @@ pub enum Command {
         #[arg(long)]
         from: Option<String>,
 
-        /// Git branch to clone (default: master)
+        /// Git branch to clone (default: master).
+        ///
+        /// This defaults to `master` because `init` materializes the config dir up-front
+        /// and needs a concrete ref to check out. The split with `SourceCommand::Add` —
+        /// where `--branch` has NO default and stays `Option<String>` — is intentional:
+        /// `source add` stores the caller's intent as-is, and the operator later resolves
+        /// `None` via `origin/HEAD`, so downstream syncs follow the remote's chosen default.
         #[arg(long, default_value = "master")]
         branch: String,
 
@@ -600,7 +610,7 @@ pub enum Command {
 
     /// Manage the daemon
     #[command(
-        long_about = "Manage the cfgd reconciliation daemon.\n\nExamples:\n  cfgd daemon status\n  cfgd daemon start\n  cfgd daemon stop"
+        long_about = "Run or manage the cfgd reconciliation daemon.\n\nExamples:\n  cfgd daemon               # run in foreground (default)\n  cfgd daemon status\n  cfgd daemon install       # install as a system service\n  cfgd daemon uninstall"
     )]
     Daemon {
         #[command(subcommand)]
@@ -609,7 +619,7 @@ pub enum Command {
 
     /// Manage secrets
     #[command(
-        long_about = "Manage secret backends and encrypted values.\n\nExamples:\n  cfgd secret list\n  cfgd secret get DATABASE_URL\n  cfgd secret set --backend sops my.secret"
+        long_about = "Encrypt, decrypt, and edit SOPS-managed secret files.\n\nExamples:\n  cfgd secret init\n  cfgd secret encrypt secrets.yaml\n  cfgd secret edit secrets.yaml\n  cfgd secret decrypt secrets.yaml"
     )]
     Secret {
         #[command(subcommand)]
@@ -646,7 +656,7 @@ pub enum Command {
 
     /// Manage modules
     #[command(
-        long_about = "List, add, remove, or publish modules.\n\nExamples:\n  cfgd module list\n  cfgd module add my-org/nettools\n  cfgd module publish ./my-module oci://ghcr.io/me/my-module:1.0.0"
+        long_about = "Create, inspect, push, and manage modules.\n\nExamples:\n  cfgd module list\n  cfgd module push ./my-module --artifact ghcr.io/me/my-module:1.0.0\n  cfgd module registry add https://github.com/my-org/cfgd-modules --name my-org"
     )]
     Module {
         #[command(subcommand)]
@@ -655,7 +665,7 @@ pub enum Command {
 
     /// Manage config sources
     #[command(
-        long_about = "Subscribe to, override, or remove upstream config sources.\n\nExamples:\n  cfgd source add https://github.com/team/config --priority 700\n  cfgd source list\n  cfgd source override team env.EDITOR set vim\n  cfgd source remove team --keep-all"
+        long_about = "Subscribe to, override, or remove upstream config sources.\n\nExamples:\n  cfgd source add https://github.com/team/config --priority 700\n  cfgd source list\n  cfgd source override team set env.EDITOR vim\n  cfgd source remove team --keep-all"
     )]
     Source {
         #[command(subcommand)]
@@ -754,7 +764,7 @@ pub enum Command {
         server_url: String,
 
         /// Bootstrap token for token-based enrollment
-        #[arg(long, env = "CFGD_BOOTSTRAP_TOKEN")]
+        #[arg(long, env = "CFGD_ENROLL_TOKEN")]
         token: Option<String>,
 
         /// SSH key file for signing (default: auto-detect from agent or ~/.ssh/)
@@ -766,7 +776,7 @@ pub enum Command {
         gpg_key: Option<String>,
 
         /// Username to enroll as (default: current system user)
-        #[arg(long, env = "USER")]
+        #[arg(long, env = "CFGD_ENROLL_USERNAME")]
         username: Option<String>,
     },
 
@@ -782,7 +792,7 @@ pub enum Command {
 
     /// AI-guided configuration generation
     #[command(
-        long_about = "Generate config fragments (profiles, modules) with an LLM backend.\n\nExamples:\n  cfgd generate module --prompt 'kubectl + k9s + kubectx'\n  cfgd generate profile --from ~/dotfiles"
+        long_about = "Generate config fragments (profiles, modules) with an LLM backend.\n\nExamples:\n  cfgd generate                    # scan system and propose full structure\n  cfgd generate module kubectl\n  cfgd generate profile laptop --model claude-opus-4-6\n  cfgd generate --scan-only --shell zsh --home ~/\n  cfgd generate --yes              # skip confirmation prompts"
     )]
     Generate(generate::GenerateArgs),
 
@@ -828,10 +838,12 @@ pub enum ComplianceCommand {
     },
     /// Show diff between two snapshots
     Diff {
-        /// First snapshot ID
-        id1: i64,
-        /// Second snapshot ID
-        id2: i64,
+        /// Base snapshot ID (the reference to compare against)
+        #[arg(value_name = "BASE_ID")]
+        base_id: i64,
+        /// Target snapshot ID (the snapshot being compared)
+        #[arg(value_name = "TARGET_ID")]
+        target_id: i64,
     },
 }
 
@@ -842,7 +854,12 @@ pub struct SourceAddArgs {
     /// Name for this source (default: inferred from URL)
     #[arg(long)]
     pub name: Option<String>,
-    /// Git branch (default: master)
+    /// Git branch to subscribe to.
+    ///
+    /// Deliberately has NO default value (unlike `init --branch`): leaving this unset
+    /// stores `None` in the source config so downstream syncs resolve against the
+    /// remote's current default (via `origin/HEAD`). Only set `--branch` when you
+    /// need to pin the subscription to a specific ref.
     #[arg(long)]
     pub branch: Option<String>,
     /// Profile to subscribe to
@@ -887,6 +904,7 @@ pub enum SourceCommand {
     },
 
     /// Remove a source subscription
+    #[command(alias = "rm")]
     Remove {
         /// Source name
         name: String,
@@ -1303,9 +1321,9 @@ pub enum ModuleCommand {
     Export {
         /// Module name
         name: String,
-        /// Export format
-        #[arg(long, value_enum)]
-        format: ExportFormat,
+        /// Export format (renamed from --format to avoid shadowing the global -o / --output)
+        #[arg(long = "as", value_name = "FORMAT", value_enum)]
+        as_format: ExportFormat,
         /// Directory to write exported files (default: current directory)
         #[arg(long)]
         dir: Option<String>,
@@ -1494,6 +1512,7 @@ pub enum ModuleRegistryCommand {
         name: Option<String>,
     },
     /// Remove a module registry
+    #[command(alias = "rm")]
     Remove {
         /// Registry name
         name: String,
@@ -1609,9 +1628,11 @@ pub fn execute(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
                 }
                 ModuleRegistryCommand::List => module::cmd_module_registry_list(cli, printer),
             },
-            ModuleCommand::Export { name, format, dir } => {
-                module::cmd_module_export(cli, printer, name, format, dir.as_deref())
-            }
+            ModuleCommand::Export {
+                name,
+                as_format,
+                dir,
+            } => module::cmd_module_export(cli, printer, name, as_format, dir.as_deref()),
             ModuleCommand::Push {
                 dir,
                 artifact,
@@ -1797,8 +1818,8 @@ pub fn execute(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
             Some(ComplianceCommand::History { since }) => {
                 cmd_compliance_history(cli, printer, since.as_deref())
             }
-            Some(ComplianceCommand::Diff { id1, id2 }) => {
-                cmd_compliance_diff(cli, printer, *id1, *id2)
+            Some(ComplianceCommand::Diff { base_id, target_id }) => {
+                cmd_compliance_diff(cli, printer, *base_id, *target_id)
             }
         },
     }
@@ -2743,6 +2764,22 @@ fn cmd_plan(cli: &Cli, printer: &Printer, args: &PlanArgs) -> anyhow::Result<()>
             );
         }
     };
+
+    // --from: mirror cmd_apply so `plan` can be pointed at a git source or local path.
+    if let Some(from) = &args.from {
+        let cli_config_dir = cli.config.parent().map(|p| p.to_path_buf());
+        let default_dir = cfgd_core::default_config_dir();
+        let target = if let Some(ref dir) = cli_config_dir {
+            if *dir != default_dir && !cli.config.exists() {
+                Some(dir.as_path())
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+        init::resolve_from(from, target, "master", printer)?;
+    }
 
     printer.header("Plan");
 
@@ -3945,18 +3982,13 @@ fn validate_resource_name(name: &str, kind: &str) -> anyhow::Result<()> {
 /// Scan a profiles/ directory and return sorted profile names.
 fn scan_profile_names(profiles_dir: &Path) -> anyhow::Result<Vec<String>> {
     let mut names = Vec::new();
-    if profiles_dir.exists() {
-        for entry in std::fs::read_dir(profiles_dir)? {
-            let entry = entry?;
-            let path = entry.path();
-            if path.extension().is_some_and(|e| e == "yaml" || e == "yml")
-                && let Ok(doc) = config::load_profile(&path)
-            {
-                names.push(doc.metadata.name);
-            }
+    cfgd_core::config::for_each_yaml_file(profiles_dir, |path| {
+        if let Ok(doc) = config::load_profile(path) {
+            names.push(doc.metadata.name);
         }
-        names.sort();
-    }
+        Ok(())
+    })?;
+    names.sort();
     Ok(names)
 }
 
@@ -4246,24 +4278,15 @@ fn cmd_config_set(cli: &Cli, printer: &Printer, key: &str, value: &str) -> anyho
         anyhow::bail!("{}", MSG_NO_CONFIG);
     }
 
-    let contents = std::fs::read_to_string(config_path)?;
-    let mut raw: serde_yaml::Value = serde_yaml::from_str(&contents)?;
-
-    let spec = raw
-        .get_mut("spec")
-        .ok_or_else(|| anyhow::anyhow!("config has no 'spec' section"))?;
-
-    let (parent, leaf_key) = walk_yaml_path_mut(spec, key)?;
-    let yaml_key = serde_yaml::Value::String(leaf_key);
-    parent.insert(yaml_key, parse_yaml_value(value));
-
-    // Validate by round-tripping through the typed config parser
-    let output = serde_yaml::to_string(&raw)?;
-    if let Err(e) = config::parse_config(&output, config_path) {
-        anyhow::bail!("invalid value for '{}': {}", key, e);
-    }
-
-    cfgd_core::atomic_write_str(config_path, &output)?;
+    mutate_config_yaml(config_path, true, |raw| {
+        let spec = raw
+            .get_mut("spec")
+            .ok_or_else(|| anyhow::anyhow!("config has no 'spec' section"))?;
+        let (parent, leaf_key) = walk_yaml_path_mut(spec, key)?;
+        let yaml_key = serde_yaml::Value::String(leaf_key);
+        parent.insert(yaml_key, parse_yaml_value(value));
+        Ok(())
+    })?;
     printer.success(&format!("Set {} = {}", key, value));
     Ok(())
 }
@@ -4274,26 +4297,17 @@ fn cmd_config_unset(cli: &Cli, printer: &Printer, key: &str) -> anyhow::Result<(
         anyhow::bail!("{}", MSG_NO_CONFIG);
     }
 
-    let contents = std::fs::read_to_string(config_path)?;
-    let mut raw: serde_yaml::Value = serde_yaml::from_str(&contents)?;
-
-    let spec = raw
-        .get_mut("spec")
-        .ok_or_else(|| anyhow::anyhow!("config has no 'spec' section"))?;
-
-    let (parent, leaf_key) = walk_yaml_path_mut(spec, key)?;
-    let yaml_key = serde_yaml::Value::String(leaf_key.clone());
-    if parent.remove(&yaml_key).is_none() {
-        anyhow::bail!("key '{}' not found in config", key);
-    }
-
-    // Validate the result is still parseable
-    let output = serde_yaml::to_string(&raw)?;
-    if let Err(e) = config::parse_config(&output, config_path) {
-        anyhow::bail!("cannot unset '{}': result would be invalid: {}", key, e);
-    }
-
-    cfgd_core::atomic_write_str(config_path, &output)?;
+    mutate_config_yaml(config_path, true, |raw| {
+        let spec = raw
+            .get_mut("spec")
+            .ok_or_else(|| anyhow::anyhow!("config has no 'spec' section"))?;
+        let (parent, leaf_key) = walk_yaml_path_mut(spec, key)?;
+        let yaml_key = serde_yaml::Value::String(leaf_key.clone());
+        if parent.remove(&yaml_key).is_none() {
+            anyhow::bail!("key '{}' not found in config", key);
+        }
+        Ok(())
+    })?;
     printer.success(&format!("Unset {}", key));
     Ok(())
 }
@@ -4472,6 +4486,9 @@ fn cmd_workflow_generate(cli: &Cli, printer: &Printer, force: bool) -> anyhow::R
     let profile_names = scan_profile_names(&config_dir.join("profiles"))?;
     let module_names = scan_module_names(&config_dir.join("modules"))?;
 
+    let default_branch =
+        cfgd_core::detect_default_branch(&config_dir).unwrap_or_else(|| "master".to_string());
+
     if profile_names.is_empty() && module_names.is_empty() {
         printer.warning("No profiles or modules found — nothing to generate");
         return Ok(());
@@ -4491,7 +4508,7 @@ fn cmd_workflow_generate(cli: &Cli, printer: &Printer, force: bool) -> anyhow::R
         return Ok(());
     }
 
-    let yaml = generate_release_workflow_yaml(&module_names, &profile_names);
+    let yaml = generate_release_workflow_yaml(&module_names, &profile_names, &default_branch);
 
     std::fs::create_dir_all(&workflow_dir)?;
     cfgd_core::atomic_write_str(&workflow_path, &yaml)?;
@@ -4509,20 +4526,25 @@ fn cmd_workflow_generate(cli: &Cli, printer: &Printer, force: bool) -> anyhow::R
     Ok(())
 }
 
-fn generate_release_workflow_yaml(modules: &[String], profiles: &[String]) -> String {
+fn generate_release_workflow_yaml(
+    modules: &[String],
+    profiles: &[String],
+    default_branch: &str,
+) -> String {
     let mut yaml = String::new();
     let has_targets = !modules.is_empty() || !profiles.is_empty();
 
     // Header
-    yaml.push_str(
+    yaml.push_str(&format!(
         "# Auto-generated by cfgd — manages release tagging for modules and profiles.\n\
          # Regenerate with: cfgd workflow generate --force\n\
          name: cfgd Release\n\
          \n\
          on:\n\
          \x20 push:\n\
-         \x20   branches: [main]\n",
-    );
+         \x20   branches: [{}]\n",
+        default_branch,
+    ));
 
     if has_targets {
         yaml.push_str("    paths:\n");
@@ -4806,11 +4828,30 @@ fn cmd_secret_encrypt(cli: &Cli, printer: &Printer, file: &Path) -> anyhow::Resu
 }
 
 fn cmd_secret_decrypt(cli: &Cli, printer: &Printer, file: &Path) -> anyhow::Result<()> {
-    printer.header("Secret Decrypt");
-
     let backend = get_secret_backend(cli, file)?;
     let decrypted = backend.decrypt_file(file)?;
-    printer.info(secrecy::ExposeSecret::expose_secret(&decrypted));
+    let plaintext = secrecy::ExposeSecret::expose_secret(&decrypted);
+
+    if printer.is_structured() {
+        #[derive(serde::Serialize)]
+        #[serde(rename_all = "camelCase")]
+        struct SecretDecryptOutput<'a> {
+            file: String,
+            plaintext: &'a str,
+        }
+        printer.write_structured(&SecretDecryptOutput {
+            file: file.display().to_string(),
+            plaintext,
+        });
+        return Ok(());
+    }
+
+    // Plaintext must land on stdout so `cfgd secret decrypt foo.yaml > out.txt`
+    // and `| pbcopy` work. `printer.info` routes to stderr (and is Quiet-suppressed
+    // when `-o json` auto-Quiets the Printer), so we use `stdout_line` here the
+    // same way `config get` does for its machine-readable output.
+    printer.header("Secret Decrypt");
+    printer.stdout_line(plaintext);
 
     Ok(())
 }
@@ -5313,18 +5354,13 @@ fn profiles_dir(cli: &Cli) -> PathBuf {
 /// Returns an empty vec if the directory doesn't exist.
 pub(super) fn list_yaml_stems(dir: &Path) -> anyhow::Result<Vec<String>> {
     let mut names = Vec::new();
-    if dir.exists() {
-        for entry in std::fs::read_dir(dir)? {
-            let entry = entry?;
-            let path = entry.path();
-            if path.extension().is_some_and(|e| e == "yaml" || e == "yml")
-                && let Some(stem) = path.file_stem().and_then(|s| s.to_str())
-            {
-                names.push(stem.to_string());
-            }
+    cfgd_core::config::for_each_yaml_file(dir, |path| {
+        if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
+            names.push(stem.to_string());
         }
-        names.sort();
-    }
+        Ok(())
+    })?;
+    names.sort();
     Ok(names)
 }
 
@@ -5360,7 +5396,7 @@ fn cmd_daemon(cli: &Cli, printer: &Printer, command: Option<&DaemonCommand>) -> 
     let profile_override = cli.profile.clone();
     let printer = std::sync::Arc::new(cfgd_core::output::Printer::new(if cli.quiet {
         cfgd_core::output::Verbosity::Quiet
-    } else if cli.verbose {
+    } else if cli.verbose > 0 {
         cfgd_core::output::Verbosity::Verbose
     } else {
         cfgd_core::output::Verbosity::Normal
@@ -6759,57 +6795,42 @@ fn add_source_to_config(config_path: &Path, source: &config::SourceSpec) -> anyh
         anyhow::bail!("Config file not found: {}", config_path.display());
     }
 
-    let contents = std::fs::read_to_string(config_path)?;
-    let mut raw: serde_yaml::Value = serde_yaml::from_str(&contents)?;
-
-    // Get or create spec.sources array
-    let spec = raw
-        .get_mut("spec")
-        .ok_or_else(|| anyhow::anyhow!("config missing 'spec'"))?;
-
-    let sources = spec
-        .as_mapping_mut()
-        .ok_or_else(|| anyhow::anyhow!("spec is not a mapping"))?
-        .entry(serde_yaml::Value::String("sources".into()))
-        .or_insert(serde_yaml::Value::Sequence(vec![]));
-
-    let seq = sources
-        .as_sequence_mut()
-        .ok_or_else(|| anyhow::anyhow!("sources is not a sequence"))?;
-
-    let source_value = serde_yaml::to_value(source)?;
-    seq.push(source_value);
-
-    let output = serde_yaml::to_string(&raw)?;
-    cfgd_core::atomic_write_str(config_path, &output)?;
-
-    Ok(())
+    mutate_config_yaml(config_path, true, |raw| {
+        let spec = raw
+            .get_mut("spec")
+            .ok_or_else(|| anyhow::anyhow!("config missing 'spec'"))?;
+        let sources = spec
+            .as_mapping_mut()
+            .ok_or_else(|| anyhow::anyhow!("spec is not a mapping"))?
+            .entry(serde_yaml::Value::String("sources".into()))
+            .or_insert(serde_yaml::Value::Sequence(vec![]));
+        let seq = sources
+            .as_sequence_mut()
+            .ok_or_else(|| anyhow::anyhow!("sources is not a sequence"))?;
+        let source_value = serde_yaml::to_value(source)?;
+        seq.push(source_value);
+        Ok(())
+    })
 }
 
 fn remove_source_from_config(config_path: &Path, name: &str) -> anyhow::Result<()> {
     if !config_path.exists() {
         return Ok(());
     }
-
-    let contents = std::fs::read_to_string(config_path)?;
-    let mut raw: serde_yaml::Value = serde_yaml::from_str(&contents)?;
-
-    if let Some(spec) = raw.get_mut("spec")
-        && let Some(sources) = spec.get_mut("sources")
-        && let Some(seq) = sources.as_sequence_mut()
-    {
-        seq.retain(|item| {
-            item.get("name")
-                .and_then(|n| n.as_str())
-                .map(|n| n != name)
-                .unwrap_or(true)
-        });
-    }
-
-    let output = serde_yaml::to_string(&raw)?;
-    cfgd_core::atomic_write_str(config_path, &output)?;
-
-    Ok(())
+    mutate_config_yaml(config_path, true, |raw| {
+        if let Some(spec) = raw.get_mut("spec")
+            && let Some(sources) = spec.get_mut("sources")
+            && let Some(seq) = sources.as_sequence_mut()
+        {
+            seq.retain(|item| {
+                item.get("name")
+                    .and_then(|n| n.as_str())
+                    .map(|n| n != name)
+                    .unwrap_or(true)
+            });
+        }
+        Ok(())
+    })
 }
 
 fn update_source_rejection(
@@ -6895,20 +6916,45 @@ fn find_source_in_config<'a>(
         })
 }
 
+/// Generalized read-parse-mutate-write loop for `cfgd.yaml`.
+///
+/// Loads the YAML at `config_path`, hands the mutable root `serde_yaml::Value`
+/// to `f`, then serializes and atomically writes the result. When `validate`
+/// is `true`, the serialized output is round-tripped through
+/// `config::parse_config` before write — callers that could produce schema-invalid
+/// documents (`set`, `unset`) pass `true`; mechanical add/remove-by-key
+/// operations pass `false` so the write path is free of the typed-parse cost.
+///
+/// Use this instead of open-coding the `read_to_string → from_str → mutate →
+/// to_string → atomic_write_str` pattern, which diverged in validation
+/// behavior (set/unset validated; add/remove did not) before this helper.
+fn mutate_config_yaml<F>(config_path: &Path, validate: bool, f: F) -> anyhow::Result<()>
+where
+    F: FnOnce(&mut serde_yaml::Value) -> anyhow::Result<()>,
+{
+    let contents = std::fs::read_to_string(config_path)?;
+    let mut raw: serde_yaml::Value = serde_yaml::from_str(&contents)?;
+    f(&mut raw)?;
+    let output = serde_yaml::to_string(&raw)?;
+    if validate {
+        config::parse_config(&output, config_path)
+            .map_err(|e| anyhow::anyhow!("config would become invalid: {}", e))?;
+    }
+    cfgd_core::atomic_write_str(config_path, &output)?;
+    Ok(())
+}
+
 /// Load config YAML, find a named source, apply a mutation, and write back.
 /// The closure receives the mutable source entry; the helper handles I/O.
 fn with_source_config<F>(config_path: &Path, source_name: &str, f: F) -> anyhow::Result<()>
 where
     F: FnOnce(&mut serde_yaml::Value) -> anyhow::Result<()>,
 {
-    let contents = std::fs::read_to_string(config_path)?;
-    let mut raw: serde_yaml::Value = serde_yaml::from_str(&contents)?;
-    let source = find_source_in_config(&mut raw, source_name)
-        .ok_or_else(|| anyhow::anyhow!("source '{}' not found in config file", source_name))?;
-    f(source)?;
-    let output = serde_yaml::to_string(&raw)?;
-    cfgd_core::atomic_write_str(config_path, &output)?;
-    Ok(())
+    mutate_config_yaml(config_path, false, |raw| {
+        let source = find_source_in_config(raw, source_name)
+            .ok_or_else(|| anyhow::anyhow!("source '{}' not found in config file", source_name))?;
+        f(source)
+    })
 }
 
 // --- Plan filtering for --skip and --only ---
@@ -7424,13 +7470,20 @@ fn compose_with_sources(
         // Persist conflicts to state
         if let Ok(state) = open_state_store(cli.state_dir.as_deref()) {
             for conflict in &result.conflicts {
-                let _ = state.record_source_conflict(
+                if let Err(e) = state.record_source_conflict(
                     &conflict.winning_source,
                     "composition",
                     &conflict.resource_id,
                     conflict.resolution_type.label(),
                     Some(&conflict.details),
-                );
+                ) {
+                    tracing::warn!(
+                        error = %e,
+                        winning_source = %conflict.winning_source,
+                        resource_id = %conflict.resource_id,
+                        "failed to persist source conflict to state store; conflict history may be incomplete",
+                    );
+                }
             }
         }
     }
@@ -7814,7 +7867,7 @@ spec:
                 config: self.config_dir.path().join("cfgd.yaml"),
                 profile: None,
                 no_color: true,
-                verbose: false,
+                verbose: 0,
                 quiet: true,
                 output: OutputFormatArg(self.output_format.clone()),
                 jsonpath: None,
@@ -8283,7 +8336,7 @@ spec:
             config: dir.join("cfgd.yaml"),
             profile: None,
             no_color: true,
-            verbose: false,
+            verbose: 0,
             quiet: true,
             output: OutputFormatArg(cfgd_core::output::OutputFormat::Table),
             jsonpath: None,
@@ -9147,7 +9200,7 @@ spec:
         let modules = vec!["neovim".to_string(), "zsh".to_string()];
         let profiles = vec!["default".to_string(), "work".to_string()];
 
-        let yaml = generate_release_workflow_yaml(&modules, &profiles);
+        let yaml = generate_release_workflow_yaml(&modules, &profiles, "master");
 
         // Header
         assert!(yaml.contains("name: cfgd Release"));
@@ -9180,7 +9233,7 @@ spec:
         let modules = vec!["vim".to_string()];
         let profiles: Vec<String> = vec![];
 
-        let yaml = generate_release_workflow_yaml(&modules, &profiles);
+        let yaml = generate_release_workflow_yaml(&modules, &profiles, "master");
 
         assert!(yaml.contains("tag-modules:"));
         assert!(!yaml.contains("tag-profiles:"));
@@ -9191,7 +9244,7 @@ spec:
         let modules: Vec<String> = vec![];
         let profiles = vec!["default".to_string()];
 
-        let yaml = generate_release_workflow_yaml(&modules, &profiles);
+        let yaml = generate_release_workflow_yaml(&modules, &profiles, "master");
 
         assert!(!yaml.contains("tag-modules:"));
         assert!(yaml.contains("tag-profiles:"));
@@ -9262,7 +9315,7 @@ spec:
         let modules = vec!["my-module".to_string()];
         let profiles = vec!["my-profile".to_string()];
 
-        let yaml = generate_release_workflow_yaml(&modules, &profiles);
+        let yaml = generate_release_workflow_yaml(&modules, &profiles, "master");
 
         // Hyphens should be converted to underscores in output names
         assert!(yaml.contains("module_my_module"));
@@ -10069,14 +10122,14 @@ spec:
 
     #[test]
     fn generate_release_workflow_empty() {
-        let yaml = super::generate_release_workflow_yaml(&[], &[]);
+        let yaml = super::generate_release_workflow_yaml(&[], &[], "master");
         assert!(yaml.contains("placeholder:"));
         assert!(yaml.contains("No modules or profiles to tag yet"));
     }
 
     #[test]
     fn generate_release_workflow_with_modules() {
-        let yaml = super::generate_release_workflow_yaml(&["shell-tools".into()], &[]);
+        let yaml = super::generate_release_workflow_yaml(&["shell-tools".into()], &[], "master");
         assert!(yaml.contains("modules/shell-tools/**"));
         assert!(yaml.contains("tag-modules:"));
         assert!(!yaml.contains("placeholder:"));
@@ -10084,15 +10137,18 @@ spec:
 
     #[test]
     fn generate_release_workflow_with_profiles() {
-        let yaml = super::generate_release_workflow_yaml(&[], &["work".into()]);
+        let yaml = super::generate_release_workflow_yaml(&[], &["work".into()], "master");
         assert!(yaml.contains("profiles/work.yaml"));
         assert!(yaml.contains("tag-profiles:"));
     }
 
     #[test]
     fn generate_release_workflow_both() {
-        let yaml =
-            super::generate_release_workflow_yaml(&["git-tools".into()], &["personal".into()]);
+        let yaml = super::generate_release_workflow_yaml(
+            &["git-tools".into()],
+            &["personal".into()],
+            "master",
+        );
         assert!(yaml.contains("tag-modules:"));
         assert!(yaml.contains("tag-profiles:"));
         assert!(yaml.contains("detect-changes:"));
@@ -11877,6 +11933,7 @@ spec:
         let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
         let (printer, buf) = Printer::for_test();
         let args = PlanArgs {
+            from: None,
             phase: None,
             skip: vec![],
             only: vec![],
@@ -11901,6 +11958,7 @@ spec:
         let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
         let (printer, buf) = Printer::for_test();
         let args = PlanArgs {
+            from: None,
             phase: None,
             skip: vec![],
             only: vec![],
@@ -11925,6 +11983,7 @@ spec:
         let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
         let printer = test_printer();
         let args = PlanArgs {
+            from: None,
             phase: None,
             skip: vec![],
             only: vec![],
@@ -11945,6 +12004,7 @@ spec:
         let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
         let (printer, buf) = Printer::for_test();
         let args = PlanArgs {
+            from: None,
             phase: Some(ApplyPhase::Packages),
             skip: vec![],
             only: vec![],
@@ -11972,6 +12032,7 @@ spec:
         let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
         let (printer, buf) = Printer::for_test();
         let args = PlanArgs {
+            from: None,
             phase: None,
             skip: vec!["packages".to_string()],
             only: vec![],
@@ -11995,6 +12056,7 @@ spec:
         let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
         let (printer, buf) = Printer::for_test();
         let args = PlanArgs {
+            from: None,
             phase: None,
             skip: vec![],
             only: vec!["files".to_string()],
@@ -12018,6 +12080,7 @@ spec:
         let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
         let (printer, buf) = Printer::for_test();
         let args = PlanArgs {
+            from: None,
             phase: None,
             skip: vec![],
             only: vec![],
@@ -12047,6 +12110,7 @@ spec:
         let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
         let (printer, buf) = Printer::for_test();
         let args = PlanArgs {
+            from: None,
             phase: None,
             skip: vec![],
             only: vec![],
@@ -12406,6 +12470,7 @@ spec:
 
         let cli = Cli {
             command: Command::Plan(PlanArgs {
+                from: None,
                 phase: None,
                 skip: vec![],
                 only: vec![],
@@ -12549,6 +12614,7 @@ spec:
         let (printer, buf) = Printer::for_test_with_format(cfgd_core::output::OutputFormat::Json);
 
         let args = PlanArgs {
+            from: None,
             phase: None,
             skip: vec![],
             only: vec![],
@@ -12788,6 +12854,7 @@ spec:
         let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
         let (printer, buf) = Printer::for_test();
         let args = PlanArgs {
+            from: None,
             phase: None,
             skip: vec![],
             only: vec![],
@@ -15818,6 +15885,7 @@ spec:
         let cli = test_cli_with_state(dir.path(), Some(state_dir.path().to_path_buf()));
         let (printer, buf) = Printer::for_test();
         let args = PlanArgs {
+            from: None,
             phase: None,
             skip: vec![],
             only: vec![],
@@ -16172,6 +16240,7 @@ spec:
         };
         let (printer, buf) = Printer::for_test_with_format(cfgd_core::output::OutputFormat::Json);
         let args = PlanArgs {
+            from: None,
             phase: None,
             skip: vec![],
             only: vec![],
@@ -16792,6 +16861,7 @@ spec:
         };
         let (printer, buf) = Printer::for_test_with_format(cfgd_core::output::OutputFormat::Json);
         let args = PlanArgs {
+            from: None,
             phase: None,
             skip: vec![],
             only: vec![],
@@ -17102,6 +17172,7 @@ spec:
     fn cmd_plan_invalid_context_fails() {
         let h = CliTestHarness::builder().build();
         let args = PlanArgs {
+            from: None,
             phase: None,
             skip: vec![],
             only: vec![],
@@ -17117,6 +17188,7 @@ spec:
     fn cmd_plan_with_skip_filters_actions() {
         let h = CliTestHarness::builder().build();
         let args = PlanArgs {
+            from: None,
             phase: None,
             skip: vec!["packages".to_string()],
             only: vec![],
@@ -18052,6 +18124,7 @@ spec:
     fn json_schema_plan() {
         let h = CliTestHarness::builder().json().build();
         let args = PlanArgs {
+            from: None,
             phase: None,
             skip: vec![],
             only: vec![],
@@ -19821,6 +19894,7 @@ spec:
         .unwrap();
 
         let cli = h.cli_with_command(Command::Plan(PlanArgs {
+            from: None,
             phase: None,
             skip: vec![],
             only: vec![],
@@ -19832,6 +19906,7 @@ spec:
             &cli,
             h.printer(),
             &PlanArgs {
+                from: None,
                 phase: None,
                 skip: vec![],
                 only: vec![],
@@ -19881,6 +19956,7 @@ spec:
             .build();
 
         let args = PlanArgs {
+            from: None,
             phase: None,
             skip: vec![],
             only: vec![],
@@ -19936,6 +20012,7 @@ spec:
             .build();
 
         let args = PlanArgs {
+            from: None,
             phase: None,
             skip: vec![],
             only: vec![],
@@ -20646,6 +20723,7 @@ spec:
         let yaml = super::generate_release_workflow_yaml(
             &["shell-tools".into(), "git-config".into()],
             &[],
+            "master",
         );
         // Both module paths should appear
         assert!(yaml.contains("modules/shell-tools/**"));
@@ -20663,6 +20741,7 @@ spec:
         let yaml = super::generate_release_workflow_yaml(
             &["my-cool-tools".into()],
             &["work-laptop".into()],
+            "master",
         );
         // Hyphens in names become underscores in output variable names
         assert!(yaml.contains("module_my_cool_tools"));
@@ -20671,7 +20750,7 @@ spec:
 
     #[test]
     fn generate_release_workflow_empty_has_placeholder_job() {
-        let yaml = super::generate_release_workflow_yaml(&[], &[]);
+        let yaml = super::generate_release_workflow_yaml(&[], &[], "master");
         // Should have commented-out paths section
         assert!(yaml.contains("# paths:"));
         // Should have placeholder job
@@ -20685,8 +20764,11 @@ spec:
 
     #[test]
     fn generate_release_workflow_profiles_only() {
-        let yaml =
-            super::generate_release_workflow_yaml(&[], &["personal".into(), "server".into()]);
+        let yaml = super::generate_release_workflow_yaml(
+            &[],
+            &["personal".into(), "server".into()],
+            "master",
+        );
         assert!(yaml.contains("profiles/personal.yaml"));
         assert!(yaml.contains("profiles/personal.yml"));
         assert!(yaml.contains("profiles/server.yaml"));

@@ -1,5 +1,5 @@
 use std::collections::HashSet;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
 use cfgd_core::command_available;
@@ -7,6 +7,27 @@ use cfgd_core::config::{MergedProfile, PackagesSpec};
 use cfgd_core::errors::{PackageError, Result};
 use cfgd_core::output::{CommandOutput, Printer};
 use cfgd_core::providers::{PackageAction, PackageManager};
+
+/// Locate a package-manager binary. First checks `$PATH` via `command_available`;
+/// on miss, walks each entry in `fallbacks` and returns the first that exists.
+/// Returns `None` if nothing is found — matches the `find_X() -> Option<PathBuf>`
+/// shape that cargo/pipx/go managers had open-coded.
+fn resolve_tool_with_fallbacks(name: &str, fallbacks: &[PathBuf]) -> Option<PathBuf> {
+    if command_available(name) {
+        return Some(PathBuf::from(name));
+    }
+    fallbacks.iter().find(|p| p.exists()).cloned()
+}
+
+/// Build a `Command` for `name`, using `resolver` for the binary path and
+/// falling back to a plain `Command::new(name)` when `resolver` returns `None`.
+/// Mirrors the `X_cmd()` pattern that cargo/pipx/go had open-coded.
+fn tool_cmd_with_resolver<F>(name: &str, resolver: F) -> Command
+where
+    F: FnOnce() -> Option<PathBuf>,
+{
+    Command::new(resolver().unwrap_or_else(|| PathBuf::from(name)))
+}
 
 /// Important post-install messages extracted from package manager output.
 struct PostInstallNote {
@@ -1370,30 +1391,23 @@ fn pkg_manager() -> SimpleManager {
 
 pub struct CargoManager;
 
-/// Check if cargo is available, including ~/.cargo/bin fallback.
-fn cargo_available() -> bool {
-    if command_available("cargo") {
-        return true;
-    }
-    if let Some(home) = std::env::var_os("HOME") {
-        let cargo_bin = std::path::PathBuf::from(home).join(".cargo/bin/cargo");
-        return cargo_bin.exists();
-    }
-    false
+/// Cargo fallback locations when `cargo` is not on `$PATH`.
+fn cargo_fallbacks() -> Vec<PathBuf> {
+    std::env::var_os("HOME")
+        .map(|h| vec![PathBuf::from(h).join(".cargo/bin/cargo")])
+        .unwrap_or_default()
 }
 
-/// Get the cargo command, preferring PATH but falling back to ~/.cargo/bin.
+fn find_cargo() -> Option<PathBuf> {
+    resolve_tool_with_fallbacks("cargo", &cargo_fallbacks())
+}
+
+fn cargo_available() -> bool {
+    find_cargo().is_some()
+}
+
 fn cargo_cmd() -> Command {
-    if command_available("cargo") {
-        return Command::new("cargo");
-    }
-    if let Some(home) = std::env::var_os("HOME") {
-        let cargo_bin = std::path::PathBuf::from(home).join(".cargo/bin/cargo");
-        if cargo_bin.exists() {
-            return Command::new(cargo_bin);
-        }
-    }
-    Command::new("cargo")
+    tool_cmd_with_resolver("cargo", find_cargo)
 }
 
 impl PackageManager for CargoManager {
@@ -1544,12 +1558,16 @@ pub(crate) fn parse_cargo_install_list(stdout: &str) -> Vec<cfgd_core::providers
 pub struct NpmManager;
 
 /// Find npm binary, checking PATH and common nvm install locations.
-fn find_npm() -> Option<std::path::PathBuf> {
+///
+/// Not usable with the generic `resolve_tool_with_fallbacks` helper because the
+/// nvm path is a wildcard `~/.nvm/versions/node/*/bin/npm` that requires a
+/// directory scan rather than a fixed fallback list.
+fn find_npm() -> Option<PathBuf> {
     if command_available("npm") {
-        return Some(std::path::PathBuf::from("npm"));
+        return Some(PathBuf::from("npm"));
     }
     if let Some(home) = std::env::var_os("HOME") {
-        let nvm_dir = std::path::PathBuf::from(home).join(".nvm/versions/node");
+        let nvm_dir = PathBuf::from(home).join(".nvm/versions/node");
         if let Ok(entries) = std::fs::read_dir(&nvm_dir) {
             for entry in entries.flatten() {
                 let npm_path = entry.path().join("bin/npm");
@@ -1567,7 +1585,7 @@ fn npm_available() -> bool {
 }
 
 fn npm_cmd() -> Command {
-    Command::new(find_npm().unwrap_or_else(|| std::path::PathBuf::from("npm")))
+    tool_cmd_with_resolver("npm", find_npm)
 }
 
 impl PackageManager for NpmManager {
@@ -1754,18 +1772,14 @@ pub(crate) fn parse_npm_list_versions(
 
 pub struct PipxManager;
 
-/// Find pipx binary, checking PATH and ~/.local/bin fallback.
-fn find_pipx() -> Option<std::path::PathBuf> {
-    if command_available("pipx") {
-        return Some(std::path::PathBuf::from("pipx"));
-    }
-    if let Some(home) = std::env::var_os("HOME") {
-        let local_bin = std::path::PathBuf::from(home).join(".local/bin/pipx");
-        if local_bin.exists() {
-            return Some(local_bin);
-        }
-    }
-    None
+fn pipx_fallbacks() -> Vec<PathBuf> {
+    std::env::var_os("HOME")
+        .map(|h| vec![PathBuf::from(h).join(".local/bin/pipx")])
+        .unwrap_or_default()
+}
+
+fn find_pipx() -> Option<PathBuf> {
+    resolve_tool_with_fallbacks("pipx", &pipx_fallbacks())
 }
 
 fn pipx_available() -> bool {
@@ -1773,7 +1787,7 @@ fn pipx_available() -> bool {
 }
 
 fn pipx_cmd() -> Command {
-    Command::new(find_pipx().unwrap_or_else(|| std::path::PathBuf::from("pipx")))
+    tool_cmd_with_resolver("pipx", find_pipx)
 }
 
 impl PackageManager for PipxManager {
@@ -2379,23 +2393,19 @@ pub(crate) fn parse_nix_search_version(output: &str) -> Option<String> {
 
 pub struct GoInstallManager;
 
-/// Find go binary, checking PATH and common install locations.
-fn find_go() -> Option<std::path::PathBuf> {
-    if command_available("go") {
-        return Some(std::path::PathBuf::from("go"));
-    }
-    for path in ["/usr/local/go/bin/go", "/usr/local/bin/go"] {
-        if std::path::Path::new(path).exists() {
-            return Some(std::path::PathBuf::from(path));
-        }
-    }
+fn go_fallbacks() -> Vec<PathBuf> {
+    let mut fallbacks = vec![
+        PathBuf::from("/usr/local/go/bin/go"),
+        PathBuf::from("/usr/local/bin/go"),
+    ];
     if let Some(home) = std::env::var_os("HOME") {
-        let go_bin = std::path::PathBuf::from(home).join("go/bin/go");
-        if go_bin.exists() {
-            return Some(go_bin);
-        }
+        fallbacks.push(PathBuf::from(home).join("go/bin/go"));
     }
-    None
+    fallbacks
+}
+
+fn find_go() -> Option<PathBuf> {
+    resolve_tool_with_fallbacks("go", &go_fallbacks())
 }
 
 fn go_available() -> bool {
@@ -2403,7 +2413,7 @@ fn go_available() -> bool {
 }
 
 fn go_cmd() -> Command {
-    Command::new(find_go().unwrap_or_else(|| std::path::PathBuf::from("go")))
+    tool_cmd_with_resolver("go", find_go)
 }
 
 impl PackageManager for GoInstallManager {

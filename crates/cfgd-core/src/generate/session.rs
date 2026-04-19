@@ -105,19 +105,13 @@ impl GenerateSession {
 
     pub fn get_existing_profiles(&self) -> Result<Vec<String>, CfgdError> {
         let profiles_dir = self.repo_root.join("profiles");
-        if !profiles_dir.exists() {
-            return Ok(vec![]);
-        }
         let mut names = vec![];
-        for entry in std::fs::read_dir(&profiles_dir)? {
-            let entry = entry?;
-            let path = entry.path();
-            if path.extension().and_then(|e| e.to_str()) == Some("yaml")
-                && let Some(stem) = path.file_stem().and_then(|s| s.to_str())
-            {
+        crate::config::for_each_yaml_file(&profiles_dir, |path| {
+            if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
                 names.push(stem.to_string());
             }
-        }
+            Ok(())
+        })?;
         names.sort();
         Ok(names)
     }

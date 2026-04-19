@@ -1,3 +1,18 @@
+//! CRD YAML generator — writes serialized CRDs to stdout for the Helm chart.
+//!
+//! # Hard-Rule #1 exemption
+//!
+//! This is a standalone build-tool binary whose entire contract is
+//! "emit well-formed YAML on stdout so the caller can `> file.yaml`".
+//! The `output::Printer` abstraction is a structured terminal interface
+//! (headers, spinners, styling) and cannot produce raw YAML on stdout
+//! without corrupting the output. The direct `print!` below is therefore
+//! the correct tool, documented here so future audits / reviewers don't
+//! re-flag it as a Hard-Rule #1 violation.
+//!
+//! This file is the ONLY `print!`/`println!` use outside of the
+//! `output` module in the cfgd workspace.
+
 use kube::CustomResourceExt;
 
 use cfgd_operator::crds::{ClusterConfigPolicy, ConfigPolicy, DriftAlert, MachineConfig, Module};

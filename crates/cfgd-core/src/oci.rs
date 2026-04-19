@@ -817,7 +817,7 @@ fn push_module_inner(
 
     // Build manifest
     let mut annotations = HashMap::new();
-    annotations.insert("cfgd.io/platform".to_string(), platform_str);
+    annotations.insert(crate::OCI_ANNOTATION_PLATFORM.to_string(), platform_str);
     annotations.insert(
         "org.opencontainers.image.created".to_string(),
         crate::utc_now_iso8601(),
@@ -4102,7 +4102,10 @@ mod tests {
     #[test]
     fn oci_manifest_with_annotations_round_trips() {
         let mut annotations = HashMap::new();
-        annotations.insert("cfgd.io/platform".to_string(), "linux/amd64".to_string());
+        annotations.insert(
+            crate::OCI_ANNOTATION_PLATFORM.to_string(),
+            "linux/amd64".to_string(),
+        );
         annotations.insert(
             "org.opencontainers.image.created".to_string(),
             "2026-01-01T00:00:00Z".to_string(),
@@ -4130,7 +4133,10 @@ mod tests {
         let parsed: OciManifest = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed.annotations.len(), 2);
         assert_eq!(
-            parsed.annotations.get("cfgd.io/platform").unwrap(),
+            parsed
+                .annotations
+                .get(crate::OCI_ANNOTATION_PLATFORM)
+                .unwrap(),
             "linux/amd64"
         );
         assert_eq!(
@@ -4629,7 +4635,10 @@ mod tests {
     #[test]
     fn oci_manifest_round_trip_with_annotations() {
         let mut annotations = HashMap::new();
-        annotations.insert("cfgd.io/platform".to_string(), "linux/amd64".to_string());
+        annotations.insert(
+            crate::OCI_ANNOTATION_PLATFORM.to_string(),
+            "linux/amd64".to_string(),
+        );
         annotations.insert(
             "org.opencontainers.image.created".to_string(),
             "2026-01-01T00:00:00Z".to_string(),
@@ -4663,7 +4672,10 @@ mod tests {
         assert_eq!(parsed.layers[0].size, 4096);
         assert_eq!(parsed.annotations.len(), 2);
         assert_eq!(
-            parsed.annotations.get("cfgd.io/platform").unwrap(),
+            parsed
+                .annotations
+                .get(crate::OCI_ANNOTATION_PLATFORM)
+                .unwrap(),
             "linux/amd64"
         );
     }

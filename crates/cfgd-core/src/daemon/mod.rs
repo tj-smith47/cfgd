@@ -898,13 +898,18 @@ pub async fn run_daemon(
 
                 tracing::info!(path = %path.display(), "file changed");
 
-                // Record drift
+                // Record drift. Mutate state counters under the mutex, then DROP
+                // the guard before calling `notifier.notify()` — Desktop notify
+                // does a blocking dbus round-trip that otherwise blocks every
+                // other daemon task waiting on the state mutex.
                 let drift_recorded = record_file_drift(&path);
                 if drift_recorded {
-                    let mut st = state.lock().await;
-                    st.drift_count += 1;
-                    if let Some(source) = st.sources.first_mut() {
-                        source.drift_count += 1;
+                    {
+                        let mut st = state.lock().await;
+                        st.drift_count += 1;
+                        if let Some(source) = st.sources.first_mut() {
+                            source.drift_count += 1;
+                        }
                     }
 
                     if notify_on_drift {
@@ -2391,54 +2396,68 @@ where
         }
     }
 
-    let st = state.lock().await;
-
-    let (status_code, body) = match path {
-        "/health" => {
-            let health = serde_json::json!({
-                "status": "ok",
-                "pid": std::process::id(),
-                "uptime_secs": st.started_at.elapsed().as_secs(),
-            });
-            ("200 OK", serde_json::to_string_pretty(&health)?)
-        }
-        "/status" => {
-            let response = st.to_response();
-            ("200 OK", serde_json::to_string_pretty(&response)?)
-        }
-        "/drift" => {
-            let drift_events = match st.store_path.as_ref() {
-                Some(path) => StateStore::open(path)
-                    .and_then(|s| s.unresolved_drift())
-                    .unwrap_or_default(),
-                None => Vec::new(),
-            };
-
-            let drift: Vec<serde_json::Value> = drift_events
-                .iter()
-                .map(|d| {
-                    serde_json::json!({
-                        "resource_type": d.resource_type,
-                        "resource_id": d.resource_id,
-                        "expected": d.expected,
-                        "actual": d.actual,
-                        "timestamp": d.timestamp,
-                    })
-                })
-                .collect();
-
+    // Clone the state snapshot out of the guard and DROP the guard before any
+    // `.await` — holding the mutex across writer.write_all/flush would serialize
+    // every /health, /status, and /drift connection. The /drift branch also
+    // runs blocking sqlite I/O inside spawn_blocking instead of under the guard.
+    let (status_code, body) = {
+        let (uptime_secs, status_response, store_path_for_drift) = {
+            let st = state.lock().await;
             (
-                "200 OK",
-                serde_json::to_string_pretty(&serde_json::json!({
-                    "drift_count": drift.len(),
-                    "events": drift,
-                }))?,
+                st.started_at.elapsed().as_secs(),
+                st.to_response(),
+                st.store_path.clone(),
             )
+        };
+
+        match path {
+            "/health" => {
+                let health = serde_json::json!({
+                    "status": "ok",
+                    "pid": std::process::id(),
+                    "uptime_secs": uptime_secs,
+                });
+                ("200 OK", serde_json::to_string_pretty(&health)?)
+            }
+            "/status" => ("200 OK", serde_json::to_string_pretty(&status_response)?),
+            "/drift" => {
+                let drift_events = match store_path_for_drift {
+                    Some(p) => tokio::task::spawn_blocking(move || {
+                        StateStore::open(&p)
+                            .and_then(|s| s.unresolved_drift())
+                            .unwrap_or_default()
+                    })
+                    .await
+                    .unwrap_or_default(),
+                    None => Vec::new(),
+                };
+
+                let drift: Vec<serde_json::Value> = drift_events
+                    .iter()
+                    .map(|d| {
+                        serde_json::json!({
+                            "resource_type": d.resource_type,
+                            "resource_id": d.resource_id,
+                            "expected": d.expected,
+                            "actual": d.actual,
+                            "timestamp": d.timestamp,
+                        })
+                    })
+                    .collect();
+
+                (
+                    "200 OK",
+                    serde_json::to_string_pretty(&serde_json::json!({
+                        "drift_count": drift.len(),
+                        "events": drift,
+                    }))?,
+                )
+            }
+            _ => (
+                "404 Not Found",
+                serde_json::json!({"error": "not found"}).to_string(),
+            ),
         }
-        _ => (
-            "404 Not Found",
-            serde_json::json!({"error": "not found"}).to_string(),
-        ),
     };
 
     let response = format!(
@@ -3068,6 +3087,15 @@ pub fn git_pull_sync(repo_path: &Path) -> std::result::Result<bool, String> {
 
 // --- Helpers ---
 
+/// Module-local wrapper around [`crate::parse_duration_str`] that returns the
+/// daemon's `DEFAULT_RECONCILE_SECS` (5 minutes) fallback when parsing fails.
+///
+/// Intentional duplication with `cfgd-operator::leader::parse_duration_secs`:
+/// the two callers want different fallbacks (daemon reconcile loop default vs.
+/// leader-election lease-window default), so a single shared helper with a
+/// parameterised default would just push the default decision back to every
+/// call site without saving any code. Kept local and documented per
+/// dedup-audit S1 (decision: keep + document).
 pub(crate) fn parse_duration_or_default(s: &str) -> Duration {
     crate::parse_duration_str(s).unwrap_or(Duration::from_secs(DEFAULT_RECONCILE_SECS))
 }

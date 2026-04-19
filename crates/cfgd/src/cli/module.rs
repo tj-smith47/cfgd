@@ -361,19 +361,14 @@ pub(super) fn profiles_using_module(
     module_name: &str,
 ) -> anyhow::Result<Vec<String>> {
     let mut result = Vec::new();
-    if !profiles_dir.exists() {
-        return Ok(result);
-    }
-    for entry in std::fs::read_dir(profiles_dir)? {
-        let entry = entry?;
-        let path = entry.path();
-        if path.extension().is_some_and(|e| e == "yaml" || e == "yml")
-            && let Ok(doc) = config::load_profile(&path)
+    cfgd_core::config::for_each_yaml_file(profiles_dir, |path| {
+        if let Ok(doc) = config::load_profile(path)
             && doc.spec.modules.contains(&module_name.to_string())
         {
             result.push(doc.metadata.name.clone());
         }
-    }
+        Ok(())
+    })?;
     Ok(result)
 }
 
@@ -1652,7 +1647,7 @@ fn verify_tag_signature_cryptographic(repo_dir: &Path, tag_name: &str) -> anyhow
     if output.status.success() {
         Ok(true)
     } else {
-        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stderr = cfgd_core::stderr_lossy_trimmed(&output);
         // Distinguish "bad signature" from "no keyring / gpg not found"
         if stderr.contains("BAD signature")
             || stderr.contains("BADSIG")
@@ -1661,7 +1656,7 @@ fn verify_tag_signature_cryptographic(repo_dir: &Path, tag_name: &str) -> anyhow
             Ok(false) // Signature present but invalid
         } else {
             // gpg not installed, key not in keyring, etc.
-            anyhow::bail!("{}", stderr.trim())
+            anyhow::bail!("{}", stderr)
         }
     }
 }
@@ -1768,45 +1763,47 @@ pub(super) fn cmd_module_registry_add(
         anyhow::bail!("{}", MSG_NO_CONFIG);
     }
 
-    // Read and modify the raw YAML to preserve formatting
-    let raw = std::fs::read_to_string(&cli.config)?;
-    let mut doc: serde_yaml::Value = serde_yaml::from_str(&raw)?;
-
-    let spec = doc
-        .get_mut("spec")
-        .ok_or_else(|| anyhow::anyhow!("config has no spec"))?;
-
-    // Ensure spec.modules.registries exists
-    if spec.get("modules").is_none() {
-        spec["modules"] = serde_yaml::Value::Mapping(serde_yaml::Mapping::new());
-    }
-    let modules = spec
-        .get_mut("modules")
-        .ok_or_else(|| anyhow::anyhow!("failed to create modules section"))?;
-
-    let registries = modules
-        .get_mut("registries")
-        .and_then(|v| v.as_sequence_mut());
-
     let new_entry = serde_yaml::to_value(cfgd_core::config::ModuleRegistryEntry {
         name: registry_name.clone(),
         url: url.to_string(),
     })?;
 
-    if let Some(registries) = registries {
-        for s in registries.iter() {
-            if s.get("name").and_then(|v| v.as_str()) == Some(&registry_name) {
-                printer.info(&format!("Registry '{}' already configured", registry_name));
+    // `already_present` short-circuits the "added" success message after the
+    // helper's write (still a harmless idempotent rewrite).
+    let mut already_present = false;
+    super::mutate_config_yaml(&cli.config, true, |doc| {
+        let spec = doc
+            .get_mut("spec")
+            .ok_or_else(|| anyhow::anyhow!("config has no spec"))?;
+        if spec.get("modules").is_none() {
+            spec["modules"] = serde_yaml::Value::Mapping(serde_yaml::Mapping::new());
+        }
+        let modules = spec
+            .get_mut("modules")
+            .ok_or_else(|| anyhow::anyhow!("failed to create modules section"))?;
+        let registries = modules
+            .get_mut("registries")
+            .and_then(|v| v.as_sequence_mut());
+
+        if let Some(registries) = registries {
+            if registries
+                .iter()
+                .any(|s| s.get("name").and_then(|v| v.as_str()) == Some(&registry_name))
+            {
+                already_present = true;
                 return Ok(());
             }
+            registries.push(new_entry.clone());
+        } else {
+            modules["registries"] = serde_yaml::Value::Sequence(vec![new_entry.clone()]);
         }
-        registries.push(new_entry);
-    } else {
-        modules["registries"] = serde_yaml::Value::Sequence(vec![new_entry]);
-    }
+        Ok(())
+    })?;
 
-    let yaml = serde_yaml::to_string(&doc)?;
-    cfgd_core::atomic_write_str(&cli.config, &yaml)?;
+    if already_present {
+        printer.info(&format!("Registry '{}' already configured", registry_name));
+        return Ok(());
+    }
 
     printer.success(&format!(
         "Added module registry '{}' ({})",
@@ -1828,50 +1825,63 @@ pub(super) fn cmd_module_registry_remove(
         anyhow::bail!("{}", MSG_NO_CONFIG);
     }
 
-    let raw = std::fs::read_to_string(&cli.config)?;
-    let mut doc: serde_yaml::Value = serde_yaml::from_str(&raw)?;
+    let mut outcome = RegistryRemoveOutcome::NoRegistries;
+    super::mutate_config_yaml(&cli.config, true, |doc| {
+        let registries = doc
+            .get_mut("spec")
+            .and_then(|s| s.get_mut("modules"))
+            .and_then(|m| m.get_mut("registries"))
+            .and_then(|v| v.as_sequence_mut());
+        match registries {
+            None => outcome = RegistryRemoveOutcome::NoRegistries,
+            Some(registries) => {
+                let before = registries.len();
+                registries.retain(|s| s.get("name").and_then(|v| v.as_str()) != Some(name));
+                outcome = if registries.len() < before {
+                    RegistryRemoveOutcome::Removed
+                } else {
+                    RegistryRemoveOutcome::NotFound
+                };
+            }
+        }
+        Ok(())
+    })?;
 
-    let registries = doc
-        .get_mut("spec")
-        .and_then(|s| s.get_mut("modules"))
-        .and_then(|m| m.get_mut("registries"))
-        .and_then(|v| v.as_sequence_mut());
-
-    if let Some(registries) = registries {
-        let before = registries.len();
-        registries.retain(|s| s.get("name").and_then(|v| v.as_str()) != Some(name));
-        if registries.len() < before {
-            let yaml = serde_yaml::to_string(&doc)?;
-            cfgd_core::atomic_write_str(&cli.config, &yaml)?;
+    match outcome {
+        RegistryRemoveOutcome::Removed => {
             printer.success(&format!("Removed module registry '{}'", name));
-
             // Warn about profile references that now point to a removed registry
             let config_dir = cli.config.parent().unwrap_or_else(|| Path::new("."));
             let profiles_dir = config_dir.join("profiles");
             let old_prefix = format!("{}/", name);
-            if profiles_dir.is_dir() {
-                for entry in std::fs::read_dir(&profiles_dir)?.flatten() {
-                    let path = entry.path();
-                    if path.extension().is_some_and(|e| e == "yaml" || e == "yml")
-                        && let Ok(contents) = std::fs::read_to_string(&path)
-                        && contents.contains(&old_prefix)
-                    {
-                        printer.warning(&format!(
-                            "Profile '{}' still references '{}/...' — those modules will fail to resolve",
-                            path.file_name().unwrap_or_default().to_string_lossy(),
-                            name
-                        ));
-                    }
+            cfgd_core::config::for_each_yaml_file(&profiles_dir, |path| {
+                if let Ok(contents) = std::fs::read_to_string(path)
+                    && contents.contains(&old_prefix)
+                {
+                    printer.warning(&format!(
+                        "Profile '{}' still references '{}/...' — those modules will fail to resolve",
+                        path.file_name().unwrap_or_default().to_string_lossy(),
+                        name
+                    ));
                 }
-            }
-        } else {
+                Ok(())
+            })?;
+        }
+        RegistryRemoveOutcome::NotFound => {
             printer.info(&format!("Registry '{}' not found", name));
         }
-    } else {
-        printer.info(NO_REGISTRIES_MSG);
+        RegistryRemoveOutcome::NoRegistries => {
+            printer.info(NO_REGISTRIES_MSG);
+        }
     }
 
     Ok(())
+}
+
+enum RegistryRemoveOutcome {
+    Removed,
+    NotFound,
+    NoRegistries,
 }
 
 pub(super) fn cmd_module_registry_rename(
@@ -1899,24 +1909,23 @@ pub(super) fn cmd_module_registry_rename(
         anyhow::bail!("A registry named '{}' already exists", new_name);
     }
 
-    // Update registry name in cfgd.yaml
-    let raw = std::fs::read_to_string(&cli.config)?;
-    let mut doc: serde_yaml::Value = serde_yaml::from_str(&raw)?;
-    if let Some(registries) = doc
-        .get_mut("spec")
-        .and_then(|s| s.get_mut("modules"))
-        .and_then(|m| m.get_mut("registries"))
-        .and_then(|v| v.as_sequence_mut())
-    {
-        for entry in registries.iter_mut() {
-            if entry.get("name").and_then(|v| v.as_str()) == Some(name) {
-                entry["name"] = serde_yaml::Value::String(new_name.to_string());
-                break;
+    // Update registry name in cfgd.yaml via the shared mutate-write helper.
+    super::mutate_config_yaml(&cli.config, true, |doc| {
+        if let Some(registries) = doc
+            .get_mut("spec")
+            .and_then(|s| s.get_mut("modules"))
+            .and_then(|m| m.get_mut("registries"))
+            .and_then(|v| v.as_sequence_mut())
+        {
+            for entry in registries.iter_mut() {
+                if entry.get("name").and_then(|v| v.as_str()) == Some(name) {
+                    entry["name"] = serde_yaml::Value::String(new_name.to_string());
+                    break;
+                }
             }
         }
-    }
-    let yaml = serde_yaml::to_string(&doc)?;
-    cfgd_core::atomic_write_str(&cli.config, &yaml)?;
+        Ok(())
+    })?;
 
     // Cascade to profiles: old_name/module → new_name/module
     let profiles_dir = cli
@@ -1924,33 +1933,27 @@ pub(super) fn cmd_module_registry_rename(
         .parent()
         .unwrap_or_else(|| Path::new("."))
         .join("profiles");
-    if profiles_dir.is_dir() {
-        let old_prefix = format!("{}/", name);
-        let new_prefix = format!("{}/", new_name);
-        for entry in std::fs::read_dir(&profiles_dir)? {
-            let entry = entry?;
-            let path = entry.path();
-            if !path.extension().is_some_and(|e| e == "yaml" || e == "yml") {
-                continue;
-            }
-            let contents = std::fs::read_to_string(&path)?;
-            let mut profile: config::ProfileDocument = match serde_yaml::from_str(&contents) {
-                Ok(p) => p,
-                Err(_) => continue,
-            };
-            let mut changed = false;
-            for module_ref in &mut profile.spec.modules {
-                if module_ref.starts_with(&old_prefix) {
-                    *module_ref = format!("{}{}", new_prefix, &module_ref[old_prefix.len()..]);
-                    changed = true;
-                }
-            }
-            if changed {
-                let yaml = serde_yaml::to_string(&profile)?;
-                cfgd_core::atomic_write_str(&path, &yaml)?;
+    let old_prefix = format!("{}/", name);
+    let new_prefix = format!("{}/", new_name);
+    cfgd_core::config::for_each_yaml_file(&profiles_dir, |path| {
+        let contents = std::fs::read_to_string(path)?;
+        let mut profile: config::ProfileDocument = match serde_yaml::from_str(&contents) {
+            Ok(p) => p,
+            Err(_) => return Ok(()),
+        };
+        let mut changed = false;
+        for module_ref in &mut profile.spec.modules {
+            if module_ref.starts_with(&old_prefix) {
+                *module_ref = format!("{}{}", new_prefix, &module_ref[old_prefix.len()..]);
+                changed = true;
             }
         }
-    }
+        if changed {
+            let yaml = serde_yaml::to_string(&profile).map_err(std::io::Error::other)?;
+            cfgd_core::atomic_write_str(path, &yaml)?;
+        }
+        Ok(())
+    })?;
 
     printer.success(&format!("Renamed registry '{}' to '{}'", name, new_name));
     Ok(())
@@ -2886,7 +2889,7 @@ spec:
             },
             config: config_dir.path().join("cfgd.yaml"),
             profile: None,
-            verbose: false,
+            verbose: 0,
             quiet: true,
             no_color: false,
             output: super::OutputFormatArg(cfgd_core::output::OutputFormat::Table),
@@ -2929,7 +2932,7 @@ spec:
             },
             config: dir.join("cfgd.yaml"),
             profile: None,
-            verbose: false,
+            verbose: 0,
             quiet: true,
             no_color: true,
             output: super::OutputFormatArg(cfgd_core::output::OutputFormat::Table),

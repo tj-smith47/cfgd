@@ -26,7 +26,7 @@ pub struct GenerateArgs {
     pub provider: Option<String>,
 
     /// Skip confirmation prompts
-    #[arg(long, short)]
+    #[arg(long, short, env = "CFGD_YES")]
     pub yes: bool,
 
     /// Only scan dotfiles and shell config; print findings without AI generation
@@ -93,9 +93,9 @@ pub fn cmd_generate(cli: &Cli, printer: &Printer, args: &GenerateArgs) -> anyhow
         printer.info(
             "Only files in your home directory are accessible, and private keys/credentials are excluded.",
         );
-        let proceed = inquire::Confirm::new("Continue?")
-            .with_default(true)
-            .prompt()?;
+        // Routed through Printer::prompt_confirm so -o json / structured mode
+        // early-returns with a non-interactive error instead of hanging.
+        let proceed = printer.prompt_confirm("Continue?")?;
         if !proceed {
             printer.info("Aborted.");
             return Ok(());
@@ -217,9 +217,7 @@ pub fn cmd_generate(cli: &Cli, printer: &Printer, args: &GenerateArgs) -> anyhow
         let commit = if args.yes {
             true
         } else {
-            inquire::Confirm::new("Commit all generated files?")
-                .with_default(true)
-                .prompt()?
+            printer.prompt_confirm("Commit all generated files?")?
         };
         if commit {
             let mut add_cmd = std::process::Command::new("git");
@@ -231,7 +229,7 @@ pub fn cmd_generate(cli: &Cli, printer: &Printer, args: &GenerateArgs) -> anyhow
             if !add_out.status.success() {
                 printer.warning(&format!(
                     "git add failed: {}",
-                    String::from_utf8_lossy(&add_out.stderr).trim()
+                    cfgd_core::stderr_lossy_trimmed(&add_out)
                 ));
             } else {
                 let commit_out = std::process::Command::new("git")
@@ -246,7 +244,7 @@ pub fn cmd_generate(cli: &Cli, printer: &Printer, args: &GenerateArgs) -> anyhow
                 } else {
                     printer.warning(&format!(
                         "git commit failed: {}",
-                        String::from_utf8_lossy(&commit_out.stderr).trim()
+                        cfgd_core::stderr_lossy_trimmed(&commit_out)
                     ));
                 }
             }
@@ -281,14 +279,19 @@ fn handle_present_yaml(
     let response = if auto_accept {
         PresentYamlResponse::Accept
     } else {
-        let options = vec!["Accept", "Reject", "Give feedback", "Step through"];
-        let choice = inquire::Select::new("What would you like to do?", options).prompt()?;
+        let options: Vec<String> = ["Accept", "Reject", "Give feedback", "Step through"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let choice = printer
+            .prompt_select("What would you like to do?", &options)?
+            .as_str();
 
         match choice {
             "Accept" => PresentYamlResponse::Accept,
             "Reject" => PresentYamlResponse::Reject,
             "Give feedback" => {
-                let feedback = inquire::Text::new("Your feedback:").prompt()?;
+                let feedback = printer.prompt_text("Your feedback:", "")?;
                 PresentYamlResponse::Feedback { message: feedback }
             }
             "Step through" => PresentYamlResponse::StepThrough,

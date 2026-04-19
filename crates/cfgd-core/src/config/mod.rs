@@ -88,6 +88,44 @@ pub struct ConfigSpec {
     pub compliance: Option<ComplianceConfig>,
 }
 
+/// Returns `true` if `path` has a YAML extension (`.yaml` or `.yml`,
+/// case-sensitive to match the rest of cfgd).
+///
+/// Use this instead of inlining `ext == "yaml" || ext == "yml"` checks when
+/// iterating module / profile directories — keeps the "what counts as a YAML
+/// file" decision in one place.
+pub fn is_yaml_ext(path: &Path) -> bool {
+    path.extension().is_some_and(|e| e == "yaml" || e == "yml")
+}
+
+/// Iterate over every `.yaml` / `.yml` file in `dir`, invoking `f(path)` for each.
+///
+/// - Non-existent `dir` is **not** an error — yields nothing.
+/// - Non-YAML entries, subdirectories, and unreadable entries are silently skipped.
+/// - `f`'s error short-circuits the walk (first error wins).
+///
+/// Use this instead of open-coding `std::fs::read_dir` + `is_yaml_ext` checks
+/// when scanning `<config_dir>/profiles` / `<config_dir>/modules` trees.
+pub fn for_each_yaml_file<F>(dir: &Path, mut f: F) -> std::io::Result<()>
+where
+    F: FnMut(&Path) -> std::io::Result<()>,
+{
+    if !dir.exists() {
+        return Ok(());
+    }
+    for entry in std::fs::read_dir(dir)? {
+        let entry = match entry {
+            Ok(e) => e,
+            Err(_) => continue,
+        };
+        let path = entry.path();
+        if is_yaml_ext(&path) {
+            f(&path)?;
+        }
+    }
+    Ok(())
+}
+
 /// Build a minimal CfgdConfig for module-only operations that don't have cfgd.yaml.
 pub fn minimal_config() -> CfgdConfig {
     CfgdConfig {

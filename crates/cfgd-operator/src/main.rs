@@ -247,6 +247,12 @@ fn init_tracing() {
     let env_filter = cfgd_core::tracing_env_filter("info");
     let fmt_layer = tracing_subscriber::fmt::layer();
 
+    // Capture any OTel-init failure so we can emit it via `tracing::warn!`
+    // AFTER the fmt subscriber is up — avoids an `eprintln!` in an operator
+    // binary (Hard Rule #1) and keeps the failure message in the same
+    // structured log stream as everything else.
+    let mut otel_init_err: Option<String> = None;
+
     if std::env::var("OTEL_EXPORTER_OTLP_ENDPOINT").is_ok() {
         match init_otel_tracer() {
             Ok(tracer) => {
@@ -260,8 +266,7 @@ fn init_tracing() {
                 return;
             }
             Err(e) => {
-                // Tracing not yet initialized for structured output; log to stderr
-                eprintln!("Failed to initialize OpenTelemetry: {e}, falling back to fmt only");
+                otel_init_err = Some(e.to_string());
             }
         }
     }
@@ -270,6 +275,13 @@ fn init_tracing() {
         .with(env_filter)
         .with(fmt_layer)
         .init();
+
+    if let Some(err) = otel_init_err {
+        tracing::warn!(
+            error = %err,
+            "Failed to initialize OpenTelemetry; falling back to fmt-only tracing",
+        );
+    }
 }
 
 fn init_otel_tracer() -> Result<opentelemetry_sdk::trace::SdkTracer, Box<dyn std::error::Error>> {

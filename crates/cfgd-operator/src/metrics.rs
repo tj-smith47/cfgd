@@ -40,6 +40,15 @@ pub struct DbPoolLabels {
     pub role: String,
 }
 
+/// Build a `Histogram` using cfgd's canonical short-duration exponential buckets.
+/// Collapses the 3-line `exponential_buckets(...)` incantation to a single call so
+/// divergent inline histograms don't drift from the SLO-adjacent bucket choice
+/// defined in `cfgd_core::DURATION_BUCKETS_SHORT`.
+fn short_histogram() -> Histogram {
+    let (start, factor, length) = cfgd_core::DURATION_BUCKETS_SHORT;
+    Histogram::new(exponential_buckets(start, factor, length))
+}
+
 #[derive(Clone)]
 pub struct Metrics {
     pub reconciliations_total: Family<ReconcileLabels, Counter>,
@@ -66,10 +75,7 @@ impl Metrics {
         );
 
         let reconciliation_duration_seconds =
-            Family::<ReconcileLabels, Histogram>::new_with_constructor(|| {
-                let (start, factor, length) = cfgd_core::DURATION_BUCKETS_SHORT;
-                Histogram::new(exponential_buckets(start, factor, length))
-            });
+            Family::<ReconcileLabels, Histogram>::new_with_constructor(short_histogram);
         sub.register(
             "reconciliation_duration_seconds",
             "Duration of reconciliation attempts in seconds",
@@ -91,10 +97,7 @@ impl Metrics {
         );
 
         let webhook_duration_seconds =
-            Family::<WebhookLabels, Histogram>::new_with_constructor(|| {
-                let (start, factor, length) = cfgd_core::DURATION_BUCKETS_SHORT;
-                Histogram::new(exponential_buckets(start, factor, length))
-            });
+            Family::<WebhookLabels, Histogram>::new_with_constructor(short_histogram);
         sub.register(
             "webhook_duration_seconds",
             "Duration of webhook requests in seconds",
@@ -122,20 +125,14 @@ impl Metrics {
             db_pool_in_use.clone(),
         );
 
-        let db_pool_wait_seconds = {
-            let (start, factor, length) = cfgd_core::DURATION_BUCKETS_SHORT;
-            Histogram::new(exponential_buckets(start, factor, length))
-        };
+        let db_pool_wait_seconds = short_histogram();
         sub.register(
             "gateway_db_pool_wait_seconds",
             "Wait time to acquire a gateway DB reader pool connection",
             db_pool_wait_seconds.clone(),
         );
 
-        let db_writer_wait_seconds = {
-            let (start, factor, length) = cfgd_core::DURATION_BUCKETS_SHORT;
-            Histogram::new(exponential_buckets(start, factor, length))
-        };
+        let db_writer_wait_seconds = short_histogram();
         sub.register(
             "gateway_db_writer_wait_seconds",
             "Wait time to acquire the gateway DB writer mutex",

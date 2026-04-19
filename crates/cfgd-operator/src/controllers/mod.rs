@@ -53,6 +53,21 @@ fn record_error_and_requeue(
     Action::requeue(std::time::Duration::from_secs(30))
 }
 
+/// Build a kube-rs `error_policy` closure tagged with `controller` for CRD type `K`.
+///
+/// Collapses the five identical per-controller `error_policy_*` one-liners
+/// (MachineConfig, DriftAlert, ConfigPolicy, ClusterConfigPolicy, Module) into
+/// a single generic helper — the only per-controller variation was the metrics
+/// label, so the type parameter `K` just selects the `Arc<K>` callers expect.
+fn make_error_policy<K>(
+    controller: &'static str,
+) -> impl Fn(Arc<K>, &OperatorError, Arc<ControllerContext>) -> Action + Clone
+where
+    K: kube::Resource + 'static,
+{
+    move |_obj, error, ctx| record_error_and_requeue(error, &ctx, controller)
+}
+
 fn record_reconcile_success(ctx: &ControllerContext, controller: &str, start: std::time::Instant) {
     let labels = ReconcileLabels {
         controller: controller.to_string(),
@@ -164,11 +179,19 @@ pub async fn run(client: Client, metrics: Metrics) -> Result<(), OperatorError> 
             Api::<DriftAlert>::all(client.clone()),
             WatcherConfig::default(),
         )
-        .run(reconcile_machine_config, error_policy_mc, mc_ctx)
+        .run(
+            reconcile_machine_config,
+            make_error_policy::<MachineConfig>("machine_config"),
+            mc_ctx,
+        )
         .for_each(log_reconcile::<MachineConfig>("MachineConfig"));
 
     let da_controller = Controller::new(alerts, WatcherConfig::default())
-        .run(reconcile_drift_alert, error_policy_da, da_ctx)
+        .run(
+            reconcile_drift_alert,
+            make_error_policy::<DriftAlert>("drift_alert"),
+            da_ctx,
+        )
         .for_each(log_reconcile::<DriftAlert>("DriftAlert"));
 
     let cp_builder = Controller::new(policies, WatcherConfig::default());
@@ -188,15 +211,27 @@ pub async fn run(client: Client, metrics: Metrics) -> Result<(), OperatorError> 
                     .collect::<Vec<_>>()
             },
         )
-        .run(reconcile_config_policy, error_policy_cp, cp_ctx)
+        .run(
+            reconcile_config_policy,
+            make_error_policy::<ConfigPolicy>("config_policy"),
+            cp_ctx,
+        )
         .for_each(log_reconcile::<ConfigPolicy>("ConfigPolicy"));
 
     let ccp_controller = Controller::new(cluster_policies, WatcherConfig::default())
-        .run(reconcile_cluster_config_policy, error_policy_ccp, ccp_ctx)
+        .run(
+            reconcile_cluster_config_policy,
+            make_error_policy::<ClusterConfigPolicy>("cluster_config_policy"),
+            ccp_ctx,
+        )
         .for_each(log_reconcile::<ClusterConfigPolicy>("ClusterConfigPolicy"));
 
     let mod_controller = Controller::new(modules, WatcherConfig::default())
-        .run(reconcile_module, error_policy_module, mod_ctx)
+        .run(
+            reconcile_module,
+            make_error_policy::<Module>("module"),
+            mod_ctx,
+        )
         .for_each(log_reconcile::<Module>("Module"));
 
     tokio::join!(
@@ -611,18 +646,6 @@ fn validate_spec(spec: &MachineConfigSpec) -> Result<(), OperatorError> {
         .map_err(|errors| OperatorError::InvalidSpec(errors.join("; ")))
 }
 
-/// Error policy for MachineConfig reconciliation failures.
-/// Returns a base requeue duration; kube-rs Controller internally applies
-/// exponential backoff (via its scheduler) for repeated failures of the
-/// same object, so we don't need manual retry counting here.
-fn error_policy_mc(
-    _obj: Arc<MachineConfig>,
-    error: &OperatorError,
-    ctx: Arc<ControllerContext>,
-) -> Action {
-    record_error_and_requeue(error, &ctx, "machine_config")
-}
-
 // ---------------------------------------------------------------------------
 // DriftAlert controller — updates MachineConfig drift status
 // ---------------------------------------------------------------------------
@@ -927,16 +950,6 @@ async fn cleanup_drift_alerts(client: &Client, namespace: &str, mc_name: &str) {
             info!(name = %alert_name, "deleted resolved DriftAlert");
         }
     }
-}
-
-/// Error policy for DriftAlert reconciliation failures.
-/// kube-rs Controller applies exponential backoff internally.
-fn error_policy_da(
-    _obj: Arc<DriftAlert>,
-    error: &OperatorError,
-    ctx: Arc<ControllerContext>,
-) -> Action {
-    record_error_and_requeue(error, &ctx, "drift_alert")
 }
 
 // ---------------------------------------------------------------------------
@@ -1252,16 +1265,6 @@ async fn emit_policy_evaluation_events(
     }
 }
 
-/// Error policy for ConfigPolicy reconciliation failures.
-/// kube-rs Controller applies exponential backoff internally.
-fn error_policy_cp(
-    _obj: Arc<ConfigPolicy>,
-    error: &OperatorError,
-    ctx: Arc<ControllerContext>,
-) -> Action {
-    record_error_and_requeue(error, &ctx, "config_policy")
-}
-
 // ---------------------------------------------------------------------------
 // ClusterConfigPolicy controller — cluster-wide policy enforcement
 // ---------------------------------------------------------------------------
@@ -1456,14 +1459,6 @@ async fn reconcile_cluster_config_policy(
     record_reconcile_success(&ctx, "cluster_config_policy", start);
 
     Ok(Action::requeue(std::time::Duration::from_secs(60)))
-}
-
-fn error_policy_ccp(
-    _obj: Arc<ClusterConfigPolicy>,
-    error: &OperatorError,
-    ctx: Arc<ControllerContext>,
-) -> Action {
-    record_error_and_requeue(error, &ctx, "cluster_config_policy")
 }
 
 // ---------------------------------------------------------------------------
@@ -1813,14 +1808,6 @@ fn evaluate_module_verification(signature: &Option<ModuleSignature>) -> ModuleVe
             }
         },
     }
-}
-
-fn error_policy_module(
-    _obj: Arc<Module>,
-    error: &OperatorError,
-    ctx: Arc<ControllerContext>,
-) -> Action {
-    record_error_and_requeue(error, &ctx, "module")
 }
 
 // ---------------------------------------------------------------------------
@@ -4859,79 +4846,9 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // error_policy_* — actual function calls
-    // -----------------------------------------------------------------------
-
-    #[tokio::test]
-    async fn error_policy_mc_records_metrics_and_returns_action() {
-        let (ctx, _registry) = make_test_controller_context();
-        let obj = Arc::new(MachineConfig {
-            metadata: Default::default(),
-            spec: mc_spec("h", "p"),
-            status: None,
-        });
-        let error = OperatorError::Reconciliation("mc error".into());
-        let _action = error_policy_mc(obj, &error, Arc::new(ctx));
-    }
-
-    #[tokio::test]
-    async fn error_policy_da_records_metrics_and_returns_action() {
-        let (ctx, _registry) = make_test_controller_context();
-        let obj = Arc::new(DriftAlert {
-            metadata: Default::default(),
-            spec: crate::crds::DriftAlertSpec {
-                device_id: "dev-1".to_string(),
-                machine_config_ref: crate::crds::MachineConfigReference {
-                    name: "mc-1".to_string(),
-                    namespace: None,
-                },
-                severity: DriftSeverity::Low,
-                drift_details: vec![],
-            },
-            status: None,
-        });
-        let error = OperatorError::Reconciliation("da error".into());
-        let _action = error_policy_da(obj, &error, Arc::new(ctx));
-    }
-
-    #[tokio::test]
-    async fn error_policy_cp_records_metrics_and_returns_action() {
-        let (ctx, _registry) = make_test_controller_context();
-        let obj = Arc::new(ConfigPolicy {
-            metadata: Default::default(),
-            spec: ConfigPolicySpec::default(),
-            status: None,
-        });
-        let error = OperatorError::Reconciliation("cp error".into());
-        let _action = error_policy_cp(obj, &error, Arc::new(ctx));
-    }
-
-    #[tokio::test]
-    async fn error_policy_ccp_records_metrics_and_returns_action() {
-        let (ctx, _registry) = make_test_controller_context();
-        let obj = Arc::new(ClusterConfigPolicy {
-            metadata: Default::default(),
-            spec: ClusterConfigPolicySpec::default(),
-            status: None,
-        });
-        let error = OperatorError::Reconciliation("ccp error".into());
-        let _action = error_policy_ccp(obj, &error, Arc::new(ctx));
-    }
-
-    #[tokio::test]
-    async fn error_policy_module_records_metrics_and_returns_action() {
-        let (ctx, _registry) = make_test_controller_context();
-        let obj = Arc::new(Module {
-            metadata: Default::default(),
-            spec: ModuleSpec::default(),
-            status: None,
-        });
-        let error = OperatorError::Reconciliation("mod error".into());
-        let _action = error_policy_module(obj, &error, Arc::new(ctx));
-    }
-
-    // -----------------------------------------------------------------------
-    // error_policy_* — verify they each tag the correct controller label
+    // make_error_policy — verify each typed closure tags the correct label
+    // (the no-assertion "records_metrics_and_returns_action" duplicates the
+    // record_error_and_requeue tests above and has been removed)
     // -----------------------------------------------------------------------
 
     #[tokio::test]
@@ -4944,7 +4861,7 @@ mod tests {
             status: None,
         });
         let error = OperatorError::Reconciliation("e".into());
-        let _ = error_policy_mc(obj, &error, Arc::clone(&ctx));
+        let _ = make_error_policy::<MachineConfig>("machine_config")(obj, &error, Arc::clone(&ctx));
         let labels = crate::metrics::ReconcileLabels {
             controller: "machine_config".to_string(),
             result: "error".to_string(),
@@ -4955,7 +4872,7 @@ mod tests {
                 .get_or_create(&labels)
                 .get(),
             1,
-            "error_policy_mc should use 'machine_config' controller label"
+            "machine_config error_policy should tag the 'machine_config' controller label"
         );
     }
 
@@ -4977,7 +4894,7 @@ mod tests {
             status: None,
         });
         let error = OperatorError::Reconciliation("e".into());
-        let _ = error_policy_da(obj, &error, Arc::clone(&ctx));
+        let _ = make_error_policy::<DriftAlert>("drift_alert")(obj, &error, Arc::clone(&ctx));
         let labels = crate::metrics::ReconcileLabels {
             controller: "drift_alert".to_string(),
             result: "error".to_string(),
@@ -4988,7 +4905,7 @@ mod tests {
                 .get_or_create(&labels)
                 .get(),
             1,
-            "error_policy_da should use 'drift_alert' controller label"
+            "drift_alert error_policy should tag the 'drift_alert' controller label"
         );
     }
 
@@ -5002,7 +4919,7 @@ mod tests {
             status: None,
         });
         let error = OperatorError::Reconciliation("e".into());
-        let _ = error_policy_cp(obj, &error, Arc::clone(&ctx));
+        let _ = make_error_policy::<ConfigPolicy>("config_policy")(obj, &error, Arc::clone(&ctx));
         let labels = crate::metrics::ReconcileLabels {
             controller: "config_policy".to_string(),
             result: "error".to_string(),
@@ -5013,7 +4930,7 @@ mod tests {
                 .get_or_create(&labels)
                 .get(),
             1,
-            "error_policy_cp should use 'config_policy' controller label"
+            "config_policy error_policy should tag the 'config_policy' controller label"
         );
     }
 
@@ -5027,7 +4944,11 @@ mod tests {
             status: None,
         });
         let error = OperatorError::Reconciliation("e".into());
-        let _ = error_policy_ccp(obj, &error, Arc::clone(&ctx));
+        let _ = make_error_policy::<ClusterConfigPolicy>("cluster_config_policy")(
+            obj,
+            &error,
+            Arc::clone(&ctx),
+        );
         let labels = crate::metrics::ReconcileLabels {
             controller: "cluster_config_policy".to_string(),
             result: "error".to_string(),
@@ -5038,7 +4959,7 @@ mod tests {
                 .get_or_create(&labels)
                 .get(),
             1,
-            "error_policy_ccp should use 'cluster_config_policy' controller label"
+            "cluster_config_policy error_policy should tag the 'cluster_config_policy' controller label"
         );
     }
 
@@ -5052,7 +4973,7 @@ mod tests {
             status: None,
         });
         let error = OperatorError::Reconciliation("e".into());
-        let _ = error_policy_module(obj, &error, Arc::clone(&ctx));
+        let _ = make_error_policy::<Module>("module")(obj, &error, Arc::clone(&ctx));
         let labels = crate::metrics::ReconcileLabels {
             controller: "module".to_string(),
             result: "error".to_string(),
@@ -5063,7 +4984,7 @@ mod tests {
                 .get_or_create(&labels)
                 .get(),
             1,
-            "error_policy_module should use 'module' controller label"
+            "module error_policy should tag the 'module' controller label"
         );
     }
 

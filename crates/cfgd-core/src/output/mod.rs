@@ -10,9 +10,29 @@ use syntect::parsing::SyntaxSet;
 use syntect::util::as_24_bit_terminal_escaped;
 
 use std::collections::VecDeque;
-use std::io::BufRead;
+use std::io::{BufRead, IsTerminal};
 use std::sync::{Arc, Mutex, mpsc};
 use std::time::{Duration, Instant};
+
+/// Whether stderr is attached to a terminal. Gate animated output (spinners,
+/// progress bars) on this so `cfgd apply 2>err.log` captures a clean log
+/// without tick frames.
+fn stderr_is_terminal() -> bool {
+    std::io::stderr().is_terminal()
+}
+
+/// Build an `InquireError::Custom` for the "structured-output asked for an
+/// interactive prompt" case. `-o json|yaml|name|jsonpath|template` implies a
+/// non-interactive consumer; hanging on `inquire` here would deadlock scripts.
+fn non_interactive_err(prompt: &str) -> inquire::InquireError {
+    inquire::InquireError::Custom(
+        format!(
+            "refusing to prompt for '{prompt}' in non-interactive/structured output mode \
+             (re-run without -o json or supply the answer via a flag / env var)"
+        )
+        .into(),
+    )
+}
 
 use crate::config::ThemeConfig;
 
@@ -727,6 +747,11 @@ impl Printer {
     }
 
     pub fn progress_bar(&self, total: u64, message: &str) -> ProgressBar {
+        // Mirror spinner()'s gates: Quiet (including auto-Quiet under `-o json`)
+        // or a non-TTY stderr must never emit animated progress frames.
+        if self.verbosity == Verbosity::Quiet || !stderr_is_terminal() {
+            return ProgressBar::hidden();
+        }
         let pb = self.multi_progress.add(ProgressBar::new(total));
         pb.set_style(
             ProgressStyle::with_template("{spinner:.cyan} [{bar:30.cyan/dim}] {pos}/{len} {msg}")
@@ -738,7 +763,7 @@ impl Printer {
     }
 
     pub fn spinner(&self, message: &str) -> ProgressBar {
-        if self.verbosity == Verbosity::Quiet {
+        if self.verbosity == Verbosity::Quiet || !stderr_is_terminal() {
             return ProgressBar::hidden();
         }
         let pb = self.multi_progress.add(ProgressBar::new_spinner());
@@ -846,6 +871,9 @@ impl Printer {
         &self,
         message: &str,
     ) -> std::result::Result<bool, inquire::InquireError> {
+        if self.is_structured() {
+            return Err(non_interactive_err(message));
+        }
         inquire::Confirm::new(message).with_default(false).prompt()
     }
 
@@ -854,6 +882,9 @@ impl Printer {
         message: &str,
         options: &'a [String],
     ) -> std::result::Result<&'a String, inquire::InquireError> {
+        if self.is_structured() {
+            return Err(non_interactive_err(message));
+        }
         if options.is_empty() {
             return Err(inquire::InquireError::Custom("no options available".into()));
         }
@@ -866,6 +897,9 @@ impl Printer {
         message: &str,
         default: &str,
     ) -> std::result::Result<String, inquire::InquireError> {
+        if self.is_structured() {
+            return Err(non_interactive_err(message));
+        }
         inquire::Text::new(message).with_default(default).prompt()
     }
 

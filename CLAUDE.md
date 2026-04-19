@@ -30,6 +30,14 @@ See `.claude/PLAN.md` for the phased plan. Do not add features outside the curre
 ## Config format
 Primary YAML (KRM-inspired: `apiVersion`, `kind`, `metadata`, `spec`). TOML also supported. All parsing in `config/`.
 
+## CLI conventions
+
+- **Verb-noun subcommand pattern** is canonical. `cfgd module registry add <url>`, `cfgd source add <url>`, `cfgd module registry remove <name>`. New subcommand trees follow this shape — never invert (e.g. do NOT `cfgd module registry list-all` or `cfgd source new`).
+- **Destructive verbs take `rm` as an alias** (`Remove` accepts `rm`). `List` accepts `ls`.
+- **`--yes` skips confirmations** and always binds to `env = "CFGD_YES"` (not a per-command env var).
+- **Global `-o` / `--output`** owns the output-format concept. Subcommand-local format flags must be named something else (e.g. `module export --as devcontainer`) to avoid shadowing.
+- **Every top-level `Command` variant carries `long_about` with an `Examples:` block.** Regression-guard via ux-consistency audit.
+
 ## Quality scripts
 - `.claude/scripts/audit.sh` — DRY violations, banned patterns, module boundary violations
 

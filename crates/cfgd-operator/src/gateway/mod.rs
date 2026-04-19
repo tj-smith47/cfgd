@@ -122,6 +122,7 @@ pub async fn start_gateway(config: GatewayConfig) -> Result<(), Box<dyn std::err
         event_tx,
         enrollment_method,
         metrics: config.metrics,
+        web_sessions: api::WebSessions::new(),
     };
 
     // Periodic event cleanup — runs daily to prevent unbounded DB growth
@@ -162,7 +163,7 @@ pub async fn start_gateway(config: GatewayConfig) -> Result<(), Box<dyn std::err
     }
 
     let app = api::router(state.clone())
-        .merge(web::router())
+        .merge(web::router(state.clone()))
         .layer(DefaultBodyLimit::max(GATEWAY_MAX_BODY_BYTES))
         .layer(TraceLayer::new_for_http())
         .layer(build_cors_layer())

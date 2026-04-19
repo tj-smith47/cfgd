@@ -5,7 +5,17 @@ use cfgd_core::output::Printer;
 #[derive(Parser)]
 #[command(
     name = "kubectl-cfgd",
-    about = "cfgd kubectl plugin — manage modules on pods"
+    about = "cfgd kubectl plugin — manage modules on pods",
+    long_about = "Manage cfgd modules on pods via kubectl.\n\n\
+                  Installed as a kubectl plugin (via Krew or PATH), this binary \
+                  proxies module operations (debug, exec, inject) through the \
+                  CSI driver and operator.\n\n\
+                  Examples:\n  \
+                  kubectl cfgd debug mypod --module nettools:1.0.0\n  \
+                  kubectl cfgd exec mypod --module nettools:1.0.0 -- curl -v http://svc\n  \
+                  kubectl cfgd inject deployment/myapp --module nettools:1.0.0\n  \
+                  kubectl cfgd status\n  \
+                  kubectl cfgd version"
 )]
 struct PluginCli {
     #[command(subcommand)]
@@ -15,6 +25,13 @@ struct PluginCli {
 #[derive(Subcommand)]
 enum PluginCommand {
     /// Create an ephemeral debug container with cfgd modules
+    #[command(
+        long_about = "Attach an ephemeral debug container to a running pod with one or more cfgd modules mounted.\n\n\
+                      Examples:\n  \
+                      kubectl cfgd debug mypod --module nettools:1.0.0\n  \
+                      kubectl cfgd debug mypod -m nettools:1.0.0 -m dig-utils:2.3.1 --namespace prod\n  \
+                      kubectl cfgd debug mypod --module nettools:1.0.0 --image alpine:3.20"
+    )]
     Debug {
         /// Pod name
         pod: String,
@@ -29,6 +46,12 @@ enum PluginCommand {
         image: String,
     },
     /// Execute a command in a pod with module environment
+    #[command(
+        long_about = "Run a command inside a running pod with cfgd modules mounted and PATH extended.\n\n\
+                      Examples:\n  \
+                      kubectl cfgd exec mypod --module nettools:1.0.0 -- curl -v http://svc\n  \
+                      kubectl cfgd exec mypod -m nettools:1.0.0 --namespace prod -- dig example.com"
+    )]
     Exec {
         /// Pod name
         pod: String,
@@ -43,6 +66,12 @@ enum PluginCommand {
         command: Vec<String>,
     },
     /// Inject modules into a workload (patches pod template, triggers rollout)
+    #[command(
+        long_about = "Patch a workload's pod template to mount cfgd modules on every replica and trigger a rollout.\n\n\
+                      Examples:\n  \
+                      kubectl cfgd inject deployment/myapp --module nettools:1.0.0\n  \
+                      kubectl cfgd inject statefulset/db -m dbtools:3.1.0 --namespace prod"
+    )]
     Inject {
         /// Resource in kind/name format (e.g. deployment/myapp, statefulset/db)
         resource: String,
@@ -54,8 +83,18 @@ enum PluginCommand {
         namespace: String,
     },
     /// Show fleet module status
+    #[command(
+        long_about = "Show per-node module status across the cluster (cache hits, pull errors, staged versions).\n\n\
+                      Examples:\n  \
+                      kubectl cfgd status"
+    )]
     Status,
     /// Show client and server version
+    #[command(
+        long_about = "Print the client plugin version plus the deployed operator/CSI driver versions detected from the cluster.\n\n\
+                      Examples:\n  \
+                      kubectl cfgd version"
+    )]
     Version,
 }
 

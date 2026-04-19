@@ -2523,14 +2523,6 @@ const MODULE_SCRIPT_TIMEOUT: std::time::Duration = std::time::Duration::from_sec
 const ENV_FILE_HEADER: &str = "# managed by cfgd \u{2014} do not edit";
 
 /// Build environment variables injected into every script invocation.
-//
-// `CFGD_DRY_RUN` is always "false" here because the CLI (see `cli/mod.rs`)
-// short-circuits the dry-run path above `Reconciler::apply`, so `execute_script`
-// never runs in dry-run mode today. The env var is emitted as a forward-compat
-// contract for user scripts; the previously-threaded `dry_run` parameter was
-// structurally dead — no production call site passed anything but `false` —
-// so it was removed. Re-introduce it only as part of a full wire-through that
-// threads a real `dry_run: bool` down `Reconciler::apply`.
 pub(crate) fn build_script_env(
     config_dir: &std::path::Path,
     profile_name: &str,
@@ -2553,7 +2545,6 @@ pub(crate) fn build_script_env(
             },
         ),
         ("CFGD_PHASE".to_string(), phase.display_name().to_string()),
-        ("CFGD_DRY_RUN".to_string(), "false".to_string()),
     ];
     if let Some(name) = module_name {
         env.push(("CFGD_MODULE_NAME".to_string(), name.to_string()));
@@ -6358,7 +6349,7 @@ mod tests {
         assert_eq!(map.get("CFGD_PROFILE").unwrap(), "default");
         assert_eq!(map.get("CFGD_CONTEXT").unwrap(), "apply");
         assert_eq!(map.get("CFGD_PHASE").unwrap(), "preApply");
-        assert_eq!(map.get("CFGD_DRY_RUN").unwrap(), "false");
+        assert!(!map.contains_key("CFGD_DRY_RUN"));
         assert!(!map.contains_key("CFGD_MODULE_NAME"));
         assert!(!map.contains_key("CFGD_MODULE_DIR"));
     }
@@ -9758,10 +9749,13 @@ mod tests {
     }
 
     #[test]
-    fn build_script_env_dry_run_always_false() {
-        // CFGD_DRY_RUN is currently hardcoded to "false" — the CLI gates dry-run
-        // above `Reconciler::apply`, so execute_script never runs in dry-run mode.
-        // Guards against accidental re-introduction of an un-wired parameter.
+    fn build_script_env_does_not_emit_dry_run() {
+        // The CFGD_DRY_RUN env var was removed: it was hardcoded to "false"
+        // because the CLI gates dry-run above `Reconciler::apply`, so
+        // `execute_script` never ran in dry-run mode. Re-introduce the
+        // variable only as part of a full wire-through that threads a real
+        // `dry_run` down `Reconciler::apply`. This test guards against
+        // accidental re-introduction of the un-wired variable.
         let env = super::build_script_env(
             std::path::Path::new("/cfg"),
             "laptop",
@@ -9771,7 +9765,7 @@ mod tests {
             None,
         );
         let map: HashMap<String, String> = env.into_iter().collect();
-        assert_eq!(map.get("CFGD_DRY_RUN").unwrap(), "false");
+        assert!(!map.contains_key("CFGD_DRY_RUN"));
     }
 
     #[test]
@@ -9811,7 +9805,8 @@ mod tests {
 
     #[test]
     fn build_script_env_count_base_vars() {
-        // Without module info, should have exactly 5 base vars
+        // Without module info, should have exactly 4 base vars
+        // (CFGD_CONFIG_DIR, CFGD_PROFILE, CFGD_CONTEXT, CFGD_PHASE)
         let env = super::build_script_env(
             std::path::Path::new("/x"),
             "p",
@@ -9820,9 +9815,9 @@ mod tests {
             None,
             None,
         );
-        assert_eq!(env.len(), 5, "base env should have 5 entries");
+        assert_eq!(env.len(), 4, "base env should have 4 entries");
 
-        // With both module name and dir, should have 7
+        // With both module name and dir, should have 6
         let env_with_module = super::build_script_env(
             std::path::Path::new("/x"),
             "p",
@@ -9833,8 +9828,8 @@ mod tests {
         );
         assert_eq!(
             env_with_module.len(),
-            7,
-            "env with module info should have 7 entries"
+            6,
+            "env with module info should have 6 entries"
         );
     }
 

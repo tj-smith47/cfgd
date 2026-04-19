@@ -22,6 +22,14 @@ pub struct ModuleLabels {
     pub module: String,
 }
 
+/// Build a `Histogram` using cfgd's canonical long-duration exponential buckets.
+/// Centralizes the SLO-adjacent bucket choice from `cfgd_core::DURATION_BUCKETS_LONG`
+/// so the inline `exponential_buckets(...)` pattern doesn't drift.
+fn long_histogram() -> Histogram {
+    let (start, factor, length) = cfgd_core::DURATION_BUCKETS_LONG;
+    Histogram::new(exponential_buckets(start, factor, length))
+}
+
 pub struct CsiMetrics {
     pub volume_publish_total: Family<PublishLabels, Counter>,
     pub pull_duration_seconds: Family<PullLabels, Histogram>,
@@ -38,10 +46,8 @@ impl CsiMetrics {
             volume_publish_total.clone(),
         );
 
-        let pull_duration_seconds = Family::<PullLabels, Histogram>::new_with_constructor(|| {
-            let (start, factor, length) = cfgd_core::DURATION_BUCKETS_LONG;
-            Histogram::new(exponential_buckets(start, factor, length))
-        });
+        let pull_duration_seconds =
+            Family::<PullLabels, Histogram>::new_with_constructor(long_histogram);
         registry.register(
             "cfgd_csi_pull_duration_seconds",
             "Duration of OCI module pull operations",

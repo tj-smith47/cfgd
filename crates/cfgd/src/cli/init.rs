@@ -583,7 +583,9 @@ cfgd apply
     // It gets regenerated when modules/profiles are added.
     let workflow_dir = dir.join(".github").join("workflows");
     std::fs::create_dir_all(&workflow_dir)?;
-    let workflow = generate_release_workflow_yaml(&[], &[]);
+    let default_branch =
+        cfgd_core::detect_default_branch(dir).unwrap_or_else(|| "master".to_string());
+    let workflow = generate_release_workflow_yaml(&[], &[], &default_branch);
     cfgd_core::atomic_write_str(&workflow_dir.join("cfgd-release.yml"), &workflow)?;
     printer.success("Created .github/workflows/cfgd-release.yml");
 
@@ -603,7 +605,9 @@ pub(super) fn regenerate_workflow(config_dir: &Path, printer: &Printer) -> anyho
     let workflow_dir = config_dir.join(".github").join("workflows");
     std::fs::create_dir_all(&workflow_dir)?;
 
-    let yaml = generate_release_workflow_yaml(&modules, &profiles);
+    let default_branch =
+        cfgd_core::detect_default_branch(config_dir).unwrap_or_else(|| "master".to_string());
+    let yaml = generate_release_workflow_yaml(&modules, &profiles, &default_branch);
     cfgd_core::atomic_write_str(&workflow_dir.join("cfgd-release.yml"), &yaml)?;
     printer.success("Generated .github/workflows/cfgd-release.yml");
 
@@ -2827,14 +2831,15 @@ spec:
 
     #[test]
     fn generate_release_workflow_yaml_empty_inputs() {
-        let yaml = generate_release_workflow_yaml(&[], &[]);
+        let yaml = generate_release_workflow_yaml(&[], &[], "master");
         assert!(!yaml.is_empty(), "should produce non-empty YAML");
         assert!(yaml.contains("cfgd"), "should reference cfgd");
     }
 
     #[test]
     fn generate_release_workflow_yaml_with_modules() {
-        let yaml = generate_release_workflow_yaml(&["git".to_string(), "tmux".to_string()], &[]);
+        let yaml =
+            generate_release_workflow_yaml(&["git".to_string(), "tmux".to_string()], &[], "master");
         assert!(
             yaml.contains("git") || yaml.contains("tmux"),
             "should reference module names"
@@ -2843,7 +2848,11 @@ spec:
 
     #[test]
     fn generate_release_workflow_yaml_with_profiles() {
-        let yaml = generate_release_workflow_yaml(&[], &["work".to_string(), "home".to_string()]);
+        let yaml = generate_release_workflow_yaml(
+            &[],
+            &["work".to_string(), "home".to_string()],
+            "master",
+        );
         assert!(
             yaml.contains("work") || yaml.contains("home"),
             "should reference profile names"
@@ -2852,7 +2861,11 @@ spec:
 
     #[test]
     fn generate_release_workflow_yaml_with_both() {
-        let yaml = generate_release_workflow_yaml(&["neovim".to_string()], &["base".to_string()]);
+        let yaml = generate_release_workflow_yaml(
+            &["neovim".to_string()],
+            &["base".to_string()],
+            "master",
+        );
         assert!(!yaml.is_empty());
     }
 

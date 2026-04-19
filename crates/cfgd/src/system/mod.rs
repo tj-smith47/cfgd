@@ -1127,8 +1127,8 @@ impl EnvironmentConfigurator {
             Ok(output) if output.status.success() => {}
             Ok(output) => {
                 // setx writes error messages to stdout, not stderr
-                let stdout = String::from_utf8_lossy(&output.stdout);
-                printer.warning(&format!("setx {} failed: {}", name, stdout.trim()));
+                let stdout = cfgd_core::stdout_lossy_trimmed(&output);
+                printer.warning(&format!("setx {} failed: {}", name, stdout));
             }
             Err(e) => {
                 printer.warning(&format!("setx {} failed: {}", name, e));

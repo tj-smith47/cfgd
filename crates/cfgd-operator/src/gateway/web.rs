@@ -4,10 +4,30 @@ use axum::http::HeaderMap;
 use axum::response::Html;
 use axum::routing::get;
 
-use cfgd_core::xml_escape;
+use cfgd_core::{sha256_hex, xml_escape};
+use subtle::ConstantTimeEq;
 
 use super::api::{SharedState, extract_bearer_token};
 use super::errors::GatewayError;
+
+/// Session cookie lifetime — matches the 24h Max-Age written to the client.
+const SESSION_TTL: std::time::Duration = std::time::Duration::from_secs(24 * 60 * 60);
+
+/// Constant-time comparison of a candidate secret against the expected key.
+/// Hashes both sides so the comparison length is fixed regardless of input length.
+fn secret_eq(candidate: &str, expected: &str) -> bool {
+    sha256_hex(candidate.as_bytes())
+        .as_bytes()
+        .ct_eq(sha256_hex(expected.as_bytes()).as_bytes())
+        .into()
+}
+
+/// Generate a 256-bit random session token (hex-encoded), prefixed for log grep.
+fn new_session_id() -> String {
+    let a = uuid::Uuid::new_v4().to_string().replace('-', "");
+    let b = uuid::Uuid::new_v4().to_string().replace('-', "");
+    format!("cfgd_ws_{a}{b}")
+}
 
 const COMMON_STYLES: &str = r#"
         * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -43,9 +63,14 @@ const COMMON_STYLES: &str = r#"
 
 /// Web UI auth: checks Authorization header, session cookie, or ?token= query param.
 /// When CFGD_API_KEY is not set, all requests are allowed.
-/// If ?token= is used, a session cookie is set and the client is redirected to strip
-/// the token from the URL (prevents token leaking into browser history/logs).
+///
+/// On successful `?token=` auth we mint a fresh random session ID (NOT the admin
+/// key) and store its hash in `state.web_sessions`, then set it as the
+/// `cfgd_session` cookie with `Secure; HttpOnly; SameSite=Strict`. A leaked
+/// cookie therefore cannot be replayed to recover `CFGD_API_KEY`, and the
+/// server can invalidate sessions without rotating the admin key.
 async fn web_auth_middleware(
+    State(state): State<SharedState>,
     headers: HeaderMap,
     query: Query<std::collections::HashMap<String, String>>,
     request: axum::extract::Request,
@@ -54,7 +79,7 @@ async fn web_auth_middleware(
     if let Ok(expected_key) = std::env::var("CFGD_API_KEY") {
         // 1. Authorization header
         if let Some(token) = extract_bearer_token(&headers)
-            && token == expected_key
+            && secret_eq(&token, &expected_key)
         {
             return Ok(next.run(request).await);
         }
@@ -65,17 +90,20 @@ async fn web_auth_middleware(
         {
             for cookie in cookies.split(';') {
                 if let Some(value) = cookie.trim().strip_prefix("cfgd_session=")
-                    && value == expected_key
+                    && state.web_sessions.validate(value)
                 {
                     return Ok(next.run(request).await);
                 }
             }
         }
 
-        // 3. ?token= query param — validate, set cookie, redirect to strip token from URL
+        // 3. ?token= query param — validate, mint session, redirect to strip token from URL
         if let Some(token) = query.get("token")
-            && *token == expected_key
+            && secret_eq(token, &expected_key)
         {
+            let session_id = new_session_id();
+            state.web_sessions.insert(&session_id, SESSION_TTL);
+
             let path = request.uri().path().to_string();
             let response = axum::response::Response::builder()
                 .status(axum::http::StatusCode::SEE_OTHER)
@@ -83,8 +111,7 @@ async fn web_auth_middleware(
                 .header(
                     axum::http::header::SET_COOKIE,
                     format!(
-                        "cfgd_session={}; Path=/; HttpOnly; SameSite=Strict; Max-Age=86400",
-                        token
+                        "cfgd_session={session_id}; Path=/; Secure; HttpOnly; SameSite=Strict; Max-Age=86400"
                     ),
                 )
                 .body(axum::body::Body::empty())
@@ -97,12 +124,15 @@ async fn web_auth_middleware(
     Ok(next.run(request).await)
 }
 
-pub fn router() -> Router<SharedState> {
+pub fn router(state: SharedState) -> Router<SharedState> {
     Router::new()
         .route("/", get(dashboard))
         .route("/devices/{id}", get(device_detail))
         .route("/events", get(fleet_events))
-        .route_layer(axum::middleware::from_fn(web_auth_middleware))
+        .route_layer(axum::middleware::from_fn_with_state(
+            state,
+            web_auth_middleware,
+        ))
 }
 
 async fn dashboard(State(state): State<SharedState>) -> Result<Html<String>, GatewayError> {
@@ -354,7 +384,16 @@ async fn device_detail(
         )
     };
 
-    let device_id_js = xml_escape(&device.id);
+    // `serde_json::to_string` produces a fully-escaped JS string literal (with
+    // surrounding quotes), which handles `\`, `\n`, `\r`, `\u2028` / `\u2029`,
+    // and other characters that `xml_escape` leaves untouched.
+    let device_id_js = match serde_json::to_string(&device.id) {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::error!(error = %e, device_id = %device.id, "failed to JSON-encode device id for JS literal");
+            "\"\"".to_string()
+        }
+    };
 
     let html = format!(
         r#"<!DOCTYPE html>
@@ -480,7 +519,7 @@ async fn device_detail(
         </div>
     </div>
     <script>
-        var deviceId = "{device_id_js}";
+        var deviceId = {device_id_js};
         function getAuthHeader() {{
             // If CFGD_API_KEY is set on the server, users must provide a token.
             // For the web UI, we read it from localStorage if available.
@@ -835,7 +874,7 @@ mod tests {
     use axum::routing::get;
     use tower::ServiceExt;
 
-    use super::super::api::{AppState, EnrollmentMethod};
+    use super::super::api::{AppState, EnrollmentMethod, WebSessions};
     use super::super::db::ServerDb;
 
     fn test_state() -> (SharedState, tempfile::TempDir) {
@@ -850,6 +889,7 @@ mod tests {
                 event_tx,
                 enrollment_method: EnrollmentMethod::Token,
                 metrics: None,
+                web_sessions: WebSessions::new(),
             },
             tmp,
         )
@@ -1308,11 +1348,11 @@ mod tests {
 
     // --- web_auth_middleware ---
 
-    /// Build a minimal router with the auth middleware for testing.
-    fn auth_test_app() -> axum::Router {
+    /// Build a minimal router with the auth middleware bound to `state` for testing.
+    fn auth_test_app(state: SharedState) -> axum::Router {
         axum::Router::new()
             .route("/test", get(|| async { "ok" }))
-            .route_layer(middleware::from_fn(web_auth_middleware))
+            .route_layer(middleware::from_fn_with_state(state, web_auth_middleware))
     }
 
     #[tokio::test]
@@ -1321,7 +1361,8 @@ mod tests {
         // Ensure CFGD_API_KEY is not set
         unsafe { std::env::remove_var("CFGD_API_KEY") };
 
-        let app = auth_test_app();
+        let (state, _tmp) = test_state();
+        let app = auth_test_app(state);
         let resp = app
             .oneshot(Request::builder().uri("/test").body(Body::empty()).unwrap())
             .await
@@ -1334,7 +1375,8 @@ mod tests {
     async fn auth_middleware_rejects_without_credentials_when_key_set() {
         unsafe { std::env::set_var("CFGD_API_KEY", "test-secret-key") };
 
-        let app = auth_test_app();
+        let (state, _tmp) = test_state();
+        let app = auth_test_app(state);
         let resp = app
             .oneshot(Request::builder().uri("/test").body(Body::empty()).unwrap())
             .await
@@ -1349,7 +1391,8 @@ mod tests {
     async fn auth_middleware_accepts_valid_bearer_token() {
         unsafe { std::env::set_var("CFGD_API_KEY", "test-secret-key") };
 
-        let app = auth_test_app();
+        let (state, _tmp) = test_state();
+        let app = auth_test_app(state);
         let resp = app
             .oneshot(
                 Request::builder()
@@ -1370,7 +1413,8 @@ mod tests {
     async fn auth_middleware_rejects_wrong_bearer_token() {
         unsafe { std::env::set_var("CFGD_API_KEY", "test-secret-key") };
 
-        let app = auth_test_app();
+        let (state, _tmp) = test_state();
+        let app = auth_test_app(state);
         let resp = app
             .oneshot(
                 Request::builder()
@@ -1391,12 +1435,14 @@ mod tests {
     async fn auth_middleware_accepts_valid_session_cookie() {
         unsafe { std::env::set_var("CFGD_API_KEY", "test-secret-key") };
 
-        let app = auth_test_app();
+        let (state, _tmp) = test_state();
+        state.web_sessions.insert("sess-registered", SESSION_TTL);
+        let app = auth_test_app(state);
         let resp = app
             .oneshot(
                 Request::builder()
                     .uri("/test")
-                    .header(header::COOKIE, "cfgd_session=test-secret-key")
+                    .header(header::COOKIE, "cfgd_session=sess-registered")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -1409,15 +1455,39 @@ mod tests {
 
     #[tokio::test]
     #[serial_test::serial]
-    async fn auth_middleware_rejects_wrong_session_cookie() {
+    async fn auth_middleware_rejects_unknown_session_cookie() {
         unsafe { std::env::set_var("CFGD_API_KEY", "test-secret-key") };
 
-        let app = auth_test_app();
+        let (state, _tmp) = test_state();
+        let app = auth_test_app(state);
         let resp = app
             .oneshot(
                 Request::builder()
                     .uri("/test")
-                    .header(header::COOKIE, "cfgd_session=wrong-key")
+                    .header(header::COOKIE, "cfgd_session=not-a-real-session")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+
+        unsafe { std::env::remove_var("CFGD_API_KEY") };
+    }
+
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn auth_middleware_rejects_raw_api_key_as_session_cookie() {
+        // Regression: we must NOT accept the raw CFGD_API_KEY as a cfgd_session value.
+        unsafe { std::env::set_var("CFGD_API_KEY", "test-secret-key") };
+
+        let (state, _tmp) = test_state();
+        let app = auth_test_app(state);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/test")
+                    .header(header::COOKIE, "cfgd_session=test-secret-key")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -1433,14 +1503,16 @@ mod tests {
     async fn auth_middleware_accepts_cookie_among_multiple() {
         unsafe { std::env::set_var("CFGD_API_KEY", "test-secret-key") };
 
-        let app = auth_test_app();
+        let (state, _tmp) = test_state();
+        state.web_sessions.insert("sess-abc", SESSION_TTL);
+        let app = auth_test_app(state);
         let resp = app
             .oneshot(
                 Request::builder()
                     .uri("/test")
                     .header(
                         header::COOKIE,
-                        "other=value; cfgd_session=test-secret-key; another=thing",
+                        "other=value; cfgd_session=sess-abc; another=thing",
                     )
                     .body(Body::empty())
                     .unwrap(),
@@ -1457,7 +1529,8 @@ mod tests {
     async fn auth_middleware_token_query_param_redirects_and_sets_cookie() {
         unsafe { std::env::set_var("CFGD_API_KEY", "test-secret-key") };
 
-        let app = auth_test_app();
+        let (state, _tmp) = test_state();
+        let app = auth_test_app(state);
         let resp = app
             .oneshot(
                 Request::builder()
@@ -1477,14 +1550,17 @@ mod tests {
             .to_str()
             .unwrap();
         assert_eq!(location, "/test");
-        // Set-Cookie header should contain the session cookie
+        // Set-Cookie header should contain the session cookie with required flags,
+        // and the cookie value must NOT be the admin API key.
         let set_cookie = resp
             .headers()
             .get(header::SET_COOKIE)
             .unwrap()
             .to_str()
             .unwrap();
-        assert!(set_cookie.contains("cfgd_session=test-secret-key"));
+        assert!(set_cookie.starts_with("cfgd_session=cfgd_ws_"));
+        assert!(!set_cookie.contains("test-secret-key"));
+        assert!(set_cookie.contains("Secure"));
         assert!(set_cookie.contains("HttpOnly"));
         assert!(set_cookie.contains("SameSite=Strict"));
         assert!(set_cookie.contains("Max-Age=86400"));
@@ -1497,7 +1573,8 @@ mod tests {
     async fn auth_middleware_wrong_token_query_param_rejected() {
         unsafe { std::env::set_var("CFGD_API_KEY", "test-secret-key") };
 
-        let app = auth_test_app();
+        let (state, _tmp) = test_state();
+        let app = auth_test_app(state);
         let resp = app
             .oneshot(
                 Request::builder()
@@ -1532,7 +1609,7 @@ mod tests {
     #[serial_test::serial]
     async fn router_wires_routes() {
         let (state, _tmp) = test_state();
-        let app = router().with_state(state);
+        let app = router(state.clone()).with_state(state);
 
         // Ensure CFGD_API_KEY is not set so auth middleware lets us through
         unsafe { std::env::remove_var("CFGD_API_KEY") };

@@ -1,3 +1,7 @@
+use std::collections::HashMap;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::middleware::{self, Next};
@@ -6,6 +10,7 @@ use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::routing::{delete, get, post, put};
 use axum::{Extension, Json, Router};
 use futures::stream::Stream;
+use parking_lot::Mutex as PlMutex;
 use serde::{Deserialize, Serialize};
 use subtle::ConstantTimeEq;
 use tokio_stream::StreamExt;
@@ -14,6 +19,43 @@ use tokio_stream::wrappers::BroadcastStream;
 use super::db::{FleetEvent, ServerDb};
 use super::errors::GatewayError;
 use crate::metrics::Metrics;
+
+/// In-memory store of active web-UI session IDs (hashed).
+///
+/// Session IDs are random 256-bit tokens set as the `cfgd_session` cookie
+/// after successful `?token=` auth. We store only the SHA-256 hash + expiry,
+/// so a disk snapshot or memory-scrape of this struct doesn't yield usable
+/// cookies, and we never write the raw admin key (`CFGD_API_KEY`) into a
+/// client cookie.
+#[derive(Clone, Default)]
+pub struct WebSessions {
+    inner: Arc<PlMutex<HashMap<String, Instant>>>,
+}
+
+impl WebSessions {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Register a fresh session ID (raw, not hashed) valid for `ttl`.
+    /// Also prunes expired entries so the map cannot grow unboundedly.
+    pub fn insert(&self, session_id: &str, ttl: Duration) {
+        let expires = Instant::now() + ttl;
+        let hash = cfgd_core::sha256_hex(session_id.as_bytes());
+        let mut map = self.inner.lock();
+        let now = Instant::now();
+        map.retain(|_, exp| *exp > now);
+        map.insert(hash, expires);
+    }
+
+    /// Returns `true` if `session_id` is a known, non-expired session.
+    pub fn validate(&self, session_id: &str) -> bool {
+        let hash = cfgd_core::sha256_hex(session_id.as_bytes());
+        let map = self.inner.lock();
+        map.get(&hash)
+            .is_some_and(|expires| *expires > Instant::now())
+    }
+}
 
 /// Server-level enrollment method.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -45,6 +87,7 @@ pub struct AppState {
     pub event_tx: tokio::sync::broadcast::Sender<FleetEvent>,
     pub enrollment_method: EnrollmentMethod,
     pub metrics: Option<Metrics>,
+    pub web_sessions: WebSessions,
 }
 
 pub type SharedState = AppState;
@@ -279,6 +322,7 @@ pub fn router(state: SharedState) -> Router<SharedState> {
 // device_id lands in a path), and DB-pressure DoS.
 const DEVICE_ID_MAX_LEN: usize = 128;
 const HOSTNAME_MAX_LEN: usize = 253;
+const USERNAME_MAX_LEN: usize = 64;
 
 fn validate_device_id(s: &str) -> Result<(), GatewayError> {
     if s.is_empty() {
@@ -319,6 +363,34 @@ fn validate_hostname(s: &str) -> Result<(), GatewayError> {
     {
         return Err(GatewayError::InvalidRequest(
             "hostname may only contain [A-Za-z0-9._-]".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+/// Validate an admin-supplied username.
+///
+/// The username is embedded verbatim in the SSH `allowed_signers` file (one signer
+/// per line) and passed as `-I` to `ssh-keygen -Y verify`, and appears in GPG log
+/// lines. Rejecting control characters (newline / CR / NUL / tab) is load-bearing:
+/// a newline would inject an additional signer line in `allowed_signers`.
+fn validate_username(s: &str) -> Result<(), GatewayError> {
+    if s.is_empty() {
+        return Err(GatewayError::InvalidRequest(
+            "username must not be empty".to_string(),
+        ));
+    }
+    if s.len() > USERNAME_MAX_LEN {
+        return Err(GatewayError::InvalidRequest(format!(
+            "username exceeds {USERNAME_MAX_LEN} chars"
+        )));
+    }
+    if !s
+        .bytes()
+        .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_' || b == b'.')
+    {
+        return Err(GatewayError::InvalidRequest(
+            "username may only contain [A-Za-z0-9._-]".to_string(),
         ));
     }
     Ok(())
@@ -537,11 +609,7 @@ async fn create_token(
     State(state): State<SharedState>,
     Json(req): Json<CreateTokenRequest>,
 ) -> Result<impl IntoResponse, GatewayError> {
-    if req.username.is_empty() {
-        return Err(GatewayError::InvalidRequest(
-            "username must not be empty".to_string(),
-        ));
-    }
+    validate_username(&req.username)?;
     if req.expires_in == 0 || req.expires_in > 30 * 86400 {
         return Err(GatewayError::InvalidRequest(
             "expires_in must be between 1 and 2592000 seconds (30 days)".to_string(),
@@ -620,11 +688,7 @@ async fn add_user_key(
     Path(username): Path<String>,
     Json(req): Json<AddKeyRequest>,
 ) -> Result<impl IntoResponse, GatewayError> {
-    if username.is_empty() {
-        return Err(GatewayError::InvalidRequest(
-            "username must not be empty".to_string(),
-        ));
-    }
+    validate_username(&username)?;
     if !matches!(req.key_type.as_str(), "ssh" | "gpg") {
         return Err(GatewayError::InvalidRequest(
             "key_type must be 'ssh' or 'gpg'".to_string(),
@@ -703,11 +767,7 @@ async fn request_challenge(
                 .to_string(),
         ));
     }
-    if req.username.is_empty() {
-        return Err(GatewayError::InvalidRequest(
-            "username must not be empty".to_string(),
-        ));
-    }
+    validate_username(&req.username)?;
     validate_device_id(&req.device_id)?;
     validate_hostname(&req.hostname)?;
 
@@ -801,7 +861,7 @@ async fn verify_enrollment(
     let key_type = req.key_type.clone();
     let owned_keys: Vec<super::db::UserPublicKey> =
         matching_keys.iter().map(|k| (*k).clone()).collect();
-    let verified = tokio::task::spawn_blocking(move || {
+    let verified = match tokio::task::spawn_blocking(move || {
         let key_refs: Vec<_> = owned_keys.iter().collect();
         match key_type.as_str() {
             "ssh" => verify_ssh_signature(&nonce, &signature, &key_refs),
@@ -810,7 +870,20 @@ async fn verify_enrollment(
         }
     })
     .await
-    .unwrap_or(false);
+    {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::error!(
+                error = %e,
+                is_panic = e.is_panic(),
+                is_cancelled = e.is_cancelled(),
+                "signature verification blocking task failed to join",
+            );
+            return Err(GatewayError::Internal(
+                "signature verification task failed".into(),
+            ));
+        }
+    };
 
     if !verified {
         return Err(GatewayError::Unauthorized);
@@ -1021,7 +1094,9 @@ fn verify_gpg_signature(
             continue;
         }
 
-        // Import the public key
+        // Import the public key. Capture stderr so the debug log is actionable
+        // when an import fails (missing key material, bad permissions, unknown
+        // packet version, etc.) instead of discarding the underlying gpg error.
         let import = std::process::Command::new("gpg")
             .args([
                 "--homedir",
@@ -1032,15 +1107,27 @@ fn verify_gpg_signature(
                 &key_path.to_string_lossy(),
             ])
             .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status();
+            .output();
 
-        if !matches!(import, Ok(s) if s.success()) {
-            tracing::debug!(
-                fingerprint = %key.fingerprint,
-                "failed to import GPG key"
-            );
-            continue;
+        match import {
+            Ok(o) if o.status.success() => {}
+            Ok(o) => {
+                tracing::debug!(
+                    fingerprint = %key.fingerprint,
+                    status = ?o.status.code(),
+                    stderr = %cfgd_core::stderr_lossy_trimmed(&o),
+                    "failed to import GPG key",
+                );
+                continue;
+            }
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    fingerprint = %key.fingerprint,
+                    "gpg --import invocation failed",
+                );
+                continue;
+            }
         }
 
         // Verify the signature against THIS iteration's single-key keyring.
@@ -1330,13 +1417,24 @@ async fn event_stream(
 ) -> Sse<impl Stream<Item = Result<Event, std::convert::Infallible>>> {
     let rx = state.event_tx.subscribe();
     let stream = BroadcastStream::new(rx).filter_map(|result| match result {
-        Ok(event) => {
-            let data = serde_json::to_string(&event).unwrap_or_default();
-            Some(Ok(Event::default()
+        Ok(event) => match serde_json::to_string(&event) {
+            Ok(data) => Some(Ok(Event::default()
                 .event(event.event_type.clone())
-                .data(data)))
+                .data(data))),
+            Err(e) => {
+                tracing::error!(
+                    error = %e,
+                    device_id = %event.device_id,
+                    event_type = %event.event_type,
+                    "failed to serialize fleet event for SSE; dropping",
+                );
+                None
+            }
+        },
+        Err(tokio_stream::wrappers::errors::BroadcastStreamRecvError::Lagged(n)) => {
+            tracing::warn!(skipped = n, "SSE subscriber lagged; dropped events");
+            None
         }
-        Err(_) => None,
     });
     Sse::new(stream).keep_alive(KeepAlive::default())
 }
@@ -1387,8 +1485,11 @@ async fn create_drift_alert_crd(
         },
     );
     alert.metadata.labels = Some(std::collections::BTreeMap::from([
-        ("cfgd.io/machine-config".to_string(), mc_ref),
-        ("cfgd.io/device-id".to_string(), device_id.to_string()),
+        (cfgd_core::LABEL_MACHINE_CONFIG.to_string(), mc_ref),
+        (
+            cfgd_core::LABEL_DEVICE_ID.to_string(),
+            device_id.to_string(),
+        ),
     ]));
 
     let retry = cfgd_core::retry::BackoffConfig::DEFAULT_TRANSIENT;
@@ -2467,6 +2568,7 @@ mod tests {
                 event_tx,
                 enrollment_method: EnrollmentMethod::Token,
                 metrics: None,
+                web_sessions: WebSessions::new(),
             },
             tmp,
         )
@@ -2484,6 +2586,7 @@ mod tests {
                 event_tx,
                 enrollment_method: EnrollmentMethod::Key,
                 metrics: None,
+                web_sessions: WebSessions::new(),
             },
             tmp,
         )

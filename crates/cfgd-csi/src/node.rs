@@ -275,37 +275,51 @@ impl Node for CfgdNode {
         // Get cached content (should have been staged already, but pull if needed)
         let oci_ref = resolve_oci_ref(attrs, module, version);
         check_registry_allowed(&oci_ref, self.allowed_registries.as_deref())?;
-        let source = self
-            .cache
-            .get_or_pull(module, version, &oci_ref)
-            .map_err(|e| Status::internal(format!("cache pull failed: {e}")))?;
 
-        std::fs::create_dir_all(target_path)
-            .map_err(|e| Status::internal(format!("cannot create target dir: {e}")))?;
+        // OCI pull, `std::fs::create_dir_all`, and the `bind_mount` syscall are
+        // all blocking. Running them inline on the tokio runtime starves other
+        // worker threads under kubelet concurrency. Move the whole blocking
+        // sequence into `spawn_blocking` with owned clones of the relevant state.
+        let cache = Arc::clone(&self.cache);
+        let metrics = Arc::clone(&self.metrics);
+        let module = module.to_string();
+        let version = version.to_string();
+        let oci_ref_owned = oci_ref.clone();
+        let target_path_owned: std::path::PathBuf = target.to_path_buf();
+        tokio::task::spawn_blocking(move || {
+            let source = cache
+                .get_or_pull(&module, &version, &oci_ref_owned)
+                .map_err(|e| Status::internal(format!("cache pull failed: {e}")))?;
 
-        match bind_mount_readonly(&source, target) {
-            Ok(()) => {
-                self.metrics
-                    .volume_publish_total
-                    .get_or_create(&PublishLabels {
-                        module: module.to_string(),
-                        result: "success".to_string(),
-                    })
-                    .inc();
+            std::fs::create_dir_all(&target_path_owned)
+                .map_err(|e| Status::internal(format!("cannot create target dir: {e}")))?;
+
+            match bind_mount_readonly(&source, &target_path_owned) {
+                Ok(()) => {
+                    metrics
+                        .volume_publish_total
+                        .get_or_create(&PublishLabels {
+                            module: module.clone(),
+                            result: "success".to_string(),
+                        })
+                        .inc();
+                    Ok(())
+                }
+                Err(e) => {
+                    metrics
+                        .volume_publish_total
+                        .get_or_create(&PublishLabels {
+                            module: module.clone(),
+                            result: "error".to_string(),
+                        })
+                        .inc();
+                    let _ = std::fs::remove_dir(&target_path_owned);
+                    Err(e)
+                }
             }
-            Err(e) => {
-                self.metrics
-                    .volume_publish_total
-                    .get_or_create(&PublishLabels {
-                        module: module.to_string(),
-                        result: "error".to_string(),
-                    })
-                    .inc();
-                // Clean up the target directory we created if mount failed
-                let _ = std::fs::remove_dir(target);
-                return Err(e);
-            }
-        }
+        })
+        .await
+        .map_err(|e| Status::internal(format!("publish task join failed: {e}")))??;
 
         Ok(Response::new(NodePublishVolumeResponse {}))
     }
@@ -328,13 +342,19 @@ impl Node for CfgdNode {
             "unpublishing volume"
         );
 
-        let target = Path::new(target_path);
-        unmount(target)?;
-
-        // CSI spec: SP MUST delete the file or directory it created at this path
-        if let Err(e) = std::fs::remove_dir(target) {
-            tracing::warn!(target = %target.display(), error = %e, "failed to remove target directory after unmount");
-        }
+        // `unmount` (umount2 syscall) and `remove_dir` both block — run them
+        // off the tokio runtime so kubelet-driven concurrency cannot starve
+        // other csi workers.
+        let target_path_owned: std::path::PathBuf = target_path.into();
+        tokio::task::spawn_blocking(move || -> Result<(), Status> {
+            unmount(&target_path_owned)?;
+            if let Err(e) = std::fs::remove_dir(&target_path_owned) {
+                tracing::warn!(target = %target_path_owned.display(), error = %e, "failed to remove target directory after unmount");
+            }
+            Ok(())
+        })
+        .await
+        .map_err(|e| Status::internal(format!("unpublish task join failed: {e}")))??;
 
         Ok(Response::new(NodeUnpublishVolumeResponse {}))
     }

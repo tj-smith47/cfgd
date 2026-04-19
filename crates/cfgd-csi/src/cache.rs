@@ -40,7 +40,9 @@ impl Cache {
         let entry_dir = self.entry_path(module, version)?;
 
         if entry_dir.is_dir() && is_complete(&entry_dir) {
-            touch_atime(&entry_dir);
+            if let Err(e) = touch_atime(&entry_dir) {
+                tracing::warn!(module = %module, version = %version, error = %e, "failed to update cache atime on hit; LRU ordering may be stale");
+            }
             return Ok(entry_dir);
         }
 
@@ -59,7 +61,9 @@ impl Cache {
         if let Err(e) = cfgd_core::atomic_write_str(&tmp_dir.join(COMPLETE_SENTINEL), "") {
             tracing::warn!("failed to write cache sentinel: {e}");
         }
-        touch_atime(&tmp_dir);
+        if let Err(e) = touch_atime(&tmp_dir) {
+            tracing::warn!(module = %module, version = %version, error = %e, "failed to record cache atime after pull; entry will look cold to LRU");
+        }
 
         // Ensure parent dir exists for the final path
         if let Some(parent) = entry_dir.parent() {
@@ -95,7 +99,9 @@ impl Cache {
     pub fn get(&self, module: &str, version: &str) -> Option<PathBuf> {
         let entry_dir = self.entry_path(module, version).ok()?;
         if entry_dir.is_dir() && is_complete(&entry_dir) {
-            touch_atime(&entry_dir);
+            if let Err(e) = touch_atime(&entry_dir) {
+                tracing::warn!(module = %module, version = %version, error = %e, "failed to update cache atime on get; LRU ordering may be stale");
+            }
             Some(entry_dir)
         } else {
             None
@@ -203,9 +209,14 @@ impl Cache {
 }
 
 /// Write a marker file with the current unix timestamp for LRU tracking.
-fn touch_atime(path: &Path) {
+///
+/// Returns the underlying `io::Error` on failure so callers can decide whether
+/// to propagate or log. Dropped errors would skew the LRU (stale atime sticks
+/// around and makes a hot entry look cold to `evict_lru`).
+fn touch_atime(path: &Path) -> std::io::Result<()> {
     let now = cfgd_core::unix_secs_now();
-    let _ = cfgd_core::atomic_write_str(&path.join(LAST_ACCESS_FILE), &now.to_string());
+    cfgd_core::atomic_write_str(&path.join(LAST_ACCESS_FILE), &now.to_string())?;
+    Ok(())
 }
 
 /// Read the last-access timestamp from the marker file, or 0 if missing.
@@ -464,11 +475,34 @@ mod tests {
     #[test]
     fn touch_atime_writes_timestamp() {
         let dir = tempfile::tempdir().unwrap();
-        touch_atime(dir.path());
+        touch_atime(dir.path()).expect("touch_atime");
 
         let atime = read_atime(dir.path());
         // Should be a recent unix timestamp (after 2020)
         assert!(atime > 1_577_836_800);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn touch_atime_errors_on_unwritable_dir() {
+        use std::os::unix::fs::PermissionsExt;
+        // atomic_write_str creates parent dirs automatically, so the only
+        // reliable failure mode is a parent that exists but is read-only.
+        // Root bypasses permission bits on Unix, so skip under euid==0
+        // where the write would succeed anyway.
+        if cfgd_core::is_root() {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let ro = dir.path().join("readonly");
+        std::fs::create_dir(&ro).unwrap();
+        std::fs::set_permissions(&ro, std::fs::Permissions::from_mode(0o500)).unwrap();
+
+        let err = touch_atime(&ro).expect_err("should fail on read-only dir");
+        let _ = err.kind();
+
+        // Restore perms so tempdir can clean up.
+        let _ = std::fs::set_permissions(&ro, std::fs::Permissions::from_mode(0o700));
     }
 
     #[test]

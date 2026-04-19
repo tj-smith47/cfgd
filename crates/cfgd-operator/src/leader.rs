@@ -12,6 +12,13 @@ use crate::errors::OperatorError;
 const FIELD_MANAGER_PREFIX: &str = "cfgd-operator-leader";
 const LEASE_NAME: &str = "cfgd-operator-leader";
 
+/// Module-local wrapper around [`cfgd_core::parse_duration_str`] that reads a
+/// duration from an env var and returns seconds (u64), with a caller-provided
+/// fallback. The caller-specific `default` per lease timing variable
+/// (LEASE_DURATION / RENEW_DEADLINE / RETRY_PERIOD) is the reason this doesn't
+/// collapse into `cfgd_core::parse_duration_str`: those defaults are an
+/// operator leader-election concern, not a core-library one. Kept local and
+/// documented per dedup-audit S1 (decision: keep + document).
 fn parse_duration_secs(env_var: &str, default: u64) -> u64 {
     std::env::var(env_var)
         .ok()

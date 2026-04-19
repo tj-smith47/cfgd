@@ -38,14 +38,14 @@ fn probe_version(name: &str) -> Option<String> {
         if let Ok(output) = Command::new(name).arg(flag).output()
             && output.status.success()
         {
-            let stdout = String::from_utf8_lossy(&output.stdout);
+            let stdout = cfgd_core::stdout_lossy_trimmed(&output);
             let first_line = stdout.lines().next().unwrap_or("").trim();
             if !first_line.is_empty() {
                 return Some(first_line.to_string());
             }
             // Some tools (e.g. vim) write version to stderr even on success
             if !output.stderr.is_empty() {
-                let stderr = String::from_utf8_lossy(&output.stderr);
+                let stderr = cfgd_core::stderr_lossy_trimmed(&output);
                 let first_line = stderr.lines().next().unwrap_or("").trim();
                 if !first_line.is_empty() {
                     return Some(first_line.to_string());
