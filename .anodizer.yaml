@@ -280,14 +280,7 @@ workspaces:
               - src: README.md
                 dst: /usr/share/doc/cfgd/README.md
         snapcrafts:
-          # TEMP: disabled while anodizer stage-snapcraft is patched to clear
-          # ~/.cache/snapcraft/download between back-to-back `snapcraft pack`
-          # invocations. snapcraft 8.14.5 raises FileExistsError at legacy-module
-          # import time when the cache dir already exists, which breaks the
-          # 2nd parallel pack call. Re-enable once ANODIZER_REV is bumped to a
-          # rev containing the fix.
           - name: cfgd
-            disable: true
             summary: "Declarative, GitOps-style machine configuration management"
             description: |
               cfgd is a declarative, GitOps-style machine configuration state
