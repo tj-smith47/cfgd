@@ -113,14 +113,22 @@ tasks:
       - task: snapshot
 
   commit:
-    desc: "Lint, then commit. Usage: task commit -- -m 'my message'"
-    preconditions:
-      - sh: git diff --cached --quiet || test -n "$(git diff --cached --name-only)"
-        msg: "Nothing staged. Stage files with git add before running task commit."
+    desc: "Lint, then commit everything (new + modified + deleted). Usage: task commit -- -m 'my message'"
     cmds:
+      # Pre-tidy stage: catches any new files added since the last commit so
+      # `cargo fmt` inside `tidy` sees them. `-A` respects .gitignore, which is
+      # allow-list-shaped (deny-**-then-allow) so it never stages incidentals.
+      - git add -A
       - task: tidy
-      - git add -u
+      # Re-stage post-tidy: fmt / yaml-fixes may have edited the working tree
+      # after the first `add`, and those edits must be in the commit.
+      - git add -A
       - task: lint
+      - |
+        if git diff --cached --quiet; then
+          echo "task commit: nothing to commit — tree matches HEAD"
+          exit 1
+        fi
       - git commit {{.CLI_ARGS}}
 
   ci:
