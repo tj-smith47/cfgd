@@ -16,10 +16,10 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
   RUSTFLAGS: "-D warnings"
-  # Pin anodize to a specific commit so the cache key stays stable.
-  # Bump this when you need a newer anodize. Temporary until anodize has
-  # tagged GitHub releases and anodize-action's version: latest works.
-  ANODIZE_REV: 7c19077755c3161483455eeafd8968e34bdda87c
+  # Pin anodizer to a specific commit so the cache key stays stable.
+  # Bump this when you need a newer anodizer. Temporary until anodizer has
+  # tagged GitHub releases and anodizer-action's version: latest works.
+  ANODIZER_REV: f9ba2da9795f72ee750c75625f8e0f130430572c
 
 jobs:
   fmt:
@@ -64,14 +64,14 @@ jobs:
       matrix:
         include:
           - os: ubuntu-latest
-            anodize_artifact: anodize-linux
-            anodize_bin: anodize
+            anodizer_artifact: anodizer-linux
+            anodizer_bin: anodizer
           - os: macos-latest
-            anodize_artifact: anodize-macos
-            anodize_bin: anodize
+            anodizer_artifact: anodizer-macos
+            anodizer_bin: anodizer
           - os: windows-latest
-            anodize_artifact: anodize-windows
-            anodize_bin: anodize.exe
+            anodizer_artifact: anodizer-windows
+            anodizer_bin: anodizer.exe
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -103,37 +103,37 @@ jobs:
             task test
           fi
 
-      # --- Build and upload anodize for downstream consumers. -------------
-      # Every job that needs anodize (snapshot, tag, release.yml) downloads
-      # it via actions/download-artifact or anodize-action's from-artifact
+      # --- Build and upload anodizer for downstream consumers. -------------
+      # Every job that needs anodizer (snapshot, tag, release.yml) downloads
+      # it via actions/download-artifact or anodizer-action's from-artifact
       # instead of cargo-installing it from scratch. One build per platform
-      # per master push, cached by ANODIZE_REV.
-      - name: Cache anodize binary
+      # per master push, cached by ANODIZER_REV.
+      - name: Cache anodizer binary
         if: github.ref == 'refs/heads/master'
-        id: anodize-cache
+        id: anodizer-cache
         uses: actions/cache@v4
         with:
-          path: ~/.cargo/bin/${{ matrix.anodize_bin }}
-          key: anodize-${{ runner.os }}-${{ env.ANODIZE_REV }}
+          path: ~/.cargo/bin/${{ matrix.anodizer_bin }}
+          key: anodizer-${{ runner.os }}-${{ env.ANODIZER_REV }}
 
-      - name: Install anodize
-        if: github.ref == 'refs/heads/master' && steps.anodize-cache.outputs.cache-hit != 'true'
+      - name: Install anodizer
+        if: github.ref == 'refs/heads/master' && steps.anodizer-cache.outputs.cache-hit != 'true'
         shell: bash
-        run: cargo install --git https://github.com/tj-smith47/anodize --rev "$ANODIZE_REV" --locked anodize
+        run: cargo install --git https://github.com/tj-smith47/anodizer --rev "$ANODIZER_REV" --locked anodizer
 
-      - name: Stage anodize binary for artifact upload
+      - name: Stage anodizer binary for artifact upload
         if: github.ref == 'refs/heads/master'
         shell: bash
         run: |
-          mkdir -p anodize-bin
-          cp ~/.cargo/bin/${{ matrix.anodize_bin }} anodize-bin/${{ matrix.anodize_bin }}
+          mkdir -p anodizer-bin
+          cp ~/.cargo/bin/${{ matrix.anodizer_bin }} anodizer-bin/${{ matrix.anodizer_bin }}
 
-      - name: Upload anodize binary
+      - name: Upload anodizer binary
         if: github.ref == 'refs/heads/master'
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.anodize_artifact }}
-          path: anodize-bin/${{ matrix.anodize_bin }}
+          name: ${{ matrix.anodizer_artifact }}
+          path: anodizer-bin/${{ matrix.anodizer_bin }}
 
   audit:
     name: Code Audit
@@ -193,11 +193,11 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      # Reuse the anodize binary uploaded by the test job — no rebuild.
-      - name: Validate release pipeline via anodize
-        uses: tj-smith47/anodize-action@master
+      # Reuse the anodizer binary uploaded by the test job — no rebuild.
+      - name: Validate release pipeline via anodizer
+        uses: tj-smith47/anodizer-action@master
         with:
-          from-artifact: anodize-linux
+          from-artifact: anodizer-linux
           args: release --snapshot --single-target --clean --dry-run
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -205,7 +205,7 @@ jobs:
   tag:
     name: Auto-tag
     # Gate on master only. The `#none` whole-token decision lives inside
-    # anodize tag per-crate — doing it here with GitHub Actions' substring
+    # anodizer tag per-crate — doing it here with GitHub Actions' substring
     # `contains()` mis-fires when a commit body mentions `#none` in prose.
     if: github.ref == 'refs/heads/master'
     needs: [fmt, clippy, test, audit, package, snapshot]
@@ -223,25 +223,25 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-      # Download anodize once, then tag each workspace independently.
+      # Download anodizer once, then tag each workspace independently.
       # Each --crate uses the crate's tag_template prefix for both tag
       # discovery and creation (cfgd→v*, cfgd-core→core-v*, etc.).
       # create_and_push_tag pushes each tag immediately, which triggers
       # one release.yml run per workspace via the concurrency queue.
-      - name: Download anodize binary
+      - name: Download anodizer binary
         uses: actions/download-artifact@v4
         with:
-          name: anodize-linux
-          path: /tmp/anodize-bin
+          name: anodizer-linux
+          path: /tmp/anodizer-bin
       - name: Auto-tag all workspaces
         env:
           GITHUB_TOKEN: ${{ secrets.GH_PAT }}
         run: |
-          chmod +x /tmp/anodize-bin/anodize
-          export PATH="/tmp/anodize-bin:$PATH"
+          chmod +x /tmp/anodizer-bin/anodizer
+          export PATH="/tmp/anodizer-bin:$PATH"
           for crate in cfgd-core cfgd cfgd-operator cfgd-csi; do
             echo "--- tagging $crate ---"
-            if anodize tag --crate "$crate"; then
+            if anodizer tag --crate "$crate"; then
               echo "::notice::$crate: tagged successfully"
             else
               echo "::warning::$crate: tag skipped or failed (exit $?)"

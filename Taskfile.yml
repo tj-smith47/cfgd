@@ -91,12 +91,12 @@ tasks:
       - cargo package --workspace --no-verify --allow-dirty
 
   snapshot:
-    desc: Dry-run release pipeline (single target, no publish) using anodize
+    desc: Dry-run release pipeline (single target, no publish) using anodizer
     deps: [build]
     cmds:
-      - anodize release --snapshot --single-target --clean --dry-run
+      - anodizer release --snapshot --single-target --clean --dry-run
 
-  # --- Pre-commit pipeline (mirrors anodize/Taskfile.yml) ---
+  # --- Pre-commit pipeline (mirrors anodizer/Taskfile.yml) ---
 
   tidy:
     desc: Format code

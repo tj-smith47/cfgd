@@ -39,7 +39,7 @@
 !ecosystem/**
 
 # CI, tasks, and release config
-!.anodize.yaml
+!.anodizer.yaml
 !cfgd.spec
 !cliff.toml
 /dist/

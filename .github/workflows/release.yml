@@ -21,21 +21,21 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  # Map tag → crate name + whether it has binary builds via anodize resolve-tag.
+  # Map tag → crate name + whether it has binary builds via anodizer resolve-tag.
   resolve:
     name: Resolve workspace
     runs-on: ubuntu-latest
     outputs:
-      workspace: ${{ steps.anodize.outputs.workspace }}
-      has-builds: ${{ steps.anodize.outputs.has-builds }}
+      workspace: ${{ steps.anodizer.outputs.workspace }}
+      has-builds: ${{ steps.anodizer.outputs.has-builds }}
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - uses: tj-smith47/anodize-action@master
-        id: anodize
+      - uses: tj-smith47/anodizer-action@master
+        id: anodizer
         with:
-          from-artifact: anodize-linux
+          from-artifact: anodizer-linux
           artifact-run-id: auto
           artifact-workflow: ci.yml
           resolve-workspace: 'true'
@@ -53,13 +53,13 @@ jobs:
         include:
           - os: ubuntu-latest
             targets: x86_64-unknown-linux-gnu,aarch64-unknown-linux-gnu
-            anodize_artifact: anodize-linux
+            anodizer_artifact: anodizer-linux
           - os: macos-latest
             targets: x86_64-apple-darwin,aarch64-apple-darwin
-            anodize_artifact: anodize-macos
+            anodizer_artifact: anodizer-macos
           - os: windows-latest
             targets: x86_64-pc-windows-msvc,aarch64-pc-windows-msvc
-            anodize_artifact: anodize-windows
+            anodizer_artifact: anodizer-windows
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -79,10 +79,10 @@ jobs:
           version: "25.x"
           repo-token: ${{ github.token }}
 
-      - name: Run anodize release --split
-        uses: tj-smith47/anodize-action@master
+      - name: Run anodizer release --split
+        uses: tj-smith47/anodizer-action@master
         with:
-          from-artifact: ${{ matrix.anodize_artifact }}
+          from-artifact: ${{ matrix.anodizer_artifact }}
           artifact-run-id: auto
           artifact-workflow: ci.yml
           install: zig,cargo-zigbuild,upx
@@ -113,10 +113,10 @@ jobs:
 
       # --merge is only valid when split build artifacts exist (binary crates).
       # Library-only crates run the full pipeline in one shot.
-      - name: Run anodize release
-        uses: tj-smith47/anodize-action@master
+      - name: Run anodizer release
+        uses: tj-smith47/anodizer-action@master
         with:
-          from-artifact: anodize-linux
+          from-artifact: anodizer-linux
           artifact-run-id: auto
           artifact-workflow: ci.yml
           install: ${{ needs.resolve.outputs.has-builds == 'true' && 'nfpm,makeself,snapcraft,rpmbuild,cosign' || '' }}

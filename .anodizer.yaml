@@ -1,6 +1,6 @@
-# yaml-language-server: $schema=https://tj-smith47.github.io/anodize/schema.json
+# yaml-language-server: $schema=https://tj-smith47.github.io/anodizer/schema.json
 # cfgd — declarative, GitOps-style machine configuration management.
-# Dogfoods every anodize feature that applies to cfgd's 4-workspace monorepo.
+# Dogfoods every anodizer feature that applies to cfgd's 4-workspace monorepo.
 # Templates use Tera syntax with Go-style compat.
 
 version: 2
@@ -165,7 +165,7 @@ workspaces:
           name_template: "{{ ProjectName }} {{ Tag }}"
           footer: |
             ---
-            Released with [anodize](https://github.com/tj-smith47/anodize)
+            Released with [anodizer](https://github.com/tj-smith47/anodizer)
           include_meta: true
         publish:
           crates:
@@ -355,7 +355,7 @@ workspaces:
           name_template: "{{ ProjectName }} {{ Tag }}"
           footer: |
             ---
-            Released with [anodize](https://github.com/tj-smith47/anodize)
+            Released with [anodizer](https://github.com/tj-smith47/anodizer)
           include_meta: true
         publish:
           crates:
@@ -418,7 +418,7 @@ workspaces:
           name_template: "{{ ProjectName }} {{ Tag }}"
           footer: |
             ---
-            Released with [anodize](https://github.com/tj-smith47/anodize)
+            Released with [anodizer](https://github.com/tj-smith47/anodizer)
           include_meta: true
         publish:
           crates:
@@ -524,7 +524,7 @@ sbom:
   enabled: true
   format: cyclonedx
 
-# Source RPM (exercised by anodize; dogfooded here too).
+# Source RPM (exercised by anodizer; dogfooded here too).
 srpm:
   enabled: true
   package_name: cfgd
@@ -545,7 +545,7 @@ partial:
 announce:
   webhook:
     enabled: true
-    endpoint_url: "https://tj.jarvispro.io/webhooks/anodize"
+    endpoint_url: "https://tj.jarvispro.io/webhooks/anodizer"
     content_type: application/json
     message_template: '{"project":"{{ ProjectName }}","tag":"{{ Tag }}","url":"{{ ReleaseURL }}"}'
   email:

@@ -181,7 +181,7 @@ fn find_checksums_asset(release: &ReleaseInfo) -> Option<&ReleaseAsset> {
 }
 
 /// Find the cosign signature bundle for the checksums asset. Produced by the
-/// `checksum-cosign` entry in `.anodize.yaml`.
+/// `checksum-cosign` entry in `.anodizer.yaml`.
 fn find_cosign_bundle_asset(release: &ReleaseInfo) -> Option<&ReleaseAsset> {
     release
         .assets
