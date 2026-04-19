@@ -10,8 +10,10 @@ WARNINGS=""
 CRITICAL=""
 
 # Check for println!/eprintln! outside allowed modules
-# output/ owns all terminal interaction; main.rs is allowed for startup panics
-if [[ "$FILE" != *"src/output/"* && "$FILE" != *"src/main.rs"* ]]; then
+# output/ owns all terminal interaction; main.rs is allowed for startup panics;
+# build.rs files are allowed because println! is the cargo build-script protocol
+# (emits `cargo:...` directives parsed by cargo, not terminal output)
+if [[ "$FILE" != *"src/output/"* && "$FILE" != *"src/main.rs"* && "$(basename "$FILE")" != "build.rs" ]]; then
     if grep -qE 'println!\(|eprintln!\(' "$FILE" 2>/dev/null; then
         # Exclude test code (lines inside cfg(test) blocks — approximate by checking the line itself)
         VIOLATIONS=$(grep -n 'println!\|eprintln!' "$FILE" | grep -v '#\[test\]\|mod tests\|#\[cfg(test)\]\|assert' || true)

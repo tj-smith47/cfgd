@@ -20,36 +20,7 @@ fn exit_code_for_anyhow(err: &anyhow::Error) -> cfgd_core::exit::ExitCode {
         .unwrap_or(cfgd_core::exit::ExitCode::Error)
 }
 
-/// Stack size for the worker thread that runs `run_main`.
-///
-/// The clap `Command` tree for cfgd's 29 top-level subcommands (each carrying
-/// a `long_about` with `Examples:` blocks, some built via `format!`) is large
-/// enough to overflow Windows's default 1 MiB main-thread stack during
-/// `Cli::parse_from`. The symptom on Windows CI was `STATUS_STACK_OVERFLOW`
-/// (exit code `-1073741571` = `0xC00000FD`) on *every* invocation — every
-/// assert_cmd integration test in `tests/cli_integration.rs` failed with a
-/// "main has overflowed its stack" panic.
-///
-/// 8 MiB matches Linux's default and is the standard workaround for
-/// clap-heavy Rust CLIs on Windows.
-const RUN_STACK_SIZE: usize = 8 * 1024 * 1024;
-
 fn main() -> anyhow::Result<()> {
-    // Run the real entry point on a worker thread with a Linux-sized stack so
-    // the clap Command tree never overflows on Windows. The main thread just
-    // joins and propagates the worker's Result.
-    let worker = std::thread::Builder::new()
-        .name("cfgd-main".into())
-        .stack_size(RUN_STACK_SIZE)
-        .spawn(run_main)
-        .expect("spawn cfgd-main worker thread");
-    match worker.join() {
-        Ok(result) => result,
-        Err(panic) => std::panic::resume_unwind(panic),
-    }
-}
-
-fn run_main() -> anyhow::Result<()> {
     let _ = rustls::crypto::ring::default_provider().install_default();
 
     // Clean up old binary from Windows upgrade rename-dance (no-op on Unix)
