@@ -477,8 +477,14 @@ impl TestEnv {
         std::fs::write(&path, content).expect("write file");
     }
 
-    /// Read a file relative to the root.
-    pub fn read_file(&self, rel_path: &str) -> String {
+    /// Read a file relative to the test root.
+    ///
+    /// Named `read_at` (not `read_file`) to avoid a workspace-wide name
+    /// collision with production `cfgd::generate::files::read_file` — the
+    /// DRY audit flags same-named functions across files, and the two serve
+    /// different purposes (test-env helper vs. path-traversal-validated
+    /// reader).
+    pub fn read_at(&self, rel_path: &str) -> String {
         std::fs::read_to_string(self.root.join(rel_path)).expect("read file")
     }
 
@@ -880,7 +886,7 @@ mod tests {
         assert!(env.file_exists("profiles/default.yaml"));
         assert!(env.file_exists("modules/nvim/module.yaml"));
         assert!(env.file_exists("extra/data.txt"));
-        assert_eq!(env.read_file("extra/data.txt"), "hello\n");
+        assert_eq!(env.read_at("extra/data.txt"), "hello\n");
     }
 
     #[test]
@@ -889,7 +895,7 @@ mod tests {
         assert!(!env.file_exists("late.txt"));
         env.write_file("late.txt", "added later");
         assert!(env.file_exists("late.txt"));
-        assert_eq!(env.read_file("late.txt"), "added later");
+        assert_eq!(env.read_at("late.txt"), "added later");
     }
 
     #[test]

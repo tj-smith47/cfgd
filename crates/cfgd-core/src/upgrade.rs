@@ -235,7 +235,7 @@ fn verify_cosign_bundle(
     download_to_file(&pub_key_asset.download_url, &pub_key_path, printer)?;
 
     let verify_spinner = printer.map(|p| p.spinner("Verifying cosign signature..."));
-    let output = std::process::Command::new("cosign")
+    let output = crate::cosign_cmd()
         .arg("verify-blob")
         .arg(format!("--key={}", pub_key_path.display()))
         .arg(format!("--bundle={}", bundle_path.display()))

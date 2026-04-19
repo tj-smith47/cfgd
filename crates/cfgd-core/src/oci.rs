@@ -1235,7 +1235,7 @@ pub fn sign_artifact(artifact_ref: &str, key_path: Option<&str>) -> Result<(), O
         tool: "cosign".to_string(),
     })?;
 
-    let mut cmd = std::process::Command::new("cosign");
+    let mut cmd = crate::cosign_cmd();
     cmd.arg("sign");
 
     if let Some(key) = key_path {
@@ -1307,7 +1307,7 @@ pub fn verify_signature(artifact_ref: &str, opts: &VerifyOptions<'_>) -> Result<
         tool: "cosign".to_string(),
     })?;
 
-    let mut cmd = std::process::Command::new("cosign");
+    let mut cmd = crate::cosign_cmd();
     cmd.arg("verify");
     apply_verify_args(&mut cmd, opts);
     cmd.arg(artifact_ref);
@@ -1388,7 +1388,7 @@ pub fn attach_attestation(
         tool: "cosign".to_string(),
     })?;
 
-    let mut cmd = std::process::Command::new("cosign");
+    let mut cmd = crate::cosign_cmd();
     cmd.arg("attest");
 
     if let Some(key) = key_path {
@@ -1432,7 +1432,7 @@ pub fn verify_attestation(
         tool: "cosign".to_string(),
     })?;
 
-    let mut cmd = std::process::Command::new("cosign");
+    let mut cmd = crate::cosign_cmd();
     cmd.arg("verify-attestation");
     apply_verify_args(&mut cmd, opts);
     cmd.arg("--type").arg(predicate_type).arg(artifact_ref);

@@ -2474,11 +2474,13 @@ pub(super) fn cmd_module_keys_generate(
     } else {
         std::process::Stdio::inherit()
     };
-    let status = std::process::Command::new("cosign")
+    let status = cfgd_core::cosign_cmd()
         .args(["generate-key-pair"])
         .current_dir(dir)
         .stdin(stdin_cfg)
         .stdout(std::process::Stdio::inherit())
+        // Override the default piped stderr: interactive key-pair generation
+        // prompts the user and inherits the real terminal.
         .stderr(std::process::Stdio::inherit())
         .status()
         .map_err(|e| anyhow::anyhow!("failed to run cosign: {e}"))?;
@@ -2594,11 +2596,13 @@ pub(super) fn cmd_module_keys_rotate(
     }
 
     // Generate new key pair
-    let status = std::process::Command::new("cosign")
+    let status = cfgd_core::cosign_cmd()
         .args(["generate-key-pair"])
         .current_dir(key_dir)
         .stdin(std::process::Stdio::inherit())
         .stdout(std::process::Stdio::inherit())
+        // Override the default piped stderr: interactive key-pair generation
+        // prompts the user and inherits the real terminal.
         .stderr(std::process::Stdio::inherit())
         .status()
         .map_err(|e| anyhow::anyhow!("failed to run cosign: {e}"))?;

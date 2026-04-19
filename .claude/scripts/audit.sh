@@ -269,7 +269,8 @@ done < <(find "${SRC_ROOTS[@]}" -name '*.rs' -print0 2>/dev/null) \
         $2 != "home_dir_var" && $2 != "file_permissions_mode" && \
         $2 != "create_symlink_impl" && $2 != "cleanup_old_binary" && \
         $2 != "atomic_replace" && $2 != "acquire_apply_lock" && \
-        $2 != "recv_sighup" && $2 != "recv_sigterm" && $2 != "read_command_output" \
+        $2 != "recv_sighup" && $2 != "recv_sigterm" && $2 != "read_command_output" && \
+        $2 != "unavailable" && $2 != "set_fail_apply" \
         {print}' \
     > /tmp/cfgd_fn_dupes 2>/dev/null || true
 fn_dupes=$(cat /tmp/cfgd_fn_dupes 2>/dev/null || true)

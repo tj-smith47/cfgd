@@ -170,6 +170,23 @@ pub fn try_git_cmd(
     }
 }
 
+/// Build a base `cosign` `Command` — the shared factory for signature / attestation
+/// operations across `oci.rs`, `cli/module.rs`, and `upgrade.rs`.
+///
+/// Rationale: cosign is cfgd's controlled shell-out for Sigstore signature
+/// verification, the same architectural category as [`git_cmd_safe`] for git.
+/// Centralising the factory keeps invocation-site assumptions (stderr capture,
+/// future env / timeout hardening) uniform and lets the module-boundary audit
+/// point at `lib.rs` instead of tracking every caller.
+///
+/// Callers add their own subcommand (`sign`, `verify-blob`, `verify-attestation`,
+/// `attest`, etc.) and any additional flags.
+pub fn cosign_cmd() -> std::process::Command {
+    let mut cmd = std::process::Command::new("cosign");
+    cmd.stderr(std::process::Stdio::piped());
+    cmd
+}
+
 /// Best-effort detection of a local git repo's default branch.
 ///
 /// Tries (in order) `origin/HEAD` symbolic-ref (the remote-tracking default),
