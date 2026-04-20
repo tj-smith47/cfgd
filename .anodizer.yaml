@@ -217,6 +217,12 @@ workspaces:
             license: MIT
             package_identifier: "TJSmith.cfgd"
             publisher: "TJ Smith"
+            # Rust/MSVC binaries dynamically link against the VC++ 2015+
+            # runtime. Without this dependency declared, winget's automated
+            # validation fails at invocation time with STATUS_DLL_NOT_FOUND
+            # (exit code -1073741515).
+            dependencies:
+              - package_identifier: "Microsoft.VCRedist.2015+.x64"
             commit_author:
               name: "TJ Smith"
               email: "tj@jarvispro.io"
