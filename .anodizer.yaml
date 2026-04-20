@@ -183,12 +183,18 @@ workspaces:
               bin.install "cfgd"
             test: |
               system "#{bin}/cfgd", "--version"
+            commit_author:
+              name: "TJ Smith"
+              email: "tj@jarvispro.io"
           scoop:
             bucket:
               owner: tj-smith47
               name: scoop-bucket
             description: "Declarative, GitOps-style machine configuration management"
             license: MIT
+            commit_author:
+              name: "TJ Smith"
+              email: "tj@jarvispro.io"
           chocolatey:
             project_repo:
               owner: tj-smith47
@@ -200,6 +206,9 @@ workspaces:
               - gitops
               - reconciliation
               - rust
+            commit_author:
+              name: "TJ Smith"
+              email: "tj@jarvispro.io"
           winget:
             manifests_repo:
               owner: tj-smith47
@@ -208,6 +217,9 @@ workspaces:
             license: MIT
             package_identifier: "TJSmith.cfgd"
             publisher: "TJ Smith"
+            commit_author:
+              name: "TJ Smith"
+              email: "tj@jarvispro.io"
           nix:
             name: cfgd
             repository:
@@ -217,6 +229,9 @@ workspaces:
             description: "Declarative, GitOps-style machine configuration management"
             license: mit
             skip_upload: false
+            commit_author:
+              name: "TJ Smith"
+              email: "tj@jarvispro.io"
           krew:
             manifests_repo:
               owner: tj-smith47
@@ -544,7 +559,7 @@ srpm:
 # CloudSmith publisher — uploads nfpm-built deb/rpm/apk artifacts to a
 # generic repo (distribution-agnostic so one repo serves all package formats).
 cloudsmiths:
-  - organization: tj-smith47
+  - organization: jarvispro
     repository: cfgd
     formats: [deb, rpm, alpine]
     distributions:
