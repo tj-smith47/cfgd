@@ -221,15 +221,22 @@ workspaces:
             manifests_repo:
               owner: tj-smith47
               name: krew-index
-            short_description: "Declarative, GitOps-style machine configuration management"
+            # <=50 chars per krew review bot guidance.
+            short_description: "Declarative GitOps machine config manager"
+            # Wrapped to 80 cols, no usage examples / subcommand enumeration.
             description: |
-              cfgd is a declarative, GitOps-style machine configuration manager.
-              It reconciles system state (packages, files, services, shell, kernel
-              settings, container runtimes, kubernetes nodes) against a YAML config,
-              detects drift, and applies changes safely. The kubectl plugin exposes
-              cfgd's inject/exec/debug/status/version subcommands for working with
-              cfgd-managed pods and nodes inside a cluster.
+              cfgd reconciles machine state (packages, files, services, shell,
+              kernel settings, container runtimes, and Kubernetes nodes) against
+              a declarative YAML config. It detects drift and applies changes
+              safely. Inside a cluster, the kubectl plugin works with cfgd-managed
+              pods and nodes.
             homepage: "https://github.com/tj-smith47/cfgd"
+            # Commit as the release engineer's GH-verified identity so CNCF
+            # EasyCLA matches the PR to the signed individual CLA. Default
+            # bot@anodizer.dev has no GitHub account and always fails the CLA.
+            commit_author:
+              name: "TJ Smith"
+              email: "tj@jarvispro.io"
         # Docker V2 image for the cfgd agent (CLI + daemon image).
         docker_v2:
           - id: cfgd-agent
@@ -533,6 +540,17 @@ srpm:
   package_name: cfgd
   spec_file: cfgd.spec
   file_name_template: "{{ ProjectName }}-{{ RawVersion }}-1.src.rpm"
+
+# CloudSmith publisher — uploads nfpm-built deb/rpm/apk artifacts to a
+# generic repo (distribution-agnostic so one repo serves all package formats).
+cloudsmiths:
+  - organization: tj-smith47
+    repository: cfgd
+    formats: [deb, rpm, alpine]
+    distributions:
+      deb: any-distro/any-version
+      rpm: any-distro/any-version
+      alpine: alpine/any-version
 
 # Curl-pipe install script — rendered with the version baked in and uploaded
 # as a release asset.
