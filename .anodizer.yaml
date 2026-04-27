@@ -58,14 +58,22 @@ defaults:
     - x86_64-pc-windows-msvc
     - aarch64-pc-windows-msvc
   cross: auto
-  flags: --release
+  builds:
+    flags:
+      - --release
   archives:
-    format: tar.gz
+    formats: [tar.gz]
     format_overrides:
       - os: windows
-        format: zip
+        formats: [zip]
   checksum:
     algorithm: sha256
+  # All four workspaces opt into crates.io publishing with the same
+  # 600s index timeout. Per-crate `publish.cargo: { skip: true }` would
+  # suppress inheritance for that crate (DEC-9).
+  publish:
+    cargo:
+      index_timeout: 600
 
 # UPX compression — shrinks binaries on targets UPX supports.
 # macOS ARM is broken in recent UPX; exclude it.
@@ -90,7 +98,7 @@ makeselfs:
   - id: default
     name: "cfgd Installer"
     script: scripts/makeself-install.sh
-    name_template: "{{ ProjectName }}-{{ Version }}-{{ Os }}-{{ Arch }}-installer.run"
+    filename: "{{ ProjectName }}-{{ Version }}-{{ Os }}-{{ Arch }}-installer.run"
 
 before:
   hooks:
@@ -115,10 +123,7 @@ workspaces:
         version_sync:
           enabled: true
           mode: cargo
-        publish:
-          crates:
-            enabled: true
-            index_timeout: 600
+        # Inherits `publish.cargo: { index_timeout: 600 }` from defaults.
 
   # --- cfgd CLI: cross-platform binary + kubectl plugin ---
   - name: cfgd
@@ -136,10 +141,10 @@ workspaces:
             no_default_features: false
         archives:
           - name_template: "{{ ProjectName }}-{{ Version }}-{{ Os }}-{{ Arch }}"
-            format: tar.gz
+            formats: [tar.gz]
             format_overrides:
               - os: windows
-                format: zip
+                formats: [zip]
             files:
               - LICENSE
               - README.md
@@ -169,11 +174,9 @@ workspaces:
           include_meta: true
           replace_existing_artifacts: true
         publish:
-          crates:
-            enabled: true
-            index_timeout: 600
+          # `cargo:` inherits `index_timeout: 600` from defaults.publish.cargo.
           homebrew:
-            tap:
+            repository:
               owner: tj-smith47
               name: homebrew-tap
             directory: Formula
@@ -187,7 +190,7 @@ workspaces:
               name: "TJ Smith"
               email: "tj@jarvispro.io"
           scoop:
-            bucket:
+            repository:
               owner: tj-smith47
               name: scoop-bucket
             description: "Declarative, GitOps-style machine configuration management"
@@ -196,7 +199,7 @@ workspaces:
               name: "TJ Smith"
               email: "tj@jarvispro.io"
           chocolatey:
-            project_repo:
+            repository:
               owner: tj-smith47
               name: cfgd
             description: "Declarative, GitOps-style machine configuration management"
@@ -206,11 +209,8 @@ workspaces:
               - gitops
               - reconciliation
               - rust
-            commit_author:
-              name: "TJ Smith"
-              email: "tj@jarvispro.io"
           winget:
-            manifests_repo:
+            repository:
               owner: tj-smith47
               name: winget-pkgs
             description: "Declarative, GitOps-style machine configuration management"
@@ -239,7 +239,7 @@ workspaces:
               name: "TJ Smith"
               email: "tj@jarvispro.io"
           krew:
-            manifests_repo:
+            repository:
               owner: tj-smith47
               name: krew-index
             # <=50 chars per krew review bot guidance.
@@ -387,9 +387,8 @@ workspaces:
             Released with [anodizer](https://github.com/tj-smith47/anodizer)
           include_meta: true
           replace_existing_artifacts: true
-        publish:
-          crates:
-            enabled: true
+        # Inherits `publish.cargo: { index_timeout: 600 }` from defaults
+        # (the operator opts in to crates.io publishing through the same slot).
 
   # --- cfgd-csi: CSI Node plugin (Linux only, Docker) ---
   - name: cfgd-csi
@@ -451,9 +450,9 @@ workspaces:
             Released with [anodizer](https://github.com/tj-smith47/anodizer)
           include_meta: true
           replace_existing_artifacts: true
-        publish:
-          crates:
-            enabled: true
+        # Inherits `publish.cargo: { index_timeout: 600 }` from defaults
+        # (the CSI node plugin opts in to crates.io publishing through the
+        # same slot).
 
 changelog:
   header: "# Changelog for {{ ProjectName }}"
@@ -551,7 +550,7 @@ source:
     - "LICENSE"
     - "README.md"
 
-sbom:
+sboms:
   enabled: true
   format: cyclonedx
 
