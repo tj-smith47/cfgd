@@ -432,8 +432,13 @@ pub struct Cli {
     #[arg(long, global = true, env = "CFGD_STATE_DIR")]
     pub state_dir: Option<PathBuf>,
 
+    // Optional so `cfgd` with no args prints help and exits 0. A required
+    // subcommand (non-Option) makes clap emit a "usage" error and exit with
+    // code 2, which package-manager validators (winget's, chocolatey's)
+    // treat as install failure since they smoke-test the installed binary
+    // with no args.
     #[command(subcommand)]
-    pub command: Command,
+    pub command: Option<Command>,
 }
 
 #[derive(Parser)]
@@ -1531,7 +1536,16 @@ pub enum ModuleRegistryCommand {
 
 /// Execute the given CLI command. Returns Ok(()) on success.
 pub fn execute(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
-    match &cli.command {
+    // No subcommand: print help and exit 0. Required for package-manager
+    // validators (winget, chocolatey) that smoke-test the installed binary
+    // with no arguments and treat any non-zero exit code as failure.
+    let Some(command) = &cli.command else {
+        use clap::CommandFactory;
+        let _ = Cli::command().print_help();
+        println!();
+        return Ok(());
+    };
+    match command {
         Command::Apply(args) => cmd_apply(cli, printer, args),
         Command::Plan(args) => cmd_plan(cli, printer, args),
         Command::Status { module, exit_code } => {
