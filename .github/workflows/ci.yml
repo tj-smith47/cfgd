@@ -19,7 +19,7 @@ env:
   # Pin anodizer to a specific commit so the cache key stays stable.
   # Bump this when you need a newer anodizer. Temporary until anodizer has
   # tagged GitHub releases and anodizer-action's version: latest works.
-  ANODIZER_REV: 0211d156ed2697a340929234a12682633e313dbc
+  ANODIZER_REV: a19f15e073d0633b45ba9ef0bea2cb66775d59bc
 
 jobs:
   fmt:
