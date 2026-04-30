@@ -20,6 +20,17 @@ struct ModuleStatusEntry {
     status: String,
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ModuleStatus {
+    name: String,
+    packages: usize,
+    files: usize,
+    depends: Vec<String>,
+    status: String,
+    last_applied: Option<String>,
+}
+
 pub(super) fn cmd_status(
     cli: &Cli,
     printer: &Printer,
@@ -240,16 +251,6 @@ pub(super) fn cmd_status_module(
         None => {
             // Module not found — show empty status gracefully
             if printer.is_structured() {
-                #[derive(serde::Serialize)]
-                #[serde(rename_all = "camelCase")]
-                struct ModuleStatus {
-                    name: String,
-                    packages: usize,
-                    files: usize,
-                    depends: Vec<String>,
-                    status: String,
-                    last_applied: Option<String>,
-                }
                 printer.write_structured(&ModuleStatus {
                     name: mod_name.to_string(),
                     packages: 0,
@@ -270,16 +271,6 @@ pub(super) fn cmd_status_module(
     let state_rec = state.module_state_by_name(mod_name)?;
 
     if printer.is_structured() {
-        #[derive(serde::Serialize)]
-        #[serde(rename_all = "camelCase")]
-        struct ModuleStatus {
-            name: String,
-            packages: usize,
-            files: usize,
-            depends: Vec<String>,
-            status: String,
-            last_applied: Option<String>,
-        }
         let status = state_rec
             .as_ref()
             .map(|s| s.status.clone())

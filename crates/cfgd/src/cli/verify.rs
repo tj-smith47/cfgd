@@ -8,27 +8,20 @@ struct VerifyOutput {
     fail_count: usize,
 }
 
-fn print_verify_results(results: &[reconciler::VerifyResult], printer: &Printer) -> (usize, usize) {
-    let mut pass_count = 0;
-    let mut fail_count = 0;
-
+fn print_verify_results(results: &[reconciler::VerifyResult], printer: &Printer) {
     for result in results {
         if result.matches {
-            pass_count += 1;
             printer.success(&format!(
                 "{} {} — {}",
                 result.resource_type, result.resource_id, result.expected
             ));
         } else {
-            fail_count += 1;
             printer.error(&format!(
                 "{} {} — want: {}, have: {}",
                 result.resource_type, result.resource_id, result.expected, result.actual
             ));
         }
     }
-
-    (pass_count, fail_count)
 }
 
 pub(super) fn cmd_verify(
@@ -89,7 +82,7 @@ pub(super) fn cmd_verify(
         return Ok(());
     }
 
-    let (pass_count, fail_count) = print_verify_results(&results, printer);
+    print_verify_results(&results, printer);
 
     printer.newline();
     if fail_count == 0 {
@@ -113,8 +106,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn print_verify_results_all_pass() {
-        let printer = Printer::new(cfgd_core::output::Verbosity::Quiet);
+    fn print_verify_results_renders_passing_resources() {
+        let (printer, buf) = Printer::for_test();
         let results = vec![reconciler::VerifyResult {
             resource_type: "package".into(),
             resource_id: "curl".into(),
@@ -122,32 +115,37 @@ mod tests {
             actual: "installed".into(),
             matches: true,
         }];
-        let (pass, fail) = print_verify_results(&results, &printer);
-        assert_eq!(pass, 1);
-        assert_eq!(fail, 0);
+        print_verify_results(&results, &printer);
+        let out = buf.lock().unwrap();
+        assert!(
+            out.contains("package"),
+            "expected resource_type, got: {out}"
+        );
+        assert!(out.contains("curl"), "expected resource_id, got: {out}");
+        assert!(
+            out.contains("installed"),
+            "expected expected-value, got: {out}"
+        );
     }
 
     #[test]
-    fn print_verify_results_with_failures() {
-        let printer = Printer::new(cfgd_core::output::Verbosity::Quiet);
-        let results = vec![
-            reconciler::VerifyResult {
-                resource_type: "package".into(),
-                resource_id: "curl".into(),
-                expected: "installed".into(),
-                actual: "installed".into(),
-                matches: true,
-            },
-            reconciler::VerifyResult {
-                resource_type: "sysctl".into(),
-                resource_id: "net.ipv4.ip_forward".into(),
-                expected: "1".into(),
-                actual: "0".into(),
-                matches: false,
-            },
-        ];
-        let (pass, fail) = print_verify_results(&results, &printer);
-        assert_eq!(pass, 1);
-        assert_eq!(fail, 1);
+    fn print_verify_results_renders_failures_with_actual() {
+        let (printer, buf) = Printer::for_test();
+        let results = vec![reconciler::VerifyResult {
+            resource_type: "sysctl".into(),
+            resource_id: "net.ipv4.ip_forward".into(),
+            expected: "1".into(),
+            actual: "0".into(),
+            matches: false,
+        }];
+        print_verify_results(&results, &printer);
+        let out = buf.lock().unwrap();
+        assert!(out.contains("sysctl"), "expected resource_type, got: {out}");
+        assert!(
+            out.contains("net.ipv4.ip_forward"),
+            "expected resource_id, got: {out}"
+        );
+        assert!(out.contains("want: 1"), "expected want-line, got: {out}");
+        assert!(out.contains("have: 0"), "expected have-line, got: {out}");
     }
 }

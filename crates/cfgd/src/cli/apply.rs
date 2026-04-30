@@ -277,10 +277,8 @@ pub(super) fn cmd_apply(cli: &Cli, printer: &Printer, args: &ApplyArgs) -> anyho
         }
     }
 
-    // Prune old backups — keep last 10 applies' worth
-    if let Ok(state) = open_state_store(cli.state_dir.as_deref()) {
-        let _ = state.prune_old_backups(10);
-    }
+    // Prune old backups — keep last 10 applies' worth.
+    let _ = state.prune_old_backups(10);
 
     Ok(())
 }
