@@ -2887,10 +2887,10 @@ spec:
         let output_dir = tempfile::tempdir().unwrap();
         let printer = cfgd_core::output::Printer::new(cfgd_core::output::Verbosity::Quiet);
         let cli = super::Cli {
-            command: super::Command::Status {
+            command: Some(super::Command::Status {
                 module: None,
                 exit_code: false,
-            },
+            }),
             config: config_dir.path().join("cfgd.yaml"),
             profile: None,
             verbose: 0,
@@ -2930,10 +2930,10 @@ spec:
 
     fn test_cli(dir: &std::path::Path) -> super::Cli {
         super::Cli {
-            command: super::Command::Status {
+            command: Some(super::Command::Status {
                 module: None,
                 exit_code: false,
-            },
+            }),
             config: dir.join("cfgd.yaml"),
             profile: None,
             verbose: 0,

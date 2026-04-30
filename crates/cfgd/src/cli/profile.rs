@@ -1580,10 +1580,10 @@ spec:
             output: super::super::OutputFormatArg(cfgd_core::output::OutputFormat::Table),
             jsonpath: None,
             state_dir: None,
-            command: super::super::Command::Status {
+            command: Some(super::super::Command::Status {
                 module: None,
                 exit_code: false,
-            },
+            }),
         }
     }
 
