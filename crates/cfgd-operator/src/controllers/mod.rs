@@ -2,34 +2,33 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use futures::StreamExt;
-use k8s_openapi::apimachinery::pkg::apis::meta::v1::OwnerReference;
-use kube::api::{Api, ListParams, Patch, PatchParams};
+use kube::api::Api;
 use kube::runtime::Controller;
 use kube::runtime::controller::Action;
 use kube::runtime::events::{Event, EventType, Recorder, Reporter};
 use kube::runtime::reflector::ObjectRef;
 use kube::runtime::watcher::Config as WatcherConfig;
-use kube::{Client, Resource, ResourceExt};
+use kube::{Client, ResourceExt};
 use tracing::{debug, info, warn};
 
-use k8s_openapi::api::core::v1::Namespace;
-
 use crate::crds::{
-    ClusterConfigPolicy, ClusterConfigPolicySpec, ClusterConfigPolicyStatus, Condition,
-    ConfigPolicy, ConfigPolicySpec, ConfigPolicyStatus, DriftAlert, DriftAlertStatus,
-    DriftSeverity, LabelSelector, MachineConfig, MachineConfigSpec, MachineConfigStatus, Module,
-    ModuleRef, ModuleSignature, ModuleSpec, ModuleStatus, PackageRef, SelectorOperator,
-    is_valid_oci_reference, is_valid_pem_public_key,
+    ClusterConfigPolicy, Condition, ConfigPolicy, DriftAlert, DriftSeverity, LabelSelector,
+    MachineConfig, Module, SelectorOperator,
 };
 use crate::errors::OperatorError;
-use crate::metrics::{DriftLabels, Metrics, PolicyLabels, ReconcileLabels};
-use cfgd_core::version_satisfies;
+use crate::metrics::{Metrics, ReconcileLabels};
 
-const FIELD_MANAGER_OPERATOR: &str = "cfgd-operator";
-const FIELD_MANAGER_STATUS: &str = "cfgd-operator/status";
-const MACHINE_CONFIG_FINALIZER: &str = "cfgd.io/machine-config-cleanup";
+#[cfg(test)]
+use crate::crds::{
+    ClusterConfigPolicySpec, ConfigPolicySpec, MachineConfigSpec, MachineConfigStatus, ModuleRef,
+    ModuleSignature, ModuleSpec, PackageRef,
+};
 
-fn compliance_summary(compliant: u32, non_compliant: u32) -> String {
+pub(super) const FIELD_MANAGER_OPERATOR: &str = "cfgd-operator";
+pub(super) const FIELD_MANAGER_STATUS: &str = "cfgd-operator/status";
+pub(super) const MACHINE_CONFIG_FINALIZER: &str = "cfgd.io/machine-config-cleanup";
+
+pub(super) fn compliance_summary(compliant: u32, non_compliant: u32) -> String {
     format!("{compliant} compliant, {non_compliant} non-compliant")
 }
 
@@ -37,7 +36,7 @@ fn compliance_summary(compliant: u32, non_compliant: u32) -> String {
 // Shared metrics helpers (DRY for error_policy and reconcile success blocks)
 // ---------------------------------------------------------------------------
 
-fn record_error_and_requeue(
+pub(super) fn record_error_and_requeue(
     error: &OperatorError,
     ctx: &ControllerContext,
     controller: &str,
@@ -59,7 +58,7 @@ fn record_error_and_requeue(
 /// (MachineConfig, DriftAlert, ConfigPolicy, ClusterConfigPolicy, Module) into
 /// a single generic helper — the only per-controller variation was the metrics
 /// label, so the type parameter `K` just selects the `Arc<K>` callers expect.
-fn make_error_policy<K>(
+pub(super) fn make_error_policy<K>(
     controller: &'static str,
 ) -> impl Fn(Arc<K>, &OperatorError, Arc<ControllerContext>) -> Action + Clone
 where
@@ -68,7 +67,11 @@ where
     move |_obj, error, ctx| record_error_and_requeue(error, &ctx, controller)
 }
 
-fn record_reconcile_success(ctx: &ControllerContext, controller: &str, start: std::time::Instant) {
+pub(super) fn record_reconcile_success(
+    ctx: &ControllerContext,
+    controller: &str,
+    start: std::time::Instant,
+) {
     let labels = ReconcileLabels {
         controller: controller.to_string(),
         result: "success".to_string(),
@@ -88,7 +91,7 @@ type ReconcileResult<K> = Result<
     kube::runtime::controller::Error<OperatorError, kube::runtime::watcher::Error>,
 >;
 
-fn log_reconcile<K: kube::Resource>(
+pub(super) fn log_reconcile<K: kube::Resource>(
     type_name: &'static str,
 ) -> impl Fn(ReconcileResult<K>) -> futures::future::Ready<()> {
     move |result| {
@@ -100,7 +103,7 @@ fn log_reconcile<K: kube::Resource>(
     }
 }
 
-fn record_reconcile_metrics(
+pub(super) fn record_reconcile_metrics(
     ctx: &ControllerContext,
     controller: &str,
     result: &str,
@@ -127,7 +130,7 @@ pub struct ControllerContext {
 }
 
 /// Get a namespaced API for a resource, or return an error if namespace is empty.
-fn namespaced_api<
+pub(super) fn namespaced_api<
     T: kube::Resource<DynamicType = (), Scope = kube::core::NamespaceResourceScope>
         + Clone
         + serde::de::DeserializeOwned
@@ -250,7 +253,10 @@ pub async fn run(client: Client, metrics: Metrics) -> Result<(), OperatorError> 
 // ---------------------------------------------------------------------------
 
 /// Find an existing condition's status by type, returning None if not found.
-fn find_condition_status(conditions: &[Condition], condition_type: &str) -> Option<String> {
+pub(super) fn find_condition_status(
+    conditions: &[Condition],
+    condition_type: &str,
+) -> Option<String> {
     conditions
         .iter()
         .find(|c| c.condition_type == condition_type)
@@ -258,7 +264,7 @@ fn find_condition_status(conditions: &[Condition], condition_type: &str) -> Opti
 }
 
 /// Find an existing condition's last_transition_time by type.
-fn find_condition_transition_time(
+pub(super) fn find_condition_transition_time(
     conditions: &[Condition],
     condition_type: &str,
 ) -> Option<String> {
@@ -269,7 +275,7 @@ fn find_condition_transition_time(
 }
 
 /// Build a condition, preserving lastTransitionTime if the status hasn't changed.
-fn build_condition(
+pub(super) fn build_condition(
     existing_conditions: &[Condition],
     condition_type: &str,
     status: &str,
@@ -302,7 +308,7 @@ fn build_condition(
 // DriftAlert condition builder (DRY helper for M1)
 // ---------------------------------------------------------------------------
 
-fn build_drift_alert_conditions(
+pub(super) fn build_drift_alert_conditions(
     severity: &DriftSeverity,
     resolved: bool,
     device_id: &str,
@@ -366,7 +372,7 @@ fn build_drift_alert_conditions(
 // Publish event helper (logs on failure instead of silent .ok())
 // ---------------------------------------------------------------------------
 
-async fn publish_event(
+pub(super) async fn publish_event(
     recorder: &Recorder,
     event: &Event,
     obj_ref: &k8s_openapi::api::core::v1::ObjectReference,
@@ -376,7 +382,7 @@ async fn publish_event(
     }
 }
 
-async fn emit_event(
+pub(super) async fn emit_event(
     recorder: &Recorder,
     obj_ref: &k8s_openapi::api::core::v1::ObjectReference,
     event_type: EventType,
@@ -399,729 +405,33 @@ async fn emit_event(
 }
 
 // ---------------------------------------------------------------------------
-// MachineConfig controller
+// Submodule declarations
 // ---------------------------------------------------------------------------
 
-async fn reconcile_machine_config(
-    obj: Arc<MachineConfig>,
-    ctx: Arc<ControllerContext>,
-) -> Result<Action, OperatorError> {
-    let start = std::time::Instant::now();
-    let name = obj.name_any();
-    let namespace = obj.namespace().unwrap_or_default();
+mod cluster_config_policy;
+mod config_policy;
+mod drift_alert;
+mod machine_config;
+mod module;
 
-    let machines_api: Api<MachineConfig> = namespaced_api(&ctx.client, &namespace)?;
+// Bring per-controller reconcile fns into scope so run() can wire them up.
+use cluster_config_policy::reconcile_cluster_config_policy;
+use config_policy::reconcile_config_policy;
+use drift_alert::reconcile_drift_alert;
+use machine_config::reconcile_machine_config;
+use module::reconcile_module;
 
-    let finalizers = obj.metadata.finalizers.as_deref().unwrap_or(&[]);
-    let has_finalizer = finalizers.iter().any(|f| f == MACHINE_CONFIG_FINALIZER);
-
-    if obj.metadata.deletion_timestamp.is_some() && has_finalizer {
-        info!(name = %name, "machineConfig being deleted, running cleanup");
-        let updated: Vec<&str> = finalizers
-            .iter()
-            .filter(|f| f.as_str() != MACHINE_CONFIG_FINALIZER)
-            .map(|f| f.as_str())
-            .collect();
-        let patch = serde_json::json!({
-            "metadata": {
-                "finalizers": updated
-            }
-        });
-        machines_api
-            .patch(
-                &name,
-                &PatchParams::apply(FIELD_MANAGER_OPERATOR),
-                &Patch::Merge(patch),
-            )
-            .await
-            .map_err(|e| {
-                OperatorError::Reconciliation(format!(
-                    "failed to remove finalizer from {name}: {e}"
-                ))
-            })?;
-        return Ok(Action::await_change());
-    }
-
-    if obj.metadata.deletion_timestamp.is_none() && !has_finalizer {
-        let mut updated: Vec<String> = finalizers.to_vec();
-        updated.push(MACHINE_CONFIG_FINALIZER.to_string());
-        let patch = serde_json::json!({
-            "metadata": {
-                "finalizers": updated
-            }
-        });
-        machines_api
-            .patch(
-                &name,
-                &PatchParams::apply(FIELD_MANAGER_OPERATOR),
-                &Patch::Merge(patch),
-            )
-            .await
-            .map_err(|e| {
-                OperatorError::Reconciliation(format!("failed to add finalizer to {name}: {e}"))
-            })?;
-        info!(name = %name, "added finalizer to MachineConfig");
-    }
-
-    if let Err(e) = validate_spec(&obj.spec) {
-        let error_msg = e.to_string();
-        emit_event(
-            &ctx.recorder,
-            &obj.object_ref(&()),
-            EventType::Warning,
-            "ReconcileError",
-            format!("Reconciliation failed for {}: {}", name, error_msg),
-            "Reconcile",
-        )
-        .await;
-        return Err(e);
-    }
-
-    info!(
-        name = %name,
-        namespace = %namespace,
-        hostname = %obj.spec.hostname,
-        profile = %obj.spec.profile,
-        packages = obj.spec.packages.len(),
-        files = obj.spec.files.len(),
-        "reconciling MachineConfig"
-    );
-
-    let current_generation = obj.meta().generation;
-    let existing_status = obj.status.as_ref();
-    let observed_generation = existing_status.and_then(|s| s.observed_generation);
-    let existing_conditions = existing_status
-        .map(|s| s.conditions.as_slice())
-        .unwrap_or(&[]);
-
-    // Check if any DriftAlerts exist for this MachineConfig
-    let has_drift = has_active_drift_alerts(&ctx.client, &namespace, &name).await;
-
-    // Skip if we've already observed this generation, no drift, and condition already reflects that
-    let generation_unchanged =
-        current_generation.is_some() && current_generation == observed_generation;
-    let had_drift = existing_conditions
-        .iter()
-        .any(|c| c.condition_type == "DriftDetected" && c.status == "True");
-    if generation_unchanged && !has_drift && !had_drift {
-        info!(name = %name, "already reconciled this generation, skipping");
-        return Ok(Action::requeue(std::time::Duration::from_secs(60)));
-    }
-
-    // If not drifted, clean up any stale DriftAlerts for this MachineConfig
-    if !has_drift {
-        cleanup_drift_alerts(&ctx.client, &namespace, &name).await;
-    }
-
-    // Resolve moduleRefs against Module CRDs (cluster-scoped)
-    let (modules_resolved_status, modules_resolved_reason, modules_resolved_message) =
-        resolve_module_refs(&ctx.client, &obj.spec.module_refs).await;
-
-    let now = cfgd_core::utc_now_iso8601();
-
-    let (drift_status, drift_reason, drift_message) = if has_drift {
-        (
-            "True",
-            "DriftActive",
-            format!("MachineConfig {} has detected drift on device", name),
-        )
-    } else {
-        (
-            "False",
-            "NoDrift",
-            format!("No drift detected for MachineConfig {}", name),
-        )
-    };
-
-    // Preserve existing package_versions from status (C1 fix)
-    let existing_package_versions = existing_status
-        .map(|s| s.package_versions.clone())
-        .unwrap_or_default();
-
-    let status = serde_json::json!({
-        "status": MachineConfigStatus {
-            last_reconciled: Some(now.clone()),
-            observed_generation: current_generation,
-            conditions: vec![
-                build_condition(
-                    existing_conditions,
-                    "Reconciled", "True", "ReconcileSuccess",
-                    &format!("MachineConfig {} reconciled successfully", name),
-                    &now, current_generation,
-                ),
-                build_condition(
-                    existing_conditions,
-                    "DriftDetected", drift_status, drift_reason,
-                    &drift_message,
-                    &now, current_generation,
-                ),
-                build_condition(
-                    existing_conditions,
-                    "ModulesResolved", modules_resolved_status, modules_resolved_reason,
-                    &modules_resolved_message,
-                    &now, current_generation,
-                ),
-                // Compliant is set by policy controllers — preserve existing value
-                build_condition(
-                    existing_conditions,
-                    "Compliant",
-                    find_condition_status(existing_conditions, "Compliant")
-                        .as_deref()
-                        .unwrap_or("Unknown"),
-                    find_condition_status(existing_conditions, "Compliant")
-                        .as_deref()
-                        .map(|s| if s == "True" { "PolicyCompliant" } else if s == "False" { "PolicyViolation" } else { "NotEvaluated" })
-                        .unwrap_or("NotEvaluated"),
-                    find_condition_status(existing_conditions, "Compliant")
-                        .as_deref()
-                        .map(|_| "Policy compliance evaluated by ConfigPolicy controller")
-                        .unwrap_or("Awaiting policy evaluation"),
-                    &now, current_generation,
-                ),
-            ],
-            package_versions: existing_package_versions,
-        }
-    });
-
-    if let Err(e) = machines_api
-        .patch_status(
-            &name,
-            &PatchParams::apply(FIELD_MANAGER_STATUS),
-            &Patch::Merge(status),
-        )
-        .await
-    {
-        let error_msg = format!("failed to update status for {name}: {e}");
-        emit_event(
-            &ctx.recorder,
-            &obj.object_ref(&()),
-            EventType::Warning,
-            "ReconcileError",
-            format!("Reconciliation failed for {}: {}", name, error_msg),
-            "Reconcile",
-        )
-        .await;
-        return Err(OperatorError::Reconciliation(error_msg));
-    }
-
-    info!(name = %name, "status updated with last_reconciled timestamp");
-
-    emit_event(
-        &ctx.recorder,
-        &obj.object_ref(&()),
-        EventType::Normal,
-        "Reconciled",
-        format!("MachineConfig {} reconciled successfully", name),
-        "Reconcile",
-    )
-    .await;
-
-    if has_drift {
-        emit_event(
-            &ctx.recorder,
-            &obj.object_ref(&()),
-            EventType::Warning,
-            "DriftDetected",
-            format!("Drift detected on device for MachineConfig {}", name),
-            "DriftCheck",
-        )
-        .await;
-
-        ctx.metrics
-            .drift_events_total
-            .get_or_create(&DriftLabels {
-                severity: "warning".to_string(),
-                namespace: namespace.clone(),
-            })
-            .inc();
-    }
-
-    record_reconcile_success(&ctx, "machine_config", start);
-
-    Ok(Action::requeue(std::time::Duration::from_secs(60)))
-}
-
-fn validate_spec(spec: &MachineConfigSpec) -> Result<(), OperatorError> {
-    spec.validate()
-        .map_err(|errors| OperatorError::InvalidSpec(errors.join("; ")))
-}
+// Test-only helpers re-imported so the cross-cutting tests block keeps working.
+#[cfg(test)]
+use config_policy::{merge_policy_requirements, validate_policy_compliance};
+#[cfg(test)]
+use machine_config::validate_spec;
+#[cfg(test)]
+use module::evaluate_module_verification;
 
 // ---------------------------------------------------------------------------
-// DriftAlert controller — updates MachineConfig drift status
+// Shared selector helper (used across config_policy and cluster_config_policy)
 // ---------------------------------------------------------------------------
-
-async fn reconcile_drift_alert(
-    obj: Arc<DriftAlert>,
-    ctx: Arc<ControllerContext>,
-) -> Result<Action, OperatorError> {
-    let start = std::time::Instant::now();
-    let name = obj.name_any();
-    let namespace = obj.namespace().unwrap_or_default();
-    let mc_name = &obj.spec.machine_config_ref.name;
-    let mc_namespace = obj
-        .spec
-        .machine_config_ref
-        .namespace
-        .as_deref()
-        .unwrap_or(&namespace);
-
-    info!(
-        name = %name,
-        machine_config = %mc_name,
-        device_id = %obj.spec.device_id,
-        severity = ?obj.spec.severity,
-        details_count = obj.spec.drift_details.len(),
-        "reconciling DriftAlert"
-    );
-
-    let machines: Api<MachineConfig> = namespaced_api(&ctx.client, mc_namespace)?;
-
-    match machines.get(mc_name).await {
-        Ok(mc) => {
-            // Require valid UID for owner reference (H7 fix)
-            let mc_uid = mc.metadata.uid.clone().ok_or_else(|| {
-                OperatorError::Reconciliation(format!(
-                    "MachineConfig {} has no UID — cannot set owner reference",
-                    mc.name_any()
-                ))
-            })?;
-
-            let owner_ref = OwnerReference {
-                api_version: cfgd_core::API_VERSION.to_string(),
-                kind: "MachineConfig".to_string(),
-                name: mc.name_any(),
-                uid: mc_uid,
-                controller: Some(true),
-                block_owner_deletion: Some(true),
-            };
-
-            let existing_owners = obj.metadata.owner_references.as_deref().unwrap_or(&[]);
-            let has_owner_ref = existing_owners.iter().any(|r| {
-                r.kind == "MachineConfig" && r.name == owner_ref.name && r.uid == owner_ref.uid
-            });
-
-            if !has_owner_ref {
-                let mut updated_owners: Vec<OwnerReference> = existing_owners.to_vec();
-                updated_owners.push(owner_ref);
-                let patch = serde_json::json!({
-                    "metadata": {
-                        "ownerReferences": updated_owners
-                    }
-                });
-                let da_api: Api<DriftAlert> = namespaced_api(&ctx.client, &namespace)?;
-                da_api
-                    .patch(
-                        &name,
-                        &PatchParams::apply(FIELD_MANAGER_OPERATOR),
-                        &Patch::Merge(patch),
-                    )
-                    .await
-                    .map_err(|e| {
-                        OperatorError::Reconciliation(format!(
-                            "failed to set owner reference on DriftAlert {name}: {e}"
-                        ))
-                    })?;
-                info!(name = %name, machine_config = %mc.name_any(), "set owner reference on DriftAlert");
-            }
-
-            // Check if a DriftDetected condition already exists
-            let has_drift_condition = mc
-                .status
-                .as_ref()
-                .map(|s| {
-                    s.conditions
-                        .iter()
-                        .any(|c| c.condition_type == "DriftDetected" && c.status == "True")
-                })
-                .unwrap_or(false);
-
-            // If MC has no drift condition and no drift details, this alert is resolved — delete it
-            if !has_drift_condition && obj.spec.drift_details.is_empty() {
-                let alerts: Api<DriftAlert> = namespaced_api(&ctx.client, &namespace)?;
-
-                let now = cfgd_core::utc_now_iso8601();
-                let da_status = serde_json::json!({
-                    "status": DriftAlertStatus {
-                        detected_at: obj.status.as_ref().and_then(|s| s.detected_at.clone()),
-                        resolved_at: Some(now.clone()),
-                        conditions: build_drift_alert_conditions(
-                            &obj.spec.severity,
-                            true,
-                            &obj.spec.device_id,
-                            obj.spec.drift_details.len(),
-                            &now,
-                            obj.meta().generation,
-                        ),
-                    }
-                });
-                if let Err(e) = alerts
-                    .patch_status(
-                        &name,
-                        &PatchParams::apply(FIELD_MANAGER_STATUS),
-                        &Patch::Merge(da_status),
-                    )
-                    .await
-                {
-                    warn!(name = %name, error = %e, "failed to set Resolved condition on DriftAlert");
-                }
-
-                emit_event(
-                    &ctx.recorder,
-                    &obj.object_ref(&()),
-                    EventType::Normal,
-                    "DriftResolved",
-                    format!("DriftAlert {} resolved", name),
-                    "DriftCheck",
-                )
-                .await;
-
-                if let Err(e) = alerts.delete(&name, &Default::default()).await {
-                    warn!(name = %name, error = %e, "failed to delete resolved DriftAlert");
-                }
-
-                record_reconcile_success(&ctx, "drift_alert", start);
-
-                return Ok(Action::requeue(std::time::Duration::from_secs(60)));
-            }
-
-            if !has_drift_condition {
-                ctx.metrics
-                    .drift_events_total
-                    .get_or_create(&DriftLabels {
-                        severity: format!("{:?}", obj.spec.severity),
-                        namespace: namespace.clone(),
-                    })
-                    .inc();
-
-                let now = cfgd_core::utc_now_iso8601();
-                let mc_generation = mc.meta().generation;
-                let mc_status = serde_json::json!({
-                    "status": {
-                        "conditions": [
-                            {
-                                "type": "DriftDetected",
-                                "status": "True",
-                                "reason": "DriftActive",
-                                "message": format!(
-                                    "Drift detected on device {} — {} detail(s)",
-                                    obj.spec.device_id,
-                                    obj.spec.drift_details.len()
-                                ),
-                                "lastTransitionTime": now.clone(),
-                                "observedGeneration": mc_generation,
-                            }
-                        ]
-                    }
-                });
-
-                machines
-                    .patch_status(
-                        mc_name,
-                        &PatchParams::apply(FIELD_MANAGER_STATUS),
-                        &Patch::Merge(mc_status),
-                    )
-                    .await
-                    .map_err(|e| {
-                        OperatorError::Reconciliation(format!(
-                            "failed to update drift status for MachineConfig {mc_name}: {e}"
-                        ))
-                    })?;
-
-                info!(
-                    machine_config = %mc_name,
-                    "machineConfig drift condition set"
-                );
-
-                emit_event(
-                    &ctx.recorder,
-                    &mc.object_ref(&()),
-                    EventType::Warning,
-                    "DriftDetected",
-                    format!(
-                        "Drift detected from device {} — {} details",
-                        obj.spec.device_id,
-                        obj.spec.drift_details.len()
-                    ),
-                    "DriftCheck",
-                )
-                .await;
-
-                // Patch DriftAlert status with Resolved=False condition
-                let da_api: Api<DriftAlert> = namespaced_api(&ctx.client, &namespace)?;
-                let da_status = serde_json::json!({
-                    "status": DriftAlertStatus {
-                        detected_at: Some(now.clone()),
-                        resolved_at: None,
-                        conditions: build_drift_alert_conditions(
-                            &obj.spec.severity,
-                            false,
-                            &obj.spec.device_id,
-                            obj.spec.drift_details.len(),
-                            &now,
-                            obj.meta().generation,
-                        ),
-                    }
-                });
-                da_api
-                    .patch_status(
-                        &name,
-                        &PatchParams::apply(FIELD_MANAGER_STATUS),
-                        &Patch::Merge(da_status),
-                    )
-                    .await
-                    .map_err(|e| {
-                        OperatorError::Reconciliation(format!(
-                            "failed to update DriftAlert status for {name}: {e}"
-                        ))
-                    })?;
-            }
-        }
-        Err(kube::Error::Api(resp)) if resp.code == 404 => {
-            warn!(
-                machine_config = %mc_name,
-                "driftAlert references non-existent MachineConfig"
-            );
-            // Record as error, not success (H6 fix)
-            record_reconcile_metrics(&ctx, "drift_alert", "error", start);
-            return Ok(Action::requeue(std::time::Duration::from_secs(60)));
-        }
-        Err(e) => {
-            return Err(OperatorError::Reconciliation(format!(
-                "failed to get MachineConfig {mc_name}: {e}"
-            )));
-        }
-    }
-
-    record_reconcile_success(&ctx, "drift_alert", start);
-
-    Ok(Action::requeue(std::time::Duration::from_secs(60)))
-}
-
-/// Check whether any active DriftAlerts exist for a MachineConfig.
-/// Matches by spec.machineConfigRef.name since labels may not be set.
-async fn has_active_drift_alerts(client: &Client, namespace: &str, mc_name: &str) -> bool {
-    let alerts: Api<DriftAlert> = if namespace.is_empty() {
-        Api::all(client.clone())
-    } else {
-        Api::namespaced(client.clone(), namespace)
-    };
-
-    // List all DriftAlerts and filter by machineConfigRef.name since labels are not guaranteed
-    match alerts.list(&ListParams::default()).await {
-        Ok(list) => list
-            .items
-            .iter()
-            .any(|da| da.spec.machine_config_ref.name == mc_name),
-        Err(e) => {
-            warn!(error = %e, mc_name = %mc_name, "failed to list DriftAlerts for drift check");
-            false
-        }
-    }
-}
-
-async fn cleanup_drift_alerts(client: &Client, namespace: &str, mc_name: &str) {
-    let alerts: Api<DriftAlert> = if namespace.is_empty() {
-        Api::all(client.clone())
-    } else {
-        Api::namespaced(client.clone(), namespace)
-    };
-
-    // List all and filter by machineConfigRef.name (labels may not be set)
-    let list = match alerts.list(&ListParams::default()).await {
-        Ok(l) => l,
-        Err(e) => {
-            warn!(error = %e, "failed to list DriftAlerts for cleanup");
-            return;
-        }
-    };
-
-    for alert in list {
-        if alert.spec.machine_config_ref.name != mc_name {
-            continue;
-        }
-        let alert_name = alert.name_any();
-        if let Err(e) = alerts.delete(&alert_name, &Default::default()).await {
-            warn!(
-                name = %alert_name,
-                error = %e,
-                "failed to delete resolved DriftAlert"
-            );
-        } else {
-            info!(name = %alert_name, "deleted resolved DriftAlert");
-        }
-    }
-}
-
-// ---------------------------------------------------------------------------
-// ConfigPolicy controller — validates MachineConfigs against policies
-// ---------------------------------------------------------------------------
-
-async fn reconcile_config_policy(
-    obj: Arc<ConfigPolicy>,
-    ctx: Arc<ControllerContext>,
-) -> Result<Action, OperatorError> {
-    let start = std::time::Instant::now();
-    let name = obj.name_any();
-    let namespace = obj.namespace().unwrap_or_default();
-
-    info!(
-        name = %name,
-        required_modules = obj.spec.required_modules.len(),
-        packages = obj.spec.packages.len(),
-        settings = obj.spec.settings.len(),
-        "reconciling ConfigPolicy"
-    );
-
-    let machines: Api<MachineConfig> = namespaced_api(&ctx.client, &namespace)?;
-
-    let mc_list = machines.list(&ListParams::default()).await.map_err(|e| {
-        OperatorError::Reconciliation(format!("failed to list MachineConfigs: {e}"))
-    })?;
-
-    // Filter MachineConfigs by target selector
-    let targeted_mcs: Vec<&MachineConfig> = mc_list
-        .iter()
-        .filter(|mc| matches_selector(mc.metadata.labels.as_ref(), &obj.spec.target_selector))
-        .collect();
-
-    // Update each targeted MachineConfig's Compliant condition
-    for mc in &targeted_mcs {
-        let compliant = validate_policy_compliance(
-            &mc.spec,
-            mc.status.as_ref(),
-            &obj.spec.required_modules,
-            &obj.spec.packages,
-            &obj.spec.settings,
-        );
-        let mc_name = mc.name_any();
-        let mc_existing_conditions = mc
-            .status
-            .as_ref()
-            .map(|s| s.conditions.as_slice())
-            .unwrap_or(&[]);
-        let now = cfgd_core::utc_now_iso8601();
-        let (comp_status, comp_reason, comp_message) = if compliant {
-            (
-                "True",
-                "PolicyCompliant",
-                format!("Compliant with policy {}", name),
-            )
-        } else {
-            (
-                "False",
-                "PolicyViolation",
-                format!("Violates policy {}", name),
-            )
-        };
-        let compliant_condition = build_condition(
-            mc_existing_conditions,
-            "Compliant",
-            comp_status,
-            comp_reason,
-            &comp_message,
-            &now,
-            mc.meta().generation,
-        );
-        let mc_status_patch = serde_json::json!({
-            "status": {
-                "conditions": [compliant_condition]
-            }
-        });
-        if let Err(e) = machines
-            .patch_status(
-                &mc_name,
-                &PatchParams::apply(FIELD_MANAGER_STATUS),
-                &Patch::Merge(mc_status_patch),
-            )
-            .await
-        {
-            warn!(name = %mc_name, error = %e, "failed to update Compliant condition on MachineConfig");
-        }
-    }
-
-    // Evaluate compliance counts and emit violation events
-    let targeted_mc_refs: Vec<MachineConfig> = targeted_mcs.into_iter().cloned().collect();
-    let (compliant_count, non_compliant_count) = evaluate_policy_compliance(
-        &ctx,
-        &targeted_mc_refs,
-        &obj.spec.packages,
-        &obj.spec.required_modules,
-        &obj.spec.settings,
-        &name,
-    )
-    .await;
-
-    let now = cfgd_core::utc_now_iso8601();
-    let overall_status = if non_compliant_count == 0 {
-        "True"
-    } else {
-        "False"
-    };
-
-    let policies: Api<ConfigPolicy> = namespaced_api(&ctx.client, &namespace)?;
-
-    let existing_conditions = obj
-        .status
-        .as_ref()
-        .map(|s| s.conditions.as_slice())
-        .unwrap_or(&[]);
-
-    let status = serde_json::json!({
-        "status": ConfigPolicyStatus {
-            compliant_count,
-            non_compliant_count,
-            conditions: vec![
-                build_condition(
-                    existing_conditions,
-                    "Enforced", overall_status,
-                    if non_compliant_count == 0 { "AllCompliant" } else { "NonCompliantTargets" },
-                    &compliance_summary(compliant_count, non_compliant_count),
-                    &now, obj.meta().generation,
-                ),
-            ],
-        }
-    });
-
-    policies
-        .patch_status(
-            &name,
-            &PatchParams::apply(FIELD_MANAGER_STATUS),
-            &Patch::Merge(status),
-        )
-        .await
-        .map_err(|e| {
-            OperatorError::Reconciliation(format!(
-                "failed to update ConfigPolicy status for {name}: {e}"
-            ))
-        })?;
-
-    info!(
-        name = %name,
-        compliant = compliant_count,
-        non_compliant = non_compliant_count,
-        "configPolicy status updated"
-    );
-
-    emit_policy_evaluation_events(
-        &ctx,
-        &obj.object_ref(&()),
-        compliant_count,
-        non_compliant_count,
-    )
-    .await;
-
-    ctx.metrics
-        .devices_compliant
-        .get_or_create(&PolicyLabels {
-            policy: name.clone(),
-            namespace: namespace.clone(),
-        })
-        .set(i64::from(compliant_count));
-
-    record_reconcile_success(&ctx, "config_policy", start);
-
-    Ok(Action::requeue(std::time::Duration::from_secs(60)))
-}
 
 pub(crate) fn matches_selector(
     labels: Option<&BTreeMap<String, String>>,
@@ -1151,716 +461,6 @@ pub(crate) fn matches_selector(
         }
     }
     true
-}
-
-fn validate_policy_compliance(
-    spec: &MachineConfigSpec,
-    status: Option<&MachineConfigStatus>,
-    required_modules: &[ModuleRef],
-    packages: &[PackageRef],
-    settings: &BTreeMap<String, serde_json::Value>,
-) -> bool {
-    for module in required_modules {
-        if !spec.module_refs.iter().any(|mr| mr.name == module.name) {
-            return false;
-        }
-    }
-    for pkg in packages {
-        if !spec.packages.iter().any(|p| p.name == pkg.name) {
-            return false;
-        }
-        if let Some(req_str) = &pkg.version {
-            let installed_versions = status.map(|s| &s.package_versions);
-            match installed_versions.and_then(|pv| pv.get(&pkg.name)) {
-                Some(reported) => {
-                    if !version_satisfies(reported, req_str) {
-                        return false;
-                    }
-                }
-                None => return false,
-            }
-        }
-    }
-    for (key, value) in settings {
-        match spec.system_settings.get(key) {
-            Some(v) if v == value => {}
-            _ => return false,
-        }
-    }
-    true
-}
-
-// ---------------------------------------------------------------------------
-// Shared policy compliance evaluation helpers
-// ---------------------------------------------------------------------------
-
-/// Evaluate a set of MachineConfigs against policy requirements, emitting
-/// violation events for non-compliant targets. Returns (compliant, non-compliant) counts.
-async fn evaluate_policy_compliance(
-    ctx: &ControllerContext,
-    machine_configs: &[MachineConfig],
-    required_packages: &[PackageRef],
-    required_modules: &[ModuleRef],
-    required_settings: &BTreeMap<String, serde_json::Value>,
-    policy_name: &str,
-) -> (u32, u32) {
-    let mut compliant_count: u32 = 0;
-    let mut non_compliant_count: u32 = 0;
-
-    for mc in machine_configs {
-        let compliant = validate_policy_compliance(
-            &mc.spec,
-            mc.status.as_ref(),
-            required_modules,
-            required_packages,
-            required_settings,
-        );
-        if compliant {
-            compliant_count += 1;
-        } else {
-            non_compliant_count += 1;
-            let mc_name = mc.name_any();
-            emit_event(
-                &ctx.recorder,
-                &mc.object_ref(&()),
-                EventType::Warning,
-                "PolicyViolation",
-                format!("MachineConfig {} violates policy {}", mc_name, policy_name),
-                "PolicyEvaluate",
-            )
-            .await;
-        }
-    }
-
-    (compliant_count, non_compliant_count)
-}
-
-/// Emit standard post-evaluation events for a policy reconciler.
-async fn emit_policy_evaluation_events(
-    ctx: &ControllerContext,
-    obj_ref: &k8s_openapi::api::core::v1::ObjectReference,
-    compliant_count: u32,
-    non_compliant_count: u32,
-) {
-    emit_event(
-        &ctx.recorder,
-        obj_ref,
-        EventType::Normal,
-        "Evaluated",
-        compliance_summary(compliant_count, non_compliant_count),
-        "Evaluate",
-    )
-    .await;
-
-    if non_compliant_count > 0 {
-        emit_event(
-            &ctx.recorder,
-            obj_ref,
-            EventType::Warning,
-            "NonCompliantTargets",
-            format!("{} non-compliant MachineConfigs", non_compliant_count),
-            "Evaluate",
-        )
-        .await;
-    }
-}
-
-// ---------------------------------------------------------------------------
-// ClusterConfigPolicy controller — cluster-wide policy enforcement
-// ---------------------------------------------------------------------------
-
-struct MergedPolicyRequirements {
-    packages: Vec<PackageRef>,
-    modules: Vec<ModuleRef>,
-    settings: BTreeMap<String, serde_json::Value>,
-}
-
-fn merge_policy_requirements(
-    cluster: &ClusterConfigPolicySpec,
-    namespace_policies: &[&ConfigPolicySpec],
-) -> MergedPolicyRequirements {
-    let mut packages = cluster.packages.clone();
-    let mut modules = cluster.required_modules.clone();
-    let mut settings = BTreeMap::new();
-
-    for ns in namespace_policies {
-        for pkg in &ns.packages {
-            if let Some(existing) = packages.iter_mut().find(|p| p.name == pkg.name) {
-                if existing.version.is_none() {
-                    existing.version = pkg.version.clone();
-                }
-            } else {
-                packages.push(pkg.clone());
-            }
-        }
-        for module in &ns.required_modules {
-            if !modules.iter().any(|m| m.name == module.name) {
-                modules.push(module.clone());
-            }
-        }
-        settings.extend(ns.settings.clone());
-    }
-
-    for cluster_pkg in &cluster.packages {
-        if let Some(ver) = &cluster_pkg.version
-            && let Some(existing) = packages.iter_mut().find(|p| p.name == cluster_pkg.name)
-        {
-            existing.version = Some(ver.clone());
-        }
-    }
-
-    settings.extend(cluster.settings.clone());
-
-    MergedPolicyRequirements {
-        packages,
-        modules,
-        settings,
-    }
-}
-
-async fn reconcile_cluster_config_policy(
-    obj: Arc<ClusterConfigPolicy>,
-    ctx: Arc<ControllerContext>,
-) -> Result<Action, OperatorError> {
-    let start = std::time::Instant::now();
-    let name = obj.name_any();
-
-    info!(
-        name = %name,
-        required_modules = obj.spec.required_modules.len(),
-        packages = obj.spec.packages.len(),
-        settings = obj.spec.settings.len(),
-        "reconciling ClusterConfigPolicy"
-    );
-
-    // List all namespaces, filtering by namespace_selector if non-empty
-    let ns_api: Api<Namespace> = Api::all(ctx.client.clone());
-    let ns_list = ns_api
-        .list(&ListParams::default())
-        .await
-        .map_err(|e| OperatorError::Reconciliation(format!("failed to list namespaces: {e}")))?;
-
-    let matching_namespaces: Vec<String> = ns_list
-        .items
-        .iter()
-        .filter(|ns| {
-            let ns_labels = ns.metadata.labels.as_ref();
-            matches_selector(ns_labels, &obj.spec.namespace_selector)
-        })
-        .filter_map(|ns| ns.metadata.name.clone())
-        .collect();
-
-    let mut compliant_count: u32 = 0;
-    let mut non_compliant_count: u32 = 0;
-
-    for ns_name in &matching_namespaces {
-        let machines: Api<MachineConfig> = Api::namespaced(ctx.client.clone(), ns_name);
-        let mc_list = machines.list(&ListParams::default()).await.map_err(|e| {
-            OperatorError::Reconciliation(format!(
-                "failed to list MachineConfigs in namespace {ns_name}: {e}"
-            ))
-        })?;
-
-        // List ALL namespace-scoped ConfigPolicies for merging (C5 fix)
-        let ns_policies_api: Api<ConfigPolicy> = Api::namespaced(ctx.client.clone(), ns_name);
-        let cp_list = ns_policies_api
-            .list(&ListParams::default())
-            .await
-            .map_err(|e| {
-                OperatorError::Reconciliation(format!(
-                    "failed to list ConfigPolicies in namespace {ns_name}: {e}"
-                ))
-            })?;
-
-        let ns_policy_specs: Vec<&ConfigPolicySpec> =
-            cp_list.items.iter().map(|cp| &cp.spec).collect();
-        let merged = merge_policy_requirements(&obj.spec, &ns_policy_specs);
-
-        let (c, nc) = evaluate_policy_compliance(
-            &ctx,
-            &mc_list.items,
-            &merged.packages,
-            &merged.modules,
-            &merged.settings,
-            &name,
-        )
-        .await;
-        compliant_count += c;
-        non_compliant_count += nc;
-    }
-
-    let now = cfgd_core::utc_now_iso8601();
-    let overall_status = if non_compliant_count == 0 {
-        "True"
-    } else {
-        "False"
-    };
-
-    let ccp_api: Api<ClusterConfigPolicy> = Api::all(ctx.client.clone());
-
-    let existing_conditions = obj
-        .status
-        .as_ref()
-        .map(|s| s.conditions.as_slice())
-        .unwrap_or(&[]);
-
-    let status = serde_json::json!({
-        "status": ClusterConfigPolicyStatus {
-            compliant_count,
-            non_compliant_count,
-            conditions: vec![
-                build_condition(
-                    existing_conditions,
-                    "Enforced", overall_status,
-                    if non_compliant_count == 0 { "AllCompliant" } else { "NonCompliantTargets" },
-                    &compliance_summary(compliant_count, non_compliant_count),
-                    &now, obj.meta().generation,
-                ),
-            ],
-        }
-    });
-
-    ccp_api
-        .patch_status(
-            &name,
-            &PatchParams::apply(FIELD_MANAGER_STATUS),
-            &Patch::Merge(status),
-        )
-        .await
-        .map_err(|e| {
-            OperatorError::Reconciliation(format!(
-                "failed to update ClusterConfigPolicy status for {name}: {e}"
-            ))
-        })?;
-
-    info!(
-        name = %name,
-        compliant = compliant_count,
-        non_compliant = non_compliant_count,
-        "clusterConfigPolicy status updated"
-    );
-
-    emit_policy_evaluation_events(
-        &ctx,
-        &obj.object_ref(&()),
-        compliant_count,
-        non_compliant_count,
-    )
-    .await;
-
-    ctx.metrics
-        .devices_compliant
-        .get_or_create(&PolicyLabels {
-            policy: name.clone(),
-            namespace: String::new(), // cluster-scoped
-        })
-        .set(i64::from(compliant_count));
-
-    record_reconcile_success(&ctx, "cluster_config_policy", start);
-
-    Ok(Action::requeue(std::time::Duration::from_secs(60)))
-}
-
-// ---------------------------------------------------------------------------
-// Module controller — validates OCI artifacts, signatures, trusted registries
-// ---------------------------------------------------------------------------
-
-async fn reconcile_module(
-    obj: Arc<Module>,
-    ctx: Arc<ControllerContext>,
-) -> Result<Action, OperatorError> {
-    let start = std::time::Instant::now();
-    let name = obj.name_any();
-
-    info!(
-        name = %name,
-        oci_artifact = ?obj.spec.oci_artifact,
-        has_signature = obj.spec.signature.is_some(),
-        packages = obj.spec.packages.len(),
-        "reconciling Module"
-    );
-
-    let current_generation = obj.meta().generation;
-    let existing_conditions = obj
-        .status
-        .as_ref()
-        .map(|s| s.conditions.as_slice())
-        .unwrap_or(&[]);
-    let now = cfgd_core::utc_now_iso8601();
-
-    let mut conditions = Vec::new();
-
-    // Evaluate Available condition
-    let (avail_status, avail_reason, avail_message, avail_event) =
-        evaluate_module_availability(&ctx.client, &name, &obj.spec).await;
-
-    conditions.push(build_condition(
-        existing_conditions,
-        "Available",
-        avail_status,
-        avail_reason,
-        avail_message,
-        &now,
-        current_generation,
-    ));
-
-    // Evaluate Verified condition
-    let ver = evaluate_module_verification(&obj.spec.signature);
-
-    conditions.push(build_condition(
-        existing_conditions,
-        "Verified",
-        ver.status,
-        ver.reason,
-        ver.message,
-        &now,
-        current_generation,
-    ));
-
-    // Determine resolved artifact (just echo the reference if valid)
-    let resolved_artifact = obj.spec.oci_artifact.clone();
-    let verified = ver.status == "True";
-
-    let status = serde_json::json!({
-        "status": ModuleStatus {
-            resolved_artifact,
-            available_platforms: vec![],
-            verified,
-            signature_digest: ver.signature_digest,
-            attestations: vec![],
-            conditions,
-        }
-    });
-
-    let modules_api: Api<Module> = Api::all(ctx.client.clone());
-    modules_api
-        .patch_status(
-            &name,
-            &PatchParams::apply(FIELD_MANAGER_STATUS),
-            &Patch::Merge(status),
-        )
-        .await
-        .map_err(|e| {
-            OperatorError::Reconciliation(format!("failed to update Module status for {name}: {e}"))
-        })?;
-
-    info!(name = %name, "module status updated");
-
-    // Emit availability event
-    emit_event(
-        &ctx.recorder,
-        &obj.object_ref(&()),
-        avail_event.0,
-        avail_event.1,
-        avail_event.2,
-        "Reconcile",
-    )
-    .await;
-
-    // Emit verification event
-    emit_event(
-        &ctx.recorder,
-        &obj.object_ref(&()),
-        ver.event.0,
-        ver.event.1,
-        ver.event.2,
-        "Reconcile",
-    )
-    .await;
-
-    record_reconcile_success(&ctx, "module", start);
-
-    Ok(Action::requeue(std::time::Duration::from_secs(60)))
-}
-
-/// Evaluate the Available condition for a Module.
-/// Returns (status, reason, message, (event_type, event_reason, event_note)).
-async fn evaluate_module_availability<'a>(
-    client: &Client,
-    module_name: &str,
-    spec: &ModuleSpec,
-) -> (&'a str, &'a str, &'a str, (EventType, &'a str, String)) {
-    let oci_ref = match &spec.oci_artifact {
-        None => {
-            return (
-                "True",
-                "NoArtifact",
-                "Module is local-only (no OCI artifact)",
-                (
-                    EventType::Normal,
-                    "Available",
-                    format!("Module {} is local-only", module_name),
-                ),
-            );
-        }
-        Some(r) => r,
-    };
-
-    // Validate OCI reference format
-    if !is_valid_oci_reference(oci_ref) {
-        return (
-            "False",
-            "InvalidReference",
-            "OCI artifact reference is invalid",
-            (
-                EventType::Warning,
-                "PullFailed",
-                format!(
-                    "Module {} has invalid OCI reference: {}",
-                    module_name, oci_ref
-                ),
-            ),
-        );
-    }
-
-    // Read all ClusterConfigPolicies for security constraints
-    let ccp_api: Api<ClusterConfigPolicy> = Api::all(client.clone());
-    let ccp_list = match ccp_api.list(&ListParams::default()).await {
-        Ok(list) => list,
-        Err(e) => {
-            warn!(error = %e, "failed to list ClusterConfigPolicies for Module validation");
-            // If we can't list policies, allow the module (fail-open for availability)
-            return (
-                "True",
-                "ArtifactAvailable",
-                "OCI artifact reference is valid",
-                (
-                    EventType::Normal,
-                    "Available",
-                    format!("Module {} artifact available: {}", module_name, oci_ref),
-                ),
-            );
-        }
-    };
-
-    // Collect all trusted registries from ClusterConfigPolicies
-    let mut all_trusted_registries: Vec<String> = Vec::new();
-    let mut any_disallow_unsigned = false;
-
-    for ccp in &ccp_list {
-        let security = &ccp.spec.security;
-        all_trusted_registries.extend(security.trusted_registries.clone());
-        if !security.allow_unsigned {
-            any_disallow_unsigned = true;
-        }
-    }
-
-    // Check trusted registries (only if any are configured)
-    if !all_trusted_registries.is_empty() {
-        let matches_registry = all_trusted_registries.iter().any(|pattern| {
-            if let Some(prefix) = pattern.strip_suffix('*') {
-                oci_ref.starts_with(prefix)
-            } else {
-                oci_ref.starts_with(pattern.as_str())
-            }
-        });
-
-        if !matches_registry {
-            return (
-                "False",
-                "TrustedRegistryViolation",
-                "OCI artifact is not from a trusted registry",
-                (
-                    EventType::Warning,
-                    "TrustedRegistryViolation",
-                    format!(
-                        "Module {} artifact {} is not from a trusted registry",
-                        module_name, oci_ref
-                    ),
-                ),
-            );
-        }
-    }
-
-    // Check unsigned policy
-    if any_disallow_unsigned {
-        let has_cosign_key = spec
-            .signature
-            .as_ref()
-            .and_then(|s| s.cosign.as_ref())
-            .is_some_and(|c| c.keyless || c.public_key.as_ref().is_some_and(|pk| !pk.is_empty()));
-
-        if !has_cosign_key {
-            return (
-                "False",
-                "UnsignedNotAllowed",
-                "Module has no signature but unsigned modules are not allowed",
-                (
-                    EventType::Warning,
-                    "UnsignedNotAllowed",
-                    format!(
-                        "Module {} has no signature but policy requires signing",
-                        module_name
-                    ),
-                ),
-            );
-        }
-    }
-
-    (
-        "True",
-        "ArtifactAvailable",
-        "OCI artifact reference is valid",
-        (
-            EventType::Normal,
-            "Available",
-            format!("Module {} artifact available: {}", module_name, oci_ref),
-        ),
-    )
-}
-
-/// Evaluate the Verified condition for a Module.
-/// Returns (status, reason, message, (event_type, event_reason, event_note)).
-/// Result of module verification evaluation.
-struct ModuleVerificationResult {
-    status: &'static str,
-    reason: &'static str,
-    message: &'static str,
-    event: (EventType, &'static str, String),
-    /// SHA256 fingerprint of the public key, or keyless identity description.
-    signature_digest: Option<String>,
-}
-
-fn evaluate_module_verification(signature: &Option<ModuleSignature>) -> ModuleVerificationResult {
-    match signature {
-        None => ModuleVerificationResult {
-            status: "False",
-            reason: "NotSigned",
-            message: "No signature configuration present",
-            event: (
-                EventType::Normal,
-                "Verified",
-                "Module has no signature configuration".to_string(),
-            ),
-            signature_digest: None,
-        },
-        Some(sig) => match &sig.cosign {
-            None => ModuleVerificationResult {
-                status: "False",
-                reason: "NotSigned",
-                message: "No cosign signature configured",
-                event: (
-                    EventType::Normal,
-                    "Verified",
-                    "Module has no cosign signature configured".to_string(),
-                ),
-                signature_digest: None,
-            },
-            Some(cosign) => {
-                // Keyless mode — no public key needed
-                if cosign.keyless {
-                    let identity_desc = format!(
-                        "keyless:{}@{}",
-                        cosign.certificate_identity.as_deref().unwrap_or("*"),
-                        cosign.certificate_oidc_issuer.as_deref().unwrap_or("*"),
-                    );
-                    return ModuleVerificationResult {
-                        status: "True",
-                        reason: "SignatureConfigured",
-                        message: "Keyless cosign verification configured (Fulcio/Rekor)",
-                        event: (
-                            EventType::Normal,
-                            "Verified",
-                            "Module has keyless cosign verification configured".to_string(),
-                        ),
-                        signature_digest: Some(identity_desc),
-                    };
-                }
-                // Static key mode — validate PEM
-                match &cosign.public_key {
-                    Some(pk) if is_valid_pem_public_key(pk) => {
-                        let fingerprint = cfgd_core::sha256_digest(pk.as_bytes());
-                        ModuleVerificationResult {
-                            status: "True",
-                            reason: "SignatureConfigured",
-                            message: "Cosign public key is configured and valid",
-                            event: (
-                                EventType::Normal,
-                                "Verified",
-                                "Module has valid cosign signature configuration".to_string(),
-                            ),
-                            signature_digest: Some(fingerprint),
-                        }
-                    }
-                    Some(_) => ModuleVerificationResult {
-                        status: "False",
-                        reason: "SignatureInvalid",
-                        message: "Cosign public key is not valid PEM",
-                        event: (
-                            EventType::Warning,
-                            "SignatureInvalid",
-                            "Module cosign public key is not valid PEM".to_string(),
-                        ),
-                        signature_digest: None,
-                    },
-                    None => ModuleVerificationResult {
-                        status: "False",
-                        reason: "SignatureInvalid",
-                        message: "Cosign signature configured but no public key or keyless mode",
-                        event: (
-                            EventType::Warning,
-                            "SignatureInvalid",
-                            "No public key and keyless not enabled".to_string(),
-                        ),
-                        signature_digest: None,
-                    },
-                }
-            }
-        },
-    }
-}
-
-// ---------------------------------------------------------------------------
-// MachineConfig moduleRef resolution helper
-// ---------------------------------------------------------------------------
-
-/// Resolve module references against cluster-scoped Module CRDs.
-/// Returns (status, reason, message) for the ModulesResolved condition.
-async fn resolve_module_refs(
-    client: &Client,
-    module_refs: &[ModuleRef],
-) -> (&'static str, &'static str, String) {
-    if module_refs.is_empty() {
-        return (
-            "True",
-            "AllResolved",
-            "No module references to resolve".to_string(),
-        );
-    }
-
-    let modules_api: Api<Module> = Api::all(client.clone());
-    let module_list = match modules_api.list(&ListParams::default()).await {
-        Ok(list) => list,
-        Err(e) => {
-            warn!(error = %e, "failed to list Modules for moduleRef resolution");
-            return (
-                "Unknown",
-                "ResolutionError",
-                "Failed to list Module resources".to_string(),
-            );
-        }
-    };
-
-    let existing_names: Vec<String> = module_list.iter().map(|m| m.name_any()).collect();
-    let missing: Vec<&str> = module_refs
-        .iter()
-        .filter(|mr| !existing_names.iter().any(|n| n == &mr.name))
-        .map(|mr| mr.name.as_str())
-        .collect();
-
-    if missing.is_empty() {
-        (
-            "True",
-            "AllResolved",
-            "All module references resolved".to_string(),
-        )
-    } else {
-        (
-            "False",
-            "ModulesNotFound",
-            format!("Missing modules: {}", missing.join(", ")),
-        )
-    }
 }
 
 // ---------------------------------------------------------------------------
