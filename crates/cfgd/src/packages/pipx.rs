@@ -207,3 +207,205 @@ pub(super) fn parse_pipx_list_versions(
     }
     packages
 }
+
+#[cfg(test)]
+mod tests {
+    use cfgd_core::command_available;
+    use cfgd_core::providers::PackageManager;
+
+    use super::super::shared::brew_available;
+    use super::*;
+
+    #[test]
+    fn test_parse_pipx_list_versions_basic() {
+        let json = serde_json::json!({
+            "venvs": {
+                "black": {
+                    "metadata": {
+                        "main_package": {
+                            "package_version": "24.1.1"
+                        }
+                    }
+                },
+                "httpie": {
+                    "metadata": {
+                        "main_package": {
+                            "package_version": "3.2.2"
+                        }
+                    }
+                }
+            }
+        });
+        let pkgs = parse_pipx_list_versions(&json);
+        assert_eq!(pkgs.len(), 2);
+        assert!(
+            pkgs.iter()
+                .any(|p| p.name == "black" && p.version == "24.1.1")
+        );
+        assert!(
+            pkgs.iter()
+                .any(|p| p.name == "httpie" && p.version == "3.2.2")
+        );
+    }
+
+    #[test]
+    fn test_parse_pipx_list_versions_no_venvs() {
+        let json = serde_json::json!({"venvs": {}});
+        let pkgs = parse_pipx_list_versions(&json);
+        assert!(pkgs.is_empty());
+    }
+
+    #[test]
+    fn test_parse_pipx_list_versions_missing_version_field() {
+        let json = serde_json::json!({
+            "venvs": {
+                "awscli": {
+                    "metadata": {
+                        "main_package": {}
+                    }
+                }
+            }
+        });
+        let pkgs = parse_pipx_list_versions(&json);
+        assert_eq!(pkgs.len(), 1);
+        assert_eq!(pkgs[0].version, "unknown");
+    }
+
+    #[test]
+    fn parse_pipx_list_versions_null_root() {
+        let json = serde_json::json!(null);
+        let pkgs = parse_pipx_list_versions(&json);
+        assert!(pkgs.is_empty());
+    }
+
+    #[test]
+    fn parse_pipx_list_versions_missing_metadata() {
+        let json = serde_json::json!({
+            "venvs": {
+                "tool": {}
+            }
+        });
+        let pkgs = parse_pipx_list_versions(&json);
+        assert_eq!(pkgs.len(), 1);
+        assert_eq!(pkgs[0].name, "tool");
+        assert_eq!(pkgs[0].version, "unknown");
+    }
+
+    #[test]
+    fn pipx_manager_name() {
+        let mgr = PipxManager;
+        assert_eq!(mgr.name(), "pipx");
+    }
+
+    #[test]
+    fn parse_pipx_list_versions_multiple_venvs() {
+        let json = serde_json::json!({
+            "venvs": {
+                "black": {"metadata": {"main_package": {"package_version": "24.1.1"}}},
+                "httpie": {"metadata": {"main_package": {"package_version": "3.2.2"}}},
+                "ruff": {"metadata": {"main_package": {"package_version": "0.2.0"}}},
+                "mypy": {"metadata": {"main_package": {"package_version": "1.8.0"}}}
+            }
+        });
+        let pkgs = parse_pipx_list_versions(&json);
+        assert_eq!(pkgs.len(), 4);
+        assert!(
+            pkgs.iter()
+                .any(|p| p.name == "ruff" && p.version == "0.2.0")
+        );
+        assert!(
+            pkgs.iter()
+                .any(|p| p.name == "mypy" && p.version == "1.8.0")
+        );
+    }
+
+    #[test]
+    fn parse_pipx_list_versions_no_venvs_key() {
+        let json = serde_json::json!({"pipx_spec_version": "0.1"});
+        let pkgs = parse_pipx_list_versions(&json);
+        assert!(pkgs.is_empty());
+    }
+
+    #[test]
+    fn parse_pipx_list_versions_real_world_output() {
+        let json = serde_json::json!({
+            "pipx_spec_version": "0.1",
+            "venvs": {
+                "black": {
+                    "metadata": {
+                        "main_package": {
+                            "package": "black",
+                            "package_version": "24.1.1",
+                            "pip_args": [],
+                            "include_apps": true,
+                            "include_dependencies": false
+                        },
+                        "python_version": "Python 3.12.1"
+                    }
+                },
+                "ruff": {
+                    "metadata": {
+                        "main_package": {
+                            "package": "ruff",
+                            "package_version": "0.2.0",
+                            "pip_args": [],
+                            "include_apps": true,
+                            "include_dependencies": false
+                        },
+                        "python_version": "Python 3.12.1"
+                    }
+                }
+            }
+        });
+        let pkgs = parse_pipx_list_versions(&json);
+        assert_eq!(pkgs.len(), 2);
+        assert!(
+            pkgs.iter()
+                .any(|p| p.name == "black" && p.version == "24.1.1")
+        );
+        assert!(
+            pkgs.iter()
+                .any(|p| p.name == "ruff" && p.version == "0.2.0")
+        );
+    }
+
+    #[test]
+    fn parse_pipx_list_versions_with_injected_packages() {
+        let json = serde_json::json!({
+            "venvs": {
+                "black": {
+                    "metadata": {
+                        "main_package": {"package_version": "24.1.1"},
+                        "injected_packages": {
+                            "black[jupyter]": {"package_version": "24.1.1"}
+                        }
+                    }
+                }
+            }
+        });
+        let pkgs = parse_pipx_list_versions(&json);
+        // Only main_package is extracted, not injected
+        assert_eq!(pkgs.len(), 1);
+        assert_eq!(pkgs[0].name, "black");
+        assert_eq!(pkgs[0].version, "24.1.1");
+    }
+
+    #[test]
+    fn pipx_manager_can_bootstrap_checks_cascade() {
+        let mgr = PipxManager;
+        let can = mgr.can_bootstrap();
+        let expected = brew_available()
+            || command_available("apt")
+            || command_available("dnf")
+            || command_available("pip3")
+            || command_available("pip");
+        assert_eq!(can, expected);
+    }
+
+    #[test]
+    fn pipx_manager_is_available_checks_pipx() {
+        let mgr = PipxManager;
+        let available = mgr.is_available();
+        assert_eq!(available, pipx_available());
+    }
+}

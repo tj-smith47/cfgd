@@ -187,3 +187,118 @@ pub(super) fn parse_nix_search_version(output: &str) -> Option<String> {
     }
     None
 }
+
+#[cfg(test)]
+mod tests {
+    use cfgd_core::command_available;
+    use cfgd_core::output::Printer;
+    use cfgd_core::providers::PackageManager;
+
+    use super::*;
+
+    #[test]
+    fn nix_manager_name_and_traits() {
+        let mgr = NixManager;
+        assert_eq!(mgr.name(), "nix");
+    }
+
+    #[test]
+    fn nix_manager_update_is_noop() {
+        let mgr = NixManager;
+        let printer = Printer::new(cfgd_core::output::Verbosity::Quiet);
+        mgr.update(&printer).unwrap();
+    }
+
+    #[test]
+    fn parse_nix_search_version_single_result() {
+        let output = r#"{"legacyPackages.x86_64-linux.ripgrep":{"pname":"ripgrep","version":"14.1.0","description":"A utility that combines the usability of The Silver Searcher with the raw speed of grep"}}"#;
+        assert_eq!(parse_nix_search_version(output), Some("14.1.0".to_string()));
+    }
+
+    #[test]
+    fn parse_nix_search_version_multiple_results() {
+        let output = r#"{"legacyPackages.x86_64-linux.bat":{"version":"0.24.0"},"legacyPackages.x86_64-linux.bat-extras":{"version":"2024.08.24"}}"#;
+        let v = parse_nix_search_version(output);
+        // Returns first result — either is valid since JSON object order is unspecified
+        assert!(v.is_some());
+    }
+
+    #[test]
+    fn parse_nix_search_version_empty_version() {
+        let output = r#"{"legacyPackages.x86_64-linux.thing":{"version":""}}"#;
+        assert_eq!(parse_nix_search_version(output), None);
+    }
+
+    #[test]
+    fn parse_nix_search_version_no_version_field() {
+        let output = r#"{"legacyPackages.x86_64-linux.thing":{"pname":"thing"}}"#;
+        assert_eq!(parse_nix_search_version(output), None);
+    }
+
+    #[test]
+    fn parse_nix_search_version_invalid_json() {
+        assert_eq!(parse_nix_search_version("not json"), None);
+    }
+
+    #[test]
+    fn parse_nix_search_version_nested_package_key_format() {
+        // Real nix search output uses deeply nested keys like legacyPackages.SYSTEM.NAME
+        let output = r#"{"legacyPackages.aarch64-darwin.ripgrep":{"pname":"ripgrep","version":"14.1.0","description":"fast grep"}}"#;
+        assert_eq!(
+            parse_nix_search_version(output),
+            Some("14.1.0".to_string()),
+            "should work with aarch64-darwin platform prefix"
+        );
+    }
+
+    #[test]
+    fn parse_nix_search_version_empty_object() {
+        let output = "{}";
+        assert_eq!(parse_nix_search_version(output), None);
+    }
+
+    #[test]
+    fn parse_nix_search_version_null_version() {
+        let output = r#"{"legacyPackages.x86_64-linux.thing":{"version":null}}"#;
+        assert_eq!(parse_nix_search_version(output), None);
+    }
+
+    #[test]
+    fn parse_nix_search_version_numeric_version() {
+        let output = r#"{"legacyPackages.x86_64-linux.thing":{"version":123}}"#;
+        assert_eq!(parse_nix_search_version(output), None);
+    }
+
+    #[test]
+    fn parse_nix_search_version_cross_platform() {
+        let output = r#"{
+            "legacyPackages.x86_64-linux.ripgrep": {"version": "14.1.0"},
+            "legacyPackages.aarch64-linux.ripgrep": {"version": "14.1.0"},
+            "legacyPackages.x86_64-darwin.ripgrep": {"version": "14.1.0"}
+        }"#;
+        let v = parse_nix_search_version(output);
+        assert_eq!(v, Some("14.1.0".to_string()));
+    }
+
+    #[test]
+    fn nix_manager_can_bootstrap_checks_curl() {
+        let mgr = NixManager;
+        let can = mgr.can_bootstrap();
+        assert_eq!(can, command_available("curl"));
+    }
+
+    #[test]
+    fn nix_manager_is_available_checks_nix_env_or_nix() {
+        let mgr = NixManager;
+        let available = mgr.is_available();
+        let expected = command_available("nix-env") || command_available("nix");
+        assert_eq!(available, expected);
+    }
+
+    #[test]
+    fn nix_update_returns_ok() {
+        let mgr = NixManager;
+        let printer = Printer::new(cfgd_core::output::Verbosity::Quiet);
+        mgr.update(&printer).unwrap();
+    }
+}

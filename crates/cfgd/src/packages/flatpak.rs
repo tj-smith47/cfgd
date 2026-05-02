@@ -110,3 +110,35 @@ impl PackageManager for FlatpakManager {
         Ok(parse_version_field(&stdout))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use cfgd_core::command_available;
+    use cfgd_core::providers::PackageManager;
+
+    #[cfg(target_os = "linux")]
+    use super::super::shared::linux_system_manager_available;
+    use super::*;
+
+    #[test]
+    fn flatpak_manager_name_and_traits() {
+        let mgr = FlatpakManager;
+        assert_eq!(mgr.name(), "flatpak");
+    }
+
+    #[test]
+    fn flatpak_manager_can_bootstrap_checks_system_managers() {
+        let mgr = FlatpakManager;
+        #[cfg(target_os = "linux")]
+        assert_eq!(mgr.can_bootstrap(), linux_system_manager_available());
+        #[cfg(not(target_os = "linux"))]
+        assert!(!mgr.can_bootstrap());
+    }
+
+    #[test]
+    fn flatpak_manager_is_available_checks_flatpak() {
+        let mgr = FlatpakManager;
+        let available = mgr.is_available();
+        assert_eq!(available, command_available("flatpak"));
+    }
+}

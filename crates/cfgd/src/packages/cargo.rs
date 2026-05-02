@@ -176,3 +176,165 @@ pub(super) fn parse_cargo_install_list(stdout: &str) -> Vec<cfgd_core::providers
         })
         .collect()
 }
+
+#[cfg(test)]
+mod tests {
+    use cfgd_core::output::Printer;
+    use cfgd_core::providers::PackageManager;
+
+    use super::*;
+
+    #[test]
+    fn test_parse_cargo_install_list_basic() {
+        let output = "bat v0.24.0:\n    bat\nripgrep v14.1.0:\n    rg\nfd-find v9.0.0:\n    fd\n";
+        let pkgs = parse_cargo_install_list(output);
+        assert_eq!(pkgs.len(), 3);
+        assert!(
+            pkgs.iter()
+                .any(|p| p.name == "bat" && p.version == "0.24.0")
+        );
+        assert!(
+            pkgs.iter()
+                .any(|p| p.name == "ripgrep" && p.version == "14.1.0")
+        );
+        assert!(
+            pkgs.iter()
+                .any(|p| p.name == "fd-find" && p.version == "9.0.0")
+        );
+    }
+
+    #[test]
+    fn test_parse_cargo_install_list_strips_v_prefix() {
+        let output = "cargo-edit v0.12.2:\n    cargo-add\n    cargo-rm\n";
+        let pkgs = parse_cargo_install_list(output);
+        assert_eq!(pkgs.len(), 1);
+        assert_eq!(pkgs[0].name, "cargo-edit");
+        assert_eq!(pkgs[0].version, "0.12.2");
+    }
+
+    #[test]
+    fn test_parse_cargo_install_list_empty() {
+        let pkgs = parse_cargo_install_list("");
+        assert!(pkgs.is_empty());
+    }
+
+    #[test]
+    fn parse_cargo_install_list_no_version() {
+        // A package line without version info
+        let output = "some-tool:\n    some-tool\n";
+        let pkgs = parse_cargo_install_list(output);
+        assert_eq!(pkgs.len(), 1);
+        assert_eq!(pkgs[0].name, "some-tool:");
+        // This is the actual behavior: "some-tool:" is the first whitespace token
+    }
+
+    #[test]
+    fn parse_cargo_install_list_skips_indented_lines() {
+        // Indented lines are binary names, not packages
+        let output = "    binary-name\n";
+        let pkgs = parse_cargo_install_list(output);
+        assert!(pkgs.is_empty());
+    }
+
+    #[test]
+    fn cargo_manager_name_and_traits() {
+        let mgr = CargoManager;
+        assert_eq!(mgr.name(), "cargo");
+    }
+
+    #[test]
+    fn cargo_manager_update_is_noop() {
+        let mgr = CargoManager;
+        let printer = Printer::new(cfgd_core::output::Verbosity::Quiet);
+        mgr.update(&printer).unwrap();
+    }
+
+    #[test]
+    fn parse_cargo_install_list_multiple_binaries() {
+        let output = "cargo-edit v0.12.2:\n    cargo-add\n    cargo-rm\n    cargo-upgrade\n    cargo-set-version\n";
+        let pkgs = parse_cargo_install_list(output);
+        assert_eq!(pkgs.len(), 1);
+        assert_eq!(pkgs[0].name, "cargo-edit");
+        assert_eq!(pkgs[0].version, "0.12.2");
+    }
+
+    #[test]
+    fn parse_cargo_install_list_consecutive_packages() {
+        let output = "bat v0.24.0:\n    bat\nfd-find v9.0.0:\n    fd\ntokei v12.1.2:\n    tokei\n";
+        let pkgs = parse_cargo_install_list(output);
+        assert_eq!(pkgs.len(), 3);
+        let names: Vec<&str> = pkgs.iter().map(|p| p.name.as_str()).collect();
+        assert!(names.contains(&"bat"));
+        assert!(names.contains(&"fd-find"));
+        assert!(names.contains(&"tokei"));
+    }
+
+    #[test]
+    fn parse_cargo_install_list_real_world_output() {
+        // Simulate a real cargo install --list output
+        let output = "\
+cargo-edit v0.12.2:
+    cargo-add
+    cargo-rm
+    cargo-set-version
+    cargo-upgrade
+cargo-watch v8.5.2:
+    cargo-watch
+ripgrep v14.1.0:
+    rg
+tokei v12.1.2:
+    tokei
+";
+        let pkgs = parse_cargo_install_list(output);
+        assert_eq!(pkgs.len(), 4);
+        assert!(
+            pkgs.iter()
+                .any(|p| p.name == "cargo-edit" && p.version == "0.12.2")
+        );
+        assert!(
+            pkgs.iter()
+                .any(|p| p.name == "cargo-watch" && p.version == "8.5.2")
+        );
+        assert!(
+            pkgs.iter()
+                .any(|p| p.name == "ripgrep" && p.version == "14.1.0")
+        );
+        assert!(
+            pkgs.iter()
+                .any(|p| p.name == "tokei" && p.version == "12.1.2")
+        );
+    }
+
+    #[test]
+    fn parse_cargo_install_list_path_installed() {
+        // Path-based installs show (path) instead of version
+        let output = "my-tool v0.1.0 (/home/user/projects/my-tool):\n    my-tool\nripgrep v14.1.0:\n    rg\n";
+        let pkgs = parse_cargo_install_list(output);
+        assert_eq!(pkgs.len(), 2);
+        // The first entry keeps the full "v0.1.0" after stripping 'v'
+        let my_tool = pkgs.iter().find(|p| p.name == "my-tool").unwrap();
+        assert_eq!(my_tool.version, "0.1.0 (/home/user/projects/my-tool)");
+    }
+
+    #[test]
+    fn cargo_manager_can_bootstrap_depends_on_curl() {
+        let mgr = CargoManager;
+        let can = mgr.can_bootstrap();
+        // Should be true if curl is available
+        assert_eq!(can, command_available("curl"));
+    }
+
+    #[test]
+    fn cargo_manager_is_available_checks_cargo() {
+        let mgr = CargoManager;
+        let available = mgr.is_available();
+        assert_eq!(available, cargo_available());
+    }
+
+    #[test]
+    fn cargo_update_returns_ok() {
+        let mgr = CargoManager;
+        let printer = Printer::new(cfgd_core::output::Verbosity::Quiet);
+        mgr.update(&printer).unwrap();
+    }
+}

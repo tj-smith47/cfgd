@@ -172,3 +172,111 @@ pub(super) fn parse_go_module_version(output: &str) -> Option<String> {
     let version = version.strip_prefix('v').unwrap_or(version);
     Some(version.to_string())
 }
+
+#[cfg(test)]
+mod tests {
+    use cfgd_core::output::Printer;
+    use cfgd_core::providers::PackageManager;
+
+    use super::super::shared::any_system_manager_available;
+    use super::*;
+
+    #[test]
+    fn go_install_manager_name_and_traits() {
+        let mgr = GoInstallManager;
+        assert_eq!(mgr.name(), "go");
+    }
+
+    #[test]
+    fn go_install_manager_update_is_noop() {
+        let mgr = GoInstallManager;
+        let printer = Printer::new(cfgd_core::output::Verbosity::Quiet);
+        mgr.update(&printer).unwrap();
+    }
+
+    #[test]
+    fn parse_go_module_version_strips_v_prefix() {
+        let output = r#"{"Path":"golang.org/x/tools/gopls","Version":"v0.15.3"}"#;
+        assert_eq!(parse_go_module_version(output), Some("0.15.3".to_string()));
+    }
+
+    #[test]
+    fn parse_go_module_version_handles_pseudo_version() {
+        // Go pseudo-versions include timestamps and commit hashes
+        let output =
+            r#"{"Path":"example.com/tool","Version":"v0.0.0-20240301120000-abcdef123456"}"#;
+        assert_eq!(
+            parse_go_module_version(output),
+            Some("0.0.0-20240301120000-abcdef123456".to_string()),
+            "should handle pseudo-versions with commit metadata"
+        );
+    }
+
+    #[test]
+    fn parse_go_module_version_extra_fields_ignored() {
+        // Real go list -m output has many extra fields — only Version matters
+        let output = r#"{"Path":"golang.org/x/tools","Version":"v0.20.0","Time":"2024-04-01T00:00:00Z","GoMod":"golang.org/x/tools@v0.20.0/go.mod"}"#;
+        assert_eq!(parse_go_module_version(output), Some("0.20.0".to_string()));
+    }
+
+    #[test]
+    fn parse_go_module_version_no_v_prefix() {
+        // Unlikely but handles gracefully
+        let output = r#"{"Path":"example.com/tool","Version":"1.0.0"}"#;
+        assert_eq!(parse_go_module_version(output), Some("1.0.0".to_string()));
+    }
+
+    #[test]
+    fn parse_go_module_version_invalid_json() {
+        assert_eq!(parse_go_module_version("not json"), None);
+    }
+
+    #[test]
+    fn parse_go_module_version_missing_version() {
+        let output = r#"{"Path":"example.com/tool"}"#;
+        assert_eq!(parse_go_module_version(output), None);
+    }
+
+    #[test]
+    fn parse_go_module_version_empty_string() {
+        assert_eq!(parse_go_module_version(""), None);
+    }
+
+    #[test]
+    fn parse_go_module_version_null_version() {
+        let output = r#"{"Path":"example.com/tool","Version":null}"#;
+        assert_eq!(parse_go_module_version(output), None);
+    }
+
+    #[test]
+    fn parse_go_module_version_real_world() {
+        let output = r#"{
+            "Path": "golang.org/x/tools/gopls",
+            "Version": "v0.15.3",
+            "Time": "2024-04-01T12:00:00Z",
+            "GoMod": "golang.org/x/tools/gopls@v0.15.3/go.mod",
+            "GoVersion": "1.21"
+        }"#;
+        assert_eq!(parse_go_module_version(output), Some("0.15.3".to_string()));
+    }
+
+    #[test]
+    fn go_install_manager_can_bootstrap_checks_cascade() {
+        let mgr = GoInstallManager;
+        assert_eq!(mgr.can_bootstrap(), any_system_manager_available());
+    }
+
+    #[test]
+    fn go_install_manager_is_available_checks_go() {
+        let mgr = GoInstallManager;
+        let available = mgr.is_available();
+        assert_eq!(available, go_available());
+    }
+
+    #[test]
+    fn go_update_returns_ok() {
+        let mgr = GoInstallManager;
+        let printer = Printer::new(cfgd_core::output::Verbosity::Quiet);
+        mgr.update(&printer).unwrap();
+    }
+}

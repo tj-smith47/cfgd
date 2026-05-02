@@ -225,3 +225,158 @@ pub(super) fn parse_npm_list_versions(
     }
     packages
 }
+
+#[cfg(test)]
+mod tests {
+    use cfgd_core::command_available;
+    use cfgd_core::providers::PackageManager;
+
+    use super::super::shared::brew_available;
+    use super::*;
+
+    #[test]
+    fn test_parse_npm_list_versions_basic() {
+        let json = serde_json::json!({
+            "dependencies": {
+                "typescript": {"version": "5.3.3"},
+                "eslint": {"version": "8.56.0"},
+                "prettier": {"version": "3.2.0"}
+            }
+        });
+        let pkgs = parse_npm_list_versions(&json);
+        assert_eq!(pkgs.len(), 3);
+        assert!(
+            pkgs.iter()
+                .any(|p| p.name == "typescript" && p.version == "5.3.3")
+        );
+        assert!(
+            pkgs.iter()
+                .any(|p| p.name == "eslint" && p.version == "8.56.0")
+        );
+    }
+
+    #[test]
+    fn test_parse_npm_list_versions_no_deps() {
+        let json = serde_json::json!({"name": "root"});
+        let pkgs = parse_npm_list_versions(&json);
+        assert!(pkgs.is_empty());
+    }
+
+    #[test]
+    fn test_parse_npm_list_versions_missing_version() {
+        let json = serde_json::json!({
+            "dependencies": {
+                "some-pkg": {}
+            }
+        });
+        let pkgs = parse_npm_list_versions(&json);
+        assert_eq!(pkgs.len(), 1);
+        assert_eq!(pkgs[0].version, "unknown");
+    }
+
+    #[test]
+    fn parse_npm_list_versions_nested_deps_ignored() {
+        // Only top-level dependencies are parsed
+        let json = serde_json::json!({
+            "dependencies": {
+                "typescript": {
+                    "version": "5.3.3",
+                    "dependencies": {
+                        "nested-pkg": {"version": "1.0.0"}
+                    }
+                }
+            }
+        });
+        let pkgs = parse_npm_list_versions(&json);
+        assert_eq!(pkgs.len(), 1);
+        assert_eq!(pkgs[0].name, "typescript");
+    }
+
+    #[test]
+    fn npm_manager_name() {
+        let mgr = NpmManager;
+        assert_eq!(mgr.name(), "npm");
+    }
+
+    #[test]
+    fn parse_npm_list_versions_empty_deps() {
+        let json = serde_json::json!({"dependencies": {}});
+        let pkgs = parse_npm_list_versions(&json);
+        assert!(pkgs.is_empty());
+    }
+
+    #[test]
+    fn parse_npm_list_versions_non_string_version() {
+        let json = serde_json::json!({
+            "dependencies": {
+                "pkg": {"version": 123}
+            }
+        });
+        let pkgs = parse_npm_list_versions(&json);
+        assert_eq!(pkgs.len(), 1);
+        // version is not a string, so it falls back to "unknown"
+        assert_eq!(pkgs[0].version, "unknown");
+    }
+
+    #[test]
+    fn parse_npm_list_versions_real_world_output() {
+        let json = serde_json::json!({
+            "version": "10.2.4",
+            "name": "lib",
+            "dependencies": {
+                "corepack": {"version": "0.24.0"},
+                "npm": {"version": "10.2.4"},
+                "typescript": {"version": "5.3.3"},
+                "eslint": {"version": "8.56.0"},
+                "prettier": {"version": "3.2.0"}
+            }
+        });
+        let pkgs = parse_npm_list_versions(&json);
+        assert_eq!(pkgs.len(), 5);
+        assert!(
+            pkgs.iter()
+                .any(|p| p.name == "corepack" && p.version == "0.24.0")
+        );
+        assert!(
+            pkgs.iter()
+                .any(|p| p.name == "npm" && p.version == "10.2.4")
+        );
+    }
+
+    #[test]
+    fn parse_npm_list_versions_with_extra_fields() {
+        let json = serde_json::json!({
+            "version": "1.0.0",
+            "dependencies": {
+                "express": {
+                    "version": "4.18.2",
+                    "resolved": "https://registry.npmjs.org/express/-/express-4.18.2.tgz",
+                    "overridden": false
+                }
+            }
+        });
+        let pkgs = parse_npm_list_versions(&json);
+        assert_eq!(pkgs.len(), 1);
+        assert_eq!(pkgs[0].name, "express");
+        assert_eq!(pkgs[0].version, "4.18.2");
+    }
+
+    #[test]
+    fn npm_manager_can_bootstrap_checks_cascade() {
+        let mgr = NpmManager;
+        let can = mgr.can_bootstrap();
+        // Should be true if brew, apt, dnf, or curl is available
+        let expected = brew_available()
+            || command_available("apt")
+            || command_available("dnf")
+            || command_available("curl");
+        assert_eq!(can, expected);
+    }
+
+    #[test]
+    fn npm_manager_is_available_checks_npm() {
+        let mgr = NpmManager;
+        let available = mgr.is_available();
+        assert_eq!(available, npm_available());
+    }
+}

@@ -143,3 +143,137 @@ pub(super) fn parse_snap_info_version(output: &str) -> Option<String> {
     }
     None
 }
+
+#[cfg(test)]
+mod tests {
+    use cfgd_core::command_available;
+    use cfgd_core::providers::PackageManager;
+
+    #[cfg(target_os = "linux")]
+    use super::super::shared::linux_system_manager_available;
+    use super::*;
+
+    #[test]
+    fn snap_manager_name_and_traits() {
+        let mgr = SnapManager;
+        assert_eq!(mgr.name(), "snap");
+    }
+
+    #[test]
+    fn parse_snap_info_version_latest_stable() {
+        let output = "\
+name:      ripgrep
+summary:   Fast recursive search
+publisher: BurntSushi
+store-url: https://snapcraft.io/ripgrep
+license:   MIT
+description: |
+  ripgrep is a line-oriented search tool.
+channels:
+  latest/stable:    14.1.0 2024-03-15 (234) 5MB classic
+  latest/candidate: 14.1.1 2024-04-01 (240) 5MB classic
+  latest/beta:      ↑
+  latest/edge:      ↑";
+        assert_eq!(parse_snap_info_version(output), Some("14.1.0".to_string()));
+    }
+
+    #[test]
+    fn parse_snap_info_version_stable_without_latest_prefix() {
+        let output = "channels:\n  stable:    2.0.3 2024-01-01 (100) 10MB -\n";
+        assert_eq!(parse_snap_info_version(output), Some("2.0.3".to_string()));
+    }
+
+    #[test]
+    fn parse_snap_info_version_no_stable_channel() {
+        let output = "channels:\n  latest/edge: 0.1.0-dev 2024-01-01 (1) 1MB -\n";
+        assert_eq!(parse_snap_info_version(output), None);
+    }
+
+    #[test]
+    fn parse_snap_info_version_caret_placeholder() {
+        // "^" means "same as above" — not a real version
+        let output = "channels:\n  latest/stable:    ^ 2024-01-01 (1) 1MB -\n";
+        assert_eq!(parse_snap_info_version(output), None);
+    }
+
+    #[test]
+    fn parse_snap_info_version_dash_placeholder() {
+        let output = "channels:\n  latest/stable:    -- 2024-01-01\n";
+        assert_eq!(parse_snap_info_version(output), None);
+    }
+
+    #[test]
+    fn parse_snap_info_version_picks_stable_over_candidate() {
+        // Real snap info output has multiple channels — must pick stable
+        let output = "\
+channels:
+  latest/candidate: 15.0.0-rc1 2024-04-01 (240) 5MB classic
+  latest/stable:    14.1.0 2024-03-15 (234) 5MB classic
+  latest/beta:      ↑";
+        assert_eq!(
+            parse_snap_info_version(output),
+            Some("14.1.0".to_string()),
+            "should pick stable even when candidate appears first"
+        );
+    }
+
+    #[test]
+    fn parse_snap_info_version_empty_string() {
+        assert_eq!(parse_snap_info_version(""), None);
+    }
+
+    #[test]
+    fn parse_snap_info_version_stable_empty_after_colon() {
+        let output = "channels:\n  latest/stable:\n";
+        assert_eq!(parse_snap_info_version(output), None);
+    }
+
+    #[test]
+    fn parse_snap_info_version_complex_version_string() {
+        let output = "channels:\n  latest/stable:    0.10.2-alpha.1 2024-01-01 (100) 5MB -\n";
+        assert_eq!(
+            parse_snap_info_version(output),
+            Some("0.10.2-alpha.1".to_string())
+        );
+    }
+
+    #[test]
+    fn parse_snap_info_version_real_world_full() {
+        let output = "\
+name:      core
+summary:   snapd runtime environment
+publisher: Canonical**
+store-url: https://snapcraft.io/core
+contact:   https://github.com/snapcore/snapd
+license:   unset
+description: |
+  The core runtime environment for snapd
+snap-id: 99T7MUlRhtI3U0QFgl5mXXESAiSwt776
+channels:
+  latest/stable:    16-2.61.3 2024-03-01 (17200) 112MB -
+  latest/candidate: 16-2.61.4 2024-04-01 (17250) 112MB -
+  latest/beta:      ↑
+  latest/edge:      16-2.62-dev 2024-04-05 (17260) 112MB -
+";
+        assert_eq!(
+            parse_snap_info_version(output),
+            Some("16-2.61.3".to_string())
+        );
+    }
+
+    #[test]
+    fn snap_manager_can_bootstrap_checks_system_managers() {
+        let mgr = SnapManager;
+        #[cfg(target_os = "linux")]
+        assert_eq!(mgr.can_bootstrap(), linux_system_manager_available());
+        #[cfg(not(target_os = "linux"))]
+        assert!(!mgr.can_bootstrap());
+    }
+
+    #[test]
+    fn snap_manager_is_available_checks_snap() {
+        let mgr = SnapManager;
+        let available = mgr.is_available();
+        assert_eq!(available, command_available("snap"));
+    }
+}
