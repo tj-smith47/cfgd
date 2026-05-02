@@ -134,11 +134,15 @@ check_pattern error \
 
 log_section "No Unwrap in Library Code"
 # Match .unwrap() but NOT .unwrap_or(), .unwrap_or_default(), .unwrap_or_else()
-# Exclude main.rs and gen_crds.rs (binary entry points where expect is acceptable)
+# Exclusions:
+#   - main.rs / gen_crds.rs: binary entry points (expect is acceptable)
+#   - test_helpers.rs: shared test scaffolding
+#   - tests.rs / *_test.rs: inline #[cfg(test)] modules — test code is allowed
+#     to unwrap freely (matches the anodizer anti-patterns convention).
 check_pattern error \
     "No .unwrap()/.expect() in library code" \
     '\.unwrap\(\)[^_]|\.unwrap\(\)$|\.expect\(' \
-    'main\.rs:|gen_crds\.rs:|test_helpers\.rs:'
+    'main\.rs:|gen_crds\.rs:|test_helpers\.rs:|/tests\.rs:|_test\.rs:'
 
 log_section "Console/Indicatif Encapsulation"
 check_pattern error \

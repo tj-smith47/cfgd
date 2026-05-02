@@ -92,3 +92,4 @@ CLAUDE.local.md
 .claude/local/
 .claude/scratch/
 .claude/audits/
+.claude/worktrees/

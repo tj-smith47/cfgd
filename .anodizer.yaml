@@ -19,6 +19,11 @@ variables:
 
 git:
   tag_sort: "-version:refname"
+  ignore_tags:
+    - "nightly"
+  ignore_tag_prefixes:
+    - "draft-"
+  prerelease_suffix: "-"
 
 tag:
   # Require an explicit bump signal per commit range. Release-worthy signals
@@ -48,6 +53,11 @@ metadata:
   maintainers:
     - "TJ Smith"
   mod_timestamp: "{{ CommitTimestamp }}"
+  full_description:
+    from_file: README.md
+  commit_author:
+    name: TJ Smith
+    email: tj@jarvispro.io
 
 defaults:
   targets:
@@ -66,6 +76,11 @@ defaults:
     format_overrides:
       - os: windows
         formats: [zip]
+    hooks:
+      before:
+        - "echo packing {{ ProjectName }} {{ Tag }} format={{ Format }}"
+      after:
+        - "echo packed {{ ProjectName }} {{ Tag }} format={{ Format }}"
   checksum:
     algorithm: sha256
   # All four workspaces opt into crates.io publishing with the same
@@ -84,6 +99,8 @@ upx:
     args:
       - "--best"
       - "--lzma"
+    compress: "9"
+    lzma: true
     targets:
       - x86_64-unknown-linux-gnu
       - aarch64-unknown-linux-gnu
@@ -149,8 +166,9 @@ workspaces:
               - LICENSE
               - README.md
         checksum:
-          name_template: "{{ ProjectName }}-{{ Version }}-checksums.txt"
+          name_template: "{{ ArtifactName }}.sha256"
           algorithm: sha256
+          split: true
         # Single fat macOS binary from the two per-arch builds.
         universal_binaries:
           - name_template: "{{ ProjectName }}"
@@ -167,12 +185,18 @@ workspaces:
           draft: false
           prerelease: auto
           make_latest: auto
+          mode: keep-existing
+          target_commitish: "{{ .Commit }}"
+          discussion_category_name: "Announcements"
+          replace_existing_draft: false
+          replace_existing_artifacts: true
           name_template: "{{ ProjectName }} {{ Tag }}"
+          header: |
+            ## What's new in {{ .Tag }}
           footer: |
             ---
             Released with [anodizer](https://github.com/tj-smith47/anodizer)
           include_meta: true
-          replace_existing_artifacts: true
         publish:
           # `cargo:` inherits `index_timeout: 600` from defaults.publish.cargo.
           homebrew:
@@ -181,11 +205,20 @@ workspaces:
               name: homebrew-tap
             directory: Formula
             description: "Declarative, GitOps-style machine configuration management"
+            homepage: "https://github.com/tj-smith47/cfgd"
             license: MIT
             install: |
               bin.install "cfgd"
+            post_install: |
+              generate_completions_from_executable(bin/"cfgd", "completion")
             test: |
               system "#{bin}/cfgd", "--version"
+            caveats: |
+              Run `cfgd init` to scaffold a config in your repo.
+            dependencies:
+              - name: git
+                type: required
+            commit_msg_template: "cfgd {{ .Tag }}"
             commit_author:
               name: "TJ Smith"
               email: "tj@jarvispro.io"
@@ -194,7 +227,13 @@ workspaces:
               owner: tj-smith47
               name: scoop-bucket
             description: "Declarative, GitOps-style machine configuration management"
+            homepage: "https://github.com/tj-smith47/cfgd"
             license: MIT
+            depends:
+              - git
+            shortcuts:
+              - ["cfgd.exe", "cfgd"]
+            commit_msg_template: "cfgd {{ .Tag }}"
             commit_author:
               name: "TJ Smith"
               email: "tj@jarvispro.io"
@@ -202,8 +241,22 @@ workspaces:
             repository:
               owner: tj-smith47
               name: cfgd
+            title: "cfgd"
+            summary: "Declarative, GitOps-style machine configuration management"
             description: "Declarative, GitOps-style machine configuration management"
+            authors: "TJ Smith"
+            copyright: "Copyright © 2026 TJ Smith"
             license: MIT
+            require_license_acceptance: false
+            project_url: "https://github.com/tj-smith47/cfgd"
+            project_source_url: "https://github.com/tj-smith47/cfgd"
+            package_source_url: "https://github.com/tj-smith47/cfgd/tree/{{ .Tag }}/crates/cfgd"
+            docs_url: "https://github.com/tj-smith47/cfgd/blob/{{ .Tag }}/docs/configuration.md"
+            bug_tracker_url: "https://github.com/tj-smith47/cfgd/issues"
+            release_notes: "https://github.com/tj-smith47/cfgd/releases/tag/{{ .Tag }}"
+            # icon_url: TBD — no logo asset committed yet; add once
+            # assets/logo.png exists, then point to:
+            # https://raw.githubusercontent.com/tj-smith47/cfgd/main/assets/logo.png
             tags:
               - configuration
               - gitops
@@ -213,10 +266,25 @@ workspaces:
             repository:
               owner: tj-smith47
               name: winget-pkgs
+            short_description: "GitOps-style machine config manager"
             description: "Declarative, GitOps-style machine configuration management"
+            homepage: "https://github.com/tj-smith47/cfgd"
             license: MIT
+            author: "TJ Smith"
+            copyright: "Copyright © 2026 TJ Smith"
             package_identifier: "TJSmith.cfgd"
             publisher: "TJ Smith"
+            publisher_url: "https://github.com/tj-smith47"
+            publisher_support_url: "https://github.com/tj-smith47/cfgd/issues"
+            release_notes: "See release-notes URL for the full changelog."
+            release_notes_url: "https://github.com/tj-smith47/cfgd/releases/tag/{{ .Tag }}"
+            installation_notes: "Run `cfgd --help` after installation."
+            tags:
+              - configuration
+              - gitops
+              - reconciliation
+              - rust
+            commit_msg_template: "cfgd {{ .Tag }}"
             # Rust/MSVC binaries dynamically link against the VC++ 2015+
             # runtime. Without this dependency declared, winget's automated
             # validation fails at invocation time with STATUS_DLL_NOT_FOUND
@@ -235,6 +303,12 @@ workspaces:
             description: "Declarative, GitOps-style machine configuration management"
             license: mit
             skip_upload: false
+            formatter: alejandra
+            extra_install: |
+              installManPage share/man/man1/cfgd.1
+            post_install: |
+              echo "Installed cfgd. Run 'cfgd init' to scaffold a config."
+            commit_msg_template: "cfgd {{ .Tag }}"
             commit_author:
               name: "TJ Smith"
               email: "tj@jarvispro.io"
@@ -290,7 +364,8 @@ workspaces:
         docker_digest:
           name_template: "cfgd_{{ .Tag }}.digest"
         nfpm:
-          - package_name: cfgd
+          - id: default
+            package_name: cfgd
             formats:
               - deb
               - rpm
@@ -301,14 +376,45 @@ workspaces:
             description: "Declarative, GitOps-style machine configuration management"
             license: MIT
             bindir: /usr/bin
+            section: utils
+            priority: optional
+            epoch: "1"
+            release: "1"
+            umask: "0o002"
+            mtime: "{{ CommitDate }}"
+            recommends:
+              - git
+            provides:
+              - cfgd
             file_name_template: "{{ ProjectName }}_{{ RawVersion }}_{{ Os }}_{{ Arch }}"
             contents:
               - src: LICENSE
                 dst: /usr/share/doc/cfgd/LICENSE
               - src: README.md
                 dst: /usr/share/doc/cfgd/README.md
+            # GPG signing for deb / rpm / apk packages.
+            # Requires `GPG_KEY_PATH` env pointing at an exported secret key
+            # file. anodizer-action wires this automatically when
+            # `gpg-private-key` is supplied; locally:
+            #   gpg --export-secret-keys --armor <fingerprint> > ~/.gnupg/cfgd-signing.asc
+            #   export GPG_KEY_PATH=~/.gnupg/cfgd-signing.asc
+            deb:
+              signature:
+                key_file: "{{ .Env.GPG_KEY_PATH }}"
+                type: origin
+            rpm:
+              group: Development/Tools
+              packager: "TJ Smith <tj@jarvispro.io>"
+              signature:
+                key_file: "{{ .Env.GPG_KEY_PATH }}"
+            apk:
+              signature:
+                key_file: "{{ .Env.GPG_KEY_PATH }}"
         snapcrafts:
-          - name: cfgd
+          - id: default
+            name: cfgd
+            title: "cfgd"
+            base: core24
             summary: "Declarative, GitOps-style machine configuration management"
             description: |
               cfgd is a declarative, GitOps-style machine configuration state
@@ -319,6 +425,8 @@ workspaces:
             confinement: strict
             license: MIT
             publish: true
+            channel_templates:
+              - "latest/stable"
             apps:
               cfgd:
                 command: cfgd
@@ -381,12 +489,17 @@ workspaces:
           draft: false
           prerelease: auto
           make_latest: false
+          mode: keep-existing
+          target_commitish: "{{ .Commit }}"
+          replace_existing_draft: false
+          replace_existing_artifacts: true
           name_template: "{{ ProjectName }} {{ Tag }}"
+          header: |
+            ## What's new in {{ .Tag }} (operator)
           footer: |
             ---
             Released with [anodizer](https://github.com/tj-smith47/anodizer)
           include_meta: true
-          replace_existing_artifacts: true
         # Inherits `publish.cargo: { index_timeout: 600 }` from defaults
         # (the operator opts in to crates.io publishing through the same slot).
 
@@ -444,19 +557,33 @@ workspaces:
           draft: false
           prerelease: auto
           make_latest: false
+          mode: keep-existing
+          target_commitish: "{{ .Commit }}"
+          replace_existing_draft: false
+          replace_existing_artifacts: true
           name_template: "{{ ProjectName }} {{ Tag }}"
+          header: |
+            ## What's new in {{ .Tag }} (CSI node plugin)
           footer: |
             ---
             Released with [anodizer](https://github.com/tj-smith47/anodizer)
           include_meta: true
-          replace_existing_artifacts: true
         # Inherits `publish.cargo: { index_timeout: 600 }` from defaults
         # (the CSI node plugin opts in to crates.io publishing through the
         # same slot).
 
 changelog:
+  use: github-native
+  title: "Changelog"
   header: "# Changelog for {{ ProjectName }}"
+  divider: "---"
   sort: asc
+  abbrev: 12
+  format: "* {{ .SHA }} {{ .Message }} ({{ .AuthorUsername }})"
+  paths:
+    - "crates/**"
+    - "Cargo.toml"
+    - "Cargo.lock"
   filters:
     exclude:
       - "^docs:"
@@ -475,6 +602,8 @@ changelog:
       order: 2
     - title: Others
       order: 999
+  footer: |
+    _Generated by anodizer._
 
 # GPG + cosign signing for checksums / source / archives.
 # Cosign signatures on checksums give consumers a publisher-compromise-resistant
@@ -494,6 +623,9 @@ signs:
       - "{{ Signature }}"
       - "--detach-sig"
       - "{{ Artifact }}"
+    env:
+      - "GPG_TTY={{ Env.GPG_TTY }}"
+    if_condition: "{{ not .IsSnapshot }}"
   - id: checksum-cosign
     artifacts: checksum
     signature: "{{ .Artifact }}.cosign.bundle"
@@ -504,6 +636,9 @@ signs:
       - "--bundle={{ Signature }}"
       - "--yes"
       - "{{ Artifact }}"
+    env:
+      - "COSIGN_EXPERIMENTAL=1"
+    if_condition: "{{ not .IsSnapshot }}"
   - id: source
     artifacts: source
     cmd: gpg
@@ -515,6 +650,9 @@ signs:
       - "{{ Signature }}"
       - "--detach-sig"
       - "{{ Artifact }}"
+    env:
+      - "GPG_TTY={{ Env.GPG_TTY }}"
+    if_condition: "{{ not .IsSnapshot }}"
 
 # Cosign-based binary signing for the cfgd CLI binary.
 binary_signs:
@@ -527,6 +665,9 @@ binary_signs:
       - "--bundle={{ Signature }}"
       - "--yes"
       - "{{ Artifact }}"
+    env:
+      - "COSIGN_EXPERIMENTAL=1"
+    if_condition: "{{ not .IsSnapshot }}"
 
 # Cosign-based Docker image signing for all 3 images.
 docker_signs:
@@ -538,11 +679,15 @@ docker_signs:
       - "--key=env://COSIGN_KEY"
       - "--yes"
       - "{{ Artifact }}"
+    env:
+      - "COSIGN_EXPERIMENTAL=1"
+    if_condition: "{{ not .IsSnapshot }}"
 
 source:
   enabled: true
   format: tar.gz
   name_template: "{{ ProjectName }}-{{ Version }}-source"
+  prefix_template: "{{ ProjectName }}-{{ Version }}/"
   files:
     - "crates/**/*.rs"
     - "Cargo.toml"
@@ -551,8 +696,18 @@ source:
     - "README.md"
 
 sboms:
-  enabled: true
-  format: cyclonedx
+  - id: default
+    enabled: true
+    cmd: syft
+    args:
+      - "{{ .Artifact }}"
+      - "--output"
+      - "cyclonedx-json={{ .Document }}"
+    documents:
+      - "{{ .ArtifactName }}.cdx.json"
+    artifacts: archive
+    env:
+      - "SYFT_QUIET=true"
 
 # Source RPM (exercised by anodizer; dogfooded here too).
 srpm:
@@ -589,6 +744,12 @@ announce:
     endpoint_url: "https://tj.jarvispro.io/webhooks/anodizer"
     content_type: application/json
     message_template: '{"project":"{{ ProjectName }}","tag":"{{ Tag }}","url":"{{ ReleaseURL }}"}'
+    headers:
+      X-Anodizer-Source: "release"
+    skip_tls_verify: false
+    expected_status_codes:
+      - 200
+      - 202
   email:
     enabled: true
     host: smtp.gmail.com
@@ -599,3 +760,5 @@ announce:
       - "tj@jarvispro.io"
     subject_template: "{{ ProjectName }} {{ Tag }} released"
     message_template: "{{ ProjectName }} {{ Tag }} is now available at {{ ReleaseURL }}"
+    encryption: starttls
+    insecure_skip_verify: false
