@@ -1,0 +1,301 @@
+//! `SimpleManager` — a data-driven `PackageManager` covering apt, dnf, yum,
+//! apk, pacman, zypper, and pkg.
+//!
+//! Each constructor (`apt_manager`, `dnf_manager`, ...) wires up the manager
+//! name, list/install/uninstall/update commands, parser, and version-query
+//! function. Behavioural overrides (yum-only-when-no-dnf, dnf check-update
+//! exit-code-100) are encoded as struct fields, not subclasses.
+
+use std::collections::HashSet;
+use std::process::Command;
+
+use cfgd_core::command_available;
+use cfgd_core::errors::{PackageError, Result};
+use cfgd_core::output::Printer;
+use cfgd_core::providers::PackageManager;
+
+use super::parsers::{
+    parse_apk_lines, parse_dnf_lines, parse_pkg_lines, parse_simple_lines, parse_yum_lines,
+    parse_zypper_lines,
+};
+use super::shared::{run_pkg_cmd, run_pkg_cmd_live, strip_sudo_if_root};
+use super::versions::{
+    apt_aliases, dnf_aliases, list_apt_with_versions, list_dnf_with_versions, query_version_apk,
+    query_version_apt, query_version_info, query_version_pkg,
+};
+
+/// Function pointer type for `installed_packages_with_versions` overrides.
+type ListWithVersionsFn = fn(&str) -> Result<Vec<cfgd_core::providers::PackageInfo>>;
+
+/// A data-driven package manager for system package managers that follow a
+/// uniform pattern: list installed, install, uninstall, update.
+/// Replaces individual structs for apt, dnf, yum, apk, pacman, zypper, pkg.
+pub struct SimpleManager {
+    pub(super) mgr_name: &'static str,
+    pub(super) list_cmd: &'static [&'static str],
+    pub(super) install_cmd: &'static [&'static str],
+    pub(super) uninstall_cmd: &'static [&'static str],
+    pub(super) update_cmd: Option<&'static [&'static str]>,
+    /// When true, non-zero exit from the update command is ignored (dnf/yum
+    /// check-update returns 100 when updates are available).
+    pub(super) ignore_update_exit: bool,
+    pub(super) parse_list: fn(&str) -> HashSet<String>,
+    pub(super) query_version: fn(&str, &str) -> Result<Option<String>>,
+    /// Custom availability check. When None, uses `command_available(mgr_name)`.
+    pub(super) is_available_fn: Option<fn() -> bool>,
+    /// Override for installed_packages_with_versions. When None, falls back to
+    /// the default trait implementation (wraps installed_packages with "unknown").
+    pub(super) list_with_versions: Option<ListWithVersionsFn>,
+    /// Override for package_aliases. When None, returns empty vec (default).
+    pub(super) aliases_fn: Option<fn(&str) -> Vec<String>>,
+}
+
+impl SimpleManager {
+    pub(super) fn display_cmd(&self, cmd_parts: &[&str], packages: &[String]) -> String {
+        let effective = strip_sudo_if_root(cmd_parts);
+        let mut parts: Vec<&str> = effective.to_vec();
+        for p in packages {
+            parts.push(p);
+        }
+        parts.join(" ")
+    }
+}
+
+impl PackageManager for SimpleManager {
+    fn name(&self) -> &str {
+        self.mgr_name
+    }
+
+    fn is_available(&self) -> bool {
+        if let Some(f) = self.is_available_fn {
+            f()
+        } else {
+            command_available(self.mgr_name)
+        }
+    }
+
+    fn can_bootstrap(&self) -> bool {
+        false
+    }
+
+    fn bootstrap(&self, _printer: &Printer) -> Result<()> {
+        Ok(())
+    }
+
+    fn installed_packages(&self) -> Result<HashSet<String>> {
+        let (prog, args) = self.list_cmd.split_first().unwrap_or((&"true", &[]));
+        let output = run_pkg_cmd(self.mgr_name, Command::new(prog).args(args), "list")?;
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        Ok((self.parse_list)(&stdout))
+    }
+
+    fn install(&self, packages: &[String], printer: &Printer) -> Result<()> {
+        if packages.is_empty() {
+            return Ok(());
+        }
+        let effective = strip_sudo_if_root(self.install_cmd);
+        let label = self.display_cmd(self.install_cmd, packages);
+        let (prog, args) = effective.split_first().unwrap_or((&"true", &[]));
+        run_pkg_cmd_live(
+            printer,
+            self.mgr_name,
+            Command::new(prog).args(args).args(packages),
+            &label,
+            "install",
+        )?;
+        Ok(())
+    }
+
+    fn uninstall(&self, packages: &[String], printer: &Printer) -> Result<()> {
+        if packages.is_empty() {
+            return Ok(());
+        }
+        let effective = strip_sudo_if_root(self.uninstall_cmd);
+        let label = self.display_cmd(self.uninstall_cmd, packages);
+        let (prog, args) = effective.split_first().unwrap_or((&"true", &[]));
+        run_pkg_cmd_live(
+            printer,
+            self.mgr_name,
+            Command::new(prog).args(args).args(packages),
+            &label,
+            "uninstall",
+        )?;
+        Ok(())
+    }
+
+    fn update(&self, printer: &Printer) -> Result<()> {
+        let Some(update_parts) = self.update_cmd else {
+            return Ok(());
+        };
+        let effective = strip_sudo_if_root(update_parts);
+        let label = self.display_cmd(update_parts, &[]);
+        let (prog, args) = effective.split_first().unwrap_or((&"true", &[]));
+        if self.ignore_update_exit {
+            // dnf/yum check-update returns 100 when updates are available
+            let _ = printer
+                .run_with_output(Command::new(prog).args(args), &label)
+                .map_err(|e| PackageError::CommandFailed {
+                    manager: self.mgr_name.into(),
+                    source: e,
+                })?;
+        } else {
+            run_pkg_cmd_live(
+                printer,
+                self.mgr_name,
+                Command::new(prog).args(args),
+                &label,
+                "update",
+            )?;
+        }
+        Ok(())
+    }
+
+    fn available_version(&self, package: &str) -> Result<Option<String>> {
+        (self.query_version)(self.mgr_name, package)
+    }
+
+    fn installed_packages_with_versions(&self) -> Result<Vec<cfgd_core::providers::PackageInfo>> {
+        if let Some(f) = self.list_with_versions {
+            f(self.mgr_name)
+        } else {
+            // Default: wrap installed_packages with "unknown"
+            Ok(self
+                .installed_packages()?
+                .into_iter()
+                .map(|name| cfgd_core::providers::PackageInfo {
+                    name,
+                    version: "unknown".into(),
+                })
+                .collect())
+        }
+    }
+
+    fn package_aliases(&self, canonical_name: &str) -> Result<Vec<String>> {
+        if let Some(f) = self.aliases_fn {
+            Ok(f(canonical_name))
+        } else {
+            Ok(vec![])
+        }
+    }
+}
+
+// --- SimpleManager constructors ---
+
+pub(super) fn apt_manager() -> SimpleManager {
+    SimpleManager {
+        mgr_name: "apt",
+        list_cmd: &["dpkg-query", "-W", "-f", "${Package}\n"],
+        install_cmd: &["sudo", "apt-get", "install", "-y"],
+        uninstall_cmd: &["sudo", "apt-get", "remove", "-y"],
+        update_cmd: Some(&["sudo", "apt-get", "update"]),
+        ignore_update_exit: false,
+        parse_list: parse_simple_lines,
+        query_version: query_version_apt,
+        is_available_fn: None,
+        list_with_versions: Some(list_apt_with_versions),
+        aliases_fn: Some(apt_aliases),
+    }
+}
+
+pub(super) fn dnf_manager() -> SimpleManager {
+    SimpleManager {
+        mgr_name: "dnf",
+        list_cmd: &["dnf", "list", "installed", "--quiet"],
+        install_cmd: &["sudo", "dnf", "install", "-y"],
+        uninstall_cmd: &["sudo", "dnf", "remove", "-y"],
+        update_cmd: Some(&["sudo", "dnf", "check-update"]),
+        ignore_update_exit: true,
+        parse_list: parse_dnf_lines,
+        query_version: query_version_info,
+        is_available_fn: None,
+        list_with_versions: Some(list_dnf_with_versions),
+        aliases_fn: Some(dnf_aliases),
+    }
+}
+
+pub(super) fn yum_manager() -> SimpleManager {
+    SimpleManager {
+        mgr_name: "yum",
+        list_cmd: &["yum", "list", "installed", "--quiet"],
+        install_cmd: &["sudo", "yum", "install", "-y"],
+        uninstall_cmd: &["sudo", "yum", "remove", "-y"],
+        update_cmd: Some(&["sudo", "yum", "check-update"]),
+        ignore_update_exit: true,
+        parse_list: parse_yum_lines,
+        query_version: query_version_info,
+        is_available_fn: Some(|| !command_available("dnf") && command_available("yum")),
+        list_with_versions: Some(list_dnf_with_versions),
+        aliases_fn: Some(dnf_aliases),
+    }
+}
+
+pub(super) fn apk_manager() -> SimpleManager {
+    SimpleManager {
+        mgr_name: "apk",
+        list_cmd: &["apk", "list", "--installed", "--quiet"],
+        install_cmd: &["apk", "add"],
+        uninstall_cmd: &["apk", "del"],
+        update_cmd: Some(&["apk", "update"]),
+        ignore_update_exit: false,
+        parse_list: parse_apk_lines,
+        query_version: query_version_apk,
+        is_available_fn: None,
+        list_with_versions: None,
+        aliases_fn: None,
+    }
+}
+
+pub(super) fn pacman_manager() -> SimpleManager {
+    SimpleManager {
+        mgr_name: "pacman",
+        list_cmd: &["pacman", "-Qq"],
+        install_cmd: &["sudo", "pacman", "-S", "--noconfirm"],
+        uninstall_cmd: &["sudo", "pacman", "-R", "--noconfirm"],
+        update_cmd: Some(&["sudo", "pacman", "-Sy", "--noconfirm"]),
+        ignore_update_exit: false,
+        parse_list: parse_simple_lines,
+        query_version: query_version_info,
+        is_available_fn: None,
+        list_with_versions: None,
+        aliases_fn: None,
+    }
+}
+
+pub(super) fn zypper_manager() -> SimpleManager {
+    SimpleManager {
+        mgr_name: "zypper",
+        list_cmd: &[
+            "zypper",
+            "se",
+            "--installed-only",
+            "--type",
+            "package",
+            "-s",
+        ],
+        install_cmd: &["sudo", "zypper", "install", "-y"],
+        uninstall_cmd: &["sudo", "zypper", "remove", "-y"],
+        update_cmd: Some(&["sudo", "zypper", "refresh"]),
+        ignore_update_exit: false,
+        parse_list: parse_zypper_lines,
+        query_version: query_version_info,
+        is_available_fn: None,
+        list_with_versions: None,
+        aliases_fn: None,
+    }
+}
+
+pub(super) fn pkg_manager() -> SimpleManager {
+    SimpleManager {
+        mgr_name: "pkg",
+        list_cmd: &["pkg", "info", "-q"],
+        install_cmd: &["pkg", "install", "-y"],
+        uninstall_cmd: &["pkg", "remove", "-y"],
+        update_cmd: Some(&["pkg", "update"]),
+        ignore_update_exit: false,
+        parse_list: parse_pkg_lines,
+        query_version: query_version_pkg,
+        is_available_fn: None,
+        list_with_versions: None,
+        aliases_fn: None,
+    }
+}

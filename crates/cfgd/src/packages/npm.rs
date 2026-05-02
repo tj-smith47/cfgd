@@ -1,0 +1,227 @@
+//! npm-based package manager (global packages).
+
+use std::collections::HashSet;
+use std::path::PathBuf;
+use std::process::Command;
+
+use cfgd_core::command_available;
+use cfgd_core::errors::{PackageError, Result};
+use cfgd_core::output::Printer;
+use cfgd_core::providers::PackageManager;
+
+use super::shared::{
+    bootstrap_via_brew_then_system, brew_available, run_pkg_cmd_live, tool_cmd_with_resolver,
+};
+
+pub struct NpmManager;
+
+/// Find npm binary, checking PATH and common nvm install locations.
+///
+/// Not usable with the generic `resolve_tool_with_fallbacks` helper because the
+/// nvm path is a wildcard `~/.nvm/versions/node/*/bin/npm` that requires a
+/// directory scan rather than a fixed fallback list.
+pub(super) fn find_npm() -> Option<PathBuf> {
+    if command_available("npm") {
+        return Some(PathBuf::from("npm"));
+    }
+    if let Some(home) = std::env::var_os("HOME") {
+        let nvm_dir = PathBuf::from(home).join(".nvm/versions/node");
+        if let Ok(entries) = std::fs::read_dir(&nvm_dir) {
+            for entry in entries.flatten() {
+                let npm_path = entry.path().join("bin/npm");
+                if npm_path.exists() {
+                    return Some(npm_path);
+                }
+            }
+        }
+    }
+    None
+}
+
+pub(super) fn npm_available() -> bool {
+    find_npm().is_some()
+}
+
+pub(super) fn npm_cmd() -> Command {
+    tool_cmd_with_resolver("npm", find_npm)
+}
+
+impl PackageManager for NpmManager {
+    fn name(&self) -> &str {
+        "npm"
+    }
+
+    fn is_available(&self) -> bool {
+        npm_available()
+    }
+
+    fn can_bootstrap(&self) -> bool {
+        // Can bootstrap via system package manager or nvm
+        brew_available()
+            || command_available("apt")
+            || command_available("dnf")
+            || command_available("curl")
+    }
+
+    fn bootstrap(&self, printer: &Printer) -> Result<()> {
+        if bootstrap_via_brew_then_system(printer, "npm", "node", &["nodejs", "npm"])? {
+            return Ok(());
+        }
+
+        // Fall back to nvm
+        if command_available("curl") {
+            let result = printer
+                .run_with_output(
+                    Command::new("bash")
+                        .arg("-c")
+                        .arg(concat!(
+                            "curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.1/install.sh | bash && ",
+                            "export NVM_DIR=\"$HOME/.nvm\" && [ -s \"$NVM_DIR/nvm.sh\" ] && . \"$NVM_DIR/nvm.sh\" && ",
+                            "nvm install --lts"
+                        )),
+                    "Installing Node.js via nvm",
+                )
+                .map_err(|e| PackageError::BootstrapFailed {
+                    manager: "npm".into(),
+                    message: format!("nvm install failed: {}", e),
+                })?;
+            if result.status.success() {
+                return Ok(());
+            }
+        }
+
+        Err(PackageError::BootstrapFailed {
+            manager: "npm".into(),
+            message: "no installation method available".into(),
+        }
+        .into())
+    }
+
+    fn installed_packages(&self) -> Result<HashSet<String>> {
+        let output = npm_cmd()
+            .args(["list", "-g", "--depth=0", "--json"])
+            .output()
+            .map_err(|e| PackageError::CommandFailed {
+                manager: "npm".into(),
+                source: e,
+            })?;
+
+        // npm list exits non-zero if there are peer dep issues, but still produces valid JSON
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let parsed: serde_json::Value =
+            serde_json::from_str(&stdout).map_err(|e| PackageError::ListFailed {
+                manager: "npm".into(),
+                message: format!("failed to parse npm list output: {}", e),
+            })?;
+
+        let mut packages = HashSet::new();
+        if let Some(deps) = parsed.get("dependencies").and_then(|d| d.as_object()) {
+            for key in deps.keys() {
+                packages.insert(key.clone());
+            }
+        }
+
+        Ok(packages)
+    }
+
+    fn install(&self, packages: &[String], printer: &Printer) -> Result<()> {
+        if packages.is_empty() {
+            return Ok(());
+        }
+        let label = format!("npm install -g {}", packages.join(" "));
+        run_pkg_cmd_live(
+            printer,
+            "npm",
+            npm_cmd().arg("install").arg("-g").args(packages),
+            &label,
+            "install",
+        )?;
+        Ok(())
+    }
+
+    fn uninstall(&self, packages: &[String], printer: &Printer) -> Result<()> {
+        if packages.is_empty() {
+            return Ok(());
+        }
+        let label = format!("npm uninstall -g {}", packages.join(" "));
+        run_pkg_cmd_live(
+            printer,
+            "npm",
+            npm_cmd().arg("uninstall").arg("-g").args(packages),
+            &label,
+            "uninstall",
+        )?;
+        Ok(())
+    }
+
+    fn update(&self, printer: &Printer) -> Result<()> {
+        run_pkg_cmd_live(
+            printer,
+            "npm",
+            npm_cmd().args(["update", "-g"]),
+            "npm update -g",
+            "update",
+        )?;
+        Ok(())
+    }
+
+    fn available_version(&self, package: &str) -> Result<Option<String>> {
+        // npm view <pkg> version
+        let output = npm_cmd()
+            .args(["view", package, "version"])
+            .output()
+            .map_err(|e| PackageError::CommandFailed {
+                manager: "npm".into(),
+                source: e,
+            })?;
+        if !output.status.success() {
+            return Ok(None);
+        }
+        let version = cfgd_core::stdout_lossy_trimmed(&output);
+        if version.is_empty() {
+            Ok(None)
+        } else {
+            Ok(Some(version))
+        }
+    }
+
+    fn installed_packages_with_versions(&self) -> Result<Vec<cfgd_core::providers::PackageInfo>> {
+        let output = npm_cmd()
+            .args(["list", "-g", "--depth=0", "--json"])
+            .output()
+            .map_err(|e| PackageError::CommandFailed {
+                manager: "npm".into(),
+                source: e,
+            })?;
+        // npm list exits non-zero on peer dep issues but still produces valid JSON
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let parsed: serde_json::Value =
+            serde_json::from_str(&stdout).map_err(|e| PackageError::ListFailed {
+                manager: "npm".into(),
+                message: format!("failed to parse npm list output: {}", e),
+            })?;
+        Ok(parse_npm_list_versions(&parsed))
+    }
+}
+
+/// Parse `npm list -g --depth=0 --json` dependencies object into PackageInfo.
+/// JSON format: `{"dependencies": {"pkg": {"version": "1.2.3"}, ...}}`
+pub(super) fn parse_npm_list_versions(
+    parsed: &serde_json::Value,
+) -> Vec<cfgd_core::providers::PackageInfo> {
+    let mut packages = Vec::new();
+    if let Some(deps) = parsed.get("dependencies").and_then(|d| d.as_object()) {
+        for (name, info) in deps {
+            let version = info
+                .get("version")
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown")
+                .to_string();
+            packages.push(cfgd_core::providers::PackageInfo {
+                name: name.clone(),
+                version,
+            });
+        }
+    }
+    packages
+}
