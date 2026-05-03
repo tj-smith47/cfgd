@@ -2,10 +2,18 @@ use std::collections::HashMap;
 
 use crate::providers::{FileAction, PackageAction, SecretAction};
 
-use super::restore::provenance_suffix;
 use super::types::{
     Action, EnvAction, ModuleAction, ModuleActionKind, Phase, ScriptAction, SystemAction,
 };
+
+/// Append source provenance suffix for non-local origins.
+pub(super) fn provenance_suffix(origin: &str) -> String {
+    if origin.is_empty() || origin == "local" {
+        String::new()
+    } else {
+        format!(" <- {origin}")
+    }
+}
 
 /// Format a human-readable description of an action.
 pub fn format_action_description(action: &Action) -> String {

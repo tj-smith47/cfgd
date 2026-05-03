@@ -99,12 +99,3 @@ pub(super) fn content_hash_if_exists(path: &std::path::Path) -> Option<String> {
         .ok()
         .map(|bytes| crate::sha256_hex(&bytes))
 }
-
-/// Append source provenance suffix for non-local origins.
-pub(super) fn provenance_suffix(origin: &str) -> String {
-    if origin.is_empty() || origin == "local" {
-        String::new()
-    } else {
-        format!(" <- {origin}")
-    }
-}
