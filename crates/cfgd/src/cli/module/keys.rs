@@ -1,0 +1,198 @@
+use super::*;
+
+pub(crate) fn cmd_module_keys_generate(
+    printer: &Printer,
+    output_dir: Option<&str>,
+) -> anyhow::Result<()> {
+    cfgd_core::require_tool(
+        "cosign",
+        Some("install it from https://docs.sigstore.dev/cosign/installation/"),
+    )
+    .map_err(|m| anyhow::anyhow!(m))?;
+
+    printer.header("Generate Cosign Key Pair");
+
+    let dir = output_dir.unwrap_or(".");
+    std::fs::create_dir_all(dir)?;
+
+    // If COSIGN_PASSWORD is set, cosign reads it from the env and doesn't prompt.
+    // Use null stdin in that case so it never blocks waiting for terminal input.
+    let stdin_cfg = if std::env::var("COSIGN_PASSWORD").is_ok() {
+        std::process::Stdio::null()
+    } else {
+        std::process::Stdio::inherit()
+    };
+    let status = cfgd_core::cosign_cmd()
+        .args(["generate-key-pair"])
+        .current_dir(dir)
+        .stdin(stdin_cfg)
+        .stdout(std::process::Stdio::inherit())
+        // Override the default piped stderr: interactive key-pair generation
+        // prompts the user and inherits the real terminal.
+        .stderr(std::process::Stdio::inherit())
+        .status()
+        .map_err(|e| anyhow::anyhow!("failed to run cosign: {e}"))?;
+
+    if !status.success() {
+        anyhow::bail!("cosign generate-key-pair failed");
+    }
+
+    let key_dir = Path::new(dir);
+    if key_dir.join("cosign.key").exists() {
+        printer.success(&format!("Private key: {}/cosign.key", dir));
+        printer.success(&format!("Public key:  {}/cosign.pub", dir));
+        printer.info("Sign with: cfgd module push --sign --key cosign.key ...");
+        printer.info("Verify with: cosign verify --key cosign.pub <artifact>");
+    }
+
+    Ok(())
+}
+
+pub(crate) fn cmd_module_keys_list(printer: &Printer) -> anyhow::Result<()> {
+    let locations = [
+        ("./cosign.key", "./cosign.pub"),
+        ("~/.cfgd/cosign.key", "~/.cfgd/cosign.pub"),
+    ];
+
+    let mut entries: Vec<super::KeyListEntry> = Vec::new();
+    for (private, public) in &locations {
+        let priv_path = cfgd_core::expand_tilde(Path::new(private));
+        let pub_path = cfgd_core::expand_tilde(Path::new(public));
+
+        if pub_path.exists() {
+            let fingerprint = if priv_path.exists() {
+                Some("private key: yes".to_string())
+            } else {
+                Some("private key: no".to_string())
+            };
+            let created = std::fs::metadata(&pub_path)
+                .ok()
+                .and_then(|m| m.modified().ok())
+                .map(|t| {
+                    let secs = t
+                        .duration_since(std::time::SystemTime::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_secs();
+                    cfgd_core::unix_secs_to_iso8601(secs)
+                });
+            entries.push(super::KeyListEntry {
+                name: pub_path.display().to_string(),
+                fingerprint,
+                created,
+            });
+        }
+    }
+
+    if printer.write_structured(&entries) {
+        return Ok(());
+    }
+
+    printer.header("Signing Keys");
+
+    if entries.is_empty() {
+        printer.info("No signing keys found");
+        printer.info("Generate with: cfgd module keys generate");
+    } else {
+        for entry in &entries {
+            printer.key_value(&entry.name, entry.fingerprint.as_deref().unwrap_or(""));
+        }
+    }
+
+    Ok(())
+}
+
+pub(crate) fn cmd_module_keys_rotate(
+    printer: &Printer,
+    dir: Option<&str>,
+    artifacts: &[String],
+) -> anyhow::Result<()> {
+    cfgd_core::require_tool(
+        "cosign",
+        Some("install it from https://docs.sigstore.dev/cosign/installation/"),
+    )
+    .map_err(|m| anyhow::anyhow!(m))?;
+
+    let key_dir = dir.unwrap_or(".");
+    let old_key = Path::new(key_dir).join("cosign.key");
+    let old_pub = Path::new(key_dir).join("cosign.pub");
+
+    if !old_key.exists() {
+        anyhow::bail!(
+            "No existing cosign.key found in {} — generate one first with: cfgd module keys generate",
+            key_dir
+        );
+    }
+
+    printer.header("Rotate Cosign Key Pair");
+
+    // Back up old keys
+    let backup_suffix = cfgd_core::utc_now_iso8601().replace([':', '-', 'T', 'Z'], "");
+    let backup_key = Path::new(key_dir).join(format!("cosign.key.{backup_suffix}"));
+    let backup_pub = Path::new(key_dir).join(format!("cosign.pub.{backup_suffix}"));
+
+    std::fs::rename(&old_key, &backup_key)?;
+    printer.info(&format!(
+        "Backed up old private key to {}",
+        backup_key.display()
+    ));
+    if old_pub.exists() {
+        std::fs::rename(&old_pub, &backup_pub)?;
+        printer.info(&format!(
+            "Backed up old public key to {}",
+            backup_pub.display()
+        ));
+    }
+
+    // Generate new key pair
+    let status = cfgd_core::cosign_cmd()
+        .args(["generate-key-pair"])
+        .current_dir(key_dir)
+        .stdin(std::process::Stdio::inherit())
+        .stdout(std::process::Stdio::inherit())
+        // Override the default piped stderr: interactive key-pair generation
+        // prompts the user and inherits the real terminal.
+        .stderr(std::process::Stdio::inherit())
+        .status()
+        .map_err(|e| anyhow::anyhow!("failed to run cosign: {e}"))?;
+
+    if !status.success() {
+        // Restore old keys on failure
+        if backup_key.exists() {
+            let _ = std::fs::rename(&backup_key, &old_key);
+        }
+        if backup_pub.exists() {
+            let _ = std::fs::rename(&backup_pub, &old_pub);
+        }
+        anyhow::bail!("cosign generate-key-pair failed — old keys restored");
+    }
+
+    printer.success("Generated new key pair");
+
+    // Re-sign artifacts with the new key
+    let new_key_path = Path::new(key_dir).join("cosign.key");
+    for artifact in artifacts {
+        printer.info(&format!("Re-signing {artifact}..."));
+        cfgd_core::oci::sign_artifact(artifact, Some(&new_key_path.display().to_string()))
+            .map_err(|e| anyhow::anyhow!("{e}"))?;
+        printer.success(&format!("Re-signed {artifact}"));
+    }
+
+    if artifacts.is_empty() {
+        printer.info("No artifacts specified — re-sign manually with: cfgd module push --sign --key cosign.key ...");
+    }
+
+    printer.success("Key rotation complete");
+    Ok(())
+}
+
+/// Mask a value for display: show `***` with last 3 chars visible.
+/// Short values (3 chars or fewer) are fully masked.
+pub(crate) fn mask_value(value: &str) -> String {
+    let chars: Vec<char> = value.chars().collect();
+    if chars.len() <= 3 {
+        "***".to_string()
+    } else {
+        let suffix: String = chars[chars.len() - 3..].iter().collect();
+        format!("***{}", suffix)
+    }
+}
