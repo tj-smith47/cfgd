@@ -98,6 +98,7 @@ impl<'a> super::Reconciler<'a> {
 
         Ok(Plan { phases, warnings })
     }
+
     /// Check for file target conflicts across profile files and module files.
     /// Two sources targeting the same path with identical content is allowed;
     /// different content is an error.
@@ -154,6 +155,7 @@ impl<'a> super::Reconciler<'a> {
 
         Ok(())
     }
+
     pub(super) fn plan_system(
         &self,
         profile: &MergedProfile,
@@ -308,6 +310,7 @@ impl<'a> super::Reconciler<'a> {
 
         actions
     }
+
     fn plan_scripts(
         &self,
         scripts: &ScriptSpec,

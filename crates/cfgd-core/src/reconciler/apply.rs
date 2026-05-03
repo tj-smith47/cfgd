@@ -88,6 +88,7 @@ impl<'a> super::Reconciler<'a> {
         }
         Ok(())
     }
+
     /// Apply a plan, executing each phase in order.
     /// Failed actions are logged and skipped — they don't abort the entire apply.
     #[allow(clippy::too_many_arguments)]
@@ -473,8 +474,9 @@ impl<'a> super::Reconciler<'a> {
             apply_id,
         })
     }
+
     #[allow(clippy::too_many_arguments)]
-    pub(super) fn apply_action(
+    fn apply_action(
         &self,
         action: &Action,
         resolved: &ResolvedProfile,

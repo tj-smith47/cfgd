@@ -127,6 +127,7 @@ impl<'a> super::Reconciler<'a> {
 
         (actions, warnings)
     }
+
     pub(super) fn apply_env_action(action: &EnvAction, printer: &Printer) -> Result<String> {
         match action {
             EnvAction::WriteEnvFile { path, content } => {
