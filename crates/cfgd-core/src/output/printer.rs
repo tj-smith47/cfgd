@@ -20,7 +20,7 @@ pub(super) fn stderr_is_terminal() -> bool {
 /// Build an `InquireError::Custom` for the "structured-output asked for an
 /// interactive prompt" case. `-o json|yaml|name|jsonpath|template` implies a
 /// non-interactive consumer; hanging on `inquire` here would deadlock scripts.
-pub(super) fn non_interactive_err(prompt: &str) -> inquire::InquireError {
+fn non_interactive_err(prompt: &str) -> inquire::InquireError {
     inquire::InquireError::Custom(
         format!(
             "refusing to prompt for '{prompt}' in non-interactive/structured output mode \
