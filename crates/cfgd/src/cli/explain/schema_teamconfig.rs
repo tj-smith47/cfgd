@@ -1,0 +1,163 @@
+use super::{ResourceSchema, SchemaField};
+
+pub(super) static SCHEMA_TEAMCONFIG: ResourceSchema = ResourceSchema {
+    name: "TeamConfig",
+    api_version: cfgd_core::API_VERSION,
+    kind: "TeamConfig",
+    location: "Crossplane Composite Resource (XR)",
+    description: "Crossplane composite resource for team-level configuration. Fans out to per-user MachineConfig CRDs via composition function.",
+    fields: &[
+        SchemaField {
+            name: "team",
+            type_desc: "string",
+            required: true,
+            description: "Team name",
+            children: &[],
+        },
+        SchemaField {
+            name: "profile",
+            type_desc: "string",
+            required: false,
+            description: "Default profile for team members",
+            children: &[],
+        },
+        SchemaField {
+            name: "source",
+            type_desc: "object",
+            required: false,
+            description: "Team config source",
+            children: &[
+                SchemaField {
+                    name: "url",
+                    type_desc: "string",
+                    required: true,
+                    description: "Git URL of the team config repo",
+                    children: &[],
+                },
+                SchemaField {
+                    name: "branch",
+                    type_desc: "string",
+                    required: false,
+                    description: "Git branch (default: master)",
+                    children: &[],
+                },
+            ],
+        },
+        SchemaField {
+            name: "modules",
+            type_desc: "[]object",
+            required: false,
+            description: "Modules for the team",
+            children: &[
+                SchemaField {
+                    name: "name",
+                    type_desc: "string",
+                    required: true,
+                    description: "Module name",
+                    children: &[],
+                },
+                SchemaField {
+                    name: "sourceRef",
+                    type_desc: "object",
+                    required: false,
+                    description: "Remote module source reference",
+                    children: &[
+                        SchemaField {
+                            name: "url",
+                            type_desc: "string",
+                            required: true,
+                            description: "Git URL",
+                            children: &[],
+                        },
+                        SchemaField {
+                            name: "ref",
+                            type_desc: "string",
+                            required: false,
+                            description: "Git ref (tag/commit)",
+                            children: &[],
+                        },
+                    ],
+                },
+            ],
+        },
+        SchemaField {
+            name: "policy",
+            type_desc: "object",
+            required: false,
+            description: "Team policy settings",
+            children: &[
+                SchemaField {
+                    name: "required",
+                    type_desc: "object",
+                    required: false,
+                    description: "Required configuration items",
+                    children: &[],
+                },
+                SchemaField {
+                    name: "recommended",
+                    type_desc: "object",
+                    required: false,
+                    description: "Recommended configuration items",
+                    children: &[],
+                },
+                SchemaField {
+                    name: "locked",
+                    type_desc: "object",
+                    required: false,
+                    description: "Locked (non-overridable) items",
+                    children: &[],
+                },
+                SchemaField {
+                    name: "requiredModules",
+                    type_desc: "[]string",
+                    required: false,
+                    description: "Modules that must be installed",
+                    children: &[],
+                },
+                SchemaField {
+                    name: "recommendedModules",
+                    type_desc: "[]string",
+                    required: false,
+                    description: "Modules that are recommended",
+                    children: &[],
+                },
+            ],
+        },
+        SchemaField {
+            name: "members",
+            type_desc: "[]object",
+            required: false,
+            description: "Team members",
+            children: &[
+                SchemaField {
+                    name: "username",
+                    type_desc: "string",
+                    required: true,
+                    description: "Username",
+                    children: &[],
+                },
+                SchemaField {
+                    name: "sshPublicKey",
+                    type_desc: "string",
+                    required: false,
+                    description: "SSH public key for enrollment",
+                    children: &[],
+                },
+                SchemaField {
+                    name: "profile",
+                    type_desc: "string",
+                    required: false,
+                    description: "Profile override for this member",
+                    children: &[],
+                },
+                SchemaField {
+                    name: "hostname",
+                    type_desc: "string",
+                    required: false,
+                    description: "Hostname override",
+                    children: &[],
+                },
+            ],
+        },
+    ],
+};
