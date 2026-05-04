@@ -313,10 +313,7 @@ impl super::CfgdFileManager {
     }
 
     /// Resolve a source path relative to the config directory.
-    pub(super) fn resolve_source_path(
-        &self,
-        source: &str,
-    ) -> std::result::Result<PathBuf, FileError> {
+    fn resolve_source_path(&self, source: &str) -> std::result::Result<PathBuf, FileError> {
         let resolved = cfgd_core::resolve_relative_path(&PathBuf::from(source), &self.config_dir)
             .map_err(|_| FileError::PathTraversal {
             path: self.config_dir.join(source),
