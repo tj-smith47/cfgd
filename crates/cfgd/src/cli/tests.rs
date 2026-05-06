@@ -2754,7 +2754,7 @@ fn cmd_doctor_with_valid_config() {
     let cli = test_cli(dir.path());
     let (printer, buf) = Printer::for_test();
 
-    let result = super::cmd_doctor(&cli, &printer);
+    let result = super::doctor::cmd_doctor(&cli, &printer);
     assert!(result.is_ok(), "doctor failed: {:?}", result.err());
 
     let output = buf.lock().unwrap();
@@ -2777,7 +2777,7 @@ fn cmd_doctor_without_config() {
     };
     let (printer, buf) = Printer::for_test();
 
-    let result = super::cmd_doctor(&cli, &printer);
+    let result = super::doctor::cmd_doctor(&cli, &printer);
     assert!(result.is_ok(), "doctor failed: {:?}", result.err());
 
     let output = buf.lock().unwrap();
@@ -4942,7 +4942,7 @@ fn cmd_doctor_structured_json() {
     };
     let (printer, buf) = Printer::for_test_with_format(cfgd_core::output::OutputFormat::Json);
 
-    super::cmd_doctor(&cli, &printer).unwrap();
+    super::doctor::cmd_doctor(&cli, &printer).unwrap();
 
     let output = buf.lock().unwrap();
     let parsed: serde_json::Value = serde_json::from_str(&output)
@@ -9338,7 +9338,7 @@ fn cmd_doctor_without_config_succeeds() {
     let cli = test_cli(dir.path());
     let (printer, buf) = Printer::for_test();
 
-    super::cmd_doctor(&cli, &printer).unwrap();
+    super::doctor::cmd_doctor(&cli, &printer).unwrap();
 
     let output = buf.lock().unwrap();
     assert!(output.contains("Doctor"), "missing Doctor header");
@@ -9350,7 +9350,7 @@ fn cmd_doctor_with_rich_config() {
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
     let (printer, buf) = Printer::for_test();
 
-    super::cmd_doctor(&cli, &printer).unwrap();
+    super::doctor::cmd_doctor(&cli, &printer).unwrap();
 
     let output = buf.lock().unwrap();
     assert!(output.contains("Doctor"), "missing Doctor header");
@@ -10397,7 +10397,7 @@ fn json_schema_config_show() {
 #[test]
 fn json_schema_doctor() {
     let h = CliTestHarness::builder().json().build();
-    super::cmd_doctor(&h.cli(), h.printer()).unwrap();
+    super::doctor::cmd_doctor(&h.cli(), h.printer()).unwrap();
     let parsed = h.json_output();
     assert_json_has_fields(
         &parsed,
@@ -13677,7 +13677,7 @@ fn cmd_doctor_with_invalid_config_shows_error_but_succeeds() {
         .config("this is not valid yaml: [[[")
         .build();
 
-    let result = super::cmd_doctor(&h.cli(), h.printer());
+    let result = super::doctor::cmd_doctor(&h.cli(), h.printer());
     assert!(
         result.is_ok(),
         "doctor should succeed even with invalid config"
@@ -13699,7 +13699,7 @@ fn cmd_doctor_with_invalid_config_shows_error_but_succeeds() {
 fn cmd_doctor_json_has_all_top_level_fields() {
     let h = CliTestHarness::builder().json().build();
 
-    super::cmd_doctor(&h.cli(), h.printer()).unwrap();
+    super::doctor::cmd_doctor(&h.cli(), h.printer()).unwrap();
 
     let parsed = h.json_output();
     assert_json_has_fields(
@@ -13725,7 +13725,7 @@ fn cmd_doctor_json_has_all_top_level_fields() {
 fn cmd_doctor_json_config_section_has_expected_fields() {
     let h = CliTestHarness::builder().json().build();
 
-    super::cmd_doctor(&h.cli(), h.printer()).unwrap();
+    super::doctor::cmd_doctor(&h.cli(), h.printer()).unwrap();
 
     let parsed = h.json_output();
     let config = &parsed["config"];
@@ -13755,7 +13755,7 @@ spec:
         .module("test-mod", SIMPLE_MODULE_YAML)
         .build();
 
-    super::cmd_doctor(&h.cli(), h.printer()).unwrap();
+    super::doctor::cmd_doctor(&h.cli(), h.printer()).unwrap();
 
     let output = h.output();
     assert!(
@@ -13785,7 +13785,7 @@ spec:
         .profile("default", profile_with_missing_module)
         .build();
 
-    super::cmd_doctor(&h.cli(), h.printer()).unwrap();
+    super::doctor::cmd_doctor(&h.cli(), h.printer()).unwrap();
 
     let output = h.output();
     assert!(
@@ -13816,7 +13816,7 @@ spec:
         .json()
         .build();
 
-    super::cmd_doctor(&h.cli(), h.printer()).unwrap();
+    super::doctor::cmd_doctor(&h.cli(), h.printer()).unwrap();
 
     let parsed = h.json_output();
     let modules = parsed["modules"]
