@@ -254,9 +254,7 @@ workspaces:
             docs_url: "https://github.com/tj-smith47/cfgd/blob/{{ .Tag }}/docs/configuration.md"
             bug_tracker_url: "https://github.com/tj-smith47/cfgd/issues"
             release_notes: "https://github.com/tj-smith47/cfgd/releases/tag/{{ .Tag }}"
-            # icon_url: TBD — no logo asset committed yet; add once
-            # assets/logo.png exists, then point to:
-            # https://raw.githubusercontent.com/tj-smith47/cfgd/main/assets/logo.png
+            icon_url: "https://raw.githubusercontent.com/tj-smith47/cfgd/main/.github/gear.svg"
             tags:
               - configuration
               - gitops
@@ -414,6 +412,7 @@ workspaces:
           - id: default
             name: cfgd
             title: "cfgd"
+            icon: ".github/gear.svg"
             base: core24
             summary: "Declarative, GitOps-style machine configuration management"
             description: |

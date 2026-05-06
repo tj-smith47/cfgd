@@ -19,11 +19,25 @@ violations, user-reported issues.
 
 ## Active
 
-### Wave B cycle 2 — 2026-04-18 — deep-audit (3 BLOCKER, 6 WARN, 6 SUGGEST)
+### 2026-05-03 — disk: stale agent worktrees consuming 87 GB — ✅ resolved
 
-Audit file: `.claude/audits/2026-04-v0.x/deep-audit.md`. `findings_already_tracked=0`.
+Source: out-of-band session (anodizer side) found `/` at 100% during a cfgd
+snapshot rebuild. `du` traced 87 GB to `.claude/worktrees/` — 11 locked
+agent worktrees, each carrying its own `target/` build cache. SHAs all
+point at commits already on `master`; no in-flight agent work.
 
-- [ ] ⚠ autofix blocked 2026-04-18 deep-audit (SUGGEST S-6): `cfgd/src/cli/mod.rs` is 22,403 lines; carve out `apply`, `diff`, `status`, `verify`, `upgrade`, `init` per the pattern already established for `module`, `profile` — crates/cfgd/src/cli/mod.rs — blocked pending implementer carve plan. 22k-line refactor requires upstream design (which exports/types go pub, shared state threading, test movement); the task description explicitly permits blocking this item. Deliberately excluded from push-gate / fix-loop counters.
+**Resolved 2026-05-03**: cleaned up via `git worktree remove --force` over
+all 11 `.claude/worktrees/agent-*` paths + `git branch -D` over the matching
+`worktree-agent-*` branches. Each branch tip was first verified against
+master (direct ancestor or patch-id match for cherry-picks) — no work lost.
+Disk freed: 149 GB → 70 GB. Final state: only the parent worktree at
+`/opt/repos/cfgd` remains.
+
+Standing question still open: should `audit-wave` / `parity-fix` /
+file-decomposition skills auto-prune their worktrees on completion?
+Currently they leak — every dispatch adds a fresh `agent-<hash>` dir
+that never gets removed. Worth filing a follow-up against the skill
+authors.
 
 ### Wave B cycle 2 — 2026-04-18 — dedup (0 BLOCKER, 4 WARN, 3 SUGGEST)
 
@@ -41,6 +55,10 @@ Audit file: `.claude/audits/2026-04-v0.x/ux-consistency.md`. `findings_already_t
 
 
 ## Resolved
+
+### Resolved 2026-04-30
+
+- [x] Wave B cycle 2 — 2026-04-18 — deep-audit (SUGGEST S-6): `cfgd/src/cli/mod.rs` carve-out of `apply`, `diff`, `status`, `verify`, `upgrade`, `init`. Drained across commits `aa6db7c` (upgrade), `b085caf` (verify), `72c64de` (diff), `02a1dfc` (status), `8b72fb4` (apply). `init` was already carved before the batch (no-op). `mod.rs` shrank from 22,499 → 21,368 lines (−1,131). Reviewer-flagged cleanup items also drained in a follow-up: hoisted `ModuleStatus` in status.rs, dedup'd `open_state_store` in apply.rs, consolidated count computation + upgraded tests to capture printed output in verify.rs.
 
 ### Archived 2026-04-18
 
