@@ -12,8 +12,11 @@ mod log;
 mod module;
 pub mod plugin;
 mod profile;
+mod pull;
+mod rollback;
 mod secret;
 mod status;
+mod sync;
 mod upgrade;
 mod verify;
 mod workflow;
@@ -1699,8 +1702,8 @@ pub fn execute(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
                 }
             },
         },
-        Command::Sync => cmd_sync(cli, printer),
-        Command::Pull => cmd_pull(cli, printer),
+        Command::Sync => sync::cmd_sync(cli, printer),
+        Command::Pull => pull::cmd_pull(cli, printer),
         Command::Daemon { command } => daemon::cmd_daemon(cli, printer, command.as_ref()),
         Command::Secret { command } => match command {
             SecretCommand::Encrypt { file } => secret::cmd_secret_encrypt(cli, printer, file),
@@ -1813,7 +1816,7 @@ pub fn execute(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
         }
         Command::Generate(args) => generate::cmd_generate(cli, printer, args),
         Command::Rollback { apply_id, yes } => {
-            cmd_rollback(printer, *apply_id, *yes, cli.state_dir.as_deref())
+            rollback::cmd_rollback(printer, *apply_id, *yes, cli.state_dir.as_deref())
         }
         Command::McpServer => crate::mcp::server::run_mcp_server(&cli.config),
         Command::Compliance { command } => match command {
@@ -3018,248 +3021,6 @@ fn resolve_profile_name(cli: &Cli, name: Option<&str>) -> anyhow::Result<String>
     } else {
         Ok(cfg.active_profile()?.to_string())
     }
-}
-
-fn cmd_rollback(
-    printer: &Printer,
-    apply_id: i64,
-    yes: bool,
-    state_dir: Option<&Path>,
-) -> anyhow::Result<()> {
-    let state = open_state_store(state_dir)?;
-
-    // Check if the target apply exists
-    if state.get_apply(apply_id)?.is_none() {
-        anyhow::bail!("no apply found with ID {}", apply_id);
-    }
-
-    // Preview: count file backups available for rollback (target apply's own
-    // post-apply snapshots + subsequent apply backups) and non-file actions.
-    let target_backups = state.get_apply_backups(apply_id)?;
-    let after_backups = state.file_backups_after_apply(apply_id)?;
-    let after_entries = state.journal_entries_after_apply(apply_id)?;
-
-    // Unique file paths across both sources
-    let mut file_paths = std::collections::HashSet::new();
-    for bk in &target_backups {
-        file_paths.insert(bk.file_path.clone());
-    }
-    for bk in &after_backups {
-        file_paths.insert(bk.file_path.clone());
-    }
-    let file_count = file_paths.len();
-    let non_file_actions: Vec<String> = after_entries
-        .iter()
-        .filter(|e| {
-            !(e.phase == "files" || e.action_type == "file" || e.resource_id.starts_with("file:"))
-        })
-        .map(|e| e.resource_id.clone())
-        .collect::<std::collections::HashSet<_>>()
-        .into_iter()
-        .collect();
-    let non_file_count = non_file_actions.len();
-
-    printer.header("Rollback");
-    printer.key_value("Target apply ID", &apply_id.to_string());
-    printer.key_value("File backups to restore", &file_count.to_string());
-    if non_file_count > 0 {
-        printer.key_value(
-            "Non-file actions (manual review)",
-            &non_file_count.to_string(),
-        );
-    }
-
-    if file_count == 0 && non_file_count == 0 {
-        printer.info("No subsequent changes to roll back — system is already at this apply");
-        return Ok(());
-    }
-
-    // Confirm
-    if !yes {
-        printer.newline();
-        let confirmed = printer
-            .prompt_confirm("Roll back to this apply?")
-            .unwrap_or(false);
-        if !confirmed {
-            printer.info("Aborted");
-            return Ok(());
-        }
-    }
-
-    printer.newline();
-
-    // Construct a minimal Reconciler — rollback only needs state, but Reconciler
-    // requires a ProviderRegistry reference.
-    let registry = ProviderRegistry::new();
-    let reconciler = Reconciler::new(&registry, &state);
-    let result = reconciler.rollback_apply(apply_id, printer)?;
-
-    if printer.is_structured() {
-        printer.write_structured(&RollbackOutput {
-            apply_id,
-            files_restored: result.files_restored,
-            files_removed: result.files_removed,
-            non_file_actions: result.non_file_actions.clone(),
-        });
-        return Ok(());
-    }
-
-    printer.newline();
-    if result.files_restored > 0 {
-        printer.success(&format!(
-            "{} file(s) restored from backup",
-            result.files_restored
-        ));
-    }
-    if result.files_removed > 0 {
-        printer.success(&format!(
-            "{} newly created file(s) removed",
-            result.files_removed
-        ));
-    }
-
-    if !result.non_file_actions.is_empty() {
-        printer.newline();
-        printer.warning(&format!(
-            "{} non-file action(s) require manual review:",
-            result.non_file_actions.len()
-        ));
-        for action in &result.non_file_actions {
-            printer.info(&format!("  {}", action));
-        }
-    }
-
-    if result.files_restored == 0 && result.files_removed == 0 {
-        printer.info("No files were changed during rollback");
-    } else {
-        printer.newline();
-        printer.success("Rollback complete");
-    }
-
-    Ok(())
-}
-
-fn cmd_sync(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
-    printer.header("Sync");
-
-    let (cfg, _resolved) = load_config_and_profile(cli, printer)?;
-    let config_dir = config_dir(cli);
-
-    printer.newline();
-    printer.info("Syncing local repo with remote...");
-
-    // Pull local config repo
-    match cfgd_core::daemon::git_pull_sync(&config_dir) {
-        Ok(true) => printer.success("Pulled new changes from remote"),
-        Ok(false) => printer.success("Already up to date"),
-        Err(e) => printer.warning(&format!("Pull failed: {}", e)),
-    }
-
-    // Sync all configured sources
-    if !cfg.spec.sources.is_empty() {
-        printer.newline();
-        printer.subheader("Sources");
-
-        let cache_dir = source_cache_dir(cli)?;
-        let mut mgr = SourceManager::new(&cache_dir);
-        mgr.set_allow_unsigned(cfg.spec.security.as_ref().is_some_and(|s| s.allow_unsigned));
-        let mut changes_detected = false;
-
-        for source_spec in &cfg.spec.sources {
-            printer.info(&format!("Syncing source '{}'...", source_spec.name));
-
-            // Capture old manifest before syncing (for permission change detection)
-            let source_dir = cache_dir.join(&source_spec.name);
-            let old_manifest = if source_dir.exists() {
-                mgr.parse_manifest(&source_spec.name, &source_dir).ok()
-            } else {
-                None
-            };
-
-            match mgr.load_source(source_spec, printer) {
-                Ok(()) => {
-                    if let Some(cached) = mgr.get(&source_spec.name) {
-                        // Detect permission-expanding changes
-                        if let Some(ref old) = old_manifest {
-                            let old_input =
-                                build_permission_input(&source_spec.name, &old.spec.policy);
-                            let new_input = build_permission_input(
-                                &source_spec.name,
-                                &cached.manifest.spec.policy,
-                            );
-                            let perm_changes =
-                                composition::detect_permission_changes(&[old_input], &[new_input]);
-                            if !perm_changes.is_empty() {
-                                printer.newline();
-                                printer.warning(&format!(
-                                    "Source '{}' update changes permissions:",
-                                    source_spec.name
-                                ));
-                                for change in &perm_changes {
-                                    printer.warning(&format!("  - {}", change.description));
-                                }
-                                match printer.prompt_confirm("Accept permission changes?") {
-                                    Ok(true) => {}
-                                    Ok(false) => {
-                                        printer.info(&format!(
-                                            "Skipped source '{}' (permission changes rejected)",
-                                            source_spec.name
-                                        ));
-                                        continue;
-                                    }
-                                    Err(_) => {
-                                        printer.info(&format!(
-                                            "Skipped source '{}' (prompt cancelled)",
-                                            source_spec.name
-                                        ));
-                                        continue;
-                                    }
-                                }
-                            }
-                        }
-
-                        let commit_short = cached
-                            .last_commit
-                            .as_deref()
-                            .map(|c| &c[..c.len().min(12)])
-                            .unwrap_or("unknown");
-                        printer.success(&format!(
-                            "'{}' synced (commit: {})",
-                            source_spec.name, commit_short
-                        ));
-                        changes_detected = true;
-                    }
-                }
-                Err(e) => {
-                    printer.warning(&format!("Failed to sync '{}': {}", source_spec.name, e));
-                }
-            }
-        }
-
-        if changes_detected {
-            printer.newline();
-            printer.info(&format!("Sources updated. {}", MSG_RUN_APPLY));
-        }
-    }
-
-    Ok(())
-}
-
-fn cmd_pull(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
-    printer.header("Pull");
-
-    let (_cfg, _resolved) = load_config_and_profile(cli, printer)?;
-    let config_dir = config_dir(cli);
-
-    printer.newline();
-
-    match cfgd_core::daemon::git_pull_sync(&config_dir) {
-        Ok(true) => printer.success("Pulled new changes from remote"),
-        Ok(false) => printer.success("Already up to date"),
-        Err(e) => printer.warning(&format!("Pull failed: {}", e)),
-    }
-
-    Ok(())
 }
 
 fn default_device_id() -> String {

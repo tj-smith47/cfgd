@@ -4038,7 +4038,7 @@ fn cmd_sync_no_sources() {
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
     let (printer, buf) = Printer::for_test();
 
-    super::cmd_sync(&cli, &printer).unwrap();
+    super::sync::cmd_sync(&cli, &printer).unwrap();
 
     let output = buf.lock().unwrap();
     assert!(
@@ -4054,7 +4054,7 @@ fn cmd_pull_no_sources() {
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
     let (printer, buf) = Printer::for_test();
 
-    super::cmd_pull(&cli, &printer).unwrap();
+    super::pull::cmd_pull(&cli, &printer).unwrap();
 
     let output = buf.lock().unwrap();
     assert!(
@@ -4396,7 +4396,7 @@ fn cmd_rollback_invalid_id_empty_state() {
     let state_dir = tempfile::tempdir().unwrap();
     let printer = test_printer();
 
-    let result = super::cmd_rollback(&printer, 9999, true, Some(state_dir.path()));
+    let result = super::rollback::cmd_rollback(&printer, 9999, true, Some(state_dir.path()));
     assert!(result.is_err());
     assert!(result.unwrap_err().to_string().contains("no apply found"));
 }
@@ -4453,7 +4453,7 @@ fn cmd_rollback_after_file_apply() {
     buf.lock().unwrap().clear();
 
     // Rollback
-    let result = super::cmd_rollback(&printer, apply_id, true, Some(state_dir.path()));
+    let result = super::rollback::cmd_rollback(&printer, apply_id, true, Some(state_dir.path()));
     assert!(
         result.is_ok(),
         "rollback should succeed for valid apply ID: {:?}",
@@ -9931,7 +9931,7 @@ fn cmd_rollback_missing_apply_id_fails() {
     let state_dir = tempfile::tempdir().unwrap();
     let printer = test_printer();
 
-    let result = super::cmd_rollback(&printer, 99, true, Some(state_dir.path()));
+    let result = super::rollback::cmd_rollback(&printer, 99, true, Some(state_dir.path()));
     assert!(result.is_err(), "rollback with no history should fail");
 }
 
@@ -10196,7 +10196,7 @@ fn cmd_source_add_duplicate_fails() {
 fn cmd_pull_non_git_dir_shows_warning() {
     let h = CliTestHarness::builder().build();
     // config dir is not a git repo, so git_pull_sync will fail gracefully
-    super::cmd_pull(&h.cli(), h.printer()).unwrap();
+    super::pull::cmd_pull(&h.cli(), h.printer()).unwrap();
     h.assert_header("Pull");
     // Should either show "up to date" or "Pull failed" — both are OK
     let output = h.output();
@@ -10209,7 +10209,7 @@ fn cmd_pull_non_git_dir_shows_warning() {
 #[test]
 fn cmd_sync_non_git_dir_shows_output() {
     let h = CliTestHarness::builder().build();
-    super::cmd_sync(&h.cli(), h.printer()).unwrap();
+    super::sync::cmd_sync(&h.cli(), h.printer()).unwrap();
     h.assert_header("Sync");
 }
 
@@ -14478,7 +14478,7 @@ fn cmd_sync_non_git_shows_pull_warning_and_sync_header() {
     // A tempdir is not a git repo, so git_pull_sync will fail with a
     // warning. The test verifies both the header and the pull-failure warning path.
     let h = CliTestHarness::builder().build();
-    super::cmd_sync(&h.cli(), h.printer()).unwrap();
+    super::sync::cmd_sync(&h.cli(), h.printer()).unwrap();
     h.assert_header("Sync");
     let output = h.output();
     // git_pull_sync on a non-git dir returns Err, displayed as a warning
@@ -14510,7 +14510,7 @@ spec:
         priority: 100
 "#;
     let h = CliTestHarness::builder().config(config_with_source).build();
-    super::cmd_sync(&h.cli(), h.printer()).unwrap();
+    super::sync::cmd_sync(&h.cli(), h.printer()).unwrap();
     h.assert_header("Sync");
     // When sources are configured, the Sources subheader should appear
     h.assert_output_contains("Sources");
