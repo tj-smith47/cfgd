@@ -4,7 +4,9 @@ use super::*;
 
 /// Extract secret backend name and age key path from config.
 /// Returns ("sops", None) as defaults when no secrets config is present.
-pub(super) fn secret_backend_from_config(cfg: Option<&CfgdConfig>) -> (String, Option<PathBuf>) {
+pub(in crate::cli) fn secret_backend_from_config(
+    cfg: Option<&CfgdConfig>,
+) -> (String, Option<PathBuf>) {
     if let Some(cfg) = cfg
         && let Some(ref secrets_cfg) = cfg.spec.secrets
     {
@@ -16,13 +18,13 @@ pub(super) fn secret_backend_from_config(cfg: Option<&CfgdConfig>) -> (String, O
     }
 }
 
-pub(super) fn build_registry() -> ProviderRegistry {
+pub(in crate::cli) fn build_registry() -> ProviderRegistry {
     build_registry_with_config(None)
 }
 
 /// DaemonHooks implementation for the workstation binary.
 /// Provides concrete provider wiring so cfgd-core's daemon can plan packages/files.
-pub(super) struct WorkstationDaemonHooks;
+pub(in crate::cli) struct WorkstationDaemonHooks;
 
 impl cfgd_core::daemon::DaemonHooks for WorkstationDaemonHooks {
     fn build_registry(&self, config: &CfgdConfig) -> ProviderRegistry {
@@ -67,17 +69,17 @@ impl cfgd_core::daemon::DaemonHooks for WorkstationDaemonHooks {
     }
 }
 
-pub(super) fn build_registry_with_profile(
+pub(in crate::cli) fn build_registry_with_profile(
     spec: &cfgd_core::config::PackagesSpec,
 ) -> ProviderRegistry {
     build_registry_with_config_and_packages(None, Some(spec))
 }
 
-pub(super) fn build_registry_with_config(cfg: Option<&CfgdConfig>) -> ProviderRegistry {
+pub(in crate::cli) fn build_registry_with_config(cfg: Option<&CfgdConfig>) -> ProviderRegistry {
     build_registry_with_config_and_packages(cfg, None)
 }
 
-pub(super) fn build_registry_with_config_and_packages(
+pub(in crate::cli) fn build_registry_with_config_and_packages(
     cfg: Option<&CfgdConfig>,
     packages: Option<&cfgd_core::config::PackagesSpec>,
 ) -> ProviderRegistry {
@@ -210,7 +212,7 @@ pub(super) fn build_registry_with_config_and_packages(
 }
 
 #[cfg(unix)]
-pub(super) fn print_daemon_install_success(printer: &Printer) {
+pub(in crate::cli) fn print_daemon_install_success(printer: &Printer) {
     if cfg!(target_os = "macos") {
         printer.success("Installed launchd service: com.cfgd.daemon");
         printer.info("Load with: launchctl load ~/Library/LaunchAgents/com.cfgd.daemon.plist");
@@ -220,7 +222,7 @@ pub(super) fn print_daemon_install_success(printer: &Printer) {
     }
 }
 
-pub(super) fn open_state_store(state_dir: Option<&Path>) -> anyhow::Result<StateStore> {
+pub(in crate::cli) fn open_state_store(state_dir: Option<&Path>) -> anyhow::Result<StateStore> {
     if let Some(dir) = state_dir {
         std::fs::create_dir_all(dir)?;
         Ok(StateStore::open(&dir.join("cfgd.db"))?)
@@ -233,7 +235,10 @@ pub(super) fn open_state_store(state_dir: Option<&Path>) -> anyhow::Result<State
 
 /// Resolve the secret backend from config, check availability, and validate the file exists.
 /// Returns a registry whose `secret_backend` is guaranteed `Some`.
-pub(super) fn resolve_secret_backend(cli: &Cli, file: &Path) -> anyhow::Result<ProviderRegistry> {
+pub(in crate::cli) fn resolve_secret_backend(
+    cli: &Cli,
+    file: &Path,
+) -> anyhow::Result<ProviderRegistry> {
     let cfg = if cli.config.exists() {
         Some(config::load_config(&cli.config)?)
     } else {
@@ -267,7 +272,10 @@ pub(super) fn resolve_secret_backend(cli: &Cli, file: &Path) -> anyhow::Result<P
 }
 
 /// Shorthand: resolve secret backend and extract it in one call.
-pub(super) fn get_secret_backend(cli: &Cli, file: &Path) -> anyhow::Result<Box<dyn SecretBackend>> {
+pub(in crate::cli) fn get_secret_backend(
+    cli: &Cli,
+    file: &Path,
+) -> anyhow::Result<Box<dyn SecretBackend>> {
     let registry = resolve_secret_backend(cli, file)?;
     registry
         .secret_backend

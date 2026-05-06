@@ -3,7 +3,7 @@ use super::*;
 // --- Plan output rendering ---
 
 /// Display apply result summary via Printer. Returns the status for caller control flow.
-pub(super) fn print_apply_result(
+pub(in crate::cli) fn print_apply_result(
     result: &cfgd_core::reconciler::ApplyResult,
     printer: &Printer,
 ) -> cfgd_core::state::ApplyStatus {
@@ -35,7 +35,7 @@ pub(super) fn print_apply_result(
 }
 
 /// Derive a short action type string from a reconciler Action.
-pub(super) fn action_type_str(action: &reconciler::Action) -> &'static str {
+pub(in crate::cli) fn action_type_str(action: &reconciler::Action) -> &'static str {
     match action {
         reconciler::Action::File(fa) => match fa {
             FileAction::Create { .. } => "create",
@@ -75,7 +75,7 @@ pub(super) fn action_type_str(action: &reconciler::Action) -> &'static str {
 }
 
 /// Build a PlanOutput from a reconciler Plan, applying an optional phase filter.
-pub(super) fn build_plan_output(
+pub(in crate::cli) fn build_plan_output(
     plan: &reconciler::Plan,
     context_name: &str,
     phase_filter: Option<&PhaseName>,
@@ -114,7 +114,7 @@ pub(super) fn build_plan_output(
 /// Strip all script-related actions from a plan.
 /// Removes PreScripts/PostScripts phases, module-level RunScript actions,
 /// and script-based package installs (manager: "script").
-pub(super) fn strip_scripts_from_plan(plan: &mut reconciler::Plan) {
+pub(in crate::cli) fn strip_scripts_from_plan(plan: &mut reconciler::Plan) {
     plan.phases
         .retain(|p| !matches!(p.name, PhaseName::PreScripts | PhaseName::PostScripts));
     for phase in &mut plan.phases {
@@ -136,7 +136,7 @@ pub(super) fn strip_scripts_from_plan(plan: &mut reconciler::Plan) {
 
 /// Display a reconciliation plan in table mode.
 /// Used by both `cmd_plan` and `cmd_apply --dry-run`.
-pub(super) fn display_plan_table(
+pub(in crate::cli) fn display_plan_table(
     plan: &reconciler::Plan,
     printer: &Printer,
     phase_filter: Option<&PhaseName>,
@@ -155,7 +155,7 @@ pub(super) fn display_plan_table(
 /// Display the full plan output: pending decisions, structured/table output,
 /// file diffs, warnings, and summary line.
 /// Used by both `cmd_plan` and `cmd_apply --dry-run`.
-pub(super) fn display_plan_preview(
+pub(in crate::cli) fn display_plan_preview(
     plan: &reconciler::Plan,
     printer: &Printer,
     state: &cfgd_core::state::StateStore,
@@ -234,7 +234,7 @@ pub(super) fn display_plan_preview(
 ///   FileAction::Create { target: "/etc/foo" } → "files./etc/foo"
 ///   SecretAction::Resolve { provider: "1password" } → "secrets.1password"
 ///   ScriptAction::Run { path: "scripts/setup.sh" } → "scripts.scripts/setup.sh"
-pub(super) fn action_path(phase: &PhaseName, action: &reconciler::Action) -> String {
+pub(in crate::cli) fn action_path(phase: &PhaseName, action: &reconciler::Action) -> String {
     let prefix = phase.as_str();
     match action {
         reconciler::Action::Package(pa) => {
@@ -305,7 +305,7 @@ pub(super) fn action_path(phase: &PhaseName, action: &reconciler::Action) -> Str
 /// Check if a pattern matches an action path.
 /// A pattern is a prefix match: "packages.brew" matches "packages.brew.ripgrep".
 /// For file/script paths using `:`, "files:" matches all files.
-pub(super) fn pattern_matches(pattern: &str, action_path: &str) -> bool {
+pub(in crate::cli) fn pattern_matches(pattern: &str, action_path: &str) -> bool {
     if action_path == pattern {
         return true;
     }
@@ -320,7 +320,11 @@ pub(super) fn pattern_matches(pattern: &str, action_path: &str) -> bool {
 
 /// Check if a file target is an unmanaged file — exists on disk but not tracked by cfgd.
 /// A cfgd-managed symlink (pointing into config_dir) is NOT unmanaged.
-pub(super) fn is_unmanaged_file(target: &Path, config_dir: &Path, state: &StateStore) -> bool {
+pub(in crate::cli) fn is_unmanaged_file(
+    target: &Path,
+    config_dir: &Path,
+    state: &StateStore,
+) -> bool {
     // Target must exist on disk
     if !target.exists() && target.symlink_metadata().is_err() {
         return false;
@@ -351,7 +355,7 @@ pub(super) fn is_unmanaged_file(target: &Path, config_dir: &Path, state: &StateS
 
 /// Handle unmanaged file targets in the plan: for each file Create/Update action targeting
 /// an existing file not managed by cfgd, prompt the user to adopt, backup, or skip.
-pub(super) fn handle_unmanaged_file_targets(
+pub(in crate::cli) fn handle_unmanaged_file_targets(
     plan: &mut reconciler::Plan,
     config_dir: &Path,
     state: &StateStore,
@@ -446,7 +450,7 @@ fn prompt_backup_choice<'a>(
 }
 
 /// Rename a file to <path>.cfgd-backup.
-pub(super) fn backup_file(target: &Path, printer: &Printer) -> anyhow::Result<()> {
+pub(in crate::cli) fn backup_file(target: &Path, printer: &Printer) -> anyhow::Result<()> {
     let backup_path = PathBuf::from(format!("{}.cfgd-backup", target.display()));
     std::fs::rename(target, &backup_path).map_err(|e| {
         anyhow::anyhow!(
@@ -461,7 +465,7 @@ pub(super) fn backup_file(target: &Path, printer: &Printer) -> anyhow::Result<()
 }
 
 /// Apply the user's backup choice to a file action.
-pub(super) fn apply_backup_choice(
+pub(in crate::cli) fn apply_backup_choice(
     choice: &str,
     target: &Path,
     action: &mut reconciler::Action,
@@ -486,7 +490,7 @@ pub(super) fn apply_backup_choice(
 
 /// Apply --skip and --only filters to a plan, modifying it in place.
 /// For package actions, individual packages can be filtered from install/uninstall lists.
-pub(super) fn filter_plan(plan: &mut reconciler::Plan, skip: &[String], only: &[String]) {
+pub(in crate::cli) fn filter_plan(plan: &mut reconciler::Plan, skip: &[String], only: &[String]) {
     if skip.is_empty() && only.is_empty() {
         return;
     }
