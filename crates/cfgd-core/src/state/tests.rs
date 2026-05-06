@@ -1,3 +1,5 @@
+use rusqlite::params;
+
 use super::*;
 
 #[test]
