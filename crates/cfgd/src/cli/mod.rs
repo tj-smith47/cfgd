@@ -11,6 +11,7 @@ mod log;
 mod module;
 pub mod plugin;
 mod profile;
+mod secret;
 mod status;
 mod upgrade;
 mod verify;
@@ -1701,10 +1702,10 @@ pub fn execute(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
         Command::Pull => cmd_pull(cli, printer),
         Command::Daemon { command } => cmd_daemon(cli, printer, command.as_ref()),
         Command::Secret { command } => match command {
-            SecretCommand::Encrypt { file } => cmd_secret_encrypt(cli, printer, file),
-            SecretCommand::Decrypt { file } => cmd_secret_decrypt(cli, printer, file),
-            SecretCommand::Edit { file } => cmd_secret_edit(cli, printer, file),
-            SecretCommand::Init => cmd_secret_init(cli, printer),
+            SecretCommand::Encrypt { file } => secret::cmd_secret_encrypt(cli, printer, file),
+            SecretCommand::Decrypt { file } => secret::cmd_secret_decrypt(cli, printer, file),
+            SecretCommand::Edit { file } => secret::cmd_secret_edit(cli, printer, file),
+            SecretCommand::Init => secret::cmd_secret_init(cli, printer),
         },
         Command::Source { command } => match command {
             SourceCommand::Add(args) => cmd_source_add(cli, printer, args),
@@ -2973,86 +2974,6 @@ fn get_secret_backend(cli: &Cli, file: &Path) -> anyhow::Result<Box<dyn SecretBa
     registry
         .secret_backend
         .ok_or_else(|| anyhow::anyhow!("No secret backend configured"))
-}
-
-fn cmd_secret_encrypt(cli: &Cli, printer: &Printer, file: &Path) -> anyhow::Result<()> {
-    printer.header("Secret Encrypt");
-
-    let backend = get_secret_backend(cli, file)?;
-    backend.encrypt_file(file)?;
-
-    printer.newline();
-    printer.success(&format!(
-        "Encrypted {} via {}",
-        file.display(),
-        backend.name()
-    ));
-
-    Ok(())
-}
-
-fn cmd_secret_decrypt(cli: &Cli, printer: &Printer, file: &Path) -> anyhow::Result<()> {
-    let backend = get_secret_backend(cli, file)?;
-    let decrypted = backend.decrypt_file(file)?;
-    let plaintext = secrecy::ExposeSecret::expose_secret(&decrypted);
-
-    if printer.is_structured() {
-        #[derive(serde::Serialize)]
-        #[serde(rename_all = "camelCase")]
-        struct SecretDecryptOutput<'a> {
-            file: String,
-            plaintext: &'a str,
-        }
-        printer.write_structured(&SecretDecryptOutput {
-            file: file.display().to_string(),
-            plaintext,
-        });
-        return Ok(());
-    }
-
-    // Plaintext must land on stdout so `cfgd secret decrypt foo.yaml > out.txt`
-    // and `| pbcopy` work. `printer.info` routes to stderr (and is Quiet-suppressed
-    // when `-o json` auto-Quiets the Printer), so we use `stdout_line` here the
-    // same way `config get` does for its machine-readable output.
-    printer.header("Secret Decrypt");
-    printer.stdout_line(plaintext);
-
-    Ok(())
-}
-
-fn cmd_secret_edit(cli: &Cli, printer: &Printer, file: &Path) -> anyhow::Result<()> {
-    printer.header("Secret Edit");
-
-    let backend = get_secret_backend(cli, file)?;
-    backend.edit_file(file)?;
-
-    printer.newline();
-    printer.success(&format!(
-        "Edited and re-encrypted {} via {}",
-        file.display(),
-        backend.name()
-    ));
-
-    Ok(())
-}
-
-fn cmd_secret_init(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
-    printer.header("Secret Init");
-
-    let config_dir = config_dir(cli);
-    let key_path = secrets::init_age_key(&config_dir)?;
-
-    printer.newline();
-    printer.success(&format!("Age key: {}", key_path.display()));
-
-    let sops_config = config_dir.join(".sops.yaml");
-    if sops_config.exists() {
-        printer.success(&format!(".sops.yaml: {}", sops_config.display()));
-    }
-
-    printer.info("Secrets setup complete — files can now be encrypted with 'cfgd secret encrypt'");
-
-    Ok(())
 }
 
 pub(crate) fn config_dir(cli: &Cli) -> PathBuf {

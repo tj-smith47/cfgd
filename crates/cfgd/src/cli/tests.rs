@@ -10472,7 +10472,7 @@ fn secret_init_prints_header_and_key_path() {
     // cmd_secret_init calls secrets::init_age_key which shells out to age-keygen.
     // If age-keygen is not installed, the error message should mention it.
     let h = CliTestHarness::builder().build();
-    let result = super::cmd_secret_init(&h.cli(), h.printer());
+    let result = super::secret::cmd_secret_init(&h.cli(), h.printer());
 
     match result {
         Ok(()) => {
@@ -10547,7 +10547,7 @@ fn resolve_secret_backend_no_config_file_errors() {
 fn cmd_secret_encrypt_file_not_found() {
     let h = CliTestHarness::builder().rich_config().build();
     let nonexistent = h.config_path().join("missing.enc.yaml");
-    let result = super::cmd_secret_encrypt(&h.cli(), h.printer(), &nonexistent);
+    let result = super::secret::cmd_secret_encrypt(&h.cli(), h.printer(), &nonexistent);
     assert_error_contains(&result, "File not found");
 }
 
@@ -10555,7 +10555,7 @@ fn cmd_secret_encrypt_file_not_found() {
 fn cmd_secret_decrypt_file_not_found() {
     let h = CliTestHarness::builder().rich_config().build();
     let nonexistent = h.config_path().join("missing.enc.yaml");
-    let result = super::cmd_secret_decrypt(&h.cli(), h.printer(), &nonexistent);
+    let result = super::secret::cmd_secret_decrypt(&h.cli(), h.printer(), &nonexistent);
     assert_error_contains(&result, "File not found");
 }
 
