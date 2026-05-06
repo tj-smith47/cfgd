@@ -1396,7 +1396,7 @@ spec:
 
     let cli = test_cli(dir.path());
     let (printer, buf) = Printer::for_test();
-    let result = cmd_config_show(&cli, &printer);
+    let result = config_cmd::cmd_config_show(&cli, &printer);
     assert!(result.is_ok(), "config show failed: {:?}", result.err());
 
     let output = buf.lock().unwrap();
@@ -1415,7 +1415,7 @@ fn config_show_fails_without_config() {
     let dir = tempfile::tempdir().unwrap();
     let cli = test_cli(dir.path());
     let printer = test_printer();
-    let result = cmd_config_show(&cli, &printer);
+    let result = config_cmd::cmd_config_show(&cli, &printer);
     let err = result.unwrap_err();
     let msg = err.to_string();
     assert!(
@@ -1775,7 +1775,7 @@ spec:
     let cli = test_cli(dir.path());
     let (printer, buf) = Printer::for_test();
 
-    let result = cmd_config_show(&cli, &printer);
+    let result = config_cmd::cmd_config_show(&cli, &printer);
     assert!(result.is_ok(), "config show failed: {:?}", result.err());
 
     let output = buf.lock().unwrap();
@@ -1972,7 +1972,7 @@ fn config_get_scalar() {
     let raw: serde_yaml::Value = serde_yaml::from_str(&contents).unwrap();
     let spec = raw.get("spec").unwrap();
 
-    let val = walk_yaml_path(spec, "profile").unwrap();
+    let val = config_cmd::walk_yaml_path(spec, "profile").unwrap();
     assert_eq!(val.as_str().unwrap(), "work");
 }
 
@@ -1984,7 +1984,7 @@ fn config_get_nested() {
     let raw: serde_yaml::Value = serde_yaml::from_str(&contents).unwrap();
     let spec = raw.get("spec").unwrap();
 
-    let val = walk_yaml_path(spec, "daemon.reconcile.interval").unwrap();
+    let val = config_cmd::walk_yaml_path(spec, "daemon.reconcile.interval").unwrap();
     assert_eq!(val.as_str().unwrap(), "5m");
 }
 
@@ -1996,7 +1996,7 @@ fn config_get_boolean() {
     let raw: serde_yaml::Value = serde_yaml::from_str(&contents).unwrap();
     let spec = raw.get("spec").unwrap();
 
-    let val = walk_yaml_path(spec, "daemon.enabled").unwrap();
+    let val = config_cmd::walk_yaml_path(spec, "daemon.enabled").unwrap();
     assert!(val.as_bool().unwrap());
 }
 
@@ -2008,7 +2008,7 @@ fn config_get_complex_returns_mapping() {
     let raw: serde_yaml::Value = serde_yaml::from_str(&contents).unwrap();
     let spec = raw.get("spec").unwrap();
 
-    let val = walk_yaml_path(spec, "daemon").unwrap();
+    let val = config_cmd::walk_yaml_path(spec, "daemon").unwrap();
     assert!(val.is_mapping());
 }
 
@@ -2020,7 +2020,7 @@ fn config_get_missing_key_errors() {
     let raw: serde_yaml::Value = serde_yaml::from_str(&contents).unwrap();
     let spec = raw.get("spec").unwrap();
 
-    let result = walk_yaml_path(spec, "nonexistent");
+    let result = config_cmd::walk_yaml_path(spec, "nonexistent");
     assert!(result.is_err());
     assert!(result.unwrap_err().to_string().contains("not found"));
 }
@@ -2033,7 +2033,7 @@ fn config_get_alias() {
     let raw: serde_yaml::Value = serde_yaml::from_str(&contents).unwrap();
     let spec = raw.get("spec").unwrap();
 
-    let val = walk_yaml_path(spec, "aliases.deploy").unwrap();
+    let val = config_cmd::walk_yaml_path(spec, "aliases.deploy").unwrap();
     assert_eq!(val.as_str().unwrap(), "apply --yes");
 }
 
@@ -2045,11 +2045,14 @@ fn config_set_scalar() {
     let mut raw: serde_yaml::Value = serde_yaml::from_str(&contents).unwrap();
     let spec = raw.get_mut("spec").unwrap();
 
-    let (parent, key) = walk_yaml_path_mut(spec, "profile").unwrap();
-    parent.insert(serde_yaml::Value::String(key), parse_yaml_value("personal"));
+    let (parent, key) = config_cmd::walk_yaml_path_mut(spec, "profile").unwrap();
+    parent.insert(
+        serde_yaml::Value::String(key),
+        config_cmd::parse_yaml_value("personal"),
+    );
 
     let spec = raw.get("spec").unwrap();
-    let val = walk_yaml_path(spec, "profile").unwrap();
+    let val = config_cmd::walk_yaml_path(spec, "profile").unwrap();
     assert_eq!(val.as_str().unwrap(), "personal");
 }
 
@@ -2072,32 +2075,35 @@ spec:
     let mut raw: serde_yaml::Value = serde_yaml::from_str(&contents).unwrap();
     let spec = raw.get_mut("spec").unwrap();
 
-    let (parent, key) = walk_yaml_path_mut(spec, "daemon.reconcile.interval").unwrap();
-    parent.insert(serde_yaml::Value::String(key), parse_yaml_value("10m"));
+    let (parent, key) = config_cmd::walk_yaml_path_mut(spec, "daemon.reconcile.interval").unwrap();
+    parent.insert(
+        serde_yaml::Value::String(key),
+        config_cmd::parse_yaml_value("10m"),
+    );
 
     let spec = raw.get("spec").unwrap();
-    let val = walk_yaml_path(spec, "daemon.reconcile.interval").unwrap();
+    let val = config_cmd::walk_yaml_path(spec, "daemon.reconcile.interval").unwrap();
     assert_eq!(val.as_str().unwrap(), "10m");
 }
 
 #[test]
 fn config_set_boolean_value() {
-    let val = parse_yaml_value("true");
+    let val = config_cmd::parse_yaml_value("true");
     assert_eq!(val, serde_yaml::Value::Bool(true));
-    let val = parse_yaml_value("false");
+    let val = config_cmd::parse_yaml_value("false");
     assert_eq!(val, serde_yaml::Value::Bool(false));
 }
 
 #[test]
 fn config_set_number_value() {
-    let val = parse_yaml_value("42");
+    let val = config_cmd::parse_yaml_value("42");
     assert!(val.is_number());
     assert_eq!(val.as_i64().unwrap(), 42);
 }
 
 #[test]
 fn config_set_string_value() {
-    let val = parse_yaml_value("hello world");
+    let val = config_cmd::parse_yaml_value("hello world");
     assert_eq!(val.as_str().unwrap(), "hello world");
 }
 
@@ -2111,11 +2117,11 @@ fn config_unset_removes_key() {
 
     // Verify theme exists before removal
     assert!(
-        walk_yaml_path(spec, "theme").is_ok(),
+        config_cmd::walk_yaml_path(spec, "theme").is_ok(),
         "theme key should exist before unset"
     );
 
-    let (parent, key) = walk_yaml_path_mut(spec, "theme").unwrap();
+    let (parent, key) = config_cmd::walk_yaml_path_mut(spec, "theme").unwrap();
     let yaml_key = serde_yaml::Value::String(key);
     let removed = parent.remove(&yaml_key);
     assert!(removed.is_some(), "remove should return the removed value");
@@ -2123,7 +2129,7 @@ fn config_unset_removes_key() {
     // Verify theme is actually gone
     let spec = raw.get("spec").unwrap();
     assert!(
-        walk_yaml_path(spec, "theme").is_err(),
+        config_cmd::walk_yaml_path(spec, "theme").is_err(),
         "theme key should not exist after unset"
     );
 }
@@ -2138,20 +2144,20 @@ fn config_unset_nested_alias() {
 
     // Verify deploy alias exists before removal
     assert!(
-        walk_yaml_path(spec, "aliases.deploy").is_ok(),
+        config_cmd::walk_yaml_path(spec, "aliases.deploy").is_ok(),
         "deploy alias should exist before unset"
     );
 
-    let (parent, key) = walk_yaml_path_mut(spec, "aliases.deploy").unwrap();
+    let (parent, key) = config_cmd::walk_yaml_path_mut(spec, "aliases.deploy").unwrap();
     let yaml_key = serde_yaml::Value::String(key);
     let removed = parent.remove(&yaml_key);
     assert!(removed.is_some(), "remove should return the removed value");
 
     // "add" alias should still exist, "deploy" should be gone
     let spec = raw.get("spec").unwrap();
-    walk_yaml_path(spec, "aliases.add").unwrap();
+    config_cmd::walk_yaml_path(spec, "aliases.add").unwrap();
     assert!(
-        walk_yaml_path(spec, "aliases.deploy").is_err(),
+        config_cmd::walk_yaml_path(spec, "aliases.deploy").is_err(),
         "deploy alias should not exist after unset"
     );
 }
@@ -2250,12 +2256,12 @@ fn add_to_gitignore_no_duplicate() {
     assert_eq!(count, 1);
 }
 
-// --- parse_yaml_value ---
+// --- config_cmd::parse_yaml_value ---
 
 #[test]
 fn parse_yaml_value_bool_true() {
     assert_eq!(
-        super::parse_yaml_value("true"),
+        super::config_cmd::parse_yaml_value("true"),
         serde_yaml::Value::Bool(true)
     );
 }
@@ -2263,21 +2269,27 @@ fn parse_yaml_value_bool_true() {
 #[test]
 fn parse_yaml_value_bool_false() {
     assert_eq!(
-        super::parse_yaml_value("false"),
+        super::config_cmd::parse_yaml_value("false"),
         serde_yaml::Value::Bool(false)
     );
 }
 
 #[test]
 fn parse_yaml_value_null() {
-    assert_eq!(super::parse_yaml_value("null"), serde_yaml::Value::Null);
-    assert_eq!(super::parse_yaml_value("~"), serde_yaml::Value::Null);
+    assert_eq!(
+        super::config_cmd::parse_yaml_value("null"),
+        serde_yaml::Value::Null
+    );
+    assert_eq!(
+        super::config_cmd::parse_yaml_value("~"),
+        serde_yaml::Value::Null
+    );
 }
 
 #[test]
 fn parse_yaml_value_integer() {
     assert_eq!(
-        super::parse_yaml_value("42"),
+        super::config_cmd::parse_yaml_value("42"),
         serde_yaml::Value::Number(42.into())
     );
 }
@@ -2285,17 +2297,17 @@ fn parse_yaml_value_integer() {
 #[test]
 fn parse_yaml_value_string() {
     assert_eq!(
-        super::parse_yaml_value("hello"),
+        super::config_cmd::parse_yaml_value("hello"),
         serde_yaml::Value::String("hello".into())
     );
 }
 
-// --- walk_yaml_path ---
+// --- config_cmd::walk_yaml_path ---
 
 #[test]
 fn walk_yaml_path_root() {
     let value = serde_yaml::Value::String("hi".into());
-    let result = super::walk_yaml_path(&value, ".").unwrap();
+    let result = super::config_cmd::walk_yaml_path(&value, ".").unwrap();
     assert_eq!(result, &value);
 }
 
@@ -2303,7 +2315,7 @@ fn walk_yaml_path_root() {
 fn walk_yaml_path_nested() {
     let yaml = "a:\n  b: 42\n";
     let value: serde_yaml::Value = serde_yaml::from_str(yaml).unwrap();
-    let result = super::walk_yaml_path(&value, "a.b").unwrap();
+    let result = super::config_cmd::walk_yaml_path(&value, "a.b").unwrap();
     assert_eq!(result.as_i64(), Some(42));
 }
 
@@ -2311,27 +2323,27 @@ fn walk_yaml_path_nested() {
 fn walk_yaml_path_missing_key() {
     let yaml = "a:\n  b: 42\n";
     let value: serde_yaml::Value = serde_yaml::from_str(yaml).unwrap();
-    assert!(super::walk_yaml_path(&value, "a.c").is_err());
+    assert!(super::config_cmd::walk_yaml_path(&value, "a.c").is_err());
 }
 
 #[test]
 fn walk_yaml_path_empty_segment() {
     let value = serde_yaml::Value::Null;
-    assert!(super::walk_yaml_path(&value, "a..b").is_err());
+    assert!(super::config_cmd::walk_yaml_path(&value, "a..b").is_err());
 }
 
-// --- walk_yaml_path_mut ---
+// --- config_cmd::walk_yaml_path_mut ---
 
 #[test]
 fn walk_yaml_path_mut_creates_intermediate() {
     let mut value = serde_yaml::Value::Mapping(serde_yaml::Mapping::new());
-    let (parent, leaf) = super::walk_yaml_path_mut(&mut value, "a.b.c").unwrap();
+    let (parent, leaf) = super::config_cmd::walk_yaml_path_mut(&mut value, "a.b.c").unwrap();
     assert_eq!(leaf, "c");
     parent.insert(
         serde_yaml::Value::String("c".into()),
         serde_yaml::Value::String("val".into()),
     );
-    let result = super::walk_yaml_path(&value, "a.b.c").unwrap();
+    let result = super::config_cmd::walk_yaml_path(&value, "a.b.c").unwrap();
     assert_eq!(result.as_str(), Some("val"));
 }
 
@@ -2449,7 +2461,7 @@ fn generate_release_workflow_both() {
     assert!(yaml.contains("detect-changes:"));
 }
 
-// --- cmd_config_get / cmd_config_set / cmd_config_unset ---
+// --- config_cmd::cmd_config_get / config_cmd::cmd_config_set / config_cmd::cmd_config_unset ---
 
 #[test]
 fn config_get_reads_value() {
@@ -2463,7 +2475,7 @@ fn config_get_reads_value() {
     };
     let printer = test_printer();
 
-    let result = super::cmd_config_get(&cli, &printer, "profile");
+    let result = super::config_cmd::cmd_config_get(&cli, &printer, "profile");
     assert!(
         result.is_ok(),
         "config get should read profile value without error: {:?}",
@@ -2487,7 +2499,7 @@ fn cmd_config_get_missing_key_errors() {
     };
     let printer = test_printer();
 
-    assert!(super::cmd_config_get(&cli, &printer, "nonexistent").is_err());
+    assert!(super::config_cmd::cmd_config_get(&cli, &printer, "nonexistent").is_err());
 }
 
 #[test]
@@ -2502,7 +2514,7 @@ fn config_set_and_get_roundtrip() {
     };
     let printer = test_printer();
 
-    super::cmd_config_set(&cli, &printer, "profile", "work").unwrap();
+    super::config_cmd::cmd_config_set(&cli, &printer, "profile", "work").unwrap();
 
     let contents = std::fs::read_to_string(&config_path).unwrap();
     assert!(contents.contains("work"));
@@ -2520,7 +2532,7 @@ fn cmd_config_unset_removes_key() {
     };
     let printer = test_printer();
 
-    let result = super::cmd_config_unset(&cli, &printer, "profile");
+    let result = super::config_cmd::cmd_config_unset(&cli, &printer, "profile");
     assert!(
         result.is_ok(),
         "config unset should remove the key successfully: {:?}",
@@ -2547,10 +2559,10 @@ fn cmd_config_unset_missing_key_errors() {
     };
     let printer = test_printer();
 
-    assert!(super::cmd_config_unset(&cli, &printer, "nope").is_err());
+    assert!(super::config_cmd::cmd_config_unset(&cli, &printer, "nope").is_err());
 }
 
-// --- cmd_config_show ---
+// --- config_cmd::cmd_config_show ---
 
 #[test]
 fn config_show_succeeds_with_valid_config() {
@@ -2565,7 +2577,7 @@ fn config_show_succeeds_with_valid_config() {
     let (printer, buf) = Printer::for_test();
 
     assert!(
-        super::cmd_config_show(&cli, &printer).is_ok(),
+        super::config_cmd::cmd_config_show(&cli, &printer).is_ok(),
         "config show should succeed when cfgd.yaml exists and is valid"
     );
 
@@ -2589,7 +2601,7 @@ fn config_show_errors_without_config() {
     };
     let printer = test_printer();
 
-    assert!(super::cmd_config_show(&cli, &printer).is_err());
+    assert!(super::config_cmd::cmd_config_show(&cli, &printer).is_err());
 }
 
 // --- secret_backend_from_config ---
@@ -7489,7 +7501,7 @@ fn filter_plan_only_with_uninstall() {
     }
 }
 
-// --- cmd_config_set and cmd_config_unset via full commands ---
+// --- config_cmd::cmd_config_set and config_cmd::cmd_config_unset via full commands ---
 
 #[test]
 fn cmd_config_set_creates_nested_key() {
@@ -7504,7 +7516,7 @@ fn cmd_config_set_creates_nested_key() {
     let printer = test_printer();
 
     // Set a nested key
-    super::cmd_config_set(&cli, &printer, "daemon.enabled", "true").unwrap();
+    super::config_cmd::cmd_config_set(&cli, &printer, "daemon.enabled", "true").unwrap();
 
     let contents = std::fs::read_to_string(&config_path).unwrap();
     assert!(contents.contains("daemon"));
@@ -7520,7 +7532,7 @@ fn cmd_config_set_no_config_errors() {
     };
     let printer = test_printer();
 
-    let result = super::cmd_config_set(&cli, &printer, "profile", "work");
+    let result = super::config_cmd::cmd_config_set(&cli, &printer, "profile", "work");
     assert!(result.is_err());
     assert!(result.unwrap_err().to_string().contains("No cfgd.yaml"));
 }
@@ -7534,7 +7546,7 @@ fn cmd_config_unset_no_config_errors() {
     };
     let printer = test_printer();
 
-    let result = super::cmd_config_unset(&cli, &printer, "profile");
+    let result = super::config_cmd::cmd_config_unset(&cli, &printer, "profile");
     assert!(result.is_err());
     assert!(result.unwrap_err().to_string().contains("No cfgd.yaml"));
 }
@@ -9141,7 +9153,7 @@ fn setup_rich_test_env() -> (tempfile::TempDir, tempfile::TempDir) {
     (config_dir, state_dir)
 }
 
-// --- cmd_config_show ---
+// --- config_cmd::cmd_config_show ---
 
 #[test]
 fn cmd_config_show_with_rich_config() {
@@ -9149,7 +9161,7 @@ fn cmd_config_show_with_rich_config() {
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
     let (printer, buf) = Printer::for_test();
 
-    super::cmd_config_show(&cli, &printer).unwrap();
+    super::config_cmd::cmd_config_show(&cli, &printer).unwrap();
 
     let output = buf.lock().unwrap();
     assert!(
@@ -9169,7 +9181,7 @@ fn cmd_config_show_structured_json() {
     };
     let (printer, buf) = Printer::for_test_with_format(cfgd_core::output::OutputFormat::Json);
 
-    super::cmd_config_show(&cli, &printer).unwrap();
+    super::config_cmd::cmd_config_show(&cli, &printer).unwrap();
 
     let output = buf.lock().unwrap();
     let parsed: serde_json::Value = serde_json::from_str(&output)
@@ -9190,12 +9202,12 @@ fn cmd_config_show_no_config_fails() {
     let cli = test_cli(dir.path());
     let printer = test_printer();
 
-    let result = super::cmd_config_show(&cli, &printer);
+    let result = super::config_cmd::cmd_config_show(&cli, &printer);
     assert!(result.is_err());
     assert!(result.unwrap_err().to_string().contains("No cfgd.yaml"));
 }
 
-// --- cmd_config_get ---
+// --- config_cmd::cmd_config_get ---
 
 #[test]
 fn cmd_config_get_reads_profile() {
@@ -9203,7 +9215,7 @@ fn cmd_config_get_reads_profile() {
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
     let (printer, buf) = Printer::for_test();
 
-    super::cmd_config_get(&cli, &printer, "profile").unwrap();
+    super::config_cmd::cmd_config_get(&cli, &printer, "profile").unwrap();
 
     let output = buf.lock().unwrap();
     assert!(
@@ -9218,7 +9230,7 @@ fn cmd_config_get_nested_key() {
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
     let (printer, buf) = Printer::for_test();
 
-    super::cmd_config_get(&cli, &printer, "daemon.enabled").unwrap();
+    super::config_cmd::cmd_config_get(&cli, &printer, "daemon.enabled").unwrap();
 
     let output = buf.lock().unwrap();
     assert!(
@@ -9236,7 +9248,7 @@ fn cmd_config_get_structured_json() {
     };
     let (printer, buf) = Printer::for_test_with_format(cfgd_core::output::OutputFormat::Json);
 
-    super::cmd_config_get(&cli, &printer, "profile").unwrap();
+    super::config_cmd::cmd_config_get(&cli, &printer, "profile").unwrap();
 
     let output = buf.lock().unwrap();
     let parsed: serde_json::Value = serde_json::from_str(&output)
@@ -9250,7 +9262,7 @@ fn cmd_config_get_missing_key_fails() {
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
     let printer = test_printer();
 
-    let result = super::cmd_config_get(&cli, &printer, "nonexistent.path");
+    let result = super::config_cmd::cmd_config_get(&cli, &printer, "nonexistent.path");
     let err = result.unwrap_err();
     let msg = err.to_string();
     assert!(
@@ -9265,12 +9277,12 @@ fn cmd_config_get_no_config_fails() {
     let cli = test_cli(dir.path());
     let printer = test_printer();
 
-    let result = super::cmd_config_get(&cli, &printer, "profile");
+    let result = super::config_cmd::cmd_config_get(&cli, &printer, "profile");
     assert!(result.is_err());
     assert!(result.unwrap_err().to_string().contains("No cfgd.yaml"));
 }
 
-// --- cmd_config_set ---
+// --- config_cmd::cmd_config_set ---
 
 #[test]
 fn cmd_config_set_updates_value() {
@@ -9278,7 +9290,7 @@ fn cmd_config_set_updates_value() {
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
     let printer = test_printer();
 
-    let result = super::cmd_config_set(&cli, &printer, "profile", "work");
+    let result = super::config_cmd::cmd_config_set(&cli, &printer, "profile", "work");
     assert!(
         result.is_ok(),
         "config set should succeed: {:?}",
@@ -9295,7 +9307,7 @@ fn cmd_config_set_no_config_fails() {
     let cli = test_cli(dir.path());
     let printer = test_printer();
 
-    let result = super::cmd_config_set(&cli, &printer, "profile", "work");
+    let result = super::config_cmd::cmd_config_set(&cli, &printer, "profile", "work");
     let err = result.unwrap_err();
     let msg = err.to_string();
     assert!(
@@ -9304,7 +9316,7 @@ fn cmd_config_set_no_config_fails() {
     );
 }
 
-// --- cmd_config_unset ---
+// --- config_cmd::cmd_config_unset ---
 
 #[test]
 fn cmd_config_unset_missing_key_fails() {
@@ -9312,7 +9324,7 @@ fn cmd_config_unset_missing_key_fails() {
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
     let printer = test_printer();
 
-    let result = super::cmd_config_unset(&cli, &printer, "nonexistent");
+    let result = super::config_cmd::cmd_config_unset(&cli, &printer, "nonexistent");
     assert!(result.is_err());
     assert!(result.unwrap_err().to_string().contains("not found"));
 }
@@ -9323,7 +9335,7 @@ fn cmd_config_unset_no_config_fails() {
     let cli = test_cli(dir.path());
     let printer = test_printer();
 
-    let result = super::cmd_config_unset(&cli, &printer, "profile");
+    let result = super::config_cmd::cmd_config_unset(&cli, &printer, "profile");
     let err = result.unwrap_err();
     let msg = err.to_string();
     assert!(
@@ -10202,7 +10214,7 @@ fn cmd_sync_non_git_dir_shows_output() {
 }
 
 // -----------------------------------------------------------------------
-// New coverage: cmd_config_edit error path
+// New coverage: config_cmd::cmd_config_edit error path
 // -----------------------------------------------------------------------
 
 #[test]
@@ -10210,7 +10222,7 @@ fn cmd_config_edit_no_config_fails() {
     let dir = tempfile::tempdir().unwrap();
     let cli = test_cli(dir.path());
     let printer = test_printer();
-    let result = super::cmd_config_edit(&cli, &printer);
+    let result = super::config_cmd::cmd_config_edit(&cli, &printer);
     assert!(result.is_err());
     assert_error_contains(&result, "No cfgd.yaml");
 }
@@ -10390,7 +10402,7 @@ fn json_schema_plan() {
 #[test]
 fn json_schema_config_show() {
     let h = CliTestHarness::builder().json().rich_config().build();
-    super::cmd_config_show(&h.cli(), h.printer()).unwrap();
+    super::config_cmd::cmd_config_show(&h.cli(), h.printer()).unwrap();
     let parsed = h.json_output();
     assert_json_has_fields(&parsed, &["metadata", "spec"]);
     assert_json_field_type(&parsed, "metadata", "object");
@@ -11579,20 +11591,20 @@ fn scan_module_names_nonexistent_dir_returns_empty() {
 }
 
 // -----------------------------------------------------------------------
-// walk_yaml_path — exercises all branches including error paths
+// config_cmd::walk_yaml_path — exercises all branches including error paths
 // -----------------------------------------------------------------------
 
 #[test]
 fn walk_yaml_path_root_dot_returns_whole_value() {
     let val: serde_yaml::Value = serde_yaml::from_str("foo: bar\nbaz: 42").unwrap();
-    let result = super::walk_yaml_path(&val, ".").unwrap();
+    let result = super::config_cmd::walk_yaml_path(&val, ".").unwrap();
     assert!(result.is_mapping(), "root should be a mapping");
 }
 
 #[test]
 fn walk_yaml_path_nested_key() {
     let val: serde_yaml::Value = serde_yaml::from_str("a:\n  b:\n    c: hello").unwrap();
-    let result = super::walk_yaml_path(&val, "a.b.c").unwrap();
+    let result = super::config_cmd::walk_yaml_path(&val, "a.b.c").unwrap();
     assert_eq!(
         result.as_str().unwrap(),
         "hello",
@@ -11603,7 +11615,7 @@ fn walk_yaml_path_nested_key() {
 #[test]
 fn walk_yaml_path_missing_key_errors() {
     let val: serde_yaml::Value = serde_yaml::from_str("a:\n  b: 1").unwrap();
-    let result = super::walk_yaml_path(&val, "a.z");
+    let result = super::config_cmd::walk_yaml_path(&val, "a.z");
     assert!(result.is_err());
     let msg = result.unwrap_err().to_string();
     assert!(
@@ -11615,7 +11627,7 @@ fn walk_yaml_path_missing_key_errors() {
 #[test]
 fn walk_yaml_path_empty_segment_errors() {
     let val: serde_yaml::Value = serde_yaml::from_str("a: 1").unwrap();
-    let result = super::walk_yaml_path(&val, "a..b");
+    let result = super::config_cmd::walk_yaml_path(&val, "a..b");
     assert!(result.is_err());
     assert!(
         result.unwrap_err().to_string().contains("empty segment"),
@@ -11626,7 +11638,7 @@ fn walk_yaml_path_empty_segment_errors() {
 #[test]
 fn walk_yaml_path_traverse_into_scalar_errors() {
     let val: serde_yaml::Value = serde_yaml::from_str("a: 1").unwrap();
-    let result = super::walk_yaml_path(&val, "a.b");
+    let result = super::config_cmd::walk_yaml_path(&val, "a.b");
     assert!(result.is_err());
     let msg = result.unwrap_err().to_string();
     assert!(
@@ -11636,27 +11648,28 @@ fn walk_yaml_path_traverse_into_scalar_errors() {
 }
 
 // -----------------------------------------------------------------------
-// walk_yaml_path_mut — creates intermediate mappings
+// config_cmd::walk_yaml_path_mut — creates intermediate mappings
 // -----------------------------------------------------------------------
 
 #[test]
 fn walk_yaml_path_mut_creates_intermediate_maps() {
     let mut val: serde_yaml::Value = serde_yaml::from_str("root: {}").unwrap();
-    let (parent, leaf) = super::walk_yaml_path_mut(&mut val, "root.new.nested.key").unwrap();
+    let (parent, leaf) =
+        super::config_cmd::walk_yaml_path_mut(&mut val, "root.new.nested.key").unwrap();
     assert_eq!(leaf, "key");
     // Insert a value to verify parent is the right map
     parent.insert(
         serde_yaml::Value::String(leaf),
         serde_yaml::Value::String("value".into()),
     );
-    let result = super::walk_yaml_path(&val, "root.new.nested.key").unwrap();
+    let result = super::config_cmd::walk_yaml_path(&val, "root.new.nested.key").unwrap();
     assert_eq!(result.as_str().unwrap(), "value");
 }
 
 #[test]
 fn walk_yaml_path_mut_empty_path_errors() {
     let mut val: serde_yaml::Value = serde_yaml::from_str("a: 1").unwrap();
-    let result = super::walk_yaml_path_mut(&mut val, "");
+    let result = super::config_cmd::walk_yaml_path_mut(&mut val, "");
     assert!(result.is_err());
     assert!(
         result.unwrap_err().to_string().contains("empty segment"),
@@ -11665,31 +11678,37 @@ fn walk_yaml_path_mut_empty_path_errors() {
 }
 
 // -----------------------------------------------------------------------
-// parse_yaml_value — type inference branches
+// config_cmd::parse_yaml_value — type inference branches
 // -----------------------------------------------------------------------
 
 #[test]
 fn parse_yaml_value_all_types() {
     assert_eq!(
-        super::parse_yaml_value("true"),
+        super::config_cmd::parse_yaml_value("true"),
         serde_yaml::Value::Bool(true)
     );
     assert_eq!(
-        super::parse_yaml_value("false"),
+        super::config_cmd::parse_yaml_value("false"),
         serde_yaml::Value::Bool(false)
     );
-    assert_eq!(super::parse_yaml_value("null"), serde_yaml::Value::Null);
-    assert_eq!(super::parse_yaml_value("~"), serde_yaml::Value::Null);
     assert_eq!(
-        super::parse_yaml_value("42"),
+        super::config_cmd::parse_yaml_value("null"),
+        serde_yaml::Value::Null
+    );
+    assert_eq!(
+        super::config_cmd::parse_yaml_value("~"),
+        serde_yaml::Value::Null
+    );
+    assert_eq!(
+        super::config_cmd::parse_yaml_value("42"),
         serde_yaml::Value::Number(42i64.into())
     );
     assert_eq!(
-        super::parse_yaml_value("hello"),
+        super::config_cmd::parse_yaml_value("hello"),
         serde_yaml::Value::String("hello".into())
     );
     // Float
-    let float_val = super::parse_yaml_value("3.14");
+    let float_val = super::config_cmd::parse_yaml_value("3.14");
     assert!(float_val.is_number(), "3.14 should parse as number");
 }
 
@@ -12291,14 +12310,14 @@ fn cmd_status_module_json_output_not_found() {
 }
 
 // -----------------------------------------------------------------------
-// cmd_config_show — exercises all branches (origins, sources, daemon, etc.)
+// config_cmd::cmd_config_show — exercises all branches (origins, sources, daemon, etc.)
 // -----------------------------------------------------------------------
 
 #[test]
 fn cmd_config_show_with_rich_config_full() {
     let h = CliTestHarness::builder().rich_config().build();
 
-    let result = super::cmd_config_show(&h.cli(), h.printer());
+    let result = super::config_cmd::cmd_config_show(&h.cli(), h.printer());
     assert!(
         result.is_ok(),
         "config show should succeed: {:?}",
@@ -12340,7 +12359,7 @@ fn cmd_config_show_missing_file_errors() {
     let dir = tempfile::tempdir().unwrap();
     let cli = test_cli_with_state(dir.path(), None);
     let printer = test_printer();
-    let result = super::cmd_config_show(&cli, &printer);
+    let result = super::config_cmd::cmd_config_show(&cli, &printer);
     assert!(result.is_err());
     assert!(
         result
@@ -12352,13 +12371,13 @@ fn cmd_config_show_missing_file_errors() {
 }
 
 // -----------------------------------------------------------------------
-// cmd_config_get — exercises walk_yaml_path through config
+// config_cmd::cmd_config_get — exercises config_cmd::walk_yaml_path through config
 // -----------------------------------------------------------------------
 
 #[test]
 fn cmd_config_get_string_value() {
     let h = CliTestHarness::builder().build();
-    let result = super::cmd_config_get(&h.cli(), h.printer(), "profile");
+    let result = super::config_cmd::cmd_config_get(&h.cli(), h.printer(), "profile");
     assert!(
         result.is_ok(),
         "config get profile should succeed: {:?}",
@@ -12374,7 +12393,7 @@ fn cmd_config_get_string_value() {
 #[test]
 fn cmd_config_get_missing_key_errors_no_config() {
     let h = CliTestHarness::builder().build();
-    let result = super::cmd_config_get(&h.cli(), h.printer(), "nonexistent.key");
+    let result = super::config_cmd::cmd_config_get(&h.cli(), h.printer(), "nonexistent.key");
     assert!(result.is_err(), "missing key should error");
     assert!(
         result.unwrap_err().to_string().contains("not found"),
@@ -12385,7 +12404,7 @@ fn cmd_config_get_missing_key_errors_no_config() {
 #[test]
 fn cmd_config_get_json_output() {
     let h = CliTestHarness::builder().json().build();
-    let result = super::cmd_config_get(&h.cli(), h.printer(), "profile");
+    let result = super::config_cmd::cmd_config_get(&h.cli(), h.printer(), "profile");
     assert!(result.is_ok(), "JSON config get should succeed");
     let output = h.output();
     // JSON output should contain the value
