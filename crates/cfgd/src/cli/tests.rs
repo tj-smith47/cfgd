@@ -4204,7 +4204,7 @@ fn cmd_plan_empty_profile() {
         context: "apply".to_string(),
     };
 
-    super::cmd_plan(&cli, &printer, &args).unwrap();
+    super::plan::cmd_plan(&cli, &printer, &args).unwrap();
 
     let output = buf.lock().unwrap();
     assert!(
@@ -4229,7 +4229,7 @@ fn cmd_plan_reconcile_context() {
         context: "reconcile".to_string(),
     };
 
-    super::cmd_plan(&cli, &printer, &args).unwrap();
+    super::plan::cmd_plan(&cli, &printer, &args).unwrap();
 
     let output = buf.lock().unwrap();
     assert!(
@@ -4254,7 +4254,7 @@ fn cmd_plan_invalid_context() {
         context: "bogus".to_string(),
     };
 
-    let result = super::cmd_plan(&cli, &printer, &args);
+    let result = super::plan::cmd_plan(&cli, &printer, &args);
     assert!(result.is_err());
     assert!(result.unwrap_err().to_string().contains("Unknown context"));
 }
@@ -4275,7 +4275,7 @@ fn cmd_plan_with_phase_filter() {
         context: "apply".to_string(),
     };
 
-    super::cmd_plan(&cli, &printer, &args).unwrap();
+    super::plan::cmd_plan(&cli, &printer, &args).unwrap();
     let output = buf.lock().unwrap();
     assert!(
         output.contains("Plan") || output.contains("Packages"),
@@ -4303,7 +4303,7 @@ fn cmd_plan_with_skip_filter() {
         context: "apply".to_string(),
     };
 
-    super::cmd_plan(&cli, &printer, &args).unwrap();
+    super::plan::cmd_plan(&cli, &printer, &args).unwrap();
     let output = buf.lock().unwrap();
     assert!(
         output.contains("Plan") || output.contains("Phase"),
@@ -4327,7 +4327,7 @@ fn cmd_plan_with_only_filter() {
         context: "apply".to_string(),
     };
 
-    super::cmd_plan(&cli, &printer, &args).unwrap();
+    super::plan::cmd_plan(&cli, &printer, &args).unwrap();
     let output = buf.lock().unwrap();
     assert!(
         output.contains("Plan") || output.contains("Phase"),
@@ -4351,7 +4351,7 @@ fn cmd_plan_with_skip_scripts() {
         context: "apply".to_string(),
     };
 
-    super::cmd_plan(&cli, &printer, &args).unwrap();
+    super::plan::cmd_plan(&cli, &printer, &args).unwrap();
     let output = buf.lock().unwrap();
     assert!(
         output.contains("Plan") || output.contains("Phase"),
@@ -4381,7 +4381,7 @@ fn cmd_plan_with_module_filter() {
         context: "apply".to_string(),
     };
 
-    super::cmd_plan(&cli, &printer, &args).unwrap();
+    super::plan::cmd_plan(&cli, &printer, &args).unwrap();
     let output = buf.lock().unwrap();
     assert!(
         output.contains("Plan") || output.contains("plan-mod"),
@@ -4887,7 +4887,7 @@ fn cmd_plan_structured_json() {
         context: "apply".to_string(),
     };
 
-    super::cmd_plan(&cli, &printer, &args).unwrap();
+    super::plan::cmd_plan(&cli, &printer, &args).unwrap();
 
     let output = buf.lock().unwrap();
     let parsed = extract_json(&output);
@@ -5127,7 +5127,7 @@ fn cmd_plan_module_with_packages() {
         context: "apply".to_string(),
     };
 
-    let result = super::cmd_plan(&cli, &printer, &args);
+    let result = super::plan::cmd_plan(&cli, &printer, &args);
     assert!(
         result.is_ok(),
         "plan should succeed when module contains packages: {:?}",
@@ -8155,7 +8155,7 @@ fn cmd_plan_module_only_no_profile() {
         context: "apply".to_string(),
     };
 
-    let result = super::cmd_plan(&cli, &printer, &args);
+    let result = super::plan::cmd_plan(&cli, &printer, &args);
     assert!(
         result.is_ok(),
         "plan should succeed with --module flag and no profile configured: {:?}",
@@ -8508,7 +8508,7 @@ fn cmd_plan_structured_output() {
         context: "apply".to_string(),
     };
 
-    super::cmd_plan(&cli, &printer, &args).unwrap();
+    super::plan::cmd_plan(&cli, &printer, &args).unwrap();
 
     let output = buf.lock().unwrap();
     let parsed = extract_json(&output);
@@ -9129,7 +9129,7 @@ fn cmd_plan_module_structured_output() {
         context: "apply".to_string(),
     };
 
-    super::cmd_plan(&cli, &printer, &args).unwrap();
+    super::plan::cmd_plan(&cli, &printer, &args).unwrap();
 
     let output = buf.lock().unwrap();
     let parsed = extract_json(&output);
@@ -9439,7 +9439,7 @@ fn cmd_plan_invalid_context_fails() {
         skip_scripts: false,
         context: "invalid".to_string(),
     };
-    let result = super::cmd_plan(&h.cli(), h.printer(), &args);
+    let result = super::plan::cmd_plan(&h.cli(), h.printer(), &args);
     assert_error_contains(&result, "Unknown context");
 }
 
@@ -9455,7 +9455,7 @@ fn cmd_plan_with_skip_filters_actions() {
         skip_scripts: false,
         context: "apply".to_string(),
     };
-    super::cmd_plan(&h.cli(), h.printer(), &args).unwrap();
+    super::plan::cmd_plan(&h.cli(), h.printer(), &args).unwrap();
     let output = h.output();
     assert!(
         output.contains("Plan") || output.contains("Phase"),
@@ -10391,7 +10391,7 @@ fn json_schema_plan() {
         skip_scripts: false,
         context: "apply".to_string(),
     };
-    super::cmd_plan(&h.cli(), h.printer(), &args).unwrap();
+    super::plan::cmd_plan(&h.cli(), h.printer(), &args).unwrap();
     let parsed = h.json_output();
     assert_json_has_fields(&parsed, &["context", "phases", "totalActions"]);
     assert_json_field_type(&parsed, "context", "string");
@@ -12059,7 +12059,7 @@ spec:
         skip_scripts: false,
         context: "apply".to_string(),
     }));
-    let result = super::cmd_plan(
+    let result = super::plan::cmd_plan(
         &cli,
         h.printer(),
         &PlanArgs {
@@ -12121,7 +12121,7 @@ spec:
         skip_scripts: false,
         context: "apply".to_string(),
     };
-    let result = super::cmd_plan(&h.cli(), h.printer(), &args);
+    let result = super::plan::cmd_plan(&h.cli(), h.printer(), &args);
     assert!(
         result.is_ok(),
         "module-only plan should succeed: {:?}",
@@ -12177,7 +12177,7 @@ spec:
         skip_scripts: false,
         context: "apply".to_string(),
     };
-    let result = super::cmd_plan(&h.cli(), h.printer(), &args);
+    let result = super::plan::cmd_plan(&h.cli(), h.printer(), &args);
     assert!(
         result.is_ok(),
         "JSON plan should succeed: {:?}",
