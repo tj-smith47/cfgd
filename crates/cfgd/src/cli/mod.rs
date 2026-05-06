@@ -12,6 +12,7 @@ mod init;
 mod kubectl;
 mod log;
 mod module;
+mod output_types;
 mod plan;
 pub mod plugin;
 mod profile;
@@ -25,6 +26,7 @@ mod upgrade;
 mod verify;
 mod workflow;
 
+use output_types::*;
 #[cfg(test)]
 pub(in crate::cli) use source::{
     add_source_to_config, count_policy_items, display_policy_items, infer_source_name,
@@ -59,192 +61,6 @@ use cfgd_core::state::StateStore;
 const MSG_NO_CONFIG: &str = "No cfgd.yaml found — run 'cfgd init' first";
 const MSG_RUN_APPLY: &str = "Run 'cfgd apply --dry-run' to preview changes, then 'cfgd apply'";
 const MSG_NOTHING_TO_DO: &str = "Nothing to do — everything is up to date";
-
-// --- Structured output types ---
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct LogOutput {
-    entries: Vec<cfgd_core::state::ApplyRecord>,
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct RollbackOutput {
-    apply_id: i64,
-    files_restored: usize,
-    files_removed: usize,
-    non_file_actions: Vec<String>,
-}
-
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct PlanOutput {
-    context: String,
-    phases: Vec<PlanPhaseOutput>,
-    total_actions: usize,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    warnings: Vec<String>,
-}
-
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct PlanPhaseOutput {
-    phase: String,
-    actions: Vec<PlanActionOutput>,
-}
-
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct PlanActionOutput {
-    description: String,
-    #[serde(rename = "type")]
-    action_type: String,
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct DoctorOutput {
-    config: DoctorConfigCheck,
-    git: bool,
-    secrets: DoctorSecretsCheck,
-    package_managers: Vec<DoctorManagerCheck>,
-    modules: Vec<DoctorModuleCheck>,
-    system_configurators: Vec<DoctorConfiguratorCheck>,
-}
-
-#[derive(Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct DoctorConfigCheck {
-    valid: bool,
-    path: String,
-    name: Option<String>,
-    profile: Option<String>,
-    error: Option<String>,
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct DoctorSecretsCheck {
-    sops_available: bool,
-    sops_version: Option<String>,
-    age_key_exists: bool,
-    age_key_path: Option<String>,
-    sops_config_exists: bool,
-    providers: Vec<DoctorProviderCheck>,
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct DoctorProviderCheck {
-    name: String,
-    available: bool,
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct DoctorManagerCheck {
-    name: String,
-    available: bool,
-    declared: bool,
-    can_bootstrap: bool,
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct DoctorModuleCheck {
-    name: String,
-    valid: bool,
-    error: Option<String>,
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct DoctorConfiguratorCheck {
-    name: String,
-    available: bool,
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct SourceListEntry {
-    name: String,
-    url: String,
-    priority: u32,
-    version: Option<String>,
-    status: String,
-    last_fetched: Option<String>,
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct SourceShowOutput {
-    name: String,
-    url: String,
-    branch: String,
-    priority: u32,
-    accept_recommended: bool,
-    profile: Option<String>,
-    sync_interval: String,
-    auto_apply: bool,
-    version_pin: Option<String>,
-    state: Option<SourceStateInfo>,
-    managed_resources: Vec<SourceResourceEntry>,
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct SourceStateInfo {
-    status: String,
-    last_fetched: Option<String>,
-    last_commit: Option<String>,
-    version: Option<String>,
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct SourceResourceEntry {
-    resource_type: String,
-    resource_id: String,
-}
-
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(super) struct ProfileListEntry {
-    pub name: String,
-    pub active: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub inherits: Option<String>,
-    pub module_count: usize,
-}
-
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(super) struct ModuleSearchResult {
-    pub name: String,
-    pub registry: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub description: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub version: Option<String>,
-}
-
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(super) struct RegistryListEntry {
-    pub name: String,
-    pub url: String,
-}
-
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(super) struct KeyListEntry {
-    pub name: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub fingerprint: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub created: Option<String>,
-}
 
 fn default_config_file() -> PathBuf {
     cfgd_core::default_config_dir().join("cfgd.yaml")
@@ -2488,42 +2304,6 @@ pub(super) fn display_plan_preview(
     } else {
         printer.info(&format!("{} action(s) planned", plan_output.total_actions));
     }
-}
-
-// ---------------------------------------------------------------------------
-// Compliance command output types
-// ---------------------------------------------------------------------------
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct ComplianceSnapshotOutput {
-    snapshot: cfgd_core::compliance::ComplianceSnapshot,
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct ComplianceHistoryOutput {
-    entries: Vec<cfgd_core::state::ComplianceHistoryRow>,
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct ComplianceDiffOutput {
-    id1: i64,
-    id2: i64,
-    added: Vec<cfgd_core::compliance::ComplianceCheck>,
-    removed: Vec<cfgd_core::compliance::ComplianceCheck>,
-    changed: Vec<ComplianceCheckChange>,
-}
-
-#[derive(Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct ComplianceCheckChange {
-    key: String,
-    old_status: String,
-    new_status: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    detail: Option<String>,
 }
 
 // --- Validation helpers ---
