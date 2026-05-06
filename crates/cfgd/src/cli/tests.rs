@@ -3841,7 +3841,7 @@ fn cmd_decide_accept_all_empty() {
 
     let (printer, buf) = Printer::for_test();
 
-    let result = super::cmd_decide(
+    let result = super::decide::cmd_decide(
         &printer,
         super::DecideAction::Accept,
         None,
@@ -3867,7 +3867,7 @@ fn cmd_decide_reject_all_empty() {
 
     let (printer, buf) = Printer::for_test();
 
-    let result = super::cmd_decide(
+    let result = super::decide::cmd_decide(
         &printer,
         super::DecideAction::Reject,
         None,
@@ -3897,7 +3897,7 @@ fn cmd_decide_accept_specific_resource() {
 
     let (printer, buf) = Printer::for_test();
 
-    let result = super::cmd_decide(
+    let result = super::decide::cmd_decide(
         &printer,
         super::DecideAction::Accept,
         Some("packages.brew.curl"),
@@ -3926,7 +3926,7 @@ fn cmd_decide_reject_by_source() {
 
     let (printer, buf) = Printer::for_test();
 
-    let result = super::cmd_decide(
+    let result = super::decide::cmd_decide(
         &printer,
         super::DecideAction::Reject,
         None,
@@ -7855,7 +7855,7 @@ fn cmd_decide_no_args_shows_pending() {
     let state_dir = tempfile::tempdir().unwrap();
     let (printer, buf) = Printer::for_test();
 
-    super::cmd_decide(
+    super::decide::cmd_decide(
         &printer,
         super::DecideAction::Accept,
         None,
@@ -7888,7 +7888,7 @@ fn cmd_decide_with_pending_decision() {
         )
         .unwrap();
 
-    let result = super::cmd_decide(
+    let result = super::decide::cmd_decide(
         &printer,
         super::DecideAction::Accept,
         Some("packages.brew.curl"),
@@ -7934,7 +7934,7 @@ fn cmd_decide_accept_all_with_pending() {
         .upsert_pending_decision("team", "env.EDITOR", "recommended", "set", "Set EDITOR")
         .unwrap();
 
-    let result = super::cmd_decide(
+    let result = super::decide::cmd_decide(
         &printer,
         super::DecideAction::Accept,
         None,
@@ -7977,7 +7977,7 @@ fn cmd_decide_reject_by_source_with_pending() {
         .upsert_pending_decision("other", "env.EDITOR", "recommended", "set", "Set EDITOR")
         .unwrap();
 
-    let result = super::cmd_decide(
+    let result = super::decide::cmd_decide(
         &printer,
         super::DecideAction::Reject,
         None,
@@ -10683,7 +10683,8 @@ fn checkin_fails_when_no_profile_configured() {
     let no_profile_config =
         "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec: {}\n";
     let h = CliTestHarness::builder().config(no_profile_config).build();
-    let result = super::cmd_checkin(&h.cli(), h.printer(), "http://localhost:8080", None, None);
+    let result =
+        super::checkin::cmd_checkin(&h.cli(), h.printer(), "http://localhost:8080", None, None);
     assert_error_contains(&result, "no profile configured");
 }
 
@@ -10693,7 +10694,7 @@ fn checkin_fails_when_config_file_missing() {
     // Don't write any config file
     let cli = test_cli(dir.path());
     let printer = test_printer();
-    let result = super::cmd_checkin(&cli, &printer, "http://localhost:8080", None, None);
+    let result = super::checkin::cmd_checkin(&cli, &printer, "http://localhost:8080", None, None);
     assert_error_contains(&result, "config file not found");
 }
 
@@ -10701,7 +10702,8 @@ fn checkin_fails_when_config_file_missing() {
 fn checkin_fails_when_profile_does_not_exist() {
     let bad_profile_config = "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec:\n  profile: nonexistent\n";
     let h = CliTestHarness::builder().config(bad_profile_config).build();
-    let result = super::cmd_checkin(&h.cli(), h.printer(), "http://localhost:8080", None, None);
+    let result =
+        super::checkin::cmd_checkin(&h.cli(), h.printer(), "http://localhost:8080", None, None);
     let err = result.unwrap_err();
     let msg = err.to_string();
     assert!(
@@ -13867,7 +13869,7 @@ fn cmd_decide_no_args_no_pending_shows_info() {
     let (printer, buf) = Printer::for_test();
 
     // With no resource, no source, and all=false, should show pending list
-    super::cmd_decide(
+    super::decide::cmd_decide(
         &printer,
         super::DecideAction::Accept,
         None,
@@ -13898,7 +13900,7 @@ fn cmd_decide_no_args_with_pending_shows_list() {
         .unwrap();
 
     // No resource/source/all — should display pending decisions
-    super::cmd_decide(
+    super::decide::cmd_decide(
         &printer,
         super::DecideAction::Accept,
         None,
@@ -13956,7 +13958,7 @@ fn cmd_decide_reject_specific_resource_verifies_resolution() {
         )
         .unwrap();
 
-    super::cmd_decide(
+    super::decide::cmd_decide(
         &printer,
         super::DecideAction::Reject,
         Some("packages.brew.jq"),
@@ -13994,7 +13996,7 @@ fn cmd_decide_accept_specific_resource_verifies_messaging() {
         .upsert_pending_decision("team", "file/bashrc", "required", "create", "Create bashrc")
         .unwrap();
 
-    super::cmd_decide(
+    super::decide::cmd_decide(
         &printer,
         super::DecideAction::Accept,
         Some("file/bashrc"),
@@ -14024,7 +14026,7 @@ fn cmd_decide_accept_nonexistent_resource_warns() {
     let state_dir = tempfile::tempdir().unwrap();
     let (printer, buf) = Printer::for_test();
 
-    super::cmd_decide(
+    super::decide::cmd_decide(
         &printer,
         super::DecideAction::Accept,
         Some("no.such.resource"),
@@ -14063,7 +14065,7 @@ fn cmd_decide_accept_all_reports_count() {
             .unwrap();
     }
 
-    super::cmd_decide(
+    super::decide::cmd_decide(
         &printer,
         super::DecideAction::Accept,
         None,
@@ -14107,7 +14109,7 @@ fn cmd_decide_reject_by_source_preserves_other_sources() {
         .upsert_pending_decision("beta", "env/X", "required", "set", "X")
         .unwrap();
 
-    super::cmd_decide(
+    super::decide::cmd_decide(
         &printer,
         super::DecideAction::Reject,
         None,
@@ -14148,7 +14150,7 @@ fn cmd_decide_reject_by_source_with_no_matching_decisions() {
         .upsert_pending_decision("alpha", "pkg/a", "recommended", "install", "A")
         .unwrap();
 
-    super::cmd_decide(
+    super::decide::cmd_decide(
         &printer,
         super::DecideAction::Reject,
         None,
@@ -14179,7 +14181,7 @@ fn cmd_decide_accept_single_item_singular_message() {
         .upsert_pending_decision("src", "pkg/only", "recommended", "install", "Only pkg")
         .unwrap();
 
-    super::cmd_decide(
+    super::decide::cmd_decide(
         &printer,
         super::DecideAction::Accept,
         None,
@@ -14384,7 +14386,7 @@ spec:
 #[test]
 fn cmd_checkin_server_unreachable() {
     let h = CliTestHarness::builder().build();
-    let result = super::cmd_checkin(
+    let result = super::checkin::cmd_checkin(
         &h.cli(),
         h.printer(),
         "http://127.0.0.1:19999",
@@ -14424,7 +14426,8 @@ spec:
     let h = CliTestHarness::builder()
         .config(config_with_compliance)
         .build();
-    let result = super::cmd_checkin(&h.cli(), h.printer(), "http://127.0.0.1:19999", None, None);
+    let result =
+        super::checkin::cmd_checkin(&h.cli(), h.printer(), "http://127.0.0.1:19999", None, None);
     assert!(
         result.is_err(),
         "checkin should fail with unreachable server"
