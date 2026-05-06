@@ -10566,7 +10566,7 @@ fn cmd_secret_decrypt_file_not_found() {
 #[test]
 fn daemon_status_no_daemon_running_human_output() {
     let h = CliTestHarness::builder().build();
-    super::cmd_daemon_status(h.printer()).unwrap();
+    super::daemon::cmd_daemon_status(h.printer()).unwrap();
     let output = h.output();
     assert!(
         output.contains("Daemon Status"),
@@ -10589,7 +10589,7 @@ fn daemon_status_no_daemon_running_human_output() {
 #[test]
 fn daemon_status_no_daemon_running_json_output() {
     let h = CliTestHarness::builder().json().build();
-    super::cmd_daemon_status(h.printer()).unwrap();
+    super::daemon::cmd_daemon_status(h.printer()).unwrap();
     let parsed = h.json_output();
     assert_json_has_fields(
         &parsed,
@@ -10616,7 +10616,7 @@ fn daemon_uninstall_prints_platform_info_and_succeeds() {
     let (printer, buf) = Printer::for_test();
     // On Linux (CI/test env), uninstall_service just removes the unit file
     // if present; in a clean test env there is nothing to remove, so it succeeds.
-    let result = super::cmd_daemon_uninstall(&printer);
+    let result = super::daemon::cmd_daemon_uninstall(&printer);
     let output = buf.lock().unwrap().clone();
 
     assert!(
