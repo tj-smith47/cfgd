@@ -1494,7 +1494,7 @@ fn generate_workflow_yaml_contains_all_resources() {
     let modules = vec!["neovim".to_string(), "zsh".to_string()];
     let profiles = vec!["default".to_string(), "work".to_string()];
 
-    let yaml = generate_release_workflow_yaml(&modules, &profiles, "master");
+    let yaml = workflow::generate_release_workflow_yaml(&modules, &profiles, "master");
 
     // Header
     assert!(yaml.contains("name: cfgd Release"));
@@ -1527,7 +1527,7 @@ fn generate_workflow_yaml_modules_only() {
     let modules = vec!["vim".to_string()];
     let profiles: Vec<String> = vec![];
 
-    let yaml = generate_release_workflow_yaml(&modules, &profiles, "master");
+    let yaml = workflow::generate_release_workflow_yaml(&modules, &profiles, "master");
 
     assert!(yaml.contains("tag-modules:"));
     assert!(!yaml.contains("tag-profiles:"));
@@ -1538,7 +1538,7 @@ fn generate_workflow_yaml_profiles_only() {
     let modules: Vec<String> = vec![];
     let profiles = vec!["default".to_string()];
 
-    let yaml = generate_release_workflow_yaml(&modules, &profiles, "master");
+    let yaml = workflow::generate_release_workflow_yaml(&modules, &profiles, "master");
 
     assert!(!yaml.contains("tag-modules:"));
     assert!(yaml.contains("tag-profiles:"));
@@ -1552,7 +1552,7 @@ fn workflow_generate_creates_file() {
     let cli = test_cli(dir.path());
     let printer = test_printer();
 
-    let result = cmd_workflow_generate(&cli, &printer, false);
+    let result = workflow::cmd_workflow_generate(&cli, &printer, false);
     assert!(
         result.is_ok(),
         "workflow generate should create the workflow file: {:?}",
@@ -1580,7 +1580,7 @@ fn workflow_generate_empty_repo() {
     let (printer, buf) = Printer::for_test();
 
     // No profiles or modules — should warn and return Ok
-    let result = cmd_workflow_generate(&cli, &printer, false);
+    let result = workflow::cmd_workflow_generate(&cli, &printer, false);
     assert!(
         result.is_ok(),
         "workflow generate should return Ok with no modules/profiles (warn+skip): {:?}",
@@ -1609,7 +1609,7 @@ fn generate_workflow_yaml_hyphens_in_names() {
     let modules = vec!["my-module".to_string()];
     let profiles = vec!["my-profile".to_string()];
 
-    let yaml = generate_release_workflow_yaml(&modules, &profiles, "master");
+    let yaml = workflow::generate_release_workflow_yaml(&modules, &profiles, "master");
 
     // Hyphens should be converted to underscores in output names
     assert!(yaml.contains("module_my_module"));
@@ -1646,7 +1646,7 @@ fn workflow_generate_force_overwrites() {
     let printer = test_printer();
 
     // First generate
-    cmd_workflow_generate(&cli, &printer, false).unwrap();
+    workflow::cmd_workflow_generate(&cli, &printer, false).unwrap();
     let path = dir.path().join(".github/workflows/cfgd-release.yml");
     assert!(path.exists());
 
@@ -1654,7 +1654,7 @@ fn workflow_generate_force_overwrites() {
     std::fs::write(&path, "old content").unwrap();
 
     // Force overwrite
-    cmd_workflow_generate(&cli, &printer, true).unwrap();
+    workflow::cmd_workflow_generate(&cli, &printer, true).unwrap();
     let contents = std::fs::read_to_string(&path).unwrap();
     assert!(contents.contains("cfgd Release"));
     assert!(!contents.contains("old content"));
@@ -2412,18 +2412,19 @@ fn copy_files_to_dir_nonexistent_source_errors() {
     );
 }
 
-// --- generate_release_workflow_yaml ---
+// --- workflow::generate_release_workflow_yaml ---
 
 #[test]
 fn generate_release_workflow_empty() {
-    let yaml = super::generate_release_workflow_yaml(&[], &[], "master");
+    let yaml = super::workflow::generate_release_workflow_yaml(&[], &[], "master");
     assert!(yaml.contains("placeholder:"));
     assert!(yaml.contains("No modules or profiles to tag yet"));
 }
 
 #[test]
 fn generate_release_workflow_with_modules() {
-    let yaml = super::generate_release_workflow_yaml(&["shell-tools".into()], &[], "master");
+    let yaml =
+        super::workflow::generate_release_workflow_yaml(&["shell-tools".into()], &[], "master");
     assert!(yaml.contains("modules/shell-tools/**"));
     assert!(yaml.contains("tag-modules:"));
     assert!(!yaml.contains("placeholder:"));
@@ -2431,14 +2432,14 @@ fn generate_release_workflow_with_modules() {
 
 #[test]
 fn generate_release_workflow_with_profiles() {
-    let yaml = super::generate_release_workflow_yaml(&[], &["work".into()], "master");
+    let yaml = super::workflow::generate_release_workflow_yaml(&[], &["work".into()], "master");
     assert!(yaml.contains("profiles/work.yaml"));
     assert!(yaml.contains("tag-profiles:"));
 }
 
 #[test]
 fn generate_release_workflow_both() {
-    let yaml = super::generate_release_workflow_yaml(
+    let yaml = super::workflow::generate_release_workflow_yaml(
         &["git-tools".into()],
         &["personal".into()],
         "master",
@@ -7982,7 +7983,7 @@ fn cmd_decide_reject_by_source_with_pending() {
     assert_eq!(pending[0].source, "other");
 }
 
-// --- cmd_workflow_generate ---
+// --- workflow::cmd_workflow_generate ---
 
 #[test]
 #[cfg(unix)] // prompt_confirm hangs on Windows CI (no /dev/null stdin fallback)
@@ -7994,7 +7995,7 @@ fn cmd_workflow_generate_no_overwrite_without_force() {
     let printer = test_printer();
 
     // First generate
-    super::cmd_workflow_generate(&cli, &printer, false).unwrap();
+    super::workflow::cmd_workflow_generate(&cli, &printer, false).unwrap();
     let path = dir.path().join(".github/workflows/cfgd-release.yml");
     assert!(path.exists());
 
@@ -8002,7 +8003,7 @@ fn cmd_workflow_generate_no_overwrite_without_force() {
     std::fs::write(&path, "custom content").unwrap();
 
     // Generate without force — should NOT overwrite
-    super::cmd_workflow_generate(&cli, &printer, false).unwrap();
+    super::workflow::cmd_workflow_generate(&cli, &printer, false).unwrap();
 
     let contents = std::fs::read_to_string(&path).unwrap();
     assert_eq!(
@@ -9875,7 +9876,7 @@ fn cmd_source_list_structured_json() {
     assert_eq!(arr[0]["url"], "https://github.com/team/config");
 }
 
-// --- cmd_workflow_generate ---
+// --- workflow::cmd_workflow_generate ---
 
 #[test]
 fn cmd_workflow_generate_with_git_repo() {
@@ -9889,7 +9890,7 @@ fn cmd_workflow_generate_with_git_repo() {
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
     let (printer, buf) = Printer::for_test();
 
-    let result = super::cmd_workflow_generate(&cli, &printer, true);
+    let result = super::workflow::cmd_workflow_generate(&cli, &printer, true);
     assert!(
         result.is_ok(),
         "workflow generate with git repo should succeed: {:?}",
@@ -12848,12 +12849,12 @@ fn action_path_secret_skip() {
 }
 
 // -----------------------------------------------------------------------
-// generate_release_workflow_yaml — deeper content verification
+// workflow::generate_release_workflow_yaml — deeper content verification
 // -----------------------------------------------------------------------
 
 #[test]
 fn generate_release_workflow_multiple_modules() {
-    let yaml = super::generate_release_workflow_yaml(
+    let yaml = super::workflow::generate_release_workflow_yaml(
         &["shell-tools".into(), "git-config".into()],
         &[],
         "master",
@@ -12871,7 +12872,7 @@ fn generate_release_workflow_multiple_modules() {
 
 #[test]
 fn generate_release_workflow_hyphenated_names_become_underscored() {
-    let yaml = super::generate_release_workflow_yaml(
+    let yaml = super::workflow::generate_release_workflow_yaml(
         &["my-cool-tools".into()],
         &["work-laptop".into()],
         "master",
@@ -12883,7 +12884,7 @@ fn generate_release_workflow_hyphenated_names_become_underscored() {
 
 #[test]
 fn generate_release_workflow_empty_has_placeholder_job() {
-    let yaml = super::generate_release_workflow_yaml(&[], &[], "master");
+    let yaml = super::workflow::generate_release_workflow_yaml(&[], &[], "master");
     // Should have commented-out paths section
     assert!(yaml.contains("# paths:"));
     // Should have placeholder job
@@ -12897,8 +12898,11 @@ fn generate_release_workflow_empty_has_placeholder_job() {
 
 #[test]
 fn generate_release_workflow_profiles_only() {
-    let yaml =
-        super::generate_release_workflow_yaml(&[], &["personal".into(), "server".into()], "master");
+    let yaml = super::workflow::generate_release_workflow_yaml(
+        &[],
+        &["personal".into(), "server".into()],
+        "master",
+    );
     assert!(yaml.contains("profiles/personal.yaml"));
     assert!(yaml.contains("profiles/personal.yml"));
     assert!(yaml.contains("profiles/server.yaml"));
