@@ -181,6 +181,20 @@ pub enum StateError {
     #[error("state directory not writable: {path}")]
     DirectoryNotWritable { path: PathBuf },
 
+    #[error("state filesystem I/O failed at {path}: {source}")]
+    FilesystemIo {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+
+    #[error("state serialization failed ({context}): {source}")]
+    Serialize {
+        context: &'static str,
+        #[source]
+        source: serde_json::Error,
+    },
+
     #[error("apply lock held by another process: {holder}")]
     ApplyLockHeld { holder: String },
 }

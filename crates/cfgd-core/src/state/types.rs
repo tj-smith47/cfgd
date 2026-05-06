@@ -1,3 +1,13 @@
+//! State-store record types.
+//!
+//! Types that derive `Serialize + #[serde(rename_all = "camelCase")]` are part
+//! of the cfgd CLI JSON output surface (`cfgd <cmd> -o json` paths). Types
+//! that don't derive `Serialize` are internal-only DAOs — they're returned
+//! from `StateStore` methods to crate-internal callers but never marshaled
+//! across the CLI boundary. To surface a previously-internal type, add the
+//! pair (`#[derive(Serialize)] #[serde(rename_all = "camelCase")]`) and wire
+//! it into the relevant `*_output_types.rs` wrapper.
+
 use serde::Serialize;
 
 /// Apply status for a reconciliation run.
@@ -86,7 +96,7 @@ pub struct ConfigSourceRecord {
     pub status: String,
 }
 
-/// A conflict record from composition.
+/// A conflict record from composition. Internal-only DAO.
 #[derive(Debug, Clone)]
 pub struct SourceConflictRecord {
     pub id: i64,
@@ -113,7 +123,7 @@ pub struct PendingDecision {
     pub resolution: Option<String>,
 }
 
-/// A stored config hash for detecting source changes.
+/// A stored config hash for detecting source changes. Internal-only DAO.
 #[derive(Debug, Clone)]
 pub struct SourceConfigHash {
     pub source: String,
@@ -123,6 +133,7 @@ pub struct SourceConfigHash {
 
 /// A module's state in the state store.
 #[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ModuleStateRecord {
     pub module_name: String,
     pub installed_at: String,
@@ -133,7 +144,10 @@ pub struct ModuleStateRecord {
     pub status: String,
 }
 
-/// A file backup record from the safety store.
+/// A file backup record from the safety store. Internal-only DAO; the
+/// `content` blob would balloon JSON output, so deliberately non-`Serialize` —
+/// surface via a derived view-struct if you need to expose this through
+/// the CLI.
 #[derive(Debug, Clone)]
 pub struct FileBackupRecord {
     pub id: i64,
@@ -148,7 +162,8 @@ pub struct FileBackupRecord {
     pub backed_up_at: String,
 }
 
-/// A journal entry for a single action within an apply.
+/// A journal entry for a single action within an apply. Internal-only DAO;
+/// used by rollback and apply-recovery paths.
 #[derive(Debug, Clone)]
 pub struct JournalEntry {
     pub id: i64,
@@ -168,6 +183,7 @@ pub struct JournalEntry {
 
 /// A compliance snapshot summary row from the state store.
 #[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ComplianceHistoryRow {
     pub id: i64,
     pub timestamp: String,
@@ -177,6 +193,7 @@ pub struct ComplianceHistoryRow {
 }
 
 /// A module file manifest entry — tracks which files a module deployed.
+/// Internal-only DAO.
 #[derive(Debug, Clone)]
 pub struct ModuleFileRecord {
     pub module_name: String,

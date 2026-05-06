@@ -11,10 +11,14 @@ pub fn save_pending_server_config(config: &serde_json::Value) -> Result<PathBuf>
     std::fs::create_dir_all(&dir)
         .map_err(|_| StateError::DirectoryNotWritable { path: dir.clone() })?;
     let path = dir.join(PENDING_CONFIG_FILENAME);
-    let json = serde_json::to_string_pretty(config)
-        .map_err(|e| StateError::Database(format!("failed to serialize pending config: {}", e)))?;
-    crate::atomic_write_str(&path, &json)
-        .map_err(|_| StateError::DirectoryNotWritable { path: path.clone() })?;
+    let json = serde_json::to_string_pretty(config).map_err(|e| StateError::Serialize {
+        context: "encode pending config",
+        source: e,
+    })?;
+    crate::atomic_write_str(&path, &json).map_err(|e| StateError::FilesystemIo {
+        path: path.clone(),
+        source: e,
+    })?;
     Ok(path)
 }
 
@@ -25,10 +29,15 @@ pub fn load_pending_server_config() -> Result<Option<serde_json::Value>> {
     if !path.exists() {
         return Ok(None);
     }
-    let contents = std::fs::read_to_string(&path)
-        .map_err(|_| StateError::DirectoryNotWritable { path: path.clone() })?;
-    let value: serde_json::Value = serde_json::from_str(&contents)
-        .map_err(|e| StateError::Database(format!("failed to parse pending config: {}", e)))?;
+    let contents = std::fs::read_to_string(&path).map_err(|e| StateError::FilesystemIo {
+        path: path.clone(),
+        source: e,
+    })?;
+    let value: serde_json::Value =
+        serde_json::from_str(&contents).map_err(|e| StateError::Serialize {
+            context: "parse pending config",
+            source: e,
+        })?;
     Ok(Some(value))
 }
 
@@ -39,6 +48,6 @@ pub fn clear_pending_server_config() -> Result<()> {
     match std::fs::remove_file(&path) {
         Ok(()) => Ok(()),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(_) => Err(StateError::DirectoryNotWritable { path }.into()),
+        Err(e) => Err(StateError::FilesystemIo { path, source: e }.into()),
     }
 }
