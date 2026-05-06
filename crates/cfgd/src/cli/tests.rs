@@ -4464,7 +4464,7 @@ fn cmd_compliance_snapshot_basic() {
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
     let (printer, buf) = Printer::for_test();
 
-    let result = super::cmd_compliance_snapshot(&cli, &printer);
+    let result = super::compliance::cmd_compliance_snapshot(&cli, &printer);
     assert!(
         result.is_ok(),
         "compliance snapshot should succeed: {:?}",
@@ -4493,7 +4493,7 @@ fn cmd_compliance_export_basic() {
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
     let (printer, buf) = Printer::for_test();
 
-    let result = super::cmd_compliance_export(&cli, &printer);
+    let result = super::compliance::cmd_compliance_export(&cli, &printer);
     assert!(
         result.is_ok(),
         "compliance export failed: {:?}",
@@ -4514,7 +4514,7 @@ fn cmd_compliance_history_empty() {
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
     let (printer, buf) = Printer::for_test();
 
-    let result = super::cmd_compliance_history(&cli, &printer, None);
+    let result = super::compliance::cmd_compliance_history(&cli, &printer, None);
     assert!(
         result.is_ok(),
         "compliance history should succeed with no snapshots: {:?}",
@@ -4546,7 +4546,7 @@ fn cmd_compliance_history_with_since() {
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
     let (printer, buf) = Printer::for_test();
 
-    let result = super::cmd_compliance_history(&cli, &printer, Some("7d"));
+    let result = super::compliance::cmd_compliance_history(&cli, &printer, Some("7d"));
     assert!(
         result.is_ok(),
         "compliance history should succeed with --since 7d time filter: {:?}",
@@ -4567,7 +4567,8 @@ fn cmd_compliance_history_invalid_since() {
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
     let printer = test_printer();
 
-    let result = super::cmd_compliance_history(&cli, &printer, Some("invalid-duration"));
+    let result =
+        super::compliance::cmd_compliance_history(&cli, &printer, Some("invalid-duration"));
     let err = result.unwrap_err();
     let msg = err.to_string();
     assert!(
@@ -4583,7 +4584,7 @@ fn cmd_compliance_diff_missing_snapshots() {
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
     let printer = test_printer();
 
-    let result = super::cmd_compliance_diff(&cli, &printer, 1, 2);
+    let result = super::compliance::cmd_compliance_diff(&cli, &printer, 1, 2);
     assert!(result.is_err());
     assert!(result.unwrap_err().to_string().contains("not found"));
 }
@@ -4596,8 +4597,8 @@ fn cmd_compliance_diff_after_two_snapshots() {
     let printer = test_printer();
 
     // Create two snapshots
-    super::cmd_compliance_snapshot(&cli, &printer).unwrap();
-    super::cmd_compliance_snapshot(&cli, &printer).unwrap();
+    super::compliance::cmd_compliance_snapshot(&cli, &printer).unwrap();
+    super::compliance::cmd_compliance_snapshot(&cli, &printer).unwrap();
 
     // Get snapshot IDs from history — must have exactly 2
     let state = super::open_state_store(Some(state_dir.path())).unwrap();
@@ -4607,7 +4608,8 @@ fn cmd_compliance_diff_after_two_snapshots() {
         2,
         "two snapshots should create two history entries"
     );
-    let result = super::cmd_compliance_diff(&cli, &printer, entries[1].id, entries[0].id);
+    let result =
+        super::compliance::cmd_compliance_diff(&cli, &printer, entries[1].id, entries[0].id);
     assert!(
         result.is_ok(),
         "compliance diff should succeed when comparing two valid snapshots: {:?}",
@@ -4623,13 +4625,13 @@ fn cmd_compliance_history_after_snapshot() {
     let (printer, buf) = Printer::for_test();
 
     // Create a snapshot first
-    super::cmd_compliance_snapshot(&cli, &printer).unwrap();
+    super::compliance::cmd_compliance_snapshot(&cli, &printer).unwrap();
 
     // Clear buffer before checking history
     buf.lock().unwrap().clear();
 
     // History should show at least one entry
-    let result = super::cmd_compliance_history(&cli, &printer, None);
+    let result = super::compliance::cmd_compliance_history(&cli, &printer, None);
     assert!(
         result.is_ok(),
         "compliance history should succeed after a snapshot was taken: {:?}",
@@ -4980,7 +4982,7 @@ fn cmd_compliance_snapshot_structured_json() {
     };
     let (printer, buf) = Printer::for_test_with_format(cfgd_core::output::OutputFormat::Json);
 
-    super::cmd_compliance_snapshot(&cli, &printer).unwrap();
+    super::compliance::cmd_compliance_snapshot(&cli, &printer).unwrap();
 
     let output = buf.lock().unwrap();
     let parsed = extract_json(&output);
@@ -5017,7 +5019,7 @@ fn cmd_compliance_history_structured_json() {
     };
     let (printer, buf) = Printer::for_test_with_format(cfgd_core::output::OutputFormat::Json);
 
-    super::cmd_compliance_history(&cli, &printer, None).unwrap();
+    super::compliance::cmd_compliance_history(&cli, &printer, None).unwrap();
 
     let output = buf.lock().unwrap();
     let parsed: serde_json::Value = serde_json::from_str(&output)
@@ -8036,7 +8038,7 @@ fn cmd_compliance_history_structured() {
     };
     let (printer, buf) = Printer::for_test_with_format(cfgd_core::output::OutputFormat::Json);
 
-    super::cmd_compliance_history(&cli, &printer, None).unwrap();
+    super::compliance::cmd_compliance_history(&cli, &printer, None).unwrap();
 
     let output = buf.lock().unwrap();
     let parsed: serde_json::Value = serde_json::from_str(&output)
@@ -8057,7 +8059,7 @@ fn cmd_compliance_diff_missing_snapshot() {
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
     let printer = test_printer();
 
-    let result = super::cmd_compliance_diff(&cli, &printer, 1, 2);
+    let result = super::compliance::cmd_compliance_diff(&cli, &printer, 1, 2);
     assert!(result.is_err());
     assert!(result.unwrap_err().to_string().contains("not found"));
 }
@@ -9601,14 +9603,14 @@ fn cmd_apply_skip_scripts_flag() {
 #[test]
 fn cmd_compliance_history_invalid_since_fails() {
     let h = CliTestHarness::builder().build();
-    let result = super::cmd_compliance_history(&h.cli(), h.printer(), Some("invalid"));
+    let result = super::compliance::cmd_compliance_history(&h.cli(), h.printer(), Some("invalid"));
     assert_error_contains(&result, "invalid --since value");
 }
 
 #[test]
 fn cmd_compliance_diff_missing_snapshots_fails() {
     let h = CliTestHarness::builder().build();
-    let result = super::cmd_compliance_diff(&h.cli(), h.printer(), 1, 2);
+    let result = super::compliance::cmd_compliance_diff(&h.cli(), h.printer(), 1, 2);
     assert_error_contains(&result, "not found");
 }
 
@@ -10256,7 +10258,7 @@ fn cmd_source_replace_nonexistent_fails() {
 #[test]
 fn cmd_compliance_snapshot_empty_state() {
     let h = CliTestHarness::builder().build();
-    super::cmd_compliance_snapshot(&h.cli(), h.printer()).unwrap();
+    super::compliance::cmd_compliance_snapshot(&h.cli(), h.printer()).unwrap();
     let output = h.output();
     assert!(
         output.contains("Compliance") || output.contains("Snapshot"),
@@ -10267,7 +10269,7 @@ fn cmd_compliance_snapshot_empty_state() {
 #[test]
 fn cmd_compliance_export_empty_state() {
     let h = CliTestHarness::builder().build();
-    super::cmd_compliance_export(&h.cli(), h.printer()).unwrap();
+    super::compliance::cmd_compliance_export(&h.cli(), h.printer()).unwrap();
     // export writes to a file and prints success message
     let output = h.output();
     assert!(
@@ -10283,7 +10285,7 @@ fn cmd_compliance_export_empty_state() {
 #[test]
 fn cmd_compliance_snapshot_json() {
     let h = CliTestHarness::builder().json().build();
-    super::cmd_compliance_snapshot(&h.cli(), h.printer()).unwrap();
+    super::compliance::cmd_compliance_snapshot(&h.cli(), h.printer()).unwrap();
     let parsed = h.json_output();
     // Compliance snapshot JSON wraps a snapshot object
     assert_json_has_fields(&parsed, &["snapshot"]);
@@ -10292,7 +10294,7 @@ fn cmd_compliance_snapshot_json() {
 #[test]
 fn cmd_compliance_history_json() {
     let h = CliTestHarness::builder().json().build();
-    super::cmd_compliance_history(&h.cli(), h.printer(), None).unwrap();
+    super::compliance::cmd_compliance_history(&h.cli(), h.printer(), None).unwrap();
     let output = h.output();
     // History output may be an array or object — just verify it's valid JSON
     let _parsed: serde_json::Value = serde_json::from_str(&output)
@@ -13383,8 +13385,8 @@ fn cmd_compliance_diff_identical_snapshots_reports_no_differences() {
     let h = CliTestHarness::builder().build();
 
     // Create two identical snapshots
-    super::cmd_compliance_snapshot(&h.cli(), h.printer()).unwrap();
-    super::cmd_compliance_snapshot(&h.cli(), h.printer()).unwrap();
+    super::compliance::cmd_compliance_snapshot(&h.cli(), h.printer()).unwrap();
+    super::compliance::cmd_compliance_snapshot(&h.cli(), h.printer()).unwrap();
 
     let state = super::open_state_store(Some(h.state_path())).unwrap();
     let entries = state.compliance_history(None, 10).unwrap();
@@ -13393,7 +13395,8 @@ fn cmd_compliance_diff_identical_snapshots_reports_no_differences() {
     // Clear output before diff
     h.buf.lock().unwrap().clear();
 
-    super::cmd_compliance_diff(&h.cli(), h.printer(), entries[1].id, entries[0].id).unwrap();
+    super::compliance::cmd_compliance_diff(&h.cli(), h.printer(), entries[1].id, entries[0].id)
+        .unwrap();
 
     h.assert_output_contains("No differences");
 }
@@ -13457,7 +13460,7 @@ fn cmd_compliance_diff_with_changes_shows_added_and_removed() {
     let id1 = entries[1].id;
     let id2 = entries[0].id;
 
-    super::cmd_compliance_diff(&h.cli(), h.printer(), id1, id2).unwrap();
+    super::compliance::cmd_compliance_diff(&h.cli(), h.printer(), id1, id2).unwrap();
 
     let output = h.output();
     assert!(
@@ -13536,7 +13539,7 @@ fn cmd_compliance_diff_with_status_change_shows_changed() {
     let id1 = entries[1].id;
     let id2 = entries[0].id;
 
-    super::cmd_compliance_diff(&h.cli(), h.printer(), id1, id2).unwrap();
+    super::compliance::cmd_compliance_diff(&h.cli(), h.printer(), id1, id2).unwrap();
 
     let output = h.output();
     assert!(
@@ -13616,7 +13619,7 @@ fn cmd_compliance_diff_structured_json_with_changes() {
     let id1 = entries[1].id;
     let id2 = entries[0].id;
 
-    super::cmd_compliance_diff(&h.cli(), h.printer(), id1, id2).unwrap();
+    super::compliance::cmd_compliance_diff(&h.cli(), h.printer(), id1, id2).unwrap();
 
     let parsed = h.json_output();
     assert_eq!(parsed["id1"], id1);
@@ -13645,11 +13648,11 @@ fn cmd_compliance_history_with_entries_shows_table() {
     let h = CliTestHarness::builder().build();
 
     // Create a snapshot to populate history
-    super::cmd_compliance_snapshot(&h.cli(), h.printer()).unwrap();
+    super::compliance::cmd_compliance_snapshot(&h.cli(), h.printer()).unwrap();
 
     h.buf.lock().unwrap().clear();
 
-    super::cmd_compliance_history(&h.cli(), h.printer(), None).unwrap();
+    super::compliance::cmd_compliance_history(&h.cli(), h.printer(), None).unwrap();
 
     let output = h.output();
     assert!(
@@ -14422,7 +14425,7 @@ spec:
 #[test]
 fn cmd_compliance_export_writes_file_and_displays_path() {
     let h = CliTestHarness::builder().build();
-    super::cmd_compliance_export(&h.cli(), h.printer()).unwrap();
+    super::compliance::cmd_compliance_export(&h.cli(), h.printer()).unwrap();
     let output = h.output();
     // export writes a file and prints the path in a success message
     assert!(
@@ -14439,7 +14442,7 @@ fn cmd_compliance_export_writes_file_and_displays_path() {
 #[test]
 fn cmd_compliance_export_json_returns_snapshot_object() {
     let h = CliTestHarness::builder().json().build();
-    super::cmd_compliance_export(&h.cli(), h.printer()).unwrap();
+    super::compliance::cmd_compliance_export(&h.cli(), h.printer()).unwrap();
     let parsed = h.json_output();
     // Structured output should contain the snapshot wrapper
     assert_json_has_fields(&parsed, &["snapshot"]);
