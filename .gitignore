@@ -47,15 +47,16 @@
 !scripts/**
 !Taskfile.yml
 
-# Claude project config (plans, scripts, skills, hooks)
+# Claude project config — only files load-bearing for CI / hooks / planning are tracked.
+# Everything else under .claude/ stays on disk but is intentionally local-only.
 !.claude/
-!.claude/*.md
-!.claude/scripts/
-!.claude/scripts/**
-!.claude/skills/
-!.claude/skills/**
 !.claude/hooks/
-!.claude/hooks/**
+!.claude/hooks/post-edit-rs.sh
+!.claude/hooks/validate-commands.sh
+!.claude/scripts/
+!.claude/scripts/update-coverage-badge.sh
+!.claude/plans/
+!.claude/plans/upstream-kubernetes.md
 
 # Tests
 !tests/
