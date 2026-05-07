@@ -481,3 +481,5 @@ mod tests_config_policy;
 mod tests_drift_alert;
 #[cfg(test)]
 mod tests_machine_config;
+#[cfg(test)]
+mod tests_module;
