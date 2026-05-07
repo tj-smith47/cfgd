@@ -543,6 +543,203 @@ fn default_noninteractive_priority_is_midpoint() {
     assert_eq!(super::DEFAULT_NONINTERACTIVE_PRIORITY, 500);
 }
 
+// --- display_source_manifest ---
+
+fn manifest_yaml(extra_spec: &str) -> cfgd_core::config::ConfigSourceDocument {
+    let yaml = format!(
+        r#"apiVersion: cfgd.io/v1alpha1
+kind: ConfigSource
+metadata:
+  name: acme-platform
+  version: "1.4.0"
+  description: "Acme platform baseline"
+spec:
+{extra_spec}
+"#
+    );
+    serde_yaml::from_str(&yaml).expect("manifest fixture must parse")
+}
+
+#[test]
+fn display_source_manifest_returns_provided_profiles_in_listed_order() {
+    let manifest = manifest_yaml("  provides:\n    profiles: [dev, prod, ci]\n");
+    let (printer, _buf) = cfgd_core::output::Printer::for_test();
+    let profiles = super::display_source_manifest(&printer, &manifest);
+    assert_eq!(profiles, vec!["dev", "prod", "ci"]);
+}
+
+#[test]
+fn display_source_manifest_emits_metadata_header_kv_lines() {
+    let manifest = manifest_yaml("  provides: {}\n");
+    let (printer, buf) = cfgd_core::output::Printer::for_test();
+    super::display_source_manifest(&printer, &manifest);
+    let out = buf.lock().unwrap().clone();
+    assert!(out.contains("Source Manifest"), "header missing: {out}");
+    assert!(
+        out.contains("Name") && out.contains("acme-platform"),
+        "Name kv missing: {out}"
+    );
+    assert!(
+        out.contains("Version") && out.contains("1.4.0"),
+        "Version kv missing: {out}"
+    );
+    assert!(
+        out.contains("Description") && out.contains("Acme platform baseline"),
+        "Description kv missing: {out}"
+    );
+}
+
+#[test]
+fn display_source_manifest_omits_profiles_kv_when_empty() {
+    // When the manifest provides no profiles, the "Profiles:" key/value
+    // line is suppressed entirely (rather than printing an empty value).
+    let manifest = manifest_yaml("  provides: {}\n");
+    let (printer, buf) = cfgd_core::output::Printer::for_test();
+    let profiles = super::display_source_manifest(&printer, &manifest);
+    assert!(profiles.is_empty());
+    let out = buf.lock().unwrap().clone();
+    assert!(
+        !out.contains("Profiles"),
+        "Profiles label must be suppressed when none provided, got: {out}"
+    );
+}
+
+#[test]
+fn display_source_manifest_summarizes_required_recommended_locked_counts() {
+    // Each tier with a non-zero count emits a labeled line; the locked
+    // tier uses warning() (the others use info()), so the locked label
+    // must be present in the output regardless of stderr-vs-stdout split.
+    let manifest = manifest_yaml(
+        r#"  provides: {}
+  policy:
+    required:
+      env:
+        - name: REQUIRED_VAR
+          value: required-value
+    recommended:
+      env:
+        - name: REC_ONE
+          value: r1
+        - name: REC_TWO
+          value: r2
+    locked:
+      env:
+        - name: LOCKED_VAR
+          value: locked-value
+"#,
+    );
+    let (printer, buf) = cfgd_core::output::Printer::for_test();
+    super::display_source_manifest(&printer, &manifest);
+    let out = buf.lock().unwrap().clone();
+    assert!(out.contains("Policy"), "Policy header missing: {out}");
+    assert!(
+        out.contains("1 locked item(s)") && out.contains("cannot override"),
+        "locked tier line missing: {out}"
+    );
+    assert!(
+        out.contains("1 required item(s)") && out.contains("team requirement"),
+        "required tier line missing: {out}"
+    );
+    assert!(
+        out.contains("2 recommended item(s)"),
+        "recommended count line missing: {out}"
+    );
+}
+
+#[test]
+fn display_source_manifest_omits_zero_count_tiers() {
+    // When a tier has zero items its line must NOT appear — pin so a
+    // future "always show all 3 tiers" change is intentional.
+    let manifest = manifest_yaml("  provides: {}\n");
+    let (printer, buf) = cfgd_core::output::Printer::for_test();
+    super::display_source_manifest(&printer, &manifest);
+    let out = buf.lock().unwrap().clone();
+    assert!(
+        !out.contains("required item(s)") && !out.contains("recommended item(s)"),
+        "zero-count tiers must be suppressed, got: {out}"
+    );
+}
+
+#[test]
+fn display_source_manifest_constraints_render_each_blocked_axis() {
+    let manifest = manifest_yaml(
+        r#"  provides: {}
+  policy:
+    constraints:
+      noScripts: true
+      noSecretsRead: true
+      allowedTargetPaths: ["/etc/cfgd", "/var/lib/cfgd"]
+"#,
+    );
+    let (printer, buf) = cfgd_core::output::Printer::for_test();
+    super::display_source_manifest(&printer, &manifest);
+    let out = buf.lock().unwrap().clone();
+    assert!(
+        out.contains("Scripts: blocked"),
+        "no-scripts line missing: {out}"
+    );
+    assert!(
+        out.contains("Secret access: blocked"),
+        "no-secrets line missing: {out}"
+    );
+    assert!(
+        out.contains("Allowed paths") && out.contains("/etc/cfgd, /var/lib/cfgd"),
+        "allowed-paths line must be comma-joined, got: {out}"
+    );
+}
+
+#[test]
+fn display_source_manifest_constraints_omitted_when_unrestricted() {
+    // noScripts and noSecretsRead default to true via default_true; turn
+    // them off to verify the suppression branches.
+    let manifest = manifest_yaml(
+        r#"  provides: {}
+  policy:
+    constraints:
+      noScripts: false
+      noSecretsRead: false
+      allowedTargetPaths: []
+"#,
+    );
+    let (printer, buf) = cfgd_core::output::Printer::for_test();
+    super::display_source_manifest(&printer, &manifest);
+    let out = buf.lock().unwrap().clone();
+    assert!(
+        !out.contains("Scripts: blocked")
+            && !out.contains("Secret access: blocked")
+            && !out.contains("Allowed paths"),
+        "no constraint lines should appear when all unrestricted, got: {out}"
+    );
+}
+
+#[test]
+fn display_source_manifest_omits_optional_metadata_kv_when_absent() {
+    // Manifest with only the required `name` field — no version, no
+    // description. The Name kv must still appear; the other two suppressed.
+    let manifest: cfgd_core::config::ConfigSourceDocument = serde_yaml::from_str(
+        r#"apiVersion: cfgd.io/v1alpha1
+kind: ConfigSource
+metadata:
+  name: minimal
+spec:
+  provides: {}
+"#,
+    )
+    .unwrap();
+    let (printer, buf) = cfgd_core::output::Printer::for_test();
+    super::display_source_manifest(&printer, &manifest);
+    let out = buf.lock().unwrap().clone();
+    assert!(out.contains("Name") && out.contains("minimal"));
+    assert!(
+        !out.contains("Version"),
+        "Version kv must be suppressed when None: {out}"
+    );
+    assert!(
+        !out.contains("Description"),
+        "Description kv must be suppressed when None: {out}"
+    );
+}
+
 #[test]
 fn add_and_remove_source_in_config() {
     let dir = tempfile::tempdir().unwrap();

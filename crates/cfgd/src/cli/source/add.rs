@@ -57,58 +57,7 @@ pub(crate) fn cmd_source_add(
 
     // Display source manifest info
     let manifest = &cached.manifest;
-    printer.subheader("Source Manifest");
-    printer.key_value("Name", &manifest.metadata.name);
-    if let Some(ref version) = manifest.metadata.version {
-        printer.key_value("Version", version);
-    }
-    if let Some(ref desc) = manifest.metadata.description {
-        printer.key_value("Description", desc);
-    }
-
-    let provided_profiles = cfgd_core::config::source_profile_names(&manifest.spec.provides);
-    if !provided_profiles.is_empty() {
-        printer.key_value("Profiles", &provided_profiles.join(", "));
-    }
-
-    // Show policy summary
-    let policy = &manifest.spec.policy;
-    let required_count = count_policy_items(&policy.required);
-    let recommended_count = count_policy_items(&policy.recommended);
-    let locked_count = count_policy_items(&policy.locked);
-
-    printer.newline();
-    printer.subheader("Policy");
-    if locked_count > 0 {
-        printer.warning(&format!(
-            "{} locked item(s) (cannot override)",
-            locked_count
-        ));
-    }
-    if required_count > 0 {
-        printer.info(&format!(
-            "{} required item(s) (team requirement)",
-            required_count
-        ));
-    }
-    if recommended_count > 0 {
-        printer.info(&format!("{} recommended item(s)", recommended_count));
-    }
-
-    // Show constraints
-    let constraints = &manifest.spec.policy.constraints;
-    if constraints.no_scripts {
-        printer.info("Scripts: blocked");
-    }
-    if constraints.no_secrets_read {
-        printer.info("Secret access: blocked");
-    }
-    if !constraints.allowed_target_paths.is_empty() {
-        printer.info(&format!(
-            "Allowed paths: {}",
-            constraints.allowed_target_paths.join(", ")
-        ));
-    }
+    let provided_profiles = display_source_manifest(printer, manifest);
 
     // Profile selection: explicit flag > platform auto-detect > single profile > interactive
     let auto_detected_profile =
