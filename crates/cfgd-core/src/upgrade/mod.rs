@@ -361,6 +361,43 @@ fn sha256_file(path: &Path) -> std::result::Result<String, UpgradeError> {
     Ok(crate::sha256_hex(&bytes))
 }
 
+/// Verify that the archive at `archive_path` matches the SHA256 listed for
+/// `asset_name` inside the goreleaser-style `checksums.txt` body.
+///
+/// Three error branches, each distinct on the wire so operators can tell them
+/// apart in incident triage:
+/// * `ChecksumsEmpty` — `parse_checksums` produced no entries (truncation /
+///   wrong file served).
+/// * `ChecksumMissing` — the file parsed but `asset_name` is not in the list
+///   (stripped-line attack or upload race).
+/// * `ChecksumMismatch` — the file is listed but the local SHA differs
+///   (genuine corruption or interception).
+///
+/// Pure helper — split out so the three branches are testable without
+/// downloading anything.
+fn verify_archive_checksum(
+    archive_path: &Path,
+    checksums_content: &str,
+    asset_name: &str,
+) -> std::result::Result<(), UpgradeError> {
+    let checksums = parse_checksums(checksums_content);
+    if checksums.is_empty() {
+        return Err(UpgradeError::ChecksumsEmpty);
+    }
+    let Some(expected) = checksums.get(asset_name) else {
+        return Err(UpgradeError::ChecksumMissing {
+            file: asset_name.to_string(),
+        });
+    };
+    let actual = sha256_file(archive_path)?;
+    if actual != *expected {
+        return Err(UpgradeError::ChecksumMismatch {
+            file: asset_name.to_string(),
+        });
+    }
+    Ok(())
+}
+
 /// Download, verify checksum, extract, and atomically install the new binary.
 ///
 /// Returns the path to the newly installed binary.
@@ -400,35 +437,13 @@ pub fn download_and_install(
                 message: format!("read checksums: {}", e),
             })?;
 
-        let checksums = parse_checksums(&checksums_content);
-        if checksums.is_empty() {
-            return Err(UpgradeError::ChecksumsEmpty.into());
+        let verify_spinner = printer.map(|p| p.spinner("Verifying checksum..."));
+        let verify_result = verify_archive_checksum(&archive_path, &checksums_content, &asset.name);
+        if let Some(s) = verify_spinner {
+            s.finish_and_clear();
         }
-        if let Some(expected) = checksums.get(&asset.name) {
-            let verify_spinner = printer.map(|p| p.spinner("Verifying checksum..."));
-            let actual = sha256_file(&archive_path)?;
-            if actual != *expected {
-                if let Some(s) = verify_spinner {
-                    s.finish_and_clear();
-                }
-                return Err(UpgradeError::ChecksumMismatch {
-                    file: asset.name.clone(),
-                }
-                .into());
-            }
-            if let Some(s) = verify_spinner {
-                s.finish_and_clear();
-            }
-            tracing::debug!("checksum verified for {}", asset.name);
-        } else {
-            // The archive downloaded fine but checksums.txt does not list it
-            // — distinct from "mismatch" so operators can tell interception /
-            // stripped-line attacks from genuine corruption.
-            return Err(UpgradeError::ChecksumMissing {
-                file: asset.name.clone(),
-            }
-            .into());
-        }
+        verify_result?;
+        tracing::debug!("checksum verified for {}", asset.name);
     } else {
         return Err(UpgradeError::ChecksumMissing {
             file: asset.name.clone(),

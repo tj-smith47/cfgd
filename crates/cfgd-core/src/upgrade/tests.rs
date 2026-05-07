@@ -150,6 +150,130 @@ fn sha256_file_computes_hash() {
     );
 }
 
+// --- verify_archive_checksum ---
+
+const HELLO_WORLD_SHA256: &str = "b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9";
+
+fn write_temp_archive(content: &[u8]) -> tempfile::NamedTempFile {
+    let tmp = tempfile::NamedTempFile::new().expect("temp file");
+    fs::write(tmp.path(), content).expect("write");
+    tmp
+}
+
+#[test]
+fn verify_archive_checksum_accepts_matching_sha() {
+    let archive = write_temp_archive(b"hello world");
+    let checksums = format!("{HELLO_WORLD_SHA256}  cfgd_x86_64-unknown-linux-gnu.tar.gz\n");
+    super::verify_archive_checksum(
+        archive.path(),
+        &checksums,
+        "cfgd_x86_64-unknown-linux-gnu.tar.gz",
+    )
+    .expect("matching SHA must succeed");
+}
+
+#[test]
+fn verify_archive_checksum_rejects_empty_checksums_with_dedicated_variant() {
+    // Distinct from ChecksumMissing — operators triaging "checksums.txt was
+    // truncated by CDN" need to see ChecksumsEmpty, not "asset not listed."
+    let archive = write_temp_archive(b"hello world");
+    let err = super::verify_archive_checksum(archive.path(), "", "cfgd.tar.gz").unwrap_err();
+    assert!(
+        matches!(err, crate::errors::UpgradeError::ChecksumsEmpty),
+        "expected ChecksumsEmpty, got: {err:?}"
+    );
+}
+
+#[test]
+fn verify_archive_checksum_rejects_whitespace_only_checksums() {
+    // parse_checksums skips lines that don't have two tokens — purely
+    // whitespace input parses to an empty map and must surface ChecksumsEmpty.
+    let archive = write_temp_archive(b"hello world");
+    let err =
+        super::verify_archive_checksum(archive.path(), "   \n\t\n", "cfgd.tar.gz").unwrap_err();
+    assert!(matches!(err, crate::errors::UpgradeError::ChecksumsEmpty));
+}
+
+#[test]
+fn verify_archive_checksum_returns_missing_when_asset_not_in_list() {
+    // The archive downloaded fine but checksums.txt does not list it. This
+    // is distinct from a SHA *mismatch* — see the rustdoc on the helper.
+    let archive = write_temp_archive(b"hello world");
+    let checksums = format!("{HELLO_WORLD_SHA256}  some-other-asset.tar.gz\n");
+    let err = super::verify_archive_checksum(archive.path(), &checksums, "cfgd_linux.tar.gz")
+        .unwrap_err();
+    match err {
+        crate::errors::UpgradeError::ChecksumMissing { file } => {
+            assert_eq!(file, "cfgd_linux.tar.gz");
+        }
+        other => panic!("expected ChecksumMissing, got: {other:?}"),
+    }
+}
+
+#[test]
+fn verify_archive_checksum_returns_mismatch_when_sha_differs() {
+    // Local archive content disagrees with what checksums.txt advertises.
+    // Genuine corruption or in-flight interception — distinct from missing.
+    let archive = write_temp_archive(b"tampered content");
+    let checksums = format!("{HELLO_WORLD_SHA256}  cfgd_linux.tar.gz\n");
+    let err = super::verify_archive_checksum(archive.path(), &checksums, "cfgd_linux.tar.gz")
+        .unwrap_err();
+    match err {
+        crate::errors::UpgradeError::ChecksumMismatch { file } => {
+            assert_eq!(file, "cfgd_linux.tar.gz");
+        }
+        other => panic!("expected ChecksumMismatch, got: {other:?}"),
+    }
+}
+
+#[test]
+fn verify_archive_checksum_propagates_read_failure_as_download_failed() {
+    // Unreadable archive surfaces through sha256_file → DownloadFailed.
+    let checksums = format!("{HELLO_WORLD_SHA256}  cfgd_linux.tar.gz\n");
+    let err = super::verify_archive_checksum(
+        std::path::Path::new("/nonexistent/path/to/archive.tar.gz"),
+        &checksums,
+        "cfgd_linux.tar.gz",
+    )
+    .unwrap_err();
+    match err {
+        crate::errors::UpgradeError::DownloadFailed { message } => {
+            assert!(message.contains("/nonexistent/path"), "msg: {message}");
+        }
+        other => panic!("expected DownloadFailed, got: {other:?}"),
+    }
+}
+
+#[test]
+fn verify_archive_checksum_is_case_insensitive_on_hex() {
+    // parse_checksums lowercases before storing — verify the helper
+    // still matches when the checksums file uses uppercase hex (some
+    // signers emit `SHA256SUMS` with capitalized digests).
+    let archive = write_temp_archive(b"hello world");
+    let upper = HELLO_WORLD_SHA256.to_uppercase();
+    let checksums = format!("{upper}  cfgd_linux.tar.gz\n");
+    super::verify_archive_checksum(archive.path(), &checksums, "cfgd_linux.tar.gz")
+        .expect("uppercase hex must still match after lowercase normalization");
+}
+
+#[test]
+fn verify_archive_checksum_picks_correct_entry_when_multiple_assets_listed() {
+    let archive = write_temp_archive(b"hello world");
+    let checksums = format!(
+        "{HELLO_WORLD_SHA256}  cfgd_linux.tar.gz\n\
+         deadbeef00000000000000000000000000000000000000000000000000000000  cfgd_macos.tar.gz\n\
+         cafebabe00000000000000000000000000000000000000000000000000000000  cfgd_windows.zip\n"
+    );
+    super::verify_archive_checksum(archive.path(), &checksums, "cfgd_linux.tar.gz")
+        .expect("must match the linux entry");
+    let err = super::verify_archive_checksum(archive.path(), &checksums, "cfgd_macos.tar.gz")
+        .unwrap_err();
+    assert!(
+        matches!(err, crate::errors::UpgradeError::ChecksumMismatch { ref file } if file == "cfgd_macos.tar.gz"),
+        "wrong asset must surface as mismatch on the macos entry: {err:?}"
+    );
+}
+
 #[test]
 fn atomic_replace_overwrites_target() {
     let dir = tempfile::tempdir().unwrap();
