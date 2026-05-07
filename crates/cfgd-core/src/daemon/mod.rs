@@ -244,15 +244,8 @@ impl Notifier {
             return;
         };
 
-        let payload = serde_json::json!({
-            "event": title,
-            "message": message,
-            "timestamp": crate::utc_now_iso8601(),
-            "source": "cfgd",
-        });
-
         let url = url.clone();
-        let body = payload.to_string();
+        let body = build_webhook_payload(title, message, &crate::utc_now_iso8601());
 
         // Run webhook POST via spawn_blocking (uses tokio's bounded threadpool)
         tokio::task::spawn_blocking(move || {
@@ -267,6 +260,20 @@ impl Notifier {
         });
     }
 }
+/// Build the JSON payload posted by `Notifier::notify_webhook`. Split out so
+/// the schema is testable without spawning a tokio thread or hitting the
+/// network. The `timestamp_iso` is injected so tests get deterministic
+/// output rather than `utc_now_iso8601()` at call time.
+pub(super) fn build_webhook_payload(title: &str, message: &str, timestamp_iso: &str) -> String {
+    serde_json::json!({
+        "event": title,
+        "message": message,
+        "timestamp": timestamp_iso,
+        "source": "cfgd",
+    })
+    .to_string()
+}
+
 // --- Submodule declarations ---
 
 mod checkin;

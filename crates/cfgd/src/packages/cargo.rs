@@ -71,15 +71,9 @@ impl PackageManager for CargoManager {
 
     fn installed_packages(&self) -> Result<HashSet<String>> {
         let output = run_pkg_cmd("cargo", cargo_cmd().args(["install", "--list"]), "list")?;
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        // `cargo install --list` format: "package_name v1.2.3:" followed by indented binary names
-        // We only care about the package names (lines that don't start with whitespace)
-        Ok(stdout
-            .lines()
-            .filter(|l| !l.starts_with(' ') && !l.is_empty())
-            .filter_map(|l| l.split_whitespace().next())
-            .map(|s| s.to_string())
-            .collect())
+        Ok(parse_cargo_install_list_packages(&String::from_utf8_lossy(
+            &output.stdout,
+        )))
     }
 
     fn install(&self, packages: &[String], printer: &Printer) -> Result<()> {
@@ -127,19 +121,10 @@ impl PackageManager for CargoManager {
         if !output.status.success() {
             return Ok(None);
         }
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        // First line format: `package_name = "1.2.3"    # description`
-        // Only match if the package name exactly matches
-        for line in stdout.lines() {
-            let parts: Vec<&str> = line.splitn(3, '"').collect();
-            if parts.len() >= 2 {
-                let name = line.split_whitespace().next().unwrap_or("");
-                if name == package {
-                    return Ok(Some(parts[1].to_string()));
-                }
-            }
-        }
-        Ok(None)
+        Ok(parse_cargo_search_version(
+            &String::from_utf8_lossy(&output.stdout),
+            package,
+        ))
     }
 
     fn installed_packages_with_versions(&self) -> Result<Vec<cfgd_core::providers::PackageInfo>> {
@@ -148,6 +133,36 @@ impl PackageManager for CargoManager {
             &output.stdout,
         )))
     }
+}
+
+/// Parse `cargo install --list` stdout into a name-only `HashSet`.
+/// Non-indented lines are `package_name v1.2.3:`; indented lines are binary
+/// names (skipped). Empty lines are also skipped.
+pub(super) fn parse_cargo_install_list_packages(stdout: &str) -> HashSet<String> {
+    stdout
+        .lines()
+        .filter(|l| !l.starts_with(' ') && !l.is_empty())
+        .filter_map(|l| l.split_whitespace().next())
+        .map(|s| s.to_string())
+        .collect()
+}
+
+/// Parse `cargo search <pkg> --limit 1` stdout for the matching package.
+/// Each line looks like `name = "1.2.3"    # description`. Returns the
+/// quoted version only when the line's leading token matches `expected`
+/// exactly — partial / prefix matches do not count, since `cargo search`
+/// can return adjacent crates that share a prefix with the query.
+pub(super) fn parse_cargo_search_version(stdout: &str, expected: &str) -> Option<String> {
+    for line in stdout.lines() {
+        let parts: Vec<&str> = line.splitn(3, '"').collect();
+        if parts.len() >= 2 {
+            let name = line.split_whitespace().next().unwrap_or("");
+            if name == expected {
+                return Some(parts[1].to_string());
+            }
+        }
+    }
+    None
 }
 
 /// Parse `cargo install --list` output into PackageInfo.
@@ -336,5 +351,81 @@ tokei v12.1.2:
         let mgr = CargoManager;
         let printer = Printer::new(cfgd_core::output::Verbosity::Quiet);
         mgr.update(&printer).unwrap();
+    }
+
+    // --- parse_cargo_install_list_packages ---
+
+    #[test]
+    fn parse_cargo_install_list_packages_extracts_top_level_names() {
+        let stdout = "bat v0.24.0:\n    bat\nripgrep v14.1.0:\n    rg\nfd-find v9.0.0:\n    fd\n";
+        let pkgs = parse_cargo_install_list_packages(stdout);
+        assert_eq!(pkgs.len(), 3);
+        assert!(pkgs.contains("bat"));
+        assert!(pkgs.contains("ripgrep"));
+        assert!(pkgs.contains("fd-find"));
+    }
+
+    #[test]
+    fn parse_cargo_install_list_packages_skips_indented_binary_names() {
+        // Indented lines are binary names installed by the package — they
+        // should never end up in the package set.
+        let stdout = "ripgrep v14.1.0:\n    rg\n    rg-extra\n";
+        let pkgs = parse_cargo_install_list_packages(stdout);
+        assert_eq!(pkgs.len(), 1);
+        assert!(pkgs.contains("ripgrep"));
+        assert!(!pkgs.contains("rg"));
+    }
+
+    #[test]
+    fn parse_cargo_install_list_packages_drops_empty_lines() {
+        let stdout = "\nbat v0.24.0:\n    bat\n\nripgrep v14.1.0:\n    rg\n\n";
+        let pkgs = parse_cargo_install_list_packages(stdout);
+        assert_eq!(pkgs.len(), 2);
+    }
+
+    #[test]
+    fn parse_cargo_install_list_packages_empty_input_yields_empty_set() {
+        assert!(parse_cargo_install_list_packages("").is_empty());
+    }
+
+    // --- parse_cargo_search_version ---
+
+    #[test]
+    fn parse_cargo_search_version_extracts_quoted_version() {
+        let stdout = "ripgrep = \"14.1.0\"    # ripgrep recursively searches\n";
+        let v = parse_cargo_search_version(stdout, "ripgrep");
+        assert_eq!(v.as_deref(), Some("14.1.0"));
+    }
+
+    #[test]
+    fn parse_cargo_search_version_returns_none_when_name_does_not_match() {
+        // cargo search returns adjacent crates; do not return their version.
+        let stdout = "ripgrep-all = \"0.10.5\"    # different crate\n";
+        let v = parse_cargo_search_version(stdout, "ripgrep");
+        assert!(
+            v.is_none(),
+            "name match must be exact — prefix matches must not pass"
+        );
+    }
+
+    #[test]
+    fn parse_cargo_search_version_returns_none_on_empty_input() {
+        assert!(parse_cargo_search_version("", "anything").is_none());
+    }
+
+    #[test]
+    fn parse_cargo_search_version_returns_none_when_no_quote_pair() {
+        // No '"' in the line — splitn(3,'"') returns a single element vec.
+        let stdout = "ripgrep some text without quotes\n";
+        let v = parse_cargo_search_version(stdout, "ripgrep");
+        assert!(v.is_none());
+    }
+
+    #[test]
+    fn parse_cargo_search_version_picks_first_exact_match() {
+        // Multi-line stdout where the second line is the exact match.
+        let stdout = "rg = \"0.0.1\"\nripgrep = \"14.1.0\"\n";
+        let v = parse_cargo_search_version(stdout, "ripgrep");
+        assert_eq!(v.as_deref(), Some("14.1.0"));
     }
 }

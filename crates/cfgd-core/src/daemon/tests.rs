@@ -6380,3 +6380,58 @@ fn infer_item_tier_normal_resources_are_recommended() {
     );
     assert_eq!(infer_item_tier("env.PATH"), "recommended");
 }
+
+// --- build_webhook_payload ---
+
+#[test]
+fn build_webhook_payload_emits_expected_schema() {
+    let body = super::build_webhook_payload(
+        "cfgd: drift detected",
+        "5 file(s) changed",
+        "2026-05-07T05:30:00Z",
+    );
+    let parsed: serde_json::Value =
+        serde_json::from_str(&body).expect("payload must be valid JSON");
+    assert_eq!(parsed["event"], "cfgd: drift detected");
+    assert_eq!(parsed["message"], "5 file(s) changed");
+    assert_eq!(parsed["timestamp"], "2026-05-07T05:30:00Z");
+    assert_eq!(
+        parsed["source"], "cfgd",
+        "source must be hardcoded so receivers can filter on it"
+    );
+}
+
+#[test]
+fn build_webhook_payload_preserves_unicode_in_message() {
+    let body =
+        super::build_webhook_payload("hdr", "msg with 中文 + emoji 🎉", "2026-05-07T00:00:00Z");
+    let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(parsed["message"], "msg with 中文 + emoji 🎉");
+}
+
+#[test]
+fn build_webhook_payload_escapes_quotes_and_backslashes() {
+    // The function must produce JSON that round-trips even when the message
+    // contains characters that would break a naive string concat.
+    let body = super::build_webhook_payload(
+        "hdr",
+        "a \"quoted\" path: C:\\Users\\me\\.config",
+        "2026-05-07T00:00:00Z",
+    );
+    let parsed: serde_json::Value =
+        serde_json::from_str(&body).expect("payload with quotes/backslashes must round-trip");
+    assert_eq!(
+        parsed["message"],
+        "a \"quoted\" path: C:\\Users\\me\\.config"
+    );
+}
+
+#[test]
+fn build_webhook_payload_accepts_empty_strings() {
+    let body = super::build_webhook_payload("", "", "");
+    let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(parsed["event"], "");
+    assert_eq!(parsed["message"], "");
+    assert_eq!(parsed["timestamp"], "");
+    assert_eq!(parsed["source"], "cfgd");
+}
