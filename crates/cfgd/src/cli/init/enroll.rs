@@ -182,7 +182,11 @@ fn finish_enrollment(
 // ─────────────────────────────────────────────────────
 
 pub(super) fn detect_ssh_key(printer: &Printer) -> Option<String> {
-    // Try SSH agent first
+    let ssh_dir = cfgd_core::expand_tilde(Path::new("~/.ssh"));
+
+    // Try SSH agent first — when the agent has identities loaded, prefer
+    // disk keys (matching agent semantics is impractical without the
+    // agent socket, but the disk keys are what `ssh-keygen -Y sign` uses).
     if cfgd_core::command_available("ssh-add")
         && let Ok(output) = cfgd_core::command_output_with_timeout(
             std::process::Command::new("ssh-add").arg("-l"),
@@ -193,40 +197,37 @@ pub(super) fn detect_ssh_key(printer: &Printer) -> Option<String> {
         let stdout = String::from_utf8_lossy(&output.stdout);
         if let Some(line) = stdout.lines().next()
             && !line.contains("no identities")
+            && let Some(key) = first_existing_ssh_key(&ssh_dir)
         {
-            let ssh_dir = cfgd_core::expand_tilde(Path::new("~/.ssh"));
-            for key_name in &["id_ed25519", "id_rsa", "id_ecdsa"] {
-                let pub_path = ssh_dir.join(format!("{key_name}.pub"));
-                if pub_path.exists() {
-                    printer.info(&format!("Using SSH key from agent: {}", pub_path.display()));
-                    return Some(pub_path.to_string_lossy().to_string());
-                }
-            }
-            for key_name in &["id_ed25519", "id_rsa", "id_ecdsa"] {
-                let key_path = ssh_dir.join(key_name);
-                if key_path.exists() {
-                    printer.info(&format!("Using SSH key: {}", key_path.display()));
-                    return Some(key_path.to_string_lossy().to_string());
-                }
-            }
+            printer.info(&format!("Using SSH key from agent: {}", key.display()));
+            return Some(key.to_string_lossy().to_string());
         }
     }
 
     // Fall back to on-disk keys
-    let ssh_dir = cfgd_core::expand_tilde(Path::new("~/.ssh"));
+    if let Some(key) = first_existing_ssh_key(&ssh_dir) {
+        printer.info(&format!("Using SSH key: {}", key.display()));
+        return Some(key.to_string_lossy().to_string());
+    }
+
+    None
+}
+
+/// Scan `ssh_dir` for the first available key in priority order
+/// (`id_ed25519` → `id_rsa` → `id_ecdsa`), preferring `<key>.pub` over the
+/// private key in each round. Pure helper — split out so the priority
+/// ordering and pub-vs-private fallback are testable against a tempdir.
+pub(super) fn first_existing_ssh_key(ssh_dir: &Path) -> Option<std::path::PathBuf> {
     for key_name in &["id_ed25519", "id_rsa", "id_ecdsa"] {
         let pub_path = ssh_dir.join(format!("{key_name}.pub"));
         if pub_path.exists() {
-            printer.info(&format!("Using SSH key: {}", pub_path.display()));
-            return Some(pub_path.to_string_lossy().to_string());
+            return Some(pub_path);
         }
         let key_path = ssh_dir.join(key_name);
         if key_path.exists() {
-            printer.info(&format!("Using SSH key: {}", key_path.display()));
-            return Some(key_path.to_string_lossy().to_string());
+            return Some(key_path);
         }
     }
-
     None
 }
 

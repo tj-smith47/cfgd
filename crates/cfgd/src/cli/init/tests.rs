@@ -2079,3 +2079,77 @@ fn is_module_only_apply_false_when_no_modules() {
     assert!(!super::is_module_only_apply(None, &[]));
     assert!(!super::is_module_only_apply(Some("dev"), &[]));
 }
+
+// --- first_existing_ssh_key ---
+
+#[test]
+fn first_existing_ssh_key_returns_pub_over_private() {
+    // When both `id_ed25519` and `id_ed25519.pub` exist, the .pub wins
+    // (the public key is what the enrollment payload sends).
+    let ssh_dir = tempfile::tempdir().unwrap();
+    std::fs::write(ssh_dir.path().join("id_ed25519"), b"private").unwrap();
+    std::fs::write(ssh_dir.path().join("id_ed25519.pub"), b"public").unwrap();
+    let found = super::first_existing_ssh_key(ssh_dir.path()).unwrap();
+    assert_eq!(found.file_name().unwrap(), "id_ed25519.pub");
+}
+
+#[test]
+fn first_existing_ssh_key_falls_back_to_private_when_no_pub() {
+    // Only the private key present — fall back to it (the caller still
+    // gets a usable signing path even without a discoverable .pub).
+    let ssh_dir = tempfile::tempdir().unwrap();
+    std::fs::write(ssh_dir.path().join("id_ed25519"), b"private").unwrap();
+    let found = super::first_existing_ssh_key(ssh_dir.path()).unwrap();
+    assert_eq!(found.file_name().unwrap(), "id_ed25519");
+}
+
+#[test]
+fn first_existing_ssh_key_priority_ed25519_over_rsa_over_ecdsa() {
+    // All three present → ed25519 wins (modern + smallest key).
+    let ssh_dir = tempfile::tempdir().unwrap();
+    for key in &["id_ed25519", "id_rsa", "id_ecdsa"] {
+        std::fs::write(ssh_dir.path().join(format!("{key}.pub")), b"k").unwrap();
+    }
+    let found = super::first_existing_ssh_key(ssh_dir.path()).unwrap();
+    assert_eq!(found.file_name().unwrap(), "id_ed25519.pub");
+}
+
+#[test]
+fn first_existing_ssh_key_picks_rsa_when_ed25519_missing() {
+    let ssh_dir = tempfile::tempdir().unwrap();
+    std::fs::write(ssh_dir.path().join("id_rsa.pub"), b"k").unwrap();
+    std::fs::write(ssh_dir.path().join("id_ecdsa.pub"), b"k").unwrap();
+    let found = super::first_existing_ssh_key(ssh_dir.path()).unwrap();
+    assert_eq!(found.file_name().unwrap(), "id_rsa.pub");
+}
+
+#[test]
+fn first_existing_ssh_key_picks_ecdsa_when_only_option() {
+    let ssh_dir = tempfile::tempdir().unwrap();
+    std::fs::write(ssh_dir.path().join("id_ecdsa.pub"), b"k").unwrap();
+    let found = super::first_existing_ssh_key(ssh_dir.path()).unwrap();
+    assert_eq!(found.file_name().unwrap(), "id_ecdsa.pub");
+}
+
+#[test]
+fn first_existing_ssh_key_returns_none_for_empty_dir() {
+    let ssh_dir = tempfile::tempdir().unwrap();
+    assert!(super::first_existing_ssh_key(ssh_dir.path()).is_none());
+}
+
+#[test]
+fn first_existing_ssh_key_ignores_unrecognized_key_names() {
+    // Files like `id_dsa` (legacy) or `github_actions` are not in the
+    // priority list and must be skipped — only the canonical names match.
+    let ssh_dir = tempfile::tempdir().unwrap();
+    std::fs::write(ssh_dir.path().join("id_dsa"), b"k").unwrap();
+    std::fs::write(ssh_dir.path().join("github_actions.pub"), b"k").unwrap();
+    assert!(super::first_existing_ssh_key(ssh_dir.path()).is_none());
+}
+
+#[test]
+fn first_existing_ssh_key_returns_none_when_dir_does_not_exist() {
+    // No tempdir — pass a path that doesn't exist. Function must not panic.
+    let found = super::first_existing_ssh_key(std::path::Path::new("/nonexistent/ssh/dir/12345"));
+    assert!(found.is_none());
+}
