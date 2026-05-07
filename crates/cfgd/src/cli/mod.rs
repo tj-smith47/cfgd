@@ -80,6 +80,39 @@ fn builtin_aliases() -> HashMap<String, String> {
     HashMap::new()
 }
 
+/// Locate the index of the first positional argument in `args` (i.e. the
+/// subcommand slot), skipping global flags and their values.
+///
+/// Knows that `--config` / `--profile` take a value in the next slot, while
+/// `--config=value` / `--profile=value` glue the value to the flag (no skip).
+/// Boolean flags (`--verbose`, `-v`, `--quiet`, `-q`, `--no-color`) take no
+/// value. Stops scanning at the first `--` separator (POSIX end-of-options).
+///
+/// Returns `None` when no positional appears (only flags). Pure helper —
+/// split out so the value-skipping rules are testable without depending on
+/// alias-loading I/O.
+pub(super) fn find_subcommand_index(args: &[String]) -> Option<usize> {
+    let mut i = 1; // skip argv[0]
+    while i < args.len() {
+        let arg = &args[i];
+        if arg == "--" {
+            return None;
+        }
+        if arg.starts_with('-') {
+            if matches!(arg.as_str(), "--config" | "--profile") {
+                i += 1;
+            } else if arg.starts_with("--config=") || arg.starts_with("--profile=") {
+                // inline value, no skip
+            }
+            // boolean flags fall through with no extra skip
+        } else {
+            return Some(i);
+        }
+        i += 1;
+    }
+    None
+}
+
 /// Expand CLI aliases before clap parsing.
 ///
 /// Finds the first positional argument (non-flag, non-flag-value), checks if it
@@ -92,31 +125,7 @@ pub fn expand_aliases(args: Vec<String>) -> Vec<String> {
         return args;
     }
 
-    // Collect global flags that appear before the subcommand so we can skip them.
-    // We need to find the first positional arg (the subcommand position).
-    let mut subcommand_idx = None;
-    let mut i = 1; // skip argv[0]
-    while i < args.len() {
-        let arg = &args[i];
-        if arg == "--" {
-            break;
-        }
-        if arg.starts_with('-') {
-            // Skip flags and their values. Known global flags that take a value:
-            if matches!(arg.as_str(), "--config" | "--profile") {
-                i += 1; // skip the value too
-            } else if arg.starts_with("--config=") || arg.starts_with("--profile=") {
-                // value is inline, no skip needed
-            }
-            // Boolean flags (--verbose, -v, --quiet, -q, --no-color) are just skipped
-        } else {
-            subcommand_idx = Some(i);
-            break;
-        }
-        i += 1;
-    }
-
-    let subcommand_idx = match subcommand_idx {
+    let subcommand_idx = match find_subcommand_index(&args) {
         Some(idx) => idx,
         None => return args,
     };

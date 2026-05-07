@@ -2419,6 +2419,103 @@ fn expand_aliases_empty_args() {
     assert_eq!(expanded, args);
 }
 
+// --- find_subcommand_index ---
+
+fn s(v: &[&str]) -> Vec<String> {
+    v.iter().map(|s| s.to_string()).collect()
+}
+
+#[test]
+fn find_subcommand_index_returns_none_for_argv0_only() {
+    assert_eq!(super::find_subcommand_index(&s(&["cfgd"])), None);
+}
+
+#[test]
+fn find_subcommand_index_returns_none_for_only_flags() {
+    // No positional → None (alias expansion bails out, clap takes over).
+    assert_eq!(
+        super::find_subcommand_index(&s(&["cfgd", "--verbose", "--no-color"])),
+        None
+    );
+}
+
+#[test]
+fn find_subcommand_index_locates_first_positional() {
+    let args = s(&["cfgd", "apply"]);
+    assert_eq!(super::find_subcommand_index(&args), Some(1));
+}
+
+#[test]
+fn find_subcommand_index_skips_boolean_global_flags() {
+    let args = s(&["cfgd", "--verbose", "-v", "-q", "--no-color", "apply"]);
+    assert_eq!(super::find_subcommand_index(&args), Some(5));
+}
+
+#[test]
+fn find_subcommand_index_skips_value_for_separate_form_config() {
+    // --config <path> is two args; the subcommand is at idx 3, not 2.
+    let args = s(&["cfgd", "--config", "/etc/cfgd.yaml", "apply"]);
+    assert_eq!(super::find_subcommand_index(&args), Some(3));
+}
+
+#[test]
+fn find_subcommand_index_skips_value_for_separate_form_profile() {
+    let args = s(&["cfgd", "--profile", "developer", "apply"]);
+    assert_eq!(super::find_subcommand_index(&args), Some(3));
+}
+
+#[test]
+fn find_subcommand_index_does_not_skip_for_inline_form_config() {
+    // --config=<value> is a single arg; the subcommand is right after.
+    let args = s(&["cfgd", "--config=/etc/cfgd.yaml", "apply"]);
+    assert_eq!(super::find_subcommand_index(&args), Some(2));
+}
+
+#[test]
+fn find_subcommand_index_does_not_skip_for_inline_form_profile() {
+    let args = s(&["cfgd", "--profile=dev", "apply"]);
+    assert_eq!(super::find_subcommand_index(&args), Some(2));
+}
+
+#[test]
+fn find_subcommand_index_handles_mixed_global_flag_forms() {
+    let args = s(&[
+        "cfgd",
+        "-v",
+        "--config",
+        "/path",
+        "--profile=dev",
+        "--no-color",
+        "module",
+    ]);
+    assert_eq!(super::find_subcommand_index(&args), Some(6));
+}
+
+#[test]
+fn find_subcommand_index_stops_at_double_dash() {
+    // POSIX `--` ends the options section; nothing past it is a subcommand
+    // candidate (it's all positional args for the *parent*, not a new
+    // subcommand). Pin so a future "scan past --" change is intentional.
+    let args = s(&["cfgd", "--verbose", "--", "apply"]);
+    assert_eq!(super::find_subcommand_index(&args), None);
+}
+
+#[test]
+fn find_subcommand_index_does_not_misread_value_starting_with_dash() {
+    // After --config the next slot is *the value*, even if it looks like
+    // a flag (e.g. someone passes `--config -my-config.yaml`). The scanner
+    // must skip it unconditionally so the real subcommand stays visible.
+    let args = s(&["cfgd", "--config", "-/weird/path", "apply"]);
+    assert_eq!(super::find_subcommand_index(&args), Some(3));
+}
+
+#[test]
+fn find_subcommand_index_returns_first_positional_when_subcommand_at_position_one() {
+    // Common case: no global flags, subcommand at idx 1.
+    let args = s(&["cfgd", "init", "--apply"]);
+    assert_eq!(super::find_subcommand_index(&args), Some(1));
+}
+
 #[test]
 fn resolve_profile_name_explicit_takes_precedence() {
     let dir = create_test_config_dir();
