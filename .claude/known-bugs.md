@@ -43,6 +43,17 @@ public `parse_loose_version` API stays unchanged so other callers aren't
 affected. Test pinned in `modules/tests.rs::group_module_tags_sorts_versions_semver_then_lexical`
 and the consumer-facing contract in `group_module_tags_last_is_highest_version`.
 
+**Follow-up fix 2026-05-07 (`dfa15d8`)**: pushed the v-prefix handling down
+into `parse_loose_version` itself (`util/hashing.rs`) so every caller benefits
+— `modules/resolve.rs` min-version checks against package-manager output, and
+`controllers/config_policy.rs` agent-version constraints (where the reported
+version is sometimes a git tag like `v0.3.5`) now parse correctly without
+their own workaround. The `group_module_tags` comparator drops the
+`strip_prefix('v')` since the parser handles it. 4 new tests pin v-prefix
+parsing, the comparison invariant `v1.9.0 < v1.10.0`, the *non*-stripping of
+other prefixes (`release-1.0.0` stays rejected), and `version_satisfies`
+pull-through for `v`-prefixed inputs.
+
 ### Resolved 2026-05-07 — Apply/Plan `--context` parity + 4 surfaced spec items
 
 User decision on the `--context` asymmetry: **(A) add `--context` to `ApplyArgs`**

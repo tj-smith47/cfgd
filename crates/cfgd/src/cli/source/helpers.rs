@@ -352,3 +352,59 @@ where
         f(source)
     })
 }
+
+// --- Conflict-preview helpers (cmd_source_add) ---
+
+/// Build the [`CompositionInput`] used by `cfgd source add`'s conflict-preview
+/// step. The prospective subscription is modeled as a single composition input
+/// against the user's current resolved profile — the engine then surfaces the
+/// resource-level conflicts that would arise if the subscription went live.
+///
+/// Pure constructor — split out so the input shape (which fields flow through,
+/// which default) is testable without a live SourceManager.
+pub(crate) fn build_subscription_preview_input(
+    source_name: &str,
+    priority: u32,
+    manifest_policy: &config::ConfigSourcePolicy,
+    accept_recommended: bool,
+    opt_in: &[String],
+    layers: Vec<config::ProfileLayer>,
+) -> CompositionInput {
+    CompositionInput {
+        source_name: source_name.to_string(),
+        priority,
+        policy: manifest_policy.clone(),
+        constraints: manifest_policy.constraints.clone(),
+        layers,
+        subscription: SubscriptionConfig {
+            accept_recommended,
+            opt_in: opt_in.to_vec(),
+            ..Default::default()
+        },
+    }
+}
+
+/// Render each [`ConflictResolution`] as a user-facing warning line, in the
+/// order returned by the composition engine. Returns an empty `Vec` when
+/// `conflicts` is empty so the caller can take the "no conflicts with
+/// current config" branch on `is_empty()`.
+///
+/// Format pinned to `"  {LABEL} {resource_id} <- {winning_source} ({details})"`
+/// — two-space indent, capital label, ASCII left-arrow. Any change to this
+/// shape is consumer-visible.
+pub(crate) fn format_conflict_preview_lines(
+    conflicts: &[cfgd_core::composition::ConflictResolution],
+) -> Vec<String> {
+    conflicts
+        .iter()
+        .map(|conflict| {
+            format!(
+                "  {} {} <- {} ({})",
+                conflict.resolution_type.label(),
+                conflict.resource_id,
+                conflict.winning_source,
+                conflict.details
+            )
+        })
+        .collect()
+}

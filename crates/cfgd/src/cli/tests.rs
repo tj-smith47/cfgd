@@ -740,6 +740,259 @@ spec:
     );
 }
 
+// --- build_subscription_preview_input ---
+
+fn manifest_policy_with_constraints() -> cfgd_core::config::ConfigSourcePolicy {
+    let manifest: cfgd_core::config::ConfigSourceDocument = serde_yaml::from_str(
+        r#"apiVersion: cfgd.io/v1alpha1
+kind: ConfigSource
+metadata:
+  name: acme
+spec:
+  provides: {}
+  policy:
+    constraints:
+      noScripts: true
+      noSecretsRead: false
+      allowedTargetPaths: ["/etc/cfgd"]
+"#,
+    )
+    .expect("manifest fixture must parse");
+    manifest.spec.policy
+}
+
+#[test]
+fn build_subscription_preview_input_threads_priority_through() {
+    let policy = manifest_policy_with_constraints();
+    let input = super::build_subscription_preview_input("acme", 750, &policy, false, &[], vec![]);
+    assert_eq!(input.priority, 750);
+    assert_eq!(input.source_name, "acme");
+}
+
+#[test]
+fn build_subscription_preview_input_clones_policy_and_constraints() {
+    // The composition engine reads `input.policy` for tier classification
+    // and `input.constraints` for path/script/secrets checks. Pin that
+    // both come from the manifest's policy, not silently zeroed.
+    let policy = manifest_policy_with_constraints();
+    let input = super::build_subscription_preview_input("acme", 100, &policy, false, &[], vec![]);
+    assert!(
+        input.constraints.no_scripts,
+        "noScripts must propagate from manifest"
+    );
+    assert!(
+        !input.constraints.no_secrets_read,
+        "noSecretsRead=false must NOT be silently flipped to true"
+    );
+    assert_eq!(
+        input.constraints.allowed_target_paths,
+        vec!["/etc/cfgd".to_string()]
+    );
+}
+
+#[test]
+fn build_subscription_preview_input_propagates_subscription_flags() {
+    let policy = manifest_policy_with_constraints();
+    let opt_in = vec!["editor".to_string(), "shell-aliases".to_string()];
+    let input =
+        super::build_subscription_preview_input("acme", 100, &policy, true, &opt_in, vec![]);
+    assert!(input.subscription.accept_recommended);
+    assert_eq!(input.subscription.opt_in, opt_in);
+}
+
+#[test]
+fn build_subscription_preview_input_defaults_overrides_and_reject_to_null() {
+    // The cfgd source add preview never carries user overrides/reject —
+    // those are only meaningful after subscription. Pin that the helper
+    // emits Null so the engine's default-tier classification kicks in.
+    let policy = manifest_policy_with_constraints();
+    let input = super::build_subscription_preview_input("acme", 100, &policy, false, &[], vec![]);
+    assert!(matches!(
+        input.subscription.overrides,
+        serde_yaml::Value::Null
+    ));
+    assert!(matches!(input.subscription.reject, serde_yaml::Value::Null));
+}
+
+#[test]
+fn build_subscription_preview_input_preserves_layer_ordering() {
+    // Layers are applied in the order resolve_profile returned them
+    // (lowest priority → highest, parents before children). The helper
+    // must move the Vec into the input without reordering or dropping.
+    let policy = manifest_policy_with_constraints();
+    let layers = vec![
+        cfgd_core::config::ProfileLayer {
+            source: "local".to_string(),
+            profile_name: "base".to_string(),
+            priority: 0,
+            policy: cfgd_core::config::LayerPolicy::Local,
+            spec: cfgd_core::config::ProfileSpec::default(),
+        },
+        cfgd_core::config::ProfileLayer {
+            source: "local".to_string(),
+            profile_name: "overlay".to_string(),
+            priority: 10,
+            policy: cfgd_core::config::LayerPolicy::Local,
+            spec: cfgd_core::config::ProfileSpec::default(),
+        },
+    ];
+    let input =
+        super::build_subscription_preview_input("acme", 100, &policy, false, &[], layers.clone());
+    assert_eq!(input.layers.len(), 2);
+    assert_eq!(input.layers[0].profile_name, "base");
+    assert_eq!(input.layers[1].profile_name, "overlay");
+}
+
+#[test]
+fn build_subscription_preview_input_empty_opt_in_is_empty_vec_not_dropped() {
+    // SubscriptionConfig::opt_in is `Vec<String>` (no Option). An empty
+    // input must produce an empty Vec — not panic, not skip the field.
+    let policy = manifest_policy_with_constraints();
+    let input = super::build_subscription_preview_input("acme", 100, &policy, false, &[], vec![]);
+    assert!(input.subscription.opt_in.is_empty());
+}
+
+// --- format_conflict_preview_lines ---
+
+fn conflict(
+    resource: &str,
+    kind: cfgd_core::composition::ResolutionType,
+    source: &str,
+    details: &str,
+) -> cfgd_core::composition::ConflictResolution {
+    cfgd_core::composition::ConflictResolution {
+        resource_id: resource.to_string(),
+        resolution_type: kind,
+        winning_source: source.to_string(),
+        details: details.to_string(),
+    }
+}
+
+#[test]
+fn format_conflict_preview_lines_empty_input_returns_empty_vec() {
+    // The caller relies on `is_empty()` to take the "No conflicts" branch.
+    assert!(super::format_conflict_preview_lines(&[]).is_empty());
+}
+
+#[test]
+fn format_conflict_preview_lines_emits_canonical_shape() {
+    let conflicts = vec![conflict(
+        "package:apt:curl",
+        cfgd_core::composition::ResolutionType::Locked,
+        "acme-baseline",
+        "policy locks installation",
+    )];
+    let lines = super::format_conflict_preview_lines(&conflicts);
+    assert_eq!(lines.len(), 1);
+    assert_eq!(
+        lines[0],
+        "  LOCKED package:apt:curl <- acme-baseline (policy locks installation)"
+    );
+}
+
+#[test]
+fn format_conflict_preview_lines_renders_each_resolution_type_label() {
+    // All five ResolutionType variants must produce their canonical UPPER
+    // label — pin so a future rename of `Override` → `Overridden` is
+    // intentional, not silent.
+    let conflicts = vec![
+        conflict(
+            "a",
+            cfgd_core::composition::ResolutionType::Locked,
+            "src",
+            "d",
+        ),
+        conflict(
+            "b",
+            cfgd_core::composition::ResolutionType::Required,
+            "src",
+            "d",
+        ),
+        conflict(
+            "c",
+            cfgd_core::composition::ResolutionType::Override,
+            "src",
+            "d",
+        ),
+        conflict(
+            "d",
+            cfgd_core::composition::ResolutionType::Rejected,
+            "src",
+            "d",
+        ),
+        conflict(
+            "e",
+            cfgd_core::composition::ResolutionType::Default,
+            "src",
+            "d",
+        ),
+    ];
+    let lines = super::format_conflict_preview_lines(&conflicts);
+    assert_eq!(lines.len(), 5);
+    assert!(lines[0].contains("LOCKED"));
+    assert!(lines[1].contains("REQUIRED"));
+    assert!(lines[2].contains("OVERRIDE"));
+    assert!(lines[3].contains("REJECTED"));
+    assert!(lines[4].contains("DEFAULT"));
+}
+
+#[test]
+fn format_conflict_preview_lines_preserves_input_order() {
+    // The composition engine returns conflicts in a deterministic order;
+    // the formatter must not reorder them — consumers reading the output
+    // top-to-bottom assume the engine's grouping (e.g. all package
+    // conflicts together).
+    let conflicts = vec![
+        conflict(
+            "z",
+            cfgd_core::composition::ResolutionType::Default,
+            "src",
+            "z-details",
+        ),
+        conflict(
+            "a",
+            cfgd_core::composition::ResolutionType::Default,
+            "src",
+            "a-details",
+        ),
+    ];
+    let lines = super::format_conflict_preview_lines(&conflicts);
+    assert!(
+        lines[0].contains(" z "),
+        "first line must be `z`: {:?}",
+        lines
+    );
+    assert!(
+        lines[1].contains(" a "),
+        "second line must be `a`: {:?}",
+        lines
+    );
+}
+
+#[test]
+fn format_conflict_preview_lines_uses_two_space_indent() {
+    // The output is indented under the "Conflicts with Current Config"
+    // subheader so the eye groups them. Two spaces is the convention
+    // shared with display_pending_decisions.
+    let conflicts = vec![conflict(
+        "a",
+        cfgd_core::composition::ResolutionType::Default,
+        "s",
+        "d",
+    )];
+    let lines = super::format_conflict_preview_lines(&conflicts);
+    assert!(
+        lines[0].starts_with("  "),
+        "must start with two-space indent: {:?}",
+        lines[0]
+    );
+    assert!(
+        !lines[0].starts_with("   "),
+        "must not be three-space indent: {:?}",
+        lines[0]
+    );
+}
+
 #[test]
 fn add_and_remove_source_in_config() {
     let dir = tempfile::tempdir().unwrap();

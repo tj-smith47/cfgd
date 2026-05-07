@@ -117,7 +117,6 @@ pub(crate) fn cmd_source_add(
         if let Some(pn) = profile_name
             && let Ok(local_resolved) = config::resolve_profile(pn, &pdir)
         {
-            // Build a CompositionInput for the prospective source
             let mut preview_layers = Vec::new();
             if let Some(ref pn) = selected_profile
                 && let Ok(src_profiles_dir) = mgr.source_profiles_dir(&source_name)
@@ -127,45 +126,26 @@ pub(crate) fn cmd_source_add(
                 preview_layers = r.layers;
             }
 
-            let preview_sub = config::SubscriptionSpec {
-                profile: selected_profile.clone(),
-                priority: resolved_priority,
+            let preview_input = build_subscription_preview_input(
+                &source_name,
+                resolved_priority,
+                &manifest.spec.policy,
                 accept_recommended,
-                opt_in: opt_in.to_vec(),
-                ..Default::default()
-            };
-
-            let preview_input = CompositionInput {
-                source_name: source_name.clone(),
-                priority: resolved_priority,
-                policy: manifest.spec.policy.clone(),
-                constraints: manifest.spec.policy.constraints.clone(),
-                layers: preview_layers,
-                subscription: SubscriptionConfig {
-                    accept_recommended: preview_sub.accept_recommended,
-                    opt_in: preview_sub.opt_in.clone(),
-                    overrides: preview_sub.overrides.clone(),
-                    reject: preview_sub.reject.clone(),
-                },
-            };
+                opt_in,
+                preview_layers,
+            );
 
             match composition::compose(&local_resolved, &[preview_input]) {
                 Ok(result) => {
-                    if result.conflicts.is_empty() {
+                    let lines = format_conflict_preview_lines(&result.conflicts);
+                    if lines.is_empty() {
                         printer.newline();
                         printer.success("No conflicts with current config");
                     } else {
                         printer.newline();
                         printer.subheader("Conflicts with Current Config");
-                        for conflict in &result.conflicts {
-                            let label = conflict.resolution_type.label();
-                            printer.warning(&format!(
-                                "  {} {} <- {} ({})",
-                                label,
-                                conflict.resource_id,
-                                conflict.winning_source,
-                                conflict.details
-                            ));
+                        for line in &lines {
+                            printer.warning(line);
                         }
                     }
                 }
