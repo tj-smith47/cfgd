@@ -129,32 +129,30 @@ pub(crate) fn cmd_source_add(
             None
         };
 
-    let selected_profile = if profile.is_some() {
-        profile.map(|s| s.to_string())
-    } else if auto_detected_profile.is_some() {
-        auto_detected_profile
-    } else if provided_profiles.len() == 1 {
-        Some(provided_profiles[0].clone())
-    } else if !provided_profiles.is_empty() {
-        printer.newline();
-        let selection =
-            printer.prompt_select("Select a profile to subscribe to:", &provided_profiles)?;
-        Some(selection.clone())
-    } else {
-        None
+    let selected_profile: Option<String> = match resolve_non_interactive_profile(
+        profile,
+        auto_detected_profile.as_deref(),
+        &provided_profiles,
+    ) {
+        Some(p) => Some(p),
+        None if provided_profiles.is_empty() => None,
+        None => {
+            printer.newline();
+            let selection =
+                printer.prompt_select("Select a profile to subscribe to:", &provided_profiles)?;
+            Some(selection.clone())
+        }
     };
 
     // Interactive priority prompt (when --priority not specified on command line)
     let resolved_priority = if let Some(p) = priority {
         p
     } else if args.yes {
-        500
+        DEFAULT_NONINTERACTIVE_PRIORITY
     } else {
         printer.newline();
         let input = printer.prompt_text("Set priority", "500")?;
-        input
-            .parse::<u32>()
-            .map_err(|_| anyhow::anyhow!("invalid priority: '{}' (must be a number)", input))?
+        parse_priority_input(&input)?
     };
 
     // Conflict preview: check for conflicts with current config before subscribing

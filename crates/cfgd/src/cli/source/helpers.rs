@@ -50,6 +50,44 @@ pub(crate) fn infer_source_name(url: &str) -> String {
     cleaned.to_string()
 }
 
+/// Default priority assigned to a non-interactive `cfgd source add --yes` run
+/// when neither `--priority` nor an interactive prompt picks one. Pinned at
+/// the midpoint of the 1–1000 priority space so non-interactive subscriptions
+/// don't implicitly outrank or sit beneath user-curated sources.
+pub(crate) const DEFAULT_NONINTERACTIVE_PRIORITY: u32 = 500;
+
+/// Pick the source-add profile without consulting the user. Returns:
+/// * `Some(name)` when an explicit `--profile`, an auto-detected platform
+///   profile, or a sole-option profile decides the choice.
+/// * `None` when the caller must either prompt (multiple options) or accept
+///   "no profile" — the caller distinguishes the two by checking
+///   `provided_profiles.is_empty()`.
+pub(crate) fn resolve_non_interactive_profile(
+    explicit: Option<&str>,
+    auto_detected: Option<&str>,
+    provided_profiles: &[String],
+) -> Option<String> {
+    if let Some(p) = explicit {
+        return Some(p.to_string());
+    }
+    if let Some(p) = auto_detected {
+        return Some(p.to_string());
+    }
+    if provided_profiles.len() == 1 {
+        return Some(provided_profiles[0].clone());
+    }
+    None
+}
+
+/// Parse the priority text typed at the interactive `cfgd source add` prompt.
+/// Surfaces the canonical `invalid priority: '<input>' (must be a number)`
+/// error so the wording stays in lockstep with the user-facing CLI.
+pub(crate) fn parse_priority_input(input: &str) -> anyhow::Result<u32> {
+    input
+        .parse::<u32>()
+        .map_err(|_| anyhow::anyhow!("invalid priority: '{}' (must be a number)", input))
+}
+
 pub(crate) fn count_policy_items(items: &config::PolicyItems) -> usize {
     let mut count = 0;
     if let Some(ref pkgs) = items.packages {

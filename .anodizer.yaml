@@ -310,31 +310,6 @@ workspaces:
             commit_author:
               name: "TJ Smith"
               email: "tj@jarvispro.io"
-          krew:
-            # Disabled until the Krew index PR review process is unblocked —
-            # re-enable once we're ready to ship a `kubectl krew install cfgd`
-            # path. The block is kept intact (rather than deleted) so the
-            # full publisher config is one toggle away.
-            skip_upload: "true"
-            repository:
-              owner: tj-smith47
-              name: krew-index
-            # <=50 chars per krew review bot guidance.
-            short_description: "Declarative GitOps machine config manager"
-            # Wrapped to 80 cols, no usage examples / subcommand enumeration.
-            description: |
-              cfgd reconciles machine state (packages, files, services, shell,
-              kernel settings, container runtimes, and Kubernetes nodes) against
-              a declarative YAML config. It detects drift and applies changes
-              safely. Inside a cluster, the kubectl plugin works with cfgd-managed
-              pods and nodes.
-            homepage: "https://github.com/tj-smith47/cfgd"
-            # Commit as the release engineer's GH-verified identity so CNCF
-            # EasyCLA matches the PR to the signed individual CLA. Default
-            # bot@anodizer.dev has no GitHub account and always fails the CLA.
-            commit_author:
-              name: "TJ Smith"
-              email: "tj@jarvispro.io"
         # Docker V2 image for the cfgd agent (CLI + daemon image).
         docker_v2:
           - id: cfgd-agent
