@@ -290,6 +290,9 @@ pub struct ApplyArgs {
     /// Skip all script hooks (pre/post/onChange)
     #[arg(long)]
     pub skip_scripts: bool,
+    /// Reconciliation context: apply (default) or reconcile
+    #[arg(long, default_value = "apply")]
+    pub context: String,
 }
 
 #[derive(Parser)]
@@ -377,7 +380,7 @@ pub enum Command {
 
     /// Apply the configuration (use --dry-run to preview without applying)
     #[command(
-        long_about = "Apply the active profile to this machine.\n\nExamples:\n  cfgd apply\n  cfgd apply --dry-run\n  cfgd apply --phase packages --yes\n  cfgd apply --module nettools"
+        long_about = "Apply the active profile to this machine.\n\nExamples:\n  cfgd apply\n  cfgd apply --dry-run\n  cfgd apply --phase packages --yes\n  cfgd apply --module nettools\n  cfgd apply --context reconcile"
     )]
     Apply(ApplyArgs),
 

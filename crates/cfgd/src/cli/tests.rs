@@ -2880,6 +2880,7 @@ fn cmd_apply_dry_run_empty_profile() {
         only: vec![],
         module: None,
         skip_scripts: false,
+        context: "apply".to_string(),
     };
 
     super::apply::cmd_apply(&h.cli(), h.printer(), &args).unwrap();
@@ -2913,6 +2914,7 @@ fn cmd_apply_from_flag_parses() {
         only: vec![],
         module: Some("dev-tools".to_string()),
         skip_scripts: false,
+        context: "apply".to_string(),
     };
 
     // cmd_apply should attempt to resolve the --from URL.
@@ -2942,6 +2944,7 @@ fn cmd_apply_dry_run_with_phase_filter() {
         only: vec![],
         module: None,
         skip_scripts: false,
+        context: "apply".to_string(),
     };
     super::apply::cmd_apply(&h.cli(), h.printer(), &args).unwrap();
     h.assert_header("Plan");
@@ -2968,6 +2971,7 @@ fn cmd_apply_dry_run_with_skip() {
         only: vec![],
         module: None,
         skip_scripts: false,
+        context: "apply".to_string(),
     };
     super::apply::cmd_apply(&h.cli(), h.printer(), &args).unwrap();
     h.assert_header("Plan");
@@ -2990,6 +2994,7 @@ fn cmd_apply_dry_run_with_only() {
         only: vec!["files".to_string()],
         module: None,
         skip_scripts: false,
+        context: "apply".to_string(),
     };
     super::apply::cmd_apply(&h.cli(), h.printer(), &args).unwrap();
     h.assert_header("Plan");
@@ -3015,6 +3020,7 @@ fn cmd_apply_real_with_empty_profile() {
         only: vec![],
         module: None,
         skip_scripts: false,
+        context: "apply".to_string(),
     };
     super::apply::cmd_apply(&h.cli(), h.printer(), &args).unwrap();
     h.assert_header("Apply");
@@ -3051,6 +3057,7 @@ fn cmd_status_after_apply() {
         only: vec![],
         module: None,
         skip_scripts: false,
+        context: "apply".to_string(),
     };
     super::apply::cmd_apply(&cli, &printer, &args).unwrap();
     buf.lock().unwrap().clear();
@@ -3086,6 +3093,7 @@ fn cmd_log_after_apply() {
         only: vec![],
         module: None,
         skip_scripts: false,
+        context: "apply".to_string(),
     };
     super::apply::cmd_apply(&cli, &printer, &args).unwrap();
     buf.lock().unwrap().clear();
@@ -3151,6 +3159,7 @@ fn cmd_apply_dry_run_with_files() {
         only: vec![],
         module: None,
         skip_scripts: false,
+        context: "apply".to_string(),
     };
 
     let result = super::apply::cmd_apply(&cli, &printer, &args);
@@ -3206,6 +3215,7 @@ fn cmd_apply_creates_file() {
         only: vec![],
         module: None,
         skip_scripts: false,
+        context: "apply".to_string(),
     };
 
     let result = super::apply::cmd_apply(&cli, &printer, &args);
@@ -3252,6 +3262,7 @@ fn cmd_apply_idempotent() {
         only: vec![],
         module: None,
         skip_scripts: false,
+        context: "apply".to_string(),
     };
 
     // First apply
@@ -3463,6 +3474,7 @@ fn execute_apply_dry_run() {
         only: vec![],
         module: None,
         skip_scripts: false,
+        context: "apply".to_string(),
     }));
     super::execute(&cli, h.printer()).unwrap();
     let output = h.output();
@@ -3636,6 +3648,7 @@ fn cmd_apply_with_module_filter() {
         only: vec![],
         module: Some("test-mod".to_string()),
         skip_scripts: false,
+        context: "apply".to_string(),
     };
 
     let result = super::apply::cmd_apply(&cli, &printer, &args);
@@ -3671,6 +3684,7 @@ fn cmd_apply_with_env_vars() {
         only: vec![],
         module: None,
         skip_scripts: false,
+        context: "apply".to_string(),
     };
 
     let result = super::apply::cmd_apply(&cli, &printer, &args);
@@ -3762,6 +3776,7 @@ fn cmd_status_with_drift_events() {
         only: vec![],
         module: None,
         skip_scripts: false,
+        context: "apply".to_string(),
     };
     super::apply::cmd_apply(&cli, &printer, &args).unwrap();
 
@@ -4092,6 +4107,7 @@ fn cmd_apply_dry_run_each_phase() {
             only: vec![],
             module: None,
             skip_scripts: false,
+            context: "apply".to_string(),
         };
         let result = super::apply::cmd_apply(&cli, &printer, &args);
         assert!(
@@ -4129,6 +4145,7 @@ fn cmd_verify_after_apply_with_env() {
         only: vec![],
         module: None,
         skip_scripts: false,
+        context: "apply".to_string(),
     };
     super::apply::cmd_apply(&cli, &printer, &args).unwrap();
 
@@ -4436,6 +4453,7 @@ fn cmd_rollback_after_file_apply() {
         only: vec![],
         module: None,
         skip_scripts: false,
+        context: "apply".to_string(),
     };
     super::apply::cmd_apply(&cli, &printer, &args).unwrap();
     assert!(target.exists());
@@ -4707,6 +4725,7 @@ fn cmd_apply_dry_run_with_skip_scripts() {
         only: vec![],
         module: None,
         skip_scripts: true,
+        context: "apply".to_string(),
     };
 
     let result = super::apply::cmd_apply(&cli, &printer, &args);
@@ -8108,6 +8127,7 @@ fn cmd_apply_module_only_no_profile() {
         only: vec![],
         module: Some("standalone-mod".to_string()),
         skip_scripts: false,
+        context: "apply".to_string(),
     };
 
     let result = super::apply::cmd_apply(&cli, &printer, &args);
@@ -8399,6 +8419,7 @@ fn cmd_apply_with_aliases() {
         only: vec![],
         module: None,
         skip_scripts: false,
+        context: "apply".to_string(),
     };
 
     let result = super::apply::cmd_apply(&cli, &printer, &args);
@@ -9076,6 +9097,7 @@ fn cmd_apply_dry_run_with_skip_and_only() {
         only: vec!["packages".to_string()],
         module: None,
         skip_scripts: false,
+        context: "apply".to_string(),
     };
 
     let result = super::apply::cmd_apply(&cli, &printer, &args);
@@ -9544,6 +9566,7 @@ fn cmd_apply_real_records_state() {
         module: None,
         from: None,
         skip_scripts: false,
+        context: "apply".to_string(),
     };
     super::apply::cmd_apply(&h.cli(), h.printer(), &args).unwrap();
 
@@ -9574,6 +9597,7 @@ fn cmd_apply_with_skip_and_only() {
         module: None,
         from: None,
         skip_scripts: false,
+        context: "apply".to_string(),
     };
     super::apply::cmd_apply(&h.cli(), h.printer(), &args).unwrap();
     let output = h.output();
@@ -9598,6 +9622,7 @@ fn cmd_apply_skip_scripts_flag() {
         module: None,
         from: None,
         skip_scripts: true,
+        context: "apply".to_string(),
     };
     super::apply::cmd_apply(&h.cli(), h.printer(), &args).unwrap();
     let output = h.output();

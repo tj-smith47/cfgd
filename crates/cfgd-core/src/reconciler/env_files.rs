@@ -2,6 +2,21 @@ use std::collections::HashMap;
 
 pub(super) const ENV_FILE_HEADER: &str = "# managed by cfgd \u{2014} do not edit";
 
+/// Detect whether fish shell is in use by the current user.
+///
+/// On Unix, `$SHELL` is the canonical signal — it points at the user's login
+/// shell. On Windows, `$SHELL` is not a Windows convention (and is rarely set
+/// even when a Unix-style fish lives at PATH via Cygwin / MSYS2 / Scoop), so
+/// fall back to `command_available` so Windows fish users still get a managed
+/// fish env file generated.
+pub(super) fn fish_in_use() -> bool {
+    if cfg!(windows) {
+        crate::command_available("fish")
+    } else {
+        std::env::var("SHELL").unwrap_or_default().contains("fish")
+    }
+}
+
 /// Generate bash/zsh env file content from merged env vars and aliases.
 pub(super) fn generate_env_file_content(
     env: &[crate::config::EnvVar],

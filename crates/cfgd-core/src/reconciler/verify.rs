@@ -11,7 +11,8 @@ use crate::providers::ProviderRegistry;
 use crate::state::StateStore;
 
 use super::env_files::{
-    generate_env_file_content, generate_fish_env_content, generate_powershell_env_content,
+    fish_in_use, generate_env_file_content, generate_fish_env_content,
+    generate_powershell_env_content,
 };
 
 /// Record a drift event or log a warning if the write fails. Previous sites
@@ -355,10 +356,10 @@ pub(super) fn verify_env(
         }
     }
 
-    // Check fish env file only if fish is the user's shell
+    // Check fish env file only if fish is the user's shell.
+    // Windows fish lives outside $SHELL conventions — see fish_in_use().
     let fish_conf_d = expand_tilde(std::path::Path::new("~/.config/fish/conf.d"));
-    let verify_shell = std::env::var("SHELL").unwrap_or_default();
-    if verify_shell.contains("fish") && fish_conf_d.exists() {
+    if fish_in_use() && fish_conf_d.exists() {
         let fish_path = fish_conf_d.join("cfgd-env.fish");
         let expected_fish = generate_fish_env_content(&merged, &merged_aliases);
         verify_env_file(&fish_path, &expected_fish, state, results);

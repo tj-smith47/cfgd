@@ -315,6 +315,7 @@ pub async fn run_daemon(
         reconcile: None,
         sync: None,
         notify: None,
+        windows_event_log: false,
     });
 
     // Parse daemon config into resolved values with defaults

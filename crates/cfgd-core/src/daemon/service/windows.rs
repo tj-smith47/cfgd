@@ -1,11 +1,18 @@
 use super::super::*;
 
 /// Install cfgd as a Windows Service via sc.exe.
+///
+/// `enable_event_log` controls whether the Windows Event Log subscriber is
+/// installed alongside the file appender. When `true`, `--enable-event-log`
+/// is baked into the service's binPath and the `cfgd` event source is
+/// registered under
+/// `HKLM\SYSTEM\CurrentControlSet\Services\EventLog\Application\cfgd`.
 #[cfg(windows)]
 pub(crate) fn install_windows_service(
     binary: &Path,
     config_path: &Path,
     profile: Option<&str>,
+    enable_event_log: bool,
 ) -> Result<()> {
     let config_abs =
         std::fs::canonicalize(config_path).unwrap_or_else(|_| config_path.to_path_buf());
@@ -21,6 +28,9 @@ pub(crate) fn install_windows_service(
     );
     if let Some(p) = profile {
         bin_args.push_str(&format!(" --profile \"{}\"", p));
+    }
+    if enable_event_log {
+        bin_args.push_str(" --enable-event-log");
     }
 
     // sc.exe requires key= and value as separate arguments
@@ -62,6 +72,10 @@ pub(crate) fn install_windows_service(
         tracing::warn!(error = %e, "failed to set Windows Service description");
     }
 
+    if enable_event_log {
+        register_event_source();
+    }
+
     // Start the service
     if let Err(e) = std::process::Command::new("sc.exe")
         .args(["start", "cfgd"])
@@ -70,8 +84,58 @@ pub(crate) fn install_windows_service(
         tracing::warn!(error = %e, "failed to start Windows Service");
     }
 
-    tracing::info!("installed Windows Service: cfgd");
+    tracing::info!(
+        event_log = enable_event_log,
+        "installed Windows Service: cfgd"
+    );
     Ok(())
+}
+
+/// Register the `cfgd` source in the Application Event Log so Event Viewer
+/// renders ReportEventW messages cleanly. Best-effort — the service install
+/// already succeeded by the time we get here, and a missing source only
+/// degrades to "the description for Event ID X cannot be found" warnings in
+/// Event Viewer rather than dropping events.
+///
+/// `EventCreate.exe` ships with every supported Windows version and contains
+/// generic message templates (`%1`...`%n`) that just echo the inserted
+/// strings — so we get readable Event Viewer rendering without owning a
+/// resource DLL.
+#[cfg(windows)]
+fn register_event_source() {
+    let key = r"HKLM\SYSTEM\CurrentControlSet\Services\EventLog\Application\cfgd";
+    let msg_file = r"%SystemRoot%\System32\EventCreate.exe";
+
+    let _ = std::process::Command::new("reg.exe")
+        .args([
+            "add",
+            key,
+            "/v",
+            "EventMessageFile",
+            "/t",
+            "REG_EXPAND_SZ",
+            "/d",
+            msg_file,
+            "/f",
+        ])
+        .output();
+
+    // TypesSupported = 0x7 → ERROR | WARNING | INFORMATION (the three the
+    // Layer emits). Higher bits would cover audit success/failure if we ever
+    // surface those.
+    let _ = std::process::Command::new("reg.exe")
+        .args([
+            "add",
+            key,
+            "/v",
+            "TypesSupported",
+            "/t",
+            "REG_DWORD",
+            "/d",
+            "0x7",
+            "/f",
+        ])
+        .output();
 }
 
 /// Uninstall cfgd Windows Service via sc.exe.
@@ -105,6 +169,16 @@ pub(crate) fn uninstall_windows_service() -> Result<()> {
         }
         .into());
     }
+
+    // Best-effort: drop the Event Log source registration. Idempotent —
+    // `reg delete` on a non-existent key returns non-zero but causes no harm.
+    let _ = std::process::Command::new("reg.exe")
+        .args([
+            "delete",
+            r"HKLM\SYSTEM\CurrentControlSet\Services\EventLog\Application\cfgd",
+            "/f",
+        ])
+        .output();
 
     tracing::info!("removed Windows Service: cfgd");
     Ok(())
@@ -143,8 +217,31 @@ extern "system" fn ffi_service_main(_argc: u32, _argv: *mut *mut u16) {
     }
 }
 
+/// True when this process should mirror tracing events into the Windows
+/// Event Log in addition to the file appender. Set by either:
+///
+/// * the `--enable-event-log` argument that `install_windows_service` bakes
+///   into the service binPath when `daemon.windowsEventLog: true`, or
+/// * the `CFGD_WINDOWS_EVENT_LOG=1` environment variable (for ad-hoc testing
+///   without reinstalling the service).
+///
+/// The file appender is always installed; this only adds a *second* sink.
+#[cfg(windows)]
+fn event_log_requested() -> bool {
+    if std::env::var("CFGD_WINDOWS_EVENT_LOG")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false)
+    {
+        return true;
+    }
+    std::env::args().any(|a| a == "--enable-event-log")
+}
+
 #[cfg(windows)]
 pub(crate) fn init_windows_logging() {
+    use tracing_subscriber::layer::SubscriberExt;
+    use tracing_subscriber::util::SubscriberInitExt;
+
     let log_dir = std::env::var("LOCALAPPDATA")
         .map(|d| PathBuf::from(d).join("cfgd"))
         .unwrap_or_else(|_| crate::default_config_dir());
@@ -152,18 +249,32 @@ pub(crate) fn init_windows_logging() {
     let _ = std::fs::create_dir_all(&log_dir);
     let log_path = log_dir.join("daemon.log");
 
-    if let Ok(file) = std::fs::OpenOptions::new()
+    let file = match std::fs::OpenOptions::new()
         .create(true)
         .append(true)
         .open(&log_path)
     {
-        let subscriber = tracing_subscriber::fmt()
-            .with_writer(std::sync::Mutex::new(file))
-            .with_ansi(false)
-            .with_target(false)
-            .finish();
-        let _ = tracing::subscriber::set_global_default(subscriber);
-    }
+        Ok(f) => f,
+        // No log destination available — don't install a partial subscriber.
+        // tracing macros become no-ops and the daemon continues running.
+        Err(_) => return,
+    };
+
+    let file_layer = tracing_subscriber::fmt::layer()
+        .with_writer(std::sync::Mutex::new(file))
+        .with_ansi(false)
+        .with_target(false);
+
+    let event_log_layer = if event_log_requested() {
+        Some(super::windows_eventlog::EventLogLayer)
+    } else {
+        None
+    };
+
+    let _ = tracing_subscriber::registry()
+        .with(file_layer)
+        .with(event_log_layer)
+        .try_init();
 }
 
 #[cfg(windows)]
@@ -265,6 +376,10 @@ pub(crate) fn windows_service_main() -> std::result::Result<(), Box<dyn std::err
 
     // Gracefully shut down the runtime, giving in-flight operations time to complete
     rt.shutdown_timeout(std::time::Duration::from_secs(5));
+
+    // Drop the Event Log source handle if one was registered this run.
+    // No-op if the file-only sink was used.
+    super::windows_eventlog::deregister_source();
 
     status_handle.set_service_status(ServiceStatus {
         service_type: ServiceType::OWN_PROCESS,

@@ -3,7 +3,7 @@ use crate::modules::ResolvedModule;
 use crate::output::Printer;
 
 use super::env_files::{
-    detect_rc_env_conflicts, generate_env_file_content, generate_fish_env_content,
+    detect_rc_env_conflicts, fish_in_use, generate_env_file_content, generate_fish_env_content,
     generate_powershell_env_content,
 };
 use super::types::{Action, EnvAction};
@@ -110,10 +110,10 @@ impl<'a> super::Reconciler<'a> {
             detect_rc_env_conflicts(&rc_path, &merged, &merged_aliases)
         };
 
-        // Fish shell: only generate fish env if fish is the user's shell
+        // Fish shell: only generate fish env if fish is the user's shell.
+        // Windows fish lives outside $SHELL conventions — see fish_in_use().
         let fish_conf_d = home.join(".config/fish/conf.d");
-        let current_shell = std::env::var("SHELL").unwrap_or_default();
-        if current_shell.contains("fish") && fish_conf_d.exists() {
+        if fish_in_use() && fish_conf_d.exists() {
             let fish_path = fish_conf_d.join("cfgd-env.fish");
             let fish_content = generate_fish_env_content(&merged, &merged_aliases);
             let existing_fish = std::fs::read_to_string(&fish_path).unwrap_or_default(); // OK: file may not exist yet

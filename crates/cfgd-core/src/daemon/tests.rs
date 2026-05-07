@@ -4546,6 +4546,7 @@ fn parse_daemon_config_defaults() {
         reconcile: None,
         sync: None,
         notify: None,
+        windows_event_log: false,
     };
     let parsed = parse_daemon_config(&daemon_cfg);
     assert_eq!(
@@ -4580,6 +4581,7 @@ fn parse_daemon_config_custom_intervals() {
             interval: "30s".to_string(),
         }),
         notify: None,
+        windows_event_log: false,
     };
     let parsed = parse_daemon_config(&daemon_cfg);
     assert_eq!(parsed.reconcile_interval, Duration::from_secs(600));
@@ -4597,6 +4599,7 @@ fn parse_daemon_config_notification_settings() {
             method: NotifyMethod::Webhook,
             webhook_url: Some("https://hooks.example.com/drift".to_string()),
         }),
+        windows_event_log: false,
     };
     let parsed = parse_daemon_config(&daemon_cfg);
     assert!(parsed.notify_on_drift);
@@ -4618,6 +4621,7 @@ fn parse_daemon_config_sync_flags() {
             interval: "5m".to_string(),
         }),
         notify: None,
+        windows_event_log: false,
     };
     let parsed = parse_daemon_config(&daemon_cfg);
     assert!(parsed.auto_pull);
@@ -4638,6 +4642,7 @@ fn parse_daemon_config_on_change_enabled() {
         }),
         sync: None,
         notify: None,
+        windows_event_log: false,
     };
     let parsed = parse_daemon_config(&daemon_cfg);
     assert!(parsed.on_change_reconcile);
@@ -4658,6 +4663,7 @@ fn parse_daemon_config_auto_apply_enabled() {
         }),
         sync: None,
         notify: None,
+        windows_event_log: false,
     };
     let parsed = parse_daemon_config(&daemon_cfg);
     assert!(parsed.auto_apply);
@@ -4808,6 +4814,7 @@ fn build_reconcile_tasks_default_only_when_no_patches() {
         }),
         sync: None,
         notify: None,
+        windows_event_log: false,
     };
     let tasks = build_reconcile_tasks(&daemon_cfg, None, &[], Duration::from_secs(60), false);
     assert_eq!(tasks.len(), 1);
@@ -4831,6 +4838,7 @@ fn build_reconcile_tasks_default_inherits_global_drift_policy() {
         }),
         sync: None,
         notify: None,
+        windows_event_log: false,
     };
     let tasks = build_reconcile_tasks(&daemon_cfg, None, &[], Duration::from_secs(120), true);
     assert_eq!(tasks.len(), 1);
@@ -4845,6 +4853,7 @@ fn build_reconcile_tasks_no_reconcile_config_uses_defaults() {
         reconcile: None,
         sync: None,
         notify: None,
+        windows_event_log: false,
     };
     let tasks = build_reconcile_tasks(&daemon_cfg, None, &[], Duration::from_secs(300), false);
     assert_eq!(tasks.len(), 1);
@@ -4875,6 +4884,7 @@ fn build_reconcile_tasks_patches_without_resolved_profile_skips_modules() {
         }),
         sync: None,
         notify: None,
+        windows_event_log: false,
     };
     let tasks = build_reconcile_tasks(
         &daemon_cfg,
@@ -4924,6 +4934,7 @@ fn build_reconcile_tasks_module_with_overridden_interval_gets_dedicated_task() {
         }),
         sync: None,
         notify: None,
+        windows_event_log: false,
     };
 
     let tasks = build_reconcile_tasks(
@@ -4979,6 +4990,7 @@ fn build_reconcile_tasks_module_matching_global_gets_no_dedicated_task() {
         }),
         sync: None,
         notify: None,
+        windows_event_log: false,
     };
 
     let tasks = build_reconcile_tasks(
@@ -5949,6 +5961,7 @@ fn parse_daemon_config_all_defaults() {
         reconcile: None,
         sync: None,
         notify: None,
+        windows_event_log: false,
     };
 
     let parsed = parse_daemon_config(&cfg);
@@ -5988,6 +6001,7 @@ fn parse_daemon_config_with_all_settings() {
             method: NotifyMethod::Webhook,
             webhook_url: Some("https://hooks.example.com/notify".into()),
         }),
+        windows_event_log: false,
     };
 
     let parsed = parse_daemon_config(&cfg);
@@ -6023,6 +6037,7 @@ fn parse_daemon_config_with_minute_interval() {
             interval: "30m".into(),
         }),
         notify: None,
+        windows_event_log: false,
     };
 
     let parsed = parse_daemon_config(&cfg);
@@ -6144,6 +6159,7 @@ fn build_reconcile_tasks_always_has_default() {
         reconcile: None,
         sync: None,
         notify: None,
+        windows_event_log: false,
     };
 
     let tasks = build_reconcile_tasks(&cfg, None, &[], Duration::from_secs(300), false);

@@ -208,6 +208,7 @@ Puppet is the closest philosophical match — declarative state, continuous enfo
 | [Team Config](docs/team-config.md) | Crossplane-powered team config distribution |
 | [Safety](docs/safety.md) | Atomic writes, backups, rollback, apply locking, path safety |
 | [CLI Reference](docs/cli-reference.md) | Complete command reference with flags and examples |
+| [Installation](docs/installation.md) | All install channels (Homebrew, install script, winget, scoop, chocolatey, cargo, direct download) |
 | [Bootstrap](docs/bootstrap.md) | `cfgd init` flow, apply options, install script |
 | [AI Generate](docs/ai-generate.md) | AI-guided config generation, MCP server setup |
 

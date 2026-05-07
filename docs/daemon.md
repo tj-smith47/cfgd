@@ -187,7 +187,7 @@ The service is configured to start at login (macOS/Linux) or at system boot (Win
 
 ### Windows Service
 
-On Windows, `cfgd daemon install` registers cfgd as a Windows Service named `cfgd`. The service starts automatically on boot and restarts on failure. Logs are written to `%LOCALAPPDATA%\cfgd\daemon.log`.
+On Windows, `cfgd daemon install` registers cfgd as a Windows Service named `cfgd`. The service starts automatically on boot and restarts on failure.
 
 ```sh
 cfgd daemon install    # register and start the Windows Service
@@ -196,3 +196,65 @@ cfgd daemon uninstall  # stop and remove the Windows Service
 ```
 
 Requires running in an elevated (Administrator) prompt for install and uninstall. `cfgd daemon status` works without elevation.
+
+#### Logging on Windows
+
+cfgd writes daemon logs to a file by default and can mirror them into the Windows Event Log on demand. Both sinks are supported; pick whichever fits how you operate the host.
+
+**File log (default).** Every install captures stdout, stderr, and the structured `tracing` stream into `%LOCALAPPDATA%\cfgd\daemon.log`. Open with `Get-Content`, `notepad`, your editor, or stream over PSRemoting:
+
+```powershell
+Get-Content -Wait -Tail 200 $env:LOCALAPPDATA\cfgd\daemon.log
+```
+
+When the service runs as the default `LocalSystem`, the file lives under
+`C:\Windows\System32\config\systemprofile\AppData\Local\cfgd\daemon.log`
+instead — change the service's logon account (Services → cfgd → Properties → Log On) if you want logs under your interactive user profile.
+
+**Event Log (opt-in).** Mirror the same stream into Event Viewer / Windows Event Forwarding / SIEM ingestion by setting:
+
+```yaml
+# cfgd.yaml
+spec:
+  daemon:
+    windowsEventLog: true
+```
+
+Then run `cfgd daemon install` (or `uninstall` then `install`, if the service was already registered). Install does two things when the flag is set:
+
+1. Bakes `--enable-event-log` into the service binPath, so the daemon installs a second `tracing` Layer that writes to the `cfgd` Event Log source on every event.
+2. Creates `HKLM\SYSTEM\CurrentControlSet\Services\EventLog\Application\cfgd` pointing `EventMessageFile` at `%SystemRoot%\System32\EventCreate.exe`, which is what makes Event Viewer show your messages cleanly instead of "The description for Event ID 1 cannot be found." Both writes require elevation — `cfgd daemon install` already runs elevated, so no extra step is needed.
+
+Once the service is reinstalled, find cfgd events in:
+
+```
+Event Viewer → Windows Logs → Application → Source: cfgd
+```
+
+…or query from the command line:
+
+```powershell
+Get-WinEvent -LogName Application -ProviderName cfgd -MaxEvents 50
+```
+
+`Get-WinEvent` works against remote machines too (`-ComputerName host`), which is why this path matters for fleet ops.
+
+**Mode switching.** The flag is read at install time. Flip it by editing `cfgd.yaml` and running:
+
+```sh
+cfgd daemon uninstall
+cfgd daemon install
+```
+
+For ad-hoc testing without reinstalling, set `CFGD_WINDOWS_EVENT_LOG=1` in the running process's environment — `init_windows_logging` consults both the CLI arg and the env var on every start.
+
+`cfgd daemon uninstall` removes the Event Log registry source automatically, so reverting to file-only is also a single command pair.
+
+| Need | Sink |
+|---|---|
+| Solo developer machine, `Get-Content` workflow | File only (default) |
+| Enterprise fleet → SIEM ingest | File + Event Log |
+| WEF central collector | File + Event Log |
+| Admins look at Event Viewer for service health | File + Event Log |
+
+The two are additive: enabling Event Log never disables the file appender, so file-based diagnostics keep working even if the Event Log channel is full or filtered upstream.

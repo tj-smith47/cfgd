@@ -179,6 +179,13 @@ pub(super) static SCHEMA_CONFIG: ResourceSchema = ResourceSchema {
                         },
                     ],
                 },
+                SchemaField {
+                    name: "windowsEventLog",
+                    type_desc: "bool",
+                    required: false,
+                    description: "Mirror daemon log into the Windows Event Log under the 'cfgd' source in addition to the default %LOCALAPPDATA%\\cfgd\\daemon.log file appender (Windows-only; default: false; reinstall the service after toggling)",
+                    children: &[],
+                },
             ],
         },
         SchemaField {

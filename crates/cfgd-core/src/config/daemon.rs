@@ -13,6 +13,13 @@ pub struct DaemonConfig {
     pub sync: Option<SyncConfig>,
     #[serde(default)]
     pub notify: Option<NotifyConfig>,
+    /// Mirror daemon log output into the Windows Event Log under the `cfgd`
+    /// source, in addition to the default file appender at
+    /// `%LOCALAPPDATA%\cfgd\daemon.log`. No effect on Unix. Read by
+    /// `cfgd daemon install` to bake `--enable-event-log` into the service
+    /// binPath; changes require reinstalling the service to take effect.
+    #[serde(default)]
+    pub windows_event_log: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

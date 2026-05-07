@@ -73,10 +73,10 @@ spec:
             {{- toYaml .Values.agent.readinessProbe | nindent 12 }}
           volumeMounts:
             - name: host-proc
-              mountPath: /proc
+              mountPath: /host/proc
               readOnly: true
             - name: host-sys
-              mountPath: /sys
+              mountPath: /host/sys
               readOnly: false
             - name: cfgd-config
               mountPath: /etc/cfgd/cfgd.yaml

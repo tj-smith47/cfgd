@@ -5,6 +5,8 @@ mod launchd;
 #[cfg(unix)]
 mod systemd;
 mod windows;
+#[cfg(windows)]
+mod windows_eventlog;
 
 #[cfg(unix)]
 pub(crate) use launchd::*;
@@ -24,7 +26,8 @@ pub fn install_service(config_path: &Path, profile: Option<&str>) -> Result<()> 
     })?;
     #[cfg(windows)]
     {
-        install_windows_service(&cfgd_binary, config_path, profile)
+        let enable_event_log = read_event_log_flag(config_path);
+        install_windows_service(&cfgd_binary, config_path, profile, enable_event_log)
     }
     #[cfg(unix)]
     {
@@ -34,6 +37,20 @@ pub fn install_service(config_path: &Path, profile: Option<&str>) -> Result<()> 
             install_systemd_service(&cfgd_binary, config_path, profile)
         }
     }
+}
+
+/// Best-effort lookup for `daemon.windowsEventLog` in the user config.
+/// Failure to read or parse the config silently defaults to `false` —
+/// `cfgd daemon install` keeps working when the config has not yet been
+/// scaffolded, just without Event Log mirroring.
+#[cfg(windows)]
+fn read_event_log_flag(config_path: &Path) -> bool {
+    use crate::config;
+    config::load_config(config_path)
+        .ok()
+        .and_then(|cfg| cfg.spec.daemon)
+        .map(|d| d.windows_event_log)
+        .unwrap_or(false)
 }
 
 pub fn uninstall_service() -> Result<()> {

@@ -119,6 +119,18 @@ pub(super) fn cmd_daemon_install(cli: &Cli, printer: &Printer) -> anyhow::Result
         printer.success("cfgd service installed and started");
         printer.info("The service will start automatically on boot");
         printer.info("Logs: %LOCALAPPDATA%\\cfgd\\daemon.log");
+        let event_log_on = cfgd_core::config::load_config(&cli.config)
+            .ok()
+            .and_then(|cfg| cfg.spec.daemon)
+            .map(|d| d.windows_event_log)
+            .unwrap_or(false);
+        if event_log_on {
+            printer.info(
+                "Event Log mirror: Application → Source 'cfgd' (also at the file path above)",
+            );
+        } else {
+            printer.info("Set spec.daemon.windowsEventLog: true in cfgd.yaml + reinstall to mirror logs into the Windows Event Log");
+        }
     }
     #[cfg(unix)]
     {

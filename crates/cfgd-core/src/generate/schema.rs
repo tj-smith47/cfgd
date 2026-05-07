@@ -526,6 +526,13 @@ spec:
       method: Desktop          # optional: Desktop (default), Stdout, Webhook
       webhookUrl: https://hooks.example.com/cfgd   # optional, string — webhook URL (when method=webhook)
 
+    # Mirror daemon log into the Windows Event Log under the `cfgd` source
+    # in addition to the default %LOCALAPPDATA%\cfgd\daemon.log file appender.
+    # No effect on Unix. Read by `cfgd daemon install`; flipping the flag
+    # requires `cfgd daemon uninstall && cfgd daemon install` to take effect.
+    # optional, bool, default: false
+    windowsEventLog: false
+
   # Secrets backend configuration.
   # optional
   secrets:

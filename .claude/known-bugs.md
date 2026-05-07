@@ -19,73 +19,84 @@ violations, user-reported issues.
 
 ## Active
 
-### 2026-05-06 — surfaced from specs/prompts analysis (subagent triage)
-
-A 5-subagent parallel analysis of the 9 specs + 7 prompts under `.claude/`
-verified completion against current master. 14 of 16 docs were DONE
-(or DONE-with-deviations-that-are-better-than-spec) and have been archived
-to `.claude/archive/{specs,prompts}/`. The Windows spec stays active until
-its 3 small gaps are reconciled (below). Four small surface items remain:
-
-- [ ] **Helm chart agent DaemonSet host volume mount paths** — agent mounts
-  `/proc` and `/sys` (which shadow the container's own procfs/sysfs); the
-  2026-03-23 helm-chart-fixes-design.md called for `/host/proc` and
-  `/host/sys`. Commit `6a4b80c` removed the redundant root mount but missed
-  this relocation. Fix in `chart/cfgd/templates/agent-daemonset.yaml`
-  (volumes + volumeMounts) — small change, no migration needed (pre-launch
-  v1alpha1).
-
-- [ ] **Windows: Fish shell detection on Windows is `$SHELL`-only** —
-  `crates/cfgd-core/src/reconciler/env.rs` Windows branch doesn't consult
-  `command_available("fish")` / `command_available("fish.exe")`. Windows
-  users with fish installed via Cygwin/MSYS2/Scoop won't get a managed fish
-  env file generated. Spec 2026-03-22-windows-support-design.md §"Shell
-  detection on Windows" required this. Add the `command_available` check
-  alongside the existing `$SHELL` test.
-
-- [ ] **Windows: `docs/installation.md` missing** — spec required a Windows
-  installation page (download, winget/scoop/chocolatey install methods).
-  Windows install info ended up scattered across `docs/configuration.md`
-  and `docs/packages.md` instead. Either create `docs/installation.md`
-  consolidating Windows install paths, or update the spec to formally
-  drop this requirement.
-
-- [ ] **Windows: spec needs sync to file-logging reality** — spec called for
-  daemon Event Log subscriber wrapping `ReportEventW`; implementation chose
-  file-based `%LOCALAPPDATA%\cfgd\daemon.log` instead (simpler, no extra
-  unsafe FFI, easier diagnostics — documented as deliberate in COMPLETED.md
-  but not reflected back into the spec). Update
-  `.claude/specs/2026-03-22-windows-support-design.md` §"Logging" to
-  describe the implemented approach. Doc-only change.
-
-Once these 3 Windows items + the helm mount-path fix are closed, archive the
-Windows spec alongside its prompt (which is already in
-`.claude/archive/prompts/`).
-
-### 2026-05-06 — Apply/Plan `--context` asymmetry — **user decision required**
-
-`crates/cfgd/src/cli/mod.rs` — `ApplyArgs` lacks `--context` while `PlanArgs`
-has it. The `--from` parity gap was closed in cycle 2 cleanup; this remaining
-asymmetry creates `cfgd plan` / `cfgd apply --dry-run` drift (you can preview
-a plan against an arbitrary context but you can't apply against one without
-first switching).
-
-Decision needed:
-- (A) Add `--context` to `ApplyArgs` (matches the "apply what you previewed"
-  intuition — adds surface area)
-- (B) Remove `--context` from `PlanArgs` (simpler model, removes surface)
-
-**User input required.** Default-to-deferred per "never decline features"
-rule — Plan's `--context` is an existing feature, removing it would be
-de-scoping. Holding for explicit call.
-
-*Source: ux-consistency cycle 2 WARN, recategorized to SUGGEST 2026-05-06.*
+(none)
 
 ## Resolved
 
+### Resolved 2026-05-07 — Apply/Plan `--context` parity + 4 surfaced spec items
+
+User decision on the `--context` asymmetry: **(A) add `--context` to `ApplyArgs`**
+to match the "apply what you previewed" intuition. Resolved alongside the four
+surfaced spec/prompt items:
+
+  `crates/cfgd/src/cli/mod.rs` — `ApplyArgs` gained `--context` (default
+  `"apply"`, accepts `apply`/`reconcile`) mirroring `PlanArgs`. `cli/apply.rs`
+  parses the value into `ReconcileContext` once and threads the parsed value
+  through both `reconciler.plan(...)` and `reconciler.apply(...)` (replacing
+  the two prior hardcoded `ReconcileContext::Apply` sites). Apply's
+  `long_about` Examples block now lists `cfgd apply --context reconcile`. All
+  25 `ApplyArgs { ... }` test fixtures updated with `context: "apply".to_string()`.
+
+  `chart/cfgd/templates/agent-daemonset.yaml` — `host-proc` and `host-sys`
+  mountPaths relocated from `/proc`/`/sys` to `/host/proc`/`/host/sys` per
+  archived 2026-03-23 helm-chart-fixes-design.md. The agent providers
+  (`system/node/{seccomp,kernel_modules,apparmor,sysctl}.rs`) continue to
+  read `/proc`/`/sys` directly — privileged + hostPID gives the container
+  the host kernel view through its own procfs/sysfs, and `/host/proc`/
+  `/host/sys` are now explicit "this is the host view" accessors (no
+  shadowing). Pre-launch v1alpha1, no migration.
+
+  `crates/cfgd-core/src/reconciler/env_files.rs` — added `fish_in_use()`
+  helper: Unix branch keeps the `$SHELL contains "fish"` check (canonical on
+  Unix); Windows branch consults `command_available("fish")` (covers
+  `fish.exe` automatically via the function's Windows extension fallback).
+  `reconciler/env.rs` and `reconciler/verify.rs` both call the new helper
+  at their respective fish-env-file generation sites, so planning and
+  verification stay symmetric.
+
+  `docs/installation.md` consolidating all install channels: Linux/macOS
+  (Homebrew, install script, cargo, direct download), Windows (winget,
+  Scoop, Chocolatey, direct download — including the
+  `Microsoft.VCRedist.2015+.x64` runtime requirement note), cosign
+  signature verification, and the cluster-side Helm/Krew paths. Linked
+  from README.md "Documentation" table. Surfaces winget package id
+  `TJSmith.cfgd`, scoop bucket `tj-smith47/scoop-bucket`, and the
+  chocolatey package id from `.anodizer.yaml`.
+
+- [x] **Windows: file logging + opt-in Event Log subscriber.** User
+  redirected the prior session's "doc-only deviation" call: instead of
+  documenting "we picked file over Event Log," BOTH sinks are now
+  supported. The default remains the file appender at
+  `%LOCALAPPDATA%\cfgd\daemon.log` (the safer path — no `unsafe` FFI needed
+  to run cfgd); `spec.daemon.windowsEventLog: true` opts into a second
+  `tracing` Layer that mirrors every event into the Windows Event Log
+  under the `cfgd` source. Layer impl in
+  `crates/cfgd-core/src/daemon/service/windows_eventlog.rs` (90-line
+  `tracing` Layer wrapping `RegisterEventSourceW` / `ReportEventW` /
+  `DeregisterEventSource`); composition in
+  `crates/cfgd-core/src/daemon/service/windows.rs::init_windows_logging`
+  (file always installs first, Event Log layer wraps via
+  `tracing-subscriber::registry`); registration in
+  `install_windows_service` (reads the config flag, bakes
+  `--enable-event-log` into the service binPath, and sets
+  `HKLM\SYSTEM\CurrentControlSet\Services\EventLog\Application\cfgd`'s
+  `EventMessageFile=%SystemRoot%\System32\EventCreate.exe` so Event
+  Viewer renders messages cleanly without a custom resource DLL);
+  cleanup in `uninstall_windows_service` (deregisters the source for
+  clean removal). `DaemonConfig` gained `windows_event_log: bool` (no-op
+  on Unix); `cfgd daemon install` surfaces the active sink mode in its
+  success output. `CFGD_WINDOWS_EVENT_LOG=1` env var allows ad-hoc
+  enabling without reinstalling the service. Spec §Logging rewritten in
+  the archived `2026-03-22-windows-support-design.md` to describe both
+  sinks; user-facing docs in `docs/daemon.md` walk through both modes,
+  including `Get-WinEvent` / Event Viewer access patterns and the
+  enterprise-vs-solo tradeoff table. `.claude/specs/` remains empty;
+  the spec stays archived.
+
+## Archived
+
 ### Resolved 2026-05-06 (state/ decomposition follow-ups + missed-by-triage)
 
-- [x] **`crates/cfgd-core/src/state/types.rs` — Serialize/camelCase consistency
   (N-1 from 2026-05-06 state/ decomposition audit).** Two types that derived
   `Serialize` without `#[serde(rename_all = "camelCase")]` (`ModuleStateRecord`,
   `ComplianceHistoryRow`) gained the attribute. Five internal-only DAOs
@@ -96,7 +107,6 @@ de-scoping. Holding for explicit call.
   blob that justifies its non-serializable status. No behavior change; tighter
   policy contract.
 
-- [x] **`crates/cfgd-core/src/errors/mod.rs` + `state/pending_config.rs`
   — `StateError::DirectoryNotWritable` mis-applied to read/unlink paths
   (N-2) and `StateError::Database` mis-applied to JSON encoder failures
   (EXTRA_FOUND).** Added two new `StateError` variants:
@@ -109,7 +119,6 @@ de-scoping. Holding for explicit call.
   `state serialization failed (<context>): <serde::Error>` instead of the
   misleading "directory not writable" / "database error".
 
-- [x] **`crates/cfgd/src/cli/mod.rs` — Init.branch / SourceAddArgs.branch
   documentation split (ux-consistency cycle 2 SUGGEST).** Already addressed in
   commit `6e81def`; missed by 2026-05-06 triage agent (line-range mismatch
   caused by intervening file decomposition). Both fields carry rustdoc paragraphs
@@ -119,7 +128,6 @@ de-scoping. Holding for explicit call.
 
 ### Resolved 2026-05-06 (Wave B cycle 2 audit drains — confirmed via triage)
 
-- [x] **Wave B cycle 2 — 2026-04-18 — deep-audit (3 BLOCKER, 6 WARN, 6 SUGGEST)** — full
   triage on 2026-05-06 against current master confirmed all 12 non-S6 findings
   fixed in master since 2026-04-18 (mostly 2026-04-19 → 2026-04-30):
   - B-1 (web auth non-constant-time): `gateway/web/mod.rs:18-23` `secret_eq`
@@ -148,7 +156,6 @@ de-scoping. Holding for explicit call.
   - S-6 (cli/mod.rs 22k lines): see prior Resolved 2026-04-30 + 2026-05-05/06
     Steps 11–12 (now 1,672 lines)
 
-- [x] **Wave B cycle 2 — 2026-04-18 — dedup (0 BLOCKER, 4 WARN, 4 SUGGEST)** —
   triage 2026-05-06 confirmed all 8 findings addressed:
   - W1 (find_X / X_available / X_cmd 4× duplication): `packages/shared/mod.rs:18`
     `resolve_tool_with_fallbacks` shared helper
@@ -164,7 +171,6 @@ de-scoping. Holding for explicit call.
   - S3 (label key strings): `util/constants.rs:8-13` `LABEL_*` constants
   - S4 (yaml||yml ext predicate): `is_yaml_ext` at `config/root.rs:102`
 
-- [x] **Wave B cycle 2 — 2026-04-18 — rust-safety-scanner (0 BLOCKER, 3 WARN, 3
   SUGGEST)** — triage 2026-05-06 confirmed all 3 WARNs fixed:
   - WARN (handle_health_connection lock-across-await): `daemon/health_ipc.rs:70-169`
     clones out of guard before await; `/drift` wraps StateStore in spawn_blocking
@@ -174,7 +180,6 @@ de-scoping. Holding for explicit call.
     publish/unpublish wrapped in spawn_blocking
   - 3 SUGGESTs were originally "no action" decisions; remain so.
 
-- [x] **Wave B cycle 2 — 2026-04-18 — ux-consistency (9 BLOCKER, 8 WARN, 6 SUGGEST)**
   — triage 2026-05-06 confirmed all 9 BLOCKERs and 7 of 8 WARNs fixed; 1 WARN
   recategorized to SUGGEST and tracked in Active above:
   - All 5 long_about/Examples truthfulness BLOCKERs (`module`/`secret`/`daemon`/
@@ -200,7 +205,6 @@ de-scoping. Holding for explicit call.
 
 ### Resolved 2026-04-30
 
-- [x] Wave B cycle 2 — 2026-04-18 — deep-audit (SUGGEST S-6): `cfgd/src/cli/mod.rs` carve-out of `apply`, `diff`, `status`, `verify`, `upgrade`, `init`. Drained across commits `aa6db7c` (upgrade), `b085caf` (verify), `72c64de` (diff), `02a1dfc` (status), `8b72fb4` (apply). `init` was already carved before the batch (no-op). `mod.rs` shrank from 22,499 → 21,368 lines (−1,131). Reviewer-flagged cleanup items also drained in a follow-up: hoisted `ModuleStatus` in status.rs, dedup'd `open_state_store` in apply.rs, consolidated count computation + upgraded tests to capture printed output in verify.rs.
 
 ### Resolved 2026-05-03 — disk: stale agent worktrees consuming 87 GB
 

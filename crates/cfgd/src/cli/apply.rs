@@ -1,6 +1,18 @@
 use super::*;
 
 pub(super) fn cmd_apply(cli: &Cli, printer: &Printer, args: &ApplyArgs) -> anyhow::Result<()> {
+    // Parse --context (mirrors PlanArgs::context).
+    let reconcile_context = match args.context.as_str() {
+        "apply" => ReconcileContext::Apply,
+        "reconcile" => ReconcileContext::Reconcile,
+        other => {
+            anyhow::bail!(
+                "Unknown context '{}'. Valid values: apply, reconcile",
+                other
+            );
+        }
+    };
+
     // --from: clone from git source or use local path as config directory.
     // When --config points to a non-default path, use its parent as the clone target
     // so the cloned config ends up where the user expects.
@@ -160,7 +172,7 @@ pub(super) fn cmd_apply(cli: &Cli, printer: &Printer, args: &ApplyArgs) -> anyho
         file_actions,
         pkg_actions,
         resolved_modules.clone(),
-        ReconcileContext::Apply,
+        reconcile_context,
     )?;
 
     // Apply --skip / --only filters
@@ -176,7 +188,7 @@ pub(super) fn cmd_apply(cli: &Cli, printer: &Printer, args: &ApplyArgs) -> anyho
             &plan,
             printer,
             &state,
-            "apply",
+            &args.context,
             phase_filter.as_ref(),
             dry_run_fm.as_ref(),
         );
@@ -256,7 +268,7 @@ pub(super) fn cmd_apply(cli: &Cli, printer: &Printer, args: &ApplyArgs) -> anyho
         printer,
         phase_filter.as_ref(),
         &resolved_modules,
-        ReconcileContext::Apply,
+        reconcile_context,
         args.skip_scripts,
     )?;
 
