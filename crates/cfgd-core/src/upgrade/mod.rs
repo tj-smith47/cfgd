@@ -688,6 +688,12 @@ pub fn check_latest(repo: Option<&str>, printer: Option<&Printer>) -> Result<Upd
 }
 
 fn cache_dir() -> Option<PathBuf> {
+    // Tests that install a test-home override get a tempdir-scoped cache
+    // directory so they don't pollute (or race against each other in) the
+    // real user cache. Production callers see the real ProjectDirs path.
+    if let Some(home) = crate::test_home_override() {
+        return Some(home.join(".cache").join("cfgd"));
+    }
     directories::ProjectDirs::from("dev", "cfgd", "cfgd").map(|dirs| dirs.cache_dir().to_path_buf())
 }
 

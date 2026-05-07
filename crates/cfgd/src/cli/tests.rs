@@ -9635,6 +9635,57 @@ fn cmd_apply_skip_scripts_flag() {
     );
 }
 
+#[test]
+fn cmd_apply_invalid_context_fails() {
+    let h = CliTestHarness::builder().build();
+    let args = ApplyArgs {
+        dry_run: true,
+        yes: true,
+        phase: None,
+        skip: vec![],
+        only: vec![],
+        module: None,
+        from: None,
+        skip_scripts: false,
+        context: "bogus".to_string(),
+    };
+    let result = super::apply::cmd_apply(&h.cli(), h.printer(), &args);
+    let err = result
+        .expect_err("apply with unknown context must fail before any reconcile work runs")
+        .to_string();
+    assert!(
+        err.contains("Unknown context") && err.contains("'bogus'"),
+        "error must name the rejected context value, got: {err}"
+    );
+    assert!(
+        err.contains("apply") && err.contains("reconcile"),
+        "error must list both valid context values, got: {err}"
+    );
+}
+
+#[test]
+fn cmd_apply_reconcile_context_threads_through() {
+    let h = CliTestHarness::builder().build();
+    let args = ApplyArgs {
+        dry_run: true,
+        yes: true,
+        phase: None,
+        skip: vec![],
+        only: vec![],
+        module: None,
+        from: None,
+        skip_scripts: false,
+        context: "reconcile".to_string(),
+    };
+    super::apply::cmd_apply(&h.cli(), h.printer(), &args).unwrap();
+    h.assert_header("Plan");
+    let output = h.output();
+    assert!(
+        output.contains("Nothing to do") || output.contains("action(s) planned"),
+        "apply --context reconcile dry-run should still produce a plan, got: {output}"
+    );
+}
+
 // --- cmd_compliance ---
 
 #[test]

@@ -728,26 +728,16 @@ fn find_checksums_asset_empty_assets() {
 
 #[test]
 fn invalidate_cache_removes_file_if_present() {
-    // Write a fake cache file into the real cache dir, then invalidate.
-    // Skip if the cache dir is unavailable or not writable (CI environments).
-    let dir = match directories::ProjectDirs::from("dev", "cfgd", "cfgd") {
-        Some(d) => d,
-        None => return,
-    };
-    if fs::create_dir_all(dir.cache_dir()).is_err() {
-        return; // skip if dir can't be created
-    }
-    let cache_path = dir.cache_dir().join(CACHE_FILENAME);
+    let home = tempfile::tempdir().unwrap();
+    let _guard = crate::with_test_home_guard(home.path());
+
+    let dir = home.path().join(".cache").join("cfgd");
+    fs::create_dir_all(&dir).unwrap();
+    let cache_path = dir.join(CACHE_FILENAME);
     let data =
         r#"{"checkedAtSecs":0,"latestTag":"v0","latestVersion":"0.0.0","currentVersion":"0.0.0"}"#;
-    if fs::write(&cache_path, data).is_err() {
-        return; // skip if not writable
-    }
-    // Another parallel test may race and invalidate the cache between write
-    // and this check; skip if the file disappeared (test is still valid).
-    if !cache_path.exists() {
-        return;
-    }
+    fs::write(&cache_path, data).unwrap();
+    assert!(cache_path.exists(), "test setup: cache file must exist");
 
     invalidate_cache();
 
@@ -759,7 +749,9 @@ fn invalidate_cache_removes_file_if_present() {
 
 #[test]
 fn invalidate_cache_no_panic_when_no_file() {
-    // Ensure calling invalidate when no cache file exists does not panic
+    let home = tempfile::tempdir().unwrap();
+    let _guard = crate::with_test_home_guard(home.path());
+    // Ensure calling invalidate when no cache file exists does not panic.
     invalidate_cache();
     invalidate_cache(); // double-call should be safe
 }
@@ -799,7 +791,9 @@ fn update_check_fields_are_coherent() {
 
 #[test]
 fn version_cache_write_and_read_roundtrip() {
-    // Test write_version_cache + read_version_cache via the real cache dir
+    let home = tempfile::tempdir().unwrap();
+    let _guard = crate::with_test_home_guard(home.path());
+
     let cache = VersionCache {
         checked_at_secs: SystemTime::now()
             .duration_since(SystemTime::UNIX_EPOCH)
@@ -810,31 +804,38 @@ fn version_cache_write_and_read_roundtrip() {
         current_version: env!("CARGO_PKG_VERSION").into(),
     };
 
-    // Write the cache
-    let write_result = write_version_cache(&cache);
-    if write_result.is_ok() {
-        // Read it back
-        let read = read_version_cache();
-        assert!(read.is_some(), "should be able to read back written cache");
-        let read = read.unwrap();
-        assert_eq!(read.latest_tag, "v99.99.99");
-        assert_eq!(read.latest_version, "99.99.99");
-        assert_eq!(read.current_version, env!("CARGO_PKG_VERSION"));
+    write_version_cache(&cache).expect("write into tempdir cache should succeed");
 
-        // Clean up by invalidating
-        invalidate_cache();
-    }
+    let read = read_version_cache().expect("should be able to read back written cache");
+    assert_eq!(read.latest_tag, "v99.99.99");
+    assert_eq!(read.latest_version, "99.99.99");
+    assert_eq!(read.current_version, env!("CARGO_PKG_VERSION"));
+    assert_eq!(read.checked_at_secs, cache.checked_at_secs);
 }
 
 #[test]
 fn read_version_cache_returns_none_after_invalidation() {
-    invalidate_cache();
-    // After invalidation, the cache should be gone (or nonexistent)
-    // We can't guarantee it was there before, but we can verify the function
-    // doesn't panic and returns None when no file
-    let result = read_version_cache();
+    let home = tempfile::tempdir().unwrap();
+    let _guard = crate::with_test_home_guard(home.path());
+
+    // Seed a cache file so invalidation has something to remove — the
+    // post-invalidation None must reflect a real removal, not absence.
+    let cache = VersionCache {
+        checked_at_secs: 1,
+        latest_tag: "v0".into(),
+        latest_version: "0.0.0".into(),
+        current_version: "0.0.0".into(),
+    };
+    write_version_cache(&cache).expect("seed cache write must succeed");
     assert!(
-        result.is_none(),
+        read_version_cache().is_some(),
+        "test precondition: cache must be readable before invalidation"
+    );
+
+    invalidate_cache();
+
+    assert!(
+        read_version_cache().is_none(),
         "read_version_cache should return None after invalidation"
     );
 }

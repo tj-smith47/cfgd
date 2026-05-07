@@ -24,15 +24,20 @@ pub(super) fn find_npm() -> Option<PathBuf> {
     if command_available("npm") {
         return Some(PathBuf::from("npm"));
     }
-    if let Some(home) = std::env::var_os("HOME") {
-        let nvm_dir = PathBuf::from(home).join(".nvm/versions/node");
-        if let Ok(entries) = std::fs::read_dir(&nvm_dir) {
-            for entry in entries.flatten() {
-                let npm_path = entry.path().join("bin/npm");
-                if npm_path.exists() {
-                    return Some(npm_path);
-                }
-            }
+    let home = std::env::var_os("HOME").map(PathBuf::from)?;
+    find_npm_in_nvm(&home)
+}
+
+/// Scan `<home>/.nvm/versions/node/*/bin/npm` and return the first match.
+/// Split out so tests can drive the directory scan against a tempdir without
+/// mutating `$HOME`.
+pub(super) fn find_npm_in_nvm(home: &std::path::Path) -> Option<PathBuf> {
+    let nvm_dir = home.join(".nvm/versions/node");
+    let entries = std::fs::read_dir(&nvm_dir).ok()?;
+    for entry in entries.flatten() {
+        let npm_path = entry.path().join("bin/npm");
+        if npm_path.exists() {
+            return Some(npm_path);
         }
     }
     None
@@ -105,23 +110,8 @@ impl PackageManager for NpmManager {
                 manager: "npm".into(),
                 source: e,
             })?;
-
         // npm list exits non-zero if there are peer dep issues, but still produces valid JSON
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let parsed: serde_json::Value =
-            serde_json::from_str(&stdout).map_err(|e| PackageError::ListFailed {
-                manager: "npm".into(),
-                message: format!("failed to parse npm list output: {}", e),
-            })?;
-
-        let mut packages = HashSet::new();
-        if let Some(deps) = parsed.get("dependencies").and_then(|d| d.as_object()) {
-            for key in deps.keys() {
-                packages.insert(key.clone());
-            }
-        }
-
-        Ok(packages)
+        parse_npm_list_packages(&String::from_utf8_lossy(&output.stdout))
     }
 
     fn install(&self, packages: &[String], printer: &Printer) -> Result<()> {
@@ -202,6 +192,25 @@ impl PackageManager for NpmManager {
             })?;
         Ok(parse_npm_list_versions(&parsed))
     }
+}
+
+/// Parse `npm list -g --depth=0 --json` dependencies object into a name-only
+/// `HashSet`. Shared between `installed_packages` and tests; the JSON-string
+/// boundary is the natural contract since `npm list` exits non-zero on peer
+/// dep issues but still produces valid JSON we have to consume.
+pub(super) fn parse_npm_list_packages(stdout: &str) -> Result<HashSet<String>> {
+    let parsed: serde_json::Value =
+        serde_json::from_str(stdout).map_err(|e| PackageError::ListFailed {
+            manager: "npm".into(),
+            message: format!("failed to parse npm list output: {}", e),
+        })?;
+    let mut packages = HashSet::new();
+    if let Some(deps) = parsed.get("dependencies").and_then(|d| d.as_object()) {
+        for key in deps.keys() {
+            packages.insert(key.clone());
+        }
+    }
+    Ok(packages)
 }
 
 /// Parse `npm list -g --depth=0 --json` dependencies object into PackageInfo.
@@ -378,5 +387,111 @@ mod tests {
         let mgr = NpmManager;
         let available = mgr.is_available();
         assert_eq!(available, npm_available());
+    }
+
+    // --- parse_npm_list_packages ---
+
+    #[test]
+    fn parse_npm_list_packages_returns_top_level_dep_names() {
+        let stdout = r#"{"dependencies": {"typescript":{"version":"5.3.3"}, "eslint":{"version":"8.56.0"}}}"#;
+        let pkgs = parse_npm_list_packages(stdout).unwrap();
+        assert_eq!(pkgs.len(), 2);
+        assert!(pkgs.contains("typescript"));
+        assert!(pkgs.contains("eslint"));
+    }
+
+    #[test]
+    fn parse_npm_list_packages_no_deps_field_yields_empty() {
+        let stdout = r#"{"name":"root","version":"1.0.0"}"#;
+        let pkgs = parse_npm_list_packages(stdout).unwrap();
+        assert!(pkgs.is_empty());
+    }
+
+    #[test]
+    fn parse_npm_list_packages_empty_deps_object_yields_empty() {
+        let stdout = r#"{"dependencies":{}}"#;
+        let pkgs = parse_npm_list_packages(stdout).unwrap();
+        assert!(pkgs.is_empty());
+    }
+
+    #[test]
+    fn parse_npm_list_packages_ignores_nested_deps() {
+        // Only top-level keys are returned; nested dependency trees stay nested.
+        let stdout = r#"{"dependencies":{"typescript":{"version":"5.3.3","dependencies":{"nested-pkg":{"version":"1.0.0"}}}}}"#;
+        let pkgs = parse_npm_list_packages(stdout).unwrap();
+        assert_eq!(pkgs.len(), 1);
+        assert!(pkgs.contains("typescript"));
+        assert!(
+            !pkgs.contains("nested-pkg"),
+            "nested deps must not leak into the top-level set"
+        );
+    }
+
+    #[test]
+    fn parse_npm_list_packages_errors_on_invalid_json() {
+        let err = parse_npm_list_packages("not-json").expect_err("invalid JSON must error");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("npm") && msg.contains("failed to parse npm list output"),
+            "error must include 'npm' and parse-failure context, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn parse_npm_list_packages_dependencies_not_object_yields_empty() {
+        // npm sometimes emits "dependencies": [] when there are issues —
+        // treat that as no deps rather than panicking.
+        let stdout = r#"{"dependencies":[]}"#;
+        let pkgs = parse_npm_list_packages(stdout).unwrap();
+        assert!(pkgs.is_empty());
+    }
+
+    // --- find_npm_in_nvm ---
+
+    #[test]
+    fn find_npm_in_nvm_returns_none_when_no_nvm_dir() {
+        let home = tempfile::tempdir().unwrap();
+        // No .nvm directory exists in the tempdir at all.
+        assert!(find_npm_in_nvm(home.path()).is_none());
+    }
+
+    #[test]
+    fn find_npm_in_nvm_returns_none_when_nvm_dir_empty() {
+        let home = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(home.path().join(".nvm/versions/node")).unwrap();
+        // Directory exists but contains no node version subdirs.
+        assert!(find_npm_in_nvm(home.path()).is_none());
+    }
+
+    #[test]
+    fn find_npm_in_nvm_returns_first_npm_binary_found() {
+        let home = tempfile::tempdir().unwrap();
+        let v20 = home.path().join(".nvm/versions/node/v20.10.0/bin");
+        std::fs::create_dir_all(&v20).unwrap();
+        let npm = v20.join("npm");
+        std::fs::write(&npm, b"#!/bin/sh\n").unwrap();
+
+        let found = find_npm_in_nvm(home.path()).expect("npm should be found in nvm version dir");
+        assert_eq!(
+            found, npm,
+            "must return the absolute path to the located npm binary"
+        );
+    }
+
+    #[test]
+    fn find_npm_in_nvm_skips_versions_without_bin_npm() {
+        let home = tempfile::tempdir().unwrap();
+        // v18 has no bin/npm; v20 does. Result must be from v20.
+        std::fs::create_dir_all(home.path().join(".nvm/versions/node/v18.0.0")).unwrap();
+        let v20bin = home.path().join(".nvm/versions/node/v20.10.0/bin");
+        std::fs::create_dir_all(&v20bin).unwrap();
+        std::fs::write(v20bin.join("npm"), b"").unwrap();
+
+        let found = find_npm_in_nvm(home.path()).expect("v20 npm should be located");
+        assert!(
+            found.to_string_lossy().contains("v20.10.0"),
+            "must skip the version that lacks bin/npm, got: {}",
+            found.display()
+        );
     }
 }

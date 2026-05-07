@@ -241,3 +241,113 @@ fn brew_tap_available_version_always_none() {
     let result = mgr.available_version("homebrew/core").unwrap();
     assert!(result.is_none());
 }
+
+// --- parse_brew_list_set ---
+
+#[test]
+fn parse_brew_list_set_collects_distinct_lines() {
+    let stdout = "git\nneovim\nripgrep\n";
+    let set = parse_brew_list_set(stdout);
+    assert_eq!(set.len(), 3);
+    assert!(set.contains("git"));
+    assert!(set.contains("neovim"));
+    assert!(set.contains("ripgrep"));
+}
+
+#[test]
+fn parse_brew_list_set_drops_blank_and_whitespace_lines() {
+    let stdout = "\ngit\n   \n\nneovim\n   \t  \n";
+    let set = parse_brew_list_set(stdout);
+    assert_eq!(set.len(), 2, "blank/whitespace lines must be dropped");
+    assert!(set.contains("git"));
+    assert!(set.contains("neovim"));
+}
+
+#[test]
+fn parse_brew_list_set_trims_each_line() {
+    let stdout = "  git  \n\thomebrew/core\nuser/tap\n";
+    let set = parse_brew_list_set(stdout);
+    assert_eq!(set.len(), 3);
+    // Surrounding whitespace must be stripped so the set lookup matches the
+    // raw name brew users see — otherwise diffing installed vs desired would
+    // wrongly report drift on whitespace alone.
+    assert!(set.contains("git"));
+    assert!(set.contains("homebrew/core"));
+}
+
+#[test]
+fn parse_brew_list_set_dedupes_duplicates() {
+    // brew list never repeats, but if it ever did, HashSet semantics dedupe.
+    let stdout = "git\ngit\ngit\n";
+    let set = parse_brew_list_set(stdout);
+    assert_eq!(set.len(), 1);
+}
+
+#[test]
+fn parse_brew_list_set_empty_input_returns_empty_set() {
+    assert!(parse_brew_list_set("").is_empty());
+}
+
+// --- parse_brew_info_version ---
+
+#[test]
+fn parse_brew_info_version_extracts_formula_stable() {
+    let stdout =
+        r#"{"formulae":[{"name":"git","versions":{"stable":"2.43.0","head":"HEAD"}}],"casks":[]}"#;
+    let v = parse_brew_info_version(stdout, "/formulae/0/versions/stable", "brew").unwrap();
+    assert_eq!(v.as_deref(), Some("2.43.0"));
+}
+
+#[test]
+fn parse_brew_info_version_extracts_cask_version() {
+    let stdout = r#"{"formulae":[],"casks":[{"token":"firefox","version":"123.0.1"}]}"#;
+    let v = parse_brew_info_version(stdout, "/casks/0/version", "brew-cask").unwrap();
+    assert_eq!(v.as_deref(), Some("123.0.1"));
+}
+
+#[test]
+fn parse_brew_info_version_returns_none_when_pointer_missing() {
+    // Empty arrays — brew returns this when the package is unknown.
+    let stdout = r#"{"formulae":[],"casks":[]}"#;
+    let v = parse_brew_info_version(stdout, "/formulae/0/versions/stable", "brew").unwrap();
+    assert!(v.is_none(), "missing pointer must yield None, not error");
+}
+
+#[test]
+fn parse_brew_info_version_returns_none_when_value_is_null() {
+    // Field present but JSON null — must not panic, must not return "null".
+    let stdout = r#"{"formulae":[{"versions":{"stable":null}}]}"#;
+    let v = parse_brew_info_version(stdout, "/formulae/0/versions/stable", "brew").unwrap();
+    assert!(v.is_none());
+}
+
+#[test]
+fn parse_brew_info_version_returns_none_when_value_is_non_string() {
+    // Some brew versions surface integers — must not stringify them silently.
+    let stdout = r#"{"formulae":[{"versions":{"stable":42}}]}"#;
+    let v = parse_brew_info_version(stdout, "/formulae/0/versions/stable", "brew").unwrap();
+    assert!(v.is_none());
+}
+
+#[test]
+fn parse_brew_info_version_errors_on_invalid_json() {
+    let err = parse_brew_info_version("not json at all", "/anything", "brew")
+        .expect_err("invalid JSON must surface as PackageError::ListFailed");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("brew") && msg.contains("failed to parse brew info output"),
+        "error must name the brew manager + parse-failure context, got: {msg}"
+    );
+}
+
+#[test]
+fn parse_brew_info_version_errors_attribute_correct_manager() {
+    // brew-cask path should attribute the error to brew-cask, not brew.
+    let err = parse_brew_info_version("garbage", "/casks/0/version", "brew-cask")
+        .expect_err("invalid JSON must error");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("brew-cask"),
+        "error must attribute to brew-cask manager, got: {msg}"
+    );
+}

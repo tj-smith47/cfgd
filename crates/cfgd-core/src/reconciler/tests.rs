@@ -6056,6 +6056,45 @@ fn generate_fish_env_path_splitting() {
     );
 }
 
+// --- fish_in_use Unix-branch helper ---
+
+#[test]
+fn shell_var_indicates_fish_matches_explicit_paths() {
+    use super::env_files::shell_var_indicates_fish;
+    assert!(shell_var_indicates_fish(Some("/usr/bin/fish")));
+    assert!(shell_var_indicates_fish(Some("/opt/homebrew/bin/fish")));
+    assert!(shell_var_indicates_fish(Some("fish")));
+}
+
+#[test]
+fn shell_var_indicates_fish_rejects_other_shells() {
+    use super::env_files::shell_var_indicates_fish;
+    assert!(!shell_var_indicates_fish(Some("/bin/bash")));
+    assert!(!shell_var_indicates_fish(Some("/bin/zsh")));
+    assert!(!shell_var_indicates_fish(Some("/usr/bin/sh")));
+}
+
+#[test]
+fn shell_var_indicates_fish_handles_missing_or_empty() {
+    use super::env_files::shell_var_indicates_fish;
+    // SHELL unset → unwrap_or("") path, no match.
+    assert!(!shell_var_indicates_fish(None));
+    // SHELL set to empty string (some sandboxes do this).
+    assert!(!shell_var_indicates_fish(Some("")));
+}
+
+#[test]
+fn shell_var_indicates_fish_matches_substring_anywhere() {
+    use super::env_files::shell_var_indicates_fish;
+    // The implementation uses `.contains("fish")` rather than basename match —
+    // pin that contract so a future regex-tightening refactor doesn't silently
+    // break Cygwin/MSYS users whose `$SHELL` may include parent dirs.
+    assert!(shell_var_indicates_fish(Some(
+        "/cygdrive/c/Program Files/fish/bin/fish.exe"
+    )));
+    assert!(shell_var_indicates_fish(Some("/opt/fish-shell/fish")));
+}
+
 // --- build_script_env additional tests ---
 
 #[test]

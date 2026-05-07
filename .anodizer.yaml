@@ -311,6 +311,11 @@ workspaces:
               name: "TJ Smith"
               email: "tj@jarvispro.io"
           krew:
+            # Disabled until the Krew index PR review process is unblocked —
+            # re-enable once we're ready to ship a `kubectl krew install cfgd`
+            # path. The block is kept intact (rather than deleted) so the
+            # full publisher config is one toggle away.
+            skip_upload: "true"
             repository:
               owner: tj-smith47
               name: krew-index

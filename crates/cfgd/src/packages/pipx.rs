@@ -18,8 +18,14 @@ pub struct PipxManager;
 
 fn pipx_fallbacks() -> Vec<PathBuf> {
     std::env::var_os("HOME")
-        .map(|h| vec![PathBuf::from(h).join(".local/bin/pipx")])
+        .map(|h| pipx_fallbacks_for_home(std::path::Path::new(&h)))
         .unwrap_or_default()
+}
+
+/// `pipx_fallbacks` with the `$HOME` directory injected — split out so tests
+/// exercise the path-construction contract without mutating process env state.
+pub(super) fn pipx_fallbacks_for_home(home: &std::path::Path) -> Vec<PathBuf> {
+    vec![home.join(".local/bin/pipx")]
 }
 
 pub(super) fn find_pipx() -> Option<PathBuf> {
@@ -93,21 +99,7 @@ impl PackageManager for PipxManager {
 
     fn installed_packages(&self) -> Result<HashSet<String>> {
         let output = run_pkg_cmd("pipx", pipx_cmd().args(["list", "--json"]), "list")?;
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let parsed: serde_json::Value =
-            serde_json::from_str(&stdout).map_err(|e| PackageError::ListFailed {
-                manager: "pipx".into(),
-                message: format!("failed to parse pipx list output: {}", e),
-            })?;
-
-        let mut packages = HashSet::new();
-        if let Some(venvs) = parsed.get("venvs").and_then(|v| v.as_object()) {
-            for key in venvs.keys() {
-                packages.insert(key.clone());
-            }
-        }
-
-        Ok(packages)
+        parse_pipx_list_packages(&String::from_utf8_lossy(&output.stdout))
     }
 
     fn install(&self, packages: &[String], printer: &Printer) -> Result<()> {
@@ -162,16 +154,7 @@ impl PackageManager for PipxManager {
         if !output.status.success() {
             return Ok(None);
         }
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let parsed: serde_json::Value =
-            serde_json::from_str(&stdout).map_err(|e| PackageError::ListFailed {
-                manager: "pipx".into(),
-                message: format!("failed to parse PyPI response: {}", e),
-            })?;
-        Ok(parsed
-            .pointer("/info/version")
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_string()))
+        parse_pypi_version(&String::from_utf8_lossy(&output.stdout))
     }
 
     fn installed_packages_with_versions(&self) -> Result<Vec<cfgd_core::providers::PackageInfo>> {
@@ -184,6 +167,39 @@ impl PackageManager for PipxManager {
             })?;
         Ok(parse_pipx_list_versions(&parsed))
     }
+}
+
+/// Parse `pipx list --json` venvs object into a name-only `HashSet`.
+/// Shared with `installed_packages`; the JSON-string boundary is the natural
+/// contract since `pipx list --json` is the production input.
+pub(super) fn parse_pipx_list_packages(stdout: &str) -> Result<HashSet<String>> {
+    let parsed: serde_json::Value =
+        serde_json::from_str(stdout).map_err(|e| PackageError::ListFailed {
+            manager: "pipx".into(),
+            message: format!("failed to parse pipx list output: {}", e),
+        })?;
+    let mut packages = HashSet::new();
+    if let Some(venvs) = parsed.get("venvs").and_then(|v| v.as_object()) {
+        for key in venvs.keys() {
+            packages.insert(key.clone());
+        }
+    }
+    Ok(packages)
+}
+
+/// Parse the PyPI JSON API response for the latest version.
+/// Returns `Ok(None)` when `/info/version` is absent or non-string —
+/// callers treat that as "version unknown" rather than an error.
+pub(super) fn parse_pypi_version(stdout: &str) -> Result<Option<String>> {
+    let parsed: serde_json::Value =
+        serde_json::from_str(stdout).map_err(|e| PackageError::ListFailed {
+            manager: "pipx".into(),
+            message: format!("failed to parse PyPI response: {}", e),
+        })?;
+    Ok(parsed
+        .pointer("/info/version")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string()))
 }
 
 /// Parse `pipx list --json` venvs object into PackageInfo.
@@ -407,5 +423,85 @@ mod tests {
         let mgr = PipxManager;
         let available = mgr.is_available();
         assert_eq!(available, pipx_available());
+    }
+
+    // --- parse_pipx_list_packages ---
+
+    #[test]
+    fn parse_pipx_list_packages_returns_venv_names() {
+        let stdout = r#"{"venvs":{"black":{},"ruff":{},"httpie":{}}}"#;
+        let pkgs = parse_pipx_list_packages(stdout).unwrap();
+        assert_eq!(pkgs.len(), 3);
+        assert!(pkgs.contains("black"));
+        assert!(pkgs.contains("ruff"));
+        assert!(pkgs.contains("httpie"));
+    }
+
+    #[test]
+    fn parse_pipx_list_packages_no_venvs_field_yields_empty() {
+        let stdout = r#"{"pipx_spec_version":"0.1"}"#;
+        let pkgs = parse_pipx_list_packages(stdout).unwrap();
+        assert!(pkgs.is_empty());
+    }
+
+    #[test]
+    fn parse_pipx_list_packages_empty_venvs_yields_empty() {
+        let stdout = r#"{"venvs":{}}"#;
+        let pkgs = parse_pipx_list_packages(stdout).unwrap();
+        assert!(pkgs.is_empty());
+    }
+
+    #[test]
+    fn parse_pipx_list_packages_errors_on_invalid_json() {
+        let err = parse_pipx_list_packages("garbage").expect_err("invalid JSON must error");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("pipx") && msg.contains("failed to parse pipx list output"),
+            "error must include 'pipx' and parse-failure context, got: {msg}"
+        );
+    }
+
+    // --- parse_pypi_version ---
+
+    #[test]
+    fn parse_pypi_version_extracts_info_version() {
+        let stdout = r#"{"info":{"name":"black","version":"24.1.1"}}"#;
+        let v = parse_pypi_version(stdout).unwrap();
+        assert_eq!(v.as_deref(), Some("24.1.1"));
+    }
+
+    #[test]
+    fn parse_pypi_version_returns_none_when_field_missing() {
+        let stdout = r#"{"info":{"name":"black"}}"#;
+        let v = parse_pypi_version(stdout).unwrap();
+        assert!(v.is_none());
+    }
+
+    #[test]
+    fn parse_pypi_version_returns_none_when_value_is_non_string() {
+        // Tolerate broken/non-conforming PyPI responses (e.g. integer field).
+        let stdout = r#"{"info":{"version":42}}"#;
+        let v = parse_pypi_version(stdout).unwrap();
+        assert!(v.is_none());
+    }
+
+    #[test]
+    fn parse_pypi_version_errors_on_invalid_json() {
+        let err = parse_pypi_version("not-json").expect_err("invalid JSON must error");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("pipx") && msg.contains("failed to parse PyPI response"),
+            "error must attribute to pipx + name PyPI source, got: {msg}"
+        );
+    }
+
+    // --- pipx_fallbacks_for_home ---
+
+    #[test]
+    fn pipx_fallbacks_for_home_contains_local_bin_path() {
+        let home = std::path::Path::new("/some/home");
+        let fallbacks = pipx_fallbacks_for_home(home);
+        assert_eq!(fallbacks.len(), 1);
+        assert_eq!(fallbacks[0], home.join(".local/bin/pipx"));
     }
 }

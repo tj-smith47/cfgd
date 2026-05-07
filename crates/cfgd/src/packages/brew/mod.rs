@@ -22,22 +22,46 @@ impl BrewManager {
     }
 
     pub(super) fn installed_taps(&self) -> Result<HashSet<String>> {
-        let output = self.run_brew(&["tap"])?;
-        Ok(output
-            .lines()
-            .map(|l| l.trim().to_string())
-            .filter(|l| !l.is_empty())
-            .collect())
+        Ok(parse_brew_list_set(&self.run_brew(&["tap"])?))
     }
 
     pub(super) fn installed_casks(&self) -> Result<HashSet<String>> {
-        let output = self.run_brew(&["list", "--cask", "-1"])?;
-        Ok(output
-            .lines()
-            .map(|l| l.trim().to_string())
-            .filter(|l| !l.is_empty())
-            .collect())
+        Ok(parse_brew_list_set(
+            &self.run_brew(&["list", "--cask", "-1"])?,
+        ))
     }
+}
+
+/// Parse newline-separated brew list output (taps, casks, formulae) into a
+/// trimmed `HashSet`, dropping empty / whitespace-only lines. Shared by
+/// `installed_taps`, `installed_casks`, and `installed_packages`.
+pub(super) fn parse_brew_list_set(stdout: &str) -> HashSet<String> {
+    stdout
+        .lines()
+        .map(|l| l.trim().to_string())
+        .filter(|l| !l.is_empty())
+        .collect()
+}
+
+/// Pull a string field out of `brew info --json=v2` output by JSON pointer.
+/// Used for both formula version (`/formulae/0/versions/stable`) and cask
+/// version (`/casks/0/version`). Returns `Ok(None)` when the pointer doesn't
+/// resolve or doesn't refer to a string — brew uses a sparse schema, so a
+/// missing field is "no version known" not a hard error.
+pub(super) fn parse_brew_info_version(
+    stdout: &str,
+    json_pointer: &str,
+    manager: &'static str,
+) -> Result<Option<String>> {
+    let parsed: serde_json::Value =
+        serde_json::from_str(stdout).map_err(|e| PackageError::ListFailed {
+            manager: manager.into(),
+            message: format!("failed to parse brew info output: {}", e),
+        })?;
+    Ok(parsed
+        .pointer(json_pointer)
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string()))
 }
 
 // --- BrewTapManager ---
@@ -176,16 +200,11 @@ impl PackageManager for BrewCaskManager {
         if !output.status.success() {
             return Ok(None);
         }
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let parsed: serde_json::Value =
-            serde_json::from_str(&stdout).map_err(|e| PackageError::ListFailed {
-                manager: "brew-cask".into(),
-                message: format!("failed to parse brew info output: {}", e),
-            })?;
-        Ok(parsed
-            .pointer("/casks/0/version")
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_string()))
+        parse_brew_info_version(
+            &String::from_utf8_lossy(&output.stdout),
+            "/casks/0/version",
+            "brew-cask",
+        )
     }
 }
 
@@ -281,12 +300,11 @@ impl PackageManager for BrewManager {
     }
 
     fn installed_packages(&self) -> Result<HashSet<String>> {
-        let output = self.run_brew(&["list", "--formulae", "-1"])?;
-        Ok(output
-            .lines()
-            .map(|l| l.trim().to_string())
-            .filter(|l| !l.is_empty())
-            .collect())
+        Ok(parse_brew_list_set(&self.run_brew(&[
+            "list",
+            "--formulae",
+            "-1",
+        ])?))
     }
 
     fn install(&self, packages: &[String], printer: &Printer) -> Result<()> {
@@ -342,16 +360,11 @@ impl PackageManager for BrewManager {
         if !output.status.success() {
             return Ok(None);
         }
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let parsed: serde_json::Value =
-            serde_json::from_str(&stdout).map_err(|e| PackageError::ListFailed {
-                manager: "brew".into(),
-                message: format!("failed to parse brew info output: {}", e),
-            })?;
-        Ok(parsed
-            .pointer("/formulae/0/versions/stable")
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_string()))
+        parse_brew_info_version(
+            &String::from_utf8_lossy(&output.stdout),
+            "/formulae/0/versions/stable",
+            "brew",
+        )
     }
 
     fn path_dirs(&self) -> Vec<String> {

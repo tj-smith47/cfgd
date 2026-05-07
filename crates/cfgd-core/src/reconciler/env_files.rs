@@ -13,8 +13,16 @@ pub(super) fn fish_in_use() -> bool {
     if cfg!(windows) {
         crate::command_available("fish")
     } else {
-        std::env::var("SHELL").unwrap_or_default().contains("fish")
+        shell_var_indicates_fish(std::env::var("SHELL").ok().as_deref())
     }
+}
+
+/// Pure inner of the Unix branch of `fish_in_use` — reads the `$SHELL` value
+/// and returns whether it names fish. Split out so tests can exercise the
+/// branching without mutating process-wide environment state (`set_var` is
+/// `unsafe` in the 2024 edition and racy across parallel tests).
+pub(super) fn shell_var_indicates_fish(shell: Option<&str>) -> bool {
+    shell.unwrap_or("").contains("fish")
 }
 
 /// Generate bash/zsh env file content from merged env vars and aliases.
