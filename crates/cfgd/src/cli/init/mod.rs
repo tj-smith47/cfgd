@@ -18,7 +18,9 @@ pub(super) use source::resolve_from;
 // --- Cross-submodule helpers (private to cli::init, visible to tests) ---
 
 #[cfg(test)]
-use cmd_init::{apply_plan, check_prerequisites, pick_profile, scaffold};
+use cmd_init::{
+    apply_plan, check_prerequisites, is_module_only_apply, pick_profile, scaffold, should_run_apply,
+};
 #[cfg(test)]
 use enroll::{detect_ssh_key, sign_with_gpg, sign_with_ssh};
 #[cfg(test)]

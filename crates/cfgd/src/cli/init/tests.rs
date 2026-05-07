@@ -2006,3 +2006,76 @@ fn list_yaml_stems_empty_dir() {
     let stems = super::list_yaml_stems(dir.path()).unwrap();
     assert!(stems.is_empty());
 }
+
+// --- should_run_apply ---
+
+#[test]
+fn should_run_apply_explicit_apply_flag_triggers() {
+    assert!(super::should_run_apply(true, None, &[]));
+}
+
+#[test]
+fn should_run_apply_apply_profile_triggers() {
+    assert!(super::should_run_apply(false, Some("dev"), &[]));
+}
+
+#[test]
+fn should_run_apply_apply_modules_triggers() {
+    assert!(super::should_run_apply(
+        false,
+        None,
+        &["neovim".to_string()]
+    ));
+}
+
+#[test]
+fn should_run_apply_returns_false_when_no_apply_signals() {
+    // None of --apply / --apply-profile / --apply-module passed.
+    assert!(!super::should_run_apply(false, None, &[]));
+}
+
+#[test]
+fn should_run_apply_combinations_still_trigger() {
+    // Any combination of the three signals must trigger; do not require
+    // exclusivity (the cmd_init body uses the same OR rule).
+    assert!(super::should_run_apply(
+        true,
+        Some("dev"),
+        &["m".to_string()]
+    ));
+    assert!(super::should_run_apply(true, None, &["m".to_string()]));
+    assert!(super::should_run_apply(
+        false,
+        Some("dev"),
+        &["m".to_string()]
+    ));
+}
+
+// --- is_module_only_apply ---
+
+#[test]
+fn is_module_only_apply_true_when_modules_only() {
+    // Modules supplied + no profile → module-only mode.
+    assert!(super::is_module_only_apply(
+        None,
+        &["neovim".to_string(), "tmux".to_string()],
+    ));
+}
+
+#[test]
+fn is_module_only_apply_false_when_profile_present() {
+    // Even with modules, presence of --apply-profile drops us into the
+    // regular profile-based path so the profile's modules merge with
+    // the user's --apply-module additions.
+    assert!(!super::is_module_only_apply(
+        Some("dev"),
+        &["neovim".to_string()]
+    ));
+}
+
+#[test]
+fn is_module_only_apply_false_when_no_modules() {
+    // No modules → never module-only, regardless of profile presence.
+    assert!(!super::is_module_only_apply(None, &[]));
+    assert!(!super::is_module_only_apply(Some("dev"), &[]));
+}

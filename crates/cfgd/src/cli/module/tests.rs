@@ -3140,3 +3140,55 @@ fn cmd_module_export_devcontainer_no_packages() {
         "should include env vars, got:\n{install}"
     );
 }
+
+// --- build_registry_module_url ---
+
+#[test]
+fn build_registry_module_url_assembles_subdir_and_per_module_tag() {
+    // Assembles `<base>//modules/<module>@<module>/<tag>` so the module
+    // resolves to a `modules/<module>` subdirectory pinned at the
+    // per-module tag prefix `<module>/<tag>`.
+    let url = super::build_registry_module_url(
+        "https://github.com/cfgd-community/modules.git",
+        "neovim",
+        "v1.2.3",
+    );
+    assert_eq!(
+        url,
+        "https://github.com/cfgd-community/modules.git//modules/neovim@neovim/v1.2.3"
+    );
+}
+
+#[test]
+fn build_registry_module_url_repeats_module_in_tag_segment() {
+    // The doubled module name (`@<module>/<tag>`) is the prescribed
+    // per-module tag-prefix convention so a single registry repo can
+    // carry independently versioned modules. Pin that contract.
+    let url = super::build_registry_module_url("git@github.com:org/repo.git", "ripgrep", "v0.1.0");
+    assert!(
+        url.contains("@ripgrep/v0.1.0"),
+        "tag segment must be <module>/<tag>, got: {url}"
+    );
+    assert!(url.contains("//modules/ripgrep"));
+}
+
+#[test]
+fn build_registry_module_url_passes_unusual_tags_through_verbatim() {
+    // `parse_git_source` later splits on the rightmost `@`; pre-pinned
+    // SHA tags or odd tag formats must round-trip without escaping here.
+    let url =
+        super::build_registry_module_url("https://example.com/r.git", "mod", "abcdef0123456789");
+    assert_eq!(
+        url,
+        "https://example.com/r.git//modules/mod@mod/abcdef0123456789"
+    );
+}
+
+#[test]
+fn build_registry_module_url_handles_ssh_base_urls() {
+    // SSH-style git remotes use `git@host:org/repo.git` — the helper
+    // shouldn't care which URL form the registry uses.
+    let url = super::build_registry_module_url("git@github.com:owner/repo.git", "tool", "v3.0.0");
+    assert!(url.starts_with("git@github.com:owner/repo.git//modules/tool"));
+    assert!(url.ends_with("@tool/v3.0.0"));
+}

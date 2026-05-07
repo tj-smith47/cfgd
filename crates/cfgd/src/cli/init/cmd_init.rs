@@ -96,13 +96,13 @@ pub(crate) fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result
     printer.success(&format!("Initialized at {}", target_dir.display()));
 
     // 7. Apply if requested
-    let should_apply = args.apply || args.apply_profile.is_some() || !args.apply_modules.is_empty();
+    let should_apply = should_run_apply(args.apply, args.apply_profile, args.apply_modules);
     if should_apply {
         let config_path = target_dir.join("cfgd.yaml");
         let profiles_dir = target_dir.join("profiles");
 
         // Module-only apply: no profile needed
-        let module_only = !args.apply_modules.is_empty() && args.apply_profile.is_none();
+        let module_only = is_module_only_apply(args.apply_profile, args.apply_modules);
 
         if module_only {
             // Validate that requested modules exist
@@ -291,6 +291,32 @@ pub(crate) fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result
     }
 
     Ok(())
+}
+
+/// Decide whether `cfgd init` should run an apply step after scaffolding.
+///
+/// Returns `true` when any of:
+/// - `--apply` was passed explicitly,
+/// - `--apply-profile <name>` was passed (apply against that profile), or
+/// - `--apply-module <m>...` named at least one module.
+///
+/// Pure helper — split out so the precedence rules are testable without
+/// running the orchestration around it.
+pub(super) fn should_run_apply(
+    apply: bool,
+    apply_profile: Option<&str>,
+    apply_modules: &[String],
+) -> bool {
+    apply || apply_profile.is_some() || !apply_modules.is_empty()
+}
+
+/// Decide whether the apply step should run in module-only mode (no profile
+/// resolution). True iff `--apply-module` named at least one module *and*
+/// no `--apply-profile` was supplied — modules can be applied standalone
+/// without a profile, but as soon as a profile is named the regular
+/// profile-based apply path takes over.
+pub(super) fn is_module_only_apply(apply_profile: Option<&str>, apply_modules: &[String]) -> bool {
+    !apply_modules.is_empty() && apply_profile.is_none()
 }
 
 /// Show plan, prompt for confirmation, and apply.

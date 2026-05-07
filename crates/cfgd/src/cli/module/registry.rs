@@ -59,12 +59,7 @@ pub(crate) fn cmd_module_add_from_registry(
     };
 
     // Build the full git URL with subdir and delegate to cmd_module_add_remote
-    // Subdir follows prescribed registry layout: modules/<name>
-    let subdir = format!("modules/{}", reg_ref.module);
-    let full_url = format!(
-        "{}//{}@{}/{}",
-        registry_entry.url, subdir, reg_ref.module, tag
-    );
+    let full_url = build_registry_module_url(&registry_entry.url, &reg_ref.module, &tag);
     printer.info(&format!(
         "Resolved: {}/{} -> {}",
         reg_ref.registry, reg_ref.module, full_url
@@ -754,4 +749,16 @@ pub(crate) fn cmd_module_registry_list(cli: &Cli, printer: &Printer) -> anyhow::
     printer.table(&["Name", "URL"], &rows);
 
     Ok(())
+}
+
+/// Construct the git source URL the registry resolver feeds into
+/// `cmd_module_add_remote`. The format is
+/// `<registry_base_url>//modules/<module>@<module>/<tag>` — `parse_git_source`
+/// treats the segment after `//` as a subdirectory and the segment after `@`
+/// as the git tag, so this assembles a single URL that pins
+/// `modules/<module>` at the per-module tag `<module>/<tag>` (the prefix lets
+/// a single registry repo carry independently versioned modules).
+pub(crate) fn build_registry_module_url(base_url: &str, module: &str, tag: &str) -> String {
+    let subdir = format!("modules/{}", module);
+    format!("{}//{}@{}/{}", base_url, subdir, module, tag)
 }
