@@ -475,3 +475,5 @@ mod test_kube_harness;
 mod tests;
 #[cfg(test)]
 mod tests_drift_alert;
+#[cfg(test)]
+mod tests_machine_config;
