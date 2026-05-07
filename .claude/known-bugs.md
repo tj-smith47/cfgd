@@ -23,6 +23,26 @@ violations, user-reported issues.
 
 ## Resolved
 
+### Resolved 2026-05-07 — `latest_module_version` mis-ranks v-prefixed semver tags
+
+Source: surfaced while writing `group_module_tags_sorts_versions_semver_then_lexical`
+test for the extracted `group_module_tags` helper in `modules/registry.rs`.
+
+`parse_loose_version` does NOT strip a leading `v`, so when the registry
+tag-sort comparator at `modules/registry.rs:265–273` called it with `v1.10.0` /
+`v1.9.0`, both returned `None` and the comparator fell back to *lexical* sort
+(`v1.10.0` < `v1.2.0` < `v1.9.0`). The consumer `latest_module_version` reads
+`tags.last()` to get the "highest" version — which silently picked the lexically
+last tag instead of the actual semver-highest. Result: `cfgd module add
+<registry>/<module>` (no tag) would resolve to e.g. `v1.9.0` instead of `v1.10.0`
+when both existed.
+
+**Fix**: strip a leading `v` inside the comparator in `group_module_tags`
+(`modules/registry.rs`) before handing the version to `parse_loose_version`. The
+public `parse_loose_version` API stays unchanged so other callers aren't
+affected. Test pinned in `modules/tests.rs::group_module_tags_sorts_versions_semver_then_lexical`
+and the consumer-facing contract in `group_module_tags_last_is_highest_version`.
+
 ### Resolved 2026-05-07 — Apply/Plan `--context` parity + 4 surfaced spec items
 
 User decision on the `--context` asymmetry: **(A) add `--context` to `ApplyArgs`**

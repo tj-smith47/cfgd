@@ -1396,6 +1396,91 @@ fn parse_registry_ref_invalid() {
     assert!(parse_registry_ref("community/tmux@").is_none());
 }
 
+// --- group_module_tags ---
+
+#[test]
+fn group_module_tags_groups_by_module_prefix() {
+    use super::registry::group_module_tags;
+    let tags = ["tmux/v1.0.0", "tmux/v1.1.0", "nvim/v0.9.0"];
+    let map = group_module_tags(tags);
+    assert_eq!(map.len(), 2);
+    assert_eq!(map.get("tmux").unwrap(), &vec!["v1.0.0", "v1.1.0"]);
+    assert_eq!(map.get("nvim").unwrap(), &vec!["v0.9.0"]);
+}
+
+#[test]
+fn group_module_tags_sorts_versions_semver_then_lexical() {
+    use super::registry::group_module_tags;
+    // Push tags in mixed order — semver sort must put v1.10.0 after v1.9.0
+    // (lexical would sort v1.10.0 before v1.9.0).
+    let tags = ["tmux/v1.10.0", "tmux/v1.2.0", "tmux/v1.9.0"];
+    let map = group_module_tags(tags);
+    assert_eq!(
+        map.get("tmux").unwrap(),
+        &vec!["v1.2.0", "v1.9.0", "v1.10.0"],
+        "must be semver-sorted, not lexical"
+    );
+}
+
+#[test]
+fn group_module_tags_falls_back_to_lexical_for_non_semver() {
+    use super::registry::group_module_tags;
+    // Non-semver tags fall back to string compare so the helper still
+    // produces a stable ordering rather than panicking.
+    let tags = ["tmux/release-c", "tmux/release-a", "tmux/release-b"];
+    let map = group_module_tags(tags);
+    assert_eq!(
+        map.get("tmux").unwrap(),
+        &vec!["release-a", "release-b", "release-c"]
+    );
+}
+
+#[test]
+fn group_module_tags_drops_unprefixed_tag_names() {
+    use super::registry::group_module_tags;
+    // Tags without `<module>/` prefix are unrelated to module versioning
+    // (e.g., a repo-level "v1.0.0" tag). They must be silently dropped,
+    // not bucketed under an empty key.
+    let tags = ["v1.0.0", "release-2024-01", "tmux/v1.0.0"];
+    let map = group_module_tags(tags);
+    assert_eq!(map.len(), 1, "non-module-prefixed tags must be dropped");
+    assert!(map.contains_key("tmux"));
+}
+
+#[test]
+fn group_module_tags_handles_multi_slash_tag_names() {
+    use super::registry::group_module_tags;
+    // split_once('/') splits on the FIRST slash — so a tag like
+    // `myorg/group/v1.0.0` buckets under "myorg" with version
+    // "group/v1.0.0". Pin this so a future "rfind('/')" or strip-prefix
+    // refactor is intentional.
+    let tags = ["myorg/group/v1.0.0"];
+    let map = group_module_tags(tags);
+    assert_eq!(map.get("myorg").unwrap(), &vec!["group/v1.0.0"]);
+}
+
+#[test]
+fn group_module_tags_empty_input_returns_empty_map() {
+    use super::registry::group_module_tags;
+    let empty: [&str; 0] = [];
+    assert!(group_module_tags(empty).is_empty());
+}
+
+#[test]
+fn group_module_tags_last_is_highest_version() {
+    use super::registry::group_module_tags;
+    // latest_module_version reads `tags.last()`; pin that the highest
+    // version lands at the tail after sort.
+    let tags = ["tmux/v0.1.0", "tmux/v2.5.0", "tmux/v1.0.0"];
+    let map = group_module_tags(tags);
+    let versions = map.get("tmux").unwrap();
+    assert_eq!(
+        versions.last().map(String::as_str),
+        Some("v2.5.0"),
+        "last() must return the highest semver"
+    );
+}
+
 #[test]
 fn resolve_profile_module_name_bare() {
     assert_eq!(resolve_profile_module_name("tmux"), "tmux");

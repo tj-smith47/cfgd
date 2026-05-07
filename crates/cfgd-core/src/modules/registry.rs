@@ -239,8 +239,6 @@ pub fn fetch_registry_modules(
 /// Returns a map of module_name → sorted list of version tags.
 fn list_module_tags(repo_path: &Path, source_name: &str) -> Result<HashMap<String, Vec<String>>> {
     let repo = open_repo(repo_path, source_name, "")?;
-    let mut result: HashMap<String, Vec<String>> = HashMap::new();
-
     let tag_names = repo
         .tag_names(None)
         .map_err(|e| ModuleError::GitFetchFailed {
@@ -248,8 +246,24 @@ fn list_module_tags(repo_path: &Path, source_name: &str) -> Result<HashMap<Strin
             url: String::new(),
             message: format!("cannot list tags: {e}"),
         })?;
+    Ok(group_module_tags(tag_names.iter().flatten()))
+}
 
-    for tag_name in tag_names.iter().flatten() {
+/// Group git tag names that follow the `<module>/<version>` convention into a
+/// `HashMap<module, sorted versions>`. Tags without a `/` (or without anything
+/// after the first `/`) are silently dropped — the registry layout requires
+/// the prefix, so anything else is unrelated to module versioning.
+///
+/// Each module's tag list is sorted with `parse_loose_version` (best-effort
+/// semver) and falls back to lexicographic string compare for tags that
+/// don't parse as semver. The last element is therefore the highest version
+/// — matching the consumer expectation in `latest_module_version`.
+pub(super) fn group_module_tags<'a, I>(tag_names: I) -> HashMap<String, Vec<String>>
+where
+    I: IntoIterator<Item = &'a str>,
+{
+    let mut result: HashMap<String, Vec<String>> = HashMap::new();
+    for tag_name in tag_names {
         if let Some((module, version)) = tag_name.split_once('/') {
             result
                 .entry(module.to_string())
@@ -257,20 +271,21 @@ fn list_module_tags(repo_path: &Path, source_name: &str) -> Result<HashMap<Strin
                 .push(version.to_string());
         }
     }
-
-    // Sort each module's tags (best-effort semver sort, falling back to string sort)
     for tags in result.values_mut() {
         tags.sort_by(|a, b| {
-            let av = crate::parse_loose_version(a);
-            let bv = crate::parse_loose_version(b);
+            // Registry tag convention is `<module>/v<X.Y.Z>` — strip the
+            // leading `v` before semver-parsing so "v1.10.0" sorts after
+            // "v1.9.0" instead of falling back to lexical ordering (which
+            // would silently mis-rank double-digit minor/patch versions).
+            let av = crate::parse_loose_version(a.strip_prefix('v').unwrap_or(a));
+            let bv = crate::parse_loose_version(b.strip_prefix('v').unwrap_or(b));
             match (av, bv) {
                 (Some(av), Some(bv)) => av.cmp(&bv),
                 _ => a.cmp(b),
             }
         });
     }
-
-    Ok(result)
+    result
 }
 
 /// Find the latest version for a module in a registry repo.
