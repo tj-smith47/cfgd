@@ -481,3 +481,185 @@ fn parse_sc_config_value_value_with_colon() {
         Some("C:\\path:with:colons\\svc.exe".to_string())
     );
 }
+
+// --- sc_create_args ---
+
+#[test]
+fn sc_create_args_returns_none_when_binary_path_missing() {
+    // sc.exe create without binPath= is invalid; apply() skips create when
+    // entry.binary_path is None. Pin that the helper signals "skip" via None
+    // rather than returning a malformed args vector.
+    assert!(super::sc_create_args("MySvc", None, None, None).is_none());
+    assert!(super::sc_create_args("MySvc", None, Some("Display"), Some("auto")).is_none());
+}
+
+#[test]
+fn sc_create_args_minimal_entry_only_binary_path() {
+    let (args, unknown) = super::sc_create_args("MySvc", Some(r"C:\svc.exe"), None, None).unwrap();
+    assert_eq!(
+        args,
+        vec!["create", "MySvc", "binPath=", r"C:\svc.exe"],
+        "minimal create must be exactly 4 args"
+    );
+    assert!(unknown.is_none());
+}
+
+#[test]
+fn sc_create_args_separates_key_and_value_for_sc_quirk() {
+    // sc.exe's quirk: `key= value` is NOT one argument — the trailing
+    // `=` is glued to the key and the value is the next argv slot. Pin
+    // that the helper produces this shape (regression guard).
+    let (args, _) = super::sc_create_args(
+        "MySvc",
+        Some(r"C:\svc.exe"),
+        Some("My Service"),
+        Some("auto"),
+    )
+    .unwrap();
+    assert!(
+        args.iter().any(|a| a == "binPath="),
+        "binPath= must be a standalone arg: {args:?}"
+    );
+    assert!(
+        args.iter().any(|a| a == "DisplayName="),
+        "DisplayName= must be a standalone arg: {args:?}"
+    );
+    assert!(
+        args.iter().any(|a| a == "start="),
+        "start= must be a standalone arg: {args:?}"
+    );
+    // Each `key=` must be followed immediately by its value.
+    let bin_idx = args.iter().position(|a| a == "binPath=").unwrap();
+    assert_eq!(args[bin_idx + 1], r"C:\svc.exe");
+    let dn_idx = args.iter().position(|a| a == "DisplayName=").unwrap();
+    assert_eq!(args[dn_idx + 1], "My Service");
+    let st_idx = args.iter().position(|a| a == "start=").unwrap();
+    assert_eq!(args[st_idx + 1], "auto");
+}
+
+#[test]
+fn sc_create_args_maps_manual_to_sc_demand() {
+    // The user-facing `manual` start-type maps to sc.exe's `demand`.
+    let (args, unknown) =
+        super::sc_create_args("MySvc", Some(r"C:\svc.exe"), None, Some("manual")).unwrap();
+    let st_idx = args.iter().position(|a| a == "start=").unwrap();
+    assert_eq!(args[st_idx + 1], "demand");
+    assert!(unknown.is_none(), "manual is a recognized value");
+}
+
+#[test]
+fn sc_create_args_unknown_start_type_falls_back_to_demand_and_returns_warning() {
+    // Unknown start types must NOT cause the create to fail outright —
+    // apply() warns and uses `demand`. Pin both: the warning surface (raw
+    // value returned in the second tuple slot) and the fallback default.
+    let (args, unknown) =
+        super::sc_create_args("MySvc", Some(r"C:\svc.exe"), None, Some("on-demand")).unwrap();
+    let st_idx = args.iter().position(|a| a == "start=").unwrap();
+    assert_eq!(args[st_idx + 1], "demand");
+    assert_eq!(unknown.as_deref(), Some("on-demand"));
+}
+
+#[test]
+fn sc_create_args_omits_optional_fields_when_none() {
+    // No DisplayName, no start_type → those keys must NOT appear at all.
+    let (args, _) = super::sc_create_args("MySvc", Some(r"C:\svc.exe"), None, None).unwrap();
+    assert!(
+        !args.iter().any(|a| a == "DisplayName="),
+        "DisplayName= must be absent when display_name is None"
+    );
+    assert!(
+        !args.iter().any(|a| a == "start="),
+        "start= must be absent when start_type is None"
+    );
+}
+
+#[test]
+fn sc_create_args_preserves_field_order_create_name_binpath_displayname_start() {
+    let (args, _) = super::sc_create_args(
+        "MySvc",
+        Some(r"C:\svc.exe"),
+        Some("My Service"),
+        Some("auto"),
+    )
+    .unwrap();
+    assert_eq!(args[0], "create");
+    assert_eq!(args[1], "MySvc");
+    assert_eq!(args[2], "binPath=");
+    let dn_idx = args.iter().position(|a| a == "DisplayName=").unwrap();
+    let st_idx = args.iter().position(|a| a == "start=").unwrap();
+    assert!(
+        dn_idx < st_idx,
+        "DisplayName= must appear before start= for sc.exe argument-order safety: {args:?}"
+    );
+}
+
+// --- sc_config_args ---
+
+#[test]
+fn sc_config_args_returns_none_when_no_field_changed() {
+    // Empty entry (no fields to update) must return None so apply() skips
+    // the no-op sc invocation.
+    assert!(super::sc_config_args("MySvc", None, None, None).is_none());
+}
+
+#[test]
+fn sc_config_args_returns_none_when_only_unknown_start_type() {
+    // Unknown start_type is silently dropped on reconfigure (unlike create).
+    // If it's the ONLY field provided, the helper has nothing to emit.
+    assert!(super::sc_config_args("MySvc", None, None, Some("on-demand")).is_none());
+}
+
+#[test]
+fn sc_config_args_minimal_with_only_binary_path() {
+    let args = super::sc_config_args("MySvc", Some(r"C:\new.exe"), None, None).unwrap();
+    assert_eq!(args, vec!["config", "MySvc", "binPath=", r"C:\new.exe"]);
+}
+
+#[test]
+fn sc_config_args_emits_recognized_start_but_drops_unknown() {
+    // Recognized start_type emits start= start. Provide an unknown value
+    // alongside binary_path: the result includes binPath= but NOT start=.
+    let args =
+        super::sc_config_args("MySvc", Some(r"C:\new.exe"), None, Some("on-demand")).unwrap();
+    assert!(
+        !args.iter().any(|a| a == "start="),
+        "unknown start_type must be silently dropped on reconfigure: {args:?}"
+    );
+    assert!(args.iter().any(|a| a == "binPath="));
+}
+
+#[test]
+fn sc_config_args_recognized_start_type_threads_through() {
+    let args = super::sc_config_args("MySvc", None, None, Some("disabled")).unwrap();
+    let st_idx = args.iter().position(|a| a == "start=").unwrap();
+    assert_eq!(args[st_idx + 1], "disabled");
+}
+
+#[test]
+fn sc_config_args_full_entry_emits_all_three_keys() {
+    let args = super::sc_config_args(
+        "MySvc",
+        Some(r"C:\new.exe"),
+        Some("My Service v2"),
+        Some("auto"),
+    )
+    .unwrap();
+    assert_eq!(args[0], "config");
+    assert_eq!(args[1], "MySvc");
+    assert!(args.iter().any(|a| a == "start="));
+    assert!(args.iter().any(|a| a == "binPath="));
+    assert!(args.iter().any(|a| a == "DisplayName="));
+}
+
+#[test]
+fn sc_config_args_separates_key_and_value_for_sc_quirk() {
+    // Same sc.exe quirk as create: `key= value` is two args.
+    let args =
+        super::sc_config_args("MySvc", Some(r"C:\new.exe"), Some("DN"), Some("manual")).unwrap();
+    let bin_idx = args.iter().position(|a| a == "binPath=").unwrap();
+    assert_eq!(args[bin_idx + 1], r"C:\new.exe");
+    let dn_idx = args.iter().position(|a| a == "DisplayName=").unwrap();
+    assert_eq!(args[dn_idx + 1], "DN");
+    let st_idx = args.iter().position(|a| a == "start=").unwrap();
+    assert_eq!(args[st_idx + 1], "demand"); // manual → demand
+}

@@ -123,6 +123,85 @@ fn sc_start_type(user_value: &str) -> Option<&'static str> {
     }
 }
 
+/// Build the argument vector for `sc.exe create <name> binPath= <path> ...`.
+///
+/// Returns `None` when `binary_path` is `None` — sc.exe requires a binPath to
+/// create a service, and apply() simply skips the create call in that case.
+///
+/// Returns `Some((args, unknown_start_type))`:
+/// * `args` — the full argument list to pass to `sc.exe`. sc.exe's quirk is
+///   that `key= value` pairs must be passed as **two separate arguments** with
+///   the trailing `=` glued to the key — pinned in tests.
+/// * `unknown_start_type` — `Some(raw_value)` when the user supplied a
+///   `startType` that doesn't map to `{auto, manual, disabled}`. apply()
+///   surfaces the warning and the helper falls back to `"demand"` so the
+///   create still proceeds.
+fn sc_create_args(
+    name: &str,
+    binary_path: Option<&str>,
+    display_name: Option<&str>,
+    start_type: Option<&str>,
+) -> Option<(Vec<String>, Option<String>)> {
+    let bp = binary_path?;
+    let mut args = vec![
+        "create".to_string(),
+        name.to_string(),
+        "binPath=".to_string(),
+        bp.to_string(),
+    ];
+    if let Some(dn) = display_name {
+        args.push("DisplayName=".to_string());
+        args.push(dn.to_string());
+    }
+    let mut unknown = None;
+    if let Some(st) = start_type {
+        let sc_start = sc_start_type(st).unwrap_or_else(|| {
+            unknown = Some(st.to_string());
+            "demand"
+        });
+        args.push("start=".to_string());
+        args.push(sc_start.to_string());
+    }
+    Some((args, unknown))
+}
+
+/// Build the argument vector for `sc.exe config <name> ...` to reconfigure an
+/// existing service.
+///
+/// Returns `None` when no field needs updating (apply() skips the call to
+/// avoid no-op sc invocations). Returns `Some(args)` when at least one of
+/// `binary_path`, `display_name`, or a *recognized* `start_type` needs to be
+/// applied. An unknown `start_type` here is **silently dropped** (unlike
+/// create) — pinned in tests because the existing apply() pattern preserves
+/// rather than warns on reconfigure.
+fn sc_config_args(
+    name: &str,
+    binary_path: Option<&str>,
+    display_name: Option<&str>,
+    start_type: Option<&str>,
+) -> Option<Vec<String>> {
+    let mut args = vec!["config".to_string(), name.to_string()];
+    let mut needs_config = false;
+    if let Some(st) = start_type
+        && let Some(sc_start) = sc_start_type(st)
+    {
+        args.push("start=".to_string());
+        args.push(sc_start.to_string());
+        needs_config = true;
+    }
+    if let Some(bp) = binary_path {
+        args.push("binPath=".to_string());
+        args.push(bp.to_string());
+        needs_config = true;
+    }
+    if let Some(dn) = display_name {
+        args.push("DisplayName=".to_string());
+        args.push(dn.to_string());
+        needs_config = true;
+    }
+    needs_config.then_some(args)
+}
+
 /// Parse the STATE line from `sc query` output.
 ///
 /// Input format: `"        STATE              : 4  RUNNING"`
@@ -241,27 +320,18 @@ impl SystemConfigurator for WindowsServiceConfigurator {
             let mut exists = Self::query_service(&entry.name).is_some();
 
             if !exists {
-                if let Some(ref binary_path) = entry.binary_path {
-                    // sc.exe requires key= and value as separate arguments
-                    let mut args: Vec<&str> = vec!["create", &entry.name, "binPath=", binary_path];
-
-                    if let Some(ref dn) = entry.display_name {
-                        args.push("DisplayName=");
-                        args.push(dn);
+                if let Some((args, unknown_start)) = sc_create_args(
+                    &entry.name,
+                    entry.binary_path.as_deref(),
+                    entry.display_name.as_deref(),
+                    entry.start_type.as_deref(),
+                ) {
+                    if let Some(raw) = unknown_start {
+                        printer.warning(&format!(
+                            "Unknown start type '{}' for service {}, using 'demand'",
+                            raw, entry.name
+                        ));
                     }
-
-                    if let Some(ref st) = entry.start_type {
-                        let sc_start = sc_start_type(st).unwrap_or_else(|| {
-                            printer.warning(&format!(
-                                "Unknown start type '{}' for service {}, using 'demand'",
-                                st, entry.name
-                            ));
-                            "demand"
-                        });
-                        args.push("start=");
-                        args.push(sc_start);
-                    }
-
                     let output = Command::new("sc.exe")
                         .args(&args)
                         .output()
@@ -270,7 +340,6 @@ impl SystemConfigurator for WindowsServiceConfigurator {
                         printer.success(&format!("Created service {}", entry.name));
                         exists = true;
                     } else {
-                        // sc.exe writes error messages to stdout
                         let stdout = String::from_utf8_lossy(&output.stdout);
                         printer.warning(&format!(
                             "Failed to create service {}: {}",
@@ -279,41 +348,23 @@ impl SystemConfigurator for WindowsServiceConfigurator {
                         ));
                     }
                 }
-            } else {
-                // Reconfigure existing service
-                let mut config_args: Vec<&str> = vec!["config", &entry.name];
-                let mut needs_config = false;
-
-                if let Some(ref start_type) = entry.start_type
-                    && let Some(sc_start) = sc_start_type(start_type)
-                {
-                    config_args.push("start=");
-                    config_args.push(sc_start);
-                    needs_config = true;
-                }
-                if let Some(ref bp) = entry.binary_path {
-                    config_args.push("binPath=");
-                    config_args.push(bp);
-                    needs_config = true;
-                }
-                if let Some(ref dn) = entry.display_name {
-                    config_args.push("DisplayName=");
-                    config_args.push(dn);
-                    needs_config = true;
-                }
-                if needs_config {
-                    let output = Command::new("sc.exe")
-                        .args(&config_args)
-                        .output()
-                        .map_err(cfgd_core::errors::CfgdError::Io)?;
-                    if !output.status.success() {
-                        let stdout = String::from_utf8_lossy(&output.stdout);
-                        printer.warning(&format!(
-                            "Failed to configure service {}: {}",
-                            entry.name,
-                            stdout.trim()
-                        ));
-                    }
+            } else if let Some(config_args) = sc_config_args(
+                &entry.name,
+                entry.binary_path.as_deref(),
+                entry.display_name.as_deref(),
+                entry.start_type.as_deref(),
+            ) {
+                let output = Command::new("sc.exe")
+                    .args(&config_args)
+                    .output()
+                    .map_err(cfgd_core::errors::CfgdError::Io)?;
+                if !output.status.success() {
+                    let stdout = String::from_utf8_lossy(&output.stdout);
+                    printer.warning(&format!(
+                        "Failed to configure service {}: {}",
+                        entry.name,
+                        stdout.trim()
+                    ));
                 }
             }
 
