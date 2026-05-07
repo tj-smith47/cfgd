@@ -222,7 +222,7 @@ In addition to publishing binaries to [GitHub Releases](https://github.com/tj-sm
 | [crates.io](https://crates.io/crates/cfgd) | `cargo install cfgd` |
 | [GHCR](https://ghcr.io/tj-smith47) | Docker images: `cfgd`, `cfgd-operator`, `cfgd-csi` |
 | [Helm](chart/cfgd/) | `helm install cfgd oci://ghcr.io/tj-smith47/charts/cfgd` |
-| [Krew](manifests/krew/) | `kubectl krew install cfgd` — the [kubectl plugin](docs/operator.md) for debugging nodes, exec'ing into agent pods, and inspecting fleet status |
+| [Krew](manifests/krew/) | _Pending Krew index PR review_ — the [kubectl plugin](docs/operator.md) for debugging nodes, exec'ing into agent pods, and inspecting fleet status. Until the plugin is published, install `cfgd` and symlink it as `kubectl-cfgd` on `PATH` (the binary dispatches on `argv[0]`); see [Installation](docs/installation.md#containers-and-kubernetes). |
 | [OLM](ecosystem/olm/) | Operator bundle for OLM-managed clusters |
 | [Crossplane](function-cfgd/) | `function-cfgd` composition function for [team config distribution](docs/team-config.md) |
 
