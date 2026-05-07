@@ -12,7 +12,8 @@ use k8s_openapi::apimachinery::pkg::apis::meta::v1::OwnerReference;
 use kube::api::ObjectMeta;
 
 use crate::crds::{
-    DriftAlert, DriftAlertSpec, DriftDetail, DriftSeverity, MachineConfig, MachineConfigReference,
+    ClusterConfigPolicy, ClusterConfigPolicySpec, ConfigPolicy, ConfigPolicySpec, DriftAlert,
+    DriftAlertSpec, DriftDetail, DriftSeverity, MachineConfig, MachineConfigReference,
     MachineConfigSpec, MachineConfigStatus,
 };
 
@@ -84,6 +85,25 @@ pub(super) fn machine_config_status_with_drift_detected() -> MachineConfigStatus
             observed_generation: Some(1),
         }],
         package_versions: BTreeMap::new(),
+    }
+}
+
+pub(super) fn config_policy(name: &str, namespace: &str) -> ConfigPolicy {
+    ConfigPolicy {
+        metadata: meta(name, Some(namespace)),
+        spec: ConfigPolicySpec::default(),
+        status: None,
+    }
+}
+
+pub(super) fn cluster_config_policy_with_spec(
+    name: &str,
+    spec: ClusterConfigPolicySpec,
+) -> ClusterConfigPolicy {
+    ClusterConfigPolicy {
+        metadata: meta(name, None),
+        spec,
+        status: None,
     }
 }
 

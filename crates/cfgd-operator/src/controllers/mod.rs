@@ -474,6 +474,10 @@ mod test_kube_harness;
 #[cfg(test)]
 mod tests;
 #[cfg(test)]
+mod tests_cluster_config_policy;
+#[cfg(test)]
+mod tests_config_policy;
+#[cfg(test)]
 mod tests_drift_alert;
 #[cfg(test)]
 mod tests_machine_config;
