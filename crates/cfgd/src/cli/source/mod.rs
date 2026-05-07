@@ -35,8 +35,9 @@ pub(in crate::cli) use helpers::{
 
 #[cfg(test)]
 pub(in crate::cli) use helpers::{
-    add_source_to_config, count_policy_items, display_policy_items, infer_source_name,
-    remove_source_from_config,
+    DEFAULT_NONINTERACTIVE_PRIORITY, add_source_to_config, count_policy_items,
+    display_policy_items, infer_source_name, parse_priority_input, remove_source_from_config,
+    resolve_non_interactive_profile,
 };
 
 // Glob-import all helpers so siblings can reference them as `super::*`-imported

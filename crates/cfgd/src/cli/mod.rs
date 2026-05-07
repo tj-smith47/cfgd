@@ -35,8 +35,9 @@ pub(in crate::cli) use plan_ops::*;
 pub(in crate::cli) use registry::*;
 #[cfg(test)]
 pub(in crate::cli) use source::{
-    add_source_to_config, count_policy_items, display_policy_items, infer_source_name,
-    remove_source_from_config,
+    DEFAULT_NONINTERACTIVE_PRIORITY, add_source_to_config, count_policy_items,
+    display_policy_items, infer_source_name, parse_priority_input, remove_source_from_config,
+    resolve_non_interactive_profile,
 };
 pub(in crate::cli) use source::{
     build_permission_input, display_pending_decisions, mutate_config_yaml, source_cache_dir,

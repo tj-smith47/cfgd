@@ -426,6 +426,123 @@ fn count_policy_items_empty() {
     assert_eq!(super::count_policy_items(&items), 0);
 }
 
+// --- resolve_non_interactive_profile ---
+
+#[test]
+fn resolve_non_interactive_profile_explicit_wins_over_everything() {
+    // Explicit --profile beats auto-detect, sole option, and prompt.
+    let out = super::resolve_non_interactive_profile(
+        Some("explicit-pick"),
+        Some("auto-pick"),
+        &["only-one".to_string()],
+    );
+    assert_eq!(out.as_deref(), Some("explicit-pick"));
+}
+
+#[test]
+fn resolve_non_interactive_profile_auto_detected_wins_over_sole_option() {
+    // Auto-detected platform profile beats sole-option fallback.
+    let out =
+        super::resolve_non_interactive_profile(None, Some("ubuntu"), &["only-one".to_string()]);
+    assert_eq!(out.as_deref(), Some("ubuntu"));
+}
+
+#[test]
+fn resolve_non_interactive_profile_sole_option_wins_when_no_higher_signal() {
+    // No explicit, no auto-detect, exactly one provided → it gets picked.
+    let out = super::resolve_non_interactive_profile(None, None, &["dev".to_string()]);
+    assert_eq!(out.as_deref(), Some("dev"));
+}
+
+#[test]
+fn resolve_non_interactive_profile_returns_none_when_multiple_options() {
+    // Multiple provided + no override → caller must prompt.
+    let out = super::resolve_non_interactive_profile(
+        None,
+        None,
+        &["dev".to_string(), "prod".to_string(), "ci".to_string()],
+    );
+    assert!(
+        out.is_none(),
+        "multi-option case must return None so the caller prompts"
+    );
+}
+
+#[test]
+fn resolve_non_interactive_profile_returns_none_when_no_options_and_no_override() {
+    // Nothing to pick from and no override — caller treats as "no profile".
+    let out = super::resolve_non_interactive_profile(None, None, &[]);
+    assert!(out.is_none());
+}
+
+#[test]
+fn resolve_non_interactive_profile_explicit_wins_even_over_empty_provided() {
+    // Source manifest may declare no profiles, but the user can still
+    // pin one via --profile (e.g. for a custom subscription).
+    let out = super::resolve_non_interactive_profile(Some("custom"), None, &[]);
+    assert_eq!(out.as_deref(), Some("custom"));
+}
+
+// --- parse_priority_input ---
+
+#[test]
+fn parse_priority_input_accepts_valid_u32() {
+    assert_eq!(super::parse_priority_input("42").unwrap(), 42);
+    assert_eq!(super::parse_priority_input("0").unwrap(), 0);
+    assert_eq!(super::parse_priority_input("1000").unwrap(), 1000);
+    assert_eq!(
+        super::parse_priority_input("4294967295").unwrap(),
+        u32::MAX,
+        "must accept the full u32 range to match the field type"
+    );
+}
+
+#[test]
+fn parse_priority_input_rejects_non_numeric_with_canonical_error() {
+    let err = super::parse_priority_input("five").unwrap_err().to_string();
+    assert!(
+        err.contains("invalid priority: 'five'") && err.contains("must be a number"),
+        "error must use the canonical CLI wording, got: {err}"
+    );
+}
+
+#[test]
+fn parse_priority_input_rejects_negative_numbers() {
+    // u32 has no negative range — pin that contract.
+    let err = super::parse_priority_input("-1").unwrap_err().to_string();
+    assert!(err.contains("invalid priority: '-1'"));
+}
+
+#[test]
+fn parse_priority_input_rejects_overflow() {
+    // u32::MAX + 1; surfaces as the same canonical error.
+    let err = super::parse_priority_input("4294967296")
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("invalid priority: '4294967296'"));
+}
+
+#[test]
+fn parse_priority_input_rejects_empty_string() {
+    let err = super::parse_priority_input("").unwrap_err().to_string();
+    assert!(err.contains("invalid priority: ''"));
+}
+
+#[test]
+fn parse_priority_input_rejects_whitespace_only() {
+    // u32::from_str does not trim; whitespace must error rather than
+    // silently succeed at zero.
+    let err = super::parse_priority_input("  ").unwrap_err().to_string();
+    assert!(err.contains("invalid priority: '  '"));
+}
+
+#[test]
+fn default_noninteractive_priority_is_midpoint() {
+    // Pin the constant so a future "let's bump the default" change is
+    // an explicit choice rather than a silent drift.
+    assert_eq!(super::DEFAULT_NONINTERACTIVE_PRIORITY, 500);
+}
+
 #[test]
 fn add_and_remove_source_in_config() {
     let dir = tempfile::tempdir().unwrap();
