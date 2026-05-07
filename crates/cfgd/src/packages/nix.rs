@@ -59,25 +59,9 @@ impl PackageManager for NixManager {
                 })?;
 
             if output.status.success() {
-                let stdout = String::from_utf8_lossy(&output.stdout);
-                // nix profile list output: index, flake ref, store path — extract package name
-                // from the flake ref or store path
-                let packages: HashSet<String> = stdout
-                    .lines()
-                    .filter(|l| !l.is_empty())
-                    .filter_map(|l| {
-                        // Format varies; extract the package name from the last path component
-                        let parts: Vec<&str> = l.split_whitespace().collect();
-                        if parts.len() >= 2 {
-                            // Try to extract from flake ref like "nixpkgs#ripgrep"
-                            if let Some(name) = parts[1].rsplit('#').next() {
-                                return Some(name.to_string());
-                            }
-                        }
-                        None
-                    })
-                    .collect();
-                return Ok(packages);
+                return Ok(parse_nix_profile_list(&String::from_utf8_lossy(
+                    &output.stdout,
+                )));
             }
         }
 
@@ -87,13 +71,9 @@ impl PackageManager for NixManager {
             Command::new("nix-env").args(["-q", "--no-name", "--attr-path"]),
             "list",
         )?;
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        // nix-env -q output: "name-version" — strip version
-        Ok(stdout
-            .lines()
-            .filter(|l| !l.is_empty())
-            .map(|l| strip_version_suffix(l.trim()))
-            .collect())
+        Ok(parse_nix_env_query(&String::from_utf8_lossy(
+            &output.stdout,
+        )))
     }
 
     fn install(&self, packages: &[String], printer: &Printer) -> Result<()> {
@@ -170,6 +150,35 @@ impl PackageManager for NixManager {
         }
         Ok(None)
     }
+}
+
+/// Parse `nix profile list` stdout into a `HashSet` of package names.
+/// Each line is whitespace-split — `parts[1]` is the flake ref like
+/// `nixpkgs#ripgrep`; the name after the final `#` is the package.
+/// Lines without a flake ref token (or empty lines) are dropped.
+pub(super) fn parse_nix_profile_list(stdout: &str) -> HashSet<String> {
+    stdout
+        .lines()
+        .filter(|l| !l.is_empty())
+        .filter_map(|l| {
+            let parts: Vec<&str> = l.split_whitespace().collect();
+            if parts.len() < 2 {
+                return None;
+            }
+            parts[1].rsplit('#').next().map(|s| s.to_string())
+        })
+        .collect()
+}
+
+/// Parse `nix-env -q --no-name --attr-path` stdout into a `HashSet` of
+/// package names. Each line is `name-version`; the trailing version suffix
+/// is stripped via `strip_version_suffix`.
+pub(super) fn parse_nix_env_query(stdout: &str) -> HashSet<String> {
+    stdout
+        .lines()
+        .filter(|l| !l.is_empty())
+        .map(|l| strip_version_suffix(l.trim()))
+        .collect()
 }
 
 /// Parse version from `nix search nixpkgs <pkg> --json` output.
@@ -300,5 +309,75 @@ mod tests {
         let mgr = NixManager;
         let printer = Printer::new(cfgd_core::output::Verbosity::Quiet);
         mgr.update(&printer).unwrap();
+    }
+
+    // --- parse_nix_profile_list ---
+
+    #[test]
+    fn parse_nix_profile_list_extracts_pkg_after_hash() {
+        let stdout = "0 nixpkgs#ripgrep /nix/store/abc-ripgrep-14.1.0\n\
+                      1 nixpkgs#fd /nix/store/def-fd-9.0.0\n";
+        let pkgs = parse_nix_profile_list(stdout);
+        assert_eq!(pkgs.len(), 2);
+        assert!(pkgs.contains("ripgrep"));
+        assert!(pkgs.contains("fd"));
+    }
+
+    #[test]
+    fn parse_nix_profile_list_handles_namespaced_flake_refs() {
+        // Real-world: nixpkgs/release-23.11#fd → strip everything before the
+        // final '#' and return the package name.
+        let stdout = "0 nixpkgs/release-23.11#fd /nix/store/abc-fd\n";
+        let pkgs = parse_nix_profile_list(stdout);
+        assert_eq!(pkgs.len(), 1);
+        assert!(pkgs.contains("fd"));
+    }
+
+    #[test]
+    fn parse_nix_profile_list_drops_empty_and_malformed_lines() {
+        let stdout = "\nrandom-no-spaces\n0 nixpkgs#ripgrep /store/x\n  \n";
+        let pkgs = parse_nix_profile_list(stdout);
+        assert_eq!(pkgs.len(), 1, "must skip empty/short lines");
+        assert!(pkgs.contains("ripgrep"));
+    }
+
+    #[test]
+    fn parse_nix_profile_list_treats_no_hash_as_full_token() {
+        // No '#' in the second column — `rsplit('#').next()` returns the whole
+        // string, which becomes the package name. Pin this contract: arbitrary
+        // tokens that happen to slip into column 2 are surfaced as-is rather
+        // than silently dropped.
+        let stdout = "0 plain-name /store/x\n";
+        let pkgs = parse_nix_profile_list(stdout);
+        assert!(pkgs.contains("plain-name"));
+    }
+
+    #[test]
+    fn parse_nix_profile_list_empty_input_returns_empty_set() {
+        assert!(parse_nix_profile_list("").is_empty());
+    }
+
+    // --- parse_nix_env_query ---
+
+    #[test]
+    fn parse_nix_env_query_strips_version_suffix() {
+        // nix-env -q --no-name --attr-path emits `attr-path` lines; we strip
+        // the trailing `-X.Y.Z` per the strip_version_suffix contract.
+        let stdout = "ripgrep-14.1.0\nfd-9.0.0\n";
+        let pkgs = parse_nix_env_query(stdout);
+        assert!(pkgs.contains("ripgrep"));
+        assert!(pkgs.contains("fd"));
+    }
+
+    #[test]
+    fn parse_nix_env_query_drops_empty_lines() {
+        let stdout = "\nripgrep-14.1.0\n\n\nfd-9.0.0\n";
+        let pkgs = parse_nix_env_query(stdout);
+        assert_eq!(pkgs.len(), 2);
+    }
+
+    #[test]
+    fn parse_nix_env_query_empty_input_returns_empty_set() {
+        assert!(parse_nix_env_query("").is_empty());
     }
 }

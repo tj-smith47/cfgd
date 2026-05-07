@@ -47,12 +47,9 @@ impl PackageManager for FlatpakManager {
             Command::new("flatpak").args(["list", "--app", "--columns=application"]),
             "list",
         )?;
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        Ok(stdout
-            .lines()
-            .map(|l| l.trim().to_string())
-            .filter(|l| !l.is_empty())
-            .collect())
+        Ok(parse_flatpak_app_list(&String::from_utf8_lossy(
+            &output.stdout,
+        )))
     }
 
     fn install(&self, packages: &[String], printer: &Printer) -> Result<()> {
@@ -111,6 +108,17 @@ impl PackageManager for FlatpakManager {
     }
 }
 
+/// Parse `flatpak list --app --columns=application` stdout into a `HashSet`
+/// of installed app IDs (one per line, surrounding whitespace stripped,
+/// blank lines dropped).
+pub(super) fn parse_flatpak_app_list(stdout: &str) -> HashSet<String> {
+    stdout
+        .lines()
+        .map(|l| l.trim().to_string())
+        .filter(|l| !l.is_empty())
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use cfgd_core::command_available;
@@ -140,5 +148,34 @@ mod tests {
         let mgr = FlatpakManager;
         let available = mgr.is_available();
         assert_eq!(available, command_available("flatpak"));
+    }
+
+    // --- parse_flatpak_app_list ---
+
+    #[test]
+    fn parse_flatpak_app_list_collects_app_ids() {
+        let stdout = "org.mozilla.firefox\norg.signal.Signal\norg.gimp.GIMP\n";
+        let pkgs = parse_flatpak_app_list(stdout);
+        assert_eq!(pkgs.len(), 3);
+        assert!(pkgs.contains("org.mozilla.firefox"));
+        assert!(pkgs.contains("org.signal.Signal"));
+        assert!(pkgs.contains("org.gimp.GIMP"));
+    }
+
+    #[test]
+    fn parse_flatpak_app_list_drops_blank_and_whitespace_lines() {
+        let stdout = "\n org.mozilla.firefox \n\t  \n\norg.signal.Signal\n";
+        let pkgs = parse_flatpak_app_list(stdout);
+        assert_eq!(pkgs.len(), 2, "blank/whitespace-only lines must be dropped");
+        assert!(
+            pkgs.contains("org.mozilla.firefox"),
+            "surrounding whitespace must be stripped before insertion"
+        );
+        assert!(pkgs.contains("org.signal.Signal"));
+    }
+
+    #[test]
+    fn parse_flatpak_app_list_empty_input_yields_empty_set() {
+        assert!(parse_flatpak_app_list("").is_empty());
     }
 }

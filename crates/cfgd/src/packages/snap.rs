@@ -42,14 +42,7 @@ impl PackageManager for SnapManager {
 
     fn installed_packages(&self) -> Result<HashSet<String>> {
         let output = run_pkg_cmd("snap", Command::new("snap").args(["list"]), "list")?;
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        // snap list output: "Name  Version  Rev  Tracking  Publisher  Notes"
-        // Skip header line
-        Ok(stdout
-            .lines()
-            .skip(1)
-            .filter_map(|l| l.split_whitespace().next().map(|s| s.to_string()))
-            .collect())
+        Ok(parse_snap_list(&String::from_utf8_lossy(&output.stdout)))
     }
 
     fn install(&self, packages: &[String], printer: &Printer) -> Result<()> {
@@ -123,6 +116,21 @@ impl PackageManager for SnapManager {
         let stdout = String::from_utf8_lossy(&output.stdout);
         Ok(parse_snap_info_version(&stdout))
     }
+}
+
+/// Parse `snap list` stdout into a `HashSet` of installed package names.
+///
+/// `snap list` emits a header row (`Name Version Rev Tracking Publisher Notes`)
+/// followed by one row per snap; the first whitespace-separated token in each
+/// data row is the snap name. We unconditionally skip the first line — empty
+/// installations still emit a header (or an empty stdout, in which case the
+/// `skip(1)` no-op is safe).
+pub(super) fn parse_snap_list(stdout: &str) -> HashSet<String> {
+    stdout
+        .lines()
+        .skip(1)
+        .filter_map(|l| l.split_whitespace().next().map(|s| s.to_string()))
+        .collect()
 }
 
 /// Parse version from `snap info` output.
@@ -275,5 +283,43 @@ channels:
         let mgr = SnapManager;
         let available = mgr.is_available();
         assert_eq!(available, command_available("snap"));
+    }
+
+    // --- parse_snap_list ---
+
+    #[test]
+    fn parse_snap_list_skips_header_and_returns_first_token() {
+        let stdout = "\
+Name      Version  Rev    Tracking       Publisher     Notes
+core22    20240124 1100   latest/stable  canonical**   base
+ripgrep   14.1.0   234    latest/stable  burntsushi    classic
+fd        9.0.0    100    latest/stable  -             -
+";
+        let pkgs = parse_snap_list(stdout);
+        assert_eq!(pkgs.len(), 3);
+        assert!(pkgs.contains("core22"));
+        assert!(pkgs.contains("ripgrep"));
+        assert!(pkgs.contains("fd"));
+    }
+
+    #[test]
+    fn parse_snap_list_empty_input_yields_empty_set() {
+        // Empty stdout — `skip(1)` over zero lines yields no elements.
+        assert!(parse_snap_list("").is_empty());
+    }
+
+    #[test]
+    fn parse_snap_list_only_header_yields_empty_set() {
+        // An installation with no snaps still emits the header line.
+        let stdout = "Name  Version  Rev  Tracking  Publisher  Notes\n";
+        assert!(parse_snap_list(stdout).is_empty());
+    }
+
+    #[test]
+    fn parse_snap_list_drops_blank_data_rows() {
+        let stdout = "Name  Version\n\ncore22  20240124  1100\n\n";
+        let pkgs = parse_snap_list(stdout);
+        assert_eq!(pkgs.len(), 1);
+        assert!(pkgs.contains("core22"));
     }
 }
