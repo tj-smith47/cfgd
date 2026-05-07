@@ -17,8 +17,10 @@ pub fn strip_sha256_prefix(s: &str) -> &str {
 }
 
 /// Parse a potentially loose version string into a semver Version.
-/// Handles "1.28" → "1.28.0" and "1" → "1.0.0".
+/// Handles "1.28" → "1.28.0", "1" → "1.0.0", and a leading `v`/`V` prefix
+/// (`v1.10.0` → `1.10.0`) so callers can feed git/OCI tag names directly.
 pub fn parse_loose_version(s: &str) -> Option<semver::Version> {
+    let s = s.strip_prefix(['v', 'V']).unwrap_or(s);
     if let Ok(ver) = semver::Version::parse(s) {
         return Some(ver);
     }

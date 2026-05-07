@@ -273,12 +273,10 @@ where
     }
     for tags in result.values_mut() {
         tags.sort_by(|a, b| {
-            // Registry tag convention is `<module>/v<X.Y.Z>` — strip the
-            // leading `v` before semver-parsing so "v1.10.0" sorts after
-            // "v1.9.0" instead of falling back to lexical ordering (which
-            // would silently mis-rank double-digit minor/patch versions).
-            let av = crate::parse_loose_version(a.strip_prefix('v').unwrap_or(a));
-            let bv = crate::parse_loose_version(b.strip_prefix('v').unwrap_or(b));
+            // `parse_loose_version` strips a leading `v` itself, so the
+            // registry convention `<module>/v<X.Y.Z>` sorts correctly here.
+            let av = crate::parse_loose_version(a);
+            let bv = crate::parse_loose_version(b);
             match (av, bv) {
                 (Some(av), Some(bv)) => av.cmp(&bv),
                 _ => a.cmp(b),

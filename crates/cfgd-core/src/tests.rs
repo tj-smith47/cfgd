@@ -124,6 +124,62 @@ fn parse_loose_version_preserves_prerelease() {
 }
 
 #[test]
+fn parse_loose_version_strips_v_prefix() {
+    // git/OCI tag convention is `vX.Y.Z` — the parser must accept it so
+    // `latest_module_version` ranks `v1.10.0` > `v1.9.0` instead of falling
+    // back to lexical compare (which would silently invert the ordering).
+    assert_eq!(
+        parse_loose_version("v1.10.0"),
+        Some(semver::Version::new(1, 10, 0))
+    );
+    assert_eq!(
+        parse_loose_version("v1.9.0"),
+        Some(semver::Version::new(1, 9, 0))
+    );
+    // Capital V is rare but cheap to accept and matches what some tag
+    // generators emit.
+    assert_eq!(
+        parse_loose_version("V2.0.0"),
+        Some(semver::Version::new(2, 0, 0))
+    );
+    // Loose two-part still works under the prefix.
+    assert_eq!(
+        parse_loose_version("v1.28"),
+        Some(semver::Version::new(1, 28, 0))
+    );
+    assert_eq!(
+        parse_loose_version("v1"),
+        Some(semver::Version::new(1, 0, 0))
+    );
+}
+
+#[test]
+fn parse_loose_version_v_prefix_compares_correctly() {
+    // The actual ordering invariant the registry tag-sort relies on.
+    let lo = parse_loose_version("v1.9.0").unwrap();
+    let hi = parse_loose_version("v1.10.0").unwrap();
+    assert!(lo < hi, "v1.9.0 must sort before v1.10.0");
+}
+
+#[test]
+fn parse_loose_version_does_not_strip_other_prefixes() {
+    // Only `v`/`V` are stripped — anything else is rejected so callers can
+    // distinguish "git tag" from arbitrary identifier strings.
+    assert!(parse_loose_version("release-1.0.0").is_none());
+    assert!(parse_loose_version("ver1.0.0").is_none());
+    assert!(parse_loose_version("1v.0.0").is_none());
+}
+
+#[test]
+fn version_satisfies_accepts_v_prefixed_version() {
+    // `available_version` from package managers usually doesn't include
+    // `v`, but module entries pulled from git tags can — verify the loose
+    // parser pulls through.
+    assert!(version_satisfies("v1.28.3", ">=1.28"));
+    assert!(!version_satisfies("v1.27.0", ">=1.28"));
+}
+
+#[test]
 fn version_satisfies_basic() {
     assert!(version_satisfies("1.28.3", ">=1.28"));
     assert!(!version_satisfies("1.27.0", ">=1.28"));
