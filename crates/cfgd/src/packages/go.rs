@@ -74,29 +74,15 @@ impl PackageManager for GoInstallManager {
                 .to_string_lossy()
                 .to_string()
         });
-
-        let bin_dir = std::path::PathBuf::from(&gopath).join("bin");
-        let mut packages = HashSet::new();
-
-        if let Ok(entries) = std::fs::read_dir(&bin_dir) {
-            for entry in entries.flatten() {
-                if let Some(name) = entry.file_name().to_str() {
-                    packages.insert(name.to_string());
-                }
-            }
-        }
-
-        Ok(packages)
+        Ok(scan_go_bin_dir(
+            &std::path::PathBuf::from(&gopath).join("bin"),
+        ))
     }
 
     fn install(&self, packages: &[String], printer: &Printer) -> Result<()> {
         for pkg in packages {
             // `go install` requires a full module path with @version
-            let install_path = if pkg.contains('@') {
-                pkg.clone()
-            } else {
-                format!("{}@latest", pkg)
-            };
+            let install_path = go_install_path(pkg);
             let label = format!("go install {}", install_path);
             run_pkg_cmd_live(
                 printer,
@@ -160,6 +146,33 @@ impl PackageManager for GoInstallManager {
         }
         let stdout = String::from_utf8_lossy(&output.stdout);
         Ok(parse_go_module_version(&stdout))
+    }
+}
+
+/// Scan `<gopath>/bin` and return the file names (binary names) it contains.
+/// Returns an empty set when the directory is missing or unreadable —
+/// matches the prior `if let Ok(entries) = read_dir(...)` permissive behaviour.
+/// Split out so tests can drive the scan against a tempdir without mutating
+/// `$GOPATH` or `$HOME`.
+pub(super) fn scan_go_bin_dir(bin_dir: &std::path::Path) -> HashSet<String> {
+    let mut packages = HashSet::new();
+    if let Ok(entries) = std::fs::read_dir(bin_dir) {
+        for entry in entries.flatten() {
+            if let Some(name) = entry.file_name().to_str() {
+                packages.insert(name.to_string());
+            }
+        }
+    }
+    packages
+}
+
+/// Derive the `go install` argument from a user-supplied package reference:
+/// pin already-versioned refs as-is, and append `@latest` to bare module paths.
+pub(super) fn go_install_path(pkg: &str) -> String {
+    if pkg.contains('@') {
+        pkg.to_string()
+    } else {
+        format!("{}@latest", pkg)
     }
 }
 
@@ -278,5 +291,78 @@ mod tests {
         let mgr = GoInstallManager;
         let printer = Printer::new(cfgd_core::output::Verbosity::Quiet);
         mgr.update(&printer).unwrap();
+    }
+
+    // --- scan_go_bin_dir ---
+
+    #[test]
+    fn scan_go_bin_dir_returns_file_names() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("gopls"), b"").unwrap();
+        std::fs::write(dir.path().join("staticcheck"), b"").unwrap();
+        let pkgs = scan_go_bin_dir(dir.path());
+        assert_eq!(pkgs.len(), 2);
+        assert!(pkgs.contains("gopls"));
+        assert!(pkgs.contains("staticcheck"));
+    }
+
+    #[test]
+    fn scan_go_bin_dir_includes_subdirectories() {
+        // read_dir does not distinguish file vs directory — anything in
+        // $GOPATH/bin is reported. Pin this so a future "filter to files"
+        // refactor is intentional.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("subdir")).unwrap();
+        std::fs::write(dir.path().join("gopls"), b"").unwrap();
+        let pkgs = scan_go_bin_dir(dir.path());
+        assert!(pkgs.contains("gopls"));
+        assert!(pkgs.contains("subdir"));
+    }
+
+    #[test]
+    fn scan_go_bin_dir_returns_empty_set_when_dir_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        let pkgs = scan_go_bin_dir(&dir.path().join("nonexistent"));
+        assert!(
+            pkgs.is_empty(),
+            "missing $GOPATH/bin must yield empty set, not error"
+        );
+    }
+
+    #[test]
+    fn scan_go_bin_dir_empty_dir_yields_empty_set() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(scan_go_bin_dir(dir.path()).is_empty());
+    }
+
+    // --- go_install_path ---
+
+    #[test]
+    fn go_install_path_appends_at_latest_for_bare_module() {
+        assert_eq!(
+            go_install_path("golang.org/x/tools/gopls"),
+            "golang.org/x/tools/gopls@latest"
+        );
+    }
+
+    #[test]
+    fn go_install_path_preserves_pinned_versions() {
+        // User-supplied @version must round-trip unchanged so semver pins
+        // (and pseudo-versions like @v0.0.0-20240301...-abcd) survive.
+        assert_eq!(
+            go_install_path("golang.org/x/tools/gopls@v0.15.0"),
+            "golang.org/x/tools/gopls@v0.15.0"
+        );
+        assert_eq!(
+            go_install_path("example.com/pkg@v0.0.0-20240101000000-abcdef123456"),
+            "example.com/pkg@v0.0.0-20240101000000-abcdef123456"
+        );
+    }
+
+    #[test]
+    fn go_install_path_treats_at_anywhere_as_pre_pinned() {
+        // The check is `contains('@')` — even if `@` is in the wrong place,
+        // the input is left untouched (we trust the user's intent).
+        assert_eq!(go_install_path("@oddly/placed"), "@oddly/placed");
     }
 }
