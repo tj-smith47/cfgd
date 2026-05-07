@@ -40,40 +40,67 @@ impl ScriptedManager {
         if packages.is_empty() {
             return Ok(());
         }
+        let invocations = build_template_invocations(template, packages);
         if template.contains("{package}") {
-            // One-at-a-time mode
-            for pkg in packages {
-                let escaped = cfgd_core::shell_escape_value(pkg);
-                let cmd = template.replace("{package}", &escaped);
-                printer.info(&cmd);
+            // One-at-a-time mode — each package emitted as its own command,
+            // surfaced as a per-package error so the caller can see which
+            // member of the batch failed.
+            for (cmd, pkg) in invocations.iter().zip(packages) {
+                printer.info(cmd);
                 run_pkg_cmd_msg(
                     &self.mgr_name,
-                    Command::new("sh").args(["-c", &cmd]),
+                    Command::new("sh").args(["-c", cmd]),
                     error_kind,
                     pkg,
                 )?;
             }
-        } else {
-            // Batch mode: {packages} or append
-            let escaped_pkgs: Vec<String> = packages
-                .iter()
-                .map(|p| cfgd_core::shell_escape_value(p))
-                .collect();
-            let joined = escaped_pkgs.join(" ");
-            let cmd = if template.contains("{packages}") {
-                template.replace("{packages}", &joined)
-            } else {
-                format!("{} {}", template, joined)
-            };
-            printer.info(&cmd);
+        } else if let Some(cmd) = invocations.first() {
+            // Batch mode — build_template_invocations emits a single command.
+            printer.info(cmd);
             run_pkg_cmd(
                 &self.mgr_name,
-                Command::new("sh").args(["-c", &cmd]),
+                Command::new("sh").args(["-c", cmd]),
                 error_kind,
             )?;
         }
         Ok(())
     }
+}
+
+/// Build the `sh -c` argument(s) ScriptedManager uses to invoke a custom
+/// package-manager template. Pure helper — split out so the substitution +
+/// shell-escaping contract is testable without spawning a shell.
+///
+/// Two modes:
+/// - **`{package}` placeholder**: one-at-a-time. Returns one command per
+///   package, with `{package}` substituted by the shell-escaped package name.
+/// - **`{packages}` placeholder or no placeholder**: batch. Returns a single
+///   command with the shell-escaped, space-joined package list either spliced
+///   into `{packages}` or appended after the template.
+pub(super) fn build_template_invocations(template: &str, packages: &[String]) -> Vec<String> {
+    if packages.is_empty() {
+        return Vec::new();
+    }
+    if template.contains("{package}") {
+        return packages
+            .iter()
+            .map(|pkg| {
+                let escaped = cfgd_core::shell_escape_value(pkg);
+                template.replace("{package}", &escaped)
+            })
+            .collect();
+    }
+    let escaped: Vec<String> = packages
+        .iter()
+        .map(|p| cfgd_core::shell_escape_value(p))
+        .collect();
+    let joined = escaped.join(" ");
+    let cmd = if template.contains("{packages}") {
+        template.replace("{packages}", &joined)
+    } else {
+        format!("{} {}", template, joined)
+    };
+    vec![cmd]
 }
 
 impl PackageManager for ScriptedManager {

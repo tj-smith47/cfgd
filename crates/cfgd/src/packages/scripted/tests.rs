@@ -722,3 +722,132 @@ fn scripted_manager_bootstrap_through_trait() {
     let printer = Printer::new(cfgd_core::output::Verbosity::Quiet);
     mgr.bootstrap(&printer).unwrap();
 }
+
+// --- build_template_invocations ---
+
+#[test]
+fn build_template_invocations_per_package_when_template_uses_brace_package() {
+    // `{package}` placeholder → one command per package, each with the
+    // package shell-escaped and substituted in.
+    let cmds = super::build_template_invocations(
+        "mypm install {package}",
+        &["foo".to_string(), "bar".to_string()],
+    );
+    assert_eq!(cmds.len(), 2);
+    assert!(
+        cmds[0].contains("foo") && cmds[0].starts_with("mypm install "),
+        "first cmd missing escaped 'foo': {}",
+        cmds[0]
+    );
+    assert!(
+        cmds[1].contains("bar"),
+        "second cmd missing escaped 'bar': {}",
+        cmds[1]
+    );
+}
+
+#[test]
+fn build_template_invocations_batch_when_template_uses_brace_packages() {
+    // `{packages}` placeholder → exactly one command with the joined,
+    // shell-escaped package list spliced in.
+    let cmds = super::build_template_invocations(
+        "mypm batch-install {packages} --yes",
+        &["foo".to_string(), "bar".to_string(), "baz".to_string()],
+    );
+    assert_eq!(
+        cmds.len(),
+        1,
+        "batch mode must collapse to a single command"
+    );
+    assert!(
+        cmds[0].contains("foo") && cmds[0].contains("bar") && cmds[0].contains("baz"),
+        "all packages must appear: {}",
+        cmds[0]
+    );
+    assert!(
+        cmds[0].contains("--yes"),
+        "trailing template args must survive: {}",
+        cmds[0]
+    );
+}
+
+#[test]
+fn build_template_invocations_appends_when_no_placeholder() {
+    // No placeholder → batch mode with the package list appended after a
+    // single space. Pin the format so a future "always require placeholder"
+    // refactor is intentional.
+    let cmds =
+        super::build_template_invocations("mypm install", &["a".to_string(), "b".to_string()]);
+    assert_eq!(cmds.len(), 1);
+    assert!(
+        cmds[0].starts_with("mypm install "),
+        "template must come first: {}",
+        cmds[0]
+    );
+    assert!(cmds[0].contains("a") && cmds[0].contains("b"));
+}
+
+#[test]
+fn build_template_invocations_empty_packages_returns_empty_vec() {
+    // Caller short-circuits before running anything when packages is empty.
+    let cmds = super::build_template_invocations("mypm install {package}", &[]);
+    assert!(cmds.is_empty());
+    let cmds = super::build_template_invocations("mypm install", &[]);
+    assert!(cmds.is_empty());
+}
+
+#[test]
+fn build_template_invocations_shell_escapes_package_names() {
+    // A package name containing shell metacharacters must come out
+    // wrapped via cfgd_core::shell_escape_value so the spawned `sh -c`
+    // doesn't interpret them. shell_escape_value double-quotes when the
+    // value lacks `$`, backtick, backslash, or quotes — `;` and `/`
+    // don't trigger the special-char branch, so the result is
+    // `"evil; rm -rf /"` which is shell-safe inside double quotes.
+    let cmds = super::build_template_invocations(
+        "mypm install {package}",
+        &["evil; rm -rf /".to_string()],
+    );
+    assert_eq!(cmds.len(), 1);
+    assert!(
+        cmds[0].contains("\"evil; rm -rf /\""),
+        "package name must be wrapped in double quotes by shell_escape_value, got: {}",
+        cmds[0]
+    );
+}
+
+#[test]
+fn build_template_invocations_handles_dollar_sign_in_package_name() {
+    // `$` triggers the single-quoted branch in shell_escape_value, since
+    // double-quotes still expand $VAR. Pin that the per-package
+    // substitution carries the escaping through verbatim.
+    let cmds =
+        super::build_template_invocations("mypm install {package}", &["pkg-$HOME".to_string()]);
+    assert_eq!(cmds.len(), 1);
+    assert!(
+        !cmds[0].contains("\"pkg-$HOME\""),
+        "double-quoted form would still expand $HOME — must use single-quote escape: {}",
+        cmds[0]
+    );
+}
+
+#[test]
+fn build_template_invocations_brace_package_takes_precedence_over_brace_packages() {
+    // If both placeholders appear, `{package}` wins (one-at-a-time mode).
+    let cmds = super::build_template_invocations(
+        "echo pkg={package} list={packages}",
+        &["foo".to_string(), "bar".to_string()],
+    );
+    assert_eq!(cmds.len(), 2, "both placeholders → still per-package");
+    assert!(
+        cmds[0].contains("pkg=") && cmds[0].contains("foo"),
+        "first cmd: {}",
+        cmds[0]
+    );
+    // `{packages}` is left literal in this branch (we picked per-package).
+    assert!(
+        cmds[0].contains("{packages}"),
+        "literal `{{packages}}` survives in per-package mode: {}",
+        cmds[0]
+    );
+}
