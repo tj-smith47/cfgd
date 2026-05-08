@@ -743,6 +743,98 @@ spec:
       target: ~/.config/nvim/
 "#;
 
+// ---------------------------------------------------------------------------
+// External-CLI shim — used by every backend that shells out to a tool, to
+// exercise the spawn/exit/stderr code paths without requiring the real binary
+// installed on the runner. Pair with `serial_test::serial` because env-var
+// mutation is process-global.
+// ---------------------------------------------------------------------------
+
+/// Owns a tempdir holding a `/bin/sh` shim binary plus the env-vars that
+/// route a single `tool_cmd(env_var, default)` factory at it. The shim
+/// records its full argv to a log file and exits with a chosen status,
+/// optionally writing canned stdout/stderr.
+///
+/// Construct with [`ToolShim::install`]. Drops the env-vars and tempdir on
+/// drop, even when a test panics — env state never leaks across tests.
+///
+/// Unix-only: the shim is a `/bin/sh` script. Tests using this helper should
+/// be gated behind `#[cfg(unix)]`.
+#[cfg(unix)]
+pub struct ToolShim {
+    _tmp: tempfile::TempDir,
+    env_var: String,
+    log_path: std::path::PathBuf,
+}
+
+#[cfg(unix)]
+impl ToolShim {
+    /// Install a shim that records argv to a log and exits with `exit_code`,
+    /// emitting `stdout` to stdout and `stderr` to stderr. The shim is pointed
+    /// at by the `env_var` env-var (the same var read by `tool_cmd`).
+    ///
+    /// Implementation detail: `CFGD_TOOL_SHIM_LOG` is read by the shim script
+    /// itself (per-test path, no cross-test collision) and `argv` is appended
+    /// one line per invocation so multi-call tests can assert ordering.
+    pub fn install(env_var: &str, exit_code: i32, stdout: &str, stderr: &str) -> Self {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::TempDir::new().expect("tempdir");
+        let bin_path = tmp.path().join(format!("shim-{env_var}"));
+        let log_path = tmp.path().join("argv.log");
+
+        // Single-quote-safe escaping: replace ' with '\''.
+        let stdout_lit = stdout.replace('\'', "'\\''");
+        let stderr_lit = stderr.replace('\'', "'\\''");
+
+        let script = format!(
+            "#!/bin/sh\n\
+             printf '%s\\n' \"$*\" >> \"$CFGD_TOOL_SHIM_LOG\"\n\
+             printf '%s' '{stdout_lit}'\n\
+             printf '%s' '{stderr_lit}' 1>&2\n\
+             exit {exit_code}\n",
+        );
+        std::fs::write(&bin_path, script).expect("write shim");
+        let mut perms = std::fs::metadata(&bin_path).expect("stat").permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&bin_path, perms).expect("chmod");
+
+        // SAFETY: callers wrap with `serial_test::serial`, so no concurrent
+        // reader observes a mid-update env state.
+        unsafe {
+            std::env::set_var(env_var, &bin_path);
+            std::env::set_var("CFGD_TOOL_SHIM_LOG", &log_path);
+        }
+
+        Self {
+            _tmp: tmp,
+            env_var: env_var.to_string(),
+            log_path,
+        }
+    }
+
+    /// Read the captured argv. Each line is the space-joined argv of one
+    /// invocation, in order.
+    pub fn argv_log(&self) -> String {
+        std::fs::read_to_string(&self.log_path).unwrap_or_default()
+    }
+
+    /// Number of times the shim was invoked.
+    pub fn invocation_count(&self) -> usize {
+        self.argv_log().lines().filter(|l| !l.is_empty()).count()
+    }
+}
+
+#[cfg(unix)]
+impl Drop for ToolShim {
+    fn drop(&mut self) {
+        // SAFETY: see `install`.
+        unsafe {
+            std::env::remove_var(&self.env_var);
+            std::env::remove_var("CFGD_TOOL_SHIM_LOG");
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

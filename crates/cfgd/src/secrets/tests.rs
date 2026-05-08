@@ -1154,3 +1154,333 @@ fn extract_age_recipient_key_with_no_newline_at_end() {
         "should handle content without trailing newline"
     );
 }
+
+// ---------------------------------------------------------------------------
+// AgeBackend — driven through the generic ToolShim against `CFGD_AGE_BIN`.
+// Tests assert behavior that would change under a real refactor: the recipient
+// extracted from the key file is forwarded to age as `--recipient <id>`, the
+// rename-replace happens after a successful encrypt, decrypted stdout is
+// returned through `SecretString`, and tool failures are translated into the
+// right `SecretError` variant with stderr surfaced.
+// ---------------------------------------------------------------------------
+
+#[cfg(unix)]
+mod age_shim {
+    use super::*;
+    use cfgd_core::test_helpers::ToolShim;
+    use secrecy::ExposeSecret;
+    use serial_test::serial;
+
+    /// Return (tempdir, key_path) with a valid age private-key file whose
+    /// public-key comment is `age1testkey`. The recipient extracted from this
+    /// file should appear verbatim in `--recipient` argv.
+    fn key_fixture() -> (tempfile::TempDir, PathBuf) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let key_path = dir.path().join("age-key.txt");
+        std::fs::write(
+            &key_path,
+            "# created: 2024-01-01\n# public key: age1testkey\nAGE-SECRET-KEY-1TEST\n",
+        )
+        .expect("write key");
+        (dir, key_path)
+    }
+
+    #[test]
+    #[serial]
+    fn age_is_available_returns_true_when_seam_points_at_real_file() {
+        let _shim = ToolShim::install("CFGD_AGE_BIN", 0, "", "");
+        let (_dir, key) = key_fixture();
+        let backend = AgeBackend::new(key);
+        assert!(
+            backend.is_available(),
+            "key + shim binary present → is_available = true"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn age_encrypt_forwards_recipient_from_key_and_replaces_original() {
+        let shim = ToolShim::install("CFGD_AGE_BIN", 0, "", "");
+        let (_keydir, key) = key_fixture();
+        let datadir = tempfile::tempdir().expect("tempdir");
+        let plain = datadir.path().join("secret.txt");
+        std::fs::write(&plain, b"hunter2").expect("write plaintext");
+
+        // The shim exits 0 *without* writing the .age output file, which means
+        // the post-spawn `rename(<path>.age, <path>)` will return an error. Set
+        // up the rename target by pre-creating the .age file the way age would.
+        let age_out = datadir.path().join("secret.txt.age");
+        std::fs::write(&age_out, b"<encrypted>").expect("seed encrypted output");
+
+        let backend = AgeBackend::new(key);
+        backend
+            .encrypt_file(&plain)
+            .expect("encrypt happy path returns Ok");
+
+        let argv = shim.argv_log();
+        assert!(
+            argv.contains("--encrypt"),
+            "argv must include --encrypt: {argv}"
+        );
+        assert!(
+            argv.contains("--recipient age1testkey"),
+            "recipient extracted from the key file must reach age as --recipient: {argv}"
+        );
+        assert!(
+            argv.contains(&format!("--output {}", age_out.display())),
+            "argv must include --output <path>.age: {argv}"
+        );
+        assert!(
+            argv.contains(plain.to_str().unwrap()),
+            "argv must include the input path: {argv}"
+        );
+
+        // Post-rename: the original path now holds the encrypted bytes;
+        // the .age file no longer exists.
+        assert_eq!(
+            std::fs::read(&plain).expect("plain still exists after encrypt"),
+            b"<encrypted>",
+            "rename must overwrite original with encrypted output"
+        );
+        assert!(
+            !age_out.exists(),
+            "post-rename, the .age sidecar file must be gone"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn age_encrypt_propagates_failure_with_stderr_in_message() {
+        let _shim = ToolShim::install("CFGD_AGE_BIN", 1, "", "no recipient");
+        let (_keydir, key) = key_fixture();
+        let datadir = tempfile::tempdir().expect("tempdir");
+        let plain = datadir.path().join("secret.txt");
+        std::fs::write(&plain, b"hunter2").expect("write plaintext");
+
+        let backend = AgeBackend::new(key);
+        let err = backend.encrypt_file(&plain).expect_err("non-zero → Err");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("no recipient"),
+            "stderr must surface in error message: {msg}"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn age_decrypt_returns_stdout_bytes_through_secret_string() {
+        let _shim = ToolShim::install("CFGD_AGE_BIN", 0, "decrypted-payload", "");
+        let (_keydir, key) = key_fixture();
+        let datadir = tempfile::tempdir().expect("tempdir");
+        let cipher = datadir.path().join("secret.age");
+        std::fs::write(&cipher, b"<ciphertext>").expect("write cipher");
+
+        let backend = AgeBackend::new(key);
+        let secret = backend.decrypt_file(&cipher).expect("decrypt → Ok");
+        assert_eq!(
+            secret.expose_secret(),
+            "decrypted-payload",
+            "stdout from age must round-trip through SecretString"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn age_decrypt_uses_identity_flag_with_key_path() {
+        let shim = ToolShim::install("CFGD_AGE_BIN", 0, "decrypted", "");
+        let (_keydir, key) = key_fixture();
+        let datadir = tempfile::tempdir().expect("tempdir");
+        let cipher = datadir.path().join("secret.age");
+        std::fs::write(&cipher, b"x").expect("write cipher");
+
+        let backend = AgeBackend::new(key.clone());
+        backend.decrypt_file(&cipher).expect("decrypt → Ok");
+
+        let argv = shim.argv_log();
+        assert!(
+            argv.contains("--decrypt"),
+            "argv must include --decrypt: {argv}"
+        );
+        assert!(
+            argv.contains(&format!("--identity {}", key.display())),
+            "argv must include --identity <key_path>: {argv}"
+        );
+        assert!(
+            argv.contains(cipher.to_str().unwrap()),
+            "argv must include the cipher path: {argv}"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn age_decrypt_propagates_failure_with_stderr_and_path() {
+        let _shim = ToolShim::install("CFGD_AGE_BIN", 1, "", "bad identity");
+        let (_keydir, key) = key_fixture();
+        let datadir = tempfile::tempdir().expect("tempdir");
+        let cipher = datadir.path().join("secret.age");
+        std::fs::write(&cipher, b"x").expect("write cipher");
+
+        let backend = AgeBackend::new(key);
+        let err = backend.decrypt_file(&cipher).expect_err("non-zero → Err");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("bad identity"),
+            "stderr must surface in error: {msg}"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// SopsBackend — driven through the same generic ToolShim against
+// `CFGD_SOPS_BIN`. Each test pins behavior that would change under a real
+// refactor: the encrypt path uses --encrypt --in-place, .sops.yaml configures
+// --config, decrypt stdout round-trips through SecretString, and the age key
+// path propagates through SOPS_AGE_KEY_FILE.
+// ---------------------------------------------------------------------------
+
+#[cfg(unix)]
+mod sops_shim {
+    use super::*;
+    use cfgd_core::test_helpers::ToolShim;
+    use secrecy::ExposeSecret;
+    use serial_test::serial;
+
+    #[test]
+    #[serial]
+    fn sops_is_available_returns_true_when_seam_points_at_real_file() {
+        let _shim = ToolShim::install("CFGD_SOPS_BIN", 0, "", "");
+        let backend = SopsBackend::new(None);
+        assert!(
+            backend.is_available(),
+            "shim binary present → is_available = true"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn sops_encrypt_uses_encrypt_in_place_with_sops_config_when_present() {
+        let shim = ToolShim::install("CFGD_SOPS_BIN", 0, "", "");
+        let dir = tempfile::tempdir().expect("tempdir");
+        // .sops.yaml in the config dir → --config <path> appears in argv.
+        let sops_yaml = dir.path().join(".sops.yaml");
+        std::fs::write(&sops_yaml, "creation_rules: []\n").expect("write .sops.yaml");
+        let plain = dir.path().join("secret.yaml");
+        std::fs::write(&plain, "key: value\n").expect("write plain");
+
+        let backend = SopsBackend::new(None).with_config_dir(dir.path());
+        backend
+            .encrypt_file(&plain)
+            .expect("encrypt happy path returns Ok");
+
+        let argv = shim.argv_log();
+        assert!(
+            argv.contains("--encrypt"),
+            "argv must include --encrypt: {argv}"
+        );
+        assert!(
+            argv.contains("--in-place"),
+            "argv must include --in-place: {argv}"
+        );
+        assert!(
+            argv.contains(&format!("--config {}", sops_yaml.display())),
+            ".sops.yaml in config_dir must surface as --config <path>: {argv}"
+        );
+        assert!(
+            argv.contains(plain.to_str().unwrap()),
+            "argv must include the input path: {argv}"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn sops_encrypt_omits_config_flag_when_no_sops_yaml_present() {
+        let shim = ToolShim::install("CFGD_SOPS_BIN", 0, "", "");
+        let dir = tempfile::tempdir().expect("tempdir");
+        // No .sops.yaml created.
+        let plain = dir.path().join("secret.yaml");
+        std::fs::write(&plain, "key: value\n").expect("write plain");
+
+        let backend = SopsBackend::new(None).with_config_dir(dir.path());
+        backend.encrypt_file(&plain).expect("encrypt → Ok");
+
+        let argv = shim.argv_log();
+        assert!(
+            !argv.contains("--config"),
+            "no .sops.yaml → --config must NOT be in argv: {argv}"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn sops_encrypt_propagates_failure_with_stderr() {
+        let _shim = ToolShim::install("CFGD_SOPS_BIN", 1, "", "no kms key configured");
+        let dir = tempfile::tempdir().expect("tempdir");
+        let plain = dir.path().join("secret.yaml");
+        std::fs::write(&plain, "key: value\n").expect("write");
+
+        let backend = SopsBackend::new(None);
+        let err = backend.encrypt_file(&plain).expect_err("non-zero → Err");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("no kms key configured"),
+            "stderr must surface in error: {msg}"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn sops_decrypt_returns_stdout_through_secret_string() {
+        let _shim = ToolShim::install("CFGD_SOPS_BIN", 0, "decrypted-yaml: 42", "");
+        let dir = tempfile::tempdir().expect("tempdir");
+        let cipher = dir.path().join("secret.enc.yaml");
+        std::fs::write(&cipher, "x").expect("write cipher");
+
+        let backend = SopsBackend::new(None);
+        let secret = backend.decrypt_file(&cipher).expect("decrypt → Ok");
+        assert_eq!(
+            secret.expose_secret(),
+            "decrypted-yaml: 42",
+            "stdout must round-trip through SecretString"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn sops_decrypt_propagates_failure_with_stderr_and_path() {
+        let _shim = ToolShim::install("CFGD_SOPS_BIN", 1, "", "MAC mismatch");
+        let dir = tempfile::tempdir().expect("tempdir");
+        let cipher = dir.path().join("secret.enc.yaml");
+        std::fs::write(&cipher, "x").expect("write cipher");
+
+        let backend = SopsBackend::new(None);
+        let err = backend.decrypt_file(&cipher).expect_err("non-zero → Err");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("MAC mismatch"),
+            "stderr must surface in error: {msg}"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn sops_age_key_path_propagates_through_env_var() {
+        // Sneaky test: the shim records its env via a side-channel — write
+        // the test-controlled SOPS_AGE_KEY_FILE to a separate file by adding
+        // shell to dump env vars. Easier path: build the command directly
+        // and inspect what env it set.
+        //
+        // Since `sops_command()` is `pub(super)`, we can call it from this
+        // tests module directly and inspect get_envs().
+        let backend = SopsBackend::new(Some(PathBuf::from("/keys/age-key.txt")));
+        let cmd = backend.sops_command();
+        let env = cmd
+            .get_envs()
+            .find(|(k, _)| k == &std::ffi::OsStr::new("SOPS_AGE_KEY_FILE"))
+            .expect("SOPS_AGE_KEY_FILE env var must be set");
+        assert_eq!(
+            env.1.unwrap(),
+            std::ffi::OsStr::new("/keys/age-key.txt"),
+            "age_key_path must be passed via SOPS_AGE_KEY_FILE"
+        );
+    }
+}

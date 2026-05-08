@@ -61,16 +61,8 @@ pub fn try_git_cmd(
     }
 }
 
-/// Resolve the `cosign` binary name (or an absolute path) callers should execute.
-///
-/// In production the result is always `"cosign"` and execution goes through the
-/// PATH lookup `Command::new` does. In tests, setting the `CFGD_COSIGN_BIN`
-/// environment variable to an absolute path (e.g. a fake-cosign shim binary)
-/// lets the test harness drive every cosign-shelling code path without a real
-/// cosign binary on PATH. The env-var seam is the SOLE supported override.
-pub fn cosign_binary_name() -> String {
-    std::env::var("CFGD_COSIGN_BIN").unwrap_or_else(|_| "cosign".to_string())
-}
+/// Env-var seam name for the cosign binary path. See [`tool_binary_name`].
+pub const COSIGN_BIN_ENV: &str = "CFGD_COSIGN_BIN";
 
 /// Build a base `cosign` `Command` — the shared factory for signature / attestation
 /// operations across `oci.rs`, `cli/module.rs`, and `upgrade.rs`.
@@ -81,34 +73,19 @@ pub fn cosign_binary_name() -> String {
 /// future env / timeout hardening) uniform and lets the module-boundary audit
 /// point at one place instead of tracking every caller.
 ///
-/// The binary name comes from [`cosign_binary_name`] so the test harness can
-/// shim cosign via `CFGD_COSIGN_BIN`.
+/// The binary name honors `CFGD_COSIGN_BIN` for tests via [`tool_cmd`].
 ///
 /// Callers add their own subcommand (`sign`, `verify-blob`, `verify-attestation`,
 /// `attest`, etc.) and any additional flags.
 pub fn cosign_cmd() -> std::process::Command {
-    let mut cmd = std::process::Command::new(cosign_binary_name());
-    cmd.stderr(std::process::Stdio::piped());
-    cmd
+    super::process::tool_cmd(COSIGN_BIN_ENV, "cosign")
 }
 
 /// Verify cosign is available, honoring the `CFGD_COSIGN_BIN` test seam.
-///
-/// When the env-var is unset, falls through to a normal PATH lookup via
-/// `require_tool("cosign", ...)`. When set, treats the value as an absolute
-/// path and only checks that the file exists — no PATH walking. This mirrors
-/// how `Command::new(absolute_path)` actually executes the binary.
+/// Delegates to [`require_tool_with_seam`] to share the env-var-override logic
+/// with every other shimmable tool in cfgd-core.
 pub fn require_cosign() -> std::result::Result<(), String> {
-    if let Ok(custom) = std::env::var("CFGD_COSIGN_BIN") {
-        let p = std::path::Path::new(&custom);
-        if p.is_file() {
-            return Ok(());
-        }
-        return Err(format!(
-            "CFGD_COSIGN_BIN points to {custom} which is not a file"
-        ));
-    }
-    super::process::require_tool("cosign", None)
+    super::process::require_tool_with_seam(COSIGN_BIN_ENV, "cosign", None)
 }
 
 /// Best-effort detection of a local git repo's default branch.
@@ -234,28 +211,6 @@ mod tests {
                 }
             }
         }
-    }
-
-    #[test]
-    #[serial]
-    fn cosign_binary_name_defaults_to_cosign_when_env_unset() {
-        let _guard = EnvVarGuard::capture("CFGD_COSIGN_BIN");
-        // SAFETY: serial.
-        unsafe {
-            std::env::remove_var("CFGD_COSIGN_BIN");
-        }
-        assert_eq!(cosign_binary_name(), "cosign");
-    }
-
-    #[test]
-    #[serial]
-    fn cosign_binary_name_returns_env_var_value_when_set() {
-        let _guard = EnvVarGuard::capture("CFGD_COSIGN_BIN");
-        // SAFETY: serial.
-        unsafe {
-            std::env::set_var("CFGD_COSIGN_BIN", "/opt/fake-cosign");
-        }
-        assert_eq!(cosign_binary_name(), "/opt/fake-cosign");
     }
 
     #[test]

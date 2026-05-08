@@ -4,9 +4,14 @@ use std::path::{Path, PathBuf};
 
 use secrecy::SecretString;
 
-use cfgd_core::command_available;
 use cfgd_core::errors::{Result, SecretError};
 use cfgd_core::providers::SecretBackend;
+use cfgd_core::{command_available_with_seam, tool_cmd};
+
+/// Env-var seam for the `sops` binary path. Production reads no env var and
+/// `Command::new` resolves `"sops"` via PATH; tests set this to a
+/// `cfgd_core::test_helpers::ToolShim` script.
+const SOPS_BIN_ENV: &str = "CFGD_SOPS_BIN";
 
 /// SOPS-based secret backend. Encrypts values within structured YAML/JSON files,
 /// keeping keys visible for meaningful diffs. Wraps the `sops` CLI binary.
@@ -32,7 +37,7 @@ impl SopsBackend {
     }
 
     pub(super) fn sops_command(&self) -> std::process::Command {
-        let mut cmd = std::process::Command::new("sops");
+        let mut cmd = tool_cmd(SOPS_BIN_ENV, "sops");
         if let Some(ref key_path) = self.age_key_path {
             cmd.env("SOPS_AGE_KEY_FILE", key_path);
         }
@@ -54,7 +59,7 @@ impl SecretBackend for SopsBackend {
     }
 
     fn is_available(&self) -> bool {
-        command_available("sops")
+        command_available_with_seam(SOPS_BIN_ENV, "sops")
     }
 
     fn encrypt_file(&self, path: &Path) -> Result<()> {

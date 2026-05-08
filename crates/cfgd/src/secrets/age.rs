@@ -4,11 +4,16 @@ use std::path::{Path, PathBuf};
 
 use secrecy::{ExposeSecret, SecretString};
 
-use cfgd_core::command_available;
 use cfgd_core::errors::{Result, SecretError};
 use cfgd_core::providers::SecretBackend;
+use cfgd_core::{command_available_with_seam, tool_cmd};
 
 use super::{extract_age_recipient, shell_split_editor};
+
+/// Env-var seam for the `age` binary path. Production code reads no env var
+/// and `Command::new` resolves `"age"` via PATH; tests set this var to a
+/// `cfgd_core::test_helpers::ToolShim` script path. See `tool_binary_name`.
+const AGE_BIN_ENV: &str = "CFGD_AGE_BIN";
 
 /// Age-based secret backend for encrypting opaque binary files where SOPS
 /// (which operates on structured data) doesn't apply.
@@ -42,7 +47,7 @@ impl SecretBackend for AgeBackend {
     }
 
     fn is_available(&self) -> bool {
-        self.key_path.exists() && command_available("age")
+        self.key_path.exists() && command_available_with_seam(AGE_BIN_ENV, "age")
     }
 
     fn encrypt_file(&self, path: &Path) -> Result<()> {
@@ -53,7 +58,7 @@ impl SecretBackend for AgeBackend {
                 .unwrap_or_else(|| "age".to_string()),
         );
 
-        let output = std::process::Command::new("age")
+        let output = tool_cmd(AGE_BIN_ENV, "age")
             .arg("--encrypt")
             .arg("--recipient")
             .arg(&recipient)
@@ -84,7 +89,7 @@ impl SecretBackend for AgeBackend {
     }
 
     fn decrypt_file(&self, path: &Path) -> Result<SecretString> {
-        let output = std::process::Command::new("age")
+        let output = tool_cmd(AGE_BIN_ENV, "age")
             .arg("--decrypt")
             .arg("--identity")
             .arg(&self.key_path)

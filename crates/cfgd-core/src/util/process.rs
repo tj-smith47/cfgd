@@ -137,3 +137,62 @@ pub fn require_tool(name: &str, install_hint: Option<&str>) -> std::result::Resu
         None => format!("{name} not found — install it or add it to PATH"),
     })
 }
+
+/// Resolve an external tool's binary path, honoring a per-tool env-var test
+/// seam. Production code reads no env var and gets `default` (which `Command`
+/// resolves via `PATH`); tests set `env_var` to an absolute path of a shim
+/// binary. This is the SOLE supported override pattern for external CLIs.
+///
+/// Catalog of seams currently in use:
+/// - `CFGD_COSIGN_BIN` / `cosign` — Sigstore signature ops
+/// - `CFGD_AGE_BIN` / `age` — opaque-binary file encryption
+///
+/// New backends should reuse this helper rather than reinventing the override
+/// shape — keeps the test-shim ergonomics uniform.
+pub fn tool_binary_name(env_var: &str, default: &str) -> String {
+    std::env::var(env_var).unwrap_or_else(|_| default.to_string())
+}
+
+/// Build a `Command` for an external tool, honoring [`tool_binary_name`]'s
+/// env-var override. Sets `stderr` to piped so callers can surface the
+/// tool's stderr in error messages without spamming the user's terminal.
+pub fn tool_cmd(env_var: &str, default: &str) -> std::process::Command {
+    let mut cmd = std::process::Command::new(tool_binary_name(env_var, default));
+    cmd.stderr(std::process::Stdio::piped());
+    cmd
+}
+
+/// Verify an external tool is available, honoring [`tool_binary_name`]'s
+/// env-var override.
+///
+/// When `env_var` is unset, falls through to a normal PATH lookup via
+/// [`require_tool`]. When set, treats the value as an absolute path and
+/// only checks that the file exists — no PATH walking. This mirrors how
+/// `Command::new(absolute_path)` actually executes the binary in tests.
+///
+/// Pair this with [`tool_cmd`] so `is_available` checks and command
+/// construction both go through the same seam.
+pub fn require_tool_with_seam(
+    env_var: &str,
+    default: &str,
+    install_hint: Option<&str>,
+) -> std::result::Result<(), String> {
+    if let Ok(custom) = std::env::var(env_var) {
+        let p = std::path::Path::new(&custom);
+        if p.is_file() {
+            return Ok(());
+        }
+        return Err(format!("{env_var} points to {custom} which is not a file"));
+    }
+    require_tool(default, install_hint)
+}
+
+/// Like [`command_available`] but also returns true when the env-var seam
+/// points at an existing file. Use in `is_available()` checks where the
+/// caller wants a bool, not a `Result`.
+pub fn command_available_with_seam(env_var: &str, default: &str) -> bool {
+    if let Ok(custom) = std::env::var(env_var) {
+        return std::path::Path::new(&custom).is_file();
+    }
+    command_available(default)
+}
