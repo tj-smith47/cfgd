@@ -743,3 +743,264 @@ fn apply_unparseable_entries_skipped() {
     let result = c.apply(&desired, &printer);
     assert!(result.is_ok(), "apply should skip unparseable entries");
 }
+
+// ---------------------------------------------------------------------------
+// SystemConfigurator-impl tests via CFGD_GPG_BIN ToolShim.
+// ---------------------------------------------------------------------------
+
+#[cfg(unix)]
+mod gpg_shim {
+    use super::*;
+    use cfgd_core::output::Printer;
+    use cfgd_core::providers::SystemConfigurator;
+    use cfgd_core::test_helpers::ToolShim;
+    use serial_test::serial;
+
+    fn shim(stdout: &str, stderr: &str, exit: i32) -> ToolShim {
+        ToolShim::install("CFGD_GPG_BIN", exit, stdout, stderr)
+    }
+    fn printer() -> Printer {
+        Printer::for_test().0
+    }
+
+    #[test]
+    #[serial]
+    fn is_available_true_when_seam_points_to_existing_file() {
+        let _s = shim("", "", 0);
+        assert!(GpgKeysConfigurator.is_available());
+    }
+
+    #[test]
+    #[serial]
+    fn is_available_false_when_seam_points_to_missing_file() {
+        // Snapshot + restore so we don't pollute other serial tests.
+        let prev = std::env::var_os("CFGD_GPG_BIN");
+        // SAFETY: serial test, no concurrent reader.
+        unsafe {
+            std::env::set_var("CFGD_GPG_BIN", "/this/path/does/not/exist/gpg");
+        }
+        let available = GpgKeysConfigurator.is_available();
+        // SAFETY: serial.
+        unsafe {
+            match prev {
+                Some(v) => std::env::set_var("CFGD_GPG_BIN", v),
+                None => std::env::remove_var("CFGD_GPG_BIN"),
+            }
+        }
+        assert!(!available);
+    }
+
+    #[test]
+    #[serial]
+    fn query_keys_for_email_records_expected_argv() {
+        let s = shim("", "", 0);
+        let entries = query_keys_for_email("jane@work.com").expect("Ok");
+        assert!(entries.is_empty());
+        let argv = s.argv_log();
+        assert!(
+            argv.contains("--list-keys --with-colons --with-fingerprint jane@work.com"),
+            "expected gpg list-keys argv, got: {argv}"
+        );
+        assert_eq!(s.invocation_count(), 1);
+    }
+
+    #[test]
+    #[serial]
+    fn query_keys_for_email_returns_empty_on_gpg_exit_2() {
+        // exit 2 = "no keys matched" — must NOT propagate as error
+        let _s = shim("", "no public key", 2);
+        let entries = query_keys_for_email("nobody@example.com").expect("Ok");
+        assert!(entries.is_empty());
+    }
+
+    #[test]
+    #[serial]
+    fn query_keys_for_email_propagates_other_exit_codes_with_stderr() {
+        let _s = shim("", "gpg: fatal: keyring busted", 1);
+        let err = query_keys_for_email("x@y.z").expect_err("expected error");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("exit 1") && msg.contains("keyring busted"),
+            "expected exit-code + stderr in error, got: {msg}"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn query_keys_for_email_parses_pub_records_from_shim_stdout() {
+        let stdout = "\
+pub:u:255:22:AAAA:1700000000:0::u:::SC:::23::
+fpr:::::::::FPR-ABC:
+uid:u::::1700000000::HASH::Jane Doe <jane@work.com>::::::::::0:
+";
+        let _s = shim(stdout, "", 0);
+        let entries = query_keys_for_email("jane@work.com").expect("Ok");
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].fingerprint, "FPR-ABC");
+        assert_eq!(entries[0].email, "jane@work.com");
+        assert_eq!(entries[0].capabilities, "SC");
+    }
+
+    #[test]
+    #[serial]
+    fn query_keys_for_email_filters_non_matching_emails() {
+        // Shim returns two pub blocks; only the matching email survives.
+        let stdout = "\
+pub:u:255:22:AAAA:1700000000:0::u:::SC:::23::
+fpr:::::::::FPR-A:
+uid:u::::1700000000::HASH1::Other <other@example.com>::::::::::0:
+pub:u:255:22:BBBB:1700000000:0::u:::SC:::23::
+fpr:::::::::FPR-B:
+uid:u::::1700000000::HASH2::Jane <jane@work.com>::::::::::0:
+";
+        let _s = shim(stdout, "", 0);
+        let entries = query_keys_for_email("jane@work.com").expect("Ok");
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].fingerprint, "FPR-B");
+    }
+
+    #[test]
+    #[serial]
+    fn apply_invokes_gpg_gen_key_when_no_matching_keys() {
+        // Empty stdout for every call: query → no keys; gen-key → success;
+        // post-gen query → no keys (apply prints a warning but returns Ok).
+        let s = shim("", "", 0);
+        let p = printer();
+        let desired: serde_yaml::Value = serde_yaml::from_str(
+            r#"
+- name: work-signing
+  type: ed25519
+  realName: "Jane Doe"
+  email: jane@work.com
+  expiry: 2y
+  usage: sign
+"#,
+        )
+        .unwrap();
+
+        GpgKeysConfigurator.apply(&desired, &p).expect("Ok");
+
+        let argv = s.argv_log();
+        assert!(
+            argv.contains("--list-keys --with-colons --with-fingerprint jane@work.com"),
+            "expected initial list-keys, got argv: {argv}"
+        );
+        assert!(
+            argv.lines()
+                .any(|l| { l.starts_with("--batch --gen-key ") && l.contains("cfgd-gpg-") }),
+            "expected --batch --gen-key with a cfgd-gpg-* param path, got argv: {argv}"
+        );
+        // 3 calls: initial query, gen-key, post-gen query
+        assert_eq!(s.invocation_count(), 3, "argv: {argv}");
+    }
+
+    #[test]
+    #[serial]
+    fn apply_returns_error_when_gen_key_exits_nonzero() {
+        // Shim exits non-zero on every call → both the initial query and the
+        // gen-key invocation see the failure. Initial query at exit 1 is
+        // already an error path (query returns Err for any non-zero/!=2).
+        let _s = shim("", "gpg: agent unavailable", 1);
+        let p = printer();
+        let desired: serde_yaml::Value = serde_yaml::from_str(
+            r#"
+- name: work-signing
+  type: ed25519
+  realName: "Jane Doe"
+  email: jane@work.com
+  expiry: 2y
+  usage: sign
+"#,
+        )
+        .unwrap();
+
+        let err = GpgKeysConfigurator
+            .apply(&desired, &p)
+            .expect_err("expected gpg failure to surface");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("agent unavailable") || msg.contains("exit 1"),
+            "expected gpg stderr in error, got: {msg}"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn diff_reports_missing_when_shim_returns_empty_keyring() {
+        let _s = shim("", "", 0);
+        let desired: serde_yaml::Value = serde_yaml::from_str(
+            r#"
+- name: work-signing
+  type: ed25519
+  realName: "Jane Doe"
+  email: jane@work.com
+  expiry: 2y
+  usage: sign
+"#,
+        )
+        .unwrap();
+
+        let drifts = GpgKeysConfigurator.diff(&desired).expect("Ok");
+        assert_eq!(drifts.len(), 1);
+        assert_eq!(drifts[0].key, "gpgKeys.work-signing.presence");
+        assert!(drifts[0].actual.contains("not found"));
+    }
+
+    #[test]
+    #[serial]
+    fn diff_reports_no_drift_when_shim_returns_valid_unexpired_key() {
+        // Far-future expiry timestamp.
+        let stdout = "\
+pub:u:255:22:AAAA:1700000000:9999999999::u:::SC:::23::
+fpr:::::::::FPR-VALID:
+uid:u::::1700000000::HASH::Jane <jane@work.com>::::::::::0:
+";
+        let _s = shim(stdout, "", 0);
+        let desired: serde_yaml::Value = serde_yaml::from_str(
+            r#"
+- name: work-signing
+  type: ed25519
+  realName: "Jane Doe"
+  email: jane@work.com
+  expiry: 2y
+  usage: sign
+"#,
+        )
+        .unwrap();
+
+        let drifts = GpgKeysConfigurator.diff(&desired).expect("Ok");
+        assert!(
+            drifts.is_empty(),
+            "expected no drift, got {} entries",
+            drifts.len()
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn diff_reports_expiry_when_all_matching_keys_expired() {
+        // Past expiry timestamp (1700000000 = 2023-11-14, in the past)
+        let stdout = "\
+pub:e:255:22:AAAA:1700000000:1700000010::u:::SC:::23::
+fpr:::::::::FPR-EXPIRED:
+uid:e::::1700000000::HASH::Jane <jane@work.com>::::::::::0:
+";
+        let _s = shim(stdout, "", 0);
+        let desired: serde_yaml::Value = serde_yaml::from_str(
+            r#"
+- name: work-signing
+  type: ed25519
+  realName: "Jane Doe"
+  email: jane@work.com
+  expiry: 2y
+  usage: sign
+"#,
+        )
+        .unwrap();
+
+        let drifts = GpgKeysConfigurator.diff(&desired).expect("Ok");
+        assert_eq!(drifts.len(), 1);
+        assert_eq!(drifts[0].key, "gpgKeys.work-signing.expiry");
+        assert!(drifts[0].actual.contains("FPR-EXPIRED"));
+    }
+}

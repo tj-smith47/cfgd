@@ -4,6 +4,17 @@ use cfgd_core::errors::{CfgdError, Result};
 use cfgd_core::output::Printer;
 use cfgd_core::providers::{SystemConfigurator, SystemDrift};
 
+/// Test seam env var for redirecting `gpg` invocations to a shim binary.
+/// Production code never sets this; tests point it at a `/bin/sh` shim
+/// installed via `cfgd_core::test_helpers::ToolShim`.
+const GPG_BIN_ENV: &str = "CFGD_GPG_BIN";
+
+/// Build a `Command` for `gpg`, honoring [`GPG_BIN_ENV`] for tests. Mirrors
+/// the `cosign_cmd` / `tool_cmd` pattern used elsewhere in the codebase.
+fn gpg_cmd() -> Command {
+    cfgd_core::tool_cmd(GPG_BIN_ENV, "gpg")
+}
+
 // ---------------------------------------------------------------------------
 // GpgKeysConfigurator
 // ---------------------------------------------------------------------------
@@ -218,7 +229,7 @@ fn required_capabilities(usage: &str) -> Vec<char> {
 /// Exit code 2 from gpg means no keys matched — treated as an empty result.
 /// Any other non-zero exit code is an error.
 fn query_keys_for_email(email: &str) -> Result<Vec<KeyringEntry>> {
-    let output = Command::new("gpg")
+    let output = gpg_cmd()
         .args(["--list-keys", "--with-colons", "--with-fingerprint", email])
         .output()
         .map_err(CfgdError::Io)?;
@@ -338,7 +349,7 @@ impl SystemConfigurator for GpgKeysConfigurator {
     }
 
     fn is_available(&self) -> bool {
-        cfgd_core::command_available("gpg")
+        cfgd_core::command_available_with_seam(GPG_BIN_ENV, "gpg")
     }
 
     fn current_state(&self) -> Result<serde_yaml::Value> {
@@ -441,7 +452,7 @@ impl SystemConfigurator for GpgKeysConfigurator {
             ));
             cfgd_core::atomic_write_str(&param_path, &param)?;
 
-            let mut cmd = Command::new("gpg");
+            let mut cmd = gpg_cmd();
             cmd.args(["--batch", "--gen-key", param_path.to_str().unwrap_or("")]);
 
             let output = printer
