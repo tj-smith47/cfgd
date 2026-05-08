@@ -1153,6 +1153,80 @@ fn download_to_file_returns_error_on_http_failure() {
     assert!(!dest.exists(), "file should not be created on failure");
 }
 
+#[test]
+fn download_to_file_returns_error_on_5xx_response() {
+    // 5xx is the apiserver-overloaded / GitHub-incident shape; the previous
+    // 404 test pinned client-error handling. This one pins server-error
+    // handling — both must surface as DownloadFailed without leaving a
+    // half-written file behind.
+    let mut server = mockito::Server::new();
+    let mock = server
+        .mock("GET", "/download/flaky")
+        .with_status(503)
+        .create();
+
+    let dir = tempfile::tempdir().unwrap();
+    let dest = dir.path().join("should-not-exist.bin");
+    let url = format!("{}/download/flaky", server.url());
+
+    let result = download_to_file(&url, &dest, None);
+    mock.assert();
+
+    assert!(result.is_err(), "5xx must surface as Err");
+    assert!(!dest.exists(), "file must not be created on 5xx");
+}
+
+#[test]
+fn download_to_file_drives_progress_bar_branch_with_printer_and_content_length() {
+    // (Some(printer), Some(content_length)) routes into the chunked-read
+    // loop with an indicatif progress bar. Quiet printer ensures no
+    // terminal output during the test; the branch is exercised regardless.
+    let mut server = mockito::Server::new();
+    let body = b"download body for progress bar branch";
+    let mock = server
+        .mock("GET", "/download/sized")
+        .with_status(200)
+        .with_header("content-length", &body.len().to_string())
+        .with_body(body)
+        .create();
+
+    let dir = tempfile::tempdir().unwrap();
+    let dest = dir.path().join("sized.bin");
+    let url = format!("{}/download/sized", server.url());
+    let printer = crate::test_helpers::test_printer();
+
+    let result = download_to_file(&url, &dest, Some(&printer));
+    mock.assert();
+
+    assert!(result.is_ok(), "happy path with printer must succeed");
+    assert_eq!(std::fs::read(&dest).unwrap(), body);
+}
+
+#[test]
+fn download_to_file_drives_spinner_branch_when_printer_present_without_content_length() {
+    // (Some(printer), None) → chunked transfer encoding from the server
+    // means no content-length header reaches the client; download_to_file
+    // routes into the spinner + io::copy branch.
+    let mut server = mockito::Server::new();
+    let body: &[u8] = b"chunked body for spinner branch";
+    let mock = server
+        .mock("GET", "/download/chunked")
+        .with_status(200)
+        .with_chunked_body(move |w| w.write_all(body))
+        .create();
+
+    let dir = tempfile::tempdir().unwrap();
+    let dest = dir.path().join("chunked.bin");
+    let url = format!("{}/download/chunked", server.url());
+    let printer = crate::test_helpers::test_printer();
+
+    let result = download_to_file(&url, &dest, Some(&printer));
+    mock.assert();
+
+    assert!(result.is_ok(), "spinner branch must succeed");
+    assert_eq!(std::fs::read(&dest).unwrap(), body);
+}
+
 // --- parse_release_json: comprehensive edge cases ---
 
 #[test]

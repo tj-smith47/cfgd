@@ -3192,3 +3192,176 @@ fn build_registry_module_url_handles_ssh_base_urls() {
     assert!(url.starts_with("git@github.com:owner/repo.git//modules/tool"));
     assert!(url.ends_with("@tool/v3.0.0"));
 }
+
+// ─── cmd_module_keys_generate / rotate via fake-cosign ───────
+//
+// The cosign generate-key-pair flow shells out to `cosign` and depends
+// on the binary writing `cosign.key` + `cosign.pub` to the cwd. These
+// tests install a /bin/sh shim under CFGD_COSIGN_BIN that records argv
+// and creates the expected files. require_tool_with_seam("CFGD_COSIGN_BIN",
+// ...) honors the seam, and cfgd_core::cosign_cmd() uses tool_cmd which
+// invokes the shim path.
+
+#[cfg(unix)]
+mod keys_with_fake_cosign {
+    use super::*;
+    use serial_test::serial;
+    use std::os::unix::fs::PermissionsExt;
+
+    /// Install a /bin/sh shim at a tempdir path and point CFGD_COSIGN_BIN
+    /// at it. The shim writes `cosign.key` + `cosign.pub` to its cwd
+    /// when invoked with `generate-key-pair` (matching cosign's actual
+    /// behavior), then exits with `exit_code`.
+    struct CosignKeygenShim {
+        _tmp: tempfile::TempDir,
+    }
+
+    impl CosignKeygenShim {
+        fn install(exit_code: i32) -> Self {
+            let tmp = tempfile::TempDir::new().expect("tempdir");
+            let bin_path = tmp.path().join("fake-cosign");
+            // The shim mirrors cosign's contract: when called with
+            // `generate-key-pair`, write a private/public pair to cwd.
+            // Other subcommands no-op and exit with `exit_code`.
+            let script = format!(
+                "#!/bin/sh\nif [ \"$1\" = \"generate-key-pair\" ]; then\n  printf 'fake-private-key-bytes' > cosign.key\n  printf 'fake-public-key-bytes' > cosign.pub\nfi\nexit {exit_code}\n"
+            );
+            std::fs::write(&bin_path, script).expect("write fake-cosign");
+            let mut perms = std::fs::metadata(&bin_path).expect("stat").permissions();
+            perms.set_mode(0o755);
+            std::fs::set_permissions(&bin_path, perms).expect("chmod");
+            // SAFETY: serial.
+            unsafe {
+                std::env::set_var("CFGD_COSIGN_BIN", &bin_path);
+            }
+            Self { _tmp: tmp }
+        }
+    }
+
+    impl Drop for CosignKeygenShim {
+        fn drop(&mut self) {
+            // SAFETY: serial.
+            unsafe {
+                std::env::remove_var("CFGD_COSIGN_BIN");
+            }
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn cmd_module_keys_generate_creates_key_pair_when_cosign_succeeds() {
+        let _shim = CosignKeygenShim::install(0);
+        let work = tempfile::tempdir().expect("workdir");
+        let dir_str = work.path().to_str().unwrap();
+
+        let (printer, buf) = cfgd_core::output::Printer::for_test();
+        cmd_module_keys_generate(&printer, Some(dir_str)).expect("happy path → Ok");
+
+        assert!(
+            work.path().join("cosign.key").is_file(),
+            "private key written by shim must land in target dir"
+        );
+        assert!(
+            work.path().join("cosign.pub").is_file(),
+            "public key written by shim must land in target dir"
+        );
+
+        let output = buf.lock().unwrap();
+        assert!(
+            output.contains("Private key:") && output.contains("Public key:"),
+            "success output must mention both key paths: {output}"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn cmd_module_keys_generate_returns_error_when_cosign_exits_nonzero() {
+        let _shim = CosignKeygenShim::install(2);
+        let work = tempfile::tempdir().expect("workdir");
+        let dir_str = work.path().to_str().unwrap();
+
+        let (printer, _buf) = cfgd_core::output::Printer::for_test();
+        let err =
+            cmd_module_keys_generate(&printer, Some(dir_str)).expect_err("non-zero exit → Err");
+        assert!(
+            err.to_string().contains("cosign generate-key-pair failed"),
+            "error must surface the failure context: {err}"
+        );
+    }
+
+    #[test]
+    fn cmd_module_keys_rotate_fails_when_no_existing_private_key() {
+        // No shim needed — the missing-key check fires before cosign is
+        // ever invoked. CFGD_COSIGN_BIN is not set; require_tool_with_seam
+        // falls through to require_tool, which finds the real cosign on
+        // PATH (or surfaces "cosign not found" if missing). Either way,
+        // the precondition error wins.
+        let work = tempfile::tempdir().expect("workdir");
+        let dir_str = work.path().to_str().unwrap();
+
+        let (printer, _buf) = cfgd_core::output::Printer::for_test();
+        let err = cmd_module_keys_rotate(&printer, Some(dir_str), &[])
+            .expect_err("missing cosign.key → Err");
+        let msg = err.to_string();
+        // require_tool_with_seam might fail first if cosign is missing
+        // on PATH (no env var, no real binary). Accept either error path
+        // here; the rotate-without-key precondition is the one we care
+        // most about, but both are valid early-failures.
+        assert!(
+            msg.contains("No existing cosign.key") || msg.contains("cosign not found"),
+            "expected missing-key or cosign-not-installed error: {msg}"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn cmd_module_keys_rotate_backs_up_old_keys_and_generates_new() {
+        let _shim = CosignKeygenShim::install(0);
+        let work = tempfile::tempdir().expect("workdir");
+        let dir = work.path();
+        // Pre-create the existing key pair so the rotate flow proceeds
+        // past the precondition check.
+        std::fs::write(dir.join("cosign.key"), b"old-private-key-bytes").unwrap();
+        std::fs::write(dir.join("cosign.pub"), b"old-public-key-bytes").unwrap();
+
+        let (printer, _buf) = cfgd_core::output::Printer::for_test();
+        cmd_module_keys_rotate(&printer, Some(dir.to_str().unwrap()), &[])
+            .expect("rotate happy path → Ok");
+
+        // The new key files written by the shim are present.
+        assert_eq!(
+            std::fs::read(dir.join("cosign.key")).unwrap(),
+            b"fake-private-key-bytes",
+            "new private key matches shim output"
+        );
+        assert_eq!(
+            std::fs::read(dir.join("cosign.pub")).unwrap(),
+            b"fake-public-key-bytes",
+            "new public key matches shim output"
+        );
+
+        // The old keys were backed up under a timestamped suffix.
+        let entries: Vec<_> = std::fs::read_dir(dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().to_string())
+            .collect();
+        let backup_priv = entries
+            .iter()
+            .find(|n| n.starts_with("cosign.key.") && n.len() > "cosign.key.".len())
+            .expect("backup of private key must exist");
+        let backup_pub = entries
+            .iter()
+            .find(|n| n.starts_with("cosign.pub.") && n.len() > "cosign.pub.".len())
+            .expect("backup of public key must exist");
+        assert_eq!(
+            std::fs::read(dir.join(backup_priv)).unwrap(),
+            b"old-private-key-bytes",
+            "private-key backup preserves the original bytes"
+        );
+        assert_eq!(
+            std::fs::read(dir.join(backup_pub)).unwrap(),
+            b"old-public-key-bytes",
+            "public-key backup preserves the original bytes"
+        );
+    }
+}

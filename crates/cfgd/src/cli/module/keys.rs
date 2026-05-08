@@ -4,7 +4,8 @@ pub(crate) fn cmd_module_keys_generate(
     printer: &Printer,
     output_dir: Option<&str>,
 ) -> anyhow::Result<()> {
-    cfgd_core::require_tool(
+    cfgd_core::require_tool_with_seam(
+        "CFGD_COSIGN_BIN",
         "cosign",
         Some("install it from https://docs.sigstore.dev/cosign/installation/"),
     )
@@ -106,7 +107,8 @@ pub(crate) fn cmd_module_keys_rotate(
     dir: Option<&str>,
     artifacts: &[String],
 ) -> anyhow::Result<()> {
-    cfgd_core::require_tool(
+    cfgd_core::require_tool_with_seam(
+        "CFGD_COSIGN_BIN",
         "cosign",
         Some("install it from https://docs.sigstore.dev/cosign/installation/"),
     )
