@@ -235,18 +235,31 @@ pub(super) fn run_pkg_cmd_live(
         })?;
     if !output.status.success() {
         let code = output.status.code().unwrap_or(-1);
+        // Surface stderr in the error message for parity with `run_pkg_cmd`
+        // (which already does this via `stderr_lossy_trimmed`). Without this,
+        // downstream branches that inspect `e.to_string()` for a substring
+        // (e.g., snap's classic-confinement retry) cannot read the upstream
+        // tool's actual diagnostic. The exit code stays in the message so
+        // operators can still distinguish "unknown failure" from a tool
+        // that exited cleanly without stderr output.
+        let stderr = output.stderr.trim();
+        let message = if stderr.is_empty() {
+            format!("exit code {}", code)
+        } else {
+            format!("exit code {}: {}", code, stderr)
+        };
         return Err(match error_kind {
             "install" => PackageError::InstallFailed {
                 manager: manager.into(),
-                message: format!("exit code {}", code),
+                message,
             },
             "uninstall" => PackageError::UninstallFailed {
                 manager: manager.into(),
-                message: format!("exit code {}", code),
+                message,
             },
             _ => PackageError::InstallFailed {
                 manager: manager.into(),
-                message: format!("exit code {}", code),
+                message,
             },
         });
     }

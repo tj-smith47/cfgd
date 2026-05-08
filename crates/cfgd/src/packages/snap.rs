@@ -398,27 +398,30 @@ fd        9.0.0    100    latest/stable  -             -
 
         #[test]
         #[serial]
-        fn snap_install_classic_retry_currently_inert_because_error_lacks_stderr() {
-            // The production retry-with-classic branch reads
-            // `e.to_string().contains("classic")` on the install error, but
-            // PackageError::InstallFailed is constructed as
-            // `format!("exit code {}", code)` in run_pkg_cmd_live — stderr
-            // is captured by Printer::run_with_output but does NOT propagate
-            // into the error's Display string. So even when the shim emits
-            // "...requires classic confinement" on stderr, the contains-check
-            // returns false and the retry never fires.
-            //
-            // Pinning this contract here makes the gap visible: if a future
-            // change rewires stderr into the error message, this test must
-            // flip to assert the retry argv. Until then, the test documents
-            // the inert state.
+        fn snap_install_retries_with_classic_when_first_attempt_complains_classic() {
+            // Shim exits non-zero with stderr containing "classic" → the
+            // install branch's `e.to_string().contains("classic")` matches
+            // (because run_pkg_cmd_live now surfaces stderr in the error
+            // message) and a second attempt is fired with `--classic`. The
+            // shim is the same for both attempts, so the second also fails
+            // — we only assert that both argvs landed.
             let s = shim("", "snap \"ripgrep\" requires classic confinement", 1);
             let p = printer();
             let _ = SnapManager.install(&["ripgrep".into()], &p);
             assert_eq!(
                 s.invocation_count(),
-                1,
-                "retry currently doesn't fire because error message omits stderr"
+                2,
+                "retry must fire on classic-confinement stderr; got argv: {}",
+                s.argv_log()
+            );
+            let argv = s.argv_log();
+            assert!(
+                argv.contains("install ripgrep"),
+                "first attempt argv must be `install ripgrep`: {argv}"
+            );
+            assert!(
+                argv.contains("install --classic ripgrep"),
+                "retry argv must be `install --classic ripgrep`: {argv}"
             );
         }
 
