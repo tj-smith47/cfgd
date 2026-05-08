@@ -9,7 +9,7 @@ use crate::errors::OciError;
 /// If `key_path` is Some, uses `cosign sign --key <path>`.
 /// If `key_path` is None, uses keyless signing (Fulcio/Rekor via OIDC).
 pub fn sign_artifact(artifact_ref: &str, key_path: Option<&str>) -> Result<(), OciError> {
-    crate::require_tool("cosign", None).map_err(|_| OciError::ToolNotFound {
+    crate::require_cosign().map_err(|_| OciError::ToolNotFound {
         tool: "cosign".to_string(),
     })?;
 
@@ -81,7 +81,7 @@ fn apply_verify_args(cmd: &mut std::process::Command, opts: &VerifyOptions<'_>) 
 pub fn verify_signature(artifact_ref: &str, opts: &VerifyOptions<'_>) -> Result<(), OciError> {
     validate_verify_options(opts)?;
 
-    crate::require_tool("cosign", None).map_err(|_| OciError::ToolNotFound {
+    crate::require_cosign().map_err(|_| OciError::ToolNotFound {
         tool: "cosign".to_string(),
     })?;
 
@@ -162,7 +162,7 @@ pub fn attach_attestation(
     attestation_path: &str,
     key_path: Option<&str>,
 ) -> Result<(), OciError> {
-    crate::require_tool("cosign", None).map_err(|_| OciError::ToolNotFound {
+    crate::require_cosign().map_err(|_| OciError::ToolNotFound {
         tool: "cosign".to_string(),
     })?;
 
@@ -206,7 +206,7 @@ pub fn verify_attestation(
 ) -> Result<(), OciError> {
     validate_verify_options(opts)?;
 
-    crate::require_tool("cosign", None).map_err(|_| OciError::ToolNotFound {
+    crate::require_cosign().map_err(|_| OciError::ToolNotFound {
         tool: "cosign".to_string(),
     })?;
 
