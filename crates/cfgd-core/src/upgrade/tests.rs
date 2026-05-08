@@ -1830,3 +1830,148 @@ fn check_with_cache_ignores_expired_entry() {
         "test setup: stale entry must be older than CACHE_TTL_SECS"
     );
 }
+
+// ---------------------------------------------------------------------------
+// run_cosign_verify_blob — driven through the fake-cosign shim. Mirrors the
+// pattern in `oci/sign/tests.rs`: serial_test::serial gates env-var mutation,
+// a per-test /bin/sh shim records argv and chooses an exit status.
+// ---------------------------------------------------------------------------
+
+#[cfg(unix)]
+mod cosign_verify_blob {
+    use super::*;
+    use serial_test::serial;
+    use std::os::unix::fs::PermissionsExt;
+
+    struct CosignShim {
+        _tmp: tempfile::TempDir,
+        log_path: std::path::PathBuf,
+    }
+
+    impl CosignShim {
+        fn install(exit_code: i32, stderr_msg: &str) -> Self {
+            let tmp = tempfile::TempDir::new().expect("tempdir");
+            let bin_path = tmp.path().join("fake-cosign");
+            let log_path = tmp.path().join("argv.log");
+
+            let script = format!(
+                "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$CFGD_FAKE_COSIGN_LOG\"\nprintf '%s' '{stderr_msg}' 1>&2\nexit {exit_code}\n",
+                stderr_msg = stderr_msg.replace('\'', "'\\''"),
+                exit_code = exit_code,
+            );
+            std::fs::write(&bin_path, script).expect("write fake-cosign");
+            let mut perms = std::fs::metadata(&bin_path).expect("stat").permissions();
+            perms.set_mode(0o755);
+            std::fs::set_permissions(&bin_path, perms).expect("chmod");
+
+            // SAFETY: serial.
+            unsafe {
+                std::env::set_var("CFGD_COSIGN_BIN", &bin_path);
+                std::env::set_var("CFGD_FAKE_COSIGN_LOG", &log_path);
+            }
+
+            Self {
+                _tmp: tmp,
+                log_path,
+            }
+        }
+
+        fn argv_log(&self) -> String {
+            std::fs::read_to_string(&self.log_path).unwrap_or_default()
+        }
+    }
+
+    impl Drop for CosignShim {
+        fn drop(&mut self) {
+            // SAFETY: serial.
+            unsafe {
+                std::env::remove_var("CFGD_COSIGN_BIN");
+                std::env::remove_var("CFGD_FAKE_COSIGN_LOG");
+            }
+        }
+    }
+
+    fn dummy_paths() -> (
+        tempfile::TempDir,
+        std::path::PathBuf,
+        std::path::PathBuf,
+        std::path::PathBuf,
+    ) {
+        let dir = tempfile::TempDir::new().expect("tempdir");
+        let checksums = dir.path().join("checksums.txt");
+        let bundle = dir.path().join("bundle.json");
+        let pub_key = dir.path().join("cosign.pub");
+        std::fs::write(&checksums, "deadbeef  some.tar.gz\n").unwrap();
+        std::fs::write(&bundle, "{}").unwrap();
+        std::fs::write(&pub_key, "key").unwrap();
+        (dir, checksums, bundle, pub_key)
+    }
+
+    #[test]
+    #[serial]
+    fn run_cosign_verify_blob_passes_key_bundle_and_checksums_paths() {
+        let shim = CosignShim::install(0, "");
+        let (_dir, checksums, bundle, pub_key) = dummy_paths();
+        run_cosign_verify_blob(&checksums, &bundle, &pub_key).expect("happy path → Ok");
+        let argv = shim.argv_log();
+        assert!(
+            argv.contains("verify-blob"),
+            "argv must use verify-blob subcommand: {argv}"
+        );
+        assert!(
+            argv.contains(&format!("--key={}", pub_key.display())),
+            "argv must include --key=<pub_key path>: {argv}"
+        );
+        assert!(
+            argv.contains(&format!("--bundle={}", bundle.display())),
+            "argv must include --bundle=<bundle path>: {argv}"
+        );
+        // The "--" terminator separates the cosign flags from the file argument.
+        assert!(
+            argv.contains(" -- "),
+            "argv must include `--` terminator: {argv}"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn run_cosign_verify_blob_propagates_failure_with_stderr_message() {
+        let _shim = CosignShim::install(1, "signature does not match");
+        let (_dir, checksums, bundle, pub_key) = dummy_paths();
+        let err =
+            run_cosign_verify_blob(&checksums, &bundle, &pub_key).expect_err("non-zero exit → Err");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("signature does not match"),
+            "stderr surfaced in error message: {msg}"
+        );
+        assert!(
+            msg.contains("cosign verify-blob failed"),
+            "error prefixes with verify-blob context: {msg}"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn run_cosign_verify_blob_surfaces_invocation_failure_when_binary_missing() {
+        // CFGD_COSIGN_BIN points at a path that does not exist — Command spawn
+        // fails with std::io::Error. The function maps that to DownloadFailed.
+        // SAFETY: serial.
+        unsafe {
+            std::env::set_var("CFGD_COSIGN_BIN", "/no/such/cosign/binary");
+            std::env::remove_var("CFGD_FAKE_COSIGN_LOG");
+        }
+        let (_dir, checksums, bundle, pub_key) = dummy_paths();
+        let err = run_cosign_verify_blob(&checksums, &bundle, &pub_key)
+            .expect_err("missing binary → Err");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("cosign invocation failed"),
+            "error prefixes with invocation context: {msg}"
+        );
+        // SAFETY: serial.
+        unsafe {
+            std::env::remove_var("CFGD_COSIGN_BIN");
+        }
+    }
+}

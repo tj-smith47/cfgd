@@ -222,7 +222,7 @@ fn verify_cosign_bundle(
         }
         return Ok(false);
     };
-    if !crate::command_available("cosign") {
+    if crate::require_cosign().is_err() {
         if let Some(p) = printer {
             p.warning("cosign bundle found but the cosign CLI is not installed — install cosign (https://docs.sigstore.dev/cosign/system_config/installation/) to enable signature verification. Falling back to SHA256-only.");
         }
@@ -235,6 +235,27 @@ fn verify_cosign_bundle(
     download_to_file(&pub_key_asset.download_url, &pub_key_path, printer)?;
 
     let verify_spinner = printer.map(|p| p.spinner("Verifying cosign signature..."));
+    let outcome = run_cosign_verify_blob(checksums_path, &bundle_path, &pub_key_path);
+    if let Some(s) = verify_spinner {
+        s.finish_and_clear();
+    }
+    outcome.map(|()| {
+        tracing::info!(asset = %bundle_asset.name, "cosign signature verified");
+        true
+    })
+}
+
+/// Run `cosign verify-blob --key ... --bundle ... -- <checksums>` and translate
+/// the outcome into `Ok(())` / `Err(UpgradeError::DownloadFailed)`.
+///
+/// Extracted from [`verify_cosign_bundle`] so the cosign-shelling branches are
+/// testable through the `CFGD_COSIGN_BIN` shim (see `oci/sign/tests.rs`)
+/// without staging downloads through a mock HTTP server.
+fn run_cosign_verify_blob(
+    checksums_path: &Path,
+    bundle_path: &Path,
+    pub_key_path: &Path,
+) -> std::result::Result<(), UpgradeError> {
     let output = crate::cosign_cmd()
         .arg("verify-blob")
         .arg(format!("--key={}", pub_key_path.display()))
@@ -242,15 +263,9 @@ fn verify_cosign_bundle(
         .arg("--")
         .arg(checksums_path)
         .output();
-    if let Some(s) = verify_spinner {
-        s.finish_and_clear();
-    }
 
     match output {
-        Ok(o) if o.status.success() => {
-            tracing::info!(asset = %bundle_asset.name, "cosign signature verified");
-            Ok(true)
-        }
+        Ok(o) if o.status.success() => Ok(()),
         Ok(o) => {
             let stderr = crate::stderr_lossy_trimmed(&o);
             Err(UpgradeError::DownloadFailed {
