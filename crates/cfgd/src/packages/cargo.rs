@@ -428,4 +428,101 @@ tokei v12.1.2:
         let v = parse_cargo_search_version(stdout, "ripgrep");
         assert_eq!(v.as_deref(), Some("14.1.0"));
     }
+
+    // ---------------------------------------------------------------------
+    // PackageManager-impl tests via CFGD_CARGO_BIN ToolShim.
+    // ---------------------------------------------------------------------
+
+    #[cfg(unix)]
+    mod cargo_shim {
+        use super::*;
+        use cfgd_core::output::Printer;
+        use cfgd_core::providers::PackageManager;
+        use cfgd_core::test_helpers::ToolShim;
+        use serial_test::serial;
+
+        fn shim(stdout: &str, stderr: &str, exit: i32) -> ToolShim {
+            ToolShim::install("CFGD_CARGO_BIN", exit, stdout, stderr)
+        }
+        fn printer() -> Printer {
+            Printer::for_test().0
+        }
+
+        #[test]
+        #[serial]
+        fn cargo_install_runs_install_subcommand_per_package() {
+            let s = shim("", "", 0);
+            let p = printer();
+            CargoManager
+                .install(&["ripgrep".into(), "fd-find".into()], &p)
+                .expect("Ok");
+            assert_eq!(s.invocation_count(), 2);
+            let argv = s.argv_log();
+            assert!(argv.contains("install ripgrep"));
+            assert!(argv.contains("install fd-find"));
+        }
+
+        #[test]
+        #[serial]
+        fn cargo_uninstall_runs_uninstall_subcommand_per_package() {
+            let s = shim("", "", 0);
+            let p = printer();
+            CargoManager.uninstall(&["ripgrep".into()], &p).expect("Ok");
+            assert!(s.argv_log().contains("uninstall ripgrep"));
+        }
+
+        #[test]
+        #[serial]
+        fn cargo_update_is_noop_no_command_spawned() {
+            let s = shim("", "", 0);
+            let p = printer();
+            CargoManager.update(&p).expect("Ok");
+            assert_eq!(
+                s.invocation_count(),
+                0,
+                "cargo update is documented no-op (re-install is the convention)"
+            );
+        }
+
+        #[test]
+        #[serial]
+        fn cargo_installed_packages_parses_install_list_output() {
+            let stdout = "ripgrep v14.1.0:\n    rg\nfd-find v9.0.0:\n    fd\n";
+            let _s = shim(stdout, "", 0);
+            let pkgs = CargoManager.installed_packages().expect("Ok");
+            assert_eq!(pkgs.len(), 2);
+            assert!(pkgs.contains("ripgrep"));
+            assert!(pkgs.contains("fd-find"));
+        }
+
+        #[test]
+        #[serial]
+        fn cargo_available_version_extracts_from_search_first_line() {
+            let _s = shim("ripgrep = \"14.1.0\"\n", "", 0);
+            let v = CargoManager.available_version("ripgrep").expect("Ok");
+            assert_eq!(v.as_deref(), Some("14.1.0"));
+        }
+
+        #[test]
+        #[serial]
+        fn cargo_available_version_passes_search_with_limit_flag() {
+            let s = shim("x = \"0.1\"\n", "", 0);
+            CargoManager.available_version("ripgrep").expect("Ok");
+            assert!(
+                s.argv_log().contains("search ripgrep --limit 1"),
+                "argv: {}",
+                s.argv_log()
+            );
+        }
+
+        #[test]
+        #[serial]
+        fn cargo_available_version_returns_none_on_nonzero_exit() {
+            let _s = shim("", "registry unreachable", 1);
+            let v = CargoManager
+                .available_version("anything")
+                .expect("non-zero → Ok(None)");
+            assert_eq!(v, None);
+        }
+    }
 }

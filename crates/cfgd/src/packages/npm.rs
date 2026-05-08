@@ -20,7 +20,16 @@ pub struct NpmManager;
 /// Not usable with the generic `resolve_tool_with_fallbacks` helper because the
 /// nvm path is a wildcard `~/.nvm/versions/node/*/bin/npm` that requires a
 /// directory scan rather than a fixed fallback list.
+///
+/// Honors the `CFGD_NPM_BIN` env-var seam for tests — when set and pointing
+/// at a real file, short-circuits the PATH + nvm scan.
 pub(super) fn find_npm() -> Option<PathBuf> {
+    if let Ok(custom) = std::env::var("CFGD_NPM_BIN") {
+        let p = PathBuf::from(custom);
+        if p.is_file() {
+            return Some(p);
+        }
+    }
     if command_available("npm") {
         return Some(PathBuf::from("npm"));
     }
@@ -493,5 +502,135 @@ mod tests {
             "must skip the version that lacks bin/npm, got: {}",
             found.display()
         );
+    }
+
+    // ---------------------------------------------------------------------
+    // PackageManager-impl tests via CFGD_NPM_BIN ToolShim.
+    // ---------------------------------------------------------------------
+
+    #[cfg(unix)]
+    mod npm_shim {
+        use super::*;
+        use cfgd_core::output::Printer;
+        use cfgd_core::test_helpers::ToolShim;
+        use serial_test::serial;
+
+        fn shim(stdout: &str, stderr: &str, exit: i32) -> ToolShim {
+            ToolShim::install("CFGD_NPM_BIN", exit, stdout, stderr)
+        }
+
+        fn printer() -> Printer {
+            let (p, _buf) = Printer::for_test();
+            p
+        }
+
+        #[test]
+        #[serial]
+        fn npm_install_passes_install_g_with_packages() {
+            let s = shim("", "", 0);
+            let p = printer();
+            NpmManager
+                .install(&["typescript".into(), "eslint".into()], &p)
+                .expect("Ok");
+            let argv = s.argv_log();
+            assert!(
+                argv.contains("install -g typescript eslint"),
+                "argv must include install -g + packages: {argv}"
+            );
+        }
+
+        #[test]
+        #[serial]
+        fn npm_install_skips_command_when_empty() {
+            let s = shim("", "", 0);
+            let p = printer();
+            NpmManager.install(&[], &p).expect("Ok");
+            assert_eq!(s.invocation_count(), 0);
+        }
+
+        #[test]
+        #[serial]
+        fn npm_uninstall_passes_uninstall_g_with_packages() {
+            let s = shim("", "", 0);
+            let p = printer();
+            NpmManager
+                .uninstall(&["typescript".into()], &p)
+                .expect("Ok");
+            assert!(s.argv_log().contains("uninstall -g typescript"));
+        }
+
+        #[test]
+        #[serial]
+        fn npm_update_runs_update_g() {
+            let s = shim("", "", 0);
+            let p = printer();
+            NpmManager.update(&p).expect("Ok");
+            assert!(s.argv_log().contains("update -g"));
+        }
+
+        #[test]
+        #[serial]
+        fn npm_available_version_runs_view_and_returns_trimmed_stdout() {
+            let _s = shim("5.3.3\n", "", 0);
+            let v = NpmManager.available_version("typescript").expect("Ok");
+            assert_eq!(v.as_deref(), Some("5.3.3"));
+        }
+
+        #[test]
+        #[serial]
+        fn npm_available_version_passes_view_subcommand_with_package_and_field() {
+            let s = shim("1.0.0", "", 0);
+            NpmManager.available_version("typescript").expect("Ok");
+            let argv = s.argv_log();
+            assert!(
+                argv.contains("view typescript version"),
+                "argv must include view <pkg> version: {argv}"
+            );
+        }
+
+        #[test]
+        #[serial]
+        fn npm_available_version_returns_none_on_nonzero_exit() {
+            let _s = shim("", "404 not found", 1);
+            let v = NpmManager
+                .available_version("nonexistent")
+                .expect("non-zero → Ok(None) not Err");
+            assert_eq!(v, None);
+        }
+
+        #[test]
+        #[serial]
+        fn npm_available_version_returns_none_on_empty_stdout() {
+            let _s = shim("\n   \n", "", 0);
+            let v = NpmManager
+                .available_version("weird-pkg")
+                .expect("empty stdout → Ok(None)");
+            assert_eq!(v, None);
+        }
+
+        #[test]
+        #[serial]
+        fn npm_installed_packages_parses_npm_list_json() {
+            let json = r#"{"dependencies":{"typescript":{"version":"5.3.3"},"eslint":{"version":"8.0.0"}}}"#;
+            // npm list exits non-zero on peer dep issues; stdout still valid JSON.
+            let _s = shim(json, "peer dep issues", 1);
+            let pkgs = NpmManager.installed_packages().expect("Ok");
+            assert_eq!(pkgs.len(), 2);
+            assert!(pkgs.contains("typescript"));
+            assert!(pkgs.contains("eslint"));
+        }
+
+        #[test]
+        #[serial]
+        fn npm_installed_packages_with_versions_includes_versions() {
+            let json = r#"{"dependencies":{"typescript":{"version":"5.3.3"}}}"#;
+            let _s = shim(json, "", 0);
+            let pkgs = NpmManager.installed_packages_with_versions().expect("Ok");
+            let ts = pkgs
+                .iter()
+                .find(|p| p.name == "typescript")
+                .expect("typescript present");
+            assert_eq!(ts.version, "5.3.3");
+        }
     }
 }

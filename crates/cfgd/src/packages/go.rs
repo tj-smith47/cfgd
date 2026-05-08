@@ -365,4 +365,121 @@ mod tests {
         // the input is left untouched (we trust the user's intent).
         assert_eq!(go_install_path("@oddly/placed"), "@oddly/placed");
     }
+
+    // ---------------------------------------------------------------------
+    // PackageManager-impl tests via CFGD_GO_BIN ToolShim.
+    // ---------------------------------------------------------------------
+
+    #[cfg(unix)]
+    mod go_shim {
+        use super::*;
+        use cfgd_core::output::Printer;
+        use cfgd_core::test_helpers::ToolShim;
+        use serial_test::serial;
+
+        fn shim(stdout: &str, stderr: &str, exit: i32) -> ToolShim {
+            ToolShim::install("CFGD_GO_BIN", exit, stdout, stderr)
+        }
+        fn printer() -> Printer {
+            Printer::for_test().0
+        }
+
+        #[test]
+        #[serial]
+        fn go_install_appends_at_latest_to_unversioned_package() {
+            let s = shim("", "", 0);
+            let p = printer();
+            GoInstallManager
+                .install(&["github.com/example/tool".into()], &p)
+                .expect("Ok");
+            assert!(
+                s.argv_log()
+                    .contains("install github.com/example/tool@latest"),
+                "unversioned package gets @latest appended: {}",
+                s.argv_log()
+            );
+        }
+
+        #[test]
+        #[serial]
+        fn go_install_passes_through_pre_pinned_version() {
+            let s = shim("", "", 0);
+            let p = printer();
+            GoInstallManager
+                .install(&["github.com/example/tool@v1.2.3".into()], &p)
+                .expect("Ok");
+            assert!(
+                s.argv_log()
+                    .contains("install github.com/example/tool@v1.2.3"),
+                "@version-pinned passes through: {}",
+                s.argv_log()
+            );
+        }
+
+        #[test]
+        #[serial]
+        fn go_install_runs_one_install_per_package() {
+            let s = shim("", "", 0);
+            let p = printer();
+            GoInstallManager
+                .install(&["a.com/x".into(), "b.com/y".into()], &p)
+                .expect("Ok");
+            assert_eq!(s.invocation_count(), 2);
+        }
+
+        #[test]
+        #[serial]
+        fn go_update_is_noop_no_command_spawned() {
+            let s = shim("", "", 0);
+            let p = printer();
+            GoInstallManager.update(&p).expect("Ok");
+            assert_eq!(
+                s.invocation_count(),
+                0,
+                "go update is a documented no-op (re-install pinned at @latest is the convention)"
+            );
+        }
+
+        #[test]
+        #[serial]
+        fn go_available_version_strips_v_prefix_from_list_json_version_field() {
+            // parse_go_module_version normalizes "v1.2.3" → "1.2.3" so versions
+            // compare cleanly against profile entries (which don't include "v").
+            let json = r#"{"Version":"v1.2.3","Path":"github.com/example/tool"}"#;
+            let _s = shim(json, "", 0);
+            let v = GoInstallManager
+                .available_version("github.com/example/tool")
+                .expect("Ok");
+            assert_eq!(v.as_deref(), Some("1.2.3"));
+        }
+
+        #[test]
+        #[serial]
+        fn go_available_version_passes_list_m_json_with_at_latest() {
+            let s = shim("{}", "", 0);
+            GoInstallManager
+                .available_version("github.com/example/tool")
+                .expect("Ok");
+            assert!(
+                s.argv_log().contains("list -m -json"),
+                "argv must include `list -m -json`: {}",
+                s.argv_log()
+            );
+            assert!(
+                s.argv_log().contains("github.com/example/tool@latest"),
+                "argv must append @latest: {}",
+                s.argv_log()
+            );
+        }
+
+        #[test]
+        #[serial]
+        fn go_available_version_returns_none_on_nonzero_exit() {
+            let _s = shim("", "module not found", 1);
+            let v = GoInstallManager
+                .available_version("nonexistent")
+                .expect("non-zero → Ok(None)");
+            assert_eq!(v, None);
+        }
+    }
 }

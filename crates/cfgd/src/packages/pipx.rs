@@ -504,4 +504,82 @@ mod tests {
         assert_eq!(fallbacks.len(), 1);
         assert_eq!(fallbacks[0], home.join(".local/bin/pipx"));
     }
+
+    // ---------------------------------------------------------------------
+    // PackageManager-impl tests via CFGD_PIPX_BIN ToolShim. The seam is
+    // honored automatically by `tool_cmd_with_resolver` / `find_pipx`.
+    // ---------------------------------------------------------------------
+
+    #[cfg(unix)]
+    mod pipx_shim {
+        use super::*;
+        use cfgd_core::output::Printer;
+        use cfgd_core::providers::PackageManager;
+        use cfgd_core::test_helpers::ToolShim;
+        use serial_test::serial;
+
+        fn shim(stdout: &str, stderr: &str, exit: i32) -> ToolShim {
+            ToolShim::install("CFGD_PIPX_BIN", exit, stdout, stderr)
+        }
+        fn printer() -> Printer {
+            Printer::for_test().0
+        }
+
+        #[test]
+        #[serial]
+        fn pipx_install_runs_install_subcommand_per_package() {
+            let s = shim("", "", 0);
+            let p = printer();
+            PipxManager
+                .install(&["black".into(), "ruff".into()], &p)
+                .expect("Ok");
+            assert_eq!(s.invocation_count(), 2, "one pipx invocation per pkg");
+            let argv = s.argv_log();
+            assert!(argv.contains("install black"));
+            assert!(argv.contains("install ruff"));
+        }
+
+        #[test]
+        #[serial]
+        fn pipx_uninstall_runs_uninstall_subcommand_per_package() {
+            let s = shim("", "", 0);
+            let p = printer();
+            PipxManager.uninstall(&["black".into()], &p).expect("Ok");
+            assert!(s.argv_log().contains("uninstall black"));
+        }
+
+        #[test]
+        #[serial]
+        fn pipx_update_runs_upgrade_all_subcommand() {
+            let s = shim("", "", 0);
+            let p = printer();
+            PipxManager.update(&p).expect("Ok");
+            assert!(s.argv_log().contains("upgrade-all"));
+        }
+
+        #[test]
+        #[serial]
+        fn pipx_installed_packages_parses_venvs_json() {
+            // pipx list --json: { "venvs": { "black": { ... }, "ruff": { ... } } }
+            let json = r#"{"venvs":{"black":{"metadata":{"main_package":{"package":"black","package_version":"24.1.0"}}},"ruff":{"metadata":{"main_package":{"package":"ruff","package_version":"0.2.1"}}}}}"#;
+            let _s = shim(json, "", 0);
+            let pkgs = PipxManager.installed_packages().expect("Ok");
+            assert_eq!(pkgs.len(), 2);
+            assert!(pkgs.contains("black"));
+            assert!(pkgs.contains("ruff"));
+        }
+
+        #[test]
+        #[serial]
+        fn pipx_installed_packages_with_versions_extracts_versions() {
+            let json = r#"{"venvs":{"black":{"metadata":{"main_package":{"package":"black","package_version":"24.1.0"}}}}}"#;
+            let _s = shim(json, "", 0);
+            let pkgs = PipxManager.installed_packages_with_versions().expect("Ok");
+            let black = pkgs
+                .iter()
+                .find(|p| p.name == "black")
+                .expect("black present");
+            assert_eq!(black.version, "24.1.0");
+        }
+    }
 }

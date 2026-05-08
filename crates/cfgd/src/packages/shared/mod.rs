@@ -11,11 +11,26 @@ use cfgd_core::command_available;
 use cfgd_core::errors::{PackageError, Result};
 use cfgd_core::output::{CommandOutput, Printer};
 
-/// Locate a package-manager binary. First checks `$PATH` via `command_available`;
-/// on miss, walks each entry in `fallbacks` and returns the first that exists.
-/// Returns `None` if nothing is found — matches the `find_X() -> Option<PathBuf>`
-/// shape that cargo/pipx/go managers had open-coded.
+/// Compute the canonical env-var seam name for a package-manager binary.
+/// Pattern: `CFGD_<NAME>_BIN`, with hyphens turned into underscores so
+/// `brew-cask` maps to `CFGD_BREW_CASK_BIN`. Used by tests via ToolShim.
+pub(super) fn tool_seam_var(name: &str) -> String {
+    format!("CFGD_{}_BIN", name.to_uppercase().replace('-', "_"))
+}
+
+/// Locate a package-manager binary. First checks the `CFGD_<NAME>_BIN` env-var
+/// seam (tests inject a ToolShim path here); then `$PATH` via
+/// `command_available`; on miss, walks each entry in `fallbacks` and returns
+/// the first that exists. Returns `None` if nothing is found — matches the
+/// `find_X() -> Option<PathBuf>` shape that cargo/pipx/go managers had
+/// open-coded.
 pub(super) fn resolve_tool_with_fallbacks(name: &str, fallbacks: &[PathBuf]) -> Option<PathBuf> {
+    if let Ok(custom) = std::env::var(tool_seam_var(name)) {
+        let p = PathBuf::from(custom);
+        if p.is_file() {
+            return Some(p);
+        }
+    }
     if command_available(name) {
         return Some(PathBuf::from(name));
     }
@@ -24,11 +39,16 @@ pub(super) fn resolve_tool_with_fallbacks(name: &str, fallbacks: &[PathBuf]) -> 
 
 /// Build a `Command` for `name`, using `resolver` for the binary path and
 /// falling back to a plain `Command::new(name)` when `resolver` returns `None`.
-/// Mirrors the `X_cmd()` pattern that cargo/pipx/go had open-coded.
+/// Honors the `CFGD_<NAME>_BIN` env-var seam first, short-circuiting the
+/// resolver entirely (tests don't want resolver-side filesystem checks
+/// running). Mirrors the `X_cmd()` pattern that cargo/pipx/go had open-coded.
 pub(super) fn tool_cmd_with_resolver<F>(name: &str, resolver: F) -> Command
 where
     F: FnOnce() -> Option<PathBuf>,
 {
+    if let Ok(custom) = std::env::var(tool_seam_var(name)) {
+        return Command::new(custom);
+    }
     Command::new(resolver().unwrap_or_else(|| PathBuf::from(name)))
 }
 
