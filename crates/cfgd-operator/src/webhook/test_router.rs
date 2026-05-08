@@ -33,11 +33,18 @@ fn stub_kube_client() -> Client {
 /// Build the webhook Router for tests, returning the live `Metrics` so
 /// post-request assertions on counters/histograms work.
 pub(super) fn test_webhook_router() -> (Router, Metrics) {
+    test_webhook_router_with_client(stub_kube_client())
+}
+
+/// Build the webhook Router using a caller-provided `kube::Client` —
+/// for tests that drive `enforce_module_policy` / `collect_policy_modules`
+/// through the shared `MockKubeHarness`.
+pub(super) fn test_webhook_router_with_client(client: Client) -> (Router, Metrics) {
     let mut registry = Registry::default();
     let metrics = Metrics::new(&mut registry);
     let state = WebhookState {
         metrics: metrics.clone(),
-        client: stub_kube_client(),
+        client,
     };
     (build_webhook_router(state), metrics)
 }

@@ -822,4 +822,6 @@ mod test_router;
 #[cfg(test)]
 mod tests;
 #[cfg(test)]
+mod tests_kube_router;
+#[cfg(test)]
 mod tests_router;
