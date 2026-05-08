@@ -330,4 +330,193 @@ mod tests {
         assert_eq!(parse_duration_secs("TEST_LEADER_DUR_7", 10), 3600);
         unsafe { remove_env("TEST_LEADER_DUR_7") };
     }
+
+    // -----------------------------------------------------------------------
+    // try_acquire — kube interactions exercised through the operator's
+    // tower_test::mock::pair-backed MockKubeHarness.
+    // -----------------------------------------------------------------------
+
+    use crate::controllers::test_kube_harness::{ExpectedCall, MockKubeHarness};
+
+    const TEST_NS: &str = "cfgd-system";
+    const TEST_ID: &str = "operator-pod-A";
+
+    fn lease_path() -> String {
+        format!("/apis/coordination.k8s.io/v1/namespaces/{TEST_NS}/leases/{LEASE_NAME}")
+    }
+
+    fn collection_path() -> String {
+        format!("/apis/coordination.k8s.io/v1/namespaces/{TEST_NS}/leases")
+    }
+
+    /// Build a Lease JSON payload whose renew_time is `secs_ago` seconds before now
+    /// and whose holder is `holder`. `lease_duration_seconds` controls expiry math.
+    fn lease_json(holder: &str, lease_duration: i32, secs_ago: i64) -> serde_json::Value {
+        let renew_time = chrono::Utc::now() - chrono::TimeDelta::try_seconds(secs_ago).unwrap();
+        serde_json::json!({
+            "apiVersion": "coordination.k8s.io/v1",
+            "kind": "Lease",
+            "metadata": { "name": LEASE_NAME, "namespace": TEST_NS },
+            "spec": {
+                "holderIdentity": holder,
+                "leaseDurationSeconds": lease_duration,
+                "renewTime": renew_time.to_rfc3339_opts(chrono::SecondsFormat::Micros, true),
+                "acquireTime": renew_time.to_rfc3339_opts(chrono::SecondsFormat::Micros, true),
+                "leaseTransitions": 0_i32,
+            }
+        })
+    }
+
+    #[tokio::test]
+    async fn try_acquire_creates_new_lease_when_get_returns_404() {
+        let (ctx, _reg, harness) = MockKubeHarness::new(vec![
+            ExpectedCall::get(lease_path()).returning_404(LEASE_NAME),
+            // POST to the collection endpoint with the new Lease body
+            ExpectedCall::post(collection_path()).returning_json(&lease_json(TEST_ID, 15, 0)),
+        ]);
+
+        let le = LeaderElection::new(ctx.client.clone(), TEST_NS.into(), TEST_ID.into());
+        let acquired = le
+            .try_acquire()
+            .await
+            .expect("404 path should create the Lease");
+        assert!(acquired, "create-on-404 must return Ok(true)");
+
+        let report = harness.finish().await;
+        assert_eq!(report.captured.len(), 2);
+        // The POST body must declare us as holder.
+        let post_body = report.captured[1].body_json();
+        assert_eq!(post_body["spec"]["holderIdentity"], TEST_ID);
+        assert_eq!(post_body["spec"]["leaseTransitions"], 0);
+    }
+
+    #[tokio::test]
+    async fn try_acquire_takes_over_when_existing_lease_expired() {
+        // Existing holder is someone else, renew_time is 60s ago, lease_duration 15s
+        // → expired → we patch to take over.
+        let existing = lease_json("other-pod", 15, 60);
+        let (ctx, _reg, harness) = MockKubeHarness::new(vec![
+            ExpectedCall::get(lease_path()).returning_json(&existing),
+            ExpectedCall::patch(lease_path())
+                .with_query_contains("force=true")
+                .returning_json(&lease_json(TEST_ID, 15, 0)),
+        ]);
+
+        let le = LeaderElection::new(ctx.client.clone(), TEST_NS.into(), TEST_ID.into());
+        let acquired = le
+            .try_acquire()
+            .await
+            .expect("expired-takeover should succeed");
+        assert!(acquired);
+
+        let report = harness.finish().await;
+        assert_eq!(report.captured.len(), 2);
+        let patch_body = report.captured[1].body_json();
+        assert_eq!(patch_body["spec"]["holderIdentity"], TEST_ID);
+        // Takeover bumps transitions
+        assert_eq!(patch_body["spec"]["leaseTransitions"], 1);
+    }
+
+    #[tokio::test]
+    async fn try_acquire_self_renews_when_currently_holder() {
+        // We already hold the lease; SSA apply for renewal must NOT be force=true.
+        let existing = lease_json(TEST_ID, 15, 5);
+        let (ctx, _reg, harness) = MockKubeHarness::new(vec![
+            ExpectedCall::get(lease_path()).returning_json(&existing),
+            ExpectedCall::patch(lease_path()).returning_json(&lease_json(TEST_ID, 15, 0)),
+        ]);
+
+        let le = LeaderElection::new(ctx.client.clone(), TEST_NS.into(), TEST_ID.into());
+        let acquired = le.try_acquire().await.expect("self-renew should succeed");
+        assert!(acquired);
+
+        let report = harness.finish().await;
+        assert_eq!(report.captured.len(), 2);
+        let patch_body = report.captured[1].body_json();
+        assert_eq!(patch_body["spec"]["holderIdentity"], TEST_ID);
+        // Self-renew preserves transition count
+        assert_eq!(patch_body["spec"]["leaseTransitions"], 0);
+    }
+
+    #[tokio::test]
+    async fn try_acquire_returns_false_when_other_holder_and_unexpired() {
+        // Another pod owns the lease and it's still valid → we DO NOT patch.
+        let existing = lease_json("other-pod", 60, 5);
+        let (ctx, _reg, harness) = MockKubeHarness::new(vec![
+            ExpectedCall::get(lease_path()).returning_json(&existing),
+        ]);
+
+        let le = LeaderElection::new(ctx.client.clone(), TEST_NS.into(), TEST_ID.into());
+        let acquired = le
+            .try_acquire()
+            .await
+            .expect("non-acquire is Ok(false), not Err");
+        assert!(
+            !acquired,
+            "another holder with unexpired lease must yield Ok(false)"
+        );
+
+        let report = harness.finish().await;
+        assert_eq!(
+            report.captured.len(),
+            1,
+            "must only issue the GET — no patch when not acquiring"
+        );
+    }
+
+    #[tokio::test]
+    async fn try_acquire_returns_false_on_409_ssa_conflict() {
+        // Existing lease shows us as the holder; PATCH races against another
+        // pod and returns 409 → treat as not-acquired (Ok(false)).
+        let existing = lease_json(TEST_ID, 15, 5);
+        let (ctx, _reg, harness) = MockKubeHarness::new(vec![
+            ExpectedCall::get(lease_path()).returning_json(&existing),
+            ExpectedCall::patch(lease_path()).returning_server_error(409, "field manager conflict"),
+        ]);
+
+        let le = LeaderElection::new(ctx.client.clone(), TEST_NS.into(), TEST_ID.into());
+        let acquired = le
+            .try_acquire()
+            .await
+            .expect("409 SSA conflict must be Ok(false), not Err");
+        assert!(!acquired);
+
+        let report = harness.finish().await;
+        assert_eq!(report.captured.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn try_acquire_propagates_unexpected_get_errors() {
+        let (ctx, _reg, harness) = MockKubeHarness::new(vec![
+            ExpectedCall::get(lease_path()).returning_server_error(500, "etcd fell over"),
+        ]);
+
+        let le = LeaderElection::new(ctx.client.clone(), TEST_NS.into(), TEST_ID.into());
+        let err = le
+            .try_acquire()
+            .await
+            .expect_err("non-404 server error must surface");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("etcd fell over") || msg.to_lowercase().contains("kube"),
+            "expected kube error context, got: {msg}"
+        );
+
+        let _report = harness.finish().await;
+    }
+
+    #[tokio::test]
+    async fn field_manager_includes_pod_identity() {
+        // Construct a LeaderElection without any kube traffic to assert the
+        // SSA field-manager string is identity-scoped (split-brain guard).
+        let (ctx, _reg, harness) = MockKubeHarness::new(vec![]);
+        let le = LeaderElection::new(
+            ctx.client.clone(),
+            "any-ns".into(),
+            "operator-pod-XYZ".into(),
+        );
+        let fm = le.field_manager();
+        assert_eq!(fm, "cfgd-operator-leader:operator-pod-XYZ");
+        let _report = harness.finish().await;
+    }
 }
