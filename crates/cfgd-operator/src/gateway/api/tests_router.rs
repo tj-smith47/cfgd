@@ -290,6 +290,120 @@ async fn unknown_route_returns_404() {
 }
 
 // -----------------------------------------------------------------------
+// Enroll — token mode happy path + error branches
+// -----------------------------------------------------------------------
+
+#[tokio::test]
+#[serial]
+async fn enroll_with_unconfigured_token_returns_4xx() {
+    unsafe {
+        std::env::remove_var("CFGD_API_KEY");
+    }
+    // Default state uses Token enrollment.
+    let (state, _tmp) = test_state();
+    let router = router_with_state(state);
+
+    let response = router
+        .oneshot(post_json(
+            "/api/v1/enroll",
+            serde_json::json!({
+                "deviceId": "dev-1",
+                "hostname": "host-1",
+                "os": "linux",
+                "arch": "x86_64",
+                "token": "not-a-real-bootstrap-token",
+            }),
+        ))
+        .await
+        .unwrap();
+    assert!(
+        response.status().is_client_error(),
+        "unrecognized bootstrap token must yield 4xx, got {}",
+        response.status()
+    );
+}
+
+#[tokio::test]
+#[serial]
+async fn enroll_with_empty_token_returns_400() {
+    unsafe {
+        std::env::remove_var("CFGD_API_KEY");
+    }
+    let (state, _tmp) = test_state();
+    let router = router_with_state(state);
+
+    let response = router
+        .oneshot(post_json(
+            "/api/v1/enroll",
+            serde_json::json!({
+                "deviceId": "dev-1",
+                "hostname": "host-1",
+                "os": "linux",
+                "arch": "x86_64",
+                "token": "",
+            }),
+        ))
+        .await
+        .unwrap();
+    assert!(response.status().is_client_error());
+    let body = String::from_utf8(body_bytes(response).await).unwrap_or_default();
+    assert!(
+        body.contains("token") || body.contains("empty"),
+        "error body should mention empty token: {body}"
+    );
+}
+
+#[tokio::test]
+#[serial]
+async fn enroll_with_valid_bootstrap_token_returns_201_and_api_key() {
+    unsafe {
+        std::env::remove_var("CFGD_API_KEY");
+    }
+    let (state, _tmp) = test_state();
+
+    // Provision a bootstrap token for "alice".
+    let bootstrap = "boot-token-xyz";
+    let bootstrap_hash = hash_token(bootstrap);
+    let expires_at = "2099-01-01T00:00:00Z";
+    state
+        .db
+        .create_bootstrap_token(&bootstrap_hash, "alice", None, expires_at)
+        .await
+        .expect("insert bootstrap");
+
+    let router = router_with_state(state);
+
+    let response = router
+        .oneshot(post_json(
+            "/api/v1/enroll",
+            serde_json::json!({
+                "deviceId": "alice-laptop",
+                "hostname": "alice-laptop.test",
+                "os": "linux",
+                "arch": "x86_64",
+                "token": bootstrap,
+            }),
+        ))
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let body: serde_json::Value =
+        serde_json::from_slice(&body_bytes(response).await).expect("json body");
+    assert_eq!(body["status"], "enrolled");
+    assert_eq!(body["deviceId"], "alice-laptop");
+    assert_eq!(body["username"], "alice");
+    assert!(
+        body["apiKey"]
+            .as_str()
+            .unwrap_or("")
+            .starts_with("cfgd_dev_"),
+        "expected device API key prefix: {}",
+        body["apiKey"]
+    );
+}
+
+// -----------------------------------------------------------------------
 // Device-token auth path (per-device credential)
 // -----------------------------------------------------------------------
 
