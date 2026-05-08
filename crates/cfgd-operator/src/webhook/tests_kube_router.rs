@@ -397,3 +397,147 @@ async fn mutate_pods_uses_required_modules_from_cluster_config_policy() {
 
     let _ = harness.finish().await;
 }
+
+// -----------------------------------------------------------------------
+// Policy LIST error branches — 5xx on ClusterConfigPolicy / ConfigPolicy
+// LIST. validate-module surfaces the kube error verbatim; mutate-pods
+// gracefully degrades because collect_policy_modules wraps each LIST in
+// `if let Ok(...)` and silently treats the error as "no policies".
+// -----------------------------------------------------------------------
+
+#[tokio::test]
+async fn validate_module_denies_when_ccp_list_returns_5xx() {
+    // Apiserver returns a 503 Status response on the CCP LIST. The webhook
+    // must surface that as a denial (not a panic, not a silent allow) so
+    // operators can observe a misconfigured/unhealthy apiserver via the
+    // admission-review denial reason.
+    let (ctx, _registry, harness) = MockKubeHarness::new(vec![
+        ExpectedCall::list(cluster_config_policies_path())
+            .returning_server_error(503, "apiserver overloaded"),
+    ]);
+
+    let (router, _metrics) = test_webhook_router_with_client(ctx.client.clone());
+
+    let response = router
+        .oneshot(post(
+            "/validate-module",
+            module_admission_review(json!({
+                "ociArtifact": "ghcr.io/myorg/img:v1",
+                "packages": [],
+            })),
+        ))
+        .await
+        .expect("router responds");
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let review = parse_response(response).await;
+    let resp = review.response.expect("response present");
+    assert!(
+        !resp.allowed,
+        "5xx on CCP LIST must surface as denial — fail-closed semantics"
+    );
+    assert!(
+        resp.result
+            .message
+            .contains("failed to list ClusterConfigPolicies"),
+        "denial reason must surface the policy LIST failure: {}",
+        resp.result.message
+    );
+
+    let report = harness.finish().await;
+    assert_eq!(
+        report.captured.len(),
+        1,
+        "exactly one CCP LIST attempt — no retry on 5xx within the handler"
+    );
+}
+
+#[tokio::test]
+async fn mutate_pods_proceeds_without_policy_modules_when_ccp_list_returns_5xx() {
+    // collect_policy_modules wraps the CCP LIST in `if let Ok(policies)` —
+    // a 5xx is silently swallowed and treated as "no policy modules".
+    // The pod's annotation-driven module is still resolved and patched in.
+    let module = module_object("editor", Some("ghcr.io/myorg/editor:v1"));
+    let (ctx, _registry, harness) = MockKubeHarness::new(vec![
+        ExpectedCall::list(config_policies_path(NS)).returning_json(&cp_list(vec![])),
+        ExpectedCall::get(namespace_path(NS)).returning_json(&namespace_object(NS, json!({}))),
+        ExpectedCall::list(cluster_config_policies_path())
+            .returning_server_error(503, "apiserver overloaded"),
+        ExpectedCall::get(module_path("editor")).returning_json(&module),
+    ]);
+
+    let (router, _metrics) = test_webhook_router_with_client(ctx.client.clone());
+
+    let response = router
+        .oneshot(post(
+            "/mutate-pods",
+            pod_admission_review(json!({
+                cfgd_core::MODULES_ANNOTATION: "editor:v1",
+            })),
+        ))
+        .await
+        .expect("router responds");
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let review = parse_response(response).await;
+    let resp = review.response.expect("response present");
+    assert!(
+        resp.allowed,
+        "5xx on CCP LIST must not block mutate-pods — degraded mode allows the pod"
+    );
+    let patch = resp
+        .patch
+        .expect("annotation-driven module still resolves through Module GET");
+    let patch_str = String::from_utf8(patch).expect("patch is utf-8");
+    assert!(
+        patch_str.contains("cfgd-module-editor"),
+        "annotation module must still produce a CSI volume patch: {patch_str}"
+    );
+
+    let report = harness.finish().await;
+    assert_eq!(
+        report.captured.len(),
+        4,
+        "all four kube calls observed: CP LIST, NS GET, CCP LIST (5xx), Module GET"
+    );
+}
+
+#[tokio::test]
+async fn mutate_pods_proceeds_without_policy_modules_when_cp_list_returns_5xx() {
+    // The first call in collect_policy_modules — namespaced CP LIST —
+    // returns 5xx. The handler must still attempt the namespace GET and
+    // cluster CCP LIST that follow, because each LIST is independently
+    // wrapped in `if let Ok(...)`. With no annotation and empty CCP, the
+    // pod is allowed without a patch.
+    let (ctx, _registry, harness) = MockKubeHarness::new(vec![
+        ExpectedCall::list(config_policies_path(NS)).returning_server_error(500, "internal error"),
+        ExpectedCall::get(namespace_path(NS)).returning_json(&namespace_object(NS, json!({}))),
+        ExpectedCall::list(cluster_config_policies_path()).returning_json(&ccp_list(vec![])),
+    ]);
+
+    let (router, _metrics) = test_webhook_router_with_client(ctx.client.clone());
+
+    let response = router
+        .oneshot(post("/mutate-pods", pod_admission_review(json!({}))))
+        .await
+        .expect("router responds");
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let review = parse_response(response).await;
+    let resp = review.response.expect("response present");
+    assert!(
+        resp.allowed,
+        "no annotation + no policies + CP LIST 5xx → allow without patch"
+    );
+    assert!(
+        resp.patch.is_none(),
+        "no resolved modules → no patch even when one LIST 5xx'd"
+    );
+
+    let report = harness.finish().await;
+    assert_eq!(
+        report.captured.len(),
+        3,
+        "all three policy-collection calls observed even after CP LIST 5xx"
+    );
+}
