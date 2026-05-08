@@ -2623,3 +2623,321 @@ fn diff_empty_trees_produces_empty_diffs() {
     let diffs = trait_diff(&fm, &source, &target).unwrap();
     assert!(diffs.is_empty());
 }
+
+// -----------------------------------------------------------------------
+// Direct apply() trait tests for underexplored FileAction branches
+// (Delete, SetPermissions, Skip, TOCTOU SourceChanged) +
+// scan_source / scan_target + ensure_target_writable readonly cases.
+// -----------------------------------------------------------------------
+
+#[test]
+fn scan_target_returns_hashed_entries() {
+    let dir = tempfile::tempdir().unwrap();
+    let resolved = make_resolved_profile(vec![], FilesSpec::default());
+    let fm = CfgdFileManager::new(dir.path(), &resolved).unwrap();
+
+    let f1 = dir.path().join("a.txt");
+    let f2 = dir.path().join("b.txt");
+    fs::write(&f1, "alpha").unwrap();
+    fs::write(&f2, "beta").unwrap();
+
+    let tree = <CfgdFileManager as cfgd_core::providers::FileManager>::scan_target(
+        &fm,
+        &[f1.clone(), f2.clone()],
+    )
+    .unwrap();
+
+    assert_eq!(tree.files.len(), 2);
+    let entry1 = tree.files.get(&f1).expect("entry for a.txt");
+    assert_eq!(entry1.content_hash, cfgd_core::sha256_hex(b"alpha"));
+    assert_eq!(entry1.origin_source, "local");
+    let entry2 = tree.files.get(&f2).expect("entry for b.txt");
+    assert_eq!(entry2.content_hash, cfgd_core::sha256_hex(b"beta"));
+}
+
+#[test]
+fn scan_target_skips_nonexistent_paths() {
+    let dir = tempfile::tempdir().unwrap();
+    let resolved = make_resolved_profile(vec![], FilesSpec::default());
+    let fm = CfgdFileManager::new(dir.path(), &resolved).unwrap();
+
+    let real = dir.path().join("present.txt");
+    fs::write(&real, "x").unwrap();
+    let missing = dir.path().join("does-not-exist.txt");
+
+    let tree = <CfgdFileManager as cfgd_core::providers::FileManager>::scan_target(
+        &fm,
+        &[real.clone(), missing],
+    )
+    .unwrap();
+
+    assert_eq!(tree.files.len(), 1);
+    assert!(tree.files.contains_key(&real));
+}
+
+#[test]
+fn scan_source_recursively_walks_directories() {
+    let dir = tempfile::tempdir().unwrap();
+    let resolved = make_resolved_profile(vec![], FilesSpec::default());
+    let fm = CfgdFileManager::new(dir.path(), &resolved).unwrap();
+
+    let source_root = dir.path().join("src");
+    fs::create_dir_all(source_root.join("nested/deep")).unwrap();
+    fs::write(source_root.join("top.txt"), "1").unwrap();
+    fs::write(source_root.join("nested/mid.txt"), "2").unwrap();
+    fs::write(source_root.join("nested/deep/leaf.txt"), "3").unwrap();
+
+    let layer = FileLayer {
+        source_dir: source_root.clone(),
+        origin_source: "test-origin".to_string(),
+        priority: 100,
+    };
+
+    let tree =
+        <CfgdFileManager as cfgd_core::providers::FileManager>::scan_source(&fm, &[layer]).unwrap();
+
+    assert_eq!(tree.files.len(), 3);
+    // Keys are paths relative to source_root
+    assert!(tree.files.contains_key(Path::new("top.txt")));
+    assert!(tree.files.contains_key(Path::new("nested/mid.txt")));
+    assert!(tree.files.contains_key(Path::new("nested/deep/leaf.txt")));
+    // Origin propagates from the layer
+    assert_eq!(
+        tree.files.get(Path::new("top.txt")).unwrap().origin_source,
+        "test-origin"
+    );
+}
+
+#[test]
+fn scan_source_skips_nonexistent_layer() {
+    let dir = tempfile::tempdir().unwrap();
+    let resolved = make_resolved_profile(vec![], FilesSpec::default());
+    let fm = CfgdFileManager::new(dir.path(), &resolved).unwrap();
+
+    let layer = FileLayer {
+        source_dir: dir.path().join("does-not-exist"),
+        origin_source: "missing".to_string(),
+        priority: 1,
+    };
+
+    let tree =
+        <CfgdFileManager as cfgd_core::providers::FileManager>::scan_source(&fm, &[layer]).unwrap();
+    assert!(tree.files.is_empty());
+}
+
+#[test]
+#[cfg(unix)]
+fn scan_source_skips_symlinks_in_source_tree() {
+    use std::os::unix::fs::symlink;
+
+    let dir = tempfile::tempdir().unwrap();
+    let resolved = make_resolved_profile(vec![], FilesSpec::default());
+    let fm = CfgdFileManager::new(dir.path(), &resolved).unwrap();
+
+    let source_root = dir.path().join("src");
+    fs::create_dir_all(&source_root).unwrap();
+    fs::write(source_root.join("real.txt"), "real").unwrap();
+
+    // Symlink target outside the source tree (or anywhere) — must be skipped
+    let outside = dir.path().join("outside.txt");
+    fs::write(&outside, "outside").unwrap();
+    symlink(&outside, source_root.join("link.txt")).unwrap();
+
+    let layer = FileLayer {
+        source_dir: source_root,
+        origin_source: "local".to_string(),
+        priority: 1,
+    };
+
+    let tree =
+        <CfgdFileManager as cfgd_core::providers::FileManager>::scan_source(&fm, &[layer]).unwrap();
+    assert_eq!(tree.files.len(), 1);
+    assert!(tree.files.contains_key(Path::new("real.txt")));
+    assert!(
+        !tree.files.contains_key(Path::new("link.txt")),
+        "symlink should be skipped"
+    );
+}
+
+#[test]
+fn apply_delete_removes_existing_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let resolved = make_resolved_profile(vec![], FilesSpec::default());
+    let fm = CfgdFileManager::new(dir.path(), &resolved).unwrap();
+
+    let target = dir.path().join("doomed.txt");
+    fs::write(&target, "bye").unwrap();
+    assert!(target.exists());
+
+    let actions = vec![FileAction::Delete {
+        target: target.clone(),
+        origin: "local".to_string(),
+    }];
+    let printer = cfgd_core::output::Printer::new(cfgd_core::output::Verbosity::Quiet);
+    <CfgdFileManager as cfgd_core::providers::FileManager>::apply(&fm, &actions, &printer).unwrap();
+
+    assert!(!target.exists());
+}
+
+#[test]
+fn apply_delete_when_target_missing_is_noop() {
+    let dir = tempfile::tempdir().unwrap();
+    let resolved = make_resolved_profile(vec![], FilesSpec::default());
+    let fm = CfgdFileManager::new(dir.path(), &resolved).unwrap();
+
+    let target = dir.path().join("never-existed.txt");
+    let actions = vec![FileAction::Delete {
+        target: target.clone(),
+        origin: "local".to_string(),
+    }];
+    let printer = cfgd_core::output::Printer::new(cfgd_core::output::Verbosity::Quiet);
+    <CfgdFileManager as cfgd_core::providers::FileManager>::apply(&fm, &actions, &printer).unwrap();
+
+    assert!(!target.exists());
+}
+
+#[test]
+#[cfg(unix)]
+fn apply_delete_removes_dangling_symlink() {
+    use std::os::unix::fs::symlink;
+
+    let dir = tempfile::tempdir().unwrap();
+    let resolved = make_resolved_profile(vec![], FilesSpec::default());
+    let fm = CfgdFileManager::new(dir.path(), &resolved).unwrap();
+
+    // Symlink to a missing target — `target.exists()` is false, but
+    // `symlink_metadata().is_ok()` is true, so the Delete branch should fire.
+    let link = dir.path().join("dangling");
+    symlink(dir.path().join("nope"), &link).unwrap();
+    assert!(!link.exists());
+    assert!(link.symlink_metadata().is_ok());
+
+    let actions = vec![FileAction::Delete {
+        target: link.clone(),
+        origin: "local".to_string(),
+    }];
+    let printer = cfgd_core::output::Printer::new(cfgd_core::output::Verbosity::Quiet);
+    <CfgdFileManager as cfgd_core::providers::FileManager>::apply(&fm, &actions, &printer).unwrap();
+
+    assert!(
+        link.symlink_metadata().is_err(),
+        "dangling symlink should be removed"
+    );
+}
+
+#[test]
+#[cfg(unix)]
+fn apply_set_permissions_changes_mode() {
+    let dir = tempfile::tempdir().unwrap();
+    let resolved = make_resolved_profile(vec![], FilesSpec::default());
+    let fm = CfgdFileManager::new(dir.path(), &resolved).unwrap();
+
+    let target = dir.path().join("perms.txt");
+    fs::write(&target, "x").unwrap();
+    fs::set_permissions(&target, fs::Permissions::from_mode(0o644)).unwrap();
+
+    let actions = vec![FileAction::SetPermissions {
+        target: target.clone(),
+        mode: 0o600,
+        origin: "local".to_string(),
+    }];
+    let printer = cfgd_core::output::Printer::new(cfgd_core::output::Verbosity::Quiet);
+    <CfgdFileManager as cfgd_core::providers::FileManager>::apply(&fm, &actions, &printer).unwrap();
+
+    let mode = fs::metadata(&target).unwrap().permissions().mode() & 0o777;
+    assert_eq!(mode, 0o600);
+}
+
+#[test]
+fn apply_skip_action_is_noop() {
+    let dir = tempfile::tempdir().unwrap();
+    let resolved = make_resolved_profile(vec![], FilesSpec::default());
+    let fm = CfgdFileManager::new(dir.path(), &resolved).unwrap();
+
+    // Ensure the Skip arm doesn't touch the target path
+    let target = dir.path().join("not-touched.txt");
+    let actions = vec![FileAction::Skip {
+        target: target.clone(),
+        reason: "private file: source missing".to_string(),
+        origin: "local".to_string(),
+    }];
+    let printer = cfgd_core::output::Printer::new(cfgd_core::output::Verbosity::Quiet);
+    <CfgdFileManager as cfgd_core::providers::FileManager>::apply(&fm, &actions, &printer).unwrap();
+
+    assert!(!target.exists());
+}
+
+#[test]
+fn apply_create_with_stale_source_hash_returns_source_changed() {
+    let dir = tempfile::tempdir().unwrap();
+    let resolved = make_resolved_profile(vec![], FilesSpec::default());
+    let fm = CfgdFileManager::new(dir.path(), &resolved).unwrap();
+
+    let source = dir.path().join("src.txt");
+    fs::write(&source, "current content").unwrap();
+    let target = dir.path().join("out").join("dst.txt");
+
+    let actions = vec![FileAction::Create {
+        source: source.clone(),
+        target: target.clone(),
+        origin: "local".to_string(),
+        strategy: cfgd_core::config::FileStrategy::Copy,
+        // Hash of completely different content — TOCTOU check must fail
+        source_hash: Some(cfgd_core::sha256_hex(b"different content from plan time")),
+    }];
+
+    let printer = cfgd_core::output::Printer::new(cfgd_core::output::Verbosity::Quiet);
+    let err =
+        <CfgdFileManager as cfgd_core::providers::FileManager>::apply(&fm, &actions, &printer)
+            .expect_err("expected SourceChanged error");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("source") && (msg.contains("changed") || msg.contains("modified")),
+        "expected SourceChanged-style error, got: {msg}"
+    );
+    assert!(!target.exists(), "target should not have been written");
+}
+
+#[test]
+fn apply_create_with_matching_source_hash_writes_target() {
+    let dir = tempfile::tempdir().unwrap();
+    let resolved = make_resolved_profile(vec![], FilesSpec::default());
+    let fm = CfgdFileManager::new(dir.path(), &resolved).unwrap();
+
+    let source = dir.path().join("src.txt");
+    let body = "hello toctou";
+    fs::write(&source, body).unwrap();
+    let target = dir.path().join("out").join("dst.txt");
+
+    let actions = vec![FileAction::Create {
+        source: source.clone(),
+        target: target.clone(),
+        origin: "local".to_string(),
+        strategy: cfgd_core::config::FileStrategy::Copy,
+        source_hash: Some(cfgd_core::sha256_hex(body.as_bytes())),
+    }];
+
+    let printer = cfgd_core::output::Printer::new(cfgd_core::output::Verbosity::Quiet);
+    <CfgdFileManager as cfgd_core::providers::FileManager>::apply(&fm, &actions, &printer).unwrap();
+
+    assert_eq!(fs::read_to_string(&target).unwrap(), body);
+}
+
+#[test]
+#[cfg(unix)]
+fn ensure_target_writable_errors_on_readonly_existing_target() {
+    let dir = tempfile::tempdir().unwrap();
+    let target = dir.path().join("ro.txt");
+    fs::write(&target, "x").unwrap();
+    fs::set_permissions(&target, fs::Permissions::from_mode(0o444)).unwrap();
+
+    let err = ensure_target_writable(&target).expect_err("readonly target must error");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("not writable") || msg.contains("writable"),
+        "expected writability error, got: {msg}"
+    );
+
+    // Restore perms so tempdir cleanup works on all platforms
+    let _ = fs::set_permissions(&target, fs::Permissions::from_mode(0o644));
+}

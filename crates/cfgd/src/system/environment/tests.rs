@@ -852,3 +852,194 @@ fn write_etc_environment_escapes_double_quotes_in_value() {
         content
     );
 }
+
+// --- macOS write paths (testable on any host via `with_test_home_guard`) ---
+
+#[test]
+fn macos_env_sh_path_is_under_default_config_dir() {
+    let dir = tempfile::tempdir().unwrap();
+    let _g = cfgd_core::with_test_home_guard(dir.path());
+    let p = EnvironmentConfigurator::macos_env_sh_path();
+    assert_eq!(p, dir.path().join(".config").join("cfgd").join("env.sh"));
+}
+
+#[test]
+fn macos_plist_path_is_under_home_library_launchagents() {
+    let dir = tempfile::tempdir().unwrap();
+    let _g = cfgd_core::with_test_home_guard(dir.path());
+    let p = EnvironmentConfigurator::macos_plist_path();
+    assert_eq!(
+        p,
+        dir.path()
+            .join("Library")
+            .join("LaunchAgents")
+            .join("com.cfgd.environment.plist")
+    );
+}
+
+#[test]
+fn macos_write_env_sh_creates_file_with_managed_block() {
+    let dir = tempfile::tempdir().unwrap();
+    let _g = cfgd_core::with_test_home_guard(dir.path());
+
+    let mut managed = BTreeMap::new();
+    managed.insert("FOO".to_string(), "bar".to_string());
+    managed.insert("LANG".to_string(), "en_US.UTF-8".to_string());
+
+    EnvironmentConfigurator::macos_write_env_sh(&managed).unwrap();
+
+    let env_sh = dir.path().join(".config/cfgd/env.sh");
+    let content = std::fs::read_to_string(&env_sh).unwrap();
+    assert!(content.starts_with("#!/bin/sh\n"), "got: {content}");
+    assert!(content.contains("Managed by cfgd"));
+    assert!(content.contains("Source this from your shell rc"));
+    // shell_escape_value always wraps the value in quotes (`"..."`).
+    assert!(content.contains(r#"export FOO="bar""#), "got: {content}");
+    assert!(
+        content.contains(r#"export LANG="en_US.UTF-8""#),
+        "got: {content}"
+    );
+}
+
+#[test]
+fn macos_write_env_sh_empty_managed_removes_existing_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let _g = cfgd_core::with_test_home_guard(dir.path());
+    let env_sh = dir.path().join(".config/cfgd/env.sh");
+    std::fs::create_dir_all(env_sh.parent().unwrap()).unwrap();
+    std::fs::write(&env_sh, "stale\n").unwrap();
+    assert!(env_sh.exists());
+
+    EnvironmentConfigurator::macos_write_env_sh(&BTreeMap::new()).unwrap();
+    assert!(!env_sh.exists(), "empty managed should have removed env.sh");
+}
+
+#[test]
+fn macos_write_env_sh_empty_managed_when_file_missing_is_ok() {
+    let dir = tempfile::tempdir().unwrap();
+    let _g = cfgd_core::with_test_home_guard(dir.path());
+    EnvironmentConfigurator::macos_write_env_sh(&BTreeMap::new()).unwrap();
+    let env_sh = dir.path().join(".config/cfgd/env.sh");
+    assert!(!env_sh.exists());
+}
+
+#[test]
+fn macos_write_env_sh_creates_parent_dir() {
+    let dir = tempfile::tempdir().unwrap();
+    let _g = cfgd_core::with_test_home_guard(dir.path());
+    // Parent .config/cfgd does not exist yet
+    assert!(!dir.path().join(".config").exists());
+
+    let mut managed = BTreeMap::new();
+    managed.insert("X".to_string(), "1".to_string());
+    EnvironmentConfigurator::macos_write_env_sh(&managed).unwrap();
+
+    assert!(dir.path().join(".config/cfgd/env.sh").exists());
+}
+
+#[test]
+fn macos_current_vars_roundtrips_through_env_sh() {
+    let dir = tempfile::tempdir().unwrap();
+    let _g = cfgd_core::with_test_home_guard(dir.path());
+
+    let mut managed = BTreeMap::new();
+    managed.insert("FOO".to_string(), "bar".to_string());
+    managed.insert("LANG".to_string(), "C".to_string());
+    EnvironmentConfigurator::macos_write_env_sh(&managed).unwrap();
+
+    let read_back = EnvironmentConfigurator::macos_current_vars();
+    assert_eq!(read_back.get("FOO").map(String::as_str), Some("bar"));
+    assert_eq!(read_back.get("LANG").map(String::as_str), Some("C"));
+}
+
+#[test]
+fn macos_current_vars_empty_when_file_missing() {
+    let dir = tempfile::tempdir().unwrap();
+    let _g = cfgd_core::with_test_home_guard(dir.path());
+    let vars = EnvironmentConfigurator::macos_current_vars();
+    assert!(vars.is_empty());
+}
+
+#[test]
+fn macos_write_launchd_plist_writes_well_formed_xml() {
+    let dir = tempfile::tempdir().unwrap();
+    let _g = cfgd_core::with_test_home_guard(dir.path());
+
+    let mut managed = BTreeMap::new();
+    managed.insert(
+        "HTTP_PROXY".to_string(),
+        "http://proxy.corp:8080".to_string(),
+    );
+
+    EnvironmentConfigurator::macos_write_launchd_plist(&managed).unwrap();
+
+    let plist = dir
+        .path()
+        .join("Library/LaunchAgents/com.cfgd.environment.plist");
+    let content = std::fs::read_to_string(&plist).unwrap();
+    assert!(content.starts_with(r#"<?xml version="1.0" encoding="UTF-8"?>"#));
+    assert!(content.contains("<key>Label</key>"));
+    assert!(content.contains("<string>com.cfgd.environment</string>"));
+    assert!(content.contains("<key>RunAtLoad</key>"));
+    assert!(content.contains("<key>EnvironmentVariables</key>"));
+    assert!(content.contains("<key>HTTP_PROXY</key>"));
+    assert!(content.contains("<string>http://proxy.corp:8080</string>"));
+    assert!(content.trim_end().ends_with("</plist>"));
+}
+
+#[test]
+fn macos_write_launchd_plist_xml_escapes_special_chars() {
+    let dir = tempfile::tempdir().unwrap();
+    let _g = cfgd_core::with_test_home_guard(dir.path());
+
+    let mut managed = BTreeMap::new();
+    managed.insert("TRICKY".to_string(), r#"<value & "quoted">"#.to_string());
+    EnvironmentConfigurator::macos_write_launchd_plist(&managed).unwrap();
+
+    let content = std::fs::read_to_string(
+        dir.path()
+            .join("Library/LaunchAgents/com.cfgd.environment.plist"),
+    )
+    .unwrap();
+    // xml_escape encodes <, >, &, "
+    assert!(
+        content.contains("&lt;value &amp; &quot;quoted&quot;&gt;"),
+        "expected escaped value, got: {content}"
+    );
+    // Raw special chars must NOT appear in the value section
+    assert!(!content.contains(r#"<value & "quoted">"#));
+}
+
+#[test]
+fn macos_write_launchd_plist_empty_managed_removes_existing_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let _g = cfgd_core::with_test_home_guard(dir.path());
+    let plist = dir
+        .path()
+        .join("Library/LaunchAgents/com.cfgd.environment.plist");
+    std::fs::create_dir_all(plist.parent().unwrap()).unwrap();
+    std::fs::write(&plist, "stale plist").unwrap();
+    assert!(plist.exists());
+
+    // Empty managed shells out to `launchctl unload` (which fails harmlessly
+    // on Linux — the function logs and proceeds), then removes the plist.
+    EnvironmentConfigurator::macos_write_launchd_plist(&BTreeMap::new()).unwrap();
+    assert!(!plist.exists());
+}
+
+#[test]
+fn macos_write_launchd_plist_creates_parent_dir() {
+    let dir = tempfile::tempdir().unwrap();
+    let _g = cfgd_core::with_test_home_guard(dir.path());
+    assert!(!dir.path().join("Library").exists());
+
+    let mut managed = BTreeMap::new();
+    managed.insert("X".to_string(), "y".to_string());
+    EnvironmentConfigurator::macos_write_launchd_plist(&managed).unwrap();
+
+    assert!(
+        dir.path()
+            .join("Library/LaunchAgents/com.cfgd.environment.plist")
+            .exists()
+    );
+}
