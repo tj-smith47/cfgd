@@ -745,3 +745,224 @@ fn brew_path_returns_option() {
     // Second call tests the cached path
     let _path2 = brew_path();
 }
+
+// ---------------------------------------------------------------------------
+// Pure-helper coverage for tool_seam_var, resolve_tool_with_fallbacks,
+// path_with_brew, brew_path_dirs, print_caveats, sudo_cmd_with_seam,
+// linux_system_manager_available, any_system_manager_available.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn tool_seam_var_uppercases_and_underscores() {
+    assert_eq!(tool_seam_var("brew"), "CFGD_BREW_BIN");
+    assert_eq!(tool_seam_var("brew-cask"), "CFGD_BREW_CASK_BIN");
+    assert_eq!(tool_seam_var("npm"), "CFGD_NPM_BIN");
+    assert_eq!(tool_seam_var("nix-env"), "CFGD_NIX_ENV_BIN");
+}
+
+#[test]
+fn tool_seam_var_already_uppercase_is_idempotent() {
+    // Already-uppercase inputs are passed through unchanged.
+    assert_eq!(tool_seam_var("BREW"), "CFGD_BREW_BIN");
+}
+
+#[test]
+#[serial_test::serial]
+fn resolve_tool_with_fallbacks_uses_seam_when_set_to_real_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let shim = dir.path().join("shim");
+    std::fs::write(&shim, b"#!/bin/sh\nexit 0\n").unwrap();
+
+    // Snapshot + restore so this test plays nicely with parallel suites.
+    let prev = std::env::var_os("CFGD_NEVER_REAL_TOOL_BIN");
+    // SAFETY: serial.
+    unsafe {
+        std::env::set_var("CFGD_NEVER_REAL_TOOL_BIN", &shim);
+    }
+    let resolved = resolve_tool_with_fallbacks("never-real-tool", &[]);
+    // SAFETY: serial.
+    unsafe {
+        match prev {
+            Some(v) => std::env::set_var("CFGD_NEVER_REAL_TOOL_BIN", v),
+            None => std::env::remove_var("CFGD_NEVER_REAL_TOOL_BIN"),
+        }
+    }
+    assert_eq!(resolved.as_deref(), Some(shim.as_path()));
+}
+
+#[test]
+#[serial_test::serial]
+fn resolve_tool_with_fallbacks_walks_fallback_paths_when_seam_and_path_miss() {
+    let dir = tempfile::tempdir().unwrap();
+    let missing = dir.path().join("does-not-exist");
+    let real = dir.path().join("real-tool");
+    std::fs::write(&real, b"#!/bin/sh\nexit 0\n").unwrap();
+
+    // Use a definitely-missing tool name so command_available returns false.
+    let prev = std::env::var_os("CFGD_DEFINITELY_NOT_INSTALLED_BIN");
+    // SAFETY: serial.
+    unsafe {
+        std::env::remove_var("CFGD_DEFINITELY_NOT_INSTALLED_BIN");
+    }
+    let resolved =
+        resolve_tool_with_fallbacks("definitely-not-installed", &[missing, real.clone()]);
+    // SAFETY: serial.
+    unsafe {
+        if let Some(v) = prev {
+            std::env::set_var("CFGD_DEFINITELY_NOT_INSTALLED_BIN", v);
+        }
+    }
+    assert_eq!(resolved.as_deref(), Some(real.as_path()));
+}
+
+#[test]
+#[serial_test::serial]
+fn resolve_tool_with_fallbacks_returns_none_when_nothing_resolves() {
+    let dir = tempfile::tempdir().unwrap();
+    let missing1 = dir.path().join("nope1");
+    let missing2 = dir.path().join("nope2");
+
+    let prev = std::env::var_os("CFGD_DEFINITELY_NOT_INSTALLED_BIN");
+    // SAFETY: serial.
+    unsafe {
+        std::env::remove_var("CFGD_DEFINITELY_NOT_INSTALLED_BIN");
+    }
+    let resolved = resolve_tool_with_fallbacks("definitely-not-installed", &[missing1, missing2]);
+    // SAFETY: serial.
+    unsafe {
+        if let Some(v) = prev {
+            std::env::set_var("CFGD_DEFINITELY_NOT_INSTALLED_BIN", v);
+        }
+    }
+    assert!(resolved.is_none());
+}
+
+#[test]
+fn brew_path_dirs_is_non_empty_on_linux_or_macos() {
+    let dirs = brew_path_dirs();
+    if cfg!(target_os = "linux") || cfg!(target_os = "macos") {
+        assert!(!dirs.is_empty(), "expected brew dirs, got: {dirs:?}");
+        // Every entry should be an absolute path.
+        for d in &dirs {
+            assert!(d.starts_with('/'), "non-absolute brew path dir: {d}");
+        }
+    } else {
+        assert!(dirs.is_empty(), "non-linux/non-macos should be empty");
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn brew_path_dirs_linux_uses_linuxbrew_paths() {
+    let dirs = brew_path_dirs();
+    assert!(dirs.iter().any(|d| d.contains("linuxbrew")));
+    assert!(dirs.iter().any(|d| d.ends_with("/bin")));
+    assert!(dirs.iter().any(|d| d.ends_with("/sbin")));
+}
+
+#[test]
+fn print_caveats_no_op_when_notes_empty() {
+    let (printer, output) = Printer::for_test();
+    print_caveats(&printer, &[]);
+    let captured = output.lock().unwrap().clone();
+    assert!(
+        captured.is_empty(),
+        "print_caveats should emit nothing for empty notes, got: {captured}"
+    );
+}
+
+#[test]
+fn print_caveats_emits_subheader_then_warning_per_note() {
+    let (printer, output) = Printer::for_test();
+    let notes = vec![
+        PostInstallNote {
+            manager: "brew".to_string(),
+            message: "run /usr/local/opt/foo/postinstall.sh".to_string(),
+        },
+        PostInstallNote {
+            manager: "npm".to_string(),
+            message: "deprecated package warning".to_string(),
+        },
+    ];
+    print_caveats(&printer, &notes);
+
+    let captured = output.lock().unwrap().clone();
+    // Subheader
+    assert!(
+        captured.contains("Post-install notes"),
+        "expected subheader, got: {captured}"
+    );
+    // Each note appears as a warning prefixed with [manager]
+    assert!(
+        captured.contains("[brew]") && captured.contains("postinstall.sh"),
+        "expected brew note, got: {captured}"
+    );
+    assert!(
+        captured.contains("[npm]") && captured.contains("deprecated"),
+        "expected npm note, got: {captured}"
+    );
+}
+
+#[test]
+#[serial_test::serial]
+fn sudo_cmd_with_seam_uses_seam_path_when_set() {
+    let dir = tempfile::tempdir().unwrap();
+    let shim = dir.path().join("shim");
+    std::fs::write(&shim, b"#!/bin/sh\nexit 0\n").unwrap();
+
+    let prev = std::env::var_os("CFGD_FAKE_SUDO_TOOL_BIN");
+    // SAFETY: serial.
+    unsafe {
+        std::env::set_var("CFGD_FAKE_SUDO_TOOL_BIN", &shim);
+    }
+    let cmd = sudo_cmd_with_seam("fake-sudo-tool");
+    // SAFETY: serial.
+    unsafe {
+        match prev {
+            Some(v) => std::env::set_var("CFGD_FAKE_SUDO_TOOL_BIN", v),
+            None => std::env::remove_var("CFGD_FAKE_SUDO_TOOL_BIN"),
+        }
+    }
+    let prog = format!("{:?}", cmd.get_program());
+    assert!(prog.contains("shim"), "expected seam path, got: {prog}");
+    // No "sudo" wrapper when seam is set
+    assert!(!prog.starts_with("\"sudo\""), "got: {prog}");
+}
+
+#[test]
+#[serial_test::serial]
+fn sudo_cmd_with_seam_falls_back_to_sudo_cmd_when_unset() {
+    let prev = std::env::var_os("CFGD_OTHER_FAKE_TOOL_BIN");
+    // SAFETY: serial.
+    unsafe {
+        std::env::remove_var("CFGD_OTHER_FAKE_TOOL_BIN");
+    }
+    let cmd = sudo_cmd_with_seam("other-fake-tool");
+    // SAFETY: serial.
+    unsafe {
+        if let Some(v) = prev {
+            std::env::set_var("CFGD_OTHER_FAKE_TOOL_BIN", v);
+        }
+    }
+    let prog = format!("{:?}", cmd.get_program());
+    // When not root, sudo_cmd prefixes with "sudo"; when root, runs program directly.
+    if cfgd_core::is_root() {
+        assert!(
+            prog.contains("other-fake-tool"),
+            "as root expected program directly, got: {prog}"
+        );
+    } else {
+        assert!(prog.contains("sudo"), "expected sudo prefix, got: {prog}");
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn linux_system_manager_available_returns_bool_without_panic() {
+    let _b = linux_system_manager_available();
+}
+
+#[test]
+fn any_system_manager_available_returns_bool_without_panic() {
+    let _b = any_system_manager_available();
+}
