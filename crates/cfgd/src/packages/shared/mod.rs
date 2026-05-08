@@ -513,6 +513,20 @@ pub(super) fn sudo_cmd(program: &str) -> Command {
     }
 }
 
+/// Build a Command for `program`, honoring the `CFGD_<NAME>_BIN` env-var seam
+/// the same way [`tool_cmd_with_resolver`] does, but for tools that normally
+/// require `sudo`. When the seam is set, returns a direct
+/// `Command::new(<seam path>)` (skipping the sudo wrapper entirely — the test
+/// shim already runs as the test user). When the seam is unset, falls back
+/// to [`sudo_cmd`].
+pub(super) fn sudo_cmd_with_seam(program: &str) -> Command {
+    if let Ok(custom) = std::env::var(tool_seam_var(program)) {
+        let p = PathBuf::from(custom);
+        return Command::new(p);
+    }
+    sudo_cmd(program)
+}
+
 /// Parse a "Version: X.Y.Z" line from command output.
 /// Used by flatpak, winget, and scoop version queries.
 pub(super) fn parse_version_field(output: &str) -> Option<String> {

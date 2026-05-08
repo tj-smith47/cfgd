@@ -1,18 +1,33 @@
 //! Snap package manager (Linux only).
 
 use std::collections::HashSet;
+use std::path::PathBuf;
 use std::process::Command;
 
-use cfgd_core::command_available;
 use cfgd_core::errors::{PackageError, Result};
 use cfgd_core::output::Printer;
 use cfgd_core::providers::PackageManager;
 
 #[cfg(target_os = "linux")]
 use super::shared::linux_system_manager_available;
-use super::shared::{bootstrap_via_system_manager, run_pkg_cmd, run_pkg_cmd_live, sudo_cmd};
+use super::shared::{
+    bootstrap_via_system_manager, resolve_tool_with_fallbacks, run_pkg_cmd, run_pkg_cmd_live,
+    sudo_cmd_with_seam, tool_cmd_with_resolver,
+};
 
 pub struct SnapManager;
+
+pub(super) fn find_snap() -> Option<PathBuf> {
+    resolve_tool_with_fallbacks("snap", &[])
+}
+
+pub(super) fn snap_available() -> bool {
+    find_snap().is_some()
+}
+
+pub(super) fn snap_cmd() -> Command {
+    tool_cmd_with_resolver("snap", find_snap)
+}
 
 impl PackageManager for SnapManager {
     fn name(&self) -> &str {
@@ -20,7 +35,7 @@ impl PackageManager for SnapManager {
     }
 
     fn is_available(&self) -> bool {
-        command_available("snap")
+        snap_available()
     }
 
     fn can_bootstrap(&self) -> bool {
@@ -41,7 +56,7 @@ impl PackageManager for SnapManager {
     }
 
     fn installed_packages(&self) -> Result<HashSet<String>> {
-        let output = run_pkg_cmd("snap", Command::new("snap").args(["list"]), "list")?;
+        let output = run_pkg_cmd("snap", snap_cmd().args(["list"]), "list")?;
         Ok(parse_snap_list(&String::from_utf8_lossy(&output.stdout)))
     }
 
@@ -52,7 +67,7 @@ impl PackageManager for SnapManager {
             let result = run_pkg_cmd_live(
                 printer,
                 "snap",
-                sudo_cmd("snap").arg("install").arg(pkg),
+                sudo_cmd_with_seam("snap").arg("install").arg(pkg),
                 &label,
                 "install",
             );
@@ -63,7 +78,7 @@ impl PackageManager for SnapManager {
                     run_pkg_cmd_live(
                         printer,
                         "snap",
-                        sudo_cmd("snap").args(["install", "--classic", pkg]),
+                        sudo_cmd_with_seam("snap").args(["install", "--classic", pkg]),
                         &label,
                         "install",
                     )?;
@@ -83,7 +98,7 @@ impl PackageManager for SnapManager {
         run_pkg_cmd_live(
             printer,
             "snap",
-            sudo_cmd("snap").arg("remove").args(packages),
+            sudo_cmd_with_seam("snap").arg("remove").args(packages),
             &label,
             "uninstall",
         )?;
@@ -94,7 +109,7 @@ impl PackageManager for SnapManager {
         run_pkg_cmd_live(
             printer,
             "snap",
-            sudo_cmd("snap").arg("refresh"),
+            sudo_cmd_with_seam("snap").arg("refresh"),
             "snap refresh",
             "update",
         )?;
@@ -103,13 +118,12 @@ impl PackageManager for SnapManager {
 
     fn available_version(&self, package: &str) -> Result<Option<String>> {
         // snap info <pkg> → parse "latest/stable:" or first channel line for version
-        let output = Command::new("snap")
-            .args(["info", package])
-            .output()
-            .map_err(|e| PackageError::CommandFailed {
+        let output = snap_cmd().args(["info", package]).output().map_err(|e| {
+            PackageError::CommandFailed {
                 manager: "snap".into(),
                 source: e,
-            })?;
+            }
+        })?;
         if !output.status.success() {
             return Ok(None);
         }
@@ -279,10 +293,26 @@ channels:
     }
 
     #[test]
+    #[serial_test::serial]
     fn snap_manager_is_available_checks_snap() {
+        // Snapshot + clear seam env var so this assertion mirrors the
+        // PATH-only contract. Without this, parallel ToolShim tests setting
+        // CFGD_SNAP_BIN would race with this assertion.
+        let prev = std::env::var_os("CFGD_SNAP_BIN");
+        // SAFETY: serial.
+        unsafe {
+            std::env::remove_var("CFGD_SNAP_BIN");
+        }
         let mgr = SnapManager;
         let available = mgr.is_available();
-        assert_eq!(available, command_available("snap"));
+        let expected = command_available("snap");
+        // SAFETY: serial.
+        unsafe {
+            if let Some(v) = prev {
+                std::env::set_var("CFGD_SNAP_BIN", v);
+            }
+        }
+        assert_eq!(available, expected);
     }
 
     // --- parse_snap_list ---
@@ -321,5 +351,153 @@ fd        9.0.0    100    latest/stable  -             -
         let pkgs = parse_snap_list(stdout);
         assert_eq!(pkgs.len(), 1);
         assert!(pkgs.contains("core22"));
+    }
+
+    // ---------------------------------------------------------------------
+    // PackageManager-impl tests via CFGD_SNAP_BIN ToolShim. The seam wires
+    // through sudo_cmd_with_seam: when CFGD_SNAP_BIN is set, the install /
+    // uninstall / update paths skip sudo entirely and invoke the shim
+    // directly. Read-only paths (snap_cmd / installed_packages /
+    // available_version) honor the seam via tool_cmd_with_resolver.
+    // ---------------------------------------------------------------------
+
+    #[cfg(unix)]
+    mod snap_shim {
+        use super::*;
+        use cfgd_core::output::Printer;
+        use cfgd_core::providers::PackageManager;
+        use cfgd_core::test_helpers::ToolShim;
+        use serial_test::serial;
+
+        fn shim(stdout: &str, stderr: &str, exit: i32) -> ToolShim {
+            ToolShim::install("CFGD_SNAP_BIN", exit, stdout, stderr)
+        }
+        fn printer() -> Printer {
+            Printer::for_test().0
+        }
+
+        #[test]
+        #[serial]
+        fn snap_install_runs_install_subcommand_per_package() {
+            let s = shim("", "", 0);
+            let p = printer();
+            SnapManager
+                .install(&["ripgrep".into(), "fd".into()], &p)
+                .expect("Ok");
+            assert_eq!(s.invocation_count(), 2);
+            let argv = s.argv_log();
+            assert!(
+                argv.contains("install ripgrep"),
+                "argv must include `install ripgrep`: {argv}"
+            );
+            assert!(
+                argv.contains("install fd"),
+                "argv must include `install fd`: {argv}"
+            );
+        }
+
+        #[test]
+        #[serial]
+        fn snap_install_classic_retry_currently_inert_because_error_lacks_stderr() {
+            // The production retry-with-classic branch reads
+            // `e.to_string().contains("classic")` on the install error, but
+            // PackageError::InstallFailed is constructed as
+            // `format!("exit code {}", code)` in run_pkg_cmd_live — stderr
+            // is captured by Printer::run_with_output but does NOT propagate
+            // into the error's Display string. So even when the shim emits
+            // "...requires classic confinement" on stderr, the contains-check
+            // returns false and the retry never fires.
+            //
+            // Pinning this contract here makes the gap visible: if a future
+            // change rewires stderr into the error message, this test must
+            // flip to assert the retry argv. Until then, the test documents
+            // the inert state.
+            let s = shim("", "snap \"ripgrep\" requires classic confinement", 1);
+            let p = printer();
+            let _ = SnapManager.install(&["ripgrep".into()], &p);
+            assert_eq!(
+                s.invocation_count(),
+                1,
+                "retry currently doesn't fire because error message omits stderr"
+            );
+        }
+
+        #[test]
+        #[serial]
+        fn snap_uninstall_runs_remove_with_all_packages_in_one_invocation() {
+            let s = shim("", "", 0);
+            let p = printer();
+            SnapManager
+                .uninstall(&["ripgrep".into(), "fd".into()], &p)
+                .expect("Ok");
+            assert_eq!(s.invocation_count(), 1, "snap remove batches all pkgs");
+            let argv = s.argv_log();
+            assert!(
+                argv.contains("remove ripgrep fd"),
+                "argv must batch all packages on a single `remove`: {argv}"
+            );
+        }
+
+        #[test]
+        #[serial]
+        fn snap_uninstall_is_noop_when_packages_empty() {
+            let s = shim("", "", 0);
+            let p = printer();
+            SnapManager.uninstall(&[], &p).expect("Ok");
+            assert_eq!(s.invocation_count(), 0, "no command spawned for empty");
+        }
+
+        #[test]
+        #[serial]
+        fn snap_update_runs_refresh() {
+            let s = shim("", "", 0);
+            let p = printer();
+            SnapManager.update(&p).expect("Ok");
+            assert_eq!(s.invocation_count(), 1);
+            assert!(s.argv_log().contains("refresh"), "argv: {}", s.argv_log());
+        }
+
+        #[test]
+        #[serial]
+        fn snap_installed_packages_parses_list_output() {
+            let stdout = "\
+Name      Version  Rev   Tracking       Publisher    Notes
+core22    20240124 1100  latest/stable  canonical**  base
+ripgrep   14.1.0   234   latest/stable  burntsushi   classic
+";
+            let _s = shim(stdout, "", 0);
+            let pkgs = SnapManager.installed_packages().expect("Ok");
+            assert!(pkgs.contains("core22"));
+            assert!(pkgs.contains("ripgrep"));
+        }
+
+        #[test]
+        #[serial]
+        fn snap_available_version_extracts_latest_stable_channel_version() {
+            let stdout = "\
+name: ripgrep
+summary: ripgrep
+channels:
+  latest/stable:    14.1.0 2024-03-01 (234) 12MB classic
+";
+            let s = shim(stdout, "", 0);
+            let v = SnapManager.available_version("ripgrep").expect("Ok");
+            assert_eq!(v.as_deref(), Some("14.1.0"));
+            assert!(
+                s.argv_log().contains("info ripgrep"),
+                "argv must include `info <pkg>`: {}",
+                s.argv_log()
+            );
+        }
+
+        #[test]
+        #[serial]
+        fn snap_available_version_returns_none_on_nonzero_exit() {
+            let _s = shim("", "no such snap", 1);
+            let v = SnapManager
+                .available_version("nonexistent")
+                .expect("non-zero → Ok(None)");
+            assert_eq!(v, None);
+        }
     }
 }
