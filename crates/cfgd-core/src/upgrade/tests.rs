@@ -1975,3 +1975,514 @@ mod cosign_verify_blob {
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// download_and_install_to — full HTTP + cosign + checksum + extract path
+// driven through mockito + the fake-cosign shim. Each test stages a release
+// whose assets resolve to mockito URLs, builds a tarball matching the
+// checksums.txt body, and exercises one branch of the install pipeline.
+//
+// Tests are #[cfg(unix)] because download_and_install_to extracts a
+// tarball on Unix (extract_zip on Windows takes a different path), and
+// because the fake-cosign shim is a /bin/sh script.
+// ---------------------------------------------------------------------------
+
+#[cfg(unix)]
+mod download_and_install_to {
+    use super::*;
+    use serial_test::serial;
+    use std::os::unix::fs::PermissionsExt;
+
+    /// Fake-cosign installed via CFGD_COSIGN_BIN; shared with the
+    /// `cosign_verify_blob` module above.
+    struct CosignShim {
+        _tmp: tempfile::TempDir,
+    }
+
+    impl CosignShim {
+        fn install(exit_code: i32, stderr_msg: &str) -> Self {
+            let tmp = tempfile::TempDir::new().expect("tempdir");
+            let bin_path = tmp.path().join("fake-cosign");
+            let script = format!(
+                "#!/bin/sh\nprintf '%s' '{stderr_msg}' 1>&2\nexit {exit_code}\n",
+                stderr_msg = stderr_msg.replace('\'', "'\\''"),
+                exit_code = exit_code,
+            );
+            std::fs::write(&bin_path, script).expect("write fake-cosign");
+            let mut perms = std::fs::metadata(&bin_path).expect("stat").permissions();
+            perms.set_mode(0o755);
+            std::fs::set_permissions(&bin_path, perms).expect("chmod");
+            // SAFETY: serial.
+            unsafe {
+                std::env::set_var("CFGD_COSIGN_BIN", &bin_path);
+            }
+            Self { _tmp: tmp }
+        }
+    }
+
+    impl Drop for CosignShim {
+        fn drop(&mut self) {
+            // SAFETY: serial.
+            unsafe {
+                std::env::remove_var("CFGD_COSIGN_BIN");
+            }
+        }
+    }
+
+    /// Build a gzipped tar archive containing a single `cfgd` file with
+    /// `binary_content`. Returns the archive bytes.
+    fn build_tarball(binary_content: &[u8]) -> Vec<u8> {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let bin_path = dir.path().join("cfgd");
+        std::fs::write(&bin_path, binary_content).unwrap();
+        let mut perms = std::fs::metadata(&bin_path).unwrap().permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&bin_path, perms).unwrap();
+
+        let mut buf: Vec<u8> = Vec::new();
+        {
+            let enc = flate2::write::GzEncoder::new(&mut buf, flate2::Compression::default());
+            let mut tar_builder = tar::Builder::new(enc);
+            tar_builder
+                .append_path_with_name(&bin_path, "cfgd")
+                .unwrap();
+            tar_builder.finish().unwrap();
+        }
+        buf
+    }
+
+    /// Build a tarball that does NOT include the `cfgd` binary at the root —
+    /// used to exercise the "extracted archive does not contain 'cfgd'"
+    /// install-failure branch.
+    fn build_tarball_without_binary() -> Vec<u8> {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let other = dir.path().join("README");
+        std::fs::write(&other, b"not the binary").unwrap();
+        let mut buf: Vec<u8> = Vec::new();
+        {
+            let enc = flate2::write::GzEncoder::new(&mut buf, flate2::Compression::default());
+            let mut tar_builder = tar::Builder::new(enc);
+            tar_builder.append_path_with_name(&other, "README").unwrap();
+            tar_builder.finish().unwrap();
+        }
+        buf
+    }
+
+    /// Compose a `<sha>  <name>` checksums.txt body for one asset.
+    fn checksums_line(sha: &str, name: &str) -> String {
+        format!("{sha}  {name}\n")
+    }
+
+    /// Build a `ReleaseInfo` whose assets all point at the mockito server.
+    /// Returns the release plus the index of the primary `cfgd-...tar.gz`
+    /// asset within `release.assets`.
+    fn release_with_full_signature_chain(server_url: &str) -> ReleaseInfo {
+        ReleaseInfo {
+            tag: "v9.9.9".into(),
+            version: Version::new(9, 9, 9),
+            assets: vec![
+                ReleaseAsset {
+                    name: "cfgd-9.9.9-linux-x86_64.tar.gz".into(),
+                    download_url: format!("{server_url}/download/cfgd.tar.gz"),
+                    size: 0,
+                },
+                ReleaseAsset {
+                    name: "cfgd-9.9.9-checksums.txt".into(),
+                    download_url: format!("{server_url}/download/checksums.txt"),
+                    size: 0,
+                },
+                ReleaseAsset {
+                    name: "cfgd-9.9.9-checksums.txt.cosign.bundle".into(),
+                    download_url: format!("{server_url}/download/cosign.bundle"),
+                    size: 0,
+                },
+                ReleaseAsset {
+                    name: "cosign.pub".into(),
+                    download_url: format!("{server_url}/download/cosign.pub"),
+                    size: 0,
+                },
+            ],
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn happy_path_installs_extracted_binary_to_target() {
+        let _shim = CosignShim::install(0, "");
+
+        let binary_content = b"#!/bin/sh\necho fake cfgd binary\n";
+        let tarball = build_tarball(binary_content);
+        let sha = crate::sha256_hex(&tarball);
+        let asset_name = "cfgd-9.9.9-linux-x86_64.tar.gz";
+        let checksums = checksums_line(&sha, asset_name);
+
+        let mut server = mockito::Server::new();
+        let _m_archive = server
+            .mock("GET", "/download/cfgd.tar.gz")
+            .with_status(200)
+            .with_body(&tarball)
+            .create();
+        let _m_checksums = server
+            .mock("GET", "/download/checksums.txt")
+            .with_status(200)
+            .with_body(checksums)
+            .create();
+        let _m_bundle = server
+            .mock("GET", "/download/cosign.bundle")
+            .with_status(200)
+            .with_body("{}")
+            .create();
+        let _m_pubkey = server
+            .mock("GET", "/download/cosign.pub")
+            .with_status(200)
+            .with_body("dummy-key")
+            .create();
+
+        let release = release_with_full_signature_chain(&server.url());
+        let asset = release.assets[0].clone();
+
+        let target_dir = tempfile::tempdir().unwrap();
+        let target = target_dir.path().join("cfgd");
+        // Pre-create the target so atomic_replace's same-FS rename succeeds.
+        std::fs::write(&target, b"old binary").unwrap();
+
+        let installed =
+            download_and_install_to(&release, &asset, &target, None).expect("happy path → Ok");
+        assert_eq!(installed, target, "returned path matches install target");
+
+        let installed_bytes = std::fs::read(&target).unwrap();
+        assert_eq!(
+            installed_bytes, binary_content,
+            "target now holds the extracted binary content"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn returns_download_failed_when_archive_url_returns_5xx() {
+        let _shim = CosignShim::install(0, "");
+        let mut server = mockito::Server::new();
+        let _m = server
+            .mock("GET", "/download/cfgd.tar.gz")
+            .with_status(503)
+            .create();
+
+        let release = release_with_full_signature_chain(&server.url());
+        let asset = release.assets[0].clone();
+        let target_dir = tempfile::tempdir().unwrap();
+        let target = target_dir.path().join("cfgd");
+
+        let err = download_and_install_to(&release, &asset, &target, None)
+            .expect_err("5xx on archive → Err");
+        let msg = err.to_string();
+        assert!(
+            msg.to_ascii_lowercase().contains("download")
+                || msg.contains("503")
+                || msg.contains("status"),
+            "error mentions download failure: {msg}"
+        );
+        assert!(!target.exists(), "target must not be created on failure");
+    }
+
+    #[test]
+    #[serial]
+    fn returns_download_failed_when_checksums_url_returns_404() {
+        let _shim = CosignShim::install(0, "");
+        let tarball = build_tarball(b"binary");
+
+        let mut server = mockito::Server::new();
+        let _m_archive = server
+            .mock("GET", "/download/cfgd.tar.gz")
+            .with_status(200)
+            .with_body(&tarball)
+            .create();
+        let _m_checksums = server
+            .mock("GET", "/download/checksums.txt")
+            .with_status(404)
+            .create();
+
+        let release = release_with_full_signature_chain(&server.url());
+        let asset = release.assets[0].clone();
+        let target_dir = tempfile::tempdir().unwrap();
+        let target = target_dir.path().join("cfgd");
+
+        let err = download_and_install_to(&release, &asset, &target, None)
+            .expect_err("404 on checksums → Err");
+        let msg = err.to_string();
+        assert!(
+            msg.to_ascii_lowercase().contains("download") || msg.contains("404"),
+            "error mentions download failure for checksums: {msg}"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn propagates_cosign_failure_when_signature_verification_fails() {
+        let _shim = CosignShim::install(1, "tampered checksums file");
+        let tarball = build_tarball(b"binary");
+        let sha = crate::sha256_hex(&tarball);
+        let asset_name = "cfgd-9.9.9-linux-x86_64.tar.gz";
+        let checksums = checksums_line(&sha, asset_name);
+
+        let mut server = mockito::Server::new();
+        let _m_archive = server
+            .mock("GET", "/download/cfgd.tar.gz")
+            .with_status(200)
+            .with_body(&tarball)
+            .create();
+        let _m_checksums = server
+            .mock("GET", "/download/checksums.txt")
+            .with_status(200)
+            .with_body(checksums)
+            .create();
+        let _m_bundle = server
+            .mock("GET", "/download/cosign.bundle")
+            .with_status(200)
+            .with_body("{}")
+            .create();
+        let _m_pubkey = server
+            .mock("GET", "/download/cosign.pub")
+            .with_status(200)
+            .with_body("dummy-key")
+            .create();
+
+        let release = release_with_full_signature_chain(&server.url());
+        let asset = release.assets[0].clone();
+        let target_dir = tempfile::tempdir().unwrap();
+        let target = target_dir.path().join("cfgd");
+
+        let err = download_and_install_to(&release, &asset, &target, None)
+            .expect_err("cosign exit 1 → Err");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("cosign verify-blob failed") && msg.contains("tampered checksums file"),
+            "error surfaces cosign-verify failure with stderr message: {msg}"
+        );
+        assert!(!target.exists(), "target must not be created on failure");
+    }
+
+    #[test]
+    #[serial]
+    fn returns_checksum_mismatch_when_sha_differs_over_the_wire() {
+        let _shim = CosignShim::install(0, "");
+        let tarball = build_tarball(b"actual-binary");
+        // Compose checksums.txt with a *wrong* SHA so the on-disk SHA differs.
+        let asset_name = "cfgd-9.9.9-linux-x86_64.tar.gz";
+        let bogus_sha = "0".repeat(64);
+        let checksums = checksums_line(&bogus_sha, asset_name);
+
+        let mut server = mockito::Server::new();
+        let _m_archive = server
+            .mock("GET", "/download/cfgd.tar.gz")
+            .with_status(200)
+            .with_body(&tarball)
+            .create();
+        let _m_checksums = server
+            .mock("GET", "/download/checksums.txt")
+            .with_status(200)
+            .with_body(checksums)
+            .create();
+        let _m_bundle = server
+            .mock("GET", "/download/cosign.bundle")
+            .with_status(200)
+            .with_body("{}")
+            .create();
+        let _m_pubkey = server
+            .mock("GET", "/download/cosign.pub")
+            .with_status(200)
+            .with_body("dummy-key")
+            .create();
+
+        let release = release_with_full_signature_chain(&server.url());
+        let asset = release.assets[0].clone();
+        let target_dir = tempfile::tempdir().unwrap();
+        let target = target_dir.path().join("cfgd");
+
+        let err = download_and_install_to(&release, &asset, &target, None)
+            .expect_err("checksum mismatch → Err");
+        let msg = err.to_string();
+        assert!(
+            msg.to_ascii_lowercase().contains("checksum") && msg.contains(asset_name),
+            "error names asset and surfaces checksum mismatch: {msg}"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn returns_checksum_missing_when_release_has_no_checksums_asset() {
+        // No checksums asset → early-return without HTTP. cosign shim still
+        // installed for hygiene; not invoked.
+        let _shim = CosignShim::install(0, "");
+        let tarball = build_tarball(b"binary");
+
+        let mut server = mockito::Server::new();
+        let _m_archive = server
+            .mock("GET", "/download/cfgd.tar.gz")
+            .with_status(200)
+            .with_body(&tarball)
+            .create();
+
+        let release = ReleaseInfo {
+            tag: "v9.9.9".into(),
+            version: Version::new(9, 9, 9),
+            assets: vec![ReleaseAsset {
+                name: "cfgd-9.9.9-linux-x86_64.tar.gz".into(),
+                download_url: format!("{}/download/cfgd.tar.gz", server.url()),
+                size: 0,
+            }],
+        };
+        let asset = release.assets[0].clone();
+        let target_dir = tempfile::tempdir().unwrap();
+        let target = target_dir.path().join("cfgd");
+
+        let err = download_and_install_to(&release, &asset, &target, None)
+            .expect_err("no checksums asset → Err");
+        let msg = err.to_string();
+        assert!(
+            msg.to_ascii_lowercase().contains("missing") || msg.contains(&asset.name),
+            "error reports missing checksums for asset: {msg}"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn returns_install_failed_when_archive_lacks_cfgd_binary() {
+        let _shim = CosignShim::install(0, "");
+        let tarball = build_tarball_without_binary();
+        let sha = crate::sha256_hex(&tarball);
+        let asset_name = "cfgd-9.9.9-linux-x86_64.tar.gz";
+        let checksums = checksums_line(&sha, asset_name);
+
+        let mut server = mockito::Server::new();
+        let _m_archive = server
+            .mock("GET", "/download/cfgd.tar.gz")
+            .with_status(200)
+            .with_body(&tarball)
+            .create();
+        let _m_checksums = server
+            .mock("GET", "/download/checksums.txt")
+            .with_status(200)
+            .with_body(checksums)
+            .create();
+        let _m_bundle = server
+            .mock("GET", "/download/cosign.bundle")
+            .with_status(200)
+            .with_body("{}")
+            .create();
+        let _m_pubkey = server
+            .mock("GET", "/download/cosign.pub")
+            .with_status(200)
+            .with_body("dummy-key")
+            .create();
+
+        let release = release_with_full_signature_chain(&server.url());
+        let asset = release.assets[0].clone();
+        let target_dir = tempfile::tempdir().unwrap();
+        let target = target_dir.path().join("cfgd");
+
+        let err = download_and_install_to(&release, &asset, &target, None)
+            .expect_err("missing cfgd in tar → Err");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("does not contain") && msg.contains("cfgd"),
+            "error reports missing cfgd binary in extracted archive: {msg}"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn returns_checksum_missing_when_asset_not_listed_in_checksums_body() {
+        // checksums.txt names a *different* asset; the SHA for our archive
+        // is therefore not in the parsed map → ChecksumMissing.
+        let _shim = CosignShim::install(0, "");
+        let tarball = build_tarball(b"binary");
+        let sha = crate::sha256_hex(&tarball);
+        let checksums = checksums_line(&sha, "some-other-asset.tar.gz");
+
+        let mut server = mockito::Server::new();
+        let _m_archive = server
+            .mock("GET", "/download/cfgd.tar.gz")
+            .with_status(200)
+            .with_body(&tarball)
+            .create();
+        let _m_checksums = server
+            .mock("GET", "/download/checksums.txt")
+            .with_status(200)
+            .with_body(checksums)
+            .create();
+        let _m_bundle = server
+            .mock("GET", "/download/cosign.bundle")
+            .with_status(200)
+            .with_body("{}")
+            .create();
+        let _m_pubkey = server
+            .mock("GET", "/download/cosign.pub")
+            .with_status(200)
+            .with_body("dummy-key")
+            .create();
+
+        let release = release_with_full_signature_chain(&server.url());
+        let asset = release.assets[0].clone();
+        let target_dir = tempfile::tempdir().unwrap();
+        let target = target_dir.path().join("cfgd");
+
+        let err = download_and_install_to(&release, &asset, &target, None)
+            .expect_err("asset name not in checksums → Err");
+        let msg = err.to_string();
+        assert!(
+            msg.contains(&asset.name) && msg.contains("not listed"),
+            "error names the asset whose checksum entry is missing: {msg}"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn skips_cosign_verification_when_release_has_no_bundle_asset() {
+        // Release lacks cosign.bundle → verify_cosign_bundle returns Ok(false)
+        // and the install proceeds with SHA256-only verification. Demonstrates
+        // the documented graceful-degradation contract.
+        let _shim = CosignShim::install(99, "should not be invoked");
+        let binary_content = b"binary";
+        let tarball = build_tarball(binary_content);
+        let sha = crate::sha256_hex(&tarball);
+        let asset_name = "cfgd-9.9.9-linux-x86_64.tar.gz";
+        let checksums = checksums_line(&sha, asset_name);
+
+        let mut server = mockito::Server::new();
+        let _m_archive = server
+            .mock("GET", "/download/cfgd.tar.gz")
+            .with_status(200)
+            .with_body(&tarball)
+            .create();
+        let _m_checksums = server
+            .mock("GET", "/download/checksums.txt")
+            .with_status(200)
+            .with_body(checksums)
+            .create();
+
+        let release = ReleaseInfo {
+            tag: "v9.9.9".into(),
+            version: Version::new(9, 9, 9),
+            assets: vec![
+                ReleaseAsset {
+                    name: asset_name.into(),
+                    download_url: format!("{}/download/cfgd.tar.gz", server.url()),
+                    size: 0,
+                },
+                ReleaseAsset {
+                    name: "cfgd-9.9.9-checksums.txt".into(),
+                    download_url: format!("{}/download/checksums.txt", server.url()),
+                    size: 0,
+                },
+            ],
+        };
+        let asset = release.assets[0].clone();
+        let target_dir = tempfile::tempdir().unwrap();
+        let target = target_dir.path().join("cfgd");
+
+        let installed = download_and_install_to(&release, &asset, &target, None)
+            .expect("no cosign bundle → SHA-only install should succeed");
+        assert_eq!(installed, target);
+        assert_eq!(std::fs::read(&target).unwrap(), binary_content);
+    }
+}

@@ -413,7 +413,8 @@ fn verify_archive_checksum(
     Ok(())
 }
 
-/// Download, verify checksum, extract, and atomically install the new binary.
+/// Download, verify checksum, extract, and atomically install the new binary
+/// over the running executable.
 ///
 /// Returns the path to the newly installed binary.
 pub fn download_and_install(
@@ -424,7 +425,19 @@ pub fn download_and_install(
     let current_exe = std::env::current_exe().map_err(|e| UpgradeError::InstallFailed {
         message: format!("cannot determine current binary path: {}", e),
     })?;
+    download_and_install_to(release, asset, &current_exe, printer)
+}
 
+/// Same as [`download_and_install`], but installs over `target` instead of
+/// `current_exe()`. Crate-internal so tests can drive the full HTTP +
+/// cosign + checksum + extract flow against a tempdir without overwriting
+/// the running test binary.
+pub(crate) fn download_and_install_to(
+    release: &ReleaseInfo,
+    asset: &ReleaseAsset,
+    target: &Path,
+    printer: Option<&Printer>,
+) -> Result<PathBuf> {
     // Create temp directory for download
     let tmp_dir = tempfile::tempdir().map_err(|e| UpgradeError::DownloadFailed {
         message: format!("create temp dir: {}", e),
@@ -504,10 +517,9 @@ pub fn download_and_install(
 
     // Install new binary over old.
     // Unix: atomic rename via tempfile. Windows: rename-dance (can't overwrite running exe).
-    let target = &current_exe;
     atomic_replace(&new_binary, target)?;
 
-    Ok(target.clone())
+    Ok(target.to_path_buf())
 }
 
 /// Atomically replace `target` with `source`.
