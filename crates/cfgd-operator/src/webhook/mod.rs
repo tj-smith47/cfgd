@@ -60,30 +60,7 @@ pub async fn run_webhook_server(
 
     let acceptor = TlsAcceptor::from(Arc::new(tls_config));
 
-    // 1 MiB cap on AdmissionReview request bodies. Typical reviews are a few KiB;
-    // the kube-apiserver enforces a ~3 MiB server-side cap, but we bound it
-    // tighter at the webhook to shed DoS load before we spend CPU on JSON.
-    const WEBHOOK_MAX_BODY_BYTES: usize = 1024 * 1024;
-
-    let app = Router::new()
-        .route(
-            "/validate-machineconfig",
-            post(handle_validate_machine_config),
-        )
-        .route(
-            "/validate-configpolicy",
-            post(handle_validate_config_policy),
-        )
-        .route(
-            "/validate-clusterconfigpolicy",
-            post(handle_validate_cluster_config_policy),
-        )
-        .route("/validate-driftalert", post(handle_validate_drift_alert))
-        .route("/validate-module", post(handle_validate_module))
-        .route("/mutate-pods", post(handle_mutate_pods))
-        .route("/healthz", axum::routing::get(liveness_ok))
-        .layer(DefaultBodyLimit::max(WEBHOOK_MAX_BODY_BYTES))
-        .with_state(WebhookState { metrics, client });
+    let app = build_webhook_router(WebhookState { metrics, client });
 
     let addr: std::net::SocketAddr = ([0, 0, 0, 0], port).into();
     let listener = TcpListener::bind(addr)
@@ -134,6 +111,35 @@ pub async fn run_webhook_server(
             }
         });
     }
+}
+
+// 1 MiB cap on AdmissionReview request bodies. Typical reviews are a few KiB;
+// the kube-apiserver enforces a ~3 MiB server-side cap, but we bound it
+// tighter at the webhook to shed DoS load before we spend CPU on JSON.
+const WEBHOOK_MAX_BODY_BYTES: usize = 1024 * 1024;
+
+/// Build the webhook Router with the same middleware stack the production
+/// `run_webhook_server` uses. Tests drive this via `Router::oneshot`.
+fn build_webhook_router(state: WebhookState) -> Router {
+    Router::new()
+        .route(
+            "/validate-machineconfig",
+            post(handle_validate_machine_config),
+        )
+        .route(
+            "/validate-configpolicy",
+            post(handle_validate_config_policy),
+        )
+        .route(
+            "/validate-clusterconfigpolicy",
+            post(handle_validate_cluster_config_policy),
+        )
+        .route("/validate-driftalert", post(handle_validate_drift_alert))
+        .route("/validate-module", post(handle_validate_module))
+        .route("/mutate-pods", post(handle_mutate_pods))
+        .route("/healthz", axum::routing::get(liveness_ok))
+        .layer(DefaultBodyLimit::max(WEBHOOK_MAX_BODY_BYTES))
+        .with_state(state)
 }
 
 // ---------------------------------------------------------------------------
@@ -812,4 +818,8 @@ async fn handle_mutate_pods(
 }
 
 #[cfg(test)]
+mod test_router;
+#[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_router;
