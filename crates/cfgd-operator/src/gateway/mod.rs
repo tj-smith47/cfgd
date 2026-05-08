@@ -4,6 +4,9 @@ pub mod errors;
 pub mod fleet;
 pub mod web;
 
+#[cfg(test)]
+pub(crate) mod test_state;
+
 use std::net::SocketAddr;
 
 use axum::extract::DefaultBodyLimit;

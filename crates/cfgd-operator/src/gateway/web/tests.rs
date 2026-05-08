@@ -6,26 +6,7 @@ use axum::middleware;
 use axum::routing::get;
 use tower::ServiceExt;
 
-use super::super::api::{AppState, EnrollmentMethod, WebSessions};
-use super::super::db::ServerDb;
-
-fn test_state() -> (SharedState, tempfile::TempDir) {
-    let tmp = tempfile::tempdir().expect("tempdir");
-    let path = tmp.path().join("test.db");
-    let db = ServerDb::open(path.to_str().expect("utf8")).expect("open db");
-    let (event_tx, _) = tokio::sync::broadcast::channel(16);
-    (
-        AppState {
-            db,
-            kube_client: None,
-            event_tx,
-            enrollment_method: EnrollmentMethod::Token,
-            metrics: None,
-            web_sessions: WebSessions::new(),
-        },
-        tmp,
-    )
-}
+use crate::gateway::test_state::test_state;
 
 // --- status_to_class ---
 

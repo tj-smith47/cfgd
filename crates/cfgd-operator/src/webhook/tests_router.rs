@@ -343,6 +343,124 @@ async fn validate_machineconfig_delete_operation_without_object_is_allowed() {
 // validate-module — happy path (no kube list needed when no policies)
 // -----------------------------------------------------------------------
 
+// -----------------------------------------------------------------------
+// mutate-pods
+// -----------------------------------------------------------------------
+
+fn pod_admission_review(pod_object: serde_json::Value) -> Vec<u8> {
+    serde_json::to_vec(&serde_json::json!({
+        "apiVersion": "admission.k8s.io/v1",
+        "kind": "AdmissionReview",
+        "request": {
+            "uid": "pod-uid",
+            "kind": {"group": "", "version": "v1", "kind": "Pod"},
+            "resource": {"group": "", "version": "v1", "resource": "pods"},
+            "operation": "CREATE",
+            "namespace": "test-ns",
+            "userInfo": {"username": "test"},
+            "object": pod_object,
+        }
+    }))
+    .unwrap()
+}
+
+#[tokio::test]
+async fn mutate_pods_with_no_annotations_or_policy_passes_through_unchanged() {
+    let (router, metrics) = test_webhook_router();
+
+    let pod = serde_json::json!({
+        "apiVersion": "v1",
+        "kind": "Pod",
+        "metadata": {"name": "no-mods", "namespace": "test-ns"},
+        "spec": {
+            "containers": [{"name": "main", "image": "alpine:latest"}],
+        }
+    });
+
+    let response = router
+        .oneshot(post("/mutate-pods", pod_admission_review(pod)))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let review = parse_response(response).await;
+    let resp = review.response.expect("response present");
+    assert!(resp.allowed, "pod with no modules must be allowed");
+    assert!(resp.patch.is_none(), "no-modules pod must produce no patch");
+
+    let allowed = metrics
+        .webhook_requests_total
+        .get_or_create(&WebhookLabels {
+            operation: "mutate_pods".to_string(),
+            result: "allowed".to_string(),
+        })
+        .get();
+    assert_eq!(allowed, 1);
+}
+
+#[tokio::test]
+async fn mutate_pods_with_delete_operation_skips_object_processing() {
+    let (router, _metrics) = test_webhook_router();
+    // DELETE has no object; the handler returns AdmissionResponse::from(&req)
+    // immediately (allowed).
+    let body = serde_json::to_vec(&serde_json::json!({
+        "apiVersion": "admission.k8s.io/v1",
+        "kind": "AdmissionReview",
+        "request": {
+            "uid": "delete-pod",
+            "kind": {"group": "", "version": "v1", "kind": "Pod"},
+            "resource": {"group": "", "version": "v1", "resource": "pods"},
+            "operation": "DELETE",
+            "namespace": "test-ns",
+            "userInfo": {"username": "test"},
+        }
+    }))
+    .unwrap();
+
+    let response = router.oneshot(post("/mutate-pods", body)).await.unwrap();
+    let review = parse_response(response).await;
+    assert!(review.response.unwrap().allowed);
+}
+
+#[tokio::test]
+async fn mutate_pods_with_garbage_body_records_error_metric() {
+    let (router, _metrics) = test_webhook_router();
+    let response = router
+        .oneshot(post("/mutate-pods", b"\x00garbage\xff".to_vec()))
+        .await
+        .unwrap();
+    // Json extractor rejects it → 4xx.
+    assert!(response.status().is_client_error());
+}
+
+#[tokio::test]
+async fn mutate_pods_with_default_namespace_when_request_namespace_missing() {
+    let (router, _metrics) = test_webhook_router();
+    // No `namespace` in request — handler uses "default" fallback.
+    let body = serde_json::to_vec(&serde_json::json!({
+        "apiVersion": "admission.k8s.io/v1",
+        "kind": "AdmissionReview",
+        "request": {
+            "uid": "no-ns-pod",
+            "kind": {"group": "", "version": "v1", "kind": "Pod"},
+            "resource": {"group": "", "version": "v1", "resource": "pods"},
+            "operation": "CREATE",
+            "userInfo": {"username": "test"},
+            "object": {
+                "apiVersion": "v1",
+                "kind": "Pod",
+                "metadata": {"name": "no-ns"},
+                "spec": {"containers": [{"name": "main", "image": "alpine"}]},
+            }
+        }
+    }))
+    .unwrap();
+
+    let response = router.oneshot(post("/mutate-pods", body)).await.unwrap();
+    let review = parse_response(response).await;
+    assert!(review.response.unwrap().allowed);
+}
+
 #[tokio::test]
 async fn validate_module_returns_response_with_uid_matching_request() {
     // Hits handle_validate_module, including the conversion +
