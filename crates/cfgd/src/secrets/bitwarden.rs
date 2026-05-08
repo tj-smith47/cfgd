@@ -2,11 +2,13 @@
 
 use secrecy::SecretString;
 
-use cfgd_core::command_available;
 use cfgd_core::errors::Result;
 use cfgd_core::providers::SecretProvider;
+use cfgd_core::{command_available_with_seam, tool_cmd};
 
 use super::run_provider_cmd;
+
+const BW_BIN_ENV: &str = "CFGD_BW_BIN";
 
 pub struct BitwardenProvider;
 
@@ -16,7 +18,7 @@ impl SecretProvider for BitwardenProvider {
     }
 
     fn is_available(&self) -> bool {
-        command_available("bw")
+        command_available_with_seam(BW_BIN_ENV, "bw")
     }
 
     fn resolve(&self, reference: &str) -> Result<SecretString> {
@@ -30,7 +32,7 @@ impl SecretProvider for BitwardenProvider {
         };
 
         run_provider_cmd(
-            std::process::Command::new("bw")
+            tool_cmd(BW_BIN_ENV, "bw")
                 .arg("get")
                 .arg("password")
                 .arg("--")

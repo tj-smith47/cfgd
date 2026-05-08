@@ -2,11 +2,13 @@
 
 use secrecy::SecretString;
 
-use cfgd_core::command_available;
 use cfgd_core::errors::Result;
 use cfgd_core::providers::SecretProvider;
+use cfgd_core::{command_available_with_seam, tool_cmd};
 
 use super::run_provider_cmd;
+
+const OP_BIN_ENV: &str = "CFGD_OP_BIN";
 
 pub struct OnePasswordProvider;
 
@@ -16,7 +18,7 @@ impl SecretProvider for OnePasswordProvider {
     }
 
     fn is_available(&self) -> bool {
-        command_available("op")
+        command_available_with_seam(OP_BIN_ENV, "op")
     }
 
     fn resolve(&self, reference: &str) -> Result<SecretString> {
@@ -28,7 +30,7 @@ impl SecretProvider for OnePasswordProvider {
         };
 
         run_provider_cmd(
-            std::process::Command::new("op")
+            tool_cmd(OP_BIN_ENV, "op")
                 .arg("read")
                 .arg("--")
                 .arg(&op_ref),

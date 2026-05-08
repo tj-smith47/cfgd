@@ -1484,3 +1484,207 @@ mod sops_shim {
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// SecretProvider backends — vault / 1password / lastpass / bitwarden — driven
+// through the same generic ToolShim. Each test pins the resolve() argv shape
+// (reference parsing → tool args), the success path (stdout → SecretString),
+// and the failure path (stderr → UnresolvableRef).
+// ---------------------------------------------------------------------------
+
+#[cfg(unix)]
+mod provider_shim {
+    use super::*;
+    use cfgd_core::test_helpers::ToolShim;
+    use secrecy::ExposeSecret;
+    use serial_test::serial;
+
+    // --- VaultProvider ---
+
+    #[test]
+    #[serial]
+    fn vault_resolve_with_field_uses_dash_field_form_and_path_terminator() {
+        let shim = ToolShim::install("CFGD_VAULT_BIN", 0, "secret-payload\n", "");
+        let secret = VaultProvider
+            .resolve("secret/db/creds#password")
+            .expect("happy path → Ok");
+        assert_eq!(
+            secret.expose_secret(),
+            "secret-payload",
+            "stdout (trimmed) → SecretString"
+        );
+
+        let argv = shim.argv_log();
+        assert!(
+            argv.contains("kv get"),
+            "argv must include `kv get`: {argv}"
+        );
+        assert!(
+            argv.contains("-field=password"),
+            "field after # must reach vault as -field=<field>: {argv}"
+        );
+        assert!(
+            argv.contains(" -- secret/db/creds"),
+            "`--` must terminate flags before path: {argv}"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn vault_resolve_without_field_defaults_to_field_value() {
+        let shim = ToolShim::install("CFGD_VAULT_BIN", 0, "x", "");
+        VaultProvider.resolve("secret/db/creds").expect("Ok");
+        let argv = shim.argv_log();
+        assert!(
+            argv.contains("-field=value"),
+            "no `#field` → defaults to -field=value: {argv}"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn vault_resolve_propagates_failure_with_stderr_in_unresolvable_ref() {
+        let _shim = ToolShim::install("CFGD_VAULT_BIN", 1, "", "permission denied");
+        let err = VaultProvider
+            .resolve("secret/locked#password")
+            .expect_err("non-zero → Err");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("permission denied"),
+            "stderr must surface in error: {msg}"
+        );
+        assert!(
+            msg.contains("secret/locked#password"),
+            "reference must surface in error: {msg}"
+        );
+    }
+
+    // --- OnePasswordProvider ---
+
+    #[test]
+    #[serial]
+    fn op_resolve_prepends_op_scheme_when_missing() {
+        let shim = ToolShim::install("CFGD_OP_BIN", 0, "topsecret", "");
+        OnePasswordProvider
+            .resolve("Personal/Login/password")
+            .expect("Ok");
+        let argv = shim.argv_log();
+        assert!(argv.contains("read"), "argv must use op `read`: {argv}");
+        assert!(
+            argv.contains("op://Personal/Login/password"),
+            "scheme prefix must be added when missing: {argv}"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn op_resolve_passes_through_op_scheme_unchanged() {
+        let shim = ToolShim::install("CFGD_OP_BIN", 0, "x", "");
+        OnePasswordProvider
+            .resolve("op://Vault/Item/Section/Field")
+            .expect("Ok");
+        let argv = shim.argv_log();
+        // No double prefix (`op://op://...`) — explicit-scheme refs round-trip.
+        assert!(
+            !argv.contains("op://op://"),
+            "must not double-prefix the scheme: {argv}"
+        );
+        assert!(
+            argv.contains("op://Vault/Item/Section/Field"),
+            "explicit scheme passes through verbatim: {argv}"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn op_resolve_returns_stdout_through_secret_string() {
+        let _shim = ToolShim::install("CFGD_OP_BIN", 0, "topsecret", "");
+        let secret = OnePasswordProvider
+            .resolve("op://Vault/Item/password")
+            .expect("Ok");
+        assert_eq!(secret.expose_secret(), "topsecret", "stdout → SecretString");
+    }
+
+    // --- LastPassProvider ---
+
+    #[test]
+    #[serial]
+    fn lpass_resolve_with_field_uses_field_flag() {
+        let shim = ToolShim::install("CFGD_LPASS_BIN", 0, "v", "");
+        LastPassProvider
+            .resolve("Folder/MyItem/username")
+            .expect("Ok");
+        let argv = shim.argv_log();
+        assert!(argv.contains("show"), "argv must use lpass `show`: {argv}");
+        assert!(
+            argv.contains("--field=username"),
+            "trailing /<field> reaches lpass as --field=<field>: {argv}"
+        );
+        assert!(
+            argv.contains(" -- Folder/MyItem"),
+            "item name after final / removed: {argv}"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn lpass_resolve_without_field_uses_password_flag() {
+        let shim = ToolShim::install("CFGD_LPASS_BIN", 0, "p", "");
+        LastPassProvider.resolve("LonelyItem").expect("Ok");
+        let argv = shim.argv_log();
+        assert!(
+            argv.contains("--password"),
+            "single-segment ref → --password flag: {argv}"
+        );
+        assert!(
+            !argv.contains("--field"),
+            "single-segment ref must NOT add --field: {argv}"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn lpass_resolve_propagates_stderr_in_error_message() {
+        let _shim = ToolShim::install("CFGD_LPASS_BIN", 1, "", "not logged in");
+        let err = LastPassProvider
+            .resolve("Folder/Item/password")
+            .expect_err("non-zero → Err");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("not logged in"),
+            "stderr surfaces in error: {msg}"
+        );
+    }
+
+    // --- BitwardenProvider ---
+
+    #[test]
+    #[serial]
+    fn bw_resolve_extracts_item_name_from_folder_slash_item() {
+        let shim = ToolShim::install("CFGD_BW_BIN", 0, "bw-secret", "");
+        let secret = BitwardenProvider.resolve("Personal/MyLogin").expect("Ok");
+        assert_eq!(secret.expose_secret(), "bw-secret", "stdout → SecretString");
+
+        let argv = shim.argv_log();
+        assert!(
+            argv.contains("get password"),
+            "argv must request password via `get password`: {argv}"
+        );
+        assert!(
+            argv.contains(" -- MyLogin"),
+            "second / segment is the item name passed verbatim: {argv}"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn bw_resolve_uses_full_reference_when_no_slash() {
+        let shim = ToolShim::install("CFGD_BW_BIN", 0, "x", "");
+        BitwardenProvider.resolve("BareItem").expect("Ok");
+        let argv = shim.argv_log();
+        assert!(
+            argv.contains(" -- BareItem"),
+            "no `/` → whole reference is the item name: {argv}"
+        );
+    }
+}

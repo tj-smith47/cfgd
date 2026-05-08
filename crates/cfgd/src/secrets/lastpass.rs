@@ -2,11 +2,13 @@
 
 use secrecy::SecretString;
 
-use cfgd_core::command_available;
 use cfgd_core::errors::Result;
 use cfgd_core::providers::SecretProvider;
+use cfgd_core::{command_available_with_seam, tool_cmd};
 
 use super::run_provider_cmd;
+
+const LPASS_BIN_ENV: &str = "CFGD_LPASS_BIN";
 
 pub struct LastPassProvider;
 
@@ -16,7 +18,7 @@ impl SecretProvider for LastPassProvider {
     }
 
     fn is_available(&self) -> bool {
-        command_available("lpass")
+        command_available_with_seam(LPASS_BIN_ENV, "lpass")
     }
 
     fn resolve(&self, reference: &str) -> Result<SecretString> {
@@ -29,7 +31,7 @@ impl SecretProvider for LastPassProvider {
             (reference, None)
         };
 
-        let mut cmd = std::process::Command::new("lpass");
+        let mut cmd = tool_cmd(LPASS_BIN_ENV, "lpass");
         cmd.arg("show");
         if let Some(field) = field {
             // Equals-form so a user-supplied `field` can't be interpreted as
