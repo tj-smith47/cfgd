@@ -716,14 +716,18 @@ fn run_pkg_cmd_command_not_found_maps_to_command_failed() {
 }
 
 #[test]
+#[serial_test::serial]
 fn brew_available_returns_bool() {
-    // Exercises brew_available() production function
+    // Exercises brew_available() production function. Serial-gated because
+    // brew_shim tests in packages::brew::tests mutate CFGD_BREW_BIN.
     let _available = brew_available();
     // Just verifying it runs without panic
 }
 
 #[test]
+#[serial_test::serial]
 fn brew_cmd_returns_valid_command() {
+    // Serial-gated for the same CFGD_BREW_BIN race.
     let cmd = brew_cmd();
     let prog = format!("{:?}", cmd.get_program());
     // Should be "brew", the linuxbrew path, or "sudo" (when root + linuxbrew)

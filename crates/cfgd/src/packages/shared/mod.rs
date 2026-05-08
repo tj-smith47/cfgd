@@ -240,8 +240,18 @@ pub(super) fn run_pkg_cmd_live(
 
 const LINUXBREW_PATH: &str = "/home/linuxbrew/.linuxbrew/bin/brew";
 
+/// Env-var seam for the `brew` binary path. Production reads no env var.
+/// Tests set this to a `cfgd_core::test_helpers::ToolShim` script path,
+/// short-circuiting the linuxbrew detection logic so install/uninstall/etc
+/// flows can be exercised without a real Homebrew installation.
+const BREW_BIN_ENV: &str = "CFGD_BREW_BIN";
+
 /// Check if brew is available, including linuxbrew fallback on Linux.
+/// Honors `CFGD_BREW_BIN` for tests.
 pub(super) fn brew_available() -> bool {
+    if std::env::var(BREW_BIN_ENV).is_ok_and(|v| std::path::Path::new(&v).is_file()) {
+        return true;
+    }
     if command_available("brew") {
         return true;
     }
@@ -320,7 +330,14 @@ pub(super) fn brew_path() -> Option<&'static str> {
 /// On Linux as root, detects the owner of the brew installation and runs via
 /// `sudo -u <owner>` since brew refuses to run as root.
 /// On Linux as non-root, uses LINUXBREW_PATH directly if brew is not in PATH.
+///
+/// Honors `CFGD_BREW_BIN` for tests: when set, short-circuits all detection
+/// and runs the shim directly. The shim is responsible for any sudo / PATH
+/// setup the test cares about.
 pub(super) fn brew_cmd() -> Command {
+    if let Ok(custom) = std::env::var(BREW_BIN_ENV) {
+        return Command::new(custom);
+    }
     if cfg!(target_os = "linux") && std::path::Path::new(LINUXBREW_PATH).exists() {
         if cfgd_core::is_root() {
             if let Some(owner) = brew_owner() {

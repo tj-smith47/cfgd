@@ -351,3 +351,241 @@ fn parse_brew_info_version_errors_attribute_correct_manager() {
         "error must attribute to brew-cask manager, got: {msg}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// PackageManager-impl tests via the CFGD_BREW_BIN ToolShim. Drive every
+// install / uninstall / update / list / available_version branch without a
+// real Homebrew install on the runner.
+// ---------------------------------------------------------------------------
+
+#[cfg(unix)]
+mod brew_shim {
+    use super::*;
+    use cfgd_core::output::Printer;
+    use cfgd_core::providers::PackageManager;
+    use cfgd_core::test_helpers::ToolShim;
+    use serial_test::serial;
+
+    fn shim_install(stdout: &str, stderr: &str, exit: i32) -> ToolShim {
+        ToolShim::install("CFGD_BREW_BIN", exit, stdout, stderr)
+    }
+
+    fn printer() -> Printer {
+        let (p, _buf) = Printer::for_test();
+        p
+    }
+
+    // --- BrewManager (formulae) ---
+
+    #[test]
+    #[serial]
+    fn brew_install_passes_install_subcommand_with_each_package() {
+        let shim = shim_install("", "", 0);
+        let p = printer();
+        BrewManager
+            .install(&["git".into(), "vim".into()], &p)
+            .expect("install Ok");
+        let argv = shim.argv_log();
+        assert!(
+            argv.contains("install git vim"),
+            "argv must include install + packages: {argv}"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn brew_install_skips_command_when_package_list_empty() {
+        let shim = shim_install("", "", 0);
+        let p = printer();
+        BrewManager.install(&[], &p).expect("empty install Ok");
+        assert_eq!(
+            shim.invocation_count(),
+            0,
+            "empty package list must not spawn brew at all"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn brew_uninstall_passes_uninstall_subcommand_with_each_package() {
+        let shim = shim_install("", "", 0);
+        let p = printer();
+        BrewManager
+            .uninstall(&["git".into()], &p)
+            .expect("uninstall Ok");
+        assert!(shim.argv_log().contains("uninstall git"));
+    }
+
+    #[test]
+    #[serial]
+    fn brew_uninstall_skips_command_when_package_list_empty() {
+        let shim = shim_install("", "", 0);
+        let p = printer();
+        BrewManager.uninstall(&[], &p).expect("empty uninstall Ok");
+        assert_eq!(shim.invocation_count(), 0);
+    }
+
+    #[test]
+    #[serial]
+    fn brew_update_runs_update_subcommand() {
+        let shim = shim_install("", "", 0);
+        let p = printer();
+        BrewManager.update(&p).expect("update Ok");
+        assert!(shim.argv_log().contains("update"));
+    }
+
+    #[test]
+    #[serial]
+    fn brew_install_translates_nonzero_exit_into_install_failed() {
+        let _shim = shim_install("", "Error: package not found", 1);
+        let p = printer();
+        let err = BrewManager
+            .install(&["nonexistent".into()], &p)
+            .expect_err("non-zero → Err");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("brew") && msg.contains("install"),
+            "error must be tagged as a brew install failure: {msg}"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn brew_installed_packages_parses_newline_list_into_set() {
+        let _shim = shim_install("git\nvim\n\nripgrep\n", "", 0);
+        let installed = BrewManager
+            .installed_packages()
+            .expect("installed_packages Ok");
+        assert_eq!(installed.len(), 3, "3 non-empty lines: {:?}", installed);
+        assert!(installed.contains("git"));
+        assert!(installed.contains("vim"));
+        assert!(installed.contains("ripgrep"));
+    }
+
+    #[test]
+    #[serial]
+    fn brew_available_version_extracts_stable_from_json_pointer() {
+        let json = r#"{"formulae":[{"versions":{"stable":"2.40.1"}}]}"#;
+        let _shim = shim_install(json, "", 0);
+        let v = BrewManager
+            .available_version("git")
+            .expect("available_version Ok");
+        assert_eq!(v.as_deref(), Some("2.40.1"));
+    }
+
+    #[test]
+    #[serial]
+    fn brew_available_version_returns_none_on_nonzero_exit() {
+        let _shim = shim_install("", "no such formula", 1);
+        let v = BrewManager
+            .available_version("nonexistent")
+            .expect("non-zero exit returns Ok(None), not Err");
+        assert_eq!(v, None);
+    }
+
+    #[test]
+    #[serial]
+    fn brew_installed_packages_with_versions_uses_last_token_as_version() {
+        // brew list --versions output: "name v1 v2" → version = last token.
+        let _shim = shim_install("git 2.40.1\nvim 9.0.1234\n", "", 0);
+        let pkgs = BrewManager.installed_packages_with_versions().expect("Ok");
+        let git = pkgs.iter().find(|p| p.name == "git").expect("git present");
+        assert_eq!(git.version, "2.40.1");
+    }
+
+    // --- BrewTapManager ---
+
+    #[test]
+    #[serial]
+    fn brew_tap_install_runs_one_tap_subcommand_per_entry() {
+        let shim = shim_install("", "", 0);
+        let p = printer();
+        BrewTapManager
+            .install(&["org/foo".into(), "org/bar".into()], &p)
+            .expect("Ok");
+        assert_eq!(shim.invocation_count(), 2, "one brew invocation per tap");
+        let argv = shim.argv_log();
+        assert!(argv.contains("tap org/foo"));
+        assert!(argv.contains("tap org/bar"));
+    }
+
+    #[test]
+    #[serial]
+    fn brew_tap_uninstall_runs_one_untap_subcommand_per_entry() {
+        let shim = shim_install("", "", 0);
+        let p = printer();
+        BrewTapManager
+            .uninstall(&["org/foo".into()], &p)
+            .expect("Ok");
+        assert!(shim.argv_log().contains("untap org/foo"));
+    }
+
+    #[test]
+    #[serial]
+    fn brew_tap_update_is_noop_no_command_spawned() {
+        let shim = shim_install("", "", 0);
+        let p = printer();
+        BrewTapManager.update(&p).expect("Ok");
+        assert_eq!(
+            shim.invocation_count(),
+            0,
+            "tap update is documented no-op (taps are repos, not versioned packages)"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn brew_tap_available_version_always_returns_none() {
+        let shim = shim_install("", "", 0);
+        let v = BrewTapManager.available_version("anything").expect("Ok");
+        assert_eq!(v, None, "taps don't have versions");
+        assert_eq!(
+            shim.invocation_count(),
+            0,
+            "available_version on a tap must not spawn brew"
+        );
+    }
+
+    // --- BrewCaskManager ---
+
+    #[test]
+    #[serial]
+    fn brew_cask_install_passes_cask_flag_with_packages() {
+        let shim = shim_install("", "", 0);
+        let p = printer();
+        BrewCaskManager
+            .install(&["firefox".into(), "vlc".into()], &p)
+            .expect("Ok");
+        let argv = shim.argv_log();
+        assert!(argv.contains("install --cask firefox vlc"), "argv: {argv}");
+    }
+
+    #[test]
+    #[serial]
+    fn brew_cask_uninstall_passes_cask_flag_with_packages() {
+        let shim = shim_install("", "", 0);
+        let p = printer();
+        BrewCaskManager
+            .uninstall(&["firefox".into()], &p)
+            .expect("Ok");
+        assert!(shim.argv_log().contains("uninstall --cask firefox"));
+    }
+
+    #[test]
+    #[serial]
+    fn brew_cask_install_skips_command_when_empty() {
+        let shim = shim_install("", "", 0);
+        let p = printer();
+        BrewCaskManager.install(&[], &p).expect("Ok");
+        assert_eq!(shim.invocation_count(), 0);
+    }
+
+    #[test]
+    #[serial]
+    fn brew_cask_available_version_extracts_from_casks_json_pointer() {
+        let json = r#"{"casks":[{"version":"117.0.1"}]}"#;
+        let _shim = shim_install(json, "", 0);
+        let v = BrewCaskManager.available_version("firefox").expect("Ok");
+        assert_eq!(v.as_deref(), Some("117.0.1"));
+    }
+}
