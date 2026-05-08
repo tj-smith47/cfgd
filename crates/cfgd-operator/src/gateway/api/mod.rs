@@ -539,4 +539,6 @@ use user_keys::*;
 #[cfg(test)]
 mod tests;
 #[cfg(test)]
+mod tests_drift;
+#[cfg(test)]
 mod tests_router;

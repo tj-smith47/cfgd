@@ -33,7 +33,7 @@ use crate::metrics::Metrics;
 /// [`ExpectedCall::patch`], [`ExpectedCall::patch_status`],
 /// [`ExpectedCall::delete`], or [`ExpectedCall::post`], then customized
 /// with `.returning_*` / `.with_status` / `.expecting_query`.
-pub(super) struct ExpectedCall {
+pub(crate) struct ExpectedCall {
     method: Method,
     /// Exact match on the URI path component (no query string, no scheme).
     path: String,
@@ -150,7 +150,7 @@ impl ExpectedCall {
 
 /// One captured request from the driver loop, exposed to the test for
 /// post-reconcile assertions.
-pub(super) struct CapturedRequest {
+pub(crate) struct CapturedRequest {
     pub method: Method,
     pub path: String,
     pub body: Vec<u8>,
@@ -172,7 +172,7 @@ impl CapturedRequest {
 }
 
 /// Report returned from [`MockKubeHarness::finish`].
-pub(super) struct HarnessReport {
+pub(crate) struct HarnessReport {
     pub captured: Vec<CapturedRequest>,
 }
 
@@ -191,7 +191,7 @@ impl HarnessReport {
 /// Build a Kubernetes `events.k8s.io/v1` POST expectation for `namespace`,
 /// returning a minimal accepted Event. Use this for every reconcile branch
 /// that calls `recorder.publish(...)`.
-pub(super) fn expect_event_post(namespace: &str) -> ExpectedCall {
+pub(crate) fn expect_event_post(namespace: &str) -> ExpectedCall {
     ExpectedCall::post(format!(
         "/apis/events.k8s.io/v1/namespaces/{namespace}/events"
     ))
@@ -205,7 +205,7 @@ pub(super) fn expect_event_post(namespace: &str) -> ExpectedCall {
 
 /// The test harness. Holds the driver `JoinHandle` and the live `Client` /
 /// `ControllerContext` references the test passes into the reconcile fn.
-pub(super) struct MockKubeHarness {
+pub(crate) struct MockKubeHarness {
     driver: JoinHandle<HarnessReport>,
 }
 
