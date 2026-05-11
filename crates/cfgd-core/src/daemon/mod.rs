@@ -282,6 +282,7 @@ mod drift;
 mod git;
 mod health_ipc;
 mod reconcile;
+mod runner;
 mod service;
 mod sync;
 
@@ -290,12 +291,15 @@ mod tests;
 
 use checkin::*;
 use daemon_config::*;
+#[allow(unused_imports)]
 use drift::*;
 use git::*;
 use health_ipc::*;
 use reconcile::*;
+use runner::*;
 #[allow(unused_imports)]
 use service::*;
+#[allow(unused_imports)]
 use sync::*;
 
 // --- Public re-exports (preserve crate::daemon::<name> API) ---
@@ -364,7 +368,7 @@ pub async fn run_daemon(
 
     let source_cache_dir = crate::sources::SourceManager::default_cache_dir()
         .unwrap_or_else(|_| config_dir.join(".cfgd-sources"));
-    let mut sync_tasks = build_sync_tasks(
+    let sync_tasks = build_sync_tasks(
         &config_dir,
         &parsed,
         &cfg.spec.sources,
@@ -381,22 +385,15 @@ pub async fn run_daemon(
     // Initialize per-source status entries
     {
         let mut st = state.lock().await;
-        for source in &cfg.spec.sources {
-            st.sources.push(SourceStatus {
-                name: source.name.clone(),
-                last_sync: None,
-                last_reconcile: None,
-                drift_count: 0,
-                status: "active".to_string(),
-            });
-        }
+        st.sources
+            .extend(build_initial_source_status(&cfg.spec.sources));
     }
 
     // Discover managed file paths for watching
     let managed_paths = discover_managed_paths(&config_path, profile_override.as_deref(), &*hooks);
 
     // Set up file watcher channel
-    let (file_tx, mut file_rx) = mpsc::channel::<PathBuf>(256);
+    let (file_tx, file_rx) = mpsc::channel::<PathBuf>(256);
     let _watcher = setup_file_watcher(file_tx, &managed_paths, &config_dir)?;
 
     // Check for already-running daemon via IPC connectivity
@@ -518,17 +515,13 @@ pub async fn run_daemon(
         .unwrap_or_else(|| vec![profile_name.to_string()]);
     let chain_refs: Vec<&str> = profile_chain.iter().map(|s| s.as_str()).collect();
 
-    let mut reconcile_tasks = build_reconcile_tasks(
+    let reconcile_tasks = build_reconcile_tasks(
         &daemon_cfg,
         resolved_profile.as_ref(),
         &chain_refs,
         reconcile_interval,
         parsed.auto_apply,
     );
-
-    // Debounce tracking for file events
-    let mut last_change: HashMap<PathBuf, Instant> = HashMap::new();
-    let debounce = Duration::from_millis(DEBOUNCE_MS);
 
     // Set up timers — use shortest interval across all reconcile and sync tasks
     let shortest_reconcile = reconcile_tasks
@@ -541,263 +534,97 @@ pub async fn run_daemon(
         .map(|t| t.interval)
         .min()
         .unwrap_or(sync_interval);
-    let mut reconcile_timer = tokio::time::interval(shortest_reconcile);
-    let mut sync_timer = tokio::time::interval(shortest_sync);
-    let mut version_check_timer = tokio::time::interval(crate::upgrade::version_check_interval());
 
-    // Compliance snapshot timer — only created when compliance is enabled
-    let mut compliance_timer = compliance_interval.map(tokio::time::interval);
+    // Shared atomics: SIGHUP updates these so pump tasks pick up the new
+    // cadence on the next tick. (See `runner::apply_sighup_reload`.)
+    let reconcile_secs = Arc::new(std::sync::atomic::AtomicU64::new(
+        shortest_reconcile.as_secs(),
+    ));
+    let sync_secs = Arc::new(std::sync::atomic::AtomicU64::new(shortest_sync.as_secs()));
 
-    // Unix: set up SIGHUP handler for config reload.
-    // On Windows, SIGHUP doesn't exist — recv_sighup() pends forever.
+    // Spawn pump tasks. Each one converts a periodic timer into a stream of
+    // `()` events on an mpsc channel that the loop awaits via select!.
+    let (reconcile_tx, reconcile_rx) = mpsc::channel::<()>(8);
+    let (sync_tx, sync_rx) = mpsc::channel::<()>(8);
+    let (version_check_tx, version_check_rx) = mpsc::channel::<()>(8);
+    let (compliance_tx, compliance_rx) = mpsc::channel::<()>(8);
+    let (sighup_tx, sighup_rx) = mpsc::channel::<()>(8);
+
+    let reconcile_pump = spawn_interval_pump(Arc::clone(&reconcile_secs), reconcile_tx);
+    let sync_pump = spawn_interval_pump(Arc::clone(&sync_secs), sync_tx);
+
+    let version_check_secs = Arc::new(std::sync::atomic::AtomicU64::new(
+        crate::upgrade::version_check_interval().as_secs(),
+    ));
+    let version_check_pump = spawn_interval_pump(version_check_secs, version_check_tx);
+
+    let compliance_pump = compliance_interval.map(|d| {
+        let secs = Arc::new(std::sync::atomic::AtomicU64::new(d.as_secs()));
+        spawn_interval_pump(secs, compliance_tx)
+    });
+
+    // Unix: spawn a task that pushes a SIGHUP-pump event on each signal.
+    // Windows: SIGHUP does not exist; the receiver simply never fires.
     #[cfg(unix)]
-    let mut sighup_signal = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::hangup())
-        .map_err(|e| DaemonError::WatchError {
-            message: format!("failed to register SIGHUP handler: {}", e),
-        })?;
+    let sighup_pump = Some(spawn_sighup_pump(sighup_tx)?);
     #[cfg(not(unix))]
-    let mut sighup_signal = ();
+    let sighup_pump: Option<tokio::task::JoinHandle<()>> = {
+        let _ = sighup_tx; // suppress unused warning on Windows
+        None
+    };
 
-    // Unix: set up SIGTERM handler for graceful shutdown.
-    // On Windows, shutdown is handled via the Windows Service control manager.
-    #[cfg(unix)]
-    let mut sigterm_signal =
-        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()).map_err(|e| {
-            DaemonError::WatchError {
-                message: format!("failed to register SIGTERM handler: {}", e),
-            }
-        })?;
-    #[cfg(not(unix))]
-    let mut sigterm_signal = ();
+    // Shutdown signaller: SIGTERM or Ctrl+C fires a oneshot that the loop
+    // awaits to break out cleanly.
+    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+    let shutdown_printer = Arc::clone(&printer);
+    let shutdown_task = tokio::spawn(async move {
+        wait_for_shutdown(shutdown_printer).await;
+        let _ = shutdown_tx.send(());
+    });
 
-    // Skip the first immediate tick
-    reconcile_timer.tick().await;
-    sync_timer.tick().await;
-    version_check_timer.tick().await;
-    if let Some(ref mut timer) = compliance_timer {
-        timer.tick().await;
+    let ctx = DaemonLoopContext {
+        state: Arc::clone(&state),
+        hooks: Arc::clone(&hooks),
+        notifier: Arc::clone(&notifier),
+        config_path: config_path.clone(),
+        profile_override: profile_override.clone(),
+        on_change_reconcile,
+        notify_on_drift,
+        compliance_config: compliance_config.clone(),
+        printer: Arc::clone(&printer),
+        state_dir_override: None,
+    };
+    let triggers = DaemonTriggers {
+        file_rx,
+        reconcile_rx,
+        sync_rx,
+        version_check_rx,
+        compliance_rx,
+        sighup_rx,
+        shutdown_rx,
+    };
+
+    let loop_result = run_daemon_loop(
+        ctx,
+        triggers,
+        reconcile_tasks,
+        sync_tasks,
+        reconcile_secs,
+        sync_secs,
+    )
+    .await;
+
+    // Shut down all spawned pump / signal tasks
+    reconcile_pump.abort();
+    sync_pump.abort();
+    version_check_pump.abort();
+    if let Some(h) = compliance_pump {
+        h.abort();
     }
-
-    loop {
-        tokio::select! {
-            Some(path) = file_rx.recv() => {
-                // Debounce: skip if we saw this path recently
-                let now = Instant::now();
-                if let Some(last) = last_change.get(&path)
-                    && now.duration_since(*last) < debounce
-                {
-                    continue;
-                }
-                last_change.insert(path.clone(), now);
-
-                tracing::info!(path = %path.display(), "file changed");
-
-                // Record drift. Mutate state counters under the mutex, then DROP
-                // the guard before calling `notifier.notify()` — Desktop notify
-                // does a blocking dbus round-trip that otherwise blocks every
-                // other daemon task waiting on the state mutex.
-                let drift_recorded = record_file_drift(&path);
-                if drift_recorded {
-                    {
-                        let mut st = state.lock().await;
-                        st.drift_count += 1;
-                        if let Some(source) = st.sources.first_mut() {
-                            source.drift_count += 1;
-                        }
-                    }
-
-                    if notify_on_drift {
-                        notifier.notify(
-                            "cfgd: drift detected",
-                            &format!("File changed: {}", path.display()),
-                        );
-                    }
-                }
-
-                // Optionally reconcile on change
-                if on_change_reconcile {
-                    let cp = config_path.clone();
-                    let po = profile_override.clone();
-                    let st = Arc::clone(&state);
-                    let nt = Arc::clone(&notifier);
-                    let notify_drift = notify_on_drift;
-                    let hk = Arc::clone(&hooks);
-                    tokio::task::spawn_blocking(move || {
-                        handle_reconcile(&cp, po.as_deref(), &st, &nt, notify_drift, &*hk, None);
-                    }).await.map_err(|e| DaemonError::WatchError {
-                        message: format!("reconcile task failed: {}", e),
-                    })?;
-                }
-            }
-
-            _ = reconcile_timer.tick() => {
-                tracing::trace!("reconcile tick");
-                let now = Instant::now();
-
-                // Check each reconcile task — only run if its interval has elapsed
-                let mut ran_default = false;
-                for task in &mut reconcile_tasks {
-                    if let Some(last) = task.last_reconciled
-                        && now.duration_since(last) < task.interval
-                    {
-                        continue;
-                    }
-                    task.last_reconciled = Some(now);
-
-                    if task.entity == "__default__" {
-                        ran_default = true;
-                        let cp = config_path.clone();
-                        let po = profile_override.clone();
-                        let st = Arc::clone(&state);
-                        let nt = Arc::clone(&notifier);
-                        let notify_drift = notify_on_drift;
-                        let hk = Arc::clone(&hooks);
-                        tokio::task::spawn_blocking(move || {
-                            handle_reconcile(&cp, po.as_deref(), &st, &nt, notify_drift, &*hk, None);
-                        }).await.map_err(|e| DaemonError::WatchError {
-                            message: format!("reconcile task failed: {}", e),
-                        })?;
-                    } else {
-                        // Per-module reconcile — currently records the timestamp;
-                        // scoped module reconciliation uses the same handle_reconcile
-                        // with --module filtering (future: handle_module_reconcile).
-                        let entity_name = task.entity.clone();
-                        tracing::info!(
-                            module = %entity_name,
-                            interval = %task.interval.as_secs(),
-                            auto_apply = task.auto_apply,
-                            drift_policy = ?task.drift_policy,
-                            "per-module reconcile tick"
-                        );
-                        let rt = tokio::runtime::Handle::current();
-                        let st = Arc::clone(&state);
-                        let ts = crate::utc_now_iso8601();
-                        rt.block_on(async {
-                            let mut st = st.lock().await;
-                            st.module_last_reconcile
-                                .insert(entity_name, ts);
-                        });
-                    }
-                }
-
-                // If the default task didn't run this tick but a module task did,
-                // that's expected — module tasks can have shorter intervals.
-                if !ran_default {
-                    tracing::trace!("default reconcile task not due this tick");
-                }
-            }
-
-            _ = sync_timer.tick() => {
-                tracing::trace!("sync tick");
-                let now = Instant::now();
-                for task in &mut sync_tasks {
-                    // Skip if this source was synced recently (per-source interval)
-                    if let Some(last) = task.last_synced
-                        && now.duration_since(last) < task.interval
-                    {
-                        continue;
-                    }
-                    task.last_synced = Some(now);
-
-                    let st = Arc::clone(&state);
-                    let repo = task.repo_path.clone();
-                    let pull = task.auto_pull;
-                    let push = task.auto_push;
-                    let auto_apply = task.auto_apply;
-                    let source_name = task.source_name.clone();
-                    let require_signed = task.require_signed_commits;
-                    let allow_uns = task.allow_unsigned;
-                    tokio::task::spawn_blocking(move || {
-                        let changed = handle_sync(&repo, pull, push, &source_name, &st, require_signed, allow_uns);
-                        if changed && !auto_apply {
-                            tracing::info!(
-                                source = %source_name,
-                                "changes detected but auto-apply is disabled — run 'cfgd sync' interactively"
-                            );
-                        }
-                    }).await.map_err(|e| DaemonError::WatchError {
-                        message: format!("sync task failed: {}", e),
-                    })?;
-                }
-            }
-
-            _ = version_check_timer.tick() => {
-                tracing::trace!("version check tick");
-                let st = Arc::clone(&state);
-                let nt = Arc::clone(&notifier);
-                tokio::task::spawn_blocking(move || {
-                    handle_version_check(&st, &nt);
-                }).await.map_err(|e| DaemonError::WatchError {
-                    message: format!("version check task failed: {}", e),
-                })?;
-            }
-
-            _ = async {
-                match compliance_timer.as_mut() {
-                    Some(timer) => timer.tick().await,
-                    None => std::future::pending().await,
-                }
-            } => {
-                tracing::trace!("compliance snapshot tick");
-                if let Some(ref cc) = compliance_config {
-                    let cp = config_path.clone();
-                    let po = profile_override.clone();
-                    let hk = Arc::clone(&hooks);
-                    let cc2 = cc.clone();
-                    tokio::task::spawn_blocking(move || {
-                        handle_compliance_snapshot(&cp, po.as_deref(), &*hk, &cc2);
-                    }).await.map_err(|e| DaemonError::WatchError {
-                        message: format!("compliance snapshot task failed: {}", e),
-                    })?;
-                }
-            }
-
-            // Unix: reload config on SIGHUP (kill -HUP <pid>).
-            // On Windows, this branch never fires (recv_sighup pends forever).
-            _ = recv_sighup(&mut sighup_signal) => {
-                printer.info("Reloading configuration (SIGHUP)...");
-                match config::load_config(&config_path) {
-                    Ok(new_cfg) => {
-                        // Update reconcile/sync timer intervals from new config.
-                        // Note: full config reload (modules, packages, etc.) requires
-                        // a daemon restart. SIGHUP only hot-reloads timer intervals.
-                        let mut changed = Vec::new();
-                        if let Some(ref rc) = new_cfg.spec.daemon.as_ref().and_then(|d| d.reconcile.clone()) {
-                            let new_interval = parse_duration_or_default(&rc.interval);
-                            reconcile_timer = tokio::time::interval(new_interval);
-                            reconcile_timer.tick().await; // skip first immediate tick
-                            changed.push(format!("reconcile={:?}", new_interval));
-                        }
-                        if let Some(ref sc) = new_cfg.spec.daemon.as_ref().and_then(|d| d.sync.clone()) {
-                            let new_interval = parse_duration_or_default(&sc.interval);
-                            sync_timer = tokio::time::interval(new_interval);
-                            sync_timer.tick().await;
-                            changed.push(format!("sync={:?}", new_interval));
-                        }
-                        if changed.is_empty() {
-                            printer.info("Config validated; no timer changes detected");
-                        } else {
-                            printer.success(&format!("Timer intervals reloaded: {}", changed.join(", ")));
-                        }
-                    }
-                    Err(e) => {
-                        printer.warning(&format!("Config reload failed: {}", e));
-                    }
-                }
-            }
-
-            _ = recv_sigterm(&mut sigterm_signal) => {
-                printer.info("Received SIGTERM, shutting down daemon...");
-                break;
-            }
-
-            _ = tokio::signal::ctrl_c() => {
-                printer.newline();
-                printer.info("Shutting down daemon...");
-                break;
-            }
-        }
+    if let Some(h) = sighup_pump {
+        h.abort();
     }
+    shutdown_task.abort();
 
     // Shutdown health server
     health_handle.abort();
@@ -812,8 +639,81 @@ pub async fn run_daemon(
     }
 
     printer.success("Daemon stopped");
-    Ok(())
+    loop_result
 }
+
+// --- Pump / shutdown task helpers ---
+
+/// Spawn a task that pumps fixed-cadence ticks into `tx`. The interval is read
+/// from `interval_secs` before every sleep, so SIGHUP-driven updates take
+/// effect on the next iteration. Aborting the returned handle stops the pump.
+fn spawn_interval_pump(
+    interval_secs: Arc<std::sync::atomic::AtomicU64>,
+    tx: mpsc::Sender<()>,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        loop {
+            let secs = interval_secs
+                .load(std::sync::atomic::Ordering::Relaxed)
+                .max(1);
+            tokio::time::sleep(Duration::from_secs(secs)).await;
+            if tx.send(()).await.is_err() {
+                break;
+            }
+        }
+    })
+}
+
+/// Spawn a task that pushes `()` to `tx` on every SIGHUP. Unix only.
+#[cfg(unix)]
+fn spawn_sighup_pump(tx: mpsc::Sender<()>) -> Result<tokio::task::JoinHandle<()>> {
+    let mut signal = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::hangup())
+        .map_err(|e| DaemonError::WatchError {
+            message: format!("failed to register SIGHUP handler: {}", e),
+        })?;
+    Ok(tokio::spawn(async move {
+        while signal.recv().await.is_some() {
+            if tx.send(()).await.is_err() {
+                break;
+            }
+        }
+    }))
+}
+
+/// Wait for SIGTERM (Unix) or Ctrl+C (any platform) and print the matching
+/// shutdown message. Returns when either fires.
+async fn wait_for_shutdown(printer: Arc<Printer>) {
+    #[cfg(unix)]
+    {
+        let sigterm = async {
+            match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+                Ok(mut s) => {
+                    s.recv().await;
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "failed to register SIGTERM handler");
+                    std::future::pending::<()>().await;
+                }
+            }
+        };
+        tokio::select! {
+            _ = sigterm => {
+                printer.info("Received SIGTERM, shutting down daemon...");
+            }
+            _ = tokio::signal::ctrl_c() => {
+                printer.newline();
+                printer.info("Shutting down daemon...");
+            }
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = tokio::signal::ctrl_c().await;
+        printer.newline();
+        printer.info("Shutting down daemon...");
+    }
+}
+
 // --- Helpers ---
 
 /// Module-local wrapper around [`crate::parse_duration_str`] that returns the
@@ -827,28 +727,4 @@ pub async fn run_daemon(
 /// dedup-audit S1 (decision: keep + document).
 pub(crate) fn parse_duration_or_default(s: &str) -> Duration {
     crate::parse_duration_str(s).unwrap_or(Duration::from_secs(DEFAULT_RECONCILE_SECS))
-}
-
-/// Receive a SIGHUP signal on Unix. On non-Unix platforms, pends forever.
-#[cfg(unix)]
-async fn recv_sighup(signal: &mut tokio::signal::unix::Signal) {
-    signal.recv().await;
-}
-
-/// Receive a SIGHUP signal on Unix. On non-Unix platforms, pends forever.
-#[cfg(not(unix))]
-async fn recv_sighup(_signal: &mut ()) {
-    std::future::pending::<()>().await;
-}
-
-/// Receive a SIGTERM signal on Unix. On non-Unix platforms, pends forever.
-#[cfg(unix)]
-async fn recv_sigterm(signal: &mut tokio::signal::unix::Signal) {
-    signal.recv().await;
-}
-
-/// Receive a SIGTERM signal on Unix. On non-Unix platforms, pends forever.
-#[cfg(not(unix))]
-async fn recv_sigterm(_signal: &mut ()) {
-    std::future::pending::<()>().await;
 }

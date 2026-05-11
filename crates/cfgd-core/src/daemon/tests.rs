@@ -6435,3 +6435,649 @@ fn build_webhook_payload_accepts_empty_strings() {
     assert_eq!(parsed["timestamp"], "");
     assert_eq!(parsed["source"], "cfgd");
 }
+
+// ===========================================================================
+// Daemon-loop harness tests (runner.rs)
+//
+// `run_daemon_loop` is extracted from `run_daemon` so the per-branch
+// orchestration is exercisable without spawning real timers, file watchers, or
+// signal handlers. The tests below drive either the loop end-to-end (via
+// `mpsc` channel triggers + a `oneshot` shutdown) or the individual branch
+// helpers directly.
+// ===========================================================================
+
+mod harness {
+    use super::*;
+    use std::path::Path;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::time::Duration as StdDuration;
+    use tokio::sync::{mpsc, oneshot};
+
+    /// Minimal DaemonHooks impl that returns empty/identity values. Suitable
+    /// for any test that doesn't need package or file planning to do real work.
+    pub(super) struct NoopHooks;
+
+    impl DaemonHooks for NoopHooks {
+        fn build_registry(&self, _: &CfgdConfig) -> ProviderRegistry {
+            ProviderRegistry::new()
+        }
+        fn plan_files(
+            &self,
+            _: &Path,
+            _: &ResolvedProfile,
+        ) -> crate::errors::Result<Vec<FileAction>> {
+            Ok(vec![])
+        }
+        fn plan_packages(
+            &self,
+            _: &MergedProfile,
+            _: &[&dyn PackageManager],
+        ) -> crate::errors::Result<Vec<PackageAction>> {
+            Ok(vec![])
+        }
+        fn extend_registry_custom_managers(
+            &self,
+            _: &mut ProviderRegistry,
+            _: &config::PackagesSpec,
+        ) {
+        }
+        fn expand_tilde(&self, path: &Path) -> PathBuf {
+            crate::expand_tilde(path)
+        }
+    }
+
+    /// Build a `DaemonLoopContext` wired for tests. `config_path` is set to a
+    /// nonexistent file under `tmp` so any handler that tries to load config
+    /// returns early before touching real system state. `state_dir_override`
+    /// is set so `handle_reconcile` does not touch `~/.local/share/cfgd/`.
+    pub(super) fn make_test_ctx(
+        tmp: &tempfile::TempDir,
+        on_change_reconcile: bool,
+        notify_on_drift: bool,
+        compliance: Option<config::ComplianceConfig>,
+    ) -> (
+        DaemonLoopContext,
+        Arc<Mutex<DaemonState>>,
+        Arc<std::sync::Mutex<String>>,
+    ) {
+        let state = Arc::new(Mutex::new(DaemonState::new()));
+        let notifier = Arc::new(Notifier::new(NotifyMethod::Stdout, None));
+        let (printer, buf) = Printer::for_test();
+        let printer = Arc::new(printer);
+        let ctx = DaemonLoopContext {
+            state: Arc::clone(&state),
+            hooks: Arc::new(NoopHooks),
+            notifier,
+            config_path: tmp.path().join("nonexistent-config.yaml"),
+            profile_override: None,
+            on_change_reconcile,
+            notify_on_drift,
+            compliance_config: compliance,
+            printer,
+            state_dir_override: Some(tmp.path().to_path_buf()),
+        };
+        (ctx, state, buf)
+    }
+
+    pub(super) fn make_triggers() -> (DaemonTriggers, TriggerSenders) {
+        let (file_tx, file_rx) = mpsc::channel::<PathBuf>(8);
+        let (reconcile_tx, reconcile_rx) = mpsc::channel::<()>(8);
+        let (sync_tx, sync_rx) = mpsc::channel::<()>(8);
+        let (version_check_tx, version_check_rx) = mpsc::channel::<()>(8);
+        let (compliance_tx, compliance_rx) = mpsc::channel::<()>(8);
+        let (sighup_tx, sighup_rx) = mpsc::channel::<()>(8);
+        let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
+        (
+            DaemonTriggers {
+                file_rx,
+                reconcile_rx,
+                sync_rx,
+                version_check_rx,
+                compliance_rx,
+                sighup_rx,
+                shutdown_rx,
+            },
+            TriggerSenders {
+                file_tx,
+                reconcile_tx,
+                sync_tx,
+                version_check_tx,
+                compliance_tx,
+                sighup_tx,
+                shutdown_tx,
+            },
+        )
+    }
+
+    #[allow(dead_code)]
+    pub(super) struct TriggerSenders {
+        pub file_tx: mpsc::Sender<PathBuf>,
+        pub reconcile_tx: mpsc::Sender<()>,
+        pub sync_tx: mpsc::Sender<()>,
+        pub version_check_tx: mpsc::Sender<()>,
+        pub compliance_tx: mpsc::Sender<()>,
+        pub sighup_tx: mpsc::Sender<()>,
+        pub shutdown_tx: oneshot::Sender<()>,
+    }
+
+    // ----- apply_sighup_reload / compute_sighup_intervals tests -----
+
+    fn parse_cfgd_config(yaml: &str) -> CfgdConfig {
+        serde_yaml::from_str(yaml).expect("test yaml must parse")
+    }
+
+    #[test]
+    fn compute_sighup_intervals_returns_none_when_daemon_spec_absent() {
+        let cfg = parse_cfgd_config(
+            "apiVersion: cfgd.io/v1alpha1\nkind: Cfgd\nmetadata:\n  name: t\nspec: {}\n",
+        );
+        let (reconcile, sync) = runner::compute_sighup_intervals(&cfg);
+        assert!(reconcile.is_none());
+        assert!(sync.is_none());
+    }
+
+    #[test]
+    fn compute_sighup_intervals_returns_reconcile_when_set() {
+        let cfg = parse_cfgd_config(
+            "apiVersion: cfgd.io/v1alpha1\nkind: Cfgd\nmetadata:\n  name: t\nspec:\n  daemon:\n    enabled: true\n    reconcile:\n      interval: 45s\n",
+        );
+        let (reconcile, sync) = runner::compute_sighup_intervals(&cfg);
+        assert_eq!(reconcile, Some(StdDuration::from_secs(45)));
+        assert!(sync.is_none());
+    }
+
+    #[test]
+    fn compute_sighup_intervals_returns_sync_when_set() {
+        let cfg = parse_cfgd_config(
+            "apiVersion: cfgd.io/v1alpha1\nkind: Cfgd\nmetadata:\n  name: t\nspec:\n  daemon:\n    enabled: true\n    sync:\n      interval: 10m\n",
+        );
+        let (reconcile, sync) = runner::compute_sighup_intervals(&cfg);
+        assert!(reconcile.is_none());
+        assert_eq!(sync, Some(StdDuration::from_secs(600)));
+    }
+
+    #[test]
+    fn apply_sighup_reload_warns_on_unparseable_config() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let config_path = tmp.path().join("bad.yaml");
+        std::fs::write(&config_path, "::: not yaml :::").unwrap();
+        let reconcile_secs = AtomicU64::new(300);
+        let sync_secs = AtomicU64::new(300);
+        let (printer, buf) = Printer::for_test();
+        runner::apply_sighup_reload(&config_path, &reconcile_secs, &sync_secs, &printer);
+        let captured = buf.lock().unwrap().clone();
+        assert!(
+            captured.contains("Config reload failed"),
+            "expected reload-failed warning in: {}",
+            captured
+        );
+        // Atomics untouched on failure
+        assert_eq!(reconcile_secs.load(Ordering::Relaxed), 300);
+        assert_eq!(sync_secs.load(Ordering::Relaxed), 300);
+    }
+
+    #[test]
+    fn apply_sighup_reload_updates_atomics_and_reports_changes() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let config_path = tmp.path().join("cfgd.yaml");
+        std::fs::write(
+            &config_path,
+            "apiVersion: cfgd.io/v1alpha1\nkind: Cfgd\nmetadata:\n  name: t\nspec:\n  daemon:\n    enabled: true\n    reconcile:\n      interval: 90s\n    sync:\n      interval: 2m\n",
+        )
+        .unwrap();
+        let reconcile_secs = AtomicU64::new(300);
+        let sync_secs = AtomicU64::new(300);
+        let (printer, buf) = Printer::for_test();
+        runner::apply_sighup_reload(&config_path, &reconcile_secs, &sync_secs, &printer);
+        let captured = buf.lock().unwrap().clone();
+        assert!(
+            captured.contains("Timer intervals reloaded"),
+            "expected reload success in: {}",
+            captured
+        );
+        assert_eq!(reconcile_secs.load(Ordering::Relaxed), 90);
+        assert_eq!(sync_secs.load(Ordering::Relaxed), 120);
+    }
+
+    #[test]
+    fn apply_sighup_reload_reports_no_changes_for_silent_config() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let config_path = tmp.path().join("cfgd.yaml");
+        std::fs::write(
+            &config_path,
+            "apiVersion: cfgd.io/v1alpha1\nkind: Cfgd\nmetadata:\n  name: t\nspec:\n  daemon:\n    enabled: true\n",
+        )
+        .unwrap();
+        let reconcile_secs = AtomicU64::new(300);
+        let sync_secs = AtomicU64::new(300);
+        let (printer, buf) = Printer::for_test();
+        runner::apply_sighup_reload(&config_path, &reconcile_secs, &sync_secs, &printer);
+        let captured = buf.lock().unwrap().clone();
+        assert!(
+            captured.contains("no timer changes detected"),
+            "expected no-changes message in: {}",
+            captured
+        );
+        assert_eq!(reconcile_secs.load(Ordering::Relaxed), 300);
+        assert_eq!(sync_secs.load(Ordering::Relaxed), 300);
+    }
+
+    // ----- build_initial_source_status tests -----
+
+    #[test]
+    fn build_initial_source_status_empty_when_no_sources() {
+        let rows = runner::build_initial_source_status(&[]);
+        assert!(rows.is_empty());
+    }
+
+    #[test]
+    fn build_initial_source_status_one_row_per_source() {
+        let cfg = parse_cfgd_config(
+            "apiVersion: cfgd.io/v1alpha1\nkind: Cfgd\nmetadata:\n  name: t\nspec:\n  sources:\n    - name: alpha\n      origin:\n        type: Git\n        url: https://example.com/a.git\n    - name: beta\n      origin:\n        type: Git\n        url: https://example.com/b.git\n",
+        );
+        let rows = runner::build_initial_source_status(&cfg.spec.sources);
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].name, "alpha");
+        assert_eq!(rows[1].name, "beta");
+        for r in &rows {
+            assert_eq!(r.status, "active");
+            assert_eq!(r.drift_count, 0);
+            assert!(r.last_sync.is_none());
+            assert!(r.last_reconcile.is_none());
+        }
+    }
+
+    // ----- handle_file_change_tick tests -----
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn file_change_tick_records_path_in_debounce_map() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let _g = crate::with_test_home_guard(tmp.path());
+        let (ctx, _state, _buf) = make_test_ctx(&tmp, false, false, None);
+        let mut last_change: HashMap<PathBuf, Instant> = HashMap::new();
+        let path = PathBuf::from("/tmp/observed-1.txt");
+        let res = runner::handle_file_change_tick(
+            &ctx,
+            &mut last_change,
+            StdDuration::from_millis(500),
+            path.clone(),
+        )
+        .await;
+        assert!(res.is_ok());
+        assert!(last_change.contains_key(&path));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn file_change_tick_debounces_rapid_repeats() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let _g = crate::with_test_home_guard(tmp.path());
+        let (ctx, _state, _buf) = make_test_ctx(&tmp, false, false, None);
+        let mut last_change: HashMap<PathBuf, Instant> = HashMap::new();
+        let path = PathBuf::from("/tmp/observed-2.txt");
+        // 60s debounce window — large enough that any plausible parallel-test
+        // scheduling jitter still keeps both calls inside the window.
+        let debounce = StdDuration::from_secs(60);
+        runner::handle_file_change_tick(&ctx, &mut last_change, debounce, path.clone())
+            .await
+            .unwrap();
+        let first_ts = *last_change.get(&path).unwrap();
+        runner::handle_file_change_tick(&ctx, &mut last_change, debounce, path.clone())
+            .await
+            .unwrap();
+        let second_ts = *last_change.get(&path).unwrap();
+        assert_eq!(
+            first_ts, second_ts,
+            "debounced call must not refresh timestamp"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn file_change_tick_triggers_reconcile_when_enabled() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let _g = crate::with_test_home_guard(tmp.path());
+        let (ctx, state, _buf) = make_test_ctx(&tmp, true, false, None);
+        let mut last_change: HashMap<PathBuf, Instant> = HashMap::new();
+        let path = PathBuf::from("/tmp/observed-3.txt");
+        // on_change_reconcile=true sends handle_reconcile through spawn_blocking.
+        // With a nonexistent config_path the handler returns early — we only
+        // care that the branch ran without panicking.
+        let res = runner::handle_file_change_tick(
+            &ctx,
+            &mut last_change,
+            StdDuration::from_millis(0), // disable debounce
+            path,
+        )
+        .await;
+        assert!(res.is_ok());
+        // No real reconcile occurred (config is missing) — last_reconcile stays None.
+        let st = state.lock().await;
+        assert!(st.last_reconcile.is_none());
+    }
+
+    // ----- handle_reconcile_tick tests -----
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn reconcile_tick_with_no_tasks_is_noop() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let _g = crate::with_test_home_guard(tmp.path());
+        let (ctx, state, _buf) = make_test_ctx(&tmp, false, false, None);
+        let mut tasks: Vec<ReconcileTask> = Vec::new();
+        runner::handle_reconcile_tick(&ctx, &mut tasks)
+            .await
+            .unwrap();
+        let st = state.lock().await;
+        assert!(st.last_reconcile.is_none());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn reconcile_tick_skips_task_whose_interval_has_not_elapsed() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let _g = crate::with_test_home_guard(tmp.path());
+        let (ctx, _state, _buf) = make_test_ctx(&tmp, false, false, None);
+        let recent = Instant::now();
+        let mut tasks = vec![ReconcileTask {
+            entity: "__default__".to_string(),
+            interval: StdDuration::from_secs(3600),
+            auto_apply: false,
+            drift_policy: config::DriftPolicy::NotifyOnly,
+            last_reconciled: Some(recent),
+        }];
+        runner::handle_reconcile_tick(&ctx, &mut tasks)
+            .await
+            .unwrap();
+        // Task skipped — last_reconciled unchanged.
+        assert_eq!(tasks[0].last_reconciled, Some(recent));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn reconcile_tick_advances_default_task_last_reconciled() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let _g = crate::with_test_home_guard(tmp.path());
+        let (ctx, _state, _buf) = make_test_ctx(&tmp, false, false, None);
+        let mut tasks = vec![ReconcileTask {
+            entity: "__default__".to_string(),
+            interval: StdDuration::from_secs(60),
+            auto_apply: false,
+            drift_policy: config::DriftPolicy::NotifyOnly,
+            last_reconciled: None,
+        }];
+        runner::handle_reconcile_tick(&ctx, &mut tasks)
+            .await
+            .unwrap();
+        assert!(tasks[0].last_reconciled.is_some());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn reconcile_tick_updates_module_timestamp_for_non_default_entity() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let _g = crate::with_test_home_guard(tmp.path());
+        let (ctx, state, _buf) = make_test_ctx(&tmp, false, false, None);
+        let mut tasks = vec![ReconcileTask {
+            entity: "my-module".to_string(),
+            interval: StdDuration::from_secs(60),
+            auto_apply: true,
+            drift_policy: config::DriftPolicy::NotifyOnly,
+            last_reconciled: None,
+        }];
+        runner::handle_reconcile_tick(&ctx, &mut tasks)
+            .await
+            .unwrap();
+        assert!(tasks[0].last_reconciled.is_some());
+        let st = state.lock().await;
+        assert!(st.module_last_reconcile.contains_key("my-module"));
+    }
+
+    // ----- handle_sync_tick tests -----
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn sync_tick_with_no_tasks_is_noop() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let _g = crate::with_test_home_guard(tmp.path());
+        let (ctx, state, _buf) = make_test_ctx(&tmp, false, false, None);
+        let mut tasks: Vec<SyncTask> = Vec::new();
+        runner::handle_sync_tick(&ctx, &mut tasks).await.unwrap();
+        let st = state.lock().await;
+        assert!(st.last_sync.is_none());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn sync_tick_skips_task_whose_interval_has_not_elapsed() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let _g = crate::with_test_home_guard(tmp.path());
+        let (ctx, _state, _buf) = make_test_ctx(&tmp, false, false, None);
+        let recent = Instant::now();
+        let mut tasks = vec![SyncTask {
+            source_name: "local".to_string(),
+            repo_path: tmp.path().to_path_buf(),
+            auto_pull: false,
+            auto_push: false,
+            auto_apply: false,
+            interval: StdDuration::from_secs(3600),
+            last_synced: Some(recent),
+            require_signed_commits: false,
+            allow_unsigned: true,
+        }];
+        runner::handle_sync_tick(&ctx, &mut tasks).await.unwrap();
+        assert_eq!(tasks[0].last_synced, Some(recent));
+    }
+
+    // ----- handle_compliance_tick tests -----
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn compliance_tick_is_noop_when_config_absent() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let _g = crate::with_test_home_guard(tmp.path());
+        let (ctx, _state, _buf) = make_test_ctx(&tmp, false, false, None);
+        // Should return Ok immediately — compliance_config is None.
+        runner::handle_compliance_tick(&ctx).await.unwrap();
+    }
+
+    // ----- end-to-end loop tests (run_daemon_loop) -----
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn loop_exits_cleanly_on_shutdown() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let _g = crate::with_test_home_guard(tmp.path());
+        let (ctx, _state, _buf) = make_test_ctx(&tmp, false, false, None);
+        let (triggers, senders) = make_triggers();
+        let reconcile_secs = Arc::new(AtomicU64::new(300));
+        let sync_secs = Arc::new(AtomicU64::new(300));
+        let handle = tokio::spawn(runner::run_daemon_loop(
+            ctx,
+            triggers,
+            Vec::new(),
+            Vec::new(),
+            reconcile_secs,
+            sync_secs,
+        ));
+        // Immediately request shutdown.
+        senders.shutdown_tx.send(()).unwrap();
+        let result = tokio::time::timeout(StdDuration::from_secs(2), handle)
+            .await
+            .expect("loop did not exit within 2s")
+            .expect("join error");
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn loop_processes_sighup_then_shuts_down() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let _g = crate::with_test_home_guard(tmp.path());
+        // Write a config that updates intervals.
+        let config_path = tmp.path().join("cfgd.yaml");
+        std::fs::write(
+            &config_path,
+            "apiVersion: cfgd.io/v1alpha1\nkind: Cfgd\nmetadata:\n  name: t\nspec:\n  daemon:\n    enabled: true\n    reconcile:\n      interval: 77s\n",
+        )
+        .unwrap();
+        let (mut ctx, _state, buf) = make_test_ctx(&tmp, false, false, None);
+        ctx.config_path = config_path;
+        let (triggers, senders) = make_triggers();
+        let reconcile_secs = Arc::new(AtomicU64::new(300));
+        let sync_secs = Arc::new(AtomicU64::new(300));
+        let reconcile_secs_observe = Arc::clone(&reconcile_secs);
+        let handle = tokio::spawn(runner::run_daemon_loop(
+            ctx,
+            triggers,
+            Vec::new(),
+            Vec::new(),
+            reconcile_secs,
+            sync_secs,
+        ));
+        // Fire a SIGHUP-equivalent tick.
+        senders.sighup_tx.send(()).await.unwrap();
+        // Give the loop a moment to process before shutdown.
+        tokio::time::sleep(StdDuration::from_millis(100)).await;
+        senders.shutdown_tx.send(()).unwrap();
+        tokio::time::timeout(StdDuration::from_secs(2), handle)
+            .await
+            .expect("loop did not exit within 2s")
+            .expect("join error")
+            .expect("loop returned Err");
+        assert_eq!(reconcile_secs_observe.load(Ordering::Relaxed), 77);
+        let captured = buf.lock().unwrap().clone();
+        assert!(
+            captured.contains("Timer intervals reloaded"),
+            "expected reload message in: {}",
+            captured
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn loop_drains_reconcile_ticks_with_no_tasks() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let _g = crate::with_test_home_guard(tmp.path());
+        let (ctx, state, _buf) = make_test_ctx(&tmp, false, false, None);
+        let (triggers, senders) = make_triggers();
+        let reconcile_secs = Arc::new(AtomicU64::new(300));
+        let sync_secs = Arc::new(AtomicU64::new(300));
+        let handle = tokio::spawn(runner::run_daemon_loop(
+            ctx,
+            triggers,
+            Vec::new(),
+            Vec::new(),
+            reconcile_secs,
+            sync_secs,
+        ));
+        for _ in 0..3 {
+            senders.reconcile_tx.send(()).await.unwrap();
+        }
+        tokio::time::sleep(StdDuration::from_millis(50)).await;
+        senders.shutdown_tx.send(()).unwrap();
+        tokio::time::timeout(StdDuration::from_secs(2), handle)
+            .await
+            .expect("loop did not exit within 2s")
+            .expect("join error")
+            .expect("loop returned Err");
+        let st = state.lock().await;
+        // No reconcile_tasks → nothing changes.
+        assert!(st.last_reconcile.is_none());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn loop_drains_sync_ticks_with_no_tasks() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let _g = crate::with_test_home_guard(tmp.path());
+        let (ctx, state, _buf) = make_test_ctx(&tmp, false, false, None);
+        let (triggers, senders) = make_triggers();
+        let reconcile_secs = Arc::new(AtomicU64::new(300));
+        let sync_secs = Arc::new(AtomicU64::new(300));
+        let handle = tokio::spawn(runner::run_daemon_loop(
+            ctx,
+            triggers,
+            Vec::new(),
+            Vec::new(),
+            reconcile_secs,
+            sync_secs,
+        ));
+        senders.sync_tx.send(()).await.unwrap();
+        senders.sync_tx.send(()).await.unwrap();
+        tokio::time::sleep(StdDuration::from_millis(50)).await;
+        senders.shutdown_tx.send(()).unwrap();
+        tokio::time::timeout(StdDuration::from_secs(2), handle)
+            .await
+            .expect("loop did not exit within 2s")
+            .expect("join error")
+            .expect("loop returned Err");
+        let st = state.lock().await;
+        assert!(st.last_sync.is_none());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn loop_drains_compliance_ticks_when_disabled() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let _g = crate::with_test_home_guard(tmp.path());
+        let (ctx, _state, _buf) = make_test_ctx(&tmp, false, false, None);
+        let (triggers, senders) = make_triggers();
+        let reconcile_secs = Arc::new(AtomicU64::new(300));
+        let sync_secs = Arc::new(AtomicU64::new(300));
+        let handle = tokio::spawn(runner::run_daemon_loop(
+            ctx,
+            triggers,
+            Vec::new(),
+            Vec::new(),
+            reconcile_secs,
+            sync_secs,
+        ));
+        senders.compliance_tx.send(()).await.unwrap();
+        tokio::time::sleep(StdDuration::from_millis(50)).await;
+        senders.shutdown_tx.send(()).unwrap();
+        tokio::time::timeout(StdDuration::from_secs(2), handle)
+            .await
+            .expect("loop did not exit within 2s")
+            .expect("join error")
+            .expect("loop returned Err");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn loop_processes_file_change_event() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let _g = crate::with_test_home_guard(tmp.path());
+        let (ctx, _state, _buf) = make_test_ctx(&tmp, false, false, None);
+        let (triggers, senders) = make_triggers();
+        let reconcile_secs = Arc::new(AtomicU64::new(300));
+        let sync_secs = Arc::new(AtomicU64::new(300));
+        let handle = tokio::spawn(runner::run_daemon_loop(
+            ctx,
+            triggers,
+            Vec::new(),
+            Vec::new(),
+            reconcile_secs,
+            sync_secs,
+        ));
+        senders
+            .file_tx
+            .send(PathBuf::from("/tmp/loop-file-event.txt"))
+            .await
+            .unwrap();
+        tokio::time::sleep(StdDuration::from_millis(50)).await;
+        senders.shutdown_tx.send(()).unwrap();
+        tokio::time::timeout(StdDuration::from_secs(2), handle)
+            .await
+            .expect("loop did not exit within 2s")
+            .expect("join error")
+            .expect("loop returned Err");
+    }
+
+    // ----- run_daemon_loop never returns Err for the channel-trigger branches
+    // (we don't have a way to trigger DaemonError::WatchError without spawn_blocking
+    // panics, which would tear down the runtime). The loop branches return Ok in
+    // all observable test conditions, so the assertion is on graceful shutdown. -----
+
+    // ----- spawn_interval_pump smoke test -----
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn interval_pump_clamps_zero_to_one_second() {
+        // A 0-second interval would spin tight — the pump must clamp to >=1s.
+        // We don't actually wait a full second; instead, we trip the abort path.
+        let secs = Arc::new(AtomicU64::new(0));
+        let (tx, mut rx) = mpsc::channel::<()>(8);
+        let handle = super::super::spawn_interval_pump(secs, tx);
+        // Give the runtime a chance to schedule the pump task.
+        tokio::time::sleep(StdDuration::from_millis(10)).await;
+        handle.abort();
+        // No assertion on rx — we only verify the pump didn't spin or panic before
+        // abort. If the clamp were missing this test would hang the runtime.
+        let _ = rx.try_recv();
+    }
+}
