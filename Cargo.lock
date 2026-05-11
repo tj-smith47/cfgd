@@ -512,6 +512,7 @@ dependencies = [
  "k8s-openapi",
  "kube",
  "libc",
+ "mockito",
  "predicates",
  "rustls",
  "schemars",

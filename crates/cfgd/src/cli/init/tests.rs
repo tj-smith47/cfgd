@@ -2253,3 +2253,186 @@ fn next_steps_lines_are_indented_so_terminal_renders_consistently() {
         );
     }
 }
+
+// ===========================================================================
+// cmd_enroll mockito chain — drives the token/key-based enrollment paths
+// through a real HTTP server so the orchestration in `cli/init/enroll.rs` is
+// covered without requiring a live gateway.
+// ===========================================================================
+
+mod enroll_mockito {
+    use crate::cli::init::enroll::cmd_enroll;
+    use cfgd_core::output::Printer;
+    use serial_test::serial;
+
+    /// Scoped env override: set/unset `var`, run `f`, restore prior value.
+    /// SAFETY: every caller below uses `#[serial]` so no concurrent test
+    /// mutates this var.
+    fn with_env<F: FnOnce()>(var: &str, value: Option<&str>, f: F) {
+        unsafe {
+            let prior = std::env::var(var).ok();
+            match value {
+                Some(v) => std::env::set_var(var, v),
+                None => std::env::remove_var(var),
+            }
+            f();
+            match prior {
+                Some(v) => std::env::set_var(var, v),
+                None => std::env::remove_var(var),
+            }
+        }
+    }
+
+    fn enroll_response_json() -> String {
+        serde_json::json!({
+            "status": "ok",
+            "deviceId": "dev-abc-123",
+            "apiKey": "key-xyz-789",
+            "username": "alice",
+            "team": "platform"
+        })
+        .to_string()
+    }
+
+    #[test]
+    #[serial]
+    fn cmd_enroll_token_path_succeeds_against_mock() {
+        let tmp = tempfile::tempdir().unwrap();
+        with_env("CFGD_STATE_DIR", Some(tmp.path().to_str().unwrap()), || {
+            let mut server = mockito::Server::new();
+            let m = server
+                .mock("POST", "/api/v1/enroll")
+                .with_status(200)
+                .with_header("content-type", "application/json")
+                .with_body(enroll_response_json())
+                .create();
+
+            let (printer, buf) = Printer::for_test();
+            let url = server.url();
+            let result = cmd_enroll(
+                &printer,
+                &url,
+                Some("bootstrap-token-xyz"),
+                None,
+                None,
+                Some("alice"),
+            );
+            assert!(result.is_ok(), "cmd_enroll should succeed: {result:?}");
+            m.assert();
+
+            // Credential file should have been written under the tempdir.
+            let cred_path = tmp.path().join("device-credential.json");
+            assert!(
+                cred_path.exists(),
+                "credential file should be at {}",
+                cred_path.display()
+            );
+            let cred: serde_json::Value =
+                serde_json::from_str(&std::fs::read_to_string(&cred_path).unwrap()).unwrap();
+            assert_eq!(cred["apiKey"], "key-xyz-789");
+            assert_eq!(cred["username"], "alice");
+
+            // Printer output should announce success.
+            let captured = buf.lock().unwrap().clone();
+            assert!(
+                captured.contains("Enrolled as user 'alice'"),
+                "expected success message in: {captured}"
+            );
+            assert!(
+                captured.contains("Next Steps"),
+                "expected next-steps header in: {captured}"
+            );
+        });
+    }
+
+    #[test]
+    #[serial]
+    fn cmd_enroll_token_path_fails_on_server_error() {
+        let tmp = tempfile::tempdir().unwrap();
+        with_env("CFGD_STATE_DIR", Some(tmp.path().to_str().unwrap()), || {
+            let mut server = mockito::Server::new();
+            // 400 is a non-retryable client error — request_error path.
+            let _m = server
+                .mock("POST", "/api/v1/enroll")
+                .with_status(400)
+                .with_body(r#"{"error":"invalid token"}"#)
+                .create();
+
+            let printer = cfgd_core::test_helpers::test_printer();
+            let url = server.url();
+            let result = cmd_enroll(&printer, &url, Some("bad-token"), None, None, Some("alice"));
+            assert!(result.is_err());
+            // No credential written on failure.
+            assert!(!tmp.path().join("device-credential.json").exists());
+        });
+    }
+
+    #[test]
+    #[serial]
+    fn cmd_enroll_key_based_rejects_server_with_token_method() {
+        let tmp = tempfile::tempdir().unwrap();
+        with_env("CFGD_STATE_DIR", Some(tmp.path().to_str().unwrap()), || {
+            let mut server = mockito::Server::new();
+            // Server says it only supports token enrollment.
+            let _m = server
+                .mock("GET", "/api/v1/enroll/info")
+                .with_status(200)
+                .with_header("content-type", "application/json")
+                .with_body(r#"{"method":"token"}"#)
+                .create();
+
+            let (printer, _buf) = Printer::for_test();
+            let url = server.url();
+            // No --token but key-based attempted: should error with a
+            // pointer to the token form.
+            let result = cmd_enroll(&printer, &url, None, None, None, Some("alice"));
+            let err = result.unwrap_err().to_string();
+            assert!(
+                err.contains("bootstrap token enrollment") || err.contains("--token"),
+                "expected token-required error, got: {err}"
+            );
+        });
+    }
+
+    #[test]
+    #[serial]
+    fn cmd_enroll_token_path_persists_desired_config_when_present() {
+        let tmp = tempfile::tempdir().unwrap();
+        with_env("CFGD_STATE_DIR", Some(tmp.path().to_str().unwrap()), || {
+            let mut server = mockito::Server::new();
+            // EnrollResponse with desiredConfig populated → exercises the
+            // save_pending_server_config branch in finish_enrollment.
+            let body = serde_json::json!({
+                "status": "ok",
+                "deviceId": "dev-abc-123",
+                "apiKey": "key-xyz-789",
+                "username": "alice",
+                "team": null,
+                "desiredConfig": {
+                    "apiVersion": "cfgd.io/v1alpha1",
+                    "kind": "Cfgd",
+                    "metadata": {"name": "from-server"},
+                    "spec": {}
+                }
+            })
+            .to_string();
+            let m = server
+                .mock("POST", "/api/v1/enroll")
+                .with_status(200)
+                .with_header("content-type", "application/json")
+                .with_body(body)
+                .create();
+
+            let (printer, buf) = Printer::for_test();
+            let url = server.url();
+            let result = cmd_enroll(&printer, &url, Some("token"), None, None, Some("alice"));
+            assert!(result.is_ok(), "cmd_enroll should succeed: {result:?}");
+            m.assert();
+            let captured = buf.lock().unwrap().clone();
+            assert!(
+                captured.contains("Server pushed desired config"),
+                "expected desired-config notice in: {captured}"
+            );
+        });
+    }
+}
