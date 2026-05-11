@@ -7241,6 +7241,148 @@ mod harness {
     // last_synced bump, the state.last_sync update via block_on — is what
     // we cover here.
 
+    /// Create a bare upstream repo + a working clone of it. Returns the
+    /// (bare_path, work_path) pair. The clone starts with a single commit
+    /// already pushed to bare's HEAD branch.
+    fn make_bare_and_clone(tmp: &tempfile::TempDir) -> (PathBuf, PathBuf) {
+        let bare = tmp.path().join("upstream.git");
+        let work = tmp.path().join("workdir");
+        let _bare_repo = git2::Repository::init_bare(&bare).unwrap();
+        let src = tmp.path().join("src");
+        let src_repo = git2::Repository::init(&src).unwrap();
+        std::fs::write(src.join("README.md"), "hi").unwrap();
+        let mut index = src_repo.index().unwrap();
+        index.add_path(std::path::Path::new("README.md")).unwrap();
+        index.write().unwrap();
+        let tree_id = index.write_tree().unwrap();
+        let tree = src_repo.find_tree(tree_id).unwrap();
+        let sig = git2::Signature::now("t", "t@example.com").unwrap();
+        src_repo
+            .commit(Some("HEAD"), &sig, &sig, "initial", &tree, &[])
+            .unwrap();
+        drop(tree);
+        let bare_url = format!("file://{}", bare.display());
+        let mut remote = src_repo.remote("origin", &bare_url).unwrap();
+        let branch = src_repo
+            .head()
+            .unwrap()
+            .shorthand()
+            .unwrap_or("master")
+            .to_string();
+        remote
+            .push(&[&format!("refs/heads/{branch}:refs/heads/{branch}")], None)
+            .unwrap();
+        let _ = git2::Repository::clone(&bare_url, &work).unwrap();
+        (bare, work)
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn sync_tick_runs_git_pull_against_real_repo() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let _g = crate::with_test_home_guard(tmp.path());
+        let (_bare, work) = make_bare_and_clone(&tmp);
+        let (ctx, state, _buf) = make_test_ctx(&tmp, false, false, None);
+        let mut tasks = vec![SyncTask {
+            source_name: "local".to_string(),
+            repo_path: work,
+            auto_pull: true,
+            auto_push: false,
+            auto_apply: false,
+            interval: StdDuration::from_secs(60),
+            last_synced: None,
+            require_signed_commits: false,
+            allow_unsigned: true,
+        }];
+        runner::handle_sync_tick(&ctx, &mut tasks).await.unwrap();
+        assert!(tasks[0].last_synced.is_some());
+        let st = state.lock().await;
+        assert!(st.last_sync.is_some());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn sync_tick_runs_git_push_against_real_repo() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let _g = crate::with_test_home_guard(tmp.path());
+        let (_bare, work) = make_bare_and_clone(&tmp);
+        // Make a local edit so git_auto_commit_push has something to commit.
+        std::fs::write(work.join("README.md"), "local change").unwrap();
+        let (ctx, _state, _buf) = make_test_ctx(&tmp, false, false, None);
+        let mut tasks = vec![SyncTask {
+            source_name: "local".to_string(),
+            repo_path: work,
+            auto_pull: false,
+            auto_push: true,
+            auto_apply: false,
+            interval: StdDuration::from_secs(60),
+            last_synced: None,
+            require_signed_commits: false,
+            allow_unsigned: true,
+        }];
+        runner::handle_sync_tick(&ctx, &mut tasks).await.unwrap();
+        assert!(tasks[0].last_synced.is_some());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn sync_tick_handles_invalid_repo_path() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let _g = crate::with_test_home_guard(tmp.path());
+        let (ctx, _state, _buf) = make_test_ctx(&tmp, false, false, None);
+        // Path that exists but isn't a git repo — git_pull fails gracefully.
+        let not_a_repo = tmp.path().join("not-a-repo");
+        std::fs::create_dir_all(&not_a_repo).unwrap();
+        let mut tasks = vec![SyncTask {
+            source_name: "local".to_string(),
+            repo_path: not_a_repo,
+            auto_pull: true,
+            auto_push: true,
+            auto_apply: false,
+            interval: StdDuration::from_secs(60),
+            last_synced: None,
+            require_signed_commits: false,
+            allow_unsigned: true,
+        }];
+        runner::handle_sync_tick(&ctx, &mut tasks).await.unwrap();
+        assert!(tasks[0].last_synced.is_some());
+    }
+
+    // ----- handle_reconcile with files+packages in profile -----
+    //
+    // Plan with a non-empty profile exercises file/package planning paths.
+    // NoopHooks returns empty actions, so plan is still empty — but the
+    // resolve_profile body walks merged.files.managed, merged.packages, etc.
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn handle_reconcile_tick_with_managed_files_in_profile() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let _g = crate::with_test_home_guard(tmp.path());
+        let config_path = tmp.path().join("cfgd.yaml");
+        std::fs::write(
+            &config_path,
+            "apiVersion: cfgd.io/v1alpha1\nkind: Cfgd\nmetadata:\n  name: t\nspec:\n  profile: default\n",
+        )
+        .unwrap();
+        std::fs::create_dir_all(tmp.path().join("profiles")).unwrap();
+        std::fs::write(
+            tmp.path().join("profiles").join("default.yaml"),
+            "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec:\n  files:\n    managed:\n      - source: example.txt\n        target: ~/example.txt\n  packages:\n    brew:\n      packages:\n        - ripgrep\n",
+        )
+        .unwrap();
+        let (mut ctx, state, _buf) = make_test_ctx(&tmp, false, false, None);
+        ctx.config_path = config_path;
+        let mut tasks = vec![ReconcileTask {
+            entity: "__default__".to_string(),
+            interval: StdDuration::from_secs(60),
+            auto_apply: false,
+            drift_policy: config::DriftPolicy::NotifyOnly,
+            last_reconciled: None,
+        }];
+        runner::handle_reconcile_tick(&ctx, &mut tasks)
+            .await
+            .unwrap();
+        let st = state.lock().await;
+        assert!(st.last_reconcile.is_some());
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn sync_tick_advances_last_synced_for_due_task() {
         let tmp = tempfile::TempDir::new().unwrap();
