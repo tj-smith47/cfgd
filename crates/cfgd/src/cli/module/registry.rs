@@ -116,51 +116,7 @@ pub(crate) fn cmd_module_add_remote(
         );
     }
 
-    // Display the module spec for review
-    printer.newline();
-    printer.subheader(&format!("Module: {}", module_name));
-
-    if !module.spec.depends.is_empty() {
-        printer.key_value("Dependencies", &module.spec.depends.join(", "));
-    }
-
-    if !module.spec.packages.is_empty() {
-        printer.newline();
-        printer.info(&format!("Packages ({}):", module.spec.packages.len()));
-        for pkg in &module.spec.packages {
-            let ver = pkg
-                .min_version
-                .as_ref()
-                .map(|v| format!(" (min: {})", v))
-                .unwrap_or_default();
-            printer.info(&format!("  {} {}{}", "+", pkg.name, ver));
-        }
-    }
-
-    if !module.spec.files.is_empty() {
-        printer.newline();
-        printer.info(&format!("Files ({}):", module.spec.files.len()));
-        for file in &module.spec.files {
-            printer.info(&format!("  {} -> {}", file.source, file.target));
-        }
-    }
-
-    if let Some(ref scripts) = module.spec.scripts
-        && !scripts.post_apply.is_empty()
-    {
-        printer.newline();
-        printer.warning(&format!(
-            "Post-apply scripts ({}) — these will execute on your machine:",
-            scripts.post_apply.len()
-        ));
-        for script in &scripts.post_apply {
-            printer.warning(&format!("  $ {}", script));
-        }
-    }
-
-    printer.newline();
-    printer.key_value("Commit", &commit);
-    printer.key_value("Integrity", &integrity);
+    print_module_review_summary(printer, &module_name, &module, &commit, &integrity);
 
     // Check for GPG/SSH signature on the tag
     let git_src = modules::parse_git_source(url)?;
@@ -379,6 +335,94 @@ pub(crate) fn cmd_module_upgrade(
     Ok(())
 }
 
+/// Print the module-review summary shown before the user confirms an
+/// `add` or `upgrade`: dependencies, packages, files, post-apply script
+/// warnings, then commit + integrity. Split out so the side-effect-free
+/// output shape is testable against a captured Printer buffer without
+/// running the full cmd_module_add_remote orchestration.
+pub(super) fn print_module_review_summary(
+    printer: &Printer,
+    module_name: &str,
+    module: &modules::LoadedModule,
+    commit: &str,
+    integrity: &str,
+) {
+    printer.newline();
+    printer.subheader(&format!("Module: {}", module_name));
+
+    if !module.spec.depends.is_empty() {
+        printer.key_value("Dependencies", &module.spec.depends.join(", "));
+    }
+
+    if !module.spec.packages.is_empty() {
+        printer.newline();
+        printer.info(&format!("Packages ({}):", module.spec.packages.len()));
+        for pkg in &module.spec.packages {
+            let ver = pkg
+                .min_version
+                .as_ref()
+                .map(|v| format!(" (min: {})", v))
+                .unwrap_or_default();
+            printer.info(&format!("  + {}{}", pkg.name, ver));
+        }
+    }
+
+    if !module.spec.files.is_empty() {
+        printer.newline();
+        printer.info(&format!("Files ({}):", module.spec.files.len()));
+        for file in &module.spec.files {
+            printer.info(&format!("  {} -> {}", file.source, file.target));
+        }
+    }
+
+    if let Some(ref scripts) = module.spec.scripts
+        && !scripts.post_apply.is_empty()
+    {
+        printer.newline();
+        printer.warning(&format!(
+            "Post-apply scripts ({}) — these will execute on your machine:",
+            scripts.post_apply.len()
+        ));
+        for script in &scripts.post_apply {
+            printer.warning(&format!("  $ {}", script));
+        }
+    }
+
+    printer.newline();
+    printer.key_value("Commit", commit);
+    printer.key_value("Integrity", integrity);
+}
+
+/// Filter a registry-module list by case-insensitive substring match on
+/// the module name, and project each hit into the user-facing
+/// `ModuleSearchResult` shape. Pure helper — split out so the
+/// filter+projection logic is unit-testable against synthetic
+/// `RegistryModule` slices without standing up a git registry.
+pub(super) fn filter_and_build_search_results(
+    registry_modules: &[modules::RegistryModule],
+    query: &str,
+) -> Vec<super::ModuleSearchResult> {
+    let query_lower = query.to_lowercase();
+    registry_modules
+        .iter()
+        .filter(|m| m.name.to_lowercase().contains(&query_lower))
+        .map(|m| {
+            let latest = m.tags.last().cloned();
+            let desc = if m.description.is_empty() {
+                None
+            } else {
+                Some(m.description.clone())
+            };
+            super::ModuleSearchResult {
+                name: format!("{}/{}", m.registry, m.name),
+                registry: m.registry.clone(),
+                description: desc,
+                version: latest,
+            }
+        })
+        .collect()
+}
+
 pub(crate) fn cmd_module_search(cli: &Cli, printer: &Printer, query: &str) -> anyhow::Result<()> {
     let cache_base = modules::default_module_cache_dir()?;
 
@@ -410,26 +454,7 @@ pub(crate) fn cmd_module_search(cli: &Cli, printer: &Printer, query: &str) -> an
     for source in registries {
         match modules::fetch_registry_modules(source, &cache_base, printer) {
             Ok(registry_modules) => {
-                let query_lower = query.to_lowercase();
-                let matches: Vec<&modules::RegistryModule> = registry_modules
-                    .iter()
-                    .filter(|m| m.name.to_lowercase().contains(&query_lower))
-                    .collect();
-
-                for m in &matches {
-                    let latest = m.tags.last().cloned();
-                    let desc = if m.description.is_empty() {
-                        None
-                    } else {
-                        Some(m.description.clone())
-                    };
-                    all_results.push(super::ModuleSearchResult {
-                        name: format!("{}/{}", m.registry, m.name),
-                        registry: m.registry.clone(),
-                        description: desc,
-                        version: latest,
-                    });
-                }
+                all_results.extend(filter_and_build_search_results(&registry_modules, query));
             }
             Err(e) => {
                 errors.push(format!("{}: {}", source.name, e));

