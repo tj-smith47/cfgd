@@ -3331,6 +3331,84 @@ fn expand_aliases_no_alias_passthrough() {
     assert_eq!(result, args);
 }
 
+#[test]
+fn expand_aliases_expands_user_defined_alias_from_config_file() {
+    // The actual expansion hot path (mod.rs:158-162) — every other expand_aliases
+    // test exercises a passthrough branch. A user-defined alias loaded from
+    // --config <yaml> should replace the alias token with its expansion tokens,
+    // and surrounding args (globals before, trailing args after) must survive
+    // verbatim so the user's argv contract isn't silently rearranged.
+    let dir = tempfile::tempdir().unwrap();
+    let cfg_path = dir.path().join("cfgd.yaml");
+    std::fs::write(
+        &cfg_path,
+        "\
+apiVersion: cfgd.io/v1alpha1
+kind: Config
+metadata:
+  name: t
+spec:
+  aliases:
+    add: \"profile update --file\"
+",
+    )
+    .unwrap();
+
+    let args = vec![
+        "cfgd".into(),
+        "--config".into(),
+        cfg_path.to_string_lossy().into_owned(),
+        "add".into(),
+        "~/.zshrc".into(),
+    ];
+    let expanded = super::expand_aliases(args);
+
+    assert_eq!(
+        expanded,
+        vec![
+            "cfgd".to_string(),
+            "--config".to_string(),
+            cfg_path.to_string_lossy().into_owned(),
+            "profile".to_string(),
+            "update".to_string(),
+            "--file".to_string(),
+            "~/.zshrc".to_string(),
+        ]
+    );
+}
+
+#[test]
+fn expand_aliases_unknown_alias_with_loaded_config_passes_through() {
+    // Config IS loaded (so the config-load branch runs at mod.rs:137-146) but
+    // the candidate token isn't in any alias — the function should still pass
+    // through verbatim rather than partial-mangle the args.
+    let dir = tempfile::tempdir().unwrap();
+    let cfg_path = dir.path().join("cfgd.yaml");
+    std::fs::write(
+        &cfg_path,
+        "\
+apiVersion: cfgd.io/v1alpha1
+kind: Config
+metadata:
+  name: t
+spec:
+  aliases:
+    add: \"profile update --file\"
+",
+    )
+    .unwrap();
+
+    let args = vec![
+        "cfgd".into(),
+        "--config".into(),
+        cfg_path.to_string_lossy().into_owned(),
+        "apply".into(),
+        "--dry-run".into(),
+    ];
+    let expanded = super::expand_aliases(args.clone());
+    assert_eq!(expanded, args);
+}
+
 // --- extract_config_path ---
 
 #[test]
@@ -4011,6 +4089,32 @@ fn cmd_log_structured_output() {
         serde_json::json!({"entries": []}),
         "fresh state should produce exactly {{entries: []}}"
     );
+}
+
+#[test]
+fn execute_with_no_subcommand_prints_help_and_returns_ok() {
+    // Pinned contract — winget / chocolatey validators smoke-test the
+    // installed binary with no arguments and treat any non-zero exit code as
+    // failure. `cfgd` with no subcommand MUST exit 0 and emit a help banner.
+    // See the comment at execute()'s top in cli/mod.rs.
+    let h = CliTestHarness::builder().build();
+    let cli = Cli {
+        config: h.config_path().join("cfgd.yaml"),
+        profile: None,
+        no_color: true,
+        verbose: 0,
+        quiet: false,
+        output: OutputFormatArg(cfgd_core::output::OutputFormat::Table),
+        jsonpath: None,
+        state_dir: Some(h.state_path().to_path_buf()),
+        command: None,
+    };
+    // The contract: exit 0 (Ok). winget/chocolatey treat any non-zero exit
+    // from `<bin>` (no args) as a failed install. Clap's `print_help()`
+    // writes directly to stdout (not through Printer), so we don't assert
+    // on captured output here — exit-code 0 is the part of the contract that
+    // moves the needle if it regresses.
+    super::execute(&cli, h.printer()).expect("no-subcommand must return Ok(())");
 }
 
 #[test]
