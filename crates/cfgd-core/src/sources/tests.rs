@@ -1,5 +1,6 @@
 use super::*;
 use crate::test_helpers::test_printer;
+use serial_test::serial;
 
 #[test]
 fn normalize_tilde_pin() {
@@ -1372,7 +1373,11 @@ spec:
 
 // --- load_source: local file URL rejection ---
 
+// `#[serial]` here so these run sequentially with `local_source_fixture`
+// tests below; the fixture mutates `CFGD_ALLOW_LOCAL_SOURCES` process-wide
+// and would otherwise race with the rejection assertions.
 #[test]
+#[serial]
 fn load_source_rejects_file_url() {
     let dir = tempfile::tempdir().unwrap();
     let mut mgr = SourceManager::new(dir.path());
@@ -1401,6 +1406,7 @@ fn load_source_rejects_file_url() {
 }
 
 #[test]
+#[serial]
 fn load_source_rejects_absolute_path_url() {
     let dir = tempfile::tempdir().unwrap();
     let mut mgr = SourceManager::new(dir.path());
@@ -1429,6 +1435,7 @@ fn load_source_rejects_absolute_path_url() {
 }
 
 #[test]
+#[serial]
 fn load_source_rejects_file_url_case_insensitive() {
     let dir = tempfile::tempdir().unwrap();
     let mut mgr = SourceManager::new(dir.path());
@@ -1684,4 +1691,315 @@ fn classify_signature_status_propagates_source_name_into_error() {
         msg.contains("my-source-XYZ"),
         "expected source name in error, got: {msg}"
     );
+}
+
+// ---------------------------------------------------------------------------
+// SourceManager end-to-end via a local bare repo (file:// URL).
+//
+// `CFGD_ALLOW_LOCAL_SOURCES=1` flips the file:// safety check off so tests
+// can stand up an init_bare upstream, commit a cfgd-source.yaml manifest,
+// and exercise clone_source / fetch_source / parse_manifest /
+// verify_commit_signature end-to-end without the network.
+// ---------------------------------------------------------------------------
+
+mod local_source_fixture {
+    use super::*;
+    use crate::config::{
+        OriginSpec, OriginType, SourceSyncSpec, SshHostKeyPolicy, SubscriptionSpec,
+    };
+
+    fn with_env<F: FnOnce()>(var: &str, value: Option<&str>, f: F) {
+        // SAFETY: serial_test ensures no other test mutates env concurrently.
+        unsafe {
+            let prior = std::env::var(var).ok();
+            match value {
+                Some(v) => std::env::set_var(var, v),
+                None => std::env::remove_var(var),
+            }
+            f();
+            match prior {
+                Some(v) => std::env::set_var(var, v),
+                None => std::env::remove_var(var),
+            }
+        }
+    }
+
+    /// Build a bare upstream populated with a `cfgd-source.yaml` manifest.
+    /// Returns the bare repo path. The manifest declares the source name
+    /// and (optionally) a version + a profile list so callers can drive
+    /// the pin-check + profile-selection arms.
+    fn make_bare_with_manifest(
+        tmp: &tempfile::TempDir,
+        name: &str,
+        version: Option<&str>,
+        profiles: &[&str],
+    ) -> std::path::PathBuf {
+        let bare = tmp.path().join(format!("{}-bare.git", name));
+        let _ = git2::Repository::init_bare(&bare).unwrap();
+
+        let src = tmp.path().join(format!("{}-src", name));
+        let src_repo = git2::Repository::init(&src).unwrap();
+        let mut manifest = format!(
+            "apiVersion: cfgd.io/v1alpha1\nkind: ConfigSource\nmetadata:\n  name: {}\n",
+            name
+        );
+        if let Some(v) = version {
+            manifest.push_str(&format!("  version: {}\n", v));
+        }
+        manifest.push_str("spec:\n  provides:\n    profiles:\n");
+        // ConfigSource manifest must declare at least one profile — fall back
+        // to a synthetic "default" if the caller didn't specify any.
+        if profiles.is_empty() {
+            manifest.push_str("      - default\n");
+        } else {
+            for p in profiles {
+                manifest.push_str(&format!("      - {}\n", p));
+            }
+        }
+        std::fs::write(src.join("cfgd-source.yaml"), &manifest).unwrap();
+
+        let mut index = src_repo.index().unwrap();
+        index
+            .add_path(std::path::Path::new("cfgd-source.yaml"))
+            .unwrap();
+        index.write().unwrap();
+        let tree_id = index.write_tree().unwrap();
+        let tree = src_repo.find_tree(tree_id).unwrap();
+        let sig = git2::Signature::now("t", "t@example.com").unwrap();
+        src_repo
+            .commit(Some("HEAD"), &sig, &sig, "initial manifest", &tree, &[])
+            .unwrap();
+        drop(tree);
+
+        let bare_url = format!("file://{}", bare.display());
+        let mut remote = src_repo.remote("origin", &bare_url).unwrap();
+        let branch = src_repo
+            .head()
+            .unwrap()
+            .shorthand()
+            .unwrap_or("master")
+            .to_string();
+        remote
+            .push(&[&format!("refs/heads/{branch}:refs/heads/{branch}")], None)
+            .unwrap();
+        bare
+    }
+
+    fn build_spec(name: &str, url: &str, branch: &str) -> SourceSpec {
+        SourceSpec {
+            name: name.to_string(),
+            origin: OriginSpec {
+                origin_type: OriginType::Git,
+                url: url.to_string(),
+                branch: branch.to_string(),
+                auth: None,
+                ssh_strict_host_key_checking: SshHostKeyPolicy::No,
+            },
+            subscription: SubscriptionSpec::default(),
+            sync: SourceSyncSpec::default(),
+        }
+    }
+
+    /// Probe the branch name of a freshly-init-bare repo (master vs main).
+    fn detect_branch(bare: &std::path::Path) -> String {
+        let repo = git2::Repository::open(bare).unwrap();
+        let refs = repo.references().unwrap();
+        for r in refs.flatten() {
+            if let Some(n) = r.name()
+                && let Some(stripped) = n.strip_prefix("refs/heads/")
+            {
+                return stripped.to_string();
+            }
+        }
+        "master".to_string()
+    }
+
+    #[test]
+    #[serial]
+    fn load_source_clones_then_fetches_from_local_bare() {
+        with_env("CFGD_ALLOW_LOCAL_SOURCES", Some("1"), || {
+            let tmp = tempfile::tempdir().unwrap();
+            let bare = make_bare_with_manifest(&tmp, "ts1", None, &[]);
+            let branch = detect_branch(&bare);
+            let url = format!("file://{}", bare.display());
+            let cache_dir = tmp.path().join("cache");
+            let mut mgr = SourceManager::new(&cache_dir);
+            let spec = build_spec("ts1", &url, &branch);
+            let printer = test_printer();
+            // First call clones.
+            mgr.load_source(&spec, &printer).unwrap();
+            assert!(mgr.get("ts1").is_some());
+            assert_eq!(mgr.get("ts1").unwrap().origin_url, url);
+            // Second call goes through fetch_source — directory exists now.
+            mgr.load_source(&spec, &printer).unwrap();
+            assert!(mgr.get("ts1").is_some());
+        });
+    }
+
+    #[test]
+    #[serial]
+    fn load_source_records_last_commit_after_clone() {
+        with_env("CFGD_ALLOW_LOCAL_SOURCES", Some("1"), || {
+            let tmp = tempfile::tempdir().unwrap();
+            let bare = make_bare_with_manifest(&tmp, "ts2", None, &[]);
+            let branch = detect_branch(&bare);
+            let url = format!("file://{}", bare.display());
+            let cache_dir = tmp.path().join("cache");
+            let mut mgr = SourceManager::new(&cache_dir);
+            let spec = build_spec("ts2", &url, &branch);
+            let printer = test_printer();
+            mgr.load_source(&spec, &printer).unwrap();
+            let cached = mgr.get("ts2").unwrap();
+            assert!(
+                cached.last_commit.is_some(),
+                "last_commit should be populated after clone"
+            );
+            assert!(cached.last_fetched.is_some());
+        });
+    }
+
+    #[test]
+    #[serial]
+    fn load_source_with_version_pin_match_succeeds() {
+        with_env("CFGD_ALLOW_LOCAL_SOURCES", Some("1"), || {
+            let tmp = tempfile::tempdir().unwrap();
+            let bare = make_bare_with_manifest(&tmp, "ts3", Some("2.1.0"), &[]);
+            let branch = detect_branch(&bare);
+            let url = format!("file://{}", bare.display());
+            let cache_dir = tmp.path().join("cache");
+            let mut mgr = SourceManager::new(&cache_dir);
+            let mut spec = build_spec("ts3", &url, &branch);
+            spec.sync.pin_version = Some("~2".to_string());
+            let printer = test_printer();
+            mgr.load_source(&spec, &printer).unwrap();
+            assert!(mgr.get("ts3").is_some());
+        });
+    }
+
+    #[test]
+    #[serial]
+    fn load_source_with_version_pin_mismatch_fails() {
+        with_env("CFGD_ALLOW_LOCAL_SOURCES", Some("1"), || {
+            let tmp = tempfile::tempdir().unwrap();
+            let bare = make_bare_with_manifest(&tmp, "ts4", Some("1.0.0"), &[]);
+            let branch = detect_branch(&bare);
+            let url = format!("file://{}", bare.display());
+            let cache_dir = tmp.path().join("cache");
+            let mut mgr = SourceManager::new(&cache_dir);
+            let mut spec = build_spec("ts4", &url, &branch);
+            spec.sync.pin_version = Some("^2".to_string());
+            let printer = test_printer();
+            let err = mgr.load_source(&spec, &printer).unwrap_err();
+            let msg = err.to_string();
+            assert!(
+                msg.contains("ts4") || msg.contains("version"),
+                "expected version mismatch error, got: {msg}"
+            );
+        });
+    }
+
+    #[test]
+    #[serial]
+    fn load_source_after_remote_advance_fetches_new_commit() {
+        with_env("CFGD_ALLOW_LOCAL_SOURCES", Some("1"), || {
+            let tmp = tempfile::tempdir().unwrap();
+            let bare = make_bare_with_manifest(&tmp, "ts5", None, &[]);
+            let branch = detect_branch(&bare);
+            let url = format!("file://{}", bare.display());
+            let cache_dir = tmp.path().join("cache");
+            let mut mgr = SourceManager::new(&cache_dir);
+            let spec = build_spec("ts5", &url, &branch);
+            let printer = test_printer();
+            mgr.load_source(&spec, &printer).unwrap();
+            let initial_commit = mgr.get("ts5").unwrap().last_commit.clone();
+
+            // Open the src repo + add another commit + push to bare.
+            let src = tmp.path().join("ts5-src");
+            let src_repo = git2::Repository::open(&src).unwrap();
+            std::fs::write(src.join("EXTRA.md"), "added").unwrap();
+            let mut index = src_repo.index().unwrap();
+            index.add_path(std::path::Path::new("EXTRA.md")).unwrap();
+            index.write().unwrap();
+            let tree_id = index.write_tree().unwrap();
+            let tree = src_repo.find_tree(tree_id).unwrap();
+            let parent = src_repo.head().unwrap().peel_to_commit().unwrap();
+            let sig = git2::Signature::now("t", "t@example.com").unwrap();
+            src_repo
+                .commit(Some("HEAD"), &sig, &sig, "second", &tree, &[&parent])
+                .unwrap();
+            drop(tree);
+            let mut remote = src_repo.find_remote("origin").unwrap();
+            remote
+                .push(&[&format!("refs/heads/{branch}:refs/heads/{branch}")], None)
+                .unwrap();
+
+            // Fetch through SourceManager — last_commit should change.
+            mgr.load_source(&spec, &printer).unwrap();
+            let new_commit = mgr.get("ts5").unwrap().last_commit.clone();
+            assert_ne!(initial_commit, new_commit);
+        });
+    }
+
+    #[test]
+    #[serial]
+    fn load_source_remove_source_clears_cache() {
+        with_env("CFGD_ALLOW_LOCAL_SOURCES", Some("1"), || {
+            let tmp = tempfile::tempdir().unwrap();
+            let bare = make_bare_with_manifest(&tmp, "ts6", None, &[]);
+            let branch = detect_branch(&bare);
+            let url = format!("file://{}", bare.display());
+            let cache_dir = tmp.path().join("cache");
+            let mut mgr = SourceManager::new(&cache_dir);
+            let spec = build_spec("ts6", &url, &branch);
+            let printer = test_printer();
+            mgr.load_source(&spec, &printer).unwrap();
+            assert!(mgr.get("ts6").is_some());
+            assert!(cache_dir.join("ts6").exists());
+            mgr.remove_source("ts6").unwrap();
+            assert!(mgr.get("ts6").is_none());
+            assert!(!cache_dir.join("ts6").exists());
+        });
+    }
+
+    #[test]
+    #[serial]
+    fn load_sources_processes_multiple_specs() {
+        with_env("CFGD_ALLOW_LOCAL_SOURCES", Some("1"), || {
+            let tmp = tempfile::tempdir().unwrap();
+            let bare_a = make_bare_with_manifest(&tmp, "alpha", None, &[]);
+            let bare_b = make_bare_with_manifest(&tmp, "beta", None, &[]);
+            let branch = detect_branch(&bare_a);
+            let cache_dir = tmp.path().join("cache");
+            let mut mgr = SourceManager::new(&cache_dir);
+            let specs = vec![
+                build_spec("alpha", &format!("file://{}", bare_a.display()), &branch),
+                build_spec("beta", &format!("file://{}", bare_b.display()), &branch),
+            ];
+            let printer = test_printer();
+            mgr.load_sources(&specs, &printer).unwrap();
+            assert!(mgr.get("alpha").is_some());
+            assert!(mgr.get("beta").is_some());
+            assert_eq!(mgr.all_sources().len(), 2);
+        });
+    }
+
+    #[test]
+    #[serial]
+    fn load_source_source_files_dir_returns_path_under_cache() {
+        with_env("CFGD_ALLOW_LOCAL_SOURCES", Some("1"), || {
+            let tmp = tempfile::tempdir().unwrap();
+            let bare = make_bare_with_manifest(&tmp, "ts7", None, &[]);
+            let branch = detect_branch(&bare);
+            let url = format!("file://{}", bare.display());
+            let cache_dir = tmp.path().join("cache");
+            let mut mgr = SourceManager::new(&cache_dir);
+            let spec = build_spec("ts7", &url, &branch);
+            let printer = test_printer();
+            mgr.load_source(&spec, &printer).unwrap();
+            let files = mgr.source_files_dir("ts7").unwrap();
+            assert!(files.starts_with(&cache_dir));
+            let profiles = mgr.source_profiles_dir("ts7").unwrap();
+            assert!(profiles.starts_with(&cache_dir));
+        });
+    }
 }
