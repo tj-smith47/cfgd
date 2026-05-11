@@ -663,3 +663,89 @@ fn sc_config_args_separates_key_and_value_for_sc_quirk() {
     let st_idx = args.iter().position(|a| a == "start=").unwrap();
     assert_eq!(args[st_idx + 1], "demand"); // manual → demand
 }
+
+// === diff() "absent" drift branch ===
+//
+// On non-Windows, query_service() always returns None — so any entry that
+// has a binaryPath must surface a `{name}.exists` drift with
+// expected="present", actual="absent". The inverse (no binaryPath → no
+// drift) is covered above.
+
+#[test]
+fn service_diff_missing_service_with_binary_path_emits_absent_drift() {
+    let wsc = WindowsServiceConfigurator;
+    let yaml: serde_yaml::Value = serde_yaml::from_str(
+        r#"
+- name: GhostService
+  binaryPath: C:\Program Files\ghost.exe
+"#,
+    )
+    .unwrap();
+    let drifts = wsc.diff(&yaml).unwrap();
+    assert_eq!(drifts.len(), 1, "exactly one drift expected");
+    let d = &drifts[0];
+    assert_eq!(d.key, "GhostService.exists");
+    assert_eq!(d.expected, "present");
+    assert_eq!(d.actual, "absent");
+}
+
+#[test]
+fn service_diff_absent_drift_uses_dot_exists_key_format() {
+    // Pin the exact key shape: `{name}.exists`. Consumers (drift renderers,
+    // operator alerts) grep on this suffix to identify presence drift.
+    let wsc = WindowsServiceConfigurator;
+    let yaml: serde_yaml::Value = serde_yaml::from_str(
+        r#"
+- name: svc.with.dots
+  binaryPath: C:\bin.exe
+"#,
+    )
+    .unwrap();
+    let drifts = wsc.diff(&yaml).unwrap();
+    assert_eq!(drifts.len(), 1);
+    assert_eq!(drifts[0].key, "svc.with.dots.exists");
+}
+
+#[test]
+fn service_diff_multiple_absent_services_with_binary_path_emit_drift_each() {
+    let wsc = WindowsServiceConfigurator;
+    let yaml: serde_yaml::Value = serde_yaml::from_str(
+        r#"
+- name: AlphaSvc
+  binaryPath: C:\alpha.exe
+- name: BetaSvc
+  binaryPath: C:\beta.exe
+"#,
+    )
+    .unwrap();
+    let drifts = wsc.diff(&yaml).unwrap();
+    assert_eq!(drifts.len(), 2);
+    let keys: Vec<&str> = drifts.iter().map(|d| d.key.as_str()).collect();
+    assert!(keys.contains(&"AlphaSvc.exists"));
+    assert!(keys.contains(&"BetaSvc.exists"));
+    for d in &drifts {
+        assert_eq!(d.expected, "present");
+        assert_eq!(d.actual, "absent");
+    }
+}
+
+#[test]
+fn service_diff_mixed_entries_only_those_with_binary_path_drift() {
+    // Pinned in tests: `binaryPath` is the gate for the absent drift, not
+    // `state` or `startType`. An entry with only `state: running` and no
+    // `binaryPath` must NOT produce an `.exists` drift even though the
+    // service is missing.
+    let wsc = WindowsServiceConfigurator;
+    let yaml: serde_yaml::Value = serde_yaml::from_str(
+        r#"
+- name: HasBinPath
+  binaryPath: C:\has.exe
+- name: NoBinPath
+  state: running
+"#,
+    )
+    .unwrap();
+    let drifts = wsc.diff(&yaml).unwrap();
+    assert_eq!(drifts.len(), 1, "only the entry with binaryPath drifts");
+    assert_eq!(drifts[0].key, "HasBinPath.exists");
+}
