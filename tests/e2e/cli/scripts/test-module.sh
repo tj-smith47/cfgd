@@ -304,20 +304,20 @@ if assert_ok; then
     pass_test "M46"
 else fail_test "M46"; fi
 # cleanup
-"$CFGD" $C module registry remove renamed-src > /dev/null 2>&1 || true
+"$CFGD" $C module registry remove renamed-src >/dev/null 2>&1 || true
 
 # SECTION 28: module export
 
 begin_test "MX01: module export --format devcontainer"
 EXPORT_DIR="$SCRATCH/export-test"
 mkdir -p "$EXPORT_DIR"
-run $C module export nvim --format devcontainer --dir "$EXPORT_DIR"
+run $C module export nvim --as devcontainer --dir "$EXPORT_DIR"
 if assert_ok; then
     pass_test "MX01"
 else fail_test "MX01"; fi
 
 begin_test "MX02: module export nonexistent fails"
-run $C module export nonexistent --format devcontainer
+run $C module export nonexistent --as devcontainer
 if assert_fail; then
     pass_test "MX02"
 else fail_test "MX02"; fi
@@ -328,7 +328,7 @@ begin_test "OCI01: module push"
 OCI_DIR="$SCRATCH/oci-push-test"
 OCI_PUSH_OK=false
 mkdir -p "$OCI_DIR/bin"
-cat > "$OCI_DIR/module.yaml" << YAML
+cat >"$OCI_DIR/module.yaml" <<YAML
 apiVersion: cfgd.io/v1alpha1
 kind: Module
 metadata:
@@ -339,8 +339,8 @@ spec:
     - source: bin/hello.sh
       target: bin/hello.sh
 YAML
-echo '#!/bin/sh' > "$OCI_DIR/bin/hello.sh"
-echo 'echo "hello from oci test"' >> "$OCI_DIR/bin/hello.sh"
+echo '#!/bin/sh' >"$OCI_DIR/bin/hello.sh"
+echo 'echo "hello from oci test"' >>"$OCI_DIR/bin/hello.sh"
 chmod +x "$OCI_DIR/bin/hello.sh"
 run $C module push "$OCI_DIR" --artifact "${REGISTRY}/cfgd-e2e/cli-oci-test:v1.0"
 if assert_ok; then
@@ -379,7 +379,7 @@ if assert_ok; then
 else fail_test "MK01"; fi
 
 begin_test "MK02: module keys generate"
-if command -v cosign > /dev/null 2>&1; then
+if command -v cosign >/dev/null 2>&1; then
     KEYS_DIR="$SCRATCH/keys-test"
     mkdir -p "$KEYS_DIR"
     # COSIGN_PASSWORD suppresses the interactive password prompt

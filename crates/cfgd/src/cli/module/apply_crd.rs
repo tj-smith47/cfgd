@@ -94,24 +94,15 @@ fn detect_git_head() -> Option<String> {
     git_output(&["rev-parse", "HEAD"])
 }
 
-async fn apply_module_crd(
-    printer: &Printer,
+pub(super) fn build_module_crd_json(
     module_doc: &cfgd_core::config::ModuleDocument,
     artifact: &str,
-) -> anyhow::Result<()> {
-    use kube::Client;
-    use kube::api::{Api, Patch, PatchParams};
-
-    let client = Client::try_default()
-        .await
-        .map_err(|e| anyhow::anyhow!("Failed to connect to cluster: {e}"))?;
-
-    let name = &module_doc.metadata.name;
-    let module_json = serde_json::json!({
+) -> serde_json::Value {
+    serde_json::json!({
         "apiVersion": cfgd_core::API_VERSION,
         "kind": "Module",
         "metadata": {
-            "name": name,
+            "name": &module_doc.metadata.name,
         },
         "spec": {
             "ociArtifact": artifact,
@@ -126,7 +117,23 @@ async fn apply_module_crd(
             }).collect::<Vec<_>>(),
             "depends": module_doc.spec.depends,
         }
-    });
+    })
+}
+
+async fn apply_module_crd(
+    printer: &Printer,
+    module_doc: &cfgd_core::config::ModuleDocument,
+    artifact: &str,
+) -> anyhow::Result<()> {
+    use kube::Client;
+    use kube::api::{Api, Patch, PatchParams};
+
+    let client = Client::try_default()
+        .await
+        .map_err(|e| anyhow::anyhow!("Failed to connect to cluster: {e}"))?;
+
+    let name = &module_doc.metadata.name;
+    let module_json = build_module_crd_json(module_doc, artifact);
 
     let modules: Api<kube::core::DynamicObject> = Api::all_with(
         client,

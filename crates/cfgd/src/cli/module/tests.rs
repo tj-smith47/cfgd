@@ -3141,6 +3141,139 @@ fn cmd_module_export_devcontainer_no_packages() {
     );
 }
 
+// --- build_module_crd_json ---
+
+fn module_doc_with(
+    name: &str,
+    packages: Vec<config::ModulePackageEntry>,
+    files: Vec<config::ModuleFileEntry>,
+    depends: Vec<String>,
+) -> config::ModuleDocument {
+    config::ModuleDocument {
+        api_version: cfgd_core::API_VERSION.to_string(),
+        kind: "Module".to_string(),
+        metadata: config::ModuleMetadata {
+            name: name.to_string(),
+            description: None,
+        },
+        spec: config::ModuleSpec {
+            packages,
+            files,
+            depends,
+            ..Default::default()
+        },
+    }
+}
+
+#[test]
+fn build_module_crd_json_emits_canonical_crd_envelope() {
+    // The operator side accepts modules under group cfgd.io/v1alpha1, kind=Module.
+    // Drifting any of these literal strings silently breaks `module push --apply`
+    // for every existing operator-deployed cluster, so pin them here.
+    let doc = module_doc_with("my-mod", vec![], vec![], vec![]);
+    let v = super::apply_crd::build_module_crd_json(&doc, "ghcr.io/me/my-mod:v1");
+
+    assert_eq!(v["apiVersion"], cfgd_core::API_VERSION);
+    assert_eq!(v["kind"], "Module");
+    assert_eq!(v["metadata"]["name"], "my-mod");
+    assert_eq!(v["spec"]["ociArtifact"], "ghcr.io/me/my-mod:v1");
+}
+
+#[test]
+fn build_module_crd_json_uses_module_name_not_artifact_for_metadata() {
+    // metadata.name MUST come from the module document, not the artifact
+    // ref. The CRD names live in k8s; the artifact ref lives in OCI. Conflating
+    // them would make every artifact-renamed module push create a NEW CRD.
+    let doc = module_doc_with("module-canonical", vec![], vec![], vec![]);
+    let v = super::apply_crd::build_module_crd_json(&doc, "ghcr.io/whatever/totally-different:v9");
+
+    assert_eq!(v["metadata"]["name"], "module-canonical");
+    assert_ne!(v["metadata"]["name"], "totally-different");
+}
+
+#[test]
+fn build_module_crd_json_packages_emit_only_name_field() {
+    // The Module CRD's package entries only carry `name` (resolution lives on
+    // the operator side via the module CRD's downstream reconcile). Other
+    // ModulePackageEntry fields (minVersion, prefer, aliases, etc.) MUST NOT
+    // leak into the CRD payload — that would either be silently ignored or
+    // (worse) trip strict-schema rejection on a future CRD version.
+    let mut pkg = make_pkg("ripgrep");
+    pkg.min_version = Some("13.0".into());
+    pkg.prefer = vec!["brew".into(), "cargo".into()];
+    pkg.deny = vec!["apt".into()];
+    pkg.platforms = vec!["darwin".into()];
+
+    let doc = module_doc_with("m", vec![pkg], vec![], vec![]);
+    let v = super::apply_crd::build_module_crd_json(&doc, "art");
+
+    let pkgs = v["spec"]["packages"].as_array().expect("packages array");
+    assert_eq!(pkgs.len(), 1);
+    let entry = pkgs[0].as_object().expect("package entry object");
+    assert_eq!(entry.len(), 1, "package entry must contain only `name`");
+    assert_eq!(entry.get("name").unwrap(), "ripgrep");
+    assert!(!entry.contains_key("minVersion"));
+    assert!(!entry.contains_key("prefer"));
+    assert!(!entry.contains_key("deny"));
+    assert!(!entry.contains_key("platforms"));
+}
+
+#[test]
+fn build_module_crd_json_files_emit_only_source_and_target() {
+    // Module CRD file entries are source+target pairs only. Per-file `strategy`,
+    // `private`, `encryption` etc. are local-side concerns and must not leak.
+    let f = config::ModuleFileEntry {
+        source: "vimrc".into(),
+        target: "~/.vimrc".into(),
+        strategy: Some(config::FileStrategy::Symlink),
+        private: true,
+        encryption: None,
+    };
+    let doc = module_doc_with("m", vec![], vec![f], vec![]);
+    let v = super::apply_crd::build_module_crd_json(&doc, "art");
+
+    let files = v["spec"]["files"].as_array().expect("files array");
+    assert_eq!(files.len(), 1);
+    let entry = files[0].as_object().expect("file entry object");
+    assert_eq!(entry.len(), 2, "file entry must contain only source+target");
+    assert_eq!(entry.get("source").unwrap(), "vimrc");
+    assert_eq!(entry.get("target").unwrap(), "~/.vimrc");
+    assert!(!entry.contains_key("strategy"));
+    assert!(!entry.contains_key("private"));
+}
+
+#[test]
+fn build_module_crd_json_depends_passes_through_verbatim() {
+    let doc = module_doc_with(
+        "m",
+        vec![],
+        vec![],
+        vec!["base".into(), "shell".into(), "git".into()],
+    );
+    let v = super::apply_crd::build_module_crd_json(&doc, "art");
+
+    let depends = v["spec"]["depends"].as_array().expect("depends array");
+    let names: Vec<&str> = depends.iter().filter_map(|d| d.as_str()).collect();
+    assert_eq!(names, vec!["base", "shell", "git"]);
+}
+
+#[test]
+fn build_module_crd_json_empty_collections_emit_as_empty_arrays_not_null() {
+    // server-side apply patches with `null` for an array field have a
+    // different semantic from `[]` (the former is a no-op, the latter
+    // means "set to empty"). The patch must always emit `[]` so that
+    // an apply removes any stale entries from a previous module version.
+    let doc = module_doc_with("m", vec![], vec![], vec![]);
+    let v = super::apply_crd::build_module_crd_json(&doc, "art");
+
+    assert!(v["spec"]["packages"].is_array());
+    assert!(v["spec"]["files"].is_array());
+    assert!(v["spec"]["depends"].is_array());
+    assert_eq!(v["spec"]["packages"].as_array().unwrap().len(), 0);
+    assert_eq!(v["spec"]["files"].as_array().unwrap().len(), 0);
+    assert_eq!(v["spec"]["depends"].as_array().unwrap().len(), 0);
+}
+
 // --- build_registry_module_url ---
 
 #[test]
