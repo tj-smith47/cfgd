@@ -3543,9 +3543,10 @@ fn dependency_order_exceeds_module_count_limit() {
 
 mod git_fixture_tests {
     use super::super::git::{
-        TagSignatureStatus, check_tag_signature, get_head_commit_sha, open_repo,
+        TagSignatureStatus, check_tag_signature, fetch_git_source, get_head_commit_sha, open_repo,
     };
     use crate::modules::GitSource;
+    use crate::output::Printer;
     use std::path::Path;
 
     fn init_repo_with_commit(dir: &Path) -> (git2::Repository, git2::Oid) {
@@ -3562,6 +3563,40 @@ mod git_fixture_tests {
             .unwrap();
         drop(tree);
         (repo, commit_id)
+    }
+
+    /// Add a second commit on top of HEAD with `path → contents`.
+    /// Returns the new commit's OID.
+    fn add_commit(repo: &git2::Repository, rel_path: &str, contents: &str) -> git2::Oid {
+        let workdir = repo.workdir().unwrap();
+        if let Some(parent) = std::path::Path::new(rel_path).parent()
+            && !parent.as_os_str().is_empty()
+        {
+            std::fs::create_dir_all(workdir.join(parent)).unwrap();
+        }
+        std::fs::write(workdir.join(rel_path), contents).unwrap();
+        let mut index = repo.index().unwrap();
+        index.add_path(std::path::Path::new(rel_path)).unwrap();
+        index.write().unwrap();
+        let tree_id = index.write_tree().unwrap();
+        let tree = repo.find_tree(tree_id).unwrap();
+        let parent_commit = repo.head().unwrap().peel_to_commit().unwrap();
+        let sig = git2::Signature::now("t", "t@example.com").unwrap();
+        repo.commit(
+            Some("HEAD"),
+            &sig,
+            &sig,
+            &format!("add {rel_path}"),
+            &tree,
+            &[&parent_commit],
+        )
+        .unwrap()
+    }
+
+    /// Build a `file://` URL for a local repo path. git CLI and libgit2 both
+    /// understand this scheme as a local-source clone.
+    fn file_url(p: &Path) -> String {
+        format!("file://{}", p.display())
     }
 
     #[test]
@@ -3696,5 +3731,253 @@ mod git_fixture_tests {
         let head_after = get_head_commit_sha(dir.path()).unwrap();
         assert_eq!(head_after, commit_id.to_string());
         assert!(dir.path().join("README.md").exists());
+    }
+
+    // ========================================================================
+    // fetch_git_source — local file:// fixture
+    //
+    // These tests exercise clone_repo, fetch_existing_repo, and checkout_ref
+    // end-to-end against a real on-disk source repo, addressed via
+    // `file:///tmp/...`. Both git CLI and libgit2 understand file://, so the
+    // CI environment doesn't need a network reachable host.
+    // ========================================================================
+
+    #[test]
+    fn fetch_git_source_clones_local_file_url_into_cache() {
+        let src_dir = tempfile::tempdir().unwrap();
+        let (_repo, src_commit) = init_repo_with_commit(src_dir.path());
+
+        let cache = tempfile::tempdir().unwrap();
+        let (printer, _) = Printer::for_test();
+        let git_src = GitSource {
+            repo_url: file_url(src_dir.path()),
+            tag: None,
+            git_ref: None,
+            subdir: None,
+        };
+
+        let dest = fetch_git_source(&git_src, cache.path(), "mymod", &printer).unwrap();
+
+        // Cache directory holds the cloned repo; resolved path == cache root
+        // (no subdir requested).
+        assert!(
+            dest.join(".git").exists() || dest.join("HEAD").exists(),
+            "clone destination should contain a git repo"
+        );
+        assert!(dest.join("README.md").exists());
+
+        // HEAD of the clone matches the source HEAD commit SHA exactly —
+        // this is the contract cfgd's lockfile relies on.
+        let cloned_head = get_head_commit_sha(&dest).unwrap();
+        assert_eq!(cloned_head, src_commit.to_string());
+    }
+
+    #[test]
+    fn fetch_git_source_second_call_takes_fetch_existing_repo_path() {
+        // First call clones, second call must hit the
+        // `.git`-exists branch and route through fetch_existing_repo. Verify
+        // by adding a new commit to the source between calls and confirming
+        // the cached repo's HEAD still resolves cleanly. Default branch is
+        // not auto-fast-forwarded after fetch (cfgd does not move HEAD
+        // unless tag/ref is set) — so HEAD stays on first-clone commit.
+        let src_dir = tempfile::tempdir().unwrap();
+        let (src_repo, first_commit) = init_repo_with_commit(src_dir.path());
+
+        let cache = tempfile::tempdir().unwrap();
+        let (printer, _) = Printer::for_test();
+        let git_src = GitSource {
+            repo_url: file_url(src_dir.path()),
+            tag: None,
+            git_ref: None,
+            subdir: None,
+        };
+
+        let dest1 = fetch_git_source(&git_src, cache.path(), "mymod", &printer).unwrap();
+        assert_eq!(
+            get_head_commit_sha(&dest1).unwrap(),
+            first_commit.to_string()
+        );
+
+        // Make a new commit on the source. The dest still points at first
+        // commit because cfgd doesn't auto-checkout default-branch tips.
+        let _second = add_commit(&src_repo, "second.txt", "second");
+
+        let dest2 = fetch_git_source(&git_src, cache.path(), "mymod", &printer).unwrap();
+        assert_eq!(dest2, dest1, "cache path should be deterministic");
+        // HEAD unchanged on second call — fetch only updated remote refs.
+        assert_eq!(
+            get_head_commit_sha(&dest2).unwrap(),
+            first_commit.to_string()
+        );
+    }
+
+    #[test]
+    fn fetch_git_source_checks_out_tag_after_clone() {
+        // The source repo has a tag pointing at the initial commit. A
+        // GitSource with tag="v1.0" should land the cache HEAD on the
+        // tagged commit, not on whatever the default branch's tip is.
+        let src_dir = tempfile::tempdir().unwrap();
+        let (src_repo, first_commit) = init_repo_with_commit(src_dir.path());
+        // Add a second commit AFTER the tag, so default-branch tip differs
+        // from the tagged commit. If checkout_ref worked, HEAD must equal
+        // the tagged commit (first_commit), not the default-branch tip.
+        let first_commit_obj = src_repo.find_commit(first_commit).unwrap();
+        src_repo
+            .tag_lightweight("v1.0", first_commit_obj.as_object(), false)
+            .unwrap();
+        let _tip = add_commit(&src_repo, "later.txt", "after tag");
+
+        let cache = tempfile::tempdir().unwrap();
+        let (printer, _) = Printer::for_test();
+        let git_src = GitSource {
+            repo_url: file_url(src_dir.path()),
+            tag: Some("v1.0".to_string()),
+            git_ref: None,
+            subdir: None,
+        };
+
+        let dest = fetch_git_source(&git_src, cache.path(), "mymod", &printer).unwrap();
+        let cloned_head = get_head_commit_sha(&dest).unwrap();
+        assert_eq!(
+            cloned_head,
+            first_commit.to_string(),
+            "tag should pin HEAD to the tagged commit, not the branch tip"
+        );
+    }
+
+    #[test]
+    fn fetch_git_source_returns_subdir_path_when_requested() {
+        // GitSource with subdir=Some("docs") must return cache_root/docs.
+        // (resolve_subdir doesn't require the subdir to physically exist;
+        // its contract is just path-join + traversal validation.)
+        let src_dir = tempfile::tempdir().unwrap();
+        let (src_repo, _) = init_repo_with_commit(src_dir.path());
+        let _ = add_commit(&src_repo, "docs/index.md", "# docs");
+
+        let cache = tempfile::tempdir().unwrap();
+        let (printer, _) = Printer::for_test();
+        let git_src = GitSource {
+            repo_url: file_url(src_dir.path()),
+            tag: None,
+            git_ref: None,
+            subdir: Some("docs".to_string()),
+        };
+
+        let dest = fetch_git_source(&git_src, cache.path(), "mymod", &printer).unwrap();
+        assert!(
+            dest.ends_with("docs"),
+            "returned path should end in the requested subdir, got: {dest:?}"
+        );
+        // And the subdir must physically exist in the clone since we
+        // created `docs/index.md` in source.
+        assert!(dest.join("index.md").exists());
+    }
+
+    #[test]
+    fn fetch_git_source_errors_with_module_name_when_tag_is_unknown() {
+        // Unknown tag → checkout_ref's revparse chain exhausts and we get
+        // a GitFetchFailed surfaced with the module name in the message.
+        // cfgd's CLI uses this error path to tell the user which module
+        // failed.
+        let src_dir = tempfile::tempdir().unwrap();
+        let (_repo, _) = init_repo_with_commit(src_dir.path());
+
+        let cache = tempfile::tempdir().unwrap();
+        let (printer, _) = Printer::for_test();
+        let git_src = GitSource {
+            repo_url: file_url(src_dir.path()),
+            tag: Some("does-not-exist-v99".to_string()),
+            git_ref: None,
+            subdir: None,
+        };
+
+        let err = fetch_git_source(&git_src, cache.path(), "mymod", &printer).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("does-not-exist-v99") || msg.contains("cannot find ref"),
+            "error must reference the missing tag or ref-resolution failure: {msg}"
+        );
+    }
+
+    #[test]
+    fn fetch_git_source_errors_when_repo_url_is_unreachable_path() {
+        // Clone from a file:// URL pointing at a path that doesn't exist.
+        // Both the git CLI and the libgit2 fallback must fail, so cfgd
+        // surfaces GitFetchFailed referencing the module.
+        let bogus_src = tempfile::tempdir().unwrap();
+        let bogus_path = bogus_src.path().join("nonexistent-repo");
+        // Do NOT create this path — repo doesn't exist.
+
+        let cache = tempfile::tempdir().unwrap();
+        let (printer, _) = Printer::for_test();
+        let git_src = GitSource {
+            repo_url: format!("file://{}", bogus_path.display()),
+            tag: None,
+            git_ref: None,
+            subdir: None,
+        };
+
+        let err = fetch_git_source(&git_src, cache.path(), "mymod", &printer).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("mymod") || msg.contains("nonexistent-repo") || msg.contains("clone"),
+            "error must mention module/url/clone-failure: {msg}"
+        );
+    }
+
+    #[test]
+    fn fetch_git_source_checks_out_branch_via_git_ref() {
+        // The `ref` field (from `?ref=branchname`) takes the branch lookup
+        // path in checkout_ref — first as `refs/remotes/origin/<ref>`. We
+        // create a `topic` branch on source, point it at the first commit,
+        // then add a new commit to master so default-branch HEAD differs.
+        let src_dir = tempfile::tempdir().unwrap();
+        let (src_repo, first_commit) = init_repo_with_commit(src_dir.path());
+        let _tip = add_commit(&src_repo, "advance.txt", "advance");
+        // Create branch `topic` pinned to first_commit.
+        let first_commit_obj = src_repo.find_commit(first_commit).unwrap();
+        src_repo.branch("topic", &first_commit_obj, false).unwrap();
+
+        let cache = tempfile::tempdir().unwrap();
+        let (printer, _) = Printer::for_test();
+        let git_src = GitSource {
+            repo_url: file_url(src_dir.path()),
+            tag: None,
+            git_ref: Some("topic".to_string()),
+            subdir: None,
+        };
+
+        let dest = fetch_git_source(&git_src, cache.path(), "mymod", &printer).unwrap();
+        let cloned_head = get_head_commit_sha(&dest).unwrap();
+        assert_eq!(
+            cloned_head,
+            first_commit.to_string(),
+            "git_ref=topic should land HEAD on the topic-branch tip (first commit)"
+        );
+    }
+
+    #[test]
+    fn fetch_git_source_cache_path_is_deterministic_for_same_url() {
+        // git_cache_dir derives the cache subdir from sha256(repo_url). The
+        // same URL must always resolve to the same cache subdir — cfgd's
+        // GitOps drift detector relies on this stability.
+        let src_dir = tempfile::tempdir().unwrap();
+        let (_repo, _) = init_repo_with_commit(src_dir.path());
+
+        let cache = tempfile::tempdir().unwrap();
+        let (printer, _) = Printer::for_test();
+        let git_src = GitSource {
+            repo_url: file_url(src_dir.path()),
+            tag: None,
+            git_ref: None,
+            subdir: None,
+        };
+
+        let dest1 = fetch_git_source(&git_src, cache.path(), "mymod", &printer).unwrap();
+        let dest2 = fetch_git_source(&git_src, cache.path(), "mymod", &printer).unwrap();
+        assert_eq!(dest1, dest2);
+        // And the cache directory is a child of `cache.path()`, not
+        // outside it (sanity check for the hash-prefix layout).
+        assert!(dest1.starts_with(cache.path()));
     }
 }
