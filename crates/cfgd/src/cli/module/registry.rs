@@ -138,22 +138,9 @@ pub(crate) fn cmd_module_add_remote(
     }
 
     // Build clean lockfile URL: repo@tag (no //subdir — subdir is a separate field)
-    let lock_url = if git_src.subdir.is_some() {
-        let mut clean = git_src.repo_url.clone();
-        if let Some(ref t) = git_src.tag {
-            clean = format!("{}@{}", clean, t);
-        } else if let Some(ref r) = git_src.git_ref {
-            clean = format!("{}?ref={}", clean, r);
-        }
-        clean
-    } else {
-        url.to_string()
-    };
+    let lock_url = compute_lock_url(url, &git_src);
 
-    let pinned_ref = git_src
-        .tag
-        .or(git_src.git_ref)
-        .unwrap_or_else(|| commit.clone());
+    let pinned_ref = compute_pinned_ref(&git_src, &commit);
 
     let lock_entry = cfgd_core::config::ModuleLockEntry {
         name: module_name.clone(),
@@ -183,8 +170,7 @@ pub(crate) fn cmd_module_add_remote(
             let contents = std::fs::read_to_string(&profile_path)?;
             let mut doc: config::ProfileDocument = serde_yaml::from_str(&contents)?;
 
-            if !doc.spec.modules.contains(&profile_module_ref) {
-                doc.spec.modules.push(profile_module_ref.clone());
+            if ensure_module_in_profile_doc(&mut doc, &profile_module_ref) {
                 let yaml = serde_yaml::to_string(&doc)?;
                 cfgd_core::atomic_write_str(&profile_path, &yaml)?;
                 printer.success(&format!(
@@ -786,4 +772,57 @@ pub(crate) fn cmd_module_registry_list(cli: &Cli, printer: &Printer) -> anyhow::
 pub(crate) fn build_registry_module_url(base_url: &str, module: &str, tag: &str) -> String {
     let subdir = format!("modules/{}", module);
     format!("{}//{}@{}/{}", base_url, subdir, module, tag)
+}
+
+/// Compute the URL string stored in the lockfile entry for a remote module.
+///
+/// When `git_src.subdir` is `None`, the raw URL the user supplied is preserved
+/// verbatim. When a subdir is present the //subdir suffix is stripped (subdir
+/// rides in its own `ModuleLockEntry::subdir` field) but tag/ref are
+/// re-attached in the canonical `repo@tag` / `repo?ref=branch` shapes — so
+/// `cmd_module_upgrade` can later `parse_git_source(url)` and recover the
+/// same source coordinates.
+pub(super) fn compute_lock_url(raw_url: &str, git_src: &modules::GitSource) -> String {
+    if git_src.subdir.is_some() {
+        let mut clean = git_src.repo_url.clone();
+        if let Some(ref t) = git_src.tag {
+            clean = format!("{}@{}", clean, t);
+        } else if let Some(ref r) = git_src.git_ref {
+            clean = format!("{}?ref={}", clean, r);
+        }
+        clean
+    } else {
+        raw_url.to_string()
+    }
+}
+
+/// Compute the `pinned_ref` field for a `ModuleLockEntry`.
+///
+/// Precedence: explicit tag > explicit branch ref > commit SHA fallback. The
+/// commit SHA fallback is what `cfgd module apply` checks against the remote
+/// when the user pinned `@HEAD` or omitted the ref — the lockfile always
+/// stores *something* so the reconciler has a deterministic target.
+pub(super) fn compute_pinned_ref(git_src: &modules::GitSource, commit: &str) -> String {
+    git_src
+        .tag
+        .clone()
+        .or_else(|| git_src.git_ref.clone())
+        .unwrap_or_else(|| commit.to_string())
+}
+
+/// Append `module_ref` to a profile's `spec.modules` if not already listed.
+///
+/// Returns `true` if the document was mutated (so the caller should rewrite
+/// it to disk), `false` if `module_ref` was already present (no I/O needed).
+/// Idempotent — repeated calls with the same `module_ref` are no-ops after
+/// the first.
+pub(super) fn ensure_module_in_profile_doc(
+    doc: &mut config::ProfileDocument,
+    module_ref: &str,
+) -> bool {
+    if doc.spec.modules.iter().any(|m| m == module_ref) {
+        return false;
+    }
+    doc.spec.modules.push(module_ref.to_string());
+    true
 }

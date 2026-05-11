@@ -3751,3 +3751,173 @@ fn print_module_review_summary_omits_empty_sections() {
     assert!(!out.contains("Files ("), "no files section: {out}");
     assert!(!out.contains("Post-apply"), "no scripts section: {out}");
 }
+
+// ============================================================================
+// compute_lock_url — URL stored in lockfile entries
+//
+// The lockfile URL is what `cmd_module_upgrade` re-parses to recover the
+// source coordinates. The contract pinned here:
+// - no subdir → preserve user's raw URL verbatim (round-trip exact)
+// - has subdir → strip `//subdir`, re-attach `@tag` or `?ref=branch`
+// ============================================================================
+
+#[test]
+fn compute_lock_url_without_subdir_preserves_raw_url_exactly() {
+    let git_src = modules::GitSource {
+        repo_url: "https://example.com/u/r.git".into(),
+        tag: Some("v1.2.3".into()),
+        git_ref: None,
+        subdir: None,
+    };
+    let url = super::registry::compute_lock_url("https://example.com/u/r.git@v1.2.3", &git_src);
+    assert_eq!(url, "https://example.com/u/r.git@v1.2.3");
+}
+
+#[test]
+fn compute_lock_url_with_subdir_strips_subdir_and_reattaches_tag() {
+    let git_src = modules::GitSource {
+        repo_url: "https://example.com/u/r.git".into(),
+        tag: Some("v1.0.0".into()),
+        git_ref: None,
+        subdir: Some("modules/foo".into()),
+    };
+    let url = super::registry::compute_lock_url(
+        "https://example.com/u/r.git//modules/foo@v1.0.0",
+        &git_src,
+    );
+    assert_eq!(url, "https://example.com/u/r.git@v1.0.0");
+}
+
+#[test]
+fn compute_lock_url_with_subdir_and_branch_ref_emits_query_form() {
+    let git_src = modules::GitSource {
+        repo_url: "https://example.com/u/r.git".into(),
+        tag: None,
+        git_ref: Some("dev".into()),
+        subdir: Some("modules/foo".into()),
+    };
+    let url = super::registry::compute_lock_url(
+        "https://example.com/u/r.git//modules/foo?ref=dev",
+        &git_src,
+    );
+    assert_eq!(url, "https://example.com/u/r.git?ref=dev");
+}
+
+#[test]
+fn compute_lock_url_with_subdir_and_no_tag_or_ref_returns_bare_repo() {
+    let git_src = modules::GitSource {
+        repo_url: "https://example.com/u/r.git".into(),
+        tag: None,
+        git_ref: None,
+        subdir: Some("modules/foo".into()),
+    };
+    let url =
+        super::registry::compute_lock_url("https://example.com/u/r.git//modules/foo", &git_src);
+    assert_eq!(url, "https://example.com/u/r.git");
+}
+
+#[test]
+fn compute_lock_url_no_subdir_no_tag_preserves_bare_url() {
+    let git_src = modules::GitSource {
+        repo_url: "https://example.com/u/r.git".into(),
+        tag: None,
+        git_ref: None,
+        subdir: None,
+    };
+    let url = super::registry::compute_lock_url("https://example.com/u/r.git", &git_src);
+    assert_eq!(url, "https://example.com/u/r.git");
+}
+
+// ============================================================================
+// compute_pinned_ref — precedence: tag > git_ref > commit
+// ============================================================================
+
+#[test]
+fn compute_pinned_ref_prefers_tag_over_ref_and_commit() {
+    let git_src = modules::GitSource {
+        repo_url: "x".into(),
+        tag: Some("v2.0".into()),
+        git_ref: Some("dev".into()),
+        subdir: None,
+    };
+    let pin = super::registry::compute_pinned_ref(&git_src, "deadbeef");
+    assert_eq!(pin, "v2.0");
+}
+
+#[test]
+fn compute_pinned_ref_uses_branch_ref_when_no_tag() {
+    let git_src = modules::GitSource {
+        repo_url: "x".into(),
+        tag: None,
+        git_ref: Some("dev".into()),
+        subdir: None,
+    };
+    let pin = super::registry::compute_pinned_ref(&git_src, "deadbeef");
+    assert_eq!(pin, "dev");
+}
+
+#[test]
+fn compute_pinned_ref_falls_back_to_commit_sha_when_no_tag_or_ref() {
+    let git_src = modules::GitSource {
+        repo_url: "x".into(),
+        tag: None,
+        git_ref: None,
+        subdir: None,
+    };
+    let pin = super::registry::compute_pinned_ref(&git_src, "abc123def456");
+    assert_eq!(pin, "abc123def456");
+}
+
+// ============================================================================
+// ensure_module_in_profile_doc — idempotent profile-modules append
+// ============================================================================
+
+fn make_profile_doc(modules: Vec<&str>) -> config::ProfileDocument {
+    config::ProfileDocument {
+        api_version: "cfgd.io/v1alpha1".to_string(),
+        kind: "Profile".to_string(),
+        metadata: config::ProfileMetadata {
+            name: "test".to_string(),
+        },
+        spec: config::ProfileSpec {
+            modules: modules.into_iter().map(|s| s.to_string()).collect(),
+            ..Default::default()
+        },
+    }
+}
+
+#[test]
+fn ensure_module_in_profile_doc_appends_when_absent_returns_true() {
+    let mut doc = make_profile_doc(vec!["base"]);
+    let changed = super::registry::ensure_module_in_profile_doc(&mut doc, "vim-config");
+    assert!(changed);
+    assert_eq!(doc.spec.modules, vec!["base", "vim-config"]);
+}
+
+#[test]
+fn ensure_module_in_profile_doc_is_idempotent_returns_false() {
+    let mut doc = make_profile_doc(vec!["base", "vim-config"]);
+    let changed = super::registry::ensure_module_in_profile_doc(&mut doc, "vim-config");
+    assert!(!changed, "second add should be no-op");
+    assert_eq!(doc.spec.modules, vec!["base", "vim-config"]);
+}
+
+#[test]
+fn ensure_module_in_profile_doc_preserves_ordering_on_append() {
+    // Order matters: profile module list is rendered to YAML in this order,
+    // and downstream reconciliation respects declaration order for ties.
+    let mut doc = make_profile_doc(vec!["a", "b", "c"]);
+    super::registry::ensure_module_in_profile_doc(&mut doc, "z");
+    assert_eq!(doc.spec.modules, vec!["a", "b", "c", "z"]);
+}
+
+#[test]
+fn ensure_module_in_profile_doc_treats_registry_prefixed_refs_as_distinct() {
+    // `registry/module` is a different reference than bare `module`. Both
+    // should be addable independently — the helper compares full strings,
+    // not parsed components.
+    let mut doc = make_profile_doc(vec!["vim-config"]);
+    let changed = super::registry::ensure_module_in_profile_doc(&mut doc, "official/vim-config");
+    assert!(changed);
+    assert_eq!(doc.spec.modules, vec!["vim-config", "official/vim-config"]);
+}
