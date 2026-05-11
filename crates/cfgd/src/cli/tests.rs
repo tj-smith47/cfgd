@@ -15823,3 +15823,193 @@ fn display_pending_decisions_orders_sources_alphabetically() {
         "expected alpha < middle < zebra in: {out}"
     );
 }
+
+// ===========================================================================
+// cmd_source_add end-to-end against a local bare repo (file:// fixture).
+//
+// CFGD_ALLOW_LOCAL_SOURCES=1 flips off the file:// safety check, so the test
+// can stand up an `init_bare` upstream containing a real `cfgd-source.yaml`,
+// drive cmd_source_add against it, and verify the cfgd.yaml is mutated +
+// state store updated. This walks the orchestration body in
+// `cli/source/add.rs` which previously only had error-path coverage.
+// ===========================================================================
+
+mod cmd_source_add_local {
+    use super::*;
+    use serial_test::serial;
+
+    fn with_env<F: FnOnce()>(var: &str, value: Option<&str>, f: F) {
+        // SAFETY: serial_test ensures no other test mutates env concurrently.
+        unsafe {
+            let prior = std::env::var(var).ok();
+            match value {
+                Some(v) => std::env::set_var(var, v),
+                None => std::env::remove_var(var),
+            }
+            f();
+            match prior {
+                Some(v) => std::env::set_var(var, v),
+                None => std::env::remove_var(var),
+            }
+        }
+    }
+
+    /// Build a bare upstream that contains a single-profile `cfgd-source.yaml`.
+    /// Returns the bare repo path.
+    fn make_bare_with_manifest(
+        scratch: &tempfile::TempDir,
+        name: &str,
+        version: Option<&str>,
+    ) -> std::path::PathBuf {
+        let bare = scratch.path().join(format!("{name}-bare.git"));
+        let _ = git2::Repository::init_bare(&bare).unwrap();
+        let src = scratch.path().join(format!("{name}-src"));
+        let src_repo = git2::Repository::init(&src).unwrap();
+        let mut manifest = format!(
+            "apiVersion: cfgd.io/v1alpha1\nkind: ConfigSource\nmetadata:\n  name: {name}\n"
+        );
+        if let Some(v) = version {
+            manifest.push_str(&format!("  version: {v}\n"));
+        }
+        manifest.push_str("spec:\n  provides:\n    profiles:\n      - default\n");
+        std::fs::write(src.join("cfgd-source.yaml"), &manifest).unwrap();
+        // Profile dir with default.yaml so source_profiles_dir(name)/default.yaml resolves.
+        std::fs::create_dir_all(src.join("profiles")).unwrap();
+        std::fs::write(
+            src.join("profiles").join("default.yaml"),
+            "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec: {}\n",
+        )
+        .unwrap();
+        let mut index = src_repo.index().unwrap();
+        index
+            .add_path(std::path::Path::new("cfgd-source.yaml"))
+            .unwrap();
+        index
+            .add_path(std::path::Path::new("profiles/default.yaml"))
+            .unwrap();
+        index.write().unwrap();
+        let tree_id = index.write_tree().unwrap();
+        let tree = src_repo.find_tree(tree_id).unwrap();
+        let sig = git2::Signature::now("t", "t@example.com").unwrap();
+        src_repo
+            .commit(Some("HEAD"), &sig, &sig, "initial", &tree, &[])
+            .unwrap();
+        drop(tree);
+        let url = format!("file://{}", bare.display());
+        let mut remote = src_repo.remote("origin", &url).unwrap();
+        let branch = src_repo
+            .head()
+            .unwrap()
+            .shorthand()
+            .unwrap_or("master")
+            .to_string();
+        remote
+            .push(&[&format!("refs/heads/{branch}:refs/heads/{branch}")], None)
+            .unwrap();
+        bare
+    }
+
+    fn empty_source_args(url: String) -> SourceAddArgs {
+        SourceAddArgs {
+            url,
+            name: None,
+            branch: None,
+            profile: Some("default".to_string()),
+            accept_recommended: false,
+            priority: Some(500),
+            opt_in: vec![],
+            sync_interval: None,
+            auto_apply: false,
+            version_pin: None,
+            yes: true,
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn cmd_source_add_against_local_bare_repo_writes_config() {
+        with_env("CFGD_ALLOW_LOCAL_SOURCES", Some("1"), || {
+            let scratch = tempfile::tempdir().unwrap();
+            let bare = make_bare_with_manifest(&scratch, "local-team", None);
+            let h = CliTestHarness::builder().build();
+            let url = format!("file://{}", bare.display());
+            let args = SourceAddArgs {
+                name: Some("local-team".to_string()),
+                ..empty_source_args(url.clone())
+            };
+            let result = super::source::cmd_source_add(&h.cli(), h.printer(), &args);
+            assert!(result.is_ok(), "cmd_source_add should succeed: {result:?}");
+            // Source row added to cfgd.yaml.
+            let cfg_after = std::fs::read_to_string(h.config_path().join("cfgd.yaml")).unwrap();
+            assert!(
+                cfg_after.contains("local-team"),
+                "expected 'local-team' in cfgd.yaml: {cfg_after}"
+            );
+            assert!(
+                cfg_after.contains(&url),
+                "expected file:// URL in cfgd.yaml"
+            );
+        });
+    }
+
+    #[test]
+    #[serial]
+    fn cmd_source_add_version_pin_persists_to_config() {
+        with_env("CFGD_ALLOW_LOCAL_SOURCES", Some("1"), || {
+            let scratch = tempfile::tempdir().unwrap();
+            let bare = make_bare_with_manifest(&scratch, "pinned-src", Some("1.2.3"));
+            let h = CliTestHarness::builder().build();
+            let url = format!("file://{}", bare.display());
+            let args = SourceAddArgs {
+                name: Some("pinned-src".to_string()),
+                version_pin: Some("~1".to_string()),
+                ..empty_source_args(url)
+            };
+            let result = super::source::cmd_source_add(&h.cli(), h.printer(), &args);
+            assert!(result.is_ok(), "cmd_source_add should succeed: {result:?}");
+            let cfg_after = std::fs::read_to_string(h.config_path().join("cfgd.yaml")).unwrap();
+            assert!(
+                cfg_after.contains("pinVersion") || cfg_after.contains("~1"),
+                "expected pinVersion field in cfgd.yaml: {cfg_after}"
+            );
+        });
+    }
+
+    #[test]
+    #[serial]
+    fn cmd_source_add_with_branch_override_respects_branch_flag() {
+        with_env("CFGD_ALLOW_LOCAL_SOURCES", Some("1"), || {
+            let scratch = tempfile::tempdir().unwrap();
+            let bare = make_bare_with_manifest(&scratch, "branched", None);
+            let h = CliTestHarness::builder().build();
+            let url = format!("file://{}", bare.display());
+            // Determine the actual default branch name from the bare repo.
+            let actual_branch = {
+                let repo = git2::Repository::open(&bare).unwrap();
+                let refs = repo.references().unwrap();
+                let mut name = String::from("master");
+                for r in refs.flatten() {
+                    if let Some(n) = r.name()
+                        && let Some(stripped) = n.strip_prefix("refs/heads/")
+                    {
+                        name = stripped.to_string();
+                        break;
+                    }
+                }
+                name
+            };
+            let args = SourceAddArgs {
+                name: Some("branched".to_string()),
+                branch: Some(actual_branch.clone()),
+                ..empty_source_args(url)
+            };
+            let result = super::source::cmd_source_add(&h.cli(), h.printer(), &args);
+            assert!(result.is_ok(), "cmd_source_add should succeed: {result:?}");
+            let cfg_after = std::fs::read_to_string(h.config_path().join("cfgd.yaml")).unwrap();
+            assert!(
+                cfg_after.contains(&actual_branch),
+                "expected branch '{actual_branch}' in cfgd.yaml: {cfg_after}"
+            );
+        });
+    }
+}
