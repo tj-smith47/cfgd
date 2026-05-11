@@ -5602,6 +5602,326 @@ async fn handle_reconcile_multiple_actions_records_all_drift() {
     );
 }
 
+// --- handle_reconcile: autoApply + onDrift + notify_on_drift arms ---
+//
+// These tests cover the branches that the prior drift tests skipped:
+// `DriftPolicy::Auto` invoking `reconciler.apply()`, the `scripts.on_drift`
+// execution loop, and the `notify_on_drift=true` notifier paths.
+
+/// `DriftingFileHooks` returns a single `FileAction::Create` whose `source`
+/// and `target` paths are owned by the test fixture. With
+/// `FileStrategy::Copy`, the reconciler's apply path will `std::fs::copy` the
+/// file, succeeding under normal conditions or failing if `source` is absent.
+struct DriftingFileHooks {
+    source: PathBuf,
+    target: PathBuf,
+}
+
+impl DaemonHooks for DriftingFileHooks {
+    fn build_registry(&self, _: &CfgdConfig) -> ProviderRegistry {
+        ProviderRegistry::new()
+    }
+    fn plan_files(&self, _: &Path, _: &ResolvedProfile) -> crate::errors::Result<Vec<FileAction>> {
+        Ok(vec![FileAction::Create {
+            source: self.source.clone(),
+            target: self.target.clone(),
+            origin: "local".into(),
+            strategy: crate::config::FileStrategy::Copy,
+            source_hash: None,
+        }])
+    }
+    fn plan_packages(
+        &self,
+        _: &MergedProfile,
+        _: &[&dyn PackageManager],
+    ) -> crate::errors::Result<Vec<PackageAction>> {
+        Ok(vec![])
+    }
+    fn extend_registry_custom_managers(&self, _: &mut ProviderRegistry, _: &config::PackagesSpec) {}
+    fn expand_tilde(&self, path: &Path) -> PathBuf {
+        crate::expand_tilde(path)
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn handle_reconcile_auto_policy_with_drift_invokes_apply_success() {
+    // DriftPolicy::Auto + a FileAction::Create with valid source/target →
+    // reconciler.apply() runs the copy, succeeded > 0. notify_on_drift=true
+    // exercises the success-notification branch.
+    let tmp = tempfile::tempdir().unwrap();
+    let _g = crate::with_test_home_guard(tmp.path());
+    let state_dir = tmp.path().join("state");
+    std::fs::create_dir_all(&state_dir).unwrap();
+
+    let config_path = tmp.path().join("cfgd.yaml");
+    std::fs::write(
+        &config_path,
+        "apiVersion: cfgd.io/v1alpha1\nkind: CfgdConfig\nmetadata:\n  name: test\nspec:\n  profile: default\n  daemon:\n    enabled: true\n    reconcile:\n      interval: 60s\n      autoApply: true\n      driftPolicy: Auto\n",
+    )
+    .unwrap();
+    let profiles_dir = tmp.path().join("profiles");
+    std::fs::create_dir_all(&profiles_dir).unwrap();
+    std::fs::write(
+        profiles_dir.join("default.yaml"),
+        "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec: {}\n",
+    )
+    .unwrap();
+
+    // Real source file inside tmp, target inside tmp — copy succeeds.
+    let source = tmp.path().join("src.txt");
+    std::fs::write(&source, "hello").unwrap();
+    let target = tmp.path().join("dst.txt");
+    let hooks = DriftingFileHooks {
+        source,
+        target: target.clone(),
+    };
+
+    let state = Arc::new(Mutex::new(DaemonState::new()));
+    let notifier = Arc::new(Notifier::new(NotifyMethod::Stdout, None));
+    let st = Arc::clone(&state);
+    let not = Arc::clone(&notifier);
+    let sd = state_dir.clone();
+    let cp = config_path.clone();
+    tokio::task::spawn_blocking(move || {
+        handle_reconcile(&cp, None, &st, &not, true, &hooks, Some(&sd));
+    })
+    .await
+    .unwrap();
+
+    // Apply succeeded — file copied to target. This proves the auto-apply
+    // branch (DriftPolicy::Auto + drift > 0 → reconciler.apply) was reached.
+    assert!(
+        target.exists(),
+        "auto-apply should have copied source to target"
+    );
+    let guard = state.lock().await;
+    assert!(guard.last_reconcile.is_some());
+    assert!(
+        guard.drift_count > 0,
+        "drift_count should have been incremented before resolve_drift"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn handle_reconcile_auto_policy_apply_failure_notifies() {
+    // DriftPolicy::Auto + FileAction::Create with nonexistent source →
+    // copy fails, exercising the auto-apply partial-failure notification branch.
+    let tmp = tempfile::tempdir().unwrap();
+    let _g = crate::with_test_home_guard(tmp.path());
+    let state_dir = tmp.path().join("state");
+    std::fs::create_dir_all(&state_dir).unwrap();
+
+    let config_path = tmp.path().join("cfgd.yaml");
+    std::fs::write(
+        &config_path,
+        "apiVersion: cfgd.io/v1alpha1\nkind: CfgdConfig\nmetadata:\n  name: test\nspec:\n  profile: default\n  daemon:\n    enabled: true\n    reconcile:\n      interval: 60s\n      autoApply: true\n      driftPolicy: Auto\n",
+    )
+    .unwrap();
+    let profiles_dir = tmp.path().join("profiles");
+    std::fs::create_dir_all(&profiles_dir).unwrap();
+    std::fs::write(
+        profiles_dir.join("default.yaml"),
+        "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec: {}\n",
+    )
+    .unwrap();
+
+    // Source does NOT exist → std::fs::copy fails → apply records failure.
+    let source = tmp.path().join("missing.txt");
+    let target = tmp.path().join("dst.txt");
+    let hooks = DriftingFileHooks {
+        source,
+        target: target.clone(),
+    };
+
+    let state = Arc::new(Mutex::new(DaemonState::new()));
+    let notifier = Arc::new(Notifier::new(NotifyMethod::Stdout, None));
+    let st = Arc::clone(&state);
+    let not = Arc::clone(&notifier);
+    let sd = state_dir.clone();
+    let cp = config_path.clone();
+    tokio::task::spawn_blocking(move || {
+        handle_reconcile(&cp, None, &st, &not, true, &hooks, Some(&sd));
+    })
+    .await
+    .unwrap();
+
+    // Target never created — apply failed.
+    assert!(!target.exists(), "apply should have failed to copy");
+    // Drift recorded regardless.
+    let store = StateStore::open(&state_dir.join("cfgd.db")).unwrap();
+    let drift_events = store.unresolved_drift().unwrap();
+    assert!(!drift_events.is_empty());
+    let guard = state.lock().await;
+    assert!(guard.last_reconcile.is_some());
+    assert!(guard.drift_count > 0);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn handle_reconcile_runs_on_drift_scripts() {
+    // Profile with `scripts.onDrift` populated → on-drift script loop runs.
+    // The script writes a marker file we can assert on.
+    let tmp = tempfile::tempdir().unwrap();
+    let _g = crate::with_test_home_guard(tmp.path());
+    let state_dir = tmp.path().join("state");
+    std::fs::create_dir_all(&state_dir).unwrap();
+
+    let marker = tmp.path().join("on-drift-ran.marker");
+    let marker_str = marker.display().to_string();
+
+    let config_path = tmp.path().join("cfgd.yaml");
+    std::fs::write(
+        &config_path,
+        "apiVersion: cfgd.io/v1alpha1\nkind: CfgdConfig\nmetadata:\n  name: test\nspec:\n  profile: default\n",
+    )
+    .unwrap();
+    let profiles_dir = tmp.path().join("profiles");
+    std::fs::create_dir_all(&profiles_dir).unwrap();
+    std::fs::write(
+        profiles_dir.join("default.yaml"),
+        format!(
+            "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec:\n  scripts:\n    onDrift:\n      - \"touch '{}'\"\n",
+            marker_str
+        ),
+    )
+    .unwrap();
+
+    // Use the existing DriftHooks pattern: a package action creates drift,
+    // which triggers the onDrift loop.
+    struct PkgDriftHooks;
+    impl DaemonHooks for PkgDriftHooks {
+        fn build_registry(&self, _: &CfgdConfig) -> ProviderRegistry {
+            ProviderRegistry::new()
+        }
+        fn plan_files(
+            &self,
+            _: &Path,
+            _: &ResolvedProfile,
+        ) -> crate::errors::Result<Vec<FileAction>> {
+            Ok(vec![])
+        }
+        fn plan_packages(
+            &self,
+            _: &MergedProfile,
+            _: &[&dyn PackageManager],
+        ) -> crate::errors::Result<Vec<PackageAction>> {
+            Ok(vec![PackageAction::Install {
+                manager: "cargo".into(),
+                packages: vec!["bat".into()],
+                origin: "local".into(),
+            }])
+        }
+        fn extend_registry_custom_managers(
+            &self,
+            _: &mut ProviderRegistry,
+            _: &config::PackagesSpec,
+        ) {
+        }
+        fn expand_tilde(&self, path: &Path) -> PathBuf {
+            crate::expand_tilde(path)
+        }
+    }
+
+    let state = Arc::new(Mutex::new(DaemonState::new()));
+    let notifier = Arc::new(Notifier::new(NotifyMethod::Stdout, None));
+    let st = Arc::clone(&state);
+    let not = Arc::clone(&notifier);
+    let sd = state_dir.clone();
+    let cp = config_path.clone();
+    tokio::task::spawn_blocking(move || {
+        handle_reconcile(&cp, None, &st, &not, false, &PkgDriftHooks, Some(&sd));
+    })
+    .await
+    .unwrap();
+
+    assert!(
+        marker.exists(),
+        "onDrift script should have created marker file at {}",
+        marker.display()
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn handle_reconcile_notify_only_with_notify_on_drift_sends_notification() {
+    // NotifyOnly policy + notify_on_drift=true + drift → notifier.notify
+    // called for "drift detected". Stdout notifier just logs, but the call
+    // path is what we want to exercise (it's a distinct branch from the
+    // notify_on_drift=false NotifyOnly case already covered).
+    let tmp = tempfile::tempdir().unwrap();
+    let _g = crate::with_test_home_guard(tmp.path());
+    let state_dir = tmp.path().join("state");
+    std::fs::create_dir_all(&state_dir).unwrap();
+
+    let config_path = tmp.path().join("cfgd.yaml");
+    std::fs::write(
+        &config_path,
+        "apiVersion: cfgd.io/v1alpha1\nkind: CfgdConfig\nmetadata:\n  name: test\nspec:\n  profile: default\n  daemon:\n    enabled: true\n    reconcile:\n      interval: 60s\n      autoApply: false\n      driftPolicy: NotifyOnly\n",
+    )
+    .unwrap();
+    let profiles_dir = tmp.path().join("profiles");
+    std::fs::create_dir_all(&profiles_dir).unwrap();
+    std::fs::write(
+        profiles_dir.join("default.yaml"),
+        "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec: {}\n",
+    )
+    .unwrap();
+
+    struct PkgDriftHooks;
+    impl DaemonHooks for PkgDriftHooks {
+        fn build_registry(&self, _: &CfgdConfig) -> ProviderRegistry {
+            ProviderRegistry::new()
+        }
+        fn plan_files(
+            &self,
+            _: &Path,
+            _: &ResolvedProfile,
+        ) -> crate::errors::Result<Vec<FileAction>> {
+            Ok(vec![])
+        }
+        fn plan_packages(
+            &self,
+            _: &MergedProfile,
+            _: &[&dyn PackageManager],
+        ) -> crate::errors::Result<Vec<PackageAction>> {
+            Ok(vec![PackageAction::Install {
+                manager: "cargo".into(),
+                packages: vec!["ripgrep".into()],
+                origin: "local".into(),
+            }])
+        }
+        fn extend_registry_custom_managers(
+            &self,
+            _: &mut ProviderRegistry,
+            _: &config::PackagesSpec,
+        ) {
+        }
+        fn expand_tilde(&self, path: &Path) -> PathBuf {
+            crate::expand_tilde(path)
+        }
+    }
+
+    let state = Arc::new(Mutex::new(DaemonState::new()));
+    let notifier = Arc::new(Notifier::new(NotifyMethod::Stdout, None));
+    let st = Arc::clone(&state);
+    let not = Arc::clone(&notifier);
+    let sd = state_dir.clone();
+    let cp = config_path.clone();
+    tokio::task::spawn_blocking(move || {
+        // notify_on_drift = true → notifier.notify() reached
+        handle_reconcile(&cp, None, &st, &not, true, &PkgDriftHooks, Some(&sd));
+    })
+    .await
+    .unwrap();
+
+    // Drift event recorded. notify ran (stdout notifier just traces; we assert
+    // the call path was reached by checking the drift bookkeeping side-effects).
+    let store = StateStore::open(&state_dir.join("cfgd.db")).unwrap();
+    let drift_events = store.unresolved_drift().unwrap();
+    assert!(!drift_events.is_empty());
+    let guard = state.lock().await;
+    assert!(guard.last_reconcile.is_some());
+    assert!(guard.drift_count > 0);
+}
+
 // --- discover_managed_paths ---
 
 #[test]

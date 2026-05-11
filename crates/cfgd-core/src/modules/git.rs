@@ -22,11 +22,23 @@ pub struct GitSource {
 }
 
 /// Check whether a file source string is a git URL (not a local path).
+///
+/// `file://` URLs are rejected by default to keep remote-module sources to
+/// proper network protocols. Tests can opt into local-file sources by setting
+/// `CFGD_ALLOW_LOCAL_SOURCES=1` — same gate `sources/mod.rs` uses for the
+/// composed-sources path.
 pub fn is_git_source(source: &str) -> bool {
-    source.starts_with("https://")
+    if source.starts_with("https://")
         || source.starts_with("http://")
         || source.starts_with("git@")
         || source.starts_with("ssh://")
+    {
+        return true;
+    }
+    if source.starts_with("file://") && std::env::var("CFGD_ALLOW_LOCAL_SOURCES").is_ok() {
+        return true;
+    }
+    false
 }
 
 /// Parse a git file source URL into its components.
@@ -120,7 +132,15 @@ pub fn git_cache_dir(cache_base: &Path, repo_url: &str) -> PathBuf {
 }
 
 /// Default cache directory for module git sources.
+///
+/// Honors the thread-local test-home override (set via `with_test_home_guard`)
+/// so tests can redirect module cache writes off the real `~/.cache/cfgd/`.
+/// Without an override this falls through to `directories::BaseDirs` (XDG on
+/// Linux, `~/Library/Caches` on macOS, `AppData\Local` on Windows).
 pub fn default_module_cache_dir() -> Result<PathBuf> {
+    if let Some(home) = crate::util::test_home_override() {
+        return Ok(home.join(".cache").join("cfgd").join("modules"));
+    }
     let base = directories::BaseDirs::new().ok_or_else(|| ModuleError::GitFetchFailed {
         module: String::new(),
         url: String::new(),

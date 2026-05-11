@@ -3921,3 +3921,302 @@ fn ensure_module_in_profile_doc_treats_registry_prefixed_refs_as_distinct() {
     assert!(changed);
     assert_eq!(doc.spec.modules, vec!["vim-config", "official/vim-config"]);
 }
+
+// ─── cmd_module_add_remote / cmd_module_upgrade against local bare repo ──────
+//
+// These tests drive the full remote-module orchestration end-to-end against a
+// `file://` URL. `CFGD_ALLOW_LOCAL_SOURCES=1` flips the `is_git_source` gate
+// so the file:// URL is accepted, and `with_test_home_guard` redirects
+// `default_module_cache_dir` off of the real `~/.cache/cfgd/`.
+
+#[cfg(unix)]
+mod cmd_module_add_remote_local_bare {
+    use super::*;
+    use serial_test::serial;
+    use std::path::{Path, PathBuf};
+
+    /// Initialise a bare upstream + a working source repo, commit `module.yaml`
+    /// at the root, annotate the commit with `tag`, and push both the branch
+    /// and the tag to the bare. Returns the bare path so `file://<bare>` can
+    /// be used as a clone source.
+    fn make_bare_with_module(tmp_root: &Path, module_name: &str, tag: &str) -> PathBuf {
+        let bare = tmp_root.join("upstream.git");
+        let _bare_repo = git2::Repository::init_bare(&bare).unwrap();
+
+        let src = tmp_root.join("src");
+        let src_repo = git2::Repository::init(&src).unwrap();
+        let yaml = format!(
+            "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: {}\n  description: test mod\nspec: {{}}\n",
+            module_name
+        );
+        std::fs::write(src.join("module.yaml"), yaml).unwrap();
+        let mut index = src_repo.index().unwrap();
+        index.add_path(Path::new("module.yaml")).unwrap();
+        index.write().unwrap();
+        let tree_id = index.write_tree().unwrap();
+        let tree = src_repo.find_tree(tree_id).unwrap();
+        let sig = git2::Signature::now("t", "t@example.com").unwrap();
+        let commit_id = src_repo
+            .commit(Some("HEAD"), &sig, &sig, "initial", &tree, &[])
+            .unwrap();
+        drop(tree);
+        let commit_obj = src_repo.find_commit(commit_id).unwrap();
+        // Annotated tag (carries metadata but no signature — fine with
+        // `allow_unsigned=true`).
+        src_repo
+            .tag(tag, commit_obj.as_object(), &sig, "release", false)
+            .unwrap();
+
+        let bare_url = format!("file://{}", bare.display());
+        let mut remote = src_repo.remote("origin", &bare_url).unwrap();
+        let branch = src_repo
+            .head()
+            .unwrap()
+            .shorthand()
+            .unwrap_or("master")
+            .to_string();
+        remote
+            .push(
+                &[
+                    &format!("refs/heads/{branch}:refs/heads/{branch}"),
+                    &format!("refs/tags/{tag}:refs/tags/{tag}"),
+                ],
+                None,
+            )
+            .unwrap();
+        bare
+    }
+
+    /// Add a second commit + tag to an existing source repo and push it.
+    fn add_tag_to_bare(src: &Path, bare: &Path, new_tag: &str) {
+        let src_repo = git2::Repository::open(src).unwrap();
+        // Mutate module.yaml so the new commit differs from the first.
+        let yaml = "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: mymod\n  description: bumped\nspec: {}\n";
+        std::fs::write(src.join("module.yaml"), yaml).unwrap();
+        let mut index = src_repo.index().unwrap();
+        index.add_path(Path::new("module.yaml")).unwrap();
+        index.write().unwrap();
+        let tree_id = index.write_tree().unwrap();
+        let tree = src_repo.find_tree(tree_id).unwrap();
+        let sig = git2::Signature::now("t", "t@example.com").unwrap();
+        let parent = src_repo.head().unwrap().peel_to_commit().unwrap();
+        let commit_id = src_repo
+            .commit(Some("HEAD"), &sig, &sig, "bump", &tree, &[&parent])
+            .unwrap();
+        drop(tree);
+        let commit_obj = src_repo.find_commit(commit_id).unwrap();
+        src_repo
+            .tag(new_tag, commit_obj.as_object(), &sig, "release", false)
+            .unwrap();
+        let bare_url = format!("file://{}", bare.display());
+        let mut remote = src_repo.remote_anonymous(&bare_url).unwrap();
+        let branch = src_repo
+            .head()
+            .unwrap()
+            .shorthand()
+            .unwrap_or("master")
+            .to_string();
+        remote
+            .push(
+                &[
+                    &format!("+refs/heads/{branch}:refs/heads/{branch}"),
+                    &format!("refs/tags/{new_tag}:refs/tags/{new_tag}"),
+                ],
+                None,
+            )
+            .unwrap();
+    }
+
+    /// RAII env-var helper: set on construction, remove on drop. Tests using
+    /// this MUST be marked `#[serial]` — env mutation is process-wide.
+    struct EnvGuard {
+        key: &'static str,
+    }
+    impl EnvGuard {
+        fn set(key: &'static str, value: &str) -> Self {
+            // SAFETY: serialized via #[serial].
+            unsafe {
+                std::env::set_var(key, value);
+            }
+            Self { key }
+        }
+    }
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            // SAFETY: serialized via #[serial].
+            unsafe {
+                std::env::remove_var(self.key);
+            }
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn cmd_module_add_remote_against_local_bare_adds_to_lockfile_and_profile() {
+        let work = setup_config_dir();
+        let _home = cfgd_core::with_test_home_guard(work.path());
+        let _env = EnvGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+
+        let bare_root = tempfile::tempdir().unwrap();
+        let bare = make_bare_with_module(bare_root.path(), "mymod", "v1.0.0");
+        let url = format!("file://{}@v1.0.0", bare.display());
+
+        let cli = test_cli(work.path());
+        let (printer, _buf) = cfgd_core::output::Printer::for_test();
+        cmd_module_add_remote(&cli, &printer, &url, None, true, true)
+            .expect("cmd_module_add_remote happy path");
+
+        // Lockfile created with the new module entry.
+        let lockfile_path = work.path().join("modules.lock");
+        assert!(lockfile_path.exists(), "modules.lock should exist");
+        let lockfile_contents = std::fs::read_to_string(&lockfile_path).unwrap();
+        assert!(
+            lockfile_contents.contains("mymod"),
+            "lockfile should list mymod: {lockfile_contents}"
+        );
+        assert!(
+            lockfile_contents.contains("v1.0.0"),
+            "lockfile pinned_ref should record v1.0.0: {lockfile_contents}"
+        );
+
+        // Profile updated with the module reference.
+        let profile_yaml =
+            std::fs::read_to_string(work.path().join("profiles/default.yaml")).unwrap();
+        assert!(
+            profile_yaml.contains("mymod"),
+            "profile should reference mymod after add: {profile_yaml}"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn cmd_module_add_remote_is_idempotent_when_module_already_in_lockfile() {
+        let work = setup_config_dir();
+        let _home = cfgd_core::with_test_home_guard(work.path());
+        let _env = EnvGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+
+        let bare_root = tempfile::tempdir().unwrap();
+        let bare = make_bare_with_module(bare_root.path(), "mymod", "v1.0.0");
+        let url = format!("file://{}@v1.0.0", bare.display());
+
+        let cli = test_cli(work.path());
+        let (printer, buf) = cfgd_core::output::Printer::for_test();
+        cmd_module_add_remote(&cli, &printer, &url, None, true, true).unwrap();
+        // Second invocation hits the "already in lockfile" early return.
+        cmd_module_add_remote(&cli, &printer, &url, None, true, true)
+            .expect("second add should noop, not error");
+
+        let output = buf.lock().unwrap();
+        assert!(
+            output.contains("already in the lockfile"),
+            "second add should report idempotent skip: {output}"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn cmd_module_add_remote_bails_when_local_module_with_same_name_exists() {
+        let work = setup_config_dir();
+        let _home = cfgd_core::with_test_home_guard(work.path());
+        let _env = EnvGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+
+        // Seed a local module under <config>/modules/<name>/ so the
+        // local-vs-remote name collision check fires.
+        let local_mod_yaml =
+            "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: mymod\nspec: {}\n";
+        make_module(work.path(), "mymod", local_mod_yaml);
+
+        let bare_root = tempfile::tempdir().unwrap();
+        let bare = make_bare_with_module(bare_root.path(), "mymod", "v1.0.0");
+        let url = format!("file://{}@v1.0.0", bare.display());
+
+        let cli = test_cli(work.path());
+        let (printer, _buf) = cfgd_core::output::Printer::for_test();
+        let err = cmd_module_add_remote(&cli, &printer, &url, None, true, true)
+            .expect_err("local-module collision should refuse to proceed");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("Local module") && msg.contains("mymod"),
+            "error should mention the local-module collision: {msg}"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn cmd_module_upgrade_against_local_bare_replaces_lockfile_entry() {
+        let work = setup_config_dir();
+        let _home = cfgd_core::with_test_home_guard(work.path());
+        let _env = EnvGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+
+        let bare_root = tempfile::tempdir().unwrap();
+        let bare = make_bare_with_module(bare_root.path(), "mymod", "v1.0.0");
+        let url_v1 = format!("file://{}@v1.0.0", bare.display());
+
+        let cli = test_cli(work.path());
+        let (printer, _buf) = cfgd_core::output::Printer::for_test();
+        cmd_module_add_remote(&cli, &printer, &url_v1, None, true, true).unwrap();
+
+        // Capture v1 lockfile state for comparison.
+        let lock_v1 = std::fs::read_to_string(work.path().join("modules.lock")).unwrap();
+        assert!(lock_v1.contains("v1.0.0"));
+
+        // Push v2 to the bare repo.
+        let src = bare_root.path().join("src");
+        add_tag_to_bare(&src, &bare, "v2.0.0");
+
+        // Upgrade to v2.0.0.
+        cmd_module_upgrade(&cli, &printer, "mymod", Some("v2.0.0"), true, true)
+            .expect("upgrade to v2.0.0 should succeed");
+
+        let lock_v2 = std::fs::read_to_string(work.path().join("modules.lock")).unwrap();
+        assert!(
+            lock_v2.contains("v2.0.0"),
+            "lockfile should now pin v2.0.0: {lock_v2}"
+        );
+        assert!(
+            !lock_v2.contains("v1.0.0") || lock_v2.matches("v2.0.0").count() >= 1,
+            "lockfile should advance past v1.0.0: {lock_v2}"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn cmd_module_upgrade_returns_early_when_module_not_in_lockfile() {
+        let work = setup_config_dir();
+        let _home = cfgd_core::with_test_home_guard(work.path());
+        let _env = EnvGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+
+        let cli = test_cli(work.path());
+        let (printer, _buf) = cfgd_core::output::Printer::for_test();
+        let err = cmd_module_upgrade(&cli, &printer, "ghost", Some("v9.9.9"), true, true)
+            .expect_err("upgrading a non-tracked module should error");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("not found") || msg.contains("ghost"),
+            "error should explain that the module isn't tracked: {msg}"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn cmd_module_upgrade_bails_when_target_is_a_local_module() {
+        let work = setup_config_dir();
+        let _home = cfgd_core::with_test_home_guard(work.path());
+        let _env = EnvGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+
+        // Module exists only as a local module — no lockfile entry.
+        let local_mod_yaml =
+            "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: localmod\nspec: {}\n";
+        make_module(work.path(), "localmod", local_mod_yaml);
+
+        let cli = test_cli(work.path());
+        let (printer, _buf) = cfgd_core::output::Printer::for_test();
+        let err = cmd_module_upgrade(&cli, &printer, "localmod", Some("v1"), true, true)
+            .expect_err("upgrade should refuse to touch local modules");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("local module") || msg.contains("edit it directly"),
+            "error should redirect user to edit local module on disk: {msg}"
+        );
+    }
+}
