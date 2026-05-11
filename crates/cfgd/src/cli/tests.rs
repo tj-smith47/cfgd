@@ -15486,3 +15486,340 @@ fn execute_dispatch_compliance_export() {
     super::execute(&cli, h.printer()).unwrap();
     h.assert_output_contains("Compliance snapshot written to");
 }
+
+// ============================================================================
+// count_policy_items — per-package-kind and per-resource-kind counting
+// ============================================================================
+
+#[test]
+fn count_policy_items_counts_brew_formulae_casks_and_taps_each_as_one() {
+    let mut items = cfgd_core::config::PolicyItems::default();
+    items.packages = Some(cfgd_core::config::PackagesSpec {
+        brew: Some(cfgd_core::config::BrewSpec {
+            taps: vec!["org/tap".to_string()],
+            formulae: vec!["ripgrep".to_string(), "fd".to_string()],
+            casks: vec!["firefox".to_string()],
+            ..Default::default()
+        }),
+        ..Default::default()
+    });
+    // 1 tap + 2 formulae + 1 cask = 4
+    assert_eq!(super::count_policy_items(&items), 4);
+}
+
+#[test]
+fn count_policy_items_counts_apt_and_cargo_packages() {
+    let mut items = cfgd_core::config::PolicyItems::default();
+    items.packages = Some(cfgd_core::config::PackagesSpec {
+        apt: Some(cfgd_core::config::AptSpec {
+            packages: vec!["curl".to_string(), "git".to_string(), "vim".to_string()],
+            ..Default::default()
+        }),
+        cargo: Some(cfgd_core::config::CargoSpec {
+            packages: vec!["bat".to_string(), "ripgrep".to_string()],
+            ..Default::default()
+        }),
+        ..Default::default()
+    });
+    assert_eq!(super::count_policy_items(&items), 5);
+}
+
+#[test]
+fn count_policy_items_counts_pipx_dnf_and_npm_global() {
+    let mut items = cfgd_core::config::PolicyItems::default();
+    items.packages = Some(cfgd_core::config::PackagesSpec {
+        pipx: vec!["black".to_string()],
+        dnf: vec!["wireshark".to_string(), "tcpdump".to_string()],
+        npm: Some(cfgd_core::config::NpmSpec {
+            global: vec!["typescript".to_string()],
+            ..Default::default()
+        }),
+        ..Default::default()
+    });
+    // 1 + 2 + 1 = 4
+    assert_eq!(super::count_policy_items(&items), 4);
+}
+
+#[test]
+fn count_policy_items_counts_files_env_and_system_independently() {
+    use cfgd_core::config::{EnvVar, ManagedFileSpec};
+    let mut items = cfgd_core::config::PolicyItems::default();
+    items.files = vec![
+        ManagedFileSpec {
+            source: "src/foo".to_string(),
+            target: std::path::PathBuf::from("/etc/foo"),
+            strategy: None,
+            private: false,
+            origin: None,
+            encryption: None,
+            permissions: None,
+        },
+        ManagedFileSpec {
+            source: "src/bar".to_string(),
+            target: std::path::PathBuf::from("/etc/bar"),
+            strategy: None,
+            private: false,
+            origin: None,
+            encryption: None,
+            permissions: None,
+        },
+    ];
+    items.env = vec![EnvVar {
+        name: "FOO".to_string(),
+        value: "bar".to_string(),
+    }];
+    items.system.insert(
+        "shell".to_string(),
+        serde_yaml::Value::String("bash".to_string()),
+    );
+    items.system.insert(
+        "systemd".to_string(),
+        serde_yaml::Value::String("running".to_string()),
+    );
+    // 2 files + 1 env + 2 system = 5
+    assert_eq!(super::count_policy_items(&items), 5);
+}
+
+#[test]
+fn count_policy_items_sums_packages_files_env_and_system() {
+    // End-to-end mixed bag: every contributing field set at once. Pin the
+    // additive contract: no field silently swallows another.
+    let mut items = cfgd_core::config::PolicyItems::default();
+    items.packages = Some(cfgd_core::config::PackagesSpec {
+        brew: Some(cfgd_core::config::BrewSpec {
+            formulae: vec!["ripgrep".to_string()],
+            ..Default::default()
+        }),
+        pipx: vec!["black".to_string()],
+        ..Default::default()
+    });
+    items.files = vec![cfgd_core::config::ManagedFileSpec {
+        source: "src/foo".to_string(),
+        target: std::path::PathBuf::from("/etc/foo"),
+        strategy: None,
+        private: false,
+        origin: None,
+        encryption: None,
+        permissions: None,
+    }];
+    items.env = vec![cfgd_core::config::EnvVar {
+        name: "X".to_string(),
+        value: "1".to_string(),
+    }];
+    items.system.insert(
+        "shell".to_string(),
+        serde_yaml::Value::String("bash".to_string()),
+    );
+    // 1 brew + 1 pipx + 1 file + 1 env + 1 system = 5
+    assert_eq!(super::count_policy_items(&items), 5);
+}
+
+#[test]
+fn count_policy_items_packages_none_does_not_panic() {
+    // policy.packages is Option<_>; when None, the helper must not panic
+    // and must still count items.{files,env,system}.
+    let mut items = cfgd_core::config::PolicyItems::default();
+    items.env = vec![cfgd_core::config::EnvVar {
+        name: "X".to_string(),
+        value: "1".to_string(),
+    }];
+    assert_eq!(super::count_policy_items(&items), 1);
+}
+
+// ============================================================================
+// display_policy_items — output shape pinning
+// ============================================================================
+
+#[test]
+fn display_policy_items_renders_brew_formula_and_cask_lines() {
+    let (printer, buf) = cfgd_core::output::Printer::for_test();
+    let mut items = cfgd_core::config::PolicyItems::default();
+    items.packages = Some(cfgd_core::config::PackagesSpec {
+        brew: Some(cfgd_core::config::BrewSpec {
+            formulae: vec!["ripgrep".to_string()],
+            casks: vec!["firefox".to_string()],
+            ..Default::default()
+        }),
+        ..Default::default()
+    });
+    super::display_policy_items(&printer, &items, "  ");
+    let out = buf.lock().unwrap().clone();
+    assert!(out.contains("brew formula: ripgrep"), "output: {out}");
+    assert!(out.contains("brew cask: firefox"), "output: {out}");
+}
+
+#[test]
+fn display_policy_items_renders_pipx_dnf_apt_cargo_lines() {
+    let (printer, buf) = cfgd_core::output::Printer::for_test();
+    let mut items = cfgd_core::config::PolicyItems::default();
+    items.packages = Some(cfgd_core::config::PackagesSpec {
+        apt: Some(cfgd_core::config::AptSpec {
+            packages: vec!["curl".to_string()],
+            ..Default::default()
+        }),
+        cargo: Some(cfgd_core::config::CargoSpec {
+            packages: vec!["bat".to_string()],
+            ..Default::default()
+        }),
+        pipx: vec!["black".to_string()],
+        dnf: vec!["wireshark".to_string()],
+        npm: Some(cfgd_core::config::NpmSpec {
+            global: vec!["typescript".to_string()],
+            ..Default::default()
+        }),
+        ..Default::default()
+    });
+    super::display_policy_items(&printer, &items, "");
+    let out = buf.lock().unwrap().clone();
+    for needle in [
+        "apt: curl",
+        "cargo: bat",
+        "pipx: black",
+        "dnf: wireshark",
+        "npm: typescript",
+    ] {
+        assert!(out.contains(needle), "expected `{needle}` in: {out}");
+    }
+}
+
+#[test]
+fn display_policy_items_renders_file_env_and_system_lines() {
+    let (printer, buf) = cfgd_core::output::Printer::for_test();
+    let mut items = cfgd_core::config::PolicyItems::default();
+    items.files = vec![cfgd_core::config::ManagedFileSpec {
+        source: "src/foo.conf".to_string(),
+        target: std::path::PathBuf::from("/etc/foo.conf"),
+        strategy: None,
+        private: false,
+        origin: None,
+        encryption: None,
+        permissions: None,
+    }];
+    items.env = vec![cfgd_core::config::EnvVar {
+        name: "PATH_EXTRA".to_string(),
+        value: "/opt/bin".to_string(),
+    }];
+    items.system.insert(
+        "systemd".to_string(),
+        serde_yaml::Value::String("on".to_string()),
+    );
+    super::display_policy_items(&printer, &items, "");
+    let out = buf.lock().unwrap().clone();
+    assert!(out.contains("file: /etc/foo.conf"), "output: {out}");
+    assert!(out.contains("env: PATH_EXTRA"), "output: {out}");
+    assert!(out.contains("system: systemd"), "output: {out}");
+}
+
+#[test]
+fn display_policy_items_honors_indent_prefix() {
+    let (printer, buf) = cfgd_core::output::Printer::for_test();
+    let mut items = cfgd_core::config::PolicyItems::default();
+    items.env = vec![cfgd_core::config::EnvVar {
+        name: "X".to_string(),
+        value: "1".to_string(),
+    }];
+    super::display_policy_items(&printer, &items, ">>>");
+    let out = buf.lock().unwrap().clone();
+    assert!(
+        out.contains(">>>env: X"),
+        "expected indent in output: {out}"
+    );
+}
+
+// ============================================================================
+// display_pending_decisions — grouped-by-source banner
+// ============================================================================
+
+fn make_pending(
+    source: &str,
+    resource: &str,
+    tier: &str,
+    action: &str,
+    summary: &str,
+) -> cfgd_core::state::PendingDecision {
+    cfgd_core::state::PendingDecision {
+        id: 1,
+        source: source.to_string(),
+        resource: resource.to_string(),
+        tier: tier.to_string(),
+        action: action.to_string(),
+        summary: summary.to_string(),
+        created_at: "2026-05-11T00:00:00Z".to_string(),
+        resolved_at: None,
+        resolution: None,
+    }
+}
+
+#[test]
+fn display_pending_decisions_groups_by_source_and_pluralizes_count() {
+    let (printer, buf) = cfgd_core::output::Printer::for_test();
+    let decisions = vec![
+        make_pending("acme", "pkg/curl", "recommended", "install", "install curl"),
+        make_pending("acme", "pkg/git", "recommended", "install", "install git"),
+        make_pending("widgetco", "pkg/vim", "required", "install", "install vim"),
+    ];
+    super::display_pending_decisions(&printer, &decisions);
+    let out = buf.lock().unwrap().clone();
+    // "acme: 2 pending items" — pluralized
+    assert!(
+        out.contains("acme: 2 pending items"),
+        "expected pluralized count for acme: {out}"
+    );
+    // "widgetco: 1 pending item" — singular (no 's')
+    assert!(
+        out.contains("widgetco: 1 pending item"),
+        "expected singular count for widgetco (no 's'): {out}"
+    );
+    assert!(!out.contains("widgetco: 1 pending items"));
+}
+
+#[test]
+fn display_pending_decisions_renders_item_tier_resource_summary_action() {
+    let (printer, buf) = cfgd_core::output::Printer::for_test();
+    let decisions = vec![make_pending(
+        "acme",
+        "pkg/curl",
+        "required",
+        "install",
+        "install curl 8.2",
+    )];
+    super::display_pending_decisions(&printer, &decisions);
+    let out = buf.lock().unwrap().clone();
+    // Pinned format: `  {tier} {resource} — {summary} ({action})`
+    assert!(out.contains("required pkg/curl"), "tier/resource: {out}");
+    assert!(out.contains("install curl 8.2"), "summary: {out}");
+    assert!(out.contains("(install)"), "action in parens: {out}");
+}
+
+#[test]
+fn display_pending_decisions_empty_input_emits_nothing() {
+    let (printer, buf) = cfgd_core::output::Printer::for_test();
+    super::display_pending_decisions(&printer, &[]);
+    let out = buf.lock().unwrap().clone();
+    assert!(
+        out.is_empty(),
+        "expected no output for empty decisions: {out:?}"
+    );
+}
+
+#[test]
+fn display_pending_decisions_orders_sources_alphabetically() {
+    // BTreeMap-backed grouping → sources surface in alpha order. cfgd's CLI
+    // promises this so users skimming a long list have a deterministic eye
+    // path.
+    let (printer, buf) = cfgd_core::output::Printer::for_test();
+    let decisions = vec![
+        make_pending("zebra", "x", "t", "a", "s"),
+        make_pending("alpha", "x", "t", "a", "s"),
+        make_pending("middle", "x", "t", "a", "s"),
+    ];
+    super::display_pending_decisions(&printer, &decisions);
+    let out = buf.lock().unwrap().clone();
+    let alpha = out.find("alpha:").expect("alpha section");
+    let middle = out.find("middle:").expect("middle section");
+    let zebra = out.find("zebra:").expect("zebra section");
+    assert!(
+        alpha < middle && middle < zebra,
+        "expected alpha < middle < zebra in: {out}"
+    );
+}
