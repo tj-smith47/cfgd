@@ -132,14 +132,7 @@ fn finish_enrollment(
     }
     printer.key_value("Device", &resp.device_id);
 
-    let credential = cfgd_core::server_client::DeviceCredential {
-        server_url: server_url.to_string(),
-        device_id: device_id.to_string(),
-        api_key: resp.api_key.clone(),
-        username: resp.username.clone(),
-        team: resp.team.clone(),
-        enrolled_at: cfgd_core::utc_now_iso8601(),
-    };
+    let credential = build_device_credential(server_url, device_id, &resp);
 
     match cfgd_core::server_client::save_credential(&credential) {
         Ok(path) => {
@@ -169,12 +162,46 @@ fn finish_enrollment(
 
     printer.newline();
     printer.header("Next Steps");
-    printer.info("  cfgd checkin --server-url <url>  — report status to server");
-    printer.info("  cfgd apply --dry-run             — preview configuration");
-    printer.info("  cfgd apply                       — apply configuration");
-    printer.info("  cfgd daemon install               — start background sync");
+    for line in next_steps_lines() {
+        printer.info(line);
+    }
 
     Ok(())
+}
+
+/// Construct the persisted `DeviceCredential` from an `EnrollResponse`.
+///
+/// The credential structure is what cfgd writes to disk via
+/// `save_credential` — its fields define the on-disk credential schema. The
+/// `enrolled_at` timestamp is filled in here so every credential carries
+/// a UTC ISO-8601 issue time the operator can correlate with server logs.
+pub(super) fn build_device_credential(
+    server_url: &str,
+    device_id: &str,
+    resp: &cfgd_core::server_client::EnrollResponse,
+) -> cfgd_core::server_client::DeviceCredential {
+    cfgd_core::server_client::DeviceCredential {
+        server_url: server_url.to_string(),
+        device_id: device_id.to_string(),
+        api_key: resp.api_key.clone(),
+        username: resp.username.clone(),
+        team: resp.team.clone(),
+        enrolled_at: cfgd_core::utc_now_iso8601(),
+    }
+}
+
+/// The next-steps banner printed after a successful enrollment.
+///
+/// Pinned as a pure helper so the line set is testable and stable — the
+/// CLI's "what do I do next?" affordance must not silently drop or reorder
+/// these as the codebase evolves; doing so degrades the first-run UX.
+pub(super) fn next_steps_lines() -> &'static [&'static str] {
+    &[
+        "  cfgd checkin --server-url <url>  — report status to server",
+        "  cfgd apply --dry-run             — preview configuration",
+        "  cfgd apply                       — apply configuration",
+        "  cfgd daemon install               — start background sync",
+    ]
 }
 
 // ─────────────────────────────────────────────────────

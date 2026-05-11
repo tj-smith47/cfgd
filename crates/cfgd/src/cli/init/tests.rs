@@ -2153,3 +2153,103 @@ fn first_existing_ssh_key_returns_none_when_dir_does_not_exist() {
     let found = super::first_existing_ssh_key(std::path::Path::new("/nonexistent/ssh/dir/12345"));
     assert!(found.is_none());
 }
+
+// ============================================================================
+// build_device_credential — fields propagated from EnrollResponse → DeviceCredential
+// ============================================================================
+
+fn make_enroll_response(
+    username: &str,
+    team: Option<&str>,
+    api_key: &str,
+) -> cfgd_core::server_client::EnrollResponse {
+    cfgd_core::server_client::EnrollResponse {
+        status: "ok".to_string(),
+        device_id: "ignored-resp-device-id".to_string(),
+        api_key: api_key.to_string(),
+        username: username.to_string(),
+        team: team.map(|t| t.to_string()),
+        desired_config: None,
+    }
+}
+
+#[test]
+fn build_device_credential_propagates_api_key_and_username_from_response() {
+    let resp = make_enroll_response("alice", Some("ops"), "secret-key-XYZ");
+    let cred = super::build_device_credential("https://srv.example", "dev-1", &resp);
+    assert_eq!(cred.server_url, "https://srv.example");
+    assert_eq!(cred.device_id, "dev-1");
+    assert_eq!(cred.api_key, "secret-key-XYZ");
+    assert_eq!(cred.username, "alice");
+    assert_eq!(cred.team.as_deref(), Some("ops"));
+}
+
+#[test]
+fn build_device_credential_uses_caller_device_id_not_response_device_id() {
+    // The server is allowed to echo back a device_id in EnrollResponse but
+    // the persisted credential MUST use the caller-supplied device_id (the
+    // one cfgd computed locally and sent in the request). Anything else
+    // would let a server re-bind clients to arbitrary IDs after enroll.
+    let resp = make_enroll_response("u", None, "k");
+    let cred = super::build_device_credential("https://s", "caller-id", &resp);
+    assert_eq!(cred.device_id, "caller-id");
+    assert_ne!(cred.device_id, "ignored-resp-device-id");
+}
+
+#[test]
+fn build_device_credential_no_team_propagates_as_none() {
+    let resp = make_enroll_response("u", None, "k");
+    let cred = super::build_device_credential("https://s", "d", &resp);
+    assert!(cred.team.is_none());
+}
+
+#[test]
+fn build_device_credential_enrolled_at_is_iso_8601_with_z_suffix() {
+    // ISO-8601 UTC timestamps are what every other cfgd surface emits
+    // (state store, drift events, gateway logs). The credential must
+    // match so operators can correlate by string comparison.
+    let resp = make_enroll_response("u", None, "k");
+    let cred = super::build_device_credential("https://s", "d", &resp);
+    assert!(
+        cred.enrolled_at.ends_with('Z'),
+        "expected ISO-8601 Z suffix, got: {}",
+        cred.enrolled_at
+    );
+    // Cheap shape check: YYYY-MM-DDTHH:MM:SS minimum is 19 chars before Z.
+    assert!(
+        cred.enrolled_at.len() >= 20,
+        "expected ≥20 chars (YYYY-MM-DDTHH:MM:SSZ), got: {}",
+        cred.enrolled_at
+    );
+}
+
+// ============================================================================
+// next_steps_lines — the first-run banner
+// ============================================================================
+
+#[test]
+fn next_steps_lines_starts_with_checkin_then_apply() {
+    let lines = super::next_steps_lines();
+    assert_eq!(lines.len(), 4, "exactly four next-step suggestions");
+    assert!(
+        lines[0].contains("cfgd checkin"),
+        "first line: {}",
+        lines[0]
+    );
+    assert!(lines[1].contains("apply --dry-run"), "second: {}", lines[1]);
+    assert!(lines[2].contains("cfgd apply"), "third: {}", lines[2]);
+    assert!(lines[3].contains("daemon install"), "fourth: {}", lines[3]);
+}
+
+#[test]
+fn next_steps_lines_are_indented_so_terminal_renders_consistently() {
+    // Every banner line is indented by two spaces. The Printer info() call
+    // doesn't add indentation — the strings own it. A drift to flush-left
+    // would break the visual grouping.
+    for line in super::next_steps_lines() {
+        assert!(
+            line.starts_with("  "),
+            "line not 2-space indented: {line:?}"
+        );
+    }
+}
