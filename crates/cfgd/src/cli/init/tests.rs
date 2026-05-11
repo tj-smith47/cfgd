@@ -2436,3 +2436,341 @@ mod enroll_mockito {
         });
     }
 }
+
+// ─── cmd_init --from <url> against local bare repo ──────────────────────────
+//
+// These tests drive `cmd_init` with `args.from = Some(<file:// URL>)` to
+// exercise the clone-from-URL orchestration path. The `cli/init/source.rs`
+// `is_git_source` predicate matches any value ending in `.git`, so a bare
+// repo at `<tmp>/upstream.git` works without an env var gate.
+
+#[cfg(unix)]
+mod cmd_init_from_local_bare {
+    use super::*;
+    use std::path::{Path, PathBuf};
+
+    /// Initialise a bare upstream + a working source repo, commit a populated
+    /// cfgd config tree (cfgd.yaml + profiles/default.yaml), and push the
+    /// branch to the bare. Returns the bare path that ends in `.git` — so
+    /// `is_git_source` treats `file://<bare>` as a clonable git source.
+    fn make_bare_config_repo(tmp_root: &Path) -> PathBuf {
+        let bare = tmp_root.join("upstream.git");
+        let _bare_repo = git2::Repository::init_bare(&bare).unwrap();
+
+        let src = tmp_root.join("src");
+        let src_repo = git2::Repository::init(&src).unwrap();
+        std::fs::write(
+            src.join("cfgd.yaml"),
+            "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: cloned-cfg\nspec:\n  profile: default\n",
+        )
+        .unwrap();
+        std::fs::create_dir_all(src.join("profiles")).unwrap();
+        std::fs::write(
+            src.join("profiles").join("default.yaml"),
+            "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec: {}\n",
+        )
+        .unwrap();
+        let mut index = src_repo.index().unwrap();
+        index.add_path(Path::new("cfgd.yaml")).unwrap();
+        index.add_path(Path::new("profiles/default.yaml")).unwrap();
+        index.write().unwrap();
+        let tree_id = index.write_tree().unwrap();
+        let tree = src_repo.find_tree(tree_id).unwrap();
+        let sig = git2::Signature::now("t", "t@example.com").unwrap();
+        src_repo
+            .commit(Some("HEAD"), &sig, &sig, "initial", &tree, &[])
+            .unwrap();
+        drop(tree);
+        let bare_url = format!("file://{}", bare.display());
+        let mut remote = src_repo.remote("origin", &bare_url).unwrap();
+        let branch = src_repo
+            .head()
+            .unwrap()
+            .shorthand()
+            .unwrap_or("master")
+            .to_string();
+        remote
+            .push(&[&format!("refs/heads/{branch}:refs/heads/{branch}")], None)
+            .unwrap();
+        bare
+    }
+
+    /// Initialise a bare repo + a working source that has NO cfgd.yaml — the
+    /// clone succeeds, but later orchestration (e.g. `--apply`) cannot find a
+    /// config. Returns the bare path so `file://<bare>` is clonable.
+    fn make_bare_empty_repo(tmp_root: &Path) -> PathBuf {
+        let bare = tmp_root.join("empty.git");
+        let _bare_repo = git2::Repository::init_bare(&bare).unwrap();
+        let src = tmp_root.join("empty-src");
+        let src_repo = git2::Repository::init(&src).unwrap();
+        std::fs::write(src.join("README.md"), "no cfgd here").unwrap();
+        let mut index = src_repo.index().unwrap();
+        index.add_path(Path::new("README.md")).unwrap();
+        index.write().unwrap();
+        let tree_id = index.write_tree().unwrap();
+        let tree = src_repo.find_tree(tree_id).unwrap();
+        let sig = git2::Signature::now("t", "t@example.com").unwrap();
+        src_repo
+            .commit(Some("HEAD"), &sig, &sig, "initial", &tree, &[])
+            .unwrap();
+        drop(tree);
+        let bare_url = format!("file://{}", bare.display());
+        let mut remote = src_repo.remote("origin", &bare_url).unwrap();
+        let branch = src_repo
+            .head()
+            .unwrap()
+            .shorthand()
+            .unwrap_or("master")
+            .to_string();
+        remote
+            .push(&[&format!("refs/heads/{branch}:refs/heads/{branch}")], None)
+            .unwrap();
+        bare
+    }
+
+    #[test]
+    fn cmd_init_from_url_clones_into_target_and_skips_workflow_generation() {
+        let tmp = tempfile::tempdir().unwrap();
+        let bare = make_bare_config_repo(tmp.path());
+        let target = tmp.path().join("dst");
+        let url = format!("file://{}", bare.display());
+
+        let printer = Printer::new(cfgd_core::output::Verbosity::Quiet);
+        let args = InitArgs {
+            path: Some(target.to_str().unwrap()),
+            from: Some(&url),
+            branch: "master",
+            name: None,
+            apply: false,
+            dry_run: false,
+            yes: false,
+            install_daemon: false,
+            theme: None,
+            apply_profile: None,
+            apply_modules: &[],
+        };
+        cmd_init(&printer, &args).expect("cmd_init --from should succeed");
+
+        // The cloned cfgd.yaml lands at the target.
+        let cfg_yaml = std::fs::read_to_string(target.join("cfgd.yaml")).unwrap();
+        assert!(
+            cfg_yaml.contains("cloned-cfg"),
+            "cloned cfgd.yaml should preserve the upstream `name` field: {cfg_yaml}"
+        );
+        // The profile from the source is preserved.
+        assert!(
+            target.join("profiles").join("default.yaml").is_file(),
+            "profile dir should have been cloned"
+        );
+        // `regenerate_workflow` runs only for scaffolded repos; with --from
+        // present, the .github/workflows directory must NOT be auto-written.
+        assert!(
+            !target.join(".github").join("workflows").exists(),
+            "workflow generation must be skipped for cloned repos"
+        );
+    }
+
+    #[test]
+    fn cmd_init_from_url_with_theme_injects_theme_into_cloned_config() {
+        let tmp = tempfile::tempdir().unwrap();
+        let bare = make_bare_config_repo(tmp.path());
+        let target = tmp.path().join("dst");
+        let url = format!("file://{}", bare.display());
+
+        let printer = Printer::new(cfgd_core::output::Verbosity::Quiet);
+        let args = InitArgs {
+            path: Some(target.to_str().unwrap()),
+            from: Some(&url),
+            branch: "master",
+            name: None,
+            apply: false,
+            dry_run: false,
+            yes: false,
+            install_daemon: false,
+            theme: Some("solarized-dark"),
+            apply_profile: None,
+            apply_modules: &[],
+        };
+        cmd_init(&printer, &args).expect("cmd_init --from --theme should succeed");
+
+        let cfg_yaml = std::fs::read_to_string(target.join("cfgd.yaml")).unwrap();
+        assert!(
+            cfg_yaml.contains("solarized-dark"),
+            "cloned cfgd.yaml should have been rewritten with the theme: {cfg_yaml}"
+        );
+    }
+
+    #[test]
+    fn cmd_init_from_url_handles_repo_without_cfgd_yaml() {
+        // Repo clones successfully but contains no cfgd.yaml — the function
+        // should still return Ok (theme injection is gated on cfgd.yaml
+        // existing). This exercises the `config_path.exists()` false-arm.
+        let tmp = tempfile::tempdir().unwrap();
+        let bare = make_bare_empty_repo(tmp.path());
+        let target = tmp.path().join("empty-dst");
+        let url = format!("file://{}", bare.display());
+
+        let printer = Printer::new(cfgd_core::output::Verbosity::Quiet);
+        let args = InitArgs {
+            path: Some(target.to_str().unwrap()),
+            from: Some(&url),
+            branch: "master",
+            name: None,
+            apply: false,
+            dry_run: false,
+            yes: false,
+            install_daemon: false,
+            theme: Some("dark"),
+            apply_profile: None,
+            apply_modules: &[],
+        };
+        cmd_init(&printer, &args).expect("clone of empty repo should still return Ok");
+
+        // README.md from the source is present.
+        assert!(target.join("README.md").is_file());
+        // No cfgd.yaml in source → none in target. Theme injection skipped.
+        assert!(!target.join("cfgd.yaml").exists());
+    }
+}
+
+// ─── cmd_init --apply orchestration ──────────────────────────────────────────
+//
+// Cover the apply branch of cmd_init that scaffolds and immediately applies
+// the resulting plan. `CFGD_STATE_DIR` redirects the state store away from
+// `~/.local/share/cfgd/`; `with_test_home_guard` keeps the module-cache lookup
+// off real disk.
+
+#[cfg(unix)]
+mod cmd_init_apply_orchestration {
+    use super::*;
+    use serial_test::serial;
+
+    /// Set CFGD_STATE_DIR for the duration of a closure (process-wide; use
+    /// with `#[serial]`).
+    fn with_state_dir<F: FnOnce()>(dir: &std::path::Path, f: F) {
+        // SAFETY: serialized via #[serial].
+        unsafe {
+            std::env::set_var("CFGD_STATE_DIR", dir);
+        }
+        f();
+        // SAFETY: serialized via #[serial].
+        unsafe {
+            std::env::remove_var("CFGD_STATE_DIR");
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn cmd_init_with_apply_on_freshly_scaffolded_dir_bails_when_no_profile_exists() {
+        // Fresh scaffold creates cfgd.yaml without an active profile and no
+        // profile files in profiles/. With --apply set, cmd_init delegates to
+        // pick_profile which bails — a real orchestration-state contract:
+        // scaffold + apply only works after at least one profile is created.
+        let tmp = tempfile::tempdir().unwrap();
+        let _home = cfgd_core::with_test_home_guard(tmp.path());
+        let target = tmp.path().join("config");
+        std::fs::create_dir_all(&target).unwrap();
+        let state_dir = tmp.path().join("state");
+
+        let (printer, _buf) = Printer::for_test();
+        with_state_dir(&state_dir, || {
+            let args = InitArgs {
+                path: Some(target.to_str().unwrap()),
+                from: None,
+                branch: "master",
+                name: Some("apply-test"),
+                apply: true,
+                dry_run: false,
+                yes: true,
+                install_daemon: false,
+                theme: None,
+                apply_profile: None,
+                apply_modules: &[],
+            };
+            let err = cmd_init(&printer, &args)
+                .expect_err("scaffold+apply without profile should surface pick_profile bail");
+            let msg = err.to_string();
+            assert!(
+                msg.contains("No profiles found"),
+                "error should explain why apply cannot proceed: {msg}"
+            );
+        });
+
+        // Scaffold still landed before the apply bail.
+        assert!(target.join("cfgd.yaml").exists());
+        assert!(target.join("profiles").is_dir());
+    }
+
+    #[test]
+    #[serial]
+    fn cmd_init_with_apply_module_unknown_name_bails() {
+        // --apply-module on a name that doesn't resolve to a local or remote
+        // module triggers the validation bail before reconciler.plan().
+        let tmp = tempfile::tempdir().unwrap();
+        let _home = cfgd_core::with_test_home_guard(tmp.path());
+        let target = tmp.path().join("config");
+        std::fs::create_dir_all(&target).unwrap();
+        let state_dir = tmp.path().join("state");
+
+        let (printer, _buf) = Printer::for_test();
+        with_state_dir(&state_dir, || {
+            let modules = vec!["ghost-module".to_string()];
+            let args = InitArgs {
+                path: Some(target.to_str().unwrap()),
+                from: None,
+                branch: "master",
+                name: Some("apply-modules-test"),
+                apply: false,
+                dry_run: false,
+                yes: true,
+                install_daemon: false,
+                theme: None,
+                apply_profile: None,
+                apply_modules: &modules,
+            };
+            let err = cmd_init(&printer, &args)
+                .expect_err("--apply-module on unknown module should bail");
+            let msg = err.to_string();
+            assert!(
+                msg.contains("ghost-module") && msg.contains("not found"),
+                "error should explain that ghost-module isn't found: {msg}"
+            );
+        });
+    }
+
+    #[test]
+    #[serial]
+    fn cmd_init_with_apply_profile_unknown_name_bails() {
+        // --apply-profile pointing at a profile that doesn't exist on disk
+        // surfaces a clear error from the profile-validation arm.
+        let tmp = tempfile::tempdir().unwrap();
+        let _home = cfgd_core::with_test_home_guard(tmp.path());
+        let target = tmp.path().join("config");
+        std::fs::create_dir_all(&target).unwrap();
+        let state_dir = tmp.path().join("state");
+
+        let (printer, _buf) = Printer::for_test();
+        with_state_dir(&state_dir, || {
+            let args = InitArgs {
+                path: Some(target.to_str().unwrap()),
+                from: None,
+                branch: "master",
+                name: Some("apply-profile-test"),
+                apply: false,
+                dry_run: false,
+                yes: true,
+                install_daemon: false,
+                theme: None,
+                apply_profile: Some("missing-profile"),
+                apply_modules: &[],
+            };
+            let err = cmd_init(&printer, &args)
+                .expect_err("--apply-profile on missing profile should bail");
+            let msg = err.to_string();
+            assert!(
+                msg.contains("missing-profile") && msg.contains("not found"),
+                "error should reference missing-profile: {msg}"
+            );
+        });
+    }
+}
