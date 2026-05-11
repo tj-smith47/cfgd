@@ -6,4 +6,5 @@ pub mod gateway;
 pub mod health;
 pub mod leader;
 pub mod metrics;
+pub mod runtime;
 pub mod webhook;

@@ -5,15 +5,13 @@ use anyhow::Result;
 use kube::Client;
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
-use uuid::Uuid;
 
-use cfgd_operator::{controllers, env, errors, gateway, health, leader, metrics, webhook};
+use cfgd_operator::{controllers, env, errors, gateway, health, leader, metrics, runtime, webhook};
 
 static OTEL_PROVIDER: std::sync::OnceLock<opentelemetry_sdk::trace::SdkTracerProvider> =
     std::sync::OnceLock::new();
 
 use cfgd_operator::crds::{ClusterConfigPolicy, ConfigPolicy, DriftAlert, MachineConfig, Module};
-use cfgd_operator::gateway::GatewayConfig;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -58,7 +56,7 @@ async fn main() -> Result<()> {
     let cert_dir = env::env_or("WEBHOOK_CERT_DIR", "/tmp/k8s-webhook-server/serving-certs");
     let webhook_port = env::parse_port_env("WEBHOOK_PORT", 9443);
 
-    if Path::new(&cert_dir).join("tls.crt").exists() {
+    if runtime::webhook_certs_present(Path::new(&cert_dir)) {
         tracing::info!(cert_dir = %cert_dir, port = webhook_port, "starting webhook server");
         let webhook_metrics = metrics.clone();
         let webhook_client = client.clone();
@@ -81,14 +79,14 @@ async fn main() -> Result<()> {
         );
     }
 
-    let leader_enabled = env::parse_bool_env("LEADER_ELECTION_ENABLED");
+    let leader_enabled = runtime::is_leader_election_enabled();
 
     let shutdown = CancellationToken::new();
 
     let operator_future = async {
         if leader_enabled {
-            let namespace = env::env_or("POD_NAMESPACE", "cfgd-system");
-            let identity = std::env::var("POD_NAME").unwrap_or_else(|_| Uuid::new_v4().to_string());
+            let namespace = runtime::leader_namespace();
+            let identity = runtime::leader_identity();
 
             tracing::info!(
                 namespace = %namespace,
@@ -161,16 +159,10 @@ async fn main() -> Result<()> {
 
 async fn run_operator(client: Client, metrics: metrics::Metrics) -> Result<()> {
     // Device gateway — optional HTTP server for device checkin, enrollment, drift, web UI
-    let gateway_enabled = env::parse_bool_env("DEVICE_GATEWAY_ENABLED");
+    let gateway_enabled = runtime::is_gateway_enabled();
 
     if gateway_enabled {
-        let gateway_config = GatewayConfig {
-            port: env::parse_port_env("DEVICE_GATEWAY_PORT", 8080),
-            db_path: env::env_or("CFGD_SERVER_DB_PATH", "/data/cfgd-gateway.db"),
-            kube_client: Some(client.clone()),
-            retention_days: env::parse_u32_env("CFGD_RETENTION_DAYS", 90),
-            metrics: Some(metrics.clone()),
-        };
+        let gateway_config = runtime::build_gateway_config(client.clone(), metrics.clone());
 
         tracing::info!("device gateway enabled");
 
