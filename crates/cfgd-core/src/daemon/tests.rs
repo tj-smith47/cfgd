@@ -7080,4 +7080,189 @@ mod harness {
         // abort. If the clamp were missing this test would hang the runtime.
         let _ = rx.try_recv();
     }
+
+    // ----- Happy-path fixture: drive handle_reconcile end-to-end ---------
+    //
+    // The previous tests exit early inside handle_reconcile because
+    // `config_path` points to a missing file. This fixture writes a real
+    // `cfgd.yaml` + `profiles/default.yaml` so reconcile reaches the plan
+    // generation + state.last_reconcile update. Unlocks coverage in
+    // daemon/reconcile.rs and (via handle_sync_tick) daemon/sync.rs.
+
+    /// Write a minimal but complete cfgd config tree under `tmp`. Returns
+    /// the path to `cfgd.yaml`. The config selects profile "default", which
+    /// resolves to an empty `profiles/default.yaml`.
+    fn write_happy_path_config(tmp: &tempfile::TempDir) -> PathBuf {
+        let config_path = tmp.path().join("cfgd.yaml");
+        std::fs::write(
+            &config_path,
+            "apiVersion: cfgd.io/v1alpha1\nkind: Cfgd\nmetadata:\n  name: t\nspec:\n  profile: default\n",
+        )
+        .unwrap();
+        std::fs::create_dir_all(tmp.path().join("profiles")).unwrap();
+        std::fs::write(
+            tmp.path().join("profiles").join("default.yaml"),
+            "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec: {}\n",
+        )
+        .unwrap();
+        config_path
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn handle_reconcile_tick_runs_full_happy_path() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let _g = crate::with_test_home_guard(tmp.path());
+        let config_path = write_happy_path_config(&tmp);
+        let (mut ctx, state, _buf) = make_test_ctx(&tmp, false, false, None);
+        ctx.config_path = config_path;
+        let mut tasks = vec![ReconcileTask {
+            entity: "__default__".to_string(),
+            interval: StdDuration::from_secs(60),
+            auto_apply: false,
+            drift_policy: config::DriftPolicy::NotifyOnly,
+            last_reconciled: None,
+        }];
+        runner::handle_reconcile_tick(&ctx, &mut tasks)
+            .await
+            .unwrap();
+        let st = state.lock().await;
+        assert!(
+            st.last_reconcile.is_some(),
+            "handle_reconcile should have updated state.last_reconcile on happy path"
+        );
+        // No drift expected — empty profile means no actions to apply.
+        assert_eq!(st.drift_count, 0);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn handle_reconcile_tick_handles_unknown_profile_gracefully() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let _g = crate::with_test_home_guard(tmp.path());
+        // Config that points to a profile name that doesn't exist on disk.
+        let config_path = tmp.path().join("cfgd.yaml");
+        std::fs::write(
+            &config_path,
+            "apiVersion: cfgd.io/v1alpha1\nkind: Cfgd\nmetadata:\n  name: t\nspec:\n  profile: missing-profile\n",
+        )
+        .unwrap();
+        std::fs::create_dir_all(tmp.path().join("profiles")).unwrap();
+        let (mut ctx, state, _buf) = make_test_ctx(&tmp, false, false, None);
+        ctx.config_path = config_path;
+        let mut tasks = vec![ReconcileTask {
+            entity: "__default__".to_string(),
+            interval: StdDuration::from_secs(60),
+            auto_apply: false,
+            drift_policy: config::DriftPolicy::NotifyOnly,
+            last_reconciled: None,
+        }];
+        runner::handle_reconcile_tick(&ctx, &mut tasks)
+            .await
+            .unwrap();
+        let st = state.lock().await;
+        // Profile resolution fails → handle_reconcile returns before
+        // touching last_reconcile.
+        assert!(st.last_reconcile.is_none());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn handle_reconcile_tick_respects_profile_override() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let _g = crate::with_test_home_guard(tmp.path());
+        // Config has no profile — override supplies one.
+        let config_path = tmp.path().join("cfgd.yaml");
+        std::fs::write(
+            &config_path,
+            "apiVersion: cfgd.io/v1alpha1\nkind: Cfgd\nmetadata:\n  name: t\nspec: {}\n",
+        )
+        .unwrap();
+        std::fs::create_dir_all(tmp.path().join("profiles")).unwrap();
+        std::fs::write(
+            tmp.path().join("profiles").join("override-profile.yaml"),
+            "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: override-profile\nspec: {}\n",
+        )
+        .unwrap();
+        let (mut ctx, state, _buf) = make_test_ctx(&tmp, false, false, None);
+        ctx.config_path = config_path;
+        ctx.profile_override = Some("override-profile".to_string());
+        let mut tasks = vec![ReconcileTask {
+            entity: "__default__".to_string(),
+            interval: StdDuration::from_secs(60),
+            auto_apply: false,
+            drift_policy: config::DriftPolicy::NotifyOnly,
+            last_reconciled: None,
+        }];
+        runner::handle_reconcile_tick(&ctx, &mut tasks)
+            .await
+            .unwrap();
+        let st = state.lock().await;
+        assert!(st.last_reconcile.is_some());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn handle_reconcile_tick_auto_apply_traverses_apply_path() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let _g = crate::with_test_home_guard(tmp.path());
+        // Config with daemon.reconcile.autoApply=true exercises the auto-apply
+        // policy branch even though the plan is empty.
+        let config_path = tmp.path().join("cfgd.yaml");
+        std::fs::write(
+            &config_path,
+            "apiVersion: cfgd.io/v1alpha1\nkind: Cfgd\nmetadata:\n  name: t\nspec:\n  profile: default\n  daemon:\n    enabled: true\n    reconcile:\n      interval: 60s\n      autoApply: true\n      driftPolicy: Auto\n",
+        )
+        .unwrap();
+        std::fs::create_dir_all(tmp.path().join("profiles")).unwrap();
+        std::fs::write(
+            tmp.path().join("profiles").join("default.yaml"),
+            "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec: {}\n",
+        )
+        .unwrap();
+        let (mut ctx, state, _buf) = make_test_ctx(&tmp, false, false, None);
+        ctx.config_path = config_path;
+        let mut tasks = vec![ReconcileTask {
+            entity: "__default__".to_string(),
+            interval: StdDuration::from_secs(60),
+            auto_apply: true,
+            drift_policy: config::DriftPolicy::Auto,
+            last_reconciled: None,
+        }];
+        runner::handle_reconcile_tick(&ctx, &mut tasks)
+            .await
+            .unwrap();
+        let st = state.lock().await;
+        assert!(st.last_reconcile.is_some());
+        assert_eq!(st.drift_count, 0);
+    }
+
+    // ----- Real sync_task with a tempdir non-git repo path -----
+    //
+    // handle_sync will attempt git operations against `repo_path`. With a
+    // non-git directory, all git calls fail gracefully and the handler
+    // still returns false (no changes). The orchestration around it — the
+    // last_synced bump, the state.last_sync update via block_on — is what
+    // we cover here.
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn sync_tick_advances_last_synced_for_due_task() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let _g = crate::with_test_home_guard(tmp.path());
+        let (ctx, state, _buf) = make_test_ctx(&tmp, false, false, None);
+        let repo_path = tmp.path().join("not-a-repo");
+        std::fs::create_dir_all(&repo_path).unwrap();
+        let mut tasks = vec![SyncTask {
+            source_name: "local".to_string(),
+            repo_path,
+            // auto_pull/push false → handle_sync does no git work, just updates state
+            auto_pull: false,
+            auto_push: false,
+            auto_apply: false,
+            interval: StdDuration::from_secs(60),
+            last_synced: None,
+            require_signed_commits: false,
+            allow_unsigned: true,
+        }];
+        runner::handle_sync_tick(&ctx, &mut tasks).await.unwrap();
+        assert!(tasks[0].last_synced.is_some(), "last_synced should advance");
+        let st = state.lock().await;
+        assert!(st.last_sync.is_some(), "state.last_sync should be set");
+    }
 }
