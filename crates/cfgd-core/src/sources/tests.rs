@@ -1589,3 +1589,99 @@ fn load_source_profile_no_profiles_directory() {
         "expected profile not found error, got: {err}"
     );
 }
+
+// ============================================================================
+// classify_signature_status — all `git log --format=%G?` status codes
+//
+// This helper was carved out of verify_head_signature so each branch of the
+// status-code → Result mapping is reachable from a unit test without needing
+// a real GPG/SSH-signed commit. The accepted set {G, U} is critical: cfgd's
+// security policy treats valid signatures with unknown trust ("U") as
+// acceptable, so a regression here would either over-reject (breaks new-key
+// onboarding) or under-reject (silent compromise).
+// ============================================================================
+
+#[test]
+fn classify_signature_status_good_is_ok() {
+    super::classify_signature_status("src", "G").unwrap();
+}
+
+#[test]
+fn classify_signature_status_unknown_trust_is_ok() {
+    // U = good signature but key not trusted yet. Accepted per cfgd policy.
+    super::classify_signature_status("src", "U").unwrap();
+}
+
+#[test]
+fn classify_signature_status_no_signature_errors_with_not_signed() {
+    let err = super::classify_signature_status("src", "N").unwrap_err();
+    let msg = err.to_string();
+    assert!(
+        msg.contains("not signed"),
+        "expected 'not signed' message for N, got: {msg}"
+    );
+}
+
+#[test]
+fn classify_signature_status_bad_signature_errors_with_invalid() {
+    let err = super::classify_signature_status("src", "B").unwrap_err();
+    let msg = err.to_string();
+    assert!(
+        msg.contains("bad") || msg.contains("invalid"),
+        "expected bad/invalid message for B, got: {msg}"
+    );
+}
+
+#[test]
+fn classify_signature_status_unverifiable_errors_with_signing_key_hint() {
+    let err = super::classify_signature_status("src", "E").unwrap_err();
+    let msg = err.to_string();
+    assert!(
+        msg.contains("signing key") || msg.contains("cannot be checked"),
+        "expected 'signing key/cannot be checked' message for E, got: {msg}"
+    );
+}
+
+#[test]
+fn classify_signature_status_expired_signature_errors_with_expired() {
+    // X = signature has expired
+    let err = super::classify_signature_status("src", "X").unwrap_err();
+    assert!(err.to_string().contains("expired"));
+}
+
+#[test]
+fn classify_signature_status_expired_key_errors_with_expired() {
+    // Y = signing key has expired
+    let err = super::classify_signature_status("src", "Y").unwrap_err();
+    assert!(err.to_string().contains("expired"));
+}
+
+#[test]
+fn classify_signature_status_revoked_key_errors_with_revoked() {
+    let err = super::classify_signature_status("src", "R").unwrap_err();
+    assert!(err.to_string().contains("revoked"));
+}
+
+#[test]
+fn classify_signature_status_unexpected_code_includes_raw_code_in_message() {
+    // The catch-all branch must surface the raw status code so users can
+    // file a useful bug report when git changes its status taxonomy.
+    let err = super::classify_signature_status("src", "Z").unwrap_err();
+    let msg = err.to_string();
+    assert!(
+        msg.contains("'Z'") || msg.contains("unexpected"),
+        "catch-all error must surface raw code or 'unexpected' hint, got: {msg}"
+    );
+}
+
+#[test]
+fn classify_signature_status_propagates_source_name_into_error() {
+    // The source name must appear in the error path so the operator log
+    // / CLI message tells the user which source failed verification.
+    let err = super::classify_signature_status("my-source-XYZ", "N").unwrap_err();
+    let msg = err.to_string();
+    assert!(
+        msg.contains("my-source-XYZ"),
+        "expected source name in error, got: {msg}"
+    );
+}

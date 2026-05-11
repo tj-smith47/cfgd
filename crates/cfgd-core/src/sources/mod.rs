@@ -580,9 +580,25 @@ pub fn verify_head_signature(name: &str, repo_dir: &Path) -> Result<()> {
     }
 
     let status = crate::stdout_lossy_trimmed(&output);
+    classify_signature_status(name, &status)
+}
 
-    match status.as_str() {
-        // G = good valid signature, U = good signature with unknown validity (untrusted key)
+/// Map a `git log --format=%G?` status code to a `Result`.
+///
+/// Status codes per `git-log(1)`:
+/// - `G`: good (valid) signature
+/// - `U`: good signature with unknown validity (untrusted key)
+/// - `N`: no signature
+/// - `B`: bad signature
+/// - `E`: signature cannot be checked
+/// - `X`: good signature that has expired
+/// - `Y`: good signature made by an expired key
+/// - `R`: good signature made by a revoked key
+///
+/// `G` and `U` are accepted (cfgd treats untrusted-key as "key not in keyring
+/// yet" rather than a hard failure). Anything else is a verification failure.
+pub(super) fn classify_signature_status(name: &str, status: &str) -> Result<()> {
+    match status {
         "G" | "U" => {
             tracing::info!(
                 source = %name,
