@@ -7,7 +7,7 @@ use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
-use cfgd_operator::{controllers, errors, gateway, health, leader, metrics, webhook};
+use cfgd_operator::{controllers, env, errors, gateway, health, leader, metrics, webhook};
 
 static OTEL_PROVIDER: std::sync::OnceLock<opentelemetry_sdk::trace::SdkTracerProvider> =
     std::sync::OnceLock::new();
@@ -29,13 +29,7 @@ async fn main() -> Result<()> {
     let client = Client::try_default().await?;
 
     let health_state = health::HealthState::new();
-    let health_port: u16 = match std::env::var("HEALTH_PORT") {
-        Ok(val) => val.parse().unwrap_or_else(|e| {
-            tracing::warn!(value = %val, error = %e, "invalid HEALTH_PORT, using default 8081");
-            8081
-        }),
-        Err(_) => 8081,
-    };
+    let health_port = env::parse_port_env("HEALTH_PORT", 8081);
 
     let mut health_handle = tokio::spawn({
         let hs = health_state.clone();
@@ -50,13 +44,7 @@ async fn main() -> Result<()> {
     let metrics = metrics::Metrics::new(&mut registry);
     let registry = Arc::new(Mutex::new(registry));
 
-    let metrics_port: u16 = match std::env::var("METRICS_PORT") {
-        Ok(val) => val.parse().unwrap_or_else(|e| {
-            tracing::warn!(value = %val, error = %e, "invalid METRICS_PORT, using default 8443");
-            8443
-        }),
-        Err(_) => 8443,
-    };
+    let metrics_port = env::parse_port_env("METRICS_PORT", 8443);
 
     let mut metrics_handle = tokio::spawn({
         let reg = registry.clone();
@@ -67,15 +55,8 @@ async fn main() -> Result<()> {
         }
     });
 
-    let cert_dir = std::env::var("WEBHOOK_CERT_DIR")
-        .unwrap_or_else(|_| "/tmp/k8s-webhook-server/serving-certs".to_string());
-    let webhook_port: u16 = match std::env::var("WEBHOOK_PORT") {
-        Ok(val) => val.parse().unwrap_or_else(|e| {
-            tracing::warn!(value = %val, error = %e, "invalid WEBHOOK_PORT, using default 9443");
-            9443
-        }),
-        Err(_) => 9443,
-    };
+    let cert_dir = env::env_or("WEBHOOK_CERT_DIR", "/tmp/k8s-webhook-server/serving-certs");
+    let webhook_port = env::parse_port_env("WEBHOOK_PORT", 9443);
 
     if Path::new(&cert_dir).join("tls.crt").exists() {
         tracing::info!(cert_dir = %cert_dir, port = webhook_port, "starting webhook server");
@@ -100,16 +81,13 @@ async fn main() -> Result<()> {
         );
     }
 
-    let leader_enabled = std::env::var("LEADER_ELECTION_ENABLED")
-        .map(|v| v == "true" || v == "1")
-        .unwrap_or(false);
+    let leader_enabled = env::parse_bool_env("LEADER_ELECTION_ENABLED");
 
     let shutdown = CancellationToken::new();
 
     let operator_future = async {
         if leader_enabled {
-            let namespace =
-                std::env::var("POD_NAMESPACE").unwrap_or_else(|_| "cfgd-system".to_string());
+            let namespace = env::env_or("POD_NAMESPACE", "cfgd-system");
             let identity = std::env::var("POD_NAME").unwrap_or_else(|_| Uuid::new_v4().to_string());
 
             tracing::info!(
@@ -183,23 +161,14 @@ async fn main() -> Result<()> {
 
 async fn run_operator(client: Client, metrics: metrics::Metrics) -> Result<()> {
     // Device gateway — optional HTTP server for device checkin, enrollment, drift, web UI
-    let gateway_enabled = std::env::var("DEVICE_GATEWAY_ENABLED")
-        .map(|v| v == "true" || v == "1")
-        .unwrap_or(false);
+    let gateway_enabled = env::parse_bool_env("DEVICE_GATEWAY_ENABLED");
 
     if gateway_enabled {
         let gateway_config = GatewayConfig {
-            port: std::env::var("DEVICE_GATEWAY_PORT")
-                .ok()
-                .and_then(|s| s.parse().ok())
-                .unwrap_or(8080),
-            db_path: std::env::var("CFGD_SERVER_DB_PATH")
-                .unwrap_or_else(|_| "/data/cfgd-gateway.db".to_string()),
+            port: env::parse_port_env("DEVICE_GATEWAY_PORT", 8080),
+            db_path: env::env_or("CFGD_SERVER_DB_PATH", "/data/cfgd-gateway.db"),
             kube_client: Some(client.clone()),
-            retention_days: std::env::var("CFGD_RETENTION_DAYS")
-                .ok()
-                .and_then(|s| s.parse().ok())
-                .unwrap_or(90),
+            retention_days: env::parse_u32_env("CFGD_RETENTION_DAYS", 90),
             metrics: Some(metrics.clone()),
         };
 
