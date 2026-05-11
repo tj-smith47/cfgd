@@ -114,6 +114,28 @@ fn build_volume_mount(name: &str) -> serde_json::Value {
     })
 }
 
+/// Build the strategic-merge JSON patch body that `kubectl cfgd inject` sends
+/// to the workload (Deployment/StatefulSet/etc). The patch sets the
+/// `cfgd.io/modules` annotation on the *pod template*, not the workload —
+/// the mutating webhook reads that annotation off newly created pods and
+/// injects CSI volumes. Moving the annotation up to the workload's metadata
+/// would cause the webhook to skip injection on existing pods that get
+/// re-created, breaking the rollout contract.
+fn build_inject_patch_json(module_refs: &[String]) -> serde_json::Value {
+    let annotation_value = module_refs.join(",");
+    serde_json::json!({
+        "spec": {
+            "template": {
+                "metadata": {
+                    "annotations": {
+                        cfgd_core::MODULES_ANNOTATION: annotation_value
+                    }
+                }
+            }
+        }
+    })
+}
+
 pub fn plugin_main() -> anyhow::Result<()> {
     // rustls CryptoProvider is already installed by main() before dispatching here
     let cli = PluginCli::parse();
@@ -304,23 +326,9 @@ fn cmd_inject(
         .map(|m| parse_module_arg(m))
         .collect::<Result<_, _>>()?;
 
-    let module_names: Vec<_> = parsed.iter().map(|(n, v)| format!("{n}:{v}")).collect();
-    let annotation_value = module_names.join(",");
+    let module_names: Vec<String> = parsed.iter().map(|(n, v)| format!("{n}:{v}")).collect();
 
-    // Patch the workload's pod template with the cfgd.io/modules annotation.
-    // The mutating webhook will inject CSI volumes on the next pod creation.
-    let patch_json = serde_json::json!({
-        "spec": {
-            "template": {
-                "metadata": {
-                    "annotations": {
-                        cfgd_core::MODULES_ANNOTATION: annotation_value
-                    }
-                }
-            }
-        }
-    });
-
+    let patch_json = build_inject_patch_json(&module_names);
     let patch_str = serde_json::to_string(&patch_json)?;
 
     let code = super::kubectl::run_inherit(&[

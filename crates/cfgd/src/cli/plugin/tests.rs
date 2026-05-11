@@ -370,3 +370,80 @@ fn module_required_message_is_descriptive() {
         "constant should mention module"
     );
 }
+
+// ============================================================================
+// build_inject_patch_json — strategic-merge patch shape
+//
+// The patch annotates `spec.template.metadata.annotations` (pod template),
+// not the workload's own metadata. Moving the annotation up to workload
+// metadata would skip the mutating webhook's CSI-injection on new pods.
+// ============================================================================
+
+#[test]
+fn build_inject_patch_json_sets_annotation_on_pod_template_not_workload() {
+    let modules = vec!["nettools:1.0".to_string()];
+    let patch = build_inject_patch_json(&modules);
+
+    // Pod template path: spec.template.metadata.annotations
+    let pt = patch
+        .pointer("/spec/template/metadata/annotations")
+        .expect("patch must annotate spec.template, not top-level metadata");
+    let val = pt
+        .get(cfgd_core::MODULES_ANNOTATION)
+        .and_then(|v| v.as_str())
+        .expect("annotation must be a string");
+    assert_eq!(val, "nettools:1.0");
+
+    // Negative: top-level metadata.annotations must NOT exist.
+    assert!(
+        patch.pointer("/metadata/annotations").is_none(),
+        "patch must not set workload-level metadata.annotations"
+    );
+}
+
+#[test]
+fn build_inject_patch_json_joins_multiple_modules_with_commas() {
+    let modules = vec![
+        "nettools:1.0".to_string(),
+        "auditpkgs:2.3".to_string(),
+        "debug-utils:latest".to_string(),
+    ];
+    let patch = build_inject_patch_json(&modules);
+    let val = patch
+        .pointer("/spec/template/metadata/annotations")
+        .and_then(|m| m.get(cfgd_core::MODULES_ANNOTATION))
+        .and_then(|v| v.as_str())
+        .unwrap();
+    assert_eq!(val, "nettools:1.0,auditpkgs:2.3,debug-utils:latest");
+}
+
+#[test]
+fn build_inject_patch_json_preserves_module_ordering() {
+    // The annotation value is interpreted as an ordered list by downstream
+    // consumers (webhook, CSI driver). Reordering would change which volume
+    // wins on conflicting mount paths.
+    let modules = vec!["z:1".to_string(), "a:1".to_string(), "m:1".to_string()];
+    let patch = build_inject_patch_json(&modules);
+    let val = patch
+        .pointer("/spec/template/metadata/annotations")
+        .and_then(|m| m.get(cfgd_core::MODULES_ANNOTATION))
+        .and_then(|v| v.as_str())
+        .unwrap();
+    assert_eq!(val, "z:1,a:1,m:1", "input order must be preserved verbatim");
+}
+
+#[test]
+fn build_inject_patch_json_empty_input_emits_empty_annotation_value() {
+    // Pinned: empty input → empty-string annotation (not absent). Callers
+    // guard against empty modules before calling, but the helper must not
+    // panic — an empty value would clear a previously-set annotation, which
+    // is a defensible default.
+    let modules: Vec<String> = Vec::new();
+    let patch = build_inject_patch_json(&modules);
+    let val = patch
+        .pointer("/spec/template/metadata/annotations")
+        .and_then(|m| m.get(cfgd_core::MODULES_ANNOTATION))
+        .and_then(|v| v.as_str())
+        .unwrap();
+    assert_eq!(val, "");
+}
