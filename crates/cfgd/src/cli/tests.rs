@@ -2092,6 +2092,36 @@ fn source_edit_with_valid_manifest_reports_valid_and_returns_ok() {
     );
 }
 
+#[cfg(unix)]
+#[test]
+#[serial_test::serial]
+fn source_edit_with_invalid_manifest_and_prompt_declined_breaks_with_warning() {
+    // Mirrors the profile/edit and config_cmd patterns: pre-stage an
+    // invalid manifest, route through the no-op editor, queue
+    // Confirm(false) so the prompt at source/edit.rs:25 takes the
+    // "Saved with validation errors" branch.
+    let dir = create_test_config_dir();
+    std::fs::write(
+        dir.path().join("cfgd-source.yaml"),
+        "not a ConfigSource document",
+    )
+    .unwrap();
+    let cli = test_cli(dir.path());
+    let (printer, buf) =
+        Printer::for_test_with_prompt_responses(vec![cfgd_core::output::PromptAnswer::Confirm(
+            false,
+        )]);
+
+    let _editor = EditorGuard::set("/bin/true");
+    source::cmd_source_edit(&cli, &printer).expect("save-with-errors must return Ok");
+
+    let out = buf.lock().unwrap().clone();
+    assert!(
+        out.contains("Saved with validation errors"),
+        "prompt-decline branch must warn: {out}"
+    );
+}
+
 #[test]
 fn source_edit_fails_without_manifest() {
     let dir = create_test_config_dir();
@@ -11284,6 +11314,36 @@ fn cmd_config_edit_no_config_fails() {
     let result = super::config_cmd::cmd_config_edit(&cli, &printer);
     assert!(result.is_err());
     assert_error_contains(&result, "No cfgd.yaml");
+}
+
+#[test]
+#[cfg(unix)]
+#[serial_test::serial]
+fn cmd_config_edit_with_invalid_config_and_prompt_declined_breaks_with_warning() {
+    // Drive config_cmd::cmd_config_edit's validate loop into the
+    // prompt-decline branch at config_cmd.rs:117-120. EDITOR=/bin/true
+    // leaves the invalid config in place; load_config Errs; the prompt
+    // fires; queue's Confirm(false) breaks the loop with "Saved with
+    // validation errors".
+    let dir = tempfile::tempdir().unwrap();
+    // Write invalid YAML AT cli.config so the loop's first iteration
+    // takes the Err arm.
+    std::fs::write(dir.path().join("cfgd.yaml"), "not a Config document").unwrap();
+
+    let cli = test_cli(dir.path());
+    let (printer, buf) =
+        Printer::for_test_with_prompt_responses(vec![cfgd_core::output::PromptAnswer::Confirm(
+            false,
+        )]);
+
+    let _editor = cfgd_core::test_helpers::EnvVarGuard::set("EDITOR", "/bin/true");
+    super::config_cmd::cmd_config_edit(&cli, &printer).expect("edit must Ok on save-with-errors");
+
+    let output = buf.lock().unwrap();
+    assert!(
+        output.contains("Saved with validation errors"),
+        "should warn: {output}"
+    );
 }
 
 // -----------------------------------------------------------------------

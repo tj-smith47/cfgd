@@ -2315,6 +2315,39 @@ fn cmd_module_delete_without_yes_and_prompt_confirmed_proceeds_with_deletion() {
 }
 
 #[test]
+#[cfg(unix)]
+#[serial_test::serial]
+fn cmd_module_edit_with_invalid_yaml_and_prompt_declined_breaks_with_warning() {
+    // Drive the editor-validate loop's prompt-decline branch at
+    // crud.rs:584-586. EDITOR=/bin/true is a no-op editor — it spawns,
+    // exits 0, and leaves the file unchanged. The pre-existing module
+    // yaml is intentionally invalid so parse_module Errs, the prompt
+    // fires, the queue's Confirm(false) is returned, and the loop
+    // breaks with the "Saved with validation errors" warning.
+    let dir = setup_config_dir();
+    make_module(
+        dir.path(),
+        "edit-broken",
+        "this is not valid YAML for a Module document",
+    );
+
+    let cli = test_cli(dir.path());
+    let (printer, buf) = cfgd_core::output::Printer::for_test_with_prompt_responses(vec![
+        cfgd_core::output::PromptAnswer::Confirm(false),
+    ]);
+
+    let _editor = cfgd_core::test_helpers::EnvVarGuard::set("EDITOR", "/bin/true");
+    cmd_module_edit(&cli, &printer, "edit-broken")
+        .expect("edit must return Ok even on Save-with-errors");
+
+    let output = buf.lock().unwrap();
+    assert!(
+        output.contains("Saved with validation errors"),
+        "should warn about invalid save: {output}"
+    );
+}
+
+#[test]
 fn cmd_module_create_interactive_drives_full_prompt_sequence_via_harness() {
     // Interactive mode at crud.rs:43-83 was uncovered for many sessions
     // because Printer::for_test()'s prompt_text returned Err. The new

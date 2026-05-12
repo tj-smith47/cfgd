@@ -1355,6 +1355,40 @@ fn profile_delete_invalid_name_fails() {
 }
 
 #[test]
+#[cfg(unix)]
+#[serial_test::serial]
+fn profile_edit_with_invalid_yaml_and_prompt_declined_breaks_with_warning() {
+    // Drive the editor-validate loop's prompt-decline branch in
+    // profile/edit.rs:22-25. EDITOR=/bin/true is a no-op editor so the
+    // pre-staged invalid YAML stays invalid; serde_yaml::from_str Errs,
+    // the prompt fires, the queue's Confirm(false) breaks the loop and
+    // emits the "Saved with validation errors" warning.
+    let dir = setup_config_dir();
+    // Overwrite the existing default.yaml with invalid content so the
+    // validate loop's Err arm fires on first iteration.
+    std::fs::write(
+        dir.path().join("profiles").join("default.yaml"),
+        "this is not a valid Profile document",
+    )
+    .unwrap();
+
+    let cli = test_cli(dir.path());
+    let (printer, buf) =
+        Printer::for_test_with_prompt_responses(vec![cfgd_core::output::PromptAnswer::Confirm(
+            false,
+        )]);
+
+    let _editor = cfgd_core::test_helpers::EnvVarGuard::set("EDITOR", "/bin/true");
+    cmd_profile_edit(&cli, &printer, "default").expect("edit must Ok even on Save-with-errors");
+
+    let output = buf.lock().unwrap();
+    assert!(
+        output.contains("Saved with validation errors"),
+        "should warn about invalid save: {output}"
+    );
+}
+
+#[test]
 fn profile_delete_without_yes_and_prompt_confirmed_proceeds() {
     // yes=false + queued Confirm(true) drives the prompt-true branch at
     // profile/delete.rs:41 — the file is removed and the success message
