@@ -2917,6 +2917,94 @@ mod cmd_init_apply_orchestration {
 
     #[test]
     #[serial]
+    fn cmd_init_with_apply_module_drives_module_only_branch_via_dry_run() {
+        // Build a bare repo where the cloned tree carries a local module —
+        // `modules/sample/module.yaml`. Then call cmd_init --from <url>
+        // --apply-module sample --dry-run. This exercises the module-only
+        // arm of cmd_init's apply orchestration (lines 107-159): loads
+        // all modules, validates the requested name, builds an empty
+        // ResolvedProfile, resolves modules, calls reconciler.plan with
+        // ReconcileContext::Apply, and apply_plan bails at "Nothing to do"
+        // because the sample module declares no packages or files.
+        let tmp = tempfile::tempdir().unwrap();
+        let _home = cfgd_core::with_test_home_guard(tmp.path());
+
+        // Build the bare repo with cfgd.yaml + modules/sample/module.yaml.
+        let bare = tmp.path().join("upstream.git");
+        let _ = git2::Repository::init_bare(&bare).unwrap();
+        let src = tmp.path().join("src");
+        let src_repo = git2::Repository::init(&src).unwrap();
+        std::fs::write(
+            src.join("cfgd.yaml"),
+            "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: with-module\nspec:\n  theme: default\n",
+        )
+        .unwrap();
+        std::fs::create_dir_all(src.join("modules").join("sample")).unwrap();
+        std::fs::write(
+            src.join("modules").join("sample").join("module.yaml"),
+            "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: sample\nspec: {}\n",
+        )
+        .unwrap();
+        let mut index = src_repo.index().unwrap();
+        index.add_path(std::path::Path::new("cfgd.yaml")).unwrap();
+        index
+            .add_path(std::path::Path::new("modules/sample/module.yaml"))
+            .unwrap();
+        index.write().unwrap();
+        let tree_id = index.write_tree().unwrap();
+        let tree = src_repo.find_tree(tree_id).unwrap();
+        let sig = git2::Signature::now("t", "t@example.com").unwrap();
+        src_repo
+            .commit(Some("HEAD"), &sig, &sig, "initial", &tree, &[])
+            .unwrap();
+        drop(tree);
+        let url = format!("file://{}", bare.display());
+        let mut remote = src_repo.remote("origin", &url).unwrap();
+        let branch = src_repo
+            .head()
+            .unwrap()
+            .shorthand()
+            .unwrap_or("master")
+            .to_string();
+        remote
+            .push(&[&format!("refs/heads/{branch}:refs/heads/{branch}")], None)
+            .unwrap();
+
+        let target = tmp.path().join("dst");
+        let state_dir = tmp.path().join("state");
+        let modules = vec!["sample".to_string()];
+        let (printer, buf) = Printer::for_test();
+        with_state_dir(&state_dir, || {
+            let args = InitArgs {
+                path: Some(target.to_str().unwrap()),
+                from: Some(&url),
+                branch: "master",
+                name: None,
+                apply: false,
+                dry_run: true,
+                yes: true,
+                install_daemon: false,
+                theme: None,
+                apply_profile: None,
+                apply_modules: &modules,
+            };
+            cmd_init(&printer, &args).expect("--apply-module drives module-only branch");
+        });
+
+        let out = buf.lock().unwrap().clone();
+        assert!(
+            out.contains("Applying Modules"),
+            "should hit the Applying Modules header in the module-only arm: {out}"
+        );
+        // Sample module declares no packages/files → 0 actions → "Nothing to do".
+        assert!(
+            out.contains("Nothing to do") || out.contains("already configured"),
+            "0-action module plan should hit the apply_plan no-op early return: {out}"
+        );
+    }
+
+    #[test]
+    #[serial]
     fn cmd_init_from_url_pick_profile_uses_only_available_when_spec_profile_blank() {
         // Clone a config without `spec.profile`, then drive apply with
         // dry_run=true. pick_profile sees a single profile (`default.yaml`)
