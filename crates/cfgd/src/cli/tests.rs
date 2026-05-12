@@ -7982,6 +7982,16 @@ fn action_type_str_secret_variants() {
     );
 
     assert_eq!(
+        super::action_type_str(&Action::Secret(SecretAction::ResolveEnv {
+            provider: "vault".into(),
+            reference: "secret/data/app".into(),
+            envs: vec!["TOKEN".into(), "API_KEY".into()],
+            origin: "local".into(),
+        })),
+        "resolve-env"
+    );
+
+    assert_eq!(
         super::action_type_str(&Action::Secret(SecretAction::Skip {
             source: "a".into(),
             reason: "test".into(),
@@ -12393,6 +12403,363 @@ fn apply_backup_choice_backup_moves_file() {
     assert!(
         output.contains("Backed up to"),
         "should print backup success, got: {output}"
+    );
+}
+
+#[test]
+fn apply_backup_choice_skip_on_non_file_action_uses_local_origin() {
+    // The `_ => "local".to_string()` arm in apply_backup_choice: when the action
+    // passed in isn't File::Create/Update, origin defaults to "local". Pin the
+    // contract — even though handle_unmanaged_file_targets only feeds File
+    // actions, callers can pass anything and the Skip-conversion must not panic.
+    let dir = tempfile::tempdir().unwrap();
+    let target = dir.path().join("stray.txt");
+    std::fs::write(&target, "data").unwrap();
+
+    let (printer, _buf) = Printer::for_test();
+    let mut action = reconciler::Action::Package(PackageAction::Install {
+        manager: "brew".into(),
+        packages: vec!["curl".into()],
+        origin: "module-foo".into(),
+    });
+
+    let result = super::apply_backup_choice("Skip this file", &target, &mut action, &printer);
+    assert!(result.is_ok());
+
+    match &action {
+        reconciler::Action::File(FileAction::Skip {
+            origin, target: t, ..
+        }) => {
+            assert_eq!(origin, "local", "non-File action falls through to 'local'");
+            assert_eq!(t, &target);
+        }
+        other => panic!("expected File::Skip after Skip choice, got: {:?}", other),
+    }
+}
+
+// -----------------------------------------------------------------------
+// is_unmanaged_file — module-cache symlink branch
+// -----------------------------------------------------------------------
+
+#[test]
+#[cfg(unix)]
+#[serial_test::serial]
+fn is_unmanaged_file_module_cache_symlink_under_test_home() {
+    // is_unmanaged_file second early-return: a symlink pointing into
+    // ~/.cache/cfgd/modules/ is module-managed (NOT unmanaged) even though it
+    // does not start with config_dir. Honors the test-home thread-local via
+    // expand_tilde, so we can build the cache-dir path under a tempdir.
+    let dir = tempfile::tempdir().unwrap();
+    let _guard = cfgd_core::with_test_home_guard(dir.path());
+    let state = StateStore::open_in_memory().unwrap();
+
+    // Build a real source under the redirected ~/.cache/cfgd/modules/<mod>/
+    let module_root = dir.path().join(".cache/cfgd/modules/example-mod");
+    std::fs::create_dir_all(&module_root).unwrap();
+    let module_payload = module_root.join("rc-fragment");
+    std::fs::write(&module_payload, "# from module\n").unwrap();
+
+    // Symlink lives outside config_dir so the first early-return (link_target
+    // starts with config_dir) does NOT fire; the module-cache check must.
+    let config_dir = dir.path().join("config");
+    std::fs::create_dir_all(&config_dir).unwrap();
+    let unrelated_dir = dir.path().join("home");
+    std::fs::create_dir_all(&unrelated_dir).unwrap();
+    let target = unrelated_dir.join(".module-link");
+    std::os::unix::fs::symlink(&module_payload, &target).unwrap();
+
+    assert!(
+        !is_unmanaged_file(&target, &config_dir, &state),
+        "symlink into ~/.cache/cfgd/modules must be treated as cfgd-managed",
+    );
+}
+
+// -----------------------------------------------------------------------
+// handle_unmanaged_file_targets — default-Adopt branch in test mode
+// -----------------------------------------------------------------------
+
+#[test]
+fn handle_unmanaged_file_targets_file_action_adopts_by_default_in_test_mode() {
+    // In test mode `prompt_select` returns Err → `.unwrap_or(&options[0])`
+    // returns "Adopt" → apply_backup_choice "Adopt" is a no-op (not Backup, not
+    // Skip). Pin the contract: when prompts can't run interactively, an
+    // unmanaged FileAction::Create stays a Create — neither backed up nor
+    // converted to Skip.
+    let dir = tempfile::tempdir().unwrap();
+    let state = StateStore::open_in_memory().unwrap();
+
+    let target = dir.path().join("home").join(".bashrc");
+    std::fs::create_dir_all(target.parent().unwrap()).unwrap();
+    std::fs::write(&target, "existing user content").unwrap();
+
+    let source = dir.path().join("src").join("bashrc");
+    std::fs::create_dir_all(source.parent().unwrap()).unwrap();
+    std::fs::write(&source, "cfgd-managed content").unwrap();
+
+    let mut plan = reconciler::Plan {
+        phases: vec![reconciler::Phase {
+            name: reconciler::PhaseName::Files,
+            actions: vec![reconciler::Action::File(FileAction::Create {
+                source: source.clone(),
+                target: target.clone(),
+                origin: "profile".into(),
+                strategy: config::FileStrategy::Copy,
+                source_hash: None,
+            })],
+        }],
+        warnings: vec![],
+    };
+    let config_dir = dir.path().join("config");
+
+    let (printer, buf) = Printer::for_test();
+    let result =
+        super::handle_unmanaged_file_targets(&mut plan, &config_dir, &state, &printer, false);
+    assert!(result.is_ok());
+
+    // Action is still Create (Adopt = overwrite via cfgd, action untouched).
+    assert!(
+        matches!(
+            &plan.phases[0].actions[0],
+            reconciler::Action::File(FileAction::Create { .. })
+        ),
+        "expected Create to remain after Adopt-by-default, got: {:?}",
+        plan.phases[0].actions[0]
+    );
+
+    // Target file is NOT renamed (only Backup choice renames; Adopt does not).
+    assert!(target.exists(), "Adopt must not rename the target file");
+    assert!(
+        !dir.path().join("home").join(".bashrc.cfgd-backup").exists(),
+        "no .cfgd-backup file should be created by Adopt",
+    );
+
+    // Warning prompt is still printed before the prompt fails over to default.
+    let out = buf.lock().unwrap().clone();
+    assert!(
+        out.contains("Target exists as unmanaged file"),
+        "expected unmanaged-file warning, got: {out}",
+    );
+}
+
+#[test]
+fn handle_unmanaged_file_targets_module_deploy_files_adopts_by_default() {
+    // Mirrors the FileAction arm but for the Module DeployFiles branch:
+    // unmanaged files inside a module DeployFiles action are NOT removed from
+    // the files list when prompts fail to run interactively (Adopt is the
+    // default; only Skip removes).
+    use cfgd_core::modules::ResolvedFile;
+    use cfgd_core::reconciler::{ModuleAction, ModuleActionKind};
+
+    let dir = tempfile::tempdir().unwrap();
+    let state = StateStore::open_in_memory().unwrap();
+
+    let target = dir
+        .path()
+        .join("home")
+        .join(".config")
+        .join("starship.toml");
+    std::fs::create_dir_all(target.parent().unwrap()).unwrap();
+    std::fs::write(&target, "# user-installed").unwrap();
+
+    let source = dir.path().join("module-src").join("starship.toml");
+    std::fs::create_dir_all(source.parent().unwrap()).unwrap();
+    std::fs::write(&source, "# from module").unwrap();
+
+    let mut plan = reconciler::Plan {
+        phases: vec![reconciler::Phase {
+            name: reconciler::PhaseName::Modules,
+            actions: vec![reconciler::Action::Module(ModuleAction {
+                module_name: "starship".into(),
+                kind: ModuleActionKind::DeployFiles {
+                    files: vec![ResolvedFile {
+                        source: source.clone(),
+                        target: target.clone(),
+                        is_git_source: false,
+                        strategy: Some(config::FileStrategy::Copy),
+                        encryption: None,
+                    }],
+                },
+            })],
+        }],
+        warnings: vec![],
+    };
+    let config_dir = dir.path().join("config");
+
+    let (printer, buf) = Printer::for_test();
+    let result =
+        super::handle_unmanaged_file_targets(&mut plan, &config_dir, &state, &printer, false);
+    assert!(result.is_ok());
+
+    // File entry survives — Adopt does not remove (only Skip removes).
+    match &plan.phases[0].actions[0] {
+        reconciler::Action::Module(ma) => match &ma.kind {
+            ModuleActionKind::DeployFiles { files } => {
+                assert_eq!(files.len(), 1, "Adopt must not drop the file entry");
+                assert_eq!(files[0].target, target);
+            }
+            other => panic!("expected DeployFiles, got: {:?}", other),
+        },
+        other => panic!("expected Module action, got: {:?}", other),
+    }
+
+    // Module-scoped warning text includes the module name.
+    let out = buf.lock().unwrap().clone();
+    assert!(
+        out.contains("Module 'starship'") && out.contains("unmanaged file"),
+        "expected module-scoped unmanaged-file warning, got: {out}",
+    );
+}
+
+#[test]
+fn handle_unmanaged_file_targets_auto_yes_skips_prompt_for_file_action() {
+    // auto_yes=true short-circuits the unmanaged-file check entirely for File
+    // actions: no warning is printed, and the action is left untouched.
+    let dir = tempfile::tempdir().unwrap();
+    let state = StateStore::open_in_memory().unwrap();
+
+    let target = dir.path().join(".vimrc");
+    std::fs::write(&target, "set nocompatible").unwrap();
+    let source = dir.path().join("src.vimrc");
+    std::fs::write(&source, "set autoindent").unwrap();
+
+    let mut plan = reconciler::Plan {
+        phases: vec![reconciler::Phase {
+            name: reconciler::PhaseName::Files,
+            actions: vec![reconciler::Action::File(FileAction::Create {
+                source,
+                target: target.clone(),
+                origin: "profile".into(),
+                strategy: config::FileStrategy::Copy,
+                source_hash: None,
+            })],
+        }],
+        warnings: vec![],
+    };
+
+    let (printer, buf) = Printer::for_test();
+    let result =
+        super::handle_unmanaged_file_targets(&mut plan, dir.path(), &state, &printer, true);
+    assert!(result.is_ok());
+    let out = buf.lock().unwrap().clone();
+    assert!(
+        !out.contains("unmanaged file"),
+        "auto_yes must suppress the unmanaged-file warning, got: {out}",
+    );
+}
+
+// -----------------------------------------------------------------------
+// display_plan_preview — pending decisions section + Update diff render
+// -----------------------------------------------------------------------
+
+#[test]
+fn display_plan_preview_emits_pending_decisions_section() {
+    // Pending Decisions block (lines 170-177): when StateStore.pending_decisions
+    // returns a non-empty Vec, the preview prints a "Pending Decisions" header
+    // and one info line per decision with the run-hint suffix.
+    let state = StateStore::open_in_memory().unwrap();
+    state
+        .upsert_pending_decision(
+            "team-config",
+            "packages.brew.exa",
+            "required",
+            "install",
+            "team profile requires exa",
+        )
+        .unwrap();
+    state
+        .upsert_pending_decision(
+            "team-config",
+            "files:/etc/foo",
+            "recommended",
+            "deploy",
+            "drop-in config",
+        )
+        .unwrap();
+
+    let plan = reconciler::Plan {
+        phases: vec![],
+        warnings: vec![],
+    };
+    let (printer, buf) = Printer::for_test();
+    super::display_plan_preview(&plan, &printer, &state, "apply", None, None);
+
+    let out = buf.lock().unwrap().clone();
+    assert!(
+        out.contains("Pending Decisions (not included in this plan)"),
+        "expected Pending Decisions subheader, got: {out}",
+    );
+    assert!(
+        out.contains("packages.brew.exa") && out.contains("install by team-config"),
+        "expected per-decision info line for brew.exa, got: {out}",
+    );
+    assert!(
+        out.contains("cfgd decide accept/reject"),
+        "expected resolution hint, got: {out}",
+    );
+}
+
+#[test]
+fn display_plan_preview_renders_file_update_diff_with_fm() {
+    // dry_run_fm=Some path (lines 192-211): for every FileAction::Update where
+    // target exists on disk and source is readable, the preview emits a
+    // subheader with the target path and a diff. Non-template sources read raw
+    // text from disk (the `is_tera_template == false` arm).
+    let dir = tempfile::tempdir().unwrap();
+    let config_dir = dir.path();
+    let target = config_dir.join("config.toml");
+    std::fs::write(&target, "color = \"red\"\n").unwrap();
+    let source = config_dir.join("src").join("config.toml");
+    std::fs::create_dir_all(source.parent().unwrap()).unwrap();
+    std::fs::write(&source, "color = \"green\"\n").unwrap();
+
+    let resolved = cfgd_core::config::ResolvedProfile {
+        layers: vec![cfgd_core::config::ProfileLayer {
+            source: "local".to_string(),
+            profile_name: "test".to_string(),
+            priority: 1000,
+            policy: cfgd_core::config::LayerPolicy::Local,
+            spec: cfgd_core::config::ProfileSpec::default(),
+        }],
+        merged: cfgd_core::config::MergedProfile::default(),
+    };
+    let fm = CfgdFileManager::new(config_dir, &resolved).unwrap();
+
+    let plan = reconciler::Plan {
+        phases: vec![reconciler::Phase {
+            name: reconciler::PhaseName::Files,
+            actions: vec![reconciler::Action::File(FileAction::Update {
+                source: source.clone(),
+                target: target.clone(),
+                diff: "ignored — preview re-reads from disk".into(),
+                origin: "profile".into(),
+                strategy: config::FileStrategy::Copy,
+                source_hash: None,
+            })],
+        }],
+        warnings: vec!["a sample warning".into()],
+    };
+    let state = StateStore::open_in_memory().unwrap();
+
+    let (printer, buf) = Printer::for_test();
+    super::display_plan_preview(&plan, &printer, &state, "apply", None, Some(&fm));
+
+    let out = buf.lock().unwrap().clone();
+    let target_str = target.display().to_string();
+    assert!(
+        out.contains(&target_str),
+        "expected target path subheader, got: {out}",
+    );
+    assert!(
+        out.contains("color = \"red\"") && out.contains("color = \"green\""),
+        "expected diff body to contain both color values, got: {out}",
+    );
+    assert!(
+        out.contains("a sample warning"),
+        "expected plan warnings to be printed, got: {out}",
+    );
+    assert!(
+        out.contains("1 action(s) planned"),
+        "expected planned summary line, got: {out}",
     );
 }
 
