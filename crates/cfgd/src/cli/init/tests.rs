@@ -2773,4 +2773,223 @@ mod cmd_init_apply_orchestration {
             );
         });
     }
+
+    /// Stage a working source repo + bare remote at `<tmp>/upstream.git` whose
+    /// committed tree has `cfgd.yaml` + `profiles/default.yaml` (empty profile,
+    /// no inherits / packages / modules). Mirror of the helper inside the
+    /// sibling `cmd_init_from_local_bare` module — duplicated locally because
+    /// Rust visibility forbids sharing a sibling-private helper across two
+    /// `#[cfg(unix)] mod` blocks without exposing it crate-wide.
+    fn make_bare_config_repo_with_default(tmp_root: &std::path::Path) -> std::path::PathBuf {
+        let bare = tmp_root.join("upstream.git");
+        let _bare_repo = git2::Repository::init_bare(&bare).unwrap();
+
+        let src = tmp_root.join("src");
+        let src_repo = git2::Repository::init(&src).unwrap();
+        std::fs::write(
+            src.join("cfgd.yaml"),
+            "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: cloned-cfg\nspec:\n  profile: default\n",
+        )
+        .unwrap();
+        std::fs::create_dir_all(src.join("profiles")).unwrap();
+        std::fs::write(
+            src.join("profiles").join("default.yaml"),
+            "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec: {}\n",
+        )
+        .unwrap();
+        let mut index = src_repo.index().unwrap();
+        index.add_path(std::path::Path::new("cfgd.yaml")).unwrap();
+        index
+            .add_path(std::path::Path::new("profiles/default.yaml"))
+            .unwrap();
+        index.write().unwrap();
+        let tree_id = index.write_tree().unwrap();
+        let tree = src_repo.find_tree(tree_id).unwrap();
+        let sig = git2::Signature::now("t", "t@example.com").unwrap();
+        src_repo
+            .commit(Some("HEAD"), &sig, &sig, "initial", &tree, &[])
+            .unwrap();
+        drop(tree);
+        let bare_url = format!("file://{}", bare.display());
+        let mut remote = src_repo.remote("origin", &bare_url).unwrap();
+        let branch = src_repo
+            .head()
+            .unwrap()
+            .shorthand()
+            .unwrap_or("master")
+            .to_string();
+        remote
+            .push(&[&format!("refs/heads/{branch}:refs/heads/{branch}")], None)
+            .unwrap();
+        bare
+    }
+
+    #[test]
+    #[serial]
+    fn cmd_init_from_url_with_apply_drives_profile_branch_via_dry_run() {
+        // `--from <bare> --apply --dry-run` exercises the profile-based apply
+        // arm end-to-end:
+        //   clone → resolve_profile → build_registry → reconciler.plan() →
+        //   apply_plan(dry_run=true) → "Nothing to do" early return.
+        // The cloned profile is empty, so plan.total_actions() == 0 and we
+        // hit the apply_plan zero-action branch.
+        let tmp = tempfile::tempdir().unwrap();
+        let _home = cfgd_core::with_test_home_guard(tmp.path());
+        let bare = make_bare_config_repo_with_default(tmp.path());
+        let target = tmp.path().join("dst");
+        let state_dir = tmp.path().join("state");
+        let url = format!("file://{}", bare.display());
+
+        let (printer, buf) = Printer::for_test();
+        with_state_dir(&state_dir, || {
+            let args = InitArgs {
+                path: Some(target.to_str().unwrap()),
+                from: Some(&url),
+                branch: "master",
+                name: None,
+                apply: true,
+                dry_run: true,
+                yes: true,
+                install_daemon: false,
+                theme: None,
+                apply_profile: None,
+                apply_modules: &[],
+            };
+            cmd_init(&printer, &args).expect("--from + --apply --dry-run should succeed");
+        });
+
+        let out = buf.lock().unwrap().clone();
+        assert!(
+            out.contains("Applying Configuration"),
+            "should enter the profile-based apply branch: {out}"
+        );
+        // Empty profile -> 0 planned actions -> the apply_plan no-op success.
+        assert!(
+            out.contains("Nothing to do") || out.contains("already configured"),
+            "0-action plan should reach the 'Nothing to do' early return: {out}"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn cmd_init_from_url_with_apply_profile_flag_persists_profile_to_cfgd_yaml() {
+        // `--apply-profile default` on a cloned repo should:
+        //   1. validate profiles/default.yaml exists
+        //   2. write spec.profile=default into cfgd.yaml (even though the
+        //      clone already has it — exercises the mutate-on-set arm)
+        //   3. run the profile-based apply (dry_run → zero-action exit)
+        let tmp = tempfile::tempdir().unwrap();
+        let _home = cfgd_core::with_test_home_guard(tmp.path());
+        let bare = make_bare_config_repo_with_default(tmp.path());
+        let target = tmp.path().join("dst");
+        let state_dir = tmp.path().join("state");
+        let url = format!("file://{}", bare.display());
+
+        let (printer, buf) = Printer::for_test();
+        with_state_dir(&state_dir, || {
+            let args = InitArgs {
+                path: Some(target.to_str().unwrap()),
+                from: Some(&url),
+                branch: "master",
+                name: None,
+                apply: false,
+                dry_run: true,
+                yes: true,
+                install_daemon: false,
+                theme: None,
+                apply_profile: Some("default"),
+                apply_modules: &[],
+            };
+            cmd_init(&printer, &args).expect("--apply-profile default should drive apply branch");
+        });
+
+        let out = buf.lock().unwrap().clone();
+        assert!(
+            out.contains("Set active profile: default"),
+            "validated --apply-profile branch should announce profile selection: {out}"
+        );
+        let cfg_yaml = std::fs::read_to_string(target.join("cfgd.yaml")).unwrap();
+        assert!(
+            cfg_yaml.contains("profile: default"),
+            "spec.profile should be persisted to cfgd.yaml: {cfg_yaml}"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn cmd_init_from_url_pick_profile_uses_only_available_when_spec_profile_blank() {
+        // Clone a config without `spec.profile`, then drive apply with
+        // dry_run=true. pick_profile sees a single profile (`default.yaml`)
+        // and selects it non-interactively — exercises the `names.len() == 1`
+        // happy-path of pick_profile.
+        let tmp = tempfile::tempdir().unwrap();
+        let _home = cfgd_core::with_test_home_guard(tmp.path());
+
+        // Build a bare repo whose cfgd.yaml has NO spec.profile.
+        let bare = tmp.path().join("upstream.git");
+        let _b = git2::Repository::init_bare(&bare).unwrap();
+        let src = tmp.path().join("src");
+        let src_repo = git2::Repository::init(&src).unwrap();
+        std::fs::write(
+            src.join("cfgd.yaml"),
+            "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: profileless\nspec:\n  theme: default\n",
+        )
+        .unwrap();
+        std::fs::create_dir_all(src.join("profiles")).unwrap();
+        std::fs::write(
+            src.join("profiles").join("only.yaml"),
+            "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: only\nspec: {}\n",
+        )
+        .unwrap();
+        let mut index = src_repo.index().unwrap();
+        index.add_path(std::path::Path::new("cfgd.yaml")).unwrap();
+        index
+            .add_path(std::path::Path::new("profiles/only.yaml"))
+            .unwrap();
+        index.write().unwrap();
+        let tree_id = index.write_tree().unwrap();
+        let tree = src_repo.find_tree(tree_id).unwrap();
+        let sig = git2::Signature::now("t", "t@example.com").unwrap();
+        src_repo
+            .commit(Some("HEAD"), &sig, &sig, "initial", &tree, &[])
+            .unwrap();
+        drop(tree);
+        let url = format!("file://{}", bare.display());
+        let mut remote = src_repo.remote("origin", &url).unwrap();
+        let branch = src_repo
+            .head()
+            .unwrap()
+            .shorthand()
+            .unwrap_or("master")
+            .to_string();
+        remote
+            .push(&[&format!("refs/heads/{branch}:refs/heads/{branch}")], None)
+            .unwrap();
+
+        let target = tmp.path().join("dst");
+        let state_dir = tmp.path().join("state");
+        let (printer, buf) = Printer::for_test();
+        with_state_dir(&state_dir, || {
+            let args = InitArgs {
+                path: Some(target.to_str().unwrap()),
+                from: Some(&url),
+                branch: "master",
+                name: None,
+                apply: true,
+                dry_run: true,
+                yes: true,
+                install_daemon: false,
+                theme: None,
+                apply_profile: None,
+                apply_modules: &[],
+            };
+            cmd_init(&printer, &args).expect("pick_profile should select the sole profile");
+        });
+
+        let out = buf.lock().unwrap().clone();
+        assert!(
+            out.contains("Using only available profile: only"),
+            "pick_profile single-profile fast path should be exercised: {out}"
+        );
+    }
 }

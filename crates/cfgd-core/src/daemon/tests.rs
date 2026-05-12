@@ -8589,6 +8589,126 @@ mod harness {
         );
     }
 
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn run_daemon_with_processes_file_change_tick_via_external_trigger() {
+        // A file-change tick goes through the dispatch arm in run_daemon_loop
+        // and lands in handle_file_change_tick → debounce::record_change.
+        // The daemon should keep running until we send shutdown.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let _g = crate::with_test_home_guard(tmp.path());
+        let config_path = write_happy_path_config(&tmp);
+        let (triggers, senders) = make_triggers();
+        let (printer, _buf) = Printer::for_test();
+        let printer = Arc::new(printer);
+        let hooks: Arc<dyn DaemonHooks> = Arc::new(NoopHooks);
+
+        let overrides = make_overrides_for_test(&tmp, triggers);
+        let daemon = tokio::spawn(super::super::run_daemon_with(
+            config_path.clone(),
+            None,
+            Arc::clone(&printer),
+            hooks,
+            overrides,
+        ));
+
+        // Push a synthetic file-change path. The path doesn't need to map to
+        // a managed_paths entry — the handler tolerates unknown paths and
+        // simply records into the debounce map.
+        senders.file_tx.send(config_path.clone()).await.unwrap();
+        tokio::time::sleep(StdDuration::from_millis(80)).await;
+        senders.shutdown_tx.send(()).unwrap();
+
+        let result = tokio::time::timeout(StdDuration::from_secs(5), daemon)
+            .await
+            .expect("daemon should shut down in time")
+            .expect("daemon join");
+        assert!(result.is_ok(), "daemon Ok, got {:?}", result);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn run_daemon_with_processes_compliance_tick_via_external_trigger() {
+        // Drive the compliance-tick arm of run_daemon_loop. Without a
+        // `compliance` config block the handler runs but writes nothing to
+        // the state store; the daemon should still exit cleanly afterwards.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let _g = crate::with_test_home_guard(tmp.path());
+        let config_path = write_happy_path_config(&tmp);
+        let (triggers, senders) = make_triggers();
+        let (printer, _buf) = Printer::for_test();
+        let printer = Arc::new(printer);
+        let hooks: Arc<dyn DaemonHooks> = Arc::new(NoopHooks);
+
+        let overrides = make_overrides_for_test(&tmp, triggers);
+        let daemon = tokio::spawn(super::super::run_daemon_with(
+            config_path,
+            None,
+            Arc::clone(&printer),
+            hooks,
+            overrides,
+        ));
+
+        senders.compliance_tx.send(()).await.unwrap();
+        tokio::time::sleep(StdDuration::from_millis(80)).await;
+        senders.shutdown_tx.send(()).unwrap();
+
+        let result = tokio::time::timeout(StdDuration::from_secs(5), daemon)
+            .await
+            .expect("daemon should shut down in time")
+            .expect("daemon join");
+        assert!(result.is_ok(), "daemon Ok, got {:?}", result);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn run_daemon_with_health_server_enabled_binds_ipc_socket() {
+        // `skip_health_server = false` exercises the health-server spawn
+        // branch. The IPC socket should be created and reachable while the
+        // daemon is alive, then cleaned up by `cleanup_ipc_socket` on exit.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let _g = crate::with_test_home_guard(tmp.path());
+        let config_path = write_happy_path_config(&tmp);
+        let ipc_path = tmp.path().join("health-on.sock");
+        let (triggers, senders) = make_triggers();
+        let (printer, _buf) = Printer::for_test();
+        let printer = Arc::new(printer);
+        let hooks: Arc<dyn DaemonHooks> = Arc::new(NoopHooks);
+
+        let overrides = super::super::DaemonRunOverrides {
+            ipc_path: Some(ipc_path.clone()),
+            state_dir_override: Some(tmp.path().to_path_buf()),
+            skip_health_server: false,
+            skip_startup_checkin: true,
+            external_triggers: Some(triggers),
+        };
+        let daemon = tokio::spawn(super::super::run_daemon_with(
+            config_path,
+            None,
+            Arc::clone(&printer),
+            hooks,
+            overrides,
+        ));
+
+        // Give the health server time to bind the socket.
+        tokio::time::sleep(StdDuration::from_millis(120)).await;
+        assert!(
+            ipc_path.exists(),
+            "health server should have created the IPC socket at {}",
+            ipc_path.display()
+        );
+
+        senders.shutdown_tx.send(()).unwrap();
+        let result = tokio::time::timeout(StdDuration::from_secs(5), daemon)
+            .await
+            .expect("daemon should shut down in time")
+            .expect("daemon join");
+        assert!(result.is_ok(), "daemon Ok, got {:?}", result);
+        // cleanup_ipc_socket should unlink the socket on shutdown.
+        assert!(
+            !ipc_path.exists(),
+            "cleanup_ipc_socket must remove the socket on exit"
+        );
+    }
+
     #[cfg(unix)]
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn run_daemon_with_errors_when_ipc_path_has_live_listener() {
