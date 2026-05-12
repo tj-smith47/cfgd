@@ -2770,6 +2770,60 @@ fn containerd_apply_writes_toml_then_returns_err_when_systemctl_fails() {
     );
 }
 
+#[test]
+fn containerd_apply_with_existing_config_triggers_rollback_attempt_after_systemctl_fails() {
+    // Drives the backup-restore branch at containerd.rs:155-167. Pre-stages
+    // a valid TOML config so capture_file_state returns Some(state); apply
+    // writes the merged config; restart fails on hosts without containerd;
+    // the rollback arm fires. Asserts the rollback warning is emitted and
+    // the final on-disk config contains the original bytes.
+    //
+    // On hosts where containerd is actually running, restart_containerd may
+    // succeed and the rollback warning won't fire. Skip the assertion in
+    // that case — the goal is to pin the rollback arm where it's reachable.
+    let dir = tempdir().unwrap();
+    let config = dir.path().join("config.toml");
+    let original = "[plugins.\"io.containerd.grpc.v1.cri\"]\nsandbox_image = \"old:1.0\"\n";
+    std::fs::write(&config, original).unwrap();
+
+    let mut settings = serde_yaml::Mapping::new();
+    settings.insert(
+        serde_yaml::Value::String("sandbox_image".into()),
+        serde_yaml::Value::String("new:2.0".into()),
+    );
+    let mut m = serde_yaml::Mapping::new();
+    m.insert(
+        serde_yaml::Value::String("configPath".into()),
+        serde_yaml::Value::String(config.to_str().unwrap().into()),
+    );
+    m.insert(
+        serde_yaml::Value::String("settings".into()),
+        serde_yaml::Value::Mapping(settings),
+    );
+    let desired = serde_yaml::Value::Mapping(m);
+    let cc = ContainerdConfigurator;
+    let (printer, buf) = cfgd_core::output::Printer::for_test();
+    let result = cc.apply(&desired, &printer);
+
+    let captured = buf.lock().unwrap().clone();
+    if result.is_err() {
+        // Rollback path: warning must fire and original content must be back.
+        assert!(
+            captured.contains("restoring previous config"),
+            "rollback warning expected on restart-failed path: {captured}"
+        );
+        let after = std::fs::read_to_string(&config).unwrap();
+        assert!(
+            after.contains("old:1.0"),
+            "rollback must restore prior containerd config: {after}"
+        );
+    }
+    // If Ok: the host actually has containerd; nothing to assert about
+    // rollback (it didn't run). The merged-write was already asserted by
+    // the sibling `containerd_apply_writes_toml_then_returns_err_when_systemctl_fails`
+    // test, so this test contributes only when the rollback arm is taken.
+}
+
 // --- KubeletConfigurator::apply paths ---
 //
 // The 60+ uncovered lines in kubelet.rs are the apply() body. systemctl
