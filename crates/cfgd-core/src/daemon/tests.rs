@@ -8909,3 +8909,171 @@ mod harness {
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// daemon/reconcile.rs — extra branch coverage:
+//   * Plural-message branch fires when count > 1 new pending decisions in
+//     one call (singular path is already covered by *_detects_new_items_on_change)
+//   * pending_resource_paths direct read-back contract — empty / multi-decision
+//     / post-resolution-empty
+// ---------------------------------------------------------------------------
+
+#[test]
+fn process_source_decisions_three_new_items_all_become_pending_in_one_call() {
+    use crate::config::{CargoSpec, PackagesSpec};
+    let store = test_state();
+    // The plural-vs-singular branch (lines 730-742 in reconcile.rs) fires
+    // inside `notifier.notify(...)` rendering when new_pending_count > 1.
+    // We can't inspect the formatted body directly via Stdout notifier, but
+    // we CAN pin the precondition: a single call must register all three
+    // items as pending in the store + the excluded set. That's exactly the
+    // shape that would trigger the plural message in the notifier body.
+    let notifier = Notifier::new(NotifyMethod::Stdout, None);
+    let policy = AutoApplyPolicyConfig::default(); // Notify
+
+    let merged = MergedProfile {
+        packages: PackagesSpec {
+            cargo: Some(CargoSpec {
+                file: None,
+                packages: vec!["bat".into(), "ripgrep".into(), "fd".into()],
+            }),
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+
+    let excluded = process_source_decisions(&store, "acme", &merged, &policy, &notifier);
+
+    let pending = store.pending_decisions().unwrap();
+    assert_eq!(
+        pending.len(),
+        3,
+        "all three new cargo items must produce pending decisions on the first call"
+    );
+    assert_eq!(
+        excluded.len(),
+        3,
+        "all three pending items must appear in the excluded set"
+    );
+    let names: std::collections::HashSet<&str> =
+        pending.iter().map(|d| d.resource.as_str()).collect();
+    assert!(names.contains("packages.cargo.bat"));
+    assert!(names.contains("packages.cargo.ripgrep"));
+    assert!(names.contains("packages.cargo.fd"));
+}
+
+#[test]
+fn pending_resource_paths_returns_decision_resources_as_set() {
+    use crate::daemon::reconcile::pending_resource_paths;
+
+    let store = test_state();
+    // Empty store → empty set
+    let empty = pending_resource_paths(&store);
+    assert!(empty.is_empty(), "no decisions → empty set");
+
+    // Two distinct decisions
+    store
+        .upsert_pending_decision(
+            "acme",
+            "packages.cargo.bat",
+            "recommended",
+            "install",
+            "recommended packages.cargo.bat",
+        )
+        .unwrap();
+    store
+        .upsert_pending_decision(
+            "acme",
+            "files.security/rules.yaml",
+            "locked",
+            "install",
+            "locked files.security/rules.yaml",
+        )
+        .unwrap();
+
+    let paths = pending_resource_paths(&store);
+    assert_eq!(paths.len(), 2);
+    assert!(paths.contains("packages.cargo.bat"));
+    assert!(paths.contains("files.security/rules.yaml"));
+
+    // Resolving a decision removes it from the pending set
+    store
+        .resolve_decisions_for_source("acme", "accepted")
+        .unwrap();
+    let after = pending_resource_paths(&store);
+    assert!(
+        after.is_empty(),
+        "resolving all decisions empties the pending-resource set"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// daemon/reconcile.rs::discover_managed_paths — early-return arms.
+// The cfg-load-Err and happy-path arms are covered elsewhere
+// (*_returns_empty_for_missing_config and *_returns_targets_from_profile).
+// These tests pin:
+//   * no-profile arm: cfg has no spec.profile AND no profile_override → []
+//   * profile-resolve-Err arm: profile name resolves to a missing file
+// ---------------------------------------------------------------------------
+
+struct DiscoverTestHooks;
+impl DaemonHooks for DiscoverTestHooks {
+    fn build_registry(&self, _: &CfgdConfig) -> ProviderRegistry {
+        ProviderRegistry::new()
+    }
+    fn plan_files(&self, _: &Path, _: &ResolvedProfile) -> crate::errors::Result<Vec<FileAction>> {
+        Ok(vec![])
+    }
+    fn plan_packages(
+        &self,
+        _: &MergedProfile,
+        _: &[&dyn PackageManager],
+    ) -> crate::errors::Result<Vec<PackageAction>> {
+        Ok(vec![])
+    }
+    fn extend_registry_custom_managers(&self, _: &mut ProviderRegistry, _: &config::PackagesSpec) {}
+    fn expand_tilde(&self, path: &Path) -> PathBuf {
+        path.to_path_buf()
+    }
+}
+
+#[test]
+fn discover_managed_paths_returns_empty_when_no_profile_configured_or_overridden() {
+    // Config has NO spec.profile and the caller passes no override →
+    // the function takes the `None => return Vec::new()` arm before any
+    // profile resolution is attempted.
+    let tmp = tempfile::tempdir().unwrap();
+    let config_path = tmp.path().join("config.yaml");
+    std::fs::write(
+        &config_path,
+        "apiVersion: cfgd.io/v1alpha1\nkind: CfgdConfig\nmetadata:\n  name: test\nspec: {}\n",
+    )
+    .unwrap();
+
+    let paths = discover_managed_paths(&config_path, None, &DiscoverTestHooks);
+    assert!(
+        paths.is_empty(),
+        "no profile configured + no override → empty path list"
+    );
+}
+
+#[test]
+fn discover_managed_paths_returns_empty_when_named_profile_does_not_exist() {
+    // Config names a profile, but the profiles/ dir doesn't contain it →
+    // resolve_profile returns Err → the function takes the resolve-Err arm
+    // and returns an empty Vec without panicking.
+    let tmp = tempfile::tempdir().unwrap();
+    let config_path = tmp.path().join("config.yaml");
+    std::fs::write(
+        &config_path,
+        "apiVersion: cfgd.io/v1alpha1\nkind: CfgdConfig\nmetadata:\n  name: test\nspec:\n  profile: ghost\n",
+    )
+    .unwrap();
+    // Intentionally no profiles/ dir written — the named profile cannot resolve.
+
+    let paths = discover_managed_paths(&config_path, None, &DiscoverTestHooks);
+    assert!(
+        paths.is_empty(),
+        "profile name set but resolve_profile fails → empty path list, no panic"
+    );
+}
