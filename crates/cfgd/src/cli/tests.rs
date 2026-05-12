@@ -17591,3 +17591,59 @@ mod cmd_source_add_local {
         });
     }
 }
+
+// ---------------------------------------------------------------------------
+// ApplyPhase mapping helpers — pure pinning tests
+//
+// The `cmd_apply_dry_run_each_phase` test exercises both `as_str` and
+// `apply_phase_to_phase_name` via Option::map / format-args, but those call
+// paths are only evaluated when assertions FAIL (format-arg path) or get
+// inlined into the caller (Option::map path), so neither shows up in
+// per-function coverage. These direct tests pin the public contract:
+// callers (plan_ops.rs prefix, apply.rs phase filter) depend on these
+// exact mappings.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn apply_phase_as_str_round_trips_every_variant_to_its_kebab_label() {
+    let cases = [
+        (super::ApplyPhase::PreScripts, "pre-scripts"),
+        (super::ApplyPhase::Env, "env"),
+        (super::ApplyPhase::Modules, "modules"),
+        (super::ApplyPhase::Packages, "packages"),
+        (super::ApplyPhase::System, "system"),
+        (super::ApplyPhase::Files, "files"),
+        (super::ApplyPhase::Secrets, "secrets"),
+        (super::ApplyPhase::PostScripts, "post-scripts"),
+    ];
+    for (phase, label) in cases {
+        assert_eq!(phase.as_str(), label);
+    }
+}
+
+#[test]
+fn apply_phase_to_phase_name_maps_every_variant_to_matching_reconciler_phase() {
+    use cfgd_core::reconciler::PhaseName;
+    let cases = [
+        (super::ApplyPhase::PreScripts, PhaseName::PreScripts),
+        (super::ApplyPhase::Env, PhaseName::Env),
+        (super::ApplyPhase::Modules, PhaseName::Modules),
+        (super::ApplyPhase::Packages, PhaseName::Packages),
+        (super::ApplyPhase::System, PhaseName::System),
+        (super::ApplyPhase::Files, PhaseName::Files),
+        (super::ApplyPhase::Secrets, PhaseName::Secrets),
+        (super::ApplyPhase::PostScripts, PhaseName::PostScripts),
+    ];
+    for (input, expected) in cases {
+        assert_eq!(super::apply_phase_to_phase_name(input), expected);
+    }
+}
+
+#[test]
+fn decide_action_resolution_pins_accepted_and_rejected_strings() {
+    // DecideAction::resolution() is the persisted state-store enum string
+    // for source-decisions. Renaming either label without a migration would
+    // orphan historical decision rows — pin both here.
+    assert_eq!(super::DecideAction::Accept.resolution(), "accepted");
+    assert_eq!(super::DecideAction::Reject.resolution(), "rejected");
+}

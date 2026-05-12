@@ -2315,6 +2315,62 @@ fn cmd_module_delete_without_yes_and_prompt_confirmed_proceeds_with_deletion() {
 }
 
 #[test]
+fn cmd_module_create_interactive_drives_full_prompt_sequence_via_harness() {
+    // Interactive mode at crud.rs:43-83 was uncovered for many sessions
+    // because Printer::for_test()'s prompt_text returned Err. The new
+    // PromptAnswer::Text queue drives all 6 prompts:
+    //   1. Description
+    //   2. Dependencies (comma-separated)
+    //   3. Package loop iter 1 (non-empty → push)
+    //   4. Package loop iter 2 (empty → break)
+    //   5. File loop iter 1 (empty → break immediately)
+    //   6. Post-apply script loop iter 1 (empty → break immediately)
+    // is_interactive at lines 33-41 fires iff every content flag is empty;
+    // make_module_create_args() already returns that shape.
+    let dir = setup_config_dir();
+    let cli = test_cli(dir.path());
+    let (printer, buf) = cfgd_core::output::Printer::for_test_with_prompt_responses(vec![
+        cfgd_core::output::PromptAnswer::Text("Interactive build module".to_string()),
+        cfgd_core::output::PromptAnswer::Text("nodejs,git".to_string()),
+        cfgd_core::output::PromptAnswer::Text("ripgrep".to_string()),
+        cfgd_core::output::PromptAnswer::Text("".to_string()),
+        cfgd_core::output::PromptAnswer::Text("".to_string()),
+        cfgd_core::output::PromptAnswer::Text("".to_string()),
+    ]);
+    let args = make_module_create_args("interactive-mod");
+
+    cmd_module_create(&cli, &printer, &args).expect("interactive create should succeed");
+
+    // The module yaml should be written with the prompted fields.
+    let yaml_path = dir
+        .path()
+        .join("modules")
+        .join("interactive-mod")
+        .join("module.yaml");
+    assert!(yaml_path.exists(), "module.yaml must be created");
+    let yaml = std::fs::read_to_string(&yaml_path).unwrap();
+    assert!(
+        yaml.contains("Interactive build module"),
+        "prompted description must persist: {yaml}"
+    );
+    assert!(
+        yaml.contains("nodejs") && yaml.contains("git"),
+        "prompted deps must persist: {yaml}"
+    );
+    assert!(
+        yaml.contains("ripgrep"),
+        "prompted package must persist: {yaml}"
+    );
+    // The "Add file" / "Add post-apply" loops were exited on empty input —
+    // no files or scripts should appear in the doc.
+    let output = buf.lock().unwrap().clone();
+    assert!(
+        output.contains("Created module 'interactive-mod'"),
+        "should announce create: {output}"
+    );
+}
+
+#[test]
 fn cmd_module_delete_without_yes_and_prompt_declined_returns_cancelled() {
     // yes=false + prompt=Confirm(false) takes the early-return arm at
     // crud.rs:626-627 — prints "Cancelled" and leaves the module dir
