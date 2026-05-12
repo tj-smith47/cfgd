@@ -694,9 +694,9 @@ sboms:
     enabled: true
     cmd: syft
     args:
-      - "{{ .Artifact }}"
+      - "$artifact"
       - "--output"
-      - "cyclonedx-json={{ .Document }}"
+      - "cyclonedx-json=$document"
     documents:
       - "{{ .ArtifactName }}.cdx.json"
     artifacts: archive
