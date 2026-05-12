@@ -119,3 +119,45 @@ pub(super) fn machine_config_owner_ref(mc_name: &str) -> OwnerReference {
         block_owner_deletion: Some(true),
     }
 }
+
+/// Build the canonical k8s API path for a namespaced MachineConfig resource.
+///
+/// `cfgd_core::API_VERSION` is the literal `"cfgd.io/v1alpha1"`; the helper
+/// inlines the path string to keep the hot test path free of format!()-over-
+/// const concatenation overhead.
+pub(crate) fn machine_config_path(namespace: &str, name: &str) -> String {
+    format!("/apis/cfgd.io/v1alpha1/namespaces/{namespace}/machineconfigs/{name}")
+}
+
+/// Build a `MachineConfigList` JSON envelope around the given items.
+pub(crate) fn mc_list(items: &[MachineConfig]) -> serde_json::Value {
+    serde_json::json!({
+        "apiVersion": "cfgd.io/v1alpha1",
+        "kind": "MachineConfigList",
+        "items": items,
+        "metadata": {},
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn machine_config_path_formats_namespaced_url() {
+        assert_eq!(
+            machine_config_path("ns", "foo"),
+            "/apis/cfgd.io/v1alpha1/namespaces/ns/machineconfigs/foo"
+        );
+    }
+
+    #[test]
+    fn mc_list_empty_returns_well_formed_envelope() {
+        let v = mc_list(&[]);
+        assert_eq!(v["apiVersion"], "cfgd.io/v1alpha1");
+        assert_eq!(v["kind"], "MachineConfigList");
+        assert!(v["items"].is_array());
+        assert_eq!(v["items"].as_array().expect("items is array").len(), 0);
+        assert!(v["metadata"].is_object());
+    }
+}

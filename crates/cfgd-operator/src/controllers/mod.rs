@@ -468,7 +468,7 @@ pub(crate) fn matches_selector(
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
-mod test_fixtures;
+pub(crate) mod test_fixtures;
 #[cfg(test)]
 pub(crate) mod test_kube_harness;
 #[cfg(test)]

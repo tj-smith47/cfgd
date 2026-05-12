@@ -28,3 +28,25 @@ pub(crate) fn test_state() -> (SharedState, tempfile::TempDir) {
         tmp,
     )
 }
+
+/// Build a fresh `ServerDb` backed by a tempdir SQLite file.
+/// Returns the db plus the tempdir guard — keep the guard alive in the
+/// test or the underlying DB file gets deleted out from under you.
+pub(crate) fn test_db() -> (ServerDb, tempfile::TempDir) {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let path = tmp.path().join("test.db");
+    let db = ServerDb::open(path.to_str().expect("utf8")).expect("open db");
+    (db, tmp)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn test_db_returns_working_handle() {
+        let (db, _tmp) = test_db();
+        let devices = db.list_devices().await.expect("list_devices on fresh db");
+        assert!(devices.is_empty());
+    }
+}
