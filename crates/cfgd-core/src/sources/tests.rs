@@ -293,6 +293,24 @@ fn set_allow_unsigned_works() {
 }
 
 #[test]
+fn verify_head_signature_surfaces_git_log_failure_on_non_git_dir() {
+    // verify_head_signature non-zero-exit arm (lines 571-579): pass a tempdir
+    // that was NEVER `git init`'d → `git log -1 --format=%G?` exits non-zero
+    // → SourceError::SignatureVerificationFailed with the "git log failed"
+    // message + stderr-trimmed body. Pins the contract: we surface the git
+    // error context, not just a generic "not signed" rejection.
+    let tmp = tempfile::tempdir().unwrap();
+    let result = verify_head_signature("non-git-source", tmp.path());
+    assert!(result.is_err());
+    let err_msg = result.unwrap_err().to_string();
+    assert!(
+        err_msg.contains("git log failed") || err_msg.contains("not a git repository"),
+        "expected git-log-failed error, got: {}",
+        err_msg
+    );
+}
+
+#[test]
 fn verify_head_signature_fails_on_unsigned_repo() {
     // Create a git repo with an unsigned commit using git2 directly
     let tmp = tempfile::tempdir().unwrap();
