@@ -518,34 +518,8 @@ fn cmd_generate_scan_only_with_plugin_manager() {
 #[cfg(test)]
 mod cmd_generate_mockito {
     use super::super::*;
+    use cfgd_core::test_helpers::EnvVarGuard;
     use serial_test::serial;
-
-    /// RAII env-var guard — mirrors the EnvVarGuard in ai/client.rs
-    /// tests. Tests using this MUST be marked `#[serial]` (process-wide
-    /// env mutation).
-    struct EnvVarGuard {
-        key: &'static str,
-        prior: Option<String>,
-    }
-    impl EnvVarGuard {
-        fn set(key: &'static str, value: &str) -> Self {
-            // SAFETY: serialized via #[serial].
-            let prior = std::env::var(key).ok();
-            unsafe { std::env::set_var(key, value) }
-            Self { key, prior }
-        }
-    }
-    impl Drop for EnvVarGuard {
-        fn drop(&mut self) {
-            // SAFETY: serialized via #[serial].
-            unsafe {
-                match &self.prior {
-                    Some(v) => std::env::set_var(self.key, v),
-                    None => std::env::remove_var(self.key),
-                }
-            }
-        }
-    }
 
     fn test_cli(config_path: std::path::PathBuf) -> super::super::super::Cli {
         super::super::super::Cli {
@@ -947,14 +921,7 @@ mod cmd_generate_mockito {
 
         // Explicitly unset. EnvVarGuard's Drop restores the prior value
         // so test ordering doesn't matter.
-        let _key = EnvVarGuard {
-            key: "ANTHROPIC_API_KEY",
-            prior: std::env::var("ANTHROPIC_API_KEY").ok(),
-        };
-        // SAFETY: serialized via #[serial].
-        unsafe {
-            std::env::remove_var("ANTHROPIC_API_KEY");
-        }
+        let _key = EnvVarGuard::unset("ANTHROPIC_API_KEY");
 
         let cli = test_cli(tmp.path().join("cfgd.yaml"));
         let (printer, _buf) = Printer::for_test();

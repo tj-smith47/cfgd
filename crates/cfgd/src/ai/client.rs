@@ -132,6 +132,7 @@ impl AnthropicClient {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use cfgd_core::test_helpers::EnvVarGuard;
 
     #[test]
     fn test_tool_use_deserialization() {
@@ -231,32 +232,6 @@ mod tests {
     // `POST {base_url}/v1/messages` call at a `mockito::Server` so we can
     // drive `AnthropicClient::send_message` end-to-end against canned
     // responses — same pattern as upgrade/server_client/oci tests.
-
-    /// RAII env-var guard. Tests using it MUST be marked `#[serial]` —
-    /// env mutation is process-wide.
-    struct EnvVarGuard {
-        key: &'static str,
-        prior: Option<String>,
-    }
-    impl EnvVarGuard {
-        fn set(key: &'static str, value: &str) -> Self {
-            // SAFETY: serialized via #[serial].
-            let prior = std::env::var(key).ok();
-            unsafe { std::env::set_var(key, value) }
-            Self { key, prior }
-        }
-    }
-    impl Drop for EnvVarGuard {
-        fn drop(&mut self) {
-            // SAFETY: serialized via #[serial].
-            unsafe {
-                match &self.prior {
-                    Some(v) => std::env::set_var(self.key, v),
-                    None => std::env::remove_var(self.key),
-                }
-            }
-        }
-    }
 
     #[test]
     #[serial_test::serial]

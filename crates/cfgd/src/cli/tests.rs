@@ -13205,33 +13205,8 @@ fn compose_with_sources_no_sources_returns_local_profile() {
 
 mod compose_with_sources_e2e {
     use super::*;
+    use cfgd_core::test_helpers::EnvVarGuard;
     use serial_test::serial;
-
-    /// RAII env-var guard — matches the pattern from `cmd_source_add_local`.
-    /// `serial_test::serial` keeps these from racing other env-touching tests.
-    struct EnvVarGuard {
-        key: &'static str,
-        prior: Option<String>,
-    }
-    impl EnvVarGuard {
-        fn set(key: &'static str, value: &str) -> Self {
-            // SAFETY: serialized via #[serial].
-            let prior = std::env::var(key).ok();
-            unsafe { std::env::set_var(key, value) }
-            Self { key, prior }
-        }
-    }
-    impl Drop for EnvVarGuard {
-        fn drop(&mut self) {
-            // SAFETY: serialized via #[serial].
-            unsafe {
-                match &self.prior {
-                    Some(v) => std::env::set_var(self.key, v),
-                    None => std::env::remove_var(self.key),
-                }
-            }
-        }
-    }
 
     /// Build a bare upstream + working clone whose tree carries a
     /// `cfgd-source.yaml` declaring `provides.profiles: [<profile>]` and a
