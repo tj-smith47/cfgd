@@ -76,7 +76,8 @@ async fn create_drift_alert_crd_uses_matched_machine_config_name_for_label_and_r
 
     let (ctx, _registry, harness) = MockKubeHarness::new(vec![
         // 1. find_machine_config_for_device LIST — one MachineConfig with matching hostname.
-        ExpectedCall::list(machine_configs_list_path()).returning_json(&mc_list(&[mc.clone()])),
+        ExpectedCall::list(machine_configs_list_path())
+            .returning_json(&mc_list(std::slice::from_ref(&mc))),
         // 2. POST DriftAlert — accept (201).
         ExpectedCall::post(drift_alerts_create_path())
             .with_status(201)

@@ -4,7 +4,7 @@ use super::*;
 /// Returns `Ok(true)` if verified, `Ok(false)` if verification fails (bad sig),
 /// or `Err` if `git` is not available or keyring is not configured.
 fn verify_tag_signature_cryptographic(repo_dir: &Path, tag_name: &str) -> anyhow::Result<bool> {
-    let output = std::process::Command::new("git")
+    let output = cfgd_core::git_cmd_local()
         .args(["tag", "-v", tag_name])
         .current_dir(repo_dir)
         .output()?;

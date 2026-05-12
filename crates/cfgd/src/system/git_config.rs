@@ -1,5 +1,3 @@
-use std::process::Command;
-
 use cfgd_core::errors::{CfgdError, Result};
 use cfgd_core::output::Printer;
 use cfgd_core::providers::{SystemConfigurator, SystemDrift};
@@ -38,7 +36,7 @@ fn git_location_args() -> Vec<String> {
 /// Returns `Some(value)` if the key exists and git exits 0, `None` otherwise.
 fn git_config_get(key: &str) -> Option<String> {
     let loc = git_location_args();
-    Command::new("git")
+    cfgd_core::git_cmd_local()
         .arg("config")
         .args(&loc)
         .args(["--get", key])
@@ -124,7 +122,7 @@ impl SystemConfigurator for GitConfigurator {
 
             printer.info(&format!("git config --global {} {}", key_str, desired_str));
 
-            let output = Command::new("git")
+            let output = cfgd_core::git_cmd_local()
                 .arg("config")
                 .args(&loc)
                 .args([key_str, &desired_str])
@@ -177,7 +175,7 @@ mod tests {
 
     /// Set a key directly in a git config file (used for test setup).
     fn git_config_set_file(file: &std::path::Path, key: &str, value: &str) {
-        let status = Command::new("git")
+        let status = cfgd_core::git_cmd_local()
             .args(["config", "--file"])
             .arg(file)
             .args([key, value])
@@ -188,7 +186,7 @@ mod tests {
 
     /// Read a key from a specific git config file (used for apply assertions).
     fn git_config_get_file(file: &std::path::Path, key: &str) -> Option<String> {
-        Command::new("git")
+        cfgd_core::git_cmd_local()
             .args(["config", "--file"])
             .arg(file)
             .args(["--get", key])

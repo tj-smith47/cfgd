@@ -33,6 +33,17 @@ pub fn git_cmd_safe(
     cmd
 }
 
+/// Build a `Command` for git suitable for LOCAL operations (config get/set,
+/// tag verify, add, commit, log). Sets `GIT_TERMINAL_PROMPT=0` to prevent
+/// any prompt-driven hang, but does NOT set `GIT_SSH_COMMAND` because no
+/// network is involved. Use [`git_cmd_safe`] for any operation that talks to
+/// a remote.
+pub fn git_cmd_local() -> std::process::Command {
+    let mut cmd = std::process::Command::new("git");
+    cmd.env("GIT_TERMINAL_PROMPT", "0");
+    cmd
+}
+
 /// Try a git CLI command via [`git_cmd_safe`], returning `true` on success.
 /// On failure, logs the stderr via `tracing::debug` and returns `false`.
 pub fn try_git_cmd(
@@ -211,6 +222,32 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn git_cmd_local_sets_terminal_prompt_zero_and_no_ssh_env() {
+        let cmd = git_cmd_local();
+        let prog = std::path::Path::new(cmd.get_program())
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("");
+        assert_eq!(prog, "git", "program must resolve to `git`");
+
+        let envs: std::collections::HashMap<&std::ffi::OsStr, Option<&std::ffi::OsStr>> =
+            cmd.get_envs().collect();
+        let term = envs
+            .get(std::ffi::OsStr::new("GIT_TERMINAL_PROMPT"))
+            .and_then(|v| v.as_deref())
+            .and_then(|s| s.to_str());
+        assert_eq!(
+            term,
+            Some("0"),
+            "GIT_TERMINAL_PROMPT must be set to 0 to prevent prompt-driven hangs"
+        );
+        assert!(
+            !envs.contains_key(std::ffi::OsStr::new("GIT_SSH_COMMAND")),
+            "git_cmd_local is for local-only ops and must not configure GIT_SSH_COMMAND"
+        );
     }
 
     #[test]

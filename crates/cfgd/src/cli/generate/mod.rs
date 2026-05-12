@@ -220,7 +220,7 @@ pub fn cmd_generate(cli: &Cli, printer: &Printer, args: &GenerateArgs) -> anyhow
             printer.prompt_confirm("Commit all generated files?")?
         };
         if commit {
-            let mut add_cmd = std::process::Command::new("git");
+            let mut add_cmd = cfgd_core::git_cmd_local();
             add_cmd.arg("add");
             for g in &generated {
                 add_cmd.arg(g.path.as_os_str());
@@ -232,7 +232,7 @@ pub fn cmd_generate(cli: &Cli, printer: &Printer, args: &GenerateArgs) -> anyhow
                     cfgd_core::stderr_lossy_trimmed(&add_out)
                 ));
             } else {
-                let commit_out = std::process::Command::new("git")
+                let commit_out = cfgd_core::git_cmd_local()
                     .args([
                         "commit",
                         "-m",

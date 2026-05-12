@@ -78,7 +78,7 @@ pub(crate) fn cmd_module_push(
 }
 
 fn git_output(args: &[&str]) -> Option<String> {
-    let output = std::process::Command::new("git").args(args).output().ok()?;
+    let output = cfgd_core::git_cmd_local().args(args).output().ok()?;
     if output.status.success() {
         Some(cfgd_core::stdout_lossy_trimmed(&output))
     } else {
