@@ -9258,3 +9258,75 @@ async fn handle_reconcile_resolves_non_empty_modules_when_module_dir_exists() {
         "resolve_modules Ok arm must allow reconcile to complete normally"
     );
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn handle_reconcile_auto_apply_with_sources_processes_decisions_and_resolves_removed() {
+    // Drives reconcile.rs:200-243 — the `auto_apply && !sources.is_empty()`
+    // branch. Pre-stages two sources in the config + a state-store row for
+    // a third "removed" source whose pending decisions should get
+    // auto-resolved (lines 226-238). Asserts:
+    //   - last_reconcile is set (reconcile ran past the block)
+    //   - pending decisions for the removed source are flipped to
+    //     "rejected" by the auto-resolve loop
+    let tmp = tempfile::tempdir().unwrap();
+    let state_dir = tmp.path().join("state");
+    std::fs::create_dir_all(&state_dir).unwrap();
+
+    let config_path = tmp.path().join("config.yaml");
+    std::fs::write(
+        &config_path,
+        "apiVersion: cfgd.io/v1alpha1\nkind: CfgdConfig\nmetadata:\n  name: t\nspec:\n  profile: default\n  daemon:\n    enabled: true\n    reconcile:\n      interval: 60s\n      onChange: false\n      autoApply: true\n  sources:\n    - name: keep-src\n      origin:\n        type: Git\n        url: https://example.test/keep.git\n",
+    )
+    .unwrap();
+    let profiles_dir = tmp.path().join("profiles");
+    std::fs::create_dir_all(&profiles_dir).unwrap();
+    std::fs::write(
+        profiles_dir.join("default.yaml"),
+        "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec: {}\n",
+    )
+    .unwrap();
+
+    // Pre-stage a pending decision for a source that's NOT in the config —
+    // the auto-resolve loop at 226-238 should flip it to "rejected".
+    {
+        let store = StateStore::open(&state_dir.join("cfgd.db")).unwrap();
+        store
+            .upsert_pending_decision(
+                "removed-src",
+                "packages.cargo.bat",
+                "recommended",
+                "install",
+                "install bat",
+            )
+            .unwrap();
+    }
+
+    let state = Arc::new(Mutex::new(DaemonState::new()));
+    let notifier = Arc::new(Notifier::new(NotifyMethod::Stdout, None));
+    let st = Arc::clone(&state);
+    let not = Arc::clone(&notifier);
+    let sd = state_dir.clone();
+    let cp = config_path.clone();
+    tokio::task::spawn_blocking(move || {
+        handle_reconcile(&cp, None, &st, &not, false, &EmptyPlanHooks, Some(&sd));
+    })
+    .await
+    .unwrap();
+
+    // Reconcile completed past the auto-apply block.
+    {
+        let guard = state.lock().await;
+        assert!(
+            guard.last_reconcile.is_some(),
+            "auto-apply branch must allow reconcile to complete"
+        );
+    }
+
+    // The removed-src pending decision should now be rejected.
+    let store = StateStore::open(&state_dir.join("cfgd.db")).unwrap();
+    let pending = store.pending_decisions().unwrap();
+    assert!(
+        pending.iter().all(|d| d.source != "removed-src"),
+        "auto-resolve loop must flip removed-src decisions to non-pending: {pending:?}"
+    );
+}
