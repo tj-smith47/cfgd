@@ -184,3 +184,139 @@ pub async fn start_gateway(config: GatewayConfig) -> Result<(), Box<dyn std::err
     result?;
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    //! Branch coverage for `build_cors_layer`. Each test drives a preflight
+    //! OPTIONS request through a tiny Router with the CORS layer applied and
+    //! asserts the resulting `access-control-allow-origin` header. The header
+    //! is present only when the requesting origin is allowed by the layer —
+    //! absence is the deny-cross-origin signal.
+    use super::{GATEWAY_ALLOWED_ORIGINS_ENV, build_cors_layer};
+    use axum::Router;
+    use axum::body::Body;
+    use axum::http::{Method, Request, header};
+    use axum::routing::get;
+    use cfgd_core::test_helpers::EnvVarGuard;
+    use serial_test::serial;
+    use tower::ServiceExt;
+
+    const TEST_ORIGIN: &str = "https://allowed.example";
+
+    fn preflight(origin: &str) -> Request<Body> {
+        Request::builder()
+            .method(Method::OPTIONS)
+            .uri("/health")
+            .header(header::ORIGIN, origin)
+            .header("access-control-request-method", "GET")
+            .body(Body::empty())
+            .expect("build preflight")
+    }
+
+    async fn allow_origin_header_for(origin: &str) -> Option<String> {
+        let app = Router::new()
+            .route("/health", get(|| async { "ok" }))
+            .layer(build_cors_layer());
+        let response = app.oneshot(preflight(origin)).await.expect("oneshot");
+        response
+            .headers()
+            .get(header::ACCESS_CONTROL_ALLOW_ORIGIN)
+            .map(|v| v.to_str().expect("ascii header").to_owned())
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    #[serial]
+    async fn build_cors_layer_with_unset_env_denies_cross_origin() {
+        let _g = EnvVarGuard::unset(GATEWAY_ALLOWED_ORIGINS_ENV);
+        assert!(allow_origin_header_for(TEST_ORIGIN).await.is_none());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    #[serial]
+    async fn build_cors_layer_with_empty_string_env_denies_cross_origin() {
+        let _g = EnvVarGuard::set(GATEWAY_ALLOWED_ORIGINS_ENV, "");
+        assert!(allow_origin_header_for(TEST_ORIGIN).await.is_none());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    #[serial]
+    async fn build_cors_layer_with_whitespace_only_env_denies_cross_origin() {
+        // Trips `trimmed.is_empty()` on a non-empty raw — distinct branch
+        // from the unset/empty case at the `unwrap_or_default` boundary.
+        let _g = EnvVarGuard::set(GATEWAY_ALLOWED_ORIGINS_ENV, "   ");
+        assert!(allow_origin_header_for(TEST_ORIGIN).await.is_none());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    #[serial]
+    async fn build_cors_layer_with_wildcard_allows_any_origin() {
+        let _g = EnvVarGuard::set(GATEWAY_ALLOWED_ORIGINS_ENV, "*");
+        // `AllowOrigin::any()` echoes back `*` regardless of the requesting
+        // origin — this is the documented permissive-mode behaviour.
+        assert_eq!(
+            allow_origin_header_for("https://anything.example").await,
+            Some("*".to_owned())
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    #[serial]
+    async fn build_cors_layer_with_explicit_origins_allows_listed_origin() {
+        let _g = EnvVarGuard::set(
+            GATEWAY_ALLOWED_ORIGINS_ENV,
+            "https://allowed.example, https://also.example",
+        );
+        // `AllowOrigin::list` echoes the matching origin (not `*`); proves
+        // the str::trim per-entry path is parsing the second entry too.
+        assert_eq!(
+            allow_origin_header_for("https://allowed.example").await,
+            Some("https://allowed.example".to_owned())
+        );
+        assert_eq!(
+            allow_origin_header_for("https://also.example").await,
+            Some("https://also.example".to_owned())
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    #[serial]
+    async fn build_cors_layer_with_explicit_origins_denies_unlisted_origin() {
+        let _g = EnvVarGuard::set(GATEWAY_ALLOWED_ORIGINS_ENV, "https://allowed.example");
+        // Same layer as above; an origin not on the list yields no header.
+        assert!(
+            allow_origin_header_for("https://stranger.example")
+                .await
+                .is_none()
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    #[serial]
+    async fn build_cors_layer_drops_invalid_entries_but_keeps_valid_ones() {
+        // `\x7f` (DEL) is outside HeaderValue's visible-ASCII range, so
+        // `HeaderValue::from_str` returns Err and the invalid entry is
+        // dropped via the `filter_map` warn arm. The remaining valid
+        // entry continues to be allowed.
+        let _g = EnvVarGuard::set(
+            GATEWAY_ALLOWED_ORIGINS_ENV,
+            "\x7fbad,https://allowed.example",
+        );
+        assert_eq!(
+            allow_origin_header_for("https://allowed.example").await,
+            Some("https://allowed.example".to_owned())
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    #[serial]
+    async fn build_cors_layer_when_all_entries_invalid_denies_cross_origin() {
+        // Every entry fails `HeaderValue::from_str`, so `parsed.is_empty()`
+        // fires and the `no valid origins` branch returns the empty-list
+        // layer (distinct from the trimmed-empty branch at the top).
+        // `\x01` (SOH) and `\x7f` (DEL) are both control chars outside the
+        // visible-ASCII range, so each entry fails `HeaderValue::from_str`.
+        // We avoid `\x00` because `std::env::set_var` rejects nul bytes.
+        let _g = EnvVarGuard::set(GATEWAY_ALLOWED_ORIGINS_ENV, "\x7fbad,\x01more");
+        assert!(allow_origin_header_for(TEST_ORIGIN).await.is_none());
+    }
+}
