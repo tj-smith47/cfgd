@@ -8009,6 +8009,119 @@ mod harness {
     }
 
     #[test]
+    fn handle_compliance_snapshot_returns_early_when_named_profile_does_not_exist() {
+        // The cfg names a profile (`ghost`) but profiles/ doesn't contain it →
+        // `resolve_profile` returns Err → the function takes the resolve-Err
+        // arm (lines 151-157 in sync.rs) and bails without opening the store.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let state_dir = tmp.path().join("state");
+        std::fs::create_dir_all(&state_dir).unwrap();
+
+        let config_path = tmp.path().join("cfgd.yaml");
+        std::fs::write(
+            &config_path,
+            "apiVersion: cfgd.io/v1alpha1\nkind: Cfgd\nmetadata:\n  name: t\nspec:\n  profile: ghost\n",
+        )
+        .unwrap();
+        std::fs::create_dir_all(tmp.path().join("profiles")).unwrap();
+        // Intentionally no ghost.yaml → resolve_profile fails.
+
+        let compliance_cfg = config::ComplianceConfig {
+            enabled: true,
+            interval: "1h".into(),
+            retention: "30d".into(),
+            scope: config::ComplianceScope::default(),
+            export: config::ComplianceExport::default(),
+        };
+
+        let hooks = NoopHooks;
+        super::super::sync::handle_compliance_snapshot(
+            &config_path,
+            None,
+            &hooks,
+            &compliance_cfg,
+            Some(&state_dir),
+        );
+
+        // No snapshot stored because resolve_profile failed.
+        let store =
+            crate::state::StateStore::open(&state_dir.join("cfgd.db")).expect("override db");
+        let hash = store.latest_compliance_hash().expect("hash query");
+        assert!(
+            hash.is_none(),
+            "missing profile → resolve_profile Err → no snapshot stored"
+        );
+    }
+
+    #[test]
+    fn handle_compliance_snapshot_skips_storage_when_hash_matches_latest() {
+        // Run twice with the same profile + state dir. The second call must
+        // take the `latest_hash == new hash` short-circuit (line 220-223 in
+        // sync.rs) and NOT write a second snapshot. The store's
+        // compliance_snapshot_count_for_test must stay at 1.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let state_dir = tmp.path().join("state");
+        std::fs::create_dir_all(&state_dir).unwrap();
+
+        let config_path = tmp.path().join("cfgd.yaml");
+        std::fs::write(
+            &config_path,
+            "apiVersion: cfgd.io/v1alpha1\nkind: Cfgd\nmetadata:\n  name: t\nspec:\n  profile: default\n",
+        )
+        .unwrap();
+        std::fs::create_dir_all(tmp.path().join("profiles")).unwrap();
+        std::fs::write(
+            tmp.path().join("profiles").join("default.yaml"),
+            "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec: {}\n",
+        )
+        .unwrap();
+
+        let compliance_cfg = config::ComplianceConfig {
+            enabled: true,
+            interval: "1h".into(),
+            retention: "30d".into(),
+            scope: config::ComplianceScope::default(),
+            export: config::ComplianceExport::default(),
+        };
+
+        let hooks = NoopHooks;
+        // First run — writes the snapshot.
+        super::super::sync::handle_compliance_snapshot(
+            &config_path,
+            None,
+            &hooks,
+            &compliance_cfg,
+            Some(&state_dir),
+        );
+        let store_a =
+            crate::state::StateStore::open(&state_dir.join("cfgd.db")).expect("override db");
+        let hash_a = store_a
+            .latest_compliance_hash()
+            .expect("hash query")
+            .expect("first snapshot stored");
+        drop(store_a);
+
+        // Second run — same config → same hash → short-circuit, no new write.
+        super::super::sync::handle_compliance_snapshot(
+            &config_path,
+            None,
+            &hooks,
+            &compliance_cfg,
+            Some(&state_dir),
+        );
+        let store_b =
+            crate::state::StateStore::open(&state_dir.join("cfgd.db")).expect("override db");
+        let hash_b = store_b
+            .latest_compliance_hash()
+            .expect("hash query")
+            .expect("snapshot still present after no-op run");
+        assert_eq!(
+            hash_a, hash_b,
+            "hash must be unchanged across the no-op second run"
+        );
+    }
+
+    #[test]
     fn handle_compliance_snapshot_skips_when_no_profile_configured() {
         let tmp = tempfile::TempDir::new().unwrap();
         let state_dir = tmp.path().join("state");
