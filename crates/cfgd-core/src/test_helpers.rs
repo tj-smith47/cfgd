@@ -835,6 +835,73 @@ impl Drop for ToolShim {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Env-var test guards — replace per-file `struct EnvVarGuard` / `fn with_env`
+// duplicates. Pair with `serial_test::serial` because env-var mutation is
+// process-global. The pattern mirrors `cfgd-core/src/util/git.rs:190`.
+// ---------------------------------------------------------------------------
+
+/// RAII guard that captures the prior value of an env var and restores it on
+/// drop (or removes the var if no prior value existed). Use in tests that
+/// mutate process-global env state.
+pub struct EnvVarGuard {
+    key: &'static str,
+    prior: Option<String>,
+}
+
+impl EnvVarGuard {
+    /// Capture the prior value of `key`, then set it to `value`.
+    pub fn set(key: &'static str, value: &str) -> Self {
+        let prior = std::env::var(key).ok();
+        // SAFETY: serial_test::serial gates execution; no concurrent reader/writer.
+        unsafe {
+            std::env::set_var(key, value);
+        }
+        Self { key, prior }
+    }
+
+    /// Capture the prior value of `key`, then remove it.
+    pub fn unset(key: &'static str) -> Self {
+        let prior = std::env::var(key).ok();
+        // SAFETY: serial_test::serial gates execution; no concurrent reader/writer.
+        unsafe {
+            std::env::remove_var(key);
+        }
+        Self { key, prior }
+    }
+}
+
+impl Drop for EnvVarGuard {
+    fn drop(&mut self) {
+        // SAFETY: serial_test::serial gates execution; no concurrent reader/writer.
+        unsafe {
+            match self.prior.take() {
+                Some(v) => std::env::set_var(self.key, v),
+                None => std::env::remove_var(self.key),
+            }
+        }
+    }
+}
+
+/// Function-call style env-var scope: capture prior, set/unset `var` to
+/// `value`, run `f`, then restore. `value = None` removes the var for the
+/// duration of `f`.
+pub fn with_test_env_var<F: FnOnce()>(var: &str, value: Option<&str>, f: F) {
+    // SAFETY: serial_test::serial gates execution; no concurrent reader/writer.
+    unsafe {
+        let prior = std::env::var(var).ok();
+        match value {
+            Some(v) => std::env::set_var(var, v),
+            None => std::env::remove_var(var),
+        }
+        f();
+        match prior {
+            Some(v) => std::env::set_var(var, v),
+            None => std::env::remove_var(var),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1002,5 +1069,137 @@ mod tests {
 
         let commit = head.peel_to_commit().unwrap();
         assert_eq!(commit.message().unwrap(), "initial commit");
+    }
+
+    // -----------------------------------------------------------------------
+    // EnvVarGuard / with_test_env_var
+    // -----------------------------------------------------------------------
+
+    use serial_test::serial;
+
+    #[test]
+    #[serial]
+    fn env_var_guard_set_captures_prior_and_restores_on_drop() {
+        const KEY: &str = "CFGD_TEST_GUARD_SET_1";
+        // SAFETY: serial gates env mutation across tests.
+        unsafe {
+            std::env::set_var(KEY, "original");
+        }
+
+        {
+            let _g = EnvVarGuard::set(KEY, "overridden");
+            assert_eq!(std::env::var(KEY).ok().as_deref(), Some("overridden"));
+        }
+
+        assert_eq!(std::env::var(KEY).ok().as_deref(), Some("original"));
+        // SAFETY: serial gates env mutation across tests.
+        unsafe {
+            std::env::remove_var(KEY);
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn env_var_guard_set_with_no_prior_removes_on_drop() {
+        const KEY: &str = "CFGD_TEST_GUARD_SET_2";
+        // SAFETY: serial gates env mutation across tests.
+        unsafe {
+            std::env::remove_var(KEY);
+        }
+        assert!(std::env::var(KEY).is_err());
+
+        {
+            let _g = EnvVarGuard::set(KEY, "value");
+            assert_eq!(std::env::var(KEY).ok().as_deref(), Some("value"));
+        }
+
+        assert!(std::env::var(KEY).is_err());
+    }
+
+    #[test]
+    #[serial]
+    fn env_var_guard_unset_removes_and_restores_on_drop() {
+        const KEY: &str = "CFGD_TEST_GUARD_UNSET_1";
+        // SAFETY: serial gates env mutation across tests.
+        unsafe {
+            std::env::set_var(KEY, "before");
+        }
+
+        {
+            let _g = EnvVarGuard::unset(KEY);
+            assert!(std::env::var(KEY).is_err());
+        }
+
+        assert_eq!(std::env::var(KEY).ok().as_deref(), Some("before"));
+        // SAFETY: serial gates env mutation across tests.
+        unsafe {
+            std::env::remove_var(KEY);
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn with_test_env_var_some_sets_and_restores() {
+        const KEY: &str = "CFGD_TEST_WITH_ENV_SOME_1";
+        // SAFETY: serial gates env mutation across tests.
+        unsafe {
+            std::env::set_var(KEY, "outer");
+        }
+
+        let mut observed = None;
+        with_test_env_var(KEY, Some("inner"), || {
+            observed = std::env::var(KEY).ok();
+        });
+
+        assert_eq!(observed.as_deref(), Some("inner"));
+        assert_eq!(std::env::var(KEY).ok().as_deref(), Some("outer"));
+        // SAFETY: serial gates env mutation across tests.
+        unsafe {
+            std::env::remove_var(KEY);
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn with_test_env_var_none_removes_and_restores() {
+        const KEY: &str = "CFGD_TEST_WITH_ENV_NONE_1";
+        // SAFETY: serial gates env mutation across tests.
+        unsafe {
+            std::env::set_var(KEY, "outer");
+        }
+
+        let mut observed_present = true;
+        with_test_env_var(KEY, None, || {
+            observed_present = std::env::var(KEY).is_ok();
+        });
+
+        assert!(!observed_present);
+        assert_eq!(std::env::var(KEY).ok().as_deref(), Some("outer"));
+        // SAFETY: serial gates env mutation across tests.
+        unsafe {
+            std::env::remove_var(KEY);
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn env_var_guard_round_trips_special_chars() {
+        const KEY: &str = "CFGD_TEST_GUARD_SPECIAL_1";
+        let weird = "a=b c\t\"quoted\" 'single' = trailing  ";
+        // SAFETY: serial gates env mutation across tests.
+        unsafe {
+            std::env::set_var(KEY, weird);
+        }
+
+        {
+            let _g = EnvVarGuard::set(KEY, "temp");
+            assert_eq!(std::env::var(KEY).ok().as_deref(), Some("temp"));
+        }
+
+        assert_eq!(std::env::var(KEY).ok().as_deref(), Some(weird));
+        // SAFETY: serial gates env mutation across tests.
+        unsafe {
+            std::env::remove_var(KEY);
+        }
     }
 }
