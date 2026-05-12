@@ -673,6 +673,271 @@ mod cmd_generate_mockito {
 
     #[test]
     #[serial]
+    fn cmd_generate_handles_tool_use_then_text_in_two_turn_loop() {
+        // Drives the multi-turn conversation loop branch:
+        //   Turn 1 → API returns assistant message with a `tool_use` block
+        //            calling `detect_platform` (no input, always succeeds)
+        //   Dispatch → `tools::dispatch_tool_call` returns platform info,
+        //              wrapped into a ContentBlock::ToolResult and appended
+        //              via `conversation.add_tool_results`
+        //   Turn 2 → API returns text-only response with end_turn, loop breaks
+        //
+        // The two mock responses are differentiated by `Matcher::Regex` on
+        // request body: turn 1 sees only the initial user message (matches
+        // "scan my system"); turn 2 sees the assistant tool_use + the
+        // tool_result block (matches "tool_result").
+        let tmp = tempfile::tempdir().unwrap();
+        let _home = cfgd_core::with_test_home_guard(tmp.path());
+        let _api = EnvVarGuard::set("ANTHROPIC_API_KEY", "test-key-xyz");
+
+        let mut server = mockito::Server::new();
+        let _url = EnvVarGuard::set("CFGD_ANTHROPIC_URL", &server.url());
+
+        let turn1 = server
+            .mock("POST", "/v1/messages")
+            .match_body(mockito::Matcher::Regex("scan my system".to_string()))
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                r#"{
+                    "id": "msg_turn1",
+                    "content": [{
+                        "type": "tool_use",
+                        "id": "toolu_detect_001",
+                        "name": "detect_platform",
+                        "input": {}
+                    }],
+                    "stop_reason": "tool_use",
+                    "usage": {"input_tokens": 10, "output_tokens": 5}
+                }"#,
+            )
+            .expect(1)
+            .create();
+
+        let turn2 = server
+            .mock("POST", "/v1/messages")
+            .match_body(mockito::Matcher::Regex("tool_result".to_string()))
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                r#"{
+                    "id": "msg_turn2",
+                    "content": [{
+                        "type": "text",
+                        "text": "Got it — platform detected."
+                    }],
+                    "stop_reason": "end_turn",
+                    "usage": {"input_tokens": 20, "output_tokens": 8}
+                }"#,
+            )
+            .expect(1)
+            .create();
+
+        let cli = test_cli(tmp.path().join("cfgd.yaml"));
+        let (printer, buf) = Printer::for_test();
+        let args = GenerateArgs {
+            target: None,
+            model: None,
+            provider: None,
+            yes: true,
+            scan_only: false,
+            shell: None,
+            home: None,
+        };
+
+        cmd_generate(&cli, &printer, &args)
+            .expect("two-turn conversation must complete without error");
+
+        // Both mocks fired exactly once → the loop made two API calls.
+        turn1.assert();
+        turn2.assert();
+
+        let output = buf.lock().unwrap();
+        // Turn-2 text lands in the output.
+        assert!(
+            output.contains("Got it — platform detected."),
+            "turn-2 assistant text must print: {output}"
+        );
+        // Token tally sums across BOTH turns: (10+5) + (20+8) = 43.
+        assert!(
+            output.contains("Token usage:") && output.contains("43 total"),
+            "token tally must sum across both turns (got 43 total): {output}"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn cmd_generate_handles_present_yaml_tool_use_in_auto_accept_mode() {
+        // Drives the `if name == "present_yaml"` arm of the conversation
+        // loop (mod.rs:182-184) and `handle_present_yaml` Accept branch
+        // (auto_accept=true via args.yes=true).
+        //   Turn 1: API returns a `tool_use` block for `present_yaml`
+        //           with kind=Profile, description, content (a tiny YAML).
+        //   handle_present_yaml renders the syntax-highlighted YAML and
+        //           returns Accept (because auto_accept=true skips the prompt).
+        //   Turn 2: API returns text-only end_turn — loop breaks.
+        let tmp = tempfile::tempdir().unwrap();
+        let _home = cfgd_core::with_test_home_guard(tmp.path());
+        let _api = EnvVarGuard::set("ANTHROPIC_API_KEY", "test-key-pyaml");
+
+        let mut server = mockito::Server::new();
+        let _url = EnvVarGuard::set("CFGD_ANTHROPIC_URL", &server.url());
+
+        let turn1 = server
+            .mock("POST", "/v1/messages")
+            .match_body(mockito::Matcher::Regex("Please scan my system".to_string()))
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                r#"{
+                    "id": "msg_pyaml1",
+                    "content": [{
+                        "type": "tool_use",
+                        "id": "toolu_pyaml_001",
+                        "name": "present_yaml",
+                        "input": {
+                            "kind": "Profile",
+                            "description": "minimal sample profile",
+                            "content": "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: sample\nspec: {}\n"
+                        }
+                    }],
+                    "stop_reason": "tool_use",
+                    "usage": {"input_tokens": 30, "output_tokens": 12}
+                }"#,
+            )
+            .expect(1)
+            .create();
+
+        let turn2 = server
+            .mock("POST", "/v1/messages")
+            .match_body(mockito::Matcher::Regex("tool_result".to_string()))
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                r#"{
+                    "id": "msg_pyaml2",
+                    "content": [{"type": "text", "text": "Acknowledged your acceptance."}],
+                    "stop_reason": "end_turn",
+                    "usage": {"input_tokens": 4, "output_tokens": 6}
+                }"#,
+            )
+            .expect(1)
+            .create();
+
+        let cli = test_cli(tmp.path().join("cfgd.yaml"));
+        let (printer, buf) = Printer::for_test();
+        let args = GenerateArgs {
+            target: None,
+            model: None,
+            provider: None,
+            yes: true, // <— auto-accept the present_yaml prompt
+            scan_only: false,
+            shell: None,
+            home: None,
+        };
+
+        cmd_generate(&cli, &printer, &args)
+            .expect("present_yaml + Accept two-turn loop must succeed");
+
+        turn1.assert();
+        turn2.assert();
+
+        let output = buf.lock().unwrap();
+        // The "Generated <kind> — <description>" header from
+        // handle_present_yaml lands in the output.
+        assert!(
+            output.contains("Generated Profile") && output.contains("minimal sample profile"),
+            "present_yaml header must render kind + description: {output}"
+        );
+        // Final assistant message from turn 2.
+        assert!(
+            output.contains("Acknowledged your acceptance."),
+            "turn-2 text must print: {output}"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn cmd_generate_aborts_when_consent_prompt_declined() {
+        // Drives the consent-disclosure branch with yes=false. The
+        // Printer::for_test() prompt_confirm returns Err in non-interactive
+        // mode (via non_interactive_err) → `let proceed = ...?` propagates
+        // the Err out of cmd_generate. The user-facing contract is that we
+        // never hit the API.
+        let tmp = tempfile::tempdir().unwrap();
+        let _home = cfgd_core::with_test_home_guard(tmp.path());
+        let _api = EnvVarGuard::set("ANTHROPIC_API_KEY", "test-key-xyz");
+
+        let mut server = mockito::Server::new();
+        let _url = EnvVarGuard::set("CFGD_ANTHROPIC_URL", &server.url());
+
+        // A mock that MUST NOT fire — if the consent path failed open and
+        // an HTTP call went out, this would record a hit. We assert below
+        // that it never matched, proving the abort happened before /v1/messages.
+        let must_not_fire = server
+            .mock("POST", "/v1/messages")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                r#"{
+                    "id": "should-never-see-this",
+                    "content": [{"type": "text", "text": "x"}],
+                    "stop_reason": "end_turn",
+                    "usage": {"input_tokens": 1, "output_tokens": 1}
+                }"#,
+            )
+            .expect(0)
+            .create();
+
+        let cli = test_cli(tmp.path().join("cfgd.yaml"));
+        let (printer, buf) = Printer::for_test();
+        let args = GenerateArgs {
+            target: None,
+            model: None,
+            provider: None,
+            yes: false, // <— consent prompt MUST fire
+            scan_only: false,
+            shell: None,
+            home: None,
+        };
+
+        let result = cmd_generate(&cli, &printer, &args);
+        // Either:
+        //   (a) prompt_confirm returns Err → cmd_generate returns Err via `?`
+        //   (b) some prompt impls return Ok(false) → "Aborted." printed + Ok
+        // Both are acceptable contracts — what we pin is that NO API call
+        // went out and the consent-warning text printed to the user.
+        let output = buf.lock().unwrap().clone();
+
+        assert!(
+            output.contains("sends file contents and system information"),
+            "consent disclosure must always print before any API call: {output}"
+        );
+
+        match result {
+            Ok(()) => {
+                assert!(
+                    output.contains("Aborted."),
+                    "Ok-on-decline branch must print 'Aborted.': {output}"
+                );
+            }
+            Err(e) => {
+                let msg = e.to_string();
+                // Non-interactive prompt error — fine, just confirm we didn't
+                // mention any API-side problem.
+                assert!(
+                    !msg.contains("API") && !msg.contains("api"),
+                    "Err should be prompt-side, not API-side: {msg}"
+                );
+            }
+        }
+
+        // CRITICAL: the API mock must never have been touched.
+        must_not_fire.assert();
+    }
+
+    #[test]
+    #[serial]
     fn cmd_generate_errors_when_api_key_env_unset() {
         // No ANTHROPIC_API_KEY set → the GenerateError::ApiKeyNotFound
         // arm fires before any HTTP call. Drives the
