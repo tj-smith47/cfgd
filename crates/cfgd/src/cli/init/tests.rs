@@ -2396,6 +2396,71 @@ mod enroll_mockito {
 
     #[test]
     #[serial]
+    fn cmd_enroll_key_based_bails_when_no_ssh_key_found() {
+        // Server says key-based enrollment; no --ssh-key / --gpg-key flags
+        // provided; HOME redirected to a tempdir with no `.ssh` directory so
+        // detect_ssh_key cannot find anything. Drives the second arm of the
+        // key-detection block: cmd_enroll must bail with the help text that
+        // names the SSH and GPG flag forms.
+        let tmp = tempfile::tempdir().unwrap();
+        let home_dir = tempfile::tempdir().unwrap();
+        let _home_guard = cfgd_core::with_test_home_guard(home_dir.path());
+
+        with_env("CFGD_STATE_DIR", Some(tmp.path().to_str().unwrap()), || {
+            let mut server = mockito::Server::new();
+            let _m = server
+                .mock("GET", "/api/v1/enroll/info")
+                .with_status(200)
+                .with_header("content-type", "application/json")
+                .with_body(r#"{"method":"key"}"#)
+                .create();
+
+            let printer = cfgd_core::test_helpers::test_printer();
+            let url = server.url();
+            let result = cmd_enroll(&printer, &url, None, None, None, Some("alice"));
+            let err = result.unwrap_err().to_string();
+            assert!(
+                err.contains("no SSH key found"),
+                "expected no-SSH-key bail, got: {err}"
+            );
+            assert!(
+                err.contains("--ssh-key") && err.contains("--gpg-key"),
+                "expected help text naming both flags, got: {err}"
+            );
+        });
+    }
+
+    #[test]
+    #[serial]
+    fn cmd_enroll_key_based_propagates_enroll_info_endpoint_failure() {
+        // The /enroll/info pre-check returns 500. cmd_enroll's first
+        // network call should surface as an anyhow error mentioning the
+        // failed query — pins the early-fail contract before any key
+        // detection / challenge plumbing runs.
+        let tmp = tempfile::tempdir().unwrap();
+        with_env("CFGD_STATE_DIR", Some(tmp.path().to_str().unwrap()), || {
+            let mut server = mockito::Server::new();
+            let _m = server
+                .mock("GET", "/api/v1/enroll/info")
+                .with_status(500)
+                .with_body("internal error")
+                .create();
+
+            let printer = cfgd_core::test_helpers::test_printer();
+            let url = server.url();
+            let result = cmd_enroll(&printer, &url, None, None, None, Some("alice"));
+            let err = result.unwrap_err().to_string();
+            assert!(
+                err.contains("enrollment info") || err.contains("500"),
+                "expected enroll_info failure surfaced, got: {err}"
+            );
+            // No credential written when the pre-check fails.
+            assert!(!tmp.path().join("device-credential.json").exists());
+        });
+    }
+
+    #[test]
+    #[serial]
     fn cmd_enroll_token_path_persists_desired_config_when_present() {
         let tmp = tempfile::tempdir().unwrap();
         with_env("CFGD_STATE_DIR", Some(tmp.path().to_str().unwrap()), || {
