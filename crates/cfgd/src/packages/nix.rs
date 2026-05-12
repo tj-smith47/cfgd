@@ -445,12 +445,8 @@ mod tests {
         use cfgd_core::test_helpers::{ToolShim, test_printer};
         use serial_test::serial;
 
-        fn nix_shim(stdout: &str, stderr: &str, exit: i32) -> ToolShim {
-            ToolShim::install("CFGD_NIX_BIN", exit, stdout, stderr)
-        }
-        fn nix_env_shim(stdout: &str, stderr: &str, exit: i32) -> ToolShim {
-            ToolShim::install("CFGD_NIX_ENV_BIN", exit, stdout, stderr)
-        }
+        const SHIM_ENV: &str = "CFGD_NIX_BIN";
+        const SHIM_ENV_NIX_ENV: &str = "CFGD_NIX_ENV_BIN";
 
         #[test]
         #[serial]
@@ -458,7 +454,7 @@ mod tests {
             // CFGD_NIX_BIN is set → nix_available() returns true → install
             // takes the `nix profile install` path. CFGD_NIX_ENV_BIN must
             // stay unset so the test fails loudly if the wrong branch fires.
-            let s = nix_shim("", "", 0);
+            let s = ToolShim::install(SHIM_ENV, 0, "", "");
             let p = test_printer();
             NixManager
                 .install(&["ripgrep".into(), "fd".into()], &p)
@@ -481,7 +477,7 @@ mod tests {
         #[test]
         #[serial]
         fn nix_uninstall_routes_through_nix_profile_when_nix_available() {
-            let s = nix_shim("", "", 0);
+            let s = ToolShim::install(SHIM_ENV, 0, "", "");
             let p = test_printer();
             NixManager.uninstall(&["ripgrep".into()], &p).expect("Ok");
             assert!(
@@ -496,7 +492,7 @@ mod tests {
         fn nix_installed_packages_uses_nix_profile_list_when_nix_available() {
             let stdout = "0 nixpkgs#ripgrep /nix/store/abc-ripgrep\n\
                           1 nixpkgs#fd /nix/store/def-fd\n";
-            let _s = nix_shim(stdout, "", 0);
+            let _s = ToolShim::install(SHIM_ENV, 0, stdout, "");
             let pkgs = NixManager.installed_packages().expect("Ok");
             assert_eq!(pkgs.len(), 2);
             assert!(pkgs.contains("ripgrep"));
@@ -510,8 +506,8 @@ mod tests {
             // falls through to nix-env path. Both shims must be installed.
             // Use the SAME tempdir tracking — but ToolShim::install creates
             // its own tempdir per call, so each shim is independent.
-            let _nix = nix_shim("", "profile list unsupported on this nix", 1);
-            let _nix_env = nix_env_shim("ripgrep-14.1.0\nfd-9.0.0\n", "", 0);
+            let _nix = ToolShim::install(SHIM_ENV, 1, "", "profile list unsupported on this nix");
+            let _nix_env = ToolShim::install(SHIM_ENV_NIX_ENV, 0, "ripgrep-14.1.0\nfd-9.0.0\n", "");
             let pkgs = NixManager.installed_packages().expect("Ok");
             assert!(pkgs.contains("ripgrep"));
             assert!(pkgs.contains("fd"));
@@ -521,7 +517,7 @@ mod tests {
         #[serial]
         fn nix_available_version_uses_nix_search_when_nix_available() {
             let json = r#"{"legacyPackages.x86_64-linux.ripgrep":{"version":"14.1.0"}}"#;
-            let s = nix_shim(json, "", 0);
+            let s = ToolShim::install(SHIM_ENV, 0, json, "");
             let v = NixManager.available_version("ripgrep").expect("Ok");
             assert_eq!(v.as_deref(), Some("14.1.0"));
             let argv = s.argv_log();
@@ -534,7 +530,7 @@ mod tests {
         #[test]
         #[serial]
         fn nix_available_version_returns_none_on_nonzero_exit() {
-            let _s = nix_shim("", "search service unavailable", 1);
+            let _s = ToolShim::install(SHIM_ENV, 1, "", "search service unavailable");
             let v = NixManager
                 .available_version("anything")
                 .expect("non-zero → Ok(None)");
@@ -546,7 +542,7 @@ mod tests {
         fn nix_install_uses_nix_env_when_only_nix_env_seam_set() {
             // Shim ONLY on CFGD_NIX_ENV_BIN — nix_available() is false, so
             // install routes through the nix-env -iA fallback path.
-            let s = nix_env_shim("", "", 0);
+            let s = ToolShim::install(SHIM_ENV_NIX_ENV, 0, "", "");
             let p = test_printer();
             NixManager.install(&["ripgrep".into()], &p).expect("Ok");
             let argv = s.argv_log();
@@ -559,7 +555,7 @@ mod tests {
         #[test]
         #[serial]
         fn nix_uninstall_uses_nix_env_when_only_nix_env_seam_set() {
-            let s = nix_env_shim("", "", 0);
+            let s = ToolShim::install(SHIM_ENV_NIX_ENV, 0, "", "");
             let p = test_printer();
             NixManager.uninstall(&["ripgrep".into()], &p).expect("Ok");
             assert!(

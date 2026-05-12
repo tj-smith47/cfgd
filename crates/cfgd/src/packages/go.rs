@@ -376,14 +376,12 @@ mod tests {
         use cfgd_core::test_helpers::{ToolShim, test_printer};
         use serial_test::serial;
 
-        fn shim(stdout: &str, stderr: &str, exit: i32) -> ToolShim {
-            ToolShim::install("CFGD_GO_BIN", exit, stdout, stderr)
-        }
+        const SHIM_ENV: &str = "CFGD_GO_BIN";
 
         #[test]
         #[serial]
         fn go_install_appends_at_latest_to_unversioned_package() {
-            let s = shim("", "", 0);
+            let s = ToolShim::install(SHIM_ENV, 0, "", "");
             let p = test_printer();
             GoInstallManager
                 .install(&["github.com/example/tool".into()], &p)
@@ -399,7 +397,7 @@ mod tests {
         #[test]
         #[serial]
         fn go_install_passes_through_pre_pinned_version() {
-            let s = shim("", "", 0);
+            let s = ToolShim::install(SHIM_ENV, 0, "", "");
             let p = test_printer();
             GoInstallManager
                 .install(&["github.com/example/tool@v1.2.3".into()], &p)
@@ -415,7 +413,7 @@ mod tests {
         #[test]
         #[serial]
         fn go_install_runs_one_install_per_package() {
-            let s = shim("", "", 0);
+            let s = ToolShim::install(SHIM_ENV, 0, "", "");
             let p = test_printer();
             GoInstallManager
                 .install(&["a.com/x".into(), "b.com/y".into()], &p)
@@ -426,7 +424,7 @@ mod tests {
         #[test]
         #[serial]
         fn go_update_is_noop_no_command_spawned() {
-            let s = shim("", "", 0);
+            let s = ToolShim::install(SHIM_ENV, 0, "", "");
             let p = test_printer();
             GoInstallManager.update(&p).expect("Ok");
             assert_eq!(
@@ -442,7 +440,7 @@ mod tests {
             // parse_go_module_version normalizes "v1.2.3" → "1.2.3" so versions
             // compare cleanly against profile entries (which don't include "v").
             let json = r#"{"Version":"v1.2.3","Path":"github.com/example/tool"}"#;
-            let _s = shim(json, "", 0);
+            let _s = ToolShim::install(SHIM_ENV, 0, json, "");
             let v = GoInstallManager
                 .available_version("github.com/example/tool")
                 .expect("Ok");
@@ -452,7 +450,7 @@ mod tests {
         #[test]
         #[serial]
         fn go_available_version_passes_list_m_json_with_at_latest() {
-            let s = shim("{}", "", 0);
+            let s = ToolShim::install(SHIM_ENV, 0, "{}", "");
             GoInstallManager
                 .available_version("github.com/example/tool")
                 .expect("Ok");
@@ -471,7 +469,7 @@ mod tests {
         #[test]
         #[serial]
         fn go_available_version_returns_none_on_nonzero_exit() {
-            let _s = shim("", "module not found", 1);
+            let _s = ToolShim::install(SHIM_ENV, 1, "", "module not found");
             let v = GoInstallManager
                 .available_version("nonexistent")
                 .expect("non-zero → Ok(None)");

@@ -440,14 +440,12 @@ tokei v12.1.2:
         use cfgd_core::test_helpers::{ToolShim, test_printer};
         use serial_test::serial;
 
-        fn shim(stdout: &str, stderr: &str, exit: i32) -> ToolShim {
-            ToolShim::install("CFGD_CARGO_BIN", exit, stdout, stderr)
-        }
+        const SHIM_ENV: &str = "CFGD_CARGO_BIN";
 
         #[test]
         #[serial]
         fn cargo_install_runs_install_subcommand_per_package() {
-            let s = shim("", "", 0);
+            let s = ToolShim::install(SHIM_ENV, 0, "", "");
             let p = test_printer();
             CargoManager
                 .install(&["ripgrep".into(), "fd-find".into()], &p)
@@ -461,7 +459,7 @@ tokei v12.1.2:
         #[test]
         #[serial]
         fn cargo_uninstall_runs_uninstall_subcommand_per_package() {
-            let s = shim("", "", 0);
+            let s = ToolShim::install(SHIM_ENV, 0, "", "");
             let p = test_printer();
             CargoManager.uninstall(&["ripgrep".into()], &p).expect("Ok");
             assert!(s.argv_log().contains("uninstall ripgrep"));
@@ -470,7 +468,7 @@ tokei v12.1.2:
         #[test]
         #[serial]
         fn cargo_update_is_noop_no_command_spawned() {
-            let s = shim("", "", 0);
+            let s = ToolShim::install(SHIM_ENV, 0, "", "");
             let p = test_printer();
             CargoManager.update(&p).expect("Ok");
             assert_eq!(
@@ -484,7 +482,7 @@ tokei v12.1.2:
         #[serial]
         fn cargo_installed_packages_parses_install_list_output() {
             let stdout = "ripgrep v14.1.0:\n    rg\nfd-find v9.0.0:\n    fd\n";
-            let _s = shim(stdout, "", 0);
+            let _s = ToolShim::install(SHIM_ENV, 0, stdout, "");
             let pkgs = CargoManager.installed_packages().expect("Ok");
             assert_eq!(pkgs.len(), 2);
             assert!(pkgs.contains("ripgrep"));
@@ -494,7 +492,7 @@ tokei v12.1.2:
         #[test]
         #[serial]
         fn cargo_available_version_extracts_from_search_first_line() {
-            let _s = shim("ripgrep = \"14.1.0\"\n", "", 0);
+            let _s = ToolShim::install(SHIM_ENV, 0, "ripgrep = \"14.1.0\"\n", "");
             let v = CargoManager.available_version("ripgrep").expect("Ok");
             assert_eq!(v.as_deref(), Some("14.1.0"));
         }
@@ -502,7 +500,7 @@ tokei v12.1.2:
         #[test]
         #[serial]
         fn cargo_available_version_passes_search_with_limit_flag() {
-            let s = shim("x = \"0.1\"\n", "", 0);
+            let s = ToolShim::install(SHIM_ENV, 0, "x = \"0.1\"\n", "");
             CargoManager.available_version("ripgrep").expect("Ok");
             assert!(
                 s.argv_log().contains("search ripgrep --limit 1"),
@@ -514,7 +512,7 @@ tokei v12.1.2:
         #[test]
         #[serial]
         fn cargo_available_version_returns_none_on_nonzero_exit() {
-            let _s = shim("", "registry unreachable", 1);
+            let _s = ToolShim::install(SHIM_ENV, 1, "", "registry unreachable");
             let v = CargoManager
                 .available_version("anything")
                 .expect("non-zero → Ok(None)");

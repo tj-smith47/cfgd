@@ -517,14 +517,12 @@ mod tests {
         use cfgd_core::test_helpers::{ToolShim, test_printer};
         use serial_test::serial;
 
-        fn shim(stdout: &str, stderr: &str, exit: i32) -> ToolShim {
-            ToolShim::install("CFGD_PIPX_BIN", exit, stdout, stderr)
-        }
+        const SHIM_ENV: &str = "CFGD_PIPX_BIN";
 
         #[test]
         #[serial]
         fn pipx_install_runs_install_subcommand_per_package() {
-            let s = shim("", "", 0);
+            let s = ToolShim::install(SHIM_ENV, 0, "", "");
             let p = test_printer();
             PipxManager
                 .install(&["black".into(), "ruff".into()], &p)
@@ -538,7 +536,7 @@ mod tests {
         #[test]
         #[serial]
         fn pipx_uninstall_runs_uninstall_subcommand_per_package() {
-            let s = shim("", "", 0);
+            let s = ToolShim::install(SHIM_ENV, 0, "", "");
             let p = test_printer();
             PipxManager.uninstall(&["black".into()], &p).expect("Ok");
             assert!(s.argv_log().contains("uninstall black"));
@@ -547,7 +545,7 @@ mod tests {
         #[test]
         #[serial]
         fn pipx_update_runs_upgrade_all_subcommand() {
-            let s = shim("", "", 0);
+            let s = ToolShim::install(SHIM_ENV, 0, "", "");
             let p = test_printer();
             PipxManager.update(&p).expect("Ok");
             assert!(s.argv_log().contains("upgrade-all"));
@@ -558,7 +556,7 @@ mod tests {
         fn pipx_installed_packages_parses_venvs_json() {
             // pipx list --json: { "venvs": { "black": { ... }, "ruff": { ... } } }
             let json = r#"{"venvs":{"black":{"metadata":{"main_package":{"package":"black","package_version":"24.1.0"}}},"ruff":{"metadata":{"main_package":{"package":"ruff","package_version":"0.2.1"}}}}}"#;
-            let _s = shim(json, "", 0);
+            let _s = ToolShim::install(SHIM_ENV, 0, json, "");
             let pkgs = PipxManager.installed_packages().expect("Ok");
             assert_eq!(pkgs.len(), 2);
             assert!(pkgs.contains("black"));
@@ -569,7 +567,7 @@ mod tests {
         #[serial]
         fn pipx_installed_packages_with_versions_extracts_versions() {
             let json = r#"{"venvs":{"black":{"metadata":{"main_package":{"package":"black","package_version":"24.1.0"}}}}}"#;
-            let _s = shim(json, "", 0);
+            let _s = ToolShim::install(SHIM_ENV, 0, json, "");
             let pkgs = PipxManager.installed_packages_with_versions().expect("Ok");
             let black = pkgs
                 .iter()

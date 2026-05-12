@@ -514,14 +514,12 @@ mod tests {
         use cfgd_core::test_helpers::{ToolShim, test_printer};
         use serial_test::serial;
 
-        fn shim(stdout: &str, stderr: &str, exit: i32) -> ToolShim {
-            ToolShim::install("CFGD_NPM_BIN", exit, stdout, stderr)
-        }
+        const SHIM_ENV: &str = "CFGD_NPM_BIN";
 
         #[test]
         #[serial]
         fn npm_install_passes_install_g_with_packages() {
-            let s = shim("", "", 0);
+            let s = ToolShim::install(SHIM_ENV, 0, "", "");
             let p = test_printer();
             NpmManager
                 .install(&["typescript".into(), "eslint".into()], &p)
@@ -536,7 +534,7 @@ mod tests {
         #[test]
         #[serial]
         fn npm_install_skips_command_when_empty() {
-            let s = shim("", "", 0);
+            let s = ToolShim::install(SHIM_ENV, 0, "", "");
             let p = test_printer();
             NpmManager.install(&[], &p).expect("Ok");
             assert_eq!(s.invocation_count(), 0);
@@ -545,7 +543,7 @@ mod tests {
         #[test]
         #[serial]
         fn npm_uninstall_passes_uninstall_g_with_packages() {
-            let s = shim("", "", 0);
+            let s = ToolShim::install(SHIM_ENV, 0, "", "");
             let p = test_printer();
             NpmManager
                 .uninstall(&["typescript".into()], &p)
@@ -556,7 +554,7 @@ mod tests {
         #[test]
         #[serial]
         fn npm_update_runs_update_g() {
-            let s = shim("", "", 0);
+            let s = ToolShim::install(SHIM_ENV, 0, "", "");
             let p = test_printer();
             NpmManager.update(&p).expect("Ok");
             assert!(s.argv_log().contains("update -g"));
@@ -565,7 +563,7 @@ mod tests {
         #[test]
         #[serial]
         fn npm_available_version_runs_view_and_returns_trimmed_stdout() {
-            let _s = shim("5.3.3\n", "", 0);
+            let _s = ToolShim::install(SHIM_ENV, 0, "5.3.3\n", "");
             let v = NpmManager.available_version("typescript").expect("Ok");
             assert_eq!(v.as_deref(), Some("5.3.3"));
         }
@@ -573,7 +571,7 @@ mod tests {
         #[test]
         #[serial]
         fn npm_available_version_passes_view_subcommand_with_package_and_field() {
-            let s = shim("1.0.0", "", 0);
+            let s = ToolShim::install(SHIM_ENV, 0, "1.0.0", "");
             NpmManager.available_version("typescript").expect("Ok");
             let argv = s.argv_log();
             assert!(
@@ -585,7 +583,7 @@ mod tests {
         #[test]
         #[serial]
         fn npm_available_version_returns_none_on_nonzero_exit() {
-            let _s = shim("", "404 not found", 1);
+            let _s = ToolShim::install(SHIM_ENV, 1, "", "404 not found");
             let v = NpmManager
                 .available_version("nonexistent")
                 .expect("non-zero → Ok(None) not Err");
@@ -595,7 +593,7 @@ mod tests {
         #[test]
         #[serial]
         fn npm_available_version_returns_none_on_empty_stdout() {
-            let _s = shim("\n   \n", "", 0);
+            let _s = ToolShim::install(SHIM_ENV, 0, "\n   \n", "");
             let v = NpmManager
                 .available_version("weird-pkg")
                 .expect("empty stdout → Ok(None)");
@@ -607,7 +605,7 @@ mod tests {
         fn npm_installed_packages_parses_npm_list_json() {
             let json = r#"{"dependencies":{"typescript":{"version":"5.3.3"},"eslint":{"version":"8.0.0"}}}"#;
             // npm list exits non-zero on peer dep issues; stdout still valid JSON.
-            let _s = shim(json, "peer dep issues", 1);
+            let _s = ToolShim::install(SHIM_ENV, 1, json, "peer dep issues");
             let pkgs = NpmManager.installed_packages().expect("Ok");
             assert_eq!(pkgs.len(), 2);
             assert!(pkgs.contains("typescript"));
@@ -618,7 +616,7 @@ mod tests {
         #[serial]
         fn npm_installed_packages_with_versions_includes_versions() {
             let json = r#"{"dependencies":{"typescript":{"version":"5.3.3"}}}"#;
-            let _s = shim(json, "", 0);
+            let _s = ToolShim::install(SHIM_ENV, 0, json, "");
             let pkgs = NpmManager.installed_packages_with_versions().expect("Ok");
             let ts = pkgs
                 .iter()

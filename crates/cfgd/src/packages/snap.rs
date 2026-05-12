@@ -368,14 +368,12 @@ fd        9.0.0    100    latest/stable  -             -
         use cfgd_core::test_helpers::{ToolShim, test_printer};
         use serial_test::serial;
 
-        fn shim(stdout: &str, stderr: &str, exit: i32) -> ToolShim {
-            ToolShim::install("CFGD_SNAP_BIN", exit, stdout, stderr)
-        }
+        const SHIM_ENV: &str = "CFGD_SNAP_BIN";
 
         #[test]
         #[serial]
         fn snap_install_runs_install_subcommand_per_package() {
-            let s = shim("", "", 0);
+            let s = ToolShim::install(SHIM_ENV, 0, "", "");
             let p = test_printer();
             SnapManager
                 .install(&["ripgrep".into(), "fd".into()], &p)
@@ -401,7 +399,12 @@ fd        9.0.0    100    latest/stable  -             -
             // message) and a second attempt is fired with `--classic`. The
             // shim is the same for both attempts, so the second also fails
             // — we only assert that both argvs landed.
-            let s = shim("", "snap \"ripgrep\" requires classic confinement", 1);
+            let s = ToolShim::install(
+                SHIM_ENV,
+                1,
+                "",
+                "snap \"ripgrep\" requires classic confinement",
+            );
             let p = test_printer();
             let _ = SnapManager.install(&["ripgrep".into()], &p);
             assert_eq!(
@@ -424,7 +427,7 @@ fd        9.0.0    100    latest/stable  -             -
         #[test]
         #[serial]
         fn snap_uninstall_runs_remove_with_all_packages_in_one_invocation() {
-            let s = shim("", "", 0);
+            let s = ToolShim::install(SHIM_ENV, 0, "", "");
             let p = test_printer();
             SnapManager
                 .uninstall(&["ripgrep".into(), "fd".into()], &p)
@@ -440,7 +443,7 @@ fd        9.0.0    100    latest/stable  -             -
         #[test]
         #[serial]
         fn snap_uninstall_is_noop_when_packages_empty() {
-            let s = shim("", "", 0);
+            let s = ToolShim::install(SHIM_ENV, 0, "", "");
             let p = test_printer();
             SnapManager.uninstall(&[], &p).expect("Ok");
             assert_eq!(s.invocation_count(), 0, "no command spawned for empty");
@@ -449,7 +452,7 @@ fd        9.0.0    100    latest/stable  -             -
         #[test]
         #[serial]
         fn snap_update_runs_refresh() {
-            let s = shim("", "", 0);
+            let s = ToolShim::install(SHIM_ENV, 0, "", "");
             let p = test_printer();
             SnapManager.update(&p).expect("Ok");
             assert_eq!(s.invocation_count(), 1);
@@ -464,7 +467,7 @@ Name      Version  Rev   Tracking       Publisher    Notes
 core22    20240124 1100  latest/stable  canonical**  base
 ripgrep   14.1.0   234   latest/stable  burntsushi   classic
 ";
-            let _s = shim(stdout, "", 0);
+            let _s = ToolShim::install(SHIM_ENV, 0, stdout, "");
             let pkgs = SnapManager.installed_packages().expect("Ok");
             assert!(pkgs.contains("core22"));
             assert!(pkgs.contains("ripgrep"));
@@ -479,7 +482,7 @@ summary: ripgrep
 channels:
   latest/stable:    14.1.0 2024-03-01 (234) 12MB classic
 ";
-            let s = shim(stdout, "", 0);
+            let s = ToolShim::install(SHIM_ENV, 0, stdout, "");
             let v = SnapManager.available_version("ripgrep").expect("Ok");
             assert_eq!(v.as_deref(), Some("14.1.0"));
             assert!(
@@ -492,7 +495,7 @@ channels:
         #[test]
         #[serial]
         fn snap_available_version_returns_none_on_nonzero_exit() {
-            let _s = shim("", "no such snap", 1);
+            let _s = ToolShim::install(SHIM_ENV, 1, "", "no such snap");
             let v = SnapManager
                 .available_version("nonexistent")
                 .expect("non-zero → Ok(None)");

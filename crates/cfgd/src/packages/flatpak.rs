@@ -219,14 +219,12 @@ mod tests {
         use cfgd_core::test_helpers::{ToolShim, test_printer};
         use serial_test::serial;
 
-        fn shim(stdout: &str, stderr: &str, exit: i32) -> ToolShim {
-            ToolShim::install("CFGD_FLATPAK_BIN", exit, stdout, stderr)
-        }
+        const SHIM_ENV: &str = "CFGD_FLATPAK_BIN";
 
         #[test]
         #[serial]
         fn flatpak_install_runs_install_subcommand_per_package() {
-            let s = shim("", "", 0);
+            let s = ToolShim::install(SHIM_ENV, 0, "", "");
             let p = test_printer();
             FlatpakManager
                 .install(
@@ -243,7 +241,7 @@ mod tests {
         #[test]
         #[serial]
         fn flatpak_uninstall_runs_uninstall_subcommand_per_package() {
-            let s = shim("", "", 0);
+            let s = ToolShim::install(SHIM_ENV, 0, "", "");
             let p = test_printer();
             FlatpakManager
                 .uninstall(&["org.mozilla.firefox".into()], &p)
@@ -254,7 +252,7 @@ mod tests {
         #[test]
         #[serial]
         fn flatpak_update_runs_update_y() {
-            let s = shim("", "", 0);
+            let s = ToolShim::install(SHIM_ENV, 0, "", "");
             let p = test_printer();
             FlatpakManager.update(&p).expect("Ok");
             assert_eq!(s.invocation_count(), 1);
@@ -265,7 +263,7 @@ mod tests {
         #[serial]
         fn flatpak_installed_packages_parses_columns_application_output() {
             let stdout = "org.mozilla.firefox\norg.signal.Signal\n";
-            let _s = shim(stdout, "", 0);
+            let _s = ToolShim::install(SHIM_ENV, 0, stdout, "");
             let pkgs = FlatpakManager.installed_packages().expect("Ok");
             assert_eq!(pkgs.len(), 2);
             assert!(pkgs.contains("org.mozilla.firefox"));
@@ -277,7 +275,7 @@ mod tests {
             // remote-info output uses "Version: <X.Y.Z>" lines; parse_version_field
             // is shared and returns the first match.
             let stdout = "Description: Browser\nVersion: 124.0.1\nLicense: MPL\n";
-            let s = shim(stdout, "", 0);
+            let s = ToolShim::install(SHIM_ENV, 0, stdout, "");
             let v = FlatpakManager
                 .available_version("org.mozilla.firefox")
                 .expect("Ok");
@@ -292,7 +290,7 @@ mod tests {
         #[test]
         #[serial]
         fn flatpak_available_version_returns_none_on_nonzero_exit() {
-            let _s = shim("", "no such app on flathub", 1);
+            let _s = ToolShim::install(SHIM_ENV, 1, "", "no such app on flathub");
             let v = FlatpakManager
                 .available_version("nonexistent.app")
                 .expect("non-zero → Ok(None)");
