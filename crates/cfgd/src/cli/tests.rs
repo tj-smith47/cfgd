@@ -16968,6 +16968,87 @@ mod cmd_source_add_local {
 
     #[test]
     #[serial]
+    fn cmd_source_show_displays_cached_manifest_and_policy_summary() {
+        // After cmd_source_add against a local bare publishes a v2 manifest
+        // with a populated policy (1 required + 1 recommended item), drive
+        // cmd_source_show. With a successfully-cached manifest, show.rs
+        // enters its manifest-display block: Name + Description + the
+        // Policy Summary subheader with per-tier item listings.
+        with_env("CFGD_ALLOW_LOCAL_SOURCES", Some("1"), || {
+            let scratch = tempfile::tempdir().unwrap();
+            let bare = make_bare_with_manifest(&scratch, "shown-src", Some("2.0.0"));
+            let h = CliTestHarness::builder().build();
+            let url = format!("file://{}", bare.display());
+            super::source::cmd_source_add(
+                &h.cli(),
+                h.printer(),
+                &SourceAddArgs {
+                    name: Some("shown-src".to_string()),
+                    accept_recommended: true,
+                    ..empty_source_args(url)
+                },
+            )
+            .expect("cmd_source_add precondition should succeed");
+
+            // Republish with a v2 manifest carrying a populated policy. This
+            // is what cmd_source_show will load into its display block.
+            let v2 = "apiVersion: cfgd.io/v1alpha1\n\
+                      kind: ConfigSource\n\
+                      metadata:\n  name: shown-src\n  version: 2.0.0\n  \
+                      description: Team-shared config\n\
+                      spec:\n  provides:\n    profiles:\n      - default\n  \
+                      policy:\n    required:\n      packages:\n        \
+                      pipx:\n          - ripgrep\n    recommended:\n      \
+                      packages:\n        pipx:\n          - fd-find\n";
+            push_replacement_manifest(&scratch, &bare, v2);
+
+            // Pull v2 into the cache. Permission expansion warning fires
+            // (required count 0 → 1) but prompt_confirm in test mode returns
+            // Err → continue. The cache nevertheless got the v2 manifest
+            // written by SourceManager::load_source BEFORE the permission
+            // check ran, so cmd_source_show can render its policy section.
+            super::source::cmd_source_update(&h.cli(), h.printer(), Some("shown-src"))
+                .expect("cmd_source_update");
+
+            let baseline_len = h.output().len();
+            super::source::cmd_source_show(&h.cli(), h.printer(), "shown-src")
+                .expect("cmd_source_show");
+            let full = h.output();
+            let show_out = &full[baseline_len..];
+
+            assert!(
+                show_out.contains("Source: shown-src"),
+                "expected header, got: {show_out}"
+            );
+            assert!(
+                show_out.contains("Manifest"),
+                "expected Manifest subheader, got: {show_out}"
+            );
+            assert!(
+                show_out.contains("Team-shared config"),
+                "expected manifest description, got: {show_out}"
+            );
+            assert!(
+                show_out.contains("Policy Summary"),
+                "expected Policy Summary subheader, got: {show_out}"
+            );
+            assert!(
+                show_out.contains("Required") && show_out.contains("Recommended"),
+                "expected per-tier labels, got: {show_out}"
+            );
+            assert!(
+                show_out.contains("pipx: ripgrep"),
+                "expected required pipx item rendered, got: {show_out}"
+            );
+            assert!(
+                show_out.contains("pipx: fd-find"),
+                "expected recommended pipx item rendered, got: {show_out}"
+            );
+        });
+    }
+
+    #[test]
+    #[serial]
     fn cmd_source_update_detects_permission_change_and_skips_on_prompt_cancel() {
         // cmd_source_add stages the initial manifest (no policy). A second
         // commit is pushed to the bare that expands the policy
