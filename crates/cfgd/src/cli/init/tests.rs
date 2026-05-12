@@ -3080,4 +3080,162 @@ mod cmd_init_apply_orchestration {
             "pick_profile single-profile fast path should be exercised: {out}"
         );
     }
+
+    /// Same shape as `make_bare_config_repo_with_default`, but the cloned tree
+    /// also carries `modules/<mod>/module.yaml` so a `--apply-module <mod>`
+    /// invocation can pull it into the profile-based plan.
+    fn make_bare_config_repo_with_default_and_module(
+        tmp_root: &std::path::Path,
+        mod_name: &str,
+    ) -> std::path::PathBuf {
+        let bare = tmp_root.join("upstream.git");
+        let _bare_repo = git2::Repository::init_bare(&bare).unwrap();
+
+        let src = tmp_root.join("src");
+        let src_repo = git2::Repository::init(&src).unwrap();
+        std::fs::write(
+            src.join("cfgd.yaml"),
+            "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: cloned-cfg\nspec:\n  profile: default\n",
+        )
+        .unwrap();
+        std::fs::create_dir_all(src.join("profiles")).unwrap();
+        std::fs::write(
+            src.join("profiles").join("default.yaml"),
+            "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec: {}\n",
+        )
+        .unwrap();
+        std::fs::create_dir_all(src.join("modules").join(mod_name)).unwrap();
+        let module_rel = format!("modules/{mod_name}/module.yaml");
+        let module_yaml = format!(
+            "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: {mod_name}\nspec: {{}}\n"
+        );
+        std::fs::write(src.join(&module_rel), module_yaml).unwrap();
+        let mut index = src_repo.index().unwrap();
+        index.add_path(std::path::Path::new("cfgd.yaml")).unwrap();
+        index
+            .add_path(std::path::Path::new("profiles/default.yaml"))
+            .unwrap();
+        index.add_path(std::path::Path::new(&module_rel)).unwrap();
+        index.write().unwrap();
+        let tree_id = index.write_tree().unwrap();
+        let tree = src_repo.find_tree(tree_id).unwrap();
+        let sig = git2::Signature::now("t", "t@example.com").unwrap();
+        src_repo
+            .commit(Some("HEAD"), &sig, &sig, "initial", &tree, &[])
+            .unwrap();
+        drop(tree);
+        let bare_url = format!("file://{}", bare.display());
+        let mut remote = src_repo.remote("origin", &bare_url).unwrap();
+        let branch = src_repo
+            .head()
+            .unwrap()
+            .shorthand()
+            .unwrap_or("master")
+            .to_string();
+        remote
+            .push(&[&format!("refs/heads/{branch}:refs/heads/{branch}")], None)
+            .unwrap();
+        bare
+    }
+
+    #[test]
+    #[serial]
+    fn cmd_init_combined_apply_profile_and_apply_module_merges_module_into_profile_plan() {
+        // `--apply-profile default --apply-module extra` drives the
+        // profile-based branch (lines 162-174 in cmd_init: set spec.profile,
+        // load it) AND the apply-modules merge (lines 195-198: extend
+        // module_names with names passed in --apply-module that the profile
+        // doesn't already list). With dry_run=true, the reconciler plan
+        // bails at "Nothing to do" since the module declares nothing — what
+        // we're pinning is the *control flow*: profile validated + persisted
+        // + module name carried through into the plan.
+        let tmp = tempfile::tempdir().unwrap();
+        let _home = cfgd_core::with_test_home_guard(tmp.path());
+        let bare = make_bare_config_repo_with_default_and_module(tmp.path(), "extra");
+        let target = tmp.path().join("dst");
+        let state_dir = tmp.path().join("state");
+        let url = format!("file://{}", bare.display());
+
+        let (printer, buf) = Printer::for_test();
+        let modules = vec!["extra".to_string()];
+        with_state_dir(&state_dir, || {
+            let args = InitArgs {
+                path: Some(target.to_str().unwrap()),
+                from: Some(&url),
+                branch: "master",
+                name: None,
+                apply: false,
+                dry_run: true,
+                yes: true,
+                install_daemon: false,
+                theme: None,
+                apply_profile: Some("default"),
+                apply_modules: &modules,
+            };
+            cmd_init(&printer, &args)
+                .expect("--apply-profile + --apply-module should walk the combined arm");
+        });
+
+        let out = buf.lock().unwrap().clone();
+        // Profile-validation arm fires.
+        assert!(
+            out.contains("Set active profile: default"),
+            "combined arm should still announce profile selection: {out}"
+        );
+        // Profile-based apply header (not the module-only one).
+        assert!(
+            out.contains("Applying Configuration"),
+            "combined arm should drive the profile-based apply branch, not module-only: {out}"
+        );
+        // Profile + module both reach the reconciler — empty module + empty
+        // profile yield 0 actions → apply_plan's no-op path.
+        assert!(
+            out.contains("Nothing to do") || out.contains("already configured"),
+            "0-action combined plan should hit the apply_plan no-op early return: {out}"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn cmd_init_combined_apply_profile_and_unknown_apply_module_bails_in_profile_branch() {
+        // Profile-based apply branch (apply_profile=Some) with an
+        // --apply-module that doesn't exist on disk. The combined arm
+        // resolves the profile first (writes spec.profile), then validates
+        // every name in args.apply_modules against load_all_modules and
+        // bails at lines 207-211. This pins the "validate before plan"
+        // contract on the profile-based path (mirror of the module-only
+        // bail test).
+        let tmp = tempfile::tempdir().unwrap();
+        let _home = cfgd_core::with_test_home_guard(tmp.path());
+        let bare = make_bare_config_repo_with_default(tmp.path());
+        let target = tmp.path().join("dst");
+        let state_dir = tmp.path().join("state");
+        let url = format!("file://{}", bare.display());
+
+        let (printer, _buf) = Printer::for_test();
+        let modules = vec!["ghost-extra".to_string()];
+        with_state_dir(&state_dir, || {
+            let args = InitArgs {
+                path: Some(target.to_str().unwrap()),
+                from: Some(&url),
+                branch: "master",
+                name: None,
+                apply: false,
+                dry_run: true,
+                yes: true,
+                install_daemon: false,
+                theme: None,
+                apply_profile: Some("default"),
+                apply_modules: &modules,
+            };
+            let err = cmd_init(&printer, &args).expect_err(
+                "profile-based apply with unknown --apply-module should bail before plan",
+            );
+            let msg = err.to_string();
+            assert!(
+                msg.contains("ghost-extra") && msg.contains("not found"),
+                "error should name the missing module: {msg}"
+            );
+        });
+    }
 }
