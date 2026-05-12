@@ -3003,3 +3003,157 @@ fn ensure_target_writable_errors_on_readonly_existing_target() {
     // Restore perms so tempdir cleanup works on all platforms
     let _ = fs::set_permissions(&target, fs::Permissions::from_mode(0o644));
 }
+
+#[test]
+#[cfg(unix)]
+fn ensure_target_writable_errors_on_readonly_parent_directory() {
+    // The parent-readonly arm (apply.rs ~314-321) — covered separately from
+    // the existing-target-readonly arm above, which fires on lines 328-333.
+    let dir = tempfile::tempdir().unwrap();
+    let parent = dir.path().join("ro_parent");
+    fs::create_dir(&parent).unwrap();
+    fs::set_permissions(&parent, fs::Permissions::from_mode(0o555)).unwrap();
+
+    // Target inside a readonly parent — file does not yet exist, so the
+    // existing-target arm is bypassed and the parent-readonly arm fires.
+    let target = parent.join("dst.txt");
+    let err =
+        ensure_target_writable(&target).expect_err("readonly parent should reject new target");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("not writable") || msg.contains("writable"),
+        "expected writability error, got: {msg}"
+    );
+
+    // Restore perms so tempdir cleanup succeeds.
+    let _ = fs::set_permissions(&parent, fs::Permissions::from_mode(0o755));
+}
+
+#[test]
+#[cfg(unix)]
+fn apply_create_with_symlink_strategy_creates_symbolic_link() {
+    // FileStrategy::Symlink arm in apply.rs ~158-164. The source file is a
+    // real file; the target should be a symlink pointing to source.
+    let dir = tempfile::tempdir().unwrap();
+    let resolved = make_resolved_profile(vec![], FilesSpec::default());
+    let fm = CfgdFileManager::new(dir.path(), &resolved).unwrap();
+
+    let source = dir.path().join("real.txt");
+    fs::write(&source, "linked content").unwrap();
+    let target = dir.path().join("nested").join("alias.txt");
+
+    let actions = vec![FileAction::Create {
+        source: source.clone(),
+        target: target.clone(),
+        origin: "local".to_string(),
+        strategy: cfgd_core::config::FileStrategy::Symlink,
+        source_hash: None,
+    }];
+
+    let printer = cfgd_core::output::Printer::new(cfgd_core::output::Verbosity::Quiet);
+    <CfgdFileManager as cfgd_core::providers::FileManager>::apply(&fm, &actions, &printer).unwrap();
+
+    let meta = target.symlink_metadata().expect("target should exist");
+    assert!(meta.file_type().is_symlink(), "target must be a symlink");
+    // Following the symlink reads the source's content.
+    assert_eq!(fs::read_to_string(&target).unwrap(), "linked content");
+}
+
+#[test]
+#[cfg(unix)]
+fn apply_create_with_hardlink_strategy_creates_hard_link() {
+    // FileStrategy::Hardlink arm in apply.rs ~166-170. Inode equality proves
+    // the second path is a hard link to the first, not a copy.
+    use std::os::unix::fs::MetadataExt;
+
+    let dir = tempfile::tempdir().unwrap();
+    let resolved = make_resolved_profile(vec![], FilesSpec::default());
+    let fm = CfgdFileManager::new(dir.path(), &resolved).unwrap();
+
+    let source = dir.path().join("orig.txt");
+    fs::write(&source, "shared content").unwrap();
+    let target = dir.path().join("nested").join("dup.txt");
+
+    let actions = vec![FileAction::Create {
+        source: source.clone(),
+        target: target.clone(),
+        origin: "local".to_string(),
+        strategy: cfgd_core::config::FileStrategy::Hardlink,
+        source_hash: None,
+    }];
+
+    let printer = cfgd_core::output::Printer::new(cfgd_core::output::Verbosity::Quiet);
+    <CfgdFileManager as cfgd_core::providers::FileManager>::apply(&fm, &actions, &printer).unwrap();
+
+    let src_meta = fs::metadata(&source).unwrap();
+    let tgt_meta = fs::metadata(&target).unwrap();
+    assert_eq!(
+        src_meta.ino(),
+        tgt_meta.ino(),
+        "hardlink must share an inode with the source"
+    );
+    assert_eq!(
+        tgt_meta.nlink(),
+        2,
+        "expected exactly 2 links after hardlink"
+    );
+}
+
+#[test]
+#[cfg(unix)]
+fn apply_create_with_symlink_strategy_replaces_existing_file() {
+    // The "remove existing target before deploying" arm (apply.rs ~150-154):
+    // existing real file at target must be removed before the symlink is
+    // created — otherwise create_symlink would fail with EEXIST.
+    let dir = tempfile::tempdir().unwrap();
+    let resolved = make_resolved_profile(vec![], FilesSpec::default());
+    let fm = CfgdFileManager::new(dir.path(), &resolved).unwrap();
+
+    let source = dir.path().join("src.txt");
+    fs::write(&source, "new content").unwrap();
+    let target = dir.path().join("target.txt");
+    fs::write(&target, "stale content").unwrap();
+    assert!(target.exists());
+
+    let actions = vec![FileAction::Create {
+        source: source.clone(),
+        target: target.clone(),
+        origin: "local".to_string(),
+        strategy: cfgd_core::config::FileStrategy::Symlink,
+        source_hash: None,
+    }];
+
+    let printer = cfgd_core::output::Printer::new(cfgd_core::output::Verbosity::Quiet);
+    <CfgdFileManager as cfgd_core::providers::FileManager>::apply(&fm, &actions, &printer).unwrap();
+
+    let meta = target.symlink_metadata().unwrap();
+    assert!(
+        meta.file_type().is_symlink(),
+        "existing file should have been replaced with a symlink"
+    );
+    assert_eq!(fs::read_to_string(&target).unwrap(), "new content");
+}
+
+#[test]
+fn scan_target_io_error_when_path_is_a_directory() {
+    // scan_target.read_to_string Err arm (apply.rs ~41-44). When the caller
+    // hands a directory path that exists, fs::read_to_string fails — the Err
+    // must wrap the path that triggered the failure.
+    let dir = tempfile::tempdir().unwrap();
+    let resolved = make_resolved_profile(vec![], FilesSpec::default());
+    let fm = CfgdFileManager::new(dir.path(), &resolved).unwrap();
+
+    let dir_path = dir.path().join("not-a-file");
+    fs::create_dir(&dir_path).unwrap();
+
+    let err = <CfgdFileManager as cfgd_core::providers::FileManager>::scan_target(
+        &fm,
+        &[dir_path.clone()],
+    )
+    .expect_err("reading a directory as a file should error");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("not-a-file") || msg.contains("directory") || msg.contains("Is a directory"),
+        "expected directory-related error, got: {msg}"
+    );
+}
