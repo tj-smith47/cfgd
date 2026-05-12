@@ -518,6 +518,68 @@ fn collect_package_checks_empty_desired_skips_manager() {
 }
 
 #[test]
+fn collect_package_checks_manager_query_error_emits_warning_and_skips_packages() {
+    use crate::config::MergedProfile;
+    use crate::providers::StubPackageManager;
+
+    let mut profile = MergedProfile::default();
+    // Two desired packages — should be skipped entirely when the manager
+    // fails to enumerate; only a single Warning emerges for the manager.
+    profile.packages.pipx = vec!["ripgrep".into(), "fd".into()];
+
+    let mut registry = ProviderRegistry::new();
+    registry.package_managers.push(Box::new(
+        StubPackageManager::new("pipx").with_installed_error("permission denied: /var/lib/pipx"),
+    ));
+
+    let checks = collect_package_checks(&profile, &registry).unwrap();
+    assert_eq!(checks.len(), 1, "single Warning per unqueryable manager");
+    assert_eq!(checks[0].category, "package");
+    assert_eq!(checks[0].manager.as_deref(), Some("pipx"));
+    assert_eq!(checks[0].status, ComplianceStatus::Warning);
+    let detail = checks[0].detail.as_deref().unwrap();
+    assert!(
+        detail.contains("cannot query pipx"),
+        "expected 'cannot query <name>', got: {detail}"
+    );
+    assert!(
+        detail.contains("permission denied"),
+        "expected underlying error in detail, got: {detail}"
+    );
+    // Ensure the per-package iteration was skipped (no name-bearing checks).
+    assert!(
+        checks.iter().all(|c| c.name.is_none()),
+        "no per-package checks should be emitted on query failure"
+    );
+}
+
+#[test]
+fn watch_package_manager_query_error_emits_warning() {
+    use crate::providers::StubPackageManager;
+
+    let mut registry = ProviderRegistry::new();
+    registry.package_managers.push(Box::new(
+        StubPackageManager::new("snap")
+            .with_installed_error("snapd not responding (no such file or directory)"),
+    ));
+
+    let checks = collect_watched_package_manager_checks("snap", &registry).unwrap();
+    assert_eq!(checks.len(), 1);
+    assert_eq!(checks[0].category, "watchPackage");
+    assert_eq!(checks[0].manager.as_deref(), Some("snap"));
+    assert_eq!(checks[0].status, ComplianceStatus::Warning);
+    let detail = checks[0].detail.as_deref().unwrap();
+    assert!(
+        detail.contains("cannot query snap"),
+        "expected 'cannot query <name>', got: {detail}"
+    );
+    assert!(
+        detail.contains("snapd not responding"),
+        "expected underlying error in detail, got: {detail}"
+    );
+}
+
+#[test]
 fn collect_package_checks_multiple_managers() {
     use crate::config::MergedProfile;
     use crate::providers::StubPackageManager;

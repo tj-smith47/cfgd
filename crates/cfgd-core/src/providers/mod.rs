@@ -313,6 +313,9 @@ pub(crate) struct StubPackageManager {
     pub installed: HashSet<String>,
     pub versions: std::collections::HashMap<String, String>,
     pub bootstrap_capable: bool,
+    /// When Some, `installed_packages()` returns an Err carrying this message.
+    /// Lets tests drive the "cannot query" arms in compliance + reconciler code.
+    pub installed_error: Option<String>,
 }
 
 #[cfg(test)]
@@ -324,6 +327,7 @@ impl StubPackageManager {
             installed: HashSet::new(),
             versions: std::collections::HashMap::new(),
             bootstrap_capable: false,
+            installed_error: None,
         }
     }
 
@@ -341,6 +345,11 @@ impl StubPackageManager {
         for p in pkgs {
             self.installed.insert((*p).to_string());
         }
+        self
+    }
+
+    pub fn with_installed_error(mut self, message: &str) -> Self {
+        self.installed_error = Some(message.to_string());
         self
     }
 
@@ -365,6 +374,11 @@ impl PackageManager for StubPackageManager {
         Ok(())
     }
     fn installed_packages(&self) -> Result<HashSet<String>> {
+        if let Some(ref msg) = self.installed_error {
+            return Err(crate::errors::CfgdError::Io(std::io::Error::other(
+                msg.clone(),
+            )));
+        }
         Ok(self.installed.clone())
     }
     fn install(&self, _packages: &[String], _printer: &Printer) -> Result<()> {
