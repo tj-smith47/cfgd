@@ -7,7 +7,7 @@ use kube::runtime::controller::Action;
 
 use super::MACHINE_CONFIG_FINALIZER;
 use super::machine_config::reconcile_machine_config;
-use super::test_fixtures::machine_config;
+use super::test_fixtures::{machine_config, machine_config_path};
 use super::test_kube_harness::{ExpectedCall, MockKubeHarness, expect_event_post};
 use crate::crds::{Condition, MachineConfigStatus, ModuleRef};
 use crate::metrics::ReconcileLabels;
@@ -16,10 +16,6 @@ const NS: &str = "cfgd-system";
 
 fn drift_alerts_path() -> String {
     format!("/apis/cfgd.io/v1alpha1/namespaces/{NS}/driftalerts")
-}
-
-fn machine_config_path(name: &str) -> String {
-    format!("/apis/cfgd.io/v1alpha1/namespaces/{NS}/machineconfigs/{name}")
 }
 
 fn modules_list_path() -> &'static str {
@@ -55,7 +51,7 @@ async fn reconcile_machine_config_adds_finalizer_when_missing() {
 
     let (ctx, _registry, harness) = MockKubeHarness::new(vec![
         // 1. PATCH metadata to add finalizer
-        ExpectedCall::patch(machine_config_path("mc-noface"))
+        ExpectedCall::patch(machine_config_path(NS, "mc-noface"))
             .with_query_contains("fieldManager=cfgd-operator")
             .returning_json(&mc),
         // 2. LIST DriftAlerts (has_active_drift_alerts)
@@ -63,7 +59,7 @@ async fn reconcile_machine_config_adds_finalizer_when_missing() {
         // 3. LIST DriftAlerts (cleanup_drift_alerts, since !has_drift)
         ExpectedCall::list(drift_alerts_path()).returning_json(&empty_drift_list()),
         // 4. PATCH /status (no LIST modules — module_refs is empty)
-        ExpectedCall::patch_status(format!("{}/status", machine_config_path("mc-noface")))
+        ExpectedCall::patch_status(format!("{}/status", machine_config_path(NS, "mc-noface")))
             .returning_json(&mc),
         // 5. POST event (Reconciled)
         expect_event_post(NS),
@@ -108,7 +104,7 @@ async fn reconcile_machine_config_removes_finalizer_on_deletion_then_returns_awa
     ));
 
     let (ctx, _registry, harness) = MockKubeHarness::new(vec![
-        ExpectedCall::patch(machine_config_path("mc-deleting"))
+        ExpectedCall::patch(machine_config_path(NS, "mc-deleting"))
             .with_query_contains("fieldManager=cfgd-operator")
             .returning_json(&mc),
     ]);
@@ -152,7 +148,7 @@ async fn reconcile_machine_config_when_deletion_and_no_finalizer_skips_patch_and
         // 3. PATCH /status
         ExpectedCall::patch_status(format!(
             "{}/status",
-            machine_config_path("mc-deleted-clean")
+            machine_config_path(NS, "mc-deleted-clean")
         ))
         .returning_json(&mc),
         // 4. POST event
@@ -252,7 +248,7 @@ async fn reconcile_machine_config_emits_drift_event_when_active_alerts_match() {
         ExpectedCall::list(drift_alerts_path()).returning_json(&drift_list),
         // No cleanup_drift_alerts call (because has_drift)
         // 2. PATCH /status
-        ExpectedCall::patch_status(format!("{}/status", machine_config_path("mc-drifted")))
+        ExpectedCall::patch_status(format!("{}/status", machine_config_path(NS, "mc-drifted")))
             .returning_json(&mc),
         // 3. POST event (Reconciled)
         expect_event_post(NS),
@@ -308,8 +304,11 @@ async fn reconcile_machine_config_resolves_module_refs_and_records_modules_resol
         ExpectedCall::list(drift_alerts_path()).returning_json(&empty_drift_list()),
         // resolve_module_refs LISTs all Modules (cluster-scoped).
         ExpectedCall::list(modules_list_path()).returning_json(&empty_module_list()),
-        ExpectedCall::patch_status(format!("{}/status", machine_config_path("mc-with-modules")))
-            .returning_json(&mc),
+        ExpectedCall::patch_status(format!(
+            "{}/status",
+            machine_config_path(NS, "mc-with-modules")
+        ))
+        .returning_json(&mc),
         expect_event_post(NS),
     ]);
 
@@ -350,8 +349,11 @@ async fn reconcile_machine_config_when_status_patch_fails_emits_reconcile_error_
     let (ctx, _registry, harness) = MockKubeHarness::new(vec![
         ExpectedCall::list(drift_alerts_path()).returning_json(&empty_drift_list()),
         ExpectedCall::list(drift_alerts_path()).returning_json(&empty_drift_list()),
-        ExpectedCall::patch_status(format!("{}/status", machine_config_path("mc-statuserr")))
-            .returning_server_error(500, "etcd melted"),
+        ExpectedCall::patch_status(format!(
+            "{}/status",
+            machine_config_path(NS, "mc-statuserr")
+        ))
+        .returning_server_error(500, "etcd melted"),
         expect_event_post(NS),
     ]);
 
@@ -397,7 +399,7 @@ async fn reconcile_machine_config_preserves_existing_compliant_condition_status(
         ExpectedCall::list(drift_alerts_path()).returning_json(&empty_drift_list()),
         ExpectedCall::patch_status(format!(
             "{}/status",
-            machine_config_path("mc-with-compliant")
+            machine_config_path(NS, "mc-with-compliant")
         ))
         .returning_json(&mc),
         expect_event_post(NS),

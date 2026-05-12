@@ -6,10 +6,10 @@ use std::sync::Arc;
 use kube::runtime::controller::Action;
 
 use super::config_policy::reconcile_config_policy;
-use super::test_fixtures::{config_policy, machine_config};
+use super::test_fixtures::{config_policy, machine_config, machine_config_path, mc_list};
 use super::test_kube_harness::{ExpectedCall, MockKubeHarness, expect_event_post};
 use crate::crds::{
-    LabelSelector, LabelSelectorRequirement, MachineConfig, ModuleRef, PackageRef, SelectorOperator,
+    LabelSelector, LabelSelectorRequirement, ModuleRef, PackageRef, SelectorOperator,
 };
 use crate::metrics::{PolicyLabels, ReconcileLabels};
 
@@ -19,21 +19,8 @@ fn machine_configs_path() -> String {
     format!("/apis/cfgd.io/v1alpha1/namespaces/{NS}/machineconfigs")
 }
 
-fn machine_config_path(name: &str) -> String {
-    format!("/apis/cfgd.io/v1alpha1/namespaces/{NS}/machineconfigs/{name}")
-}
-
 fn config_policy_path(name: &str) -> String {
     format!("/apis/cfgd.io/v1alpha1/namespaces/{NS}/configpolicies/{name}")
-}
-
-fn mc_list(items: &[MachineConfig]) -> serde_json::Value {
-    serde_json::json!({
-        "apiVersion": "cfgd.io/v1alpha1",
-        "kind": "MachineConfigList",
-        "items": items,
-        "metadata": {},
-    })
 }
 
 // -----------------------------------------------------------------------
@@ -51,9 +38,9 @@ async fn reconcile_config_policy_with_empty_selector_targets_all_machine_configs
         ExpectedCall::list(machine_configs_path())
             .returning_json(&mc_list(&[mc1.clone(), mc2.clone()])),
         // 2. PATCH each MC's /status to set Compliant=True (empty policy, both compliant)
-        ExpectedCall::patch_status(format!("{}/status", machine_config_path("mc1")))
+        ExpectedCall::patch_status(format!("{}/status", machine_config_path(NS, "mc1")))
             .returning_json(&mc1),
-        ExpectedCall::patch_status(format!("{}/status", machine_config_path("mc2")))
+        ExpectedCall::patch_status(format!("{}/status", machine_config_path(NS, "mc2")))
             .returning_json(&mc2),
         // (Both are compliant — no PolicyViolation events.)
         // 3. PATCH ConfigPolicy /status
@@ -122,8 +109,11 @@ async fn reconcile_config_policy_marks_mc_non_compliant_when_required_module_mis
     let (ctx, _registry, harness) = MockKubeHarness::new(vec![
         ExpectedCall::list(machine_configs_path())
             .returning_json(&mc_list(std::slice::from_ref(&mc))),
-        ExpectedCall::patch_status(format!("{}/status", machine_config_path("mc-no-kubectl")))
-            .returning_json(&mc),
+        ExpectedCall::patch_status(format!(
+            "{}/status",
+            machine_config_path(NS, "mc-no-kubectl")
+        ))
+        .returning_json(&mc),
         // PolicyViolation event for the non-compliant MC
         expect_event_post(NS),
         ExpectedCall::patch_status(format!("{}/status", config_policy_path("require-mod")))
@@ -186,7 +176,7 @@ async fn reconcile_config_policy_marks_non_compliant_when_package_version_does_n
 
     let (ctx, _registry, harness) = MockKubeHarness::new(vec![
         ExpectedCall::list(machine_configs_path()).returning_json(&mc_list(&[mc.clone()])),
-        ExpectedCall::patch_status(format!("{}/status", machine_config_path("mc-ver")))
+        ExpectedCall::patch_status(format!("{}/status", machine_config_path(NS, "mc-ver")))
             .returning_json(&mc),
         expect_event_post(NS), // PolicyViolation
         ExpectedCall::patch_status(format!("{}/status", config_policy_path("ver-policy")))
@@ -230,7 +220,7 @@ async fn reconcile_config_policy_only_targets_machine_configs_matching_selector(
         ExpectedCall::list(machine_configs_path())
             .returning_json(&mc_list(&[prod_mc.clone(), dev_mc])),
         // Only prod_mc gets a PATCH /status
-        ExpectedCall::patch_status(format!("{}/status", machine_config_path("mc-prod")))
+        ExpectedCall::patch_status(format!("{}/status", machine_config_path(NS, "mc-prod")))
             .returning_json(&prod_mc),
         ExpectedCall::patch_status(format!("{}/status", config_policy_path("scoped-policy")))
             .returning_json(&policy),
@@ -279,7 +269,7 @@ async fn reconcile_config_policy_with_match_expressions_does_not_exist_excludes_
 
     let (ctx, _registry, harness) = MockKubeHarness::new(vec![
         ExpectedCall::list(machine_configs_path()).returning_json(&mc_list(&[mc1, mc2.clone()])),
-        ExpectedCall::patch_status(format!("{}/status", machine_config_path("mc2")))
+        ExpectedCall::patch_status(format!("{}/status", machine_config_path(NS, "mc2")))
             .returning_json(&mc2),
         ExpectedCall::patch_status(format!("{}/status", config_policy_path("excl-policy")))
             .returning_json(&policy),

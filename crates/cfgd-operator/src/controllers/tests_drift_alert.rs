@@ -14,7 +14,7 @@ use kube::runtime::controller::Action;
 
 use super::drift_alert::{cleanup_drift_alerts, has_active_drift_alerts, reconcile_drift_alert};
 use super::test_fixtures::{
-    drift_alert, machine_config, machine_config_owner_ref,
+    drift_alert, machine_config, machine_config_owner_ref, machine_config_path,
     machine_config_status_with_drift_detected,
 };
 use super::test_kube_harness::{ExpectedCall, MockKubeHarness, expect_event_post};
@@ -29,10 +29,6 @@ fn drift_alerts_path(namespace: &str) -> String {
 
 fn drift_alert_path(namespace: &str, name: &str) -> String {
     format!("/apis/cfgd.io/v1alpha1/namespaces/{namespace}/driftalerts/{name}")
-}
-
-fn machine_config_path(namespace: &str, name: &str) -> String {
-    format!("/apis/cfgd.io/v1alpha1/namespaces/{namespace}/machineconfigs/{name}")
 }
 
 // -----------------------------------------------------------------------

@@ -11,6 +11,7 @@ use serde_json::json;
 
 use super::drift::{create_drift_alert_crd, find_machine_config_for_device};
 use super::*;
+use crate::controllers::test_fixtures::mc_list;
 use crate::controllers::test_kube_harness::{ExpectedCall, MockKubeHarness};
 use crate::crds::{MachineConfig, MachineConfigSpec};
 
@@ -25,15 +26,6 @@ fn drift_alerts_create_path() -> &'static str {
 
 fn machine_configs_list_path() -> &'static str {
     "/apis/cfgd.io/v1alpha1/machineconfigs"
-}
-
-fn mc_list(items: Vec<MachineConfig>) -> serde_json::Value {
-    json!({
-        "apiVersion": "cfgd.io/v1alpha1",
-        "kind": "MachineConfigList",
-        "items": items,
-        "metadata": {},
-    })
 }
 
 fn mc_for(name: &str, hostname: &str) -> MachineConfig {
@@ -84,7 +76,7 @@ async fn create_drift_alert_crd_uses_matched_machine_config_name_for_label_and_r
 
     let (ctx, _registry, harness) = MockKubeHarness::new(vec![
         // 1. find_machine_config_for_device LIST — one MachineConfig with matching hostname.
-        ExpectedCall::list(machine_configs_list_path()).returning_json(&mc_list(vec![mc.clone()])),
+        ExpectedCall::list(machine_configs_list_path()).returning_json(&mc_list(&[mc.clone()])),
         // 2. POST DriftAlert — accept (201).
         ExpectedCall::post(drift_alerts_create_path())
             .with_status(201)
@@ -147,7 +139,7 @@ async fn create_drift_alert_crd_falls_back_to_synthetic_name_when_no_mc_matches(
     let synthetic = format!("{HOSTNAME}-mc");
 
     let (ctx, _registry, harness) = MockKubeHarness::new(vec![
-        ExpectedCall::list(machine_configs_list_path()).returning_json(&mc_list(vec![mc])),
+        ExpectedCall::list(machine_configs_list_path()).returning_json(&mc_list(&[mc])),
         ExpectedCall::post(drift_alerts_create_path())
             .with_status(201)
             .returning_json(&json!({
@@ -180,7 +172,7 @@ async fn create_drift_alert_crd_falls_back_to_synthetic_name_when_no_mc_matches(
 #[tokio::test]
 async fn create_drift_alert_crd_treats_409_conflict_as_already_exists_no_retry() {
     let (ctx, _registry, harness) = MockKubeHarness::new(vec![
-        ExpectedCall::list(machine_configs_list_path()).returning_json(&mc_list(vec![])),
+        ExpectedCall::list(machine_configs_list_path()).returning_json(&mc_list(&[])),
         // First (and only) POST attempt returns 409 Conflict — function exits early.
         ExpectedCall::post(drift_alerts_create_path()).returning_server_error(409, "AlreadyExists"),
     ]);
@@ -200,7 +192,7 @@ async fn create_drift_alert_crd_treats_409_conflict_as_already_exists_no_retry()
 #[tokio::test(start_paused = true)]
 async fn create_drift_alert_crd_retries_on_server_error_then_succeeds() {
     let (ctx, _registry, harness) = MockKubeHarness::new(vec![
-        ExpectedCall::list(machine_configs_list_path()).returning_json(&mc_list(vec![])),
+        ExpectedCall::list(machine_configs_list_path()).returning_json(&mc_list(&[])),
         // Attempt 1 → 500 → retried (with virtual time advance via `start_paused`).
         ExpectedCall::post(drift_alerts_create_path()).returning_server_error(500, "etcd"),
         // Attempt 2 → 201 → success.

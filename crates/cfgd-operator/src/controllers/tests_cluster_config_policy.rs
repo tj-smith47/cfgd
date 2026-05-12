@@ -6,9 +6,11 @@ use std::sync::Arc;
 use kube::runtime::controller::Action;
 
 use super::cluster_config_policy::reconcile_cluster_config_policy;
-use super::test_fixtures::{cluster_config_policy_with_spec, config_policy, machine_config};
+use super::test_fixtures::{
+    cluster_config_policy_with_spec, config_policy, machine_config, mc_list,
+};
 use super::test_kube_harness::{ExpectedCall, MockKubeHarness, expect_event_post};
-use crate::crds::{ConfigPolicy, MachineConfig, ModuleRef};
+use crate::crds::{ConfigPolicy, ModuleRef};
 use crate::metrics::PolicyLabels;
 
 const NS_A: &str = "team-a";
@@ -44,15 +46,6 @@ fn ns_list(namespaces: &[&str]) -> serde_json::Value {
     serde_json::json!({
         "apiVersion": "v1",
         "kind": "NamespaceList",
-        "items": items,
-        "metadata": {},
-    })
-}
-
-fn mc_list(items: &[MachineConfig]) -> serde_json::Value {
-    serde_json::json!({
-        "apiVersion": "cfgd.io/v1alpha1",
-        "kind": "MachineConfigList",
         "items": items,
         "metadata": {},
     })
