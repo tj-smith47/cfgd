@@ -753,3 +753,160 @@ fn test_generate_pipeline_invalid_yaml_does_not_write() {
     assert!(!result.is_error);
     assert_eq!(result.content, "[]");
 }
+
+// ---------------------------------------------------------------------------
+// Err-arm coverage — each dispatcher with an underlying call that returns Err
+// must surface "Error: ..." with is_error=true. These pin the dispatch contract
+// so a future refactor doesn't accidentally promote a failure into a success.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_dispatch_read_file_underlying_error_surfaces() {
+    // dispatch_read_file Err arm (lines 490-493): path within home but does
+    // NOT exist on disk → files::read_file → fs::metadata Err →
+    // CfgdError::Generate(FileAccessDenied) → "Error: ..." is_error=true.
+    let tmp = tempfile::TempDir::new().unwrap();
+    let missing = tmp.path().join("not-on-disk.txt");
+    let mut session = GenerateSession::new(tmp.path().to_path_buf());
+    let input = serde_json::json!({"path": missing.to_str().unwrap()});
+    let result = dispatch_tool_call("read_file", &input, &mut session, tmp.path(), &[]);
+    assert!(result.is_error);
+    assert!(
+        result.content.starts_with("Error: "),
+        "expected leading 'Error: ', got: {}",
+        result.content
+    );
+}
+
+#[test]
+fn test_dispatch_list_directory_underlying_error_surfaces() {
+    // dispatch_list_directory Err arm (lines 512-515): path within home but
+    // does NOT exist on disk → files::list_directory → fs::read_dir Err →
+    // "Error: ..." is_error=true.
+    let tmp = tempfile::TempDir::new().unwrap();
+    let missing = tmp.path().join("no-such-dir");
+    let mut session = GenerateSession::new(tmp.path().to_path_buf());
+    let input = serde_json::json!({"path": missing.to_str().unwrap()});
+    let result = dispatch_tool_call("list_directory", &input, &mut session, tmp.path(), &[]);
+    assert!(result.is_error);
+    assert!(
+        result.content.starts_with("Error: "),
+        "expected leading 'Error: ', got: {}",
+        result.content
+    );
+}
+
+#[test]
+fn test_dispatch_adopt_files_underlying_error_surfaces() {
+    // dispatch_adopt_files Err arm (lines 561-564): all params present, but
+    // source path doesn't exist on disk → files::adopt_files → fs::read Err →
+    // "Error: ..." is_error=true. Pins the failure path of the per-pair copy
+    // loop; the Ok arm is covered by test_dispatch_adopt_files.
+    let tmp = tempfile::TempDir::new().unwrap();
+    let mut session = GenerateSession::new(tmp.path().to_path_buf());
+    let input = serde_json::json!({
+        "files": [
+            {"source": "/tmp/__cfgd_test_does_not_exist__", "dest": "x.txt"}
+        ]
+    });
+    let result = dispatch_tool_call("adopt_files", &input, &mut session, tmp.path(), &[]);
+    assert!(result.is_error);
+    assert!(
+        result.content.starts_with("Error: "),
+        "expected leading 'Error: ', got: {}",
+        result.content
+    );
+}
+
+#[test]
+fn test_dispatch_validate_yaml_missing_kind() {
+    // dispatch_validate_yaml second-param-check Err arm (lines 607-610):
+    // content is present but 'kind' is not → "Error: 'kind' parameter is required".
+    let mut session = GenerateSession::new(PathBuf::from("/tmp/test"));
+    let input = serde_json::json!({"content": "apiVersion: x"});
+    let result = dispatch_tool_call("validate_yaml", &input, &mut session, Path::new("/"), &[]);
+    assert!(result.is_error);
+    assert!(
+        result.content.contains("'kind' parameter is required"),
+        "expected missing-kind error, got: {}",
+        result.content
+    );
+}
+
+#[test]
+fn test_dispatch_validate_yaml_invalid_kind_value() {
+    // dispatch_validate_yaml kind-parse Err arm (lines 615-619): 'kind' is
+    // present but is not "Module" / "Profile" / "Config" → SchemaKind parse
+    // Err → "Error: unknown schema kind" surfaced verbatim.
+    let mut session = GenerateSession::new(PathBuf::from("/tmp/test"));
+    let input = serde_json::json!({"content": "anything", "kind": "NotARealKind"});
+    let result = dispatch_tool_call("validate_yaml", &input, &mut session, Path::new("/"), &[]);
+    assert!(result.is_error);
+    assert!(
+        result.content.contains("unknown schema kind"),
+        "expected unknown-kind error, got: {}",
+        result.content
+    );
+}
+
+#[test]
+fn test_dispatch_write_module_yaml_missing_content() {
+    // dispatch_write_module_yaml second-param-check Err arm (lines 642-645):
+    // name is present but content is not → "Error: 'content' parameter is required".
+    // Complements the existing _missing_name test.
+    let mut session = GenerateSession::new(PathBuf::from("/tmp/test"));
+    let input = serde_json::json!({"name": "test"});
+    let result = dispatch_tool_call(
+        "write_module_yaml",
+        &input,
+        &mut session,
+        Path::new("/"),
+        &[],
+    );
+    assert!(result.is_error);
+    assert!(
+        result.content.contains("'content' parameter is required"),
+        "expected missing-content error, got: {}",
+        result.content
+    );
+}
+
+#[test]
+fn test_dispatch_write_profile_yaml_missing_name() {
+    // dispatch_write_profile_yaml first-param-check Err arm (lines 664-667):
+    // 'name' is missing → "Error: 'name' parameter is required". Complements
+    // the existing _missing_content test.
+    let mut session = GenerateSession::new(PathBuf::from("/tmp/test"));
+    let input = serde_json::json!({"content": "yaml goes here"});
+    let result = dispatch_tool_call(
+        "write_profile_yaml",
+        &input,
+        &mut session,
+        Path::new("/"),
+        &[],
+    );
+    assert!(result.is_error);
+    assert!(
+        result.content.contains("'name' parameter is required"),
+        "expected missing-name error, got: {}",
+        result.content
+    );
+}
+
+#[test]
+fn test_dispatch_write_profile_yaml_underlying_error_surfaces() {
+    // dispatch_write_profile_yaml Err arm (lines 684-687): both params present
+    // but session.write_profile_yaml errors (invalid YAML body) → "Error: ..."
+    // is_error=true. Mirrors test_dispatch_write_module_yaml_invalid for the
+    // profile side, which had no equivalent test.
+    let tmp = tempfile::TempDir::new().unwrap();
+    let mut session = GenerateSession::new(tmp.path().to_path_buf());
+    let input = serde_json::json!({"name": "bad", "content": "not yaml {{ unclosed"});
+    let result = dispatch_tool_call("write_profile_yaml", &input, &mut session, tmp.path(), &[]);
+    assert!(result.is_error);
+    assert!(
+        result.content.starts_with("Error: "),
+        "expected leading 'Error: ', got: {}",
+        result.content
+    );
+}
