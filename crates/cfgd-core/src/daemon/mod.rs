@@ -308,19 +308,43 @@ pub use git::git_pull_sync;
 pub use health_ipc::query_daemon_status;
 pub use service::{install_service, run_as_windows_service, uninstall_service};
 
-// --- Main Daemon Entry Point ---
+// --- Pre-loop setup (synchronous; pulled out so the SETUP arms are unit-testable) ---
 
-pub async fn run_daemon(
-    config_path: PathBuf,
-    profile_override: Option<String>,
-    printer: Arc<Printer>,
-    hooks: Arc<dyn DaemonHooks>,
-) -> Result<()> {
-    printer.header("Daemon");
-    printer.info("Starting cfgd daemon...");
+/// Bundle of values built up from config + profile resolution before the
+/// daemon loop spawns its watcher, health server, and timer pumps.
+///
+/// Constructed by [`build_pre_loop_setup`]. Tests can drive that function
+/// against tempdir fixtures and assert on the populated fields without the
+/// rest of `run_daemon`'s side-effect machinery (mpsc pumps, signal handlers,
+/// Unix socket binds, network startup check-ins).
+pub(super) struct PreLoopSetup {
+    pub cfg: CfgdConfig,
+    pub parsed: ParsedDaemonConfig,
+    pub notifier: Arc<Notifier>,
+    pub compliance_config: Option<config::ComplianceConfig>,
+    pub compliance_interval: Option<Duration>,
+    pub config_dir: PathBuf,
+    pub sync_tasks: Vec<SyncTask>,
+    pub initial_source_status: Vec<SourceStatus>,
+    pub managed_paths: Vec<PathBuf>,
+    pub reconcile_tasks: Vec<ReconcileTask>,
+    pub shortest_reconcile: Duration,
+    pub shortest_sync: Duration,
+    pub server_checkin_url: Option<String>,
+}
 
-    // Load config to get daemon settings
-    let cfg = config::load_config(&config_path)?;
+/// Build everything `run_daemon` needs before it starts spawning tasks.
+///
+/// This is purely synchronous: config load + profile resolution + pure
+/// helpers from `daemon_config`, `checkin`, and `reconcile` submodules. No
+/// sockets, no spawned tasks, no network. Production callers use this from
+/// `run_daemon`; tests use it to exercise the SETUP arms directly.
+pub(super) fn build_pre_loop_setup(
+    config_path: &Path,
+    profile_override: Option<&str>,
+    hooks: &dyn DaemonHooks,
+) -> Result<PreLoopSetup> {
+    let cfg = config::load_config(config_path)?;
     let daemon_cfg = cfg.spec.daemon.clone().unwrap_or(config::DaemonConfig {
         enabled: true,
         reconcile: None,
@@ -328,42 +352,22 @@ pub async fn run_daemon(
         notify: None,
         windows_event_log: false,
     });
-
-    // Parse daemon config into resolved values with defaults
     let parsed = parse_daemon_config(&daemon_cfg);
-    let reconcile_interval = parsed.reconcile_interval;
-    let sync_interval = parsed.sync_interval;
-    let auto_pull = parsed.auto_pull;
-    let auto_push = parsed.auto_push;
-    let on_change_reconcile = parsed.on_change_reconcile;
-    let notify_on_drift = parsed.notify_on_drift;
-
     let notifier = Arc::new(Notifier::new(
         parsed.notify_method.clone(),
         parsed.webhook_url.clone(),
     ));
-    let daemon_state = match crate::state::default_state_dir() {
-        Ok(dir) => DaemonState::new().with_store_path(dir.join("state.db")),
-        Err(e) => {
-            tracing::warn!(error = %e, "cannot resolve default state dir; /drift endpoint disabled");
-            DaemonState::new()
-        }
-    };
-    let state = Arc::new(Mutex::new(daemon_state));
 
-    // Parse compliance snapshot config
     let compliance_config = cfg.spec.compliance.clone();
     let compliance_interval = compliance_config
         .as_ref()
         .filter(|c| c.enabled)
         .and_then(|c| crate::parse_duration_str(&c.interval).ok());
 
-    // Build sync tasks for local config and each configured source
     let config_dir = config_path
         .parent()
         .unwrap_or_else(|| Path::new("."))
         .to_path_buf();
-
     let allow_unsigned = cfg.spec.security.as_ref().is_some_and(|s| s.allow_unsigned);
 
     let source_cache_dir = crate::sources::SourceManager::default_cache_dir()
@@ -381,20 +385,89 @@ pub async fn run_daemon(
                 .map(|m| m.spec.policy.constraints.require_signed_commits)
         },
     );
+    let initial_source_status = build_initial_source_status(&cfg.spec.sources);
+
+    let managed_paths = discover_managed_paths(config_path, profile_override, hooks);
+
+    let profiles_dir = config_dir.join("profiles");
+    let profile_name = profile_override
+        .or(cfg.spec.profile.as_deref())
+        .unwrap_or("default");
+    let resolved_profile = config::resolve_profile(profile_name, &profiles_dir).ok();
+    let profile_chain: Vec<String> = resolved_profile
+        .as_ref()
+        .map(|r| r.layers.iter().map(|l| l.profile_name.clone()).collect())
+        .unwrap_or_else(|| vec![profile_name.to_string()]);
+    let chain_refs: Vec<&str> = profile_chain.iter().map(|s| s.as_str()).collect();
+    let reconcile_tasks = build_reconcile_tasks(
+        &daemon_cfg,
+        resolved_profile.as_ref(),
+        &chain_refs,
+        parsed.reconcile_interval,
+        parsed.auto_apply,
+    );
+
+    let shortest_reconcile = reconcile_tasks
+        .iter()
+        .map(|t| t.interval)
+        .min()
+        .unwrap_or(parsed.reconcile_interval);
+    let shortest_sync = sync_tasks
+        .iter()
+        .map(|t| t.interval)
+        .min()
+        .unwrap_or(parsed.sync_interval);
+
+    let server_checkin_url = find_server_url(&cfg);
+
+    Ok(PreLoopSetup {
+        cfg,
+        parsed,
+        notifier,
+        compliance_config,
+        compliance_interval,
+        config_dir,
+        sync_tasks,
+        initial_source_status,
+        managed_paths,
+        reconcile_tasks,
+        shortest_reconcile,
+        shortest_sync,
+        server_checkin_url,
+    })
+}
+
+// --- Main Daemon Entry Point ---
+
+pub async fn run_daemon(
+    config_path: PathBuf,
+    profile_override: Option<String>,
+    printer: Arc<Printer>,
+    hooks: Arc<dyn DaemonHooks>,
+) -> Result<()> {
+    printer.header("Daemon");
+    printer.info("Starting cfgd daemon...");
+
+    let setup = build_pre_loop_setup(&config_path, profile_override.as_deref(), &*hooks)?;
+
+    let daemon_state = match crate::state::default_state_dir() {
+        Ok(dir) => DaemonState::new().with_store_path(dir.join("state.db")),
+        Err(e) => {
+            tracing::warn!(error = %e, "cannot resolve default state dir; /drift endpoint disabled");
+            DaemonState::new()
+        }
+    };
+    let state = Arc::new(Mutex::new(daemon_state));
 
     // Initialize per-source status entries
     {
         let mut st = state.lock().await;
-        st.sources
-            .extend(build_initial_source_status(&cfg.spec.sources));
+        st.sources.extend(setup.initial_source_status.clone());
     }
-
-    // Discover managed file paths for watching
-    let managed_paths = discover_managed_paths(&config_path, profile_override.as_deref(), &*hooks);
 
     // Set up file watcher channel
     let (file_tx, file_rx) = mpsc::channel::<PathBuf>(256);
-    let _watcher = setup_file_watcher(file_tx, &managed_paths, &config_dir)?;
+    let _watcher = setup_file_watcher(file_tx, &setup.managed_paths, &setup.config_dir)?;
 
     // Check for already-running daemon via IPC connectivity
     #[cfg(unix)]
@@ -430,16 +503,19 @@ pub async fn run_daemon(
         }
     });
 
-    let mut intervals = vec![format!("reconcile={}s", reconcile_interval.as_secs())];
-    if auto_pull || auto_push {
+    let mut intervals = vec![format!(
+        "reconcile={}s",
+        setup.parsed.reconcile_interval.as_secs()
+    )];
+    if setup.parsed.auto_pull || setup.parsed.auto_push {
         intervals.push(format!(
             "sync={}s (pull={}, push={})",
-            sync_interval.as_secs(),
-            auto_pull,
-            auto_push
+            setup.parsed.sync_interval.as_secs(),
+            setup.parsed.auto_pull,
+            setup.parsed.auto_push
         ));
     }
-    if let Some(interval) = compliance_interval {
+    if let Some(interval) = setup.compliance_interval {
         intervals.push(format!("compliance={}s", interval.as_secs()));
     }
     printer.success(&format!("Health: {}", DEFAULT_IPC_PATH));
@@ -448,8 +524,8 @@ pub async fn run_daemon(
     printer.newline();
 
     // Initial server check-in at startup
-    if find_server_url(&cfg).is_some() {
-        let startup_cfg = cfg.clone();
+    if setup.server_checkin_url.is_some() {
+        let startup_cfg = setup.cfg.clone();
         let startup_config_path = config_path.clone();
         let startup_profile_override = profile_override.clone();
         tokio::task::spawn_blocking(move || {
@@ -502,45 +578,14 @@ pub async fn run_daemon(
         })?;
     }
 
-    // Build per-module reconcile tasks from patches
-    let profiles_dir = config_dir.join("profiles");
-    let profile_name = profile_override
-        .as_deref()
-        .or(cfg.spec.profile.as_deref())
-        .unwrap_or("default");
-    let resolved_profile = config::resolve_profile(profile_name, &profiles_dir).ok();
-    let profile_chain: Vec<String> = resolved_profile
-        .as_ref()
-        .map(|r| r.layers.iter().map(|l| l.profile_name.clone()).collect())
-        .unwrap_or_else(|| vec![profile_name.to_string()]);
-    let chain_refs: Vec<&str> = profile_chain.iter().map(|s| s.as_str()).collect();
-
-    let reconcile_tasks = build_reconcile_tasks(
-        &daemon_cfg,
-        resolved_profile.as_ref(),
-        &chain_refs,
-        reconcile_interval,
-        parsed.auto_apply,
-    );
-
-    // Set up timers — use shortest interval across all reconcile and sync tasks
-    let shortest_reconcile = reconcile_tasks
-        .iter()
-        .map(|t| t.interval)
-        .min()
-        .unwrap_or(reconcile_interval);
-    let shortest_sync = sync_tasks
-        .iter()
-        .map(|t| t.interval)
-        .min()
-        .unwrap_or(sync_interval);
-
     // Shared atomics: SIGHUP updates these so pump tasks pick up the new
     // cadence on the next tick. (See `runner::apply_sighup_reload`.)
     let reconcile_secs = Arc::new(std::sync::atomic::AtomicU64::new(
-        shortest_reconcile.as_secs(),
+        setup.shortest_reconcile.as_secs(),
     ));
-    let sync_secs = Arc::new(std::sync::atomic::AtomicU64::new(shortest_sync.as_secs()));
+    let sync_secs = Arc::new(std::sync::atomic::AtomicU64::new(
+        setup.shortest_sync.as_secs(),
+    ));
 
     // Spawn pump tasks. Each one converts a periodic timer into a stream of
     // `()` events on an mpsc channel that the loop awaits via select!.
@@ -558,7 +603,7 @@ pub async fn run_daemon(
     ));
     let version_check_pump = spawn_interval_pump(version_check_secs, version_check_tx);
 
-    let compliance_pump = compliance_interval.map(|d| {
+    let compliance_pump = setup.compliance_interval.map(|d| {
         let secs = Arc::new(std::sync::atomic::AtomicU64::new(d.as_secs()));
         spawn_interval_pump(secs, compliance_tx)
     });
@@ -585,12 +630,12 @@ pub async fn run_daemon(
     let ctx = DaemonLoopContext {
         state: Arc::clone(&state),
         hooks: Arc::clone(&hooks),
-        notifier: Arc::clone(&notifier),
+        notifier: Arc::clone(&setup.notifier),
         config_path: config_path.clone(),
         profile_override: profile_override.clone(),
-        on_change_reconcile,
-        notify_on_drift,
-        compliance_config: compliance_config.clone(),
+        on_change_reconcile: setup.parsed.on_change_reconcile,
+        notify_on_drift: setup.parsed.notify_on_drift,
+        compliance_config: setup.compliance_config.clone(),
         printer: Arc::clone(&printer),
         state_dir_override: None,
     };
@@ -607,8 +652,8 @@ pub async fn run_daemon(
     let loop_result = run_daemon_loop(
         ctx,
         triggers,
-        reconcile_tasks,
-        sync_tasks,
+        setup.reconcile_tasks,
+        setup.sync_tasks,
         reconcile_secs,
         sync_secs,
     )
