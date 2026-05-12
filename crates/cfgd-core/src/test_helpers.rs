@@ -902,6 +902,198 @@ pub fn with_test_env_var<F: FnOnce()>(var: &str, value: Option<&str>, f: F) {
     }
 }
 
+// ---------------------------------------------------------------------------
+// CosignTestShim — consolidated fake-cosign shim for the three legacy variants
+// in `oci/sign/tests.rs` (CosignShimGuard), `upgrade/tests.rs` (CosignShim),
+// and `cli/module/tests.rs` (CosignKeygenShim). Builder configures argv
+// logging, keygen mode, exit code, and stderr in one place so consumers can
+// collapse to one type. Pair with `serial_test::serial` — env-var mutation
+// is process-global. Unix-only: shim is a `/bin/sh` script.
+// ---------------------------------------------------------------------------
+//
+// Env vars owned by this shim:
+// - CFGD_COSIGN_BIN          — points cosign_cmd() at the shim binary
+// - CFGD_FAKE_COSIGN_LOG     — per-shim argv log path (only set when argv
+//                              logging is enabled; matches the legacy log
+//                              env var so consumer migration is mechanical).
+//
+// Prior values for both vars are captured on `install()` and restored on
+// drop, even if the test panics.
+
+/// Builder + RAII guard for a fake `cosign` binary. Configure with the
+/// `with_*` methods, then call [`CosignTestShim::install`] to write the
+/// script and set `CFGD_COSIGN_BIN`. Drops the env vars + tempdir when
+/// the returned value goes out of scope.
+///
+/// Unix-only: the shim is a `/bin/sh` script. Gate consumers behind
+/// `#[cfg(unix)]`.
+#[cfg(unix)]
+pub struct CosignTestShim {
+    _tmp: tempfile::TempDir,
+    log_path: std::path::PathBuf,
+    argv_logging: bool,
+    prior_bin: Option<String>,
+    prior_log: Option<String>,
+}
+
+#[cfg(unix)]
+impl CosignTestShim {
+    /// Builder entry point. Chain `with_*` methods then call [`install`].
+    pub fn builder() -> CosignTestShimBuilder {
+        CosignTestShimBuilder::default()
+    }
+
+    /// Install with defaults: argv logging on, keygen off, exit 0, empty
+    /// stderr. Equivalent to `CosignTestShim::builder().install()`.
+    pub fn install() -> Self {
+        Self::builder().install()
+    }
+
+    /// Read the captured argv log. Each line is the space-joined argv of
+    /// one invocation, in order. Returns empty string if argv logging is
+    /// disabled or the shim was never invoked.
+    pub fn argv_log(&self) -> String {
+        if !self.argv_logging {
+            return String::new();
+        }
+        std::fs::read_to_string(&self.log_path).unwrap_or_default()
+    }
+
+    /// Number of times the shim was invoked. Returns 0 if argv logging is
+    /// disabled.
+    pub fn invocation_count(&self) -> usize {
+        self.argv_log().lines().filter(|l| !l.is_empty()).count()
+    }
+}
+
+#[cfg(unix)]
+impl Drop for CosignTestShim {
+    fn drop(&mut self) {
+        // SAFETY: callers wrap with `serial_test::serial`, so no concurrent
+        // reader observes a mid-update env state.
+        unsafe {
+            match self.prior_bin.take() {
+                Some(v) => std::env::set_var("CFGD_COSIGN_BIN", v),
+                None => std::env::remove_var("CFGD_COSIGN_BIN"),
+            }
+            match self.prior_log.take() {
+                Some(v) => std::env::set_var("CFGD_FAKE_COSIGN_LOG", v),
+                None => std::env::remove_var("CFGD_FAKE_COSIGN_LOG"),
+            }
+        }
+    }
+}
+
+/// Builder for [`CosignTestShim`]. All fields default to the most common
+/// existing variant: argv logging on, keygen off, exit 0, empty stderr.
+#[cfg(unix)]
+pub struct CosignTestShimBuilder {
+    argv_logging: bool,
+    keygen: bool,
+    exit_code: i32,
+    stderr: String,
+}
+
+#[cfg(unix)]
+impl Default for CosignTestShimBuilder {
+    fn default() -> Self {
+        Self {
+            argv_logging: true,
+            keygen: false,
+            exit_code: 0,
+            stderr: String::new(),
+        }
+    }
+}
+
+#[cfg(unix)]
+impl CosignTestShimBuilder {
+    /// Enable or disable argv logging. When enabled, every invocation
+    /// appends one space-joined-argv line to the log file, readable via
+    /// `CosignTestShim::argv_log()`. Default: enabled.
+    pub fn with_argv_logging(mut self, enabled: bool) -> Self {
+        self.argv_logging = enabled;
+        self
+    }
+
+    /// Enable keygen mode. When enabled, invoking the shim with
+    /// `generate-key-pair` as `$1` writes `cosign.key` and `cosign.pub`
+    /// to the current working directory (matching real cosign behavior).
+    /// Default: disabled.
+    pub fn with_keygen(mut self, enabled: bool) -> Self {
+        self.keygen = enabled;
+        self
+    }
+
+    /// Set the shim's exit code. Default: 0.
+    pub fn with_exit(mut self, code: i32) -> Self {
+        self.exit_code = code;
+        self
+    }
+
+    /// Set the stderr the shim emits on every invocation. Default: empty.
+    pub fn with_stderr(mut self, stderr: &str) -> Self {
+        self.stderr = stderr.to_string();
+        self
+    }
+
+    /// Write the shim script to a tempfile, set `CFGD_COSIGN_BIN` (and,
+    /// when argv logging is on, `CFGD_FAKE_COSIGN_LOG`). Prior values for
+    /// both vars are captured for restoration on drop.
+    pub fn install(self) -> CosignTestShim {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::TempDir::new().expect("tempdir");
+        let bin_path = tmp.path().join("fake-cosign");
+        let log_path = tmp.path().join("argv.log");
+
+        // Single-quote-safe escape — replace ' with '\''.
+        let stderr_lit = self.stderr.replace('\'', "'\\''");
+
+        // Build the script in pieces so flags compose cleanly.
+        let log_line = if self.argv_logging {
+            "printf '%s\\n' \"$*\" >> \"$CFGD_FAKE_COSIGN_LOG\"\n"
+        } else {
+            ""
+        };
+        let keygen_block = if self.keygen {
+            "if [ \"$1\" = \"generate-key-pair\" ]; then\n  printf 'fake-private-key-bytes' > cosign.key\n  printf 'fake-public-key-bytes' > cosign.pub\nfi\n"
+        } else {
+            ""
+        };
+        let script = format!(
+            "#!/bin/sh\n{log_line}{keygen_block}printf '%s' '{stderr_lit}' 1>&2\nexit {exit}\n",
+            exit = self.exit_code,
+        );
+        std::fs::write(&bin_path, script).expect("write fake-cosign");
+        let mut perms = std::fs::metadata(&bin_path).expect("stat").permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&bin_path, perms).expect("chmod");
+
+        // Capture prior values for restoration on drop.
+        let prior_bin = std::env::var("CFGD_COSIGN_BIN").ok();
+        let prior_log = std::env::var("CFGD_FAKE_COSIGN_LOG").ok();
+
+        // SAFETY: callers wrap with `serial_test::serial`, so no concurrent
+        // reader observes a mid-update env state.
+        unsafe {
+            std::env::set_var("CFGD_COSIGN_BIN", &bin_path);
+            if self.argv_logging {
+                std::env::set_var("CFGD_FAKE_COSIGN_LOG", &log_path);
+            } else {
+                std::env::remove_var("CFGD_FAKE_COSIGN_LOG");
+            }
+        }
+
+        CosignTestShim {
+            _tmp: tmp,
+            log_path,
+            argv_logging: self.argv_logging,
+            prior_bin,
+            prior_log,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1200,6 +1392,216 @@ mod tests {
         // SAFETY: serial gates env mutation across tests.
         unsafe {
             std::env::remove_var(KEY);
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // CosignTestShim
+    // -----------------------------------------------------------------------
+
+    #[cfg(unix)]
+    mod cosign_shim_tests {
+        use super::super::CosignTestShim;
+        use serial_test::serial;
+
+        /// Run the installed shim with the given argv. Returns (exit_code,
+        /// stderr_string). Reads $CFGD_COSIGN_BIN like real consumers.
+        fn run_shim(args: &[&str]) -> (i32, String) {
+            let bin = std::env::var("CFGD_COSIGN_BIN").expect("CFGD_COSIGN_BIN set");
+            let output = std::process::Command::new(&bin)
+                .args(args)
+                .output()
+                .expect("spawn shim");
+            (
+                output.status.code().unwrap_or(-1),
+                String::from_utf8_lossy(&output.stderr).into_owned(),
+            )
+        }
+
+        #[test]
+        #[serial]
+        fn install_sets_cosign_bin_and_drop_restores_prior() {
+            // SAFETY: serial gates env mutation across tests.
+            unsafe {
+                std::env::set_var("CFGD_COSIGN_BIN", "/prior/value");
+            }
+
+            {
+                let _shim = CosignTestShim::install();
+                let observed =
+                    std::env::var("CFGD_COSIGN_BIN").expect("install sets CFGD_COSIGN_BIN");
+                assert_ne!(observed, "/prior/value", "shim must override prior value");
+                assert!(
+                    std::path::Path::new(&observed).is_file(),
+                    "CFGD_COSIGN_BIN must point at the shim file"
+                );
+            }
+
+            assert_eq!(
+                std::env::var("CFGD_COSIGN_BIN").ok().as_deref(),
+                Some("/prior/value"),
+                "drop must restore the prior value"
+            );
+
+            // SAFETY: serial gates env mutation across tests.
+            unsafe {
+                std::env::remove_var("CFGD_COSIGN_BIN");
+            }
+        }
+
+        #[test]
+        #[serial]
+        fn install_with_no_prior_value_removes_on_drop() {
+            // SAFETY: serial gates env mutation across tests.
+            unsafe {
+                std::env::remove_var("CFGD_COSIGN_BIN");
+            }
+            assert!(std::env::var("CFGD_COSIGN_BIN").is_err());
+
+            {
+                let _shim = CosignTestShim::install();
+                assert!(std::env::var("CFGD_COSIGN_BIN").is_ok());
+            }
+
+            assert!(
+                std::env::var("CFGD_COSIGN_BIN").is_err(),
+                "drop must remove when no prior value existed"
+            );
+        }
+
+        #[test]
+        #[serial]
+        fn argv_logging_enabled_records_invocations() {
+            let shim = CosignTestShim::builder().with_argv_logging(true).install();
+            let (code, _) = run_shim(&["sign", "--yes", "ghcr.io/test/x:v1"]);
+            assert_eq!(code, 0);
+
+            let log = shim.argv_log();
+            assert!(log.contains("sign"), "argv log must contain `sign`: {log}");
+            assert!(
+                log.contains("--yes"),
+                "argv log must contain `--yes`: {log}"
+            );
+            assert!(
+                log.contains("ghcr.io/test/x:v1"),
+                "argv log must contain artifact ref: {log}"
+            );
+            assert_eq!(shim.invocation_count(), 1);
+
+            // Second invocation appends a new line.
+            run_shim(&["verify", "ghcr.io/test/x:v1"]);
+            assert_eq!(shim.invocation_count(), 2);
+        }
+
+        #[test]
+        #[serial]
+        fn argv_logging_disabled_does_not_write_log() {
+            let shim = CosignTestShim::builder().with_argv_logging(false).install();
+            assert!(
+                std::env::var("CFGD_FAKE_COSIGN_LOG").is_err(),
+                "argv-log env var must not be set when logging is disabled"
+            );
+
+            let (code, _) = run_shim(&["sign", "ghcr.io/test/x:v1"]);
+            assert_eq!(code, 0);
+
+            // No log file, no logged invocations.
+            assert_eq!(shim.argv_log(), "");
+            assert_eq!(shim.invocation_count(), 0);
+        }
+
+        #[test]
+        #[serial]
+        fn keygen_mode_writes_key_pair_to_cwd_on_generate_key_pair() {
+            let _shim = CosignTestShim::builder().with_keygen(true).install();
+            let workdir = tempfile::TempDir::new().expect("workdir");
+
+            let bin = std::env::var("CFGD_COSIGN_BIN").unwrap();
+            let status = std::process::Command::new(&bin)
+                .arg("generate-key-pair")
+                .current_dir(workdir.path())
+                .status()
+                .expect("spawn shim");
+            assert!(status.success(), "keygen shim must exit zero");
+
+            assert!(
+                workdir.path().join("cosign.key").is_file(),
+                "cosign.key must be written to cwd"
+            );
+            assert!(
+                workdir.path().join("cosign.pub").is_file(),
+                "cosign.pub must be written to cwd"
+            );
+            assert_eq!(
+                std::fs::read(workdir.path().join("cosign.key")).unwrap(),
+                b"fake-private-key-bytes"
+            );
+            assert_eq!(
+                std::fs::read(workdir.path().join("cosign.pub")).unwrap(),
+                b"fake-public-key-bytes"
+            );
+        }
+
+        #[test]
+        #[serial]
+        fn keygen_mode_skips_writes_for_non_generate_subcommands() {
+            let _shim = CosignTestShim::builder().with_keygen(true).install();
+            let workdir = tempfile::TempDir::new().expect("workdir");
+
+            let bin = std::env::var("CFGD_COSIGN_BIN").unwrap();
+            let status = std::process::Command::new(&bin)
+                .arg("sign")
+                .arg("ghcr.io/test/x:v1")
+                .current_dir(workdir.path())
+                .status()
+                .expect("spawn shim");
+            assert!(status.success());
+
+            assert!(
+                !workdir.path().join("cosign.key").exists(),
+                "non-keygen subcommand must NOT write cosign.key"
+            );
+            assert!(
+                !workdir.path().join("cosign.pub").exists(),
+                "non-keygen subcommand must NOT write cosign.pub"
+            );
+        }
+
+        #[test]
+        #[serial]
+        fn exit_code_propagates_from_with_exit() {
+            let _shim = CosignTestShim::builder().with_exit(1).install();
+            let (code, _) = run_shim(&["sign", "ghcr.io/test/x:v1"]);
+            assert_eq!(code, 1, "with_exit(1) must surface as non-zero exit");
+        }
+
+        #[test]
+        #[serial]
+        fn stderr_is_captured_from_with_stderr() {
+            let _shim = CosignTestShim::builder()
+                .with_exit(2)
+                .with_stderr("oops something broke")
+                .install();
+            let (code, stderr) = run_shim(&["verify", "ghcr.io/test/x:v1"]);
+            assert_eq!(code, 2);
+            assert!(
+                stderr.contains("oops something broke"),
+                "shim stderr must surface: {stderr}"
+            );
+        }
+
+        #[test]
+        #[serial]
+        fn stderr_round_trips_single_quotes() {
+            let _shim = CosignTestShim::builder()
+                .with_exit(1)
+                .with_stderr("can't connect — 'rekor' down")
+                .install();
+            let (_code, stderr) = run_shim(&["sign"]);
+            assert!(
+                stderr.contains("can't connect — 'rekor' down"),
+                "single-quote-laden stderr must round-trip: {stderr}"
+            );
         }
     }
 }
