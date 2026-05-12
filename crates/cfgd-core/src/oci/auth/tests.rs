@@ -407,11 +407,34 @@ fn get_bearer_token_fails_without_realm() {
     let agent = ureq::AgentBuilder::new().build();
     let result = get_bearer_token(&agent, "Bearer service=\"svc\"", None);
     assert!(result.is_err());
-    let err_msg = format!("{}", result.unwrap_err());
     assert!(
-        err_msg.contains("missing realm"),
-        "expected missing realm error, got: {err_msg}"
+        matches!(result, Err(OciError::AuthFailed { .. })),
+        "expected AuthFailed variant"
     );
+}
+
+#[test]
+fn get_bearer_token_fails_on_non_json_token_response() {
+    // 200 OK with malformed body triggers the AuthFailed variant on
+    // serde_json::from_str() inside get_bearer_token.
+    let mut server = mockito::Server::new();
+    let www_auth = format!(r#"Bearer realm="{}/token",service="svc""#, server.url());
+
+    server
+        .mock(
+            "GET",
+            mockito::Matcher::Regex(r"/token\?service=.*".to_string()),
+        )
+        .with_status(200)
+        .with_body("not json at all")
+        .create();
+
+    let agent = ureq::AgentBuilder::new()
+        .timeout(std::time::Duration::from_secs(10))
+        .build();
+
+    let result = get_bearer_token(&agent, &www_auth, None);
+    assert!(matches!(result, Err(OciError::AuthFailed { .. })));
 }
 
 #[test]

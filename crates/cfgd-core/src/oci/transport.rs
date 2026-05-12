@@ -394,12 +394,7 @@ mod tests {
 
         let url = format!("{}/v2/test/repo/manifests/v1", server.url());
         let result = authenticated_request(&agent, "GET", &url, None, None, None, None);
-        assert!(result.is_err());
-        let err_msg = format!("{}", result.unwrap_err());
-        assert!(
-            err_msg.contains("no Bearer challenge"),
-            "expected no Bearer challenge error, got: {err_msg}"
-        );
+        assert!(matches!(result, Err(OciError::AuthFailed { .. })));
     }
 
     #[test]
@@ -476,11 +471,20 @@ mod tests {
 
         let url = format!("{}/v2/test/repo/tags/list", server.url());
         let result = authenticated_request(&agent, "GET", &url, None, None, None, None);
-        assert!(result.is_err());
-        let err_msg = format!("{}", result.unwrap_err());
-        assert!(
-            err_msg.contains("HTTP 500"),
-            "expected HTTP 500 error, got: {err_msg}"
-        );
+        assert!(matches!(result, Err(OciError::RequestFailed { .. })));
+    }
+
+    #[test]
+    fn authenticated_request_returns_request_failed_on_unreachable_host() {
+        // Pointing the agent at a closed port triggers the catch-all
+        // `Err(e) => Err(OciError::RequestFailed { ... })` arm.
+        let agent = ureq::AgentBuilder::new()
+            .timeout(std::time::Duration::from_millis(250))
+            .build();
+
+        // 127.0.0.1:1 is reserved/unused; the connection refuses immediately.
+        let url = "http://127.0.0.1:1/v2/test/repo/tags/list";
+        let result = authenticated_request(&agent, "GET", url, None, None, None, None);
+        assert!(matches!(result, Err(OciError::RequestFailed { .. })));
     }
 }

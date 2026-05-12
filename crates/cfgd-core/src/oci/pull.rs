@@ -354,6 +354,84 @@ mod tests {
     }
 
     #[test]
+    fn pull_module_returns_manifest_not_found_on_404() {
+        let mut server = mockito::Server::new();
+        let registry = registry_from_url(&server.url());
+
+        // Manifest endpoint returns 404 → maps to ManifestNotFound
+        server
+            .mock("GET", "/v2/test/missingmod/manifests/v1")
+            .with_status(404)
+            .create();
+
+        let output_dir = tempfile::tempdir().unwrap();
+        let artifact_ref = format!("{}/test/missingmod:v1", registry);
+        let result = pull_module(&artifact_ref, output_dir.path(), false, None);
+        assert!(matches!(result, Err(OciError::ManifestNotFound { .. })));
+    }
+
+    #[test]
+    fn pull_module_returns_blob_not_found_when_layer_missing() {
+        let mut server = mockito::Server::new();
+        let registry = registry_from_url(&server.url());
+
+        // Manifest succeeds but references a layer the registry won't serve.
+        let fake_digest = "sha256:0000000000000000000000000000000000000000000000000000000000000000";
+        let manifest = serde_json::json!({
+            "schemaVersion": 2,
+            "mediaType": MEDIA_TYPE_OCI_MANIFEST,
+            "config": {
+                "mediaType": MEDIA_TYPE_MODULE_CONFIG,
+                "digest": "sha256:cfgcfg",
+                "size": 10,
+            },
+            "layers": [{
+                "mediaType": MEDIA_TYPE_MODULE_LAYER,
+                "digest": fake_digest,
+                "size": 16,
+            }],
+        });
+
+        server
+            .mock("GET", "/v2/test/noblob/manifests/v1")
+            .with_status(200)
+            .with_body(serde_json::to_string(&manifest).unwrap())
+            .create();
+
+        // Blob fetch returns 404 → maps to BlobNotFound
+        server
+            .mock(
+                "GET",
+                mockito::Matcher::Regex(r"/v2/test/noblob/blobs/sha256:.*".to_string()),
+            )
+            .with_status(404)
+            .create();
+
+        let output_dir = tempfile::tempdir().unwrap();
+        let artifact_ref = format!("{}/test/noblob:v1", registry);
+        let result = pull_module(&artifact_ref, output_dir.path(), false, None);
+        assert!(matches!(result, Err(OciError::BlobNotFound { .. })));
+    }
+
+    #[test]
+    fn pull_module_returns_request_failed_on_invalid_manifest_json() {
+        let mut server = mockito::Server::new();
+        let registry = registry_from_url(&server.url());
+
+        // Manifest GET succeeds (200) but body is unparseable → RequestFailed
+        server
+            .mock("GET", "/v2/test/badjson/manifests/v1")
+            .with_status(200)
+            .with_body("not valid json")
+            .create();
+
+        let output_dir = tempfile::tempdir().unwrap();
+        let artifact_ref = format!("{}/test/badjson:v1", registry);
+        let result = pull_module(&artifact_ref, output_dir.path(), false, None);
+        assert!(matches!(result, Err(OciError::RequestFailed { .. })));
+    }
+
+    #[test]
     fn check_signature_exists_digest_reference() {
         let mut server = mockito::Server::new();
         let registry = registry_from_url(&server.url());

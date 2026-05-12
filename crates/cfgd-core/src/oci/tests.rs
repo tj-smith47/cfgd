@@ -223,18 +223,27 @@ fn sha256_digest_known_hello() {
 
 #[test]
 fn parse_reference_with_whitespace_fails() {
-    assert!(OciReference::parse("ghcr.io/my repo:v1").is_err());
+    let result = OciReference::parse("ghcr.io/my repo:v1");
+    assert!(matches!(result, Err(OciError::InvalidReference { .. })));
 }
 
 #[test]
 fn parse_reference_with_control_chars_fails() {
-    assert!(OciReference::parse("ghcr.io/repo\x00:v1").is_err());
+    let result = OciReference::parse("ghcr.io/repo\x00:v1");
+    assert!(matches!(result, Err(OciError::InvalidReference { .. })));
 }
 
 #[test]
 fn parse_reference_host_colon_port_only_fails() {
     // "host:5000" without a repo path is invalid (looks like port with no repo)
-    assert!(OciReference::parse("host:5000").is_err());
+    let result = OciReference::parse("host:5000");
+    assert!(matches!(result, Err(OciError::InvalidReference { .. })));
+}
+
+#[test]
+fn parse_empty_reference_yields_invalid_reference_variant() {
+    let result = OciReference::parse("");
+    assert!(matches!(result, Err(OciError::InvalidReference { .. })));
 }
 
 #[test]
