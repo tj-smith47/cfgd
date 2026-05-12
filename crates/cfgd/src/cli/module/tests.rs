@@ -2528,6 +2528,100 @@ fn cmd_module_list_json_active_modules() {
     assert_eq!(inactive["status"], "available");
 }
 
+// ─── cmd_module_list — wide format table (7-column variant) ─────
+
+#[test]
+fn cmd_module_list_wide_format_emits_seven_column_table() {
+    // Wide format produces the 7-column table (Module/Active/Source/Status/
+    // Packages/Files/Deps) — separate from the 5-column compact table the
+    // default Table format uses. Each numeric counter (packages, files, deps)
+    // is rendered as its own column rather than the "X pkgs, Y files, Z deps"
+    // string. Pins this UX contract by counting the per-column values.
+    let dir = setup_config_dir();
+    make_module(
+        dir.path(),
+        "wide-mod",
+        "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: wide-mod\nspec:\n  depends:\n    - base\n    - extras\n  packages:\n    - name: curl\n    - name: wget\n    - name: jq\n  files:\n    - source: files/a\n      target: ~/.a\n    - source: files/b\n      target: ~/.b\n",
+    );
+
+    let mut cli = test_cli(dir.path());
+    cli.output = super::super::OutputFormatArg(cfgd_core::output::OutputFormat::Wide);
+    let (printer, buf) =
+        cfgd_core::output::Printer::for_test_with_format(cfgd_core::output::OutputFormat::Wide);
+
+    cmd_module_list(&cli, &printer).unwrap();
+
+    let output = buf.lock().unwrap();
+    // Per-column counts rather than the "X pkgs, Y files, Z deps" composite.
+    assert!(
+        output.contains("Packages") && output.contains("Files") && output.contains("Deps"),
+        "wide format should expose per-counter columns, got: {output}"
+    );
+    // Counts as raw cells: 3 packages, 2 files, 2 deps.
+    assert!(
+        output.contains("3") && output.contains("2"),
+        "wide format should render raw counts, got: {output}"
+    );
+    // The composite string from the compact format MUST NOT appear in wide.
+    assert!(
+        !output.contains("pkgs"),
+        "wide format should NOT use the compact 'pkgs' composite string, got: {output}"
+    );
+    assert!(
+        output.contains("wide-mod"),
+        "should list module name, got: {output}"
+    );
+}
+
+// ─── cmd_module_show — packages with aliases/platforms + resolution arms ──
+
+#[test]
+fn cmd_module_show_renders_platform_filtered_and_resolved_packages() {
+    // Drives two resolve_package outcome arms in cmd_module_show:
+    // - Ok(Some(_)) clean-resolved package, prints \"<n> -> <mgr> install <r>\"
+    // - Ok(None) platform-filtered, prints \"<n>, platforms: <list> — skipped\"
+    //   on a Linux/macOS runner with a 'windows'-only entry.
+    // The aliases + platforms format strings (lines 212-223) are also
+    // exercised on the resolved entry — they're computed for every package
+    // regardless of resolution outcome, even though only the Err arm emits
+    // them in the printed output.
+    let dir = setup_config_dir();
+    let yaml = "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  \
+                name: rich\nspec:\n  packages:\n    \
+                - name: curl\n      \
+                aliases:\n        brew: brew-curl\n      \
+                platforms:\n        - linux\n        - macos\n    \
+                - name: notepad\n      \
+                platforms:\n        - windows\n";
+    make_module(dir.path(), "rich", yaml);
+
+    let cli = test_cli(dir.path());
+    let (printer, buf) = cfgd_core::output::Printer::for_test();
+
+    cmd_module_show(&cli, &printer, "rich", false).unwrap();
+
+    let output = buf.lock().unwrap();
+    // Ok(Some(_)) — curl resolves cleanly via the default manager.
+    assert!(
+        output.contains("curl -> "),
+        "resolved entry should render '<name> -> <mgr> install ...', got: {output}"
+    );
+    // Ok(None) — notepad has only 'windows' in its platforms filter, so on
+    // a Linux/macOS host the entry is skipped via the platform filter arm.
+    // The platform_str format ('platforms: <slash-joined>') is rendered here.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    {
+        assert!(
+            output.contains("notepad") && output.contains("skipped (platform filter)"),
+            "platforms-filtered entry should report 'skipped (platform filter)', got: {output}"
+        );
+        assert!(
+            output.contains("platforms: windows"),
+            "skipped entry should render platform_str with the host-rejected list, got: {output}"
+        );
+    }
+}
+
 // ─── cmd_module_list — table with active modules ────────────────
 
 #[test]
