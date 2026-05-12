@@ -16920,6 +16920,114 @@ mod cmd_source_add_local {
         });
     }
 
+    /// Clone `bare` into a fresh workdir, replace its cfgd-source.yaml with
+    /// `new_manifest_yaml`, commit + push back to the bare. Used by the
+    /// permission-change update tests to publish a v2 manifest with
+    /// expanded policy.
+    fn push_replacement_manifest(
+        scratch: &tempfile::TempDir,
+        bare: &std::path::Path,
+        new_manifest_yaml: &str,
+    ) {
+        let clone_dir = scratch.path().join(format!(
+            "replace-clone-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        let url = format!("file://{}", bare.display());
+        let repo = git2::Repository::clone(&url, &clone_dir).unwrap();
+        std::fs::write(clone_dir.join("cfgd-source.yaml"), new_manifest_yaml).unwrap();
+        let mut index = repo.index().unwrap();
+        index
+            .add_path(std::path::Path::new("cfgd-source.yaml"))
+            .unwrap();
+        index.write().unwrap();
+        let tree_id = index.write_tree().unwrap();
+        let tree = repo.find_tree(tree_id).unwrap();
+        let sig = git2::Signature::now("t", "t@example.com").unwrap();
+        let parent = repo.head().unwrap().peel_to_commit().unwrap();
+        repo.commit(Some("HEAD"), &sig, &sig, "v2 manifest", &tree, &[&parent])
+            .unwrap();
+        drop(tree);
+        let branch = repo
+            .head()
+            .unwrap()
+            .shorthand()
+            .unwrap_or("master")
+            .to_string();
+        let mut remote = repo.find_remote("origin").unwrap();
+        remote
+            .push(
+                &[&format!("+refs/heads/{branch}:refs/heads/{branch}")],
+                None,
+            )
+            .unwrap();
+    }
+
+    #[test]
+    #[serial]
+    fn cmd_source_update_detects_permission_change_and_skips_on_prompt_cancel() {
+        // cmd_source_add stages the initial manifest (no policy). A second
+        // commit is pushed to the bare that expands the policy
+        // (required.modules: [m1, m2] — 2 items). cmd_source_update fetches
+        // the v2 manifest; detect_permission_changes returns "Required
+        // items increased from 0 to 2"; the warning fires; prompt_confirm
+        // in test mode returns Err → the Err(_) arm prints
+        // "Skipped source 'X' (prompt cancelled)" and continue's out of the
+        // loop. Pins the prompt-cancel branch (lines 72-77 in source/update.rs).
+        with_env("CFGD_ALLOW_LOCAL_SOURCES", Some("1"), || {
+            let scratch = tempfile::tempdir().unwrap();
+            let bare = make_bare_with_manifest(&scratch, "perm-src", None);
+            let h = CliTestHarness::builder().build();
+            let url = format!("file://{}", bare.display());
+            super::source::cmd_source_add(
+                &h.cli(),
+                h.printer(),
+                &SourceAddArgs {
+                    name: Some("perm-src".to_string()),
+                    ..empty_source_args(url)
+                },
+            )
+            .expect("cmd_source_add precondition should succeed");
+
+            // Publish a v2 manifest with EXPANDED policy. required.modules
+            // grew from 0 to 2 — detect_permission_changes will flag this.
+            let v2 = "apiVersion: cfgd.io/v1alpha1\n\
+                      kind: ConfigSource\n\
+                      metadata:\n  name: perm-src\n\
+                      spec:\n  provides:\n    profiles:\n      - default\n  \
+                      policy:\n    required:\n      modules:\n        - mod-a\n        - mod-b\n";
+            push_replacement_manifest(&scratch, &bare, v2);
+
+            let baseline_len = h.output().len();
+            super::source::cmd_source_update(&h.cli(), h.printer(), Some("perm-src"))
+                .expect("cmd_source_update should not bubble up the cancelled prompt");
+
+            let full = h.output();
+            let update_out = &full[baseline_len..];
+            assert!(
+                update_out.contains("update changes permissions"),
+                "expected permission-change warning, got: {update_out}"
+            );
+            assert!(
+                update_out.contains("Required items increased from 0 to 2"),
+                "expected required-items expansion message, got: {update_out}"
+            );
+            assert!(
+                update_out.contains("Skipped source 'perm-src' (prompt cancelled)"),
+                "expected prompt-cancelled skip line, got: {update_out}"
+            );
+            // The upsert_config_source success line MUST NOT appear — the
+            // continue must short-circuit before the state-store write.
+            assert!(
+                !update_out.contains("Updated source 'perm-src'"),
+                "perm-src should NOT have been marked updated when prompt is cancelled: {update_out}"
+            );
+        });
+    }
+
     #[test]
     #[serial]
     fn cmd_source_update_records_error_status_when_upstream_unreachable() {
