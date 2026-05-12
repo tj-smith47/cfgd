@@ -3980,4 +3980,173 @@ mod git_fixture_tests {
         // outside it (sanity check for the hash-prefix layout).
         assert!(dest1.starts_with(cache.path()));
     }
+
+    // -------------------------------------------------------------------
+    // fetch_registry_modules + latest_module_version — drive against a
+    // local file:// fixture containing modules/<name>/module.yaml and a
+    // tag matching the `<name>/v<X.Y.Z>` convention.
+    // -------------------------------------------------------------------
+
+    /// Build a source repo at `src_dir` that contains `modules/<mod>/module.yaml`
+    /// and tag the HEAD commit as `<mod>/v<version>`. Returns the working
+    /// (non-bare) repo path — the file:// URL of this path serves the
+    /// registry to `fetch_registry_modules`.
+    fn make_registry_source_with_module(
+        src_dir: &Path,
+        mod_name: &str,
+        version: &str,
+        description: &str,
+    ) -> git2::Oid {
+        let src_repo = git2::Repository::init(src_dir).unwrap();
+        let module_rel = format!("modules/{mod_name}/module.yaml");
+        let module_yaml = format!(
+            "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: {mod_name}\n  description: {description}\nspec: {{}}\n"
+        );
+        std::fs::create_dir_all(src_dir.join("modules").join(mod_name)).unwrap();
+        std::fs::write(src_dir.join(&module_rel), &module_yaml).unwrap();
+        let mut index = src_repo.index().unwrap();
+        index.add_path(std::path::Path::new(&module_rel)).unwrap();
+        index.write().unwrap();
+        let tree_id = index.write_tree().unwrap();
+        let tree = src_repo.find_tree(tree_id).unwrap();
+        let sig = git2::Signature::now("t", "t@example.com").unwrap();
+        let commit_id = src_repo
+            .commit(Some("HEAD"), &sig, &sig, "add module", &tree, &[])
+            .unwrap();
+        let commit = src_repo.find_commit(commit_id).unwrap();
+        src_repo
+            .tag_lightweight(&format!("{mod_name}/v{version}"), commit.as_object(), false)
+            .unwrap();
+        drop(tree);
+        commit_id
+    }
+
+    #[test]
+    fn fetch_registry_modules_discovers_module_yaml_under_modules_dir() {
+        use crate::config::ModuleRegistryEntry;
+        use crate::modules::registry::fetch_registry_modules;
+
+        let src_dir = tempfile::tempdir().unwrap();
+        make_registry_source_with_module(src_dir.path(), "foo", "1.0.0", "Foo module");
+
+        let cache = tempfile::tempdir().unwrap();
+        let (printer, _) = Printer::for_test();
+        let registry = ModuleRegistryEntry {
+            name: "test-registry".to_string(),
+            url: file_url(src_dir.path()),
+        };
+
+        let modules = fetch_registry_modules(&registry, cache.path(), &printer).unwrap();
+        assert_eq!(modules.len(), 1, "expected one discovered module");
+        let m = &modules[0];
+        assert_eq!(m.name, "foo");
+        assert_eq!(m.description, "Foo module");
+        assert_eq!(m.registry, "test-registry");
+        // group_module_tags keeps everything after the first slash verbatim
+        // — the `v` prefix is part of the registry's `<mod>/v<X.Y.Z>` tag
+        // convention and surfaces in the published tag list.
+        assert_eq!(m.tags, vec!["v1.0.0".to_string()]);
+    }
+
+    #[test]
+    fn fetch_registry_modules_errors_when_repo_has_no_modules_dir() {
+        // No `modules/` directory in the source repo → SourceFetchFailed.
+        use crate::config::ModuleRegistryEntry;
+        use crate::modules::registry::fetch_registry_modules;
+
+        let src_dir = tempfile::tempdir().unwrap();
+        // Only README.md, no modules/.
+        let (_repo, _commit) = init_repo_with_commit(src_dir.path());
+
+        let cache = tempfile::tempdir().unwrap();
+        let (printer, _) = Printer::for_test();
+        let registry = ModuleRegistryEntry {
+            name: "no-modules".to_string(),
+            url: file_url(src_dir.path()),
+        };
+
+        let err = fetch_registry_modules(&registry, cache.path(), &printer)
+            .expect_err("registry without modules/ dir should fail");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("modules/") || msg.contains("no modules"),
+            "error should reference missing modules/ dir, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn fetch_registry_modules_returns_multiple_modules_sorted_by_name() {
+        use crate::config::ModuleRegistryEntry;
+        use crate::modules::registry::fetch_registry_modules;
+
+        let src_dir = tempfile::tempdir().unwrap();
+        // Seed two modules in one source repo by initialising then committing twice.
+        make_registry_source_with_module(src_dir.path(), "zeta", "0.1.0", "Zeta");
+        // Append a second module + tag via the existing repo on disk.
+        let src_repo = git2::Repository::open(src_dir.path()).unwrap();
+        let module_rel = "modules/alpha/module.yaml";
+        std::fs::create_dir_all(src_dir.path().join("modules/alpha")).unwrap();
+        std::fs::write(
+            src_dir.path().join(module_rel),
+            "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: alpha\n  description: A\nspec: {}\n",
+        )
+        .unwrap();
+        let mut index = src_repo.index().unwrap();
+        index.add_path(std::path::Path::new(module_rel)).unwrap();
+        index.write().unwrap();
+        let tree_id = index.write_tree().unwrap();
+        let tree = src_repo.find_tree(tree_id).unwrap();
+        let parent = src_repo.head().unwrap().peel_to_commit().unwrap();
+        let sig = git2::Signature::now("t", "t@example.com").unwrap();
+        let commit_id = src_repo
+            .commit(Some("HEAD"), &sig, &sig, "add alpha", &tree, &[&parent])
+            .unwrap();
+        let commit = src_repo.find_commit(commit_id).unwrap();
+        src_repo
+            .tag_lightweight("alpha/v2.0.0", commit.as_object(), false)
+            .unwrap();
+        drop(tree);
+
+        let cache = tempfile::tempdir().unwrap();
+        let (printer, _) = Printer::for_test();
+        let registry = ModuleRegistryEntry {
+            name: "multi-reg".to_string(),
+            url: file_url(src_dir.path()),
+        };
+
+        let modules = fetch_registry_modules(&registry, cache.path(), &printer).unwrap();
+        let names: Vec<&str> = modules.iter().map(|m| m.name.as_str()).collect();
+        assert_eq!(
+            names,
+            vec!["alpha", "zeta"],
+            "modules must be sorted alphabetically"
+        );
+    }
+
+    #[test]
+    fn latest_module_version_returns_highest_semver_tag() {
+        // Seed a registry repo, prime its cache via fetch_registry_modules,
+        // then ask latest_module_version for "foo". The single tag is 1.0.0
+        // and should come back unchanged.
+        use crate::config::ModuleRegistryEntry;
+        use crate::modules::registry::{fetch_registry_modules, latest_module_version};
+
+        let src_dir = tempfile::tempdir().unwrap();
+        make_registry_source_with_module(src_dir.path(), "foo", "1.0.0", "Foo");
+
+        let cache = tempfile::tempdir().unwrap();
+        let (printer, _) = Printer::for_test();
+        let registry = ModuleRegistryEntry {
+            name: "for-latest".to_string(),
+            url: file_url(src_dir.path()),
+        };
+
+        let _ = fetch_registry_modules(&registry, cache.path(), &printer).unwrap();
+        let latest = latest_module_version(&registry, "foo", cache.path()).unwrap();
+        assert_eq!(latest.as_deref(), Some("v1.0.0"));
+
+        // Unknown module → None (no key in the tags map).
+        let unknown = latest_module_version(&registry, "ghost", cache.path()).unwrap();
+        assert!(unknown.is_none());
+    }
 }
