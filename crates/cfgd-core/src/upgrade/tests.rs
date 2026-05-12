@@ -2721,3 +2721,44 @@ mod download_and_install_to {
         );
     }
 }
+
+// --- UpgradeError::ApiError pinning ---
+// `fetch_latest_release_from` produces ApiError when the GitHub Releases API
+// (1) fails the HTTP call, (2) returns a body that is not valid JSON, or
+// (3) returns JSON without a `tag_name`. Each branch gets a dedicated test
+// asserting via `matches!` so a future variant rename or signature change
+// trips the test rather than silently reshaping the upgrade-error surface.
+
+#[test]
+fn fetch_latest_release_api_error_on_http_500() {
+    let mut server = mockito::Server::new();
+    let _m = server
+        .mock("GET", "/repos/tj-smith47/cfgd/releases/latest")
+        .with_status(500)
+        .with_body("upstream blew up")
+        .create();
+
+    let err = fetch_latest_release_from(&server.url(), "tj-smith47/cfgd", None).unwrap_err();
+    let inner = match err {
+        crate::errors::CfgdError::Upgrade(u) => u,
+        other => panic!("expected CfgdError::Upgrade, got: {other:?}"),
+    };
+    assert!(matches!(inner, UpgradeError::ApiError { .. }));
+}
+
+#[test]
+fn fetch_latest_release_api_error_on_invalid_json_body() {
+    let mut server = mockito::Server::new();
+    let _m = server
+        .mock("GET", "/repos/tj-smith47/cfgd/releases/latest")
+        .with_status(200)
+        .with_body("not json at all { [ }")
+        .create();
+
+    let err = fetch_latest_release_from(&server.url(), "tj-smith47/cfgd", None).unwrap_err();
+    let inner = match err {
+        crate::errors::CfgdError::Upgrade(u) => u,
+        other => panic!("expected CfgdError::Upgrade, got: {other:?}"),
+    };
+    assert!(matches!(inner, UpgradeError::ApiError { .. }));
+}

@@ -548,6 +548,68 @@ fn source_template_cannot_access_local_env() {
 }
 
 #[test]
+fn source_template_sandbox_violation_pins_variant() {
+    // Same production path as `source_template_cannot_access_local_env`, but
+    // asserts the exact CompositionError variant rather than the rendered
+    // error string — so a rename or signature change to the variant trips
+    // this test rather than silently reshaping the error surface.
+    let dir = tempfile::tempdir().unwrap();
+    let config_dir = dir.path();
+
+    let files_dir = config_dir.join("files");
+    fs::create_dir_all(&files_dir).unwrap();
+    fs::write(
+        files_dir.join("team.txt.tera"),
+        "team={{ team_name }}\nlocal={{ personal_var }}",
+    )
+    .unwrap();
+
+    let target = config_dir.join("target").join("team.txt");
+
+    let local_env = vec![EnvVar {
+        name: "personal_var".into(),
+        value: "my-secret".into(),
+    }];
+
+    let resolved = make_resolved_profile(
+        local_env,
+        FilesSpec {
+            managed: vec![ManagedFileSpec {
+                source: "files/team.txt.tera".to_string(),
+                target,
+                strategy: Some(FileStrategy::Copy),
+                private: false,
+                origin: Some("acme-corp".to_string()),
+                encryption: None,
+                permissions: None,
+            }],
+            permissions: HashMap::new(),
+        },
+    );
+
+    let mut fm = CfgdFileManager::new(config_dir, &resolved).unwrap();
+    let mut source_vars = HashMap::new();
+    source_vars.insert(
+        "acme-corp".to_string(),
+        vec![EnvVar {
+            name: "team_name".into(),
+            value: "Platform".into(),
+        }],
+    );
+    fm.set_source_env(&source_vars);
+
+    let err = fm.plan(&resolved.merged).unwrap_err();
+    let inner = match err {
+        cfgd_core::errors::CfgdError::Composition(boxed) => *boxed,
+        other => panic!("expected CfgdError::Composition, got: {other:?}"),
+    };
+    assert!(matches!(
+        inner,
+        cfgd_core::errors::CompositionError::TemplateSandboxViolation { .. }
+    ));
+}
+
+#[test]
 fn source_template_can_access_own_env() {
     let dir = tempfile::tempdir().unwrap();
     let config_dir = dir.path();

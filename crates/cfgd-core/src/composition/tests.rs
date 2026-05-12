@@ -2664,3 +2664,321 @@ fn encryption_module_file_matching_required_target_without_encryption_is_error()
     let msg = result.unwrap_err().to_string();
     assert!(msg.contains("~/.config/secrets/api-key"), "msg: {msg}");
 }
+
+// --- Direct `matches!`-pinned variant tests ---
+// These tests construct the production code paths that produce each
+// CompositionError variant and assert via `matches!` so a future rename or
+// signature change to the variant trips the test rather than silently
+// reshaping the error surface. One variant per test.
+
+/// Helper: unwrap `CfgdError::Composition(Box<CompositionError>)` to its inner
+/// variant for `matches!` assertions. Panics with the actual error if the
+/// outer wrap shape changed.
+fn unwrap_composition_err(err: crate::errors::CfgdError) -> crate::errors::CompositionError {
+    match err {
+        crate::errors::CfgdError::Composition(boxed) => *boxed,
+        other => panic!("expected CfgdError::Composition, got: {other:?}"),
+    }
+}
+
+#[test]
+fn composition_error_variant_locked_resource() {
+    let locked = PolicyItems {
+        files: vec![ManagedFileSpec {
+            source: "corp/policy.yaml".into(),
+            target: "~/.config/policy.yaml".into(),
+            strategy: None,
+            private: false,
+            origin: None,
+            encryption: None,
+            permissions: None,
+        }],
+        ..Default::default()
+    };
+    let mut merged = MergedProfile::default();
+    merged.files.managed.push(ManagedFileSpec {
+        source: "local/override.yaml".into(),
+        target: "~/.config/policy.yaml".into(),
+        strategy: None,
+        private: false,
+        origin: None,
+        encryption: None,
+        permissions: None,
+    });
+    let err = check_locked_violations("corp", &locked, &merged).unwrap_err();
+    let inner = unwrap_composition_err(err);
+    assert!(matches!(
+        inner,
+        crate::errors::CompositionError::LockedResource { .. }
+    ));
+}
+
+#[test]
+fn composition_error_variant_required_resource() {
+    let local = make_local_profile();
+    let source_required = CompositionInput {
+        source_name: "corp".into(),
+        priority: 500,
+        policy: ConfigSourcePolicy {
+            required: PolicyItems {
+                files: vec![ManagedFileSpec {
+                    source: "corp/policy.yaml".into(),
+                    target: "~/.config/policy.yaml".into(),
+                    strategy: None,
+                    private: false,
+                    origin: None,
+                    encryption: None,
+                    permissions: None,
+                }],
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+        constraints: Default::default(),
+        layers: vec![],
+        subscription: SubscriptionConfig {
+            accept_recommended: true,
+            ..Default::default()
+        },
+    };
+    let source_overrider = CompositionInput {
+        source_name: "rogue".into(),
+        priority: 600,
+        policy: ConfigSourcePolicy {
+            recommended: PolicyItems {
+                files: vec![ManagedFileSpec {
+                    source: "rogue/policy.yaml".into(),
+                    target: "~/.config/policy.yaml".into(),
+                    strategy: None,
+                    private: false,
+                    origin: None,
+                    encryption: None,
+                    permissions: None,
+                }],
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+        constraints: Default::default(),
+        layers: vec![],
+        subscription: SubscriptionConfig {
+            accept_recommended: true,
+            ..Default::default()
+        },
+    };
+
+    let err = compose(&local, &[source_required, source_overrider]).unwrap_err();
+    let inner = unwrap_composition_err(err);
+    assert!(matches!(
+        inner,
+        crate::errors::CompositionError::RequiredResource { .. }
+    ));
+}
+
+#[test]
+fn composition_error_variant_path_not_allowed() {
+    let constraints = SourceConstraints {
+        allowed_target_paths: vec!["~/.config/acme/".into()],
+        ..Default::default()
+    };
+    let spec = ProfileSpec {
+        files: Some(FilesSpec {
+            managed: vec![ManagedFileSpec {
+                source: "evil.sh".into(),
+                target: "/etc/sudoers".into(),
+                strategy: None,
+                private: false,
+                origin: None,
+                encryption: None,
+                permissions: None,
+            }],
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let err = validate_constraints("acme", &constraints, &spec).unwrap_err();
+    let inner = unwrap_composition_err(err);
+    assert!(matches!(
+        inner,
+        crate::errors::CompositionError::PathNotAllowed { .. }
+    ));
+}
+
+#[test]
+fn composition_error_variant_scripts_not_allowed() {
+    let constraints = SourceConstraints {
+        no_scripts: true,
+        ..Default::default()
+    };
+    let spec = ProfileSpec {
+        scripts: Some(ScriptSpec {
+            pre_apply: vec![ScriptEntry::Simple("setup.sh".into())],
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let err = validate_constraints("acme", &constraints, &spec).unwrap_err();
+    let inner = unwrap_composition_err(err);
+    assert!(matches!(
+        inner,
+        crate::errors::CompositionError::ScriptsNotAllowed { .. }
+    ));
+}
+
+#[test]
+fn composition_error_variant_system_change_not_allowed() {
+    let constraints = SourceConstraints {
+        allow_system_changes: false,
+        ..Default::default()
+    };
+    let spec = ProfileSpec {
+        system: HashMap::from([("shell".into(), serde_yaml::Value::String("/bin/zsh".into()))]),
+        ..Default::default()
+    };
+    let err = validate_constraints("acme", &constraints, &spec).unwrap_err();
+    let inner = unwrap_composition_err(err);
+    assert!(matches!(
+        inner,
+        crate::errors::CompositionError::SystemChangeNotAllowed { .. }
+    ));
+}
+
+#[test]
+fn composition_error_variant_unresolvable_conflict() {
+    let local = make_local_profile();
+    let source_a = CompositionInput {
+        source_name: "team-a".into(),
+        priority: 500,
+        policy: ConfigSourcePolicy {
+            recommended: PolicyItems {
+                files: vec![ManagedFileSpec {
+                    source: "team-a/settings.json".into(),
+                    target: "~/.config/settings.json".into(),
+                    strategy: None,
+                    private: false,
+                    origin: None,
+                    encryption: None,
+                    permissions: None,
+                }],
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+        constraints: Default::default(),
+        layers: vec![],
+        subscription: SubscriptionConfig {
+            accept_recommended: true,
+            ..Default::default()
+        },
+    };
+    let source_b = CompositionInput {
+        source_name: "team-b".into(),
+        priority: 500, // same priority → unresolvable
+        policy: ConfigSourcePolicy {
+            recommended: PolicyItems {
+                files: vec![ManagedFileSpec {
+                    source: "team-b/settings.json".into(),
+                    target: "~/.config/settings.json".into(),
+                    strategy: None,
+                    private: false,
+                    origin: None,
+                    encryption: None,
+                    permissions: None,
+                }],
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+        constraints: Default::default(),
+        layers: vec![],
+        subscription: SubscriptionConfig {
+            accept_recommended: true,
+            ..Default::default()
+        },
+    };
+
+    let err = compose(&local, &[source_a, source_b]).unwrap_err();
+    let inner = unwrap_composition_err(err);
+    assert!(matches!(
+        inner,
+        crate::errors::CompositionError::UnresolvableConflict { .. }
+    ));
+}
+
+#[test]
+fn composition_error_variant_encryption_required() {
+    let constraints = make_encryption_constraint(&["~/.ssh/*"], None);
+    let spec = make_file_spec_with_encryption("~/.ssh/id_rsa", None);
+    let err = validate_constraints("corp", &constraints, &spec).unwrap_err();
+    let inner = unwrap_composition_err(err);
+    assert!(matches!(
+        inner,
+        crate::errors::CompositionError::EncryptionRequired { .. }
+    ));
+}
+
+#[test]
+fn composition_error_variant_encryption_backend_mismatch() {
+    let constraints = make_encryption_constraint(&["~/.aws/*"], Some("sops"));
+    let spec = make_file_spec_with_encryption("~/.aws/credentials", Some("age"));
+    let err = validate_constraints("corp", &constraints, &spec).unwrap_err();
+    let inner = unwrap_composition_err(err);
+    assert!(matches!(
+        inner,
+        crate::errors::CompositionError::EncryptionBackendMismatch { .. }
+    ));
+}
+
+#[test]
+fn composition_error_variant_encryption_mode_mismatch() {
+    let constraints = SourceConstraints {
+        encryption: Some(crate::config::EncryptionConstraint {
+            required_targets: vec!["~/.ssh/*".into()],
+            backend: None,
+            mode: Some(crate::config::EncryptionMode::Always),
+        }),
+        ..Default::default()
+    };
+    let spec = ProfileSpec {
+        files: Some(FilesSpec {
+            managed: vec![ManagedFileSpec {
+                source: "key".into(),
+                target: "~/.ssh/id_rsa".into(),
+                strategy: None,
+                private: false,
+                origin: None,
+                encryption: Some(crate::config::EncryptionSpec {
+                    backend: "sops".into(),
+                    mode: crate::config::EncryptionMode::InRepo,
+                }),
+                permissions: None,
+            }],
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let err = validate_constraints("corp", &constraints, &spec).unwrap_err();
+    let inner = unwrap_composition_err(err);
+    assert!(matches!(
+        inner,
+        crate::errors::CompositionError::EncryptionModeMismatch { .. }
+    ));
+}
+
+#[test]
+fn composition_error_variant_template_sandbox_violation() {
+    // The variant is produced by the binary crate's template renderer when a
+    // source template references a variable outside its sandbox. The variant
+    // itself is constructed in production code; here we directly instantiate
+    // and `matches!`-pin so a rename or signature change trips the test. The
+    // production code path is exercised in
+    // `crates/cfgd/src/files/tests.rs::source_template_sandbox_violation_pins_variant`.
+    let err = crate::errors::CompositionError::TemplateSandboxViolation {
+        source_name: "acme-corp".into(),
+        variable: "personal_var".into(),
+    };
+    assert!(matches!(
+        err,
+        crate::errors::CompositionError::TemplateSandboxViolation { .. }
+    ));
+}
