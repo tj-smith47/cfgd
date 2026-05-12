@@ -764,6 +764,88 @@ fn export_snapshot_creates_parent_dir() {
     assert!(nested.exists());
 }
 
+#[cfg(unix)]
+#[test]
+fn collect_file_checks_invalid_permission_string_warns() {
+    let dir = tempfile::tempdir().unwrap();
+    let file_path = dir.path().join("malformed.conf");
+    std::fs::write(&file_path, "content").unwrap();
+
+    let profile = MergedProfile {
+        files: crate::config::FilesSpec {
+            managed: vec![crate::config::ManagedFileSpec {
+                source: "malformed.conf".into(),
+                target: file_path.clone(),
+                strategy: None,
+                private: false,
+                origin: None,
+                encryption: None,
+                permissions: Some("not-octal".into()),
+            }],
+            permissions: HashMap::new(),
+        },
+        ..Default::default()
+    };
+
+    let checks = collect_file_checks(&profile);
+    assert_eq!(checks.len(), 1);
+    assert_eq!(checks[0].status, ComplianceStatus::Warning);
+    let detail = checks[0].detail.as_deref().unwrap();
+    assert!(
+        detail.contains("invalid permission string"),
+        "expected invalid-permission detail, got: {detail}"
+    );
+    assert!(
+        detail.contains("not-octal"),
+        "detail should echo the bad string, got: {detail}"
+    );
+}
+
+#[test]
+fn collect_file_checks_with_encryption_declared_adds_file_encryption_check() {
+    let dir = tempfile::tempdir().unwrap();
+    let file_path = dir.path().join("secret.enc.yaml");
+    std::fs::write(&file_path, "encrypted-blob").unwrap();
+
+    let profile = MergedProfile {
+        files: crate::config::FilesSpec {
+            managed: vec![crate::config::ManagedFileSpec {
+                source: "secret.enc.yaml".into(),
+                target: file_path.clone(),
+                strategy: None,
+                private: false,
+                origin: None,
+                encryption: Some(crate::config::EncryptionSpec {
+                    backend: "sops".into(),
+                    mode: crate::config::EncryptionMode::InRepo,
+                }),
+                permissions: None,
+            }],
+            permissions: HashMap::new(),
+        },
+        ..Default::default()
+    };
+
+    let checks = collect_file_checks(&profile);
+    // First check: file present (no permissions declared → Compliant "present").
+    // Second check: encryption declaration → "file-encryption" category, Compliant.
+    assert_eq!(checks.len(), 2, "expected file + encryption checks");
+    let enc = checks
+        .iter()
+        .find(|c| c.category == "file-encryption")
+        .expect("expected a file-encryption category check");
+    assert_eq!(enc.status, ComplianceStatus::Compliant);
+    let detail = enc.detail.as_deref().unwrap();
+    assert!(
+        detail.contains("backend=sops"),
+        "expected backend in detail, got: {detail}"
+    );
+    assert_eq!(
+        enc.target.as_deref(),
+        Some(file_path.to_string_lossy().as_ref())
+    );
+}
+
 #[test]
 fn compute_summary_all_statuses() {
     let checks = vec![
