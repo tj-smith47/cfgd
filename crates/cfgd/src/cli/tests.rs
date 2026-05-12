@@ -16172,6 +16172,166 @@ mod cmd_source_add_local {
         });
     }
 
+    /// Like `make_bare_with_manifest` but also writes a non-empty
+    /// `platform_profiles` mapping into the source manifest. Used to drive the
+    /// auto-detect arm of cmd_source_add, which fires when caller passes no
+    /// `--profile` and the manifest declares `platformProfiles`.
+    fn make_bare_with_platform_profiles(
+        scratch: &tempfile::TempDir,
+        name: &str,
+        profile_files: &[&str],
+        platform_keys: &[(&str, &str)],
+    ) -> std::path::PathBuf {
+        let bare = scratch.path().join(format!("{name}-bare.git"));
+        let _ = git2::Repository::init_bare(&bare).unwrap();
+        let src = scratch.path().join(format!("{name}-src"));
+        let src_repo = git2::Repository::init(&src).unwrap();
+        let mut manifest = format!(
+            "apiVersion: cfgd.io/v1alpha1\nkind: ConfigSource\nmetadata:\n  name: {name}\nspec:\n  provides:\n    profiles:\n"
+        );
+        for p in profile_files {
+            manifest.push_str(&format!("      - {p}\n"));
+        }
+        if !platform_keys.is_empty() {
+            manifest.push_str("    platformProfiles:\n");
+            for (k, v) in platform_keys {
+                manifest.push_str(&format!("      {k}: {v}\n"));
+            }
+        }
+        std::fs::write(src.join("cfgd-source.yaml"), &manifest).unwrap();
+        std::fs::create_dir_all(src.join("profiles")).unwrap();
+        for p in profile_files {
+            std::fs::write(
+                src.join("profiles").join(format!("{p}.yaml")),
+                format!(
+                    "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: {p}\nspec: {{}}\n"
+                ),
+            )
+            .unwrap();
+        }
+        let mut index = src_repo.index().unwrap();
+        index
+            .add_path(std::path::Path::new("cfgd-source.yaml"))
+            .unwrap();
+        for p in profile_files {
+            let rel = format!("profiles/{p}.yaml");
+            index.add_path(std::path::Path::new(&rel)).unwrap();
+        }
+        index.write().unwrap();
+        let tree_id = index.write_tree().unwrap();
+        let tree = src_repo.find_tree(tree_id).unwrap();
+        let sig = git2::Signature::now("t", "t@example.com").unwrap();
+        src_repo
+            .commit(Some("HEAD"), &sig, &sig, "initial", &tree, &[])
+            .unwrap();
+        drop(tree);
+        let url = format!("file://{}", bare.display());
+        let mut remote = src_repo.remote("origin", &url).unwrap();
+        let branch = src_repo
+            .head()
+            .unwrap()
+            .shorthand()
+            .unwrap_or("master")
+            .to_string();
+        remote
+            .push(&[&format!("refs/heads/{branch}:refs/heads/{branch}")], None)
+            .unwrap();
+        bare
+    }
+
+    #[test]
+    #[serial]
+    fn cmd_source_add_auto_selects_platform_profile_when_no_profile_flag() {
+        // Manifest declares `platformProfiles: {linux: linux-default, macos: macos-default}`.
+        // On the Linux CI host detect_platform().os == "linux", so the auto-detect
+        // branch picks "linux-default", emits the `Auto-selected profile` success
+        // line, and persists that as the subscription's profile.
+        // Skip on non-Linux to keep platform expectations honest.
+        if std::env::consts::OS != "linux" {
+            return;
+        }
+        with_env("CFGD_ALLOW_LOCAL_SOURCES", Some("1"), || {
+            let scratch = tempfile::tempdir().unwrap();
+            let bare = make_bare_with_platform_profiles(
+                &scratch,
+                "platform-src",
+                &["linux-default", "macos-default"],
+                &[("linux", "linux-default"), ("macos", "macos-default")],
+            );
+            let h = CliTestHarness::builder().build();
+            let url = format!("file://{}", bare.display());
+            let args = SourceAddArgs {
+                name: Some("platform-src".to_string()),
+                profile: None, // <- trigger auto-detect branch
+                ..empty_source_args(url)
+            };
+            let result = super::source::cmd_source_add(&h.cli(), h.printer(), &args);
+            assert!(result.is_ok(), "cmd_source_add should succeed: {result:?}");
+            let cfg_after = std::fs::read_to_string(h.config_path().join("cfgd.yaml")).unwrap();
+            assert!(
+                cfg_after.contains("linux-default"),
+                "auto-detected profile should land in cfgd.yaml: {cfg_after}"
+            );
+        });
+    }
+
+    #[test]
+    #[serial]
+    fn cmd_source_add_with_empty_provided_profiles_bails_at_source_load() {
+        // Manifest declares no profiles at all. SourceManager::load_source
+        // rejects the source before we ever reach the profile-selection arms
+        // of cmd_source_add — encoding the contract that a subscribable
+        // source must expose at least one profile.
+        with_env("CFGD_ALLOW_LOCAL_SOURCES", Some("1"), || {
+            let scratch = tempfile::tempdir().unwrap();
+            let bare = scratch.path().join("empty-bare.git");
+            let _ = git2::Repository::init_bare(&bare).unwrap();
+            let src = scratch.path().join("empty-src");
+            let src_repo = git2::Repository::init(&src).unwrap();
+            std::fs::write(
+                src.join("cfgd-source.yaml"),
+                "apiVersion: cfgd.io/v1alpha1\nkind: ConfigSource\nmetadata:\n  name: empty-provider\nspec:\n  provides:\n    profiles: []\n",
+            )
+            .unwrap();
+            let mut index = src_repo.index().unwrap();
+            index
+                .add_path(std::path::Path::new("cfgd-source.yaml"))
+                .unwrap();
+            index.write().unwrap();
+            let tree_id = index.write_tree().unwrap();
+            let tree = src_repo.find_tree(tree_id).unwrap();
+            let sig = git2::Signature::now("t", "t@example.com").unwrap();
+            src_repo
+                .commit(Some("HEAD"), &sig, &sig, "initial", &tree, &[])
+                .unwrap();
+            drop(tree);
+            let url = format!("file://{}", bare.display());
+            let mut remote = src_repo.remote("origin", &url).unwrap();
+            let branch = src_repo
+                .head()
+                .unwrap()
+                .shorthand()
+                .unwrap_or("master")
+                .to_string();
+            remote
+                .push(&[&format!("refs/heads/{branch}:refs/heads/{branch}")], None)
+                .unwrap();
+
+            let h = CliTestHarness::builder().build();
+            let args = SourceAddArgs {
+                name: Some("empty-provider".to_string()),
+                profile: None,
+                ..empty_source_args(url)
+            };
+            let result = super::source::cmd_source_add(&h.cli(), h.printer(), &args);
+            let err = result.expect_err("empty provides.profiles must fail in source load");
+            assert!(
+                err.to_string().to_lowercase().contains("no profiles"),
+                "expected 'no profiles' in error, got: {err}"
+            );
+        });
+    }
+
     #[test]
     #[serial]
     fn cmd_source_add_with_branch_override_respects_branch_flag() {
