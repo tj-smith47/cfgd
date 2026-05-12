@@ -8746,4 +8746,166 @@ mod harness {
             "expected AlreadyRunning, got: {msg}"
         );
     }
+
+    // ----- handle_health_connection unit tests -----
+    //
+    // Drives the four-way path dispatch in health_ipc::handle_health_connection
+    // through an in-memory `tokio::io::duplex` pair. No real socket bind, no
+    // listener, no /tmp file — every assertion is on the HTTP response bytes
+    // produced by the handler. Routes covered: /health, /status, /drift (both
+    // with and without a store_path), and the unknown-path 404 fallback.
+
+    /// Drive one request through `handle_health_connection`. Returns the raw
+    /// HTTP response bytes the handler wrote.
+    async fn drive_health_request(
+        state: Arc<Mutex<super::super::DaemonState>>,
+        request: &str,
+    ) -> String {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let (client, server) = tokio::io::duplex(8192);
+        let handler = tokio::spawn(super::super::health_ipc::handle_health_connection(
+            server, state,
+        ));
+        let (mut client_read, mut client_write) = tokio::io::split(client);
+        client_write.write_all(request.as_bytes()).await.unwrap();
+        // Drop the write half so the server sees EOF when draining the request
+        // headers — the handler completes its response and returns Ok(()).
+        drop(client_write);
+        let _ = handler
+            .await
+            .expect("handle_health_connection task panicked");
+
+        let mut out = Vec::new();
+        client_read.read_to_end(&mut out).await.unwrap();
+        String::from_utf8(out).expect("response should be utf-8")
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn handle_health_connection_returns_health_payload_with_pid_and_uptime() {
+        let state = Arc::new(Mutex::new(super::super::DaemonState::new()));
+        let resp = drive_health_request(
+            state,
+            "GET /health HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n",
+        )
+        .await;
+        assert!(
+            resp.starts_with("HTTP/1.1 200 OK"),
+            "expected 200 OK status line, got: {resp}"
+        );
+        assert!(
+            resp.contains("\"status\": \"ok\""),
+            "/health body should include status=ok: {resp}"
+        );
+        assert!(
+            resp.contains("\"pid\""),
+            "/health body should include pid: {resp}"
+        );
+        assert!(
+            resp.contains("\"uptime_secs\""),
+            "/health body should include uptime_secs: {resp}"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn handle_health_connection_returns_status_response_with_sources() {
+        let state = Arc::new(Mutex::new(super::super::DaemonState::new()));
+        let resp = drive_health_request(
+            state,
+            "GET /status HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n",
+        )
+        .await;
+        assert!(resp.starts_with("HTTP/1.1 200 OK"), "got: {resp}");
+        // DaemonStatusResponse includes a default "local" source entry.
+        assert!(
+            resp.contains("\"running\": true"),
+            "/status should report running=true: {resp}"
+        );
+        assert!(
+            resp.contains("\"local\""),
+            "/status should serialize the default local source: {resp}"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn handle_health_connection_drift_with_no_store_path_returns_empty_events() {
+        // DaemonState::new() sets store_path=None; the /drift branch then
+        // skips the spawn_blocking + StateStore::open and returns drift_count=0.
+        let state = Arc::new(Mutex::new(super::super::DaemonState::new()));
+        let resp = drive_health_request(
+            state,
+            "GET /drift HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n",
+        )
+        .await;
+        assert!(resp.starts_with("HTTP/1.1 200 OK"), "got: {resp}");
+        assert!(
+            resp.contains("\"drift_count\": 0"),
+            "drift_count should be 0 with no store_path: {resp}"
+        );
+        assert!(
+            resp.contains("\"events\": []"),
+            "events should be the empty array: {resp}"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn handle_health_connection_drift_with_recorded_event_returns_it_in_body() {
+        // store_path=Some(<tempfile>) drives the spawn_blocking branch that
+        // opens the StateStore and pulls unresolved_drift(). With a single
+        // recorded drift event, the JSON body should include drift_count=1
+        // and the event's resource_id.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let store_path = tmp.path().join("state.db");
+        // Open & seed in a scoped block so the connection drops before the
+        // handler opens its own connection — SQLite WAL handles concurrent
+        // readers but we keep the test deterministic.
+        {
+            let store = crate::state::StateStore::open(&store_path).unwrap();
+            store
+                .record_drift(
+                    "file",
+                    "/etc/hosts",
+                    Some("expected-sha"),
+                    Some("actual-sha"),
+                    "file-manager",
+                )
+                .unwrap();
+        }
+        let mut s = super::super::DaemonState::new();
+        // Reach into the private field; `daemon::tests::harness` is inside
+        // `daemon` so super::super:: gives us module-private access.
+        s.store_path = Some(store_path);
+        let state = Arc::new(Mutex::new(s));
+        let resp = drive_health_request(
+            state,
+            "GET /drift HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n",
+        )
+        .await;
+        assert!(resp.starts_with("HTTP/1.1 200 OK"), "got: {resp}");
+        assert!(
+            resp.contains("\"drift_count\": 1"),
+            "drift_count should be 1 after recording one event: {resp}"
+        );
+        assert!(
+            resp.contains("/etc/hosts"),
+            "event resource_id should appear in body: {resp}"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn handle_health_connection_unknown_path_returns_404() {
+        let state = Arc::new(Mutex::new(super::super::DaemonState::new()));
+        let resp = drive_health_request(
+            state,
+            "GET /nope HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n",
+        )
+        .await;
+        assert!(
+            resp.starts_with("HTTP/1.1 404 Not Found"),
+            "expected 404 status: {resp}"
+        );
+        assert!(
+            resp.contains("\"error\":\"not found\""),
+            "404 body should include not-found marker: {resp}"
+        );
+    }
 }
