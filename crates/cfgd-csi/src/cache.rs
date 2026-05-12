@@ -531,4 +531,71 @@ mod tests {
             "access time should be updated after get()"
         );
     }
+
+    #[test]
+    fn cache_get_or_pull_returns_path_without_touching_oci_on_hit() {
+        // get_or_pull cache-hit early-return (lines 42-47): pre-populate an
+        // entry with the .cfgd-complete sentinel — get_or_pull must short-
+        // circuit and return entry_path WITHOUT invoking oci::pull_module,
+        // proven by passing a garbage oci_ref that would fail any real call.
+        let dir = tempfile::tempdir().unwrap();
+        let cache = make_cache(dir.path(), 1024 * 1024);
+        populate_entry(dir.path(), "preinstalled", "1.0.0", 256, 1_000);
+
+        let result = cache
+            .get_or_pull("preinstalled", "1.0.0", "not-a-real-oci-ref://garbage")
+            .expect("cache-hit must NOT consult oci::pull_module");
+
+        assert_eq!(result, dir.path().join("preinstalled").join("1.0.0"));
+        assert!(
+            result.join(COMPLETE_SENTINEL).exists(),
+            "sentinel should still mark the entry complete",
+        );
+        // The hit path calls touch_atime — verify atime moved forward.
+        let new_atime = read_atime(&result);
+        assert!(
+            new_atime > 1_000,
+            "atime must refresh on cache hit (was 1000, now {})",
+            new_atime,
+        );
+    }
+
+    #[test]
+    fn list_entries_skips_regular_files_at_root() {
+        // list_entries non-dir skip at root level (line 180): a stray regular
+        // file directly under the cache root (e.g. a README placed by an
+        // operator) must NOT be treated as a module directory. Pin the
+        // contract; otherwise eviction would try to remove_dir_all a regular
+        // file and the cache would surface bogus errors.
+        let dir = tempfile::tempdir().unwrap();
+        let cache = make_cache(dir.path(), 1024 * 1024);
+        populate_entry(dir.path(), "real-mod", "v1", 100, 5_000);
+        std::fs::write(dir.path().join("README"), "not a module dir").unwrap();
+
+        let entries = cache.list_entries().unwrap();
+        assert_eq!(entries.len(), 1, "stray file at root must not be listed");
+        assert_eq!(entries[0].0, dir.path().join("real-mod").join("v1"));
+    }
+
+    #[test]
+    fn list_entries_skips_regular_files_at_version_level() {
+        // list_entries non-dir skip at module/version level (line 199): a
+        // regular file sibling to version dirs inside a module dir (e.g.
+        // module-level metadata.json placed by a future feature) must not be
+        // listed as a version. Without this skip the per-version atime read
+        // would target a non-directory and surface noise.
+        let dir = tempfile::tempdir().unwrap();
+        let cache = make_cache(dir.path(), 1024 * 1024);
+        populate_entry(dir.path(), "vmod", "1.0", 100, 5_000);
+        // Sibling of version dir, but not a version itself.
+        std::fs::write(dir.path().join("vmod").join("notes.txt"), "stray").unwrap();
+
+        let entries = cache.list_entries().unwrap();
+        assert_eq!(
+            entries.len(),
+            1,
+            "stray file under module dir must be skipped"
+        );
+        assert_eq!(entries[0].0, dir.path().join("vmod").join("1.0"));
+    }
 }
