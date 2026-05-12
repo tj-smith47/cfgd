@@ -1328,6 +1328,97 @@ mod age_shim {
             "stderr must surface in error: {msg}"
         );
     }
+
+    /// Run a closure with `EDITOR=<path>` and restore the prior value
+    /// on drop. Serialised via `#[serial]`.
+    fn with_editor<F: FnOnce()>(editor_path: &str, f: F) {
+        // SAFETY: serialised by #[serial]; no other test mutates EDITOR.
+        unsafe {
+            let prior = std::env::var("EDITOR").ok();
+            std::env::set_var("EDITOR", editor_path);
+            f();
+            match prior {
+                Some(v) => std::env::set_var("EDITOR", v),
+                None => std::env::remove_var("EDITOR"),
+            }
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn age_edit_returns_early_when_editor_does_not_change_content() {
+        // /bin/true exits 0 without opening the temp file, so the decrypted
+        // payload remains identical after the editor returns. edit_file must
+        // hit the `edited == decrypted` early-return arm and NOT re-encrypt.
+        let shim = ToolShim::install("CFGD_AGE_BIN", 0, "unchanged-secret\n", "");
+        let (_keydir, key) = key_fixture();
+        let datadir = tempfile::tempdir().expect("tempdir");
+        let cipher = datadir.path().join("secret.age");
+        std::fs::write(&cipher, b"<ciphertext>").expect("write cipher");
+
+        let backend = AgeBackend::new(key);
+        with_editor("/bin/true", || {
+            backend
+                .edit_file(&cipher)
+                .expect("edit happy path returns Ok");
+        });
+
+        // Only one age invocation should have happened (the initial decrypt).
+        // If the early-return path failed, the function would also invoke
+        // `--encrypt`, and argv_log would contain "--encrypt".
+        let argv = shim.argv_log();
+        assert!(
+            argv.contains("--decrypt"),
+            "edit should invoke age --decrypt at least once: {argv}"
+        );
+        assert!(
+            !argv.contains("--encrypt"),
+            "edit should skip re-encrypt when content unchanged, got: {argv}"
+        );
+        // Original ciphertext is unchanged on disk.
+        assert_eq!(
+            std::fs::read(&cipher).expect("cipher still on disk"),
+            b"<ciphertext>",
+            "no edit happened → no re-encrypt → ciphertext untouched"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn age_edit_surfaces_editor_failure_as_secret_error() {
+        // /bin/false exits 1 → edit_file must surface the editor non-zero
+        // exit as a SecretError::EncryptionFailed with the editor name in
+        // the message.
+        let _shim = ToolShim::install("CFGD_AGE_BIN", 0, "payload", "");
+        let (_keydir, key) = key_fixture();
+        let datadir = tempfile::tempdir().expect("tempdir");
+        let cipher = datadir.path().join("secret.age");
+        std::fs::write(&cipher, b"x").expect("write cipher");
+
+        let backend = AgeBackend::new(key);
+        let err = with_editor_returning("/bin/false", || backend.edit_file(&cipher));
+        let msg = format!("{}", err.expect_err("editor=false should surface as Err"));
+        assert!(
+            msg.contains("/bin/false") || msg.contains("non-zero"),
+            "editor failure should mention the editor path or non-zero status: {msg}"
+        );
+    }
+
+    /// Variant of `with_editor` that returns the closure's result. Restores
+    /// EDITOR even if the closure errors.
+    fn with_editor_returning<T, F: FnOnce() -> T>(editor_path: &str, f: F) -> T {
+        // SAFETY: serialised by #[serial]; no other test mutates EDITOR.
+        unsafe {
+            let prior = std::env::var("EDITOR").ok();
+            std::env::set_var("EDITOR", editor_path);
+            let r = f();
+            match prior {
+                Some(v) => std::env::set_var("EDITOR", v),
+                None => std::env::remove_var("EDITOR"),
+            }
+            r
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
