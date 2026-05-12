@@ -361,18 +361,12 @@ fn parse_brew_info_version_errors_attribute_correct_manager() {
 #[cfg(unix)]
 mod brew_shim {
     use super::*;
-    use cfgd_core::output::Printer;
     use cfgd_core::providers::PackageManager;
-    use cfgd_core::test_helpers::ToolShim;
+    use cfgd_core::test_helpers::{ToolShim, test_printer};
     use serial_test::serial;
 
     fn shim_install(stdout: &str, stderr: &str, exit: i32) -> ToolShim {
         ToolShim::install("CFGD_BREW_BIN", exit, stdout, stderr)
-    }
-
-    fn printer() -> Printer {
-        let (p, _buf) = Printer::for_test();
-        p
     }
 
     // --- BrewManager (formulae) ---
@@ -381,7 +375,7 @@ mod brew_shim {
     #[serial]
     fn brew_install_passes_install_subcommand_with_each_package() {
         let shim = shim_install("", "", 0);
-        let p = printer();
+        let p = test_printer();
         BrewManager
             .install(&["git".into(), "vim".into()], &p)
             .expect("install Ok");
@@ -396,7 +390,7 @@ mod brew_shim {
     #[serial]
     fn brew_install_skips_command_when_package_list_empty() {
         let shim = shim_install("", "", 0);
-        let p = printer();
+        let p = test_printer();
         BrewManager.install(&[], &p).expect("empty install Ok");
         assert_eq!(
             shim.invocation_count(),
@@ -409,7 +403,7 @@ mod brew_shim {
     #[serial]
     fn brew_uninstall_passes_uninstall_subcommand_with_each_package() {
         let shim = shim_install("", "", 0);
-        let p = printer();
+        let p = test_printer();
         BrewManager
             .uninstall(&["git".into()], &p)
             .expect("uninstall Ok");
@@ -420,7 +414,7 @@ mod brew_shim {
     #[serial]
     fn brew_uninstall_skips_command_when_package_list_empty() {
         let shim = shim_install("", "", 0);
-        let p = printer();
+        let p = test_printer();
         BrewManager.uninstall(&[], &p).expect("empty uninstall Ok");
         assert_eq!(shim.invocation_count(), 0);
     }
@@ -429,7 +423,7 @@ mod brew_shim {
     #[serial]
     fn brew_update_runs_update_subcommand() {
         let shim = shim_install("", "", 0);
-        let p = printer();
+        let p = test_printer();
         BrewManager.update(&p).expect("update Ok");
         assert!(shim.argv_log().contains("update"));
     }
@@ -438,7 +432,7 @@ mod brew_shim {
     #[serial]
     fn brew_install_translates_nonzero_exit_into_install_failed() {
         let _shim = shim_install("", "Error: package not found", 1);
-        let p = printer();
+        let p = test_printer();
         let err = BrewManager
             .install(&["nonexistent".into()], &p)
             .expect_err("non-zero → Err");
@@ -499,7 +493,7 @@ mod brew_shim {
     #[serial]
     fn brew_tap_install_runs_one_tap_subcommand_per_entry() {
         let shim = shim_install("", "", 0);
-        let p = printer();
+        let p = test_printer();
         BrewTapManager
             .install(&["org/foo".into(), "org/bar".into()], &p)
             .expect("Ok");
@@ -513,7 +507,7 @@ mod brew_shim {
     #[serial]
     fn brew_tap_uninstall_runs_one_untap_subcommand_per_entry() {
         let shim = shim_install("", "", 0);
-        let p = printer();
+        let p = test_printer();
         BrewTapManager
             .uninstall(&["org/foo".into()], &p)
             .expect("Ok");
@@ -524,7 +518,7 @@ mod brew_shim {
     #[serial]
     fn brew_tap_update_is_noop_no_command_spawned() {
         let shim = shim_install("", "", 0);
-        let p = printer();
+        let p = test_printer();
         BrewTapManager.update(&p).expect("Ok");
         assert_eq!(
             shim.invocation_count(),
@@ -552,7 +546,7 @@ mod brew_shim {
     #[serial]
     fn brew_cask_install_passes_cask_flag_with_packages() {
         let shim = shim_install("", "", 0);
-        let p = printer();
+        let p = test_printer();
         BrewCaskManager
             .install(&["firefox".into(), "vlc".into()], &p)
             .expect("Ok");
@@ -564,7 +558,7 @@ mod brew_shim {
     #[serial]
     fn brew_cask_uninstall_passes_cask_flag_with_packages() {
         let shim = shim_install("", "", 0);
-        let p = printer();
+        let p = test_printer();
         BrewCaskManager
             .uninstall(&["firefox".into()], &p)
             .expect("Ok");
@@ -575,7 +569,7 @@ mod brew_shim {
     #[serial]
     fn brew_cask_install_skips_command_when_empty() {
         let shim = shim_install("", "", 0);
-        let p = printer();
+        let p = test_printer();
         BrewCaskManager.install(&[], &p).expect("Ok");
         assert_eq!(shim.invocation_count(), 0);
     }

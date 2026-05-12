@@ -364,23 +364,19 @@ fd        9.0.0    100    latest/stable  -             -
     #[cfg(unix)]
     mod snap_shim {
         use super::*;
-        use cfgd_core::output::Printer;
         use cfgd_core::providers::PackageManager;
-        use cfgd_core::test_helpers::ToolShim;
+        use cfgd_core::test_helpers::{ToolShim, test_printer};
         use serial_test::serial;
 
         fn shim(stdout: &str, stderr: &str, exit: i32) -> ToolShim {
             ToolShim::install("CFGD_SNAP_BIN", exit, stdout, stderr)
-        }
-        fn printer() -> Printer {
-            Printer::for_test().0
         }
 
         #[test]
         #[serial]
         fn snap_install_runs_install_subcommand_per_package() {
             let s = shim("", "", 0);
-            let p = printer();
+            let p = test_printer();
             SnapManager
                 .install(&["ripgrep".into(), "fd".into()], &p)
                 .expect("Ok");
@@ -406,7 +402,7 @@ fd        9.0.0    100    latest/stable  -             -
             // shim is the same for both attempts, so the second also fails
             // — we only assert that both argvs landed.
             let s = shim("", "snap \"ripgrep\" requires classic confinement", 1);
-            let p = printer();
+            let p = test_printer();
             let _ = SnapManager.install(&["ripgrep".into()], &p);
             assert_eq!(
                 s.invocation_count(),
@@ -429,7 +425,7 @@ fd        9.0.0    100    latest/stable  -             -
         #[serial]
         fn snap_uninstall_runs_remove_with_all_packages_in_one_invocation() {
             let s = shim("", "", 0);
-            let p = printer();
+            let p = test_printer();
             SnapManager
                 .uninstall(&["ripgrep".into(), "fd".into()], &p)
                 .expect("Ok");
@@ -445,7 +441,7 @@ fd        9.0.0    100    latest/stable  -             -
         #[serial]
         fn snap_uninstall_is_noop_when_packages_empty() {
             let s = shim("", "", 0);
-            let p = printer();
+            let p = test_printer();
             SnapManager.uninstall(&[], &p).expect("Ok");
             assert_eq!(s.invocation_count(), 0, "no command spawned for empty");
         }
@@ -454,7 +450,7 @@ fd        9.0.0    100    latest/stable  -             -
         #[serial]
         fn snap_update_runs_refresh() {
             let s = shim("", "", 0);
-            let p = printer();
+            let p = test_printer();
             SnapManager.update(&p).expect("Ok");
             assert_eq!(s.invocation_count(), 1);
             assert!(s.argv_log().contains("refresh"), "argv: {}", s.argv_log());

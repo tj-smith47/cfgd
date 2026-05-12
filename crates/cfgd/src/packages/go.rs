@@ -373,22 +373,18 @@ mod tests {
     #[cfg(unix)]
     mod go_shim {
         use super::*;
-        use cfgd_core::output::Printer;
-        use cfgd_core::test_helpers::ToolShim;
+        use cfgd_core::test_helpers::{ToolShim, test_printer};
         use serial_test::serial;
 
         fn shim(stdout: &str, stderr: &str, exit: i32) -> ToolShim {
             ToolShim::install("CFGD_GO_BIN", exit, stdout, stderr)
-        }
-        fn printer() -> Printer {
-            Printer::for_test().0
         }
 
         #[test]
         #[serial]
         fn go_install_appends_at_latest_to_unversioned_package() {
             let s = shim("", "", 0);
-            let p = printer();
+            let p = test_printer();
             GoInstallManager
                 .install(&["github.com/example/tool".into()], &p)
                 .expect("Ok");
@@ -404,7 +400,7 @@ mod tests {
         #[serial]
         fn go_install_passes_through_pre_pinned_version() {
             let s = shim("", "", 0);
-            let p = printer();
+            let p = test_printer();
             GoInstallManager
                 .install(&["github.com/example/tool@v1.2.3".into()], &p)
                 .expect("Ok");
@@ -420,7 +416,7 @@ mod tests {
         #[serial]
         fn go_install_runs_one_install_per_package() {
             let s = shim("", "", 0);
-            let p = printer();
+            let p = test_printer();
             GoInstallManager
                 .install(&["a.com/x".into(), "b.com/y".into()], &p)
                 .expect("Ok");
@@ -431,7 +427,7 @@ mod tests {
         #[serial]
         fn go_update_is_noop_no_command_spawned() {
             let s = shim("", "", 0);
-            let p = printer();
+            let p = test_printer();
             GoInstallManager.update(&p).expect("Ok");
             assert_eq!(
                 s.invocation_count(),

@@ -215,23 +215,19 @@ mod tests {
     #[cfg(unix)]
     mod flatpak_shim {
         use super::*;
-        use cfgd_core::output::Printer;
         use cfgd_core::providers::PackageManager;
-        use cfgd_core::test_helpers::ToolShim;
+        use cfgd_core::test_helpers::{ToolShim, test_printer};
         use serial_test::serial;
 
         fn shim(stdout: &str, stderr: &str, exit: i32) -> ToolShim {
             ToolShim::install("CFGD_FLATPAK_BIN", exit, stdout, stderr)
-        }
-        fn printer() -> Printer {
-            Printer::for_test().0
         }
 
         #[test]
         #[serial]
         fn flatpak_install_runs_install_subcommand_per_package() {
             let s = shim("", "", 0);
-            let p = printer();
+            let p = test_printer();
             FlatpakManager
                 .install(
                     &["org.mozilla.firefox".into(), "org.signal.Signal".into()],
@@ -248,7 +244,7 @@ mod tests {
         #[serial]
         fn flatpak_uninstall_runs_uninstall_subcommand_per_package() {
             let s = shim("", "", 0);
-            let p = printer();
+            let p = test_printer();
             FlatpakManager
                 .uninstall(&["org.mozilla.firefox".into()], &p)
                 .expect("Ok");
@@ -259,7 +255,7 @@ mod tests {
         #[serial]
         fn flatpak_update_runs_update_y() {
             let s = shim("", "", 0);
-            let p = printer();
+            let p = test_printer();
             FlatpakManager.update(&p).expect("Ok");
             assert_eq!(s.invocation_count(), 1);
             assert!(s.argv_log().contains("update -y"), "argv: {}", s.argv_log());

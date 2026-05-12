@@ -511,24 +511,18 @@ mod tests {
     #[cfg(unix)]
     mod npm_shim {
         use super::*;
-        use cfgd_core::output::Printer;
-        use cfgd_core::test_helpers::ToolShim;
+        use cfgd_core::test_helpers::{ToolShim, test_printer};
         use serial_test::serial;
 
         fn shim(stdout: &str, stderr: &str, exit: i32) -> ToolShim {
             ToolShim::install("CFGD_NPM_BIN", exit, stdout, stderr)
         }
 
-        fn printer() -> Printer {
-            let (p, _buf) = Printer::for_test();
-            p
-        }
-
         #[test]
         #[serial]
         fn npm_install_passes_install_g_with_packages() {
             let s = shim("", "", 0);
-            let p = printer();
+            let p = test_printer();
             NpmManager
                 .install(&["typescript".into(), "eslint".into()], &p)
                 .expect("Ok");
@@ -543,7 +537,7 @@ mod tests {
         #[serial]
         fn npm_install_skips_command_when_empty() {
             let s = shim("", "", 0);
-            let p = printer();
+            let p = test_printer();
             NpmManager.install(&[], &p).expect("Ok");
             assert_eq!(s.invocation_count(), 0);
         }
@@ -552,7 +546,7 @@ mod tests {
         #[serial]
         fn npm_uninstall_passes_uninstall_g_with_packages() {
             let s = shim("", "", 0);
-            let p = printer();
+            let p = test_printer();
             NpmManager
                 .uninstall(&["typescript".into()], &p)
                 .expect("Ok");
@@ -563,7 +557,7 @@ mod tests {
         #[serial]
         fn npm_update_runs_update_g() {
             let s = shim("", "", 0);
-            let p = printer();
+            let p = test_printer();
             NpmManager.update(&p).expect("Ok");
             assert!(s.argv_log().contains("update -g"));
         }

@@ -751,16 +751,12 @@ fn apply_unparseable_entries_skipped() {
 #[cfg(unix)]
 mod gpg_shim {
     use super::*;
-    use cfgd_core::output::Printer;
     use cfgd_core::providers::SystemConfigurator;
-    use cfgd_core::test_helpers::ToolShim;
+    use cfgd_core::test_helpers::{ToolShim, test_printer};
     use serial_test::serial;
 
     fn shim(stdout: &str, stderr: &str, exit: i32) -> ToolShim {
         ToolShim::install("CFGD_GPG_BIN", exit, stdout, stderr)
-    }
-    fn printer() -> Printer {
-        Printer::for_test().0
     }
 
     #[test]
@@ -865,7 +861,7 @@ uid:u::::1700000000::HASH2::Jane <jane@work.com>::::::::::0:
         // Empty stdout for every call: query → no keys; gen-key → success;
         // post-gen query → no keys (apply prints a warning but returns Ok).
         let s = shim("", "", 0);
-        let p = printer();
+        let p = test_printer();
         let desired: serde_yaml::Value = serde_yaml::from_str(
             r#"
 - name: work-signing
@@ -901,7 +897,7 @@ uid:u::::1700000000::HASH2::Jane <jane@work.com>::::::::::0:
         // gen-key invocation see the failure. Initial query at exit 1 is
         // already an error path (query returns Err for any non-zero/!=2).
         let _s = shim("", "gpg: agent unavailable", 1);
-        let p = printer();
+        let p = test_printer();
         let desired: serde_yaml::Value = serde_yaml::from_str(
             r#"
 - name: work-signing
