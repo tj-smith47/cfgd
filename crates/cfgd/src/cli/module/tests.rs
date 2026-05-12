@@ -864,6 +864,40 @@ fn cmd_module_update_nonexistent_fails() {
     );
 }
 
+#[test]
+fn cmd_module_update_add_files_with_duplicate_basename_bails() {
+    let dir = tempfile::tempdir().unwrap();
+    make_module(
+        dir.path(),
+        "mod1",
+        "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: mod1\nspec:\n  packages: []\n",
+    );
+    // Two distinct source files, same basename — must be rejected so
+    // they don't silently overwrite each other in the module's files/ dir.
+    let src_dir = tempfile::tempdir().unwrap();
+    let a = src_dir.path().join("a");
+    let b = src_dir.path().join("b");
+    std::fs::create_dir_all(&a).unwrap();
+    std::fs::create_dir_all(&b).unwrap();
+    let f1 = a.join("conflict.toml");
+    let f2 = b.join("conflict.toml");
+    std::fs::write(&f1, b"first").unwrap();
+    std::fs::write(&f2, b"second").unwrap();
+
+    let cli = test_cli(dir.path());
+    let (printer, _buf) = cfgd_core::output::Printer::for_test();
+    let args = super::ModuleUpdateArgs {
+        files: vec![f1.display().to_string(), f2.display().to_string()],
+        ..make_module_update_args("mod1")
+    };
+    let err = cmd_module_update_local(&cli, &printer, &args).unwrap_err();
+    let msg = err.to_string();
+    assert!(
+        msg.contains("Duplicate file basename") && msg.contains("conflict.toml"),
+        "must bail with the offending basename so the user fixes the conflict: {msg}"
+    );
+}
+
 // ─── cmd_module_create — non-interactive flags ─────────────
 
 #[test]
