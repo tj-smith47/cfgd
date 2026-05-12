@@ -8353,6 +8353,60 @@ mod harness {
         assert!(!path.exists());
     }
 
+    // ----- setup_file_watcher tests -----
+
+    #[test]
+    fn setup_file_watcher_watches_existing_managed_path() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let managed = tmp.path().join("watched.txt");
+        std::fs::write(&managed, b"initial").unwrap();
+        let config_dir = tmp.path().to_path_buf();
+        let (tx, _rx) = mpsc::channel::<PathBuf>(8);
+
+        let watcher = super::super::reconcile::setup_file_watcher(
+            tx,
+            std::slice::from_ref(&managed),
+            &config_dir,
+        );
+        assert!(
+            watcher.is_ok(),
+            "expected watcher to construct: {watcher:?}"
+        );
+    }
+
+    #[test]
+    fn setup_file_watcher_watches_parent_when_path_does_not_yet_exist() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        // Managed path is in tmp but file does not exist yet — the watcher
+        // should fall back to watching the parent dir for create events.
+        let managed = tmp.path().join("not-yet-created.txt");
+        let config_dir = tmp.path().to_path_buf();
+        let (tx, _rx) = mpsc::channel::<PathBuf>(8);
+
+        let watcher = super::super::reconcile::setup_file_watcher(
+            tx,
+            std::slice::from_ref(&managed),
+            &config_dir,
+        );
+        assert!(
+            watcher.is_ok(),
+            "watcher should still succeed via parent-dir fallback: {watcher:?}"
+        );
+    }
+
+    #[test]
+    fn setup_file_watcher_tolerates_missing_config_dir() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        // Config dir doesn't exist; watcher logs a warning and returns Ok.
+        let missing_config = tmp.path().join("does/not/exist");
+        let (tx, _rx) = mpsc::channel::<PathBuf>(8);
+        let watcher = super::super::reconcile::setup_file_watcher(tx, &[], &missing_config);
+        assert!(
+            watcher.is_ok(),
+            "missing config_dir should not error: {watcher:?}"
+        );
+    }
+
     // ----- run_daemon_with end-to-end tests -----
     //
     // These drive `run_daemon_with` against externally-supplied triggers so

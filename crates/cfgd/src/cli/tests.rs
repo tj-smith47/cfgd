@@ -16107,6 +16107,73 @@ mod cmd_source_add_local {
 
     #[test]
     #[serial]
+    fn cmd_source_add_records_opt_in_sync_interval_and_auto_apply_in_config() {
+        with_env("CFGD_ALLOW_LOCAL_SOURCES", Some("1"), || {
+            let scratch = tempfile::tempdir().unwrap();
+            let bare = make_bare_with_manifest(&scratch, "opt-in-src", None);
+            let h = CliTestHarness::builder().build();
+            let url = format!("file://{}", bare.display());
+            let args = SourceAddArgs {
+                name: Some("opt-in-src".to_string()),
+                opt_in: vec!["app/featureA".to_string(), "app/featureB".to_string()],
+                sync_interval: Some("15m".to_string()),
+                auto_apply: true,
+                accept_recommended: true,
+                ..empty_source_args(url)
+            };
+            let result = super::source::cmd_source_add(&h.cli(), h.printer(), &args);
+            assert!(result.is_ok(), "cmd_source_add should succeed: {result:?}");
+            let cfg_after = std::fs::read_to_string(h.config_path().join("cfgd.yaml")).unwrap();
+            assert!(
+                cfg_after.contains("app/featureA"),
+                "opt-in items should land in cfgd.yaml: {cfg_after}"
+            );
+            assert!(
+                cfg_after.contains("15m"),
+                "sync interval should land in cfgd.yaml: {cfg_after}"
+            );
+            assert!(
+                cfg_after.contains("autoApply: true") || cfg_after.contains("autoApply: yes"),
+                "auto_apply should serialise as true in cfgd.yaml: {cfg_after}"
+            );
+            assert!(
+                cfg_after.contains("acceptRecommended: true"),
+                "accept_recommended should serialise as true: {cfg_after}"
+            );
+        });
+    }
+
+    #[test]
+    #[serial]
+    fn cmd_source_add_duplicate_name_via_local_bare_fails() {
+        with_env("CFGD_ALLOW_LOCAL_SOURCES", Some("1"), || {
+            let scratch = tempfile::tempdir().unwrap();
+            let bare = make_bare_with_manifest(&scratch, "dup-name", None);
+            let h = CliTestHarness::builder().build();
+            let url = format!("file://{}", bare.display());
+            let args = SourceAddArgs {
+                name: Some("dup-name".to_string()),
+                ..empty_source_args(url.clone())
+            };
+            // First add succeeds.
+            let r1 = super::source::cmd_source_add(&h.cli(), h.printer(), &args);
+            assert!(r1.is_ok(), "first add should succeed: {r1:?}");
+            // Second add against the same name fails with the "already exists" message.
+            let args2 = SourceAddArgs {
+                name: Some("dup-name".to_string()),
+                ..empty_source_args(url)
+            };
+            let r2 = super::source::cmd_source_add(&h.cli(), h.printer(), &args2);
+            let err = r2.expect_err("duplicate source name should fail");
+            assert!(
+                err.to_string().to_lowercase().contains("already exists"),
+                "expected 'already exists' in error, got: {err}"
+            );
+        });
+    }
+
+    #[test]
+    #[serial]
     fn cmd_source_add_with_branch_override_respects_branch_flag() {
         with_env("CFGD_ALLOW_LOCAL_SOURCES", Some("1"), || {
             let scratch = tempfile::tempdir().unwrap();
