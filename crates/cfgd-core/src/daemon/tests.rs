@@ -8352,4 +8352,224 @@ mod harness {
         super::super::cleanup_ipc_socket(&path);
         assert!(!path.exists());
     }
+
+    // ----- run_daemon_with end-to-end tests -----
+    //
+    // These drive `run_daemon_with` against externally-supplied triggers so
+    // the full SETUP body (pre-loop config, IPC path, health-server gating,
+    // startup-checkin gating, ctx assembly, loop run, cleanup) executes
+    // without binding `/tmp/cfgd.sock` or hitting the network.
+
+    fn make_overrides_for_test(
+        tmp: &tempfile::TempDir,
+        triggers: DaemonTriggers,
+    ) -> super::super::DaemonRunOverrides {
+        super::super::DaemonRunOverrides {
+            ipc_path: Some(tmp.path().join("daemon-test.sock")),
+            state_dir_override: Some(tmp.path().to_path_buf()),
+            skip_health_server: true,
+            skip_startup_checkin: true,
+            external_triggers: Some(triggers),
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn run_daemon_with_external_triggers_shuts_down_cleanly() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let _g = crate::with_test_home_guard(tmp.path());
+        let config_path = write_happy_path_config(&tmp);
+        let (triggers, senders) = make_triggers();
+        let (printer, buf) = Printer::for_test();
+        let printer = Arc::new(printer);
+        let hooks: Arc<dyn DaemonHooks> = Arc::new(NoopHooks);
+
+        let overrides = make_overrides_for_test(&tmp, triggers);
+        let daemon = tokio::spawn(super::super::run_daemon_with(
+            config_path,
+            None,
+            Arc::clone(&printer),
+            hooks,
+            overrides,
+        ));
+
+        // Give the loop a tick to enter the select! arm
+        tokio::time::sleep(StdDuration::from_millis(20)).await;
+        // Send shutdown
+        senders.shutdown_tx.send(()).unwrap();
+
+        let result = tokio::time::timeout(StdDuration::from_secs(5), daemon)
+            .await
+            .expect("daemon shutdown did not complete in time")
+            .expect("daemon join");
+        assert!(result.is_ok(), "daemon should exit Ok, got {:?}", result);
+
+        // Banner emitted by print_startup_banner
+        let out = buf.lock().unwrap().clone();
+        assert!(
+            out.contains("Daemon running"),
+            "banner should announce running state, got: {}",
+            out
+        );
+        assert!(
+            out.contains("Daemon stopped"),
+            "shutdown should print stopped message, got: {}",
+            out
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn run_daemon_with_processes_reconcile_tick_via_external_trigger() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let _g = crate::with_test_home_guard(tmp.path());
+        let config_path = write_happy_path_config(&tmp);
+        let (triggers, senders) = make_triggers();
+        let (printer, _buf) = Printer::for_test();
+        let printer = Arc::new(printer);
+        let hooks: Arc<dyn DaemonHooks> = Arc::new(NoopHooks);
+
+        let overrides = make_overrides_for_test(&tmp, triggers);
+        let daemon = tokio::spawn(super::super::run_daemon_with(
+            config_path,
+            None,
+            Arc::clone(&printer),
+            hooks,
+            overrides,
+        ));
+
+        // Drive a reconcile tick (default task __default__ is auto-built
+        // from setup.reconcile_tasks with a 300s interval; first tick
+        // always fires because last_reconciled is None).
+        senders.reconcile_tx.send(()).await.unwrap();
+        // Allow handle_reconcile to land before we shut down.
+        tokio::time::sleep(StdDuration::from_millis(150)).await;
+        senders.shutdown_tx.send(()).unwrap();
+
+        let result = tokio::time::timeout(StdDuration::from_secs(5), daemon)
+            .await
+            .expect("daemon should shut down in time")
+            .expect("daemon join");
+        assert!(result.is_ok(), "daemon Ok, got {:?}", result);
+        // The state dir override is honored; a state.db should now exist
+        // (handle_reconcile opens the store via state_dir_override).
+        let store = tmp.path().join("cfgd.db");
+        // Either the reconcile-driven path or the daemon-startup path may
+        // create it; tolerate either name (the override-side handler uses
+        // `cfgd.db` while the production-default uses `state.db`).
+        assert!(
+            store.exists() || tmp.path().join("state.db").exists(),
+            "expected a state DB under {}",
+            tmp.path().display()
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn run_daemon_with_processes_sync_tick_with_no_tasks() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let _g = crate::with_test_home_guard(tmp.path());
+        let config_path = write_happy_path_config(&tmp);
+        let (triggers, senders) = make_triggers();
+        let (printer, _buf) = Printer::for_test();
+        let printer = Arc::new(printer);
+        let hooks: Arc<dyn DaemonHooks> = Arc::new(NoopHooks);
+
+        let overrides = make_overrides_for_test(&tmp, triggers);
+        let daemon = tokio::spawn(super::super::run_daemon_with(
+            config_path,
+            None,
+            Arc::clone(&printer),
+            hooks,
+            overrides,
+        ));
+
+        senders.sync_tx.send(()).await.unwrap();
+        tokio::time::sleep(StdDuration::from_millis(60)).await;
+        senders.shutdown_tx.send(()).unwrap();
+
+        let result = tokio::time::timeout(StdDuration::from_secs(5), daemon)
+            .await
+            .expect("daemon should shut down in time")
+            .expect("daemon join");
+        assert!(result.is_ok(), "daemon Ok, got {:?}", result);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn run_daemon_with_processes_sighup_tick_and_reloads_intervals() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let _g = crate::with_test_home_guard(tmp.path());
+        // Start with the happy-path config (no daemon spec).
+        let config_path = write_happy_path_config(&tmp);
+        let (triggers, senders) = make_triggers();
+        let (printer, buf) = Printer::for_test();
+        let printer = Arc::new(printer);
+        let hooks: Arc<dyn DaemonHooks> = Arc::new(NoopHooks);
+
+        let overrides = make_overrides_for_test(&tmp, triggers);
+        let daemon = tokio::spawn(super::super::run_daemon_with(
+            config_path.clone(),
+            None,
+            Arc::clone(&printer),
+            hooks,
+            overrides,
+        ));
+
+        // Rewrite the config to introduce daemon reconcile interval.
+        std::fs::write(
+            &config_path,
+            "apiVersion: cfgd.io/v1alpha1\nkind: Cfgd\nmetadata:\n  name: t\nspec:\n  profile: default\n  daemon:\n    enabled: true\n    reconcile:\n      interval: 45s\n",
+        )
+        .unwrap();
+        senders.sighup_tx.send(()).await.unwrap();
+        tokio::time::sleep(StdDuration::from_millis(80)).await;
+        senders.shutdown_tx.send(()).unwrap();
+
+        let result = tokio::time::timeout(StdDuration::from_secs(5), daemon)
+            .await
+            .expect("daemon should shut down in time")
+            .expect("daemon join");
+        assert!(result.is_ok(), "daemon Ok, got {:?}", result);
+        let out = buf.lock().unwrap().clone();
+        assert!(
+            out.contains("Reloading configuration") || out.contains("Timer intervals reloaded"),
+            "expected sighup reload chatter, got: {}",
+            out
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn run_daemon_with_errors_when_ipc_path_has_live_listener() {
+        use std::os::unix::net::UnixListener as StdUnixListener;
+        let tmp = tempfile::TempDir::new().unwrap();
+        let _g = crate::with_test_home_guard(tmp.path());
+        let config_path = write_happy_path_config(&tmp);
+        let ipc_path = tmp.path().join("busy.sock");
+        let _listener = StdUnixListener::bind(&ipc_path).unwrap();
+
+        let (triggers, _senders) = make_triggers();
+        let (printer, _buf) = Printer::for_test();
+        let printer = Arc::new(printer);
+        let hooks: Arc<dyn DaemonHooks> = Arc::new(NoopHooks);
+
+        let overrides = super::super::DaemonRunOverrides {
+            ipc_path: Some(ipc_path.clone()),
+            state_dir_override: Some(tmp.path().to_path_buf()),
+            skip_health_server: true,
+            skip_startup_checkin: true,
+            external_triggers: Some(triggers),
+        };
+        let result = super::super::run_daemon_with(
+            config_path,
+            None,
+            Arc::clone(&printer),
+            hooks,
+            overrides,
+        )
+        .await;
+        let err = result.expect_err("expect AlreadyRunning error");
+        let msg = format!("{err}");
+        assert!(
+            msg.to_lowercase().contains("already") || msg.to_lowercase().contains("running"),
+            "expected AlreadyRunning, got: {msg}"
+        );
+    }
 }

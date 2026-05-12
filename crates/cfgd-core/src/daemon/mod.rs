@@ -450,12 +450,72 @@ pub async fn run_daemon(
     printer: Arc<Printer>,
     hooks: Arc<dyn DaemonHooks>,
 ) -> Result<()> {
+    run_daemon_with(
+        config_path,
+        profile_override,
+        printer,
+        hooks,
+        DaemonRunOverrides::default(),
+    )
+    .await
+}
+
+/// Test-shaped knobs for [`run_daemon_with`]. Production callers go through
+/// [`run_daemon`] which uses `DaemonRunOverrides::default()` and matches the
+/// pre-refactor behaviour byte-for-byte. Tests set the fields they need to
+/// bypass real-world side effects:
+///
+/// * `ipc_path` — point the health socket / already-running check at a
+///   tempdir so concurrent tests don't fight over `/tmp/cfgd.sock`.
+/// * `state_dir_override` — redirect both the `DaemonState` store path and
+///   the per-tick `handle_reconcile` / `handle_compliance_snapshot` state
+///   dir to a tempdir so the real `~/.local/share/cfgd/` is never touched.
+/// * `skip_health_server` — don't spawn the HTTP/IPC health server. Useful
+///   when a test doesn't need `/healthz` or `/drift` and wants to avoid the
+///   socket bind entirely.
+/// * `skip_startup_checkin` — even if the parsed config has a Server origin,
+///   suppress the startup `try_server_checkin` call. Keeps tests offline.
+/// * `external_triggers` — when supplied, the function bypasses all
+///   real-world trigger sources (file_watcher, interval pumps, SIGHUP /
+///   SIGINT / SIGTERM handlers) and drives the loop entirely from the
+///   provided receivers. The test owns the matching senders and pushes
+///   events to drive specific arms in `run_daemon_loop`.
+#[derive(Default)]
+pub(super) struct DaemonRunOverrides {
+    pub ipc_path: Option<PathBuf>,
+    pub state_dir_override: Option<PathBuf>,
+    pub skip_health_server: bool,
+    pub skip_startup_checkin: bool,
+    pub(in crate::daemon) external_triggers: Option<DaemonTriggers>,
+}
+
+/// Bundle of trigger receivers + the task handles that feed them. Production
+/// callers build this from spawned pumps + signal handlers; tests build it
+/// from externally-owned senders with `pump` / `shutdown_task` fields left
+/// `None`. Lives in `run_daemon_with` only — not exposed.
+struct TriggerSetup {
+    triggers: DaemonTriggers,
+    reconcile_pump: Option<tokio::task::JoinHandle<()>>,
+    sync_pump: Option<tokio::task::JoinHandle<()>>,
+    version_check_pump: Option<tokio::task::JoinHandle<()>>,
+    compliance_pump: Option<tokio::task::JoinHandle<()>>,
+    sighup_pump: Option<tokio::task::JoinHandle<()>>,
+    shutdown_task: Option<tokio::task::JoinHandle<()>>,
+}
+
+pub(super) async fn run_daemon_with(
+    config_path: PathBuf,
+    profile_override: Option<String>,
+    printer: Arc<Printer>,
+    hooks: Arc<dyn DaemonHooks>,
+    overrides: DaemonRunOverrides,
+) -> Result<()> {
     printer.header("Daemon");
     printer.info("Starting cfgd daemon...");
 
     let setup = build_pre_loop_setup(&config_path, profile_override.as_deref(), &*hooks)?;
 
-    let daemon_state = init_daemon_state(None);
+    let daemon_state = init_daemon_state(overrides.state_dir_override.as_deref());
     let state = Arc::new(Mutex::new(daemon_state));
 
     // Initialize per-source status entries
@@ -464,27 +524,44 @@ pub async fn run_daemon(
         st.sources.extend(setup.initial_source_status.clone());
     }
 
-    // Set up file watcher channel
-    let (file_tx, file_rx) = mpsc::channel::<PathBuf>(256);
-    let _watcher = setup_file_watcher(file_tx, &setup.managed_paths, &setup.config_dir)?;
+    // External-triggers mode supplies its own file_rx; production wires up a
+    // notify-based watcher and pushes via file_tx → file_rx.
+    let using_external_triggers = overrides.external_triggers.is_some();
+    let (file_rx_for_triggers, _watcher_handle): (
+        Option<mpsc::Receiver<PathBuf>>,
+        Option<notify::RecommendedWatcher>,
+    ) = if using_external_triggers {
+        (None, None)
+    } else {
+        let (file_tx, file_rx) = mpsc::channel::<PathBuf>(256);
+        let watcher = setup_file_watcher(file_tx, &setup.managed_paths, &setup.config_dir)?;
+        (Some(file_rx), Some(watcher))
+    };
 
-    let ipc_path = PathBuf::from(DEFAULT_IPC_PATH);
+    let ipc_path = overrides
+        .ipc_path
+        .clone()
+        .unwrap_or_else(|| PathBuf::from(DEFAULT_IPC_PATH));
     check_already_running(&ipc_path)?;
 
-    // Start health server
-    let health_state = Arc::clone(&state);
-    let health_ipc_path = ipc_path.to_string_lossy().to_string();
-    let health_handle = tokio::spawn(async move {
-        if let Err(e) = run_health_server(&health_ipc_path, health_state).await {
-            tracing::error!(error = %e, "health server error");
-        }
-    });
+    // Start health server (skippable in tests that don't need /healthz).
+    let health_handle = if overrides.skip_health_server {
+        None
+    } else {
+        let health_state = Arc::clone(&state);
+        let health_ipc_path = ipc_path.to_string_lossy().to_string();
+        Some(tokio::spawn(async move {
+            if let Err(e) = run_health_server(&health_ipc_path, health_state).await {
+                tracing::error!(error = %e, "health server error");
+            }
+        }))
+    };
 
     let intervals = format_interval_lines(&setup.parsed, setup.compliance_interval);
     print_startup_banner(&printer, &intervals, &ipc_path.to_string_lossy());
 
-    // Initial server check-in at startup
-    if setup.server_checkin_url.is_some() {
+    // Initial server check-in at startup (skippable for offline tests).
+    if setup.server_checkin_url.is_some() && !overrides.skip_startup_checkin {
         let startup_cfg = setup.cfg.clone();
         let startup_config_path = config_path.clone();
         let startup_profile_override = profile_override.clone();
@@ -510,45 +587,83 @@ pub async fn run_daemon(
         setup.shortest_sync.as_secs(),
     ));
 
-    // Spawn pump tasks. Each one converts a periodic timer into a stream of
-    // `()` events on an mpsc channel that the loop awaits via select!.
-    let (reconcile_tx, reconcile_rx) = mpsc::channel::<()>(8);
-    let (sync_tx, sync_rx) = mpsc::channel::<()>(8);
-    let (version_check_tx, version_check_rx) = mpsc::channel::<()>(8);
-    let (compliance_tx, compliance_rx) = mpsc::channel::<()>(8);
-    let (sighup_tx, sighup_rx) = mpsc::channel::<()>(8);
+    // Build the triggers + spawn the production pumps/signal handlers, OR
+    // adopt the externally-supplied triggers verbatim. The cleanup path at
+    // the bottom only aborts what was actually spawned.
+    let TriggerSetup {
+        triggers,
+        reconcile_pump,
+        sync_pump,
+        version_check_pump,
+        compliance_pump,
+        sighup_pump,
+        shutdown_task,
+    } = if let Some(t) = overrides.external_triggers {
+        TriggerSetup {
+            triggers: t,
+            reconcile_pump: None,
+            sync_pump: None,
+            version_check_pump: None,
+            compliance_pump: None,
+            sighup_pump: None,
+            shutdown_task: None,
+        }
+    } else {
+        let (reconcile_tx, reconcile_rx) = mpsc::channel::<()>(8);
+        let (sync_tx, sync_rx) = mpsc::channel::<()>(8);
+        let (version_check_tx, version_check_rx) = mpsc::channel::<()>(8);
+        let (compliance_tx, compliance_rx) = mpsc::channel::<()>(8);
+        let (sighup_tx, sighup_rx) = mpsc::channel::<()>(8);
 
-    let reconcile_pump = spawn_interval_pump(Arc::clone(&reconcile_secs), reconcile_tx);
-    let sync_pump = spawn_interval_pump(Arc::clone(&sync_secs), sync_tx);
+        let reconcile_pump = spawn_interval_pump(Arc::clone(&reconcile_secs), reconcile_tx);
+        let sync_pump = spawn_interval_pump(Arc::clone(&sync_secs), sync_tx);
 
-    let version_check_secs = Arc::new(std::sync::atomic::AtomicU64::new(
-        crate::upgrade::version_check_interval().as_secs(),
-    ));
-    let version_check_pump = spawn_interval_pump(version_check_secs, version_check_tx);
+        let version_check_secs = Arc::new(std::sync::atomic::AtomicU64::new(
+            crate::upgrade::version_check_interval().as_secs(),
+        ));
+        let version_check_pump = spawn_interval_pump(version_check_secs, version_check_tx);
 
-    let compliance_pump = setup.compliance_interval.map(|d| {
-        let secs = Arc::new(std::sync::atomic::AtomicU64::new(d.as_secs()));
-        spawn_interval_pump(secs, compliance_tx)
-    });
+        let compliance_pump = setup.compliance_interval.map(|d| {
+            let secs = Arc::new(std::sync::atomic::AtomicU64::new(d.as_secs()));
+            spawn_interval_pump(secs, compliance_tx)
+        });
 
-    // Unix: spawn a task that pushes a SIGHUP-pump event on each signal.
-    // Windows: SIGHUP does not exist; the receiver simply never fires.
-    #[cfg(unix)]
-    let sighup_pump = Some(spawn_sighup_pump(sighup_tx)?);
-    #[cfg(not(unix))]
-    let sighup_pump: Option<tokio::task::JoinHandle<()>> = {
-        let _ = sighup_tx; // suppress unused warning on Windows
-        None
+        #[cfg(unix)]
+        let sighup_pump = Some(spawn_sighup_pump(sighup_tx)?);
+        #[cfg(not(unix))]
+        let sighup_pump: Option<tokio::task::JoinHandle<()>> = {
+            let _ = sighup_tx; // suppress unused warning on Windows
+            None
+        };
+
+        let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+        let shutdown_printer = Arc::clone(&printer);
+        let shutdown_task = tokio::spawn(async move {
+            wait_for_shutdown(shutdown_printer).await;
+            let _ = shutdown_tx.send(());
+        });
+
+        let file_rx = file_rx_for_triggers.ok_or_else(|| DaemonError::WatchError {
+            message: "internal: production path did not initialise file watcher".to_string(),
+        })?;
+        TriggerSetup {
+            triggers: DaemonTriggers {
+                file_rx,
+                reconcile_rx,
+                sync_rx,
+                version_check_rx,
+                compliance_rx,
+                sighup_rx,
+                shutdown_rx,
+            },
+            reconcile_pump: Some(reconcile_pump),
+            sync_pump: Some(sync_pump),
+            version_check_pump: Some(version_check_pump),
+            compliance_pump,
+            sighup_pump,
+            shutdown_task: Some(shutdown_task),
+        }
     };
-
-    // Shutdown signaller: SIGTERM or Ctrl+C fires a oneshot that the loop
-    // awaits to break out cleanly.
-    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
-    let shutdown_printer = Arc::clone(&printer);
-    let shutdown_task = tokio::spawn(async move {
-        wait_for_shutdown(shutdown_printer).await;
-        let _ = shutdown_tx.send(());
-    });
 
     let ctx = DaemonLoopContext {
         state: Arc::clone(&state),
@@ -560,16 +675,7 @@ pub async fn run_daemon(
         notify_on_drift: setup.parsed.notify_on_drift,
         compliance_config: setup.compliance_config.clone(),
         printer: Arc::clone(&printer),
-        state_dir_override: None,
-    };
-    let triggers = DaemonTriggers {
-        file_rx,
-        reconcile_rx,
-        sync_rx,
-        version_check_rx,
-        compliance_rx,
-        sighup_rx,
-        shutdown_rx,
+        state_dir_override: overrides.state_dir_override.clone(),
     };
 
     let loop_result = run_daemon_loop(
@@ -582,21 +688,31 @@ pub async fn run_daemon(
     )
     .await;
 
-    // Shut down all spawned pump / signal tasks
-    reconcile_pump.abort();
-    sync_pump.abort();
-    version_check_pump.abort();
+    // Shut down whatever the trigger-builder block actually spawned.
+    if let Some(h) = reconcile_pump {
+        h.abort();
+    }
+    if let Some(h) = sync_pump {
+        h.abort();
+    }
+    if let Some(h) = version_check_pump {
+        h.abort();
+    }
     if let Some(h) = compliance_pump {
         h.abort();
     }
     if let Some(h) = sighup_pump {
         h.abort();
     }
-    shutdown_task.abort();
+    if let Some(h) = shutdown_task {
+        h.abort();
+    }
 
-    // Shutdown health server
-    health_handle.abort();
-    let _ = health_handle.await;
+    // Shutdown health server (only present when not skipped).
+    if let Some(h) = health_handle {
+        h.abort();
+        let _ = h.await;
+    }
     cleanup_ipc_socket(&ipc_path);
 
     printer.success("Daemon stopped");
