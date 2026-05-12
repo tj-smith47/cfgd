@@ -32,7 +32,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - uses: tj-smith47/anodizer-action@master
+      - uses: tj-smith47/anodizer-action@v1
         id: anodizer
         with:
           from-artifact: anodizer-linux
@@ -80,7 +80,7 @@ jobs:
           repo-token: ${{ github.token }}
 
       - name: Run anodizer release --split
-        uses: tj-smith47/anodizer-action@master
+        uses: tj-smith47/anodizer-action@v1
         with:
           from-artifact: ${{ matrix.anodizer_artifact }}
           artifact-run-id: auto
@@ -114,7 +114,7 @@ jobs:
       # --merge is only valid when split build artifacts exist (binary crates).
       # Library-only crates run the full pipeline in one shot.
       - name: Run anodizer release
-        uses: tj-smith47/anodizer-action@master
+        uses: tj-smith47/anodizer-action@v1
         with:
           from-artifact: anodizer-linux
           artifact-run-id: auto

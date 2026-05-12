@@ -195,7 +195,7 @@ jobs:
           fetch-depth: 0
       # Reuse the anodizer binary uploaded by the test job — no rebuild.
       - name: Validate release pipeline via anodizer
-        uses: tj-smith47/anodizer-action@master
+        uses: tj-smith47/anodizer-action@v1
         with:
           from-artifact: anodizer-linux
           args: release --snapshot --single-target --clean --dry-run
