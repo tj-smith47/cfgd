@@ -205,7 +205,7 @@ workspaces:
           # when the file is absent (local snapshot / dry-run flows where
           # no secret was provisioned).
           extra_files:
-            - glob: "dist/anodizer-apk-signing-key.rsa.pub"
+            - glob: "dist/*-apk-signing-key.rsa.pub"
               allow_empty: true
         publish:
           # `cargo:` inherits `index_timeout: 600` from defaults.publish.cargo.
