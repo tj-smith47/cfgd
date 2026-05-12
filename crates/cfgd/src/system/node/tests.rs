@@ -2865,3 +2865,54 @@ fn kubelet_apply_writes_config_then_returns_err_when_systemctl_fails() {
         "err should mention systemctl/kubelet, got: {msg}"
     );
 }
+
+#[test]
+fn kubelet_apply_with_existing_config_triggers_rollback_attempt_after_systemctl_fails() {
+    // Drives the backup-restore branch at kubelet.rs:166-180. Pre-stage a
+    // valid kubelet config so `capture_file_state` returns Some(state) with
+    // !is_symlink && !oversized. apply writes the new merged config; restart
+    // fails (systemctl unavailable / no kubelet unit); the rollback arm fires,
+    // attempts to atomic_write the original bytes back, then re-tries the
+    // restart (which fails again). Asserts:
+    //   - the printer warning "kubelet restart failed — restoring previous
+    //     config" was emitted (proves the if-let-Some(backup) branch ran)
+    //   - the final config on disk matches the prior contents (rollback's
+    //     atomic_write succeeded)
+    let dir = tempdir().unwrap();
+    let config = dir.path().join("config.yaml");
+    let original = "clusterDomain: cluster.local\nmaxPods: 50\n";
+    std::fs::write(&config, original).unwrap();
+
+    let mut settings = serde_yaml::Mapping::new();
+    settings.insert(
+        serde_yaml::Value::String("maxPods".into()),
+        serde_yaml::Value::Number(110.into()),
+    );
+    let mut m = serde_yaml::Mapping::new();
+    m.insert(
+        serde_yaml::Value::String("configPath".into()),
+        serde_yaml::Value::String(config.to_str().unwrap().into()),
+    );
+    m.insert(
+        serde_yaml::Value::String("settings".into()),
+        serde_yaml::Value::Mapping(settings),
+    );
+    let desired = serde_yaml::Value::Mapping(m);
+    let kc = KubeletConfigurator;
+    let (printer, buf) = cfgd_core::output::Printer::for_test();
+    let _ = kc.apply(&desired, &printer);
+
+    let captured = buf.lock().unwrap().clone();
+    assert!(
+        captured.contains("restoring previous config"),
+        "rollback warning must fire after restart failure: {captured}"
+    );
+    // After rollback the file on disk should contain the original bytes
+    // (the rollback's atomic_write succeeded even though restart did not).
+    let after = std::fs::read_to_string(&config).unwrap();
+    assert_eq!(
+        after.trim(),
+        original.trim(),
+        "rollback must restore prior config contents"
+    );
+}
