@@ -4199,6 +4199,94 @@ mod cmd_module_add_remote_local_bare {
 
     #[test]
     #[serial]
+    fn cmd_module_upgrade_with_no_new_ref_logs_latest_head_and_short_circuits() {
+        // Drives the `new_ref: None` arm of cmd_module_upgrade. The body
+        // calls fetch_git_source with `tag: None` (no checkout advance —
+        // checkout_ref short-circuits when both tag/git_ref are None),
+        // reads the cached HEAD commit, logs it via "Latest commit:", and
+        // then short-circuits at the same-commit guard because HEAD still
+        // points at the originally-pinned tag's commit. Pins both the
+        // "Latest commit:" log line shape AND the contract that bare
+        // `cfgd module upgrade <name>` is a no-op without an explicit tag.
+        let work = setup_config_dir();
+        let _home = cfgd_core::with_test_home_guard(work.path());
+        let _env = EnvGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+
+        let bare_root = tempfile::tempdir().unwrap();
+        let bare = make_bare_with_module(bare_root.path(), "mymod", "v1.0.0");
+        let url_v1 = format!("file://{}@v1.0.0", bare.display());
+
+        let cli = test_cli(work.path());
+        let (printer, _buf) = cfgd_core::output::Printer::for_test();
+        cmd_module_add_remote(&cli, &printer, &url_v1, None, true, true).unwrap();
+
+        let lock_v1 = std::fs::read_to_string(work.path().join("modules.lock")).unwrap();
+
+        let (printer2, buf2) = cfgd_core::output::Printer::for_test();
+        cmd_module_upgrade(&cli, &printer2, "mymod", None, true, true)
+            .expect("upgrade with new_ref=None should succeed");
+
+        let out = buf2.lock().unwrap();
+        assert!(
+            out.contains("Latest commit:"),
+            "no-new_ref arm should log the resolved HEAD: {out}"
+        );
+        assert!(
+            out.contains("already at this version"),
+            "HEAD still points at the tagged commit, so same-commit short-circuit should fire: {out}"
+        );
+
+        // Lockfile must be byte-identical — the short-circuit fires before save_lockfile.
+        let lock_after = std::fs::read_to_string(work.path().join("modules.lock")).unwrap();
+        assert_eq!(
+            lock_v1, lock_after,
+            "lockfile must not change when upgrade resolves to the same commit"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn cmd_module_upgrade_returns_early_when_already_at_target_commit() {
+        // Drives the `new_commit == old_entry.commit` early-return arm:
+        // upgrade requested against the exact tag the lockfile already pins,
+        // so cmd_module_upgrade should bail with "already at this version"
+        // BEFORE rewriting the lockfile.
+        let work = setup_config_dir();
+        let _home = cfgd_core::with_test_home_guard(work.path());
+        let _env = EnvGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+
+        let bare_root = tempfile::tempdir().unwrap();
+        let bare = make_bare_with_module(bare_root.path(), "mymod", "v1.0.0");
+        let url_v1 = format!("file://{}@v1.0.0", bare.display());
+
+        let cli = test_cli(work.path());
+        let (printer, _buf) = cfgd_core::output::Printer::for_test();
+        cmd_module_add_remote(&cli, &printer, &url_v1, None, true, true).unwrap();
+
+        let lock_before = std::fs::read_to_string(work.path().join("modules.lock")).unwrap();
+
+        // Re-upgrade to the SAME tag — should detect the same commit and bail.
+        let (printer2, buf2) = cfgd_core::output::Printer::for_test();
+        cmd_module_upgrade(&cli, &printer2, "mymod", Some("v1.0.0"), true, true)
+            .expect("re-upgrading to current ref should succeed (no-op)");
+
+        let out = buf2.lock().unwrap();
+        assert!(
+            out.contains("already at this version"),
+            "early-return arm should announce no-op: {out}"
+        );
+
+        // Lockfile content must not have changed — proves the early-return
+        // fired BEFORE save_lockfile was called.
+        let lock_after = std::fs::read_to_string(work.path().join("modules.lock")).unwrap();
+        assert_eq!(
+            lock_before, lock_after,
+            "lockfile must be byte-identical after a same-commit upgrade"
+        );
+    }
+
+    #[test]
+    #[serial]
     fn cmd_module_upgrade_bails_when_target_is_a_local_module() {
         let work = setup_config_dir();
         let _home = cfgd_core::with_test_home_guard(work.path());
