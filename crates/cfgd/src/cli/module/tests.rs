@@ -4476,4 +4476,167 @@ mod cmd_module_add_from_registry_local {
             "error should name the missing module: {msg}"
         );
     }
+
+    // ─── cmd_module_search end-to-end against the local registry fixture ──
+    //
+    // The non-end-to-end search tests above cover the no-config / no-registries
+    // early returns. These tests drive the full body: fetch_registry_modules
+    // for each declared registry, filter via `filter_and_build_search_results`,
+    // route to structured / wide / standard output, and the error-arm when a
+    // registry fetch fails.
+
+    #[test]
+    #[serial]
+    fn cmd_module_search_returns_matching_module_in_table() {
+        let work = setup_config_dir();
+        let _home = cfgd_core::with_test_home_guard(work.path());
+        let _env = EnvGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+
+        let src_root = tempfile::tempdir().unwrap();
+        let src = init_registry_source(src_root.path(), "alpha", "1.0.0", "Alpha module");
+        let reg_url = format!("file://{}", src.display());
+        write_cfgd_yaml_with_registry(work.path(), "myreg", &reg_url);
+
+        let cli = test_cli(work.path());
+        let (printer, buf) = cfgd_core::output::Printer::for_test();
+        cmd_module_search(&cli, &printer, "alph").expect("search should succeed");
+
+        let out = buf.lock().unwrap();
+        assert!(
+            out.contains("Search Modules: alph"),
+            "header should include the query: {out}"
+        );
+        assert!(
+            out.contains("Searching myreg"),
+            "should announce per-registry scan: {out}"
+        );
+        assert!(out.contains("alpha"), "module row should appear: {out}");
+        assert!(
+            out.contains("v1.0.0"),
+            "latest tag should render in the Latest column: {out}"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn cmd_module_search_reports_no_matches_when_query_misses() {
+        let work = setup_config_dir();
+        let _home = cfgd_core::with_test_home_guard(work.path());
+        let _env = EnvGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+
+        let src_root = tempfile::tempdir().unwrap();
+        let src = init_registry_source(src_root.path(), "alpha", "1.0.0", "Alpha module");
+        let reg_url = format!("file://{}", src.display());
+        write_cfgd_yaml_with_registry(work.path(), "myreg", &reg_url);
+
+        let cli = test_cli(work.path());
+        let (printer, buf) = cfgd_core::output::Printer::for_test();
+        cmd_module_search(&cli, &printer, "no-such-name").expect("search should succeed");
+
+        let out = buf.lock().unwrap();
+        assert!(
+            out.contains("Search Modules: no-such-name"),
+            "header should include the (missing) query: {out}"
+        );
+        assert!(
+            out.contains("No modules found matching your query"),
+            "empty-result message should render: {out}"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn cmd_module_search_wide_format_includes_registry_column() {
+        let work = setup_config_dir();
+        let _home = cfgd_core::with_test_home_guard(work.path());
+        let _env = EnvGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+
+        let src_root = tempfile::tempdir().unwrap();
+        let src = init_registry_source(src_root.path(), "alpha", "1.0.0", "Alpha module");
+        let reg_url = format!("file://{}", src.display());
+        write_cfgd_yaml_with_registry(work.path(), "myreg", &reg_url);
+
+        let mut cli = test_cli(work.path());
+        cli.output = super::OutputFormatArg(cfgd_core::output::OutputFormat::Wide);
+        let (printer, buf) =
+            cfgd_core::output::Printer::for_test_with_format(cfgd_core::output::OutputFormat::Wide);
+        cmd_module_search(&cli, &printer, "alph").expect("wide search should succeed");
+
+        let out = buf.lock().unwrap();
+        assert!(
+            out.contains("Registry"),
+            "wide table should include a Registry column: {out}"
+        );
+        assert!(
+            out.contains("myreg"),
+            "registry name should render in the Registry column: {out}"
+        );
+        assert!(
+            out.contains("Alpha module"),
+            "description should render in the Description column: {out}"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn cmd_module_search_json_emits_results_array() {
+        let work = setup_config_dir();
+        let _home = cfgd_core::with_test_home_guard(work.path());
+        let _env = EnvGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+
+        let src_root = tempfile::tempdir().unwrap();
+        let src = init_registry_source(src_root.path(), "alpha", "1.0.0", "Alpha module");
+        let reg_url = format!("file://{}", src.display());
+        write_cfgd_yaml_with_registry(work.path(), "myreg", &reg_url);
+
+        let cli = test_cli_json(work.path());
+        let (printer, buf) =
+            cfgd_core::output::Printer::for_test_with_format(cfgd_core::output::OutputFormat::Json);
+        cmd_module_search(&cli, &printer, "alpha").expect("json search should succeed");
+
+        let out = buf.lock().unwrap();
+        let json: serde_json::Value = serde_json::from_str(out.trim())
+            .unwrap_or_else(|e| panic!("structured output should be valid JSON: {e}, raw: {out}"));
+        let arr = json
+            .as_array()
+            .expect("structured output should be an array");
+        assert_eq!(arr.len(), 1, "should emit exactly one result: {out}");
+        // `name` is registry-qualified (`<registry>/<module>`) so callers can
+        // round-trip it back through `cfgd module add` without losing context.
+        assert_eq!(arr[0]["name"], "myreg/alpha");
+        assert_eq!(arr[0]["registry"], "myreg");
+        assert_eq!(arr[0]["version"], "v1.0.0");
+        assert_eq!(arr[0]["description"], "Alpha module");
+    }
+
+    #[test]
+    #[serial]
+    fn cmd_module_search_unreachable_registry_emits_failure_warning() {
+        let work = setup_config_dir();
+        let _home = cfgd_core::with_test_home_guard(work.path());
+        let _env = EnvGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+
+        // Point the registry URL at a path that doesn't exist — the
+        // file:// resolver should fail to clone, the search should NOT
+        // bail (it should continue to the empty-results print), and the
+        // failure should surface as a warning line.
+        let ghost = work.path().join("does-not-exist-registry");
+        let ghost_url = format!("file://{}", ghost.display());
+        write_cfgd_yaml_with_registry(work.path(), "myreg", &ghost_url);
+
+        let cli = test_cli(work.path());
+        let (printer, buf) = cfgd_core::output::Printer::for_test();
+        cmd_module_search(&cli, &printer, "anything")
+            .expect("search should succeed even when a registry fails");
+
+        let out = buf.lock().unwrap();
+        assert!(
+            out.contains("Failed to fetch source: myreg:"),
+            "failure should mention the registry name + delimiter: {out}"
+        );
+        assert!(
+            out.contains("No modules found matching your query"),
+            "with all registries failing, the empty-result message should render: {out}"
+        );
+    }
 }
