@@ -9122,3 +9122,139 @@ fn discover_managed_paths_returns_empty_when_named_profile_does_not_exist() {
         "profile name set but resolve_profile fails → empty path list, no panic"
     );
 }
+
+// ---------------------------------------------------------------------------
+// handle_reconcile — modules block (reconcile.rs lines 264-291)
+// Covers the `!resolved.merged.modules.is_empty()` branch of the
+// module-resolution if/else. Without these, the entire block (cache_base
+// derivation, quiet_printer construction, resolve_modules call, and both
+// the Ok and Err arms) is skipped because every existing reconcile test
+// uses a profile with no `modules:` list.
+// ---------------------------------------------------------------------------
+
+/// Build the minimal CfgdConfig + Profile pair that drives `handle_reconcile`
+/// into the modules-resolution block. The profile lists `module_names` in its
+/// `spec.modules:` array; the daemon will then call `resolve_modules` against
+/// `<config_dir>/modules/`.
+fn write_config_with_module_refs(tmp: &Path, module_names: &[&str]) -> PathBuf {
+    let config_path = tmp.join("config.yaml");
+    std::fs::write(
+        &config_path,
+        "apiVersion: cfgd.io/v1alpha1\nkind: CfgdConfig\nmetadata:\n  name: test\nspec:\n  profile: default\n",
+    )
+    .unwrap();
+    let profiles_dir = tmp.join("profiles");
+    std::fs::create_dir_all(&profiles_dir).unwrap();
+    let mods_inline = module_names
+        .iter()
+        .map(|n| format!("    - {n}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    std::fs::write(
+        profiles_dir.join("default.yaml"),
+        format!(
+            "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec:\n  modules:\n{mods_inline}\n",
+        ),
+    )
+    .unwrap();
+    config_path
+}
+
+/// DaemonHooks impl with no packages and no files. Lets the reconcile flow
+/// reach the modules block without needing a registry, package planner, or
+/// file planner — those branches are already covered by sibling tests.
+struct EmptyPlanHooks;
+impl DaemonHooks for EmptyPlanHooks {
+    fn build_registry(&self, _: &CfgdConfig) -> ProviderRegistry {
+        ProviderRegistry::new()
+    }
+    fn plan_files(&self, _: &Path, _: &ResolvedProfile) -> crate::errors::Result<Vec<FileAction>> {
+        Ok(vec![])
+    }
+    fn plan_packages(
+        &self,
+        _: &MergedProfile,
+        _: &[&dyn PackageManager],
+    ) -> crate::errors::Result<Vec<PackageAction>> {
+        Ok(vec![])
+    }
+    fn extend_registry_custom_managers(&self, _: &mut ProviderRegistry, _: &config::PackagesSpec) {}
+    fn expand_tilde(&self, path: &Path) -> PathBuf {
+        crate::expand_tilde(path)
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn handle_reconcile_warns_when_module_resolution_fails_and_continues() {
+    // Profile references a module name with no on-disk module dir, so
+    // `resolve_modules -> resolve_dependency_order` returns Err. The reconcile
+    // body must take the `tracing::warn!` arm at reconcile.rs:284-287 and
+    // substitute Vec::new() for resolved_modules; the rest of the reconcile
+    // (plan generation, state update) must continue normally.
+    let tmp = tempfile::tempdir().unwrap();
+    let state_dir = tmp.path().join("state");
+    std::fs::create_dir_all(&state_dir).unwrap();
+    let config_path = write_config_with_module_refs(tmp.path(), &["does-not-exist"]);
+    // No `modules/` dir is written — load_all_modules finds nothing, then
+    // resolve_dependency_order errors with "module not found".
+
+    let state = Arc::new(Mutex::new(DaemonState::new()));
+    let notifier = Arc::new(Notifier::new(NotifyMethod::Stdout, None));
+    let st = Arc::clone(&state);
+    let not = Arc::clone(&notifier);
+    let sd = state_dir.clone();
+    let cp = config_path.clone();
+    tokio::task::spawn_blocking(move || {
+        handle_reconcile(&cp, None, &st, &not, false, &EmptyPlanHooks, Some(&sd));
+    })
+    .await
+    .unwrap();
+
+    // The reconcile completed past the modules block — last_reconcile is set.
+    let guard = state.lock().await;
+    assert!(
+        guard.last_reconcile.is_some(),
+        "warn-on-module-fail must not short-circuit reconcile — last_reconcile should be set"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn handle_reconcile_resolves_non_empty_modules_when_module_dir_exists() {
+    // Profile lists a module that DOES exist on disk; load_all_modules and
+    // resolve_dependency_order both succeed, the Ok arm at reconcile.rs:282-283
+    // fires, and the resulting Vec<ResolvedModule> flows into reconciler.plan
+    // (covered by sibling tests; here we only assert the reconcile completes).
+    let tmp = tempfile::tempdir().unwrap();
+    let state_dir = tmp.path().join("state");
+    std::fs::create_dir_all(&state_dir).unwrap();
+    let config_path = write_config_with_module_refs(tmp.path(), &["empty-mod"]);
+
+    // Minimal Module on disk — empty spec is enough; the modules block only
+    // needs load + dependency-order resolution to succeed.
+    let mod_dir = tmp.path().join("modules").join("empty-mod");
+    std::fs::create_dir_all(&mod_dir).unwrap();
+    std::fs::write(
+        mod_dir.join("module.yaml"),
+        "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: empty-mod\nspec: {}\n",
+    )
+    .unwrap();
+
+    let state = Arc::new(Mutex::new(DaemonState::new()));
+    let notifier = Arc::new(Notifier::new(NotifyMethod::Stdout, None));
+    let st = Arc::clone(&state);
+    let not = Arc::clone(&notifier);
+    let sd = state_dir.clone();
+    let cp = config_path.clone();
+    tokio::task::spawn_blocking(move || {
+        handle_reconcile(&cp, None, &st, &not, false, &EmptyPlanHooks, Some(&sd));
+    })
+    .await
+    .unwrap();
+
+    // The reconcile resolved a non-empty module list and completed.
+    let guard = state.lock().await;
+    assert!(
+        guard.last_reconcile.is_some(),
+        "resolve_modules Ok arm must allow reconcile to complete normally"
+    );
+}
