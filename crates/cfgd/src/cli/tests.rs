@@ -16570,15 +16570,27 @@ mod cmd_source_add_local {
             )
             .unwrap();
 
+            // Snapshot the buffer length so we only inspect output from
+            // cmd_source_update — cmd_source_add ran twice above and its
+            // success messages would otherwise satisfy the assertions.
+            let baseline_len = h.output().len();
+
             // Update only src-b — the name-filter arm should pick exactly one
-            // source and the success line should mention only src-b.
+            // source. The post-update slice must contain src-b AND must NOT
+            // mention src-a; without the second assertion the test would
+            // pass even if the name filter was wired to update everything.
             super::source::cmd_source_update(&h.cli(), h.printer(), Some("src-b"))
                 .expect("named update should succeed");
 
-            let out = h.output();
+            let full = h.output();
+            let update_out = &full[baseline_len..];
             assert!(
-                out.contains("Updated source 'src-b'"),
-                "named update should report src-b: {out}"
+                update_out.contains("Updated source 'src-b'"),
+                "named update should report src-b: {update_out}"
+            );
+            assert!(
+                !update_out.contains("Updated source 'src-a'"),
+                "named update must NOT touch src-a — the filter arm is broken if it does: {update_out}"
             );
         });
     }
