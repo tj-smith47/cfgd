@@ -2470,4 +2470,235 @@ mod profile_update_module_cleanup {
             "delete_module_files should wipe the manifest"
         );
     }
+
+    // ─── prompt-yes restore arms (update.rs lines 146-194) ─────────────────────
+    //
+    // With Printer::for_test_with_prompt_responses, `prompt_confirm` returns the
+    // queued `Confirm(true)` instead of falling through to `unwrap_or(false)`.
+    // That unblocks the `if should_clean { ... }` body — the per-file restore
+    // loop — which was uncovered for many sessions because every existing test
+    // used the default `Printer::for_test()` (queue absent → Err → false).
+    //
+    // Each test stages exactly one canned response for the "Remove deployed
+    // files? Backups will be restored where available." prompt. Because
+    // `collect_module_file_targets` returns Vec::new() when no local module
+    // dir exists, the subsequent `prompt_restore_backups` call is a no-op and
+    // does not consume queue entries.
+
+    use cfgd_core::output::PromptAnswer;
+
+    /// Drop a tmpdir with the standard config+profile shape PLUS a state DB
+    /// containing one deployed-file row for `module`. Returns the config dir
+    /// guard, state dir, and the on-disk path the module "owns".
+    fn setup_module_with_deployed_file(
+        module: &str,
+        file_basename: &str,
+    ) -> (
+        tempfile::TempDir,
+        std::path::PathBuf,
+        std::path::PathBuf,
+        std::path::PathBuf,
+    ) {
+        let tmp = tempfile::tempdir().unwrap();
+        // The setup_with_module_in_profile helper above writes its tmpdir
+        // contents at $TMP/{cfgd.yaml, profiles/default.yaml}; we replicate
+        // it inline so the file targets here can live alongside (not inside)
+        // the config_dir.
+        let cfg_dir = tmp.path().join("cfg");
+        std::fs::create_dir_all(cfg_dir.join("profiles")).unwrap();
+        std::fs::write(
+            cfg_dir.join("cfgd.yaml"),
+            "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec:\n  profile: default\n",
+        )
+        .unwrap();
+        std::fs::write(
+            cfg_dir.join("profiles").join("default.yaml"),
+            format!(
+                "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec:\n  modules:\n    - {module}\n",
+            ),
+        )
+        .unwrap();
+        let state_dir = tmp.path().join("state");
+        std::fs::create_dir_all(&state_dir).unwrap();
+        let deployed_path = tmp.path().join(file_basename);
+        (tmp, cfg_dir, state_dir, deployed_path)
+    }
+
+    /// Record one apply + one deployed-file row in the state store at
+    /// `state_dir/cfgd.db`. Returns the apply_id for backup-staging tests.
+    fn record_apply_and_deployed_file(
+        state_dir: &std::path::Path,
+        module: &str,
+        deployed_path: &std::path::Path,
+    ) -> i64 {
+        let store = cfgd_core::state::StateStore::open(&state_dir.join("cfgd.db")).unwrap();
+        let apply_id = store
+            .record_apply(
+                "default",
+                "plan-hash",
+                cfgd_core::state::ApplyStatus::Success,
+                None,
+            )
+            .unwrap();
+        store
+            .upsert_module_file(
+                module,
+                deployed_path.to_str().unwrap(),
+                "sha256:abc",
+                "copy",
+                apply_id,
+            )
+            .unwrap();
+        apply_id
+    }
+
+    #[test]
+    #[serial]
+    fn remove_module_with_prompt_yes_and_no_backup_removes_deployed_file() {
+        // Branch C of update.rs:184-193 — `latest_backup_for_path` returns
+        // Ok(None) → fall through to the `path.exists()` arm → file is
+        // physically removed.
+        let tmp = tempfile::tempdir().unwrap();
+        let _home = cfgd_core::with_test_home_guard(tmp.path());
+
+        let (_tmp_guard, cfg_dir, state_dir, deployed_path) =
+            setup_module_with_deployed_file("noBackupMod", "deployed-no-backup.conf");
+        std::fs::write(&deployed_path, b"old-deployed-content").unwrap();
+        let _apply_id = record_apply_and_deployed_file(&state_dir, "noBackupMod", &deployed_path);
+
+        let cli = cli_with_state_dir(&cfg_dir, &state_dir);
+        let (printer, buf) =
+            Printer::for_test_with_prompt_responses(vec![PromptAnswer::Confirm(true)]);
+        let mut args = make_profile_update_args();
+        args.modules = vec!["-noBackupMod".to_string()];
+        cmd_profile_update(&cli, &printer, "default", &args)
+            .expect("remove-with-yes-prompt should succeed");
+
+        assert!(
+            !deployed_path.exists(),
+            "should_clean=true + no backup → file must be removed: {}",
+            deployed_path.display()
+        );
+        let out = buf.lock().unwrap().clone();
+        assert!(
+            out.contains("Removed:") && out.contains("deployed-no-backup.conf"),
+            "should announce the fallback removal: {out}"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn remove_module_with_prompt_yes_restores_content_from_backup() {
+        // Branch B of update.rs:172-183 — backup exists with non-empty,
+        // not-oversized content; the restore loop atomic_writes the backup
+        // content back to the deployed path. The post-removal file content
+        // must match the staged backup content (not the prior deployed
+        // content).
+        let tmp = tempfile::tempdir().unwrap();
+        let _home = cfgd_core::with_test_home_guard(tmp.path());
+
+        let (_tmp_guard, cfg_dir, state_dir, deployed_path) =
+            setup_module_with_deployed_file("backupMod", "deployed-with-backup.conf");
+        std::fs::write(&deployed_path, b"DEPLOYED-NOW-OVERWRITES-BACKUP").unwrap();
+
+        let apply_id = record_apply_and_deployed_file(&state_dir, "backupMod", &deployed_path);
+
+        // Stage a backup row at the deployed path. FileState shape:
+        // - content: pre-deploy bytes to restore
+        // - is_symlink=false, oversized=false, content non-empty → branch B fires
+        let state = cfgd_core::state::StateStore::open(&state_dir.join("cfgd.db")).unwrap();
+        let backup_state = cfgd_core::FileState {
+            content: b"original-pre-deploy-content".to_vec(),
+            content_hash: "sha256:original".to_string(),
+            permissions: Some(0o644),
+            is_symlink: false,
+            symlink_target: None,
+            oversized: false,
+        };
+        state
+            .store_file_backup(apply_id, deployed_path.to_str().unwrap(), &backup_state)
+            .unwrap();
+        drop(state);
+
+        let cli = cli_with_state_dir(&cfg_dir, &state_dir);
+        let (printer, buf) =
+            Printer::for_test_with_prompt_responses(vec![PromptAnswer::Confirm(true)]);
+        let mut args = make_profile_update_args();
+        args.modules = vec!["-backupMod".to_string()];
+        cmd_profile_update(&cli, &printer, "default", &args)
+            .expect("backup-restore should succeed");
+
+        // Post: deployed file content matches backup content.
+        let restored = std::fs::read(&deployed_path).expect("file must still exist after restore");
+        assert_eq!(
+            restored, b"original-pre-deploy-content",
+            "atomic_write must have replaced deployed content with backup content"
+        );
+        let out = buf.lock().unwrap().clone();
+        assert!(
+            out.contains("Restored:") && out.contains("deployed-with-backup.conf"),
+            "should announce the restore: {out}"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn remove_module_with_prompt_yes_restores_symlink_from_backup() {
+        // Branch A of update.rs:152-171 — backup has was_symlink=true with
+        // a symlink_target. The restore loop removes whatever is at the
+        // deployed path and create_symlinks the original target back.
+        let tmp = tempfile::tempdir().unwrap();
+        let _home = cfgd_core::with_test_home_guard(tmp.path());
+
+        let (_tmp_guard, cfg_dir, state_dir, deployed_path) =
+            setup_module_with_deployed_file("symlinkMod", "deployed-symlink");
+        // Pre-deploy: deployed path was a regular file (the "managed" form);
+        // backup row will indicate it was *previously* a symlink to
+        // original-target.
+        std::fs::write(&deployed_path, b"managed-file-content").unwrap();
+
+        let original_target = tmp.path().join("original-target.bin");
+        std::fs::write(&original_target, b"target-payload").unwrap();
+
+        let apply_id = record_apply_and_deployed_file(&state_dir, "symlinkMod", &deployed_path);
+        let state = cfgd_core::state::StateStore::open(&state_dir.join("cfgd.db")).unwrap();
+        let backup_state = cfgd_core::FileState {
+            content: Vec::new(),
+            content_hash: String::new(),
+            permissions: None,
+            is_symlink: true,
+            symlink_target: Some(original_target.clone()),
+            oversized: false,
+        };
+        state
+            .store_file_backup(apply_id, deployed_path.to_str().unwrap(), &backup_state)
+            .unwrap();
+        drop(state);
+
+        let cli = cli_with_state_dir(&cfg_dir, &state_dir);
+        let (printer, buf) =
+            Printer::for_test_with_prompt_responses(vec![PromptAnswer::Confirm(true)]);
+        let mut args = make_profile_update_args();
+        args.modules = vec!["-symlinkMod".to_string()];
+        cmd_profile_update(&cli, &printer, "default", &args)
+            .expect("symlink-restore should succeed");
+
+        // Post: deployed path is now a symlink pointing at original_target.
+        let meta = std::fs::symlink_metadata(&deployed_path)
+            .expect("symlink should exist at deployed path");
+        assert!(
+            meta.file_type().is_symlink(),
+            "restore must recreate the symlink"
+        );
+        let link_dest = std::fs::read_link(&deployed_path).unwrap();
+        assert_eq!(
+            link_dest, original_target,
+            "symlink must point back at the original target"
+        );
+        let out = buf.lock().unwrap().clone();
+        assert!(
+            out.contains("Restored symlink:") && out.contains("deployed-symlink"),
+            "should announce the symlink restore: {out}"
+        );
+    }
 }

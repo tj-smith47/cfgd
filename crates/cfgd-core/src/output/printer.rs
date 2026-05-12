@@ -6,8 +6,10 @@ use syntect::parsing::SyntaxSet;
 use std::io::IsTerminal;
 use std::sync::{Arc, Mutex};
 
+use std::collections::VecDeque;
+
 use super::theme::Theme;
-use super::{OutputFormat, Printer, Verbosity};
+use super::{OutputFormat, Printer, PromptAnswer, Verbosity};
 use crate::config::ThemeConfig;
 
 /// Whether stderr is attached to a terminal. Gate animated output (spinners,
@@ -83,6 +85,7 @@ impl Printer {
             verbosity,
             output_format,
             test_buf: None,
+            prompt_queue: None,
         }
     }
 
@@ -103,6 +106,7 @@ impl Printer {
             verbosity: Verbosity::Quiet,
             output_format: OutputFormat::Table,
             test_buf: Some(buf.clone()),
+            prompt_queue: None,
         };
         (printer, buf)
     }
@@ -119,6 +123,33 @@ impl Printer {
             verbosity: Verbosity::Quiet,
             output_format,
             test_buf: Some(buf.clone()),
+            prompt_queue: None,
+        };
+        (printer, buf)
+    }
+
+    /// Create a Printer that captures output AND drives prompt calls with
+    /// the supplied canned responses. Each `prompt_confirm` / `prompt_text`
+    /// / `prompt_select` call consumes the front of `responses`; entries
+    /// of the wrong type, or calls after the queue is exhausted, fall
+    /// through to the normal non-interactive Err arm.
+    ///
+    /// Use to drive `should_clean = true` / "Apply these changes? → yes"
+    /// branches in CLI tests without an attached TTY.
+    pub fn for_test_with_prompt_responses(
+        responses: Vec<PromptAnswer>,
+    ) -> (Self, Arc<Mutex<String>>) {
+        let buf = Arc::new(Mutex::new(String::new()));
+        let printer = Self {
+            theme: Theme::from_config(None),
+            term: Term::stderr(),
+            multi_progress: MultiProgress::new(),
+            syntax_set: SyntaxSet::load_defaults_newlines(),
+            theme_set: ThemeSet::load_defaults(),
+            verbosity: Verbosity::Quiet,
+            output_format: OutputFormat::Table,
+            test_buf: Some(buf.clone()),
+            prompt_queue: Some(Arc::new(Mutex::new(VecDeque::from(responses)))),
         };
         (printer, buf)
     }
@@ -277,6 +308,12 @@ impl Printer {
         &self,
         message: &str,
     ) -> std::result::Result<bool, inquire::InquireError> {
+        if let Some(answer) = self.pop_prompt_answer()
+            && let PromptAnswer::Confirm(b) = answer
+        {
+            return Ok(b);
+        }
+        // exhausted queue or wrong-type entry: fall through to the real prompt path
         if self.is_structured() {
             return Err(non_interactive_err(message));
         }
@@ -288,6 +325,15 @@ impl Printer {
         message: &str,
         options: &'a [String],
     ) -> std::result::Result<&'a String, inquire::InquireError> {
+        if let Some(answer) = self.pop_prompt_answer()
+            && let PromptAnswer::Select(s) = answer
+        {
+            return options.iter().find(|o| **o == s).ok_or_else(|| {
+                inquire::InquireError::Custom(
+                    format!("test prompt response '{s}' not in option list").into(),
+                )
+            });
+        }
         if self.is_structured() {
             return Err(non_interactive_err(message));
         }
@@ -303,10 +349,26 @@ impl Printer {
         message: &str,
         default: &str,
     ) -> std::result::Result<String, inquire::InquireError> {
+        if let Some(answer) = self.pop_prompt_answer()
+            && let PromptAnswer::Text(s) = answer
+        {
+            return Ok(s);
+        }
         if self.is_structured() {
             return Err(non_interactive_err(message));
         }
         inquire::Text::new(message).with_default(default).prompt()
+    }
+
+    /// Pop one canned answer from the test prompt queue, or `None` if no
+    /// queue is set or the queue is empty. Wrong-type entries are still
+    /// consumed — caller decides whether to fall through.
+    fn pop_prompt_answer(&self) -> Option<PromptAnswer> {
+        self.prompt_queue
+            .as_ref()?
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .pop_front()
     }
 
     pub fn newline(&self) {

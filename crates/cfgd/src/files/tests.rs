@@ -3148,7 +3148,7 @@ fn scan_target_io_error_when_path_is_a_directory() {
 
     let err = <CfgdFileManager as cfgd_core::providers::FileManager>::scan_target(
         &fm,
-        &[dir_path.clone()],
+        std::slice::from_ref(&dir_path),
     )
     .expect_err("reading a directory as a file should error");
     let msg = err.to_string();

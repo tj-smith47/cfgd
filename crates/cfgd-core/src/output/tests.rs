@@ -934,3 +934,88 @@ fn name_from_value_resource_type_field() {
     let val = serde_json::json!({"resourceType": "MachineConfig"});
     assert_eq!(name_from_value(&val), Some("MachineConfig".to_string()));
 }
+
+// ---------------------------------------------------------------------------
+// prompt-response mock (Printer::for_test_with_prompt_responses)
+//
+// 35+ production call-sites of prompt_confirm currently fall back to
+// `unwrap_or(false)` in tests because Printer::for_test() returns a printer
+// whose prompt_* methods would block on inquire. The queue lets tests drive
+// the "user said yes" / "user typed X" branches of those flows.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn prompt_confirm_consumes_canned_true() {
+    let (printer, _buf) =
+        Printer::for_test_with_prompt_responses(vec![PromptAnswer::Confirm(true)]);
+    assert!(printer.prompt_confirm("first").unwrap());
+}
+
+#[test]
+fn prompt_confirm_consumes_canned_false() {
+    let (printer, _buf) =
+        Printer::for_test_with_prompt_responses(vec![PromptAnswer::Confirm(false)]);
+    assert!(!printer.prompt_confirm("confirm?").unwrap());
+}
+
+#[test]
+fn prompt_select_consumes_canned_choice_matching_options() {
+    let (printer, _buf) =
+        Printer::for_test_with_prompt_responses(vec![PromptAnswer::Select("beta".to_string())]);
+    let options = vec!["alpha".to_string(), "beta".to_string(), "gamma".to_string()];
+    let chosen = printer.prompt_select("pick one", &options).unwrap();
+    assert_eq!(chosen, "beta");
+}
+
+#[test]
+fn prompt_select_with_option_not_in_list_returns_err() {
+    // Caller queued "ghost" but it isn't among the options the production
+    // code supplied — return a Custom Err that explains the mismatch
+    // rather than silently mapping to the first option.
+    let (printer, _buf) =
+        Printer::for_test_with_prompt_responses(vec![PromptAnswer::Select("ghost".to_string())]);
+    let options = vec!["alpha".to_string(), "beta".to_string()];
+    let result = printer.prompt_select("pick", &options);
+    assert!(result.is_err(), "ghost option should not match");
+    let msg = format!("{:?}", result.unwrap_err());
+    assert!(
+        msg.contains("not in option list"),
+        "error should explain mismatch: {msg}"
+    );
+}
+
+#[test]
+fn prompt_text_consumes_canned_string() {
+    let (printer, _buf) = Printer::for_test_with_prompt_responses(vec![PromptAnswer::Text(
+        "hello world".to_string(),
+    )]);
+    assert_eq!(
+        printer.prompt_text("name?", "default").unwrap(),
+        "hello world"
+    );
+}
+
+#[test]
+fn prompt_queue_drains_in_order_across_mixed_calls() {
+    let (printer, _buf) = Printer::for_test_with_prompt_responses(vec![
+        PromptAnswer::Confirm(true),
+        PromptAnswer::Text("typed".to_string()),
+        PromptAnswer::Confirm(false),
+    ]);
+    assert!(printer.prompt_confirm("a").unwrap());
+    assert_eq!(printer.prompt_text("b", "").unwrap(), "typed");
+    assert!(!printer.prompt_confirm("c").unwrap());
+}
+
+#[test]
+fn for_test_with_prompt_responses_captures_output_to_shared_buffer() {
+    // The new constructor also wires the test_buf, so `info`/`warning`/`success`
+    // calls during the prompted flow remain inspectable by tests.
+    let (printer, buf) = Printer::for_test_with_prompt_responses(vec![PromptAnswer::Confirm(true)]);
+    printer.info("inspectable");
+    let captured = buf.lock().unwrap().clone();
+    assert!(
+        captured.contains("inspectable"),
+        "test_buf must capture: {captured}"
+    );
+}
