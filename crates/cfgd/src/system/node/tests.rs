@@ -2595,6 +2595,85 @@ fn seccomp_apply_uses_default_profiles_dir_when_unset() {
     let _ = result;
 }
 
+// --- KernelModuleConfigurator::apply early returns ---
+
+#[test]
+fn kernel_modules_apply_with_non_sequence_value_is_a_noop() {
+    let km = KernelModuleConfigurator;
+    let (printer, _buf) = cfgd_core::output::Printer::for_test();
+    km.apply(
+        &serde_yaml::Value::String("not-a-sequence".into()),
+        &printer,
+    )
+    .expect("non-sequence value is a no-op");
+}
+
+#[test]
+fn kernel_modules_apply_with_empty_sequence_is_a_noop_and_skips_persist_when_empty() {
+    let km = KernelModuleConfigurator;
+    let (printer, _buf) = cfgd_core::output::Printer::for_test();
+    km.apply(&serde_yaml::Value::Sequence(Vec::new()), &printer)
+        .expect("empty sequence must Ok");
+}
+
+#[test]
+fn kernel_modules_apply_skips_non_string_entries() {
+    // Mix of valid string and non-string entries → non-string skipped via
+    // continue (lines 144-146), but the string entry calls modprobe which
+    // is absent in CI → Err. Accept either outcome; we only care that the
+    // loop ran past the non-string branch.
+    let km = KernelModuleConfigurator;
+    let (printer, _buf) = cfgd_core::output::Printer::for_test();
+    let seq = vec![
+        serde_yaml::Value::Number(42.into()),
+        serde_yaml::Value::String("nonexistent_module_cfgd_test".into()),
+    ];
+    let _ = km.apply(&serde_yaml::Value::Sequence(seq), &printer);
+}
+
+// --- AppArmorConfigurator::apply early returns ---
+
+#[test]
+fn apparmor_apply_with_no_profiles_field_is_a_noop() {
+    let ac = AppArmorConfigurator;
+    let (printer, _buf) = cfgd_core::output::Printer::for_test();
+    ac.apply(
+        &serde_yaml::Value::Mapping(serde_yaml::Mapping::new()),
+        &printer,
+    )
+    .expect("missing profiles key is a no-op");
+}
+
+#[test]
+fn apparmor_apply_skips_profile_entries_with_path_traversal() {
+    // Profile path contains `..` → validate_no_traversal Errs → continue
+    // at lines 159-165. With only the bad entry the for-loop completes
+    // without calling apparmor_parser, so apply Ok.
+    let ac = AppArmorConfigurator;
+    let (printer, buf) = cfgd_core::output::Printer::for_test();
+    let mut profile = serde_yaml::Mapping::new();
+    profile.insert(
+        serde_yaml::Value::String("name".into()),
+        serde_yaml::Value::String("escaping".into()),
+    );
+    profile.insert(
+        serde_yaml::Value::String("path".into()),
+        serde_yaml::Value::String("/etc/apparmor.d/../../../tmp/oops".into()),
+    );
+    let mut desired = serde_yaml::Mapping::new();
+    desired.insert(
+        serde_yaml::Value::String("profiles".into()),
+        serde_yaml::Value::Sequence(vec![serde_yaml::Value::Mapping(profile)]),
+    );
+    ac.apply(&serde_yaml::Value::Mapping(desired), &printer)
+        .expect("traversal-skip path must Ok");
+    let output = buf.lock().unwrap();
+    assert!(
+        output.contains("path traversal"),
+        "should warn about traversal: {output}"
+    );
+}
+
 // --- ContainerdConfigurator::apply paths ---
 //
 // Same shape as kubelet apply tests below: drive the no-op, empty-settings,
