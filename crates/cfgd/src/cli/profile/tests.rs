@@ -703,6 +703,57 @@ fn profile_switch_error_lists_available_profiles() {
 // --- cmd_profile_create ---
 
 #[test]
+fn profile_create_interactive_drives_prompts_via_harness() {
+    // Interactive mode at profile/create.rs:63-84 was uncovered because
+    // every existing create test supplies at least one content flag,
+    // taking the is_interactive=false arm. The harness queue drives the
+    // two prompt_text calls so the body of the if-branch fires.
+    let dir = setup_config_dir();
+    let cli = test_cli(dir.path());
+    let (printer, buf) = Printer::for_test_with_prompt_responses(vec![
+        cfgd_core::output::PromptAnswer::Text("default".to_string()),
+        cfgd_core::output::PromptAnswer::Text("".to_string()),
+    ]);
+
+    // setup_config_dir already creates a `default.yaml` profile that the
+    // first prompt response will reference as a parent.
+    let args = make_profile_create_args("interactive-child");
+
+    cmd_profile_create(&cli, &printer, &args)
+        .expect("interactive profile create with valid parent + no modules");
+
+    let profile_path = dir.path().join("profiles").join("interactive-child.yaml");
+    assert!(
+        profile_path.exists(),
+        "profile YAML must be created on interactive happy path"
+    );
+    let doc = config::load_profile(&profile_path).unwrap();
+    assert_eq!(doc.spec.inherits, vec!["default"]);
+    drop(buf);
+}
+
+#[test]
+fn profile_create_interactive_with_missing_parent_bails() {
+    // is_interactive=true + Text("ghost") for parent prompt → loop checks
+    // ghost.yaml existence at profile/create.rs:70-74 → anyhow::bail.
+    let dir = setup_config_dir();
+    let cli = test_cli(dir.path());
+    let (printer, _buf) = Printer::for_test_with_prompt_responses(vec![
+        cfgd_core::output::PromptAnswer::Text("ghost-parent".to_string()),
+        cfgd_core::output::PromptAnswer::Text("".to_string()),
+    ]);
+
+    let args = make_profile_create_args("bad-parent-child");
+    let result = cmd_profile_create(&cli, &printer, &args);
+    let err = result.expect_err("missing parent must bail");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("ghost-parent") && msg.contains("not found"),
+        "should mention missing parent: {msg}"
+    );
+}
+
+#[test]
 fn profile_create_minimal() {
     let dir = setup_config_dir();
     let cli = test_cli(dir.path());
