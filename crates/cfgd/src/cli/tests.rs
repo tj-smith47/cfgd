@@ -5306,6 +5306,110 @@ fn cmd_rollback_after_file_apply() {
     );
 }
 
+/// Stage a config + profile + applied file under tempdirs and return
+/// (config_dir, state_dir, target file path, apply_id). Shared by the two
+/// `cmd_rollback` prompt-driven tests below — extracted so the post-apply
+/// setup churn doesn't get copy-pasted three times.
+fn apply_one_file_and_record(
+    name: &str,
+) -> (
+    tempfile::TempDir,
+    tempfile::TempDir,
+    std::path::PathBuf,
+    i64,
+) {
+    let (config_dir, state_dir) = setup_test_env();
+    let files_dir = config_dir.path().join("files");
+    std::fs::create_dir_all(&files_dir).unwrap();
+    std::fs::write(files_dir.join(format!("{name}.txt")), "rollback content").unwrap();
+    let target = config_dir.path().join("output").join(format!("{name}.txt"));
+
+    let profile = format!(
+        "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: withfile\nspec:\n  inherits: []\n  modules: []\n  files:\n    managed:\n      - source: files/{name}.txt\n        target: {}\n        strategy: Copy\n",
+        target.display()
+    );
+    std::fs::write(
+        config_dir.path().join("profiles").join("withfile.yaml"),
+        &profile,
+    )
+    .unwrap();
+    let config = "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec:\n  profile: withfile\n";
+    std::fs::write(config_dir.path().join("cfgd.yaml"), config).unwrap();
+
+    let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
+    let (printer, _buf) = Printer::for_test();
+
+    let args = ApplyArgs {
+        from: None,
+        dry_run: false,
+        phase: None,
+        yes: true,
+        skip: vec![],
+        only: vec![],
+        module: None,
+        skip_scripts: false,
+        context: "apply".to_string(),
+    };
+    super::apply::cmd_apply(&cli, &printer, &args).unwrap();
+
+    let state = super::open_state_store(Some(state_dir.path())).unwrap();
+    let history = state.history(1).unwrap();
+    let apply_id = history[0].id;
+    (config_dir, state_dir, target, apply_id)
+}
+
+#[test]
+fn cmd_rollback_without_yes_and_prompt_confirmed_proceeds() {
+    // yes=false + Confirm(true) drives the prompt-true branch at
+    // rollback.rs:60-67 — the reconciler.rollback_apply call fires
+    // and the success message follows.
+    let (_cd, state_dir, _target, apply_id) = apply_one_file_and_record("rb-yes-prompt");
+    let (printer, buf) =
+        Printer::for_test_with_prompt_responses(vec![cfgd_core::output::PromptAnswer::Confirm(
+            true,
+        )]);
+
+    let result = super::rollback::cmd_rollback(&printer, apply_id, false, Some(state_dir.path()));
+    assert!(
+        result.is_ok(),
+        "prompt-confirmed rollback must succeed: {:?}",
+        result.err()
+    );
+    let output = buf.lock().unwrap();
+    assert!(
+        output.contains("Rollback") || output.contains("restore"),
+        "should produce rollback output: {output}"
+    );
+    assert!(
+        !output.contains("Aborted"),
+        "Aborted must not fire when prompt is true: {output}"
+    );
+}
+
+#[test]
+fn cmd_rollback_without_yes_and_prompt_declined_aborts() {
+    // yes=false + Confirm(false) takes the early-return arm at
+    // rollback.rs:63-66 — "Aborted" fires and reconciler.rollback_apply
+    // is never called (file count remains unchanged).
+    let (_cd, state_dir, _target, apply_id) = apply_one_file_and_record("rb-no-prompt");
+    let (printer, buf) =
+        Printer::for_test_with_prompt_responses(vec![cfgd_core::output::PromptAnswer::Confirm(
+            false,
+        )]);
+
+    let result = super::rollback::cmd_rollback(&printer, apply_id, false, Some(state_dir.path()));
+    assert!(result.is_ok(), "prompt-declined rollback must return Ok");
+    let output = buf.lock().unwrap();
+    assert!(
+        output.contains("Aborted"),
+        "should print Aborted when prompt is false: {output}"
+    );
+    assert!(
+        !output.contains("Rollback complete"),
+        "rollback body must NOT run when prompt is false: {output}"
+    );
+}
+
 // --- cmd_compliance tests ---
 
 #[test]

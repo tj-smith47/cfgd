@@ -2284,6 +2284,66 @@ fn cmd_module_delete_with_yes_succeeds() {
     );
 }
 
+#[test]
+fn cmd_module_delete_without_yes_and_prompt_confirmed_proceeds_with_deletion() {
+    // yes=false → the production code reaches `prompt_confirm(...)`. With
+    // the new harness queuing Confirm(true), the prompt returns Ok(true)
+    // and the deletion proceeds exactly as the yes=true case does.
+    let dir = setup_config_dir();
+    make_module(
+        dir.path(),
+        "prompt-yes-mod",
+        "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: prompt-yes-mod\nspec:\n  packages: []\n",
+    );
+
+    let cli = test_cli(dir.path());
+    let (printer, buf) = cfgd_core::output::Printer::for_test_with_prompt_responses(vec![
+        cfgd_core::output::PromptAnswer::Confirm(true),
+    ]);
+
+    cmd_module_delete(&cli, &printer, "prompt-yes-mod", false, false).unwrap();
+
+    let output = buf.lock().unwrap();
+    assert!(
+        output.contains("Deleted module 'prompt-yes-mod'"),
+        "should confirm deletion, got: {output}"
+    );
+    assert!(
+        !dir.path().join("modules/prompt-yes-mod").exists(),
+        "module dir must be removed once prompt is confirmed"
+    );
+}
+
+#[test]
+fn cmd_module_delete_without_yes_and_prompt_declined_returns_cancelled() {
+    // yes=false + prompt=Confirm(false) takes the early-return arm at
+    // crud.rs:626-627 — prints "Cancelled" and leaves the module dir
+    // on disk.
+    let dir = setup_config_dir();
+    make_module(
+        dir.path(),
+        "prompt-no-mod",
+        "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: prompt-no-mod\nspec:\n  packages: []\n",
+    );
+
+    let cli = test_cli(dir.path());
+    let (printer, buf) = cfgd_core::output::Printer::for_test_with_prompt_responses(vec![
+        cfgd_core::output::PromptAnswer::Confirm(false),
+    ]);
+
+    cmd_module_delete(&cli, &printer, "prompt-no-mod", false, false).unwrap();
+
+    let output = buf.lock().unwrap();
+    assert!(
+        output.contains("Cancelled"),
+        "should print Cancelled after no, got: {output}"
+    );
+    assert!(
+        dir.path().join("modules/prompt-no-mod").exists(),
+        "module dir must remain when prompt is declined"
+    );
+}
+
 // ─── cmd_module_delete — refused when profiles reference module ─
 
 #[test]

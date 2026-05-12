@@ -1354,6 +1354,58 @@ fn profile_delete_invalid_name_fails() {
     );
 }
 
+#[test]
+fn profile_delete_without_yes_and_prompt_confirmed_proceeds() {
+    // yes=false + queued Confirm(true) drives the prompt-true branch at
+    // profile/delete.rs:41 — the file is removed and the success message
+    // fires (previously unreachable without an attached TTY).
+    let dir = setup_config_dir();
+    let cli = test_cli(dir.path());
+    let (printer, buf) =
+        Printer::for_test_with_prompt_responses(vec![cfgd_core::output::PromptAnswer::Confirm(
+            true,
+        )]);
+
+    cmd_profile_delete(&cli, &printer, "work", false).unwrap();
+
+    let profile_path = dir.path().join("profiles").join("work.yaml");
+    assert!(
+        !profile_path.exists(),
+        "prompt-yes path must remove the profile file"
+    );
+    let output = buf.lock().unwrap();
+    assert!(
+        output.contains("Deleted profile 'work'"),
+        "should announce deletion: {output}"
+    );
+}
+
+#[test]
+fn profile_delete_without_yes_and_prompt_declined_returns_cancelled() {
+    // yes=false + queued Confirm(false) takes the early-return arm at
+    // delete.rs:41-44 — file must remain on disk and the printer emits
+    // "Cancelled".
+    let dir = setup_config_dir();
+    let cli = test_cli(dir.path());
+    let (printer, buf) =
+        Printer::for_test_with_prompt_responses(vec![cfgd_core::output::PromptAnswer::Confirm(
+            false,
+        )]);
+
+    cmd_profile_delete(&cli, &printer, "work", false).unwrap();
+
+    let profile_path = dir.path().join("profiles").join("work.yaml");
+    assert!(
+        profile_path.exists(),
+        "prompt-no path must NOT remove the file"
+    );
+    let output = buf.lock().unwrap();
+    assert!(
+        output.contains("Cancelled"),
+        "should print Cancelled: {output}"
+    );
+}
+
 // --- JSON output tests ─────────────────────────────────────
 
 fn test_cli_json(dir: &Path) -> super::super::Cli {
