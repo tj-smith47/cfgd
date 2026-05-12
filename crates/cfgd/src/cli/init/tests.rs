@@ -1740,6 +1740,62 @@ fn default_device_id_is_deterministic() {
     assert_eq!(id1, id2, "device ID should be deterministic");
 }
 
+// --- apply_plan prompt-declined branch (yes=false, prompt fails or returns false) ---
+
+#[test]
+fn apply_plan_prompt_declined_branch_prints_skipped_and_returns_ok() {
+    // yes=false + non-empty plan + dry_run=false → cmd_init's apply_plan enters
+    // the prompt_confirm arm. In test mode, prompt_confirm returns Err →
+    // unwrap_or(false) → false → "Skipped" message + early return. Pins the
+    // contract that a declined apply does NOT touch the reconciler or hit
+    // the state-store apply lock.
+    let dir = tempfile::tempdir().unwrap();
+    let (printer, buf) = Printer::for_test();
+
+    let registry = super::build_registry_with_config(None);
+    let store = super::open_state_store(Some(dir.path())).unwrap();
+    let reconciler = cfgd_core::reconciler::Reconciler::new(&registry, &store);
+    let resolved = config::ResolvedProfile {
+        layers: Vec::new(),
+        merged: config::MergedProfile::default(),
+    };
+
+    let plan = cfgd_core::reconciler::Plan {
+        phases: vec![cfgd_core::reconciler::Phase {
+            name: cfgd_core::reconciler::PhaseName::Packages,
+            actions: vec![cfgd_core::reconciler::Action::Package(
+                cfgd_core::providers::PackageAction::Install {
+                    manager: "brew".to_string(),
+                    packages: vec!["test-pkg".to_string()],
+                    origin: "test".to_string(),
+                },
+            )],
+        }],
+        warnings: Vec::new(),
+    };
+
+    let result = apply_plan(
+        &plan,
+        &reconciler,
+        &resolved,
+        dir.path(),
+        false, // dry_run
+        false, // yes — exercises the prompt arm
+        &printer,
+    );
+    assert!(result.is_ok(), "declined prompt should still return Ok");
+
+    let output = buf.lock().unwrap();
+    assert!(
+        output.contains("Skipped"),
+        "expected 'Skipped' message on declined prompt, got: {output}"
+    );
+    assert!(
+        output.contains("cfgd apply"),
+        "expected hint to run 'cfgd apply' later, got: {output}"
+    );
+}
+
 // --- apply_plan with dry_run ---
 
 #[test]
