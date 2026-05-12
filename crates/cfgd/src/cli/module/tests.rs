@@ -4220,3 +4220,260 @@ mod cmd_module_add_remote_local_bare {
         );
     }
 }
+
+// ─── cmd_module_add_from_registry — end-to-end against a local registry ───────
+//
+// Drives the registry-resolution entry-point: parse `<registry>/<module>[@<tag>]`,
+// load the registry URL from cfgd.yaml, optionally look up the latest tag, and
+// hand off to `cmd_module_add_remote` with the assembled
+// `<registry_url>//modules/<mod>@<mod>/<tag>` URL. Both the explicit-tag and
+// the latest-lookup paths are exercised, plus the error arms for unknown
+// registry, no matching tags, and a malformed registry reference.
+
+#[cfg(unix)]
+mod cmd_module_add_from_registry_local {
+    use super::*;
+    use serial_test::serial;
+    use std::path::{Path, PathBuf};
+
+    /// Init a non-bare git repo at `src_dir/<subpath>` with
+    /// `modules/<mod>/module.yaml` committed and the HEAD tagged as
+    /// `<mod>/v<version>`. Returns the source path so `file://<src>` can serve
+    /// as the registry URL. Multiple versions can be added by calling
+    /// `add_module_version`.
+    fn init_registry_source(
+        src_dir: &Path,
+        mod_name: &str,
+        version: &str,
+        description: &str,
+    ) -> PathBuf {
+        let src_repo = git2::Repository::init(src_dir).unwrap();
+        let module_rel = format!("modules/{mod_name}/module.yaml");
+        let module_yaml = format!(
+            "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: {mod_name}\n  description: {description}\nspec: {{}}\n"
+        );
+        std::fs::create_dir_all(src_dir.join("modules").join(mod_name)).unwrap();
+        std::fs::write(src_dir.join(&module_rel), module_yaml).unwrap();
+        let mut index = src_repo.index().unwrap();
+        index.add_path(Path::new(&module_rel)).unwrap();
+        index.write().unwrap();
+        let tree_id = index.write_tree().unwrap();
+        let tree = src_repo.find_tree(tree_id).unwrap();
+        let sig = git2::Signature::now("t", "t@example.com").unwrap();
+        let commit_id = src_repo
+            .commit(Some("HEAD"), &sig, &sig, "add module", &tree, &[])
+            .unwrap();
+        drop(tree);
+        let commit_obj = src_repo.find_commit(commit_id).unwrap();
+        src_repo
+            .tag_lightweight(
+                &format!("{mod_name}/v{version}"),
+                commit_obj.as_object(),
+                false,
+            )
+            .unwrap();
+        src_dir.to_path_buf()
+    }
+
+    /// Append a second tagged version on top of HEAD in an existing registry
+    /// source. Used to exercise the latest-version lookup path.
+    fn add_module_version(src_dir: &Path, mod_name: &str, version: &str, description: &str) {
+        let src_repo = git2::Repository::open(src_dir).unwrap();
+        let module_rel = format!("modules/{mod_name}/module.yaml");
+        let module_yaml = format!(
+            "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: {mod_name}\n  description: {description}\nspec: {{}}\n"
+        );
+        std::fs::write(src_dir.join(&module_rel), module_yaml).unwrap();
+        let mut index = src_repo.index().unwrap();
+        index.add_path(Path::new(&module_rel)).unwrap();
+        index.write().unwrap();
+        let tree_id = index.write_tree().unwrap();
+        let tree = src_repo.find_tree(tree_id).unwrap();
+        let sig = git2::Signature::now("t", "t@example.com").unwrap();
+        let parent = src_repo.head().unwrap().peel_to_commit().unwrap();
+        let commit_id = src_repo
+            .commit(Some("HEAD"), &sig, &sig, "bump", &tree, &[&parent])
+            .unwrap();
+        drop(tree);
+        let commit_obj = src_repo.find_commit(commit_id).unwrap();
+        src_repo
+            .tag_lightweight(
+                &format!("{mod_name}/v{version}"),
+                commit_obj.as_object(),
+                false,
+            )
+            .unwrap();
+    }
+
+    /// Overwrite cfgd.yaml in `config_dir` so the registry entry shows up
+    /// under `spec.modules.registries`. `setup_config_dir` seeded the file
+    /// with the bare "profile only" shape — we replace it wholesale rather
+    /// than YAML-merging.
+    fn write_cfgd_yaml_with_registry(config_dir: &Path, reg_name: &str, reg_url: &str) {
+        let yaml = format!(
+            "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec:\n  profile: default\n  modules:\n    registries:\n      - name: {reg_name}\n        url: {reg_url}\n"
+        );
+        std::fs::write(config_dir.join("cfgd.yaml"), yaml).unwrap();
+    }
+
+    /// Match the `EnvGuard` from the sibling local-bare module — required so
+    /// `is_git_source` accepts `file://` URLs. Independent definition because
+    /// Rust visibility forbids sharing a sibling-private type across `mod`
+    /// boundaries.
+    struct EnvGuard {
+        key: &'static str,
+    }
+    impl EnvGuard {
+        fn set(key: &'static str, value: &str) -> Self {
+            // SAFETY: serialized via #[serial].
+            unsafe {
+                std::env::set_var(key, value);
+            }
+            Self { key }
+        }
+    }
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            // SAFETY: serialized via #[serial].
+            unsafe {
+                std::env::remove_var(self.key);
+            }
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn cmd_module_add_from_registry_explicit_tag_writes_lockfile_and_profile() {
+        let work = setup_config_dir();
+        let _home = cfgd_core::with_test_home_guard(work.path());
+        let _env = EnvGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+
+        let src_root = tempfile::tempdir().unwrap();
+        let src = init_registry_source(src_root.path(), "alpha", "1.0.0", "Alpha module");
+        let reg_url = format!("file://{}", src.display());
+        write_cfgd_yaml_with_registry(work.path(), "myreg", &reg_url);
+
+        let cli = test_cli(work.path());
+        let (printer, buf) = cfgd_core::output::Printer::for_test();
+        cmd_module_add_from_registry(&cli, &printer, "myreg/alpha@v1.0.0", true, true)
+            .expect("explicit-tag registry add should succeed");
+
+        // The resolver should log the per-module URL it built before delegating.
+        let out = buf.lock().unwrap();
+        assert!(
+            out.contains("Resolved: myreg/alpha"),
+            "resolver should log the assembled URL: {out}"
+        );
+
+        let lockfile = std::fs::read_to_string(work.path().join("modules.lock")).unwrap();
+        assert!(
+            lockfile.contains("alpha"),
+            "lockfile should record the registry module: {lockfile}"
+        );
+        assert!(
+            lockfile.contains("alpha/v1.0.0"),
+            "lockfile pinned_ref should record the per-module tag: {lockfile}"
+        );
+
+        let profile_yaml =
+            std::fs::read_to_string(work.path().join("profiles/default.yaml")).unwrap();
+        assert!(
+            profile_yaml.contains("myreg/alpha"),
+            "profile should reference the registry-qualified module name: {profile_yaml}"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn cmd_module_add_from_registry_no_tag_resolves_latest_version() {
+        let work = setup_config_dir();
+        let _home = cfgd_core::with_test_home_guard(work.path());
+        let _env = EnvGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+
+        let src_root = tempfile::tempdir().unwrap();
+        let src = init_registry_source(src_root.path(), "beta", "1.0.0", "Beta v1");
+        add_module_version(&src, "beta", "2.5.0", "Beta v2.5");
+        let reg_url = format!("file://{}", src.display());
+        write_cfgd_yaml_with_registry(work.path(), "myreg", &reg_url);
+
+        let cli = test_cli(work.path());
+        let (printer, buf) = cfgd_core::output::Printer::for_test();
+        // No `@<tag>` — should fetch tags and pick the highest semver.
+        cmd_module_add_from_registry(&cli, &printer, "myreg/beta", true, true)
+            .expect("latest-version registry add should succeed");
+
+        let out = buf.lock().unwrap();
+        assert!(
+            out.contains("No tag specified"),
+            "resolver should announce the latest-lookup fallback: {out}"
+        );
+
+        let lockfile = std::fs::read_to_string(work.path().join("modules.lock")).unwrap();
+        assert!(
+            lockfile.contains("beta/v2.5.0"),
+            "lockfile should pin the highest available tag: {lockfile}"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn cmd_module_add_from_registry_unknown_registry_errors() {
+        let work = setup_config_dir();
+        let _home = cfgd_core::with_test_home_guard(work.path());
+        let _env = EnvGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+
+        // cfgd.yaml left without any registries declared.
+        let cli = test_cli(work.path());
+        let (printer, _buf) = cfgd_core::output::Printer::for_test();
+        let err = cmd_module_add_from_registry(&cli, &printer, "ghost-reg/foo@v1.0.0", true, true)
+            .expect_err("unknown registry should error");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("ghost-reg") && msg.contains("registry add"),
+            "error should name the missing registry and point at the fix: {msg}"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn cmd_module_add_from_registry_invalid_reference_format_errors() {
+        let work = setup_config_dir();
+        let _home = cfgd_core::with_test_home_guard(work.path());
+        let _env = EnvGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+
+        let cli = test_cli(work.path());
+        let (printer, _buf) = cfgd_core::output::Printer::for_test();
+        // No slash — `parse_registry_ref` should reject this before any I/O.
+        let err = cmd_module_add_from_registry(&cli, &printer, "noslash", true, true)
+            .expect_err("bare reference without `/` should be rejected");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("registry/module"),
+            "error should explain the expected reference shape: {msg}"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn cmd_module_add_from_registry_unknown_module_errors_when_no_tags() {
+        let work = setup_config_dir();
+        let _home = cfgd_core::with_test_home_guard(work.path());
+        let _env = EnvGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+
+        let src_root = tempfile::tempdir().unwrap();
+        let src = init_registry_source(src_root.path(), "alpha", "1.0.0", "Alpha");
+        let reg_url = format!("file://{}", src.display());
+        write_cfgd_yaml_with_registry(work.path(), "myreg", &reg_url);
+
+        let cli = test_cli(work.path());
+        let (printer, _buf) = cfgd_core::output::Printer::for_test();
+        // Registry resolves, but `beta` has no matching tags in the source.
+        let err = cmd_module_add_from_registry(&cli, &printer, "myreg/beta", true, true)
+            .expect_err("module with no tags should error on latest lookup");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("No tags") && msg.contains("beta"),
+            "error should name the missing module: {msg}"
+        );
+    }
+}
