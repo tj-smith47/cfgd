@@ -2594,3 +2594,99 @@ fn seccomp_apply_uses_default_profiles_dir_when_unset() {
     // The important thing is it doesn't panic
     let _ = result;
 }
+
+// --- KubeletConfigurator::apply paths ---
+//
+// The 60+ uncovered lines in kubelet.rs are the apply() body. systemctl
+// won't be available in CI/tests so the rollback arm fires after the
+// atomic_write succeeds. These tests pin the no-op early returns plus the
+// "write + restart fails + attempt rollback" sequence.
+
+#[test]
+fn kubelet_apply_with_no_settings_field_is_a_noop() {
+    // desired without `settings` → match returns None → early Ok(()).
+    let dir = tempdir().unwrap();
+    let config = dir.path().join("config.yaml");
+    let mut m = serde_yaml::Mapping::new();
+    m.insert(
+        serde_yaml::Value::String("configPath".into()),
+        serde_yaml::Value::String(config.to_str().unwrap().into()),
+    );
+    let desired = serde_yaml::Value::Mapping(m);
+    let kc = KubeletConfigurator;
+    let (printer, _buf) = cfgd_core::output::Printer::for_test();
+    kc.apply(&desired, &printer)
+        .expect("missing settings must be Ok(no-op)");
+    assert!(!config.exists(), "no-op must not create the config file");
+}
+
+#[test]
+fn kubelet_apply_with_empty_settings_is_a_noop() {
+    // desired with empty `settings: {}` → settings.is_empty() → early Ok.
+    let dir = tempdir().unwrap();
+    let config = dir.path().join("config.yaml");
+    let mut m = serde_yaml::Mapping::new();
+    m.insert(
+        serde_yaml::Value::String("configPath".into()),
+        serde_yaml::Value::String(config.to_str().unwrap().into()),
+    );
+    m.insert(
+        serde_yaml::Value::String("settings".into()),
+        serde_yaml::Value::Mapping(serde_yaml::Mapping::new()),
+    );
+    let desired = serde_yaml::Value::Mapping(m);
+    let kc = KubeletConfigurator;
+    let (printer, _buf) = cfgd_core::output::Printer::for_test();
+    kc.apply(&desired, &printer)
+        .expect("empty settings must be Ok(no-op)");
+    assert!(
+        !config.exists(),
+        "empty-settings no-op must not write the config"
+    );
+}
+
+#[test]
+fn kubelet_apply_writes_config_then_returns_err_when_systemctl_fails() {
+    // Settings present → apply writes the merged config via atomic_write,
+    // then shells out to `systemctl restart kubelet`. In CI/tests
+    // systemctl is either absent or the kubelet unit doesn't exist, so
+    // restart fails → apply returns Err. We assert:
+    //   (a) the merged config IS written to disk (atomic_write fired)
+    //   (b) the returned Err carries a systemctl-related message
+    let dir = tempdir().unwrap();
+    let config = dir.path().join("nested/sub/config.yaml");
+    let mut settings = serde_yaml::Mapping::new();
+    settings.insert(
+        serde_yaml::Value::String("maxPods".into()),
+        serde_yaml::Value::Number(110.into()),
+    );
+    let mut m = serde_yaml::Mapping::new();
+    m.insert(
+        serde_yaml::Value::String("configPath".into()),
+        serde_yaml::Value::String(config.to_str().unwrap().into()),
+    );
+    m.insert(
+        serde_yaml::Value::String("settings".into()),
+        serde_yaml::Value::Mapping(settings),
+    );
+    let desired = serde_yaml::Value::Mapping(m);
+    let kc = KubeletConfigurator;
+    let (printer, _buf) = cfgd_core::output::Printer::for_test();
+    let err = kc
+        .apply(&desired, &printer)
+        .expect_err("systemctl restart should fail in CI/tests");
+    assert!(
+        config.exists(),
+        "atomic_write must have written the merged config before restart"
+    );
+    let written = std::fs::read_to_string(&config).unwrap();
+    assert!(
+        written.contains("maxPods"),
+        "config must contain the desired setting key: {written}"
+    );
+    let msg = err.to_string();
+    assert!(
+        msg.contains("systemctl") || msg.contains("kubelet"),
+        "err should mention systemctl/kubelet, got: {msg}"
+    );
+}
