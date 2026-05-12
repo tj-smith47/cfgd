@@ -3560,52 +3560,16 @@ fn build_registry_module_url_handles_ssh_base_urls() {
 #[cfg(unix)]
 mod keys_with_fake_cosign {
     use super::*;
+    use cfgd_core::test_helpers::CosignTestShim;
     use serial_test::serial;
-    use std::os::unix::fs::PermissionsExt;
-
-    /// Install a /bin/sh shim at a tempdir path and point CFGD_COSIGN_BIN
-    /// at it. The shim writes `cosign.key` + `cosign.pub` to its cwd
-    /// when invoked with `generate-key-pair` (matching cosign's actual
-    /// behavior), then exits with `exit_code`.
-    struct CosignKeygenShim {
-        _tmp: tempfile::TempDir,
-    }
-
-    impl CosignKeygenShim {
-        fn install(exit_code: i32) -> Self {
-            let tmp = tempfile::TempDir::new().expect("tempdir");
-            let bin_path = tmp.path().join("fake-cosign");
-            // The shim mirrors cosign's contract: when called with
-            // `generate-key-pair`, write a private/public pair to cwd.
-            // Other subcommands no-op and exit with `exit_code`.
-            let script = format!(
-                "#!/bin/sh\nif [ \"$1\" = \"generate-key-pair\" ]; then\n  printf 'fake-private-key-bytes' > cosign.key\n  printf 'fake-public-key-bytes' > cosign.pub\nfi\nexit {exit_code}\n"
-            );
-            std::fs::write(&bin_path, script).expect("write fake-cosign");
-            let mut perms = std::fs::metadata(&bin_path).expect("stat").permissions();
-            perms.set_mode(0o755);
-            std::fs::set_permissions(&bin_path, perms).expect("chmod");
-            // SAFETY: serial.
-            unsafe {
-                std::env::set_var("CFGD_COSIGN_BIN", &bin_path);
-            }
-            Self { _tmp: tmp }
-        }
-    }
-
-    impl Drop for CosignKeygenShim {
-        fn drop(&mut self) {
-            // SAFETY: serial.
-            unsafe {
-                std::env::remove_var("CFGD_COSIGN_BIN");
-            }
-        }
-    }
 
     #[test]
     #[serial]
     fn cmd_module_keys_generate_creates_key_pair_when_cosign_succeeds() {
-        let _shim = CosignKeygenShim::install(0);
+        let _shim = CosignTestShim::builder()
+            .with_argv_logging(false)
+            .with_keygen(true)
+            .install();
         let work = tempfile::tempdir().expect("workdir");
         let dir_str = work.path().to_str().unwrap();
 
@@ -3631,7 +3595,11 @@ mod keys_with_fake_cosign {
     #[test]
     #[serial]
     fn cmd_module_keys_generate_returns_error_when_cosign_exits_nonzero() {
-        let _shim = CosignKeygenShim::install(2);
+        let _shim = CosignTestShim::builder()
+            .with_argv_logging(false)
+            .with_keygen(true)
+            .with_exit(2)
+            .install();
         let work = tempfile::tempdir().expect("workdir");
         let dir_str = work.path().to_str().unwrap();
 
@@ -3671,7 +3639,10 @@ mod keys_with_fake_cosign {
     #[test]
     #[serial]
     fn cmd_module_keys_rotate_backs_up_old_keys_and_generates_new() {
-        let _shim = CosignKeygenShim::install(0);
+        let _shim = CosignTestShim::builder()
+            .with_argv_logging(false)
+            .with_keygen(true)
+            .install();
         let work = tempfile::tempdir().expect("workdir");
         let dir = work.path();
         // Pre-create the existing key pair so the rotate flow proceeds

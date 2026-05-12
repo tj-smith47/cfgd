@@ -1997,56 +1997,8 @@ fn check_with_cache_ignores_expired_entry() {
 #[cfg(unix)]
 mod cosign_verify_blob {
     use super::*;
+    use crate::test_helpers::CosignTestShim;
     use serial_test::serial;
-    use std::os::unix::fs::PermissionsExt;
-
-    struct CosignShim {
-        _tmp: tempfile::TempDir,
-        log_path: std::path::PathBuf,
-    }
-
-    impl CosignShim {
-        fn install(exit_code: i32, stderr_msg: &str) -> Self {
-            let tmp = tempfile::TempDir::new().expect("tempdir");
-            let bin_path = tmp.path().join("fake-cosign");
-            let log_path = tmp.path().join("argv.log");
-
-            let script = format!(
-                "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$CFGD_FAKE_COSIGN_LOG\"\nprintf '%s' '{stderr_msg}' 1>&2\nexit {exit_code}\n",
-                stderr_msg = stderr_msg.replace('\'', "'\\''"),
-                exit_code = exit_code,
-            );
-            std::fs::write(&bin_path, script).expect("write fake-cosign");
-            let mut perms = std::fs::metadata(&bin_path).expect("stat").permissions();
-            perms.set_mode(0o755);
-            std::fs::set_permissions(&bin_path, perms).expect("chmod");
-
-            // SAFETY: serial.
-            unsafe {
-                std::env::set_var("CFGD_COSIGN_BIN", &bin_path);
-                std::env::set_var("CFGD_FAKE_COSIGN_LOG", &log_path);
-            }
-
-            Self {
-                _tmp: tmp,
-                log_path,
-            }
-        }
-
-        fn argv_log(&self) -> String {
-            std::fs::read_to_string(&self.log_path).unwrap_or_default()
-        }
-    }
-
-    impl Drop for CosignShim {
-        fn drop(&mut self) {
-            // SAFETY: serial.
-            unsafe {
-                std::env::remove_var("CFGD_COSIGN_BIN");
-                std::env::remove_var("CFGD_FAKE_COSIGN_LOG");
-            }
-        }
-    }
 
     fn dummy_paths() -> (
         tempfile::TempDir,
@@ -2067,7 +2019,7 @@ mod cosign_verify_blob {
     #[test]
     #[serial]
     fn run_cosign_verify_blob_passes_key_bundle_and_checksums_paths() {
-        let shim = CosignShim::install(0, "");
+        let shim = CosignTestShim::install();
         let (_dir, checksums, bundle, pub_key) = dummy_paths();
         run_cosign_verify_blob(&checksums, &bundle, &pub_key).expect("happy path → Ok");
         let argv = shim.argv_log();
@@ -2093,7 +2045,10 @@ mod cosign_verify_blob {
     #[test]
     #[serial]
     fn run_cosign_verify_blob_propagates_failure_with_stderr_message() {
-        let _shim = CosignShim::install(1, "signature does not match");
+        let _shim = CosignTestShim::builder()
+            .with_exit(1)
+            .with_stderr("signature does not match")
+            .install();
         let (_dir, checksums, bundle, pub_key) = dummy_paths();
         let err =
             run_cosign_verify_blob(&checksums, &bundle, &pub_key).expect_err("non-zero exit → Err");
@@ -2147,44 +2102,9 @@ mod cosign_verify_blob {
 #[cfg(unix)]
 mod download_and_install_to {
     use super::*;
+    use crate::test_helpers::CosignTestShim;
     use serial_test::serial;
     use std::os::unix::fs::PermissionsExt;
-
-    /// Fake-cosign installed via CFGD_COSIGN_BIN; shared with the
-    /// `cosign_verify_blob` module above.
-    struct CosignShim {
-        _tmp: tempfile::TempDir,
-    }
-
-    impl CosignShim {
-        fn install(exit_code: i32, stderr_msg: &str) -> Self {
-            let tmp = tempfile::TempDir::new().expect("tempdir");
-            let bin_path = tmp.path().join("fake-cosign");
-            let script = format!(
-                "#!/bin/sh\nprintf '%s' '{stderr_msg}' 1>&2\nexit {exit_code}\n",
-                stderr_msg = stderr_msg.replace('\'', "'\\''"),
-                exit_code = exit_code,
-            );
-            std::fs::write(&bin_path, script).expect("write fake-cosign");
-            let mut perms = std::fs::metadata(&bin_path).expect("stat").permissions();
-            perms.set_mode(0o755);
-            std::fs::set_permissions(&bin_path, perms).expect("chmod");
-            // SAFETY: serial.
-            unsafe {
-                std::env::set_var("CFGD_COSIGN_BIN", &bin_path);
-            }
-            Self { _tmp: tmp }
-        }
-    }
-
-    impl Drop for CosignShim {
-        fn drop(&mut self) {
-            // SAFETY: serial.
-            unsafe {
-                std::env::remove_var("CFGD_COSIGN_BIN");
-            }
-        }
-    }
 
     /// Build a gzipped tar archive containing a single `cfgd` file with
     /// `binary_content`. Returns the archive bytes.
@@ -2265,7 +2185,7 @@ mod download_and_install_to {
     #[test]
     #[serial]
     fn happy_path_installs_extracted_binary_to_target() {
-        let _shim = CosignShim::install(0, "");
+        let _shim = CosignTestShim::builder().with_argv_logging(false).install();
 
         let binary_content = b"#!/bin/sh\necho fake cfgd binary\n";
         let tarball = build_tarball(binary_content);
@@ -2322,7 +2242,7 @@ mod download_and_install_to {
     #[test]
     #[serial]
     fn happy_path_with_printer_drives_spinner_branches() {
-        let _shim = CosignShim::install(0, "");
+        let _shim = CosignTestShim::builder().with_argv_logging(false).install();
 
         let binary_content = b"#!/bin/sh\necho printer cfgd binary\n";
         let tarball = build_tarball(binary_content);
@@ -2371,7 +2291,7 @@ mod download_and_install_to {
     #[test]
     #[serial]
     fn returns_download_failed_when_archive_url_returns_5xx() {
-        let _shim = CosignShim::install(0, "");
+        let _shim = CosignTestShim::builder().with_argv_logging(false).install();
         let mut server = mockito::Server::new();
         let _m = server
             .mock("GET", "/download/cfgd.tar.gz")
@@ -2398,7 +2318,7 @@ mod download_and_install_to {
     #[test]
     #[serial]
     fn returns_download_failed_when_checksums_url_returns_404() {
-        let _shim = CosignShim::install(0, "");
+        let _shim = CosignTestShim::builder().with_argv_logging(false).install();
         let tarball = build_tarball(b"binary");
 
         let mut server = mockito::Server::new();
@@ -2429,7 +2349,11 @@ mod download_and_install_to {
     #[test]
     #[serial]
     fn propagates_cosign_failure_when_signature_verification_fails() {
-        let _shim = CosignShim::install(1, "tampered checksums file");
+        let _shim = CosignTestShim::builder()
+            .with_argv_logging(false)
+            .with_exit(1)
+            .with_stderr("tampered checksums file")
+            .install();
         let tarball = build_tarball(b"binary");
         let sha = crate::sha256_hex(&tarball);
         let asset_name = "cfgd-9.9.9-linux-x86_64.tar.gz";
@@ -2475,7 +2399,7 @@ mod download_and_install_to {
     #[test]
     #[serial]
     fn returns_checksum_mismatch_when_sha_differs_over_the_wire() {
-        let _shim = CosignShim::install(0, "");
+        let _shim = CosignTestShim::builder().with_argv_logging(false).install();
         let tarball = build_tarball(b"actual-binary");
         // Compose checksums.txt with a *wrong* SHA so the on-disk SHA differs.
         let asset_name = "cfgd-9.9.9-linux-x86_64.tar.gz";
@@ -2523,7 +2447,7 @@ mod download_and_install_to {
     fn returns_checksum_missing_when_release_has_no_checksums_asset() {
         // No checksums asset → early-return without HTTP. cosign shim still
         // installed for hygiene; not invoked.
-        let _shim = CosignShim::install(0, "");
+        let _shim = CosignTestShim::builder().with_argv_logging(false).install();
         let tarball = build_tarball(b"binary");
 
         let mut server = mockito::Server::new();
@@ -2558,7 +2482,7 @@ mod download_and_install_to {
     #[test]
     #[serial]
     fn returns_install_failed_when_archive_lacks_cfgd_binary() {
-        let _shim = CosignShim::install(0, "");
+        let _shim = CosignTestShim::builder().with_argv_logging(false).install();
         let tarball = build_tarball_without_binary();
         let sha = crate::sha256_hex(&tarball);
         let asset_name = "cfgd-9.9.9-linux-x86_64.tar.gz";
@@ -2605,7 +2529,7 @@ mod download_and_install_to {
     fn returns_checksum_missing_when_asset_not_listed_in_checksums_body() {
         // checksums.txt names a *different* asset; the SHA for our archive
         // is therefore not in the parsed map → ChecksumMissing.
-        let _shim = CosignShim::install(0, "");
+        let _shim = CosignTestShim::builder().with_argv_logging(false).install();
         let tarball = build_tarball(b"binary");
         let sha = crate::sha256_hex(&tarball);
         let checksums = checksums_line(&sha, "some-other-asset.tar.gz");
@@ -2652,7 +2576,11 @@ mod download_and_install_to {
         // Release lacks cosign.bundle → verify_cosign_bundle returns Ok(false)
         // and the install proceeds with SHA256-only verification. Demonstrates
         // the documented graceful-degradation contract.
-        let _shim = CosignShim::install(99, "should not be invoked");
+        let _shim = CosignTestShim::builder()
+            .with_argv_logging(false)
+            .with_exit(99)
+            .with_stderr("should not be invoked")
+            .install();
         let binary_content = b"binary";
         let tarball = build_tarball(binary_content);
         let sha = crate::sha256_hex(&tarball);
@@ -2704,7 +2632,7 @@ mod download_and_install_to {
     #[test]
     #[serial]
     fn verify_cosign_bundle_emits_warning_when_no_bundle_attached() {
-        let _shim = CosignShim::install(0, "");
+        let _shim = CosignTestShim::builder().with_argv_logging(false).install();
         let release = release_with_assets(&["cfgd-9.9.9-linux-x86_64.tar.gz"]);
         let tmp = tempfile::tempdir().unwrap();
         let checksums_path = tmp.path().join("checksums.txt");
@@ -2729,7 +2657,7 @@ mod download_and_install_to {
     #[test]
     #[serial]
     fn verify_cosign_bundle_emits_warning_when_no_public_key_attached() {
-        let _shim = CosignShim::install(0, "");
+        let _shim = CosignTestShim::builder().with_argv_logging(false).install();
         let release = release_with_assets(&[
             "cfgd-9.9.9-linux-x86_64.tar.gz",
             "cfgd-9.9.9-checksums.txt.cosign.bundle",

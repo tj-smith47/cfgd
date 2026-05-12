@@ -492,72 +492,15 @@ fn apply_verify_args_keyless_defaults() {
 #[cfg(unix)]
 mod fake_cosign {
     use super::*;
+    use crate::test_helpers::CosignTestShim;
     use serial_test::serial;
-    use std::fs;
-    use std::os::unix::fs::PermissionsExt;
-    use std::path::PathBuf;
-
-    /// Owns a tempdir holding the fake-cosign script and the env var that
-    /// points cosign_cmd at it. Drops in reverse order so the env var is
-    /// cleared before the dir is removed — test isolation is preserved
-    /// even on a panicking test.
-    struct CosignShimGuard {
-        _tmp: tempfile::TempDir,
-        log_path: PathBuf,
-    }
-
-    impl CosignShimGuard {
-        fn install(exit_code: i32, stderr_msg: &str) -> Self {
-            let tmp = tempfile::TempDir::new().expect("tempdir");
-            let bin_path = tmp.path().join("fake-cosign");
-            let log_path = tmp.path().join("argv.log");
-
-            // Each invocation appends "<arg1>\t<arg2>\t...\n" to the log.
-            // The shim re-reads ${CFGD_FAKE_COSIGN_LOG} so multiple cmds in
-            // a single test write to the same file in order.
-            let script = format!(
-                "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$CFGD_FAKE_COSIGN_LOG\"\nprintf '%s' '{stderr_msg}' 1>&2\nexit {exit_code}\n",
-                stderr_msg = stderr_msg.replace('\'', "'\\''"),
-                exit_code = exit_code,
-            );
-            fs::write(&bin_path, script).expect("write fake-cosign");
-            let mut perms = fs::metadata(&bin_path).expect("metadata").permissions();
-            perms.set_mode(0o755);
-            fs::set_permissions(&bin_path, perms).expect("chmod");
-
-            // SAFETY: serial_test::serial gates execution; no concurrent reader.
-            unsafe {
-                std::env::set_var("CFGD_COSIGN_BIN", &bin_path);
-                std::env::set_var("CFGD_FAKE_COSIGN_LOG", &log_path);
-            }
-
-            Self {
-                _tmp: tmp,
-                log_path,
-            }
-        }
-
-        fn argv_log(&self) -> String {
-            fs::read_to_string(&self.log_path).unwrap_or_default()
-        }
-    }
-
-    impl Drop for CosignShimGuard {
-        fn drop(&mut self) {
-            // SAFETY: serial_test::serial gates execution; no concurrent reader.
-            unsafe {
-                std::env::remove_var("CFGD_COSIGN_BIN");
-                std::env::remove_var("CFGD_FAKE_COSIGN_LOG");
-            }
-        }
-    }
 
     // --- sign_artifact ---
 
     #[test]
     #[serial]
     fn sign_artifact_keyless_invokes_sign_yes_subcommand_and_returns_ok() {
-        let guard = CosignShimGuard::install(0, "");
+        let guard = CosignTestShim::install();
         let result = sign_artifact("ghcr.io/test/mod:v1", None);
         assert!(result.is_ok(), "happy keyless sign returns Ok: {result:?}");
         let argv = guard.argv_log();
@@ -572,7 +515,7 @@ mod fake_cosign {
     #[test]
     #[serial]
     fn sign_artifact_with_key_path_passes_key_flag() {
-        let guard = CosignShimGuard::install(0, "");
+        let guard = CosignTestShim::install();
         let result = sign_artifact("ghcr.io/test/mod:v1", Some("/keys/cosign.key"));
         assert!(result.is_ok(), "with-key sign returns Ok");
         let argv = guard.argv_log();
@@ -589,7 +532,10 @@ mod fake_cosign {
     #[test]
     #[serial]
     fn sign_artifact_propagates_cosign_failure_with_stderr_message() {
-        let _guard = CosignShimGuard::install(1, "rekor unreachable");
+        let _guard = CosignTestShim::builder()
+            .with_exit(1)
+            .with_stderr("rekor unreachable")
+            .install();
         let result = sign_artifact("ghcr.io/test/mod:v1", None);
         let err = result.expect_err("non-zero cosign must error");
         let msg = format!("{err}");
@@ -608,7 +554,7 @@ mod fake_cosign {
     #[test]
     #[serial]
     fn verify_signature_keyless_passes_identity_and_issuer_constraints() {
-        let guard = CosignShimGuard::install(0, "");
+        let guard = CosignTestShim::install();
         let result = verify_signature(
             "ghcr.io/myorg/mod:v1",
             &VerifyOptions {
@@ -639,7 +585,7 @@ mod fake_cosign {
     #[test]
     #[serial]
     fn verify_signature_with_key_takes_priority_over_identity() {
-        let guard = CosignShimGuard::install(0, "");
+        let guard = CosignTestShim::install();
         let result = verify_signature(
             "ghcr.io/myorg/mod:v1",
             &VerifyOptions {
@@ -663,7 +609,10 @@ mod fake_cosign {
     #[test]
     #[serial]
     fn verify_signature_propagates_cosign_failure_with_artifact_ref() {
-        let _guard = CosignShimGuard::install(1, "signature mismatch");
+        let _guard = CosignTestShim::builder()
+            .with_exit(1)
+            .with_stderr("signature mismatch")
+            .install();
         let result = verify_signature(
             "ghcr.io/myorg/mod:v1",
             &VerifyOptions {
@@ -690,7 +639,7 @@ mod fake_cosign {
     #[test]
     #[serial]
     fn attach_attestation_passes_predicate_and_type_flags() {
-        let guard = CosignShimGuard::install(0, "");
+        let guard = CosignTestShim::install();
         let result = attach_attestation(
             "ghcr.io/myorg/mod:v1",
             "/tmp/provenance.json",
@@ -719,7 +668,7 @@ mod fake_cosign {
     #[test]
     #[serial]
     fn attach_attestation_keyless_uses_yes_flag() {
-        let guard = CosignShimGuard::install(0, "");
+        let guard = CosignTestShim::install();
         let result = attach_attestation("ghcr.io/myorg/mod:v1", "/tmp/p.json", None);
         assert!(result.is_ok());
         let argv = guard.argv_log();
@@ -738,7 +687,7 @@ mod fake_cosign {
     #[test]
     #[serial]
     fn verify_attestation_runs_verify_attestation_subcommand() {
-        let guard = CosignShimGuard::install(0, "");
+        let guard = CosignTestShim::install();
         let result = verify_attestation(
             "ghcr.io/myorg/mod:v1",
             "slsaprovenance",
@@ -767,7 +716,10 @@ mod fake_cosign {
     #[test]
     #[serial]
     fn verify_attestation_propagates_failure_with_stderr() {
-        let _guard = CosignShimGuard::install(1, "no matching attestations");
+        let _guard = CosignTestShim::builder()
+            .with_exit(1)
+            .with_stderr("no matching attestations")
+            .install();
         let result = verify_attestation(
             "ghcr.io/myorg/mod:v1",
             "slsaprovenance",
