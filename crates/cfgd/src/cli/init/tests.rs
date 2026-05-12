@@ -337,6 +337,46 @@ fn pick_profile_no_profiles_errors() {
 }
 
 #[test]
+fn pick_profile_multi_lists_options_and_propagates_prompt_error() {
+    // Multiple profiles → pick_profile must (a) emit the "Available Profiles"
+    // subheader, (b) emit one info line per profile in 1-based numbered form,
+    // (c) call prompt_text. With a JSON-format printer, prompt_text Errs in
+    // non-interactive tests, so the function returns that Err — confirming
+    // that the multi-profile branch wires through to prompt_text.
+    let dir = tempfile::tempdir().unwrap();
+    let profiles_dir = dir.path().join("profiles");
+    std::fs::create_dir_all(&profiles_dir).unwrap();
+    for stem in ["alpha", "bravo"] {
+        std::fs::write(
+            profiles_dir.join(format!("{stem}.yaml")),
+            format!(
+                "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: {stem}\nspec: {{}}\n"
+            ),
+        )
+        .unwrap();
+    }
+
+    let (printer, buf) = Printer::for_test_with_format(cfgd_core::output::OutputFormat::Json);
+    let err = pick_profile(&profiles_dir, &printer)
+        .expect_err("non-interactive prompt_text Errs in JSON-format printer");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("Select profile") || msg.to_ascii_lowercase().contains("interactive"),
+        "Err must mention the prompt that could not be satisfied: {msg}"
+    );
+
+    let captured = buf.lock().unwrap().clone();
+    assert!(
+        captured.contains("Available Profiles"),
+        "subheader must fire on multi-profile path: {captured}"
+    );
+    assert!(
+        captured.contains("1. alpha") && captured.contains("2. bravo"),
+        "each profile must be enumerated 1-based on its own info line: {captured}"
+    );
+}
+
+#[test]
 fn pick_profile_no_dir_errors() {
     let dir = tempfile::tempdir().unwrap();
     let profiles_dir = dir.path().join("profiles");
