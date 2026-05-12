@@ -2275,3 +2275,199 @@ fn profile_create_with_all_script_types() {
     assert_eq!(scripts.pre_reconcile[0].run_str(), "pre-recon.sh");
     assert_eq!(scripts.post_reconcile[0].run_str(), "post-recon.sh");
 }
+
+// ─── cmd_profile_update — module-removal lockfile + state cleanup ─────────────
+//
+// `--modules -<name>` is well-tested for *local* modules (the bare `retain`
+// arm). These tests drive the *remote-module* cleanup branch: when the
+// module name has a `modules.lock` entry, cmd_profile_update should also
+// remove the lockfile entry, wipe the cached git checkout, list deployed
+// files from the state store, and clear the module's state-store records.
+// The prompt to actually restore backups defaults to `false` in test mode
+// (Printer::for_test() drops to `unwrap_or(false)`), so we exercise the
+// listing arm + the state-cleanup arms only — the per-file restore loop
+// itself remains uncovered until a prompt-mock harness lands.
+
+#[cfg(unix)]
+mod profile_update_module_cleanup {
+    use super::*;
+    use serial_test::serial;
+
+    /// Build a `setup_config_dir`-shaped tempdir whose `profiles/default.yaml`
+    /// already lists `shell` in `spec.modules`. Avoids relying on the local
+    /// `setup_config_dir`'s YAML shape which omits a modules section.
+    fn setup_with_module_in_profile(mod_name: &str) -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        let profiles_dir = dir.path().join("profiles");
+        std::fs::create_dir_all(&profiles_dir).unwrap();
+        std::fs::write(
+            dir.path().join("cfgd.yaml"),
+            "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec:\n  profile: default\n",
+        )
+        .unwrap();
+        let profile_yaml = format!(
+            "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec:\n  modules:\n    - {mod_name}\n"
+        );
+        std::fs::write(profiles_dir.join("default.yaml"), profile_yaml).unwrap();
+        dir
+    }
+
+    /// Mirror `test_cli` from the outer module but with `state_dir` plumbed
+    /// in so the test can drive `open_state_store` at a known path without
+    /// touching the real `~/.local/share/cfgd/state`.
+    fn cli_with_state_dir(
+        config_dir: &std::path::Path,
+        state_dir: &std::path::Path,
+    ) -> super::super::Cli {
+        super::super::Cli {
+            config: config_dir.join("cfgd.yaml"),
+            profile: None,
+            no_color: true,
+            verbose: 0,
+            quiet: true,
+            output: super::super::OutputFormatArg(cfgd_core::output::OutputFormat::Table),
+            jsonpath: None,
+            state_dir: Some(state_dir.to_path_buf()),
+            command: Some(super::super::Command::Status {
+                module: None,
+                exit_code: false,
+            }),
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn remove_remote_module_cleans_lockfile_entry_and_cache_dir() {
+        let tmp = tempfile::tempdir().unwrap();
+        let _home = cfgd_core::with_test_home_guard(tmp.path());
+
+        let config_dir = setup_with_module_in_profile("ghmod");
+        let state_dir = tmp.path().join("state");
+
+        // Seed modules.lock with a remote entry. parse_git_source treats
+        // `https://...@<tag>` as repo_url + tag, so the cleanup branch
+        // computes git_cache_dir(<cache_base>, "https://github.com/x/y.git").
+        let lock_yaml = "modules:\n  - name: ghmod\n    url: https://github.com/x/y.git@v1.0.0\n    pinnedRef: v1.0.0\n    commit: deadbeef\n    integrity: sha256:0\n";
+        std::fs::write(config_dir.path().join("modules.lock"), lock_yaml).unwrap();
+
+        // Pre-create the cache dir at the location the cleanup branch will
+        // compute. Using the same primitives the production code uses
+        // means future hashing-scheme changes don't silently bypass the
+        // assertion.
+        let cache_base = cfgd_core::modules::default_module_cache_dir().unwrap();
+        let cache_dir =
+            cfgd_core::modules::git_cache_dir(&cache_base, "https://github.com/x/y.git");
+        std::fs::create_dir_all(&cache_dir).unwrap();
+        std::fs::write(cache_dir.join("HEAD"), "ref: refs/heads/master\n").unwrap();
+        assert!(cache_dir.exists(), "test precondition: cache dir staged");
+
+        let cli = cli_with_state_dir(config_dir.path(), &state_dir);
+        let (printer, buf) = Printer::for_test();
+        let mut args = make_profile_update_args();
+        args.modules = vec!["-ghmod".to_string()];
+        cmd_profile_update(&cli, &printer, "default", &args)
+            .expect("remove of remote module should succeed");
+
+        // Lockfile entry is gone.
+        let lock_after = std::fs::read_to_string(config_dir.path().join("modules.lock")).unwrap();
+        assert!(
+            !lock_after.contains("ghmod"),
+            "lockfile should drop the removed entry: {lock_after}"
+        );
+
+        // Cache dir was wiped.
+        assert!(
+            !cache_dir.exists(),
+            "cache dir for removed module should be gone: {}",
+            cache_dir.display()
+        );
+
+        // Profile no longer lists the module.
+        let profile_yaml =
+            std::fs::read_to_string(config_dir.path().join("profiles").join("default.yaml"))
+                .unwrap();
+        assert!(
+            !profile_yaml.contains("ghmod"),
+            "profile should drop ghmod after removal: {profile_yaml}"
+        );
+
+        // User-visible signals are emitted by the cleanup branch.
+        let out = buf.lock().unwrap().clone();
+        assert!(
+            out.contains("Removed 'ghmod' from modules.lock"),
+            "should announce lockfile removal: {out}"
+        );
+        assert!(
+            out.contains("Cleaned cached checkout"),
+            "should announce cache cleanup: {out}"
+        );
+        assert!(
+            out.contains("Removed module: ghmod"),
+            "should report module removal success: {out}"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn remove_module_with_deployed_files_lists_them_and_clears_state() {
+        let tmp = tempfile::tempdir().unwrap();
+        let _home = cfgd_core::with_test_home_guard(tmp.path());
+
+        let config_dir = setup_with_module_in_profile("statemod");
+        let state_dir = tmp.path().join("state");
+        std::fs::create_dir_all(&state_dir).unwrap();
+
+        // No modules.lock — pure local-module path. The state store still
+        // carries records the module deployed, so the deployed-files
+        // listing + delete_module_files + remove_module_state arms run.
+        let store = cfgd_core::state::StateStore::open(&state_dir.join("cfgd.db")).unwrap();
+        let apply_id = store
+            .record_apply(
+                "default",
+                "plan-hash",
+                cfgd_core::state::ApplyStatus::Success,
+                None,
+            )
+            .unwrap();
+        store
+            .upsert_module_file(
+                "statemod",
+                "/tmp/cfgd-test/deployed-file.conf",
+                "sha256:abc",
+                "copy",
+                apply_id,
+            )
+            .unwrap();
+        drop(store);
+
+        let cli = cli_with_state_dir(config_dir.path(), &state_dir);
+        let (printer, buf) = Printer::for_test();
+        let mut args = make_profile_update_args();
+        args.modules = vec!["-statemod".to_string()];
+        cmd_profile_update(&cli, &printer, "default", &args)
+            .expect("remove of module with state should succeed");
+
+        // The listing arm prints the deployed-file path. The prompt to
+        // restore returns false in a non-interactive printer, so we don't
+        // assert on the restore loop body — we only pin the listing +
+        // state-cleanup arms.
+        let out = buf.lock().unwrap().clone();
+        assert!(
+            out.contains("Module 'statemod' deployed 1 file(s):"),
+            "should announce deployed-file count: {out}"
+        );
+        assert!(
+            out.contains("deployed-file.conf"),
+            "should list the deployed file path: {out}"
+        );
+
+        // After the removal, both module_deployed_files and the module
+        // state row should be cleared.
+        let store2 = cfgd_core::state::StateStore::open(&state_dir.join("cfgd.db")).unwrap();
+        let remaining = store2.module_deployed_files("statemod").unwrap();
+        assert!(
+            remaining.is_empty(),
+            "delete_module_files should wipe the manifest"
+        );
+    }
+}
