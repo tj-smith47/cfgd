@@ -4448,6 +4448,52 @@ fn execute_explain_module() {
 }
 
 #[test]
+fn execute_explain_no_resource_json_format_writes_structured_array() {
+    // is_structured() == true → cmd_explain's None-resource branch takes the
+    // path at explain/mod.rs:172-184: build Vec<ExplainOutput>, write_structured,
+    // return. The captured buffer should contain JSON for all known schemas.
+    let dir = tempfile::tempdir().unwrap();
+    let cli = Cli {
+        command: Some(Command::Explain {
+            resource: None,
+            recursive: false,
+        }),
+        output: OutputFormatArg(cfgd_core::output::OutputFormat::Json),
+        ..test_cli(dir.path())
+    };
+    let (printer, buf) = Printer::for_test_with_format(cfgd_core::output::OutputFormat::Json);
+    super::execute(&cli, &printer).unwrap();
+    let output = buf.lock().unwrap();
+    assert!(
+        output.trim().starts_with('[') && output.contains("\"kind\""),
+        "should emit JSON array of schemas: {output}"
+    );
+}
+
+#[test]
+fn execute_explain_resource_json_format_writes_structured_object() {
+    // is_structured() == true + Some(resource) → mod.rs:223-232 builds a
+    // single ExplainOutput, write_structured, return. Buffer should contain
+    // a JSON object (not an array).
+    let dir = tempfile::tempdir().unwrap();
+    let cli = Cli {
+        command: Some(Command::Explain {
+            resource: Some("module".to_string()),
+            recursive: false,
+        }),
+        output: OutputFormatArg(cfgd_core::output::OutputFormat::Json),
+        ..test_cli(dir.path())
+    };
+    let (printer, buf) = Printer::for_test_with_format(cfgd_core::output::OutputFormat::Json);
+    super::execute(&cli, &printer).unwrap();
+    let output = buf.lock().unwrap();
+    assert!(
+        output.trim().starts_with('{') && output.contains("\"kind\""),
+        "should emit JSON object: {output}"
+    );
+}
+
+#[test]
 fn execute_explain_no_resource() {
     let dir = tempfile::tempdir().unwrap();
     let cli = Cli {
