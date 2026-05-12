@@ -181,6 +181,11 @@ impl DaemonState {
         self
     }
 
+    #[cfg(test)]
+    pub(super) fn store_path_for_test(&self) -> Option<&Path> {
+        self.store_path.as_deref()
+    }
+
     fn to_response(&self) -> DaemonStatusResponse {
         DaemonStatusResponse {
             running: true,
@@ -450,13 +455,7 @@ pub async fn run_daemon(
 
     let setup = build_pre_loop_setup(&config_path, profile_override.as_deref(), &*hooks)?;
 
-    let daemon_state = match crate::state::default_state_dir() {
-        Ok(dir) => DaemonState::new().with_store_path(dir.join("state.db")),
-        Err(e) => {
-            tracing::warn!(error = %e, "cannot resolve default state dir; /drift endpoint disabled");
-            DaemonState::new()
-        }
-    };
+    let daemon_state = init_daemon_state(None);
     let state = Arc::new(Mutex::new(daemon_state));
 
     // Initialize per-source status entries
@@ -469,59 +468,20 @@ pub async fn run_daemon(
     let (file_tx, file_rx) = mpsc::channel::<PathBuf>(256);
     let _watcher = setup_file_watcher(file_tx, &setup.managed_paths, &setup.config_dir)?;
 
-    // Check for already-running daemon via IPC connectivity
-    #[cfg(unix)]
-    {
-        let socket_path = PathBuf::from(DEFAULT_IPC_PATH);
-        if socket_path.exists() {
-            if StdUnixStream::connect(&socket_path).is_ok() {
-                return Err(DaemonError::AlreadyRunning {
-                    pid: std::process::id(),
-                }
-                .into());
-            }
-            // Stale socket from crashed daemon — remove it
-            let _ = std::fs::remove_file(&socket_path);
-        }
-    }
-    #[cfg(windows)]
-    {
-        if connect_daemon_ipc().is_some() {
-            return Err(DaemonError::AlreadyRunning {
-                pid: std::process::id(),
-            }
-            .into());
-        }
-    }
+    let ipc_path = PathBuf::from(DEFAULT_IPC_PATH);
+    check_already_running(&ipc_path)?;
 
     // Start health server
     let health_state = Arc::clone(&state);
-    let ipc_path = DEFAULT_IPC_PATH.to_string();
+    let health_ipc_path = ipc_path.to_string_lossy().to_string();
     let health_handle = tokio::spawn(async move {
-        if let Err(e) = run_health_server(&ipc_path, health_state).await {
+        if let Err(e) = run_health_server(&health_ipc_path, health_state).await {
             tracing::error!(error = %e, "health server error");
         }
     });
 
-    let mut intervals = vec![format!(
-        "reconcile={}s",
-        setup.parsed.reconcile_interval.as_secs()
-    )];
-    if setup.parsed.auto_pull || setup.parsed.auto_push {
-        intervals.push(format!(
-            "sync={}s (pull={}, push={})",
-            setup.parsed.sync_interval.as_secs(),
-            setup.parsed.auto_pull,
-            setup.parsed.auto_push
-        ));
-    }
-    if let Some(interval) = setup.compliance_interval {
-        intervals.push(format!("compliance={}s", interval.as_secs()));
-    }
-    printer.success(&format!("Health: {}", DEFAULT_IPC_PATH));
-    printer.success(&format!("Intervals: {}", intervals.join(", ")));
-    printer.info("Daemon running — press Ctrl+C to stop");
-    printer.newline();
+    let intervals = format_interval_lines(&setup.parsed, setup.compliance_interval);
+    print_startup_banner(&printer, &intervals, &ipc_path.to_string_lossy());
 
     // Initial server check-in at startup
     if setup.server_checkin_url.is_some() {
@@ -529,48 +489,11 @@ pub async fn run_daemon(
         let startup_config_path = config_path.clone();
         let startup_profile_override = profile_override.clone();
         tokio::task::spawn_blocking(move || {
-            let config_dir = startup_config_path
-                .parent()
-                .unwrap_or_else(|| Path::new("."))
-                .to_path_buf();
-            let profiles_dir = config_dir.join("profiles");
-            let profile_name = match startup_profile_override
-                .as_deref()
-                .or(startup_cfg.spec.profile.as_deref())
-            {
-                Some(p) => p,
-                None => {
-                    tracing::error!("no profile configured — skipping reconciliation");
-                    return;
-                }
-            };
-            match config::resolve_profile(profile_name, &profiles_dir) {
-                Ok(resolved) => {
-                    let changed = try_server_checkin(&startup_cfg, &resolved);
-                    if changed {
-                        tracing::info!("server reports config changed at startup");
-                    }
-                    // Consume any pending server config at startup so the first
-                    // reconcile tick picks up the changes.
-                    match crate::state::load_pending_server_config() {
-                        Ok(Some(_pending)) => {
-                            tracing::info!(
-                                "startup: found pending server config — first reconcile will apply it"
-                            );
-                            if let Err(e) = crate::state::clear_pending_server_config() {
-                                tracing::warn!(error = %e, "startup: failed to clear pending server config");
-                            }
-                        }
-                        Ok(None) => {}
-                        Err(e) => {
-                            tracing::warn!(error = %e, "startup: failed to load pending server config");
-                        }
-                    }
-                }
-                Err(e) => {
-                    tracing::warn!(error = %e, "startup check-in: failed to resolve profile");
-                }
-            }
+            run_startup_checkin_blocking(
+                &startup_config_path,
+                startup_profile_override.as_deref(),
+                &startup_cfg,
+            );
         })
         .await
         .map_err(|e| DaemonError::WatchError {
@@ -674,17 +597,156 @@ pub async fn run_daemon(
     // Shutdown health server
     health_handle.abort();
     let _ = health_handle.await;
-    // Unix: remove socket file. Windows: named pipes are kernel objects, no cleanup needed.
-    #[cfg(unix)]
-    {
-        let socket_path = PathBuf::from(DEFAULT_IPC_PATH);
-        if socket_path.exists() {
-            let _ = std::fs::remove_file(&socket_path);
-        }
-    }
+    cleanup_ipc_socket(&ipc_path);
 
     printer.success("Daemon stopped");
     loop_result
+}
+
+/// Initialize a fresh `DaemonState`, attaching the state-DB path when one can
+/// be resolved. When the platform default state dir is unavailable, the
+/// returned state has no store path (the `/drift` IPC endpoint will return
+/// empty events rather than crash). The `override_dir` parameter exists for
+/// tests: passing `Some(dir)` skips the platform lookup entirely.
+pub(super) fn init_daemon_state(override_dir: Option<&Path>) -> DaemonState {
+    let dir_result = override_dir
+        .map(|d| Ok(d.to_path_buf()))
+        .unwrap_or_else(crate::state::default_state_dir);
+    match dir_result {
+        Ok(dir) => DaemonState::new().with_store_path(dir.join("state.db")),
+        Err(e) => {
+            tracing::warn!(error = %e, "cannot resolve default state dir; /drift endpoint disabled");
+            DaemonState::new()
+        }
+    }
+}
+
+/// Verify no other cfgd daemon is reachable via the IPC endpoint. Returns
+/// `Err(AlreadyRunning)` if a connect succeeds; clears a stale socket file
+/// (Unix) otherwise. On Windows, falls back to the shared
+/// `connect_daemon_ipc()` probe and ignores `_ipc_path` — named pipes are
+/// kernel objects with no on-disk cleanup.
+pub(super) fn check_already_running(_ipc_path: &Path) -> Result<()> {
+    #[cfg(unix)]
+    {
+        if _ipc_path.exists() {
+            if StdUnixStream::connect(_ipc_path).is_ok() {
+                return Err(DaemonError::AlreadyRunning {
+                    pid: std::process::id(),
+                }
+                .into());
+            }
+            // Stale socket from crashed daemon — remove it
+            let _ = std::fs::remove_file(_ipc_path);
+        }
+    }
+    #[cfg(windows)]
+    {
+        if connect_daemon_ipc().is_some() {
+            return Err(DaemonError::AlreadyRunning {
+                pid: std::process::id(),
+            }
+            .into());
+        }
+    }
+    Ok(())
+}
+
+/// Build the "Intervals: ..." line components for the startup banner. Returns
+/// a vector of `key=value` segments the printer joins with `, `. Sync and
+/// compliance lines are conditional; reconcile is always present.
+pub(super) fn format_interval_lines(
+    parsed: &ParsedDaemonConfig,
+    compliance_interval: Option<Duration>,
+) -> Vec<String> {
+    let mut intervals = vec![format!(
+        "reconcile={}s",
+        parsed.reconcile_interval.as_secs()
+    )];
+    if parsed.auto_pull || parsed.auto_push {
+        intervals.push(format!(
+            "sync={}s (pull={}, push={})",
+            parsed.sync_interval.as_secs(),
+            parsed.auto_pull,
+            parsed.auto_push
+        ));
+    }
+    if let Some(interval) = compliance_interval {
+        intervals.push(format!("compliance={}s", interval.as_secs()));
+    }
+    intervals
+}
+
+/// Emit the four-line startup banner: health endpoint, interval summary,
+/// run hint, trailing blank. Pure-output; testable via `Printer::for_test()`.
+pub(super) fn print_startup_banner(printer: &Printer, intervals: &[String], ipc_path: &str) {
+    printer.success(&format!("Health: {}", ipc_path));
+    printer.success(&format!("Intervals: {}", intervals.join(", ")));
+    printer.info("Daemon running — press Ctrl+C to stop");
+    printer.newline();
+}
+
+/// Synchronous body of the startup server check-in. Resolves the profile,
+/// posts the check-in payload, and clears any pending server config so the
+/// first reconcile tick picks it up. Extracted from the `spawn_blocking`
+/// closure so tests can drive the no-profile and resolve-failure arms without
+/// scheduling onto a tokio runtime.
+pub(super) fn run_startup_checkin_blocking(
+    config_path: &Path,
+    profile_override: Option<&str>,
+    cfg: &CfgdConfig,
+) {
+    let config_dir = config_path
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .to_path_buf();
+    let profiles_dir = config_dir.join("profiles");
+    let profile_name = match profile_override.or(cfg.spec.profile.as_deref()) {
+        Some(p) => p,
+        None => {
+            tracing::error!("no profile configured — skipping reconciliation");
+            return;
+        }
+    };
+    match config::resolve_profile(profile_name, &profiles_dir) {
+        Ok(resolved) => {
+            let changed = try_server_checkin(cfg, &resolved);
+            if changed {
+                tracing::info!("server reports config changed at startup");
+            }
+            // Consume any pending server config at startup so the first
+            // reconcile tick picks up the changes.
+            match crate::state::load_pending_server_config() {
+                Ok(Some(_pending)) => {
+                    tracing::info!(
+                        "startup: found pending server config — first reconcile will apply it"
+                    );
+                    if let Err(e) = crate::state::clear_pending_server_config() {
+                        tracing::warn!(error = %e, "startup: failed to clear pending server config");
+                    }
+                }
+                Ok(None) => {}
+                Err(e) => {
+                    tracing::warn!(error = %e, "startup: failed to load pending server config");
+                }
+            }
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "startup check-in: failed to resolve profile");
+        }
+    }
+}
+
+/// Remove the daemon's IPC socket file at shutdown. No-op on Windows (named
+/// pipes are kernel objects with no on-disk artifact).
+#[allow(unused_variables)]
+pub(super) fn cleanup_ipc_socket(ipc_path: &Path) {
+    #[cfg(unix)]
+    {
+        if ipc_path.exists() {
+            let _ = std::fs::remove_file(ipc_path);
+        }
+    }
 }
 
 // --- Pump / shutdown task helpers ---

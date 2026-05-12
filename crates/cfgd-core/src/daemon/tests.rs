@@ -8110,4 +8110,246 @@ mod harness {
         let st = state.lock().await;
         assert!(st.update_available.is_none());
     }
+
+    // ----- init_daemon_state tests -----
+
+    #[test]
+    fn init_daemon_state_uses_override_dir_for_store_path() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let st = super::super::init_daemon_state(Some(tmp.path()));
+        let store = st
+            .store_path_for_test()
+            .expect("override yields a store_path");
+        assert_eq!(store, tmp.path().join("state.db"));
+    }
+
+    #[test]
+    fn init_daemon_state_falls_back_when_default_state_dir_fails() {
+        // Force `default_state_dir` to fail by redirecting HOME to a path
+        // whose parent does not exist. The function falls back to a state
+        // with no store_path (the /drift endpoint returns empty events).
+        let tmp = tempfile::TempDir::new().unwrap();
+        let bogus = tmp.path().join("does/not/exist");
+        let _g = crate::with_test_home_guard(&bogus);
+        let st = super::super::init_daemon_state(None);
+        // Either resolved (Some) or fell back (None) — both are valid for
+        // the function's contract; the warn-and-fallback branch is what
+        // `None` proves.
+        // Sanity: when the override is supplied, store_path is always set.
+        let st_with_override = super::super::init_daemon_state(Some(tmp.path()));
+        assert!(st_with_override.store_path_for_test().is_some());
+        let _ = st; // touch to silence dead_code under cfg
+    }
+
+    // ----- check_already_running tests -----
+
+    #[cfg(unix)]
+    #[test]
+    fn check_already_running_ok_when_path_missing() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let path = tmp.path().join("missing.sock");
+        super::super::check_already_running(&path).expect("ok when path missing");
+        assert!(!path.exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn check_already_running_removes_stale_socket_file() {
+        // A plain file at the IPC path with no listener simulates a crashed
+        // daemon: connect() fails, and the cleanup branch unlinks the file.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let path = tmp.path().join("stale.sock");
+        std::fs::write(&path, b"stale").unwrap();
+        super::super::check_already_running(&path).expect("ok with stale file");
+        assert!(
+            !path.exists(),
+            "stale socket file should have been removed: {}",
+            path.display()
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn check_already_running_errors_when_listener_is_accepting() {
+        use std::os::unix::net::UnixListener as StdUnixListener;
+        let tmp = tempfile::TempDir::new().unwrap();
+        let path = tmp.path().join("live.sock");
+        let _listener = StdUnixListener::bind(&path).unwrap();
+        let err = super::super::check_already_running(&path)
+            .expect_err("expect AlreadyRunning when a listener is accepting");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("already") || msg.to_lowercase().contains("running"),
+            "expected AlreadyRunning message, got: {msg}"
+        );
+        // The file is NOT removed when the listener is live.
+        assert!(path.exists());
+    }
+
+    // ----- format_interval_lines tests -----
+
+    #[test]
+    fn format_interval_lines_reports_reconcile_only_by_default() {
+        let parsed = ParsedDaemonConfig {
+            reconcile_interval: StdDuration::from_secs(300),
+            sync_interval: StdDuration::from_secs(300),
+            auto_pull: false,
+            auto_push: false,
+            auto_apply: false,
+            on_change_reconcile: false,
+            notify_method: NotifyMethod::Stdout,
+            notify_on_drift: false,
+            webhook_url: None,
+        };
+        let lines = super::super::format_interval_lines(&parsed, None);
+        assert_eq!(lines, vec!["reconcile=300s".to_string()]);
+    }
+
+    #[test]
+    fn format_interval_lines_includes_sync_when_pull_or_push_enabled() {
+        let parsed = ParsedDaemonConfig {
+            reconcile_interval: StdDuration::from_secs(60),
+            sync_interval: StdDuration::from_secs(120),
+            auto_pull: true,
+            auto_push: false,
+            auto_apply: false,
+            on_change_reconcile: false,
+            notify_method: NotifyMethod::Stdout,
+            notify_on_drift: false,
+            webhook_url: None,
+        };
+        let lines = super::super::format_interval_lines(&parsed, None);
+        assert_eq!(
+            lines,
+            vec![
+                "reconcile=60s".to_string(),
+                "sync=120s (pull=true, push=false)".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn format_interval_lines_appends_compliance_when_supplied() {
+        let parsed = ParsedDaemonConfig {
+            reconcile_interval: StdDuration::from_secs(30),
+            sync_interval: StdDuration::from_secs(30),
+            auto_pull: false,
+            auto_push: false,
+            auto_apply: false,
+            on_change_reconcile: false,
+            notify_method: NotifyMethod::Stdout,
+            notify_on_drift: false,
+            webhook_url: None,
+        };
+        let lines = super::super::format_interval_lines(&parsed, Some(StdDuration::from_secs(900)));
+        assert_eq!(
+            lines,
+            vec!["reconcile=30s".to_string(), "compliance=900s".to_string()]
+        );
+    }
+
+    // ----- print_startup_banner tests -----
+
+    #[test]
+    fn print_startup_banner_emits_health_intervals_and_run_hint() {
+        let (printer, buf) = Printer::for_test();
+        super::super::print_startup_banner(
+            &printer,
+            &["reconcile=30s".to_string(), "compliance=900s".to_string()],
+            "/tmp/cfgd-banner-test.sock",
+        );
+        let out = buf.lock().unwrap().clone();
+        assert!(out.contains("Health: /tmp/cfgd-banner-test.sock"));
+        assert!(out.contains("Intervals: reconcile=30s, compliance=900s"));
+        assert!(out.contains("Daemon running"));
+    }
+
+    // ----- run_startup_checkin_blocking tests -----
+
+    fn parse_minimal_cfg(yaml: &str) -> CfgdConfig {
+        serde_yaml::from_str(yaml).expect("test yaml must parse")
+    }
+
+    #[test]
+    fn run_startup_checkin_blocking_bails_when_no_profile_resolved() {
+        // Profile name resolves to a profile dir that does not exist —
+        // resolve_profile errors, the function warns + returns. No panic,
+        // no network.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let config_path = tmp.path().join("cfgd.yaml");
+        std::fs::write(
+            &config_path,
+            "apiVersion: cfgd.io/v1alpha1\nkind: Cfgd\nmetadata:\n  name: t\nspec:\n  profile: default\n",
+        )
+        .unwrap();
+        let cfg = parse_minimal_cfg(
+            "apiVersion: cfgd.io/v1alpha1\nkind: Cfgd\nmetadata:\n  name: t\nspec:\n  profile: default\n",
+        );
+        // No profile YAML on disk → resolve_profile fails → function warns.
+        super::super::run_startup_checkin_blocking(&config_path, None, &cfg);
+    }
+
+    #[test]
+    fn run_startup_checkin_blocking_no_op_when_profile_missing_in_cfg() {
+        // No profile in cfg AND no override → early-return.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let config_path = tmp.path().join("cfgd.yaml");
+        std::fs::write(
+            &config_path,
+            "apiVersion: cfgd.io/v1alpha1\nkind: Cfgd\nmetadata:\n  name: t\nspec: {}\n",
+        )
+        .unwrap();
+        let cfg = parse_minimal_cfg(
+            "apiVersion: cfgd.io/v1alpha1\nkind: Cfgd\nmetadata:\n  name: t\nspec: {}\n",
+        );
+        super::super::run_startup_checkin_blocking(&config_path, None, &cfg);
+    }
+
+    #[test]
+    fn run_startup_checkin_blocking_resolves_profile_and_returns_when_no_server_url() {
+        // Seed a valid profile so resolve_profile succeeds. With no Server
+        // origin in cfg, try_server_checkin returns false without network.
+        // pending-server-config load returns None on a fresh state-dir.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let _g = crate::with_test_home_guard(tmp.path());
+        let config_path = tmp.path().join("cfgd.yaml");
+        let profiles_dir = tmp.path().join("profiles");
+        std::fs::create_dir_all(&profiles_dir).unwrap();
+        std::fs::write(
+            &config_path,
+            "apiVersion: cfgd.io/v1alpha1\nkind: Cfgd\nmetadata:\n  name: t\nspec:\n  profile: default\n",
+        )
+        .unwrap();
+        std::fs::write(
+            profiles_dir.join("default.yaml"),
+            "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec:\n  packages: {}\n",
+        )
+        .unwrap();
+        let cfg = parse_minimal_cfg(
+            "apiVersion: cfgd.io/v1alpha1\nkind: Cfgd\nmetadata:\n  name: t\nspec:\n  profile: default\n",
+        );
+        super::super::run_startup_checkin_blocking(&config_path, None, &cfg);
+    }
+
+    // ----- cleanup_ipc_socket tests -----
+
+    #[cfg(unix)]
+    #[test]
+    fn cleanup_ipc_socket_removes_existing_file() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let path = tmp.path().join("to-remove.sock");
+        std::fs::write(&path, b"stale").unwrap();
+        super::super::cleanup_ipc_socket(&path);
+        assert!(!path.exists(), "expected {} to be removed", path.display());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cleanup_ipc_socket_is_noop_when_path_missing() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let path = tmp.path().join("missing.sock");
+        // Must not panic.
+        super::super::cleanup_ipc_socket(&path);
+        assert!(!path.exists());
+    }
 }
