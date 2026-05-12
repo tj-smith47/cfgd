@@ -318,3 +318,367 @@ pub(super) fn print_compliance_summary(
         printer.success(&format!("All {} check(s) compliant", s.compliant));
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use cfgd_core::compliance::{
+        ComplianceCheck, ComplianceSnapshot, ComplianceStatus, ComplianceSummary, MachineInfo,
+    };
+    use cfgd_core::output::OutputFormat;
+
+    fn sample_snapshot(checks: Vec<ComplianceCheck>) -> ComplianceSnapshot {
+        let summary = cfgd_core::compliance::compute_summary(&checks);
+        ComplianceSnapshot {
+            timestamp: "2026-05-12T00:00:00Z".into(),
+            machine: MachineInfo {
+                hostname: "test-host".into(),
+                os: "linux".into(),
+                arch: "x86_64".into(),
+            },
+            profile: "default".into(),
+            sources: vec!["local".into()],
+            checks,
+            summary,
+        }
+    }
+
+    fn check(category: &str, target: &str, status: ComplianceStatus) -> ComplianceCheck {
+        ComplianceCheck {
+            category: category.into(),
+            target: Some(target.into()),
+            status,
+            ..Default::default()
+        }
+    }
+
+    fn test_cli_for(state_dir: &std::path::Path) -> Cli {
+        Cli {
+            config: state_dir.join("cfgd.yaml"),
+            profile: None,
+            verbose: 0,
+            quiet: true,
+            no_color: true,
+            output: OutputFormatArg(OutputFormat::Table),
+            jsonpath: None,
+            state_dir: Some(state_dir.to_path_buf()),
+            command: None,
+        }
+    }
+
+    fn store_snapshot(state_dir: &std::path::Path, snapshot: &ComplianceSnapshot) {
+        let state = open_state_store(Some(state_dir)).unwrap();
+        let json = serde_json::to_string(snapshot).unwrap();
+        let hash = cfgd_core::sha256_hex(json.as_bytes());
+        state.store_compliance_snapshot(snapshot, &hash).unwrap();
+    }
+
+    // --- print_compliance_summary ---
+
+    #[test]
+    fn print_compliance_summary_all_compliant() {
+        let snapshot = sample_snapshot(vec![
+            check("file", "/etc/hosts", ComplianceStatus::Compliant),
+            check("package", "ripgrep", ComplianceStatus::Compliant),
+        ]);
+        let (printer, buf) = Printer::for_test();
+
+        print_compliance_summary(&snapshot, &printer);
+
+        let output = buf.lock().unwrap();
+        assert!(
+            output.contains("Compliance Snapshot"),
+            "should print header, got: {output}"
+        );
+        assert!(
+            output.contains("test-host"),
+            "should print hostname, got: {output}"
+        );
+        assert!(
+            output.contains("All 2 check(s) compliant"),
+            "should print all-compliant success line, got: {output}"
+        );
+    }
+
+    #[test]
+    fn print_compliance_summary_warning_route() {
+        let snapshot = sample_snapshot(vec![
+            check("file", "/etc/a", ComplianceStatus::Compliant),
+            check("system", "sysctl.x", ComplianceStatus::Warning),
+        ]);
+        let (printer, buf) = Printer::for_test();
+
+        print_compliance_summary(&snapshot, &printer);
+
+        let output = buf.lock().unwrap();
+        assert!(
+            output.contains("Summary: 1 compliant, 1 warning, 0 violation"),
+            "should take warning summary route, got: {output}"
+        );
+    }
+
+    #[test]
+    fn print_compliance_summary_violation_route() {
+        let snapshot = sample_snapshot(vec![
+            check("file", "/etc/a", ComplianceStatus::Compliant),
+            check("file", "/etc/b", ComplianceStatus::Warning),
+            check("package", "ripgrep", ComplianceStatus::Violation),
+        ]);
+        let (printer, buf) = Printer::for_test();
+
+        print_compliance_summary(&snapshot, &printer);
+
+        let output = buf.lock().unwrap();
+        assert!(
+            output.contains("Summary: 1 compliant, 1 warning, 1 violation"),
+            "should take violation summary route, got: {output}"
+        );
+    }
+
+    #[test]
+    fn print_compliance_summary_empty_checks() {
+        let snapshot = sample_snapshot(vec![]);
+        let (printer, buf) = Printer::for_test();
+
+        print_compliance_summary(&snapshot, &printer);
+
+        let output = buf.lock().unwrap();
+        assert!(
+            output.contains("No checks performed"),
+            "empty checks should short-circuit, got: {output}"
+        );
+        // Must NOT print a summary line since we returned early
+        assert!(
+            !output.contains("Summary:"),
+            "empty checks should not print summary, got: {output}"
+        );
+    }
+
+    // --- cmd_compliance_diff ---
+
+    #[test]
+    fn cmd_compliance_diff_missing_snapshots_returns_err() {
+        let state_dir = tempfile::tempdir().unwrap();
+        let cli = test_cli_for(state_dir.path());
+        let printer = Printer::new(cfgd_core::output::Verbosity::Quiet);
+
+        let err = cmd_compliance_diff(&cli, &printer, 1, 2).unwrap_err();
+        assert!(
+            err.to_string().contains("not found"),
+            "expected 'not found' error, got: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn cmd_compliance_diff_no_differences_when_snapshots_equal() {
+        let state_dir = tempfile::tempdir().unwrap();
+        let snapshot = sample_snapshot(vec![check(
+            "file",
+            "/etc/hosts",
+            ComplianceStatus::Compliant,
+        )]);
+        store_snapshot(state_dir.path(), &snapshot);
+        store_snapshot(state_dir.path(), &snapshot);
+
+        let cli = test_cli_for(state_dir.path());
+        let (printer, buf) = Printer::for_test();
+
+        cmd_compliance_diff(&cli, &printer, 1, 2).unwrap();
+
+        let output = buf.lock().unwrap();
+        assert!(
+            output.contains("No differences between snapshots"),
+            "identical snapshots should print no-diff message, got: {output}"
+        );
+    }
+
+    #[test]
+    fn cmd_compliance_diff_added_removed_changed_branches() {
+        let state_dir = tempfile::tempdir().unwrap();
+
+        // Snapshot 1: file:/a compliant, file:/b compliant
+        let snap1 = sample_snapshot(vec![
+            check("file", "/a", ComplianceStatus::Compliant),
+            check("file", "/b", ComplianceStatus::Compliant),
+        ]);
+        // Snapshot 2: file:/a now Violation (changed), file:/b removed,
+        // file:/c added.
+        let snap2 = sample_snapshot(vec![
+            check("file", "/a", ComplianceStatus::Violation),
+            check("file", "/c", ComplianceStatus::Warning),
+        ]);
+        store_snapshot(state_dir.path(), &snap1);
+        store_snapshot(state_dir.path(), &snap2);
+
+        let cli = test_cli_for(state_dir.path());
+        let (printer, buf) = Printer::for_test();
+
+        cmd_compliance_diff(&cli, &printer, 1, 2).unwrap();
+
+        let output = buf.lock().unwrap();
+        assert!(
+            output.contains("Added (1 check(s))") && output.contains("file:/c"),
+            "should report added check file:/c, got: {output}"
+        );
+        assert!(
+            output.contains("Removed (1 check(s))") && output.contains("file:/b"),
+            "should report removed check file:/b, got: {output}"
+        );
+        assert!(
+            output.contains("Changed (1 check(s))") && output.contains("file:/a"),
+            "should report changed check file:/a, got: {output}"
+        );
+        assert!(
+            output.contains("Compliant") && output.contains("Violation"),
+            "changed line should include old + new status, got: {output}"
+        );
+    }
+
+    #[test]
+    fn cmd_compliance_diff_structured_json_output() {
+        let state_dir = tempfile::tempdir().unwrap();
+        let snap1 = sample_snapshot(vec![check("file", "/a", ComplianceStatus::Compliant)]);
+        let snap2 = sample_snapshot(vec![
+            check("file", "/a", ComplianceStatus::Violation),
+            check("file", "/b", ComplianceStatus::Compliant),
+        ]);
+        store_snapshot(state_dir.path(), &snap1);
+        store_snapshot(state_dir.path(), &snap2);
+
+        let mut cli = test_cli_for(state_dir.path());
+        cli.output = OutputFormatArg(OutputFormat::Json);
+        let (printer, buf) = Printer::for_test_with_format(OutputFormat::Json);
+
+        cmd_compliance_diff(&cli, &printer, 1, 2).unwrap();
+
+        let output = buf.lock().unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(output.trim())
+            .unwrap_or_else(|e| panic!("invalid JSON: {e}, got: {output}"));
+        assert_eq!(parsed["id1"], 1);
+        assert_eq!(parsed["id2"], 2);
+        assert!(
+            parsed["added"].is_array() && parsed["added"].as_array().unwrap().len() == 1,
+            "expected exactly 1 added entry, got: {parsed}"
+        );
+        assert!(
+            parsed["removed"].is_array() && parsed["removed"].as_array().unwrap().is_empty(),
+            "expected no removed entries, got: {parsed}"
+        );
+        let changed = parsed["changed"].as_array().expect("changed array");
+        assert_eq!(changed.len(), 1, "expected 1 changed entry, got: {parsed}");
+        assert_eq!(changed[0]["key"], "file:/a");
+        assert_eq!(changed[0]["newStatus"], "Violation");
+    }
+
+    // --- cmd_compliance_history ---
+
+    #[test]
+    fn cmd_compliance_history_empty_state_prints_no_snapshots() {
+        let state_dir = tempfile::tempdir().unwrap();
+        let cli = test_cli_for(state_dir.path());
+        let (printer, buf) = Printer::for_test();
+
+        cmd_compliance_history(&cli, &printer, None).unwrap();
+
+        let output = buf.lock().unwrap();
+        assert!(
+            output.contains("No compliance snapshots recorded yet"),
+            "should print empty-state message, got: {output}"
+        );
+    }
+
+    #[test]
+    fn cmd_compliance_history_invalid_since_returns_err() {
+        let state_dir = tempfile::tempdir().unwrap();
+        let cli = test_cli_for(state_dir.path());
+        let printer = Printer::new(cfgd_core::output::Verbosity::Quiet);
+
+        let err = cmd_compliance_history(&cli, &printer, Some("not-a-duration")).unwrap_err();
+        assert!(
+            err.to_string().contains("invalid --since value"),
+            "expected 'invalid --since value', got: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn cmd_compliance_history_after_seed_renders_table() {
+        let state_dir = tempfile::tempdir().unwrap();
+        let snapshot = sample_snapshot(vec![
+            check("file", "/etc/hosts", ComplianceStatus::Compliant),
+            check("package", "ripgrep", ComplianceStatus::Violation),
+        ]);
+        store_snapshot(state_dir.path(), &snapshot);
+
+        let cli = test_cli_for(state_dir.path());
+        let (printer, buf) = Printer::for_test();
+
+        cmd_compliance_history(&cli, &printer, None).unwrap();
+
+        let output = buf.lock().unwrap();
+        assert!(
+            output.contains("Compliance History"),
+            "should print history header, got: {output}"
+        );
+        // Table row contains the summary counts as strings
+        assert!(
+            output.contains("2026-05-12T00:00:00Z"),
+            "should include seeded timestamp, got: {output}"
+        );
+    }
+
+    #[test]
+    fn cmd_compliance_history_structured_json_with_entry() {
+        let state_dir = tempfile::tempdir().unwrap();
+        let snapshot = sample_snapshot(vec![check(
+            "file",
+            "/etc/hosts",
+            ComplianceStatus::Compliant,
+        )]);
+        store_snapshot(state_dir.path(), &snapshot);
+
+        let mut cli = test_cli_for(state_dir.path());
+        cli.output = OutputFormatArg(OutputFormat::Json);
+        let (printer, buf) = Printer::for_test_with_format(OutputFormat::Json);
+
+        cmd_compliance_history(&cli, &printer, None).unwrap();
+
+        let output = buf.lock().unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(output.trim())
+            .unwrap_or_else(|e| panic!("invalid JSON: {e}, got: {output}"));
+        let entries = parsed["entries"].as_array().expect("entries array");
+        assert_eq!(entries.len(), 1, "expected 1 entry, got: {parsed}");
+        assert_eq!(entries[0]["compliant"], 1);
+        assert_eq!(entries[0]["violation"], 0);
+    }
+
+    // --- ComplianceSummary smoke: confirm sample_snapshot helper ---
+
+    #[test]
+    fn sample_snapshot_summary_matches_checks() {
+        let snapshot = sample_snapshot(vec![
+            check("file", "/a", ComplianceStatus::Compliant),
+            check("file", "/b", ComplianceStatus::Warning),
+            check("file", "/c", ComplianceStatus::Violation),
+        ]);
+        // Sanity-check the helper used by other tests in this module.
+        assert_eq!(
+            (
+                snapshot.summary.compliant,
+                snapshot.summary.warning,
+                snapshot.summary.violation
+            ),
+            (1, 1, 1)
+        );
+        // ComplianceSummary should round-trip through compute_summary.
+        let recomputed = ComplianceSummary {
+            compliant: 1,
+            warning: 1,
+            violation: 1,
+        };
+        assert_eq!(snapshot.summary.compliant, recomputed.compliant);
+        assert_eq!(snapshot.summary.warning, recomputed.warning);
+        assert_eq!(snapshot.summary.violation, recomputed.violation);
+    }
+}
