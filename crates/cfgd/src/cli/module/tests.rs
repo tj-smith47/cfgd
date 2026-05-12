@@ -2387,6 +2387,100 @@ fn cmd_module_delete_restores_symlinked_files() {
     );
 }
 
+// ─── cmd_module_delete — purge mode with a directory target ─────
+
+#[test]
+fn cmd_module_delete_with_purge_removes_directory_target() {
+    // The `cmd_module_delete_with_purge` test covers the file branch of
+    // the purge loop (`fs::remove_file`). This test covers the directory
+    // branch (`fs::remove_dir_all`) — a module whose deployed target is
+    // a real directory, not a file. Without this, the dir-purge arm
+    // would silently rot if a refactor mis-typed the recursion.
+    let dir = setup_config_dir();
+    let target_root = tempfile::tempdir().unwrap();
+    let target_dir = target_root.path().join("deployed-dir");
+    std::fs::create_dir_all(target_dir.join("inner")).unwrap();
+    std::fs::write(target_dir.join("inner/data.conf"), "deployed").unwrap();
+
+    let yaml = format!(
+        "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: purge-dir-mod\nspec:\n  files:\n    - source: files/config\n      target: {}\n",
+        target_dir.display()
+    );
+    make_module(dir.path(), "purge-dir-mod", &yaml);
+
+    let cli = test_cli(dir.path());
+    let (printer, buf) = cfgd_core::output::Printer::for_test();
+    cmd_module_delete(&cli, &printer, "purge-dir-mod", true, true).unwrap();
+
+    assert!(
+        !target_dir.exists(),
+        "purge mode must recursively remove a directory target"
+    );
+    let captured = buf.lock().unwrap().clone();
+    assert!(
+        captured.contains("Purged") && captured.contains("deployed-dir"),
+        "purge log line must name the removed directory: {captured}"
+    );
+}
+
+// ─── cmd_module_delete — default mode restores from a dir source ─
+
+#[test]
+#[cfg(unix)]
+fn cmd_module_delete_default_mode_restores_directory_source_via_copy_dir() {
+    // The `cmd_module_delete_restores_symlinked_files` test covers the
+    // file-source branch of the restore loop (`fs::copy`). This test
+    // covers the directory-source branch (`copy_dir_recursive`) — when
+    // the module's `files/<source>` is a directory whose contents must
+    // be replicated at the target.
+    let dir = setup_config_dir();
+    let target_root = tempfile::tempdir().unwrap();
+    let target = target_root.path().join("restored-dir");
+
+    let module_source = dir.path().join("modules/restore-dir-mod/files/payload");
+    std::fs::create_dir_all(&module_source).unwrap();
+    std::fs::write(module_source.join("a.txt"), "alpha").unwrap();
+    std::fs::write(module_source.join("b.txt"), "beta").unwrap();
+
+    // Symlink the deployed location at the dir source — the restore loop
+    // requires `read_link(target)` to start_with the module dir.
+    std::os::unix::fs::symlink(&module_source, &target).unwrap();
+
+    let yaml = format!(
+        "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: restore-dir-mod\nspec:\n  files:\n    - source: files/payload\n      target: {}\n",
+        target.display()
+    );
+    std::fs::write(
+        dir.path().join("modules/restore-dir-mod/module.yaml"),
+        &yaml,
+    )
+    .unwrap();
+
+    let cli = test_cli(dir.path());
+    let (printer, buf) = cfgd_core::output::Printer::for_test();
+    cmd_module_delete(&cli, &printer, "restore-dir-mod", true, false).unwrap();
+
+    // The symlink is replaced by a real directory whose contents match.
+    assert!(target.exists(), "target dir must remain after restore");
+    assert!(
+        !target.is_symlink(),
+        "target must now be a real directory, not the original symlink"
+    );
+    assert_eq!(
+        std::fs::read_to_string(target.join("a.txt")).unwrap(),
+        "alpha"
+    );
+    assert_eq!(
+        std::fs::read_to_string(target.join("b.txt")).unwrap(),
+        "beta"
+    );
+    let captured = buf.lock().unwrap().clone();
+    assert!(
+        captured.contains("Restored"),
+        "restore log line must fire: {captured}"
+    );
+}
+
 // ─── cmd_module_delete — cleans lockfile entry ──────────────────
 
 #[test]
