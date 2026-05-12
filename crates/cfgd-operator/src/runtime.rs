@@ -64,28 +64,13 @@ pub fn build_gateway_config(client: Client, metrics: metrics::Metrics) -> Gatewa
 #[cfg(test)]
 mod tests {
     use super::*;
+    use cfgd_core::test_helpers::with_test_env_var;
     use serial_test::serial;
-
-    fn with_env<F: FnOnce()>(var: &str, value: Option<&str>, f: F) {
-        // SAFETY: serial_test ensures no other test mutates env concurrently.
-        unsafe {
-            let prior = std::env::var(var).ok();
-            match value {
-                Some(v) => std::env::set_var(var, v),
-                None => std::env::remove_var(var),
-            }
-            f();
-            match prior {
-                Some(v) => std::env::set_var(var, v),
-                None => std::env::remove_var(var),
-            }
-        }
-    }
 
     #[test]
     #[serial]
     fn is_gateway_enabled_returns_false_when_unset() {
-        with_env("DEVICE_GATEWAY_ENABLED", None, || {
+        with_test_env_var("DEVICE_GATEWAY_ENABLED", None, || {
             assert!(!is_gateway_enabled());
         });
     }
@@ -93,7 +78,7 @@ mod tests {
     #[test]
     #[serial]
     fn is_gateway_enabled_returns_true_when_truthy() {
-        with_env("DEVICE_GATEWAY_ENABLED", Some("true"), || {
+        with_test_env_var("DEVICE_GATEWAY_ENABLED", Some("true"), || {
             assert!(is_gateway_enabled());
         });
     }
@@ -101,7 +86,7 @@ mod tests {
     #[test]
     #[serial]
     fn is_gateway_enabled_returns_true_for_1() {
-        with_env("DEVICE_GATEWAY_ENABLED", Some("1"), || {
+        with_test_env_var("DEVICE_GATEWAY_ENABLED", Some("1"), || {
             assert!(is_gateway_enabled());
         });
     }
@@ -109,7 +94,7 @@ mod tests {
     #[test]
     #[serial]
     fn is_leader_election_enabled_returns_false_when_unset() {
-        with_env("LEADER_ELECTION_ENABLED", None, || {
+        with_test_env_var("LEADER_ELECTION_ENABLED", None, || {
             assert!(!is_leader_election_enabled());
         });
     }
@@ -117,7 +102,7 @@ mod tests {
     #[test]
     #[serial]
     fn is_leader_election_enabled_returns_true_when_truthy() {
-        with_env("LEADER_ELECTION_ENABLED", Some("true"), || {
+        with_test_env_var("LEADER_ELECTION_ENABLED", Some("true"), || {
             assert!(is_leader_election_enabled());
         });
     }
@@ -125,7 +110,7 @@ mod tests {
     #[test]
     #[serial]
     fn leader_namespace_defaults_to_cfgd_system() {
-        with_env("POD_NAMESPACE", None, || {
+        with_test_env_var("POD_NAMESPACE", None, || {
             assert_eq!(leader_namespace(), "cfgd-system");
         });
     }
@@ -133,7 +118,7 @@ mod tests {
     #[test]
     #[serial]
     fn leader_namespace_respects_pod_namespace_env() {
-        with_env("POD_NAMESPACE", Some("custom-ns"), || {
+        with_test_env_var("POD_NAMESPACE", Some("custom-ns"), || {
             assert_eq!(leader_namespace(), "custom-ns");
         });
     }
@@ -141,7 +126,7 @@ mod tests {
     #[test]
     #[serial]
     fn leader_identity_respects_pod_name_env() {
-        with_env("POD_NAME", Some("cfgd-operator-0"), || {
+        with_test_env_var("POD_NAME", Some("cfgd-operator-0"), || {
             assert_eq!(leader_identity(), "cfgd-operator-0");
         });
     }
@@ -149,7 +134,7 @@ mod tests {
     #[test]
     #[serial]
     fn leader_identity_falls_back_to_random_uuid_when_pod_name_unset() {
-        with_env("POD_NAME", None, || {
+        with_test_env_var("POD_NAME", None, || {
             let id = leader_identity();
             // UUID v4 string: 36 chars, 8-4-4-4-12 hex with hyphens.
             assert_eq!(id.len(), 36, "expected UUID, got: {id}");
@@ -195,8 +180,8 @@ mod tests {
     #[test]
     #[serial]
     fn build_gateway_config_reads_port_env() {
-        with_env("DEVICE_GATEWAY_PORT", Some("9999"), || {
-            with_env("CFGD_SERVER_DB_PATH", None, || {
+        with_test_env_var("DEVICE_GATEWAY_PORT", Some("9999"), || {
+            with_test_env_var("CFGD_SERVER_DB_PATH", None, || {
                 let port = env::parse_port_env("DEVICE_GATEWAY_PORT", 8080);
                 assert_eq!(port, 9999);
             });
@@ -206,7 +191,7 @@ mod tests {
     #[test]
     #[serial]
     fn build_gateway_config_falls_back_to_default_port() {
-        with_env("DEVICE_GATEWAY_PORT", None, || {
+        with_test_env_var("DEVICE_GATEWAY_PORT", None, || {
             assert_eq!(env::parse_port_env("DEVICE_GATEWAY_PORT", 8080), 8080);
         });
     }
@@ -214,7 +199,7 @@ mod tests {
     #[test]
     #[serial]
     fn build_gateway_config_reads_retention_env() {
-        with_env("CFGD_RETENTION_DAYS", Some("30"), || {
+        with_test_env_var("CFGD_RETENTION_DAYS", Some("30"), || {
             assert_eq!(env::parse_u32_env("CFGD_RETENTION_DAYS", 90), 30);
         });
     }

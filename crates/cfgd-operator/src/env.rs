@@ -53,30 +53,15 @@ pub fn parse_u32_env(var: &str, default: u32) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use cfgd_core::test_helpers::with_test_env_var;
     use serial_test::serial;
-
-    fn with_env<F: FnOnce()>(var: &str, value: Option<&str>, f: F) {
-        // SAFETY: serial_test ensures no other test mutates env concurrently.
-        unsafe {
-            let prior = std::env::var(var).ok();
-            match value {
-                Some(v) => std::env::set_var(var, v),
-                None => std::env::remove_var(var),
-            }
-            f();
-            match prior {
-                Some(v) => std::env::set_var(var, v),
-                None => std::env::remove_var(var),
-            }
-        }
-    }
 
     // --- parse_port_env ---
 
     #[test]
     #[serial]
     fn parse_port_env_returns_default_when_unset() {
-        with_env("CFGD_TEST_PORT_UNSET", None, || {
+        with_test_env_var("CFGD_TEST_PORT_UNSET", None, || {
             assert_eq!(parse_port_env("CFGD_TEST_PORT_UNSET", 8081), 8081);
         });
     }
@@ -84,7 +69,7 @@ mod tests {
     #[test]
     #[serial]
     fn parse_port_env_parses_valid_port() {
-        with_env("CFGD_TEST_PORT_VALID", Some("9090"), || {
+        with_test_env_var("CFGD_TEST_PORT_VALID", Some("9090"), || {
             assert_eq!(parse_port_env("CFGD_TEST_PORT_VALID", 8081), 9090);
         });
     }
@@ -94,7 +79,7 @@ mod tests {
     fn parse_port_env_falls_back_on_garbage() {
         // Operator startup contract: a typo in the deployment YAML must
         // NOT crash the process; we log + fall through to the default.
-        with_env("CFGD_TEST_PORT_GARBAGE", Some("not-a-number"), || {
+        with_test_env_var("CFGD_TEST_PORT_GARBAGE", Some("not-a-number"), || {
             assert_eq!(parse_port_env("CFGD_TEST_PORT_GARBAGE", 8081), 8081);
         });
     }
@@ -103,7 +88,7 @@ mod tests {
     #[serial]
     fn parse_port_env_falls_back_on_negative() {
         // u16 can't hold negative — confirm the parse-error branch handles it.
-        with_env("CFGD_TEST_PORT_NEG", Some("-1"), || {
+        with_test_env_var("CFGD_TEST_PORT_NEG", Some("-1"), || {
             assert_eq!(parse_port_env("CFGD_TEST_PORT_NEG", 8081), 8081);
         });
     }
@@ -111,7 +96,7 @@ mod tests {
     #[test]
     #[serial]
     fn parse_port_env_falls_back_on_overflow() {
-        with_env("CFGD_TEST_PORT_OVER", Some("99999"), || {
+        with_test_env_var("CFGD_TEST_PORT_OVER", Some("99999"), || {
             assert_eq!(parse_port_env("CFGD_TEST_PORT_OVER", 8081), 8081);
         });
     }
@@ -122,7 +107,7 @@ mod tests {
         // 0 is a valid port (means "kernel assigns") — accept it rather
         // than silently fall back; the caller decides whether 0 is sane
         // for their service.
-        with_env("CFGD_TEST_PORT_ZERO", Some("0"), || {
+        with_test_env_var("CFGD_TEST_PORT_ZERO", Some("0"), || {
             assert_eq!(parse_port_env("CFGD_TEST_PORT_ZERO", 8081), 0);
         });
     }
@@ -132,7 +117,7 @@ mod tests {
     #[test]
     #[serial]
     fn parse_bool_env_returns_false_when_unset() {
-        with_env("CFGD_TEST_BOOL_UNSET", None, || {
+        with_test_env_var("CFGD_TEST_BOOL_UNSET", None, || {
             assert!(!parse_bool_env("CFGD_TEST_BOOL_UNSET"));
         });
     }
@@ -140,7 +125,7 @@ mod tests {
     #[test]
     #[serial]
     fn parse_bool_env_accepts_true_literal() {
-        with_env("CFGD_TEST_BOOL_T", Some("true"), || {
+        with_test_env_var("CFGD_TEST_BOOL_T", Some("true"), || {
             assert!(parse_bool_env("CFGD_TEST_BOOL_T"));
         });
     }
@@ -149,7 +134,7 @@ mod tests {
     #[serial]
     fn parse_bool_env_accepts_numeric_one() {
         // `1` is what bash conditionals and Helm chart values often emit.
-        with_env("CFGD_TEST_BOOL_1", Some("1"), || {
+        with_test_env_var("CFGD_TEST_BOOL_1", Some("1"), || {
             assert!(parse_bool_env("CFGD_TEST_BOOL_1"));
         });
     }
@@ -161,7 +146,7 @@ mod tests {
         // exact tokens. Pinning this rejects accidental loosening that
         // would silently change deployment behavior.
         for val in ["yes", "on", "y", "T", "True", "TRUE", "enable"] {
-            with_env("CFGD_TEST_BOOL_X", Some(val), || {
+            with_test_env_var("CFGD_TEST_BOOL_X", Some(val), || {
                 assert!(
                     !parse_bool_env("CFGD_TEST_BOOL_X"),
                     "{val} must NOT parse as true"
@@ -173,7 +158,7 @@ mod tests {
     #[test]
     #[serial]
     fn parse_bool_env_rejects_empty_string() {
-        with_env("CFGD_TEST_BOOL_EMPTY", Some(""), || {
+        with_test_env_var("CFGD_TEST_BOOL_EMPTY", Some(""), || {
             assert!(!parse_bool_env("CFGD_TEST_BOOL_EMPTY"));
         });
     }
@@ -183,7 +168,7 @@ mod tests {
     #[test]
     #[serial]
     fn env_or_returns_default_when_unset() {
-        with_env("CFGD_TEST_S_UNSET", None, || {
+        with_test_env_var("CFGD_TEST_S_UNSET", None, || {
             assert_eq!(env_or("CFGD_TEST_S_UNSET", "fallback"), "fallback");
         });
     }
@@ -191,7 +176,7 @@ mod tests {
     #[test]
     #[serial]
     fn env_or_returns_value_when_set() {
-        with_env("CFGD_TEST_S_SET", Some("explicit"), || {
+        with_test_env_var("CFGD_TEST_S_SET", Some("explicit"), || {
             assert_eq!(env_or("CFGD_TEST_S_SET", "fallback"), "explicit");
         });
     }
@@ -202,7 +187,7 @@ mod tests {
         // Setting a var to "" is a deliberate caller action, not unset.
         // Returning "" lets callers distinguish "user explicitly cleared"
         // from "not configured."
-        with_env("CFGD_TEST_S_EMPTY", Some(""), || {
+        with_test_env_var("CFGD_TEST_S_EMPTY", Some(""), || {
             assert_eq!(env_or("CFGD_TEST_S_EMPTY", "fallback"), "");
         });
     }
@@ -212,7 +197,7 @@ mod tests {
     #[test]
     #[serial]
     fn parse_u32_env_returns_default_when_unset() {
-        with_env("CFGD_TEST_U32_UNSET", None, || {
+        with_test_env_var("CFGD_TEST_U32_UNSET", None, || {
             assert_eq!(parse_u32_env("CFGD_TEST_U32_UNSET", 90), 90);
         });
     }
@@ -220,7 +205,7 @@ mod tests {
     #[test]
     #[serial]
     fn parse_u32_env_parses_valid_value() {
-        with_env("CFGD_TEST_U32_VALID", Some("365"), || {
+        with_test_env_var("CFGD_TEST_U32_VALID", Some("365"), || {
             assert_eq!(parse_u32_env("CFGD_TEST_U32_VALID", 90), 365);
         });
     }
@@ -228,7 +213,7 @@ mod tests {
     #[test]
     #[serial]
     fn parse_u32_env_falls_back_on_garbage() {
-        with_env("CFGD_TEST_U32_GARBAGE", Some("forever"), || {
+        with_test_env_var("CFGD_TEST_U32_GARBAGE", Some("forever"), || {
             assert_eq!(parse_u32_env("CFGD_TEST_U32_GARBAGE", 90), 90);
         });
     }

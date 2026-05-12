@@ -16785,23 +16785,8 @@ fn display_pending_decisions_orders_sources_alphabetically() {
 
 mod cmd_source_add_local {
     use super::*;
+    use cfgd_core::test_helpers::with_test_env_var;
     use serial_test::serial;
-
-    fn with_env<F: FnOnce()>(var: &str, value: Option<&str>, f: F) {
-        // SAFETY: serial_test ensures no other test mutates env concurrently.
-        unsafe {
-            let prior = std::env::var(var).ok();
-            match value {
-                Some(v) => std::env::set_var(var, v),
-                None => std::env::remove_var(var),
-            }
-            f();
-            match prior {
-                Some(v) => std::env::set_var(var, v),
-                None => std::env::remove_var(var),
-            }
-        }
-    }
 
     /// Build a bare upstream that contains a single-profile `cfgd-source.yaml`.
     /// Returns the bare repo path.
@@ -16877,7 +16862,7 @@ mod cmd_source_add_local {
     #[test]
     #[serial]
     fn cmd_source_add_against_local_bare_repo_writes_config() {
-        with_env("CFGD_ALLOW_LOCAL_SOURCES", Some("1"), || {
+        with_test_env_var("CFGD_ALLOW_LOCAL_SOURCES", Some("1"), || {
             let scratch = tempfile::tempdir().unwrap();
             let bare = make_bare_with_manifest(&scratch, "local-team", None);
             let h = CliTestHarness::builder().build();
@@ -16904,7 +16889,7 @@ mod cmd_source_add_local {
     #[test]
     #[serial]
     fn cmd_source_add_version_pin_persists_to_config() {
-        with_env("CFGD_ALLOW_LOCAL_SOURCES", Some("1"), || {
+        with_test_env_var("CFGD_ALLOW_LOCAL_SOURCES", Some("1"), || {
             let scratch = tempfile::tempdir().unwrap();
             let bare = make_bare_with_manifest(&scratch, "pinned-src", Some("1.2.3"));
             let h = CliTestHarness::builder().build();
@@ -16927,7 +16912,7 @@ mod cmd_source_add_local {
     #[test]
     #[serial]
     fn cmd_source_add_records_opt_in_sync_interval_and_auto_apply_in_config() {
-        with_env("CFGD_ALLOW_LOCAL_SOURCES", Some("1"), || {
+        with_test_env_var("CFGD_ALLOW_LOCAL_SOURCES", Some("1"), || {
             let scratch = tempfile::tempdir().unwrap();
             let bare = make_bare_with_manifest(&scratch, "opt-in-src", None);
             let h = CliTestHarness::builder().build();
@@ -16965,7 +16950,7 @@ mod cmd_source_add_local {
     #[test]
     #[serial]
     fn cmd_source_add_duplicate_name_via_local_bare_fails() {
-        with_env("CFGD_ALLOW_LOCAL_SOURCES", Some("1"), || {
+        with_test_env_var("CFGD_ALLOW_LOCAL_SOURCES", Some("1"), || {
             let scratch = tempfile::tempdir().unwrap();
             let bare = make_bare_with_manifest(&scratch, "dup-name", None);
             let h = CliTestHarness::builder().build();
@@ -17069,7 +17054,7 @@ mod cmd_source_add_local {
         if std::env::consts::OS != "linux" {
             return;
         }
-        with_env("CFGD_ALLOW_LOCAL_SOURCES", Some("1"), || {
+        with_test_env_var("CFGD_ALLOW_LOCAL_SOURCES", Some("1"), || {
             let scratch = tempfile::tempdir().unwrap();
             let bare = make_bare_with_platform_profiles(
                 &scratch,
@@ -17101,7 +17086,7 @@ mod cmd_source_add_local {
         // rejects the source before we ever reach the profile-selection arms
         // of cmd_source_add — encoding the contract that a subscribable
         // source must expose at least one profile.
-        with_env("CFGD_ALLOW_LOCAL_SOURCES", Some("1"), || {
+        with_test_env_var("CFGD_ALLOW_LOCAL_SOURCES", Some("1"), || {
             let scratch = tempfile::tempdir().unwrap();
             let bare = scratch.path().join("empty-bare.git");
             let _ = git2::Repository::init_bare(&bare).unwrap();
@@ -17154,7 +17139,7 @@ mod cmd_source_add_local {
     #[test]
     #[serial]
     fn cmd_source_add_with_branch_override_respects_branch_flag() {
-        with_env("CFGD_ALLOW_LOCAL_SOURCES", Some("1"), || {
+        with_test_env_var("CFGD_ALLOW_LOCAL_SOURCES", Some("1"), || {
             let scratch = tempfile::tempdir().unwrap();
             let bare = make_bare_with_manifest(&scratch, "branched", None);
             let h = CliTestHarness::builder().build();
@@ -17201,7 +17186,7 @@ mod cmd_source_add_local {
     #[test]
     #[serial]
     fn cmd_source_update_all_walks_happy_path_and_records_success() {
-        with_env("CFGD_ALLOW_LOCAL_SOURCES", Some("1"), || {
+        with_test_env_var("CFGD_ALLOW_LOCAL_SOURCES", Some("1"), || {
             let scratch = tempfile::tempdir().unwrap();
             let bare = make_bare_with_manifest(&scratch, "upd-src", None);
             let h = CliTestHarness::builder().build();
@@ -17236,7 +17221,7 @@ mod cmd_source_add_local {
     #[test]
     #[serial]
     fn cmd_source_update_named_walks_happy_path_for_single_source_only() {
-        with_env("CFGD_ALLOW_LOCAL_SOURCES", Some("1"), || {
+        with_test_env_var("CFGD_ALLOW_LOCAL_SOURCES", Some("1"), || {
             let scratch = tempfile::tempdir().unwrap();
             let bare_a = make_bare_with_manifest(&scratch, "src-a", None);
             let bare_b = make_bare_with_manifest(&scratch, "src-b", None);
@@ -17341,7 +17326,7 @@ mod cmd_source_add_local {
         // cmd_source_show. With a successfully-cached manifest, show.rs
         // enters its manifest-display block: Name + Description + the
         // Policy Summary subheader with per-tier item listings.
-        with_env("CFGD_ALLOW_LOCAL_SOURCES", Some("1"), || {
+        with_test_env_var("CFGD_ALLOW_LOCAL_SOURCES", Some("1"), || {
             let scratch = tempfile::tempdir().unwrap();
             let bare = make_bare_with_manifest(&scratch, "shown-src", Some("2.0.0"));
             let h = CliTestHarness::builder().build();
@@ -17425,7 +17410,7 @@ mod cmd_source_add_local {
         // in test mode returns Err → the Err(_) arm prints
         // "Skipped source 'X' (prompt cancelled)" and continue's out of the
         // loop. Pins the prompt-cancel branch (lines 72-77 in source/update.rs).
-        with_env("CFGD_ALLOW_LOCAL_SOURCES", Some("1"), || {
+        with_test_env_var("CFGD_ALLOW_LOCAL_SOURCES", Some("1"), || {
             let scratch = tempfile::tempdir().unwrap();
             let bare = make_bare_with_manifest(&scratch, "perm-src", None);
             let h = CliTestHarness::builder().build();
@@ -17479,7 +17464,7 @@ mod cmd_source_add_local {
     #[test]
     #[serial]
     fn cmd_source_update_records_error_status_when_upstream_unreachable() {
-        with_env("CFGD_ALLOW_LOCAL_SOURCES", Some("1"), || {
+        with_test_env_var("CFGD_ALLOW_LOCAL_SOURCES", Some("1"), || {
             // Stage a real source so cmd_source_add succeeds — then bulldoze
             // the bare upstream so the *next* fetch fails. cmd_source_update
             // should surface the failure via the "Failed to update source"

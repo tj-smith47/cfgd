@@ -2359,25 +2359,8 @@ fn next_steps_lines_are_indented_so_terminal_renders_consistently() {
 mod enroll_mockito {
     use crate::cli::init::enroll::cmd_enroll;
     use cfgd_core::output::Printer;
+    use cfgd_core::test_helpers::with_test_env_var;
     use serial_test::serial;
-
-    /// Scoped env override: set/unset `var`, run `f`, restore prior value.
-    /// SAFETY: every caller below uses `#[serial]` so no concurrent test
-    /// mutates this var.
-    fn with_env<F: FnOnce()>(var: &str, value: Option<&str>, f: F) {
-        unsafe {
-            let prior = std::env::var(var).ok();
-            match value {
-                Some(v) => std::env::set_var(var, v),
-                None => std::env::remove_var(var),
-            }
-            f();
-            match prior {
-                Some(v) => std::env::set_var(var, v),
-                None => std::env::remove_var(var),
-            }
-        }
-    }
 
     fn enroll_response_json() -> String {
         serde_json::json!({
@@ -2394,7 +2377,7 @@ mod enroll_mockito {
     #[serial]
     fn cmd_enroll_token_path_succeeds_against_mock() {
         let tmp = tempfile::tempdir().unwrap();
-        with_env("CFGD_STATE_DIR", Some(tmp.path().to_str().unwrap()), || {
+        with_test_env_var("CFGD_STATE_DIR", Some(tmp.path().to_str().unwrap()), || {
             let mut server = mockito::Server::new();
             let m = server
                 .mock("POST", "/api/v1/enroll")
@@ -2445,7 +2428,7 @@ mod enroll_mockito {
     #[serial]
     fn cmd_enroll_token_path_fails_on_server_error() {
         let tmp = tempfile::tempdir().unwrap();
-        with_env("CFGD_STATE_DIR", Some(tmp.path().to_str().unwrap()), || {
+        with_test_env_var("CFGD_STATE_DIR", Some(tmp.path().to_str().unwrap()), || {
             let mut server = mockito::Server::new();
             // 400 is a non-retryable client error — request_error path.
             let _m = server
@@ -2467,7 +2450,7 @@ mod enroll_mockito {
     #[serial]
     fn cmd_enroll_key_based_rejects_server_with_token_method() {
         let tmp = tempfile::tempdir().unwrap();
-        with_env("CFGD_STATE_DIR", Some(tmp.path().to_str().unwrap()), || {
+        with_test_env_var("CFGD_STATE_DIR", Some(tmp.path().to_str().unwrap()), || {
             let mut server = mockito::Server::new();
             // Server says it only supports token enrollment.
             let _m = server
@@ -2502,7 +2485,7 @@ mod enroll_mockito {
         let home_dir = tempfile::tempdir().unwrap();
         let _home_guard = cfgd_core::with_test_home_guard(home_dir.path());
 
-        with_env("CFGD_STATE_DIR", Some(tmp.path().to_str().unwrap()), || {
+        with_test_env_var("CFGD_STATE_DIR", Some(tmp.path().to_str().unwrap()), || {
             let mut server = mockito::Server::new();
             let _m = server
                 .mock("GET", "/api/v1/enroll/info")
@@ -2534,7 +2517,7 @@ mod enroll_mockito {
         // failed query — pins the early-fail contract before any key
         // detection / challenge plumbing runs.
         let tmp = tempfile::tempdir().unwrap();
-        with_env("CFGD_STATE_DIR", Some(tmp.path().to_str().unwrap()), || {
+        with_test_env_var("CFGD_STATE_DIR", Some(tmp.path().to_str().unwrap()), || {
             let mut server = mockito::Server::new();
             let _m = server
                 .mock("GET", "/api/v1/enroll/info")
@@ -2559,7 +2542,7 @@ mod enroll_mockito {
     #[serial]
     fn cmd_enroll_token_path_persists_desired_config_when_present() {
         let tmp = tempfile::tempdir().unwrap();
-        with_env("CFGD_STATE_DIR", Some(tmp.path().to_str().unwrap()), || {
+        with_test_env_var("CFGD_STATE_DIR", Some(tmp.path().to_str().unwrap()), || {
             let mut server = mockito::Server::new();
             // EnrollResponse with desiredConfig populated → exercises the
             // save_pending_server_config branch in finish_enrollment.

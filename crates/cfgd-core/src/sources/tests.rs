@@ -1725,22 +1725,7 @@ mod local_source_fixture {
     use crate::config::{
         OriginSpec, OriginType, SourceSyncSpec, SshHostKeyPolicy, SubscriptionSpec,
     };
-
-    fn with_env<F: FnOnce()>(var: &str, value: Option<&str>, f: F) {
-        // SAFETY: serial_test ensures no other test mutates env concurrently.
-        unsafe {
-            let prior = std::env::var(var).ok();
-            match value {
-                Some(v) => std::env::set_var(var, v),
-                None => std::env::remove_var(var),
-            }
-            f();
-            match prior {
-                Some(v) => std::env::set_var(var, v),
-                None => std::env::remove_var(var),
-            }
-        }
-    }
+    use crate::test_helpers::with_test_env_var;
 
     /// Build a bare upstream populated with a `cfgd-source.yaml` manifest.
     /// Returns the bare repo path. The manifest declares the source name
@@ -1835,7 +1820,7 @@ mod local_source_fixture {
     #[test]
     #[serial]
     fn load_source_clones_then_fetches_from_local_bare() {
-        with_env("CFGD_ALLOW_LOCAL_SOURCES", Some("1"), || {
+        with_test_env_var("CFGD_ALLOW_LOCAL_SOURCES", Some("1"), || {
             let tmp = tempfile::tempdir().unwrap();
             let bare = make_bare_with_manifest(&tmp, "ts1", None, &[]);
             let branch = detect_branch(&bare);
@@ -1857,7 +1842,7 @@ mod local_source_fixture {
     #[test]
     #[serial]
     fn load_source_records_last_commit_after_clone() {
-        with_env("CFGD_ALLOW_LOCAL_SOURCES", Some("1"), || {
+        with_test_env_var("CFGD_ALLOW_LOCAL_SOURCES", Some("1"), || {
             let tmp = tempfile::tempdir().unwrap();
             let bare = make_bare_with_manifest(&tmp, "ts2", None, &[]);
             let branch = detect_branch(&bare);
@@ -1879,7 +1864,7 @@ mod local_source_fixture {
     #[test]
     #[serial]
     fn load_source_with_version_pin_match_succeeds() {
-        with_env("CFGD_ALLOW_LOCAL_SOURCES", Some("1"), || {
+        with_test_env_var("CFGD_ALLOW_LOCAL_SOURCES", Some("1"), || {
             let tmp = tempfile::tempdir().unwrap();
             let bare = make_bare_with_manifest(&tmp, "ts3", Some("2.1.0"), &[]);
             let branch = detect_branch(&bare);
@@ -1897,7 +1882,7 @@ mod local_source_fixture {
     #[test]
     #[serial]
     fn load_source_with_version_pin_mismatch_fails() {
-        with_env("CFGD_ALLOW_LOCAL_SOURCES", Some("1"), || {
+        with_test_env_var("CFGD_ALLOW_LOCAL_SOURCES", Some("1"), || {
             let tmp = tempfile::tempdir().unwrap();
             let bare = make_bare_with_manifest(&tmp, "ts4", Some("1.0.0"), &[]);
             let branch = detect_branch(&bare);
@@ -1919,7 +1904,7 @@ mod local_source_fixture {
     #[test]
     #[serial]
     fn load_source_after_remote_advance_fetches_new_commit() {
-        with_env("CFGD_ALLOW_LOCAL_SOURCES", Some("1"), || {
+        with_test_env_var("CFGD_ALLOW_LOCAL_SOURCES", Some("1"), || {
             let tmp = tempfile::tempdir().unwrap();
             let bare = make_bare_with_manifest(&tmp, "ts5", None, &[]);
             let branch = detect_branch(&bare);
@@ -1961,7 +1946,7 @@ mod local_source_fixture {
     #[test]
     #[serial]
     fn load_source_remove_source_clears_cache() {
-        with_env("CFGD_ALLOW_LOCAL_SOURCES", Some("1"), || {
+        with_test_env_var("CFGD_ALLOW_LOCAL_SOURCES", Some("1"), || {
             let tmp = tempfile::tempdir().unwrap();
             let bare = make_bare_with_manifest(&tmp, "ts6", None, &[]);
             let branch = detect_branch(&bare);
@@ -1982,7 +1967,7 @@ mod local_source_fixture {
     #[test]
     #[serial]
     fn load_sources_processes_multiple_specs() {
-        with_env("CFGD_ALLOW_LOCAL_SOURCES", Some("1"), || {
+        with_test_env_var("CFGD_ALLOW_LOCAL_SOURCES", Some("1"), || {
             let tmp = tempfile::tempdir().unwrap();
             let bare_a = make_bare_with_manifest(&tmp, "alpha", None, &[]);
             let bare_b = make_bare_with_manifest(&tmp, "beta", None, &[]);
@@ -2004,7 +1989,7 @@ mod local_source_fixture {
     #[test]
     #[serial]
     fn load_source_source_files_dir_returns_path_under_cache() {
-        with_env("CFGD_ALLOW_LOCAL_SOURCES", Some("1"), || {
+        with_test_env_var("CFGD_ALLOW_LOCAL_SOURCES", Some("1"), || {
             let tmp = tempfile::tempdir().unwrap();
             let bare = make_bare_with_manifest(&tmp, "ts7", None, &[]);
             let branch = detect_branch(&bare);
