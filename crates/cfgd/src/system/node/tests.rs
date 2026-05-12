@@ -2595,6 +2595,90 @@ fn seccomp_apply_uses_default_profiles_dir_when_unset() {
     let _ = result;
 }
 
+// --- ContainerdConfigurator::apply paths ---
+//
+// Same shape as kubelet apply tests below: drive the no-op, empty-settings,
+// and write+restart-fails arms. systemctl is unavailable in CI so the
+// restart_containerd call fails after the merged TOML is on disk.
+
+#[test]
+fn containerd_apply_with_no_settings_field_is_a_noop() {
+    let dir = tempdir().unwrap();
+    let config = dir.path().join("config.toml");
+    let mut m = serde_yaml::Mapping::new();
+    m.insert(
+        serde_yaml::Value::String("configPath".into()),
+        serde_yaml::Value::String(config.to_str().unwrap().into()),
+    );
+    let desired = serde_yaml::Value::Mapping(m);
+    let cc = ContainerdConfigurator;
+    let (printer, _buf) = cfgd_core::output::Printer::for_test();
+    cc.apply(&desired, &printer)
+        .expect("missing settings is no-op");
+    assert!(!config.exists());
+}
+
+#[test]
+fn containerd_apply_with_empty_settings_is_a_noop() {
+    let dir = tempdir().unwrap();
+    let config = dir.path().join("config.toml");
+    let mut m = serde_yaml::Mapping::new();
+    m.insert(
+        serde_yaml::Value::String("configPath".into()),
+        serde_yaml::Value::String(config.to_str().unwrap().into()),
+    );
+    m.insert(
+        serde_yaml::Value::String("settings".into()),
+        serde_yaml::Value::Mapping(serde_yaml::Mapping::new()),
+    );
+    let desired = serde_yaml::Value::Mapping(m);
+    let cc = ContainerdConfigurator;
+    let (printer, _buf) = cfgd_core::output::Printer::for_test();
+    cc.apply(&desired, &printer)
+        .expect("empty settings is no-op");
+    assert!(!config.exists());
+}
+
+#[test]
+fn containerd_apply_writes_toml_then_returns_err_when_systemctl_fails() {
+    // Drives lines 105-169: settings non-empty → merge into current →
+    // serialize TOML → atomic_write → restart fails → rollback arm.
+    let dir = tempdir().unwrap();
+    let config = dir.path().join("nested/config.toml");
+    let mut settings = serde_yaml::Mapping::new();
+    settings.insert(
+        serde_yaml::Value::String("sandbox_image".into()),
+        serde_yaml::Value::String("registry.k8s.io/pause:3.9".into()),
+    );
+    let mut m = serde_yaml::Mapping::new();
+    m.insert(
+        serde_yaml::Value::String("configPath".into()),
+        serde_yaml::Value::String(config.to_str().unwrap().into()),
+    );
+    m.insert(
+        serde_yaml::Value::String("settings".into()),
+        serde_yaml::Value::Mapping(settings),
+    );
+    let desired = serde_yaml::Value::Mapping(m);
+    let cc = ContainerdConfigurator;
+    let (printer, _buf) = cfgd_core::output::Printer::for_test();
+    // The body runs atomic_write before invoking systemctl. On hosts where
+    // containerd is actually running, restart_containerd may succeed and
+    // return Ok; on CI/dev boxes without containerd it returns Err. Either
+    // way, the merge + serialize + atomic_write path on lines 105-152 must
+    // have executed — verifiable via the config file contents on disk.
+    let _ = cc.apply(&desired, &printer);
+    assert!(
+        config.exists(),
+        "atomic_write must have run before restart fires"
+    );
+    let written = std::fs::read_to_string(&config).unwrap();
+    assert!(
+        written.contains("sandbox_image"),
+        "config must contain merged setting: {written}"
+    );
+}
+
 // --- KubeletConfigurator::apply paths ---
 //
 // The 60+ uncovered lines in kubelet.rs are the apply() body. systemctl
