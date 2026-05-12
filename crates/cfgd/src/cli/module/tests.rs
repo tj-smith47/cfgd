@@ -2348,6 +2348,39 @@ fn cmd_module_edit_with_invalid_yaml_and_prompt_declined_breaks_with_warning() {
 }
 
 #[test]
+#[serial_test::serial]
+fn cmd_module_create_with_apply_and_yes_drives_full_apply_sequence() {
+    // Drives crud.rs:230-298 — the `if args.apply { ... }` block at the end
+    // of cmd_module_create. With args.apply=true and args.yes=true the
+    // prompt is bypassed and the reconciler.plan + apply path runs. An
+    // empty-spec module has no packages/files so the plan ends up empty
+    // and the "Nothing to do" success branch fires at crud.rs:267-268.
+    let dir = setup_config_dir();
+    let _home = cfgd_core::with_test_home_guard(dir.path());
+    let cli = test_cli(dir.path());
+    std::fs::write(
+        dir.path().join("cfgd.yaml"),
+        "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec:\n  profile: default\n",
+    )
+    .unwrap();
+
+    let (printer, buf) = cfgd_core::output::Printer::for_test();
+    let mut args = make_module_create_args("apply-noop-mod");
+    args.apply = true;
+    args.yes = true;
+    args.description = Some("noop".to_string());
+
+    cmd_module_create(&cli, &printer, &args)
+        .expect("create-with-apply-yes (empty spec) should succeed");
+
+    let output = buf.lock().unwrap().clone();
+    assert!(
+        output.contains("Created module 'apply-noop-mod'"),
+        "should announce create: {output}"
+    );
+}
+
+#[test]
 fn cmd_module_create_interactive_drives_full_prompt_sequence_via_harness() {
     // Interactive mode at crud.rs:43-83 was uncovered for many sessions
     // because Printer::for_test()'s prompt_text returned Err. The new
