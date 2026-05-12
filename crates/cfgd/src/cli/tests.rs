@@ -2039,6 +2039,59 @@ fn source_create_refuses_duplicate() {
     assert!(result.unwrap_err().to_string().contains("already exists"));
 }
 
+/// RAII guard that sets EDITOR for the duration of the closure. Pair with
+/// `#[serial]` so concurrent tests don't observe the override.
+struct EditorGuard {
+    prior: Option<String>,
+}
+impl EditorGuard {
+    fn set(editor: &str) -> Self {
+        // SAFETY: serialized via #[serial].
+        let prior = std::env::var("EDITOR").ok();
+        unsafe {
+            std::env::set_var("EDITOR", editor);
+        }
+        Self { prior }
+    }
+}
+impl Drop for EditorGuard {
+    fn drop(&mut self) {
+        // SAFETY: serialized via #[serial].
+        unsafe {
+            match self.prior.take() {
+                Some(v) => std::env::set_var("EDITOR", v),
+                None => std::env::remove_var("EDITOR"),
+            }
+        }
+    }
+}
+
+#[cfg(unix)]
+#[test]
+#[serial_test::serial]
+fn source_edit_with_valid_manifest_reports_valid_and_returns_ok() {
+    // EDITOR=/bin/true → open_in_editor exits 0 without touching the file,
+    // so the post-edit validation reads the same valid manifest we wrote
+    // and lands in the "Source manifest is valid" success arm.
+    let dir = create_test_config_dir();
+    let cli = test_cli(dir.path());
+    let (printer, buf) = Printer::for_test();
+    std::fs::write(
+        dir.path().join("cfgd-source.yaml"),
+        "apiVersion: cfgd.io/v1alpha1\nkind: ConfigSource\nmetadata:\n  name: edit-mod\nspec:\n  provides:\n    profiles:\n      - default\n",
+    )
+    .unwrap();
+
+    let _editor = EditorGuard::set("/bin/true");
+    source::cmd_source_edit(&cli, &printer).expect("valid manifest + no-op editor → Ok");
+
+    let out = buf.lock().unwrap().clone();
+    assert!(
+        out.contains("Source manifest is valid"),
+        "happy-path validation arm should announce validity: {out}"
+    );
+}
+
 #[test]
 fn source_edit_fails_without_manifest() {
     let dir = create_test_config_dir();
