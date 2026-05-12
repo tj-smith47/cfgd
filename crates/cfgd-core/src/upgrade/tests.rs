@@ -2613,4 +2613,100 @@ mod download_and_install_to {
         assert_eq!(installed, target);
         assert_eq!(std::fs::read(&target).unwrap(), binary_content);
     }
+
+    /// Bundle missing → verify_cosign_bundle returns Ok(false) and emits the
+    /// "no cosign bundle" warning when a printer is supplied. Pin the warning
+    /// text shape so a future change can't silently downgrade publisher-
+    /// compromise resistance without an operator-visible message.
+    #[test]
+    #[serial]
+    fn verify_cosign_bundle_emits_warning_when_no_bundle_attached() {
+        let _shim = CosignShim::install(0, "");
+        let release = release_with_assets(&["cfgd-9.9.9-linux-x86_64.tar.gz"]);
+        let tmp = tempfile::tempdir().unwrap();
+        let checksums_path = tmp.path().join("checksums.txt");
+        std::fs::write(&checksums_path, "").unwrap();
+
+        let (printer, buf) = crate::output::Printer::for_test();
+        let outcome = verify_cosign_bundle(&checksums_path, &release, tmp.path(), Some(&printer))
+            .expect("missing bundle is graceful-degrade, not Err");
+        assert!(
+            !outcome,
+            "no bundle → Ok(false) so caller falls back to SHA256-only"
+        );
+        let captured = buf.lock().unwrap().clone();
+        assert!(
+            captured.contains("no cosign bundle attached"),
+            "warning text must surface so operators see the trust downgrade: {captured}"
+        );
+    }
+
+    /// Bundle present but no public key → still graceful-degrade with a
+    /// distinct warning that names the missing piece (cosign.pub).
+    #[test]
+    #[serial]
+    fn verify_cosign_bundle_emits_warning_when_no_public_key_attached() {
+        let _shim = CosignShim::install(0, "");
+        let release = release_with_assets(&[
+            "cfgd-9.9.9-linux-x86_64.tar.gz",
+            "cfgd-9.9.9-checksums.txt.cosign.bundle",
+        ]);
+        let tmp = tempfile::tempdir().unwrap();
+        let checksums_path = tmp.path().join("checksums.txt");
+        std::fs::write(&checksums_path, "").unwrap();
+
+        let (printer, buf) = crate::output::Printer::for_test();
+        let outcome = verify_cosign_bundle(&checksums_path, &release, tmp.path(), Some(&printer))
+            .expect("missing pubkey is graceful-degrade, not Err");
+        assert!(!outcome);
+        let captured = buf.lock().unwrap().clone();
+        assert!(
+            captured.contains("no public key attached") && captured.contains("cosign.pub"),
+            "warning must name the missing cosign.pub asset: {captured}"
+        );
+    }
+
+    /// Bundle + pubkey present but the cosign CLI is "missing" (env shim
+    /// points at a path that does not exist) → graceful-degrade with the
+    /// install-hint warning. Drives the `require_cosign().is_err()` arm.
+    #[test]
+    #[serial]
+    fn verify_cosign_bundle_emits_warning_when_cosign_cli_missing() {
+        // Point the seam at a path that does not exist so require_cosign Errs.
+        // SAFETY: serial gates env mutation; restored on drop via the guard.
+        struct MissingCosignGuard;
+        impl Drop for MissingCosignGuard {
+            fn drop(&mut self) {
+                unsafe {
+                    std::env::remove_var("CFGD_COSIGN_BIN");
+                }
+            }
+        }
+        unsafe {
+            std::env::set_var(
+                "CFGD_COSIGN_BIN",
+                "/nonexistent/cfgd-test-cosign-shim-does-not-exist",
+            );
+        }
+        let _guard = MissingCosignGuard;
+
+        let release = release_with_assets(&[
+            "cfgd-9.9.9-linux-x86_64.tar.gz",
+            "cfgd-9.9.9-checksums.txt.cosign.bundle",
+            "cosign.pub",
+        ]);
+        let tmp = tempfile::tempdir().unwrap();
+        let checksums_path = tmp.path().join("checksums.txt");
+        std::fs::write(&checksums_path, "").unwrap();
+
+        let (printer, buf) = crate::output::Printer::for_test();
+        let outcome = verify_cosign_bundle(&checksums_path, &release, tmp.path(), Some(&printer))
+            .expect("missing cosign CLI is graceful-degrade, not Err");
+        assert!(!outcome);
+        let captured = buf.lock().unwrap().clone();
+        assert!(
+            captured.contains("cosign CLI is not installed"),
+            "warning must point operators at the install hint: {captured}"
+        );
+    }
 }
