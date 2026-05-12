@@ -94,6 +94,16 @@ fn detect_git_head() -> Option<String> {
     git_output(&["rev-parse", "HEAD"])
 }
 
+#[cfg(test)]
+pub(super) fn detect_git_remote_for_tests() -> Option<String> {
+    detect_git_remote()
+}
+
+#[cfg(test)]
+pub(super) fn detect_git_head_for_tests() -> Option<String> {
+    detect_git_head()
+}
+
 pub(super) fn build_module_crd_json(
     module_doc: &cfgd_core::config::ModuleDocument,
     artifact: &str,

@@ -3628,6 +3628,98 @@ fn build_module_crd_json_depends_passes_through_verbatim() {
     assert_eq!(names, vec!["base", "shell", "git"]);
 }
 
+// --- detect_git_remote / detect_git_head via tempdir-rooted repos ---
+//
+// The helpers shell out to `git` via cfgd_core::git_cmd_local() and return
+// None if the call fails (no repo, no git on PATH, non-zero exit). These
+// tests cd into a freshly-initialized repo to drive both the Some and None
+// arms.
+
+#[test]
+#[cfg(unix)]
+#[serial_test::serial]
+fn detect_git_remote_returns_url_when_origin_configured() {
+    // Initialize a bare repo on disk, set an origin URL, cd into it, then
+    // drive the helper. Asserts the helper returns the configured URL.
+    if !cfgd_core::command_available("git") {
+        return;
+    }
+    let tmp = tempfile::tempdir().unwrap();
+    std::process::Command::new("git")
+        .args(["init", "-q"])
+        .current_dir(tmp.path())
+        .status()
+        .unwrap();
+    std::process::Command::new("git")
+        .args([
+            "remote",
+            "add",
+            "origin",
+            "https://example.test/owner/repo.git",
+        ])
+        .current_dir(tmp.path())
+        .status()
+        .unwrap();
+
+    let prior_cwd = std::env::current_dir().unwrap();
+    std::env::set_current_dir(tmp.path()).unwrap();
+    let url = super::apply_crd::detect_git_remote_for_tests();
+    std::env::set_current_dir(prior_cwd).unwrap();
+
+    assert_eq!(
+        url.as_deref(),
+        Some("https://example.test/owner/repo.git"),
+        "should echo configured remote URL"
+    );
+}
+
+#[test]
+#[cfg(unix)]
+#[serial_test::serial]
+fn detect_git_head_returns_commit_sha_for_repo_with_commit() {
+    // After `git init` and one commit, rev-parse HEAD should return a
+    // 40-char hex SHA. Drives the helper's Some arm.
+    if !cfgd_core::command_available("git") {
+        return;
+    }
+    let tmp = tempfile::tempdir().unwrap();
+    for args in [
+        &["init", "-q"][..],
+        &["config", "user.email", "test@example.test"][..],
+        &["config", "user.name", "Test User"][..],
+        &["commit", "--allow-empty", "-q", "-m", "init"][..],
+    ] {
+        std::process::Command::new("git")
+            .args(args)
+            .current_dir(tmp.path())
+            .status()
+            .unwrap();
+    }
+    let prior_cwd = std::env::current_dir().unwrap();
+    std::env::set_current_dir(tmp.path()).unwrap();
+    let head = super::apply_crd::detect_git_head_for_tests();
+    std::env::set_current_dir(prior_cwd).unwrap();
+
+    let sha = head.expect("rev-parse should succeed in fresh repo");
+    assert_eq!(sha.len(), 40, "expected 40-char SHA, got {sha:?}");
+    assert!(
+        sha.chars().all(|c| c.is_ascii_hexdigit()),
+        "expected hex SHA, got {sha:?}"
+    );
+}
+
+#[test]
+#[cfg(unix)]
+#[serial_test::serial]
+fn detect_git_remote_returns_none_outside_a_git_repo() {
+    let tmp = tempfile::tempdir().unwrap();
+    let prior_cwd = std::env::current_dir().unwrap();
+    std::env::set_current_dir(tmp.path()).unwrap();
+    let url = super::apply_crd::detect_git_remote_for_tests();
+    std::env::set_current_dir(prior_cwd).unwrap();
+    assert!(url.is_none(), "non-repo dir should return None");
+}
+
 #[test]
 fn build_module_crd_json_empty_collections_emit_as_empty_arrays_not_null() {
     // server-side apply patches with `null` for an array field have a
