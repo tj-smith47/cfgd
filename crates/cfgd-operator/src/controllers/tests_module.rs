@@ -60,17 +60,19 @@ fn make_module(name: &str, spec: ModuleSpec) -> Module {
 
 #[tokio::test]
 async fn reconcile_module_with_no_artifact_records_local_only_status_with_keyless_signature() {
-    let mut spec = ModuleSpec::default();
-    spec.signature = Some(ModuleSignature {
-        cosign: Some(CosignSignature {
-            keyless: true,
-            certificate_identity: Some("https://github.com/example/.*".to_string()),
-            certificate_oidc_issuer: Some(
-                "https://token.actions.githubusercontent.com".to_string(),
-            ),
-            ..Default::default()
+    let spec = ModuleSpec {
+        signature: Some(ModuleSignature {
+            cosign: Some(CosignSignature {
+                keyless: true,
+                certificate_identity: Some("https://github.com/example/.*".to_string()),
+                certificate_oidc_issuer: Some(
+                    "https://token.actions.githubusercontent.com".to_string(),
+                ),
+                ..Default::default()
+            }),
         }),
-    });
+        ..Default::default()
+    };
     let module = make_module("local-mod", spec);
 
     let (ctx, _registry, harness) = MockKubeHarness::new(vec![
@@ -127,8 +129,10 @@ async fn reconcile_module_with_no_artifact_records_local_only_status_with_keyles
 
 #[tokio::test]
 async fn reconcile_module_with_artifact_lists_cluster_config_policies_and_records_available() {
-    let mut spec = ModuleSpec::default();
-    spec.oci_artifact = Some("ghcr.io/example/mod:v1".to_string());
+    let spec = ModuleSpec {
+        oci_artifact: Some("ghcr.io/example/mod:v1".to_string()),
+        ..Default::default()
+    };
     let module = make_module("ghcr-mod", spec);
 
     let (ctx, _registry, harness) = MockKubeHarness::new(vec![
@@ -163,8 +167,10 @@ async fn reconcile_module_with_artifact_lists_cluster_config_policies_and_record
 
 #[tokio::test]
 async fn reconcile_module_with_invalid_oci_reference_records_invalid_reference() {
-    let mut spec = ModuleSpec::default();
-    spec.oci_artifact = Some("definitely not a valid oci ref".to_string());
+    let spec = ModuleSpec {
+        oci_artifact: Some("definitely not a valid oci ref".to_string()),
+        ..Default::default()
+    };
     let module = make_module("bad-ref", spec);
 
     let (ctx, _registry, harness) = MockKubeHarness::new(vec![
@@ -190,14 +196,18 @@ async fn reconcile_module_with_invalid_oci_reference_records_invalid_reference()
 
 #[tokio::test]
 async fn reconcile_module_with_unsigned_disallowed_and_no_signature_records_violation() {
-    let mut spec = ModuleSpec::default();
-    spec.oci_artifact = Some("ghcr.io/example/mod:v1".to_string());
+    let spec = ModuleSpec {
+        oci_artifact: Some("ghcr.io/example/mod:v1".to_string()),
+        ..Default::default()
+    };
     let module = make_module("unsigned-mod", spec);
 
-    let mut ccp_spec = ClusterConfigPolicySpec::default();
-    ccp_spec.security = SecurityPolicy {
-        trusted_registries: vec![],
-        allow_unsigned: false,
+    let ccp_spec = ClusterConfigPolicySpec {
+        security: SecurityPolicy {
+            trusted_registries: vec![],
+            allow_unsigned: false,
+        },
+        ..Default::default()
     };
     let ccp = ClusterConfigPolicy {
         metadata: kube::api::ObjectMeta {
@@ -234,14 +244,18 @@ async fn reconcile_module_with_unsigned_disallowed_and_no_signature_records_viol
 
 #[tokio::test]
 async fn reconcile_module_with_trusted_registry_violation_records_status() {
-    let mut spec = ModuleSpec::default();
-    spec.oci_artifact = Some("untrusted.io/example/mod:v1".to_string());
+    let spec = ModuleSpec {
+        oci_artifact: Some("untrusted.io/example/mod:v1".to_string()),
+        ..Default::default()
+    };
     let module = make_module("untrusted-mod", spec);
 
-    let mut ccp_spec = ClusterConfigPolicySpec::default();
-    ccp_spec.security = SecurityPolicy {
-        trusted_registries: vec!["ghcr.io/*".to_string()],
-        allow_unsigned: true,
+    let ccp_spec = ClusterConfigPolicySpec {
+        security: SecurityPolicy {
+            trusted_registries: vec!["ghcr.io/*".to_string()],
+            allow_unsigned: true,
+        },
+        ..Default::default()
     };
     let ccp = ClusterConfigPolicy {
         metadata: kube::api::ObjectMeta {

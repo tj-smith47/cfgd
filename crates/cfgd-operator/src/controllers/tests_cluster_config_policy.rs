@@ -109,11 +109,13 @@ async fn reconcile_cluster_config_policy_with_no_namespaces_marks_all_compliant(
 
 #[tokio::test]
 async fn reconcile_cluster_config_policy_aggregates_compliant_counts_across_namespaces() {
-    let mut ccp_spec: crate::crds::ClusterConfigPolicySpec = Default::default();
-    ccp_spec.required_modules = vec![ModuleRef {
-        name: "kubectl".to_string(),
-        required: true,
-    }];
+    let ccp_spec = crate::crds::ClusterConfigPolicySpec {
+        required_modules: vec![ModuleRef {
+            name: "kubectl".to_string(),
+            required: true,
+        }],
+        ..Default::default()
+    };
     let ccp = cluster_config_policy_with_spec("ccp-multi", ccp_spec);
 
     // mc-a is compliant (has kubectl), mc-b is not.

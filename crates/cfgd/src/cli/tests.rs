@@ -15623,49 +15623,55 @@ fn execute_dispatch_compliance_export() {
 
 #[test]
 fn count_policy_items_counts_brew_formulae_casks_and_taps_each_as_one() {
-    let mut items = cfgd_core::config::PolicyItems::default();
-    items.packages = Some(cfgd_core::config::PackagesSpec {
-        brew: Some(cfgd_core::config::BrewSpec {
-            taps: vec!["org/tap".to_string()],
-            formulae: vec!["ripgrep".to_string(), "fd".to_string()],
-            casks: vec!["firefox".to_string()],
+    let items = cfgd_core::config::PolicyItems {
+        packages: Some(cfgd_core::config::PackagesSpec {
+            brew: Some(cfgd_core::config::BrewSpec {
+                taps: vec!["org/tap".to_string()],
+                formulae: vec!["ripgrep".to_string(), "fd".to_string()],
+                casks: vec!["firefox".to_string()],
+                ..Default::default()
+            }),
             ..Default::default()
         }),
         ..Default::default()
-    });
+    };
     // 1 tap + 2 formulae + 1 cask = 4
     assert_eq!(super::count_policy_items(&items), 4);
 }
 
 #[test]
 fn count_policy_items_counts_apt_and_cargo_packages() {
-    let mut items = cfgd_core::config::PolicyItems::default();
-    items.packages = Some(cfgd_core::config::PackagesSpec {
-        apt: Some(cfgd_core::config::AptSpec {
-            packages: vec!["curl".to_string(), "git".to_string(), "vim".to_string()],
-            ..Default::default()
-        }),
-        cargo: Some(cfgd_core::config::CargoSpec {
-            packages: vec!["bat".to_string(), "ripgrep".to_string()],
+    let items = cfgd_core::config::PolicyItems {
+        packages: Some(cfgd_core::config::PackagesSpec {
+            apt: Some(cfgd_core::config::AptSpec {
+                packages: vec!["curl".to_string(), "git".to_string(), "vim".to_string()],
+                ..Default::default()
+            }),
+            cargo: Some(cfgd_core::config::CargoSpec {
+                packages: vec!["bat".to_string(), "ripgrep".to_string()],
+                ..Default::default()
+            }),
             ..Default::default()
         }),
         ..Default::default()
-    });
+    };
     assert_eq!(super::count_policy_items(&items), 5);
 }
 
 #[test]
 fn count_policy_items_counts_pipx_dnf_and_npm_global() {
-    let mut items = cfgd_core::config::PolicyItems::default();
-    items.packages = Some(cfgd_core::config::PackagesSpec {
-        pipx: vec!["black".to_string()],
-        dnf: vec!["wireshark".to_string(), "tcpdump".to_string()],
-        npm: Some(cfgd_core::config::NpmSpec {
-            global: vec!["typescript".to_string()],
+    let items = cfgd_core::config::PolicyItems {
+        packages: Some(cfgd_core::config::PackagesSpec {
+            pipx: vec!["black".to_string()],
+            dnf: vec!["wireshark".to_string(), "tcpdump".to_string()],
+            npm: Some(cfgd_core::config::NpmSpec {
+                global: vec!["typescript".to_string()],
+                ..Default::default()
+            }),
             ..Default::default()
         }),
         ..Default::default()
-    });
+    };
     // 1 + 2 + 1 = 4
     assert_eq!(super::count_policy_items(&items), 4);
 }
@@ -15673,39 +15679,43 @@ fn count_policy_items_counts_pipx_dnf_and_npm_global() {
 #[test]
 fn count_policy_items_counts_files_env_and_system_independently() {
     use cfgd_core::config::{EnvVar, ManagedFileSpec};
-    let mut items = cfgd_core::config::PolicyItems::default();
-    items.files = vec![
-        ManagedFileSpec {
-            source: "src/foo".to_string(),
-            target: std::path::PathBuf::from("/etc/foo"),
-            strategy: None,
-            private: false,
-            origin: None,
-            encryption: None,
-            permissions: None,
-        },
-        ManagedFileSpec {
-            source: "src/bar".to_string(),
-            target: std::path::PathBuf::from("/etc/bar"),
-            strategy: None,
-            private: false,
-            origin: None,
-            encryption: None,
-            permissions: None,
-        },
-    ];
-    items.env = vec![EnvVar {
-        name: "FOO".to_string(),
-        value: "bar".to_string(),
-    }];
-    items.system.insert(
+    let mut system = std::collections::HashMap::new();
+    system.insert(
         "shell".to_string(),
         serde_yaml::Value::String("bash".to_string()),
     );
-    items.system.insert(
+    system.insert(
         "systemd".to_string(),
         serde_yaml::Value::String("running".to_string()),
     );
+    let items = cfgd_core::config::PolicyItems {
+        files: vec![
+            ManagedFileSpec {
+                source: "src/foo".to_string(),
+                target: std::path::PathBuf::from("/etc/foo"),
+                strategy: None,
+                private: false,
+                origin: None,
+                encryption: None,
+                permissions: None,
+            },
+            ManagedFileSpec {
+                source: "src/bar".to_string(),
+                target: std::path::PathBuf::from("/etc/bar"),
+                strategy: None,
+                private: false,
+                origin: None,
+                encryption: None,
+                permissions: None,
+            },
+        ],
+        env: vec![EnvVar {
+            name: "FOO".to_string(),
+            value: "bar".to_string(),
+        }],
+        system,
+        ..Default::default()
+    };
     // 2 files + 1 env + 2 system = 5
     assert_eq!(super::count_policy_items(&items), 5);
 }
@@ -15714,32 +15724,36 @@ fn count_policy_items_counts_files_env_and_system_independently() {
 fn count_policy_items_sums_packages_files_env_and_system() {
     // End-to-end mixed bag: every contributing field set at once. Pin the
     // additive contract: no field silently swallows another.
-    let mut items = cfgd_core::config::PolicyItems::default();
-    items.packages = Some(cfgd_core::config::PackagesSpec {
-        brew: Some(cfgd_core::config::BrewSpec {
-            formulae: vec!["ripgrep".to_string()],
-            ..Default::default()
-        }),
-        pipx: vec!["black".to_string()],
-        ..Default::default()
-    });
-    items.files = vec![cfgd_core::config::ManagedFileSpec {
-        source: "src/foo".to_string(),
-        target: std::path::PathBuf::from("/etc/foo"),
-        strategy: None,
-        private: false,
-        origin: None,
-        encryption: None,
-        permissions: None,
-    }];
-    items.env = vec![cfgd_core::config::EnvVar {
-        name: "X".to_string(),
-        value: "1".to_string(),
-    }];
-    items.system.insert(
+    let mut system = std::collections::HashMap::new();
+    system.insert(
         "shell".to_string(),
         serde_yaml::Value::String("bash".to_string()),
     );
+    let items = cfgd_core::config::PolicyItems {
+        packages: Some(cfgd_core::config::PackagesSpec {
+            brew: Some(cfgd_core::config::BrewSpec {
+                formulae: vec!["ripgrep".to_string()],
+                ..Default::default()
+            }),
+            pipx: vec!["black".to_string()],
+            ..Default::default()
+        }),
+        files: vec![cfgd_core::config::ManagedFileSpec {
+            source: "src/foo".to_string(),
+            target: std::path::PathBuf::from("/etc/foo"),
+            strategy: None,
+            private: false,
+            origin: None,
+            encryption: None,
+            permissions: None,
+        }],
+        env: vec![cfgd_core::config::EnvVar {
+            name: "X".to_string(),
+            value: "1".to_string(),
+        }],
+        system,
+        ..Default::default()
+    };
     // 1 brew + 1 pipx + 1 file + 1 env + 1 system = 5
     assert_eq!(super::count_policy_items(&items), 5);
 }
@@ -15748,11 +15762,13 @@ fn count_policy_items_sums_packages_files_env_and_system() {
 fn count_policy_items_packages_none_does_not_panic() {
     // policy.packages is Option<_>; when None, the helper must not panic
     // and must still count items.{files,env,system}.
-    let mut items = cfgd_core::config::PolicyItems::default();
-    items.env = vec![cfgd_core::config::EnvVar {
-        name: "X".to_string(),
-        value: "1".to_string(),
-    }];
+    let items = cfgd_core::config::PolicyItems {
+        env: vec![cfgd_core::config::EnvVar {
+            name: "X".to_string(),
+            value: "1".to_string(),
+        }],
+        ..Default::default()
+    };
     assert_eq!(super::count_policy_items(&items), 1);
 }
 
@@ -15763,15 +15779,17 @@ fn count_policy_items_packages_none_does_not_panic() {
 #[test]
 fn display_policy_items_renders_brew_formula_and_cask_lines() {
     let (printer, buf) = cfgd_core::output::Printer::for_test();
-    let mut items = cfgd_core::config::PolicyItems::default();
-    items.packages = Some(cfgd_core::config::PackagesSpec {
-        brew: Some(cfgd_core::config::BrewSpec {
-            formulae: vec!["ripgrep".to_string()],
-            casks: vec!["firefox".to_string()],
+    let items = cfgd_core::config::PolicyItems {
+        packages: Some(cfgd_core::config::PackagesSpec {
+            brew: Some(cfgd_core::config::BrewSpec {
+                formulae: vec!["ripgrep".to_string()],
+                casks: vec!["firefox".to_string()],
+                ..Default::default()
+            }),
             ..Default::default()
         }),
         ..Default::default()
-    });
+    };
     super::display_policy_items(&printer, &items, "  ");
     let out = buf.lock().unwrap().clone();
     assert!(out.contains("brew formula: ripgrep"), "output: {out}");
@@ -15781,24 +15799,26 @@ fn display_policy_items_renders_brew_formula_and_cask_lines() {
 #[test]
 fn display_policy_items_renders_pipx_dnf_apt_cargo_lines() {
     let (printer, buf) = cfgd_core::output::Printer::for_test();
-    let mut items = cfgd_core::config::PolicyItems::default();
-    items.packages = Some(cfgd_core::config::PackagesSpec {
-        apt: Some(cfgd_core::config::AptSpec {
-            packages: vec!["curl".to_string()],
-            ..Default::default()
-        }),
-        cargo: Some(cfgd_core::config::CargoSpec {
-            packages: vec!["bat".to_string()],
-            ..Default::default()
-        }),
-        pipx: vec!["black".to_string()],
-        dnf: vec!["wireshark".to_string()],
-        npm: Some(cfgd_core::config::NpmSpec {
-            global: vec!["typescript".to_string()],
+    let items = cfgd_core::config::PolicyItems {
+        packages: Some(cfgd_core::config::PackagesSpec {
+            apt: Some(cfgd_core::config::AptSpec {
+                packages: vec!["curl".to_string()],
+                ..Default::default()
+            }),
+            cargo: Some(cfgd_core::config::CargoSpec {
+                packages: vec!["bat".to_string()],
+                ..Default::default()
+            }),
+            pipx: vec!["black".to_string()],
+            dnf: vec!["wireshark".to_string()],
+            npm: Some(cfgd_core::config::NpmSpec {
+                global: vec!["typescript".to_string()],
+                ..Default::default()
+            }),
             ..Default::default()
         }),
         ..Default::default()
-    });
+    };
     super::display_policy_items(&printer, &items, "");
     let out = buf.lock().unwrap().clone();
     for needle in [
@@ -15815,24 +15835,28 @@ fn display_policy_items_renders_pipx_dnf_apt_cargo_lines() {
 #[test]
 fn display_policy_items_renders_file_env_and_system_lines() {
     let (printer, buf) = cfgd_core::output::Printer::for_test();
-    let mut items = cfgd_core::config::PolicyItems::default();
-    items.files = vec![cfgd_core::config::ManagedFileSpec {
-        source: "src/foo.conf".to_string(),
-        target: std::path::PathBuf::from("/etc/foo.conf"),
-        strategy: None,
-        private: false,
-        origin: None,
-        encryption: None,
-        permissions: None,
-    }];
-    items.env = vec![cfgd_core::config::EnvVar {
-        name: "PATH_EXTRA".to_string(),
-        value: "/opt/bin".to_string(),
-    }];
-    items.system.insert(
+    let mut system = std::collections::HashMap::new();
+    system.insert(
         "systemd".to_string(),
         serde_yaml::Value::String("on".to_string()),
     );
+    let items = cfgd_core::config::PolicyItems {
+        files: vec![cfgd_core::config::ManagedFileSpec {
+            source: "src/foo.conf".to_string(),
+            target: std::path::PathBuf::from("/etc/foo.conf"),
+            strategy: None,
+            private: false,
+            origin: None,
+            encryption: None,
+            permissions: None,
+        }],
+        env: vec![cfgd_core::config::EnvVar {
+            name: "PATH_EXTRA".to_string(),
+            value: "/opt/bin".to_string(),
+        }],
+        system,
+        ..Default::default()
+    };
     super::display_policy_items(&printer, &items, "");
     let out = buf.lock().unwrap().clone();
     assert!(out.contains("file: /etc/foo.conf"), "output: {out}");
@@ -15843,11 +15867,13 @@ fn display_policy_items_renders_file_env_and_system_lines() {
 #[test]
 fn display_policy_items_honors_indent_prefix() {
     let (printer, buf) = cfgd_core::output::Printer::for_test();
-    let mut items = cfgd_core::config::PolicyItems::default();
-    items.env = vec![cfgd_core::config::EnvVar {
-        name: "X".to_string(),
-        value: "1".to_string(),
-    }];
+    let items = cfgd_core::config::PolicyItems {
+        env: vec![cfgd_core::config::EnvVar {
+            name: "X".to_string(),
+            value: "1".to_string(),
+        }],
+        ..Default::default()
+    };
     super::display_policy_items(&printer, &items, ">>>");
     let out = buf.lock().unwrap().clone();
     assert!(

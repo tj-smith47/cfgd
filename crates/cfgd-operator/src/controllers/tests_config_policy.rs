@@ -120,7 +120,8 @@ async fn reconcile_config_policy_marks_mc_non_compliant_when_required_module_mis
     let mc = machine_config("mc-no-kubectl", NS);
 
     let (ctx, _registry, harness) = MockKubeHarness::new(vec![
-        ExpectedCall::list(machine_configs_path()).returning_json(&mc_list(&[mc.clone()])),
+        ExpectedCall::list(machine_configs_path())
+            .returning_json(&mc_list(std::slice::from_ref(&mc))),
         ExpectedCall::patch_status(format!("{}/status", machine_config_path("mc-no-kubectl")))
             .returning_json(&mc),
         // PolicyViolation event for the non-compliant MC
