@@ -10552,6 +10552,54 @@ fn cmd_source_remove_existing_removes_from_config() {
 }
 
 #[test]
+fn cmd_source_remove_with_keep_all_transfers_resources_to_local_management() {
+    // Pre-seed managed_resources with one row claimed by `team-config`. Then
+    // call cmd_source_remove(name, keep_all=true, remove_all=false) — the
+    // keep_all-with-resources arm (lines 59-69 in source/remove.rs) should
+    // re-upsert each row with source="local" before removing the source.
+    let (config_dir, state_dir) = setup_rich_test_env();
+    let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
+    let (printer, _buf) = Printer::for_test();
+
+    let store = cfgd_core::state::StateStore::open(&state_dir.path().join("cfgd.db")).unwrap();
+    store
+        .upsert_managed_resource(
+            "file",
+            "/etc/managed-by-team-config",
+            "team-config",
+            Some("h1"),
+            None,
+        )
+        .unwrap();
+    drop(store);
+
+    super::source::cmd_source_remove(&cli, &printer, "team-config", true, false)
+        .expect("source remove --keep-all should succeed");
+
+    // Source dropped from cfgd.yaml.
+    let cfg = config::load_config(&config_dir.path().join("cfgd.yaml")).unwrap();
+    assert!(
+        cfg.spec.sources.is_empty(),
+        "source should be removed from cfgd.yaml regardless of keep_all"
+    );
+
+    // Resource row now claims source="local" instead of "team-config".
+    let store2 = cfgd_core::state::StateStore::open(&state_dir.path().join("cfgd.db")).unwrap();
+    let leftovers = store2.managed_resources_by_source("team-config").unwrap();
+    assert!(
+        leftovers.is_empty(),
+        "no resources should still be attributed to the removed source"
+    );
+    let local_rows = store2.managed_resources_by_source("local").unwrap();
+    assert!(
+        local_rows
+            .iter()
+            .any(|r| r.resource_id == "/etc/managed-by-team-config"),
+        "the transferred resource should now show under source=local: {local_rows:?}"
+    );
+}
+
+#[test]
 fn cmd_source_remove_nonexistent_fails() {
     let (config_dir, state_dir) = setup_test_env();
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
