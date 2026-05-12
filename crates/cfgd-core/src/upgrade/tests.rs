@@ -783,6 +783,89 @@ fn extract_tarball_invalid_gz_fails() {
 }
 
 #[test]
+#[cfg(unix)]
+fn extract_tarball_skips_symlink_entries_without_failing() {
+    use flate2::Compression;
+    use flate2::write::GzEncoder;
+
+    let dir = tempfile::tempdir().unwrap();
+    let archive_path = dir.path().join("with-symlink.tar.gz");
+    let dest = dir.path().join("out");
+    std::fs::create_dir_all(&dest).unwrap();
+
+    {
+        let file = std::fs::File::create(&archive_path).unwrap();
+        let enc = GzEncoder::new(file, Compression::default());
+        let mut tar_builder = tar::Builder::new(enc);
+
+        // Regular file (must be unpacked)
+        let body = b"real file";
+        let mut header = tar::Header::new_gnu();
+        header.set_size(body.len() as u64);
+        header.set_mode(0o644);
+        header.set_cksum();
+        tar_builder
+            .append_data(&mut header, "real.txt", &body[..])
+            .unwrap();
+
+        // Symlink entry pointing inside dest — extract_tarball must skip it
+        // (the loop's `is_symlink()` arm) and not fail the whole extraction.
+        let mut sym_header = tar::Header::new_gnu();
+        sym_header.set_size(0);
+        sym_header.set_mode(0o644);
+        sym_header.set_entry_type(tar::EntryType::Symlink);
+        sym_header.set_link_name("real.txt").unwrap();
+        sym_header.set_cksum();
+        tar_builder
+            .append_data(&mut sym_header, "link.txt", &[][..])
+            .unwrap();
+
+        tar_builder.finish().unwrap();
+    }
+
+    extract_tarball(&archive_path, &dest).expect("symlink in tarball must not fail extraction");
+
+    assert!(
+        dest.join("real.txt").exists(),
+        "regular file must still be unpacked"
+    );
+    assert!(
+        !dest.join("link.txt").exists() && !dest.join("link.txt").is_symlink(),
+        "symlink entry must be skipped — guards against escape via crafted link target"
+    );
+}
+
+#[test]
+fn check_with_cache_returns_error_when_cached_version_is_unparseable() {
+    let home = tempfile::tempdir().unwrap();
+    let _guard = crate::with_test_home_guard(home.path());
+
+    // Seed a fresh cache entry whose latest_version field is not a valid
+    // semver. The TTL check passes (just-now), so the function reaches
+    // Version::parse which must surface UpgradeError::VersionParse rather
+    // than silently fall through to the API.
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::SystemTime::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    write_version_cache(&VersionCache {
+        checked_at_secs: now,
+        latest_tag: "vBOGUS".into(),
+        latest_version: "not-a-semver".into(),
+        current_version: env!("CARGO_PKG_VERSION").into(),
+    })
+    .expect("cache seed");
+
+    let err = check_with_cache(Some("does/not/matter"), None)
+        .expect_err("unparseable cached version must surface as Err, not silent fallthrough");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("cached version") && msg.contains("parse"),
+        "error must point at the cache file's version field so triage looks there first: {msg}"
+    );
+}
+
+#[test]
 fn find_checksums_asset_picks_checksums_txt_over_other_assets() {
     let release = ReleaseInfo {
         tag: "v1.0.0".into(),
