@@ -300,8 +300,9 @@ pub(super) async fn handle_compliance_tick(ctx: &DaemonLoopContext) -> Result<()
         let po = ctx.profile_override.clone();
         let hk = Arc::clone(&ctx.hooks);
         let cc2 = cc.clone();
+        let sd = ctx.state_dir_override.clone();
         tokio::task::spawn_blocking(move || {
-            handle_compliance_snapshot(&cp, po.as_deref(), &*hk, &cc2);
+            handle_compliance_snapshot(&cp, po.as_deref(), &*hk, &cc2, sd.as_deref());
         })
         .await
         .map_err(|e| DaemonError::WatchError {

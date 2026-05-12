@@ -7703,4 +7703,462 @@ mod harness {
         let st = state.lock().await;
         assert!(st.last_sync.is_some(), "state.last_sync should be set");
     }
+
+    // ----- build_pre_loop_setup: SETUP-arm coverage -----
+
+    #[test]
+    fn build_pre_loop_setup_happy_path_yields_defaulted_intervals() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let _g = crate::with_test_home_guard(tmp.path());
+        let config_path = write_happy_path_config(&tmp);
+        let hooks = NoopHooks;
+
+        let setup = build_pre_loop_setup(&config_path, None, &hooks).expect("happy setup");
+
+        // Default reconcile + sync interval = 300s (5m)
+        assert_eq!(setup.parsed.reconcile_interval, Duration::from_secs(300));
+        assert_eq!(setup.parsed.sync_interval, Duration::from_secs(300));
+        assert!(!setup.parsed.auto_pull);
+        assert!(!setup.parsed.auto_push);
+        assert!(!setup.parsed.auto_apply);
+        // Compliance not configured → no interval
+        assert!(setup.compliance_config.is_none());
+        assert!(setup.compliance_interval.is_none());
+        // One sync task for local config dir
+        assert_eq!(setup.sync_tasks.len(), 1);
+        // Only the __default__ reconcile task (no module patches)
+        assert_eq!(setup.reconcile_tasks.len(), 1);
+        assert_eq!(setup.reconcile_tasks[0].entity, "__default__");
+        // No external sources → only the seeded "local" source status (added in run_daemon, not setup)
+        // Setup itself just produces the additions, which is empty here.
+        assert!(setup.initial_source_status.is_empty());
+        // No files in default profile → no managed paths
+        assert!(setup.managed_paths.is_empty());
+        // No server origin → no startup check-in URL
+        assert!(setup.server_checkin_url.is_none());
+        // Stdout notifier by default
+        assert!(matches!(setup.parsed.notify_method, NotifyMethod::Stdout));
+        // shortest_* == defaults when no per-module patches narrow them
+        assert_eq!(setup.shortest_reconcile, Duration::from_secs(300));
+        assert_eq!(setup.shortest_sync, Duration::from_secs(300));
+        // config_dir matches the parent of config_path
+        assert_eq!(setup.config_dir, tmp.path());
+    }
+
+    #[test]
+    fn build_pre_loop_setup_loads_compliance_interval_when_enabled() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let _g = crate::with_test_home_guard(tmp.path());
+        let config_path = tmp.path().join("cfgd.yaml");
+        std::fs::write(
+            &config_path,
+            "apiVersion: cfgd.io/v1alpha1\nkind: Cfgd\nmetadata:\n  name: t\nspec:\n  profile: default\n  compliance:\n    enabled: true\n    interval: 30m\n    retention: 30d\n",
+        )
+        .unwrap();
+        std::fs::create_dir_all(tmp.path().join("profiles")).unwrap();
+        std::fs::write(
+            tmp.path().join("profiles").join("default.yaml"),
+            "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec: {}\n",
+        )
+        .unwrap();
+        let hooks = NoopHooks;
+
+        let setup = build_pre_loop_setup(&config_path, None, &hooks).expect("setup");
+
+        assert!(setup.compliance_config.is_some());
+        assert_eq!(setup.compliance_interval, Some(Duration::from_secs(1800)));
+    }
+
+    #[test]
+    fn build_pre_loop_setup_skips_compliance_interval_when_disabled() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let _g = crate::with_test_home_guard(tmp.path());
+        let config_path = tmp.path().join("cfgd.yaml");
+        std::fs::write(
+            &config_path,
+            "apiVersion: cfgd.io/v1alpha1\nkind: Cfgd\nmetadata:\n  name: t\nspec:\n  profile: default\n  compliance:\n    enabled: false\n    interval: 30m\n    retention: 30d\n",
+        )
+        .unwrap();
+        std::fs::create_dir_all(tmp.path().join("profiles")).unwrap();
+        std::fs::write(
+            tmp.path().join("profiles").join("default.yaml"),
+            "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec: {}\n",
+        )
+        .unwrap();
+        let hooks = NoopHooks;
+
+        let setup = build_pre_loop_setup(&config_path, None, &hooks).expect("setup");
+
+        // Compliance config present but interval None because enabled=false short-circuits filter.
+        assert!(setup.compliance_config.is_some());
+        assert!(setup.compliance_interval.is_none());
+    }
+
+    #[test]
+    fn build_pre_loop_setup_returns_err_for_unparseable_config() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let _g = crate::with_test_home_guard(tmp.path());
+        let config_path = tmp.path().join("cfgd.yaml");
+        std::fs::write(&config_path, "::: not yaml :::").unwrap();
+        let hooks = NoopHooks;
+
+        let result = build_pre_loop_setup(&config_path, None, &hooks);
+
+        match result {
+            Ok(_) => panic!("invalid yaml must error"),
+            Err(e) => {
+                // Just confirm an error surfaced. Message asserts would be brittle.
+                let msg = format!("{}", e);
+                assert!(!msg.is_empty());
+            }
+        }
+    }
+
+    #[test]
+    fn build_pre_loop_setup_respects_profile_override() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let _g = crate::with_test_home_guard(tmp.path());
+        let config_path = tmp.path().join("cfgd.yaml");
+        // Config has profile: default; override should pick override-profile instead.
+        std::fs::write(
+            &config_path,
+            "apiVersion: cfgd.io/v1alpha1\nkind: Cfgd\nmetadata:\n  name: t\nspec:\n  profile: default\n",
+        )
+        .unwrap();
+        std::fs::create_dir_all(tmp.path().join("profiles")).unwrap();
+        std::fs::write(
+            tmp.path().join("profiles").join("default.yaml"),
+            "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec: {}\n",
+        )
+        .unwrap();
+        std::fs::write(
+            tmp.path().join("profiles").join("override-profile.yaml"),
+            "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: override-profile\nspec:\n  files:\n    managed:\n      - source: example.txt\n        target: /tmp/example-override.txt\n",
+        )
+        .unwrap();
+        let hooks = NoopHooks;
+
+        let setup =
+            build_pre_loop_setup(&config_path, Some("override-profile"), &hooks).expect("setup");
+
+        // override-profile has a managed file → discover_managed_paths populates it.
+        assert_eq!(setup.managed_paths.len(), 1);
+        assert!(
+            setup
+                .managed_paths
+                .iter()
+                .any(|p| p.ends_with("example-override.txt"))
+        );
+    }
+
+    #[test]
+    fn build_pre_loop_setup_falls_back_to_default_profile_name_when_unset() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let _g = crate::with_test_home_guard(tmp.path());
+        // Config has no profile field → fallback chain is "default".
+        let config_path = tmp.path().join("cfgd.yaml");
+        std::fs::write(
+            &config_path,
+            "apiVersion: cfgd.io/v1alpha1\nkind: Cfgd\nmetadata:\n  name: t\nspec: {}\n",
+        )
+        .unwrap();
+        std::fs::create_dir_all(tmp.path().join("profiles")).unwrap();
+        let hooks = NoopHooks;
+
+        let setup = build_pre_loop_setup(&config_path, None, &hooks).expect("setup");
+
+        // No profile resolution → no managed paths, reconcile_tasks contains just __default__
+        assert!(setup.managed_paths.is_empty());
+        assert_eq!(setup.reconcile_tasks.len(), 1);
+        assert_eq!(setup.reconcile_tasks[0].entity, "__default__");
+    }
+
+    #[test]
+    fn build_pre_loop_setup_picks_up_sync_auto_pull_push_from_daemon_spec() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let _g = crate::with_test_home_guard(tmp.path());
+        let config_path = tmp.path().join("cfgd.yaml");
+        std::fs::write(
+            &config_path,
+            "apiVersion: cfgd.io/v1alpha1\nkind: Cfgd\nmetadata:\n  name: t\nspec:\n  profile: default\n  daemon:\n    enabled: true\n    sync:\n      interval: 90s\n      autoPull: true\n      autoPush: true\n",
+        )
+        .unwrap();
+        std::fs::create_dir_all(tmp.path().join("profiles")).unwrap();
+        std::fs::write(
+            tmp.path().join("profiles").join("default.yaml"),
+            "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec: {}\n",
+        )
+        .unwrap();
+        let hooks = NoopHooks;
+
+        let setup = build_pre_loop_setup(&config_path, None, &hooks).expect("setup");
+
+        assert!(setup.parsed.auto_pull);
+        assert!(setup.parsed.auto_push);
+        assert_eq!(setup.parsed.sync_interval, Duration::from_secs(90));
+        assert_eq!(setup.shortest_sync, Duration::from_secs(90));
+        // First (and only) sync task is the local one, which inherits parsed values.
+        assert_eq!(setup.sync_tasks.len(), 1);
+    }
+
+    #[test]
+    fn build_pre_loop_setup_finds_server_url_for_server_origin() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let _g = crate::with_test_home_guard(tmp.path());
+        let config_path = tmp.path().join("cfgd.yaml");
+        std::fs::write(
+            &config_path,
+            "apiVersion: cfgd.io/v1alpha1\nkind: Cfgd\nmetadata:\n  name: t\nspec:\n  profile: default\n  origin:\n    - type: Server\n      url: https://gateway.example/api\n      branch: master\n",
+        )
+        .unwrap();
+        std::fs::create_dir_all(tmp.path().join("profiles")).unwrap();
+        std::fs::write(
+            tmp.path().join("profiles").join("default.yaml"),
+            "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec: {}\n",
+        )
+        .unwrap();
+        let hooks = NoopHooks;
+
+        let setup = build_pre_loop_setup(&config_path, None, &hooks).expect("setup");
+
+        assert_eq!(
+            setup.server_checkin_url.as_deref(),
+            Some("https://gateway.example/api")
+        );
+    }
+
+    // ----- handle_compliance_snapshot: state_dir_override coverage -----
+
+    #[test]
+    fn handle_compliance_snapshot_writes_to_state_dir_override() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let state_dir = tmp.path().join("state");
+        std::fs::create_dir_all(&state_dir).unwrap();
+
+        let config_path = tmp.path().join("cfgd.yaml");
+        std::fs::write(
+            &config_path,
+            "apiVersion: cfgd.io/v1alpha1\nkind: Cfgd\nmetadata:\n  name: t\nspec:\n  profile: default\n",
+        )
+        .unwrap();
+        std::fs::create_dir_all(tmp.path().join("profiles")).unwrap();
+        std::fs::write(
+            tmp.path().join("profiles").join("default.yaml"),
+            "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec: {}\n",
+        )
+        .unwrap();
+
+        let compliance_cfg = config::ComplianceConfig {
+            enabled: true,
+            interval: "1h".into(),
+            retention: "30d".into(),
+            scope: config::ComplianceScope::default(),
+            export: config::ComplianceExport::default(),
+        };
+
+        let hooks = NoopHooks;
+        super::super::sync::handle_compliance_snapshot(
+            &config_path,
+            None,
+            &hooks,
+            &compliance_cfg,
+            Some(&state_dir),
+        );
+
+        // Snapshot row was written to the override DB.
+        let store =
+            crate::state::StateStore::open(&state_dir.join("cfgd.db")).expect("override db");
+        let hash = store
+            .latest_compliance_hash()
+            .expect("hash query")
+            .expect("snapshot present");
+        assert!(!hash.is_empty());
+    }
+
+    #[test]
+    fn handle_compliance_snapshot_returns_early_on_unparseable_config() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let state_dir = tmp.path().join("state");
+        std::fs::create_dir_all(&state_dir).unwrap();
+
+        let config_path = tmp.path().join("cfgd.yaml");
+        std::fs::write(&config_path, "::: not yaml :::").unwrap();
+
+        let compliance_cfg = config::ComplianceConfig {
+            enabled: true,
+            interval: "1h".into(),
+            retention: "30d".into(),
+            scope: config::ComplianceScope::default(),
+            export: config::ComplianceExport::default(),
+        };
+
+        let hooks = NoopHooks;
+        super::super::sync::handle_compliance_snapshot(
+            &config_path,
+            None,
+            &hooks,
+            &compliance_cfg,
+            Some(&state_dir),
+        );
+
+        // No snapshot stored because config load failed.
+        let store =
+            crate::state::StateStore::open(&state_dir.join("cfgd.db")).expect("override db");
+        let hash = store.latest_compliance_hash().expect("hash query");
+        assert!(hash.is_none());
+    }
+
+    #[test]
+    fn handle_compliance_snapshot_skips_when_no_profile_configured() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let state_dir = tmp.path().join("state");
+        std::fs::create_dir_all(&state_dir).unwrap();
+
+        let config_path = tmp.path().join("cfgd.yaml");
+        // No spec.profile, no override → handler bails before opening the store.
+        std::fs::write(
+            &config_path,
+            "apiVersion: cfgd.io/v1alpha1\nkind: Cfgd\nmetadata:\n  name: t\nspec: {}\n",
+        )
+        .unwrap();
+        std::fs::create_dir_all(tmp.path().join("profiles")).unwrap();
+
+        let compliance_cfg = config::ComplianceConfig {
+            enabled: true,
+            interval: "1h".into(),
+            retention: "30d".into(),
+            scope: config::ComplianceScope::default(),
+            export: config::ComplianceExport::default(),
+        };
+
+        let hooks = NoopHooks;
+        super::super::sync::handle_compliance_snapshot(
+            &config_path,
+            None,
+            &hooks,
+            &compliance_cfg,
+            Some(&state_dir),
+        );
+
+        let store =
+            crate::state::StateStore::open(&state_dir.join("cfgd.db")).expect("override db");
+        let hash = store.latest_compliance_hash().expect("hash query");
+        assert!(hash.is_none());
+    }
+
+    #[test]
+    fn handle_compliance_snapshot_dedupes_identical_consecutive_snapshots() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let state_dir = tmp.path().join("state");
+        std::fs::create_dir_all(&state_dir).unwrap();
+
+        let config_path = tmp.path().join("cfgd.yaml");
+        std::fs::write(
+            &config_path,
+            "apiVersion: cfgd.io/v1alpha1\nkind: Cfgd\nmetadata:\n  name: t\nspec:\n  profile: default\n",
+        )
+        .unwrap();
+        std::fs::create_dir_all(tmp.path().join("profiles")).unwrap();
+        std::fs::write(
+            tmp.path().join("profiles").join("default.yaml"),
+            "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec: {}\n",
+        )
+        .unwrap();
+
+        let compliance_cfg = config::ComplianceConfig {
+            enabled: true,
+            interval: "1h".into(),
+            retention: "30d".into(),
+            scope: config::ComplianceScope::default(),
+            export: config::ComplianceExport::default(),
+        };
+
+        let hooks = NoopHooks;
+
+        super::super::sync::handle_compliance_snapshot(
+            &config_path,
+            None,
+            &hooks,
+            &compliance_cfg,
+            Some(&state_dir),
+        );
+        super::super::sync::handle_compliance_snapshot(
+            &config_path,
+            None,
+            &hooks,
+            &compliance_cfg,
+            Some(&state_dir),
+        );
+
+        let store =
+            crate::state::StateStore::open(&state_dir.join("cfgd.db")).expect("override db");
+        let history = store.compliance_history(None, 10).expect("history");
+        // Both invocations produce the same hash → second store skipped.
+        assert_eq!(history.len(), 1);
+    }
+
+    // ----- handle_version_check: cache-hit coverage -----
+    //
+    // `check_with_cache` reads/writes the version cache under
+    // `test_home_override().join(".cache/cfgd/")`. Pre-seeding the cache
+    // with a non-expired entry skips the network call entirely.
+
+    fn write_version_cache(home: &std::path::Path, latest: &str, current: &str) {
+        let dir = home.join(".cache").join("cfgd");
+        std::fs::create_dir_all(&dir).unwrap();
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        // VersionCache uses serde rename_all=camelCase.
+        let body = format!(
+            r#"{{"checkedAtSecs":{},"latestTag":"v{}","latestVersion":"{}","currentVersion":"{}"}}"#,
+            now, latest, latest, current
+        );
+        std::fs::write(dir.join("version-check.json"), body).unwrap();
+    }
+
+    // `handle_version_check` uses Handle::current().block_on(...) so it must
+    // be called from a thread that is NOT a tokio runtime driver — i.e.
+    // inside `spawn_blocking`. The test_home thread-local is installed
+    // inside the closure so the cache lookup sees the tempdir.
+    async fn drive_version_check(home: std::path::PathBuf) -> Arc<Mutex<DaemonState>> {
+        let state = Arc::new(Mutex::new(DaemonState::new()));
+        let state_for_blocking = Arc::clone(&state);
+        let notifier = Arc::new(Notifier::new(NotifyMethod::Stdout, None));
+        tokio::task::spawn_blocking(move || {
+            let _g = crate::with_test_home_guard(&home);
+            super::super::sync::handle_version_check(&state_for_blocking, &notifier);
+        })
+        .await
+        .expect("spawn_blocking joined");
+        state
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn handle_version_check_records_update_available_from_fresh_cache() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        // Pre-seed a cache entry advertising a version far ahead of any current.
+        write_version_cache(tmp.path(), "999.0.0", "0.0.0");
+
+        let state = drive_version_check(tmp.path().to_path_buf()).await;
+
+        let st = state.lock().await;
+        assert_eq!(st.update_available.as_deref(), Some("999.0.0"));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn handle_version_check_leaves_state_clean_when_cache_says_up_to_date() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        // Pre-seed a cache entry whose version is well below current. Since
+        // `check_with_cache` returns `update_available = cached > current`
+        // and the test binary's current version exceeds 0.0.0, no update is
+        // reported.
+        write_version_cache(tmp.path(), "0.0.0", "0.0.0");
+
+        let state = drive_version_check(tmp.path().to_path_buf()).await;
+
+        let st = state.lock().await;
+        assert!(st.update_available.is_none());
+    }
 }
