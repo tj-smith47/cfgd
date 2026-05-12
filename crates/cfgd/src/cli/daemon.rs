@@ -38,9 +38,19 @@ pub(super) fn cmd_daemon(
 
 pub(super) fn cmd_daemon_status(printer: &Printer) -> anyhow::Result<()> {
     let status = cfgd_core::daemon::query_daemon_status()?;
+    render_daemon_status(printer, status.as_ref());
+    Ok(())
+}
 
+/// Render the daemon status (or a "not running" placeholder when `None`) to
+/// `printer`. Pulled out so the structured-output branch and the human-output
+/// branches are testable without standing up a real IPC server.
+pub(super) fn render_daemon_status(
+    printer: &Printer,
+    status: Option<&cfgd_core::daemon::DaemonStatusResponse>,
+) {
     if printer.is_structured() {
-        match &status {
+        match status {
             Some(s) => printer.write_structured(s),
             None => printer.write_structured(&cfgd_core::daemon::DaemonStatusResponse {
                 running: false,
@@ -54,7 +64,7 @@ pub(super) fn cmd_daemon_status(printer: &Printer) -> anyhow::Result<()> {
                 module_reconcile: vec![],
             }),
         };
-        return Ok(());
+        return;
     }
 
     printer.header("Daemon Status");
@@ -105,8 +115,6 @@ pub(super) fn cmd_daemon_status(printer: &Printer) -> anyhow::Result<()> {
             printer.info("Install as service: cfgd daemon install");
         }
     }
-
-    Ok(())
 }
 
 pub(super) fn cmd_daemon_install(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {

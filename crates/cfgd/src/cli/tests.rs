@@ -11452,6 +11452,136 @@ fn daemon_status_no_daemon_running_json_output() {
 }
 
 // -----------------------------------------------------------------------
+// render_daemon_status — direct, no IPC bind required
+// -----------------------------------------------------------------------
+
+fn sample_daemon_status(
+    pid: u32,
+    uptime_secs: u64,
+    drift_count: u32,
+    sources: Vec<cfgd_core::daemon::SourceStatus>,
+    update_available: Option<String>,
+) -> cfgd_core::daemon::DaemonStatusResponse {
+    cfgd_core::daemon::DaemonStatusResponse {
+        running: true,
+        pid,
+        uptime_secs,
+        last_reconcile: Some("2026-05-12T10:00:00Z".to_string()),
+        last_sync: Some("2026-05-12T09:55:00Z".to_string()),
+        drift_count,
+        sources,
+        update_available,
+        module_reconcile: vec![],
+    }
+}
+
+fn sample_source(
+    name: &str,
+    status: &str,
+    drift: u32,
+    last_sync: Option<&str>,
+) -> cfgd_core::daemon::SourceStatus {
+    cfgd_core::daemon::SourceStatus {
+        name: name.to_string(),
+        status: status.to_string(),
+        drift_count: drift,
+        last_sync: last_sync.map(|s| s.to_string()),
+        last_reconcile: None,
+    }
+}
+
+#[test]
+fn render_daemon_status_human_running_with_sources_and_update() {
+    let h = CliTestHarness::builder().build();
+    let status = sample_daemon_status(
+        4242,
+        3600,
+        7,
+        vec![
+            sample_source("local", "active", 0, None),
+            sample_source("team", "syncing", 7, Some("2026-05-12T09:00:00Z")),
+        ],
+        Some("9.9.9".to_string()),
+    );
+    super::daemon::render_daemon_status(h.printer(), Some(&status));
+    let output = h.output();
+    assert!(output.contains("Daemon is running"), "got: {output}");
+    assert!(output.contains("4242"), "PID missing: {output}");
+    assert!(output.contains("3600s"), "uptime missing: {output}");
+    assert!(
+        output.contains("Last reconcile"),
+        "last_reconcile row missing: {output}"
+    );
+    assert!(
+        output.contains("Last sync"),
+        "last_sync row missing: {output}"
+    );
+    assert!(
+        output.contains("Update available: 9.9.9"),
+        "update-available banner missing: {output}"
+    );
+    assert!(
+        output.contains("Sources"),
+        "sources subheader missing: {output}"
+    );
+    assert!(output.contains("team"), "source name missing: {output}");
+}
+
+#[test]
+fn render_daemon_status_human_running_without_last_timestamps_skips_rows() {
+    let h = CliTestHarness::builder().build();
+    let status = cfgd_core::daemon::DaemonStatusResponse {
+        running: true,
+        pid: 1,
+        uptime_secs: 1,
+        last_reconcile: None,
+        last_sync: None,
+        drift_count: 0,
+        sources: vec![],
+        update_available: None,
+        module_reconcile: vec![],
+    };
+    super::daemon::render_daemon_status(h.printer(), Some(&status));
+    let output = h.output();
+    assert!(output.contains("Daemon is running"));
+    // When last_reconcile / last_sync are None the rows are not printed
+    assert!(
+        !output.contains("Last reconcile"),
+        "Last reconcile row should be skipped: {output}"
+    );
+    assert!(
+        !output.contains("Last sync"),
+        "Last sync row should be skipped: {output}"
+    );
+    assert!(
+        !output.contains("Update available"),
+        "Update available row should be skipped: {output}"
+    );
+}
+
+#[test]
+fn render_daemon_status_json_emits_some_status_shape() {
+    let h = CliTestHarness::builder().json().build();
+    let status = sample_daemon_status(99, 60, 1, vec![sample_source("s1", "ok", 0, None)], None);
+    super::daemon::render_daemon_status(h.printer(), Some(&status));
+    let parsed = h.json_output();
+    assert_eq!(parsed.get("pid").unwrap().as_u64().unwrap(), 99);
+    assert_eq!(parsed.get("uptimeSecs").unwrap().as_u64().unwrap(), 60);
+    assert_eq!(parsed.get("driftCount").unwrap().as_u64().unwrap(), 1);
+    assert!(parsed.get("running").unwrap().as_bool().unwrap());
+}
+
+#[test]
+fn render_daemon_status_json_emits_placeholder_when_none() {
+    let h = CliTestHarness::builder().json().build();
+    super::daemon::render_daemon_status(h.printer(), None);
+    let parsed = h.json_output();
+    assert_eq!(parsed.get("pid").unwrap().as_u64().unwrap(), 0);
+    assert!(!parsed.get("running").unwrap().as_bool().unwrap());
+    assert_eq!(parsed.get("uptimeSecs").unwrap().as_u64().unwrap(), 0);
+}
+
+// -----------------------------------------------------------------------
 // cmd_daemon_uninstall — output and completion
 // -----------------------------------------------------------------------
 
