@@ -15104,6 +15104,130 @@ spec:
     );
 }
 
+/// Profile that declares *every* package-manager category in `PackagesSpec`:
+/// the struct-wrapper managers (brew formulae/taps/casks, apt, cargo, npm
+/// global, snap, flatpak) PLUS the simple-list managers exposed by
+/// `non_empty_simple_lists` (pipx, dnf, apk, pacman, zypper, yum, pkg, nix,
+/// go, winget, chocolatey, scoop). Used to drive doctor's per-manager
+/// declared-detection arms (doctor.rs lines 80-115).
+const ALL_MANAGERS_PROFILE_YAML: &str = r#"apiVersion: cfgd.io/v1alpha1
+kind: Profile
+metadata:
+  name: default
+spec:
+  packages:
+    brew:
+      taps: ["homebrew/cask"]
+      formulae: ["ripgrep"]
+      casks: ["alacritty"]
+    apt:
+      packages: ["curl"]
+    cargo:
+      packages: ["bat"]
+    npm:
+      global: ["typescript"]
+    snap:
+      packages: ["code"]
+    flatpak:
+      packages: ["org.gimp.GIMP"]
+    pipx: ["black"]
+    dnf: ["htop"]
+    apk: ["busybox"]
+    pacman: ["fish"]
+    zypper: ["jq"]
+    yum: ["ncdu"]
+    pkg: ["tmux"]
+    nix: ["nix-tree"]
+    go: ["github.com/charmbracelet/glow"]
+    winget: ["Microsoft.PowerToys"]
+    chocolatey: ["7zip"]
+    scoop: ["nvm"]
+"#;
+
+#[test]
+fn cmd_doctor_declares_every_supported_package_manager() {
+    // Drives every arm of doctor.rs's declared_managers detection, including
+    // the simple-list managers iterated via PackagesSpec::non_empty_simple_lists.
+    let h = CliTestHarness::builder()
+        .profile("default", ALL_MANAGERS_PROFILE_YAML)
+        .json()
+        .build();
+    super::doctor::cmd_doctor(&h.cli(), h.printer()).unwrap();
+
+    let parsed = h.json_output();
+    let managers = parsed["packageManagers"]
+        .as_array()
+        .expect("packageManagers should be array");
+
+    // Per-manager: each declared name must appear with declared=true.
+    let names_declared: Vec<&str> = managers
+        .iter()
+        .filter(|m| m["declared"] == true)
+        .filter_map(|m| m["name"].as_str())
+        .collect();
+
+    for expected in &[
+        "brew",
+        "apt",
+        "cargo",
+        "npm",
+        "snap",
+        "flatpak",
+        "pipx",
+        "dnf",
+        "apk",
+        "pacman",
+        "zypper",
+        "yum",
+        "pkg",
+        "nix",
+        "go",
+        "winget",
+        "chocolatey",
+        "scoop",
+    ] {
+        assert!(
+            names_declared.iter().any(|n| n == expected),
+            "manager '{expected}' should be declared but isn't in: {names_declared:?}"
+        );
+    }
+    // brew-tap / brew-cask are deduplicated under "brew" — they must NOT
+    // appear as separate entries in the output.
+    let raw_names: Vec<&str> = managers.iter().filter_map(|m| m["name"].as_str()).collect();
+    assert!(
+        !raw_names.contains(&"brew-tap"),
+        "brew-tap should be deduplicated under brew, got: {raw_names:?}"
+    );
+    assert!(
+        !raw_names.contains(&"brew-cask"),
+        "brew-cask should be deduplicated under brew, got: {raw_names:?}"
+    );
+}
+
+#[test]
+fn cmd_doctor_shows_config_sources_section_when_sources_declared() {
+    // RICH_CONFIG_YAML carries `spec.sources` declaring a single Git source
+    // pointing at a remote URL that's NEVER been cached by this test harness
+    // — so the "Config Sources" section should render with the "not cached"
+    // warning arm (doctor.rs lines 415-439).
+    let h = CliTestHarness::builder().rich_config().build();
+    super::doctor::cmd_doctor(&h.cli(), h.printer()).unwrap();
+
+    let output = h.output();
+    assert!(
+        output.contains("Config Sources"),
+        "should render Config Sources subheader: {output}"
+    );
+    assert!(
+        output.contains("team-config"),
+        "should name the source declared in cfgd.yaml: {output}"
+    );
+    assert!(
+        output.contains("not cached") && output.contains("cfgd source update"),
+        "should point uncached source at the source-update remediation: {output}"
+    );
+}
+
 #[test]
 fn cmd_doctor_json_with_missing_module_shows_error() {
     let profile_with_missing_module = r#"apiVersion: cfgd.io/v1alpha1
