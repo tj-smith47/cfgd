@@ -7,6 +7,18 @@ pub fn utc_now_iso8601() -> String {
     unix_secs_to_iso8601(secs)
 }
 
+/// Strip filename-unsafe characters (`:`, `-`, `T`, `Z`) from an ISO 8601
+/// timestamp so it can be used as a path segment. Helper extracted from three
+/// inline replace calls in oci/build, cli/module/keys, and gateway/api/drift.
+pub fn iso8601_to_filename_safe(ts: &str) -> String {
+    ts.replace([':', '-', 'T', 'Z'], "")
+}
+
+/// Convenience: current UTC time as a filename-safe string.
+pub fn utc_now_filename_safe() -> String {
+    iso8601_to_filename_safe(&utc_now_iso8601())
+}
+
 /// Returns the current time as seconds since the Unix epoch.
 pub fn unix_secs_now() -> u64 {
     std::time::SystemTime::now()
@@ -61,4 +73,36 @@ pub fn parse_duration_str(s: &str) -> Result<std::time::Duration, String> {
     s.parse::<u64>()
         .map(std::time::Duration::from_secs)
         .map_err(|_| format!("invalid timeout '{}': use 30s, 5m, or 1h", s))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn iso8601_to_filename_safe_strips_separators() {
+        assert_eq!(
+            iso8601_to_filename_safe("2026-05-12T14:30:25Z"),
+            "20260512143025"
+        );
+    }
+
+    #[test]
+    fn iso8601_to_filename_safe_preserves_fractional_seconds() {
+        // Only `:`, `-`, `T`, `Z` are stripped — `.` and digits survive.
+        assert_eq!(
+            iso8601_to_filename_safe("2026-05-12T14:30:25.123Z"),
+            "20260512143025.123"
+        );
+    }
+
+    #[test]
+    fn utc_now_filename_safe_has_no_unsafe_chars() {
+        let s = utc_now_filename_safe();
+        assert!(!s.is_empty());
+        assert!(
+            !s.contains([':', '-', 'T', 'Z']),
+            "filename-safe stamp contained banned char: {s:?}"
+        );
+    }
 }

@@ -128,7 +128,7 @@ pub(crate) fn cmd_module_keys_rotate(
     printer.header("Rotate Cosign Key Pair");
 
     // Back up old keys
-    let backup_suffix = cfgd_core::utc_now_iso8601().replace([':', '-', 'T', 'Z'], "");
+    let backup_suffix = cfgd_core::utc_now_filename_safe();
     let backup_key = Path::new(key_dir).join(format!("cosign.key.{backup_suffix}"));
     let backup_pub = Path::new(key_dir).join(format!("cosign.pub.{backup_suffix}"));
 

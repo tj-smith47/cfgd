@@ -395,7 +395,7 @@ pub(super) fn cmd_doctor(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
             .map(|entries| {
                 entries
                     .filter_map(|e| e.ok())
-                    .filter(|e| e.path().extension().and_then(|ext| ext.to_str()) == Some("yaml"))
+                    .filter(|e| cfgd_core::config::is_yaml_ext(&e.path()))
                     .count()
             })
             .unwrap_or(0);

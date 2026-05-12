@@ -59,7 +59,7 @@ fn detail() -> DriftDetailInput {
 
 // Stripped timestamp used in alert name (replaces ':', '-', 'T', 'Z').
 fn stripped_ts() -> String {
-    TIMESTAMP.replace([':', '-', 'T', 'Z'], "")
+    cfgd_core::iso8601_to_filename_safe(TIMESTAMP)
 }
 
 fn expected_alert_name() -> String {

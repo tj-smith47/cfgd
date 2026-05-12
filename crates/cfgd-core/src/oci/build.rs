@@ -116,7 +116,7 @@ pub fn build_module(
     let container_name = format!(
         "cfgd-build-{}-{}",
         std::process::id(),
-        crate::utc_now_iso8601().replace([':', '-', 'T', 'Z'], ""),
+        crate::utc_now_filename_safe(),
     );
 
     let mut build_cmd = std::process::Command::new(runtime);

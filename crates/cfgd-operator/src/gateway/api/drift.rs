@@ -22,7 +22,7 @@ pub(super) async fn create_drift_alert_crd(
     let alert_name = format!(
         "drift-{}-{}",
         device_id,
-        timestamp.replace([':', '-', 'T', 'Z'], "")
+        cfgd_core::iso8601_to_filename_safe(timestamp)
     );
 
     let drift_details: Vec<DriftDetail> = details
