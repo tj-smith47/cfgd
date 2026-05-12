@@ -197,6 +197,16 @@ workspaces:
             ---
             Released with [anodizer](https://github.com/tj-smith47/anodizer)
           include_meta: true
+          # Attach the apk-signing public key alongside the signed apk(s).
+          # anodizer-action's `apk-private-key` input derives the pub key
+          # from the private key and drops it into ./dist/. apk verifiers
+          # install this file under /etc/apk/keys/ before `apk add`-ing a
+          # signed package. `allow_empty: true` skips the glob silently
+          # when the file is absent (local snapshot / dry-run flows where
+          # no secret was provisioned).
+          extra_files:
+            - glob: "dist/anodizer-apk-signing-key.rsa.pub"
+              allow_empty: true
         publish:
           # `cargo:` inherits `index_timeout: 600` from defaults.publish.cargo.
           homebrew:
@@ -387,7 +397,12 @@ workspaces:
                 key_file: "{{ .Env.GPG_KEY_PATH }}"
             apk:
               signature:
-                key_file: "{{ .Env.GPG_KEY_PATH }}"
+                # apk-tools uses RSA-PSS, not OpenPGP. nfpm's apk packager
+                # parses the key via Go's `pem.Decode`, so the file at this
+                # path must be a raw PEM RSA private key (not the GPG-armored
+                # block that deb / rpm consume). Provisioned by the
+                # `apk-private-key` input on anodizer-action.
+                key_file: "{{ .Env.APK_PRIVATE_KEY_PATH }}"
         snapcrafts:
           - id: default
             name: cfgd
