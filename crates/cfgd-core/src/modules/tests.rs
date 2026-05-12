@@ -3626,6 +3626,24 @@ mod git_fixture_tests {
     }
 
     #[test]
+    fn get_head_commit_sha_errors_when_repo_has_no_commits_yet() {
+        // Different from "not a repo": this is a valid repo (init succeeded,
+        // .git/ exists, open_repo Ok) but HEAD has never resolved because no
+        // commit has been made. Pin the contract that the open-vs-empty
+        // failures don't collapse into the same error message — each gives
+        // operators a distinct triage signal.
+        let dir = tempfile::tempdir().unwrap();
+        let _repo = git2::Repository::init(dir.path()).unwrap();
+
+        let err = get_head_commit_sha(dir.path()).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("HEAD") || msg.contains("head"),
+            "error must point at HEAD-read failure, distinct from 'not a repo': {msg}"
+        );
+    }
+
+    #[test]
     fn open_repo_errors_with_module_and_url_context() {
         // open_repo wraps git2's error into ModuleError::GitFetchFailed with
         // the module/url propagated — so cfgd's diagnostics show which
