@@ -64,15 +64,29 @@ pub struct Usage {
     pub output_tokens: u64,
 }
 
+/// Production base URL for the Anthropic Messages API. Test seam:
+/// `CFGD_ANTHROPIC_URL` overrides this at `AnthropicClient::new` time so
+/// `mockito::Server` can drive `cmd_generate` end-to-end against canned
+/// responses (mirrors the `CFGD_<NAME>_BIN` tool-shim pattern documented
+/// in `.claude/rules/shared-utils.md`).
+const DEFAULT_ANTHROPIC_BASE_URL: &str = "https://api.anthropic.com";
+
 /// Thin Anthropic Messages API client.
 pub struct AnthropicClient {
     api_key: String,
     model: String,
+    base_url: String,
 }
 
 impl AnthropicClient {
     pub fn new(api_key: String, model: String) -> Self {
-        Self { api_key, model }
+        let base_url = std::env::var("CFGD_ANTHROPIC_URL")
+            .unwrap_or_else(|_| DEFAULT_ANTHROPIC_BASE_URL.to_string());
+        Self {
+            api_key,
+            model,
+            base_url,
+        }
     }
 
     /// Send a message to the Anthropic Messages API.
@@ -95,7 +109,7 @@ impl AnthropicClient {
         // none and could hang the CLI indefinitely on a slow / unreachable
         // api.anthropic.com.
         let response = cfgd_core::http::http_agent(cfgd_core::http::HTTP_AI_TIMEOUT)
-            .post("https://api.anthropic.com/v1/messages")
+            .post(&format!("{}/v1/messages", self.base_url))
             .set("x-api-key", &self.api_key)
             .set("anthropic-version", "2023-06-01")
             .set("content-type", "application/json")
@@ -209,5 +223,103 @@ mod tests {
         let json = serde_json::to_value(&request).unwrap();
         assert!(json.get("tools").is_some());
         assert_eq!(json["tools"].as_array().unwrap().len(), 1);
+    }
+
+    // ─── send_message HTTP round-trip via mockito ────────────────────────
+    //
+    // The `CFGD_ANTHROPIC_URL` env-shim redirects the production
+    // `POST {base_url}/v1/messages` call at a `mockito::Server` so we can
+    // drive `AnthropicClient::send_message` end-to-end against canned
+    // responses — same pattern as upgrade/server_client/oci tests.
+
+    /// RAII env-var guard. Tests using it MUST be marked `#[serial]` —
+    /// env mutation is process-wide.
+    struct EnvVarGuard {
+        key: &'static str,
+        prior: Option<String>,
+    }
+    impl EnvVarGuard {
+        fn set(key: &'static str, value: &str) -> Self {
+            // SAFETY: serialized via #[serial].
+            let prior = std::env::var(key).ok();
+            unsafe { std::env::set_var(key, value) }
+            Self { key, prior }
+        }
+    }
+    impl Drop for EnvVarGuard {
+        fn drop(&mut self) {
+            // SAFETY: serialized via #[serial].
+            unsafe {
+                match &self.prior {
+                    Some(v) => std::env::set_var(self.key, v),
+                    None => std::env::remove_var(self.key),
+                }
+            }
+        }
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn send_message_round_trips_via_mockito_base_url() {
+        let mut server = mockito::Server::new();
+        let _env = EnvVarGuard::set("CFGD_ANTHROPIC_URL", &server.url());
+
+        let mock = server
+            .mock("POST", "/v1/messages")
+            .match_header("x-api-key", "test-key-abc")
+            .match_header("anthropic-version", "2023-06-01")
+            .match_header("content-type", "application/json")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                r#"{
+                    "id": "msg_mocked_001",
+                    "content": [{"type": "text", "text": "Hello from mock."}],
+                    "stop_reason": "end_turn",
+                    "usage": {"input_tokens": 12, "output_tokens": 7}
+                }"#,
+            )
+            .create();
+
+        let client = AnthropicClient::new("test-key-abc".to_string(), "claude-sonnet-4-6".into());
+        let response = client
+            .send_message(&[], "You are a test.", &[], 1024)
+            .expect("send_message should succeed against the mock");
+
+        mock.assert();
+        assert_eq!(response.id, "msg_mocked_001");
+        assert_eq!(response.stop_reason.as_deref(), Some("end_turn"));
+        assert_eq!(response.usage.input_tokens, 12);
+        assert_eq!(response.usage.output_tokens, 7);
+        match &response.content[0] {
+            ContentBlock::Text { text } => assert_eq!(text, "Hello from mock."),
+            other => panic!("expected text block, got {other:?}"),
+        }
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn send_message_surfaces_api_error_status_as_provider_error() {
+        let mut server = mockito::Server::new();
+        let _env = EnvVarGuard::set("CFGD_ANTHROPIC_URL", &server.url());
+
+        let _mock = server
+            .mock("POST", "/v1/messages")
+            .with_status(429)
+            .with_header("content-type", "application/json")
+            .with_body(
+                r#"{"type":"error","error":{"type":"rate_limit_error","message":"slow down"}}"#,
+            )
+            .create();
+
+        let client = AnthropicClient::new("test-key".into(), "claude-sonnet-4-6".into());
+        let err = client
+            .send_message(&[], "system", &[], 1024)
+            .expect_err("non-2xx should surface as ProviderError");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("API request failed"),
+            "error should be wrapped as ProviderError: {msg}"
+        );
     }
 }

@@ -504,3 +504,211 @@ fn cmd_generate_scan_only_with_plugin_manager() {
         "should complete scan, got: {output}"
     );
 }
+
+// ─── cmd_generate end-to-end via mockito Anthropic Messages API ───────
+//
+// Drives the AI-mode body of cmd_generate (which the scan-only tests
+// above don't reach): consent skip via yes=true, AiConfig fallback when
+// no cfgd.yaml exists, AnthropicClient construction with the
+// CFGD_ANTHROPIC_URL test seam, the conversation loop body, token-usage
+// tally, and the final "Run 'cfgd apply --dry-run'" hint. The mock
+// returns a text-only response (no tool_use) so the loop breaks after
+// one iteration.
+
+#[cfg(test)]
+mod cmd_generate_mockito {
+    use super::super::*;
+    use serial_test::serial;
+
+    /// RAII env-var guard — mirrors the EnvVarGuard in ai/client.rs
+    /// tests. Tests using this MUST be marked `#[serial]` (process-wide
+    /// env mutation).
+    struct EnvVarGuard {
+        key: &'static str,
+        prior: Option<String>,
+    }
+    impl EnvVarGuard {
+        fn set(key: &'static str, value: &str) -> Self {
+            // SAFETY: serialized via #[serial].
+            let prior = std::env::var(key).ok();
+            unsafe { std::env::set_var(key, value) }
+            Self { key, prior }
+        }
+    }
+    impl Drop for EnvVarGuard {
+        fn drop(&mut self) {
+            // SAFETY: serialized via #[serial].
+            unsafe {
+                match &self.prior {
+                    Some(v) => std::env::set_var(self.key, v),
+                    None => std::env::remove_var(self.key),
+                }
+            }
+        }
+    }
+
+    fn test_cli(config_path: std::path::PathBuf) -> super::super::super::Cli {
+        super::super::super::Cli {
+            command: Some(super::super::super::Command::Status {
+                module: None,
+                exit_code: false,
+            }),
+            config: config_path,
+            profile: None,
+            verbose: 0,
+            quiet: true,
+            no_color: true,
+            output: super::super::super::OutputFormatArg(cfgd_core::output::OutputFormat::Table),
+            jsonpath: None,
+            state_dir: None,
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn cmd_generate_loops_once_and_summarises_when_mock_returns_text_only() {
+        let tmp = tempfile::tempdir().unwrap();
+        let _home = cfgd_core::with_test_home_guard(tmp.path());
+        let _api = EnvVarGuard::set("ANTHROPIC_API_KEY", "test-key-abc");
+
+        let mut server = mockito::Server::new();
+        let _url = EnvVarGuard::set("CFGD_ANTHROPIC_URL", &server.url());
+
+        // Single API turn — text-only response with end_turn breaks the
+        // loop after one iteration without spawning any tool dispatch.
+        let mock = server
+            .mock("POST", "/v1/messages")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                r#"{
+                    "id": "msg_e2e_001",
+                    "content": [{
+                        "type": "text",
+                        "text": "I'll help generate your cfgd configuration."
+                    }],
+                    "stop_reason": "end_turn",
+                    "usage": {"input_tokens": 42, "output_tokens": 18}
+                }"#,
+            )
+            .create();
+
+        let cli = test_cli(tmp.path().join("cfgd.yaml"));
+        let (printer, buf) = Printer::for_test();
+        let args = GenerateArgs {
+            target: None,
+            model: None,
+            provider: None,
+            yes: true,
+            scan_only: false,
+            shell: None,
+            home: None,
+        };
+
+        cmd_generate(&cli, &printer, &args)
+            .expect("cmd_generate should succeed against the text-only mock");
+
+        mock.assert();
+        let output = buf.lock().unwrap();
+        // The assistant text from the mock should land in the printed output.
+        assert!(
+            output.contains("I'll help generate your cfgd configuration."),
+            "assistant text from mock should print: {output}"
+        );
+        // Token tally pulls from response.usage and reports the sum.
+        assert!(
+            output.contains("Token usage:") && output.contains("60 total"),
+            "should tally 42+18=60 tokens: {output}"
+        );
+        // The final hint always renders.
+        assert!(
+            output.contains("cfgd apply --dry-run"),
+            "should point user at dry-run: {output}"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn cmd_generate_with_module_target_loops_once_and_summarises() {
+        // Same as the no-target test, but exercises the module-target
+        // mode_context branch (Mode: module — generate module for tool 'X').
+        let tmp = tempfile::tempdir().unwrap();
+        let _home = cfgd_core::with_test_home_guard(tmp.path());
+        let _api = EnvVarGuard::set("ANTHROPIC_API_KEY", "test-key-abc");
+
+        let mut server = mockito::Server::new();
+        let _url = EnvVarGuard::set("CFGD_ANTHROPIC_URL", &server.url());
+
+        let mock = server
+            .mock("POST", "/v1/messages")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                r#"{
+                    "id": "msg_module_001",
+                    "content": [{"type": "text", "text": "Ack."}],
+                    "stop_reason": "end_turn",
+                    "usage": {"input_tokens": 5, "output_tokens": 1}
+                }"#,
+            )
+            .create();
+
+        let cli = test_cli(tmp.path().join("cfgd.yaml"));
+        let (printer, _buf) = Printer::for_test();
+        let args = GenerateArgs {
+            target: Some(GenerateTarget::Module {
+                name: "neovim".into(),
+            }),
+            model: None,
+            provider: None,
+            yes: true,
+            scan_only: false,
+            shell: None,
+            home: None,
+        };
+
+        cmd_generate(&cli, &printer, &args).expect("cmd_generate (module target) should succeed");
+        mock.assert();
+    }
+
+    #[test]
+    #[serial]
+    fn cmd_generate_errors_when_api_key_env_unset() {
+        // No ANTHROPIC_API_KEY set → the GenerateError::ApiKeyNotFound
+        // arm fires before any HTTP call. Drives the
+        // env::var(...).map_err arm at the top of cmd_generate.
+        let tmp = tempfile::tempdir().unwrap();
+        let _home = cfgd_core::with_test_home_guard(tmp.path());
+
+        // Explicitly unset. EnvVarGuard's Drop restores the prior value
+        // so test ordering doesn't matter.
+        let _key = EnvVarGuard {
+            key: "ANTHROPIC_API_KEY",
+            prior: std::env::var("ANTHROPIC_API_KEY").ok(),
+        };
+        // SAFETY: serialized via #[serial].
+        unsafe {
+            std::env::remove_var("ANTHROPIC_API_KEY");
+        }
+
+        let cli = test_cli(tmp.path().join("cfgd.yaml"));
+        let (printer, _buf) = Printer::for_test();
+        let args = GenerateArgs {
+            target: None,
+            model: None,
+            provider: None,
+            yes: true,
+            scan_only: false,
+            shell: None,
+            home: None,
+        };
+
+        let err = cmd_generate(&cli, &printer, &args)
+            .expect_err("missing API key should surface as an error");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("ANTHROPIC_API_KEY"),
+            "error should name the missing env var: {msg}"
+        );
+    }
+}
