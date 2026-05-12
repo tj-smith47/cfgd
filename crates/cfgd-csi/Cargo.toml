@@ -41,3 +41,6 @@ tonic-build = "0.13"
 [dev-dependencies]
 tempfile = "3"
 tower = "0.5"
+# Serial tests for parse_allowed_registries_from_env which mutates process-wide
+# CFGD_CSI_ALLOWED_REGISTRIES — concurrent test runs would race the env var.
+serial_test = "3"

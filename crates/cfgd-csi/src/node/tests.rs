@@ -543,3 +543,150 @@ fn resolve_oci_ref_ignores_empty_override() {
         "cfgd-modules/nettools:1.0"
     );
 }
+
+// -------------------------------------------------------------------------
+// registry_of — OCI reference parsing.
+// -------------------------------------------------------------------------
+
+#[test]
+fn registry_of_extracts_dotted_host() {
+    // "first path segment contains '.'" → host registry
+    assert_eq!(registry_of("ghcr.io/org/mod:tag"), "ghcr.io");
+}
+
+#[test]
+fn registry_of_extracts_host_with_port() {
+    // colon in head → registry with explicit port
+    assert_eq!(
+        registry_of("myreg.local:5000/org/mod:tag"),
+        "myreg.local:5000"
+    );
+}
+
+#[test]
+fn registry_of_returns_empty_for_default_namespace() {
+    // No dot, no colon, not localhost → no explicit registry; ref is in the
+    // reserved cfgd-modules namespace and registry is the empty string.
+    assert_eq!(registry_of("cfgd-modules/nettools:v1"), "");
+}
+
+#[test]
+fn registry_of_treats_localhost_as_registry() {
+    // `localhost` is the documented exception: no dot, but explicitly a
+    // registry host.
+    assert_eq!(registry_of("localhost/org/mod:tag"), "localhost");
+}
+
+#[test]
+fn registry_of_returns_empty_for_unslashed_ref() {
+    // No '/' in the ref → first_slash == ref.len(), head == whole ref. As
+    // long as it has no dot/colon and isn't `localhost`, registry is "".
+    assert_eq!(registry_of("just-a-name"), "");
+}
+
+// -------------------------------------------------------------------------
+// check_registry_allowed — allow-list semantics.
+// -------------------------------------------------------------------------
+
+#[test]
+fn check_registry_allowed_passes_when_allow_list_unset() {
+    // None means "no enforcement" — every ref passes regardless of registry.
+    assert!(check_registry_allowed("ghcr.io/org/mod:v1", None).is_ok());
+    assert!(check_registry_allowed("cfgd-modules/foo:v1", None).is_ok());
+}
+
+#[test]
+fn check_registry_allowed_passes_default_namespace_under_allow_list() {
+    // Ref with no explicit registry (default cfgd-modules namespace) is
+    // always allowed: it can't reach the network without caller-provided
+    // registry, so allow-listing it would be redundant.
+    let allow = vec!["ghcr.io".to_string()];
+    assert!(check_registry_allowed("cfgd-modules/foo:v1", Some(&allow)).is_ok());
+}
+
+#[test]
+fn check_registry_allowed_passes_when_registry_in_list() {
+    let allow = vec!["ghcr.io".to_string(), "quay.io".to_string()];
+    assert!(check_registry_allowed("quay.io/org/mod:tag", Some(&allow)).is_ok());
+}
+
+#[test]
+fn check_registry_allowed_rejects_when_registry_not_in_list() {
+    let allow = vec!["ghcr.io".to_string()];
+    let err = check_registry_allowed("docker.io/org/mod:tag", Some(&allow))
+        .expect_err("docker.io not in allow-list");
+    assert_eq!(err.code(), tonic::Code::PermissionDenied);
+    assert!(err.message().contains("docker.io"));
+    assert!(
+        err.message().contains("CFGD_CSI_ALLOWED_REGISTRIES"),
+        "error should reference the env var so the operator can fix it: {}",
+        err.message()
+    );
+}
+
+// -------------------------------------------------------------------------
+// parse_allowed_registries_from_env — env-var parsing.
+// -------------------------------------------------------------------------
+
+#[test]
+#[serial_test::serial]
+fn parse_allowed_registries_from_env_returns_none_when_unset() {
+    // SAFETY: serialised — no other test mutates this var concurrently.
+    unsafe {
+        std::env::remove_var(ALLOWED_REGISTRIES_ENV);
+    }
+    assert!(parse_allowed_registries_from_env().is_none());
+}
+
+#[test]
+#[serial_test::serial]
+fn parse_allowed_registries_from_env_returns_none_for_wildcard() {
+    // SAFETY: serialised.
+    unsafe {
+        std::env::set_var(ALLOWED_REGISTRIES_ENV, "*");
+    }
+    let got = parse_allowed_registries_from_env();
+    unsafe {
+        std::env::remove_var(ALLOWED_REGISTRIES_ENV);
+    }
+    assert!(
+        got.is_none(),
+        "'*' means 'allow any' and must collapse to None"
+    );
+}
+
+#[test]
+#[serial_test::serial]
+fn parse_allowed_registries_from_env_splits_csv_with_trimming() {
+    // SAFETY: serialised.
+    unsafe {
+        std::env::set_var(ALLOWED_REGISTRIES_ENV, " ghcr.io , quay.io ,, docker.io ");
+    }
+    let got = parse_allowed_registries_from_env();
+    unsafe {
+        std::env::remove_var(ALLOWED_REGISTRIES_ENV);
+    }
+    assert_eq!(
+        got,
+        Some(vec![
+            "ghcr.io".to_string(),
+            "quay.io".to_string(),
+            "docker.io".to_string()
+        ]),
+        "CSV split + trim + drop empty"
+    );
+}
+
+#[test]
+#[serial_test::serial]
+fn parse_allowed_registries_from_env_returns_none_for_empty_string() {
+    // SAFETY: serialised.
+    unsafe {
+        std::env::set_var(ALLOWED_REGISTRIES_ENV, "   ");
+    }
+    let got = parse_allowed_registries_from_env();
+    unsafe {
+        std::env::remove_var(ALLOWED_REGISTRIES_ENV);
+    }
+    assert!(got.is_none(), "whitespace-only → None");
+}
