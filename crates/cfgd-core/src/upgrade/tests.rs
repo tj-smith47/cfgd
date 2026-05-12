@@ -2231,6 +2231,60 @@ mod download_and_install_to {
         );
     }
 
+    /// Same chain as `happy_path_installs_extracted_binary_to_target`, but
+    /// runs with a `Some(&printer)` so the spinner branches inside
+    /// `download_to_file` (no Content-Length → spinner arm), the verify-
+    /// checksum spinner, and the extract-archive spinner all execute. Asserts
+    /// that the install still succeeds end-to-end with a printer wired in.
+    #[test]
+    #[serial]
+    fn happy_path_with_printer_drives_spinner_branches() {
+        let _shim = CosignShim::install(0, "");
+
+        let binary_content = b"#!/bin/sh\necho printer cfgd binary\n";
+        let tarball = build_tarball(binary_content);
+        let sha = crate::sha256_hex(&tarball);
+        let asset_name = "cfgd-9.9.9-linux-x86_64.tar.gz";
+        let checksums = checksums_line(&sha, asset_name);
+
+        let mut server = mockito::Server::new();
+        // Mockito does not set Content-Length unless we ask, so download_to_file
+        // takes the (Some(p), None) spinner arm — exactly the branch the
+        // None-printer happy_path test cannot reach.
+        let _m_archive = server
+            .mock("GET", "/download/cfgd.tar.gz")
+            .with_status(200)
+            .with_body(&tarball)
+            .create();
+        let _m_checksums = server
+            .mock("GET", "/download/checksums.txt")
+            .with_status(200)
+            .with_body(checksums)
+            .create();
+        let _m_bundle = server
+            .mock("GET", "/download/cosign.bundle")
+            .with_status(200)
+            .with_body("{}")
+            .create();
+        let _m_pubkey = server
+            .mock("GET", "/download/cosign.pub")
+            .with_status(200)
+            .with_body("dummy-key")
+            .create();
+
+        let release = release_with_full_signature_chain(&server.url());
+        let asset = release.assets[0].clone();
+        let target_dir = tempfile::tempdir().unwrap();
+        let target = target_dir.path().join("cfgd");
+        std::fs::write(&target, b"old binary").unwrap();
+
+        let (printer, _buf) = crate::output::Printer::for_test();
+        let installed = download_and_install_to(&release, &asset, &target, Some(&printer))
+            .expect("happy path with printer → Ok");
+        assert_eq!(installed, target);
+        assert_eq!(std::fs::read(&target).unwrap(), binary_content);
+    }
+
     #[test]
     #[serial]
     fn returns_download_failed_when_archive_url_returns_5xx() {
