@@ -491,12 +491,7 @@ fn fleet_event_serialization() {
 
 // --- Database-backed handler logic tests ---
 
-fn test_db() -> (ServerDb, tempfile::TempDir) {
-    let tmp = tempfile::tempdir().expect("tempdir");
-    let path = tmp.path().join("test.db");
-    let db = ServerDb::open(path.to_str().expect("utf8")).expect("open db");
-    (db, tmp)
-}
+use crate::gateway::test_state::test_db;
 
 #[tokio::test(flavor = "current_thread")]
 async fn checkin_config_changed_detection() {

@@ -10,14 +10,7 @@ pub struct FleetStatus {
 
 #[cfg(test)]
 mod tests {
-    use super::super::db::ServerDb;
-
-    fn test_db() -> (ServerDb, tempfile::TempDir) {
-        let tmp = tempfile::tempdir().expect("tempdir");
-        let path = tmp.path().join("test.db");
-        let db = ServerDb::open(path.to_str().expect("utf8")).expect("open");
-        (db, tmp)
-    }
+    use crate::gateway::test_state::test_db;
 
     #[tokio::test(flavor = "current_thread")]
     async fn fleet_status_empty() {

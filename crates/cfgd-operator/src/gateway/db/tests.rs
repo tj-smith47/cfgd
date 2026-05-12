@@ -1,11 +1,5 @@
 use super::*;
-
-fn test_db() -> (ServerDb, tempfile::TempDir) {
-    let tmp = tempfile::tempdir().expect("tempdir");
-    let path = tmp.path().join("test.db");
-    let db = ServerDb::open(path.to_str().expect("utf8")).expect("open db");
-    (db, tmp)
-}
+use crate::gateway::test_state::test_db;
 
 fn future_expiry() -> String {
     cfgd_core::unix_secs_to_iso8601(cfgd_core::unix_secs_now() + 3600)
