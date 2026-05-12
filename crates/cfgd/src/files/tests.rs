@@ -1265,6 +1265,23 @@ fn set_permissions_changes_mode() {
     assert_eq!(metadata.permissions().mode() & 0o777, 0o600);
 }
 
+#[test]
+#[cfg(unix)]
+fn set_permissions_nonexistent_path_returns_io_err_not_permission_denied() {
+    // Drives the non-PermissionDenied branch of the error-mapping at
+    // files/apply.rs:347-352. chmod on a nonexistent path returns ENOENT
+    // which std::io maps to ErrorKind::NotFound — distinct from
+    // ErrorKind::PermissionDenied, so the FileError::Io arm fires.
+    let dir = tempfile::tempdir().unwrap();
+    let missing = dir.path().join("nope.txt");
+    let err = set_permissions(&missing, 0o600).expect_err("ENOENT must error");
+    let msg = err.to_string();
+    assert!(
+        !msg.contains("PermissionDenied"),
+        "non-PD error should NOT be mapped to FileError::PermissionDenied, got: {msg}"
+    );
+}
+
 // --- ensure_target_writable ---
 
 #[test]

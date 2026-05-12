@@ -263,6 +263,106 @@ fn collect_module_file_targets_nonexistent_returns_empty() {
 }
 
 #[test]
+fn prompt_restore_backups_no_op_when_no_backup_files_exist() {
+    // The for-loop entry condition (backup_path.exists()) is false on every
+    // target → the body never runs. Asserts the function returns Ok with
+    // no side-effects and the prompt is never consumed.
+    let dir = tempfile::tempdir().unwrap();
+    let target = dir.path().join("no-such-target.conf");
+    let (printer, buf) =
+        Printer::for_test_with_prompt_responses(vec![cfgd_core::output::PromptAnswer::Confirm(
+            true,
+        )]);
+
+    prompt_restore_backups(&[target.clone()], &printer).expect("no backups → no-op");
+
+    let out = buf.lock().unwrap();
+    assert!(
+        !out.contains("Restored"),
+        "must not announce a restore: {out}"
+    );
+}
+
+#[test]
+fn prompt_restore_backups_with_confirmed_yes_restores_backup_to_target() {
+    // Stage `<target>.cfgd-backup` alongside a target path, queue
+    // Confirm(true), assert: backup file is renamed onto the target,
+    // the printer.success "Restored <path>" line fires.
+    let dir = tempfile::tempdir().unwrap();
+    let target = dir.path().join("restored.conf");
+    let backup = dir.path().join("restored.conf.cfgd-backup");
+    std::fs::write(&backup, b"backup-contents").unwrap();
+
+    let (printer, buf) =
+        Printer::for_test_with_prompt_responses(vec![cfgd_core::output::PromptAnswer::Confirm(
+            true,
+        )]);
+    prompt_restore_backups(std::slice::from_ref(&target), &printer)
+        .expect("restore-confirmed must Ok");
+
+    assert!(target.exists(), "target must have been restored");
+    assert!(
+        !backup.exists(),
+        "backup file must have been moved (rename), not copied"
+    );
+    assert_eq!(
+        std::fs::read(&target).unwrap(),
+        b"backup-contents",
+        "target must contain backup bytes"
+    );
+    let out = buf.lock().unwrap();
+    assert!(out.contains("Restored"), "should announce restore: {out}");
+}
+
+#[test]
+fn prompt_restore_backups_with_confirmed_no_leaves_backup_and_target_alone() {
+    // Confirm(false) → loop iteration runs but body is skipped → backup
+    // remains, target stays absent.
+    let dir = tempfile::tempdir().unwrap();
+    let target = dir.path().join("declined.conf");
+    let backup = dir.path().join("declined.conf.cfgd-backup");
+    std::fs::write(&backup, b"untouched-backup").unwrap();
+
+    let (printer, _buf) =
+        Printer::for_test_with_prompt_responses(vec![cfgd_core::output::PromptAnswer::Confirm(
+            false,
+        )]);
+    prompt_restore_backups(std::slice::from_ref(&target), &printer).expect("decline must Ok");
+
+    assert!(!target.exists(), "target must not be created on decline");
+    assert!(backup.exists(), "backup file must remain on decline");
+    assert_eq!(
+        std::fs::read(&backup).unwrap(),
+        b"untouched-backup",
+        "backup contents must be unchanged"
+    );
+}
+
+#[test]
+fn prompt_restore_backups_removes_existing_target_before_renaming_backup() {
+    // Target already on disk as a regular file → branch at backups.rs:51-53
+    // removes it before the rename. Asserts the post-state matches the
+    // backup contents (not the prior target contents).
+    let dir = tempfile::tempdir().unwrap();
+    let target = dir.path().join("overwrite.conf");
+    let backup = dir.path().join("overwrite.conf.cfgd-backup");
+    std::fs::write(&target, b"stale-deployed").unwrap();
+    std::fs::write(&backup, b"original-backup").unwrap();
+
+    let (printer, _buf) =
+        Printer::for_test_with_prompt_responses(vec![cfgd_core::output::PromptAnswer::Confirm(
+            true,
+        )]);
+    prompt_restore_backups(std::slice::from_ref(&target), &printer).unwrap();
+
+    assert_eq!(
+        std::fs::read(&target).unwrap(),
+        b"original-backup",
+        "restore must replace the prior target with the backup"
+    );
+}
+
+#[test]
 fn collect_module_file_targets_local_module() {
     let dir = tempfile::tempdir().unwrap();
     let module_dir = dir.path().join("modules").join("test-mod");
