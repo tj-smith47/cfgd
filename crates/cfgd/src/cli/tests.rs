@@ -16395,4 +16395,141 @@ mod cmd_source_add_local {
             );
         });
     }
+
+    // ─── cmd_source_update end-to-end against the local bare fixture ─────────
+    //
+    // cmd_source_add seeds cfgd.yaml + a clone under <state>/sources/<name>.
+    // cmd_source_update then walks the happy-path arm that has previously
+    // only had error-path coverage (no-sources, name-not-found, load-failure):
+    // refresh the source manifest, upsert the state-store row, and emit
+    // "Updated source 'X'". The "load failure" arm is exercised by pointing
+    // at a non-existent file:// URL.
+
+    #[test]
+    #[serial]
+    fn cmd_source_update_all_walks_happy_path_and_records_success() {
+        with_env("CFGD_ALLOW_LOCAL_SOURCES", Some("1"), || {
+            let scratch = tempfile::tempdir().unwrap();
+            let bare = make_bare_with_manifest(&scratch, "upd-src", None);
+            let h = CliTestHarness::builder().build();
+            let url = format!("file://{}", bare.display());
+            let add_args = SourceAddArgs {
+                name: Some("upd-src".to_string()),
+                ..empty_source_args(url)
+            };
+            super::source::cmd_source_add(&h.cli(), h.printer(), &add_args)
+                .expect("cmd_source_add precondition should succeed");
+
+            // No name → updates every source. Drives the
+            // `mgr.get(...).is_some()` happy path + upsert_config_source +
+            // "Updated source" success line.
+            super::source::cmd_source_update(&h.cli(), h.printer(), None)
+                .expect("cmd_source_update should succeed against the staged source");
+
+            h.assert_output_contains("Updated source 'upd-src'");
+
+            // The state store should now have a row recording the source.
+            let store =
+                cfgd_core::state::StateStore::open(&h.state_path().join("cfgd.db")).unwrap();
+            let sources = store.config_sources().unwrap();
+            assert!(
+                sources.iter().any(|s| s.name == "upd-src"),
+                "config_sources should record the source row: {:?}",
+                sources.iter().map(|s| &s.name).collect::<Vec<_>>()
+            );
+        });
+    }
+
+    #[test]
+    #[serial]
+    fn cmd_source_update_named_walks_happy_path_for_single_source_only() {
+        with_env("CFGD_ALLOW_LOCAL_SOURCES", Some("1"), || {
+            let scratch = tempfile::tempdir().unwrap();
+            let bare_a = make_bare_with_manifest(&scratch, "src-a", None);
+            let bare_b = make_bare_with_manifest(&scratch, "src-b", None);
+            let h = CliTestHarness::builder().build();
+            let url_a = format!("file://{}", bare_a.display());
+            let url_b = format!("file://{}", bare_b.display());
+            super::source::cmd_source_add(
+                &h.cli(),
+                h.printer(),
+                &SourceAddArgs {
+                    name: Some("src-a".to_string()),
+                    ..empty_source_args(url_a)
+                },
+            )
+            .unwrap();
+            super::source::cmd_source_add(
+                &h.cli(),
+                h.printer(),
+                &SourceAddArgs {
+                    name: Some("src-b".to_string()),
+                    ..empty_source_args(url_b)
+                },
+            )
+            .unwrap();
+
+            // Update only src-b — the name-filter arm should pick exactly one
+            // source and the success line should mention only src-b.
+            super::source::cmd_source_update(&h.cli(), h.printer(), Some("src-b"))
+                .expect("named update should succeed");
+
+            let out = h.output();
+            assert!(
+                out.contains("Updated source 'src-b'"),
+                "named update should report src-b: {out}"
+            );
+        });
+    }
+
+    #[test]
+    #[serial]
+    fn cmd_source_update_records_error_status_when_upstream_unreachable() {
+        with_env("CFGD_ALLOW_LOCAL_SOURCES", Some("1"), || {
+            // Stage a real source so cmd_source_add succeeds — then bulldoze
+            // the bare upstream so the *next* fetch fails. cmd_source_update
+            // should surface the failure via the "Failed to update source"
+            // error line + flip the state-store status to 'error'.
+            let scratch = tempfile::tempdir().unwrap();
+            let bare = make_bare_with_manifest(&scratch, "doomed-src", None);
+            let h = CliTestHarness::builder().build();
+            let url = format!("file://{}", bare.display());
+            super::source::cmd_source_add(
+                &h.cli(),
+                h.printer(),
+                &SourceAddArgs {
+                    name: Some("doomed-src".to_string()),
+                    ..empty_source_args(url)
+                },
+            )
+            .unwrap();
+
+            // Bulldoze the upstream + the local cache so the update can't
+            // satisfy the fetch from either side.
+            std::fs::remove_dir_all(&bare).unwrap();
+            let cache_dir = h.state_path().join("sources").join("doomed-src");
+            if cache_dir.exists() {
+                std::fs::remove_dir_all(&cache_dir).unwrap();
+            }
+
+            super::source::cmd_source_update(&h.cli(), h.printer(), Some("doomed-src"))
+                .expect("cmd_source_update should not bubble up a fetch failure");
+
+            h.assert_output_contains("Failed to update source 'doomed-src'");
+
+            // The status update arm should have flipped the row to 'error'.
+            let store =
+                cfgd_core::state::StateStore::open(&h.state_path().join("cfgd.db")).unwrap();
+            let sources = store.config_sources().unwrap();
+            let row = sources
+                .iter()
+                .find(|s| s.name == "doomed-src")
+                .expect("doomed-src should still be in the state store");
+            assert_eq!(
+                row.status, "error",
+                "state store should record the error status, got: {}",
+                row.status
+            );
+        });
+    }
 }
