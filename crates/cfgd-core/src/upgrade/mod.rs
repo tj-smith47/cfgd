@@ -12,7 +12,15 @@ use crate::errors::{Result, UpgradeError};
 use crate::output::Printer;
 
 const GITHUB_API_BASE: &str = "https://api.github.com";
+const GITHUB_API_BASE_ENV: &str = "CFGD_GITHUB_API_BASE";
 const DEFAULT_REPO: &str = "tj-smith47/cfgd";
+
+/// Resolve the GitHub Releases API base URL. Tests set CFGD_GITHUB_API_BASE
+/// to redirect at a mockito server; production calls fall through to the
+/// real api.github.com base.
+fn github_api_base() -> String {
+    std::env::var(GITHUB_API_BASE_ENV).unwrap_or_else(|_| GITHUB_API_BASE.to_string())
+}
 const CACHE_TTL_SECS: u64 = 86400; // 24 hours
 const CACHE_FILENAME: &str = "version-check.json";
 
@@ -65,7 +73,7 @@ pub fn current_version() -> std::result::Result<Version, UpgradeError> {
 
 /// Query the GitHub Releases API for the latest release.
 pub fn fetch_latest_release(repo: &str, printer: Option<&Printer>) -> Result<ReleaseInfo> {
-    fetch_latest_release_from(GITHUB_API_BASE, repo, printer)
+    fetch_latest_release_from(&github_api_base(), repo, printer)
 }
 
 /// Query a releases API for the latest release (testable with custom base URL).

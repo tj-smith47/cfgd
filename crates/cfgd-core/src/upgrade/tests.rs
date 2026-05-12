@@ -2762,3 +2762,92 @@ fn fetch_latest_release_api_error_on_invalid_json_body() {
     };
     assert!(matches!(inner, UpgradeError::ApiError { .. }));
 }
+
+// ---------------------------------------------------------------------------
+// check_latest + check_with_cache through the CFGD_GITHUB_API_BASE env shim.
+// fetch_latest_release internally calls github_api_base() which reads the
+// env var; setting it to a mockito URL redirects the entire production path
+// (check_with_cache → check_latest → fetch_latest_release → API) without
+// needing fetch_latest_release_from at the test boundary.
+//
+// Tests must be #[serial] because the env var is process-global.
+// ---------------------------------------------------------------------------
+
+mod api_base_env_shim {
+    use super::*;
+    use crate::test_helpers::EnvVarGuard;
+    use serial_test::serial;
+
+    fn mock_release_response(server: &mut mockito::ServerGuard) -> mockito::Mock {
+        server
+            .mock("GET", "/repos/test/repo/releases/latest")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                r#"{
+                    "tag_name": "v999.0.0",
+                    "assets": []
+                }"#,
+            )
+            .create()
+    }
+
+    #[test]
+    #[serial]
+    fn check_latest_uses_env_shim_to_redirect_api_call() {
+        // check_latest(repo, None) goes through fetch_latest_release →
+        // fetch_latest_release_from(github_api_base(), ...). Setting the env
+        // var redirects the whole chain to mockito, covering lines 718-730.
+        let mut server = mockito::Server::new();
+        let mock = mock_release_response(&mut server);
+        let _env = EnvVarGuard::set(GITHUB_API_BASE_ENV, &server.url());
+
+        let result = check_latest(Some("test/repo"), None)
+            .expect("env-shim redirect should make the call succeed against mockito");
+        mock.assert();
+
+        assert_eq!(result.latest, Version::new(999, 0, 0));
+        // current_version is the compiled CARGO_PKG_VERSION; 999.0.0 must be
+        // newer than any plausible release of this crate.
+        assert!(
+            result.update_available,
+            "999.0.0 must register as a newer version than current"
+        );
+        assert!(
+            result.release.is_some(),
+            "check_latest always carries the full ReleaseInfo on success"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn check_with_cache_falls_through_to_api_and_writes_fresh_cache_entry() {
+        // No cache file present in test_home → cache-miss branch fires →
+        // check_latest is called → write_version_cache persists the result.
+        // Covers lines 697-712 of mod.rs (the API-fallback + cache-write
+        // segment that has been uncovered for many sessions).
+        let home = tempfile::tempdir().unwrap();
+        let _home_guard = crate::with_test_home_guard(home.path());
+
+        let mut server = mockito::Server::new();
+        let mock = mock_release_response(&mut server);
+        let _env = EnvVarGuard::set(GITHUB_API_BASE_ENV, &server.url());
+
+        let result = check_with_cache(Some("test/repo"), None)
+            .expect("cache miss + env-shim redirect should succeed");
+        mock.assert();
+        assert_eq!(result.latest, Version::new(999, 0, 0));
+
+        // Cache file must now exist on disk under the test home — write
+        // _version_cache succeeded; subsequent calls within TTL will read
+        // it back without hitting the network.
+        let cache_path = home.path().join(".cache").join("cfgd").join(CACHE_FILENAME);
+        assert!(
+            cache_path.exists(),
+            "fresh cache must be written to {cache_path:?} after API success"
+        );
+        let cache = read_version_cache().expect("written cache must parse back");
+        assert_eq!(cache.latest_version, "999.0.0");
+        assert_eq!(cache.latest_tag, "v999.0.0");
+    }
+}
