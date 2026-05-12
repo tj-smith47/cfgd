@@ -487,3 +487,127 @@ async fn validate_module_returns_response_with_uid_matching_request() {
         "AdmissionResponse must echo the request UID"
     );
 }
+
+// -----------------------------------------------------------------------
+// try_into Err arms — AdmissionReview without `request` field
+//
+// All 6 admission handlers contain the same `try_into` arm:
+//     match AdmissionReview::<DynamicObject>::try_into(review) {
+//         Ok(r) => r,
+//         Err(e) => { record "error" metric; return invalid review }
+//     }
+// The garbage-body test above exercises body parsing (4xx before the
+// handler), not the typed-conversion Err arm. To reach it we post a
+// well-formed AdmissionReview JSON with NO `request` field — that
+// deserializes (request: Option<AdmissionRequest> = None) but the
+// TryFrom<AdmissionReview<T>> for AdmissionRequest<T> impl in kube-rs
+// returns MissingRequest. The handler then takes the Err branch.
+// -----------------------------------------------------------------------
+
+fn review_without_request() -> Vec<u8> {
+    serde_json::to_vec(&serde_json::json!({
+        "apiVersion": "admission.k8s.io/v1",
+        "kind": "AdmissionReview",
+    }))
+    .expect("review-without-request json")
+}
+
+fn assert_error_metric(metrics: &crate::metrics::Metrics, operation: &str) {
+    let count = metrics
+        .webhook_requests_total
+        .get_or_create(&WebhookLabels {
+            operation: operation.to_string(),
+            result: "error".to_string(),
+        })
+        .get();
+    assert_eq!(
+        count, 1,
+        "operation {operation:?} must record exactly one error metric"
+    );
+}
+
+async fn assert_invalid_review_body(response: axum::response::Response) {
+    assert_eq!(response.status(), StatusCode::OK);
+    let review = parse_response(response).await;
+    let resp = review.response.expect("response present");
+    // AdmissionResponse::invalid sets allowed=false and includes the failure
+    // message in `result.message`. We pin both so the contract is locked in.
+    assert!(
+        !resp.allowed,
+        "TryInto-Err arm must produce a not-allowed review"
+    );
+    let status = resp.result;
+    assert!(
+        status.message.contains("bad admission request"),
+        "TryInto-Err arm must surface 'bad admission request' in result.message, got: {status:?}"
+    );
+}
+
+#[tokio::test]
+async fn validate_machineconfig_records_error_metric_when_request_field_missing() {
+    let (router, metrics) = test_webhook_router();
+    let response = router
+        .oneshot(post("/validate-machineconfig", review_without_request()))
+        .await
+        .unwrap();
+    assert_invalid_review_body(response).await;
+    assert_error_metric(&metrics, "validate_machineconfig");
+}
+
+#[tokio::test]
+async fn validate_configpolicy_records_error_metric_when_request_field_missing() {
+    let (router, metrics) = test_webhook_router();
+    let response = router
+        .oneshot(post("/validate-configpolicy", review_without_request()))
+        .await
+        .unwrap();
+    assert_invalid_review_body(response).await;
+    assert_error_metric(&metrics, "validate_configpolicy");
+}
+
+#[tokio::test]
+async fn validate_clusterconfigpolicy_records_error_metric_when_request_field_missing() {
+    let (router, metrics) = test_webhook_router();
+    let response = router
+        .oneshot(post(
+            "/validate-clusterconfigpolicy",
+            review_without_request(),
+        ))
+        .await
+        .unwrap();
+    assert_invalid_review_body(response).await;
+    assert_error_metric(&metrics, "validate_clusterconfigpolicy");
+}
+
+#[tokio::test]
+async fn validate_driftalert_records_error_metric_when_request_field_missing() {
+    let (router, metrics) = test_webhook_router();
+    let response = router
+        .oneshot(post("/validate-driftalert", review_without_request()))
+        .await
+        .unwrap();
+    assert_invalid_review_body(response).await;
+    assert_error_metric(&metrics, "validate_driftalert");
+}
+
+#[tokio::test]
+async fn validate_module_records_error_metric_when_request_field_missing() {
+    let (router, metrics) = test_webhook_router();
+    let response = router
+        .oneshot(post("/validate-module", review_without_request()))
+        .await
+        .unwrap();
+    assert_invalid_review_body(response).await;
+    assert_error_metric(&metrics, "validate_module");
+}
+
+#[tokio::test]
+async fn mutate_pods_records_error_metric_when_request_field_missing() {
+    let (router, metrics) = test_webhook_router();
+    let response = router
+        .oneshot(post("/mutate-pods", review_without_request()))
+        .await
+        .unwrap();
+    assert_invalid_review_body(response).await;
+    assert_error_metric(&metrics, "mutate_pods");
+}
