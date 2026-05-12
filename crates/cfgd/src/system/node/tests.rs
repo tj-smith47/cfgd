@@ -2598,50 +2598,62 @@ fn seccomp_apply_uses_default_profiles_dir_when_unset() {
 // --- KernelModuleConfigurator::apply early returns ---
 
 #[test]
-fn kernel_modules_apply_with_non_sequence_value_is_a_noop() {
+fn kernel_modules_apply_with_non_sequence_value_emits_no_output_and_does_not_call_modprobe() {
+    // Behavior contract: desired isn't a sequence → match Ok(None) → early Ok.
+    // The body must NOT print anything (no "modprobe X" info line) AND must
+    // NOT touch /etc/modules-load.d (the persist call is inside the same
+    // function and is gated on the same modules.as_sequence check).
     let km = KernelModuleConfigurator;
-    let (printer, _buf) = cfgd_core::output::Printer::for_test();
+    let (printer, buf) = cfgd_core::output::Printer::for_test();
     km.apply(
         &serde_yaml::Value::String("not-a-sequence".into()),
         &printer,
     )
     .expect("non-sequence value is a no-op");
+    let captured = buf.lock().unwrap().clone();
+    assert!(
+        !captured.contains("modprobe"),
+        "no-op path must not emit a modprobe line: {captured}"
+    );
 }
 
 #[test]
-fn kernel_modules_apply_with_empty_sequence_is_a_noop_and_skips_persist_when_empty() {
+fn kernel_modules_apply_with_empty_sequence_emits_no_modprobe_line() {
+    // Empty `Sequence([])` → match Ok(Some([])) → for-loop body doesn't run,
+    // desired_names stays empty, persist_modules is called with an empty
+    // slice (which removes any prior conf file; we can't observe that path
+    // without writing to /etc/, so we pin only the user-visible signal:
+    // no `modprobe` info line fires).
     let km = KernelModuleConfigurator;
-    let (printer, _buf) = cfgd_core::output::Printer::for_test();
+    let (printer, buf) = cfgd_core::output::Printer::for_test();
     km.apply(&serde_yaml::Value::Sequence(Vec::new()), &printer)
         .expect("empty sequence must Ok");
-}
-
-#[test]
-fn kernel_modules_apply_skips_non_string_entries() {
-    // Mix of valid string and non-string entries → non-string skipped via
-    // continue (lines 144-146), but the string entry calls modprobe which
-    // is absent in CI → Err. Accept either outcome; we only care that the
-    // loop ran past the non-string branch.
-    let km = KernelModuleConfigurator;
-    let (printer, _buf) = cfgd_core::output::Printer::for_test();
-    let seq = vec![
-        serde_yaml::Value::Number(42.into()),
-        serde_yaml::Value::String("nonexistent_module_cfgd_test".into()),
-    ];
-    let _ = km.apply(&serde_yaml::Value::Sequence(seq), &printer);
+    let captured = buf.lock().unwrap().clone();
+    assert!(
+        !captured.contains("modprobe"),
+        "empty-sequence path must not invoke modprobe: {captured}"
+    );
 }
 
 // --- AppArmorConfigurator::apply early returns ---
 
 #[test]
-fn apparmor_apply_with_no_profiles_field_is_a_noop() {
+fn apparmor_apply_with_no_profiles_field_emits_no_output_and_loads_nothing() {
+    // desired without `profiles` key → match Ok(None) → early Ok at lines
+    // 144-147. Body must NOT call apparmor_parser, so NO "Loading AppArmor
+    // profile" / "Writing AppArmor profile" lines fire on the printer.
     let ac = AppArmorConfigurator;
-    let (printer, _buf) = cfgd_core::output::Printer::for_test();
+    let (printer, buf) = cfgd_core::output::Printer::for_test();
     ac.apply(
         &serde_yaml::Value::Mapping(serde_yaml::Mapping::new()),
         &printer,
     )
     .expect("missing profiles key is a no-op");
+    let captured = buf.lock().unwrap().clone();
+    assert!(
+        !captured.contains("AppArmor"),
+        "no-profiles path must not announce any AppArmor work: {captured}"
+    );
 }
 
 #[test]
