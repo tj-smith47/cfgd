@@ -7,7 +7,10 @@ use crate::config::*;
 use crate::providers::PackageManager;
 
 use crate::providers::StubPackageManager as MockPackageManager;
-use crate::test_helpers::{make_empty_resolved, make_resolved_module, test_printer, test_state};
+use crate::test_helpers::{
+    MockSecretBackend, MockSecretProvider, MockSystemConfigurator, make_empty_resolved,
+    make_resolved_module, test_printer, test_state,
+};
 
 #[test]
 fn empty_plan_has_eight_phases() {
@@ -1371,31 +1374,13 @@ fn generate_env_file_alias_escapes_quotes() {
 
 // --- Secret env injection tests ---
 
-struct MockSecretProvider {
-    provider_name: String,
-    value: String,
-}
-
-impl crate::providers::SecretProvider for MockSecretProvider {
-    fn name(&self) -> &str {
-        &self.provider_name
-    }
-    fn is_available(&self) -> bool {
-        true
-    }
-    fn resolve(&self, _reference: &str) -> Result<secrecy::SecretString> {
-        Ok(secrecy::SecretString::from(self.value.clone()))
-    }
-}
-
 #[test]
 fn plan_secrets_envs_only_produces_resolve_env() {
     let state = test_state();
     let mut registry = ProviderRegistry::new();
-    registry.secret_providers.push(Box::new(MockSecretProvider {
-        provider_name: "vault".into(),
-        value: "secret-token".into(),
-    }));
+    registry.secret_providers.push(Box::new(
+        MockSecretProvider::new("vault").with_resolve_result("secret-token"),
+    ));
     let reconciler = Reconciler::new(&registry, &state);
 
     let mut profile = MergedProfile::default();
@@ -1423,10 +1408,9 @@ fn plan_secrets_envs_only_produces_resolve_env() {
 fn plan_secrets_target_and_envs_produces_both_actions() {
     let state = test_state();
     let mut registry = ProviderRegistry::new();
-    registry.secret_providers.push(Box::new(MockSecretProvider {
-        provider_name: "1password".into(),
-        value: "ghp_abc123".into(),
-    }));
+    registry.secret_providers.push(Box::new(
+        MockSecretProvider::new("1password").with_resolve_result("ghp_abc123"),
+    ));
     let reconciler = Reconciler::new(&registry, &state);
 
     let mut profile = MergedProfile::default();
@@ -3756,30 +3740,9 @@ fn plan_total_actions_sums_across_phases() {
 
 #[test]
 fn plan_secrets_sops_file_target() {
-    use crate::providers::SecretBackend;
-
-    struct MockSopsBackend;
-    impl SecretBackend for MockSopsBackend {
-        fn name(&self) -> &str {
-            "sops"
-        }
-        fn is_available(&self) -> bool {
-            true
-        }
-        fn encrypt_file(&self, _path: &std::path::Path) -> Result<()> {
-            Ok(())
-        }
-        fn decrypt_file(&self, _path: &std::path::Path) -> Result<secrecy::SecretString> {
-            Ok(secrecy::SecretString::from("decrypted"))
-        }
-        fn edit_file(&self, _path: &std::path::Path) -> Result<()> {
-            Ok(())
-        }
-    }
-
     let state = test_state();
     let mut registry = ProviderRegistry::new();
-    registry.secret_backend = Some(Box::new(MockSopsBackend));
+    registry.secret_backend = Some(Box::new(MockSecretBackend::new("sops")));
     let reconciler = Reconciler::new(&registry, &state);
 
     let mut profile = MergedProfile::default();
@@ -3890,30 +3853,9 @@ fn plan_secrets_provider_not_available_skips() {
 
 #[test]
 fn plan_secrets_sops_with_envs_generates_skip_for_envs() {
-    use crate::providers::SecretBackend;
-
-    struct MockSopsBackend;
-    impl SecretBackend for MockSopsBackend {
-        fn name(&self) -> &str {
-            "sops"
-        }
-        fn is_available(&self) -> bool {
-            true
-        }
-        fn encrypt_file(&self, _path: &std::path::Path) -> Result<()> {
-            Ok(())
-        }
-        fn decrypt_file(&self, _path: &std::path::Path) -> Result<secrecy::SecretString> {
-            Ok(secrecy::SecretString::from("decrypted"))
-        }
-        fn edit_file(&self, _path: &std::path::Path) -> Result<()> {
-            Ok(())
-        }
-    }
-
     let state = test_state();
     let mut registry = ProviderRegistry::new();
-    registry.secret_backend = Some(Box::new(MockSopsBackend));
+    registry.secret_backend = Some(Box::new(MockSecretBackend::new("sops")));
     let reconciler = Reconciler::new(&registry, &state);
 
     let mut profile = MergedProfile::default();
@@ -3947,10 +3889,9 @@ fn plan_secrets_sops_with_envs_generates_skip_for_envs() {
 fn plan_secrets_provider_no_target_no_envs_skips() {
     let state = test_state();
     let mut registry = ProviderRegistry::new();
-    registry.secret_providers.push(Box::new(MockSecretProvider {
-        provider_name: "vault".into(),
-        value: "secret".into(),
-    }));
+    registry.secret_providers.push(Box::new(
+        MockSecretProvider::new("vault").with_resolve_result("secret"),
+    ));
     let reconciler = Reconciler::new(&registry, &state);
 
     let mut profile = MergedProfile::default();
@@ -4724,10 +4665,9 @@ fn apply_secret_resolve_writes_provider_value_to_file() {
 
     let state = test_state();
     let mut registry = ProviderRegistry::new();
-    registry.secret_providers.push(Box::new(MockSecretProvider {
-        provider_name: "vault".to_string(),
-        value: "provider-secret-value".to_string(),
-    }));
+    registry.secret_providers.push(Box::new(
+        MockSecretProvider::new("vault").with_resolve_result("provider-secret-value"),
+    ));
 
     let reconciler = Reconciler::new(&registry, &state);
     let resolved = make_empty_resolved();
@@ -4822,10 +4762,9 @@ fn apply_secret_resolve_env_collects_env_vars() {
     // never touch the user's home. See task #37 for the broader audit.
     let state = test_state();
     let mut registry = ProviderRegistry::new();
-    registry.secret_providers.push(Box::new(MockSecretProvider {
-        provider_name: "vault".to_string(),
-        value: "env-secret-value".to_string(),
-    }));
+    registry.secret_providers.push(Box::new(
+        MockSecretProvider::new("vault").with_resolve_result("env-secret-value"),
+    ));
     let reconciler = Reconciler::new(&registry, &state);
     let printer = test_printer();
     let tmp = tempfile::tempdir().unwrap();
@@ -5125,51 +5064,19 @@ fn apply_file_update_action_overwrites_target() {
 
 // --- apply_system_action: SetValue and Skip ---
 
-/// A mock system configurator that tracks apply calls.
-struct TestSystemConfigurator {
-    configurator_name: String,
-    applied: std::sync::Mutex<bool>,
-}
-
-impl TestSystemConfigurator {
-    fn new(name: &str) -> Self {
-        Self {
-            configurator_name: name.to_string(),
-            applied: std::sync::Mutex::new(false),
-        }
-    }
-}
-
-impl crate::providers::SystemConfigurator for TestSystemConfigurator {
-    fn name(&self) -> &str {
-        &self.configurator_name
-    }
-    fn is_available(&self) -> bool {
-        true
-    }
-    fn current_state(&self) -> Result<serde_yaml::Value> {
-        Ok(serde_yaml::Value::Null)
-    }
-    fn diff(&self, _desired: &serde_yaml::Value) -> Result<Vec<crate::providers::SystemDrift>> {
-        Ok(vec![crate::providers::SystemDrift {
-            key: "test.key".to_string(),
-            expected: "desired-val".to_string(),
-            actual: "current-val".to_string(),
-        }])
-    }
-    fn apply(&self, _desired: &serde_yaml::Value, _printer: &Printer) -> Result<()> {
-        *self.applied.lock().unwrap() = true;
-        Ok(())
-    }
-}
-
 #[test]
 fn apply_system_set_value_calls_configurator() {
     let state = test_state();
     let mut registry = ProviderRegistry::new();
     registry
         .system_configurators
-        .push(Box::new(TestSystemConfigurator::new("sysctl")));
+        .push(Box::new(MockSystemConfigurator::new("sysctl").with_drift(
+            vec![crate::providers::SystemDrift {
+                key: "test.key".to_string(),
+                expected: "desired-val".to_string(),
+                actual: "current-val".to_string(),
+            }],
+        )));
 
     let reconciler = Reconciler::new(&registry, &state);
     let mut resolved = make_empty_resolved();
