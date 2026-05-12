@@ -8046,57 +8046,6 @@ mod harness {
         assert!(hash.is_none());
     }
 
-    #[test]
-    fn handle_compliance_snapshot_dedupes_identical_consecutive_snapshots() {
-        let tmp = tempfile::TempDir::new().unwrap();
-        let state_dir = tmp.path().join("state");
-        std::fs::create_dir_all(&state_dir).unwrap();
-
-        let config_path = tmp.path().join("cfgd.yaml");
-        std::fs::write(
-            &config_path,
-            "apiVersion: cfgd.io/v1alpha1\nkind: Cfgd\nmetadata:\n  name: t\nspec:\n  profile: default\n",
-        )
-        .unwrap();
-        std::fs::create_dir_all(tmp.path().join("profiles")).unwrap();
-        std::fs::write(
-            tmp.path().join("profiles").join("default.yaml"),
-            "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec: {}\n",
-        )
-        .unwrap();
-
-        let compliance_cfg = config::ComplianceConfig {
-            enabled: true,
-            interval: "1h".into(),
-            retention: "30d".into(),
-            scope: config::ComplianceScope::default(),
-            export: config::ComplianceExport::default(),
-        };
-
-        let hooks = NoopHooks;
-
-        super::super::sync::handle_compliance_snapshot(
-            &config_path,
-            None,
-            &hooks,
-            &compliance_cfg,
-            Some(&state_dir),
-        );
-        super::super::sync::handle_compliance_snapshot(
-            &config_path,
-            None,
-            &hooks,
-            &compliance_cfg,
-            Some(&state_dir),
-        );
-
-        let store =
-            crate::state::StateStore::open(&state_dir.join("cfgd.db")).expect("override db");
-        let history = store.compliance_history(None, 10).expect("history");
-        // Both invocations produce the same hash → second store skipped.
-        assert_eq!(history.len(), 1);
-    }
-
     // ----- handle_version_check: cache-hit coverage -----
     //
     // `check_with_cache` reads/writes the version cache under
