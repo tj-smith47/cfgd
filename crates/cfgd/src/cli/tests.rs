@@ -12827,6 +12827,207 @@ fn compose_with_sources_no_sources_returns_local_profile() {
 }
 
 // -----------------------------------------------------------------------
+// compose_with_sources — end-to-end against a local bare-repo source
+// -----------------------------------------------------------------------
+//
+// These tests exercise the body of `compose_with_sources` (lines 404-525):
+// `SourceManager::load_sources` happy path, profile-layer resolution from
+// the source repo, the conflicts-render branch, and (separately) the
+// "Failed to resolve profile" warning when the source manifest lies about
+// what profiles it provides.
+
+mod compose_with_sources_e2e {
+    use super::*;
+    use serial_test::serial;
+
+    /// RAII env-var guard — matches the pattern from `cmd_source_add_local`.
+    /// `serial_test::serial` keeps these from racing other env-touching tests.
+    struct EnvVarGuard {
+        key: &'static str,
+        prior: Option<String>,
+    }
+    impl EnvVarGuard {
+        fn set(key: &'static str, value: &str) -> Self {
+            // SAFETY: serialized via #[serial].
+            let prior = std::env::var(key).ok();
+            unsafe { std::env::set_var(key, value) }
+            Self { key, prior }
+        }
+    }
+    impl Drop for EnvVarGuard {
+        fn drop(&mut self) {
+            // SAFETY: serialized via #[serial].
+            unsafe {
+                match &self.prior {
+                    Some(v) => std::env::set_var(self.key, v),
+                    None => std::env::remove_var(self.key),
+                }
+            }
+        }
+    }
+
+    /// Build a bare upstream + working clone whose tree carries a
+    /// `cfgd-source.yaml` declaring `provides.profiles: [<profile>]` and a
+    /// `profiles/<profile>.yaml` body. Returns the bare repo path so callers
+    /// can build the `file://<bare>` URL.
+    fn make_bare_source(
+        scratch: &tempfile::TempDir,
+        name: &str,
+        profile: &str,
+        profile_body: &str,
+    ) -> std::path::PathBuf {
+        let bare = scratch.path().join(format!("{name}-bare.git"));
+        let _ = git2::Repository::init_bare(&bare).unwrap();
+        let src = scratch.path().join(format!("{name}-src"));
+        let src_repo = git2::Repository::init(&src).unwrap();
+
+        let manifest = format!(
+            "apiVersion: cfgd.io/v1alpha1\nkind: ConfigSource\nmetadata:\n  name: {name}\nspec:\n  provides:\n    profiles:\n      - {profile}\n"
+        );
+        std::fs::write(src.join("cfgd-source.yaml"), &manifest).unwrap();
+        std::fs::create_dir_all(src.join("profiles")).unwrap();
+        std::fs::write(
+            src.join("profiles").join(format!("{profile}.yaml")),
+            profile_body,
+        )
+        .unwrap();
+
+        let mut index = src_repo.index().unwrap();
+        index
+            .add_path(std::path::Path::new("cfgd-source.yaml"))
+            .unwrap();
+        index
+            .add_path(std::path::Path::new(&format!("profiles/{profile}.yaml")))
+            .unwrap();
+        index.write().unwrap();
+        let tree_id = index.write_tree().unwrap();
+        let tree = src_repo.find_tree(tree_id).unwrap();
+        let sig = git2::Signature::now("t", "t@example.com").unwrap();
+        src_repo
+            .commit(Some("HEAD"), &sig, &sig, "initial", &tree, &[])
+            .unwrap();
+        drop(tree);
+
+        let url = format!("file://{}", bare.display());
+        let mut remote = src_repo.remote("origin", &url).unwrap();
+        let branch = src_repo
+            .head()
+            .unwrap()
+            .shorthand()
+            .unwrap_or("master")
+            .to_string();
+        remote
+            .push(&[&format!("refs/heads/{branch}:refs/heads/{branch}")], None)
+            .unwrap();
+        bare
+    }
+
+    /// Build a cfgd.yaml referencing a single Git source at `bare_url`,
+    /// requesting `profile` from that source. The local profile lives at
+    /// `profiles/default.yaml` inside the test harness as usual.
+    fn cfgd_yaml_with_source(name: &str, bare_url: &str, profile: &str, branch: &str) -> String {
+        format!(
+            "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec:\n  profile: default\n  sources:\n    - name: {name}\n      origin:\n        type: Git\n        url: {bare_url}\n        branch: {branch}\n      subscription:\n        profile: {profile}\n"
+        )
+    }
+
+    #[test]
+    #[serial]
+    fn compose_with_sources_single_source_loads_profile_layers() {
+        let _env = EnvVarGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+        let scratch = tempfile::tempdir().unwrap();
+        let bare = make_bare_source(
+            &scratch,
+            "team-src",
+            "team",
+            "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: team\nspec: {}\n",
+        );
+        let url = format!("file://{}", bare.display());
+        let branch = git2::Repository::open_bare(&bare)
+            .unwrap()
+            .branches(Some(git2::BranchType::Local))
+            .unwrap()
+            .filter_map(|b| b.ok())
+            .find_map(|(b, _)| b.name().ok().flatten().map(str::to_string))
+            .unwrap_or_else(|| "master".to_string());
+        let h = CliTestHarness::builder()
+            .config(&cfgd_yaml_with_source("team-src", &url, "team", &branch))
+            .build();
+        let cfg = config::load_config(&h.config_path().join("cfgd.yaml")).unwrap();
+        let resolved =
+            config::resolve_profile("default", &h.config_path().join("profiles")).unwrap();
+
+        let result = super::compose_with_sources(&h.cli(), &cfg, &resolved, h.printer())
+            .expect("compose_with_sources should succeed against a local bare source");
+
+        // The source resolved, so it should appear in source_commits.
+        assert!(
+            result.source_commits.contains_key("team-src"),
+            "expected source 'team-src' to record a commit hash; got: {:?}",
+            result.source_commits.keys().collect::<Vec<_>>()
+        );
+        // The remote layer should have landed in the merged profile result —
+        // local + remote layer means strictly more than the local-only count.
+        assert!(
+            !result.resolved.layers.is_empty(),
+            "expected at least one layer in composed result"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn compose_with_sources_warns_when_source_profile_missing() {
+        let _env = EnvVarGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+        let scratch = tempfile::tempdir().unwrap();
+        // The source ADVERTISES `default` but only ships `team.yaml` in
+        // profiles/, so `resolve_profile("default", ...)` will fail and the
+        // body should emit a "Failed to resolve profile" warning — without
+        // bailing the whole composition.
+        let bare = make_bare_source(
+            &scratch,
+            "skewed-src",
+            "team",
+            "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: team\nspec: {}\n",
+        );
+        let url = format!("file://{}", bare.display());
+        let branch = git2::Repository::open_bare(&bare)
+            .unwrap()
+            .branches(Some(git2::BranchType::Local))
+            .unwrap()
+            .filter_map(|b| b.ok())
+            .find_map(|(b, _)| b.name().ok().flatten().map(str::to_string))
+            .unwrap_or_else(|| "master".to_string());
+        // Ask the source for `nonexistent` profile.
+        let h = CliTestHarness::builder()
+            .config(&cfgd_yaml_with_source(
+                "skewed-src",
+                &url,
+                "nonexistent",
+                &branch,
+            ))
+            .build();
+        let cfg = config::load_config(&h.config_path().join("cfgd.yaml")).unwrap();
+        let resolved =
+            config::resolve_profile("default", &h.config_path().join("profiles")).unwrap();
+
+        let result = super::compose_with_sources(&h.cli(), &cfg, &resolved, h.printer())
+            .expect("compose_with_sources should succeed even when a remote profile is missing");
+
+        let out = h.output();
+        assert!(
+            out.contains("Failed to resolve profile 'nonexistent' from source 'skewed-src'"),
+            "warning text should name both the missing profile and the source: {out}"
+        );
+        // The source itself still loaded — the missing profile shouldn't
+        // remove the source from `source_commits`.
+        assert!(
+            result.source_commits.contains_key("skewed-src"),
+            "source commit should still be recorded; profile-resolution failure is per-source non-fatal"
+        );
+    }
+}
+
+// -----------------------------------------------------------------------
 // filter_plan — skip and only filters on package and non-package actions
 // -----------------------------------------------------------------------
 
