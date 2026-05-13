@@ -11,6 +11,10 @@ description = "Declarative, GitOps-style machine configuration state management"
 keywords = ["config", "management", "gitops", "reconciliation", "declarative"]
 categories = ["config", "command-line-utilities"]
 
+[lib]
+name = "cfgd"
+path = "src/lib.rs"
+
 [[bin]]
 name = "cfgd"
 path = "src/main.rs"

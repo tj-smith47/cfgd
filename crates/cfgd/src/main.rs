@@ -1,13 +1,6 @@
 use clap::Parser;
 
-mod ai;
-mod cli;
-mod files;
-mod generate;
-mod mcp;
-mod packages;
-mod secrets;
-mod system;
+use cfgd::cli;
 
 /// Map an [`anyhow::Error`] to an exit code by downcasting through the
 /// `CfgdError` boundary. Returns [`ExitCode::Error`] for errors that did
