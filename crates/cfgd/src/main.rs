@@ -1,4 +1,4 @@
-use clap::Parser;
+use clap::{CommandFactory, FromArgMatches};
 
 use cfgd::cli;
 
@@ -28,7 +28,22 @@ fn main() -> anyhow::Result<()> {
     // Expand aliases before clap parsing
     let raw_args: Vec<String> = std::env::args().collect();
     let expanded = cli::expand_aliases(raw_args);
-    let cli = cli::Cli::parse_from(expanded);
+
+    let brontes_cfg = brontes::Config::default().tool_name_prefix("cfgd");
+    let augmented = cli::Cli::command().subcommand(brontes::command(Some(&brontes_cfg)));
+    let matches = augmented.clone().get_matches_from(&expanded);
+
+    if let Some(("mcp", sub)) = matches.subcommand() {
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .map_err(|e| anyhow::anyhow!("failed to start tokio runtime: {e}"))?;
+        return rt
+            .block_on(brontes::handle(sub, &augmented, Some(&brontes_cfg)))
+            .map_err(|e| anyhow::anyhow!("{e}"));
+    }
+
+    let cli = cli::Cli::from_arg_matches(&matches).unwrap_or_else(|e| e.exit());
 
     // Resolve output format with --jsonpath backwards compat.
     // NOTE: --jsonpath is deprecated; --output jsonpath=EXPR is canonical.

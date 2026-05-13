@@ -158,7 +158,11 @@ tasks:
       - task: fmt:check
       - task: clippy
       - task: test
-      - task: package
+      # `task: package` is temporarily disabled — cfgd depends on
+      # `brontes` via a git source while brontes v0.1.0 is unpublished, and
+      # `cargo package` rejects deps without a registry version. Re-enable
+      # once `brontes = "0.1.0"` is published to crates.io.
+      # - task: package
 
   # --- E2E ---
 

@@ -46,6 +46,7 @@ kube = { version = "0.98", features = ["client", "derive", "runtime", "rustls-tl
 rustls = "0.23"
 k8s-openapi = { version = "0.24", features = ["latest"] }
 schemars = "0.8"
+brontes = { git = "https://github.com/tj-smith47/brontes", branch = "master" }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.59", features = [
