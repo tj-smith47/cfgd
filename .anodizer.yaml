@@ -703,15 +703,9 @@ sboms:
     env:
       - "SYFT_QUIET=true"
 
-# MCP registry publisher — dogfoods every `mcp.*` row on anodizer's
-# dogfooding page that was previously blocked on a live MCP-registry
-# publish. cfgd already ships two MCP servers (the hand-written
-# `cfgd mcp-server` and the brontes-powered `cfgd mcp start`) and a
-# multi-arch OCI image to GHCR; the registry entry surfaces those for
-# discovery on `https://registry.modelcontextprotocol.io`.
-#
-# Auth via `github-oidc` reuses the workflow's `id-token: write`
-# permission — no PAT needed.
+# Public MCP registry entry. Auth uses the workflow's `id-token: write`
+# (github-oidc); the OCI package points at the multi-arch image already
+# pushed by `docker_v2`.
 mcp:
   name: io.github.tj-smith47/cfgd
   description: "Declarative, GitOps-style machine configuration management"
