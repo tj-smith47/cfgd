@@ -11,7 +11,8 @@ on:
 permissions:
   contents: write
   packages: write
-  actions: read  # cross-workflow artifact download
+  actions: read   # cross-workflow artifact download
+  id-token: write # MCP registry publish via github-oidc auth
 
 concurrency:
   group: release-${{ github.ref_name }}
