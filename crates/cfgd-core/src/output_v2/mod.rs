@@ -9,6 +9,9 @@ pub use role::Role;
 pub mod verbosity;
 pub use verbosity::{OutputFormat, Verbosity};
 
+pub mod theme;
+pub use theme::Theme;
+
 #[cfg(test)]
 mod tests {
     #[test]
