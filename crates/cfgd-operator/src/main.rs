@@ -290,3 +290,16 @@ fn log_crd_info() {
         "registered CRD: Module"
     );
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn log_crd_info_emits_tracing_events_without_panicking() {
+        // Pure tracing emitter — calling it must not panic regardless of
+        // whether a global subscriber is installed (tracing macros are
+        // no-ops when no subscriber is set).
+        log_crd_info();
+    }
+}

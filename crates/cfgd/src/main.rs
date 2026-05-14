@@ -121,3 +121,31 @@ fn main() -> anyhow::Result<()> {
 
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::exit_code_for_anyhow;
+
+    #[test]
+    fn exit_code_for_anyhow_falls_back_to_error_for_opaque_anyhow_errors() {
+        // anyhow::anyhow! produces an error that doesn't downcast to
+        // CfgdError; the helper must return ExitCode::Error.
+        let err = anyhow::anyhow!("an opaque CLI-boundary error");
+        let code = exit_code_for_anyhow(&err);
+        assert_eq!(code, cfgd_core::exit::ExitCode::Error);
+    }
+
+    #[test]
+    fn exit_code_for_anyhow_propagates_cfgd_error_exit_code_through_downcast() {
+        // Errors that downcast to CfgdError should be routed through
+        // exit_code_for_error so the typed-domain semantics are preserved.
+        let cfgd_err =
+            cfgd_core::errors::CfgdError::Config(cfgd_core::errors::ConfigError::Invalid {
+                message: "invalid config".to_string(),
+            });
+        let expected = cfgd_core::exit::exit_code_for_error(&cfgd_err);
+        let anyhow_err: anyhow::Error = cfgd_err.into();
+        let actual = exit_code_for_anyhow(&anyhow_err);
+        assert_eq!(actual, expected);
+    }
+}
