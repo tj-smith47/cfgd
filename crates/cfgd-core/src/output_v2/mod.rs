@@ -6,6 +6,9 @@
 pub mod role;
 pub use role::Role;
 
+pub mod verbosity;
+pub use verbosity::{OutputFormat, Verbosity};
+
 #[cfg(test)]
 mod tests {
     #[test]
