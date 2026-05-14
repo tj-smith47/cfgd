@@ -12,6 +12,9 @@ pub use verbosity::{OutputFormat, Verbosity};
 pub mod theme;
 pub use theme::Theme;
 
+pub mod component;
+pub use component::{Component, KvPair};
+
 #[cfg(test)]
 mod tests {
     #[test]
