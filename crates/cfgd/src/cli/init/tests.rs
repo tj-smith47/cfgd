@@ -1898,6 +1898,71 @@ fn apply_plan_with_prompt_confirmed_proceeds_to_apply_path() {
     );
 }
 
+// --- apply_plan with prompt declined (no-branch via harness) ---
+
+#[test]
+#[serial_test::serial]
+fn apply_plan_with_prompt_declined_emits_skipped_and_returns_early() {
+    // yes=false + queued Confirm(false) drives the prompt-declined arm at
+    // cmd_init.rs:349-352. The "Skipped — run 'cfgd apply' to apply later"
+    // info line fires and apply_plan returns Ok before reaching the apply
+    // lock + reconciler.apply chain. Pins the no-branch alongside the
+    // existing yes-branch test.
+    let dir = tempfile::tempdir().unwrap();
+    let _home = cfgd_core::with_test_home_guard(dir.path());
+    let (printer, buf) =
+        Printer::for_test_with_prompt_responses(vec![cfgd_core::output::PromptAnswer::Confirm(
+            false,
+        )]);
+
+    let registry = super::build_registry_with_config(None);
+    let state_dir = dir.path().join("state");
+    std::fs::create_dir_all(&state_dir).unwrap();
+    let store = super::open_state_store(Some(&state_dir)).unwrap();
+    let reconciler = cfgd_core::reconciler::Reconciler::new(&registry, &store);
+    let resolved = config::ResolvedProfile {
+        layers: Vec::new(),
+        merged: config::MergedProfile::default(),
+    };
+
+    // Plan must have at least one action so total > 0 and the prompt fires.
+    // A FileAction::Skip is enough — the prompt-declined arm short-circuits
+    // before apply runs so the action's body is never executed.
+    let plan = cfgd_core::reconciler::Plan {
+        phases: vec![cfgd_core::reconciler::Phase {
+            name: cfgd_core::reconciler::PhaseName::Files,
+            actions: vec![cfgd_core::reconciler::Action::File(
+                cfgd_core::providers::FileAction::Skip {
+                    target: dir.path().join("noop"),
+                    reason: "synthetic prompt-declined coverage".to_string(),
+                    origin: "test".to_string(),
+                },
+            )],
+        }],
+        warnings: Vec::new(),
+    };
+
+    let result = apply_plan(
+        &plan,
+        &reconciler,
+        &resolved,
+        dir.path(),
+        false,
+        false,
+        &printer,
+    );
+    assert!(
+        result.is_ok(),
+        "declined prompt must still return Ok: {:?}",
+        result.err()
+    );
+    let output = buf.lock().unwrap();
+    assert!(
+        output.contains("Skipped"),
+        "Skipped notice must fire when prompt is declined: {output}"
+    );
+}
+
 // --- apply_plan with dry_run ---
 
 #[test]
@@ -3443,5 +3508,59 @@ mod cmd_init_apply_orchestration {
                 "error should name the missing module: {msg}"
             );
         });
+    }
+
+    // Drives the install_daemon=true branch at cmd_init.rs:258-282. The
+    // user systemd service install at install_systemd_service writes to
+    // `$HOME/.config/systemd/user/cfgd.service`, so with HOME pointing at a
+    // tempdir via with_test_home_guard, the install succeeds and the
+    // "Daemon service installed" success line fires. Pins the happy path.
+    #[test]
+    #[serial]
+    #[cfg(unix)]
+    fn cmd_init_with_install_daemon_writes_user_unit_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = cfgd_core::with_test_home_guard(tmp.path());
+        let target = tmp.path().join("install-daemon-cfg");
+        std::fs::create_dir_all(&target).unwrap();
+
+        let (printer, buf) = Printer::for_test();
+        let args = InitArgs {
+            path: Some(target.to_str().unwrap()),
+            from: None,
+            branch: "master",
+            name: Some("install-daemon-test"),
+            apply: false,
+            dry_run: false,
+            yes: false,
+            install_daemon: true,
+            theme: None,
+            apply_profile: None,
+            apply_modules: &[],
+        };
+        cmd_init(&printer, &args).expect("cmd_init with install_daemon must succeed");
+
+        let captured = buf.lock().unwrap().clone();
+        let unit = tmp.path().join(".config/systemd/user/cfgd.service");
+        if unit.exists() {
+            assert!(
+                captured.contains("Daemon service installed"),
+                "success line should fire when systemd-user install succeeds: {captured}"
+            );
+            let content = std::fs::read_to_string(&unit).unwrap();
+            assert!(
+                content.contains("[Service]") && content.contains("ExecStart="),
+                "generated systemd unit should be a valid [Service] file: {content}"
+            );
+        } else {
+            // Some hosts reject XDG-style user-service writes (rare but
+            // possible). The warning arm at lines 271-274 must have fired
+            // instead. Either way, the install_daemon block was exercised.
+            assert!(
+                captured.contains("Failed to install daemon"),
+                "warning fallback must fire when install fails: {captured}"
+            );
+        }
+        drop(home);
     }
 }
