@@ -2470,6 +2470,219 @@ async fn verify_enrollment_rejects_nonexistent_challenge() {
     assert!(matches!(err, GatewayError::NotFound(_)));
 }
 
+#[tokio::test]
+async fn verify_enrollment_rejects_when_no_keys_registered() {
+    // Drives lines 197-202 (matching_keys.is_empty() branch). The challenge
+    // exists but no user public keys are registered for that username, so
+    // the filtered list is empty and we return InvalidRequest.
+    let (state, _tmp) = test_state_key_enrollment();
+    let challenge = state
+        .db
+        .create_enrollment_challenge(
+            "ghost-user",
+            "dev-no-keys",
+            "ws-no-keys",
+            ("linux", "x86_64"),
+            "nonce-bytes",
+            300,
+        )
+        .await
+        .expect("create challenge");
+    let req = VerifyRequest {
+        challenge_id: challenge.id.clone(),
+        signature: "any-signature".to_string(),
+        key_type: "ssh".to_string(),
+    };
+    let result = verify_enrollment(State(state), Json(req)).await;
+    let Err(err) = result else {
+        panic!("expected error");
+    };
+    assert!(
+        matches!(err, GatewayError::InvalidRequest(ref msg) if msg.contains("no ssh keys registered"))
+    );
+}
+
+#[tokio::test]
+async fn verify_enrollment_rejects_when_signature_does_not_verify() {
+    // Drives the signature-verify-fail arm (line 235-237): challenge + a
+    // matching ssh key are registered, but the signature is junk → blocking
+    // verification returns false → Unauthorized.
+    if !cfgd_core::command_available("ssh-keygen") {
+        return;
+    }
+    let (state, _tmp) = test_state_key_enrollment();
+    state
+        .db
+        .add_user_public_key(
+            "junk-sig-user",
+            "ssh",
+            "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIG... laptop",
+            "SHA256:junk",
+            Some("laptop"),
+        )
+        .await
+        .expect("add user key");
+    let challenge = state
+        .db
+        .create_enrollment_challenge(
+            "junk-sig-user",
+            "dev-junk-sig",
+            "ws-junk-sig",
+            ("linux", "x86_64"),
+            "verify-fail-nonce",
+            300,
+        )
+        .await
+        .expect("create challenge");
+    let req = VerifyRequest {
+        challenge_id: challenge.id.clone(),
+        signature: "not-a-real-pem-signature".to_string(),
+        key_type: "ssh".to_string(),
+    };
+    let result = verify_enrollment(State(state), Json(req)).await;
+    let Err(err) = result else {
+        panic!("expected verification to fail with junk signature");
+    };
+    assert!(matches!(err, GatewayError::Unauthorized));
+}
+
+#[tokio::test]
+async fn verify_enrollment_with_valid_ssh_signature_enrolls_device() {
+    // Drives the success path at lines 239-310: signature verifies, a
+    // device api-key is generated and hashed, the device + credential rows
+    // are inserted in one write transaction, a FleetEvent is broadcast,
+    // and the response carries the unhashed api_key + enrollment metadata.
+    //
+    // Requires `ssh-keygen` for ed25519 keypair generation + signing. Skip
+    // when not available so CI environments without OpenSSH still pass.
+    if !cfgd_core::command_available("ssh-keygen") {
+        return;
+    }
+
+    let tmp = tempfile::tempdir().expect("tmpdir");
+    let key_path = tmp.path().join("enroll_test_key");
+    let pub_path = tmp.path().join("enroll_test_key.pub");
+
+    let keygen_status = std::process::Command::new("ssh-keygen")
+        .args([
+            "-t",
+            "ed25519",
+            "-f",
+            &key_path.to_string_lossy(),
+            "-N",
+            "",
+            "-C",
+            "enroll-test@cfgd",
+        ])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .expect("ssh-keygen");
+    assert!(keygen_status.success(), "key generation must succeed");
+    let public_key = std::fs::read_to_string(&pub_path).expect("read pubkey");
+
+    let (state, _state_tmp) = test_state_key_enrollment();
+    state
+        .db
+        .add_user_public_key(
+            "enroll-user",
+            "ssh",
+            public_key.trim(),
+            "SHA256:enroll-test",
+            Some("test"),
+        )
+        .await
+        .expect("add user key");
+
+    let nonce = "cfgd_ch_enroll_nonce_42";
+    let challenge = state
+        .db
+        .create_enrollment_challenge(
+            "enroll-user",
+            "dev-enroll-1",
+            "ws-enroll-1",
+            ("linux", "x86_64"),
+            nonce,
+            300,
+        )
+        .await
+        .expect("create challenge");
+
+    // Sign the nonce that was stored on the challenge (verify_ssh_signature
+    // signs the row's nonce, not the request payload).
+    let nonce_path = tmp.path().join("nonce.txt");
+    std::fs::write(&nonce_path, &challenge.nonce).expect("write nonce");
+    let sig_output = std::process::Command::new("ssh-keygen")
+        .args([
+            "-Y",
+            "sign",
+            "-f",
+            &key_path.to_string_lossy(),
+            "-n",
+            "cfgd-enroll",
+        ])
+        .stdin(std::fs::File::open(&nonce_path).expect("open nonce"))
+        .output()
+        .expect("ssh-keygen sign");
+    assert!(sig_output.status.success(), "sign must succeed");
+    let signature_pem = String::from_utf8_lossy(&sig_output.stdout).to_string();
+
+    let mut event_rx = state.event_tx.subscribe();
+
+    let req = VerifyRequest {
+        challenge_id: challenge.id.clone(),
+        signature: signature_pem,
+        key_type: "ssh".to_string(),
+    };
+    let result = verify_enrollment(State(state.clone()), Json(req)).await;
+    let response = result
+        .expect("verify_enrollment should succeed")
+        .into_response();
+    assert_eq!(response.status(), StatusCode::CREATED);
+
+    let body = axum::body::to_bytes(response.into_body(), 1024 * 1024)
+        .await
+        .unwrap();
+    let payload: serde_json::Value = serde_json::from_slice(&body).expect("parse JSON");
+    assert_eq!(payload["status"], "enrolled");
+    assert_eq!(payload["deviceId"], "dev-enroll-1");
+    assert_eq!(payload["username"], "enroll-user");
+    let api_key = payload["apiKey"].as_str().expect("apiKey present");
+    assert!(
+        api_key.starts_with("cfgd_dev"),
+        "api_key must use cfgd_dev prefix: {api_key}"
+    );
+
+    // FleetEvent must be broadcast.
+    let event = tokio::time::timeout(std::time::Duration::from_secs(1), event_rx.recv())
+        .await
+        .expect("event broadcast timed out")
+        .expect("event recv");
+    assert_eq!(event.device_id, "dev-enroll-1");
+    assert_eq!(event.event_type, "enrollment");
+    assert!(
+        event.summary.contains("user=enroll-user"),
+        "summary should mention user: {}",
+        event.summary
+    );
+
+    // Re-verifying with the same challenge id must fail — the challenge is
+    // single-use; the second consume returns InvalidRequest("already been used").
+    let req2 = VerifyRequest {
+        challenge_id: challenge.id,
+        signature: "any".to_string(),
+        key_type: "ssh".to_string(),
+    };
+    let result2 = verify_enrollment(State(state), Json(req2)).await;
+    let Err(err) = result2 else {
+        panic!("consumed challenge should not verify again");
+    };
+    assert!(
+        matches!(err, GatewayError::InvalidRequest(ref msg) if msg.contains("already been used")),
+        "expected InvalidRequest already-used, got: {err:?}"
+    );
+}
+
 // --- admin_reset ---
 
 #[tokio::test]

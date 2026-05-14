@@ -2970,3 +2970,169 @@ fn kubelet_apply_with_existing_config_triggers_rollback_attempt_after_systemctl_
         "rollback must restore prior config contents"
     );
 }
+
+// --- SysctlConfigurator::apply paths ---
+//
+// apply() at sysctl.rs:128-157 is reachable on Linux without root because
+// write_sysctl validates the key first (rejecting uppercase/special chars
+// returns Err pre-shellout) and persist_all_sysctls writes to /etc/sysctl.d
+// which fails for non-root → the warning arm fires.
+
+#[test]
+fn sysctl_apply_with_non_mapping_desired_is_a_noop() {
+    let sc = SysctlConfigurator;
+    let (printer, buf) = cfgd_core::output::Printer::for_test();
+    sc.apply(&serde_yaml::Value::String("not a mapping".into()), &printer)
+        .expect("non-mapping must be Ok no-op");
+    let captured = buf.lock().unwrap().clone();
+    assert!(
+        !captured.contains("sysctl"),
+        "no work-line should be emitted on no-op: {captured}"
+    );
+}
+
+#[test]
+fn sysctl_apply_with_invalid_key_returns_validation_err() {
+    // Invalid key (uppercase) trips validate_sysctl_key inside write_sysctl
+    // → returns Err before shelling out to sysctl. Drives the per-entry
+    // loop body at lines 136-147 plus the early-Err arm at line 145.
+    let mut m = serde_yaml::Mapping::new();
+    m.insert(
+        serde_yaml::Value::String("NOT.LOWERCASE".into()),
+        serde_yaml::Value::String("1".into()),
+    );
+    let desired = serde_yaml::Value::Mapping(m);
+    let sc = SysctlConfigurator;
+    let (printer, buf) = cfgd_core::output::Printer::for_test();
+    let err = sc
+        .apply(&desired, &printer)
+        .expect_err("invalid key must error before shellout");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("invalid sysctl key"),
+        "err should reference key validation: {msg}"
+    );
+    let captured = buf.lock().unwrap().clone();
+    assert!(
+        captured.contains("sysctl -w NOT.LOWERCASE=1"),
+        "info line should fire before validation Err: {captured}"
+    );
+}
+
+#[test]
+fn sysctl_apply_skips_non_string_keys_without_panicking() {
+    // Drives the `key.as_str() => None => continue` arm at lines 137-140.
+    let mut m = serde_yaml::Mapping::new();
+    m.insert(
+        serde_yaml::Value::Number(42.into()),
+        serde_yaml::Value::String("ignored".into()),
+    );
+    let desired = serde_yaml::Value::Mapping(m);
+    let sc = SysctlConfigurator;
+    let (printer, buf) = cfgd_core::output::Printer::for_test();
+    sc.apply(&desired, &printer)
+        .expect("non-string keys must be skipped, not error");
+    let captured = buf.lock().unwrap().clone();
+    assert!(
+        !captured.contains("sysctl -w"),
+        "no work-line should fire when key is skipped: {captured}"
+    );
+}
+
+// --- SystemdUnitConfigurator::apply paths ---
+//
+// apply() at systemd_unit.rs:83-144 has three loop-body branches that are
+// reachable on Linux without root:
+//   - unitFile present + source missing → "Failed to read unit file" warning
+//   - unitFile present + source readable → atomic_write to /etc/systemd/system
+//     fails (non-root) → "Failed to install unit file" warning
+//   - no unitFile → straight to enable; systemctl enable on phantom unit fails
+//     → "systemctl enable ... failed" warning (or Err if systemctl absent)
+
+#[test]
+fn systemd_apply_unit_with_missing_unit_file_emits_read_failed_warning() {
+    let yaml: serde_yaml::Value = serde_yaml::from_str(
+        r#"
+- name: cfgd-test-phantom-read.service
+  enabled: true
+  unitFile: /nonexistent/path/to/source.service
+"#,
+    )
+    .unwrap();
+    let su = crate::system::SystemdUnitConfigurator;
+    let (printer, buf) = cfgd_core::output::Printer::for_test();
+    // Apply may return Ok or Err depending on whether systemctl is present
+    // (the enable shellout uses `?`); both are acceptable — what we pin is
+    // that the "Failed to read unit file" warning is emitted.
+    let _ = su.apply(&yaml, &printer);
+    let captured = buf.lock().unwrap().clone();
+    assert!(
+        captured.contains("Failed to read unit file"),
+        "expected read-failed warning in printer buffer: {captured}"
+    );
+}
+
+#[test]
+fn systemd_apply_unit_with_readable_source_emits_install_or_enable_line() {
+    // Source unit file exists in tempdir; atomic_write to /etc/systemd/system
+    // will fail for non-root → "Failed to install unit file" warning fires.
+    // The "Installing unit file:" info line is emitted before the failure.
+    let dir = tempdir().unwrap();
+    let source = dir.path().join("cfgd-source.service");
+    fs::write(&source, "[Unit]\nDescription=Test\n").unwrap();
+    let yaml_str = format!(
+        "- name: cfgd-test-phantom-install.service\n  enabled: true\n  unitFile: {}\n",
+        source.display()
+    );
+    let yaml: serde_yaml::Value = serde_yaml::from_str(&yaml_str).unwrap();
+    let su = crate::system::SystemdUnitConfigurator;
+    let (printer, buf) = cfgd_core::output::Printer::for_test();
+    let _ = su.apply(&yaml, &printer);
+    let captured = buf.lock().unwrap().clone();
+    assert!(
+        captured.contains("Installing unit file:"),
+        "info line for install should fire: {captured}"
+    );
+}
+
+#[test]
+fn systemd_apply_unit_without_unit_file_proceeds_to_enable() {
+    // No unitFile → skips the install block entirely and goes straight to
+    // the enable shellout. systemctl enable on a phantom unit either fails
+    // with a warning, or apply returns Err if systemctl itself is missing.
+    let yaml: serde_yaml::Value = serde_yaml::from_str(
+        r#"
+- name: cfgd-test-phantom-enable.service
+  enabled: true
+"#,
+    )
+    .unwrap();
+    let su = crate::system::SystemdUnitConfigurator;
+    let (printer, buf) = cfgd_core::output::Printer::for_test();
+    let _ = su.apply(&yaml, &printer);
+    let captured = buf.lock().unwrap().clone();
+    assert!(
+        captured.contains("systemctl enable cfgd-test-phantom-enable.service"),
+        "info line for enable shellout should fire: {captured}"
+    );
+}
+
+#[test]
+fn systemd_apply_unit_with_disabled_field_emits_disable_line() {
+    // `enabled: false` → action is "disable" instead of "enable".
+    let yaml: serde_yaml::Value = serde_yaml::from_str(
+        r#"
+- name: cfgd-test-phantom-disable.service
+  enabled: false
+"#,
+    )
+    .unwrap();
+    let su = crate::system::SystemdUnitConfigurator;
+    let (printer, buf) = cfgd_core::output::Printer::for_test();
+    let _ = su.apply(&yaml, &printer);
+    let captured = buf.lock().unwrap().clone();
+    assert!(
+        captured.contains("systemctl disable cfgd-test-phantom-disable.service"),
+        "disable info line should fire when enabled=false: {captured}"
+    );
+}
