@@ -3,6 +3,9 @@
 //!
 //! See `.claude/specs/2026-05-14-output-system-redesign-design.md` for the design.
 
+pub mod role;
+pub use role::Role;
+
 #[cfg(test)]
 mod tests {
     #[test]
