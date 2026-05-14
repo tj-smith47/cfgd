@@ -2039,6 +2039,40 @@ fn source_create_refuses_duplicate() {
     assert!(result.unwrap_err().to_string().contains("already exists"));
 }
 
+#[test]
+fn source_create_interactive_mode_prompts_for_name_and_description() {
+    // All three flags (name/description/version) are None → is_interactive
+    // is true → cmd_source_create.rs:30-31 + 41-42 prompt branches fire.
+    // Queue Text answers via Printer::for_test_with_prompt_responses.
+    let dir = create_test_config_dir();
+    std::fs::write(dir.path().join("cfgd.yaml"), TEST_CONFIG_YAML).unwrap();
+
+    let cli = test_cli(dir.path());
+    let (printer, _buf) = cfgd_core::output::Printer::for_test_with_prompt_responses(vec![
+        cfgd_core::output::PromptAnswer::Text("interactive-source".to_string()),
+        cfgd_core::output::PromptAnswer::Text("Interactive description".to_string()),
+    ]);
+
+    source::cmd_source_create(&cli, &printer, None, None, None)
+        .expect("interactive create should succeed");
+
+    let contents = std::fs::read_to_string(dir.path().join("cfgd-source.yaml")).unwrap();
+    assert!(
+        contents.contains("interactive-source"),
+        "name from prompt must land in manifest: {contents}"
+    );
+    assert!(
+        contents.contains("Interactive description"),
+        "description from prompt must land in manifest: {contents}"
+    );
+    // Default version when version flag is None and not interactive-prompted
+    // for (cmd_source_create only prompts for name + description).
+    assert!(
+        contents.contains("0.1.0"),
+        "default version 0.1.0 must be applied: {contents}"
+    );
+}
+
 /// RAII guard that sets EDITOR for the duration of the closure. Pair with
 /// `#[serial]` so concurrent tests don't observe the override.
 struct EditorGuard {
