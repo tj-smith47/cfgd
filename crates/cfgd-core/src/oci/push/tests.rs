@@ -199,6 +199,172 @@ fn push_module_inner_rejects_missing_module_yaml() {
     assert!(matches!(result, Err(OciError::ModuleYamlNotFound { .. })));
 }
 
+// --- push_module (top-level wrapper) ---
+
+#[test]
+fn push_module_top_level_parses_ref_and_returns_manifest_digest() {
+    // Drives the wrapper at push/mod.rs:28-43: parse the artifact_ref string,
+    // resolve auth (which is None for this 127.0.0.1 mock registry), build
+    // the http agent, then delegate to push_module_inner. Asserts the
+    // returned digest is the sha256 of the manifest JSON.
+    let mut server = mockito::Server::new();
+    let registry = registry_from_url(&server.url());
+    let module_dir = create_test_module_dir();
+
+    server
+        .mock(
+            "HEAD",
+            mockito::Matcher::Regex(r"/v2/test/wrapped/blobs/sha256:.*".to_string()),
+        )
+        .with_status(404)
+        .expect_at_least(2)
+        .create();
+    let upload_location = format!("{}/v2/test/wrapped/blobs/uploads/upload-id", server.url());
+    server
+        .mock("POST", "/v2/test/wrapped/blobs/uploads/")
+        .with_status(202)
+        .with_header("Location", &upload_location)
+        .expect_at_least(2)
+        .create();
+    server
+        .mock(
+            "PUT",
+            mockito::Matcher::Regex(
+                r"/v2/test/wrapped/blobs/uploads/upload-id\?digest=sha256:.*".to_string(),
+            ),
+        )
+        .with_status(201)
+        .expect_at_least(2)
+        .create();
+    let manifest_mock = server
+        .mock("PUT", "/v2/test/wrapped/manifests/wrap-tag")
+        .with_status(201)
+        .create();
+
+    let artifact_ref = format!("{}/test/wrapped:wrap-tag", registry);
+    let result = push_module(
+        module_dir.path(),
+        &artifact_ref,
+        Some("linux/amd64"),
+        None, // No printer — exercises the spinner=None branch
+    );
+    assert!(
+        result.is_ok(),
+        "push_module wrapper should succeed: {:?}",
+        result.err()
+    );
+    let digest = result.unwrap();
+    assert!(
+        digest.starts_with("sha256:"),
+        "manifest digest must be sha256-prefixed: {digest}"
+    );
+    manifest_mock.assert();
+}
+
+#[test]
+fn push_module_top_level_propagates_invalid_reference_err() {
+    // OciReference::parse rejects the empty string — the wrapper must surface
+    // the parse Err before doing any I/O. Tempdir is a placeholder; nothing
+    // is dialed.
+    let module_dir = create_test_module_dir();
+    let result = push_module(module_dir.path(), "", None, None);
+    assert!(
+        result.is_err(),
+        "empty artifact_ref must error before any blob upload"
+    );
+}
+
+// --- push_module_multiplatform (mockito) ---
+
+#[test]
+fn push_module_multiplatform_pushes_index_with_per_platform_manifests() {
+    // Drives push_module_multiplatform at push/mod.rs:203-287: iterate two
+    // (build_dir, platform) pairs, push each as its own platform-tagged
+    // manifest via push_module_inner, then push the OCI index manifest list
+    // under the original tag. Asserts the index PUT fires and the returned
+    // digest is sha256-prefixed.
+    let mut server = mockito::Server::new();
+    let registry = registry_from_url(&server.url());
+    let amd64_dir = create_test_module_dir();
+    let arm64_dir = create_test_module_dir();
+
+    // Per-manifest blobs: HEAD 404 + POST 202 + PUT 201 — same shape as
+    // the single-platform path, but with `expect_at_least(4)` because
+    // each of the two platforms uploads two blobs (config + layer).
+    server
+        .mock(
+            "HEAD",
+            mockito::Matcher::Regex(r"/v2/test/multi/blobs/sha256:.*".to_string()),
+        )
+        .with_status(404)
+        .expect_at_least(4)
+        .create();
+    let upload_location = format!("{}/v2/test/multi/blobs/uploads/upload-id", server.url());
+    server
+        .mock("POST", "/v2/test/multi/blobs/uploads/")
+        .with_status(202)
+        .with_header("Location", &upload_location)
+        .expect_at_least(4)
+        .create();
+    server
+        .mock(
+            "PUT",
+            mockito::Matcher::Regex(
+                r"/v2/test/multi/blobs/uploads/upload-id\?digest=sha256:.*".to_string(),
+            ),
+        )
+        .with_status(201)
+        .expect_at_least(4)
+        .create();
+
+    // Per-platform manifest PUTs (one per build, named `<tag>-<platform-with-dash>`).
+    server
+        .mock("PUT", "/v2/test/multi/manifests/multi-tag-linux-amd64")
+        .with_status(201)
+        .create();
+    server
+        .mock("PUT", "/v2/test/multi/manifests/multi-tag-linux-arm64")
+        .with_status(201)
+        .create();
+    // Index manifest PUT (the original tag).
+    let index_mock = server
+        .mock("PUT", "/v2/test/multi/manifests/multi-tag")
+        .with_status(201)
+        .create();
+
+    let artifact_ref = format!("{}/test/multi:multi-tag", registry);
+    let builds: Vec<(&std::path::Path, &str)> = vec![
+        (amd64_dir.path(), "linux/amd64"),
+        (arm64_dir.path(), "linux/arm64"),
+    ];
+    let result = push_module_multiplatform(&builds, &artifact_ref, None);
+    assert!(
+        result.is_ok(),
+        "multiplatform push should succeed: {:?}",
+        result.err()
+    );
+    let index_digest = result.unwrap();
+    assert!(
+        index_digest.starts_with("sha256:"),
+        "index digest must be sha256-prefixed: {index_digest}"
+    );
+    index_mock.assert();
+}
+
+#[test]
+fn push_module_multiplatform_propagates_invalid_platform_target_err() {
+    // A "linuxamd64" entry has no `/` so parse_platform_target returns
+    // BuildError. The Err must surface from push_module_multiplatform
+    // before any blob is uploaded.
+    let module_dir = create_test_module_dir();
+    let builds: Vec<(&std::path::Path, &str)> = vec![(module_dir.path(), "linuxamd64")];
+    let result = push_module_multiplatform(&builds, "127.0.0.1:9999/test/m:t", None);
+    assert!(
+        matches!(result, Err(OciError::BuildError { .. })),
+        "expected BuildError, got: {result:?}"
+    );
+}
+
 // --- OCI index manifest structure ---
 
 #[test]
