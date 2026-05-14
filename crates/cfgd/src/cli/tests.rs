@@ -5718,6 +5718,51 @@ fn cmd_compliance_history_after_snapshot() {
     );
 }
 
+// --- helpers: managers_map / module_state_map / default_device_id ---
+
+#[test]
+fn managers_map_round_trips_registry_managers_by_name() {
+    // Build a registry, then check every name reachable via managers_map
+    // matches a manager in the original registry.
+    let registry = super::build_registry();
+    let map = super::managers_map(&registry);
+    assert!(
+        !map.is_empty(),
+        "registry must produce at least one manager"
+    );
+    for m in &registry.package_managers {
+        assert!(
+            map.contains_key(m.name()),
+            "managers_map missing entry for {}",
+            m.name()
+        );
+        // Trait-object identity via name is the contract — every value must
+        // self-report the same name as the key.
+        assert_eq!(map[m.name()].name(), m.name());
+    }
+}
+
+#[test]
+fn module_state_map_returns_empty_map_when_state_has_no_modules() {
+    // Empty store → empty map. Pure read-only contract; the function falls
+    // back to Vec::new() on any state-store Err and returns an empty map.
+    let state = cfgd_core::test_helpers::test_state();
+    let map = super::module_state_map(&state);
+    assert!(
+        map.is_empty(),
+        "fresh state store should yield an empty module state map: {map:?}"
+    );
+}
+
+#[test]
+fn default_device_id_returns_the_hostname_string() {
+    // The function is a thin wrapper around cfgd_core::hostname_string —
+    // pin the contract that they return the same string verbatim.
+    let id = super::default_device_id();
+    assert_eq!(id, cfgd_core::hostname_string());
+    assert!(!id.is_empty(), "device id must not be empty");
+}
+
 // --- empty_resolved_profile tests ---
 
 #[test]
