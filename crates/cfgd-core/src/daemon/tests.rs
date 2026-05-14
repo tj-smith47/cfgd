@@ -8618,7 +8618,11 @@ mod harness {
         )
         .unwrap();
         senders.sighup_tx.send(()).await.unwrap();
-        tokio::time::sleep(StdDuration::from_millis(80)).await;
+        // Give the daemon enough headroom to process the SIGHUP and emit
+        // the reload chatter. 80ms is fine for native runs but tight under
+        // llvm-cov instrumentation, which slowed this test enough to lose
+        // the printer-buffer race in the coverage build.
+        tokio::time::sleep(StdDuration::from_millis(200)).await;
         senders.shutdown_tx.send(()).unwrap();
 
         let result = tokio::time::timeout(StdDuration::from_secs(5), daemon)
