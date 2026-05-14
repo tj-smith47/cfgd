@@ -94,4 +94,28 @@ mod tests {
         }]);
         assert_eq!(conv.messages().len(), 3);
     }
+
+    #[test]
+    fn system_prompt_is_returned_verbatim() {
+        let conv = Conversation::new("you are a helpful assistant".into());
+        assert_eq!(conv.system_prompt(), "you are a helpful assistant");
+    }
+
+    #[test]
+    fn track_usage_accumulates_tokens_across_calls() {
+        // Pin the additive contract — a fresh conversation reports (0, 0)
+        // and each track_usage call adds to the running total.
+        let mut conv = Conversation::new("sys".into());
+        assert_eq!(conv.total_tokens(), (0, 0));
+
+        conv.track_usage(10, 5);
+        assert_eq!(conv.total_tokens(), (10, 5));
+
+        conv.track_usage(100, 25);
+        assert_eq!(conv.total_tokens(), (110, 30));
+
+        // Zero-update is a no-op (the running total stays).
+        conv.track_usage(0, 0);
+        assert_eq!(conv.total_tokens(), (110, 30));
+    }
 }

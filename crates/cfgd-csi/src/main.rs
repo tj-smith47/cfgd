@@ -131,3 +131,26 @@ async fn shutdown_signal() {
         _ = ctrl_c => {}
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::env_or;
+
+    #[test]
+    fn env_or_returns_default_when_var_unset() {
+        // Use a deliberately unique name to avoid collisions with the env in
+        // CI / dev shells. CFGD_CSI_TEST_UNSET_VAR_42 should never be set.
+        let v = env_or("CFGD_CSI_TEST_UNSET_VAR_42", "fallback-value");
+        assert_eq!(v, "fallback-value");
+    }
+
+    #[test]
+    fn env_or_returns_value_when_var_set() {
+        // SAFETY: process-wide env mutation. Test name is unique and the
+        // var is removed at the end so other tests don't observe it.
+        unsafe { std::env::set_var("CFGD_CSI_TEST_SET_VAR_42", "from-env") };
+        let v = env_or("CFGD_CSI_TEST_SET_VAR_42", "fallback");
+        assert_eq!(v, "from-env");
+        unsafe { std::env::remove_var("CFGD_CSI_TEST_SET_VAR_42") };
+    }
+}
