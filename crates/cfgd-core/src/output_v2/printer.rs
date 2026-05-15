@@ -145,7 +145,7 @@ impl Printer {
         // kv buffers; flush will use the renderer's current depth, so the
         // runtime check is informational here — no depth value to thread
         // through, but we still want the warn/assert at the call site.
-        let _ = self.renderer.enforce_top_level_emit(0);
+        let _depth = self.renderer.enforce_top_level_emit(0);
         self.renderer.render_kv(&key.into(), &value.into());
     }
 
@@ -398,6 +398,10 @@ mod tests {
         assert!(
             out.contains("\n  MidSection\n"),
             "expected indented; got: {out:?}"
+        );
+        assert!(
+            !out.contains("\nMidSection\n"),
+            "unindented form leaked through: {out:?}"
         );
     }
 }

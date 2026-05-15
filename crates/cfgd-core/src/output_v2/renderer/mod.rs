@@ -111,6 +111,7 @@ impl Renderer {
                 "top-level emit at depth 0 while section open at depth {actual}"
             );
             // Release build: warn once, render at the section's depth.
+            // Process-global: test runs observe at most one warning across the entire suite.
             static WARNED: std::sync::Once = std::sync::Once::new();
             WARNED.call_once(|| {
                 tracing::warn!(
