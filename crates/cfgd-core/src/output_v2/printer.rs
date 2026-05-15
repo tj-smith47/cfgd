@@ -199,7 +199,7 @@ impl Printer {
         }
     }
 
-    #[must_use]
+    #[must_use = "section closes when SectionGuard is dropped; bind it"]
     pub fn section_or_collapse(
         &self,
         name: impl Into<String>,

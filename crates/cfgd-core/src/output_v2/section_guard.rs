@@ -107,7 +107,7 @@ impl<'p> SectionGuard<'p> {
         }
     }
 
-    #[must_use]
+    #[must_use = "section closes when SectionGuard is dropped; bind it"]
     pub fn section_or_collapse(&self, name: impl Into<String>) -> SectionGuard<'_> {
         self.renderer
             .render_section_open(&name.into(), /*keep_when_empty=*/ false);
