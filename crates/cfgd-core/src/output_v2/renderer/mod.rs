@@ -7,13 +7,13 @@
 //! Every other module routes terminal writes through here.
 //!
 //! R1 skeleton: a handful of internals are not yet wired into emission paths:
-//! `RenderState::{depth,push,pop}` and `kv_buffer` await `SectionGuard` (T15+)
-//! and the kv dispatcher; `indent_prefix` is the depth helper used by future
-//! dispatchers; `mark_blank_pending` and the `section::*` family are wired
-//! internally but await `SectionGuard` (T15+) and the emission dispatchers
-//! (T10+) for an external entry point; the `glyphs::role_glyph` re-export is
-//! consumed by status dispatchers (T11+). The `dead_code` / `unused_imports`
-//! allows drop as those tasks land.
+//! `RenderState::{depth,push,pop}` await `SectionGuard` (T15+); `indent_prefix`
+//! is the depth helper inlined for now by the kv dispatcher and reserved for
+//! future dispatchers; `mark_blank_pending` and the `section::*` family are
+//! wired internally but await `SectionGuard` (T15+) and remaining emission
+//! dispatchers (T11+) for an external entry point; the `glyphs::role_glyph`
+//! re-export is consumed by status dispatchers (T11+). The `dead_code` /
+//! `unused_imports` allows drop as those tasks land.
 #![allow(dead_code, unused_imports)]
 
 use std::sync::Mutex;
@@ -21,6 +21,7 @@ use std::sync::Mutex;
 use super::{Theme, Verbosity};
 
 mod glyphs;
+pub mod kv;
 pub mod section;
 pub(crate) use glyphs::role_glyph;
 
@@ -114,8 +115,13 @@ impl Writer for StringSink {
 
 impl Renderer {
     /// Emit a single physical line at the given depth, honoring blank-pending.
-    /// Caller is responsible for kv-buffer flush.
+    ///
+    /// Flushes any pending kvs first — otherwise buffered kvs would render
+    /// *after* this non-kv line, inverting the call order. kv emission paths
+    /// must call `w.write_line(...)` directly (NOT `self.write_line`) to avoid
+    /// recursing back into `flush_kv_buffer_internal`.
     pub(crate) fn write_line(&self, w: &dyn Writer, depth: usize, body: &str) {
+        self.flush_kv_buffer_internal(w);
         let mut s = self.state.lock().unwrap_or_else(|e| e.into_inner());
         if s.leading {
             s.leading = false;
@@ -126,6 +132,20 @@ impl Renderer {
         }
         let prefix = "  ".repeat(depth);
         w.write_line(&format!("{}{}", prefix, body));
+    }
+
+    /// Inner kv-buffer flush invoked from `write_line`. Does NOT recurse — it
+    /// calls `render_kv_block_no_flush` directly, which uses `w.write_line` for
+    /// every emission rather than `self.write_line`.
+    fn flush_kv_buffer_internal(&self, w: &dyn Writer) {
+        let (pairs, depth) = {
+            let mut s = self.state.lock().unwrap_or_else(|e| e.into_inner());
+            if s.kv_buffer.is_empty() {
+                return;
+            }
+            (std::mem::take(&mut s.kv_buffer), s.indent_depth)
+        };
+        self.render_kv_block_no_flush(w, depth, &pairs);
     }
 
     /// Mark that the next non-blank emission should be preceded by exactly
