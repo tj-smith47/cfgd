@@ -73,9 +73,10 @@ impl Renderer {
         }
     }
 
-    /// Emit a deferred section header. Idempotent: no-op if already emitted.
-    /// Walks the section stack from outer to inner and emits any deferred
-    /// headers before the current line.
+    /// Emit any not-yet-emitted section headers, walking the stack outer-to-inner.
+    /// Idempotent in output (repeat calls produce no further header lines), and
+    /// always marks every frame in the stack as having children — so the section
+    /// stays in the non-collapse branch even if no real child line follows.
     pub(crate) fn flush_pending_section_headers(&self, w: &dyn Writer) {
         let frames_to_emit = {
             let mut s = self.state.lock().unwrap_or_else(|e| e.into_inner());
@@ -89,6 +90,8 @@ impl Renderer {
             }
             out
         };
+        // State mutation runs even under Quiet so that close()'s collapse decision
+        // stays consistent; only the emission of header lines is suppressed.
         if self.verbosity == Verbosity::Quiet {
             return;
         }
