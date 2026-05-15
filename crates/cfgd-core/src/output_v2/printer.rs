@@ -4,11 +4,11 @@
 //! emission methods land in later R1 tasks.
 //!
 //! R1 skeleton: several `Printer` fields are constructed now but not yet
-//! consumed — `sink_stdout` lands with `data_line`/structured emit (T22+);
-//! `multi_progress` with `spinner`/`progress_bar` (T19); `syntax_set` +
-//! `theme_set` with `syntax_highlight` (T23); `test_doc_capture` +
-//! `prompt_queue` with the test-helpers feature + prompts (T20, T26). The
-//! `dead_code` allow drops as those tasks land.
+//! consumed. `sink_stderr` is wired (T14 emit family, T15 section guard).
+//! Pending wiring: `sink_stdout` (T22+ `data_line`/structured emit),
+//! `multi_progress` (T19 `spinner`/`progress_bar`), `syntax_set`/`theme_set`
+//! (T23 `syntax_highlight`), `test_doc_capture` (T20 test-helpers feature),
+//! `prompt_queue` (T26 prompts). The `dead_code` allow drops as those land.
 #![allow(dead_code)]
 
 use std::collections::VecDeque;
@@ -185,6 +185,33 @@ impl Printer {
     pub fn flush(&self) {
         self.renderer.flush_kv_buffer(self.sink_stderr.as_ref());
     }
+
+    // ----- Section entry points -----
+
+    #[must_use = "section closes when SectionGuard is dropped; bind it"]
+    pub fn section(&self, name: impl Into<String>) -> super::section_guard::SectionGuard<'_> {
+        self.renderer.render_section_open(&name.into(), true);
+        super::section_guard::SectionGuard {
+            printer: self,
+            renderer: self.renderer.clone(),
+            sink: self.sink_stderr.clone(),
+            depth: 1,
+        }
+    }
+
+    #[must_use]
+    pub fn section_or_collapse(
+        &self,
+        name: impl Into<String>,
+    ) -> super::section_guard::SectionGuard<'_> {
+        self.renderer.render_section_open(&name.into(), false);
+        super::section_guard::SectionGuard {
+            printer: self,
+            renderer: self.renderer.clone(),
+            sink: self.sink_stderr.clone(),
+            depth: 1,
+        }
+    }
 }
 
 impl Drop for Printer {
@@ -219,5 +246,88 @@ mod tests {
         assert!(p.is_structured());
         let p = Printer::with_format(Verbosity::Normal, None, OutputFormat::Table);
         assert!(!p.is_structured());
+    }
+
+    use std::sync::Mutex;
+
+    use super::super::renderer::StringSink;
+
+    /// Build a Printer whose stderr sink is a captured StringSink. Production
+    /// `for_test`/`for_test_doc` come later; this is a per-test helper.
+    fn test_printer() -> (Printer, Arc<Mutex<String>>) {
+        let buf = Arc::new(Mutex::new(String::new()));
+        let sink: Arc<dyn Writer> = Arc::new(StringSink(buf.clone()));
+        let p = Printer {
+            renderer: Arc::new(Renderer::new(Theme::default(), Verbosity::Normal)),
+            output_format: OutputFormat::Table,
+            sink_stderr: sink.clone(),
+            sink_stdout: sink,
+            multi_progress: indicatif::MultiProgress::new(),
+            syntax_set: syntect::parsing::SyntaxSet::load_defaults_newlines(),
+            theme_set: syntect::highlighting::ThemeSet::load_defaults(),
+            test_doc_capture: None,
+            prompt_queue: None,
+        };
+        (p, buf)
+    }
+
+    fn strip_ansi(s: &str) -> String {
+        let bytes = s.as_bytes();
+        let mut out = String::with_capacity(s.len());
+        let mut i = 0;
+        while i < bytes.len() {
+            if bytes[i] == 0x1b && i + 1 < bytes.len() && bytes[i + 1] == b'[' {
+                while i < bytes.len() && bytes[i] != b'm' {
+                    i += 1;
+                }
+                i += 1;
+            } else {
+                out.push(bytes[i] as char);
+                i += 1;
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn section_with_bullets_renders_indented() {
+        let (p, buf) = test_printer();
+        {
+            let s = p.section("Files");
+            s.bullet("foo.txt");
+            s.bullet("bar.txt");
+        } // section closes
+        p.flush();
+        let out = strip_ansi(&buf.lock().unwrap());
+        assert!(out.contains("Files\n"), "got: {out:?}");
+        assert!(out.contains("\n  - foo.txt\n"), "got: {out:?}");
+        assert!(out.contains("\n  - bar.txt\n"), "got: {out:?}");
+    }
+
+    #[test]
+    fn section_or_collapse_with_no_emits_leaves_no_trace() {
+        let (p, buf) = test_printer();
+        {
+            let _s = p.section_or_collapse("Empty");
+        }
+        p.flush();
+        assert!(buf.lock().unwrap().trim().is_empty());
+    }
+
+    #[test]
+    fn nested_sections_indent_two_levels() {
+        let (p, buf) = test_printer();
+        {
+            let outer = p.section("Outer");
+            {
+                let inner = outer.section("Inner");
+                inner.bullet("deep");
+            }
+        }
+        p.flush();
+        let out = strip_ansi(&buf.lock().unwrap());
+        assert!(out.contains("Outer\n"));
+        assert!(out.contains("\n  Inner\n"));
+        assert!(out.contains("\n    - deep\n"));
     }
 }

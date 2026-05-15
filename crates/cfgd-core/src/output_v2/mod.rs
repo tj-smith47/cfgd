@@ -20,6 +20,9 @@ pub mod renderer;
 pub mod printer;
 pub use printer::{DocCapture, Printer, PromptAnswer};
 
+pub mod section_guard;
+pub use section_guard::SectionGuard;
+
 #[cfg(test)]
 mod tests {
     #[test]
