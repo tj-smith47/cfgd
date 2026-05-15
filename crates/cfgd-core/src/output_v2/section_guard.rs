@@ -1,10 +1,11 @@
 //! `SectionGuard` is the only path to indented output. Its lifetime is tied
 //! to `&Printer`, and Drop closes the section.
 //!
-//! R1 skeleton: the status-builder / spinner / progress / run / sub-status
-//! methods land in T16+ (StatusBuilder, Spinner, ProgressBar, Run). T15
-//! lands the subset documented in the task body: bullet/kv/kv_block/
-//! hint/note/table/empty_state/status_simple/nested sections + Drop.
+//! R1 skeleton: the spinner / progress / run / sub-status methods land in
+//! T19+ (Spinner, ProgressBar, Run). T15 landed the subset documented in
+//! its task body: bullet/kv/kv_block/hint/note/table/empty_state/
+//! status_simple/nested sections + Drop. T16 added the chainable
+//! `status()` returning a `StatusBuilder`.
 use std::sync::Arc;
 
 use super::renderer::{Renderer, StatusFields, Table, Writer};
@@ -75,8 +76,8 @@ impl<'p> SectionGuard<'p> {
         self
     }
 
-    /// Status with no extra fields. For chained detail/duration/target, see
-    /// the StatusBuilder added in T16.
+    /// Status with no extra fields. For chained detail/duration/target, use
+    /// `status` for the chainable builder.
     pub fn status_simple(&self, role: Role, subject: impl Into<String>) -> &Self {
         let subject = subject.into();
         self.renderer.render_status(
@@ -91,6 +92,25 @@ impl<'p> SectionGuard<'p> {
             },
         );
         self
+    }
+
+    /// Status builder at this section's depth. Commits on Drop.
+    pub fn status(
+        &self,
+        role: Role,
+        subject: impl Into<String>,
+    ) -> super::status_builder::StatusBuilder<'_> {
+        super::status_builder::StatusBuilder {
+            renderer: self.renderer.clone(),
+            sink: self.sink.clone(),
+            depth: self.depth,
+            role,
+            subject: subject.into(),
+            detail: None,
+            duration: None,
+            target: None,
+            _phantom: std::marker::PhantomData,
+        }
     }
 
     /// Open a child section. Returns a guard that borrows `&self` so the parent

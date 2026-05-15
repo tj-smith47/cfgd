@@ -4,11 +4,12 @@
 //! emission methods land in later R1 tasks.
 //!
 //! R1 skeleton: several `Printer` fields are constructed now but not yet
-//! consumed. `sink_stderr` is wired (T14 emit family, T15 section guard).
-//! Pending wiring: `sink_stdout` (T22+ `data_line`/structured emit),
-//! `multi_progress` (T19 `spinner`/`progress_bar`), `syntax_set`/`theme_set`
-//! (T23 `syntax_highlight`), `test_doc_capture` (T20 test-helpers feature),
-//! `prompt_queue` (T26 prompts). The `dead_code` allow drops as those land.
+//! consumed. `sink_stderr` is wired (T14 emit family, T15 section guard,
+//! T16 StatusBuilder). Pending wiring: `sink_stdout` (T22+ `data_line`/
+//! structured emit), `multi_progress` (T19 `spinner`/`progress_bar`),
+//! `syntax_set`/`theme_set` (T23 `syntax_highlight`), `test_doc_capture`
+//! (T20 test-helpers feature), `prompt_queue` (T26 prompts). The
+//! `dead_code` allow drops as those land.
 #![allow(dead_code)]
 
 use std::collections::VecDeque;
@@ -177,6 +178,25 @@ impl Printer {
                 target: None,
             },
         );
+    }
+
+    /// Status builder at depth 0. Commits on Drop.
+    pub fn status(
+        &self,
+        role: Role,
+        subject: impl Into<String>,
+    ) -> super::status_builder::StatusBuilder<'_> {
+        super::status_builder::StatusBuilder {
+            renderer: self.renderer.clone(),
+            sink: self.sink_stderr.clone(),
+            depth: 0,
+            role,
+            subject: subject.into(),
+            detail: None,
+            duration: None,
+            target: None,
+            _phantom: std::marker::PhantomData,
+        }
     }
 
     /// Final flush — call at the end of a streaming command to ensure any

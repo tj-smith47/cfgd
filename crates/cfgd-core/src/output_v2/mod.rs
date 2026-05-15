@@ -23,6 +23,9 @@ pub use printer::{DocCapture, Printer, PromptAnswer};
 pub mod section_guard;
 pub use section_guard::SectionGuard;
 
+pub mod status_builder;
+pub use status_builder::StatusBuilder;
+
 #[cfg(test)]
 mod tests {
     #[test]
