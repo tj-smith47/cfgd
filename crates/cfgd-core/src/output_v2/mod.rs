@@ -29,6 +29,9 @@ pub use status_builder::StatusBuilder;
 pub mod spinner;
 pub use spinner::{ProgressBar, Spinner};
 
+pub mod process;
+pub use process::CommandOutput;
+
 #[cfg(test)]
 mod tests {
     #[test]

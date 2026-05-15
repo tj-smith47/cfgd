@@ -266,6 +266,25 @@ impl Printer {
         &self.multi_progress
     }
 
+    /// Run an external command at top-level (depth 0) with live output.
+    /// TTY+non-quiet → spinner with tailing ring; otherwise → streaming lines.
+    /// Either path captures full stdout/stderr in the returned `CommandOutput`.
+    pub fn run(
+        &self,
+        cmd: &mut std::process::Command,
+        label: impl Into<String>,
+    ) -> std::io::Result<super::process::CommandOutput> {
+        let _ = self.renderer.enforce_top_level_emit(0);
+        super::process::run_command(
+            &self.renderer,
+            self.sink_stderr.as_ref(),
+            &self.multi_progress,
+            0,
+            cmd,
+            &label.into(),
+        )
+    }
+
     /// Final flush — call at the end of a streaming command to ensure any
     /// buffered kvs land. (Drop on Printer would also do this but tests need
     /// explicit control.)

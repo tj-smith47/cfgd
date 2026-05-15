@@ -176,6 +176,24 @@ impl<'p> SectionGuard<'p> {
         }
     }
 
+    /// Run an external command at this section's depth with live output.
+    /// TTY+non-quiet → spinner with tailing ring indented under the section;
+    /// otherwise → streaming lines. Either path captures full stdout/stderr.
+    pub fn run(
+        &self,
+        cmd: &mut std::process::Command,
+        label: impl Into<String>,
+    ) -> std::io::Result<super::process::CommandOutput> {
+        super::process::run_command(
+            &self.renderer,
+            self.sink.as_ref(),
+            &self.printer.multi_progress,
+            self.depth,
+            cmd,
+            &label.into(),
+        )
+    }
+
     /// Manually close (alternative to drop). Useful when the caller needs the
     /// section to close before the binding goes out of scope.
     pub fn close(self) { /* drop happens here */
