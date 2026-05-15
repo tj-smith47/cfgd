@@ -140,13 +140,12 @@ impl<'p> SectionGuard<'p> {
     #[must_use]
     pub fn spinner(&self, message: impl Into<String>) -> super::spinner::Spinner<'_> {
         let message = message.into();
-        let bar = if self.printer.verbosity() == super::Verbosity::Quiet
-            || !super::spinner::stderr_is_terminal()
-        {
-            indicatif::ProgressBar::hidden()
-        } else {
-            super::spinner::build_spinner(&self.printer.multi_progress, &self.renderer, &message)
-        };
+        let bar = super::spinner::make_spinner_bar(
+            &self.printer.multi_progress,
+            &self.renderer,
+            self.printer.verbosity(),
+            &message,
+        );
         super::spinner::Spinner {
             renderer: self.renderer.clone(),
             sink: self.sink.clone(),
@@ -165,13 +164,12 @@ impl<'p> SectionGuard<'p> {
         total: u64,
         message: impl Into<String>,
     ) -> super::spinner::ProgressBar<'_> {
-        let bar = if self.printer.verbosity() == super::Verbosity::Quiet
-            || !super::spinner::stderr_is_terminal()
-        {
-            indicatif::ProgressBar::hidden()
-        } else {
-            super::spinner::build_progress_bar(&self.printer.multi_progress, total, &message.into())
-        };
+        let bar = super::spinner::make_progress_bar(
+            &self.printer.multi_progress,
+            total,
+            self.printer.verbosity(),
+            &message.into(),
+        );
         super::spinner::ProgressBar {
             bar,
             _phantom: std::marker::PhantomData,

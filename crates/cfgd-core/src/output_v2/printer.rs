@@ -225,11 +225,12 @@ impl Printer {
     #[must_use]
     pub fn spinner(&self, message: impl Into<String>) -> super::spinner::Spinner<'_> {
         let message = message.into();
-        let bar = if self.verbosity() == Verbosity::Quiet || !super::spinner::stderr_is_terminal() {
-            indicatif::ProgressBar::hidden()
-        } else {
-            super::spinner::build_spinner(&self.multi_progress, &self.renderer, &message)
-        };
+        let bar = super::spinner::make_spinner_bar(
+            &self.multi_progress,
+            &self.renderer,
+            self.verbosity(),
+            &message,
+        );
         super::spinner::Spinner {
             renderer: self.renderer.clone(),
             sink: self.sink_stderr.clone(),
@@ -247,11 +248,12 @@ impl Printer {
         total: u64,
         message: impl Into<String>,
     ) -> super::spinner::ProgressBar<'_> {
-        let bar = if self.verbosity() == Verbosity::Quiet || !super::spinner::stderr_is_terminal() {
-            indicatif::ProgressBar::hidden()
-        } else {
-            super::spinner::build_progress_bar(&self.multi_progress, total, &message.into())
-        };
+        let bar = super::spinner::make_progress_bar(
+            &self.multi_progress,
+            total,
+            self.verbosity(),
+            &message.into(),
+        );
         super::spinner::ProgressBar {
             bar,
             _phantom: std::marker::PhantomData,

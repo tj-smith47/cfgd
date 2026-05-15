@@ -118,6 +118,37 @@ impl<'p> ProgressBar<'p> {
     }
 }
 
+/// Return the appropriate spinner bar for the current verbosity/TTY state:
+/// a hidden bar under Quiet or non-TTY, otherwise a styled spinner attached
+/// to the MultiProgress. Used by both `Printer::spinner` and
+/// `SectionGuard::spinner` to avoid duplicating the gate.
+pub(crate) fn make_spinner_bar(
+    multi: &indicatif::MultiProgress,
+    renderer: &Renderer,
+    verbosity: super::Verbosity,
+    message: &str,
+) -> IndProgressBar {
+    if verbosity == super::Verbosity::Quiet || !stderr_is_terminal() {
+        IndProgressBar::hidden()
+    } else {
+        build_spinner(multi, renderer, message)
+    }
+}
+
+/// Same gate as `make_spinner_bar`, for bounded progress bars.
+pub(crate) fn make_progress_bar(
+    multi: &indicatif::MultiProgress,
+    total: u64,
+    verbosity: super::Verbosity,
+    message: &str,
+) -> IndProgressBar {
+    if verbosity == super::Verbosity::Quiet || !stderr_is_terminal() {
+        IndProgressBar::hidden()
+    } else {
+        build_progress_bar(multi, total, message)
+    }
+}
+
 /// Build a styled spinner ProgressBar attached to a MultiProgress.
 pub(crate) fn build_spinner(
     multi: &indicatif::MultiProgress,
@@ -234,5 +265,17 @@ mod tests {
         let out = strip_ansi(&buf.lock().unwrap());
         // Info role has no icon; subject text appears.
         assert!(out.contains("abandoned"), "got: {out:?}");
+    }
+
+    #[test]
+    fn quiet_printer_returns_hidden_spinner() {
+        use super::super::printer::Printer;
+        let p = Printer::with_format(
+            super::super::Verbosity::Quiet,
+            None,
+            super::super::OutputFormat::Table,
+        );
+        let sp = p.spinner("x");
+        assert!(sp.bar.is_hidden(), "Quiet should yield a hidden bar");
     }
 }
