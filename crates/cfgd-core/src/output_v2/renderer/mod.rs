@@ -11,10 +11,9 @@
 //! is the depth helper inlined for now by the kv dispatcher and reserved for
 //! future dispatchers; `mark_blank_pending` and the `section::*` family are
 //! wired internally but await `SectionGuard` (T15+) and remaining emission
-//! dispatchers (T11+) for an external entry point; the `glyphs::role_glyph`
-//! re-export is consumed by status dispatchers (T11+). The `dead_code` /
-//! `unused_imports` allows drop as those tasks land.
-#![allow(dead_code, unused_imports)]
+//! dispatchers (T11+) for an external entry point. The `dead_code` allow
+//! drops as those tasks land.
+#![allow(dead_code)]
 
 use std::sync::Mutex;
 
@@ -23,7 +22,9 @@ use super::{Theme, Verbosity};
 mod glyphs;
 pub mod kv;
 pub mod section;
+pub mod status;
 pub(crate) use glyphs::role_glyph;
+pub use status::StatusFields;
 
 /// Per-Printer rendering state. Held inside `Mutex` because multiple
 /// `SectionGuard`s may share the same `&Printer` and write concurrently
