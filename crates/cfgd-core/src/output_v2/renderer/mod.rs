@@ -6,13 +6,13 @@
 //!
 //! Every other module routes terminal writes through here.
 //!
-//! R1 skeleton: a handful of internals are not yet wired into emission paths:
-//! `RenderState::{depth,push,pop}` await `SectionGuard` (T15+); `indent_prefix`
-//! is the depth helper inlined for now by the kv dispatcher and reserved for
-//! future dispatchers; `mark_blank_pending` and the `section::*` family are
-//! wired internally but await `SectionGuard` (T15+) and remaining emission
-//! dispatchers (T11+) for an external entry point. The `dead_code` allow
-//! drops as those tasks land.
+//! R1 skeleton: the `render_*` emission family is now wired via `Printer`
+//! (T14), but a handful of internals still await later tasks:
+//! `RenderState::{depth,push,pop}` and the `section::*` family await
+//! `SectionGuard` (T15); `mark_blank_pending` likewise has no external
+//! caller until section close lands; `indent_prefix` is the depth helper
+//! inlined for now by the kv dispatcher and reserved for future
+//! dispatchers. The `dead_code` allow drops as those tasks land.
 #![allow(dead_code)]
 
 use std::sync::Mutex;

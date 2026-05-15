@@ -17,6 +17,9 @@ pub use component::{Component, KvPair};
 
 pub mod renderer;
 
+pub mod printer;
+pub use printer::{DocCapture, Printer, PromptAnswer};
+
 #[cfg(test)]
 mod tests {
     #[test]
