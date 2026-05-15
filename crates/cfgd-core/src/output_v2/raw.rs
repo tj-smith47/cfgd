@@ -24,7 +24,7 @@ impl Renderer {
                 ChangeTag::Delete => ("-", &self.theme.diff_remove),
                 ChangeTag::Equal => (" ", &self.theme.diff_context),
             };
-            let body = format!("{}{}", sign, change);
+            let body = format!("{sign}{change}");
             let body = body.trim_end_matches('\n');
             let styled = style.apply_to(body).to_string();
             w.write_line(&styled);
@@ -146,6 +146,32 @@ mod tests {
         assert!(
             stripped.contains("let y"),
             "stripped output missing 'let y': {stripped:?}"
+        );
+    }
+
+    #[test]
+    fn data_line_writes_to_stdout_raw() {
+        use super::super::Verbosity;
+        use super::super::printer::Printer;
+
+        let stdout_buf = Arc::new(Mutex::new(String::new()));
+        let stderr_buf = Arc::new(Mutex::new(String::new()));
+        let mut p = Printer::new(Verbosity::Normal);
+        // Swap in capture sinks.
+        p.sink_stdout = Arc::new(StringSink(stdout_buf.clone()));
+        p.sink_stderr = Arc::new(StringSink(stderr_buf.clone()));
+
+        p.data_line("raw payload");
+        p.flush();
+
+        let stdout = stdout_buf.lock().unwrap();
+        let stderr = stderr_buf.lock().unwrap();
+        // data_line is RAW: exact text on stdout, no decoration, no indent.
+        assert!(stdout.contains("raw payload"), "stdout got: {stdout:?}");
+        // And NOT routed through the section/indent system to stderr.
+        assert!(
+            !stderr.contains("raw payload"),
+            "leaked to stderr: {stderr:?}"
         );
     }
 }
