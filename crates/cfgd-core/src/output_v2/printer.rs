@@ -5,11 +5,12 @@
 //!
 //! R1 skeleton: several `Printer` fields are constructed now but not yet
 //! consumed. `sink_stderr` is wired (T14 emit family, T15 section guard,
-//! T16 StatusBuilder). Pending wiring: `sink_stdout` (T22+ `data_line`/
-//! structured emit), `multi_progress` (T19 `spinner`/`progress_bar`),
-//! `syntax_set`/`theme_set` (T23 `syntax_highlight`), `test_doc_capture`
-//! (T20 test-helpers feature), `prompt_queue` (T26 prompts). The
-//! `dead_code` allow drops as those land.
+//! T16 StatusBuilder). `multi_progress` is wired (T18 `spinner` /
+//! `progress_bar` / `multi_progress`). Pending wiring: `sink_stdout`
+//! (T22+ `data_line` / structured emit), `syntax_set` / `theme_set`
+//! (T23 `syntax_highlight`), `test_doc_capture` (T20 test-helpers
+//! feature), `prompt_queue` (T26 prompts). The `dead_code` allow drops as
+//! those land.
 #![allow(dead_code)]
 
 use std::collections::VecDeque;
@@ -214,6 +215,53 @@ impl Printer {
             role,
             subject,
         )
+    }
+
+    // ----- Spinners / progress (depth 0) -----
+
+    /// Top-level spinner (depth 0). Required for ~14 lib-side call sites
+    /// in cfgd-core that today take `&Printer` and have no section context
+    /// (oci/, upgrade/, sources/, modules/git.rs, reconciler/scripts.rs).
+    #[must_use]
+    pub fn spinner(&self, message: impl Into<String>) -> super::spinner::Spinner<'_> {
+        let message = message.into();
+        let bar = if self.verbosity() == Verbosity::Quiet || !super::spinner::stderr_is_terminal() {
+            indicatif::ProgressBar::hidden()
+        } else {
+            super::spinner::build_spinner(&self.multi_progress, &self.renderer, &message)
+        };
+        super::spinner::Spinner {
+            renderer: self.renderer.clone(),
+            sink: self.sink_stderr.clone(),
+            depth: 0,
+            bar,
+            message,
+            finished: false,
+            _phantom: std::marker::PhantomData,
+        }
+    }
+
+    #[must_use]
+    pub fn progress_bar(
+        &self,
+        total: u64,
+        message: impl Into<String>,
+    ) -> super::spinner::ProgressBar<'_> {
+        let bar = if self.verbosity() == Verbosity::Quiet || !super::spinner::stderr_is_terminal() {
+            indicatif::ProgressBar::hidden()
+        } else {
+            super::spinner::build_progress_bar(&self.multi_progress, total, &message.into())
+        };
+        super::spinner::ProgressBar {
+            bar,
+            _phantom: std::marker::PhantomData,
+        }
+    }
+
+    /// Expose the underlying MultiProgress for callers that need fine-grained
+    /// control (kept for API parity with the old Printer).
+    pub fn multi_progress(&self) -> &indicatif::MultiProgress {
+        &self.multi_progress
     }
 
     /// Final flush — call at the end of a streaming command to ensure any

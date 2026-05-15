@@ -135,6 +135,49 @@ impl<'p> SectionGuard<'p> {
         }
     }
 
+    /// Section-scoped spinner. Inherits the section's depth so the eventual
+    /// Status emitted by `finish_*` lands at the right indentation.
+    #[must_use]
+    pub fn spinner(&self, message: impl Into<String>) -> super::spinner::Spinner<'_> {
+        let message = message.into();
+        let bar = if self.printer.verbosity() == super::Verbosity::Quiet
+            || !super::spinner::stderr_is_terminal()
+        {
+            indicatif::ProgressBar::hidden()
+        } else {
+            super::spinner::build_spinner(&self.printer.multi_progress, &self.renderer, &message)
+        };
+        super::spinner::Spinner {
+            renderer: self.renderer.clone(),
+            sink: self.sink.clone(),
+            depth: self.depth,
+            bar,
+            message,
+            finished: false,
+            _phantom: std::marker::PhantomData,
+        }
+    }
+
+    /// Section-scoped progress bar.
+    #[must_use]
+    pub fn progress_bar(
+        &self,
+        total: u64,
+        message: impl Into<String>,
+    ) -> super::spinner::ProgressBar<'_> {
+        let bar = if self.printer.verbosity() == super::Verbosity::Quiet
+            || !super::spinner::stderr_is_terminal()
+        {
+            indicatif::ProgressBar::hidden()
+        } else {
+            super::spinner::build_progress_bar(&self.printer.multi_progress, total, &message.into())
+        };
+        super::spinner::ProgressBar {
+            bar,
+            _phantom: std::marker::PhantomData,
+        }
+    }
+
     /// Manually close (alternative to drop). Useful when the caller needs the
     /// section to close before the binding goes out of scope.
     pub fn close(self) { /* drop happens here */

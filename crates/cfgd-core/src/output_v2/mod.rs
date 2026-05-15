@@ -26,6 +26,9 @@ pub use section_guard::SectionGuard;
 pub mod status_builder;
 pub use status_builder::StatusBuilder;
 
+pub mod spinner;
+pub use spinner::{ProgressBar, Spinner};
+
 #[cfg(test)]
 mod tests {
     #[test]
