@@ -6,10 +6,12 @@
 //!
 //! Every other module routes terminal writes through here.
 //!
-//! R1 skeleton: fields and methods below are consumed by tasks T07–T13
-//! (Writer trait + component dispatchers). The `dead_code` / `unused_imports`
-//! allows are removed once those tasks land and wire the renderer into
-//! emission paths.
+//! R1 skeleton: fields and methods below are consumed by tasks T08–T14
+//! (component dispatchers + SectionGuard). T07 adds the `Writer` trait /
+//! `StringSink` / `write_line` / `mark_blank_pending`; the latter two are
+//! still uncalled until T08 wires the first dispatcher and `glyphs::role_glyph`
+//! is still unused until T11. The `dead_code` / `unused_imports` allows are
+//! removed once those tasks land and wire the renderer into emission paths.
 #![allow(dead_code, unused_imports)]
 
 use std::sync::Mutex;
@@ -85,6 +87,50 @@ impl Renderer {
     }
 }
 
+/// Sink for one rendered line. Production = stderr Term; tests = string buffer.
+pub trait Writer: Send + Sync {
+    fn write_line(&self, text: &str);
+}
+
+impl Writer for console::Term {
+    fn write_line(&self, text: &str) {
+        let _ = console::Term::write_line(self, text);
+    }
+}
+
+pub struct StringSink(pub std::sync::Arc<std::sync::Mutex<String>>);
+impl Writer for StringSink {
+    fn write_line(&self, text: &str) {
+        let mut g = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        g.push_str(text);
+        g.push('\n');
+    }
+}
+
+impl Renderer {
+    /// Emit a single physical line at the given depth, honoring blank-pending.
+    /// Caller is responsible for kv-buffer flush.
+    pub(crate) fn write_line(&self, w: &dyn Writer, depth: usize, body: &str) {
+        let mut s = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        if s.leading {
+            s.leading = false;
+            s.blank_pending = false;
+        } else if s.blank_pending {
+            w.write_line("");
+            s.blank_pending = false;
+        }
+        let prefix = "  ".repeat(depth);
+        w.write_line(&format!("{}{}", prefix, body));
+    }
+
+    /// Mark that the next non-blank emission should be preceded by exactly
+    /// one blank line. Called by Section close.
+    pub(crate) fn mark_blank_pending(&self) {
+        let mut s = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        s.blank_pending = true;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -112,5 +158,44 @@ mod tests {
         assert_eq!(r.indent_prefix(0), "");
         assert_eq!(r.indent_prefix(1), "  ");
         assert_eq!(r.indent_prefix(3), "      ");
+    }
+
+    use std::sync::{Arc, Mutex};
+
+    fn capture() -> (Renderer, StringSink, Arc<Mutex<String>>) {
+        let buf = Arc::new(Mutex::new(String::new()));
+        let sink = StringSink(buf.clone());
+        let r = Renderer::new(Theme::default(), Verbosity::Normal);
+        (r, sink, buf)
+    }
+
+    #[test]
+    fn no_leading_blank() {
+        let (r, sink, buf) = capture();
+        r.mark_blank_pending(); // even if requested before first emit
+        r.write_line(&sink, 0, "first");
+        let s = buf.lock().unwrap();
+        assert_eq!(*s, "first\n");
+    }
+
+    #[test]
+    fn one_blank_between_siblings() {
+        let (r, sink, buf) = capture();
+        r.write_line(&sink, 0, "A");
+        r.mark_blank_pending();
+        r.mark_blank_pending(); // duplicate marks coalesce
+        r.write_line(&sink, 0, "B");
+        let s = buf.lock().unwrap();
+        assert_eq!(*s, "A\n\nB\n");
+    }
+
+    #[test]
+    fn indent_two_spaces_per_level() {
+        let (r, sink, buf) = capture();
+        r.write_line(&sink, 0, "root");
+        r.write_line(&sink, 1, "child");
+        r.write_line(&sink, 2, "grand");
+        let s = buf.lock().unwrap();
+        assert_eq!(*s, "root\n  child\n    grand\n");
     }
 }
