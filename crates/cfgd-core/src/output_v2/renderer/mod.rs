@@ -23,8 +23,10 @@ mod glyphs;
 pub mod kv;
 pub mod section;
 pub mod status;
+pub mod table;
 pub(crate) use glyphs::role_glyph;
 pub use status::StatusFields;
+pub use table::Table;
 
 /// Per-Printer rendering state. Held inside `Mutex` because multiple
 /// `SectionGuard`s may share the same `&Printer` and write concurrently
@@ -174,6 +176,33 @@ impl Renderer {
         self.flush_pending_section_headers(w);
         self.write_line(w, depth, &format!("- {}", text));
     }
+
+    /// Hint: arrow glyph + dim text. Shown at Normal+ (NOT Quiet). Per §12,
+    /// this is the canonical "next step" surface.
+    pub fn render_hint(&self, w: &dyn Writer, depth: usize, text: &str) {
+        if self.verbosity == Verbosity::Quiet {
+            return;
+        }
+        self.flush_pending_section_headers(w);
+        let arrow = self
+            .theme
+            .muted
+            .apply_to(format!("{} ", self.theme.icon_arrow));
+        let body = self.theme.muted.apply_to(text);
+        self.write_line(w, depth, &format!("{}{}", arrow, body));
+    }
+
+    /// Note: multi-line prose. Suppressed at both Quiet and Normal; only Verbose.
+    pub fn render_note(&self, w: &dyn Writer, depth: usize, text: &str) {
+        if self.verbosity != Verbosity::Verbose {
+            return;
+        }
+        self.flush_pending_section_headers(w);
+        for line in text.lines() {
+            let dim = self.theme.muted.apply_to(line);
+            self.write_line(w, depth, &dim.to_string());
+        }
+    }
 }
 
 #[cfg(test)]
@@ -280,5 +309,34 @@ mod tests {
         let r = Renderer::new(Theme::default(), Verbosity::Quiet);
         r.render_bullet(&sink, 1, "foo");
         assert!(buf.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn hint_uses_arrow_glyph() {
+        let (r, sink, buf) = capture();
+        r.render_hint(&sink, 0, "run cfgd apply");
+        let s = buf.lock().unwrap();
+        assert!(s.contains("→"), "got: {s:?}");
+        assert!(s.contains("run cfgd apply"));
+    }
+
+    #[test]
+    fn note_suppressed_at_normal() {
+        let buf = Arc::new(Mutex::new(String::new()));
+        let sink = StringSink(buf.clone());
+        let r = Renderer::new(Theme::default(), Verbosity::Normal);
+        r.render_note(&sink, 0, "long prose");
+        assert!(buf.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn note_shown_at_verbose() {
+        let buf = Arc::new(Mutex::new(String::new()));
+        let sink = StringSink(buf.clone());
+        let r = Renderer::new(Theme::default(), Verbosity::Verbose);
+        r.render_note(&sink, 0, "line1\nline2");
+        let s = buf.lock().unwrap();
+        assert!(s.contains("line1"));
+        assert!(s.contains("line2"));
     }
 }
