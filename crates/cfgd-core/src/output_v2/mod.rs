@@ -15,6 +15,8 @@ pub use theme::Theme;
 pub mod component;
 pub use component::{Component, KvPair};
 
+pub mod renderer;
+
 #[cfg(test)]
 mod tests {
     #[test]
