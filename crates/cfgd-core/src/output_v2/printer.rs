@@ -126,11 +126,26 @@ impl Printer {
     // ----- Top-level emit methods (depth 0) -----
 
     pub fn heading(&self, text: impl Into<String>) {
-        self.renderer
-            .render_heading(self.sink_stderr.as_ref(), &text.into());
+        let depth = self.renderer.enforce_top_level_emit(0);
+        // render_heading is hardcoded to depth 0 today; for the runtime-check
+        // re-route path we emit a styled bold line at the section's depth so
+        // the output stays readable despite the shape being wrong.
+        if depth == 0 {
+            self.renderer
+                .render_heading(self.sink_stderr.as_ref(), &text.into());
+        } else {
+            let text = text.into();
+            let styled = self.renderer.theme.header.apply_to(&text).to_string();
+            self.renderer
+                .write_line(self.sink_stderr.as_ref(), depth, &styled);
+        }
     }
 
     pub fn kv(&self, key: impl Into<String>, value: impl Into<String>) {
+        // kv buffers; flush will use the renderer's current depth, so the
+        // runtime check is informational here — no depth value to thread
+        // through, but we still want the warn/assert at the call site.
+        let _ = self.renderer.enforce_top_level_emit(0);
         self.renderer.render_kv(&key.into(), &value.into());
     }
 
@@ -140,36 +155,41 @@ impl Printer {
         K: Into<String>,
         V: Into<String>,
     {
+        let depth = self.renderer.enforce_top_level_emit(0);
         let pairs: Vec<(String, String)> = pairs
             .into_iter()
             .map(|(k, v)| (k.into(), v.into()))
             .collect();
         self.renderer
-            .render_kv_block(self.sink_stderr.as_ref(), 0, &pairs);
+            .render_kv_block(self.sink_stderr.as_ref(), depth, &pairs);
     }
 
     pub fn hint(&self, text: impl Into<String>) {
+        let depth = self.renderer.enforce_top_level_emit(0);
         self.renderer
-            .render_hint(self.sink_stderr.as_ref(), 0, &text.into());
+            .render_hint(self.sink_stderr.as_ref(), depth, &text.into());
     }
 
     pub fn note(&self, text: impl Into<String>) {
+        let depth = self.renderer.enforce_top_level_emit(0);
         self.renderer
-            .render_note(self.sink_stderr.as_ref(), 0, &text.into());
+            .render_note(self.sink_stderr.as_ref(), depth, &text.into());
     }
 
     pub fn table(&self, table: Table) {
+        let depth = self.renderer.enforce_top_level_emit(0);
         self.renderer
-            .render_table(self.sink_stderr.as_ref(), 0, &table);
+            .render_table(self.sink_stderr.as_ref(), depth, &table);
     }
 
     /// Status with no extra fields. For detail/duration/target, use the builder
     /// returned by the binding helper `status` (see status_builder.rs).
     pub fn status_simple(&self, role: Role, subject: impl Into<String>) {
+        let depth = self.renderer.enforce_top_level_emit(0);
         let subject = subject.into();
         self.renderer.render_status(
             self.sink_stderr.as_ref(),
-            0,
+            depth,
             &StatusFields {
                 role,
                 subject: &subject,
@@ -186,17 +206,14 @@ impl Printer {
         role: Role,
         subject: impl Into<String>,
     ) -> super::status_builder::StatusBuilder<'_> {
-        super::status_builder::StatusBuilder {
-            renderer: self.renderer.clone(),
-            sink: self.sink_stderr.clone(),
-            depth: 0,
+        let depth = self.renderer.enforce_top_level_emit(0);
+        super::status_builder::StatusBuilder::new(
+            self.renderer.clone(),
+            self.sink_stderr.clone(),
+            depth,
             role,
-            subject: subject.into(),
-            detail: None,
-            duration: None,
-            target: None,
-            _phantom: std::marker::PhantomData,
-        }
+            subject,
+        )
     }
 
     /// Final flush — call at the end of a streaming command to ensure any
@@ -349,5 +366,38 @@ mod tests {
         assert!(out.contains("Outer\n"));
         assert!(out.contains("\n  Inner\n"));
         assert!(out.contains("\n    - deep\n"));
+    }
+
+    /// In debug builds, a top-level emit reached while a section is open
+    /// trips `debug_assert!` in `Renderer::enforce_top_level_emit`. We catch
+    /// the panic to verify the assert fires.
+    #[test]
+    #[cfg(debug_assertions)]
+    fn debug_mode_panics_on_top_level_emit_during_section() {
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let (p, _buf) = test_printer();
+            let _s = p.section("Outer");
+            p.heading("MidSection"); // debug_assert! fires
+        }));
+        assert!(result.is_err(), "expected debug_assert! panic");
+    }
+
+    /// In release builds, the assert is compiled out; the warn-once fires
+    /// and the emit reroutes to the section's depth instead of column 0.
+    #[test]
+    #[cfg(not(debug_assertions))]
+    fn release_mode_reroutes_top_level_emit_during_section() {
+        let (p, buf) = test_printer();
+        {
+            let _s = p.section("Outer");
+            p.heading("MidSection"); // would assert in debug; reroutes in release
+        }
+        p.flush();
+        let out = strip_ansi(&buf.lock().unwrap());
+        // The heading rendered at depth 1 (inside the section), not column 0.
+        assert!(
+            out.contains("\n  MidSection\n"),
+            "expected indented; got: {out:?}"
+        );
     }
 }

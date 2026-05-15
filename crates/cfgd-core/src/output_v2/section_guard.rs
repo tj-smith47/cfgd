@@ -100,17 +100,13 @@ impl<'p> SectionGuard<'p> {
         role: Role,
         subject: impl Into<String>,
     ) -> super::status_builder::StatusBuilder<'_> {
-        super::status_builder::StatusBuilder {
-            renderer: self.renderer.clone(),
-            sink: self.sink.clone(),
-            depth: self.depth,
+        super::status_builder::StatusBuilder::new(
+            self.renderer.clone(),
+            self.sink.clone(),
+            self.depth,
             role,
-            subject: subject.into(),
-            detail: None,
-            duration: None,
-            target: None,
-            _phantom: std::marker::PhantomData,
-        }
+            subject,
+        )
     }
 
     /// Open a child section. Returns a guard that borrows `&self` so the parent

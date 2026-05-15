@@ -93,6 +93,37 @@ impl Renderer {
     pub(crate) fn indent_prefix(&self, depth: usize) -> String {
         "  ".repeat(depth)
     }
+
+    /// Called by every top-level emit before writing. Returns the depth at
+    /// which the emit should actually render (clamped to current open section).
+    ///
+    /// Per spec §6.2: a top-level emit (depth 0) reached while a `SectionGuard`
+    /// is alive is a programming error. Debug builds `debug_assert!` to flag
+    /// the call site loudly; release builds log a `tracing::warn!` once per
+    /// process and re-route the emit to the section's current depth so the
+    /// output stays readable.
+    pub(crate) fn enforce_top_level_emit(&self, expected_depth: usize) -> usize {
+        let actual = self.state.lock().unwrap_or_else(|e| e.into_inner()).depth();
+        if expected_depth == 0 && actual > 0 {
+            // Top-level emit while a section is open. Spec §6.2.
+            debug_assert!(
+                false,
+                "top-level emit at depth 0 while section open at depth {actual}"
+            );
+            // Release build: warn once, render at the section's depth.
+            static WARNED: std::sync::Once = std::sync::Once::new();
+            WARNED.call_once(|| {
+                tracing::warn!(
+                    "cfgd output_v2: top-level Printer emit reached while a SectionGuard \
+                     was open. The emit was re-routed to the section's depth. Fix the \
+                     call site (move it inside or outside the section)."
+                );
+            });
+            actual
+        } else {
+            expected_depth
+        }
+    }
 }
 
 /// Sink for one rendered line. Production = stderr Term; tests = string buffer.

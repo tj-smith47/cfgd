@@ -31,6 +31,28 @@ pub struct StatusBuilder<'p> {
 }
 
 impl<'p> StatusBuilder<'p> {
+    /// Crate-private constructor used by both `Printer::status` and
+    /// `SectionGuard::status` to avoid duplicating the field list.
+    pub(crate) fn new(
+        renderer: Arc<Renderer>,
+        sink: Arc<dyn Writer>,
+        depth: usize,
+        role: Role,
+        subject: impl Into<String>,
+    ) -> Self {
+        Self {
+            renderer,
+            sink,
+            depth,
+            role,
+            subject: subject.into(),
+            detail: None,
+            duration: None,
+            target: None,
+            _phantom: std::marker::PhantomData,
+        }
+    }
+
     pub fn detail(mut self, text: impl Into<String>) -> Self {
         self.detail = Some(text.into());
         self
