@@ -135,7 +135,7 @@ mod tests {
     fn chained_detail_and_duration_render() {
         let (r, buf) = build(Role::Fail);
         let sink = sink_for(&buf);
-        let _b = StatusBuilder {
+        let b = StatusBuilder {
             renderer: r,
             sink,
             depth: 0,
@@ -148,7 +148,7 @@ mod tests {
         }
         .detail("permission denied")
         .duration(std::time::Duration::from_millis(2500));
-        drop(_b);
+        drop(b);
         let s = strip_ansi(&buf.lock().unwrap());
         assert!(s.contains("✗ /tmp/foo  — permission denied"), "got: {s:?}");
         assert!(s.contains("(2.5s)"), "got: {s:?}");
