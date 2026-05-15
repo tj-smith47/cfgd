@@ -274,6 +274,7 @@ impl Printer {
         cmd: &mut std::process::Command,
         label: impl Into<String>,
     ) -> std::io::Result<super::process::CommandOutput> {
+        // run is depth-0 only; the clamp would still return 0, so the value is discarded.
         let _ = self.renderer.enforce_top_level_emit(0);
         super::process::run_command(
             &self.renderer,

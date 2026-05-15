@@ -57,6 +57,20 @@ pub(crate) fn run_command(
     }
 }
 
+fn make_output(
+    status: std::process::ExitStatus,
+    all_stdout: Vec<String>,
+    all_stderr: Vec<String>,
+    duration: Duration,
+) -> CommandOutput {
+    CommandOutput {
+        status,
+        stdout: all_stdout.join("\n"),
+        stderr: all_stderr.join("\n"),
+        duration,
+    }
+}
+
 fn spawn_readers(child: &mut std::process::Child) -> mpsc::Receiver<Captured> {
     let (tx, rx) = mpsc::channel();
     if let Some(stdout) = child.stdout.take() {
@@ -104,41 +118,38 @@ fn run_with_progress(
     let mut ring: VecDeque<String> = VecDeque::with_capacity(VISIBLE_LINES);
     let mut all_stdout = Vec::new();
     let mut all_stderr = Vec::new();
-    loop {
-        match rx.recv_timeout(Duration::from_millis(100)) {
-            Ok(line) => {
-                let text = match &line {
-                    Captured::Stdout(s) => {
-                        all_stdout.push(s.clone());
-                        s
-                    }
-                    Captured::Stderr(s) => {
-                        all_stderr.push(s.clone());
-                        s
-                    }
-                };
-                if ring.len() >= VISIBLE_LINES {
-                    ring.pop_front();
-                }
-                ring.push_back(text.clone());
-                let mut msg = label.to_string();
-                for l in &ring {
-                    let display = if l.len() > 120 {
-                        l.get(..120).unwrap_or(l)
-                    } else {
-                        l
-                    };
-                    msg.push_str(&format!(
-                        "\n{}{}",
-                        "  ".repeat(depth + 1),
-                        renderer.theme.muted.apply_to(display)
-                    ));
-                }
-                pb.set_message(msg);
+    // Blocking recv: the spinner's steady tick redraws independently of message
+    // updates, so a poll loop adds no value. Iteration ends when all tx clones
+    // drop (reader threads finish).
+    for line in rx {
+        let text = match &line {
+            Captured::Stdout(s) => {
+                all_stdout.push(s.clone());
+                s
             }
-            Err(mpsc::RecvTimeoutError::Timeout) => continue,
-            Err(mpsc::RecvTimeoutError::Disconnected) => break,
+            Captured::Stderr(s) => {
+                all_stderr.push(s.clone());
+                s
+            }
+        };
+        if ring.len() >= VISIBLE_LINES {
+            ring.pop_front();
         }
+        ring.push_back(text.clone());
+        let mut msg = label.to_string();
+        for l in &ring {
+            let display = if l.len() > 120 {
+                l.get(..120).unwrap_or(l)
+            } else {
+                l
+            };
+            msg.push_str(&format!(
+                "\n{}{}",
+                "  ".repeat(depth + 1),
+                renderer.theme.muted.apply_to(display)
+            ));
+        }
+        pb.set_message(msg);
     }
     let status = child.wait()?;
     let duration = start.elapsed();
@@ -172,12 +183,7 @@ fn run_with_progress(
             renderer.write_line(sink, depth + 1, &dim);
         }
     }
-    Ok(CommandOutput {
-        status,
-        stdout: all_stdout.join("\n"),
-        stderr: all_stderr.join("\n"),
-        duration,
-    })
+    Ok(make_output(status, all_stdout, all_stderr, duration))
 }
 
 fn run_streaming(
@@ -242,12 +248,7 @@ fn run_streaming(
             target: None,
         },
     );
-    Ok(CommandOutput {
-        status,
-        stdout: all_stdout.join("\n"),
-        stderr: all_stderr.join("\n"),
-        duration,
-    })
+    Ok(make_output(status, all_stdout, all_stderr, duration))
 }
 
 #[cfg(test)]
