@@ -6,12 +6,12 @@
 //!
 //! Every other module routes terminal writes through here.
 //!
-//! R1 skeleton: fields and methods below are consumed by tasks T08–T14
-//! (component dispatchers + SectionGuard). T07 adds the `Writer` trait /
-//! `StringSink` / `write_line` / `mark_blank_pending`; the latter two are
-//! still uncalled until T08 wires the first dispatcher and `glyphs::role_glyph`
-//! is still unused until T11. The `dead_code` / `unused_imports` allows are
-//! removed once those tasks land and wire the renderer into emission paths.
+//! R1 skeleton: a handful of internals are not yet wired into emission paths:
+//! `RenderState::{depth,push,pop}` and `kv_buffer` await `SectionGuard` (T15+)
+//! and the kv dispatcher; `indent_prefix` is the depth helper used by future
+//! dispatchers (T09+); `mark_blank_pending` is invoked by Section close
+//! (T15); the `glyphs::role_glyph` re-export is consumed by status dispatchers
+//! (T11+). The `dead_code` / `unused_imports` allows drop once those tasks land.
 #![allow(dead_code, unused_imports)]
 
 use std::sync::Mutex;
@@ -129,6 +129,15 @@ impl Renderer {
         let mut s = self.state.lock().unwrap_or_else(|e| e.into_inner());
         s.blank_pending = true;
     }
+
+    /// Heading: bold styled by Theme::header. No `=== ===` decoration. Always depth 0.
+    pub fn render_heading(&self, w: &dyn Writer, text: &str) {
+        if self.verbosity == Verbosity::Quiet {
+            return;
+        }
+        let styled = self.theme.header.apply_to(text).to_string();
+        self.write_line(w, 0, &styled);
+    }
 }
 
 #[cfg(test)]
@@ -197,5 +206,26 @@ mod tests {
         r.write_line(&sink, 2, "grand");
         let s = buf.lock().unwrap();
         assert_eq!(*s, "root\n  child\n    grand\n");
+    }
+
+    #[test]
+    fn heading_renders_at_depth_zero() {
+        let (r, sink, buf) = capture();
+        r.render_heading(&sink, "Status");
+        let s = buf.lock().unwrap();
+        assert!(s.contains("Status"));
+        // No `=== ===` decoration.
+        assert!(!s.contains("==="));
+    }
+
+    #[test]
+    fn heading_suppressed_when_quiet() {
+        let (r_default, _, _) = capture();
+        drop(r_default);
+        let buf = Arc::new(Mutex::new(String::new()));
+        let sink = StringSink(buf.clone());
+        let r = Renderer::new(Theme::default(), Verbosity::Quiet);
+        r.render_heading(&sink, "Status");
+        assert!(buf.lock().unwrap().is_empty());
     }
 }
