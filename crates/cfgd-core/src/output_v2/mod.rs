@@ -32,6 +32,8 @@ pub use spinner::{ProgressBar, Spinner};
 pub mod process;
 pub use process::CommandOutput;
 
+pub mod raw;
+
 #[cfg(test)]
 mod tests {
     #[test]

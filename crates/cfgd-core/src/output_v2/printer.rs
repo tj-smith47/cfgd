@@ -3,15 +3,12 @@
 //! stdout (structured/data output). Section/spinner/process/prompt/buffered
 //! emission methods land in later R1 tasks.
 //!
-//! R1 skeleton: several `Printer` fields are constructed now but not yet
-//! consumed. `sink_stderr` is wired (T14 emit family, T15 section guard,
-//! T16 StatusBuilder). `multi_progress` is wired (T18 `spinner` /
-//! `progress_bar` / `multi_progress`). Pending wiring: `sink_stdout`
-//! (T22+ `data_line` / structured emit), `syntax_set` / `theme_set`
-//! (T23 `syntax_highlight`), `test_doc_capture` (T20 test-helpers
-//! feature), `prompt_queue` (T26 prompts). The `dead_code` allow drops as
-//! those land.
-#![allow(dead_code)]
+//! R1 skeleton: all sinks are wired (`sink_stderr` via T14/T15/T16,
+//! `sink_stdout` via T20 `data_line`). `multi_progress` is wired (T18).
+//! `syntax_set` / `theme_set` are wired (T20 `syntax_highlight`). The
+//! remaining pending fields — `test_doc_capture` (T27 test-helpers feature)
+//! and `prompt_queue` (T26 prompts) — carry per-field `dead_code` allows
+//! until their tasks land.
 
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
@@ -58,8 +55,10 @@ pub struct Printer {
     pub(crate) syntax_set: syntect::parsing::SyntaxSet,
     pub(crate) theme_set: syntect::highlighting::ThemeSet,
     /// Set under `test-helpers` when `for_test_doc` is used.
+    #[allow(dead_code)] // wired by T27 (test-helpers feature)
     pub(crate) test_doc_capture: Option<DocCapture>,
     /// Set under `test-helpers` when prompt responses are seeded.
+    #[allow(dead_code)] // wired by T26 (prompts)
     pub(crate) prompt_queue: Option<Arc<Mutex<VecDeque<PromptAnswer>>>>,
 }
 
