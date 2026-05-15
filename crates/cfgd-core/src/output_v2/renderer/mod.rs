@@ -9,9 +9,11 @@
 //! R1 skeleton: a handful of internals are not yet wired into emission paths:
 //! `RenderState::{depth,push,pop}` and `kv_buffer` await `SectionGuard` (T15+)
 //! and the kv dispatcher; `indent_prefix` is the depth helper used by future
-//! dispatchers (T09+); `mark_blank_pending` is invoked by Section close
-//! (T15); the `glyphs::role_glyph` re-export is consumed by status dispatchers
-//! (T11+). The `dead_code` / `unused_imports` allows drop once those tasks land.
+//! dispatchers; `mark_blank_pending` and the `section::*` family are wired
+//! internally but await `SectionGuard` (T15+) and the emission dispatchers
+//! (T10+) for an external entry point; the `glyphs::role_glyph` re-export is
+//! consumed by status dispatchers (T11+). The `dead_code` / `unused_imports`
+//! allows drop as those tasks land.
 #![allow(dead_code, unused_imports)]
 
 use std::sync::Mutex;
@@ -19,6 +21,7 @@ use std::sync::Mutex;
 use super::{Theme, Verbosity};
 
 mod glyphs;
+pub mod section;
 pub(crate) use glyphs::role_glyph;
 
 /// Per-Printer rendering state. Held inside `Mutex` because multiple
@@ -35,6 +38,7 @@ pub(crate) struct RenderState {
     leading: bool,
     /// Buffered kvs awaiting a non-kv emission to flush as one aligned block.
     kv_buffer: Vec<(String, String)>,
+    pub(crate) section_stack: Vec<crate::output_v2::renderer::section::SectionFrame>,
 }
 
 impl RenderState {
@@ -44,6 +48,7 @@ impl RenderState {
             blank_pending: false,
             leading: true,
             kv_buffer: Vec::new(),
+            section_stack: Vec::new(),
         }
     }
 
