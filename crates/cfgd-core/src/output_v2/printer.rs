@@ -58,7 +58,6 @@ pub struct Printer {
     #[allow(dead_code)] // wired by T27 (test-helpers feature)
     pub(crate) test_doc_capture: Option<DocCapture>,
     /// Set under `test-helpers` when prompt responses are seeded.
-    #[allow(dead_code)] // wired by T26 (prompts)
     pub(crate) prompt_queue: Option<Arc<Mutex<VecDeque<PromptAnswer>>>>,
 }
 
