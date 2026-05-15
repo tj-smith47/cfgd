@@ -163,6 +163,16 @@ impl Renderer {
         let styled = self.theme.header.apply_to(text).to_string();
         self.write_line(w, 0, &styled);
     }
+
+    /// Bullet: glyph `-`, then space, then text. Uncolored. The renderer's only
+    /// bullet glyph; `+`/`~`/`>`/`*` are forbidden.
+    pub fn render_bullet(&self, w: &dyn Writer, depth: usize, text: &str) {
+        if self.verbosity == Verbosity::Quiet {
+            return;
+        }
+        self.flush_pending_section_headers(w);
+        self.write_line(w, depth, &format!("- {}", text));
+    }
 }
 
 #[cfg(test)]
@@ -251,6 +261,23 @@ mod tests {
         let sink = StringSink(buf.clone());
         let r = Renderer::new(Theme::default(), Verbosity::Quiet);
         r.render_heading(&sink, "Status");
+        assert!(buf.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn bullet_uses_dash_glyph() {
+        let (r, sink, buf) = capture();
+        r.render_bullet(&sink, 1, "foo");
+        let s = buf.lock().unwrap();
+        assert!(s.contains("  - foo"), "got: {s:?}");
+    }
+
+    #[test]
+    fn bullet_quiet_suppressed() {
+        let buf = Arc::new(Mutex::new(String::new()));
+        let sink = StringSink(buf.clone());
+        let r = Renderer::new(Theme::default(), Verbosity::Quiet);
+        r.render_bullet(&sink, 1, "foo");
         assert!(buf.lock().unwrap().is_empty());
     }
 }
