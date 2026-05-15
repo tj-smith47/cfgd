@@ -196,20 +196,24 @@ impl Drop for Printer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serial_test::serial;
 
     #[test]
+    #[serial]
     fn structured_format_auto_quiets() {
         let p = Printer::with_format(Verbosity::Normal, None, OutputFormat::Json);
         assert_eq!(p.verbosity(), Verbosity::Quiet);
     }
 
     #[test]
+    #[serial]
     fn table_format_keeps_verbosity() {
         let p = Printer::with_format(Verbosity::Normal, None, OutputFormat::Table);
         assert_eq!(p.verbosity(), Verbosity::Normal);
     }
 
     #[test]
+    #[serial]
     fn is_structured_classifies() {
         let p = Printer::with_format(Verbosity::Normal, None, OutputFormat::Json);
         assert!(p.is_structured());
