@@ -99,24 +99,7 @@ mod tests {
     use super::super::renderer::StringSink;
     use super::super::{Theme, Verbosity};
     use super::*;
-
-    fn strip_ansi(s: &str) -> String {
-        let bytes = s.as_bytes();
-        let mut out = String::with_capacity(s.len());
-        let mut i = 0;
-        while i < bytes.len() {
-            if bytes[i] == 0x1b && i + 1 < bytes.len() && bytes[i + 1] == b'[' {
-                while i < bytes.len() && bytes[i] != b'm' {
-                    i += 1;
-                }
-                i += 1;
-            } else {
-                out.push(bytes[i] as char);
-                i += 1;
-            }
-        }
-        out
-    }
+    use crate::output_v2::tests::strip_ansi;
 
     #[test]
     fn diff_marks_changed_lines() {

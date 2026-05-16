@@ -56,32 +56,13 @@ mod tests {
     use super::super::StringSink;
     use super::*;
     use crate::output_v2::Theme;
+    use crate::output_v2::tests::strip_ansi;
 
     fn capture() -> (Renderer, StringSink, Arc<Mutex<String>>) {
         let buf = Arc::new(Mutex::new(String::new()));
         let sink = StringSink(buf.clone());
         let r = Renderer::new(Theme::default(), Verbosity::Normal);
         (r, sink, buf)
-    }
-
-    fn strip_ansi(s: &str) -> String {
-        // ANSI CSI sequences are all ASCII, so we can walk chars and skip them
-        // without splitting multi-byte UTF-8 glyphs like ✓ ✗ —.
-        let mut out = String::with_capacity(s.len());
-        let mut chars = s.chars().peekable();
-        while let Some(c) = chars.next() {
-            if c == '\u{1b}' && chars.peek() == Some(&'[') {
-                chars.next(); // consume '['
-                for inner in chars.by_ref() {
-                    if inner == 'm' {
-                        break;
-                    }
-                }
-            } else {
-                out.push(c);
-            }
-        }
-        out
     }
 
     #[test]

@@ -98,11 +98,11 @@ impl DocCapture {
     }
 
     /// Snapshot helper: assert the captured human output matches the contents
-    /// of `tests/output_snapshots/<name>`. Use `INSTA_UPDATE=always cargo test`
-    /// to refresh.
+    /// of `src/output_v2/tests/snapshots/<name>`. Use `INSTA_UPDATE=always
+    /// cargo test` to refresh.
     pub fn assert_human_snapshot(&self, name: &str) {
-        let actual = strip_ansi_codes(&self.human());
-        let path = std::path::Path::new("tests/output_snapshots").join(name);
+        let actual = strip_ansi(&self.human());
+        let path = std::path::Path::new("src/output_v2/tests/snapshots").join(name);
         if std::env::var("INSTA_UPDATE").as_deref() == Ok("always") || !path.exists() {
             std::fs::create_dir_all(path.parent().unwrap()).unwrap();
             std::fs::write(&path, &actual).unwrap();
@@ -117,7 +117,7 @@ impl DocCapture {
             .json()
             .map(|v| serde_json::to_string_pretty(&v).unwrap())
             .unwrap_or_default();
-        let path = std::path::Path::new("tests/output_snapshots").join(name);
+        let path = std::path::Path::new("src/output_v2/tests/snapshots").join(name);
         if std::env::var("INSTA_UPDATE").as_deref() == Ok("always") || !path.exists() {
             std::fs::create_dir_all(path.parent().unwrap()).unwrap();
             std::fs::write(&path, &actual).unwrap();
@@ -128,19 +128,24 @@ impl DocCapture {
     }
 }
 
-fn strip_ansi_codes(s: &str) -> String {
-    let bytes = s.as_bytes();
+/// ANSI-stripping helper used by `assert_*_snapshot`. Mirrors
+/// `crate::output_v2::tests::strip_ansi` but lives here because this file is
+/// feature-gated (not test-gated) — `crate::output_v2::tests` is only present
+/// under `#[cfg(test)]` and is unreachable from a `cargo build
+/// --features test-helpers` compile of this module.
+fn strip_ansi(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
-    let mut i = 0;
-    while i < bytes.len() {
-        if bytes[i] == 0x1b && i + 1 < bytes.len() && bytes[i + 1] == b'[' {
-            while i < bytes.len() && bytes[i] != b'm' {
-                i += 1;
+    let mut chars = s.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\u{1b}' && chars.peek() == Some(&'[') {
+            chars.next(); // consume '['
+            for inner in chars.by_ref() {
+                if inner == 'm' {
+                    break;
+                }
             }
-            i += 1;
         } else {
-            out.push(bytes[i] as char);
-            i += 1;
+            out.push(c);
         }
     }
     out

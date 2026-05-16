@@ -109,6 +109,7 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     use super::super::{Renderer, StringSink};
+    use crate::output_v2::tests::strip_ansi;
     use crate::output_v2::{Theme, Verbosity};
 
     fn capture() -> (Renderer, StringSink, Arc<Mutex<String>>) {
@@ -116,27 +117,6 @@ mod tests {
         let sink = StringSink(buf.clone());
         let r = Renderer::new(Theme::default(), Verbosity::Normal);
         (r, sink, buf)
-    }
-
-    /// Strip CSI escape sequences. The kv block applies `theme.header` (bold)
-    /// which wraps each key in ANSI escapes; substring assertions need a
-    /// plain-text view.
-    fn strip_ansi(s: &str) -> String {
-        let bytes = s.as_bytes();
-        let mut out = String::with_capacity(s.len());
-        let mut i = 0;
-        while i < bytes.len() {
-            if bytes[i] == 0x1b && i + 1 < bytes.len() && bytes[i + 1] == b'[' {
-                while i < bytes.len() && bytes[i] != b'm' {
-                    i += 1;
-                }
-                i += 1;
-            } else {
-                out.push(bytes[i] as char);
-                i += 1;
-            }
-        }
-        out
     }
 
     #[test]

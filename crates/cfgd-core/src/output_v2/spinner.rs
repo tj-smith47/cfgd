@@ -195,6 +195,7 @@ mod tests {
     use super::super::renderer::{Renderer, StringSink};
     use super::super::{Theme, Verbosity};
     use super::*;
+    use crate::output_v2::tests::strip_ansi;
 
     fn renderer() -> Arc<Renderer> {
         Arc::new(Renderer::new(Theme::default(), Verbosity::Normal))
@@ -202,27 +203,6 @@ mod tests {
 
     fn sink_for(buf: &Arc<Mutex<String>>) -> Arc<dyn Writer> {
         Arc::new(StringSink(buf.clone()))
-    }
-
-    fn strip_ansi(s: &str) -> String {
-        // ANSI CSI sequences are all ASCII, so we can walk chars and skip
-        // them without splitting multi-byte UTF-8 glyphs like ✓ ✗ —. T28
-        // will consolidate this helper across the output_v2 test modules.
-        let mut out = String::with_capacity(s.len());
-        let mut chars = s.chars().peekable();
-        while let Some(c) = chars.next() {
-            if c == '\u{1b}' && chars.peek() == Some(&'[') {
-                chars.next(); // consume '['
-                for inner in chars.by_ref() {
-                    if inner == 'm' {
-                        break;
-                    }
-                }
-            } else {
-                out.push(c);
-            }
-        }
-        out
     }
 
     #[test]

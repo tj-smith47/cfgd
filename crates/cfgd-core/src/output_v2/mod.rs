@@ -47,9 +47,4 @@ pub mod structured;
 pub mod test_capture;
 
 #[cfg(test)]
-mod tests {
-    #[test]
-    fn module_compiles() {
-        assert_eq!(2 + 2, 4);
-    }
-}
+mod tests;

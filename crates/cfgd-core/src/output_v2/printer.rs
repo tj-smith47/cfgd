@@ -352,6 +352,8 @@ impl Drop for Printer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(feature = "test-helpers")]
+    use crate::output_v2::tests::strip_ansi;
     use serial_test::serial;
 
     #[test]
@@ -375,25 +377,6 @@ mod tests {
         assert!(p.is_structured());
         let p = Printer::with_format(Verbosity::Normal, None, OutputFormat::Table);
         assert!(!p.is_structured());
-    }
-
-    #[cfg(feature = "test-helpers")]
-    fn strip_ansi(s: &str) -> String {
-        let bytes = s.as_bytes();
-        let mut out = String::with_capacity(s.len());
-        let mut i = 0;
-        while i < bytes.len() {
-            if bytes[i] == 0x1b && i + 1 < bytes.len() && bytes[i + 1] == b'[' {
-                while i < bytes.len() && bytes[i] != b'm' {
-                    i += 1;
-                }
-                i += 1;
-            } else {
-                out.push(bytes[i] as char);
-                i += 1;
-            }
-        }
-        out
     }
 
     #[cfg(feature = "test-helpers")]
