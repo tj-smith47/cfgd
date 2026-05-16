@@ -95,23 +95,22 @@ spec:
   theme:
     name: string
     overrides:
+      header: string
       success: string
       warning: string
       error: string
       info: string
       muted: string
-      header: string
-      subheader: string
-      key: string
-      value: string
+      running: string
       diffAdd: string
       diffRemove: string
       diffContext: string
-      iconSuccess: string
-      iconWarning: string
-      iconError: string
-      iconInfo: string
+      iconOk: string
+      iconWarn: string
+      iconFail: string
       iconPending: string
+      iconRunning: string
+      iconSkipped: string
       iconArrow: string
 
   ai:
@@ -497,23 +496,22 @@ strings. An omitted field inherits the value from the active theme.
 
 | Field | Type | Description |
 |-------|------|-------------|
+| `header` | string | Colour for section headers. |
 | `success` | string | Colour for success messages and checkmarks. |
 | `warning` | string | Colour for warnings. |
 | `error` | string | Colour for errors. |
 | `info` | string | Colour for informational output. |
 | `muted` | string | Colour for de-emphasised (secondary) text. |
-| `header` | string | Colour for section headers. |
-| `subheader` | string | Colour for sub-section headers. |
-| `key` | string | Colour for table/field key labels. |
-| `value` | string | Colour for table/field values. |
+| `running` | string | Colour for running/in-progress text. |
 | `diffAdd` | string | Colour for added lines in diffs. |
 | `diffRemove` | string | Colour for removed lines in diffs. |
 | `diffContext` | string | Colour for context lines in diffs. |
-| `iconSuccess` | string | Icon character for success state. |
-| `iconWarning` | string | Icon character for warning state. |
-| `iconError` | string | Icon character for error state. |
-| `iconInfo` | string | Icon character for info state. |
+| `iconOk` | string | Icon character for success state. |
+| `iconWarn` | string | Icon character for warning state. |
+| `iconFail` | string | Icon character for error state. |
 | `iconPending` | string | Icon character for pending/in-progress state. |
+| `iconRunning` | string | Icon character for running state. |
+| `iconSkipped` | string | Icon character for skipped state. |
 | `iconArrow` | string | Icon character for directional arrows (e.g. plan output). |
 
 ---
