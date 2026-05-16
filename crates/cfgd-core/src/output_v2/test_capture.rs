@@ -12,6 +12,7 @@ use super::{OutputFormat, Theme, Verbosity};
 
 fn build_test_printer(
     buf: Arc<Mutex<String>>,
+    theme: Theme,
     verbosity: Verbosity,
     format: OutputFormat,
     test_doc_capture: Option<DocCapture>,
@@ -19,7 +20,7 @@ fn build_test_printer(
 ) -> Printer {
     let sink: Arc<dyn Writer> = Arc::new(StringSink(buf));
     Printer {
-        renderer: Arc::new(Renderer::new(Theme::default(), verbosity)),
+        renderer: Arc::new(Renderer::new(theme, verbosity)),
         output_format: format,
         sink_stderr: sink.clone(),
         sink_stdout: sink,
@@ -44,13 +45,42 @@ impl Printer {
     /// which is suppressed under `Verbosity::Quiet`.
     pub fn for_test_at(verbosity: Verbosity) -> (Self, Arc<Mutex<String>>) {
         let buf = Arc::new(Mutex::new(String::new()));
-        let p = build_test_printer(buf.clone(), verbosity, OutputFormat::Table, None, None);
+        let p = build_test_printer(
+            buf.clone(),
+            Theme::default(),
+            verbosity,
+            OutputFormat::Table,
+            None,
+            None,
+        );
+        (p, buf)
+    }
+
+    /// Like `for_test_at` but with an explicit Theme. Used by bucket (d) to
+    /// snapshot per-preset output without the struct-literal Printer anti-pattern.
+    pub fn for_test_with_theme(theme: Theme, verbosity: Verbosity) -> (Self, Arc<Mutex<String>>) {
+        let buf = Arc::new(Mutex::new(String::new()));
+        let p = build_test_printer(
+            buf.clone(),
+            theme,
+            verbosity,
+            OutputFormat::Table,
+            None,
+            None,
+        );
         (p, buf)
     }
 
     pub fn for_test_with_format(format: OutputFormat) -> (Self, Arc<Mutex<String>>) {
         let buf = Arc::new(Mutex::new(String::new()));
-        let p = build_test_printer(buf.clone(), Verbosity::Quiet, format, None, None);
+        let p = build_test_printer(
+            buf.clone(),
+            Theme::default(),
+            Verbosity::Quiet,
+            format,
+            None,
+            None,
+        );
         (p, buf)
     }
 
@@ -65,6 +95,7 @@ impl Printer {
         };
         let p = build_test_printer(
             human,
+            Theme::default(),
             Verbosity::Normal,
             OutputFormat::Table,
             Some(cap.clone_internal()),
@@ -80,6 +111,7 @@ impl Printer {
         let buf = Arc::new(Mutex::new(String::new()));
         let p = build_test_printer(
             buf.clone(),
+            Theme::default(),
             Verbosity::Quiet,
             OutputFormat::Table,
             None,

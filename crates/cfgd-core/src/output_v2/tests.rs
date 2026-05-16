@@ -9,8 +9,13 @@
 mod bucket_a_baseline;
 #[cfg(feature = "test-helpers")]
 mod bucket_b_verbosity;
-// later: bucket_c_status_role, bucket_d_themes,
-// bucket_e_indent, bucket_f_corners, bucket_g_regression
+#[cfg(feature = "test-helpers")]
+mod bucket_c_status_role;
+#[cfg(feature = "test-helpers")]
+mod bucket_d_themes;
+#[cfg(feature = "test-helpers")]
+mod bucket_e_indent;
+// later: bucket_f_corners, bucket_g_regression
 
 /// Macro: build a Printer via `for_test_doc()`, run the body with `&p` and
 /// `&cap`, then assert against `snapshots/<bucket>/<name>.txt`.
@@ -40,6 +45,38 @@ macro_rules! golden_at {
         #[test]
         fn $name() {
             let ($p, buf) = $crate::output_v2::Printer::for_test_at($verbosity);
+            $body
+            $p.flush();
+            let raw = buf.lock().unwrap().clone();
+            let actual = $crate::output_v2::tests::strip_ansi(&raw);
+            let path = std::path::Path::new("src/output_v2/tests/snapshots")
+                .join(stringify!($bucket))
+                .join(format!("{}.txt", stringify!($name)));
+            if std::env::var("INSTA_UPDATE").as_deref() == Ok("always") || !path.exists() {
+                std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+                std::fs::write(&path, &actual).unwrap();
+                return;
+            }
+            let expected = std::fs::read_to_string(&path).unwrap();
+            pretty_assertions::assert_eq!(
+                actual, expected, "snapshot mismatch: {}", stringify!($name));
+        }
+    };
+}
+
+/// Macro: like `golden_at!` but with an explicit Theme preset (Normal verbosity).
+/// Used by bucket (d) to render a representative Doc against every preset.
+/// Strips ANSI codes before snapshot comparison so color-only theme differences
+/// collapse — preset divergence comes from glyph swaps (e.g., `minimal`).
+#[macro_export]
+macro_rules! golden_themed {
+    ($bucket:ident, $name:ident, $theme_name:expr, |$p:ident| $body:block) => {
+        #[test]
+        fn $name() {
+            let ($p, buf) = $crate::output_v2::Printer::for_test_with_theme(
+                $crate::output_v2::Theme::from_preset($theme_name),
+                $crate::output_v2::Verbosity::Normal,
+            );
             $body
             $p.flush();
             let raw = buf.lock().unwrap().clone();
