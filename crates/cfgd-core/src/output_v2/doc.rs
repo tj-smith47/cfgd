@@ -175,8 +175,6 @@ impl Doc {
 
     /// Convert the Doc into a JSON value (excluding `data`); used by tests +
     /// the structured emit path when no `with_data` was set.
-    // Wired into the production lib by T24 (structured emit) / T27 (DocCapture::json).
-    #[allow(dead_code)]
     pub(crate) fn to_json_value(&self) -> serde_json::Value {
         let children: Vec<serde_json::Value> = self
             .children

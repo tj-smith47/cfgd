@@ -5,10 +5,9 @@
 //!
 //! R1 skeleton: all sinks are wired (`sink_stderr` via T14/T15/T16,
 //! `sink_stdout` via T20 `data_line`). `multi_progress` is wired (T18).
-//! `syntax_set` / `theme_set` are wired (T20 `syntax_highlight`). The
-//! remaining pending fields — `test_doc_capture` (T27 test-helpers feature)
-//! and `prompt_queue` (T26 prompts) — carry per-field `dead_code` allows
-//! until their tasks land.
+//! `syntax_set` / `theme_set` are wired (T20 `syntax_highlight`).
+//! `test_doc_capture` is wired by T27 (test-helpers feature) and
+//! `prompt_queue` is wired by T26 (prompts).
 
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
@@ -55,7 +54,6 @@ pub struct Printer {
     pub(crate) syntax_set: syntect::parsing::SyntaxSet,
     pub(crate) theme_set: syntect::highlighting::ThemeSet,
     /// Set under `test-helpers` when `for_test_doc` is used.
-    #[allow(dead_code)] // wired by T27 (test-helpers feature)
     pub(crate) test_doc_capture: Option<DocCapture>,
     /// Set under `test-helpers` when prompt responses are seeded.
     pub(crate) prompt_queue: Option<Arc<Mutex<VecDeque<PromptAnswer>>>>,
@@ -302,6 +300,11 @@ impl Printer {
     /// go to stderr as the human render. This is the canonical buffered-output
     /// entry; production callers use this, not `render`.
     pub fn emit(&self, doc: super::doc::Doc) {
+        // Capture the Doc's JSON form for tests, regardless of output_format.
+        if let Some(cap) = &self.test_doc_capture {
+            let json = doc.data_or_self_json();
+            *cap.doc_json.lock().unwrap_or_else(|e| e.into_inner()) = Some(json);
+        }
         let handled = super::structured::emit_structured(
             self.sink_stdout.as_ref(),
             &doc,
@@ -497,6 +500,21 @@ mod tests {
         let out = strip_ansi(&buf.lock().unwrap());
         assert!(out.contains("Title"));
         assert!(out.contains("k  v"));
+    }
+
+    #[cfg(feature = "test-helpers")]
+    #[test]
+    fn emit_with_doc_capture_records_both_shapes() {
+        use super::super::doc::Doc;
+        let (p, cap) = Printer::for_test_doc();
+        let doc = Doc::new().heading("S").kv("k", "v");
+        p.emit(doc);
+        p.flush();
+        let human = cap.human();
+        let json = cap.json().unwrap();
+        assert!(human.contains("S"), "got: {human:?}");
+        assert!(human.contains("k"));
+        assert!(json["heading"].as_str() == Some("S"));
     }
 
     /// In debug builds, a top-level emit reached while a section is open
