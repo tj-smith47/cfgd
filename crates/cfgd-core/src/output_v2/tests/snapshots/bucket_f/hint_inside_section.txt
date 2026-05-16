@@ -1,0 +1,2 @@
+Tips
+  → run cfgd apply
