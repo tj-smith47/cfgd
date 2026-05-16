@@ -78,16 +78,19 @@ impl Renderer {
         }
         line.push_str(&style.apply_to(f.subject).to_string());
 
+        // Field order per spec §13.2: subject — detail (target). Detail comes
+        // first (with em-dash glue), then target in parens. Duration trails
+        // last as its own (Ns) parens block.
+        if let Some(detail) = f.detail {
+            line.push_str(" — ");
+            line.push_str(detail);
+        }
         if let Some(target) = f.target {
             let dim = self
                 .theme
                 .muted
                 .apply_to(format!(" ({})", target.display()));
             line.push_str(&dim.to_string());
-        }
-        if let Some(detail) = f.detail {
-            line.push_str(" — ");
-            line.push_str(detail);
         }
         if let Some(d) = f.duration {
             let secs = d.as_secs_f64();
