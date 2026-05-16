@@ -1,0 +1,5 @@
+# EXPECTED: NOT flagged — Status with role + chained detail.
+fn _example(printer: &Printer) {
+    printer.status(Role::Ok, "wrote /etc/hosts");
+    printer.status(Role::Fail, "/tmp/foo").detail("permission denied");
+}

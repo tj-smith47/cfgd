@@ -1,0 +1,6 @@
+# EXPECTED: caught by rule #4 (direct console / indicatif use)
+fn _example() {
+    let _t = console::Term::stderr();
+    let _pb = indicatif::ProgressBar::new(10);
+    let _mp = indicatif::MultiProgress::new();
+}

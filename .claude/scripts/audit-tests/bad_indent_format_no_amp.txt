@@ -1,0 +1,4 @@
+# EXPECTED: caught by rule #2 (indent hack, format!() without &)
+fn _example(printer: &Printer, x: &str) {
+    printer.warning(format!("  - {}", x));
+}

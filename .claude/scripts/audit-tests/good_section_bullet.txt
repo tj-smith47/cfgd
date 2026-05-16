@@ -1,0 +1,6 @@
+# EXPECTED: NOT flagged — canonical replacement for the indent hack.
+fn _example(printer: &Printer) {
+    let s = printer.section("Files");
+    s.bullet("foo.txt");
+    s.bullet(format!("{} bytes", 42));
+}

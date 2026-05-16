@@ -1,0 +1,4 @@
+# EXPECTED: caught by rule #2 (tab indent — [ \t]{2,} matches one tab+space or two tabs)
+fn _example(printer: &Printer) {
+    printer.info("\t\tfoo");
+}

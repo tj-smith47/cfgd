@@ -1,0 +1,5 @@
+# EXPECTED: NOT flagged — auto-aligned kv block.
+fn _example(printer: &Printer) {
+    printer.kv_block([("Foo", "1"), ("LongerKey", "2")]);
+    printer.kv("StandaloneKey", "value");
+}

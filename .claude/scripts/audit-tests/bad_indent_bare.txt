@@ -1,0 +1,4 @@
+# EXPECTED: caught by rule #2 (indent hack, bare-string form)
+fn _example(printer: &Printer) {
+    printer.info("  foo");
+}

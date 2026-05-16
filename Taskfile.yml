@@ -85,6 +85,11 @@ tasks:
     cmds:
       - bash .claude/scripts/audit.sh
 
+  audit:test:
+    desc: Validate audit.sh's banned-pattern rules against paired fixtures
+    cmds:
+      - bash .claude/scripts/audit-tests/audit-test.sh
+
   package:
     desc: Dry-run package all publishable crates
     cmds:
@@ -158,6 +163,8 @@ tasks:
       - task: fmt:check
       - task: clippy
       - task: test
+      - task: audit
+      - task: audit:test
       - task: package
 
   # --- E2E ---

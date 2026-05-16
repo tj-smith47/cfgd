@@ -55,6 +55,8 @@
 !.claude/hooks/validate-commands.sh
 !.claude/scripts/
 !.claude/scripts/audit.sh
+!.claude/scripts/audit-tests/
+!.claude/scripts/audit-tests/**
 !.claude/scripts/update-coverage-badge.sh
 !.claude/plans/
 !.claude/plans/upstream-kubernetes.md

@@ -1,0 +1,6 @@
+# EXPECTED: caught by rule #1 (banned old-API method)
+fn _example(printer: &Printer) {
+    printer.success("done");
+    printer.subheader("Section");
+    printer.plan_phase("X", &[]);
+}

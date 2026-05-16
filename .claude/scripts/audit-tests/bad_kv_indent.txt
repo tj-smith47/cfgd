@@ -1,0 +1,4 @@
+# EXPECTED: caught by rule #3 (kv key-indent hack)
+fn _example(printer: &Printer) {
+    printer.kv("  Branch", "main");
+}

@@ -378,7 +378,8 @@ if [ "${CFGD_OUTPUT_V2_AUDIT:-0}" = "1" ]; then
 
   # 1. Banned old-API method calls outside the output module(s).
   banned_methods='printer\.(success|warning|info|error|header|subheader|key_value|newline|plan_phase|stdout_line)\('
-  if violations=$(rg --type rust -n "$banned_methods" crates/ \
+  if violations=$(rg --type-add 'rust:*.txt' --type rust -n "$banned_methods" \
+        "${CFGD_OUTPUT_V2_AUDIT_EXTRA_PATH:-crates/}" \
         --glob '!crates/cfgd-core/src/output/**' \
         --glob '!crates/cfgd-core/src/output_v2/**' \
         --glob '!**/tests.rs' \
@@ -396,7 +397,8 @@ if [ "${CFGD_OUTPUT_V2_AUDIT:-0}" = "1" ]; then
   #      printer.X(&"  …".to_string())
   #    Pattern "(  |\t|\\t) catches the three canonical hack shapes; a lone
   #    single leading space is normal prose and is NOT a hack.
-  if hack=$(rg --type rust -n 'printer\.\w+\(\s*&?(format!\()?"(  |\t|\\t)' crates/ \
+  if hack=$(rg --type-add 'rust:*.txt' --type rust -n 'printer\.\w+\(\s*&?(format!\()?"(  |\t|\\t)' \
+        "${CFGD_OUTPUT_V2_AUDIT_EXTRA_PATH:-crates/}" \
         --glob '!crates/cfgd-core/src/output/**' \
         --glob '!crates/cfgd-core/src/output_v2/**' \
         --glob '!**/tests.rs' \
@@ -406,7 +408,8 @@ if [ "${CFGD_OUTPUT_V2_AUDIT:-0}" = "1" ]; then
   fi
 
   # 3. KV key-indent hack — same shapes.
-  if kv_hack=$(rg --type rust -n '\.kv\(\s*&?(format!\()?"(  |\t|\\t)' crates/ \
+  if kv_hack=$(rg --type-add 'rust:*.txt' --type rust -n '\.kv\(\s*&?(format!\()?"(  |\t|\\t)' \
+        "${CFGD_OUTPUT_V2_AUDIT_EXTRA_PATH:-crates/}" \
         --glob '!crates/cfgd-core/src/output/**' \
         --glob '!crates/cfgd-core/src/output_v2/**' \
         --glob '!**/tests.rs' \
@@ -417,7 +420,8 @@ if [ "${CFGD_OUTPUT_V2_AUDIT:-0}" = "1" ]; then
 
   # 4. Direct console::* / indicatif::*::new outside the output module(s).
   #    Hard Rule #1 extended to the new types.
-  if direct=$(rg --type rust -n '(console::|indicatif::(ProgressBar|MultiProgress)::new)' crates/ \
+  if direct=$(rg --type-add 'rust:*.txt' --type rust -n '(console::|indicatif::(ProgressBar|MultiProgress)::new)' \
+        "${CFGD_OUTPUT_V2_AUDIT_EXTRA_PATH:-crates/}" \
         --glob '!crates/cfgd-core/src/output/**' \
         --glob '!crates/cfgd-core/src/output_v2/**' \
         --glob '!**/tests.rs' \
