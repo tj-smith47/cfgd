@@ -47,10 +47,7 @@ impl Renderer {
             .map(|(i, h)| format!("{:<width$}", h, width = widths[i]))
             .collect::<Vec<_>>()
             .join("  ");
-        let styled = console::Style::new()
-            .bold()
-            .apply_to(&header_line)
-            .to_string();
+        let styled = self.theme.header.apply_to(&header_line).to_string();
         self.write_line(w, depth, &styled);
         // Separator
         let sep: String = widths

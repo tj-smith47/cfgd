@@ -97,7 +97,7 @@ impl Renderer {
         }
         for (name, depth) in frames_to_emit {
             // Mirror `write_line`'s blank-pending handling.
-            let styled = console::Style::new().bold().apply_to(&name).to_string();
+            let styled = self.theme.header.apply_to(&name).to_string();
             self.write_line(w, depth, &styled);
         }
     }
@@ -106,10 +106,7 @@ impl Renderer {
         if self.verbosity == Verbosity::Quiet {
             return;
         }
-        let styled = console::Style::new()
-            .bold()
-            .apply_to(&frame.name)
-            .to_string();
+        let styled = self.theme.header.apply_to(&frame.name).to_string();
         self.write_line(w, frame.header_depth, &styled);
     }
 }
