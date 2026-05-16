@@ -376,6 +376,11 @@ check_pattern warn \
 # without breaking the build before the migration completes.
 if [ "${CFGD_OUTPUT_V2_AUDIT:-0}" = "1" ]; then
 
+  # CFGD_OUTPUT_V2_AUDIT_EXTRA_PATH: replace `crates/`, do NOT append. The
+  # audit-tests driver sets this per-fixture so each fixture is scanned in
+  # isolation; appending would mix in 1000+ legacy hits from crates/ and
+  # make every good_*.txt fixture spuriously fail until R3 migration completes.
+
   # 1. Banned old-API method calls outside the output module(s).
   banned_methods='printer\.(success|warning|info|error|header|subheader|key_value|newline|plan_phase|stdout_line)\('
   if violations=$(rg --type-add 'rust:*.txt' --type rust -n "$banned_methods" \
