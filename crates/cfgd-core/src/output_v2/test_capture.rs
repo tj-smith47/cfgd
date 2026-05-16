@@ -10,6 +10,27 @@ use super::printer::{DocCapture, Printer, PromptAnswer};
 use super::renderer::{Renderer, StringSink, Writer};
 use super::{OutputFormat, Theme, Verbosity};
 
+fn build_test_printer(
+    buf: Arc<Mutex<String>>,
+    verbosity: Verbosity,
+    format: OutputFormat,
+    test_doc_capture: Option<DocCapture>,
+    prompt_queue: Option<Arc<Mutex<VecDeque<PromptAnswer>>>>,
+) -> Printer {
+    let sink: Arc<dyn Writer> = Arc::new(StringSink(buf));
+    Printer {
+        renderer: Arc::new(Renderer::new(Theme::default(), verbosity)),
+        output_format: format,
+        sink_stderr: sink.clone(),
+        sink_stdout: sink,
+        multi_progress: indicatif::MultiProgress::new(),
+        syntax_set: syntect::parsing::SyntaxSet::load_defaults_newlines(),
+        theme_set: syntect::highlighting::ThemeSet::load_defaults(),
+        test_doc_capture,
+        prompt_queue,
+    }
+}
+
 impl Printer {
     /// Legacy capture: returns a flat-string buffer. Defaults to `Verbosity::Quiet`
     /// (matches the production `with_format`-under-structured-output defaults) and
@@ -23,35 +44,13 @@ impl Printer {
     /// which is suppressed under `Verbosity::Quiet`.
     pub fn for_test_at(verbosity: Verbosity) -> (Self, Arc<Mutex<String>>) {
         let buf = Arc::new(Mutex::new(String::new()));
-        let sink: Arc<dyn Writer> = Arc::new(StringSink(buf.clone()));
-        let p = Self {
-            renderer: Arc::new(Renderer::new(Theme::default(), verbosity)),
-            output_format: OutputFormat::Table,
-            sink_stderr: sink.clone(),
-            sink_stdout: sink,
-            multi_progress: indicatif::MultiProgress::new(),
-            syntax_set: syntect::parsing::SyntaxSet::load_defaults_newlines(),
-            theme_set: syntect::highlighting::ThemeSet::load_defaults(),
-            test_doc_capture: None,
-            prompt_queue: None,
-        };
+        let p = build_test_printer(buf.clone(), verbosity, OutputFormat::Table, None, None);
         (p, buf)
     }
 
     pub fn for_test_with_format(format: OutputFormat) -> (Self, Arc<Mutex<String>>) {
         let buf = Arc::new(Mutex::new(String::new()));
-        let sink: Arc<dyn Writer> = Arc::new(StringSink(buf.clone()));
-        let p = Self {
-            renderer: Arc::new(Renderer::new(Theme::default(), Verbosity::Quiet)),
-            output_format: format,
-            sink_stderr: sink.clone(),
-            sink_stdout: sink,
-            multi_progress: indicatif::MultiProgress::new(),
-            syntax_set: syntect::parsing::SyntaxSet::load_defaults_newlines(),
-            theme_set: syntect::highlighting::ThemeSet::load_defaults(),
-            test_doc_capture: None,
-            prompt_queue: None,
-        };
+        let p = build_test_printer(buf.clone(), Verbosity::Quiet, format, None, None);
         (p, buf)
     }
 
@@ -60,22 +59,17 @@ impl Printer {
     pub fn for_test_doc() -> (Self, DocCapture) {
         let human = Arc::new(Mutex::new(String::new()));
         let doc_json = Arc::new(Mutex::new(None));
-        let sink: Arc<dyn Writer> = Arc::new(StringSink(human.clone()));
         let cap = DocCapture {
             human: human.clone(),
-            doc_json: doc_json.clone(),
+            doc_json,
         };
-        let p = Self {
-            renderer: Arc::new(Renderer::new(Theme::default(), Verbosity::Normal)),
-            output_format: OutputFormat::Table,
-            sink_stderr: sink.clone(),
-            sink_stdout: sink,
-            multi_progress: indicatif::MultiProgress::new(),
-            syntax_set: syntect::parsing::SyntaxSet::load_defaults_newlines(),
-            theme_set: syntect::highlighting::ThemeSet::load_defaults(),
-            test_doc_capture: Some(cap.clone_internal()),
-            prompt_queue: None,
-        };
+        let p = build_test_printer(
+            human,
+            Verbosity::Normal,
+            OutputFormat::Table,
+            Some(cap.clone_internal()),
+            None,
+        );
         (p, cap)
     }
 
@@ -84,18 +78,13 @@ impl Printer {
         responses: Vec<PromptAnswer>,
     ) -> (Self, Arc<Mutex<String>>) {
         let buf = Arc::new(Mutex::new(String::new()));
-        let sink: Arc<dyn Writer> = Arc::new(StringSink(buf.clone()));
-        let p = Self {
-            renderer: Arc::new(Renderer::new(Theme::default(), Verbosity::Quiet)),
-            output_format: OutputFormat::Table,
-            sink_stderr: sink.clone(),
-            sink_stdout: sink,
-            multi_progress: indicatif::MultiProgress::new(),
-            syntax_set: syntect::parsing::SyntaxSet::load_defaults_newlines(),
-            theme_set: syntect::highlighting::ThemeSet::load_defaults(),
-            test_doc_capture: None,
-            prompt_queue: Some(Arc::new(Mutex::new(VecDeque::from(responses)))),
-        };
+        let p = build_test_printer(
+            buf.clone(),
+            Verbosity::Quiet,
+            OutputFormat::Table,
+            None,
+            Some(Arc::new(Mutex::new(VecDeque::from(responses)))),
+        );
         (p, buf)
     }
 }
