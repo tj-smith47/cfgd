@@ -74,14 +74,30 @@ fi
 # Mirrors .claude/scripts/audit.sh rules but per-file (fast). Gated off
 # until R3 enables it (CFGD_OUTPUT_V2_AUDIT=1); this lets the rules ship
 # without blocking edits to call-sites that have not yet migrated.
-# Regex shape "(  |\t|\\t) matches audit.sh — catches two-or-more spaces,
-# a literal tab byte, or a backslash-t escape (spec §16.2 fixture).
+# Runs AFTER the legacy CRITICAL/WARNINGS block so legacy `exit 2` still wins.
+# Regex shape uses an ANSI-C $'...' literal so the alternation matches
+# two-or-more spaces, a real tab byte (0x09), or a backslash-t escape — the
+# three canonical indent-hack shapes spec §16.2 lists. Plain `grep -E` does
+# NOT interpret \t inside a normal single-quoted pattern, hence the $'...'.
 if [ "${CFGD_OUTPUT_V2_AUDIT:-0}" = "1" ]; then
     EDITED_FILE="${1:-}"
     if [ -n "$EDITED_FILE" ] && [ -f "$EDITED_FILE" ]; then
-        # Skip if file is one of the output module(s), or any test file.
+        # Defense in depth: only inspect Rust source. The harness already
+        # filters by *.rs at settings.json before invoking the hook, but
+        # nothing prevents a future caller from invoking us with .md/.toml.
         case "$EDITED_FILE" in
-            *crates/cfgd-core/src/output/*|*crates/cfgd-core/src/output_v2/*) exit 0 ;;
+            *.rs) ;;
+            *) exit 0 ;;
+        esac
+
+        # Skip if file is one of the output module(s), or any test file.
+        # Globs use `*/` (or unanchored relative) so absolute paths
+        # (`/opt/repos/cfgd/crates/...`) and bare-relative paths
+        # (`crates/...`) both match, without falsely exempting unrelated
+        # paths that happen to contain "crates/cfgd-core/src/output/".
+        case "$EDITED_FILE" in
+            */crates/cfgd-core/src/output/*|*/crates/cfgd-core/src/output_v2/*) exit 0 ;;
+            crates/cfgd-core/src/output/*|crates/cfgd-core/src/output_v2/*) exit 0 ;;
             *tests.rs|*/tests/*) exit 0 ;;
         esac
 
@@ -94,10 +110,10 @@ if [ "${CFGD_OUTPUT_V2_AUDIT:-0}" = "1" ]; then
             echo "    .claude/plans/2026-05-14-output-system-redesign/interfaces.md  (Printer surface)"
             exit 1
         fi
-        if grep -nE 'printer\.\w+\(\s*&?(format!\()?"(  |\t|\\t)' "$EDITED_FILE" > /dev/null 2>&1; then
+        if grep -nE $'printer\\.\\w+\\(\\s*&?(format!\\()?"(  |\t|\\\\t)' "$EDITED_FILE" > /dev/null 2>&1; then
             echo
             echo "INDENT HACK in $EDITED_FILE"
-            echo "  This is a printer call whose arg starts with 2+ whitespace,"
+            echo "  This is a printer call whose arg starts with two-or-more spaces,"
             echo "  a literal tab byte, or a backslash-t escape."
             echo "  Use a section instead:"
             echo "    let sec = printer.section(\"...\");"
@@ -106,7 +122,7 @@ if [ "${CFGD_OUTPUT_V2_AUDIT:-0}" = "1" ]; then
             echo "    .claude/specs/2026-05-14-output-system-redesign-design.md"
             exit 1
         fi
-        if grep -nE '\.kv\(\s*&?(format!\()?"(  |\t|\\t)' "$EDITED_FILE" > /dev/null 2>&1; then
+        if grep -nE $'\\.kv\\(\\s*&?(format!\\()?"(  |\t|\\\\t)' "$EDITED_FILE" > /dev/null 2>&1; then
             echo
             echo "KV KEY INDENT HACK in $EDITED_FILE"
             echo "  kv keys must not start with whitespace. Use a subsection if you"
