@@ -53,11 +53,17 @@ impl Renderer {
             return;
         };
 
+        // Only TOP-LEVEL sections (header_depth == 0) mark blank-pending on
+        // close. Subsection close must NOT produce a blank between siblings —
+        // see spec §13.1 (Primary/Secondary subsections render adjacent).
+        let is_top_level = frame.header_depth == 0;
         match (frame.children_emitted, frame.keep_when_empty) {
             (true, _) => {
                 // Children rendered — section is done. Mark blank pending so the
                 // next sibling at the same depth gets one blank between.
-                self.mark_blank_pending();
+                if is_top_level {
+                    self.mark_blank_pending();
+                }
             }
             (false, true) => {
                 if self.verbosity == Verbosity::Quiet {
@@ -70,7 +76,9 @@ impl Renderer {
                 let placeholder = frame.empty_state.as_deref().unwrap_or("(none)");
                 let dim = self.theme.muted.apply_to(placeholder).to_string();
                 self.write_line(w, frame.header_depth + 1, &dim);
-                self.mark_blank_pending();
+                if is_top_level {
+                    self.mark_blank_pending();
+                }
             }
             (false, false) => {
                 // section_or_collapse with no children — leave no trace.
