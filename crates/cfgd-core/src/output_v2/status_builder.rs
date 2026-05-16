@@ -152,7 +152,7 @@ mod tests {
         .duration(std::time::Duration::from_millis(2500));
         drop(b);
         let s = strip_ansi(&buf.lock().unwrap());
-        assert!(s.contains("✗ /tmp/foo  — permission denied"), "got: {s:?}");
+        assert!(s.contains("✗ /tmp/foo — permission denied"), "got: {s:?}");
         assert!(s.contains("(2.5s)"), "got: {s:?}");
     }
 }

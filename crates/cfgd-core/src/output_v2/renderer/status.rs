@@ -37,7 +37,7 @@ impl Renderer {
             line.push_str(&dim.to_string());
         }
         if let Some(detail) = f.detail {
-            line.push_str("  — ");
+            line.push_str(" — ");
             line.push_str(detail);
         }
         if let Some(d) = f.duration {
@@ -118,7 +118,7 @@ mod tests {
         );
         let out = strip_ansi(&buf.lock().unwrap());
         assert!(
-            out.contains("✗ /tmp/foo  — permission denied"),
+            out.contains("✗ /tmp/foo — permission denied"),
             "got: {out:?}"
         );
     }
