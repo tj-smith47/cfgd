@@ -130,7 +130,7 @@ log_section "Output Centralization"
 check_pattern error \
     "No println!/eprintln! outside output/ and main.rs" \
     'println!\(|eprintln!\(' \
-    'output/|main\.rs:'
+    'output/|output_v2/|main\.rs:'
 
 log_section "No Unwrap in Library Code"
 # Match .unwrap() but NOT .unwrap_or(), .unwrap_or_default(), .unwrap_or_else()
@@ -156,13 +156,14 @@ log_section "Controlled Shell Execution"
 # sources/ allowed for git SSH fallback (git2 doesn't support all SSH configs)
 # gateway/ allowed for SSH/GPG enrollment signature verification
 # output/ allowed for Printer::run_with_output (controlled execution layer for progress UI)
+# output_v2/ allowed for SectionGuard::run / process::run_in_section (new controlled exec layer)
 # generate/ allowed for tool inspection (--version checks) and system settings scanning
 # oci/ allowed for Docker credential helper execution (docker-credential-*)
 # daemon/ allowed for sc.exe Windows Service lifecycle management
 check_pattern warn \
-    "std::process::Command confined to packages/, secrets/, system/, reconciler/, sources/, platform/, cli/, gateway/, output/, generate/, oci, daemon/" \
+    "std::process::Command confined to packages/, secrets/, system/, reconciler/, sources/, platform/, cli/, gateway/, output/, output_v2/, generate/, oci, daemon/" \
     'std::process::Command|Command::new' \
-    'packages/|secrets/|system/|reconciler/|sources/|platform/|cli/|gateway/|output/|generate/|oci|daemon/|lib\.rs:'
+    'packages/|secrets/|system/|reconciler/|sources/|platform/|cli/|gateway/|output/|output_v2/|generate/|oci|daemon/|lib\.rs:'
 
 log_section "Error Type Discipline"
 check_pattern error \
@@ -387,27 +388,30 @@ if [ "${CFGD_OUTPUT_V2_AUDIT:-0}" = "1" ]; then
   fi
 
   # 2. Indent hack in printer args. Catches:
-  #      printer.X("  …
+  #      printer.X("  …               (two-or-more leading spaces)
+  #      printer.X("<TAB>…            (literal tab byte in source)
+  #      printer.X("\t…               (backslash-t escape — spec §16.2 fixture)
   #      printer.X(&format!("  …
   #      printer.X(format!("  …
   #      printer.X(&"  …".to_string())
-  #    Uses [\s ]{2,} so 2+ leading whitespace (incl. tabs) is caught.
-  if hack=$(rg --type rust -n 'printer\.\w+\(\s*&?(format!\()?"[ \t]{2,}' crates/ \
+  #    Pattern "(  |\t|\\t) catches the three canonical hack shapes; a lone
+  #    single leading space is normal prose and is NOT a hack.
+  if hack=$(rg --type rust -n 'printer\.\w+\(\s*&?(format!\()?"(  |\t|\\t)' crates/ \
         --glob '!crates/cfgd-core/src/output/**' \
         --glob '!crates/cfgd-core/src/output_v2/**' \
         --glob '!**/tests.rs' \
         --glob '!**/tests/**' 2>/dev/null) && [ -n "$hack" ]; then
-    log_error "INDENT HACK (>=2 leading whitespace in printer arg):"
+    log_error "INDENT HACK (>=2 spaces, tab byte, or \\t escape leading printer arg):"
     echo "$hack"
   fi
 
-  # 3. KV key-indent hack — same broadening.
-  if kv_hack=$(rg --type rust -n '\.kv\(\s*&?(format!\()?"[ \t]{2,}' crates/ \
+  # 3. KV key-indent hack — same shapes.
+  if kv_hack=$(rg --type rust -n '\.kv\(\s*&?(format!\()?"(  |\t|\\t)' crates/ \
         --glob '!crates/cfgd-core/src/output/**' \
         --glob '!crates/cfgd-core/src/output_v2/**' \
         --glob '!**/tests.rs' \
         --glob '!**/tests/**' 2>/dev/null) && [ -n "$kv_hack" ]; then
-    log_error "KV KEY INDENT HACK (>=2 leading whitespace in kv key):"
+    log_error "KV KEY INDENT HACK (>=2 spaces, tab byte, or \\t escape leading kv key):"
     echo "$kv_hack"
   fi
 
