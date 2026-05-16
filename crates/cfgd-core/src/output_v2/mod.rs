@@ -41,6 +41,8 @@ pub use doc::{Doc, SectionBuilder, StatusFields};
 
 pub mod render_doc;
 
+pub mod structured;
+
 #[cfg(test)]
 mod tests {
     #[test]

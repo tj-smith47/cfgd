@@ -298,6 +298,20 @@ impl Printer {
         super::render_doc::render_doc(&self.renderer, self.sink_stderr.as_ref(), &doc);
     }
 
+    /// Routed emit: structured formats go to stdout as JSON/YAML/etc.; Table/Wide
+    /// go to stderr as the human render. This is the canonical buffered-output
+    /// entry; production callers use this, not `render`.
+    pub fn emit(&self, doc: super::doc::Doc) {
+        let handled = super::structured::emit_structured(
+            self.sink_stdout.as_ref(),
+            &doc,
+            &self.output_format,
+        );
+        if !handled {
+            self.render(doc);
+        }
+    }
+
     // ----- Section entry points -----
 
     #[must_use = "section closes when SectionGuard is dropped; bind it"]
@@ -472,6 +486,44 @@ mod tests {
         let out = strip_ansi(&buf.lock().unwrap());
         assert!(out.contains("Status"));
         assert!(!out.contains("Empty"), "got: {out:?}");
+    }
+
+    #[test]
+    fn emit_json_writes_data_payload_to_stdout() {
+        use super::super::doc::Doc;
+        #[derive(serde::Serialize)]
+        struct P {
+            foo: u32,
+        }
+        let buf = Arc::new(Mutex::new(String::new()));
+        let sink: Arc<dyn Writer> = Arc::new(super::super::renderer::StringSink(buf.clone()));
+        let p = Printer {
+            renderer: Arc::new(Renderer::new(Theme::default(), Verbosity::Normal)),
+            output_format: OutputFormat::Json,
+            sink_stderr: sink.clone(),
+            sink_stdout: sink,
+            multi_progress: indicatif::MultiProgress::new(),
+            syntax_set: syntect::parsing::SyntaxSet::load_defaults_newlines(),
+            theme_set: syntect::highlighting::ThemeSet::load_defaults(),
+            test_doc_capture: None,
+            prompt_queue: None,
+        };
+        let doc = Doc::new().heading("S").with_data(P { foo: 7 });
+        p.emit(doc);
+        let out = buf.lock().unwrap();
+        assert!(out.contains("\"foo\": 7"), "got: {out:?}");
+    }
+
+    #[test]
+    fn emit_table_writes_human_render() {
+        use super::super::doc::Doc;
+        let (p, buf) = test_printer();
+        let doc = Doc::new().heading("Title").kv("k", "v");
+        p.emit(doc);
+        p.flush();
+        let out = strip_ansi(&buf.lock().unwrap());
+        assert!(out.contains("Title"));
+        assert!(out.contains("k  v"));
     }
 
     /// In debug builds, a top-level emit reached while a section is open

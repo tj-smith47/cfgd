@@ -191,8 +191,6 @@ impl Doc {
         serde_json::Value::Object(obj)
     }
 
-    // Wired into the production lib by T24 (structured emit) / T27 (DocCapture::json).
-    #[allow(dead_code)]
     pub(crate) fn data_or_self_json(&self) -> serde_json::Value {
         self.data.clone().unwrap_or_else(|| self.to_json_value())
     }
