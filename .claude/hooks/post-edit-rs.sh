@@ -70,4 +70,52 @@ if [[ -n "$WARNINGS" ]]; then
     echo -e "$WARNINGS"
 fi
 
+# --- output_v2 banned patterns (R1.T36) -------------------------------------
+# Mirrors .claude/scripts/audit.sh rules but per-file (fast). Gated off
+# until R3 enables it (CFGD_OUTPUT_V2_AUDIT=1); this lets the rules ship
+# without blocking edits to call-sites that have not yet migrated.
+# Regex shape "(  |\t|\\t) matches audit.sh — catches two-or-more spaces,
+# a literal tab byte, or a backslash-t escape (spec §16.2 fixture).
+if [ "${CFGD_OUTPUT_V2_AUDIT:-0}" = "1" ]; then
+    EDITED_FILE="${1:-}"
+    if [ -n "$EDITED_FILE" ] && [ -f "$EDITED_FILE" ]; then
+        # Skip if file is one of the output module(s), or any test file.
+        case "$EDITED_FILE" in
+            *crates/cfgd-core/src/output/*|*crates/cfgd-core/src/output_v2/*) exit 0 ;;
+            *tests.rs|*/tests/*) exit 0 ;;
+        esac
+
+        # Same regexes as audit.sh.
+        if grep -nE 'printer\.(success|warning|info|error|header|subheader|key_value|newline|plan_phase|stdout_line)\(' "$EDITED_FILE" > /dev/null 2>&1; then
+            echo
+            echo "BANNED OLD-API CALL in $EDITED_FILE"
+            echo "  Replace with output_v2 vocabulary. See:"
+            echo "    .claude/specs/2026-05-14-output-system-redesign-design.md  (§5)"
+            echo "    .claude/plans/2026-05-14-output-system-redesign/interfaces.md  (Printer surface)"
+            exit 1
+        fi
+        if grep -nE 'printer\.\w+\(\s*&?(format!\()?"(  |\t|\\t)' "$EDITED_FILE" > /dev/null 2>&1; then
+            echo
+            echo "INDENT HACK in $EDITED_FILE"
+            echo "  This is a printer call whose arg starts with 2+ whitespace,"
+            echo "  a literal tab byte, or a backslash-t escape."
+            echo "  Use a section instead:"
+            echo "    let sec = printer.section(\"...\");"
+            echo "    sec.bullet(format!(\"{}\", x));"
+            echo "  See spec §5–§6 of:"
+            echo "    .claude/specs/2026-05-14-output-system-redesign-design.md"
+            exit 1
+        fi
+        if grep -nE '\.kv\(\s*&?(format!\()?"(  |\t|\\t)' "$EDITED_FILE" > /dev/null 2>&1; then
+            echo
+            echo "KV KEY INDENT HACK in $EDITED_FILE"
+            echo "  kv keys must not start with whitespace. Use a subsection if you"
+            echo "  need nesting:"
+            echo "    .section(\"Origins\", |s| s.subsection(\"Primary\", |o| o.kv(\"Branch\", ...)))"
+            exit 1
+        fi
+    fi
+fi
+# --- end output_v2 hook block ------------------------------------------------
+
 exit 0
