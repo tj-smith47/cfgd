@@ -46,6 +46,7 @@ impl Renderer {
             line.push_str(&dim.to_string());
         }
         self.write_line(w, depth, &line);
+        self.mark_top_level_blank_if_at_root();
     }
 }
 

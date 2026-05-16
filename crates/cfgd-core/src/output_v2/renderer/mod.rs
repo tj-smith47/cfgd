@@ -189,6 +189,17 @@ impl Renderer {
         s.blank_pending = true;
     }
 
+    /// Set blank-pending iff we're at the root group level (no open section).
+    /// Called at the end of every top-level group emission (heading, kv_block,
+    /// status, hint, note, table) so the next top-level emit gets one blank.
+    /// Spec §13: a blank line precedes every top-level group after the first.
+    pub(crate) fn mark_top_level_blank_if_at_root(&self) {
+        let mut s = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        if s.section_stack.is_empty() {
+            s.blank_pending = true;
+        }
+    }
+
     /// Heading: bold styled by Theme::header. No `=== ===` decoration. Always depth 0.
     pub fn render_heading(&self, w: &dyn Writer, text: &str) {
         if self.verbosity == Verbosity::Quiet {
@@ -196,6 +207,7 @@ impl Renderer {
         }
         let styled = self.theme.header.apply_to(text).to_string();
         self.write_line(w, 0, &styled);
+        self.mark_top_level_blank_if_at_root();
     }
 
     /// Bullet: glyph `-`, then space, then text. Uncolored. The renderer's only
@@ -221,6 +233,7 @@ impl Renderer {
             .apply_to(format!("{} ", self.theme.icon_arrow));
         let body = self.theme.muted.apply_to(text);
         self.write_line(w, depth, &format!("{}{}", arrow, body));
+        self.mark_top_level_blank_if_at_root();
     }
 
     /// Note: multi-line prose. Suppressed at both Quiet and Normal; only Verbose.
@@ -233,6 +246,7 @@ impl Renderer {
             let dim = self.theme.muted.apply_to(line);
             self.write_line(w, depth, &dim.to_string());
         }
+        self.mark_top_level_blank_if_at_root();
     }
 }
 
