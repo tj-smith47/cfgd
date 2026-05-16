@@ -7,7 +7,9 @@
 
 #[cfg(feature = "test-helpers")]
 mod bucket_a_baseline;
-// later: bucket_b_verbosity, bucket_c_status_role, bucket_d_themes,
+#[cfg(feature = "test-helpers")]
+mod bucket_b_verbosity;
+// later: bucket_c_status_role, bucket_d_themes,
 // bucket_e_indent, bucket_f_corners, bucket_g_regression
 
 /// Macro: build a Printer via `for_test_doc()`, run the body with `&p` and

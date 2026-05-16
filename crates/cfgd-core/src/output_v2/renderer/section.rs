@@ -60,6 +60,11 @@ impl Renderer {
                 self.mark_blank_pending();
             }
             (false, true) => {
+                if self.verbosity == Verbosity::Quiet {
+                    // §12: plain `section` with no children produces no output at
+                    // Quiet. Don't mark_blank_pending — there's nothing to space.
+                    return;
+                }
                 // Plain `section`: emit header + empty_state placeholder.
                 self.emit_section_header_now(w, &frame);
                 let placeholder = frame.empty_state.as_deref().unwrap_or("(none)");
