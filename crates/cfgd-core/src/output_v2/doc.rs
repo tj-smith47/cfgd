@@ -338,17 +338,9 @@ impl SectionBuilder {
         I: IntoIterator,
         F: FnMut(SectionBuilder, I::Item) -> SectionBuilder,
     {
-        // We thread a temp SectionBuilder through items, but at the end we
-        // need to fold its children back into self. Implementation: take self's
-        // children, build a sub via the existing pattern, take the sub's
-        // children, append to self.
-        let mut sub = SectionBuilder::new(self.name.clone(), self.keep_when_empty);
-        sub.children = std::mem::take(&mut self.children);
-        sub.empty_state = self.empty_state.clone();
         for item in items {
-            sub = build(sub, item);
+            self = build(self, item);
         }
-        self.children = sub.children;
         self
     }
 }
@@ -426,6 +418,30 @@ mod tests {
                 "expected first child to be a coalesced KvBlock; got {:?}",
                 d.children[0]
             );
+        }
+    }
+
+    #[test]
+    fn consecutive_kvs_coalesce_in_section_builder() {
+        let s = SectionBuilder::new("X", true)
+            .kv("Foo", "1")
+            .kv("LongerKey", "2")
+            .bullet("After"); // non-Kv child should break coalescing
+        let c = s.into_component();
+        if let Component::Section { children, .. } = c {
+            assert_eq!(children.len(), 2, "expected coalesced KvBlock + Bullet");
+            if let Component::KvBlock { pairs } = &children[0] {
+                assert_eq!(pairs.len(), 2);
+                assert_eq!(pairs[0].key, "Foo");
+                assert_eq!(pairs[1].key, "LongerKey");
+            } else {
+                panic!(
+                    "expected first child to be a coalesced KvBlock; got {:?}",
+                    children[0]
+                );
+            }
+        } else {
+            panic!("expected Section");
         }
     }
 
