@@ -211,13 +211,13 @@ fn explain_cmd_unknown_field_path() {
 
 #[test]
 fn explain_theme_overrides_complete() {
-    // ThemeOverrides has 18 fields — verify schema matches
+    // ThemeOverrides has 17 fields (10 styles + 7 icons) — verify schema matches
     let fields = resolve_field_path(SCHEMA_CONFIG.fields, &["theme", "overrides"]);
     let children = fields.unwrap();
     assert_eq!(
         children.len(),
-        18,
-        "ThemeOverrides schema should have 18 fields, got {}",
+        17,
+        "ThemeOverrides schema should have 17 fields, got {}",
         children.len()
     );
 }

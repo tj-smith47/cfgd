@@ -274,7 +274,7 @@ fn prompt_restore_backups_no_op_when_no_backup_files_exist() {
             true,
         )]);
 
-    prompt_restore_backups(&[target.clone()], &printer).expect("no backups → no-op");
+    prompt_restore_backups(std::slice::from_ref(&target), &printer).expect("no backups → no-op");
 
     let out = buf.lock().unwrap();
     assert!(

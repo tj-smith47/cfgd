@@ -575,23 +575,22 @@ spec:
   theme:
     name: default              # optional, string, default: "default"
     overrides:                 # optional — override individual theme colors/icons
-      success: green           # optional, string — color name
+      header: cyan             # optional, string — color name
+      success: green           # optional, string
       warning: yellow          # optional, string
       error: red               # optional, string
       info: blue               # optional, string
       muted: gray              # optional, string
-      header: cyan             # optional, string
-      subheader: white         # optional, string
-      key: cyan                # optional, string
-      value: white             # optional, string
+      running: cyan            # optional, string — in-progress status color
       diffAdd: green           # optional, string
       diffRemove: red          # optional, string
       diffContext: gray        # optional, string
-      iconSuccess: "✓"         # optional, string — icon character
-      iconWarning: "⚠"         # optional, string
-      iconError: "✗"           # optional, string
-      iconInfo: "ℹ"            # optional, string
+      iconOk: "✓"              # optional, string — icon character
+      iconWarn: "⚠"            # optional, string
+      iconFail: "✗"            # optional, string
       iconPending: "○"         # optional, string
+      iconRunning: "◐"         # optional, string
+      iconSkipped: "—"         # optional, string
       iconArrow: "→"           # optional, string
 
   # Module registries and security settings.

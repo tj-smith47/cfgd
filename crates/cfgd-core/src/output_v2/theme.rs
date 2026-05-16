@@ -114,6 +114,68 @@ impl Theme {
         }
     }
 
+    pub fn from_config(config: Option<&crate::config::ThemeConfig>) -> Self {
+        let Some(cfg) = config else {
+            return Self::default();
+        };
+        let mut t = Self::from_preset(&cfg.name);
+        let ov = &cfg.overrides;
+        // Style overrides
+        if let Some(c) = &ov.header {
+            apply_color(&mut t.header, c);
+        }
+        if let Some(c) = &ov.success {
+            apply_color(&mut t.success, c);
+        }
+        if let Some(c) = &ov.warning {
+            apply_color(&mut t.warning, c);
+        }
+        if let Some(c) = &ov.error {
+            apply_color(&mut t.error, c);
+        }
+        if let Some(c) = &ov.info {
+            apply_color(&mut t.info, c);
+        }
+        if let Some(c) = &ov.muted {
+            apply_color(&mut t.muted, c);
+        }
+        if let Some(c) = &ov.running {
+            apply_color(&mut t.running, c);
+        }
+        if let Some(c) = &ov.diff_add {
+            apply_color(&mut t.diff_add, c);
+        }
+        if let Some(c) = &ov.diff_remove {
+            apply_color(&mut t.diff_remove, c);
+        }
+        if let Some(c) = &ov.diff_context {
+            apply_color(&mut t.diff_context, c);
+        }
+        // Icon overrides
+        if let Some(v) = &ov.icon_ok {
+            t.icon_ok = v.clone();
+        }
+        if let Some(v) = &ov.icon_warn {
+            t.icon_warn = v.clone();
+        }
+        if let Some(v) = &ov.icon_fail {
+            t.icon_fail = v.clone();
+        }
+        if let Some(v) = &ov.icon_pending {
+            t.icon_pending = v.clone();
+        }
+        if let Some(v) = &ov.icon_running {
+            t.icon_running = v.clone();
+        }
+        if let Some(v) = &ov.icon_skipped {
+            t.icon_skipped = v.clone();
+        }
+        if let Some(v) = &ov.icon_arrow {
+            t.icon_arrow = v.clone();
+        }
+        t
+    }
+
     fn minimal() -> Self {
         Self {
             header: Style::new().bold(),
@@ -168,6 +230,12 @@ fn hex(s: &str) -> Style {
     match parse_hex_color(s) {
         Some(c) => Style::new().fg(c),
         None => Style::new(),
+    }
+}
+
+fn apply_color(style: &mut Style, hex: &str) {
+    if let Some(c) = parse_hex_color(hex) {
+        *style = Style::new().fg(c);
     }
 }
 

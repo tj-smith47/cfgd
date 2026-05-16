@@ -1799,3 +1799,58 @@ command: "ls -la"
     assert_eq!(alias.name, "ll");
     assert_eq!(alias.command, "ls -la");
 }
+
+// --- Legacy theme-override key warnings (R1.T25) ---
+
+#[test]
+#[serial_test::serial]
+#[tracing_test::traced_test]
+fn legacy_theme_subheader_emits_warning() {
+    let yaml = r##"
+spec:
+  theme:
+    name: dracula
+    overrides:
+      subheader: "#ff79c6"
+"##;
+    super::parse::warn_on_legacy_theme_keys(yaml);
+    assert!(
+        logs_contain("theme.overrides.subheader is no longer supported"),
+        "expected legacy-key warning to fire"
+    );
+}
+
+#[test]
+#[serial_test::serial]
+#[tracing_test::traced_test]
+fn legacy_icon_success_emits_rename_warning() {
+    let yaml = r##"
+spec:
+  theme:
+    name: dracula
+    overrides:
+      iconSuccess: "++"
+"##;
+    super::parse::warn_on_legacy_theme_keys(yaml);
+    assert!(
+        logs_contain("iconSuccess is renamed to iconOk"),
+        "expected rename warning to fire"
+    );
+}
+
+#[test]
+#[serial_test::serial]
+#[tracing_test::traced_test]
+fn modern_overrides_emit_no_warning() {
+    let yaml = r##"
+spec:
+  theme:
+    name: dracula
+    overrides:
+      iconOk: "✔"
+      running: "#00ff00"
+"##;
+    super::parse::warn_on_legacy_theme_keys(yaml);
+    assert!(!logs_contain("no longer supported"));
+    assert!(!logs_contain("renamed to"));
+}

@@ -91,15 +91,6 @@ impl Theme {
         if let Some(ref c) = ov.header {
             apply_color(&mut theme.header, c);
         }
-        if let Some(ref c) = ov.subheader {
-            apply_color(&mut theme.subheader, c);
-        }
-        if let Some(ref c) = ov.key {
-            apply_color(&mut theme.key, c);
-        }
-        if let Some(ref c) = ov.value {
-            apply_color(&mut theme.value, c);
-        }
         if let Some(ref c) = ov.diff_add {
             apply_color(&mut theme.diff_add, c);
         }
@@ -110,18 +101,17 @@ impl Theme {
             apply_color(&mut theme.diff_context, c);
         }
 
-        // Apply icon overrides
-        if let Some(ref v) = ov.icon_success {
+        // Apply icon overrides (legacy field names map onto the renamed config keys
+        // via Theme::from_preset; per-icon overrides for the legacy module are limited
+        // to the icons that survived the v0.4 schema shrink).
+        if let Some(ref v) = ov.icon_ok {
             theme.icon_success = v.clone();
         }
-        if let Some(ref v) = ov.icon_warning {
+        if let Some(ref v) = ov.icon_warn {
             theme.icon_warning = v.clone();
         }
-        if let Some(ref v) = ov.icon_error {
+        if let Some(ref v) = ov.icon_fail {
             theme.icon_error = v.clone();
-        }
-        if let Some(ref v) = ov.icon_info {
-            theme.icon_info = v.clone();
         }
         if let Some(ref v) = ov.icon_pending {
             theme.icon_pending = v.clone();

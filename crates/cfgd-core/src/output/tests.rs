@@ -62,7 +62,7 @@ fn from_config_with_overrides() {
     let config = ThemeConfig {
         name: "default".into(),
         overrides: crate::config::ThemeOverrides {
-            icon_success: Some("OK".into()),
+            icon_ok: Some("OK".into()),
             success: Some("#50fa7b".into()),
             ..Default::default()
         },
@@ -397,10 +397,9 @@ fn theme_from_config_all_icon_overrides() {
     let config = ThemeConfig {
         name: "default".into(),
         overrides: crate::config::ThemeOverrides {
-            icon_success: Some("OK".into()),
-            icon_warning: Some("!!".into()),
-            icon_error: Some("ERR".into()),
-            icon_info: Some("ii".into()),
+            icon_ok: Some("OK".into()),
+            icon_warn: Some("!!".into()),
+            icon_fail: Some("ERR".into()),
             icon_pending: Some("..".into()),
             icon_arrow: Some(">>".into()),
             ..Default::default()
@@ -410,7 +409,6 @@ fn theme_from_config_all_icon_overrides() {
     assert_eq!(theme.icon_success, "OK");
     assert_eq!(theme.icon_warning, "!!");
     assert_eq!(theme.icon_error, "ERR");
-    assert_eq!(theme.icon_info, "ii");
     assert_eq!(theme.icon_pending, "..");
     assert_eq!(theme.icon_arrow, ">>");
 }
@@ -426,9 +424,7 @@ fn theme_from_config_all_color_overrides() {
             info: Some("#00ffff".into()),
             muted: Some("#888888".into()),
             header: Some("#0000ff".into()),
-            subheader: Some("#ff00ff".into()),
-            key: Some("#ff79c6".into()),
-            value: Some("#f8f8f2".into()),
+            running: Some("#aabbcc".into()),
             diff_add: Some("#50fa7b".into()),
             diff_remove: Some("#ff5555".into()),
             diff_context: Some("#6272a4".into()),

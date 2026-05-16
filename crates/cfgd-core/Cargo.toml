@@ -114,3 +114,4 @@ test-helpers = []
 tempfile = "3"
 serial_test = "3"
 mockito = "1"
+tracing-test = "0.2"
