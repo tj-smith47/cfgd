@@ -1,5 +1,21 @@
+use std::path::PathBuf;
+use std::time::Duration;
+
 use super::{Renderer, Writer};
-use crate::output_v2::Verbosity;
+use crate::output_v2::{Role, Verbosity};
+
+/// A Status emission deferred until section close so subjects can be right-
+/// padded to a common column. Buffered per section frame.
+pub(crate) struct BufferedStatus {
+    pub role: Role,
+    pub subject: String,
+    pub detail: Option<String>,
+    pub duration: Option<Duration>,
+    pub target: Option<PathBuf>,
+    /// The depth at which the line should ultimately render (matches the
+    /// section's child depth at the time the status was emitted).
+    pub depth: usize,
+}
 
 /// One open section's bookkeeping. Pushed on open, popped on close.
 pub(crate) struct SectionFrame {
@@ -14,6 +30,10 @@ pub(crate) struct SectionFrame {
     /// True if the header has been written. We defer header emit until the first
     /// child renders so that collapsed sections leave no trace.
     pub header_emitted: bool,
+    /// Statuses awaiting flush at section close. Buffering lets us right-pad
+    /// subjects to a common width when trailing content (detail/duration/
+    /// target) is present, so the trailing column aligns — spec §13.3/§13.4.
+    pub pending_statuses: Vec<BufferedStatus>,
 }
 
 impl Renderer {
@@ -29,6 +49,7 @@ impl Renderer {
             children_emitted: false,
             header_depth,
             header_emitted: false,
+            pending_statuses: Vec::new(),
         });
         s.indent_depth += 1;
     }
@@ -52,6 +73,11 @@ impl Renderer {
         let Some(frame) = frame else {
             return;
         };
+
+        // Flush any buffered statuses BEFORE deciding blank-pending. Subject
+        // right-pad is computed across the buffered set so trailing content
+        // aligns in a column — spec §13.3/§13.4.
+        self.flush_pending_statuses(w, &frame.pending_statuses);
 
         // Only TOP-LEVEL sections (header_depth == 0) mark blank-pending on
         // close. Subsection close must NOT produce a blank between siblings —
@@ -121,6 +147,49 @@ impl Renderer {
         }
         let styled = self.theme.header.apply_to(&frame.name).to_string();
         self.write_line(w, frame.header_depth, &styled);
+    }
+
+    /// Drain a section's buffered statuses, padding subjects of those that
+    /// carry trailing content (detail|duration|target) to the max subject
+    /// width across that subset. Statuses without trailing content render
+    /// as-is (no padding). Width is measured with `console::measure_text_width`
+    /// so multi-byte glyphs in subjects count as one column each.
+    pub(crate) fn flush_pending_statuses(&self, w: &dyn Writer, statuses: &[BufferedStatus]) {
+        if statuses.is_empty() {
+            return;
+        }
+        let max_subject_width = statuses
+            .iter()
+            .filter(|s| s.detail.is_some() || s.duration.is_some() || s.target.is_some())
+            .map(|s| console::measure_text_width(&s.subject))
+            .max()
+            .unwrap_or(0);
+        for s in statuses {
+            let has_trailing = s.detail.is_some() || s.duration.is_some() || s.target.is_some();
+            let subject_owned;
+            let subject_ref: &str = if has_trailing && max_subject_width > 0 {
+                let cur = console::measure_text_width(&s.subject);
+                if cur < max_subject_width {
+                    subject_owned = format!("{}{}", s.subject, " ".repeat(max_subject_width - cur));
+                    subject_owned.as_str()
+                } else {
+                    s.subject.as_str()
+                }
+            } else {
+                s.subject.as_str()
+            };
+            self.render_status_immediate(
+                w,
+                s.depth,
+                &super::StatusFields {
+                    role: s.role,
+                    subject: subject_ref,
+                    detail: s.detail.as_deref(),
+                    duration: s.duration,
+                    target: s.target.as_deref(),
+                },
+            );
+        }
     }
 }
 

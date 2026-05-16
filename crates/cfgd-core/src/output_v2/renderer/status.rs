@@ -14,8 +14,57 @@ pub struct StatusFields<'a> {
 }
 
 impl Renderer {
+    /// Top-level status dispatcher. Routes to the topmost open section's
+    /// pending-statuses buffer when one exists (so subjects can be
+    /// right-padded to a common column at section close — spec §13.3/§13.4);
+    /// otherwise writes immediately.
     pub fn render_status(&self, w: &dyn Writer, depth: usize, f: &StatusFields<'_>) {
         // Status(Fail) is shown even at Quiet — see spec §12.
+        if self.verbosity == Verbosity::Quiet && f.role != Role::Fail {
+            return;
+        }
+        // Buffer when a section is open AND this status's depth is inside
+        // (not equal to) the section's header_depth. The depth==header_depth
+        // case happens for re-routed top-level emits via `enforce_top_level_emit`;
+        // those should render immediately so the warning shape stays inline.
+        let buffered = {
+            let mut s = self.state.lock().unwrap_or_else(|e| e.into_inner());
+            let mut did_buffer = false;
+            if let Some(top) = s.section_stack.last_mut()
+                && depth > top.header_depth
+            {
+                // Inside the section's child region — buffer.
+                top.pending_statuses.push(super::section::BufferedStatus {
+                    role: f.role,
+                    subject: f.subject.to_string(),
+                    detail: f.detail.map(|d| d.to_string()),
+                    duration: f.duration,
+                    target: f.target.map(|p| p.to_path_buf()),
+                    depth,
+                });
+                did_buffer = true;
+            }
+            did_buffer
+        };
+        if buffered {
+            // Header emission must still happen so the section's header
+            // appears before any of its children. This is idempotent — only
+            // the first call writes anything.
+            self.flush_pending_section_headers(w);
+            return;
+        }
+        self.render_status_immediate(w, depth, f);
+        self.mark_top_level_blank_if_at_root();
+    }
+
+    /// Actually emit a Status line, without buffering. Used by the immediate
+    /// path AND by `flush_pending_statuses` when a section closes.
+    pub(crate) fn render_status_immediate(
+        &self,
+        w: &dyn Writer,
+        depth: usize,
+        f: &StatusFields<'_>,
+    ) {
         if self.verbosity == Verbosity::Quiet && f.role != Role::Fail {
             return;
         }
@@ -46,7 +95,6 @@ impl Renderer {
             line.push_str(&dim.to_string());
         }
         self.write_line(w, depth, &line);
-        self.mark_top_level_blank_if_at_root();
     }
 }
 
