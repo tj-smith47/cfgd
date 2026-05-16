@@ -1,0 +1,2 @@
+Actions
+  - revert /etc/hosts

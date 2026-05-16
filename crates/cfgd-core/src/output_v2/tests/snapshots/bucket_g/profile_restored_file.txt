@@ -1,0 +1,2 @@
+Restored
+  ✓ /home/tj/.gitconfig

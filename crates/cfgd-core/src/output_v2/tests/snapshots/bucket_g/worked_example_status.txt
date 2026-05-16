@@ -1,0 +1,15 @@
+Status
+
+Last Apply
+  Time     3m ago
+  Profile  dev
+  Result   12 succeeded, 0 failed
+
+Drift
+  ⚠ shell-config — file changed since apply (~/.zshrc)
+  ⚠ git-config   — file changed since apply (~/.gitconfig)
+
+Modules
+  ✓ base       (3 files, 5 pkgs)
+  ✓ dev-tools  (12 files, 18 pkgs)
+  ⚠ shell-config (4 files, 0 pkgs)

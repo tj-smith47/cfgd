@@ -1,0 +1,4 @@
+Next steps
+  - cfgd module create <name>   — create a module
+  - cfgd profile create <name>  — create a profile
+  - cfgd apply                  — apply configuration

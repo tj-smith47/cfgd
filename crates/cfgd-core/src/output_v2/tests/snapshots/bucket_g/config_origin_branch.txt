@@ -1,0 +1,7 @@
+Configuration
+
+Origins
+  Primary
+    Url     git@github.com:tj/dotfiles.git
+    Type    Git
+    Branch  main

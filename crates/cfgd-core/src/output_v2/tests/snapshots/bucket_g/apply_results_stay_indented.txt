@@ -1,0 +1,5 @@
+Apply
+
+Files
+  ✓ Wrote /etc/hosts
+  ⚠ Skipped /tmp/foo — permission denied

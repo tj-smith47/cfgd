@@ -1,0 +1,14 @@
+Apply
+  Config   /etc/cfgd.yaml
+  Profile  dev
+
+Files
+  ✓ Wrote /etc/hosts   (0.0s)
+  ⚠ Skipped /tmp/foo   — permission denied
+  ✓ Symlinked ~/.zshrc (0.0s)
+
+Packages
+  ✓ Installed nodejs@20 (4.1s)
+  ✓ Installed pnpm@8    (1.2s)
+
+✓ 5 actions applied (5.4s)

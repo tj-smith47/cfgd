@@ -17,7 +17,8 @@ mod bucket_d_themes;
 mod bucket_e_indent;
 #[cfg(feature = "test-helpers")]
 mod bucket_f_corners;
-// later: bucket_g_regression
+#[cfg(feature = "test-helpers")]
+mod bucket_g_regression;
 
 /// Macro: build a Printer via `for_test_doc()`, run the body with `&p` and
 /// `&cap`, then assert against `snapshots/<bucket>/<name>.txt`.

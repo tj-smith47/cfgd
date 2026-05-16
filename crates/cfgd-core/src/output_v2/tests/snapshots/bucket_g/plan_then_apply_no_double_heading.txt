@@ -1,0 +1,5 @@
+Apply
+  Profile  dev
+
+Files
+  ✓ Wrote /etc/hosts (0.1s)

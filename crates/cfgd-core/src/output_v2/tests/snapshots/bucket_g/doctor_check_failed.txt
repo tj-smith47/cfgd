@@ -1,0 +1,2 @@
+Doctor
+  ✗ shell-init — file missing

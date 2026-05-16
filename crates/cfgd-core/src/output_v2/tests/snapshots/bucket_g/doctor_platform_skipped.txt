@@ -1,0 +1,2 @@
+Doctor
+  — macos-defaults — not applicable on Linux

@@ -1,0 +1,9 @@
+Configuration
+
+Daemon
+  Reconcile
+    Interval    5m
+    On change   yes
+    Auto apply  yes
+  Sync
+    Interval  10m

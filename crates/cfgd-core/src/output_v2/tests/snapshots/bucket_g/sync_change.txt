@@ -1,0 +1,2 @@
+Changed
+  - config drift detected in /etc/foo

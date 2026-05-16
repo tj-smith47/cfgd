@@ -1,0 +1,2 @@
+Removed
+  — /home/tj/.old-rc

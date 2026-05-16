@@ -1,0 +1,13 @@
+Compliance Diff #4 → #5
+  Snapshot 1  2026-05-13 10:14:02 UTC
+  Snapshot 2  2026-05-14 09:02:11 UTC
+
+Added (2 check(s))
+  - hardening.firewall.enabled
+  - hardening.audit.enabled
+
+Removed (1 check(s))
+  - legacy.telnet.disabled
+
+Changed (1 check(s))
+  ✗ ssh.password-auth (Pass → Violation) — sshd_config sets PasswordAuthentication=yes

@@ -1,0 +1,13 @@
+Configuration
+  File     /etc/cfgd.yaml
+  Profile  dev
+
+Origins
+  Primary
+    Url     git@github.com:tj/dotfiles.git
+    Type    Git
+    Branch  main
+  Secondary
+    Url     git@github.com:tj/work.git
+    Type    Git
+    Branch  main
