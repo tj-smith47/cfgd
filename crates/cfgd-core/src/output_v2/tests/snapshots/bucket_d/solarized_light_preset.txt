@@ -1,7 +1,7 @@
 Status
 
-Profile  dev
-Modules  12
+  Profile  dev
+  Modules  12
 
 Drift
   ⚠ shell-config

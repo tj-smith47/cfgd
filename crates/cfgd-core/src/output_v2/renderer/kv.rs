@@ -48,7 +48,12 @@ impl Renderer {
         self.flush_pending_section_headers(w);
 
         // Honor blank-pending / leading without recursing through write_line.
-        {
+        // Also consume the heading-just-emitted flag: when the previous
+        // emission was a top-level heading and we're still at root, re-anchor
+        // this kv_block one level deeper so it visually nests under the
+        // heading (spec §13.1/§13.3/§13.4). Otherwise render at the requested
+        // depth.
+        let effective_depth = {
             let mut s = self.state.lock().unwrap_or_else(|e| e.into_inner());
             if s.leading {
                 s.leading = false;
@@ -57,9 +62,12 @@ impl Renderer {
                 w.write_line("");
                 s.blank_pending = false;
             }
-        }
+            let bump = depth == 0 && s.section_stack.is_empty() && s.last_was_top_heading;
+            s.last_was_top_heading = false;
+            if bump { depth + 1 } else { depth }
+        };
 
-        let prefix = "  ".repeat(depth);
+        let prefix = "  ".repeat(effective_depth);
         let key_col = pairs
             .iter()
             .map(|(k, _)| k.len())

@@ -42,6 +42,12 @@ pub(crate) struct RenderState {
     /// Buffered kvs awaiting a non-kv emission to flush as one aligned block.
     kv_buffer: Vec<(String, String)>,
     pub(crate) section_stack: Vec<crate::output_v2::renderer::section::SectionFrame>,
+    /// True iff the most recent emission was a top-level heading and no other
+    /// emission has happened since. Consumed by the next top-level kv_block,
+    /// which re-anchors the block at depth+1 so spec §13.1/§13.3/§13.4's
+    /// "kv_block indented under its heading" shape lands. Reset by any other
+    /// emission (status, section header, bullet, etc.).
+    pub(crate) last_was_top_heading: bool,
 }
 
 impl RenderState {
@@ -52,6 +58,7 @@ impl RenderState {
             leading: true,
             kv_buffer: Vec::new(),
             section_stack: Vec::new(),
+            last_was_top_heading: false,
         }
     }
 
@@ -164,6 +171,9 @@ impl Renderer {
             w.write_line("");
             s.blank_pending = false;
         }
+        // Any emission resets the heading-just-emitted flag. Heading itself
+        // sets the flag back true after this call returns.
+        s.last_was_top_heading = false;
         let prefix = "  ".repeat(depth);
         w.write_line(&format!("{}{}", prefix, body));
     }
@@ -207,6 +217,15 @@ impl Renderer {
         }
         let styled = self.theme.header.apply_to(text).to_string();
         self.write_line(w, 0, &styled);
+        // Set the heading-just-emitted flag AFTER write_line (which clears
+        // it). The next top-level kv_block consumes this to re-anchor itself
+        // at depth+1 — spec §13.1/§13.3/§13.4.
+        {
+            let mut s = self.state.lock().unwrap_or_else(|e| e.into_inner());
+            if s.section_stack.is_empty() {
+                s.last_was_top_heading = true;
+            }
+        }
         self.mark_top_level_blank_if_at_root();
     }
 
