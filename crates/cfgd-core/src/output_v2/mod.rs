@@ -36,6 +36,9 @@ pub mod prompts;
 
 pub mod raw;
 
+pub mod doc;
+pub use doc::{Doc, SectionBuilder, StatusFields};
+
 #[cfg(test)]
 mod tests {
     #[test]
