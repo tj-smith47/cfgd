@@ -43,6 +43,9 @@ pub mod render_doc;
 
 pub mod structured;
 
+#[cfg(feature = "test-helpers")]
+pub mod test_capture;
+
 #[cfg(test)]
 mod tests {
     #[test]

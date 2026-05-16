@@ -374,29 +374,7 @@ mod tests {
         assert!(!p.is_structured());
     }
 
-    use std::sync::Mutex;
-
-    use super::super::renderer::StringSink;
-
-    /// Build a Printer whose stderr sink is a captured StringSink. Production
-    /// `for_test`/`for_test_doc` come later; this is a per-test helper.
-    fn test_printer() -> (Printer, Arc<Mutex<String>>) {
-        let buf = Arc::new(Mutex::new(String::new()));
-        let sink: Arc<dyn Writer> = Arc::new(StringSink(buf.clone()));
-        let p = Printer {
-            renderer: Arc::new(Renderer::new(Theme::default(), Verbosity::Normal)),
-            output_format: OutputFormat::Table,
-            sink_stderr: sink.clone(),
-            sink_stdout: sink,
-            multi_progress: indicatif::MultiProgress::new(),
-            syntax_set: syntect::parsing::SyntaxSet::load_defaults_newlines(),
-            theme_set: syntect::highlighting::ThemeSet::load_defaults(),
-            test_doc_capture: None,
-            prompt_queue: None,
-        };
-        (p, buf)
-    }
-
+    #[cfg(feature = "test-helpers")]
     fn strip_ansi(s: &str) -> String {
         let bytes = s.as_bytes();
         let mut out = String::with_capacity(s.len());
@@ -415,9 +393,10 @@ mod tests {
         out
     }
 
+    #[cfg(feature = "test-helpers")]
     #[test]
     fn section_with_bullets_renders_indented() {
-        let (p, buf) = test_printer();
+        let (p, buf) = Printer::for_test_at(Verbosity::Normal);
         {
             let s = p.section("Files");
             s.bullet("foo.txt");
@@ -430,9 +409,10 @@ mod tests {
         assert!(out.contains("\n  - bar.txt\n"), "got: {out:?}");
     }
 
+    #[cfg(feature = "test-helpers")]
     #[test]
     fn section_or_collapse_with_no_emits_leaves_no_trace() {
-        let (p, buf) = test_printer();
+        let (p, buf) = Printer::for_test_at(Verbosity::Normal);
         {
             let _s = p.section_or_collapse("Empty");
         }
@@ -440,9 +420,10 @@ mod tests {
         assert!(buf.lock().unwrap().trim().is_empty());
     }
 
+    #[cfg(feature = "test-helpers")]
     #[test]
     fn nested_sections_indent_two_levels() {
-        let (p, buf) = test_printer();
+        let (p, buf) = Printer::for_test_at(Verbosity::Normal);
         {
             let outer = p.section("Outer");
             {
@@ -457,10 +438,11 @@ mod tests {
         assert!(out.contains("\n    - deep\n"));
     }
 
+    #[cfg(feature = "test-helpers")]
     #[test]
     fn render_doc_with_section_indents_correctly() {
         use super::super::doc::Doc;
-        let (p, buf) = test_printer();
+        let (p, buf) = Printer::for_test_at(Verbosity::Normal);
         let doc = Doc::new()
             .heading("Status")
             .kv("Profile", "dev")
@@ -474,10 +456,11 @@ mod tests {
         assert!(out.contains("\n  - foo.txt\n"));
     }
 
+    #[cfg(feature = "test-helpers")]
     #[test]
     fn empty_section_or_collapse_in_doc_leaves_no_trace() {
         use super::super::doc::Doc;
-        let (p, buf) = test_printer();
+        let (p, buf) = Printer::for_test_at(Verbosity::Normal);
         let doc = Doc::new()
             .heading("Status")
             .section_or_collapse::<_>("Empty", |s| s);
@@ -488,6 +471,7 @@ mod tests {
         assert!(!out.contains("Empty"), "got: {out:?}");
     }
 
+    #[cfg(feature = "test-helpers")]
     #[test]
     fn emit_json_writes_data_payload_to_stdout() {
         use super::super::doc::Doc;
@@ -495,29 +479,18 @@ mod tests {
         struct P {
             foo: u32,
         }
-        let buf = Arc::new(Mutex::new(String::new()));
-        let sink: Arc<dyn Writer> = Arc::new(super::super::renderer::StringSink(buf.clone()));
-        let p = Printer {
-            renderer: Arc::new(Renderer::new(Theme::default(), Verbosity::Normal)),
-            output_format: OutputFormat::Json,
-            sink_stderr: sink.clone(),
-            sink_stdout: sink,
-            multi_progress: indicatif::MultiProgress::new(),
-            syntax_set: syntect::parsing::SyntaxSet::load_defaults_newlines(),
-            theme_set: syntect::highlighting::ThemeSet::load_defaults(),
-            test_doc_capture: None,
-            prompt_queue: None,
-        };
+        let (p, buf) = Printer::for_test_with_format(OutputFormat::Json);
         let doc = Doc::new().heading("S").with_data(P { foo: 7 });
         p.emit(doc);
         let out = buf.lock().unwrap();
         assert!(out.contains("\"foo\": 7"), "got: {out:?}");
     }
 
+    #[cfg(feature = "test-helpers")]
     #[test]
     fn emit_table_writes_human_render() {
         use super::super::doc::Doc;
-        let (p, buf) = test_printer();
+        let (p, buf) = Printer::for_test_at(Verbosity::Normal);
         let doc = Doc::new().heading("Title").kv("k", "v");
         p.emit(doc);
         p.flush();
@@ -529,11 +502,12 @@ mod tests {
     /// In debug builds, a top-level emit reached while a section is open
     /// trips `debug_assert!` in `Renderer::enforce_top_level_emit`. We catch
     /// the panic to verify the assert fires.
+    #[cfg(feature = "test-helpers")]
     #[test]
     #[cfg(debug_assertions)]
     fn debug_mode_panics_on_top_level_emit_during_section() {
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let (p, _buf) = test_printer();
+            let (p, _buf) = Printer::for_test_at(Verbosity::Normal);
             let _s = p.section("Outer");
             p.heading("MidSection"); // debug_assert! fires
         }));
@@ -542,10 +516,11 @@ mod tests {
 
     /// In release builds, the assert is compiled out; the warn-once fires
     /// and the emit reroutes to the section's depth instead of column 0.
+    #[cfg(feature = "test-helpers")]
     #[test]
     #[cfg(not(debug_assertions))]
     fn release_mode_reroutes_top_level_emit_during_section() {
-        let (p, buf) = test_printer();
+        let (p, buf) = Printer::for_test_at(Verbosity::Normal);
         {
             let _s = p.section("Outer");
             p.heading("MidSection"); // would assert in debug; reroutes in release
