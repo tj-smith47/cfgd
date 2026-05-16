@@ -291,6 +291,13 @@ impl Printer {
         self.renderer.flush_kv_buffer(self.sink_stderr.as_ref());
     }
 
+    /// Force human render of a Doc to stderr, regardless of `output_format`.
+    /// Used by tests; production code should call `emit` (T24) which routes by
+    /// `OutputFormat` and falls back to this for human formats.
+    pub fn render(&self, doc: super::doc::Doc) {
+        super::render_doc::render_doc(&self.renderer, self.sink_stderr.as_ref(), &doc);
+    }
+
     // ----- Section entry points -----
 
     #[must_use = "section closes when SectionGuard is dropped; bind it"]
@@ -434,6 +441,37 @@ mod tests {
         assert!(out.contains("Outer\n"));
         assert!(out.contains("\n  Inner\n"));
         assert!(out.contains("\n    - deep\n"));
+    }
+
+    #[test]
+    fn render_doc_with_section_indents_correctly() {
+        use super::super::doc::Doc;
+        let (p, buf) = test_printer();
+        let doc = Doc::new()
+            .heading("Status")
+            .kv("Profile", "dev")
+            .section("Files", |s| s.bullet("foo.txt").bullet("bar.txt"));
+        p.render(doc);
+        p.flush();
+        let out = strip_ansi(&buf.lock().unwrap());
+        assert!(out.contains("Status\n"));
+        assert!(out.contains("Profile  dev"));
+        assert!(out.contains("Files\n"));
+        assert!(out.contains("\n  - foo.txt\n"));
+    }
+
+    #[test]
+    fn empty_section_or_collapse_in_doc_leaves_no_trace() {
+        use super::super::doc::Doc;
+        let (p, buf) = test_printer();
+        let doc = Doc::new()
+            .heading("Status")
+            .section_or_collapse::<_>("Empty", |s| s);
+        p.render(doc);
+        p.flush();
+        let out = strip_ansi(&buf.lock().unwrap());
+        assert!(out.contains("Status"));
+        assert!(!out.contains("Empty"), "got: {out:?}");
     }
 
     /// In debug builds, a top-level emit reached while a section is open

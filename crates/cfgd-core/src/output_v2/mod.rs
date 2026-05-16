@@ -39,6 +39,8 @@ pub mod raw;
 pub mod doc;
 pub use doc::{Doc, SectionBuilder, StatusFields};
 
+pub mod render_doc;
+
 #[cfg(test)]
 mod tests {
     #[test]
