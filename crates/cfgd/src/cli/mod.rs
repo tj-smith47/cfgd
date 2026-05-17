@@ -6,7 +6,7 @@ mod daemon;
 pub mod decide;
 mod diff;
 pub mod doctor;
-mod explain;
+pub mod explain;
 pub mod generate;
 mod helpers;
 pub mod init;
@@ -33,8 +33,6 @@ pub(in crate::cli) use helpers::*;
 pub(in crate::cli) use output_types::*;
 pub(in crate::cli) use plan_ops::*;
 pub(in crate::cli) use registry::*;
-#[cfg(test)]
-pub(in crate::cli) use source::display_pending_decisions;
 #[cfg(test)]
 pub(in crate::cli) use source::{
     DEFAULT_NONINTERACTIVE_PRIORITY, add_source_to_config, build_subscription_preview_input,
@@ -1618,7 +1616,7 @@ pub fn execute(
         Command::Explain {
             resource,
             recursive,
-        } => explain::cmd_explain(printer, resource.as_deref(), *recursive),
+        } => explain::cmd_explain(v2_printer, resource.as_deref(), *recursive),
         Command::Upgrade { check } => upgrade::cmd_upgrade(printer, *check),
         Command::Decide {
             action,

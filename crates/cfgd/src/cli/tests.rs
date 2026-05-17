@@ -995,8 +995,8 @@ fn format_conflict_preview_lines_preserves_input_order() {
 #[test]
 fn format_conflict_preview_lines_uses_two_space_indent() {
     // The output is indented under the "Conflicts with Current Config"
-    // subheader so the eye groups them. Two spaces is the convention
-    // shared with display_pending_decisions.
+    // subheader so the eye groups them. Two spaces is the project-wide
+    // indent convention.
     let conflicts = vec![conflict(
         "a",
         cfgd_core::composition::ResolutionType::Default,
@@ -4502,18 +4502,13 @@ fn execute_completions_fish() {
 
 #[test]
 fn execute_explain_command() {
-    let dir = tempfile::tempdir().unwrap();
-    let cli = Cli {
-        command: Some(Command::Explain {
-            resource: Some("config".to_string()),
-            recursive: false,
-        }),
-        ..test_cli(dir.path())
-    };
-    let (printer, buf) = Printer::for_test();
-
-    super::execute(&cli, &printer, &test_v2_printer()).unwrap();
-    let output = buf.lock().unwrap();
+    let h = CliTestHarness::builder().build();
+    let cli = h.cli_with_command(Command::Explain {
+        resource: Some("config".to_string()),
+        recursive: false,
+    });
+    super::execute(&cli, h.printer(), h.v2_printer()).unwrap();
+    let output = h.output();
     assert!(
         output.contains("Config") || output.contains("cfgd.yaml"),
         "explain config should describe config resource, got: {output}"
@@ -4522,18 +4517,13 @@ fn execute_explain_command() {
 
 #[test]
 fn execute_explain_profile() {
-    let dir = tempfile::tempdir().unwrap();
-    let cli = Cli {
-        command: Some(Command::Explain {
-            resource: Some("profile".to_string()),
-            recursive: false,
-        }),
-        ..test_cli(dir.path())
-    };
-    let (printer, buf) = Printer::for_test();
-
-    super::execute(&cli, &printer, &test_v2_printer()).unwrap();
-    let output = buf.lock().unwrap();
+    let h = CliTestHarness::builder().build();
+    let cli = h.cli_with_command(Command::Explain {
+        resource: Some("profile".to_string()),
+        recursive: false,
+    });
+    super::execute(&cli, h.printer(), h.v2_printer()).unwrap();
+    let output = h.output();
     assert!(
         output.contains("Profile") || output.contains("profile"),
         "explain profile should describe profile resource, got: {output}"
@@ -4542,18 +4532,13 @@ fn execute_explain_profile() {
 
 #[test]
 fn execute_explain_module() {
-    let dir = tempfile::tempdir().unwrap();
-    let cli = Cli {
-        command: Some(Command::Explain {
-            resource: Some("module".to_string()),
-            recursive: false,
-        }),
-        ..test_cli(dir.path())
-    };
-    let (printer, buf) = Printer::for_test();
-
-    super::execute(&cli, &printer, &test_v2_printer()).unwrap();
-    let output = buf.lock().unwrap();
+    let h = CliTestHarness::builder().build();
+    let cli = h.cli_with_command(Command::Explain {
+        resource: Some("module".to_string()),
+        recursive: false,
+    });
+    super::execute(&cli, h.printer(), h.v2_printer()).unwrap();
+    let output = h.output();
     assert!(
         output.contains("Module") || output.contains("module"),
         "explain module should describe module resource, got: {output}"
@@ -4562,21 +4547,15 @@ fn execute_explain_module() {
 
 #[test]
 fn execute_explain_no_resource_json_format_writes_structured_array() {
-    // is_structured() == true → cmd_explain's None-resource branch takes the
-    // path at explain/mod.rs:172-184: build Vec<ExplainOutput>, write_structured,
-    // return. The captured buffer should contain JSON for all known schemas.
-    let dir = tempfile::tempdir().unwrap();
-    let cli = Cli {
-        command: Some(Command::Explain {
-            resource: None,
-            recursive: false,
-        }),
-        output: OutputFormatArg(cfgd_core::output::OutputFormat::Json),
-        ..test_cli(dir.path())
-    };
-    let (printer, buf) = Printer::for_test_with_format(cfgd_core::output::OutputFormat::Json);
-    super::execute(&cli, &printer, &test_v2_printer()).unwrap();
-    let output = buf.lock().unwrap();
+    // Structured emit routes the index Doc's with_data payload (Vec<ExplainOutput>)
+    // through Printer::emit → emit_structured, producing a top-level JSON array.
+    let h = CliTestHarness::builder().json().build();
+    let cli = h.cli_with_command(Command::Explain {
+        resource: None,
+        recursive: false,
+    });
+    super::execute(&cli, h.printer(), h.v2_printer()).unwrap();
+    let output = h.output();
     assert!(
         output.trim().starts_with('[') && output.contains("\"kind\""),
         "should emit JSON array of schemas: {output}"
@@ -4585,21 +4564,15 @@ fn execute_explain_no_resource_json_format_writes_structured_array() {
 
 #[test]
 fn execute_explain_resource_json_format_writes_structured_object() {
-    // is_structured() == true + Some(resource) → mod.rs:223-232 builds a
-    // single ExplainOutput, write_structured, return. Buffer should contain
-    // a JSON object (not an array).
-    let dir = tempfile::tempdir().unwrap();
-    let cli = Cli {
-        command: Some(Command::Explain {
-            resource: Some("module".to_string()),
-            recursive: false,
-        }),
-        output: OutputFormatArg(cfgd_core::output::OutputFormat::Json),
-        ..test_cli(dir.path())
-    };
-    let (printer, buf) = Printer::for_test_with_format(cfgd_core::output::OutputFormat::Json);
-    super::execute(&cli, &printer, &test_v2_printer()).unwrap();
-    let output = buf.lock().unwrap();
+    // Structured emit routes the schema Doc's with_data payload (ExplainOutput)
+    // through Printer::emit → emit_structured, producing a top-level JSON object.
+    let h = CliTestHarness::builder().json().build();
+    let cli = h.cli_with_command(Command::Explain {
+        resource: Some("module".to_string()),
+        recursive: false,
+    });
+    super::execute(&cli, h.printer(), h.v2_printer()).unwrap();
+    let output = h.output();
     assert!(
         output.trim().starts_with('{') && output.contains("\"kind\""),
         "should emit JSON object: {output}"
@@ -4608,18 +4581,13 @@ fn execute_explain_resource_json_format_writes_structured_object() {
 
 #[test]
 fn execute_explain_no_resource() {
-    let dir = tempfile::tempdir().unwrap();
-    let cli = Cli {
-        command: Some(Command::Explain {
-            resource: None,
-            recursive: false,
-        }),
-        ..test_cli(dir.path())
-    };
-    let (printer, buf) = Printer::for_test();
-
-    super::execute(&cli, &printer, &test_v2_printer()).unwrap();
-    let output = buf.lock().unwrap();
+    let h = CliTestHarness::builder().build();
+    let cli = h.cli_with_command(Command::Explain {
+        resource: None,
+        recursive: false,
+    });
+    super::execute(&cli, h.printer(), h.v2_printer()).unwrap();
+    let output = h.output();
     assert!(
         output.contains("Available resource types")
             || output.contains("NAME")
@@ -9574,18 +9542,13 @@ spec:
 
 #[test]
 fn execute_explain_recursive() {
-    let dir = tempfile::tempdir().unwrap();
-    let cli = Cli {
-        command: Some(Command::Explain {
-            resource: Some("config".to_string()),
-            recursive: true,
-        }),
-        ..test_cli(dir.path())
-    };
-    let (printer, buf) = Printer::for_test();
-
-    super::execute(&cli, &printer, &test_v2_printer()).unwrap();
-    let output = buf.lock().unwrap();
+    let h = CliTestHarness::builder().build();
+    let cli = h.cli_with_command(Command::Explain {
+        resource: Some("config".to_string()),
+        recursive: true,
+    });
+    super::execute(&cli, h.printer(), h.v2_printer()).unwrap();
+    let output = h.output();
     assert!(
         output.contains("Config") || output.contains("config") || output.contains("spec"),
         "explain recursive for config should describe config resource, got: {output}"
@@ -12459,110 +12422,6 @@ fn display_policy_items_empty_prints_nothing() {
     assert!(
         output.is_empty(),
         "expected empty output for empty items, got: {output}"
-    );
-}
-
-// -----------------------------------------------------------------------
-// display_pending_decisions tests
-// -----------------------------------------------------------------------
-
-fn make_decision(
-    id: i64,
-    source: &str,
-    resource: &str,
-    tier: &str,
-    action: &str,
-    summary: &str,
-) -> cfgd_core::state::PendingDecision {
-    cfgd_core::state::PendingDecision {
-        id,
-        source: source.into(),
-        resource: resource.into(),
-        tier: tier.into(),
-        action: action.into(),
-        summary: summary.into(),
-        created_at: "2026-01-01T00:00:00Z".into(),
-        resolved_at: None,
-        resolution: None,
-    }
-}
-
-#[test]
-fn display_pending_decisions_groups_by_source() {
-    let (printer, buf) = Printer::for_test();
-    let decisions = vec![
-        make_decision(1, "alpha", "pkg/git", "required", "install", "Install git"),
-        make_decision(
-            2,
-            "alpha",
-            "pkg/curl",
-            "recommended",
-            "install",
-            "Install curl",
-        ),
-        make_decision(3, "beta", "env/EDITOR", "optional", "set", "Set EDITOR"),
-    ];
-    super::display_pending_decisions(&printer, &decisions);
-    let output = buf.lock().unwrap().clone();
-    // alpha has 2 items (plural)
-    assert!(
-        output.contains("alpha: 2 pending items"),
-        "missing 'alpha: 2 pending items' in: {output}"
-    );
-    // beta has 1 item (singular)
-    assert!(
-        output.contains("beta: 1 pending item"),
-        "missing 'beta: 1 pending item' in: {output}"
-    );
-    // Check individual items are listed
-    assert!(
-        output.contains("required pkg/git"),
-        "missing 'required pkg/git' in: {output}"
-    );
-    assert!(
-        output.contains("recommended pkg/curl"),
-        "missing 'recommended pkg/curl' in: {output}"
-    );
-    assert!(
-        output.contains("optional env/EDITOR"),
-        "missing 'optional env/EDITOR' in: {output}"
-    );
-    // Verify summary and action format
-    assert!(
-        output.contains("Install git (install)"),
-        "missing decision detail in: {output}"
-    );
-    assert!(
-        output.contains("Set EDITOR (set)"),
-        "missing decision detail in: {output}"
-    );
-}
-
-#[test]
-fn display_pending_decisions_single_item_singular() {
-    let (printer, buf) = Printer::for_test();
-    let decisions = vec![make_decision(
-        1,
-        "solo-source",
-        "file/bashrc",
-        "required",
-        "create",
-        "Create bashrc",
-    )];
-    super::display_pending_decisions(&printer, &decisions);
-    let output = buf.lock().unwrap().clone();
-    assert!(
-        output.contains("solo-source: 1 pending item\n")
-            || output.contains("solo-source: 1 pending item"),
-        "expected singular 'item' not 'items' in: {output}"
-    );
-    assert!(
-        !output.contains("pending items"),
-        "should not contain plural 'items' in: {output}"
-    );
-    assert!(
-        output.contains("required file/bashrc"),
-        "missing item detail in: {output}"
     );
 }
 
@@ -17216,104 +17075,6 @@ fn display_policy_items_honors_indent_prefix() {
     assert!(
         out.contains(">>>env: X"),
         "expected indent in output: {out}"
-    );
-}
-
-// ============================================================================
-// display_pending_decisions — grouped-by-source banner
-// ============================================================================
-
-fn make_pending(
-    source: &str,
-    resource: &str,
-    tier: &str,
-    action: &str,
-    summary: &str,
-) -> cfgd_core::state::PendingDecision {
-    cfgd_core::state::PendingDecision {
-        id: 1,
-        source: source.to_string(),
-        resource: resource.to_string(),
-        tier: tier.to_string(),
-        action: action.to_string(),
-        summary: summary.to_string(),
-        created_at: "2026-05-11T00:00:00Z".to_string(),
-        resolved_at: None,
-        resolution: None,
-    }
-}
-
-#[test]
-fn display_pending_decisions_groups_by_source_and_pluralizes_count() {
-    let (printer, buf) = cfgd_core::output::Printer::for_test();
-    let decisions = vec![
-        make_pending("acme", "pkg/curl", "recommended", "install", "install curl"),
-        make_pending("acme", "pkg/git", "recommended", "install", "install git"),
-        make_pending("widgetco", "pkg/vim", "required", "install", "install vim"),
-    ];
-    super::display_pending_decisions(&printer, &decisions);
-    let out = buf.lock().unwrap().clone();
-    // "acme: 2 pending items" — pluralized
-    assert!(
-        out.contains("acme: 2 pending items"),
-        "expected pluralized count for acme: {out}"
-    );
-    // "widgetco: 1 pending item" — singular (no 's')
-    assert!(
-        out.contains("widgetco: 1 pending item"),
-        "expected singular count for widgetco (no 's'): {out}"
-    );
-    assert!(!out.contains("widgetco: 1 pending items"));
-}
-
-#[test]
-fn display_pending_decisions_renders_item_tier_resource_summary_action() {
-    let (printer, buf) = cfgd_core::output::Printer::for_test();
-    let decisions = vec![make_pending(
-        "acme",
-        "pkg/curl",
-        "required",
-        "install",
-        "install curl 8.2",
-    )];
-    super::display_pending_decisions(&printer, &decisions);
-    let out = buf.lock().unwrap().clone();
-    // Pinned format: `  {tier} {resource} — {summary} ({action})`
-    assert!(out.contains("required pkg/curl"), "tier/resource: {out}");
-    assert!(out.contains("install curl 8.2"), "summary: {out}");
-    assert!(out.contains("(install)"), "action in parens: {out}");
-}
-
-#[test]
-fn display_pending_decisions_empty_input_emits_nothing() {
-    let (printer, buf) = cfgd_core::output::Printer::for_test();
-    super::display_pending_decisions(&printer, &[]);
-    let out = buf.lock().unwrap().clone();
-    assert!(
-        out.is_empty(),
-        "expected no output for empty decisions: {out:?}"
-    );
-}
-
-#[test]
-fn display_pending_decisions_orders_sources_alphabetically() {
-    // BTreeMap-backed grouping → sources surface in alpha order. cfgd's CLI
-    // promises this so users skimming a long list have a deterministic eye
-    // path.
-    let (printer, buf) = cfgd_core::output::Printer::for_test();
-    let decisions = vec![
-        make_pending("zebra", "x", "t", "a", "s"),
-        make_pending("alpha", "x", "t", "a", "s"),
-        make_pending("middle", "x", "t", "a", "s"),
-    ];
-    super::display_pending_decisions(&printer, &decisions);
-    let out = buf.lock().unwrap().clone();
-    let alpha = out.find("alpha:").expect("alpha section");
-    let middle = out.find("middle:").expect("middle section");
-    let zebra = out.find("zebra:").expect("zebra section");
-    assert!(
-        alpha < middle && middle < zebra,
-        "expected alpha < middle < zebra in: {out}"
     );
 }
 

@@ -94,6 +94,67 @@ fn decide_empty_human() {
 }
 
 #[test]
+fn decide_pending_multi_source_human() {
+    // BTreeMap-driven grouping pins alphabetical source order regardless of
+    // insertion order. Insert team-config → org-config → app-config; expect
+    // app-config → org-config → team-config in the rendered output.
+    let decisions = vec![
+        pending(
+            "team-config",
+            "packages.brew.curl",
+            "recommended",
+            "install",
+            "Install curl",
+        ),
+        pending("org-config", "env.EDITOR", "optional", "set", "Set EDITOR"),
+        pending(
+            "app-config",
+            "file/bashrc",
+            "required",
+            "create",
+            "Create bashrc",
+        ),
+    ];
+    let (printer, cap) = Printer::for_test_doc();
+    printer.emit(build_decide_list_doc(&decisions));
+    drop(printer);
+    let human = cap.human();
+    let app = human.find("app-config:").expect("app-config subsection");
+    let org = human.find("org-config:").expect("org-config subsection");
+    let team = human.find("team-config:").expect("team-config subsection");
+    assert!(
+        app < org && org < team,
+        "expected app-config < org-config < team-config in:\n{human}"
+    );
+    cap.assert_human_snapshot_in(Path::new(SNAPSHOT_ROOT), "decide/pending_multi_source.txt");
+}
+
+#[test]
+fn decide_pending_single_item_human() {
+    // Singular `1 pending item` (no trailing 's') for exactly one item per source.
+    let decisions = vec![pending(
+        "solo-source",
+        "file/bashrc",
+        "required",
+        "create",
+        "Create bashrc",
+    )];
+    let (printer, cap) = Printer::for_test_doc();
+    printer.emit(build_decide_list_doc(&decisions));
+    drop(printer);
+    let human = cap.human();
+    assert!(
+        human.contains("solo-source: 1 pending item"),
+        "expected singular 'item', got:\n{human}"
+    );
+    assert!(
+        !human.contains("1 pending items"),
+        "must not pluralize for count=1, got:\n{human}"
+    );
+    cap.assert_human_snapshot_in(Path::new(SNAPSHOT_ROOT), "decide/pending_single_item.txt");
+}
+
+#[test]
 fn decide_after_accept_human() {
     let (printer, cap) = Printer::for_test_doc();
     printer.emit(build_decide_bulk_doc("accepted", 2, None));

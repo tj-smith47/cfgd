@@ -344,35 +344,6 @@ pub(crate) fn display_policy_items_v2(
     }
 }
 
-// Retained for legacy tests in `cli/tests.rs` that pin the v1 grouped-by-source
-// banner format; gated behind cfg(test) so production builds drop it. R3 will
-// retire the v1 helper together with its tests when output_v2 is the sole surface.
-#[cfg(test)]
-pub(crate) fn display_pending_decisions(
-    printer: &Printer,
-    decisions: &[cfgd_core::state::PendingDecision],
-) {
-    let mut by_source: std::collections::BTreeMap<&str, Vec<&cfgd_core::state::PendingDecision>> =
-        std::collections::BTreeMap::new();
-    for d in decisions {
-        by_source.entry(&d.source).or_default().push(d);
-    }
-    for (source_name, items) in &by_source {
-        printer.info(&format!(
-            "{}: {} pending item{}",
-            source_name,
-            items.len(),
-            if items.len() == 1 { "" } else { "s" }
-        ));
-        for item in items {
-            printer.info(&format!(
-                "  {} {} — {} ({})",
-                item.tier, item.resource, item.summary, item.action
-            ));
-        }
-    }
-}
-
 /// Append a per-source breakdown of pending decisions to a [`SectionBuilder`].
 ///
 /// Grouped by source name (BTreeMap → alphabetical order). Each source becomes

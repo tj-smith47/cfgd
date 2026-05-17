@@ -5,7 +5,7 @@ use cfgd_core::state::PendingDecision;
 /// Bulk-resolution payload (`accept --all` or `accept --source <name>`).
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct DecideBulkOutput {
+pub(super) struct DecideBulkOutput {
     pub resolution: String,
     pub count: usize,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -15,7 +15,7 @@ pub struct DecideBulkOutput {
 /// Single-resource resolution payload (`accept <resource>` / `reject <resource>`).
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct DecideSingleOutput {
+pub(super) struct DecideSingleOutput {
     pub resolution: String,
     pub resource: String,
     pub resolved: bool,
@@ -24,7 +24,7 @@ pub struct DecideSingleOutput {
 /// Listing payload (bare `cfgd decide` with no args).
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct DecideListOutput {
+pub(super) struct DecideListOutput {
     pub decisions: Vec<PendingDecision>,
 }
 
