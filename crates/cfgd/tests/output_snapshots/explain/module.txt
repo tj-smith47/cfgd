@@ -1,0 +1,15 @@
+Module (Module)
+
+Self-contained, portable configuration unit. Defines packages, files, and scripts with cross-platform resolution and dependency management.
+
+apiVersion  cfgd.io/v1alpha1
+kind        Module
+location    modules/<name>/module.yaml
+
+FIELDS (under spec)
+  depends <[]string>              — Module dependencies (resolved via topological sort)
+  packages <[]object> [+]         — Platform-agnostic package declarations
+  files <[]object> [+]            — Files to manage (local or git sources)
+  env <list[{name, value}]>       — Environment variables merged with profile env (module wins on conflict by name)
+  aliases <list[{name, command}]> — Shell aliases merged with profile aliases (module wins on conflict by name)
+  scripts <object> [+]            — Lifecycle scripts

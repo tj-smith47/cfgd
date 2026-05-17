@@ -1,0 +1,105 @@
+{
+  "api_version": "cfgd.io/v1alpha1",
+  "description": "Self-contained, portable configuration unit. Defines packages, files, and scripts with cross-platform resolution and dependency management.",
+  "fields": [
+    {
+      "description": "Module dependencies (resolved via topological sort)",
+      "name": "depends",
+      "required": false,
+      "type": "[]string"
+    },
+    {
+      "children": [
+        {
+          "description": "Canonical package name",
+          "name": "name",
+          "required": true,
+          "type": "string"
+        },
+        {
+          "description": "Minimum required version (semver)",
+          "name": "minVersion",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "description": "Preferred package managers in order (e.g., [brew, apt, script])",
+          "name": "prefer",
+          "required": false,
+          "type": "[]string"
+        },
+        {
+          "description": "Manager-specific package names (e.g., {apt: fd-find})",
+          "name": "aliases",
+          "required": false,
+          "type": "map[string]string"
+        },
+        {
+          "description": "Inline install script or path (used when prefer includes 'script')",
+          "name": "script",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "description": "Platform filter: linux, macos, freebsd, ubuntu, arch, x86_64, aarch64",
+          "name": "platforms",
+          "required": false,
+          "type": "[]string"
+        }
+      ],
+      "description": "Platform-agnostic package declarations",
+      "name": "packages",
+      "required": false,
+      "type": "[]object"
+    },
+    {
+      "children": [
+        {
+          "description": "Source path (local relative or git URL with @tag, ?ref=, //subdir)",
+          "name": "source",
+          "required": true,
+          "type": "string"
+        },
+        {
+          "description": "Target path on the machine",
+          "name": "target",
+          "required": true,
+          "type": "string"
+        }
+      ],
+      "description": "Files to manage (local or git sources)",
+      "name": "files",
+      "required": false,
+      "type": "[]object"
+    },
+    {
+      "description": "Environment variables merged with profile env (module wins on conflict by name)",
+      "name": "env",
+      "required": false,
+      "type": "list[{name, value}]"
+    },
+    {
+      "description": "Shell aliases merged with profile aliases (module wins on conflict by name)",
+      "name": "aliases",
+      "required": false,
+      "type": "list[{name, command}]"
+    },
+    {
+      "children": [
+        {
+          "description": "Scripts to run after module is applied",
+          "name": "postApply",
+          "required": false,
+          "type": "[]string"
+        }
+      ],
+      "description": "Lifecycle scripts",
+      "name": "scripts",
+      "required": false,
+      "type": "object"
+    }
+  ],
+  "kind": "Module",
+  "location": "modules/<name>/module.yaml",
+  "name": "Module"
+}

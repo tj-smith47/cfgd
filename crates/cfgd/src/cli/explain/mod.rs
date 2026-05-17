@@ -1,38 +1,38 @@
 use serde::Serialize;
 
-use super::*;
+use cfgd_core::output_v2::{Doc, Printer as PrinterV2, Role, SectionBuilder, renderer::Table};
 
 // cfgd explain — schema documentation for all resource types
 // ---------------------------------------------------------------------------
 
 /// A field in a resource schema.
-pub(super) struct SchemaField {
+pub struct SchemaField {
     /// YAML field name (camelCase)
-    pub(super) name: &'static str,
+    pub name: &'static str,
     /// Field type description
-    pub(super) type_desc: &'static str,
+    pub type_desc: &'static str,
     /// Whether the field is required
-    pub(super) required: bool,
+    pub required: bool,
     /// Short description
-    pub(super) description: &'static str,
+    pub description: &'static str,
     /// Nested fields (for objects)
-    pub(super) children: &'static [SchemaField],
+    pub children: &'static [SchemaField],
 }
 
 /// A top-level resource type.
-pub(super) struct ResourceSchema {
+pub struct ResourceSchema {
     /// Display name
-    pub(super) name: &'static str,
+    pub name: &'static str,
     /// apiVersion value
-    pub(super) api_version: &'static str,
+    pub api_version: &'static str,
     /// kind value
-    pub(super) kind: &'static str,
+    pub kind: &'static str,
     /// File location hint
-    pub(super) location: &'static str,
+    pub location: &'static str,
     /// Short description
-    pub(super) description: &'static str,
+    pub description: &'static str,
     /// Top-level fields under spec (or root for non-KRM)
-    pub(super) fields: &'static [SchemaField],
+    pub fields: &'static [SchemaField],
 }
 
 // --- Per-schema submodules ---
@@ -70,7 +70,7 @@ static ALL_SCHEMAS: &[&ResourceSchema] = &[
 ];
 
 /// Lookup table mapping user-facing names to schemas (case-insensitive).
-fn find_schema(name: &str) -> Option<&'static ResourceSchema> {
+pub fn find_schema(name: &str) -> Option<&'static ResourceSchema> {
     let lower = name.to_lowercase();
     ALL_SCHEMAS
         .iter()
@@ -108,46 +108,32 @@ fn resolve_field_path<'a>(
     None
 }
 
-fn print_field(printer: &Printer, field: &SchemaField, indent: usize, recursive: bool) {
-    let prefix = " ".repeat(indent);
-    let req = if field.required { " (required)" } else { "" };
-    let has_children = if !field.children.is_empty() && !recursive {
-        " [+]"
-    } else {
-        ""
-    };
-    printer.info(&format!(
-        "{}{} <{}>{}{}",
-        prefix, field.name, field.type_desc, req, has_children
-    ));
-    printer.info(&format!("{}  {}", prefix, field.description));
-
-    if recursive && !field.children.is_empty() {
-        for child in field.children {
-            print_field(printer, child, indent + 2, true);
-        }
-    }
+#[derive(Serialize)]
+pub struct ExplainOutput {
+    pub name: &'static str,
+    pub api_version: &'static str,
+    pub kind: &'static str,
+    pub location: &'static str,
+    pub description: &'static str,
+    pub fields: Vec<ExplainField>,
 }
 
 #[derive(Serialize)]
-struct ExplainOutput {
-    name: &'static str,
-    api_version: &'static str,
-    kind: &'static str,
-    location: &'static str,
-    description: &'static str,
-    fields: Vec<ExplainField>,
-}
-
-#[derive(Serialize)]
-struct ExplainField {
-    name: &'static str,
+pub struct ExplainField {
+    pub name: &'static str,
     #[serde(rename = "type")]
-    type_desc: &'static str,
-    required: bool,
-    description: &'static str,
+    pub type_desc: &'static str,
+    pub required: bool,
+    pub description: &'static str,
     #[serde(skip_serializing_if = "Vec::is_empty")]
-    children: Vec<ExplainField>,
+    pub children: Vec<ExplainField>,
+}
+
+/// Drill-down payload (`cfgd explain <resource>.<field.path>`).
+#[derive(Serialize)]
+pub struct ExplainDrilldownOutput {
+    pub path: String,
+    pub fields: Vec<ExplainField>,
 }
 
 fn schema_field_to_explain(field: &SchemaField) -> ExplainField {
@@ -160,134 +146,156 @@ fn schema_field_to_explain(field: &SchemaField) -> ExplainField {
     }
 }
 
+fn schema_to_output(schema: &ResourceSchema) -> ExplainOutput {
+    ExplainOutput {
+        name: schema.name,
+        api_version: schema.api_version,
+        kind: schema.kind,
+        location: schema.location,
+        description: schema.description,
+        fields: schema.fields.iter().map(schema_field_to_explain).collect(),
+    }
+}
+
+/// Append a schema field as a Status row, recursively nesting children under a
+/// subsection when `recursive` is set. Nested indentation comes from the
+/// renderer's section depth — never manual whitespace.
+fn append_field(s: SectionBuilder, f: &SchemaField, recursive: bool) -> SectionBuilder {
+    let req = if f.required { " (required)" } else { "" };
+    let leaf = if !f.children.is_empty() && !recursive {
+        " [+]"
+    } else {
+        ""
+    };
+    let header = format!("{} <{}>{}{}", f.name, f.type_desc, req, leaf);
+    let s = s.status_with(Role::Info, header, |sf| sf.detail(f.description));
+    if recursive && !f.children.is_empty() {
+        s.subsection(f.name, |sub| {
+            f.children
+                .iter()
+                .fold(sub, |sub, c| append_field(sub, c, true))
+        })
+    } else {
+        s
+    }
+}
+
+/// Build the `cfgd explain` (no args) Doc — lists all known schemas.
+pub fn build_explain_index_doc() -> Doc {
+    let schemas: Vec<ExplainOutput> = ALL_SCHEMAS.iter().map(|s| schema_to_output(s)).collect();
+    let mut table = Table::new(["NAME", "API/KIND", "LOCATION"]);
+    for s in ALL_SCHEMAS {
+        table = table.row([
+            s.name.to_string(),
+            format!("{}/{}", s.api_version, s.kind),
+            s.location.to_string(),
+        ]);
+    }
+    Doc::new()
+        .heading("Available resource types")
+        .table(table)
+        .hint("Use 'cfgd explain <resource>' for details")
+        .hint("Use 'cfgd explain <resource>.<field>' to drill into a field")
+        .hint("Use 'cfgd explain <resource> --recursive' for all fields expanded")
+        .with_data(schemas)
+}
+
+/// Build the `cfgd explain <resource>` Doc — schema overview + top-level fields.
+pub fn build_explain_schema_doc(schema: &ResourceSchema, recursive: bool) -> Doc {
+    let output = schema_to_output(schema);
+    Doc::new()
+        .heading(format!("{} ({})", schema.name, schema.kind))
+        .status(Role::Info, schema.description)
+        .kv_block([
+            ("apiVersion", schema.api_version),
+            ("kind", schema.kind),
+            ("location", schema.location),
+        ])
+        .section("FIELDS (under spec)", |s| {
+            schema
+                .fields
+                .iter()
+                .fold(s, |s, f| append_field(s, f, recursive))
+        })
+        .with_data(output)
+}
+
+/// Build the `cfgd explain <resource>.<field.path>` Doc — drill-in view.
+pub fn build_explain_drilldown_doc(
+    schema: &ResourceSchema,
+    field_path: &[&str],
+    fields: &[SchemaField],
+    recursive: bool,
+) -> Doc {
+    let path_str = format!(
+        "{}.spec.{}",
+        schema.name.to_lowercase(),
+        field_path.join(".")
+    );
+    let mut doc = Doc::new().heading(path_str.clone());
+    if fields.len() == 1 && fields[0].children.is_empty() {
+        let f = &fields[0];
+        let req = if f.required { " (required)" } else { "" };
+        doc = doc
+            .kv("field", f.name)
+            .kv("type", format!("{}{}", f.type_desc, req))
+            .status(Role::Info, f.description);
+    } else {
+        doc = doc.section("Fields", |s| {
+            fields.iter().fold(s, |s, f| append_field(s, f, recursive))
+        });
+    }
+    doc.with_data(ExplainDrilldownOutput {
+        path: path_str,
+        fields: fields.iter().map(schema_field_to_explain).collect(),
+    })
+}
+
 pub(super) fn cmd_explain(
-    printer: &Printer,
+    v2_printer: &PrinterV2,
     resource: Option<&str>,
     recursive: bool,
 ) -> anyhow::Result<()> {
     let resource = match resource {
         Some(r) => r,
         None => {
-            if printer.is_structured() {
-                let schemas: Vec<ExplainOutput> = ALL_SCHEMAS
-                    .iter()
-                    .map(|s| ExplainOutput {
-                        name: s.name,
-                        api_version: s.api_version,
-                        kind: s.kind,
-                        location: s.location,
-                        description: s.description,
-                        fields: s.fields.iter().map(schema_field_to_explain).collect(),
-                    })
-                    .collect();
-                printer.write_structured(&schemas);
-                return Ok(());
-            }
-            // List all available resource types
-            printer.header("Available resource types");
-            let rows: Vec<Vec<String>> = ALL_SCHEMAS
-                .iter()
-                .map(|s| {
-                    vec![
-                        s.name.to_string(),
-                        format!("{}/{}", s.api_version, s.kind),
-                        s.location.to_string(),
-                    ]
-                })
-                .collect();
-            printer.table(&["NAME", "API/KIND", "LOCATION"], &rows);
-            printer.newline();
-            printer.info("Use 'cfgd explain <resource>' for details");
-            printer.info("Use 'cfgd explain <resource>.<field>' to drill into a field");
-            printer.info("Use 'cfgd explain <resource> --recursive' for all fields expanded");
+            v2_printer.emit(build_explain_index_doc());
             return Ok(());
         }
     };
 
-    // Split resource.field.path
     let parts: Vec<&str> = resource.split('.').collect();
     let resource_name = parts[0];
     let field_path = &parts[1..];
 
-    let schema = match find_schema(resource_name) {
-        Some(s) => s,
-        None => {
-            anyhow::bail!(
-                "Unknown resource type '{}'. Run 'cfgd explain' to see available types.",
-                resource_name
-            );
-        }
-    };
+    let schema = find_schema(resource_name).ok_or_else(|| {
+        anyhow::anyhow!(
+            "Unknown resource type '{}'. Run 'cfgd explain' to see available types.",
+            resource_name
+        )
+    })?;
 
-    if printer.is_structured() {
-        let output = ExplainOutput {
-            name: schema.name,
-            api_version: schema.api_version,
-            kind: schema.kind,
-            location: schema.location,
-            description: schema.description,
-            fields: schema.fields.iter().map(schema_field_to_explain).collect(),
-        };
-        printer.write_structured(&output);
-        return Ok(());
-    }
-
-    // If there's a field path starting with "spec", skip it since we show spec fields directly
-    let field_path = if !field_path.is_empty() && field_path[0] == "spec" {
+    // The schema lists fields under `spec` directly; `module.spec.packages`
+    // resolves identically to `module.packages` so users can paste either form.
+    let field_path: &[&str] = if !field_path.is_empty() && field_path[0] == "spec" {
         &field_path[1..]
     } else {
         field_path
     };
 
-    if field_path.is_empty() {
-        // Show resource overview + top-level fields
-        printer.header(&format!("{} ({})", schema.name, schema.kind));
-        printer.info(schema.description);
-        printer.newline();
-        printer.key_value("apiVersion", schema.api_version);
-        printer.key_value("kind", schema.kind);
-        printer.key_value("location", schema.location);
-        printer.newline();
-        printer.subheader("FIELDS (under spec):");
-        printer.newline();
-
-        for field in schema.fields {
-            print_field(printer, field, 0, recursive);
-        }
+    let doc = if field_path.is_empty() {
+        build_explain_schema_doc(schema, recursive)
     } else {
-        // Drill into a specific field path
-        match resolve_field_path(schema.fields, field_path) {
-            Some(fields) => {
-                let path_str = format!(
-                    "{}.spec.{}",
-                    schema.name.to_lowercase(),
-                    field_path.join(".")
-                );
-                printer.header(&path_str);
-
-                if fields.len() == 1 && fields[0].children.is_empty() {
-                    // Leaf field
-                    let f = &fields[0];
-                    let req = if f.required { " (required)" } else { "" };
-                    printer.key_value("field", f.name);
-                    printer.key_value("type", &format!("{}{}", f.type_desc, req));
-                    printer.info(f.description);
-                } else {
-                    for field in fields {
-                        print_field(printer, field, 0, recursive);
-                    }
-                }
-            }
-            None => {
-                anyhow::bail!(
-                    "Unknown field path '{}.{}'. Use 'cfgd explain {}' to see available fields.",
-                    resource_name,
-                    field_path.join("."),
-                    resource_name,
-                );
-            }
-        }
-    }
-
+        let fields = resolve_field_path(schema.fields, field_path).ok_or_else(|| {
+            anyhow::anyhow!(
+                "Unknown field path '{}.{}'. Use 'cfgd explain {}' to see available fields.",
+                resource_name,
+                field_path.join("."),
+                resource_name,
+            )
+        })?;
+        build_explain_drilldown_doc(schema, field_path, fields, recursive)
+    };
+    v2_printer.emit(doc);
     Ok(())
 }

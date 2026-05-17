@@ -1,0 +1,18 @@
+Available resource types
+
+NAME           API/KIND                        LOCATION                              
+─────────────────────────────────────────────────────────────────────────────────────
+Module         cfgd.io/v1alpha1/Module         modules/<name>/module.yaml            
+Profile        cfgd.io/v1alpha1/Profile        profiles/<name>.yaml                  
+CfgdConfig     cfgd.io/v1alpha1/Config         cfgd.yaml                             
+ConfigSource   cfgd.io/v1alpha1/ConfigSource   cfgd-source.yaml (in source repo root)
+MachineConfig  cfgd.io/v1alpha1/MachineConfig  Kubernetes CRD (cfgd-operator)        
+ConfigPolicy   cfgd.io/v1alpha1/ConfigPolicy   Kubernetes CRD (cfgd-operator)        
+DriftAlert     cfgd.io/v1alpha1/DriftAlert     Kubernetes CRD (cfgd-operator)        
+TeamConfig     cfgd.io/v1alpha1/TeamConfig     Crossplane Composite Resource (XR)    
+
+→ Use 'cfgd explain <resource>' for details
+
+→ Use 'cfgd explain <resource>.<field>' to drill into a field
+
+→ Use 'cfgd explain <resource> --recursive' for all fields expanded

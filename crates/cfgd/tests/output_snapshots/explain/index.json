@@ -1,0 +1,1700 @@
+[
+  {
+    "api_version": "cfgd.io/v1alpha1",
+    "description": "Self-contained, portable configuration unit. Defines packages, files, and scripts with cross-platform resolution and dependency management.",
+    "fields": [
+      {
+        "description": "Module dependencies (resolved via topological sort)",
+        "name": "depends",
+        "required": false,
+        "type": "[]string"
+      },
+      {
+        "children": [
+          {
+            "description": "Canonical package name",
+            "name": "name",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "description": "Minimum required version (semver)",
+            "name": "minVersion",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "description": "Preferred package managers in order (e.g., [brew, apt, script])",
+            "name": "prefer",
+            "required": false,
+            "type": "[]string"
+          },
+          {
+            "description": "Manager-specific package names (e.g., {apt: fd-find})",
+            "name": "aliases",
+            "required": false,
+            "type": "map[string]string"
+          },
+          {
+            "description": "Inline install script or path (used when prefer includes 'script')",
+            "name": "script",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "description": "Platform filter: linux, macos, freebsd, ubuntu, arch, x86_64, aarch64",
+            "name": "platforms",
+            "required": false,
+            "type": "[]string"
+          }
+        ],
+        "description": "Platform-agnostic package declarations",
+        "name": "packages",
+        "required": false,
+        "type": "[]object"
+      },
+      {
+        "children": [
+          {
+            "description": "Source path (local relative or git URL with @tag, ?ref=, //subdir)",
+            "name": "source",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "description": "Target path on the machine",
+            "name": "target",
+            "required": true,
+            "type": "string"
+          }
+        ],
+        "description": "Files to manage (local or git sources)",
+        "name": "files",
+        "required": false,
+        "type": "[]object"
+      },
+      {
+        "description": "Environment variables merged with profile env (module wins on conflict by name)",
+        "name": "env",
+        "required": false,
+        "type": "list[{name, value}]"
+      },
+      {
+        "description": "Shell aliases merged with profile aliases (module wins on conflict by name)",
+        "name": "aliases",
+        "required": false,
+        "type": "list[{name, command}]"
+      },
+      {
+        "children": [
+          {
+            "description": "Scripts to run after module is applied",
+            "name": "postApply",
+            "required": false,
+            "type": "[]string"
+          }
+        ],
+        "description": "Lifecycle scripts",
+        "name": "scripts",
+        "required": false,
+        "type": "object"
+      }
+    ],
+    "kind": "Module",
+    "location": "modules/<name>/module.yaml",
+    "name": "Module"
+  },
+  {
+    "api_version": "cfgd.io/v1alpha1",
+    "description": "Defines the desired state for a machine: packages, files, system settings, secrets, and scripts. Supports inheritance for layered configuration.",
+    "fields": [
+      {
+        "description": "Ordered list of parent profiles (later overrides earlier)",
+        "name": "inherits",
+        "required": false,
+        "type": "[]string"
+      },
+      {
+        "description": "Modules to include (local names or registry/module references)",
+        "name": "modules",
+        "required": false,
+        "type": "[]string"
+      },
+      {
+        "description": "Environment variables (name/value pairs) available in templates and written to ~/.cfgd.env",
+        "name": "env",
+        "required": false,
+        "type": "list[{name, value}]"
+      },
+      {
+        "description": "Shell aliases written to ~/.cfgd.env as `alias name=\"command\"` (fish: `abbr -a name command`)",
+        "name": "aliases",
+        "required": false,
+        "type": "list[{name, command}]"
+      },
+      {
+        "children": [
+          {
+            "children": [
+              {
+                "description": "Path to Brewfile (relative to config repo root)",
+                "name": "file",
+                "required": false,
+                "type": "string"
+              },
+              {
+                "description": "Homebrew taps to add",
+                "name": "taps",
+                "required": false,
+                "type": "[]string"
+              },
+              {
+                "description": "Homebrew formulae to install",
+                "name": "formulae",
+                "required": false,
+                "type": "[]string"
+              },
+              {
+                "description": "Homebrew casks to install",
+                "name": "casks",
+                "required": false,
+                "type": "[]string"
+              }
+            ],
+            "description": "Homebrew packages",
+            "name": "brew",
+            "required": false,
+            "type": "object"
+          },
+          {
+            "children": [
+              {
+                "description": "Path to package list file (one per line)",
+                "name": "file",
+                "required": false,
+                "type": "string"
+              },
+              {
+                "description": "Packages to install",
+                "name": "packages",
+                "required": false,
+                "type": "[]string"
+              }
+            ],
+            "description": "APT packages (Debian/Ubuntu)",
+            "name": "apt",
+            "required": false,
+            "type": "object"
+          },
+          {
+            "children": [
+              {
+                "description": "Path to Cargo.toml to read dependencies from",
+                "name": "file",
+                "required": false,
+                "type": "string"
+              },
+              {
+                "description": "Packages to install",
+                "name": "packages",
+                "required": false,
+                "type": "[]string"
+              }
+            ],
+            "description": "Cargo/Rust packages",
+            "name": "cargo",
+            "required": false,
+            "type": "[]string | object"
+          },
+          {
+            "children": [
+              {
+                "description": "Path to package.json",
+                "name": "file",
+                "required": false,
+                "type": "string"
+              },
+              {
+                "description": "Global packages to install",
+                "name": "global",
+                "required": false,
+                "type": "[]string"
+              }
+            ],
+            "description": "NPM global packages",
+            "name": "npm",
+            "required": false,
+            "type": "object"
+          },
+          {
+            "description": "pipx Python packages",
+            "name": "pipx",
+            "required": false,
+            "type": "[]string"
+          },
+          {
+            "description": "DNF packages (Fedora/RHEL)",
+            "name": "dnf",
+            "required": false,
+            "type": "[]string"
+          },
+          {
+            "description": "APK packages (Alpine)",
+            "name": "apk",
+            "required": false,
+            "type": "[]string"
+          },
+          {
+            "description": "Pacman packages (Arch/Manjaro)",
+            "name": "pacman",
+            "required": false,
+            "type": "[]string"
+          },
+          {
+            "description": "Zypper packages (openSUSE/SLES)",
+            "name": "zypper",
+            "required": false,
+            "type": "[]string"
+          },
+          {
+            "description": "Yum packages (RHEL 7/CentOS 7)",
+            "name": "yum",
+            "required": false,
+            "type": "[]string"
+          },
+          {
+            "description": "pkg packages (FreeBSD)",
+            "name": "pkg",
+            "required": false,
+            "type": "[]string"
+          },
+          {
+            "children": [
+              {
+                "description": "Snap packages to install",
+                "name": "packages",
+                "required": false,
+                "type": "[]string"
+              },
+              {
+                "description": "Snap packages to install with --classic",
+                "name": "classic",
+                "required": false,
+                "type": "[]string"
+              }
+            ],
+            "description": "Snap packages (Ubuntu)",
+            "name": "snap",
+            "required": false,
+            "type": "object"
+          },
+          {
+            "children": [
+              {
+                "description": "Flatpak app IDs (reverse-DNS)",
+                "name": "packages",
+                "required": false,
+                "type": "[]string"
+              },
+              {
+                "description": "Flatpak remote (default: flathub)",
+                "name": "remote",
+                "required": false,
+                "type": "string"
+              }
+            ],
+            "description": "Flatpak packages",
+            "name": "flatpak",
+            "required": false,
+            "type": "object"
+          },
+          {
+            "description": "Nix packages",
+            "name": "nix",
+            "required": false,
+            "type": "[]string"
+          },
+          {
+            "description": "Go packages (go install)",
+            "name": "go",
+            "required": false,
+            "type": "[]string"
+          },
+          {
+            "description": "Windows Package Manager (winget) packages by ID (Windows only)",
+            "name": "winget",
+            "required": false,
+            "type": "[]string"
+          },
+          {
+            "description": "Chocolatey packages (Windows only)",
+            "name": "chocolatey",
+            "required": false,
+            "type": "[]string"
+          },
+          {
+            "description": "Scoop packages (Windows only)",
+            "name": "scoop",
+            "required": false,
+            "type": "[]string"
+          },
+          {
+            "children": [
+              {
+                "description": "Manager name",
+                "name": "name",
+                "required": true,
+                "type": "string"
+              },
+              {
+                "description": "Shell command to check availability",
+                "name": "check",
+                "required": true,
+                "type": "string"
+              },
+              {
+                "description": "Shell command to list installed packages (one per line)",
+                "name": "listInstalled",
+                "required": true,
+                "type": "string"
+              },
+              {
+                "description": "Shell command template to install ({packages} or {package})",
+                "name": "install",
+                "required": true,
+                "type": "string"
+              },
+              {
+                "description": "Shell command template to uninstall",
+                "name": "uninstall",
+                "required": true,
+                "type": "string"
+              },
+              {
+                "description": "Shell command to update all packages",
+                "name": "update",
+                "required": false,
+                "type": "string"
+              },
+              {
+                "description": "Packages to manage",
+                "name": "packages",
+                "required": false,
+                "type": "[]string"
+              }
+            ],
+            "description": "User-defined package managers",
+            "name": "custom",
+            "required": false,
+            "type": "[]object"
+          }
+        ],
+        "description": "Package declarations by manager",
+        "name": "packages",
+        "required": false,
+        "type": "object"
+      },
+      {
+        "children": [
+          {
+            "children": [
+              {
+                "description": "Relative path in source repo",
+                "name": "source",
+                "required": true,
+                "type": "string"
+              },
+              {
+                "description": "Absolute target path on the machine",
+                "name": "target",
+                "required": true,
+                "type": "string"
+              }
+            ],
+            "description": "Files to manage",
+            "name": "managed",
+            "required": false,
+            "type": "[]object"
+          },
+          {
+            "description": "Permission overrides by path (e.g., \".ssh/config\": \"600\")",
+            "name": "permissions",
+            "required": false,
+            "type": "map[string]string"
+          }
+        ],
+        "description": "File management declarations",
+        "name": "files",
+        "required": false,
+        "type": "object"
+      },
+      {
+        "children": [
+          {
+            "description": "Default shell path (e.g., /bin/zsh)",
+            "name": "shell",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "description": "macOS defaults by domain and key",
+            "name": "macosDefaults",
+            "required": false,
+            "type": "map[string]map"
+          },
+          {
+            "description": "macOS LaunchAgent definitions",
+            "name": "launchAgents",
+            "required": false,
+            "type": "[]object"
+          },
+          {
+            "description": "systemd unit file management",
+            "name": "systemdUnits",
+            "required": false,
+            "type": "[]object"
+          },
+          {
+            "description": "GNOME/GTK desktop settings by schema and key (Linux)",
+            "name": "gsettings",
+            "required": false,
+            "type": "map[string]map"
+          },
+          {
+            "description": "KDE Plasma settings by file, group, and key (Linux)",
+            "name": "kdeConfig",
+            "required": false,
+            "type": "map[string]map[string]map"
+          },
+          {
+            "description": "XFCE desktop settings by channel and property (Linux)",
+            "name": "xfconf",
+            "required": false,
+            "type": "map[string]map"
+          },
+          {
+            "description": "Environment variable declarations",
+            "name": "environment",
+            "required": false,
+            "type": "map[string]string"
+          },
+          {
+            "description": "Kernel parameters (Linux nodes)",
+            "name": "sysctl",
+            "required": false,
+            "type": "map[string]any"
+          },
+          {
+            "description": "Kernel modules to load (Linux nodes)",
+            "name": "kernelModules",
+            "required": false,
+            "type": "[]string"
+          },
+          {
+            "description": "containerd configuration (k8s nodes)",
+            "name": "containerd",
+            "required": false,
+            "type": "object"
+          },
+          {
+            "description": "kubelet configuration (k8s nodes)",
+            "name": "kubelet",
+            "required": false,
+            "type": "object"
+          },
+          {
+            "description": "Windows registry settings (Windows only). Keys are registry paths, values are name-value maps",
+            "name": "windowsRegistry",
+            "required": false,
+            "type": "map[string]map"
+          },
+          {
+            "description": "Windows Service management (Windows only). Each entry has name, binaryPath, startType, state",
+            "name": "windowsServices",
+            "required": false,
+            "type": "[]object"
+          }
+        ],
+        "description": "System configurator settings (keys map to registered configurators)",
+        "name": "system",
+        "required": false,
+        "type": "map[string]any"
+      },
+      {
+        "children": [
+          {
+            "description": "Path to SOPS-encrypted file or provider://ref",
+            "name": "source",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "description": "Target path for decrypted output",
+            "name": "target",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "description": "Template string to inject secret into",
+            "name": "template",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "description": "Override secrets backend: sops | age",
+            "name": "backend",
+            "required": false,
+            "type": "string"
+          }
+        ],
+        "description": "Secret file declarations",
+        "name": "secrets",
+        "required": false,
+        "type": "[]object"
+      },
+      {
+        "children": [
+          {
+            "description": "Scripts to run before reconciliation",
+            "name": "preReconcile",
+            "required": false,
+            "type": "[]string"
+          },
+          {
+            "description": "Scripts to run after reconciliation",
+            "name": "postReconcile",
+            "required": false,
+            "type": "[]string"
+          }
+        ],
+        "description": "Lifecycle scripts",
+        "name": "scripts",
+        "required": false,
+        "type": "object"
+      }
+    ],
+    "kind": "Profile",
+    "location": "profiles/<name>.yaml",
+    "name": "Profile"
+  },
+  {
+    "api_version": "cfgd.io/v1alpha1",
+    "description": "Root configuration file for cfgd. Defines the active profile, origin, daemon settings, secrets backend, sources, theme, and module sources.",
+    "fields": [
+      {
+        "description": "Active profile name for this machine",
+        "name": "profile",
+        "required": true,
+        "type": "string"
+      },
+      {
+        "children": [
+          {
+            "description": "Origin type: Git | Server",
+            "name": "type",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "description": "Repository URL or server endpoint",
+            "name": "url",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "description": "Git branch (default: master)",
+            "name": "branch",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "description": "Auth method for server origins (e.g., device-flow)",
+            "name": "auth",
+            "required": false,
+            "type": "string"
+          }
+        ],
+        "description": "Git or server origin(s) for config syncing",
+        "name": "origin",
+        "required": false,
+        "type": "object | []object"
+      },
+      {
+        "children": [
+          {
+            "description": "Enable the daemon (default: false)",
+            "name": "enabled",
+            "required": false,
+            "type": "bool"
+          },
+          {
+            "children": [
+              {
+                "description": "Reconciliation interval (default: 5m)",
+                "name": "interval",
+                "required": false,
+                "type": "string"
+              },
+              {
+                "description": "Reconcile on file changes (default: false)",
+                "name": "onChange",
+                "required": false,
+                "type": "bool"
+              },
+              {
+                "description": "Auto-apply on reconcile (default: false)",
+                "name": "autoApply",
+                "required": false,
+                "type": "bool"
+              },
+              {
+                "children": [
+                  {
+                    "description": "Action for new recommended items: Notify | Accept | Reject | Ignore (default: Notify)",
+                    "name": "newRecommended",
+                    "required": false,
+                    "type": "string"
+                  },
+                  {
+                    "description": "Action for new optional items (default: ignore)",
+                    "name": "newOptional",
+                    "required": false,
+                    "type": "string"
+                  },
+                  {
+                    "description": "Action for locked conflicts (default: Notify)",
+                    "name": "lockedConflict",
+                    "required": false,
+                    "type": "string"
+                  }
+                ],
+                "description": "Auto-apply policy for source updates",
+                "name": "policy",
+                "required": false,
+                "type": "object"
+              }
+            ],
+            "description": "Reconciliation settings",
+            "name": "reconcile",
+            "required": false,
+            "type": "object"
+          },
+          {
+            "children": [
+              {
+                "description": "Auto-push local changes to remote",
+                "name": "autoPush",
+                "required": false,
+                "type": "bool"
+              },
+              {
+                "description": "Auto-pull remote changes",
+                "name": "autoPull",
+                "required": false,
+                "type": "bool"
+              },
+              {
+                "description": "Sync interval (default: 1h)",
+                "name": "interval",
+                "required": false,
+                "type": "string"
+              }
+            ],
+            "description": "Sync settings for git origin",
+            "name": "sync",
+            "required": false,
+            "type": "object"
+          },
+          {
+            "children": [
+              {
+                "description": "Notify on drift detection",
+                "name": "drift",
+                "required": false,
+                "type": "bool"
+              },
+              {
+                "description": "Notification method: Desktop | Stdout | Webhook (default: Desktop)",
+                "name": "method",
+                "required": false,
+                "type": "string"
+              },
+              {
+                "description": "Webhook URL for webhook notifications",
+                "name": "webhookUrl",
+                "required": false,
+                "type": "string"
+              }
+            ],
+            "description": "Notification settings",
+            "name": "notify",
+            "required": false,
+            "type": "object"
+          },
+          {
+            "description": "Mirror daemon log into the Windows Event Log under the 'cfgd' source in addition to the default %LOCALAPPDATA%\\cfgd\\daemon.log file appender (Windows-only; default: false; reinstall the service after toggling)",
+            "name": "windowsEventLog",
+            "required": false,
+            "type": "bool"
+          }
+        ],
+        "description": "Daemon configuration",
+        "name": "daemon",
+        "required": false,
+        "type": "object"
+      },
+      {
+        "children": [
+          {
+            "description": "Secrets backend: sops | age (default: sops)",
+            "name": "backend",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "children": [
+              {
+                "description": "Path to age key file",
+                "name": "ageKey",
+                "required": false,
+                "type": "string"
+              }
+            ],
+            "description": "SOPS-specific configuration",
+            "name": "sops",
+            "required": false,
+            "type": "object"
+          },
+          {
+            "children": [
+              {
+                "description": "Provider name: 1password | bitwarden | vault",
+                "name": "name",
+                "required": true,
+                "type": "string"
+              }
+            ],
+            "description": "External secret provider integrations",
+            "name": "integrations",
+            "required": false,
+            "type": "[]object"
+          }
+        ],
+        "description": "Secrets backend configuration",
+        "name": "secrets",
+        "required": false,
+        "type": "object"
+      },
+      {
+        "children": [
+          {
+            "description": "Source name",
+            "name": "name",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "children": [
+              {
+                "description": "Origin type: Git | Server",
+                "name": "type",
+                "required": true,
+                "type": "string"
+              },
+              {
+                "description": "Repository URL or server endpoint",
+                "name": "url",
+                "required": true,
+                "type": "string"
+              },
+              {
+                "description": "Git branch (default: master)",
+                "name": "branch",
+                "required": false,
+                "type": "string"
+              },
+              {
+                "description": "Auth method for server origins (e.g., device-flow)",
+                "name": "auth",
+                "required": false,
+                "type": "string"
+              }
+            ],
+            "description": "Source origin (same schema as top-level origin)",
+            "name": "origin",
+            "required": true,
+            "type": "object"
+          },
+          {
+            "children": [
+              {
+                "description": "Profile to subscribe to from the source",
+                "name": "profile",
+                "required": false,
+                "type": "string"
+              },
+              {
+                "description": "Merge priority (default: 500, local: 1000)",
+                "name": "priority",
+                "required": false,
+                "type": "integer"
+              },
+              {
+                "description": "Auto-accept recommended items",
+                "name": "acceptRecommended",
+                "required": false,
+                "type": "bool"
+              },
+              {
+                "description": "Optional items to opt into",
+                "name": "optIn",
+                "required": false,
+                "type": "[]string"
+              },
+              {
+                "description": "Override values from the source",
+                "name": "overrides",
+                "required": false,
+                "type": "object"
+              },
+              {
+                "description": "Reject specific items from the source",
+                "name": "reject",
+                "required": false,
+                "type": "object"
+              }
+            ],
+            "description": "Subscription preferences",
+            "name": "subscription",
+            "required": false,
+            "type": "object"
+          },
+          {
+            "children": [
+              {
+                "description": "Sync interval (default: 1h)",
+                "name": "interval",
+                "required": false,
+                "type": "string"
+              },
+              {
+                "description": "Auto-apply source updates",
+                "name": "autoApply",
+                "required": false,
+                "type": "bool"
+              },
+              {
+                "description": "Pin source to a semver range",
+                "name": "pinVersion",
+                "required": false,
+                "type": "string"
+              }
+            ],
+            "description": "Source sync settings",
+            "name": "sync",
+            "required": false,
+            "type": "object"
+          }
+        ],
+        "description": "Multi-source config subscriptions",
+        "name": "sources",
+        "required": false,
+        "type": "[]object"
+      },
+      {
+        "children": [
+          {
+            "description": "Theme name: default | dracula | solarized-dark | solarized-light | minimal",
+            "name": "name",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "children": [
+              {
+                "description": "Hex color for header text",
+                "name": "header",
+                "required": false,
+                "type": "string"
+              },
+              {
+                "description": "Hex color for success styling (e.g., #50fa7b)",
+                "name": "success",
+                "required": false,
+                "type": "string"
+              },
+              {
+                "description": "Hex color for warning styling",
+                "name": "warning",
+                "required": false,
+                "type": "string"
+              },
+              {
+                "description": "Hex color for error styling",
+                "name": "error",
+                "required": false,
+                "type": "string"
+              },
+              {
+                "description": "Hex color for info styling",
+                "name": "info",
+                "required": false,
+                "type": "string"
+              },
+              {
+                "description": "Hex color for muted/dim text",
+                "name": "muted",
+                "required": false,
+                "type": "string"
+              },
+              {
+                "description": "Hex color for in-progress / running status lines",
+                "name": "running",
+                "required": false,
+                "type": "string"
+              },
+              {
+                "description": "Hex color for diff additions",
+                "name": "diffAdd",
+                "required": false,
+                "type": "string"
+              },
+              {
+                "description": "Hex color for diff removals",
+                "name": "diffRemove",
+                "required": false,
+                "type": "string"
+              },
+              {
+                "description": "Hex color for diff context lines",
+                "name": "diffContext",
+                "required": false,
+                "type": "string"
+              },
+              {
+                "description": "Custom success icon (default: ✓)",
+                "name": "iconOk",
+                "required": false,
+                "type": "string"
+              },
+              {
+                "description": "Custom warning icon (default: ⚠)",
+                "name": "iconWarn",
+                "required": false,
+                "type": "string"
+              },
+              {
+                "description": "Custom failure icon (default: ✗)",
+                "name": "iconFail",
+                "required": false,
+                "type": "string"
+              },
+              {
+                "description": "Custom pending icon (default: ○)",
+                "name": "iconPending",
+                "required": false,
+                "type": "string"
+              },
+              {
+                "description": "Custom running icon (default: ◐)",
+                "name": "iconRunning",
+                "required": false,
+                "type": "string"
+              },
+              {
+                "description": "Custom skipped icon (default: —)",
+                "name": "iconSkipped",
+                "required": false,
+                "type": "string"
+              },
+              {
+                "description": "Custom arrow icon (default: →)",
+                "name": "iconArrow",
+                "required": false,
+                "type": "string"
+              }
+            ],
+            "description": "Override individual theme colors and icons",
+            "name": "overrides",
+            "required": false,
+            "type": "object"
+          }
+        ],
+        "description": "Theme name (string) or theme config (object with name + overrides)",
+        "name": "theme",
+        "required": false,
+        "type": "string | object"
+      },
+      {
+        "children": [
+          {
+            "children": [
+              {
+                "description": "Short name/alias for this registry",
+                "name": "name",
+                "required": true,
+                "type": "string"
+              },
+              {
+                "description": "Git URL of the registry repository",
+                "name": "url",
+                "required": true,
+                "type": "string"
+              }
+            ],
+            "description": "Module registries — searchable indexes of reusable modules",
+            "name": "registries",
+            "required": false,
+            "type": "[]object"
+          },
+          {
+            "children": [
+              {
+                "description": "Require GPG/SSH signatures on remote module tags (default: false)",
+                "name": "requireSignatures",
+                "required": false,
+                "type": "bool"
+              }
+            ],
+            "description": "Module security settings",
+            "name": "security",
+            "required": false,
+            "type": "object"
+          }
+        ],
+        "description": "Module configuration: registries and security",
+        "name": "modules",
+        "required": false,
+        "type": "object"
+      }
+    ],
+    "kind": "Config",
+    "location": "cfgd.yaml",
+    "name": "CfgdConfig"
+  },
+  {
+    "api_version": "cfgd.io/v1alpha1",
+    "description": "Team config source manifest. Published by teams in their config repos to define profiles, modules, and policy tiers available for subscription.",
+    "fields": [
+      {
+        "children": [
+          {
+            "description": "Profile names available from this source",
+            "name": "profiles",
+            "required": false,
+            "type": "[]string"
+          },
+          {
+            "children": [
+              {
+                "description": "Profile name",
+                "name": "name",
+                "required": true,
+                "type": "string"
+              },
+              {
+                "description": "Profile description",
+                "name": "description",
+                "required": false,
+                "type": "string"
+              },
+              {
+                "description": "Path to profile YAML",
+                "name": "path",
+                "required": false,
+                "type": "string"
+              },
+              {
+                "description": "Profiles this inherits from",
+                "name": "inherits",
+                "required": false,
+                "type": "[]string"
+              }
+            ],
+            "description": "Detailed profile entries with descriptions",
+            "name": "profileDetails",
+            "required": false,
+            "type": "[]object"
+          },
+          {
+            "description": "OS/distro to profile mapping for auto-detection",
+            "name": "platformProfiles",
+            "required": false,
+            "type": "map[string]string"
+          },
+          {
+            "description": "Module names available from this source",
+            "name": "modules",
+            "required": false,
+            "type": "[]string"
+          }
+        ],
+        "description": "What this source provides",
+        "name": "provides",
+        "required": false,
+        "type": "object"
+      },
+      {
+        "children": [
+          {
+            "children": [
+              {
+                "description": "Package declarations (same schema as profile packages)",
+                "name": "packages",
+                "required": false,
+                "type": "object"
+              },
+              {
+                "description": "Managed file declarations",
+                "name": "files",
+                "required": false,
+                "type": "[]object"
+              },
+              {
+                "description": "Environment variable declarations",
+                "name": "env",
+                "required": false,
+                "type": "list[{name, value}]"
+              },
+              {
+                "description": "System configurator settings",
+                "name": "system",
+                "required": false,
+                "type": "map[string]any"
+              },
+              {
+                "description": "Profiles in this tier",
+                "name": "profiles",
+                "required": false,
+                "type": "[]string"
+              },
+              {
+                "description": "Modules in this tier",
+                "name": "modules",
+                "required": false,
+                "type": "[]string"
+              }
+            ],
+            "description": "Items that must be applied (enforced)",
+            "name": "required",
+            "required": false,
+            "type": "object"
+          },
+          {
+            "children": [
+              {
+                "description": "Package declarations (same schema as profile packages)",
+                "name": "packages",
+                "required": false,
+                "type": "object"
+              },
+              {
+                "description": "Managed file declarations",
+                "name": "files",
+                "required": false,
+                "type": "[]object"
+              },
+              {
+                "description": "Environment variable declarations",
+                "name": "env",
+                "required": false,
+                "type": "list[{name, value}]"
+              },
+              {
+                "description": "System configurator settings",
+                "name": "system",
+                "required": false,
+                "type": "map[string]any"
+              },
+              {
+                "description": "Profiles in this tier",
+                "name": "profiles",
+                "required": false,
+                "type": "[]string"
+              },
+              {
+                "description": "Modules in this tier",
+                "name": "modules",
+                "required": false,
+                "type": "[]string"
+              }
+            ],
+            "description": "Items that are recommended (prompted)",
+            "name": "recommended",
+            "required": false,
+            "type": "object"
+          },
+          {
+            "children": [
+              {
+                "description": "Package declarations (same schema as profile packages)",
+                "name": "packages",
+                "required": false,
+                "type": "object"
+              },
+              {
+                "description": "Managed file declarations",
+                "name": "files",
+                "required": false,
+                "type": "[]object"
+              },
+              {
+                "description": "Environment variable declarations",
+                "name": "env",
+                "required": false,
+                "type": "list[{name, value}]"
+              },
+              {
+                "description": "System configurator settings",
+                "name": "system",
+                "required": false,
+                "type": "map[string]any"
+              },
+              {
+                "description": "Profiles in this tier",
+                "name": "profiles",
+                "required": false,
+                "type": "[]string"
+              },
+              {
+                "description": "Modules in this tier",
+                "name": "modules",
+                "required": false,
+                "type": "[]string"
+              }
+            ],
+            "description": "Items that are opt-in",
+            "name": "optional",
+            "required": false,
+            "type": "object"
+          },
+          {
+            "children": [
+              {
+                "description": "Package declarations (same schema as profile packages)",
+                "name": "packages",
+                "required": false,
+                "type": "object"
+              },
+              {
+                "description": "Managed file declarations",
+                "name": "files",
+                "required": false,
+                "type": "[]object"
+              },
+              {
+                "description": "Environment variable declarations",
+                "name": "env",
+                "required": false,
+                "type": "list[{name, value}]"
+              },
+              {
+                "description": "System configurator settings",
+                "name": "system",
+                "required": false,
+                "type": "map[string]any"
+              },
+              {
+                "description": "Profiles in this tier",
+                "name": "profiles",
+                "required": false,
+                "type": "[]string"
+              },
+              {
+                "description": "Modules in this tier",
+                "name": "modules",
+                "required": false,
+                "type": "[]string"
+              }
+            ],
+            "description": "Items that cannot be overridden by subscribers",
+            "name": "locked",
+            "required": false,
+            "type": "object"
+          },
+          {
+            "children": [
+              {
+                "description": "Disallow scripts from this source (default: true)",
+                "name": "noScripts",
+                "required": false,
+                "type": "bool"
+              },
+              {
+                "description": "Disallow secret reading (default: true)",
+                "name": "noSecretsRead",
+                "required": false,
+                "type": "bool"
+              },
+              {
+                "description": "Restrict file targets to these path prefixes",
+                "name": "allowedTargetPaths",
+                "required": false,
+                "type": "[]string"
+              },
+              {
+                "description": "Allow system configurator changes (default: false)",
+                "name": "allowSystemChanges",
+                "required": false,
+                "type": "bool"
+              }
+            ],
+            "description": "Security constraints on source capabilities",
+            "name": "constraints",
+            "required": false,
+            "type": "object"
+          }
+        ],
+        "description": "Policy tiers controlling how items are applied",
+        "name": "policy",
+        "required": false,
+        "type": "object"
+      }
+    ],
+    "kind": "ConfigSource",
+    "location": "cfgd-source.yaml (in source repo root)",
+    "name": "ConfigSource"
+  },
+  {
+    "api_version": "cfgd.io/v1alpha1",
+    "description": "Kubernetes Custom Resource representing a managed machine's desired and observed configuration state.",
+    "fields": [
+      {
+        "description": "Machine hostname",
+        "name": "hostname",
+        "required": true,
+        "type": "string"
+      },
+      {
+        "description": "Active profile name",
+        "name": "profile",
+        "required": true,
+        "type": "string"
+      },
+      {
+        "children": [
+          {
+            "description": "Module name",
+            "name": "name",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "description": "Whether the module is required (default: false)",
+            "name": "required",
+            "required": false,
+            "type": "bool"
+          }
+        ],
+        "description": "Modules that should be installed",
+        "name": "moduleRefs",
+        "required": false,
+        "type": "[]object"
+      },
+      {
+        "description": "Required packages",
+        "name": "packages",
+        "required": false,
+        "type": "[]string"
+      },
+      {
+        "description": "Reported installed versions by package name",
+        "name": "packageVersions",
+        "required": false,
+        "type": "map[string]string"
+      },
+      {
+        "children": [
+          {
+            "description": "File path on the machine",
+            "name": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "description": "Inline file content",
+            "name": "content",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "description": "Source reference",
+            "name": "source",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "description": "File mode in octal (default: 0644)",
+            "name": "mode",
+            "required": false,
+            "type": "string"
+          }
+        ],
+        "description": "Managed files",
+        "name": "files",
+        "required": false,
+        "type": "[]object"
+      },
+      {
+        "description": "System configurator settings",
+        "name": "systemSettings",
+        "required": false,
+        "type": "map[string]string"
+      }
+    ],
+    "kind": "MachineConfig",
+    "location": "Kubernetes CRD (cfgd-operator)",
+    "name": "MachineConfig"
+  },
+  {
+    "api_version": "cfgd.io/v1alpha1",
+    "description": "Kubernetes Custom Resource defining fleet-wide configuration baselines. Machines are checked for compliance against policies.",
+    "fields": [
+      {
+        "description": "Policy name",
+        "name": "name",
+        "required": true,
+        "type": "string"
+      },
+      {
+        "description": "Modules that must be installed",
+        "name": "requiredModules",
+        "required": false,
+        "type": "[]string"
+      },
+      {
+        "children": [
+          {
+            "description": "Package name",
+            "name": "name",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "description": "Semver version requirement (e.g. \">=1.28\", \"~2.40\")",
+            "name": "version",
+            "required": false,
+            "type": "string"
+          }
+        ],
+        "description": "Required packages (each entry has name and optional version constraint)",
+        "name": "packages",
+        "required": false,
+        "type": "[]PackageRef"
+      },
+      {
+        "description": "Required system settings",
+        "name": "settings",
+        "required": false,
+        "type": "map[string]string"
+      },
+      {
+        "description": "Label selector to match target MachineConfigs",
+        "name": "targetSelector",
+        "required": false,
+        "type": "map[string]string"
+      }
+    ],
+    "kind": "ConfigPolicy",
+    "location": "Kubernetes CRD (cfgd-operator)",
+    "name": "ConfigPolicy"
+  },
+  {
+    "api_version": "cfgd.io/v1alpha1",
+    "description": "Kubernetes Custom Resource created when a machine drifts from its desired state. Tracks drift details and resolution status.",
+    "fields": [
+      {
+        "description": "Device identifier",
+        "name": "deviceId",
+        "required": true,
+        "type": "string"
+      },
+      {
+        "description": "Reference to the MachineConfig resource",
+        "name": "machineConfigRef",
+        "required": true,
+        "type": "string"
+      },
+      {
+        "children": [
+          {
+            "description": "Field that drifted",
+            "name": "field",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "description": "Expected value",
+            "name": "expected",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "description": "Actual observed value",
+            "name": "actual",
+            "required": true,
+            "type": "string"
+          }
+        ],
+        "description": "Individual drift items",
+        "name": "driftDetails",
+        "required": false,
+        "type": "[]object"
+      },
+      {
+        "description": "Drift severity: low | medium | high | critical",
+        "name": "severity",
+        "required": true,
+        "type": "string"
+      }
+    ],
+    "kind": "DriftAlert",
+    "location": "Kubernetes CRD (cfgd-operator)",
+    "name": "DriftAlert"
+  },
+  {
+    "api_version": "cfgd.io/v1alpha1",
+    "description": "Crossplane composite resource for team-level configuration. Fans out to per-user MachineConfig CRDs via composition function.",
+    "fields": [
+      {
+        "description": "Team name",
+        "name": "team",
+        "required": true,
+        "type": "string"
+      },
+      {
+        "description": "Default profile for team members",
+        "name": "profile",
+        "required": false,
+        "type": "string"
+      },
+      {
+        "children": [
+          {
+            "description": "Git URL of the team config repo",
+            "name": "url",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "description": "Git branch (default: master)",
+            "name": "branch",
+            "required": false,
+            "type": "string"
+          }
+        ],
+        "description": "Team config source",
+        "name": "source",
+        "required": false,
+        "type": "object"
+      },
+      {
+        "children": [
+          {
+            "description": "Module name",
+            "name": "name",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "children": [
+              {
+                "description": "Git URL",
+                "name": "url",
+                "required": true,
+                "type": "string"
+              },
+              {
+                "description": "Git ref (tag/commit)",
+                "name": "ref",
+                "required": false,
+                "type": "string"
+              }
+            ],
+            "description": "Remote module source reference",
+            "name": "sourceRef",
+            "required": false,
+            "type": "object"
+          }
+        ],
+        "description": "Modules for the team",
+        "name": "modules",
+        "required": false,
+        "type": "[]object"
+      },
+      {
+        "children": [
+          {
+            "description": "Required configuration items",
+            "name": "required",
+            "required": false,
+            "type": "object"
+          },
+          {
+            "description": "Recommended configuration items",
+            "name": "recommended",
+            "required": false,
+            "type": "object"
+          },
+          {
+            "description": "Locked (non-overridable) items",
+            "name": "locked",
+            "required": false,
+            "type": "object"
+          },
+          {
+            "description": "Modules that must be installed",
+            "name": "requiredModules",
+            "required": false,
+            "type": "[]string"
+          },
+          {
+            "description": "Modules that are recommended",
+            "name": "recommendedModules",
+            "required": false,
+            "type": "[]string"
+          }
+        ],
+        "description": "Team policy settings",
+        "name": "policy",
+        "required": false,
+        "type": "object"
+      },
+      {
+        "children": [
+          {
+            "description": "Username",
+            "name": "username",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "description": "SSH public key for enrollment",
+            "name": "sshPublicKey",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "description": "Profile override for this member",
+            "name": "profile",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "description": "Hostname override",
+            "name": "hostname",
+            "required": false,
+            "type": "string"
+          }
+        ],
+        "description": "Team members",
+        "name": "members",
+        "required": false,
+        "type": "[]object"
+      }
+    ],
+    "kind": "TeamConfig",
+    "location": "Crossplane Composite Resource (XR)",
+    "name": "TeamConfig"
+  }
+]
