@@ -1,0 +1,10 @@
+Rollback
+  Target apply ID          1
+  File backups to restore  1
+
+Restoring
+  ✓ 1 file(s) processed
+
+✓ 1 file(s) restored from backup
+
+✓ Rollback complete

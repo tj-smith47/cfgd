@@ -5455,8 +5455,10 @@ fn cmd_plan_with_module_filter() {
 fn cmd_rollback_invalid_id_empty_state() {
     let state_dir = tempfile::tempdir().unwrap();
     let printer = test_printer();
+    let v2_printer = test_v2_printer();
 
-    let result = super::rollback::cmd_rollback(&printer, 9999, true, Some(state_dir.path()));
+    let result =
+        super::rollback::cmd_rollback(&printer, &v2_printer, 9999, true, Some(state_dir.path()));
     assert!(result.is_err());
     assert!(result.unwrap_err().to_string().contains("no apply found"));
 }
@@ -5514,15 +5516,23 @@ fn cmd_rollback_after_file_apply() {
     // Clear buffer before rollback
     buf.lock().unwrap().clear();
 
-    // Rollback
-    let result = super::rollback::cmd_rollback(&printer, apply_id, true, Some(state_dir.path()));
+    // Rollback — capture v2 surface; v1 buffer only carries reconciler lib emissions.
+    let (v2_printer, v2_buf) = test_v2_printer_capture();
+    let result = super::rollback::cmd_rollback(
+        &printer,
+        &v2_printer,
+        apply_id,
+        true,
+        Some(state_dir.path()),
+    );
     assert!(
         result.is_ok(),
         "rollback should succeed for valid apply ID: {:?}",
         result.err()
     );
 
-    let output = buf.lock().unwrap();
+    drop(v2_printer);
+    let output = combine_buffers(&buf, &v2_buf);
     assert!(
         output.contains("Rollback") || output.contains("restore"),
         "rollback output should mention rollback or restoration, got: {output}"
@@ -5584,22 +5594,29 @@ fn apply_one_file_and_record(
 
 #[test]
 fn cmd_rollback_without_yes_and_prompt_confirmed_proceeds() {
-    // yes=false + Confirm(true) drives the prompt-true branch at
-    // rollback.rs:60-67 — the reconciler.rollback_apply call fires
-    // and the success message follows.
+    // yes=false + Confirm(true) drives the prompt-true branch — the
+    // reconciler.rollback_apply call fires and the success message follows.
     let (_cd, state_dir, _target, apply_id) = apply_one_file_and_record("rb-yes-prompt");
-    let (printer, buf) =
-        Printer::for_test_with_prompt_responses(vec![cfgd_core::output::PromptAnswer::Confirm(
-            true,
-        )]);
+    let printer = test_printer();
+    let (v2_printer, v2_buf) = cfgd_core::output_v2::Printer::for_test_with_prompt_responses_at(
+        vec![cfgd_core::output_v2::PromptAnswer::Confirm(true)],
+        cfgd_core::output_v2::Verbosity::Normal,
+    );
 
-    let result = super::rollback::cmd_rollback(&printer, apply_id, false, Some(state_dir.path()));
+    let result = super::rollback::cmd_rollback(
+        &printer,
+        &v2_printer,
+        apply_id,
+        false,
+        Some(state_dir.path()),
+    );
     assert!(
         result.is_ok(),
         "prompt-confirmed rollback must succeed: {:?}",
         result.err()
     );
-    let output = buf.lock().unwrap();
+    drop(v2_printer);
+    let output = v2_buf.lock().unwrap();
     assert!(
         output.contains("Rollback") || output.contains("restore"),
         "should produce rollback output: {output}"
@@ -5612,18 +5629,25 @@ fn cmd_rollback_without_yes_and_prompt_confirmed_proceeds() {
 
 #[test]
 fn cmd_rollback_without_yes_and_prompt_declined_aborts() {
-    // yes=false + Confirm(false) takes the early-return arm at
-    // rollback.rs:63-66 — "Aborted" fires and reconciler.rollback_apply
-    // is never called (file count remains unchanged).
+    // yes=false + Confirm(false) takes the early-return arm — "Aborted"
+    // fires and reconciler.rollback_apply is never called.
     let (_cd, state_dir, _target, apply_id) = apply_one_file_and_record("rb-no-prompt");
-    let (printer, buf) =
-        Printer::for_test_with_prompt_responses(vec![cfgd_core::output::PromptAnswer::Confirm(
-            false,
-        )]);
+    let printer = test_printer();
+    let (v2_printer, v2_buf) = cfgd_core::output_v2::Printer::for_test_with_prompt_responses_at(
+        vec![cfgd_core::output_v2::PromptAnswer::Confirm(false)],
+        cfgd_core::output_v2::Verbosity::Normal,
+    );
 
-    let result = super::rollback::cmd_rollback(&printer, apply_id, false, Some(state_dir.path()));
+    let result = super::rollback::cmd_rollback(
+        &printer,
+        &v2_printer,
+        apply_id,
+        false,
+        Some(state_dir.path()),
+    );
     assert!(result.is_ok(), "prompt-declined rollback must return Ok");
-    let output = buf.lock().unwrap();
+    drop(v2_printer);
+    let output = v2_buf.lock().unwrap();
     assert!(
         output.contains("Aborted"),
         "should print Aborted when prompt is false: {output}"
@@ -11424,8 +11448,10 @@ fn cmd_workflow_generate_with_git_repo() {
 fn cmd_rollback_missing_apply_id_fails() {
     let state_dir = tempfile::tempdir().unwrap();
     let printer = test_printer();
+    let v2_printer = test_v2_printer();
 
-    let result = super::rollback::cmd_rollback(&printer, 99, true, Some(state_dir.path()));
+    let result =
+        super::rollback::cmd_rollback(&printer, &v2_printer, 99, true, Some(state_dir.path()));
     assert!(result.is_err(), "rollback with no history should fail");
 }
 

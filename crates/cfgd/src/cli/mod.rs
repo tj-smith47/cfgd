@@ -20,7 +20,7 @@ pub mod plugin;
 pub mod profile;
 pub mod pull;
 mod registry;
-mod rollback;
+pub mod rollback;
 mod secret;
 pub mod source;
 pub mod status;
@@ -1676,9 +1676,13 @@ pub fn execute(
             Ok(())
         }
         Command::Generate(args) => generate::cmd_generate(cli, printer, args),
-        Command::Rollback { apply_id, yes } => {
-            rollback::cmd_rollback(printer, *apply_id, *yes, cli.state_dir.as_deref())
-        }
+        Command::Rollback { apply_id, yes } => rollback::cmd_rollback(
+            printer,
+            v2_printer,
+            *apply_id,
+            *yes,
+            cli.state_dir.as_deref(),
+        ),
         Command::McpServer => crate::mcp::server::run_mcp_server(&cli.config),
         Command::Compliance { command } => match command {
             None => compliance::cmd_compliance_snapshot(cli, v2_printer),

@@ -1,0 +1,5 @@
+Rollback
+  Target apply ID          1
+  File backups to restore  0
+
+No subsequent changes to roll back — system is already at this apply

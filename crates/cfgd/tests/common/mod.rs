@@ -11,6 +11,7 @@ use std::path::PathBuf;
 
 use cfgd::cli::{ApplyArgs, Cli, Command, OutputFormatArg, PlanArgs};
 use cfgd_core::output;
+use cfgd_core::state::{ApplyStatus, StateStore};
 
 /// Build a tempdir-backed profile with a single file action that will
 /// succeed on apply.
@@ -405,4 +406,100 @@ pub fn permission_change_source_setup() -> (
     std::fs::write(config_dir.path().join("cfgd.yaml"), config).unwrap();
 
     (workspace, config_dir, state_dir, branch)
+}
+
+// ---------------------------------------------------------------------------
+// Rollback fixtures (cmd_rollback).
+//
+// `cmd_rollback` operates from the SQLite state DB only. Each fixture seeds
+// the DB directly with applies + file backups + journal entries — no profile
+// load, no reconciler.apply — so the rollback path runs against a deterministic
+// state shape.
+// ---------------------------------------------------------------------------
+
+/// Seed a state DB with a target apply that has subsequent file changes to
+/// roll back: apply 1 creates a file, apply 2 modifies it (capturing a
+/// backup of apply 1's content). `cmd_rollback(apply_id_1)` rolls back to
+/// apply 1, restoring the v1 content.
+///
+/// Returns `(workspace, state_dir, target_path, apply_id_1)`. The workspace
+/// owns the target file; both tempdirs must outlive the test.
+pub fn rollback_state_with_backups_setup() -> (tempfile::TempDir, tempfile::TempDir, PathBuf, i64) {
+    let workspace = tempfile::tempdir().unwrap();
+    let state_dir = tempfile::tempdir().unwrap();
+
+    let target = workspace.path().join("config.txt");
+    let file_path = target.display().to_string();
+
+    std::fs::create_dir_all(state_dir.path()).unwrap();
+    let state = StateStore::open(&state_dir.path().join("cfgd.db")).unwrap();
+
+    // Apply 1: creates file with v1 content.
+    let apply_id_1 = state
+        .record_apply("test", "hash1", ApplyStatus::Success, None)
+        .unwrap();
+    let resource_id_1 = format!("file:create:{}", target.display());
+    let jid1 = state
+        .journal_begin(apply_id_1, 0, "files", "file", &resource_id_1, None)
+        .unwrap();
+    state.journal_complete(jid1, None, None).unwrap();
+    std::fs::write(&target, "v1 content").unwrap();
+
+    // Apply 2: backup of v1, then modify to v2.
+    let file_state = cfgd_core::capture_file_state(&target).unwrap().unwrap();
+    let apply_id_2 = state
+        .record_apply("test", "hash2", ApplyStatus::Success, None)
+        .unwrap();
+    let resource_id_2 = format!("file:update:{}", target.display());
+    state
+        .store_file_backup(apply_id_2, &file_path, &file_state)
+        .unwrap();
+    let jid2 = state
+        .journal_begin(apply_id_2, 0, "files", "file", &resource_id_2, None)
+        .unwrap();
+    state.journal_complete(jid2, None, None).unwrap();
+    std::fs::write(&target, "v2 content").unwrap();
+
+    (workspace, state_dir, target, apply_id_1)
+}
+
+/// Seed a state DB with a single apply and no subsequent changes — exercises
+/// the `file_count == 0 && non_file_count == 0` branch.
+pub fn rollback_state_no_changes_setup() -> (tempfile::TempDir, i64) {
+    let state_dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(state_dir.path()).unwrap();
+    let state = StateStore::open(&state_dir.path().join("cfgd.db")).unwrap();
+    let apply_id = state
+        .record_apply("test", "hash1", ApplyStatus::Success, None)
+        .unwrap();
+    (state_dir, apply_id)
+}
+
+/// Seed a state DB with a target apply followed by a non-file (package)
+/// action — exercises the "Non-file actions (manual review)" section.
+pub fn rollback_state_with_non_file_actions_setup() -> (tempfile::TempDir, i64) {
+    let state_dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(state_dir.path()).unwrap();
+    let state = StateStore::open(&state_dir.path().join("cfgd.db")).unwrap();
+
+    let apply_id_1 = state
+        .record_apply("test", "hash1", ApplyStatus::Success, None)
+        .unwrap();
+
+    let apply_id_2 = state
+        .record_apply("test", "hash2", ApplyStatus::Success, None)
+        .unwrap();
+    let jid = state
+        .journal_begin(
+            apply_id_2,
+            0,
+            "packages",
+            "package",
+            "package:brew:install:ripgrep",
+            None,
+        )
+        .unwrap();
+    state.journal_complete(jid, None, None).unwrap();
+
+    (state_dir, apply_id_1)
 }

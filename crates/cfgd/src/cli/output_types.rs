@@ -48,9 +48,9 @@ impl ApplyOutput {
     }
 }
 
-#[derive(Serialize)]
+#[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(in crate::cli) struct RollbackOutput {
+pub struct RollbackOutput {
     pub apply_id: i64,
     pub files_restored: usize,
     pub files_removed: usize,
