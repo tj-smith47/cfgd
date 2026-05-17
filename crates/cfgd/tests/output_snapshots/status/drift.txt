@@ -1,4 +1,6 @@
 Status
+  Config   /etc/cfgd/cfgd.yaml
+  Profile  default
 
 Last Apply
   Time     2026-05-14T11:30:00Z

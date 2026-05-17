@@ -1,4 +1,6 @@
 Profile: workstation
+  Config   /etc/cfgd/cfgd.yaml
+  Profile  workstation
 
 Layers
   base         source=local priority=1000

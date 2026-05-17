@@ -38,6 +38,7 @@ pub enum ExitCode {
     NoConfig = 3,
     ConfigInvalid = 4,
     DriftDetected = 5,
+    NotFound = 6,
 }
 
 impl ExitCode {
@@ -86,6 +87,7 @@ mod tests {
             ExitCode::NoConfig.as_i32(),
             ExitCode::ConfigInvalid.as_i32(),
             ExitCode::DriftDetected.as_i32(),
+            ExitCode::NotFound.as_i32(),
         ];
         let mut seen = std::collections::HashSet::new();
         for c in codes {
@@ -104,6 +106,7 @@ mod tests {
         assert_eq!(ExitCode::NoConfig.as_i32(), 3);
         assert_eq!(ExitCode::ConfigInvalid.as_i32(), 4);
         assert_eq!(ExitCode::DriftDetected.as_i32(), 5);
+        assert_eq!(ExitCode::NotFound.as_i32(), 6);
     }
 
     #[test]

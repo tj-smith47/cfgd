@@ -150,7 +150,12 @@ fn per_module_deployed_files() -> Vec<(String, bool)> {
 fn status_clean_human() {
     let output = clean_output();
     let (printer, cap) = Printer::for_test_doc();
-    printer.emit(build_fleet_status_doc(&output, &[]));
+    printer.emit(build_fleet_status_doc(
+        &output,
+        &[],
+        Path::new("/etc/cfgd/cfgd.yaml"),
+        "default",
+    ));
     drop(printer);
     cap.assert_human_snapshot_in(Path::new(SNAPSHOT_ROOT), "status/clean.txt");
 }
@@ -159,7 +164,12 @@ fn status_clean_human() {
 fn status_clean_json() {
     let output = clean_output();
     let (printer, cap) = Printer::for_test_doc();
-    printer.emit(build_fleet_status_doc(&output, &[]));
+    printer.emit(build_fleet_status_doc(
+        &output,
+        &[],
+        Path::new("/etc/cfgd/cfgd.yaml"),
+        "default",
+    ));
     drop(printer);
     let expected = serde_json::to_value(&output).unwrap();
     let actual = cap.json().expect("doc captured json");
@@ -175,7 +185,12 @@ fn status_drift_human() {
     let output = drift_output();
     let sources = vec!["team-config".to_string()];
     let (printer, cap) = Printer::for_test_doc();
-    printer.emit(build_fleet_status_doc(&output, &sources));
+    printer.emit(build_fleet_status_doc(
+        &output,
+        &sources,
+        Path::new("/etc/cfgd/cfgd.yaml"),
+        "default",
+    ));
     drop(printer);
     cap.assert_human_snapshot_in(Path::new(SNAPSHOT_ROOT), "status/drift.txt");
 }
@@ -185,7 +200,12 @@ fn status_drift_json() {
     let output = drift_output();
     let sources = vec!["team-config".to_string()];
     let (printer, cap) = Printer::for_test_doc();
-    printer.emit(build_fleet_status_doc(&output, &sources));
+    printer.emit(build_fleet_status_doc(
+        &output,
+        &sources,
+        Path::new("/etc/cfgd/cfgd.yaml"),
+        "default",
+    ));
     drop(printer);
     let expected = serde_json::to_value(&output).unwrap();
     let actual = cap.json().expect("doc captured json");

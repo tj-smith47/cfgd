@@ -1621,13 +1621,20 @@ fn profile_show_json_schema() {
     // Structured emit routes everything through stdout; payload starts at first '{'.
     let start = output.find('{').expect("should have JSON object in output");
     let json: serde_json::Value = serde_json::from_str(output[start..].trim()).unwrap();
+    assert_eq!(
+        json["name"], "default",
+        "JSON should carry the profile name"
+    );
+    let resolved = json
+        .get("resolved")
+        .expect("envelope should have 'resolved'");
     assert!(
-        json.get("layers").is_some(),
-        "JSON should have layers field, got: {json}"
+        resolved.get("layers").is_some(),
+        "resolved should have layers field, got: {resolved}"
     );
     assert!(
-        json.get("merged").is_some(),
-        "JSON should have merged field, got: {json}"
+        resolved.get("merged").is_some(),
+        "resolved should have merged field, got: {resolved}"
     );
 }
 

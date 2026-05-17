@@ -44,8 +44,16 @@ fn apply_status_str(s: &cfgd_core::state::ApplyStatus) -> &'static str {
 /// Build the fleet-wide `cfgd status` Doc. Caller supplies the precomputed
 /// payload and the configured `SourceSpec` list so the renderer can show
 /// "not yet fetched" rows for sources without state records.
-pub fn build_fleet_status_doc(output: &StatusOutput, configured_sources: &[String]) -> Doc {
-    let mut doc = Doc::new().heading("Status");
+pub fn build_fleet_status_doc(
+    output: &StatusOutput,
+    configured_sources: &[String],
+    config_path: &Path,
+    profile_name: &str,
+) -> Doc {
+    let mut doc = Doc::new()
+        .heading("Status")
+        .kv("Config", config_path.display().to_string())
+        .kv("Profile", profile_name);
 
     match &output.last_apply {
         Some(last) => {
@@ -209,7 +217,7 @@ pub fn build_module_status_doc(output: &ModuleStatus, deployed_files: &[(String,
 
 /// Doc for the `cfgd status <module>` not-found path. Renders the module
 /// header and an info note; structured consumers get a payload with packages=0
-/// and `status: "not found"`.
+/// and `status: "not found"`. Returns Ok(()) — no main-side error rendering.
 pub fn build_module_status_not_found_doc(name: &str) -> Doc {
     let payload = ModuleStatus {
         name: name.to_string(),
@@ -236,7 +244,7 @@ pub(super) fn cmd_status(
         return cmd_status_module(cli, printer, v2_printer, mod_name);
     }
 
-    let (cfg, resolved) = load_config_and_profile_v2(cli, v2_printer)?;
+    let (cfg, profile_name, resolved) = load_config_and_profile_v2(cli)?;
     let state = open_state_store(cli.state_dir.as_deref())?;
 
     let last_apply = state.last_apply()?;
@@ -294,7 +302,12 @@ pub(super) fn cmd_status(
         managed_resources: resources,
     };
 
-    v2_printer.emit(build_fleet_status_doc(&output, &configured_source_names));
+    v2_printer.emit(build_fleet_status_doc(
+        &output,
+        &configured_source_names,
+        &cli.config,
+        &profile_name,
+    ));
 
     if exit_code && has_drift {
         cfgd_core::exit::ExitCode::DriftDetected.exit();

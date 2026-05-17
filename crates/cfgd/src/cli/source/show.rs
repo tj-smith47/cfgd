@@ -4,10 +4,12 @@ use cfgd_core::output_v2::{Doc, Printer as PrinterV2, Role, doc::SectionBuilder,
 
 const SHORT_COMMIT_LEN: usize = 12;
 
-/// Doc for the `source not found` error path. Emitted before bailing so JSON
-/// consumers see a structured error with the list of available sources.
+/// Doc emitted before the not-found error bubbles to `main.rs::printer.error`.
+/// Carries the structured payload for `-o json` consumers and a hint listing
+/// available sources; the user-visible error string itself is rendered by
+/// `main.rs` so it appears exactly once.
 pub fn build_source_not_found_doc(name: &str, available: &[String]) -> Doc {
-    let mut doc = Doc::new().status(Role::Fail, format!("Source '{}' not found", name));
+    let mut doc = Doc::new();
     if !available.is_empty() {
         doc = doc.hint(format!("Available sources: {}", available.join(", ")));
     }

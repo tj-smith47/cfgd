@@ -135,7 +135,11 @@ fn empty_resolved() -> ResolvedProfile {
 fn profile_show_happy_human() {
     let resolved = happy_resolved();
     let (printer, cap) = Printer::for_test_doc();
-    printer.emit(build_profile_show_doc(&resolved, "workstation"));
+    printer.emit(build_profile_show_doc(
+        &resolved,
+        "workstation",
+        Path::new("/etc/cfgd/cfgd.yaml"),
+    ));
     drop(printer);
     cap.assert_human_snapshot_in(Path::new(SNAPSHOT_ROOT), "profile_show/happy.txt");
 }
@@ -144,13 +148,20 @@ fn profile_show_happy_human() {
 fn profile_show_happy_json() {
     let resolved = happy_resolved();
     let (printer, cap) = Printer::for_test_doc();
-    printer.emit(build_profile_show_doc(&resolved, "workstation"));
+    printer.emit(build_profile_show_doc(
+        &resolved,
+        "workstation",
+        Path::new("/etc/cfgd/cfgd.yaml"),
+    ));
     drop(printer);
-    let expected = serde_json::to_value(&resolved).unwrap();
+    let expected = serde_json::json!({
+        "name": "workstation",
+        "resolved": serde_json::to_value(&resolved).unwrap(),
+    });
     let actual = cap.json().expect("doc captured json");
     assert_eq!(
         actual, expected,
-        "emit -o json must match serde_json::to_value(resolved)"
+        "emit -o json must match {{name, resolved}} envelope"
     );
     cap.assert_json_snapshot_in(Path::new(SNAPSHOT_ROOT), "profile_show/happy.json");
 }
@@ -159,7 +170,11 @@ fn profile_show_happy_json() {
 fn profile_show_empty_human() {
     let resolved = empty_resolved();
     let (printer, cap) = Printer::for_test_doc();
-    printer.emit(build_profile_show_doc(&resolved, "default"));
+    printer.emit(build_profile_show_doc(
+        &resolved,
+        "default",
+        Path::new("/etc/cfgd/cfgd.yaml"),
+    ));
     drop(printer);
     cap.assert_human_snapshot_in(Path::new(SNAPSHOT_ROOT), "profile_show/empty.txt");
 }

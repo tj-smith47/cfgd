@@ -5,9 +5,12 @@ use cfgd_core::config::{
 use cfgd_core::output_v2::{Doc, Printer as PrinterV2};
 
 /// Build the `cfgd profile show` Doc from a resolved profile. Pure; consumes
-/// nothing — the caller serializes `resolved` as the structured payload.
-pub fn build_profile_show_doc(resolved: &ResolvedProfile, name: &str) -> Doc {
-    let mut doc = Doc::new().heading(format!("Profile: {}", name));
+/// nothing — the caller serializes `{name, resolved}` as the structured payload.
+pub fn build_profile_show_doc(resolved: &ResolvedProfile, name: &str, config_path: &Path) -> Doc {
+    let mut doc = Doc::new()
+        .heading(format!("Profile: {}", name))
+        .kv("Config", config_path.display().to_string())
+        .kv("Profile", name);
 
     doc = doc.section("Layers", |s| {
         resolved.layers.iter().fold(s, |s, layer: &ProfileLayer| {
@@ -53,7 +56,10 @@ pub fn build_profile_show_doc(resolved: &ResolvedProfile, name: &str) -> Doc {
         })
     });
 
-    doc.with_data(resolved)
+    doc.with_data(serde_json::json!({
+        "name": name,
+        "resolved": resolved,
+    }))
 }
 
 /// Flatten a `PackagesSpec` into `(label, value)` rows in the same order the
@@ -111,18 +117,19 @@ pub(crate) fn cmd_profile_show(
     let (profile_name, resolved) = match name {
         Some(n) => {
             config::load_config(&cli.config)?;
-            printer.kv("Config", cli.config.display().to_string());
-            printer.kv("Profile", n);
             let resolved = config::resolve_profile(n, &profiles_dir(cli))?;
             (n.to_string(), resolved)
         }
         None => {
-            let (cfg, resolved) = helpers::load_config_and_profile_v2(cli, printer)?;
-            let active = cfg.active_profile()?.to_string();
+            let (_cfg, active, resolved) = helpers::load_config_and_profile_v2(cli)?;
             (active, resolved)
         }
     };
 
-    printer.emit(build_profile_show_doc(&resolved, &profile_name));
+    printer.emit(build_profile_show_doc(
+        &resolved,
+        &profile_name,
+        &cli.config,
+    ));
     Ok(())
 }

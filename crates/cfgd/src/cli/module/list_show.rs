@@ -67,10 +67,12 @@ pub fn build_module_list_doc(entries: &[ModuleListEntry], wide: bool, config_dir
     doc.table(table).with_data(entries)
 }
 
-/// Doc for the `module not found` error path. Emitted before bailing so the
-/// user sees the list of available modules.
+/// Doc emitted before the not-found error bubbles to `main.rs::printer.error`.
+/// Carries the structured payload for `-o json` consumers and a hint listing
+/// available modules; the user-visible error string itself is rendered by
+/// `main.rs` so it appears exactly once.
 pub fn build_module_not_found_doc(name: &str, available: &[String]) -> Doc {
-    let mut doc = Doc::new().status(Role::Fail, format!("Module '{}' not found", name));
+    let mut doc = Doc::new();
     if !available.is_empty() {
         doc = doc.hint(format!("Available modules: {}", available.join(", ")));
     }
@@ -199,7 +201,7 @@ pub(crate) fn cmd_module_list(
     }
 
     let active_modules: Vec<String> = if cli.config.exists() {
-        let (_, resolved) = helpers::load_config_and_profile_v2(cli, v2_printer)?;
+        let (_, _, resolved) = helpers::load_config_and_profile_v2(cli)?;
         resolved.merged.modules
     } else {
         Vec::new()

@@ -21,19 +21,14 @@ pub(in crate::cli) fn load_config_and_profile(
 
 pub(in crate::cli) fn load_config_and_profile_v2(
     cli: &Cli,
-    printer: &PrinterV2,
-) -> anyhow::Result<(CfgdConfig, ResolvedProfile)> {
+) -> anyhow::Result<(CfgdConfig, String, ResolvedProfile)> {
     let cfg = config::load_config(&cli.config)?;
     let profile_name = match cli.profile.as_deref() {
-        Some(p) => p,
-        None => cfg.active_profile()?,
+        Some(p) => p.to_string(),
+        None => cfg.active_profile()?.to_string(),
     };
-
-    printer.kv("Config", cli.config.display().to_string());
-    printer.kv("Profile", profile_name);
-
-    let resolved = config::resolve_profile(profile_name, &profiles_dir(cli))?;
-    Ok((cfg, resolved))
+    let resolved = config::resolve_profile(&profile_name, &profiles_dir(cli))?;
+    Ok((cfg, profile_name, resolved))
 }
 
 /// Parse a `--package` flag value. If it contains `:` and the prefix is a known
