@@ -5159,7 +5159,7 @@ fn cmd_verify_after_apply_with_env() {
     .unwrap();
 
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
-    let (printer, buf) = Printer::for_test();
+    let (printer, _buf) = Printer::for_test();
     let v2_printer = test_v2_printer();
 
     let args = ApplyArgs {
@@ -5175,7 +5175,6 @@ fn cmd_verify_after_apply_with_env() {
     };
     super::apply::cmd_apply(&cli, &printer, &v2_printer, &args).unwrap();
 
-    buf.lock().unwrap().clear();
     let (verify_v2_printer, verify_v2_buf) =
         cfgd_core::output_v2::Printer::for_test_at(cfgd_core::output_v2::Verbosity::Normal);
     super::verify::cmd_verify(&cli, &printer, &verify_v2_printer, None, false).unwrap();
