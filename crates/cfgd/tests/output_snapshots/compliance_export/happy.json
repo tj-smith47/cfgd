@@ -1,0 +1,36 @@
+{
+  "snapshot": {
+    "checks": [
+      {
+        "category": "file",
+        "status": "Compliant",
+        "target": "/etc/hosts"
+      },
+      {
+        "category": "package",
+        "status": "Compliant",
+        "target": "ripgrep"
+      },
+      {
+        "category": "package",
+        "status": "Compliant",
+        "target": "fd"
+      }
+    ],
+    "machine": {
+      "arch": "x86_64",
+      "hostname": "test-host",
+      "os": "linux"
+    },
+    "profile": "default",
+    "sources": [
+      "local"
+    ],
+    "summary": {
+      "compliant": 3,
+      "violation": 0,
+      "warning": 0
+    },
+    "timestamp": "2026-05-14T10:00:00Z"
+  }
+}

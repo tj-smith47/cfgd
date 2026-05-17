@@ -2,6 +2,7 @@ Compliance Export
 
 ✓ Compliance snapshot written to /var/lib/cfgd/compliance/2026-05-14.json
 
-Compliant  3
-Warning    0
-Violation  0
+Summary
+  Compliant  3
+  Warning    0
+  Violation  0

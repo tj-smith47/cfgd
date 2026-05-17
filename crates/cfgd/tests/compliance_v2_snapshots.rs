@@ -149,6 +149,27 @@ fn compliance_export_happy_human() {
     cap.assert_human_snapshot_in(Path::new(SNAPSHOT_ROOT), "compliance_export/happy.txt");
 }
 
+#[test]
+fn compliance_export_happy_json() {
+    let snap = happy_snapshot();
+    let (printer, cap) = Printer::for_test_doc();
+    printer.emit(build_compliance_export_doc(
+        &snap,
+        Path::new("/var/lib/cfgd/compliance/2026-05-14.json"),
+    ));
+    drop(printer);
+    let expected = serde_json::json!({
+        "snapshot": serde_json::to_value(&snap).unwrap(),
+    });
+    let actual = cap.json().expect("doc captured json");
+    pretty_assertions::assert_eq!(
+        actual,
+        expected,
+        "emit -o json must wrap the snapshot under {{snapshot}}"
+    );
+    cap.assert_json_snapshot_in(Path::new(SNAPSHOT_ROOT), "compliance_export/happy.json");
+}
+
 // --- compliance history ---
 
 fn populated_entries() -> Vec<ComplianceHistoryRow> {

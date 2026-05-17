@@ -295,11 +295,11 @@ pub fn build_compliance_export_doc(
             Role::Ok,
             format!("Compliance snapshot written to {}", export_path.display()),
         )
-        .kv_block([
-            ("Compliant", snapshot.summary.compliant.to_string()),
-            ("Warning", snapshot.summary.warning.to_string()),
-            ("Violation", snapshot.summary.violation.to_string()),
-        ])
+        .section("Summary", |s| {
+            s.kv("Compliant", snapshot.summary.compliant.to_string())
+                .kv("Warning", snapshot.summary.warning.to_string())
+                .kv("Violation", snapshot.summary.violation.to_string())
+        })
         .with_data(ComplianceSnapshotOutput {
             snapshot: snapshot.clone(),
         })
