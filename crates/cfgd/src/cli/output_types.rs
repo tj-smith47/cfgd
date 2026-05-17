@@ -10,7 +10,7 @@ pub struct LogOutput {
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct RollbackOutput {
+pub(in crate::cli) struct RollbackOutput {
     pub apply_id: i64,
     pub files_restored: usize,
     pub files_removed: usize,
@@ -107,7 +107,7 @@ pub struct DoctorConfiguratorCheck {
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct SourceListEntry {
+pub(in crate::cli) struct SourceListEntry {
     pub name: String,
     pub url: String,
     pub priority: u32,
@@ -118,7 +118,7 @@ pub struct SourceListEntry {
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct SourceShowOutput {
+pub(in crate::cli) struct SourceShowOutput {
     pub name: String,
     pub url: String,
     pub branch: String,
@@ -134,7 +134,7 @@ pub struct SourceShowOutput {
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct SourceStateInfo {
+pub(in crate::cli) struct SourceStateInfo {
     pub status: String,
     pub last_fetched: Option<String>,
     pub last_commit: Option<String>,
@@ -143,14 +143,14 @@ pub struct SourceStateInfo {
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct SourceResourceEntry {
+pub(in crate::cli) struct SourceResourceEntry {
     pub resource_type: String,
     pub resource_id: String,
 }
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct ProfileListEntry {
+pub(in crate::cli) struct ProfileListEntry {
     pub name: String,
     pub active: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -160,7 +160,7 @@ pub struct ProfileListEntry {
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct ModuleSearchResult {
+pub(in crate::cli) struct ModuleSearchResult {
     pub name: String,
     pub registry: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -171,14 +171,14 @@ pub struct ModuleSearchResult {
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct RegistryListEntry {
+pub(in crate::cli) struct RegistryListEntry {
     pub name: String,
     pub url: String,
 }
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct KeyListEntry {
+pub(in crate::cli) struct KeyListEntry {
     pub name: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub fingerprint: Option<String>,
@@ -190,19 +190,19 @@ pub struct KeyListEntry {
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct ComplianceSnapshotOutput {
+pub(in crate::cli) struct ComplianceSnapshotOutput {
     pub snapshot: cfgd_core::compliance::ComplianceSnapshot,
 }
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct ComplianceHistoryOutput {
+pub(in crate::cli) struct ComplianceHistoryOutput {
     pub entries: Vec<cfgd_core::state::ComplianceHistoryRow>,
 }
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct ComplianceDiffOutput {
+pub(in crate::cli) struct ComplianceDiffOutput {
     pub id1: i64,
     pub id2: i64,
     pub added: Vec<cfgd_core::compliance::ComplianceCheck>,
@@ -212,7 +212,7 @@ pub struct ComplianceDiffOutput {
 
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct ComplianceCheckChange {
+pub(in crate::cli) struct ComplianceCheckChange {
     pub key: String,
     pub old_status: String,
     pub new_status: String,

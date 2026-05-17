@@ -8,8 +8,7 @@
 //!
 //! The output_types only derive `Serialize`, so round-trip equality is asserted
 //! at the `serde_json::Value` level (parse stdout → compare to freshly-serialized
-//! payload). Future F1-F4 callers wire these into commands via
-//! `printer.emit(Doc::new().with_data(&payload))`.
+//! payload).
 
 use cfgd::cli::output_types::{
     DoctorConfigCheck, DoctorConfiguratorCheck, DoctorManagerCheck, DoctorModuleCheck,
@@ -24,7 +23,7 @@ use pretty_assertions::assert_eq;
 /// `serde_json::Value`. The captured buffer is asserted non-empty.
 fn emit_and_parse<T: serde::Serialize>(payload: &T) -> serde_json::Value {
     let (p, buf) = Printer::for_test_with_format(OutputFormat::Json);
-    let doc = Doc::new().heading("section").with_data(payload);
+    let doc = Doc::new().with_data(payload);
     p.emit(doc);
     drop(p);
     let raw = buf.lock().unwrap().clone();
