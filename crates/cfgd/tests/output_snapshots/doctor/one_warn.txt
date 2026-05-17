@@ -1,0 +1,32 @@
+Doctor
+
+Config
+  Name     test-host
+  Profile  default
+  ✓ Config file: /home/test/.config/cfgd/cfgd.yaml (valid)
+
+Tools
+  ✓ git: found
+
+Secrets
+  ⚠ sops: not found — required for secrets (https://github.com/getsops/sops#install)
+  ✓ age key: /home/test/.config/sops/age/keys.txt
+  ✓ .sops.yaml: present
+  ✓ provider 1password: available
+  provider vault: not installed (optional)
+
+Package Managers
+  ✓ cargo: available (declared in config)
+  brew: available (not used in config)
+
+Modules
+  ✓ dotfiles
+
+System
+  ✓ State store: accessible
+  ✓ Profiles directory: /home/test/.config/cfgd/profiles (2 profiles)
+
+Config Sources
+  ⚠ team-base: not cached (run 'cfgd source update')
+
+✓ All checks passed

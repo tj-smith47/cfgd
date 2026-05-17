@@ -1,0 +1,54 @@
+{
+  "config": {
+    "error": null,
+    "name": "test-host",
+    "path": "/home/test/.config/cfgd/cfgd.yaml",
+    "profile": "default",
+    "valid": true
+  },
+  "git": true,
+  "modules": [
+    {
+      "error": null,
+      "name": "dotfiles",
+      "valid": true
+    }
+  ],
+  "packageManagers": [
+    {
+      "available": true,
+      "canBootstrap": false,
+      "declared": true,
+      "name": "cargo"
+    },
+    {
+      "available": true,
+      "canBootstrap": false,
+      "declared": false,
+      "name": "brew"
+    }
+  ],
+  "secrets": {
+    "ageKeyExists": true,
+    "ageKeyPath": "/home/test/.config/sops/age/keys.txt",
+    "providers": [
+      {
+        "available": true,
+        "name": "1password"
+      },
+      {
+        "available": false,
+        "name": "vault"
+      }
+    ],
+    "sopsAvailable": true,
+    "sopsConfigExists": true,
+    "sopsVersion": "3.8.1"
+  },
+  "systemConfigurators": [
+    {
+      "available": true,
+      "name": "shell"
+    }
+  ]
+}

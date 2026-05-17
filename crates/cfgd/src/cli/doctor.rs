@@ -1,7 +1,52 @@
 use super::*;
+use cfgd_core::output_v2::{Doc, Printer as PrinterV2, Role, doc::SectionBuilder};
 
-pub(super) fn cmd_doctor(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
-    // Gather data for both structured and human output
+pub(super) fn cmd_doctor(
+    cli: &Cli,
+    printer: &Printer,
+    v2_printer: &PrinterV2,
+) -> anyhow::Result<()> {
+    let (output, extras) = collect_doctor_output(cli, printer)?;
+    v2_printer.emit(build_doctor_doc(&output, &extras));
+    Ok(())
+}
+
+/// Display-only doctor results that are not part of the stable JSON payload.
+///
+/// The `DoctorOutput` schema is consumer-facing and frozen; this struct carries
+/// the human-section sources (state-store health, profiles dir, config sources)
+/// so the human Doc keeps parity with the pre-v2 output without altering the
+/// `-o json` shape.
+#[derive(Default)]
+pub struct DoctorExtras {
+    pub state_store: Option<DoctorStateStore>,
+    pub profiles_dir: Option<DoctorProfilesDir>,
+    pub config_sources: Vec<DoctorConfigSource>,
+}
+
+pub struct DoctorStateStore {
+    pub accessible: bool,
+    pub message: Option<String>,
+}
+
+pub struct DoctorProfilesDir {
+    pub path: String,
+    pub exists: bool,
+    pub profile_count: usize,
+}
+
+pub struct DoctorConfigSource {
+    pub name: String,
+    pub cached_path: Option<String>,
+}
+
+/// Gather every doctor check into the stable JSON payload + display-only extras.
+/// The lib call to `modules::load_all_modules` still takes the old `Printer`;
+/// F3 migrates it.
+fn collect_doctor_output(
+    cli: &Cli,
+    printer: &Printer,
+) -> anyhow::Result<(DoctorOutput, DoctorExtras)> {
     let (config_check, loaded_cfg) = if cli.config.exists() {
         match config::load_config(&cli.config) {
             Ok(cfg) => (
@@ -49,8 +94,6 @@ pub(super) fn cmd_doctor(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
 
     let health = secrets::check_secrets_health(&config_dir, age_key_override.map(|p| p.as_path()));
 
-    // Build structured doctor output for --output json/yaml
-    // Resolve profile to get declared managers (including custom) and build registry
     let resolved_packages = if let Some(ref cfg) = loaded_cfg {
         let profiles_dir = profiles_dir(cli);
         let profile_name = cli.profile.as_deref().or(cfg.spec.profile.as_deref());
@@ -73,7 +116,6 @@ pub(super) fn cmd_doctor(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
     };
     let all_managers = &registry.package_managers;
 
-    // Determine which managers are declared in config
     let declared_managers: Vec<String> = if let Some(ref pkgs) = resolved_packages {
         let mut declared = Vec::new();
         if let Some(ref brew) = pkgs.brew
@@ -119,7 +161,8 @@ pub(super) fn cmd_doctor(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
         Vec::new()
     };
 
-    // Build manager check data (deduplicate brew-tap/brew-cask under brew)
+    // Deduplicate brew-tap / brew-cask under the parent brew manager so the
+    // human + structured output shows brew once.
     let mut manager_checks: Vec<DoctorManagerCheck> = Vec::new();
     {
         let mut seen = std::collections::HashSet::new();
@@ -140,7 +183,6 @@ pub(super) fn cmd_doctor(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
         }
     }
 
-    // Modules health
     let module_list: Vec<String> = if let Some(ref cfg) = loaded_cfg {
         let profiles_dir = profiles_dir(cli);
         let profile_name = cli.profile.as_deref().or(cfg.spec.profile.as_deref());
@@ -174,7 +216,6 @@ pub(super) fn cmd_doctor(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
         })
         .collect();
 
-    // System configurators
     let configurator_checks: Vec<DoctorConfiguratorCheck> = registry
         .available_system_configurators()
         .iter()
@@ -184,9 +225,69 @@ pub(super) fn cmd_doctor(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
         })
         .collect();
 
-    // Structured output
-    if printer.write_structured(&DoctorOutput {
-        config: config_check.clone(),
+    let state_store = match StateStore::open_default() {
+        Ok(_) => DoctorStateStore {
+            accessible: true,
+            message: None,
+        },
+        Err(e) => DoctorStateStore {
+            accessible: false,
+            message: Some(e.to_string()),
+        },
+    };
+
+    let profiles_dir_path = profiles_dir(cli);
+    let profiles_dir_extra = if profiles_dir_path.exists() {
+        let count = std::fs::read_dir(&profiles_dir_path)
+            .map(|entries| {
+                entries
+                    .filter_map(|e| e.ok())
+                    .filter(|e| cfgd_core::config::is_yaml_ext(&e.path()))
+                    .count()
+            })
+            .unwrap_or(0);
+        DoctorProfilesDir {
+            path: profiles_dir_path.display().to_string(),
+            exists: true,
+            profile_count: count,
+        }
+    } else {
+        DoctorProfilesDir {
+            path: profiles_dir_path.display().to_string(),
+            exists: false,
+            profile_count: 0,
+        }
+    };
+
+    let config_sources: Vec<DoctorConfigSource> = if cli.config.exists()
+        && let Ok(cfg) = config::load_config(&cli.config)
+        && !cfg.spec.sources.is_empty()
+    {
+        let cache_dir = source_cache_dir(cli).ok();
+        cfg.spec
+            .sources
+            .iter()
+            .map(|source| {
+                let cached_path = cache_dir.as_ref().and_then(|cd| {
+                    let p = cd.join(&source.name);
+                    if p.exists() {
+                        Some(p.display().to_string())
+                    } else {
+                        None
+                    }
+                });
+                DoctorConfigSource {
+                    name: source.name.clone(),
+                    cached_path,
+                }
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
+
+    let output = DoctorOutput {
+        config: config_check,
         git: git_available,
         secrets: DoctorSecretsCheck {
             sops_available: health.sops_available,
@@ -209,241 +310,216 @@ pub(super) fn cmd_doctor(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
         package_managers: manager_checks,
         modules: module_checks,
         system_configurators: configurator_checks,
-    }) {
-        return Ok(());
+    };
+
+    let extras = DoctorExtras {
+        state_store: Some(state_store),
+        profiles_dir: Some(profiles_dir_extra),
+        config_sources,
+    };
+
+    Ok((output, extras))
+}
+
+/// Build the doctor `Doc` from a collected payload + display-only extras. Used
+/// by the live command and by snapshot tests under
+/// `tests/output_snapshots/doctor/`.
+pub fn build_doctor_doc(output: &DoctorOutput, extras: &DoctorExtras) -> Doc {
+    let mut doc = Doc::new().heading("Doctor");
+
+    doc = doc.section("Config", |s| build_config_section(s, &output.config));
+    doc = doc.section("Tools", |s| build_tools_section(s, output.git));
+    doc = doc.section("Secrets", |s| build_secrets_section(s, &output.secrets));
+    doc = doc.section_if_nonempty(
+        "Package Managers",
+        &output.package_managers,
+        build_managers_section,
+    );
+    doc = doc.section_if_nonempty("Modules", &output.modules, build_modules_section);
+    doc = doc.section("System", |s| build_system_section(s, extras));
+    doc = doc.section_if_nonempty(
+        "Config Sources",
+        &extras.config_sources,
+        build_sources_section,
+    );
+
+    if all_passed(output) {
+        doc = doc.status(Role::Ok, "All checks passed");
+    } else {
+        doc = doc.status(Role::Fail, "Some checks failed — see above");
     }
 
-    // Human display
-    printer.header("Doctor");
+    doc.with_data(output)
+}
 
-    let mut all_ok = config_check.valid && git_available;
-
-    if config_check.valid {
-        printer.success(&format!("Config file: {} (valid)", config_check.path));
-        if let Some(name) = loaded_cfg.as_ref().map(|c| &c.metadata.name) {
-            printer.key_value("Name", name);
+fn build_config_section(s: SectionBuilder, cfg: &DoctorConfigCheck) -> SectionBuilder {
+    if cfg.valid {
+        let mut s = s.status(Role::Ok, format!("Config file: {} (valid)", cfg.path));
+        if let Some(name) = cfg.name.as_deref() {
+            s = s.kv("Name", name);
         }
-        printer.key_value(
-            "Profile",
-            loaded_cfg
-                .as_ref()
-                .and_then(|c| c.spec.profile.as_deref())
-                .unwrap_or("(none)"),
-        );
-    } else if let Some(ref err) = config_check.error {
+        s.kv("Profile", cfg.profile.as_deref().unwrap_or("(none)"))
+    } else if let Some(err) = cfg.error.as_deref() {
         if err == "not found" {
-            printer.warning(&format!(
-                "Config file not found: {} — run 'cfgd init' to create one",
-                config_check.path
-            ));
+            s.status_with(
+                Role::Warn,
+                format!("Config file: {} — not found", cfg.path),
+                |sf| sf.detail("run 'cfgd init' to create one"),
+            )
         } else {
-            printer.error(&format!("Config file: {} — {}", config_check.path, err));
+            s.status(Role::Fail, format!("Config file: {} — {}", cfg.path, err))
         }
+    } else {
+        s.status(Role::Fail, "Config file: invalid")
     }
+}
 
+fn build_tools_section(s: SectionBuilder, git_available: bool) -> SectionBuilder {
     if git_available {
-        printer.success("git: found");
+        s.status(Role::Ok, "git: found")
     } else {
-        printer.error("git: not found — install git to use cfgd");
+        s.status(Role::Fail, "git: not found — install git to use cfgd")
     }
+}
 
-    // Secrets
-    printer.newline();
-    printer.subheader("Secrets");
-
-    if health.sops_available {
-        let version_str = health.sops_version.as_deref().unwrap_or("unknown version");
-        printer.success(&format!("sops: found ({})", version_str));
+fn build_secrets_section(mut s: SectionBuilder, secrets: &DoctorSecretsCheck) -> SectionBuilder {
+    s = if secrets.sops_available {
+        let version_str = secrets.sops_version.as_deref().unwrap_or("unknown version");
+        s.status(Role::Ok, format!("sops: found ({})", version_str))
     } else {
-        printer.warning(
+        s.status(
+            Role::Warn,
             "sops: not found — required for secrets (https://github.com/getsops/sops#install)",
-        );
-    }
+        )
+    };
 
-    if health.age_key_exists {
-        if let Some(ref path) = health.age_key_path {
-            printer.success(&format!("age key: {}", path.display()));
-        }
-    } else if let Some(ref path) = health.age_key_path {
-        printer.warning(&format!(
-            "age key: not found at {} — run 'cfgd init' to generate",
-            path.display()
-        ));
-    }
+    s = match (secrets.age_key_exists, secrets.age_key_path.as_deref()) {
+        (true, Some(path)) => s.status(Role::Ok, format!("age key: {}", path)),
+        (false, Some(path)) => s.status(
+            Role::Warn,
+            format!(
+                "age key: not found at {} — run 'cfgd init' to generate",
+                path
+            ),
+        ),
+        _ => s,
+    };
 
-    if health.sops_config_exists {
-        if let Some(ref path) = health.sops_config_path {
-            printer.success(&format!(".sops.yaml: {}", path.display()));
-        }
+    s = if secrets.sops_config_exists {
+        s.status(Role::Ok, ".sops.yaml: present")
     } else {
-        printer.warning(".sops.yaml: not found — will be generated on 'cfgd init'");
-    }
+        s.status(
+            Role::Warn,
+            ".sops.yaml: not found — will be generated on 'cfgd init'",
+        )
+    };
 
-    for (name, available) in &health.providers {
-        if *available {
-            printer.success(&format!("provider {}: available", name));
+    for provider in &secrets.providers {
+        s = if provider.available {
+            s.status(Role::Ok, format!("provider {}: available", provider.name))
         } else {
-            printer.info(&format!("provider {}: not installed (optional)", name));
-        }
+            s.status(
+                Role::Info,
+                format!("provider {}: not installed (optional)", provider.name),
+            )
+        };
     }
+    s
+}
 
-    // Package managers
-    printer.newline();
-    printer.subheader("Package Managers");
-
-    let mut shown_managers = std::collections::HashSet::new();
-    for mgr in all_managers.iter() {
-        let name = mgr.name();
-        if name == "brew-tap" || name == "brew-cask" {
-            continue;
-        }
-        if !shown_managers.insert(name.to_string()) {
-            continue;
-        }
-        let is_declared = declared_managers.iter().any(|d| d == name);
-        let available = mgr.is_available();
-
-        if is_declared {
-            if available {
-                printer.success(&format!("{}: available (declared in config)", name));
-            } else if mgr.can_bootstrap() {
-                let method = packages::bootstrap_method(mgr.as_ref());
-                printer.warning(&format!(
-                    "{}: not found — can auto-bootstrap via {}",
-                    name, method
-                ));
+fn build_managers_section(s: SectionBuilder, managers: &[DoctorManagerCheck]) -> SectionBuilder {
+    managers.iter().fold(s, |s, m| {
+        if m.declared {
+            if m.available {
+                s.status(
+                    Role::Ok,
+                    format!("{}: available (declared in config)", m.name),
+                )
+            } else if m.can_bootstrap {
+                s.status_with(
+                    Role::Warn,
+                    format!("{}: not found — can auto-bootstrap", m.name),
+                    |sf| sf.detail("declared in config; will be installed on apply"),
+                )
             } else {
-                printer.error(&format!(
-                    "{}: not found — declared in config but not available",
-                    name
-                ));
-                all_ok = false;
+                s.status(
+                    Role::Fail,
+                    format!(
+                        "{}: not found — declared in config but not available",
+                        m.name
+                    ),
+                )
             }
-        } else if available {
-            printer.info(&format!("{}: available (not used in config)", name));
+        } else if m.available {
+            s.status(
+                Role::Info,
+                format!("{}: available (not used in config)", m.name),
+            )
+        } else {
+            s
         }
-    }
+    })
+}
 
-    if !module_list.is_empty() {
-        printer.newline();
-        printer.subheader("Modules");
-
-        let registry_for_modules = build_registry();
-        let mgr_map = managers_map(&registry_for_modules);
-        let platform = Platform::detect();
-
-        for mod_name in &module_list {
-            if let Some(module) = all_modules.get(mod_name) {
-                printer.info(&format!("{}:", mod_name));
-                for entry in &module.spec.packages {
-                    match modules::resolve_package(entry, mod_name, &platform, &mgr_map) {
-                        Ok(Some(resolved)) => {
-                            let installed = mgr_map
-                                .get(&resolved.manager)
-                                .and_then(|m| m.installed_packages().ok())
-                                .map(|pkgs| pkgs.contains(&resolved.resolved_name))
-                                .unwrap_or(false);
-                            if installed {
-                                let ver = resolved.version.as_deref().unwrap_or("?");
-                                printer.success(&format!(
-                                    "  {} {} ({}, {})",
-                                    entry.name, ver, resolved.manager, resolved.resolved_name
-                                ));
-                            } else {
-                                printer.error(&format!(
-                                    "  {} — not installed ({} {})",
-                                    entry.name, resolved.manager, resolved.resolved_name
-                                ));
-                                all_ok = false;
-                            }
-                        }
-                        Ok(None) => {
-                            printer.info(&format!("  {} — skipped (platform)", entry.name));
-                        }
-                        Err(e) => {
-                            printer.error(&format!("  {} — {}", entry.name, e));
-                            all_ok = false;
-                        }
-                    }
-                }
-            } else {
-                printer.error(&format!(
-                    "{}: module not found in {}/modules/",
-                    mod_name,
-                    config_dir.display()
-                ));
-                all_ok = false;
-            }
+fn build_modules_section(s: SectionBuilder, modules: &[DoctorModuleCheck]) -> SectionBuilder {
+    modules.iter().fold(s, |s, m| {
+        if m.valid {
+            s.status(Role::Ok, m.name.clone())
+        } else {
+            let detail = m.error.clone().unwrap_or_else(|| "invalid".into());
+            s.status_with(Role::Fail, m.name.clone(), |sf| sf.detail(detail))
         }
-    }
+    })
+}
 
-    // Check state store
-    printer.newline();
-    printer.subheader("System");
-
-    match StateStore::open_default() {
-        Ok(_) => printer.success("State store: accessible"),
-        Err(e) => {
-            printer.warning(&format!("State store: {}", e));
-        }
-    }
-
-    // Check profiles directory
-    let profiles_dir = profiles_dir(cli);
-    if profiles_dir.exists() {
-        let count = std::fs::read_dir(&profiles_dir)
-            .map(|entries| {
-                entries
-                    .filter_map(|e| e.ok())
-                    .filter(|e| cfgd_core::config::is_yaml_ext(&e.path()))
-                    .count()
+fn build_system_section(mut s: SectionBuilder, extras: &DoctorExtras) -> SectionBuilder {
+    if let Some(ss) = extras.state_store.as_ref() {
+        s = if ss.accessible {
+            s.status(Role::Ok, "State store: accessible")
+        } else {
+            let detail = ss.message.clone().unwrap_or_else(|| "unavailable".into());
+            s.status_with(Role::Warn, "State store: unavailable", |sf| {
+                sf.detail(detail)
             })
-            .unwrap_or(0);
-        printer.success(&format!(
-            "Profiles directory: {} ({} profiles)",
-            profiles_dir.display(),
-            count
-        ));
-    } else {
-        printer.warning(&format!(
-            "Profiles directory not found: {}",
-            profiles_dir.display()
-        ));
+        };
     }
-
-    // Check config sources
-    let doctor_config_path = &cli.config;
-    if doctor_config_path.exists()
-        && let Ok(cfg) = config::load_config(doctor_config_path)
-        && !cfg.spec.sources.is_empty()
-    {
-        printer.newline();
-        printer.subheader("Config Sources");
-        let cache_dir = source_cache_dir(cli).ok();
-        for source in &cfg.spec.sources {
-            let cached = cache_dir.as_ref().and_then(|cd| {
-                if cd.join(&source.name).exists() {
-                    Some(format!("cached at {}", cd.join(&source.name).display()))
-                } else {
-                    None
-                }
-            });
-            match cached {
-                Some(info) => printer.success(&format!("{}: {}", source.name, info)),
-                None => printer.warning(&format!(
-                    "{}: not cached (run 'cfgd source update')",
-                    source.name
-                )),
-            }
-        }
+    if let Some(pd) = extras.profiles_dir.as_ref() {
+        s = if pd.exists {
+            s.status(
+                Role::Ok,
+                format!(
+                    "Profiles directory: {} ({} profiles)",
+                    pd.path, pd.profile_count
+                ),
+            )
+        } else {
+            s.status(
+                Role::Warn,
+                format!("Profiles directory not found: {}", pd.path),
+            )
+        };
     }
+    s
+}
 
-    printer.newline();
-    if all_ok {
-        printer.success("All checks passed");
-    } else {
-        printer.error("Some checks failed — see above");
-    }
+fn build_sources_section(s: SectionBuilder, sources: &[DoctorConfigSource]) -> SectionBuilder {
+    sources
+        .iter()
+        .fold(s, |s, source| match source.cached_path.as_deref() {
+            Some(path) => s.status(Role::Ok, format!("{}: cached at {}", source.name, path)),
+            None => s.status(
+                Role::Warn,
+                format!("{}: not cached (run 'cfgd source update')", source.name),
+            ),
+        })
+}
 
-    Ok(())
+fn all_passed(output: &DoctorOutput) -> bool {
+    output.config.valid
+        && output.git
+        && output
+            .package_managers
+            .iter()
+            .all(|m| !m.declared || m.available || m.can_bootstrap)
+        && output.modules.iter().all(|m| m.valid)
 }

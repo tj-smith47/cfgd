@@ -5,7 +5,7 @@ pub mod config_cmd;
 mod daemon;
 mod decide;
 mod diff;
-mod doctor;
+pub mod doctor;
 mod explain;
 pub mod generate;
 mod helpers;
@@ -1419,7 +1419,7 @@ pub fn execute(
                 profile::cmd_profile_delete(cli, printer, v2_printer, name, *yes)
             }
         },
-        Command::Doctor => doctor::cmd_doctor(cli, printer),
+        Command::Doctor => doctor::cmd_doctor(cli, printer, v2_printer),
         Command::Init {
             path,
             from,
