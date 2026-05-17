@@ -15,7 +15,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use cfgd::cli::output_types::{SourceResourceEntry, SourceShowOutput, SourceStateInfo};
-use cfgd::cli::source::show::build_source_show_doc;
+use cfgd::cli::source::show::{build_source_not_found_doc, build_source_show_doc};
 use cfgd_core::config::{
     ConfigSourceDocument, ConfigSourceMetadata, ConfigSourcePolicy, ConfigSourceProvides,
     ConfigSourceSpec, EnvVar, ManagedFileSpec, PolicyItems, SourceConstraints,
@@ -155,4 +155,13 @@ fn source_show_empty_human() {
     printer.emit(build_source_show_doc(&output, None));
     drop(printer);
     cap.assert_human_snapshot_in(Path::new(SNAPSHOT_ROOT), "source_show/empty.txt");
+}
+
+#[test]
+fn source_show_not_found_human() {
+    let available = vec!["alpha".to_string(), "beta".to_string()];
+    let (printer, cap) = Printer::for_test_doc();
+    printer.emit(build_source_not_found_doc("missing", &available));
+    drop(printer);
+    cap.assert_human_snapshot_in(Path::new(SNAPSHOT_ROOT), "source_show/not_found.txt");
 }

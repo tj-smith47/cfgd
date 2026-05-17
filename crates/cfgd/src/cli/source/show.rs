@@ -2,6 +2,22 @@ use super::*;
 use cfgd_core::config::{ConfigSourceDocument, PolicyItems};
 use cfgd_core::output_v2::{Doc, Printer as PrinterV2, Role, doc::SectionBuilder, renderer::Table};
 
+const SHORT_COMMIT_LEN: usize = 12;
+
+/// Doc for the `source not found` error path. Emitted before bailing so JSON
+/// consumers see a structured error with the list of available sources.
+pub fn build_source_not_found_doc(name: &str, available: &[String]) -> Doc {
+    let mut doc = Doc::new().status(Role::Fail, format!("Source '{}' not found", name));
+    if !available.is_empty() {
+        doc = doc.hint(format!("Available sources: {}", available.join(", ")));
+    }
+    doc.with_data(serde_json::json!({
+        "error": "not_found",
+        "name": name,
+        "available": available,
+    }))
+}
+
 pub fn build_source_show_doc(
     output: &SourceShowOutput,
     manifest: Option<&ConfigSourceDocument>,
@@ -30,7 +46,7 @@ pub fn build_source_show_doc(
                 s = s.kv("Last Fetched", fetched);
             }
             if let Some(ref commit) = state_info.last_commit {
-                let short = &commit[..commit.len().min(12)];
+                let short = &commit[..commit.len().min(SHORT_COMMIT_LEN)];
                 s = s.kv("Last Commit", short);
             }
             if let Some(ref version) = state_info.version {
@@ -158,12 +174,14 @@ pub(crate) fn cmd_source_show(
     let config_path = cli.config.clone();
     let cfg = config::load_config(&config_path)?;
 
-    let source_spec = cfg
-        .spec
-        .sources
-        .iter()
-        .find(|s| s.name == name)
-        .ok_or_else(|| anyhow::anyhow!("Source '{}' not found", name))?;
+    let source_spec = match cfg.spec.sources.iter().find(|s| s.name == name) {
+        Some(spec) => spec,
+        None => {
+            let available: Vec<String> = cfg.spec.sources.iter().map(|s| s.name.clone()).collect();
+            v2_printer.emit(build_source_not_found_doc(name, &available));
+            anyhow::bail!("Source '{}' not found", name);
+        }
+    };
 
     let state = open_state_store(cli.state_dir.as_deref())?;
     let state_info = state.config_source_by_name(name)?;
@@ -198,7 +216,7 @@ pub(crate) fn cmd_source_show(
     let mut mgr = SourceManager::new(&cache_dir);
     mgr.set_allow_unsigned(cfg.spec.security.as_ref().is_some_and(|s| s.allow_unsigned));
     if let Err(e) = mgr.load_source(source_spec, printer) {
-        printer.warning(&format!("Failed to load source manifest: {}", e));
+        v2_printer.status_simple(Role::Warn, format!("Failed to load source manifest: {}", e));
     }
     let manifest = mgr.get(name).map(|c| &c.manifest);
 
