@@ -297,6 +297,10 @@ pub(in crate::cli) fn display_plan_preview(
 
 // Bridge helper: callers wire up in R2 families F1–F4 (this file ships in F0 ahead of them).
 // #[allow(dead_code)] removed when R3 deletes the originals and renames *_v2 → bare name.
+//
+// The original's `printer.newline()` calls (pre-pending-header, pre-table, pre-summary)
+// are intentionally dropped: output_v2's renderer auto-blanks between top-level groups
+// and around section open/close per spec §13 (writer + blank-line state machine).
 #[allow(dead_code)]
 pub(in crate::cli) fn display_plan_preview_v2(
     plan: &reconciler::Plan,
@@ -354,7 +358,7 @@ pub(in crate::cli) fn display_plan_preview_v2(
                     // header flushing per output_v2 §5a), so a `section()` here would
                     // render its header AFTER the diff. Use `heading()` instead — same
                     // visual role as the original `subheader(target.display())`.
-                    printer.heading(format!("{}", target.display()));
+                    printer.heading(target.display().to_string());
                     printer.diff(&target_content, &source_content);
                 }
             }
@@ -719,6 +723,8 @@ pub(in crate::cli) fn handle_unmanaged_file_targets_v2(
 }
 
 /// Prompt the user to choose how to handle an unmanaged file target. (v2 helper)
+// Bridge helper: callers wire up in R2 families F1–F4 (this file ships in F0 ahead of them).
+// #[allow(dead_code)] removed when R3 deletes the originals and renames *_v2 → bare name.
 #[allow(dead_code)]
 fn prompt_backup_choice_v2<'a>(
     target: &Path,
