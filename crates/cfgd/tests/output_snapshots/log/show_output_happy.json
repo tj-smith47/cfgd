@@ -1,0 +1,17 @@
+{
+  "applyId": 1,
+  "entries": [
+    {
+      "actionType": "script",
+      "output": "hello world\nsecond line",
+      "phase": "scripts",
+      "resourceId": "script:pre:hello"
+    },
+    {
+      "actionType": "script",
+      "output": "goodbye world",
+      "phase": "scripts",
+      "resourceId": "script:post:bye"
+    }
+  ]
+}

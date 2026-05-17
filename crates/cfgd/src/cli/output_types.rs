@@ -12,14 +12,14 @@ pub struct LogOutput {
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct LogShowOutputOutput {
+pub(in crate::cli) struct LogShowOutputOutput {
     pub apply_id: i64,
     pub entries: Vec<LogShowEntryOutput>,
 }
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct LogShowEntryOutput {
+pub(in crate::cli) struct LogShowEntryOutput {
     pub phase: String,
     pub resource_id: String,
     pub action_type: String,

@@ -3,11 +3,12 @@
 //! Real `cmd_log` capture against tempdir state DBs seeded directly through
 //! the public `StateStore` API. Bridge snapshot omitted: `cmd_log` is a
 //! pure buffered surface (heading + table + emit) with no streaming side,
-//! and `cmd_log_show_output` emits the streaming "Entries" section without
-//! a buffered human surface afterwards (the trailing Doc is payload-only) —
-//! no streaming→buffered transition exists to assert against. Follows the
-//! T4 pull precedent documented in the F3 README under "Bridge-snapshot
-//! rule".
+//! and `cmd_log_show_output`'s streaming-entries branch emits the streaming
+//! "Entries" section without a buffered human surface afterwards (the
+//! trailing Doc is payload-only). The `entries.is_empty()` branch is fully
+//! buffered (heading + status + with_data) — also no streaming→buffered
+//! transition. Follows the T4 pull precedent documented in the F3 README
+//! under "Bridge-snapshot rule".
 //!
 //! Timestamps in the multi-row golden are normalised to a placeholder so
 //! the snapshot is host-stable.
@@ -26,7 +27,7 @@ use cfgd_core::output_v2::Printer;
 use cfgd_core::state::ApplyStatus;
 use pretty_assertions::assert_eq;
 
-use common::{log_history_setup, log_show_output_setup};
+use common::{log_history_setup, log_show_output_no_journal_setup, log_show_output_setup};
 
 const SNAPSHOT_ROOT: &str = "tests/output_snapshots";
 
@@ -155,6 +156,72 @@ fn log_show_output_empty_human() {
         "log/show_output_empty.txt",
         &stripped,
     );
+}
+
+/// `--show-output <apply_id>` against an apply that exists but has zero
+/// journal entries (`journal_begin` was never called for this apply) —
+/// locks the buffered `heading + status + with_data` Doc emitted on the
+/// `entries.is_empty()` branch of `cmd_log_show_output`.
+#[test]
+fn log_show_output_no_journal_human() {
+    let (state_dir, apply_id) = log_show_output_no_journal_setup();
+
+    let old_printer = PrinterV1::new(cfgd_core::output::Verbosity::Quiet);
+    let (v2_printer, cap) = Printer::for_test_doc();
+
+    cmd_log(
+        &old_printer,
+        &v2_printer,
+        10,
+        Some(apply_id),
+        Some(state_dir.path()),
+    )
+    .unwrap();
+    drop(v2_printer);
+
+    let stripped = strip_ansi(&cap.human());
+    assert_snapshot(
+        Path::new(SNAPSHOT_ROOT),
+        "log/show_output_no_journal.txt",
+        &stripped,
+    );
+}
+
+/// `--show-output <apply_id>` happy path — locks the JSON shape of
+/// `LogShowOutputOutput` carried via `Doc::with_data` on the final emit.
+/// Captures from a real `cmd_log` run so the snapshot pins the runtime
+/// `with_data` payload, not a hand-rolled struct.
+#[test]
+fn log_show_output_happy_json() {
+    let (state_dir, apply_id) = log_show_output_setup(&[
+        (
+            "scripts",
+            "script",
+            "script:pre:hello",
+            Some("hello world\nsecond line"),
+        ),
+        (
+            "scripts",
+            "script",
+            "script:post:bye",
+            Some("goodbye world"),
+        ),
+    ]);
+
+    let old_printer = PrinterV1::new(cfgd_core::output::Verbosity::Quiet);
+    let (v2_printer, cap) = Printer::for_test_doc();
+
+    cmd_log(
+        &old_printer,
+        &v2_printer,
+        10,
+        Some(apply_id),
+        Some(state_dir.path()),
+    )
+    .unwrap();
+    drop(v2_printer);
+
+    cap.assert_json_snapshot_in(Path::new(SNAPSHOT_ROOT), "log/show_output_happy.json");
 }
 
 // ─────────────────────────────────────────────────────

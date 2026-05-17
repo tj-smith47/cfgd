@@ -9385,7 +9385,7 @@ fn cmd_workflow_generate_no_overwrite_without_force() {
 // --- cmd_log_show_output ---
 
 #[test]
-fn cmd_log_show_output_no_entries() {
+fn cmd_log_show_output_nonexistent_apply_via_dispatch() {
     let state_dir = tempfile::tempdir().unwrap();
     let printer = test_printer();
     let v2_printer = test_v2_printer();

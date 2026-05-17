@@ -523,6 +523,23 @@ pub fn log_show_output_setup(
     (state_dir, apply_id)
 }
 
+/// Seed a state DB with one apply recorded via `record_apply` but **no**
+/// journal entries (`journal_begin` is never called). Exercises the
+/// `cmd_log_show_output` branch where `state.journal_entries(apply_id)`
+/// returns an empty Vec.
+///
+/// Returns `(state_dir, apply_id)`.
+pub fn log_show_output_no_journal_setup() -> (tempfile::TempDir, i64) {
+    let state_dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(state_dir.path()).unwrap();
+    let state = StateStore::open(&state_dir.path().join("cfgd.db")).unwrap();
+
+    let apply_id = state
+        .record_apply("test", "hash1", ApplyStatus::Success, None)
+        .unwrap();
+    (state_dir, apply_id)
+}
+
 /// Seed a state DB with a target apply followed by a non-file (package)
 /// action — exercises the "Non-file actions (manual review)" section.
 pub fn rollback_state_with_non_file_actions_setup() -> (tempfile::TempDir, i64) {
