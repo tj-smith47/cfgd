@@ -1,4 +1,5 @@
 use super::*;
+use cfgd_core::output_v2::{Printer as PrinterV2, Role};
 
 // --- Source cache layout ---
 
@@ -95,6 +96,7 @@ pub(crate) fn parse_priority_input(input: &str) -> anyhow::Result<u32> {
 ///
 /// Side effects only on `printer` — split out so the output contract is
 /// testable via `Printer::for_test()` without needing a real source clone.
+// TEMP (R3 removes): F1–F4 callers migrate to *_v2; this stays for the un-migrated.
 pub(crate) fn display_source_manifest(
     printer: &Printer,
     manifest: &config::ConfigSourceDocument,
@@ -155,6 +157,85 @@ pub(crate) fn display_source_manifest(
     provided_profiles
 }
 
+// Bridge helper: callers wire up in R2 families F1–F4 (this file ships in F0 ahead of them).
+// #[allow(dead_code)] removed when R3 deletes the originals and renames *_v2 → bare name.
+//
+// The original's `printer.newline()` between the two subheaders is intentionally
+// dropped: output_v2's renderer auto-blanks between top-level sections per spec
+// §13 (writer + blank-line state machine). The two `subheader` calls become two
+// sibling `printer.section(...)` blocks — NOT nested — each binding its own
+// guard so the `kv`/`status_simple` children land inside the right section.
+#[allow(dead_code)]
+pub(crate) fn display_source_manifest_v2(
+    printer: &PrinterV2,
+    manifest: &config::ConfigSourceDocument,
+) -> Vec<String> {
+    let provided_profiles = cfgd_core::config::source_profile_names(&manifest.spec.provides);
+
+    {
+        let guard = printer.section("Source Manifest");
+        guard.kv("Name", &manifest.metadata.name);
+        if let Some(ref version) = manifest.metadata.version {
+            guard.kv("Version", version);
+        }
+        if let Some(ref desc) = manifest.metadata.description {
+            guard.kv("Description", desc);
+        }
+
+        if !provided_profiles.is_empty() {
+            guard.kv("Profiles", provided_profiles.join(", "));
+        }
+    }
+
+    // Policy summary
+    let policy = &manifest.spec.policy;
+    let required_count = count_policy_items(&policy.required);
+    let recommended_count = count_policy_items(&policy.recommended);
+    let locked_count = count_policy_items(&policy.locked);
+
+    {
+        let guard = printer.section("Policy");
+        if locked_count > 0 {
+            guard.status_simple(
+                Role::Warn,
+                format!("{} locked item(s) (cannot override)", locked_count),
+            );
+        }
+        if required_count > 0 {
+            guard.status_simple(
+                Role::Info,
+                format!("{} required item(s) (team requirement)", required_count),
+            );
+        }
+        if recommended_count > 0 {
+            guard.status_simple(
+                Role::Info,
+                format!("{} recommended item(s)", recommended_count),
+            );
+        }
+
+        // Constraints
+        let constraints = &manifest.spec.policy.constraints;
+        if constraints.no_scripts {
+            guard.status_simple(Role::Info, "Scripts: blocked");
+        }
+        if constraints.no_secrets_read {
+            guard.status_simple(Role::Info, "Secret access: blocked");
+        }
+        if !constraints.allowed_target_paths.is_empty() {
+            guard.status_simple(
+                Role::Info,
+                format!(
+                    "Allowed paths: {}",
+                    constraints.allowed_target_paths.join(", ")
+                ),
+            );
+        }
+    }
+
+    provided_profiles
+}
+
 pub(crate) fn count_policy_items(items: &config::PolicyItems) -> usize {
     let mut count = 0;
     if let Some(ref pkgs) = items.packages {
@@ -178,6 +259,7 @@ pub(crate) fn count_policy_items(items: &config::PolicyItems) -> usize {
     count
 }
 
+// TEMP (R3 removes): F1–F4 callers migrate to *_v2; this stays for the un-migrated.
 pub(crate) fn display_policy_items(printer: &Printer, items: &config::PolicyItems, indent: &str) {
     if let Some(ref pkgs) = items.packages {
         if let Some(ref brew) = pkgs.brew {
@@ -221,6 +303,62 @@ pub(crate) fn display_policy_items(printer: &Printer, items: &config::PolicyItem
     }
 }
 
+// Bridge helper: callers wire up in R2 families F1–F4 (this file ships in F0 ahead of them).
+// #[allow(dead_code)] removed when R3 deletes the originals and renames *_v2 → bare name.
+//
+// `indent` is preserved as a `&str` prefix on each line for byte-parity with the
+// original. F1–F4 callers that already operate inside a `SectionGuard` should
+// pass "" to avoid double-indenting; the renderer's section depth handles the
+// visual indent on its own.
+#[allow(dead_code)]
+pub(crate) fn display_policy_items_v2(
+    printer: &PrinterV2,
+    items: &config::PolicyItems,
+    indent: &str,
+) {
+    if let Some(ref pkgs) = items.packages {
+        if let Some(ref brew) = pkgs.brew {
+            for f in &brew.formulae {
+                printer.status_simple(Role::Info, format!("{indent}brew formula: {f}"));
+            }
+            for c in &brew.casks {
+                printer.status_simple(Role::Info, format!("{indent}brew cask: {c}"));
+            }
+        }
+        if let Some(ref apt) = pkgs.apt {
+            for p in &apt.packages {
+                printer.status_simple(Role::Info, format!("{indent}apt: {p}"));
+            }
+        }
+        if let Some(ref cargo) = pkgs.cargo {
+            for p in &cargo.packages {
+                printer.status_simple(Role::Info, format!("{indent}cargo: {p}"));
+            }
+        }
+        for p in &pkgs.pipx {
+            printer.status_simple(Role::Info, format!("{indent}pipx: {p}"));
+        }
+        for p in &pkgs.dnf {
+            printer.status_simple(Role::Info, format!("{indent}dnf: {p}"));
+        }
+        if let Some(ref npm) = pkgs.npm {
+            for p in &npm.global {
+                printer.status_simple(Role::Info, format!("{indent}npm: {p}"));
+            }
+        }
+    }
+    for f in &items.files {
+        printer.status_simple(Role::Info, format!("{indent}file: {}", f.target.display()));
+    }
+    for ev in &items.env {
+        printer.status_simple(Role::Info, format!("{indent}env: {}", ev.name));
+    }
+    for k in items.system.keys() {
+        printer.status_simple(Role::Info, format!("{indent}system: {k}"));
+    }
+}
+
+// TEMP (R3 removes): F1–F4 callers migrate to *_v2; this stays for the un-migrated.
 pub(crate) fn display_pending_decisions(
     printer: &Printer,
     decisions: &[cfgd_core::state::PendingDecision],
@@ -242,6 +380,47 @@ pub(crate) fn display_pending_decisions(
                 "  {} {} — {} ({})",
                 item.tier, item.resource, item.summary, item.action
             ));
+        }
+    }
+}
+
+// Bridge helper: callers wire up in R2 families F1–F4 (this file ships in F0 ahead of them).
+// #[allow(dead_code)] removed when R3 deletes the originals and renames *_v2 → bare name.
+//
+// The original emitted a per-source summary line followed by manually two-space-
+// indented child lines (`"  {tier} {resource} ..."`). In output_v2 this becomes
+// a `section(source_name)` per source whose children are `status_simple` rows
+// at the section's depth — the renderer owns the indent. The summary count line
+// stays as the section's first child so the "N pending item(s)" framing remains
+// visible.
+#[allow(dead_code)]
+pub(crate) fn display_pending_decisions_v2(
+    printer: &PrinterV2,
+    decisions: &[cfgd_core::state::PendingDecision],
+) {
+    let mut by_source: std::collections::BTreeMap<&str, Vec<&cfgd_core::state::PendingDecision>> =
+        std::collections::BTreeMap::new();
+    for d in decisions {
+        by_source.entry(&d.source).or_default().push(d);
+    }
+    for (source_name, items) in &by_source {
+        let guard = printer.section((*source_name).to_string());
+        guard.status_simple(
+            Role::Info,
+            format!(
+                "{} pending item{}",
+                items.len(),
+                if items.len() == 1 { "" } else { "s" }
+            ),
+        );
+        for item in items {
+            guard.status_simple(
+                Role::Info,
+                format!(
+                    "{} {} — {} ({})",
+                    item.tier, item.resource, item.summary, item.action
+                ),
+            );
         }
     }
 }
