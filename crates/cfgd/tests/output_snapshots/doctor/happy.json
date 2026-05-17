@@ -11,6 +11,22 @@
     {
       "error": null,
       "name": "dotfiles",
+      "packages": [
+        {
+          "installed": true,
+          "manager": "cargo",
+          "name": "bat",
+          "resolvedName": "bat",
+          "version": "0.24.0"
+        },
+        {
+          "installed": true,
+          "manager": "cargo",
+          "name": "ripgrep",
+          "resolvedName": "ripgrep",
+          "version": "14.1.0"
+        }
+      ],
       "valid": true
     }
   ],
@@ -43,6 +59,7 @@
     ],
     "sopsAvailable": true,
     "sopsConfigExists": true,
+    "sopsConfigPath": "/home/test/.config/cfgd/.sops.yaml",
     "sopsVersion": "3.8.1"
   },
   "systemConfigurators": [

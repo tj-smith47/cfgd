@@ -41,8 +41,7 @@ pub struct DoctorConfigSource {
 }
 
 /// Gather every doctor check into the stable JSON payload + display-only extras.
-/// The lib call to `modules::load_all_modules` still takes the old `Printer`;
-/// F3 migrates it.
+/// The lib call to `modules::load_all_modules` still takes the old `Printer`.
 fn collect_doctor_output(
     cli: &Cli,
     printer: &Printer,
@@ -174,11 +173,18 @@ fn collect_doctor_output(
             if !seen.insert(name.to_string()) {
                 continue;
             }
+            let can_bootstrap = mgr.can_bootstrap();
+            let bootstrap_method = if can_bootstrap {
+                Some(packages::bootstrap_method(mgr.as_ref()).to_string())
+            } else {
+                None
+            };
             manager_checks.push(DoctorManagerCheck {
                 name: name.to_string(),
                 available: mgr.is_available(),
                 declared: declared_managers.iter().any(|d| d == name),
-                can_bootstrap: mgr.can_bootstrap(),
+                can_bootstrap,
+                bootstrap_method,
             });
         }
     }
@@ -197,20 +203,74 @@ fn collect_doctor_output(
     let cache_base = modules::default_module_cache_dir().unwrap_or_default();
     let all_modules =
         modules::load_all_modules(&config_dir, &cache_base, printer).unwrap_or_default();
+
+    // Per-module package detail: resolve each declared package against the
+    // platform's manager and query installed_packages to know whether the
+    // declared state is realized. The "modules-only" registry mirrors what
+    // `cfgd apply` would use for the install path.
+    let modules_registry = build_registry();
+    let mgr_map = managers_map(&modules_registry);
+    let platform = Platform::detect();
+
     let module_checks: Vec<DoctorModuleCheck> = module_list
         .iter()
         .map(|mod_name| {
-            if all_modules.contains_key(mod_name) {
+            if let Some(module) = all_modules.get(mod_name) {
+                let packages: Vec<DoctorModulePackageCheck> = module
+                    .spec
+                    .packages
+                    .iter()
+                    .map(|entry| {
+                        match modules::resolve_package(entry, mod_name, &platform, &mgr_map) {
+                            Ok(Some(resolved)) => {
+                                let installed = mgr_map
+                                    .get(&resolved.manager)
+                                    .and_then(|m| m.installed_packages().ok())
+                                    .map(|pkgs| pkgs.contains(&resolved.resolved_name))
+                                    .unwrap_or(false);
+                                DoctorModulePackageCheck {
+                                    name: entry.name.clone(),
+                                    resolved_name: resolved.resolved_name,
+                                    manager: resolved.manager,
+                                    installed,
+                                    version: resolved.version,
+                                    skip_reason: None,
+                                    error: None,
+                                }
+                            }
+                            Ok(None) => DoctorModulePackageCheck {
+                                name: entry.name.clone(),
+                                resolved_name: entry.name.clone(),
+                                manager: String::new(),
+                                installed: false,
+                                version: None,
+                                skip_reason: Some("platform".into()),
+                                error: None,
+                            },
+                            Err(e) => DoctorModulePackageCheck {
+                                name: entry.name.clone(),
+                                resolved_name: entry.name.clone(),
+                                manager: String::new(),
+                                installed: false,
+                                version: None,
+                                skip_reason: None,
+                                error: Some(e.to_string()),
+                            },
+                        }
+                    })
+                    .collect();
                 DoctorModuleCheck {
                     name: mod_name.clone(),
                     valid: true,
                     error: None,
+                    packages,
                 }
             } else {
                 DoctorModuleCheck {
                     name: mod_name.clone(),
                     valid: false,
                     error: Some("module not found".into()),
+                    packages: Vec::new(),
                 }
             }
         })
@@ -298,6 +358,10 @@ fn collect_doctor_output(
                 .as_ref()
                 .map(|p| p.display().to_string()),
             sops_config_exists: health.sops_config_exists,
+            sops_config_path: health
+                .sops_config_path
+                .as_ref()
+                .map(|p| p.display().to_string()),
             providers: health
                 .providers
                 .iter()
@@ -327,7 +391,10 @@ fn collect_doctor_output(
 pub fn build_doctor_doc(output: &DoctorOutput, extras: &DoctorExtras) -> Doc {
     let mut doc = Doc::new().heading("Doctor");
 
-    doc = doc.section("Config", |s| build_config_section(s, &output.config));
+    // Config emits at top-level (Status then KVs) rather than nested in a
+    // section because a section's pending_statuses buffer flushes Status
+    // lines after KVs, inverting the intended order.
+    doc = build_config_top(doc, &output.config);
     doc = doc.section("Tools", |s| build_tools_section(s, output.git));
     doc = doc.section("Secrets", |s| build_secrets_section(s, &output.secrets));
     doc = doc.section_if_nonempty(
@@ -352,25 +419,31 @@ pub fn build_doctor_doc(output: &DoctorOutput, extras: &DoctorExtras) -> Doc {
     doc.with_data(output)
 }
 
-fn build_config_section(s: SectionBuilder, cfg: &DoctorConfigCheck) -> SectionBuilder {
+fn build_config_top(doc: Doc, cfg: &DoctorConfigCheck) -> Doc {
     if cfg.valid {
-        let mut s = s.status(Role::Ok, format!("Config file: {} (valid)", cfg.path));
+        let mut doc = doc.status(Role::Ok, format!("Config file: {} (valid)", cfg.path));
+        let mut pairs: Vec<(String, String)> = Vec::new();
         if let Some(name) = cfg.name.as_deref() {
-            s = s.kv("Name", name);
+            pairs.push(("Name".into(), name.into()));
         }
-        s.kv("Profile", cfg.profile.as_deref().unwrap_or("(none)"))
+        pairs.push((
+            "Profile".into(),
+            cfg.profile.as_deref().unwrap_or("(none)").into(),
+        ));
+        doc = doc.kv_block(pairs);
+        doc
     } else if let Some(err) = cfg.error.as_deref() {
         if err == "not found" {
-            s.status_with(
+            doc.status_with(
                 Role::Warn,
                 format!("Config file: {} — not found", cfg.path),
                 |sf| sf.detail("run 'cfgd init' to create one"),
             )
         } else {
-            s.status(Role::Fail, format!("Config file: {} — {}", cfg.path, err))
+            doc.status(Role::Fail, format!("Config file: {} — {}", cfg.path, err))
         }
     } else {
-        s.status(Role::Fail, "Config file: invalid")
+        doc.status(Role::Fail, "Config file: invalid")
     }
 }
 
@@ -405,13 +478,16 @@ fn build_secrets_section(mut s: SectionBuilder, secrets: &DoctorSecretsCheck) ->
         _ => s,
     };
 
-    s = if secrets.sops_config_exists {
-        s.status(Role::Ok, ".sops.yaml: present")
-    } else {
-        s.status(
+    s = match (
+        secrets.sops_config_exists,
+        secrets.sops_config_path.as_deref(),
+    ) {
+        (true, Some(path)) => s.status(Role::Ok, format!(".sops.yaml: {}", path)),
+        (true, None) => s.status(Role::Ok, ".sops.yaml: present"),
+        (false, _) => s.status(
             Role::Warn,
             ".sops.yaml: not found — will be generated on 'cfgd init'",
-        )
+        ),
     };
 
     for provider in &secrets.providers {
@@ -436,11 +512,13 @@ fn build_managers_section(s: SectionBuilder, managers: &[DoctorManagerCheck]) ->
                     format!("{}: available (declared in config)", m.name),
                 )
             } else if m.can_bootstrap {
-                s.status_with(
-                    Role::Warn,
-                    format!("{}: not found — can auto-bootstrap", m.name),
-                    |sf| sf.detail("declared in config; will be installed on apply"),
-                )
+                let detail = match m.bootstrap_method.as_deref() {
+                    Some(method) => format!("can auto-bootstrap via {}", method),
+                    None => "can auto-bootstrap".into(),
+                };
+                s.status_with(Role::Warn, format!("{}: not found", m.name), |sf| {
+                    sf.detail(detail)
+                })
             } else {
                 s.status(
                     Role::Fail,
@@ -463,13 +541,50 @@ fn build_managers_section(s: SectionBuilder, managers: &[DoctorManagerCheck]) ->
 
 fn build_modules_section(s: SectionBuilder, modules: &[DoctorModuleCheck]) -> SectionBuilder {
     modules.iter().fold(s, |s, m| {
-        if m.valid {
-            s.status(Role::Ok, m.name.clone())
-        } else {
+        if !m.valid {
             let detail = m.error.clone().unwrap_or_else(|| "invalid".into());
-            s.status_with(Role::Fail, m.name.clone(), |sf| sf.detail(detail))
+            return s.status_with(Role::Fail, m.name.clone(), |sf| sf.detail(detail));
         }
+        if m.packages.is_empty() {
+            return s.status(Role::Ok, m.name.clone());
+        }
+        s.subsection(m.name.clone(), |sub| {
+            m.packages.iter().fold(sub, build_module_package_status)
+        })
     })
+}
+
+fn build_module_package_status(
+    sub: SectionBuilder,
+    pkg: &DoctorModulePackageCheck,
+) -> SectionBuilder {
+    if let Some(err) = pkg.error.as_deref() {
+        return sub.status_with(Role::Fail, pkg.name.clone(), |sf| {
+            sf.detail(err.to_string())
+        });
+    }
+    if let Some(reason) = pkg.skip_reason.as_deref() {
+        return sub.status_with(Role::Info, pkg.name.clone(), |sf| {
+            sf.detail(format!("skipped ({})", reason))
+        });
+    }
+    if pkg.installed {
+        let ver = pkg.version.as_deref().unwrap_or("?");
+        sub.status(
+            Role::Ok,
+            format!(
+                "{} {} ({}, {})",
+                pkg.name, ver, pkg.manager, pkg.resolved_name
+            ),
+        )
+    } else {
+        sub.status_with(Role::Fail, pkg.name.clone(), |sf| {
+            sf.detail(format!(
+                "not installed ({} {})",
+                pkg.manager, pkg.resolved_name
+            ))
+        })
+    }
 }
 
 fn build_system_section(mut s: SectionBuilder, extras: &DoctorExtras) -> SectionBuilder {
@@ -521,5 +636,10 @@ fn all_passed(output: &DoctorOutput) -> bool {
             .package_managers
             .iter()
             .all(|m| !m.declared || m.available || m.can_bootstrap)
-        && output.modules.iter().all(|m| m.valid)
+        && output.modules.iter().all(|m| {
+            m.valid
+                && m.packages
+                    .iter()
+                    .all(|p| p.error.is_none() && (p.installed || p.skip_reason.is_some()))
+        })
 }

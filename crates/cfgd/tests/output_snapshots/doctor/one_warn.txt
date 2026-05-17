@@ -1,9 +1,9 @@
 Doctor
 
-Config
-  Name     test-host
-  Profile  default
-  ✓ Config file: /home/test/.config/cfgd/cfgd.yaml (valid)
+✓ Config file: /home/test/.config/cfgd/cfgd.yaml (valid)
+
+Name     test-host
+Profile  default
 
 Tools
   ✓ git: found
@@ -11,16 +11,19 @@ Tools
 Secrets
   ⚠ sops: not found — required for secrets (https://github.com/getsops/sops#install)
   ✓ age key: /home/test/.config/sops/age/keys.txt
-  ✓ .sops.yaml: present
+  ✓ .sops.yaml: /home/test/.config/cfgd/.sops.yaml
   ✓ provider 1password: available
   provider vault: not installed (optional)
 
 Package Managers
   ✓ cargo: available (declared in config)
   brew: available (not used in config)
+  ⚠ rustup: not found — can auto-bootstrap via curl
 
 Modules
-  ✓ dotfiles
+  dotfiles
+    ✓ bat 0.24.0 (cargo, bat)
+    ✓ ripgrep 14.1.0 (cargo, ripgrep)
 
 System
   ✓ State store: accessible

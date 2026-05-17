@@ -14,7 +14,7 @@ use cfgd::cli::doctor::{
 };
 use cfgd::cli::output_types::{
     DoctorConfigCheck, DoctorConfiguratorCheck, DoctorManagerCheck, DoctorModuleCheck,
-    DoctorOutput, DoctorProviderCheck, DoctorSecretsCheck,
+    DoctorModulePackageCheck, DoctorOutput, DoctorProviderCheck, DoctorSecretsCheck,
 };
 use cfgd_core::output_v2::Printer;
 
@@ -36,6 +36,7 @@ fn happy_fixture() -> (DoctorOutput, DoctorExtras) {
             age_key_exists: true,
             age_key_path: Some("/home/test/.config/sops/age/keys.txt".into()),
             sops_config_exists: true,
+            sops_config_path: Some("/home/test/.config/cfgd/.sops.yaml".into()),
             providers: vec![
                 DoctorProviderCheck {
                     name: "1password".into(),
@@ -53,18 +54,40 @@ fn happy_fixture() -> (DoctorOutput, DoctorExtras) {
                 available: true,
                 declared: true,
                 can_bootstrap: false,
+                bootstrap_method: None,
             },
             DoctorManagerCheck {
                 name: "brew".into(),
                 available: true,
                 declared: false,
                 can_bootstrap: false,
+                bootstrap_method: None,
             },
         ],
         modules: vec![DoctorModuleCheck {
             name: "dotfiles".into(),
             valid: true,
             error: None,
+            packages: vec![
+                DoctorModulePackageCheck {
+                    name: "bat".into(),
+                    resolved_name: "bat".into(),
+                    manager: "cargo".into(),
+                    installed: true,
+                    version: Some("0.24.0".into()),
+                    skip_reason: None,
+                    error: None,
+                },
+                DoctorModulePackageCheck {
+                    name: "ripgrep".into(),
+                    resolved_name: "ripgrep".into(),
+                    manager: "cargo".into(),
+                    installed: true,
+                    version: Some("14.1.0".into()),
+                    skip_reason: None,
+                    error: None,
+                },
+            ],
         }],
         system_configurators: vec![DoctorConfiguratorCheck {
             name: "shell".into(),
@@ -90,6 +113,14 @@ fn one_warn_fixture() -> (DoctorOutput, DoctorExtras) {
     let (mut output, mut extras) = happy_fixture();
     output.secrets.sops_available = false;
     output.secrets.sops_version = None;
+    // Exercise the auto-bootstrap-with-method path.
+    output.package_managers.push(DoctorManagerCheck {
+        name: "rustup".into(),
+        available: false,
+        declared: true,
+        can_bootstrap: true,
+        bootstrap_method: Some("curl".into()),
+    });
     extras.config_sources = vec![DoctorConfigSource {
         name: "team-base".into(),
         cached_path: None,
@@ -100,6 +131,55 @@ fn one_warn_fixture() -> (DoctorOutput, DoctorExtras) {
 fn one_fail_fixture() -> (DoctorOutput, DoctorExtras) {
     let (mut output, extras) = happy_fixture();
     output.git = false;
+    // A declared module package that isn't installed should drive the overall
+    // failure summary, not just `git: not found`.
+    output.modules[0].packages.push(DoctorModulePackageCheck {
+        name: "fd".into(),
+        resolved_name: "fd-find".into(),
+        manager: "cargo".into(),
+        installed: false,
+        version: None,
+        skip_reason: None,
+        error: None,
+    });
+    (output, extras)
+}
+
+fn bare_fixture() -> (DoctorOutput, DoctorExtras) {
+    let output = DoctorOutput {
+        config: DoctorConfigCheck {
+            valid: true,
+            path: "/home/test/.config/cfgd/cfgd.yaml".into(),
+            name: Some("test-host".into()),
+            profile: Some("default".into()),
+            error: None,
+        },
+        git: true,
+        secrets: DoctorSecretsCheck {
+            sops_available: true,
+            sops_version: Some("3.8.1".into()),
+            age_key_exists: true,
+            age_key_path: Some("/home/test/.config/sops/age/keys.txt".into()),
+            sops_config_exists: true,
+            sops_config_path: Some("/home/test/.config/cfgd/.sops.yaml".into()),
+            providers: vec![],
+        },
+        package_managers: vec![],
+        modules: vec![],
+        system_configurators: vec![],
+    };
+    let extras = DoctorExtras {
+        state_store: Some(DoctorStateStore {
+            accessible: true,
+            message: None,
+        }),
+        profiles_dir: Some(DoctorProfilesDir {
+            path: "/home/test/.config/cfgd/profiles".into(),
+            exists: true,
+            profile_count: 0,
+        }),
+        config_sources: vec![],
+    };
     (output, extras)
 }
 
@@ -145,4 +225,28 @@ fn doctor_one_fail_human() {
     printer.emit(build_doctor_doc(&output, &extras));
     drop(printer);
     cap.assert_human_snapshot_in(Path::new(SNAPSHOT_ROOT), "doctor/one_fail.txt");
+}
+
+#[test]
+fn doctor_bare_human() {
+    let (output, extras) = bare_fixture();
+    let (printer, cap) = Printer::for_test_doc();
+    printer.emit(build_doctor_doc(&output, &extras));
+    drop(printer);
+    let human = cap.human();
+    // The bare fixture has empty package_managers / modules / config_sources,
+    // so none of those section headers should appear in the rendered output.
+    assert!(
+        !human.contains("Package Managers"),
+        "bare output must omit Package Managers section, got:\n{human}"
+    );
+    assert!(
+        !human.contains("Modules"),
+        "bare output must omit Modules section, got:\n{human}"
+    );
+    assert!(
+        !human.contains("Config Sources"),
+        "bare output must omit Config Sources section, got:\n{human}"
+    );
+    cap.assert_human_snapshot_in(Path::new(SNAPSHOT_ROOT), "doctor/bare.txt");
 }

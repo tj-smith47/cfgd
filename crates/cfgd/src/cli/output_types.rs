@@ -71,6 +71,8 @@ pub struct DoctorSecretsCheck {
     pub age_key_exists: bool,
     pub age_key_path: Option<String>,
     pub sops_config_exists: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sops_config_path: Option<String>,
     pub providers: Vec<DoctorProviderCheck>,
 }
 
@@ -88,6 +90,8 @@ pub struct DoctorManagerCheck {
     pub available: bool,
     pub declared: bool,
     pub can_bootstrap: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bootstrap_method: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -95,6 +99,23 @@ pub struct DoctorManagerCheck {
 pub struct DoctorModuleCheck {
     pub name: String,
     pub valid: bool,
+    pub error: Option<String>,
+    #[serde(default)]
+    pub packages: Vec<DoctorModulePackageCheck>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DoctorModulePackageCheck {
+    pub name: String,
+    pub resolved_name: String,
+    pub manager: String,
+    pub installed: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub skip_reason: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
 }
 

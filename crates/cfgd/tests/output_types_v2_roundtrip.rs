@@ -48,6 +48,7 @@ fn doctor_output_roundtrips_through_emit() {
             age_key_exists: true,
             age_key_path: Some("~/.config/sops/age/keys.txt".into()),
             sops_config_exists: false,
+            sops_config_path: None,
             providers: vec![DoctorProviderCheck {
                 name: "age".into(),
                 available: true,
@@ -58,11 +59,13 @@ fn doctor_output_roundtrips_through_emit() {
             available: true,
             declared: true,
             can_bootstrap: false,
+            bootstrap_method: None,
         }],
         modules: vec![DoctorModuleCheck {
             name: "base".into(),
             valid: true,
             error: None,
+            packages: Vec::new(),
         }],
         system_configurators: vec![DoctorConfiguratorCheck {
             name: "shell".into(),
