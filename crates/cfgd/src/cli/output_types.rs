@@ -59,6 +59,22 @@ pub(in crate::cli) struct RollbackOutput {
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct SyncOutput {
+    pub local_pulled: bool,
+    pub sources: Vec<SourceSyncOutput>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SourceSyncOutput {
+    pub name: String,
+    pub status: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub commit: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct PlanOutput {
     pub context: String,
     pub phases: Vec<PlanPhaseOutput>,

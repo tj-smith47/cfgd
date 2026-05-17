@@ -1,0 +1,15 @@
+{
+  "localPulled": false,
+  "sources": [
+    {
+      "commit": "abc1234def56",
+      "name": "team-a",
+      "status": "synced"
+    },
+    {
+      "commit": "def56abc1234",
+      "name": "team-b",
+      "status": "synced"
+    }
+  ]
+}

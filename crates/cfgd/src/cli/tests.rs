@@ -5071,10 +5071,11 @@ fn cmd_sync_no_sources() {
 
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
     let (printer, buf) = Printer::for_test();
+    let (v2_printer, v2_buf) = test_v2_printer_capture();
 
-    super::sync::cmd_sync(&cli, &printer).unwrap();
+    super::sync::cmd_sync(&cli, &printer, &v2_printer).unwrap();
 
-    let output = buf.lock().unwrap();
+    let output = combine_buffers(&buf, &v2_buf);
     assert!(
         output.contains("No sources") || output.contains("Sync"),
         "sync with no sources should report no-sources or show header, got: {output}"
@@ -9667,10 +9668,11 @@ fn execute_sync_command() {
         command: Some(Command::Sync),
         ..test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()))
     };
-    let (printer, buf) = Printer::for_test();
+    let (printer, v1_buf) = Printer::for_test();
+    let (v2_printer, v2_buf) = test_v2_printer_capture();
 
-    super::execute(&cli, &printer, &test_v2_printer()).unwrap();
-    let output = buf.lock().unwrap();
+    super::execute(&cli, &printer, &v2_printer).unwrap();
+    let output = combine_buffers(&v1_buf, &v2_buf);
     assert!(
         output.contains("Sync") || output.contains("No sources"),
         "sync dispatch should produce output, got: {output}"
@@ -11680,7 +11682,7 @@ fn cmd_pull_non_git_dir_shows_warning() {
 #[test]
 fn cmd_sync_non_git_dir_shows_output() {
     let h = CliTestHarness::builder().build();
-    super::sync::cmd_sync(&h.cli(), h.printer()).unwrap();
+    super::sync::cmd_sync(&h.cli(), h.printer(), h.v2_printer()).unwrap();
     h.assert_header("Sync");
 }
 
@@ -16690,13 +16692,14 @@ fn cmd_sync_non_git_shows_pull_warning_and_sync_header() {
     // A tempdir is not a git repo, so git_pull_sync will fail with a
     // warning. The test verifies both the header and the pull-failure warning path.
     let h = CliTestHarness::builder().build();
-    super::sync::cmd_sync(&h.cli(), h.printer()).unwrap();
+    super::sync::cmd_sync(&h.cli(), h.printer(), h.v2_printer()).unwrap();
     h.assert_header("Sync");
     let output = h.output();
-    // git_pull_sync on a non-git dir returns Err, displayed as a warning
+    // Spinner section appears with the pulling message; final state is "Pull
+    // failed" on a non-git dir.
     assert!(
-        output.contains("Syncing local repo with remote"),
-        "should display sync progress message, got: {output}"
+        output.contains("Local repo") || output.contains("Pulling from remote"),
+        "should display local-repo section / pull spinner, got: {output}"
     );
     assert!(
         output.contains("Pull failed") || output.contains("up to date"),
@@ -16722,12 +16725,12 @@ spec:
         priority: 100
 "#;
     let h = CliTestHarness::builder().config(config_with_source).build();
-    super::sync::cmd_sync(&h.cli(), h.printer()).unwrap();
+    super::sync::cmd_sync(&h.cli(), h.printer(), h.v2_printer()).unwrap();
     h.assert_header("Sync");
     // When sources are configured, the Sources subheader should appear
     h.assert_output_contains("Sources");
-    h.assert_output_contains("Syncing source 'team-config'");
-    // The source sync will fail because the URL is non-existent
+    // The source sync will fail because the URL is non-existent — spinner
+    // finishes with finish_fail("Failed to sync ...").
     h.assert_output_contains("Failed to sync 'team-config'");
 }
 

@@ -1,0 +1,7 @@
+Sync
+
+Local repo
+  ✓ Already up to date
+
+Source Commits
+  - team-a @ abc1234

@@ -24,7 +24,7 @@ mod rollback;
 mod secret;
 pub mod source;
 pub mod status;
-mod sync;
+pub mod sync;
 mod upgrade;
 pub mod verify;
 mod workflow;
@@ -1560,7 +1560,7 @@ pub fn execute(
                 }
             },
         },
-        Command::Sync => sync::cmd_sync(cli, printer),
+        Command::Sync => sync::cmd_sync(cli, printer, v2_printer),
         Command::Pull => pull::cmd_pull(cli, printer),
         Command::Daemon { command } => daemon::cmd_daemon(cli, printer, command.as_ref()),
         Command::Secret { command } => match command {

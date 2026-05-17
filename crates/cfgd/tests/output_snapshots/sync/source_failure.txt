@@ -1,0 +1,9 @@
+Sync
+  Config   <CONFIG_DIR>/cfgd.yaml
+  Profile  tiny
+
+Local repo
+  ⚠ Pull failed — open repo: could not find repository at '<CONFIG_DIR>'; class=Repository (6); code=NotFound (-3)
+
+Sources
+  ✗ Failed to sync 'missing-team' — source error: git error for source 'missing-team': local file:// URLs and absolute paths are not allowed as source origins

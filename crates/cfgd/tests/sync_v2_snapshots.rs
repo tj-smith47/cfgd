@@ -1,0 +1,274 @@
+//! Snapshot tests for `cfgd sync`.
+//!
+//! Pins the rendered output of every shape `cmd_sync` produces. Goldens
+//! live under `tests/output_snapshots/sync/`. Regenerate with:
+//!     INSTA_UPDATE=always cargo test -p cfgd --test sync_v2_snapshots
+//!
+//! Cases:
+//!   - `sync/happy.{txt,json}`   — local pull + two sources synced from
+//!     local bare repos (file:// URLs, guarded by
+//!     `CFGD_ALLOW_LOCAL_SOURCES=1`).
+//!   - `sync/no_sources.txt`     — empty source list. Local repo section
+//!     only.
+//!   - `sync/perm_changes.txt`   — pre-clone with a permissive manifest,
+//!     rewrite upstream with stricter locked policy; the rejection-path
+//!     snapshot exercises the prompt-confirm-inside-section pattern under
+//!     `CFGD_NONINTERACTIVE=1`-style stubbed input (queued prompt
+//!     response).
+//!   - `sync/source_failure.txt` — one source URL is unreachable; spinner
+//!     ends with `finish_fail`. Indent invariant holds — the failure
+//!     status renders INSIDE the Sources section.
+//!   - `sync/bridge.txt`         — streaming spinner section + buffered
+//!     Doc on the same `Printer`; asserts the §17.2 bridge invariant (one
+//!     blank line between streaming and buffered surfaces).
+
+mod common;
+
+use std::path::Path;
+
+use cfgd::cli::output_types::{SourceSyncOutput, SyncOutput};
+use cfgd::cli::sync::{build_sync_doc, cmd_sync};
+use cfgd_core::output::Printer as PrinterV1;
+use cfgd_core::output_v2::{Doc, Printer, Role};
+use cfgd_core::test_helpers::EnvVarGuard;
+use pretty_assertions::assert_eq;
+use serial_test::serial;
+
+use common::{
+    cli_for, permission_change_source_setup, tiny_profile_setup, two_source_setup,
+    unreachable_source_setup,
+};
+
+const SNAPSHOT_ROOT: &str = "tests/output_snapshots";
+
+fn happy_output() -> SyncOutput {
+    SyncOutput {
+        local_pulled: false,
+        sources: vec![
+            SourceSyncOutput {
+                name: "team-a".to_string(),
+                status: "synced".to_string(),
+                commit: Some("abc1234def56".to_string()),
+            },
+            SourceSyncOutput {
+                name: "team-b".to_string(),
+                status: "synced".to_string(),
+                commit: Some("def56abc1234".to_string()),
+            },
+        ],
+    }
+}
+
+fn normalize_tempdir_paths(raw: &str, config_dir: &Path) -> String {
+    let mut out = raw.to_string();
+    let cfg_file = config_dir.join("cfgd.yaml");
+    out = out.replace(
+        &cfg_file.to_string_lossy().to_string(),
+        "<CONFIG_DIR>/cfgd.yaml",
+    );
+    out = out.replace(&config_dir.to_string_lossy().to_string(), "<CONFIG_DIR>");
+    out
+}
+
+/// Replace the commit short-hash (12 hex chars) with a stable placeholder so
+/// goldens don't drift across runs.
+fn normalize_commit_hashes(raw: &str) -> String {
+    let needle = "commit: ";
+    let mut out = String::with_capacity(raw.len());
+    let mut rest = raw;
+    while let Some(idx) = rest.find(needle) {
+        let after = idx + needle.len();
+        out.push_str(&rest[..after]);
+        let tail = &rest[after..];
+        let hex_len = tail
+            .chars()
+            .take(12)
+            .take_while(|c| c.is_ascii_hexdigit())
+            .count();
+        if hex_len == 12 {
+            out.push_str("<COMMIT>");
+            rest = &tail[12..];
+        } else {
+            rest = tail;
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
+#[test]
+#[serial]
+fn sync_happy_human() {
+    let _allow = EnvVarGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+
+    let (_workspace, config_dir, state_dir, _branch_a, _branch_b) = two_source_setup();
+
+    let cli = cli_for(config_dir.path(), state_dir.path());
+    let old_printer = PrinterV1::new(cfgd_core::output::Verbosity::Quiet);
+    let (v2_printer, cap) = Printer::for_test_doc();
+
+    cmd_sync(&cli, &old_printer, &v2_printer).unwrap();
+    drop(v2_printer);
+
+    let normalized = normalize_tempdir_paths(&cap.human(), config_dir.path());
+    let normalized = normalize_commit_hashes(&normalized);
+    let stripped = strip_ansi(&normalized);
+    assert_snapshot(Path::new(SNAPSHOT_ROOT), "sync/happy.txt", &stripped);
+}
+
+#[test]
+fn sync_happy_json() {
+    let output = happy_output();
+    let (v2_printer, cap) = Printer::for_test_doc();
+    v2_printer.emit(build_sync_doc(&output));
+    drop(v2_printer);
+
+    let expected = serde_json::to_value(&output).unwrap();
+    let actual = cap.json().expect("sync doc carries a payload");
+    assert_eq!(
+        actual, expected,
+        "emit -o json must match serde_json::to_value(SyncOutput)"
+    );
+    cap.assert_json_snapshot_in(Path::new(SNAPSHOT_ROOT), "sync/happy.json");
+}
+
+#[test]
+#[serial]
+fn sync_no_sources_human() {
+    let (config_dir, state_dir, _target) = tiny_profile_setup();
+
+    let cli = cli_for(config_dir.path(), state_dir.path());
+    let old_printer = PrinterV1::new(cfgd_core::output::Verbosity::Quiet);
+    let (v2_printer, cap) = Printer::for_test_doc();
+
+    cmd_sync(&cli, &old_printer, &v2_printer).unwrap();
+    drop(v2_printer);
+
+    let normalized = normalize_tempdir_paths(&cap.human(), config_dir.path());
+    let stripped = strip_ansi(&normalized);
+    assert_snapshot(Path::new(SNAPSHOT_ROOT), "sync/no_sources.txt", &stripped);
+}
+
+#[test]
+#[serial]
+fn sync_perm_changes_rejection_human() {
+    // Prompt-confirm-inside-section rejection path. The migrated body must
+    // drop the nested perm SectionGuard before invoking prompt_confirm; the
+    // queued `false` answer drives the rejection branch and `cmd_sync`
+    // emits the "Skipped ..." status into the Sources section.
+    let _allow = EnvVarGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+
+    let (_workspace, config_dir, state_dir, _branch) = permission_change_source_setup();
+
+    let cli = cli_for(config_dir.path(), state_dir.path());
+    let old_printer = PrinterV1::new(cfgd_core::output::Verbosity::Quiet);
+    // Capture buffer + canned `Confirm(false)` answer to drive the rejection
+    // branch deterministically.
+    use cfgd_core::output_v2::{PromptAnswer, Verbosity as V2Verbosity};
+    let (v2_printer, v2_buf) = Printer::for_test_with_prompt_responses_at(
+        vec![PromptAnswer::Confirm(false)],
+        V2Verbosity::Normal,
+    );
+
+    cmd_sync(&cli, &old_printer, &v2_printer).unwrap();
+    v2_printer.flush();
+    drop(v2_printer);
+
+    let raw = v2_buf.lock().unwrap().clone();
+    let normalized = normalize_tempdir_paths(&raw, config_dir.path());
+    let stripped = strip_ansi(&normalized);
+    assert_snapshot(Path::new(SNAPSHOT_ROOT), "sync/perm_changes.txt", &stripped);
+}
+
+#[test]
+#[serial]
+fn sync_source_failure_human() {
+    // No CFGD_ALLOW_LOCAL_SOURCES → load_source rejects file:// URLs and
+    // returns Err. The spinner finishes via `finish_fail`. Verified against
+    // the indent invariant: the failure status appears INSIDE the Sources
+    // section, not at depth 0.
+    let _disallow = EnvVarGuard::unset("CFGD_ALLOW_LOCAL_SOURCES");
+
+    let (config_dir, state_dir) = unreachable_source_setup();
+
+    let cli = cli_for(config_dir.path(), state_dir.path());
+    let old_printer = PrinterV1::new(cfgd_core::output::Verbosity::Quiet);
+    let (v2_printer, cap) = Printer::for_test_doc();
+
+    cmd_sync(&cli, &old_printer, &v2_printer).unwrap();
+    drop(v2_printer);
+
+    let normalized = normalize_tempdir_paths(&cap.human(), config_dir.path());
+    let stripped = strip_ansi(&normalized);
+    assert_snapshot(
+        Path::new(SNAPSHOT_ROOT),
+        "sync/source_failure.txt",
+        &stripped,
+    );
+}
+
+#[test]
+fn sync_bridge_one_blank_line() {
+    // Bridge invariant: when the streaming SectionGuard drops, the
+    // renderer auto-emits one blank line. The buffered Doc that follows
+    // respects the no-leading-blank rule, so the combined surface has
+    // exactly one blank line at the transition.
+    let (v2_printer, cap) = Printer::for_test_doc();
+
+    v2_printer.heading("Sync");
+    {
+        let repo_sec = v2_printer.section("Local repo");
+        repo_sec.status(Role::Ok, "Already up to date");
+    }
+
+    let doc = Doc::new()
+        .section("Source Commits", |s| s.bullet("team-a @ abc1234"))
+        .with_data(happy_output());
+    v2_printer.emit(doc);
+    drop(v2_printer);
+
+    let captured = strip_ansi(&cap.human());
+    assert!(
+        captured.contains("\n\n"),
+        "bridge missing blank line:\n{captured}"
+    );
+    assert!(
+        !captured.contains("\n\n\n"),
+        "bridge has duplicate blank line:\n{captured}"
+    );
+
+    assert_snapshot(Path::new(SNAPSHOT_ROOT), "sync/bridge.txt", &captured);
+}
+
+// ─────────────────────────────────────────────────────
+// snapshot helpers
+// ─────────────────────────────────────────────────────
+
+fn assert_snapshot(base: &Path, name: &str, actual: &str) {
+    let path = base.join(name);
+    if std::env::var("INSTA_UPDATE").as_deref() == Ok("always") || !path.exists() {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, actual).unwrap();
+        return;
+    }
+    let expected = std::fs::read_to_string(&path).unwrap();
+    pretty_assertions::assert_eq!(actual, &expected, "snapshot mismatch: {name}");
+}
+
+fn strip_ansi(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut chars = s.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\u{1b}' && chars.peek() == Some(&'[') {
+            chars.next();
+            for inner in chars.by_ref() {
+                if inner == 'm' {
+                    break;
+                }
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
