@@ -1,4 +1,23 @@
 use super::*;
+use cfgd_core::output_v2::{Printer as PrinterV2, Verbosity as V2Verbosity};
+
+/// Build a quiet v2 printer for tests that only need to satisfy the v2
+/// signature without asserting on captured output. Mirrors the
+/// `Printer::new(Verbosity::Quiet)` pattern used for the legacy printer.
+fn v2_quiet() -> PrinterV2 {
+    PrinterV2::new(V2Verbosity::Quiet)
+}
+
+/// Build the (legacy, v2) printer pair used by every cmd_init test that
+/// doesn't otherwise assert on captured output — collapses the boilerplate
+/// of constructing both printers in tests that only need to satisfy the
+/// dual-printer signature.
+fn dual_quiet_printers() -> (Printer, PrinterV2) {
+    (
+        Printer::new(cfgd_core::output::Verbosity::Quiet),
+        v2_quiet(),
+    )
+}
 
 // ─────────────────────────────────────────────────────
 // ensure_config_file — used by profile switch and tests
@@ -88,9 +107,9 @@ fn count_packages(spec: &config::ProfileSpec) -> usize {
 #[test]
 fn scaffold_creates_structure() {
     let dir = tempfile::tempdir().unwrap();
-    let printer = Printer::new(cfgd_core::output::Verbosity::Quiet);
+    let v2_printer = v2_quiet();
 
-    scaffold(dir.path(), Some("test-config"), None, &printer).unwrap();
+    scaffold(dir.path(), Some("test-config"), None, &v2_printer).unwrap();
 
     assert!(dir.path().join("cfgd.yaml").exists());
     assert!(dir.path().join("profiles").is_dir());
@@ -105,9 +124,9 @@ fn scaffold_creates_structure() {
 #[test]
 fn scaffold_with_theme() {
     let dir = tempfile::tempdir().unwrap();
-    let printer = Printer::new(cfgd_core::output::Verbosity::Quiet);
+    let v2_printer = v2_quiet();
 
-    scaffold(dir.path(), Some("themed"), Some("minimal"), &printer).unwrap();
+    scaffold(dir.path(), Some("themed"), Some("minimal"), &v2_printer).unwrap();
 
     let contents = std::fs::read_to_string(dir.path().join("cfgd.yaml")).unwrap();
     assert!(contents.contains("name: themed"));
@@ -117,9 +136,9 @@ fn scaffold_with_theme() {
 #[test]
 fn scaffold_uses_dir_name_as_default() {
     let dir = tempfile::tempdir().unwrap();
-    let printer = Printer::new(cfgd_core::output::Verbosity::Quiet);
+    let v2_printer = v2_quiet();
 
-    scaffold(dir.path(), None, None, &printer).unwrap();
+    scaffold(dir.path(), None, None, &v2_printer).unwrap();
 
     let contents = std::fs::read_to_string(dir.path().join("cfgd.yaml")).unwrap();
     // Should use the tempdir name
@@ -254,8 +273,8 @@ fn regenerate_workflow_empty_repo() {
     std::fs::create_dir_all(dir.path().join("profiles")).unwrap();
     std::fs::create_dir_all(dir.path().join("modules")).unwrap();
 
-    let printer = Printer::new(cfgd_core::output::Verbosity::Quiet);
-    regenerate_workflow(dir.path(), &printer).unwrap();
+    let v2_printer = v2_quiet();
+    regenerate_workflow(dir.path(), &v2_printer).unwrap();
 
     // No profiles or modules → no workflow generated
     assert!(
@@ -277,8 +296,8 @@ fn regenerate_workflow_with_profile() {
     )
     .unwrap();
 
-    let printer = Printer::new(cfgd_core::output::Verbosity::Quiet);
-    regenerate_workflow(dir.path(), &printer).unwrap();
+    let v2_printer = v2_quiet();
+    regenerate_workflow(dir.path(), &v2_printer).unwrap();
 
     let workflow = dir.path().join(".github/workflows/cfgd-release.yml");
     assert!(workflow.exists());
@@ -289,9 +308,9 @@ fn regenerate_workflow_with_profile() {
 #[test]
 fn scaffold_includes_default_theme() {
     let dir = tempfile::tempdir().unwrap();
-    let printer = Printer::new(cfgd_core::output::Verbosity::Quiet);
+    let v2_printer = v2_quiet();
 
-    scaffold(dir.path(), Some("test"), None, &printer).unwrap();
+    scaffold(dir.path(), Some("test"), None, &v2_printer).unwrap();
     let cfg = config::load_config(&dir.path().join("cfgd.yaml")).unwrap();
     assert_eq!(cfg.spec.theme.unwrap().name, "default");
 }
@@ -299,9 +318,9 @@ fn scaffold_includes_default_theme() {
 #[test]
 fn scaffold_with_custom_theme() {
     let dir = tempfile::tempdir().unwrap();
-    let printer = Printer::new(cfgd_core::output::Verbosity::Quiet);
+    let v2_printer = v2_quiet();
 
-    scaffold(dir.path(), Some("test"), Some("minimal"), &printer).unwrap();
+    scaffold(dir.path(), Some("test"), Some("minimal"), &v2_printer).unwrap();
     let cfg = config::load_config(&dir.path().join("cfgd.yaml")).unwrap();
     assert_eq!(cfg.spec.theme.unwrap().name, "minimal");
 }
@@ -317,8 +336,8 @@ fn pick_profile_single_profile() {
     )
     .unwrap();
 
-    let printer = Printer::new(cfgd_core::output::Verbosity::Quiet);
-    let result = pick_profile(&profiles_dir, &printer).unwrap();
+    let v2_printer = v2_quiet();
+    let result = pick_profile(&profiles_dir, &v2_printer).unwrap();
     assert_eq!(result, "base");
 }
 
@@ -328,8 +347,8 @@ fn pick_profile_no_profiles_errors() {
     let profiles_dir = dir.path().join("profiles");
     std::fs::create_dir_all(&profiles_dir).unwrap();
 
-    let printer = Printer::new(cfgd_core::output::Verbosity::Quiet);
-    let err = pick_profile(&profiles_dir, &printer).unwrap_err();
+    let v2_printer = v2_quiet();
+    let err = pick_profile(&profiles_dir, &v2_printer).unwrap_err();
     assert!(
         err.to_string().contains("No profiles found"),
         "should report no profiles, got: {err}"
@@ -356,23 +375,34 @@ fn pick_profile_multi_lists_options_and_propagates_prompt_error() {
         .unwrap();
     }
 
-    let (printer, buf) = Printer::for_test_with_format(cfgd_core::output::OutputFormat::Json);
-    let err = pick_profile(&profiles_dir, &printer)
-        .expect_err("non-interactive prompt_text Errs in JSON-format printer");
+    // Capture the human surface (section + bullets) on one run, then re-run
+    // under structured-format to force prompt_text into its non-interactive
+    // refusal — pins both halves of the multi-profile path: the enumerator
+    // emits the section, then prompt_text Errs deterministically.
+    let (printer, cap) = PrinterV2::for_test_doc();
+    let _ = pick_profile(&profiles_dir, &printer);
+    drop(printer);
+    let captured = cap.human();
+    assert!(
+        captured.contains("Available Profiles"),
+        "section header must fire on multi-profile path: {captured}"
+    );
+    assert!(
+        captured.contains("1. alpha") && captured.contains("2. bravo"),
+        "each profile must be enumerated 1-based on its own bullet: {captured}"
+    );
+
+    let json_printer = PrinterV2::with_format(
+        V2Verbosity::Normal,
+        None,
+        cfgd_core::output_v2::OutputFormat::Json,
+    );
+    let err = pick_profile(&profiles_dir, &json_printer)
+        .expect_err("non-interactive prompt_text Errs in structured-format printer");
     let msg = err.to_string();
     assert!(
         msg.contains("Select profile") || msg.to_ascii_lowercase().contains("interactive"),
         "Err must mention the prompt that could not be satisfied: {msg}"
-    );
-
-    let captured = buf.lock().unwrap().clone();
-    assert!(
-        captured.contains("Available Profiles"),
-        "subheader must fire on multi-profile path: {captured}"
-    );
-    assert!(
-        captured.contains("1. alpha") && captured.contains("2. bravo"),
-        "each profile must be enumerated 1-based on its own info line: {captured}"
     );
 }
 
@@ -382,8 +412,8 @@ fn pick_profile_no_dir_errors() {
     let profiles_dir = dir.path().join("profiles");
     // Don't create the dir
 
-    let printer = Printer::new(cfgd_core::output::Verbosity::Quiet);
-    let err = pick_profile(&profiles_dir, &printer).unwrap_err();
+    let v2_printer = v2_quiet();
+    let err = pick_profile(&profiles_dir, &v2_printer).unwrap_err();
     assert!(
         err.to_string().contains("No profiles directory"),
         "should report missing dir, got: {err}"
@@ -425,7 +455,14 @@ fn resolve_from_local_path_with_config() {
     .unwrap();
 
     let printer = Printer::new(cfgd_core::output::Verbosity::Quiet);
-    let result = resolve_from(&dir.path().display().to_string(), None, "master", &printer);
+    let v2_printer = v2_quiet();
+    let result = resolve_from(
+        &dir.path().display().to_string(),
+        None,
+        "master",
+        &printer,
+        &v2_printer,
+    );
     assert!(result.is_ok());
     assert_eq!(result.unwrap(), dir.path());
 }
@@ -436,7 +473,14 @@ fn resolve_from_local_path_missing_config_errors() {
     // No cfgd.yaml
 
     let printer = Printer::new(cfgd_core::output::Verbosity::Quiet);
-    let result = resolve_from(&dir.path().display().to_string(), None, "master", &printer);
+    let v2_printer = v2_quiet();
+    let result = resolve_from(
+        &dir.path().display().to_string(),
+        None,
+        "master",
+        &printer,
+        &v2_printer,
+    );
     assert!(result.is_err());
     assert!(result.unwrap_err().to_string().contains("No cfgd.yaml"));
 }
@@ -446,7 +490,14 @@ fn resolve_from_nonexistent_path_errors() {
     let dir = tempfile::tempdir().unwrap();
     let nonexistent = dir.path().join("does-not-exist");
     let printer = Printer::new(cfgd_core::output::Verbosity::Quiet);
-    let result = resolve_from(&nonexistent.display().to_string(), None, "master", &printer);
+    let v2_printer = v2_quiet();
+    let result = resolve_from(
+        &nonexistent.display().to_string(),
+        None,
+        "master",
+        &printer,
+        &v2_printer,
+    );
     assert!(result.is_err());
     assert!(result.unwrap_err().to_string().contains("does not exist"));
 }
@@ -454,8 +505,8 @@ fn resolve_from_nonexistent_path_errors() {
 #[test]
 fn check_prerequisites_returns_true_when_git_available() {
     // git should be available in CI and dev environments
-    let printer = Printer::new(cfgd_core::output::Verbosity::Quiet);
-    let result = check_prerequisites(&printer);
+    let v2_printer = v2_quiet();
+    let result = check_prerequisites(&v2_printer);
     if cfgd_core::command_available("git") {
         assert!(
             result,
@@ -476,6 +527,7 @@ fn cmd_init_scaffolds_local_directory() {
     std::fs::create_dir_all(&target).unwrap();
 
     let printer = Printer::new(cfgd_core::output::Verbosity::Quiet);
+    let v2_printer = v2_quiet();
     let args = InitArgs {
         path: Some(target.to_str().unwrap()),
         from: None,
@@ -490,7 +542,7 @@ fn cmd_init_scaffolds_local_directory() {
         apply_modules: &[],
     };
 
-    let result = cmd_init(&printer, &args);
+    let result = cmd_init(&printer, &v2_printer, &args);
     assert!(result.is_ok(), "cmd_init failed: {:?}", result.err());
 
     // Verify scaffolded files exist and have expected content
@@ -528,6 +580,7 @@ fn cmd_init_skips_if_already_initialized() {
     .unwrap();
 
     let printer = Printer::new(cfgd_core::output::Verbosity::Quiet);
+    let v2_printer = v2_quiet();
     let args = InitArgs {
         path: Some(target.to_str().unwrap()),
         from: None,
@@ -542,7 +595,7 @@ fn cmd_init_skips_if_already_initialized() {
         apply_modules: &[],
     };
 
-    let result = cmd_init(&printer, &args);
+    let result = cmd_init(&printer, &v2_printer, &args);
     assert!(result.is_ok());
     // cfgd.yaml should be unchanged (not overwritten)
     let contents = std::fs::read_to_string(target.join("cfgd.yaml")).unwrap();
@@ -556,6 +609,7 @@ fn cmd_init_creates_directory_if_missing() {
     assert!(!target.exists());
 
     let printer = Printer::new(cfgd_core::output::Verbosity::Quiet);
+    let v2_printer = v2_quiet();
     let args = InitArgs {
         path: Some(target.to_str().unwrap()),
         from: None,
@@ -570,7 +624,7 @@ fn cmd_init_creates_directory_if_missing() {
         apply_modules: &[],
     };
 
-    let result = cmd_init(&printer, &args);
+    let result = cmd_init(&printer, &v2_printer, &args);
     assert!(result.is_ok(), "cmd_init failed: {:?}", result.err());
     assert!(target.exists());
     assert!(target.join("cfgd.yaml").exists());
@@ -603,8 +657,16 @@ fn clone_into_local_repo() {
     let target = dir.path().join("clone");
     std::fs::create_dir_all(&target).unwrap();
 
-    let (printer, buf) = Printer::for_test();
-    clone_into(&target, &origin.display().to_string(), "master", &printer).unwrap();
+    let (printer, _buf) = Printer::for_test();
+    let (v2_printer, v2_cap) = PrinterV2::for_test_doc();
+    clone_into(
+        &target,
+        &origin.display().to_string(),
+        "master",
+        &printer,
+        &v2_printer,
+    )
+    .unwrap();
 
     assert!(target.join(".git").exists(), "should create .git directory");
     let cfg = std::fs::read_to_string(target.join("cfgd.yaml")).unwrap();
@@ -613,7 +675,8 @@ fn clone_into_local_repo() {
         "cloned cfgd.yaml should contain the name"
     );
 
-    let output = buf.lock().unwrap();
+    drop(v2_printer);
+    let output = v2_cap.human();
     assert!(output.contains("Cloned"), "should report successful clone");
 }
 
@@ -623,17 +686,20 @@ fn clone_into_skips_if_already_cloned() {
     let target = dir.path().join("clone");
     std::fs::create_dir_all(target.join(".git")).unwrap();
 
-    let (printer, buf) = Printer::for_test();
+    let (printer, _buf) = Printer::for_test();
+    let (v2_printer, v2_cap) = PrinterV2::for_test_doc();
     // Should return Ok without actually cloning
     clone_into(
         &target,
         "https://example.com/nonexistent",
         "master",
         &printer,
+        &v2_printer,
     )
     .unwrap();
 
-    let output = buf.lock().unwrap();
+    drop(v2_printer);
+    let output = v2_cap.human();
     assert!(
         output.contains("already exists"),
         "should report repo already exists, got: {output}"
@@ -663,11 +729,13 @@ fn resolve_from_git_source_local_repo() {
 
     let target = dir.path().join("target");
     let printer = Printer::new(cfgd_core::output::Verbosity::Quiet);
+    let v2_printer = v2_quiet();
     let result = resolve_from(
         &origin.display().to_string(),
         Some(&target),
         "master",
         &printer,
+        &v2_printer,
     )
     .unwrap();
 
@@ -693,12 +761,14 @@ fn resolve_from_already_initialized_git_source() {
     .unwrap();
 
     let printer = Printer::new(cfgd_core::output::Verbosity::Quiet);
+    let v2_printer = v2_quiet();
     // Using a git URL (https://) triggers the git source path
     let result = resolve_from(
         "https://example.com/repo.git",
         Some(&target),
         "master",
         &printer,
+        &v2_printer,
     );
     assert!(result.is_ok());
     // Should return the target path without re-cloning
@@ -708,9 +778,9 @@ fn resolve_from_already_initialized_git_source() {
 #[test]
 fn scaffold_creates_readme_with_name() {
     let dir = tempfile::tempdir().unwrap();
-    let printer = Printer::new(cfgd_core::output::Verbosity::Quiet);
+    let v2_printer = v2_quiet();
 
-    scaffold(dir.path(), Some("my-dotfiles"), None, &printer).unwrap();
+    scaffold(dir.path(), Some("my-dotfiles"), None, &v2_printer).unwrap();
 
     let readme = std::fs::read_to_string(dir.path().join("README.md")).unwrap();
     assert!(
@@ -722,9 +792,9 @@ fn scaffold_creates_readme_with_name() {
 #[test]
 fn scaffold_creates_gitignore() {
     let dir = tempfile::tempdir().unwrap();
-    let printer = Printer::new(cfgd_core::output::Verbosity::Quiet);
+    let v2_printer = v2_quiet();
 
-    scaffold(dir.path(), Some("test"), None, &printer).unwrap();
+    scaffold(dir.path(), Some("test"), None, &v2_printer).unwrap();
 
     let gitignore = std::fs::read_to_string(dir.path().join(".gitignore")).unwrap();
     assert!(gitignore.contains("!cfgd.yaml"));
@@ -735,9 +805,9 @@ fn scaffold_creates_gitignore() {
 #[test]
 fn scaffold_creates_workflow() {
     let dir = tempfile::tempdir().unwrap();
-    let printer = Printer::new(cfgd_core::output::Verbosity::Quiet);
+    let v2_printer = v2_quiet();
 
-    scaffold(dir.path(), Some("test"), None, &printer).unwrap();
+    scaffold(dir.path(), Some("test"), None, &v2_printer).unwrap();
 
     let workflow_path = dir.path().join(".github/workflows/cfgd-release.yml");
     let workflow = std::fs::read_to_string(&workflow_path).unwrap();
@@ -755,7 +825,8 @@ fn cmd_init_with_from_local_path() {
     )
     .unwrap();
 
-    let (printer, buf) = Printer::for_test();
+    let (printer, _buf) = Printer::for_test();
+    let (v2_printer, v2_cap) = PrinterV2::for_test_doc();
     let source_str = source.display().to_string();
     let args = InitArgs {
         path: None,
@@ -771,9 +842,10 @@ fn cmd_init_with_from_local_path() {
         apply_modules: &[],
     };
 
-    cmd_init(&printer, &args).unwrap();
+    cmd_init(&printer, &v2_printer, &args).unwrap();
 
-    let output = buf.lock().unwrap();
+    drop(v2_printer);
+    let output = v2_cap.human();
     assert!(
         output.contains("Initialize") || output.contains("Initialized"),
         "should show init header, got: {output}"
@@ -828,7 +900,8 @@ fn cmd_init_scaffold_to_new_dir() {
     let dir = tempfile::tempdir().unwrap();
     let target = dir.path().join("new-config");
 
-    let (printer, buf) = Printer::for_test();
+    let (printer, _buf) = Printer::for_test();
+    let (v2_printer, v2_cap) = PrinterV2::for_test_doc();
     let target_str = target.display().to_string();
     let args = InitArgs {
         path: Some(&target_str),
@@ -844,7 +917,7 @@ fn cmd_init_scaffold_to_new_dir() {
         apply_modules: &[],
     };
 
-    cmd_init(&printer, &args).unwrap();
+    cmd_init(&printer, &v2_printer, &args).unwrap();
 
     // Verify scaffolded structure
     assert!(target.join("cfgd.yaml").exists(), "should create cfgd.yaml");
@@ -861,7 +934,8 @@ fn cmd_init_scaffold_to_new_dir() {
         "config should contain the name, got: {config}"
     );
 
-    let output = buf.lock().unwrap();
+    drop(v2_printer);
+    let output = v2_cap.human();
     assert!(
         output.contains("Initialized"),
         "should show init success, got: {output}"
@@ -879,7 +953,8 @@ fn cmd_init_already_initialized() {
     )
     .unwrap();
 
-    let (printer, buf) = Printer::for_test();
+    let (printer, _buf) = Printer::for_test();
+    let (v2_printer, v2_cap) = PrinterV2::for_test_doc();
     let target_str = target.display().to_string();
     let args = InitArgs {
         path: Some(&target_str),
@@ -895,9 +970,10 @@ fn cmd_init_already_initialized() {
         apply_modules: &[],
     };
 
-    cmd_init(&printer, &args).unwrap();
+    cmd_init(&printer, &v2_printer, &args).unwrap();
 
-    let output = buf.lock().unwrap();
+    drop(v2_printer);
+    let output = v2_cap.human();
     assert!(
         output.contains("Already initialized"),
         "should report already initialized, got: {output}"
@@ -910,6 +986,7 @@ fn cmd_init_with_theme() {
     let target = dir.path().join("themed");
 
     let (printer, _buf) = Printer::for_test();
+    let v2_printer = v2_quiet();
     let target_str = target.display().to_string();
     let args = InitArgs {
         path: Some(&target_str),
@@ -925,7 +1002,7 @@ fn cmd_init_with_theme() {
         apply_modules: &[],
     };
 
-    cmd_init(&printer, &args).unwrap();
+    cmd_init(&printer, &v2_printer, &args).unwrap();
 
     let config = std::fs::read_to_string(target.join("cfgd.yaml")).unwrap();
     assert!(
@@ -946,7 +1023,15 @@ fn resolve_from_local_path_valid() {
     .unwrap();
 
     let printer = Printer::new(cfgd_core::output::Verbosity::Quiet);
-    let result = resolve_from(&dir.path().display().to_string(), None, "master", &printer).unwrap();
+    let v2_printer = v2_quiet();
+    let result = resolve_from(
+        &dir.path().display().to_string(),
+        None,
+        "master",
+        &printer,
+        &v2_printer,
+    )
+    .unwrap();
     assert_eq!(result, dir.path());
 }
 
@@ -954,9 +1039,16 @@ fn resolve_from_local_path_valid() {
 fn resolve_from_local_path_no_config_fails() {
     let dir = tempfile::tempdir().unwrap();
     let printer = Printer::new(cfgd_core::output::Verbosity::Quiet);
+    let v2_printer = v2_quiet();
 
-    let err =
-        resolve_from(&dir.path().display().to_string(), None, "master", &printer).unwrap_err();
+    let err = resolve_from(
+        &dir.path().display().to_string(),
+        None,
+        "master",
+        &printer,
+        &v2_printer,
+    )
+    .unwrap_err();
     assert!(
         err.to_string().contains("No cfgd.yaml"),
         "should report missing cfgd.yaml, got: {err}"
@@ -966,7 +1058,15 @@ fn resolve_from_local_path_no_config_fails() {
 #[test]
 fn resolve_from_nonexistent_path_fails() {
     let printer = Printer::new(cfgd_core::output::Verbosity::Quiet);
-    let err = resolve_from("/nonexistent/path/xyz", None, "master", &printer).unwrap_err();
+    let v2_printer = v2_quiet();
+    let err = resolve_from(
+        "/nonexistent/path/xyz",
+        None,
+        "master",
+        &printer,
+        &v2_printer,
+    )
+    .unwrap_err();
     assert!(
         err.to_string().contains("does not exist"),
         "should report path does not exist, got: {err}"
@@ -1021,9 +1121,9 @@ fn is_git_source_local_git_repo() {
 #[test]
 fn scaffold_gitignore_content() {
     let dir = tempfile::tempdir().unwrap();
-    let printer = Printer::new(cfgd_core::output::Verbosity::Quiet);
+    let v2_printer = v2_quiet();
 
-    scaffold(dir.path(), Some("test"), None, &printer).unwrap();
+    scaffold(dir.path(), Some("test"), None, &v2_printer).unwrap();
 
     let gitignore = std::fs::read_to_string(dir.path().join(".gitignore")).unwrap();
     assert!(
@@ -1037,9 +1137,9 @@ fn scaffold_gitignore_content() {
 #[test]
 fn scaffold_config_content() {
     let dir = tempfile::tempdir().unwrap();
-    let printer = Printer::new(cfgd_core::output::Verbosity::Quiet);
+    let v2_printer = v2_quiet();
 
-    scaffold(dir.path(), Some("my-dots"), Some("catppuccin"), &printer).unwrap();
+    scaffold(dir.path(), Some("my-dots"), Some("catppuccin"), &v2_printer).unwrap();
 
     let config = std::fs::read_to_string(dir.path().join("cfgd.yaml")).unwrap();
     assert!(config.contains("my-dots"), "should use custom name");
@@ -1055,9 +1155,9 @@ fn scaffold_uses_dir_name_when_no_name() {
     let dir = tempfile::tempdir().unwrap();
     let target = dir.path().join("cool-dotfiles");
     std::fs::create_dir_all(&target).unwrap();
-    let printer = Printer::new(cfgd_core::output::Verbosity::Quiet);
+    let v2_printer = v2_quiet();
 
-    scaffold(&target, None, None, &printer).unwrap();
+    scaffold(&target, None, None, &v2_printer).unwrap();
 
     let config = std::fs::read_to_string(target.join("cfgd.yaml")).unwrap();
     assert!(
@@ -1078,11 +1178,12 @@ fn pick_profile_single_profile_auto_selects() {
     )
     .unwrap();
 
-    let (printer, buf) = Printer::for_test();
-    let result = pick_profile(dir.path(), &printer).unwrap();
+    let (v2_printer, cap) = PrinterV2::for_test_doc();
+    let result = pick_profile(dir.path(), &v2_printer).unwrap();
     assert_eq!(result, "default");
 
-    let output = buf.lock().unwrap();
+    drop(v2_printer);
+    let output = cap.human();
     assert!(
         output.contains("Using only available profile: default"),
         "should auto-select single profile, got: {output}"
@@ -1093,9 +1194,9 @@ fn pick_profile_single_profile_auto_selects() {
 fn pick_profile_no_dir_fails() {
     let dir = tempfile::tempdir().unwrap();
     let nonexistent = dir.path().join("nope");
-    let (printer, _buf) = Printer::for_test();
+    let v2_printer = v2_quiet();
 
-    let err = pick_profile(&nonexistent, &printer).unwrap_err();
+    let err = pick_profile(&nonexistent, &v2_printer).unwrap_err();
     assert!(
         err.to_string().contains("No profiles directory"),
         "should report no profiles dir, got: {err}"
@@ -1105,9 +1206,9 @@ fn pick_profile_no_dir_fails() {
 #[test]
 fn pick_profile_empty_dir_fails() {
     let dir = tempfile::tempdir().unwrap();
-    let (printer, _buf) = Printer::for_test();
+    let v2_printer = v2_quiet();
 
-    let err = pick_profile(dir.path(), &printer).unwrap_err();
+    let err = pick_profile(dir.path(), &v2_printer).unwrap_err();
     assert!(
         err.to_string().contains("No profiles found"),
         "should report no profiles, got: {err}"
@@ -1121,9 +1222,9 @@ fn regenerate_workflow_skips_empty() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::create_dir_all(dir.path().join("profiles")).unwrap();
     std::fs::create_dir_all(dir.path().join("modules")).unwrap();
-    let (printer, _buf) = Printer::for_test();
+    let v2_printer = v2_quiet();
 
-    regenerate_workflow(dir.path(), &printer).unwrap();
+    regenerate_workflow(dir.path(), &v2_printer).unwrap();
 
     // No workflow should be generated for empty project
     assert!(
@@ -1146,8 +1247,8 @@ fn regenerate_workflow_creates_for_content() {
     .unwrap();
     std::fs::create_dir_all(dir.path().join("modules")).unwrap();
 
-    let (printer, _buf) = Printer::for_test();
-    regenerate_workflow(dir.path(), &printer).unwrap();
+    let v2_printer = v2_quiet();
+    regenerate_workflow(dir.path(), &v2_printer).unwrap();
 
     let workflow_path = dir.path().join(".github/workflows/cfgd-release.yml");
     assert!(workflow_path.exists(), "should create workflow");
@@ -1302,7 +1403,15 @@ fn resolve_from_local_path_returns_canonicalized_path() {
     .unwrap();
 
     let printer = Printer::new(cfgd_core::output::Verbosity::Quiet);
-    let result = resolve_from(&dir.path().display().to_string(), None, "main", &printer).unwrap();
+    let v2_printer = v2_quiet();
+    let result = resolve_from(
+        &dir.path().display().to_string(),
+        None,
+        "main",
+        &printer,
+        &v2_printer,
+    )
+    .unwrap();
     // The result should be a valid path containing cfgd.yaml
     assert!(result.join("cfgd.yaml").exists());
 }
@@ -1332,11 +1441,13 @@ fn resolve_from_git_source_with_target_creates_dir() {
     assert!(!target.exists());
 
     let printer = Printer::new(cfgd_core::output::Verbosity::Quiet);
+    let v2_printer = v2_quiet();
     let result = resolve_from(
         &origin.display().to_string(),
         Some(&target),
         "master",
         &printer,
+        &v2_printer,
     )
     .unwrap();
 
@@ -1349,8 +1460,8 @@ fn resolve_from_git_source_with_target_creates_dir() {
 #[test]
 fn scaffold_config_has_api_version() {
     let dir = tempfile::tempdir().unwrap();
-    let printer = Printer::new(cfgd_core::output::Verbosity::Quiet);
-    scaffold(dir.path(), Some("my-cfg"), None, &printer).unwrap();
+    let v2_printer = v2_quiet();
+    scaffold(dir.path(), Some("my-cfg"), None, &v2_printer).unwrap();
 
     let config = std::fs::read_to_string(dir.path().join("cfgd.yaml")).unwrap();
     assert!(
@@ -1370,8 +1481,8 @@ fn scaffold_config_has_api_version() {
 #[test]
 fn scaffold_readme_contains_structure_docs() {
     let dir = tempfile::tempdir().unwrap();
-    let printer = Printer::new(cfgd_core::output::Verbosity::Quiet);
-    scaffold(dir.path(), Some("documented"), None, &printer).unwrap();
+    let v2_printer = v2_quiet();
+    scaffold(dir.path(), Some("documented"), None, &v2_printer).unwrap();
 
     let readme = std::fs::read_to_string(dir.path().join("README.md")).unwrap();
     assert!(
@@ -1397,6 +1508,7 @@ fn cmd_init_with_name_overrides_dir_name() {
     let target = dir.path().join("generic-dir");
 
     let (printer, _buf) = Printer::for_test();
+    let v2_printer = v2_quiet();
     let target_str = target.display().to_string();
     let args = InitArgs {
         path: Some(&target_str),
@@ -1412,7 +1524,7 @@ fn cmd_init_with_name_overrides_dir_name() {
         apply_modules: &[],
     };
 
-    cmd_init(&printer, &args).unwrap();
+    cmd_init(&printer, &v2_printer, &args).unwrap();
 
     let config = std::fs::read_to_string(target.join("cfgd.yaml")).unwrap();
     assert!(
@@ -1427,6 +1539,7 @@ fn cmd_init_creates_git_repo() {
     let target = dir.path().join("git-init-test");
 
     let (printer, _buf) = Printer::for_test();
+    let v2_printer = v2_quiet();
     let target_str = target.display().to_string();
     let args = InitArgs {
         path: Some(&target_str),
@@ -1442,7 +1555,7 @@ fn cmd_init_creates_git_repo() {
         apply_modules: &[],
     };
 
-    cmd_init(&printer, &args).unwrap();
+    cmd_init(&printer, &v2_printer, &args).unwrap();
 
     assert!(
         target.join(".git").exists(),
@@ -1459,6 +1572,7 @@ fn cmd_init_with_theme_and_name_together() {
     let target = dir.path().join("combo-test");
 
     let (printer, _buf) = Printer::for_test();
+    let v2_printer = v2_quiet();
     let target_str = target.display().to_string();
     let args = InitArgs {
         path: Some(&target_str),
@@ -1474,7 +1588,7 @@ fn cmd_init_with_theme_and_name_together() {
         apply_modules: &[],
     };
 
-    cmd_init(&printer, &args).unwrap();
+    cmd_init(&printer, &v2_printer, &args).unwrap();
 
     let config = std::fs::read_to_string(target.join("cfgd.yaml")).unwrap();
     assert!(
@@ -1492,7 +1606,8 @@ fn cmd_init_with_theme_and_name_together() {
 #[test]
 fn apply_plan_empty_plan_reports_nothing_to_do() {
     let dir = tempfile::tempdir().unwrap();
-    let (printer, buf) = Printer::for_test();
+    let (printer, _buf) = Printer::for_test();
+    let (v2_printer, v2_cap) = PrinterV2::for_test_doc();
 
     let registry = super::build_registry_with_config(None);
     // Isolate the state store under the tempdir so parallel tests don't
@@ -1517,10 +1632,12 @@ fn apply_plan_empty_plan_reports_nothing_to_do() {
         false,
         false,
         &printer,
+        &v2_printer,
     );
     assert!(result.is_ok());
 
-    let output = buf.lock().unwrap();
+    drop(v2_printer);
+    let output = v2_cap.human();
     assert!(
         output.contains("Nothing to do"),
         "should report nothing to do for empty plan, got: {output}"
@@ -1531,9 +1648,10 @@ fn apply_plan_empty_plan_reports_nothing_to_do() {
 
 #[test]
 fn check_prerequisites_with_test_printer() {
-    let (printer, buf) = Printer::for_test();
-    let result = check_prerequisites(&printer);
-    let output = buf.lock().unwrap();
+    let (v2_printer, cap) = PrinterV2::for_test_doc();
+    let result = check_prerequisites(&v2_printer);
+    drop(v2_printer);
+    let output = cap.human();
 
     if cfgd_core::command_available("git") {
         assert!(result, "should return true when git available");
@@ -1614,8 +1732,8 @@ fn regenerate_workflow_with_modules_and_profiles() {
     )
     .unwrap();
 
-    let (printer, _buf) = Printer::for_test();
-    regenerate_workflow(dir.path(), &printer).unwrap();
+    let v2_printer = v2_quiet();
+    regenerate_workflow(dir.path(), &v2_printer).unwrap();
 
     let workflow_path = dir.path().join(".github/workflows/cfgd-release.yml");
     assert!(workflow_path.exists(), "should create workflow");
@@ -1675,7 +1793,8 @@ fn cmd_init_from_local_path_uses_source_dir() {
     std::fs::create_dir_all(source.join("profiles")).unwrap();
     std::fs::create_dir_all(source.join("modules")).unwrap();
 
-    let (printer, buf) = Printer::for_test();
+    let (printer, _buf) = Printer::for_test();
+    let (v2_printer, v2_cap) = PrinterV2::for_test_doc();
     let source_str = source.display().to_string();
     let args = InitArgs {
         path: None,
@@ -1691,9 +1810,10 @@ fn cmd_init_from_local_path_uses_source_dir() {
         apply_modules: &[],
     };
 
-    cmd_init(&printer, &args).unwrap();
+    cmd_init(&printer, &v2_printer, &args).unwrap();
 
-    let output = buf.lock().unwrap();
+    drop(v2_printer);
+    let output = v2_cap.human();
     // The init should succeed and reference the source path
     assert!(
         output.contains("Initialize")
@@ -1713,10 +1833,19 @@ fn clone_into_skips_existing_git_dir() {
     let target = dir.path().join("already-cloned");
     git2::Repository::init(&target).unwrap();
 
-    let (printer, buf) = Printer::for_test();
-    clone_into(&target, "https://example.com/repo.git", "main", &printer).unwrap();
+    let (printer, _buf) = Printer::for_test();
+    let (v2_printer, v2_cap) = PrinterV2::for_test_doc();
+    clone_into(
+        &target,
+        "https://example.com/repo.git",
+        "main",
+        &printer,
+        &v2_printer,
+    )
+    .unwrap();
 
-    let output = buf.lock().unwrap();
+    drop(v2_printer);
+    let output = v2_cap.human();
     assert!(
         output.contains("already exists"),
         "should report repo already exists, got: {output}"
@@ -1790,7 +1919,8 @@ fn apply_plan_prompt_declined_branch_prints_skipped_and_returns_ok() {
     // contract that a declined apply does NOT touch the reconciler or hit
     // the state-store apply lock.
     let dir = tempfile::tempdir().unwrap();
-    let (printer, buf) = Printer::for_test();
+    let (printer, _buf) = Printer::for_test();
+    let (v2_printer, v2_cap) = PrinterV2::for_test_doc();
 
     let registry = super::build_registry_with_config(None);
     let store = super::open_state_store(Some(dir.path())).unwrap();
@@ -1822,10 +1952,12 @@ fn apply_plan_prompt_declined_branch_prints_skipped_and_returns_ok() {
         false, // dry_run
         false, // yes — exercises the prompt arm
         &printer,
+        &v2_printer,
     );
     assert!(result.is_ok(), "declined prompt should still return Ok");
 
-    let output = buf.lock().unwrap();
+    drop(v2_printer);
+    let output = v2_cap.human();
     assert!(
         output.contains("Skipped"),
         "expected 'Skipped' message on declined prompt, got: {output}"
@@ -1850,10 +1982,10 @@ fn apply_plan_with_prompt_confirmed_proceeds_to_apply_path() {
     // observed (no "Skipped" output) and that apply completed without panic.
     let dir = tempfile::tempdir().unwrap();
     let _home = cfgd_core::with_test_home_guard(dir.path());
-    let (printer, buf) =
-        Printer::for_test_with_prompt_responses(vec![cfgd_core::output::PromptAnswer::Confirm(
-            true,
-        )]);
+    let (printer, _buf) = Printer::for_test();
+    let (v2_printer, v2_buf) = PrinterV2::for_test_with_prompt_responses(vec![
+        cfgd_core::output_v2::PromptAnswer::Confirm(true),
+    ]);
 
     let registry = super::build_registry_with_config(None);
     let state_dir = dir.path().join("state");
@@ -1885,13 +2017,15 @@ fn apply_plan_with_prompt_confirmed_proceeds_to_apply_path() {
         false,
         false,
         &printer,
+        &v2_printer,
     );
     assert!(
         result.is_ok(),
         "confirmed prompt + empty-actions plan must succeed: {:?}",
         result.err()
     );
-    let output = buf.lock().unwrap();
+    drop(v2_printer);
+    let output = v2_buf.lock().unwrap();
     assert!(
         !output.contains("Skipped"),
         "Skipped must NOT fire when prompt is confirmed: {output}"
@@ -1910,10 +2044,11 @@ fn apply_plan_with_prompt_declined_emits_skipped_and_returns_early() {
     // existing yes-branch test.
     let dir = tempfile::tempdir().unwrap();
     let _home = cfgd_core::with_test_home_guard(dir.path());
-    let (printer, buf) =
-        Printer::for_test_with_prompt_responses(vec![cfgd_core::output::PromptAnswer::Confirm(
-            false,
-        )]);
+    let (printer, _buf) = Printer::for_test();
+    let (v2_printer, v2_buf) = PrinterV2::for_test_with_prompt_responses_at(
+        vec![cfgd_core::output_v2::PromptAnswer::Confirm(false)],
+        V2Verbosity::Normal,
+    );
 
     let registry = super::build_registry_with_config(None);
     let state_dir = dir.path().join("state");
@@ -1950,13 +2085,15 @@ fn apply_plan_with_prompt_declined_emits_skipped_and_returns_early() {
         false,
         false,
         &printer,
+        &v2_printer,
     );
     assert!(
         result.is_ok(),
         "declined prompt must still return Ok: {:?}",
         result.err()
     );
-    let output = buf.lock().unwrap();
+    drop(v2_printer);
+    let output = v2_buf.lock().unwrap();
     assert!(
         output.contains("Skipped"),
         "Skipped notice must fire when prompt is declined: {output}"
@@ -1968,7 +2105,8 @@ fn apply_plan_with_prompt_declined_emits_skipped_and_returns_early() {
 #[test]
 fn apply_plan_dry_run_skips_apply() {
     let dir = tempfile::tempdir().unwrap();
-    let (printer, buf) = Printer::for_test();
+    let (printer, _buf) = Printer::for_test();
+    let (v2_printer, v2_cap) = PrinterV2::for_test_doc();
 
     let registry = super::build_registry_with_config(None);
     // Isolate the state store under the tempdir so parallel tests don't
@@ -2003,10 +2141,12 @@ fn apply_plan_dry_run_skips_apply() {
         true, // dry_run
         false,
         &printer,
+        &v2_printer,
     );
     assert!(result.is_ok());
 
-    let output = buf.lock().unwrap();
+    drop(v2_printer);
+    let output = v2_cap.human();
     // Dry run shows the plan but does not apply
     assert!(
         output.contains("action") || output.contains("planned"),
@@ -2041,6 +2181,7 @@ fn cmd_init_from_git_source_with_explicit_target() {
 
     let target = dir.path().join("my-target");
     let (printer, _buf) = Printer::for_test();
+    let v2_printer = v2_quiet();
     let origin_str = origin.display().to_string();
     let target_str = target.display().to_string();
     let args = InitArgs {
@@ -2057,7 +2198,7 @@ fn cmd_init_from_git_source_with_explicit_target() {
         apply_modules: &[],
     };
 
-    let result = cmd_init(&printer, &args);
+    let result = cmd_init(&printer, &v2_printer, &args);
     assert!(
         result.is_ok(),
         "cmd_init with --from git should succeed: {:?}",
@@ -2094,6 +2235,7 @@ fn cmd_init_from_git_with_theme_override() {
 
     let target = dir.path().join("themed-target");
     let (printer, _buf) = Printer::for_test();
+    let v2_printer = v2_quiet();
     let origin_str = origin.display().to_string();
     let target_str = target.display().to_string();
     let args = InitArgs {
@@ -2110,7 +2252,7 @@ fn cmd_init_from_git_with_theme_override() {
         apply_modules: &[],
     };
 
-    let result = cmd_init(&printer, &args);
+    let result = cmd_init(&printer, &v2_printer, &args);
     assert!(
         result.is_ok(),
         "cmd_init with theme override should succeed: {:?}",
@@ -2806,7 +2948,7 @@ mod cmd_init_from_local_bare {
         let target = tmp.path().join("dst");
         let url = format!("file://{}", bare.display());
 
-        let printer = Printer::new(cfgd_core::output::Verbosity::Quiet);
+        let (printer, v2_printer) = dual_quiet_printers();
         let args = InitArgs {
             path: Some(target.to_str().unwrap()),
             from: Some(&url),
@@ -2820,7 +2962,7 @@ mod cmd_init_from_local_bare {
             apply_profile: None,
             apply_modules: &[],
         };
-        cmd_init(&printer, &args).expect("cmd_init --from should succeed");
+        cmd_init(&printer, &v2_printer, &args).expect("cmd_init --from should succeed");
 
         // The cloned cfgd.yaml lands at the target.
         let cfg_yaml = std::fs::read_to_string(target.join("cfgd.yaml")).unwrap();
@@ -2848,7 +2990,7 @@ mod cmd_init_from_local_bare {
         let target = tmp.path().join("dst");
         let url = format!("file://{}", bare.display());
 
-        let printer = Printer::new(cfgd_core::output::Verbosity::Quiet);
+        let (printer, v2_printer) = dual_quiet_printers();
         let args = InitArgs {
             path: Some(target.to_str().unwrap()),
             from: Some(&url),
@@ -2862,7 +3004,7 @@ mod cmd_init_from_local_bare {
             apply_profile: None,
             apply_modules: &[],
         };
-        cmd_init(&printer, &args).expect("cmd_init --from --theme should succeed");
+        cmd_init(&printer, &v2_printer, &args).expect("cmd_init --from --theme should succeed");
 
         let cfg_yaml = std::fs::read_to_string(target.join("cfgd.yaml")).unwrap();
         assert!(
@@ -2881,7 +3023,7 @@ mod cmd_init_from_local_bare {
         let target = tmp.path().join("empty-dst");
         let url = format!("file://{}", bare.display());
 
-        let printer = Printer::new(cfgd_core::output::Verbosity::Quiet);
+        let (printer, v2_printer) = dual_quiet_printers();
         let args = InitArgs {
             path: Some(target.to_str().unwrap()),
             from: Some(&url),
@@ -2895,7 +3037,7 @@ mod cmd_init_from_local_bare {
             apply_profile: None,
             apply_modules: &[],
         };
-        cmd_init(&printer, &args).expect("clone of empty repo should still return Ok");
+        cmd_init(&printer, &v2_printer, &args).expect("clone of empty repo should still return Ok");
 
         // README.md from the source is present.
         assert!(target.join("README.md").is_file());
@@ -2944,6 +3086,7 @@ mod cmd_init_apply_orchestration {
         let state_dir = tmp.path().join("state");
 
         let (printer, _buf) = Printer::for_test();
+        let v2_printer = v2_quiet();
         with_state_dir(&state_dir, || {
             let args = InitArgs {
                 path: Some(target.to_str().unwrap()),
@@ -2958,7 +3101,7 @@ mod cmd_init_apply_orchestration {
                 apply_profile: None,
                 apply_modules: &[],
             };
-            let err = cmd_init(&printer, &args)
+            let err = cmd_init(&printer, &v2_printer, &args)
                 .expect_err("scaffold+apply without profile should surface pick_profile bail");
             let msg = err.to_string();
             assert!(
@@ -2984,6 +3127,7 @@ mod cmd_init_apply_orchestration {
         let state_dir = tmp.path().join("state");
 
         let (printer, _buf) = Printer::for_test();
+        let v2_printer = v2_quiet();
         with_state_dir(&state_dir, || {
             let modules = vec!["ghost-module".to_string()];
             let args = InitArgs {
@@ -2999,7 +3143,7 @@ mod cmd_init_apply_orchestration {
                 apply_profile: None,
                 apply_modules: &modules,
             };
-            let err = cmd_init(&printer, &args)
+            let err = cmd_init(&printer, &v2_printer, &args)
                 .expect_err("--apply-module on unknown module should bail");
             let msg = err.to_string();
             assert!(
@@ -3021,6 +3165,7 @@ mod cmd_init_apply_orchestration {
         let state_dir = tmp.path().join("state");
 
         let (printer, _buf) = Printer::for_test();
+        let v2_printer = v2_quiet();
         with_state_dir(&state_dir, || {
             let args = InitArgs {
                 path: Some(target.to_str().unwrap()),
@@ -3035,7 +3180,7 @@ mod cmd_init_apply_orchestration {
                 apply_profile: Some("missing-profile"),
                 apply_modules: &[],
             };
-            let err = cmd_init(&printer, &args)
+            let err = cmd_init(&printer, &v2_printer, &args)
                 .expect_err("--apply-profile on missing profile should bail");
             let msg = err.to_string();
             assert!(
@@ -3111,7 +3256,8 @@ mod cmd_init_apply_orchestration {
         let state_dir = tmp.path().join("state");
         let url = format!("file://{}", bare.display());
 
-        let (printer, buf) = Printer::for_test();
+        let (printer, _buf) = Printer::for_test();
+        let (v2_printer, v2_cap) = PrinterV2::for_test_doc();
         with_state_dir(&state_dir, || {
             let args = InitArgs {
                 path: Some(target.to_str().unwrap()),
@@ -3126,10 +3272,12 @@ mod cmd_init_apply_orchestration {
                 apply_profile: None,
                 apply_modules: &[],
             };
-            cmd_init(&printer, &args).expect("--from + --apply --dry-run should succeed");
+            cmd_init(&printer, &v2_printer, &args)
+                .expect("--from + --apply --dry-run should succeed");
         });
 
-        let out = buf.lock().unwrap().clone();
+        drop(v2_printer);
+        let out = v2_cap.human();
         assert!(
             out.contains("Applying Configuration"),
             "should enter the profile-based apply branch: {out}"
@@ -3156,7 +3304,8 @@ mod cmd_init_apply_orchestration {
         let state_dir = tmp.path().join("state");
         let url = format!("file://{}", bare.display());
 
-        let (printer, buf) = Printer::for_test();
+        let (printer, _buf) = Printer::for_test();
+        let (v2_printer, v2_cap) = PrinterV2::for_test_doc();
         with_state_dir(&state_dir, || {
             let args = InitArgs {
                 path: Some(target.to_str().unwrap()),
@@ -3171,10 +3320,12 @@ mod cmd_init_apply_orchestration {
                 apply_profile: Some("default"),
                 apply_modules: &[],
             };
-            cmd_init(&printer, &args).expect("--apply-profile default should drive apply branch");
+            cmd_init(&printer, &v2_printer, &args)
+                .expect("--apply-profile default should drive apply branch");
         });
 
-        let out = buf.lock().unwrap().clone();
+        drop(v2_printer);
+        let out = v2_cap.human();
         assert!(
             out.contains("Set active profile: default"),
             "validated --apply-profile branch should announce profile selection: {out}"
@@ -3244,7 +3395,8 @@ mod cmd_init_apply_orchestration {
         let target = tmp.path().join("dst");
         let state_dir = tmp.path().join("state");
         let modules = vec!["sample".to_string()];
-        let (printer, buf) = Printer::for_test();
+        let (printer, _buf) = Printer::for_test();
+        let (v2_printer, v2_cap) = PrinterV2::for_test_doc();
         with_state_dir(&state_dir, || {
             let args = InitArgs {
                 path: Some(target.to_str().unwrap()),
@@ -3259,10 +3411,12 @@ mod cmd_init_apply_orchestration {
                 apply_profile: None,
                 apply_modules: &modules,
             };
-            cmd_init(&printer, &args).expect("--apply-module drives module-only branch");
+            cmd_init(&printer, &v2_printer, &args)
+                .expect("--apply-module drives module-only branch");
         });
 
-        let out = buf.lock().unwrap().clone();
+        drop(v2_printer);
+        let out = v2_cap.human();
         assert!(
             out.contains("Applying Modules"),
             "should hit the Applying Modules header in the module-only arm: {out}"
@@ -3327,7 +3481,8 @@ mod cmd_init_apply_orchestration {
 
         let target = tmp.path().join("dst");
         let state_dir = tmp.path().join("state");
-        let (printer, buf) = Printer::for_test();
+        let (printer, _buf) = Printer::for_test();
+        let (v2_printer, v2_cap) = PrinterV2::for_test_doc();
         with_state_dir(&state_dir, || {
             let args = InitArgs {
                 path: Some(target.to_str().unwrap()),
@@ -3342,10 +3497,12 @@ mod cmd_init_apply_orchestration {
                 apply_profile: None,
                 apply_modules: &[],
             };
-            cmd_init(&printer, &args).expect("pick_profile should select the sole profile");
+            cmd_init(&printer, &v2_printer, &args)
+                .expect("pick_profile should select the sole profile");
         });
 
-        let out = buf.lock().unwrap().clone();
+        drop(v2_printer);
+        let out = v2_cap.human();
         assert!(
             out.contains("Using only available profile: only"),
             "pick_profile single-profile fast path should be exercised: {out}"
@@ -3427,7 +3584,8 @@ mod cmd_init_apply_orchestration {
         let state_dir = tmp.path().join("state");
         let url = format!("file://{}", bare.display());
 
-        let (printer, buf) = Printer::for_test();
+        let (printer, _buf) = Printer::for_test();
+        let (v2_printer, v2_cap) = PrinterV2::for_test_doc();
         let modules = vec!["extra".to_string()];
         with_state_dir(&state_dir, || {
             let args = InitArgs {
@@ -3443,11 +3601,12 @@ mod cmd_init_apply_orchestration {
                 apply_profile: Some("default"),
                 apply_modules: &modules,
             };
-            cmd_init(&printer, &args)
+            cmd_init(&printer, &v2_printer, &args)
                 .expect("--apply-profile + --apply-module should walk the combined arm");
         });
 
-        let out = buf.lock().unwrap().clone();
+        drop(v2_printer);
+        let out = v2_cap.human();
         // Profile-validation arm fires.
         assert!(
             out.contains("Set active profile: default"),
@@ -3484,6 +3643,7 @@ mod cmd_init_apply_orchestration {
         let url = format!("file://{}", bare.display());
 
         let (printer, _buf) = Printer::for_test();
+        let v2_printer = v2_quiet();
         let modules = vec!["ghost-extra".to_string()];
         with_state_dir(&state_dir, || {
             let args = InitArgs {
@@ -3499,7 +3659,7 @@ mod cmd_init_apply_orchestration {
                 apply_profile: Some("default"),
                 apply_modules: &modules,
             };
-            let err = cmd_init(&printer, &args).expect_err(
+            let err = cmd_init(&printer, &v2_printer, &args).expect_err(
                 "profile-based apply with unknown --apply-module should bail before plan",
             );
             let msg = err.to_string();
@@ -3524,7 +3684,8 @@ mod cmd_init_apply_orchestration {
         let target = tmp.path().join("install-daemon-cfg");
         std::fs::create_dir_all(&target).unwrap();
 
-        let (printer, buf) = Printer::for_test();
+        let (printer, _buf) = Printer::for_test();
+        let (v2_printer, v2_cap) = PrinterV2::for_test_doc();
         let args = InitArgs {
             path: Some(target.to_str().unwrap()),
             from: None,
@@ -3538,9 +3699,10 @@ mod cmd_init_apply_orchestration {
             apply_profile: None,
             apply_modules: &[],
         };
-        cmd_init(&printer, &args).expect("cmd_init with install_daemon must succeed");
+        cmd_init(&printer, &v2_printer, &args).expect("cmd_init with install_daemon must succeed");
 
-        let captured = buf.lock().unwrap().clone();
+        drop(v2_printer);
+        let captured = v2_cap.human();
         let unit = tmp.path().join(".config/systemd/user/cfgd.service");
         if unit.exists() {
             assert!(

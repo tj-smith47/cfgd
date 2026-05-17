@@ -1,0 +1,23 @@
+Initialize cfgd
+
+✓ Created profiles/ modules/
+
+✓ Created cfgd.yaml
+
+✓ Created .gitignore
+
+✓ Created README.md
+
+✓ Created .github/workflows/cfgd-release.yml
+
+✓ Generated .github/workflows/cfgd-release.yml
+
+✓ Initialized git repository
+
+✓ Initialized at <TARGET_DIR>
+
+✓ Set active profile: default
+
+Applying Configuration
+
+✓ Nothing to do — system is already configured

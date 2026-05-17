@@ -26,7 +26,9 @@ pub(super) fn cmd_plan(cli: &Cli, printer: &Printer, args: &PlanArgs) -> anyhow:
         } else {
             None
         };
-        init::resolve_from(from, target, "master", printer)?;
+        let v2_printer =
+            cfgd_core::output_v2::Printer::new(cfgd_core::output_v2::Verbosity::Normal);
+        init::resolve_from(from, target, "master", printer, &v2_printer)?;
     }
 
     printer.header("Plan");

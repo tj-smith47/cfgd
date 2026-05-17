@@ -28,7 +28,9 @@ pub(super) fn cmd_apply(cli: &Cli, printer: &Printer, args: &ApplyArgs) -> anyho
         } else {
             None
         };
-        init::resolve_from(from, target, "master", printer)?;
+        let v2_printer =
+            cfgd_core::output_v2::Printer::new(cfgd_core::output_v2::Verbosity::Normal);
+        init::resolve_from(from, target, "master", printer, &v2_printer)?;
     }
 
     let dry_run = args.dry_run;

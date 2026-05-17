@@ -108,11 +108,23 @@ impl Printer {
     pub fn for_test_with_prompt_responses(
         responses: Vec<PromptAnswer>,
     ) -> (Self, Arc<Mutex<String>>) {
+        Self::for_test_with_prompt_responses_at(responses, Verbosity::Quiet)
+    }
+
+    /// Capture + canned prompt responses at a chosen verbosity. Required by
+    /// tests that drive a prompt AND assert on the rendered status the
+    /// command emits in response (e.g. apply_plan's "Skipped" notice) —
+    /// the Quiet default filters non-Fail statuses, hiding the line under
+    /// assertion.
+    pub fn for_test_with_prompt_responses_at(
+        responses: Vec<PromptAnswer>,
+        verbosity: Verbosity,
+    ) -> (Self, Arc<Mutex<String>>) {
         let buf = Arc::new(Mutex::new(String::new()));
         let p = build_test_printer(
             buf.clone(),
             Theme::default(),
-            Verbosity::Quiet,
+            verbosity,
             OutputFormat::Table,
             None,
             Some(Arc::new(Mutex::new(VecDeque::from(responses)))),

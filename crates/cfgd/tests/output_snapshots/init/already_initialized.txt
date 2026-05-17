@@ -1,0 +1,3 @@
+Initialize cfgd
+
+Already initialized at <TARGET_DIR>

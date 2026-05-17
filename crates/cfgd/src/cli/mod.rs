@@ -9,7 +9,7 @@ mod doctor;
 mod explain;
 pub mod generate;
 mod helpers;
-mod init;
+pub mod init;
 mod kubectl;
 mod log;
 pub mod module;
@@ -1432,6 +1432,7 @@ pub fn execute(
             apply_modules,
         } => init::cmd_init(
             printer,
+            v2_printer,
             &init::InitArgs {
                 path: path.as_deref(),
                 from: from.as_deref(),

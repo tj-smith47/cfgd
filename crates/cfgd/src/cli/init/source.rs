@@ -1,5 +1,7 @@
 use std::path::Path;
 
+use cfgd_core::output_v2::{Printer as PrinterV2, Role};
+
 use super::*;
 
 /// Returns true if the value is a clonable git source (URL or local git repo).
@@ -26,7 +28,8 @@ pub(crate) fn resolve_from(
     from: &str,
     target: Option<&Path>,
     branch: &str,
-    printer: &cfgd_core::output::Printer,
+    printer: &Printer,
+    v2_printer: &PrinterV2,
 ) -> anyhow::Result<std::path::PathBuf> {
     if is_git_source(from) {
         let dest = target
@@ -34,9 +37,12 @@ pub(crate) fn resolve_from(
             .unwrap_or_else(cfgd_core::default_config_dir);
         if !dest.join("cfgd.yaml").exists() {
             std::fs::create_dir_all(&dest)?;
-            clone_into(&dest, from, branch, printer)?;
+            clone_into(&dest, from, branch, printer, v2_printer)?;
         } else {
-            printer.info(&format!("Already initialized at {}", dest.display()));
+            v2_printer.status_simple(
+                Role::Info,
+                format!("Already initialized at {}", dest.display()),
+            );
         }
         Ok(dest)
     } else {
@@ -57,17 +63,18 @@ pub(super) fn clone_into(
     url: &str,
     branch: &str,
     printer: &Printer,
+    v2_printer: &PrinterV2,
 ) -> anyhow::Result<()> {
     // If target already has .git, it's already cloned — nothing to do.
     if target_dir.join(".git").exists() {
-        printer.info("Repository already exists, skipping clone");
+        v2_printer.status_simple(Role::Info, "Repository already exists, skipping clone");
         return Ok(());
     }
 
     cfgd_core::sources::git_clone_with_fallback(url, target_dir, printer)
         .map_err(|e| anyhow::anyhow!("Clone failed: {}", e))?;
 
-    printer.success(&format!("Cloned to {}", target_dir.display()));
+    v2_printer.status_simple(Role::Ok, format!("Cloned to {}", target_dir.display()));
 
     // Checkout the requested branch if HEAD isn't already on it.
     // git clone checks out the remote's default branch; if the user asked for
@@ -88,7 +95,7 @@ pub(super) fn clone_into(
             .map_err(|e| anyhow::anyhow!("Failed to checkout '{}': {}", branch, e))?;
         repo.set_head(&format!("refs/heads/{}", branch))
             .map_err(|e| anyhow::anyhow!("Failed to set HEAD to '{}': {}", branch, e))?;
-        printer.info(&format!("Checked out branch: {}", branch));
+        v2_printer.status_simple(Role::Info, format!("Checked out branch: {}", branch));
     }
 
     Ok(())
