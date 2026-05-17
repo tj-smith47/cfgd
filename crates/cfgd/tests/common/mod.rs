@@ -475,6 +475,54 @@ pub fn rollback_state_no_changes_setup() -> (tempfile::TempDir, i64) {
     (state_dir, apply_id)
 }
 
+/// Seed a state DB with N apply rows in insertion order. `cmd_log` returns
+/// them most-recent-first (via `state.history(limit)`).
+///
+/// Returns `(state_dir, apply_ids)` — `apply_ids[i]` is the rowid for the
+/// i-th input row. `summary` defaults to `None` when the third tuple slot
+/// is empty.
+pub fn log_history_setup(
+    rows: &[(&str, ApplyStatus, Option<&str>)],
+) -> (tempfile::TempDir, Vec<i64>) {
+    let state_dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(state_dir.path()).unwrap();
+    let state = StateStore::open(&state_dir.path().join("cfgd.db")).unwrap();
+
+    let mut ids = Vec::with_capacity(rows.len());
+    for (i, (profile, status, summary)) in rows.iter().enumerate() {
+        let plan_hash = format!("hash{}", i);
+        let id = state
+            .record_apply(profile, &plan_hash, status.clone(), *summary)
+            .unwrap();
+        ids.push(id);
+    }
+    (state_dir, ids)
+}
+
+/// Seed a state DB with one apply and a set of journal entries. Each
+/// entry's optional `script_output` is recorded via
+/// `journal_complete(jid, None, script_output)`.
+///
+/// Returns `(state_dir, apply_id)`.
+pub fn log_show_output_setup(
+    entries: &[(&str, &str, &str, Option<&str>)],
+) -> (tempfile::TempDir, i64) {
+    let state_dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(state_dir.path()).unwrap();
+    let state = StateStore::open(&state_dir.path().join("cfgd.db")).unwrap();
+
+    let apply_id = state
+        .record_apply("test", "hash1", ApplyStatus::Success, None)
+        .unwrap();
+    for (idx, (phase, action_type, resource_id, script_output)) in entries.iter().enumerate() {
+        let jid = state
+            .journal_begin(apply_id, idx, phase, action_type, resource_id, None)
+            .unwrap();
+        state.journal_complete(jid, None, *script_output).unwrap();
+    }
+    (state_dir, apply_id)
+}
+
 /// Seed a state DB with a target apply followed by a non-file (package)
 /// action — exercises the "Non-file actions (manual review)" section.
 pub fn rollback_state_with_non_file_actions_setup() -> (tempfile::TempDir, i64) {

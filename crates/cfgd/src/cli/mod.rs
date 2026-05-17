@@ -11,7 +11,7 @@ pub mod generate;
 mod helpers;
 pub mod init;
 mod kubectl;
-mod log;
+pub mod log;
 pub mod module;
 pub mod output_types;
 pub mod plan;
@@ -1396,9 +1396,13 @@ pub fn execute(
         Command::Diff { module, exit_code } => {
             diff::cmd_diff(cli, printer, v2_printer, module.as_deref(), *exit_code)
         }
-        Command::Log { limit, show_output } => {
-            log::cmd_log(printer, *limit, *show_output, cli.state_dir.as_deref())
-        }
+        Command::Log { limit, show_output } => log::cmd_log(
+            printer,
+            v2_printer,
+            *limit,
+            *show_output,
+            cli.state_dir.as_deref(),
+        ),
         Command::Verify { module, exit_code } => {
             verify::cmd_verify(cli, printer, v2_printer, module.as_deref(), *exit_code)
         }

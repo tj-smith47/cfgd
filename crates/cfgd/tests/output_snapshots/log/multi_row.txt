@@ -1,0 +1,7 @@
+Apply History
+
+ID  Time                  Profile  Status   Summary       
+──────────────────────────────────────────────────────────
+3   <TIMESTAMP>  gamma    failed   -             
+2   <TIMESTAMP>  beta     partial  2 ok, 1 failed
+1   <TIMESTAMP>  alpha    success  1 file applied

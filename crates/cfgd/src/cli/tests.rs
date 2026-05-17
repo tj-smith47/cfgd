@@ -3806,7 +3806,7 @@ fn cmd_verify_module() {
 #[test]
 fn cmd_log_with_empty_state() {
     let h = CliTestHarness::builder().build();
-    super::log::cmd_log(h.printer(), 10, None, Some(h.state_path())).unwrap();
+    super::log::cmd_log(h.printer(), h.v2_printer(), 10, None, Some(h.state_path())).unwrap();
     h.assert_header("Apply History");
     h.assert_output_contains("No applies recorded yet");
 }
@@ -4047,8 +4047,10 @@ fn cmd_log_after_apply() {
     super::apply::cmd_apply(&cli, &printer, &v2_printer, &args).unwrap();
     buf.lock().unwrap().clear();
 
-    super::log::cmd_log(&printer, 10, None, Some(state_dir.path())).unwrap();
-    let output = buf.lock().unwrap();
+    let (log_v2_printer, log_v2_buf) = test_v2_printer_capture();
+    super::log::cmd_log(&printer, &log_v2_printer, 10, None, Some(state_dir.path())).unwrap();
+    drop(log_v2_printer);
+    let output = log_v2_buf.lock().unwrap();
     assert!(
         output.contains("Apply History"),
         "should contain Apply History header, got: {output}"
@@ -4297,7 +4299,7 @@ fn cmd_status_structured_output() {
 #[test]
 fn cmd_log_structured_output() {
     let h = CliTestHarness::builder().json().build();
-    super::log::cmd_log(h.printer(), 5, None, Some(h.state_path())).unwrap();
+    super::log::cmd_log(h.printer(), h.v2_printer(), 5, None, Some(h.state_path())).unwrap();
     let parsed = h.json_output();
     assert_eq!(
         parsed,
@@ -5925,9 +5927,16 @@ fn empty_resolved_profile_contains_module_name() {
 fn cmd_log_show_output_nonexistent_apply() {
     let state_dir = tempfile::tempdir().unwrap();
     let printer = test_printer();
+    let v2_printer = test_v2_printer();
 
     // show_output for a nonexistent apply ID should fail
-    let result = super::log::cmd_log(&printer, 10, Some(9999), Some(state_dir.path()));
+    let result = super::log::cmd_log(
+        &printer,
+        &v2_printer,
+        10,
+        Some(9999),
+        Some(state_dir.path()),
+    );
     assert!(result.is_err());
     assert!(result.unwrap_err().to_string().contains("no apply found"));
 }
@@ -9379,10 +9388,16 @@ fn cmd_workflow_generate_no_overwrite_without_force() {
 fn cmd_log_show_output_no_entries() {
     let state_dir = tempfile::tempdir().unwrap();
     let printer = test_printer();
-    let state = super::open_state_store(Some(state_dir.path())).unwrap();
+    let v2_printer = test_v2_printer();
 
-    // Nonexistent apply ID should fail
-    let result = super::log::cmd_log_show_output(&printer, &state, 9999);
+    // Nonexistent apply ID should fail (routes through cmd_log → cmd_log_show_output)
+    let result = super::log::cmd_log(
+        &printer,
+        &v2_printer,
+        10,
+        Some(9999),
+        Some(state_dir.path()),
+    );
     assert!(result.is_err());
     assert!(result.unwrap_err().to_string().contains("no apply found"));
 }
@@ -9906,9 +9921,10 @@ fn cmd_plan_structured_output() {
 fn cmd_log_show_output_for_nonexistent_apply() {
     let state_dir = tempfile::tempdir().unwrap();
     let printer = test_printer();
+    let v2_printer = test_v2_printer();
 
     // Nonexistent apply ID should fail
-    let result = super::log::cmd_log(&printer, 10, Some(999), Some(state_dir.path()));
+    let result = super::log::cmd_log(&printer, &v2_printer, 10, Some(999), Some(state_dir.path()));
     assert!(result.is_err());
     assert!(result.unwrap_err().to_string().contains("no apply found"));
 }
@@ -10924,7 +10940,7 @@ fn cmd_verify_with_module_filter() {
 #[test]
 fn cmd_log_empty_state_succeeds() {
     let h = CliTestHarness::builder().build();
-    super::log::cmd_log(h.printer(), 10, None, Some(h.state_path())).unwrap();
+    super::log::cmd_log(h.printer(), h.v2_printer(), 10, None, Some(h.state_path())).unwrap();
     let output = h.output();
     assert!(
         output.contains("Apply History") || output.contains("No applies"),
@@ -10935,7 +10951,7 @@ fn cmd_log_empty_state_succeeds() {
 #[test]
 fn cmd_log_structured_json_output() {
     let h = CliTestHarness::builder().json().build();
-    super::log::cmd_log(h.printer(), 10, None, Some(h.state_path())).unwrap();
+    super::log::cmd_log(h.printer(), h.v2_printer(), 10, None, Some(h.state_path())).unwrap();
     let parsed = h.json_output();
     assert_json_has_fields(&parsed, &["entries"]);
     assert_eq!(
@@ -11932,7 +11948,7 @@ fn json_schema_status_module() {
 #[test]
 fn json_schema_log() {
     let h = CliTestHarness::builder().json().build();
-    super::log::cmd_log(h.printer(), 10, None, Some(h.state_path())).unwrap();
+    super::log::cmd_log(h.printer(), h.v2_printer(), 10, None, Some(h.state_path())).unwrap();
     let parsed = h.json_output();
     assert_json_has_fields(&parsed, &["entries"]);
     assert_json_field_type(&parsed, "entries", "array");

@@ -1,0 +1,8 @@
+Apply #1 — Script Output
+
+Entries
+  [scripts] script:pre:hello (script)
+    hello world
+    second line
+  [scripts] script:post:bye (script)
+    goodbye world

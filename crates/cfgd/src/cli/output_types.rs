@@ -10,6 +10,22 @@ pub struct LogOutput {
     pub entries: Vec<cfgd_core::state::ApplyRecord>,
 }
 
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LogShowOutputOutput {
+    pub apply_id: i64,
+    pub entries: Vec<LogShowEntryOutput>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LogShowEntryOutput {
+    pub phase: String,
+    pub resource_id: String,
+    pub action_type: String,
+    pub output: String,
+}
+
 /// Structured payload for `cfgd apply`. Carries the result of an apply run for
 /// `-o json|yaml|jsonpath|template` consumers (CI, scripts, the operator). The
 /// optional fields cover the no-op paths (`nothing_to_do`, `aborted`) where no
