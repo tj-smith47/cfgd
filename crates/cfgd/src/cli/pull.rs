@@ -37,7 +37,7 @@ pub fn render_pull(v2_printer: &PrinterV2, pull_result: &Result<bool, String>) {
     }));
 }
 
-pub fn pull_status_from_result(
+fn pull_status_from_result(
     result: &Result<bool, String>,
 ) -> (Role, &'static str, &'static str, Option<String>) {
     match result {
