@@ -5,25 +5,35 @@
 //!     INSTA_UPDATE=always cargo test -p cfgd --test apply_v2_snapshots
 //!
 //! Cases:
-//!   - `apply/happy.{txt,json}` — all phases succeed (streaming preview
-//!     + per-phase results + buffered ApplyOutput).
-//!   - `apply/dry_run.txt`      — `--dry-run` path through
-//!     `display_plan_preview_v2`.
+//!   - `apply/happy.{txt,json}` — all phases succeed. Snapshot captures
+//!     real `cmd_apply` output (streaming preview + per-phase results +
+//!     buffered ApplyOutput) against a tempdir-backed profile; the JSON
+//!     case exercises `build_apply_doc` directly.
+//!   - `apply/dry_run.txt`      — `--dry-run` path through real
+//!     `cmd_apply` (so `display_plan_preview_v2` drift is caught).
 //!   - `apply/nothing_to_do.txt`— plan is empty.
-//!   - `apply/with_failures.txt`— one action fails; the failure status
-//!     renders INSIDE the phase section (the §1.8 anchor under real apply
-//!     data — not at column 0).
+//!   - `apply/with_failures.txt`— one file action fails (parent path is
+//!     a regular file, so `create_dir_all` errors at apply time). The
+//!     failure status renders INSIDE the phase section — the
+//!     indent-invariant anchor under real apply data, not at column 0.
 //!   - `apply/bridge.txt`       — streaming section + buffered Doc on the
-//!     same `Printer`; asserts the §17.2 one-blank-line invariant
-//!     programmatically.
+//!     same `Printer`; asserts the bridge invariant (one blank line
+//!     between streaming and buffered) programmatically.
+
+mod common;
 
 use std::collections::HashMap;
 use std::path::Path;
 
-use cfgd::cli::apply::build_apply_doc;
+use cfgd::cli::apply::{build_apply_doc, cmd_apply};
 use cfgd::cli::output_types::ApplyOutput;
+use cfgd_core::output::Printer as PrinterV1;
 use cfgd_core::output_v2::{Doc, Printer, Role};
 use pretty_assertions::assert_eq;
+
+use common::{
+    apply_args, apply_args_dry_run, cli_for, profile_with_one_failure_setup, tiny_profile_setup,
+};
 
 const SNAPSHOT_ROOT: &str = "tests/output_snapshots";
 
@@ -39,48 +49,46 @@ fn happy_output() -> ApplyOutput {
     }
 }
 
-fn with_failures_output() -> ApplyOutput {
-    ApplyOutput {
-        status: "partial".to_string(),
-        apply_id: Some(43),
-        succeeded: 1,
-        failed: 1,
-        source_commits: HashMap::new(),
+/// Replace tempdir-rooted paths with stable placeholders so goldens are
+/// host-stable. `cmd_apply` embeds the config-file path and target file
+/// paths into its output (kv block + per-action lines).
+fn normalize_tempdir_paths(raw: &str, config_dir: &Path, extra_paths: &[(&Path, &str)]) -> String {
+    let mut out = raw.to_string();
+    // Longest first so substring overlap doesn't swallow the shorter one.
+    let cfg_file = config_dir.join("cfgd.yaml");
+    out = out.replace(
+        &cfg_file.to_string_lossy().to_string(),
+        "<CONFIG_DIR>/cfgd.yaml",
+    );
+    for (path, placeholder) in extra_paths {
+        out = out.replace(&path.to_string_lossy().to_string(), placeholder);
     }
+    out = out.replace(&config_dir.to_string_lossy().to_string(), "<CONFIG_DIR>");
+    out
 }
 
 #[test]
 fn apply_happy_human() {
+    let (config_dir, state_dir, target) = tiny_profile_setup();
+
+    let cli = cli_for(config_dir.path(), state_dir.path());
+    let old_printer = PrinterV1::new(cfgd_core::output::Verbosity::Quiet);
     let (v2_printer, cap) = Printer::for_test_doc();
+    let args = apply_args();
 
-    v2_printer.heading("Apply");
-    v2_printer.kv_block([("Config", "/etc/cfgd.yaml"), ("Profile", "default")]);
-
-    // Plan preview — mirrors cmd_apply's streaming section shape: each
-    // phase opens a fresh nested section that drops before the next
-    // phase opens, so phases are siblings, not nested.
-    {
-        let preview = v2_printer.section("Plan preview");
-        {
-            let files = preview.section("Files");
-            files.bullet("create /etc/hosts");
-        }
-        {
-            let packages = preview.section("Packages");
-            packages.bullet("install nodejs");
-            packages.bullet("install ripgrep");
-        }
-    }
-
-    v2_printer.status_simple(Role::Ok, "Apply complete — 3 action(s) succeeded");
-    v2_printer.emit(build_apply_doc(&happy_output()));
+    cmd_apply(&cli, &old_printer, &v2_printer, &args).unwrap();
     drop(v2_printer);
 
-    cap.assert_human_snapshot_in(Path::new(SNAPSHOT_ROOT), "apply/happy.txt");
+    let normalized =
+        normalize_tempdir_paths(&cap.human(), config_dir.path(), &[(&target, "<TARGET>")]);
+    let stripped = strip_ansi(&normalized);
+    assert_snapshot(Path::new(SNAPSHOT_ROOT), "apply/happy.txt", &stripped);
 }
 
 #[test]
 fn apply_happy_json() {
+    // Pure data-roundtrip test on `build_apply_doc` — doesn't need to
+    // stand up a reconciler.
     let output = happy_output();
     let (v2_printer, cap) = Printer::for_test_doc();
     v2_printer.emit(build_apply_doc(&output));
@@ -97,25 +105,23 @@ fn apply_happy_json() {
 
 #[test]
 fn apply_dry_run_human() {
-    // Mirrors the --dry-run path's shape after display_plan_preview_v2:
-    // heading + plan-table sections + "N action(s) planned" status.
+    // Real --dry-run path through cmd_apply → display_plan_preview_v2.
+    let (config_dir, state_dir, target) = tiny_profile_setup();
+
+    let cli = cli_for(config_dir.path(), state_dir.path());
+    let old_printer = PrinterV1::new(cfgd_core::output::Verbosity::Quiet);
     let (v2_printer, cap) = Printer::for_test_doc();
+    let args = apply_args_dry_run();
 
-    v2_printer.heading("Plan");
-    v2_printer.kv_block([("Config", "/etc/cfgd.yaml"), ("Profile", "default")]);
-
-    {
-        let phase = v2_printer.section("Phase: Files");
-        phase.bullet("create /etc/hosts");
-    }
-    {
-        let phase = v2_printer.section("Phase: Packages");
-        phase.bullet("install nodejs");
-    }
-    v2_printer.status_simple(Role::Info, "2 action(s) planned");
+    cmd_apply(&cli, &old_printer, &v2_printer, &args).unwrap();
     drop(v2_printer);
 
-    cap.assert_human_snapshot_in(Path::new(SNAPSHOT_ROOT), "apply/dry_run.txt");
+    assert!(!target.exists(), "dry-run must not create the target file");
+
+    let normalized =
+        normalize_tempdir_paths(&cap.human(), config_dir.path(), &[(&target, "<TARGET>")]);
+    let stripped = strip_ansi(&normalized);
+    assert_snapshot(Path::new(SNAPSHOT_ROOT), "apply/dry_run.txt", &stripped);
 }
 
 #[test]
@@ -133,44 +139,43 @@ fn apply_nothing_to_do_human() {
 
 #[test]
 fn apply_with_failures_human() {
-    // §1.8 anchor under real apply data: the failure Status renders INSIDE
-    // the phase SectionGuard — at the phase's indent, NOT at column 0.
-    // Bucket-g `apply_results_stay_indented` proves it at the renderer
-    // level; this snapshot proves it under the shape `cmd_apply` produces.
+    // Indent-invariant anchor under real apply data: the failure Status
+    // renders INSIDE the phase SectionGuard — at the phase's indent, NOT
+    // at column 0. The bucket-g `apply_results_stay_indented` renderer-level
+    // anchor pins the invariant abstractly; this snapshot pins it under
+    // cmd_apply's real shape.
+    let (config_dir, state_dir, target_ok, target_fail) = profile_with_one_failure_setup();
+
+    let cli = cli_for(config_dir.path(), state_dir.path());
+    let old_printer = PrinterV1::new(cfgd_core::output::Verbosity::Quiet);
     let (v2_printer, cap) = Printer::for_test_doc();
+    let args = apply_args();
 
-    v2_printer.heading("Apply");
-    v2_printer.kv_block([("Config", "/etc/cfgd.yaml"), ("Profile", "default")]);
-
-    {
-        let preview = v2_printer.section("Plan preview");
-        {
-            let files = preview.section("Files");
-            files.bullet("create /etc/hosts");
-            files.bullet("create /tmp/foo");
-        }
-    }
-
-    {
-        let work = v2_printer.section("Files");
-        work.status(Role::Ok, "Wrote /etc/hosts");
-        work.status(Role::Fail, "Failed /tmp/foo")
-            .detail("permission denied");
-    }
-
-    v2_printer.status_simple(
-        Role::Warn,
-        "Apply partially complete — 1 succeeded, 1 failed",
-    );
-    v2_printer.emit(build_apply_doc(&with_failures_output()));
+    cmd_apply(&cli, &old_printer, &v2_printer, &args).unwrap();
     drop(v2_printer);
 
-    cap.assert_human_snapshot_in(Path::new(SNAPSHOT_ROOT), "apply/with_failures.txt");
+    assert!(target_ok.exists(), "first file action must succeed");
+    assert!(
+        !target_fail.exists(),
+        "second file action must fail (parent is a regular file)"
+    );
+
+    let normalized = normalize_tempdir_paths(
+        &cap.human(),
+        config_dir.path(),
+        &[(&target_ok, "<TARGET_OK>"), (&target_fail, "<TARGET_FAIL>")],
+    );
+    let stripped = strip_ansi(&normalized);
+    assert_snapshot(
+        Path::new(SNAPSHOT_ROOT),
+        "apply/with_failures.txt",
+        &stripped,
+    );
 }
 
 #[test]
 fn apply_bridge_one_blank_line() {
-    // §17.2 bridge invariant: when the streaming SectionGuard drops, the
+    // Bridge invariant: when the streaming SectionGuard drops, the
     // renderer auto-emits one blank line. The buffered Doc that follows
     // respects the no-leading-blank rule, so the combined human surface
     // has exactly one blank line at the transition between the last

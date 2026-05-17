@@ -237,7 +237,7 @@ pub fn cmd_apply(
     }
 
     // Show what will change, nested under a section so each phase's items
-    // render at the section's indent (§1.8: children stay indented).
+    // render at the section's indent.
     {
         let preview = v2_printer.section("Plan preview");
         for phase_item in &plan.phases {

@@ -1,11 +1,29 @@
 Plan
-  Config   /etc/cfgd.yaml
-  Profile  default
+  Config   <CONFIG_DIR>/cfgd.yaml
+  Profile  tiny
 
-Phase: Files
-  - create /etc/hosts
+Phase: Pre-Scripts
+  (nothing to do)
+
+Phase: Environment
+  (nothing to do)
+
+Phase: Modules
+  (nothing to do)
 
 Phase: Packages
-  - install nodejs
+  (nothing to do)
 
-2 action(s) planned
+Phase: System
+  (nothing to do)
+
+Phase: Files
+  - create <TARGET>
+
+Phase: Secrets
+  (nothing to do)
+
+Phase: Post-Scripts
+  (nothing to do)
+
+1 action(s) planned

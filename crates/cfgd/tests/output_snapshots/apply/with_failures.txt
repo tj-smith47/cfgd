@@ -1,14 +1,10 @@
 Apply
-  Config   /etc/cfgd.yaml
-  Profile  default
+  Config   <CONFIG_DIR>/cfgd.yaml
+  Profile  tiny
 
 Plan preview
   Files
-    - create /etc/hosts
-    - create /tmp/foo
-
-Files
-  ✓ Wrote /etc/hosts
-  ✗ Failed /tmp/foo — permission denied
+    - create <TARGET_OK>
+    - create <TARGET_FAIL>
 
 ⚠ Apply partially complete — 1 succeeded, 1 failed

@@ -4234,7 +4234,7 @@ fn cmd_apply_idempotent() {
         result.err()
     );
 
-    v2_printer.flush();
+    drop(v2_printer);
     let output = combine_buffers(&buf, &v2_buf);
     assert!(
         output.contains("Nothing to do"),

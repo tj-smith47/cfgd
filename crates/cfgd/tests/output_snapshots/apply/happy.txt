@@ -1,12 +1,9 @@
 Apply
-  Config   /etc/cfgd.yaml
-  Profile  default
+  Config   <CONFIG_DIR>/cfgd.yaml
+  Profile  tiny
 
 Plan preview
   Files
-    - create /etc/hosts
-  Packages
-    - install nodejs
-    - install ripgrep
+    - create <TARGET>
 
-✓ Apply complete — 3 action(s) succeeded
+✓ Apply complete — 1 action(s) succeeded
