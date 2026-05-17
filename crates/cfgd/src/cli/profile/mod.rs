@@ -10,7 +10,7 @@ mod delete;
 mod edit;
 mod list;
 mod parsers;
-mod show;
+pub mod show;
 mod switch;
 mod update;
 

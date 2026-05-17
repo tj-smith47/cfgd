@@ -17,7 +17,7 @@ pub mod output_types;
 mod plan;
 mod plan_ops;
 pub mod plugin;
-mod profile;
+pub mod profile;
 mod pull;
 mod registry;
 mod rollback;
@@ -1403,7 +1403,7 @@ pub fn execute(
         }
         Command::Profile { command } => match command {
             ProfileCommand::Show { name } => {
-                profile::cmd_profile_show(cli, printer, name.as_deref())
+                profile::cmd_profile_show(cli, v2_printer, name.as_deref())
             }
             ProfileCommand::List => profile::cmd_profile_list(cli, printer),
             ProfileCommand::Switch { name } => profile::cmd_profile_switch(cli, name, printer),

@@ -1,0 +1,138 @@
+{
+  "layers": [
+    {
+      "policy": "Local",
+      "priority": 1000,
+      "profile_name": "base",
+      "source": "local",
+      "spec": {
+        "aliases": [],
+        "env": [],
+        "files": null,
+        "inherits": [],
+        "modules": [],
+        "packages": null,
+        "scripts": null,
+        "secrets": [],
+        "system": {}
+      }
+    },
+    {
+      "policy": "Local",
+      "priority": 1000,
+      "profile_name": "workstation",
+      "source": "local",
+      "spec": {
+        "aliases": [],
+        "env": [],
+        "files": null,
+        "inherits": [],
+        "modules": [],
+        "packages": null,
+        "scripts": null,
+        "secrets": [],
+        "system": {}
+      }
+    }
+  ],
+  "merged": {
+    "aliases": [],
+    "env": [
+      {
+        "name": "EDITOR",
+        "value": "nvim"
+      },
+      {
+        "name": "LANG",
+        "value": "en_US.UTF-8"
+      }
+    ],
+    "files": {
+      "managed": [
+        {
+          "source": "bashrc",
+          "target": "/home/user/.bashrc"
+        },
+        {
+          "source": "gitconfig",
+          "target": "/home/user/.gitconfig"
+        }
+      ],
+      "permissions": {}
+    },
+    "modules": [
+      "base",
+      "dev-tools"
+    ],
+    "packages": {
+      "apk": [],
+      "apt": {
+        "file": null,
+        "packages": [
+          "curl",
+          "jq"
+        ]
+      },
+      "brew": {
+        "casks": [
+          "firefox"
+        ],
+        "file": null,
+        "formulae": [
+          "ripgrep",
+          "fd"
+        ],
+        "taps": [
+          "homebrew/cask-fonts"
+        ]
+      },
+      "cargo": {
+        "packages": [
+          "cargo-edit"
+        ]
+      },
+      "chocolatey": [],
+      "custom": [],
+      "dnf": [],
+      "flatpak": null,
+      "go": [],
+      "nix": [],
+      "npm": null,
+      "pacman": [],
+      "pipx": [
+        "black",
+        "ruff"
+      ],
+      "pkg": [],
+      "scoop": [],
+      "snap": null,
+      "winget": [],
+      "yum": [],
+      "zypper": []
+    },
+    "scripts": {
+      "onChange": [],
+      "onDrift": [],
+      "postApply": [],
+      "postReconcile": [],
+      "preApply": [],
+      "preReconcile": []
+    },
+    "secrets": [
+      {
+        "source": "op://Personal/GitHub/token",
+        "target": "/home/user/.config/gh/token"
+      },
+      {
+        "envs": [
+          "AWS_ACCESS_KEY_ID"
+        ],
+        "source": "op://Personal/AWS/access-key"
+      }
+    ],
+    "system": {
+      "macosDefaults": "trackpad",
+      "shellAliases": "default"
+    }
+  }
+}

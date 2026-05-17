@@ -482,13 +482,15 @@ fn make_profile_update_args() -> super::super::ProfileUpdateArgs {
 fn profile_show_named_profile() {
     let dir = setup_config_dir();
     let cli = test_cli(dir.path());
-    let (printer, buf) = Printer::for_test();
+    let (printer, buf) =
+        cfgd_core::output_v2::Printer::for_test_at(cfgd_core::output_v2::Verbosity::Normal);
 
     cmd_profile_show(&cli, &printer, Some("default")).unwrap();
+    drop(printer);
     let output = buf.lock().unwrap();
     assert!(
-        output.contains("Resolved Profile"),
-        "should show resolved profile header, got: {output}"
+        output.contains("Profile: default"),
+        "should show profile heading, got: {output}"
     );
     assert!(
         output.contains("EDITOR"),
@@ -500,14 +502,16 @@ fn profile_show_named_profile() {
 fn profile_show_active_profile() {
     let dir = setup_config_dir();
     let cli = test_cli(dir.path());
-    let (printer, buf) = Printer::for_test();
+    let (printer, buf) =
+        cfgd_core::output_v2::Printer::for_test_at(cfgd_core::output_v2::Verbosity::Normal);
 
     // None means "show the active profile" — reads from cfgd.yaml
     cmd_profile_show(&cli, &printer, None).unwrap();
+    drop(printer);
     let output = buf.lock().unwrap();
     assert!(
-        output.contains("Resolved Profile"),
-        "should show resolved profile header, got: {output}"
+        output.contains("Profile: default"),
+        "should show active profile heading, got: {output}"
     );
     assert!(
         output.contains("EDITOR"),
@@ -519,10 +523,12 @@ fn profile_show_active_profile() {
 fn profile_show_inherited_profile_resolves_layers() {
     let dir = setup_config_dir();
     let cli = test_cli(dir.path());
-    let (printer, buf) = Printer::for_test();
+    let (printer, buf) =
+        cfgd_core::output_v2::Printer::for_test_at(cfgd_core::output_v2::Verbosity::Normal);
 
     // work inherits from default, should resolve both layers
     cmd_profile_show(&cli, &printer, Some("work")).unwrap();
+    drop(printer);
     let output = buf.lock().unwrap();
     assert!(
         output.contains("Layers"),
@@ -542,7 +548,7 @@ fn profile_show_inherited_profile_resolves_layers() {
 fn profile_show_nonexistent_profile_fails() {
     let dir = setup_config_dir();
     let cli = test_cli(dir.path());
-    let printer = make_printer();
+    let printer = cfgd_core::output_v2::Printer::new(cfgd_core::output_v2::Verbosity::Quiet);
 
     let err = cmd_profile_show(&cli, &printer, Some("nonexistent")).unwrap_err();
     assert!(
@@ -555,7 +561,7 @@ fn profile_show_nonexistent_profile_fails() {
 fn profile_show_no_config_fails() {
     let dir = tempfile::tempdir().unwrap();
     let cli = test_cli(dir.path());
-    let printer = make_printer();
+    let printer = cfgd_core::output_v2::Printer::new(cfgd_core::output_v2::Verbosity::Quiet);
 
     // No cfgd.yaml — showing active profile should fail
     let err = cmd_profile_show(&cli, &printer, None).unwrap_err();
@@ -1604,12 +1610,15 @@ fn test_cli_json(dir: &Path) -> super::super::Cli {
 fn profile_show_json_schema() {
     let dir = setup_config_dir();
     let cli = test_cli_json(dir.path());
-    let (printer, buf) = Printer::for_test_with_format(cfgd_core::output::OutputFormat::Json);
+    let (printer, buf) = cfgd_core::output_v2::Printer::for_test_with_format(
+        cfgd_core::output_v2::OutputFormat::Json,
+    );
 
     cmd_profile_show(&cli, &printer, Some("default")).unwrap();
+    drop(printer);
 
     let output = buf.lock().unwrap();
-    // JSON output may have preamble text (key_value lines) — find first '{'
+    // Structured emit routes everything through stdout; payload starts at first '{'.
     let start = output.find('{').expect("should have JSON object in output");
     let json: serde_json::Value = serde_json::from_str(output[start..].trim()).unwrap();
     assert!(
@@ -1709,9 +1718,11 @@ spec:
     .unwrap();
 
     let cli = test_cli(dir.path());
-    let (printer, buf) = Printer::for_test();
+    let (printer, buf) =
+        cfgd_core::output_v2::Printer::for_test_at(cfgd_core::output_v2::Verbosity::Normal);
 
     cmd_profile_show(&cli, &printer, Some("files-test")).unwrap();
+    drop(printer);
 
     let output = buf.lock().unwrap();
     assert!(
@@ -1729,9 +1740,11 @@ fn profile_show_displays_packages_section() {
     let dir = setup_config_dir();
     // 'default' profile has cargo packages — verify they show up
     let cli = test_cli(dir.path());
-    let (printer, buf) = Printer::for_test();
+    let (printer, buf) =
+        cfgd_core::output_v2::Printer::for_test_at(cfgd_core::output_v2::Verbosity::Normal);
 
     cmd_profile_show(&cli, &printer, Some("default")).unwrap();
+    drop(printer);
 
     let output = buf.lock().unwrap();
     assert!(
@@ -1763,9 +1776,11 @@ spec:
     .unwrap();
 
     let cli = test_cli(dir.path());
-    let (printer, buf) = Printer::for_test();
+    let (printer, buf) =
+        cfgd_core::output_v2::Printer::for_test_at(cfgd_core::output_v2::Verbosity::Normal);
 
     cmd_profile_show(&cli, &printer, Some("secret-show")).unwrap();
+    drop(printer);
 
     let output = buf.lock().unwrap();
     assert!(
@@ -1796,9 +1811,11 @@ spec:
     .unwrap();
 
     let cli = test_cli(dir.path());
-    let (printer, buf) = Printer::for_test();
+    let (printer, buf) =
+        cfgd_core::output_v2::Printer::for_test_at(cfgd_core::output_v2::Verbosity::Normal);
 
     cmd_profile_show(&cli, &printer, Some("sys-show")).unwrap();
+    drop(printer);
 
     let output = buf.lock().unwrap();
     assert!(
@@ -1939,9 +1956,11 @@ spec:
     .unwrap();
 
     let cli = test_cli(dir.path());
-    let (printer, buf) = Printer::for_test();
+    let (printer, buf) =
+        cfgd_core::output_v2::Printer::for_test_at(cfgd_core::output_v2::Verbosity::Normal);
 
     cmd_profile_show(&cli, &printer, Some("rich")).unwrap();
+    drop(printer);
     let output = buf.lock().unwrap();
 
     // Verify all package manager display branches are exercised
@@ -1999,7 +2018,7 @@ spec:
 }
 
 #[test]
-fn profile_show_no_packages_displays_none() {
+fn profile_show_no_packages_omits_section() {
     let dir = tempfile::tempdir().unwrap();
     let profiles_dir = dir.path().join("profiles");
     std::fs::create_dir_all(&profiles_dir).unwrap();
@@ -2013,17 +2032,21 @@ fn profile_show_no_packages_displays_none() {
     ).unwrap();
 
     let cli = test_cli(dir.path());
-    let (printer, buf) = Printer::for_test();
+    let (printer, buf) =
+        cfgd_core::output_v2::Printer::for_test_at(cfgd_core::output_v2::Verbosity::Normal);
     cmd_profile_show(&cli, &printer, Some("bare")).unwrap();
+    drop(printer);
     let output = buf.lock().unwrap();
 
+    // Renderer skips the Packages section header entirely when the merged
+    // PackagesSpec is empty (section_if_nonempty contract).
     assert!(
-        output.contains("Packages"),
-        "should show Packages section: {output}"
+        !output.contains("Packages"),
+        "Packages section should be omitted for empty packages: {output}"
     );
     assert!(
-        output.contains("(none)"),
-        "should show (none) for empty packages: {output}"
+        output.contains("Env"),
+        "Env section should render because LANG is set: {output}"
     );
 }
 
@@ -2055,8 +2078,10 @@ spec:
     .unwrap();
 
     let cli = test_cli(dir.path());
-    let (printer, buf) = Printer::for_test();
+    let (printer, buf) =
+        cfgd_core::output_v2::Printer::for_test_at(cfgd_core::output_v2::Verbosity::Normal);
     cmd_profile_show(&cli, &printer, Some("env-secret")).unwrap();
+    drop(printer);
     let output = buf.lock().unwrap();
     assert!(
         output.contains("Secrets"),
@@ -2094,8 +2119,10 @@ spec:
     .unwrap();
 
     let cli = test_cli(dir.path());
-    let (printer, buf) = Printer::for_test();
+    let (printer, buf) =
+        cfgd_core::output_v2::Printer::for_test_at(cfgd_core::output_v2::Verbosity::Normal);
     cmd_profile_show(&cli, &printer, Some("both-secret")).unwrap();
+    drop(printer);
     let output = buf.lock().unwrap();
     assert!(
         output.contains("Secrets"),
@@ -2135,10 +2162,10 @@ fn profile_list_wide_format() {
     );
 }
 
-// --- profile show: no env displays (none) ---
+// --- profile show: empty env omits Env section (section_if_nonempty) ---
 
 #[test]
-fn profile_show_no_env_displays_none() {
+fn profile_show_no_env_omits_section() {
     let dir = tempfile::tempdir().unwrap();
     let profiles_dir = dir.path().join("profiles");
     std::fs::create_dir_all(&profiles_dir).unwrap();
@@ -2152,25 +2179,35 @@ fn profile_show_no_env_displays_none() {
     ).unwrap();
 
     let cli = test_cli(dir.path());
-    let (printer, buf) = Printer::for_test();
+    let (printer, buf) =
+        cfgd_core::output_v2::Printer::for_test_at(cfgd_core::output_v2::Verbosity::Normal);
     cmd_profile_show(&cli, &printer, Some("noenv")).unwrap();
+    drop(printer);
     let output = buf.lock().unwrap();
+    // Layers always renders (every profile has itself as a layer); every other
+    // optional section disappears when its underlying collection is empty.
     assert!(
-        output.contains("Env"),
-        "should show Env section, got: {output}"
+        output.contains("Layers"),
+        "Layers should render, got: {output}"
     );
-    // The Env section should show "(none)" since there are no env vars
-    // But the "(none)" could also come from packages or files - let's just verify it exists
     assert!(
-        output.contains("(none)"),
-        "should show (none) for empty env/packages/files, got: {output}"
+        !output.contains("Env"),
+        "Env section should be omitted, got: {output}"
+    );
+    assert!(
+        !output.contains("Packages"),
+        "Packages section should be omitted, got: {output}"
+    );
+    assert!(
+        !output.contains("Files"),
+        "Files section should be omitted, got: {output}"
     );
 }
 
-// --- profile show: no files displays (none) ---
+// --- profile show: empty files omits Files section (section_if_nonempty) ---
 
 #[test]
-fn profile_show_no_files_displays_none() {
+fn profile_show_no_files_omits_section() {
     let dir = tempfile::tempdir().unwrap();
     let profiles_dir = dir.path().join("profiles");
     std::fs::create_dir_all(&profiles_dir).unwrap();
@@ -2184,12 +2221,18 @@ fn profile_show_no_files_displays_none() {
     ).unwrap();
 
     let cli = test_cli(dir.path());
-    let (printer, buf) = Printer::for_test();
+    let (printer, buf) =
+        cfgd_core::output_v2::Printer::for_test_at(cfgd_core::output_v2::Verbosity::Normal);
     cmd_profile_show(&cli, &printer, Some("nofiles")).unwrap();
+    drop(printer);
     let output = buf.lock().unwrap();
     assert!(
-        output.contains("Files"),
-        "should show Files section, got: {output}"
+        !output.contains("Files"),
+        "Files section should be omitted when no managed files, got: {output}"
+    );
+    assert!(
+        output.contains("Env"),
+        "Env section should render because X is set, got: {output}"
     );
 }
 

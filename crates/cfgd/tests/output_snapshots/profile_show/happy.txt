@@ -1,0 +1,31 @@
+Profile: workstation
+
+Layers
+  base         source=local priority=1000
+  workstation  source=local priority=1000
+
+Env
+  EDITOR  nvim
+  LANG    en_US.UTF-8
+
+Packages
+  brew taps      homebrew/cask-fonts
+  brew formulae  ripgrep, fd
+  brew casks     firefox
+  apt            curl, jq
+  cargo          cargo-edit
+  pipx           black, ruff
+
+Files
+  bashrc     /home/user/.bashrc
+  gitconfig  /home/user/.gitconfig
+
+System
+  macosDefaults  (configured)
+  shellAliases   (configured)
+
+Secrets
+  op://Personal/GitHub/token
+    /home/user/.config/gh/token
+  op://Personal/AWS/access-key
+    envs: AWS_ACCESS_KEY_ID
