@@ -36,7 +36,6 @@ pub(in crate::cli) fn print_apply_result(
     result.status.clone()
 }
 
-#[allow(dead_code)]
 pub(in crate::cli) fn print_apply_result_v2(
     result: &cfgd_core::reconciler::ApplyResult,
     printer: &PrinterV2,
@@ -193,7 +192,6 @@ pub(in crate::cli) fn display_plan_table(
     }
 }
 
-#[allow(dead_code)]
 pub(in crate::cli) fn display_plan_table_v2(
     plan: &reconciler::Plan,
     printer: &PrinterV2,

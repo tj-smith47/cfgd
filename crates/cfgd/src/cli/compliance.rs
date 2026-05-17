@@ -261,7 +261,7 @@ pub fn build_compliance_summary_doc(snapshot: &ComplianceSnapshot) -> Doc {
         .collect();
     doc = doc.section_if_nonempty("Violations", &violations, |s, items| {
         items.iter().fold(s, |s, c| {
-            s.status_with(Role::Fail, check_subject(c), |sf| {
+            s.status_with(Role::Fail, check_key(c), |sf| {
                 sf.detail_opt(c.detail.as_deref())
             })
         })
@@ -274,7 +274,7 @@ pub fn build_compliance_summary_doc(snapshot: &ComplianceSnapshot) -> Doc {
         .collect();
     doc = doc.section_if_nonempty("Warnings", &warnings, |s, items| {
         items.iter().fold(s, |s, c| {
-            s.status_with(Role::Warn, check_subject(c), |sf| {
+            s.status_with(Role::Warn, check_key(c), |sf| {
                 sf.detail_opt(c.detail.as_deref())
             })
         })
@@ -355,19 +355,6 @@ fn overall_status(summary: &cfgd_core::compliance::ComplianceSummary) -> &'stati
     } else {
         "Compliant"
     }
-}
-
-/// Subject line for a check — picks the first available identifier and
-/// prefixes the category, matching the diff/key convention.
-fn check_subject(c: &ComplianceCheck) -> String {
-    let id = c
-        .target
-        .as_deref()
-        .or(c.name.as_deref())
-        .or(c.key.as_deref())
-        .or(c.path.as_deref())
-        .unwrap_or("(unknown)");
-    format!("{}:{}", c.category, id)
 }
 
 #[cfg(test)]
