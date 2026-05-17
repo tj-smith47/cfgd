@@ -1,34 +1,206 @@
 use super::*;
+use cfgd_core::config::ModuleLockEntry;
+use cfgd_core::output_v2::{Doc, Printer as PrinterV2, Role, renderer::Table as TableV2};
 
-pub(crate) fn cmd_module_list(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
+/// Per-package display row for `cfgd module show`. Computed from package
+/// resolution so the renderer is pure and snapshot-testable without needing a
+/// live `ProviderRegistry` or `Platform`.
+pub enum PackageDisplay {
+    Resolved {
+        name: String,
+        manager: String,
+        resolved_name: String,
+        version: Option<String>,
+    },
+    Skipped {
+        name: String,
+        platforms: String,
+    },
+    Unresolved {
+        summary: String,
+        error: String,
+    },
+}
+
+/// Build the `cfgd module list` Doc. Caller owns `entries` (constructed from
+/// disk + state); this fn is pure.
+pub fn build_module_list_doc(entries: &[ModuleListEntry], wide: bool, config_dir: &Path) -> Doc {
+    let mut doc = Doc::new().heading("Modules");
+
+    if entries.is_empty() {
+        doc = doc
+            .status(Role::Info, "No modules found")
+            .hint(format!("Add modules to {}/modules/", config_dir.display()));
+        return doc.with_data(entries);
+    }
+
+    let table = if wide {
+        let mut t = TableV2::new([
+            "Module", "Active", "Source", "Status", "Packages", "Files", "Deps",
+        ]);
+        for e in entries {
+            t = t.row([
+                e.name.clone(),
+                if e.active { "yes" } else { "-" }.to_string(),
+                e.source.clone(),
+                e.status.clone(),
+                e.packages.to_string(),
+                e.files.to_string(),
+                e.depends.to_string(),
+            ]);
+        }
+        t
+    } else {
+        let mut t = TableV2::new(["Module", "Active", "Source", "Status", "Contents"]);
+        for e in entries {
+            t = t.row([
+                e.name.clone(),
+                if e.active { "yes" } else { "-" }.to_string(),
+                e.source.clone(),
+                e.status.clone(),
+                format!("{} pkgs, {} files, {} deps", e.packages, e.files, e.depends),
+            ]);
+        }
+        t
+    };
+
+    doc.table(table).with_data(entries)
+}
+
+/// Doc for the `module not found` error path. Emitted before bailing so the
+/// user sees the list of available modules.
+pub fn build_module_not_found_doc(name: &str, available: &[String]) -> Doc {
+    let mut doc = Doc::new().status(Role::Fail, format!("Module '{}' not found", name));
+    if !available.is_empty() {
+        doc = doc.hint(format!("Available modules: {}", available.join(", ")));
+    }
+    doc
+}
+
+/// Build the `cfgd module show` Doc from precomputed inputs.
+pub fn build_module_show_doc(
+    output: &ModuleShowOutput,
+    lock_entry: Option<&ModuleLockEntry>,
+    packages: &[PackageDisplay],
+    post_apply: &[String],
+    show_values: bool,
+) -> Doc {
+    let mut doc = Doc::new().heading(format!("Module: {}", output.name));
+
+    if !output.depends.is_empty() {
+        doc = doc.kv("Dependencies", output.depends.join(", "));
+    }
+    doc = doc.kv("Directory", &output.directory);
+
+    if let Some(entry) = lock_entry {
+        doc = doc
+            .kv("Source", "remote (locked)")
+            .kv("URL", &entry.url)
+            .kv("Pinned ref", &entry.pinned_ref)
+            .kv("Commit", &entry.commit)
+            .kv("Integrity", &entry.integrity);
+    } else {
+        doc = doc.kv("Source", "local");
+    }
+
+    if let Some(state_rec) = &output.state {
+        doc = doc
+            .kv("Status", &state_rec.status)
+            .kv("Last applied", &state_rec.installed_at)
+            .kv("Packages hash", &state_rec.packages_hash)
+            .kv("Files hash", &state_rec.files_hash);
+    }
+
+    doc = doc.section_if_nonempty("Packages", packages, |s, pkgs| {
+        pkgs.iter().fold(s, |s, pkg| match pkg {
+            PackageDisplay::Resolved {
+                name,
+                manager,
+                resolved_name,
+                version,
+            } => {
+                let ver = version
+                    .as_ref()
+                    .map(|v| format!(" ({})", v))
+                    .unwrap_or_default();
+                s.status(
+                    Role::Ok,
+                    format!("{} -> {} install {}{}", name, manager, resolved_name, ver),
+                )
+            }
+            PackageDisplay::Skipped { name, platforms } => s.status(
+                Role::Info,
+                format!("{}{} — skipped (platform filter)", name, platforms),
+            ),
+            PackageDisplay::Unresolved { summary, error } => {
+                s.status(Role::Warn, format!("{} — unresolved: {}", summary, error))
+            }
+        })
+    });
+
+    doc = doc.section_if_nonempty("Files", &output.spec.files, |s, files| {
+        files.iter().fold(s, |s, file| {
+            let git_indicator = if modules::is_git_source(&file.source) {
+                " (git)"
+            } else {
+                ""
+            };
+            s.kv(format!("{}{}", file.source, git_indicator), &file.target)
+        })
+    });
+
+    doc = doc.section_if_nonempty("Env", &output.spec.env, |s, env| {
+        env.iter().fold(s, |s, ev| {
+            let display = if show_values {
+                ev.value.clone()
+            } else {
+                mask_value(&ev.value)
+            };
+            s.kv(&ev.name, display)
+        })
+    });
+
+    doc = doc.section_if_nonempty("Aliases", &output.spec.aliases, |s, aliases| {
+        aliases
+            .iter()
+            .fold(s, |s, alias| s.kv(&alias.name, &alias.command))
+    });
+
+    doc = doc.section_if_nonempty("Post-apply Scripts", post_apply, |s, scripts| {
+        scripts
+            .iter()
+            .fold(s, |s, script| s.status(Role::Info, script))
+    });
+
+    doc.with_data(output)
+}
+
+pub(crate) fn cmd_module_list(
+    cli: &Cli,
+    printer: &Printer,
+    v2_printer: &PrinterV2,
+) -> anyhow::Result<()> {
     let config_dir = config_dir(cli);
     let cache_base = modules::default_module_cache_dir()?;
     let all_modules = modules::load_all_modules(&config_dir, &cache_base, printer)?;
     let lockfile = modules::load_lockfile(&config_dir)?;
 
     if all_modules.is_empty() {
-        if printer.is_structured() {
-            printer.write_structured(&Vec::<ModuleListEntry>::new());
-            return Ok(());
-        }
-        printer.header("Modules");
-        printer.info("No modules found");
-        printer.info(&format!("Add modules to {}/modules/", config_dir.display()));
+        v2_printer.emit(build_module_list_doc(
+            &[],
+            v2_printer.is_wide(),
+            &config_dir,
+        ));
         return Ok(());
     }
 
-    // Load profile to determine which modules are active
     let active_modules: Vec<String> = if cli.config.exists() {
-        let (_, resolved) = load_config_and_profile(cli, printer)?;
-        if !printer.is_structured() {
-            printer.newline();
-        }
+        let (_, resolved) = helpers::load_config_and_profile_v2(cli, v2_printer)?;
         resolved.merged.modules
     } else {
         Vec::new()
     };
 
-    // Load module state from DB
     let state = open_state_store(cli.state_dir.as_deref())?;
     let state_map = module_state_map(&state);
 
@@ -66,55 +238,18 @@ pub(crate) fn cmd_module_list(cli: &Cli, printer: &Printer) -> anyhow::Result<()
         })
         .collect();
 
-    if printer.write_structured(&entries) {
-        return Ok(());
-    }
-
-    printer.header("Modules");
-
-    if printer.is_wide() {
-        let rows: Vec<Vec<String>> = entries
-            .iter()
-            .map(|e| {
-                vec![
-                    e.name.clone(),
-                    if e.active { "yes" } else { "-" }.to_string(),
-                    e.source.clone(),
-                    e.status.clone(),
-                    e.packages.to_string(),
-                    e.files.to_string(),
-                    e.depends.to_string(),
-                ]
-            })
-            .collect();
-        printer.table(
-            &[
-                "Module", "Active", "Source", "Status", "Packages", "Files", "Deps",
-            ],
-            &rows,
-        );
-    } else {
-        let rows: Vec<Vec<String>> = entries
-            .iter()
-            .map(|e| {
-                vec![
-                    e.name.clone(),
-                    if e.active { "yes" } else { "-" }.to_string(),
-                    e.source.clone(),
-                    e.status.clone(),
-                    format!("{} pkgs, {} files, {} deps", e.packages, e.files, e.depends),
-                ]
-            })
-            .collect();
-        printer.table(&["Module", "Active", "Source", "Status", "Contents"], &rows);
-    }
-
+    v2_printer.emit(build_module_list_doc(
+        &entries,
+        v2_printer.is_wide(),
+        &config_dir,
+    ));
     Ok(())
 }
 
 pub(crate) fn cmd_module_show(
     cli: &Cli,
     printer: &Printer,
+    v2_printer: &PrinterV2,
     name: &str,
     show_values: bool,
 ) -> anyhow::Result<()> {
@@ -125,179 +260,112 @@ pub(crate) fn cmd_module_show(
     let module = match all_modules.get(name) {
         Some(m) => m,
         None => {
-            let available: Vec<&String> = all_modules.keys().collect();
-            if !available.is_empty() {
-                let mut sorted: Vec<&str> = available.iter().map(|s| s.as_str()).collect();
-                sorted.sort();
-                printer.info(&format!("Available modules: {}", sorted.join(", ")));
-            }
+            let mut available: Vec<String> = all_modules.keys().map(|s| s.to_string()).collect();
+            available.sort();
+            v2_printer.emit(build_module_not_found_doc(name, &available));
             anyhow::bail!("Module '{}' not found", name);
         }
     };
 
-    if printer.is_structured() {
-        let lockfile = modules::load_lockfile(&config_dir)?;
-        let source_type = if lockfile.modules.iter().any(|e| e.name == name) {
-            "remote"
-        } else {
-            "local"
-        };
-        let state = open_state_store(cli.state_dir.as_deref())?;
-        let state_rec = state.module_state_by_name(name)?;
-        let output = ModuleShowOutput {
-            name: name.to_string(),
-            directory: module.dir.display().to_string(),
-            source: source_type.to_string(),
-            depends: module.spec.depends.clone(),
-            state: state_rec,
-            spec: module.spec.clone(),
-        };
-        printer.write_structured(&output);
-        return Ok(());
-    }
-
-    printer.header(&format!("Module: {}", name));
-
-    // Basic info
-    if !module.spec.depends.is_empty() {
-        printer.key_value("Dependencies", &module.spec.depends.join(", "));
-    }
-    printer.key_value("Directory", &module.dir.display().to_string());
-
-    // Lockfile info for remote modules
     let lockfile = modules::load_lockfile(&config_dir)?;
-    if let Some(lock_entry) = lockfile.modules.iter().find(|e| e.name == name) {
-        printer.key_value("Source", "remote (locked)");
-        printer.key_value("URL", &lock_entry.url);
-        printer.key_value("Pinned ref", &lock_entry.pinned_ref);
-        printer.key_value("Commit", &lock_entry.commit);
-        printer.key_value("Integrity", &lock_entry.integrity);
+    let lock_entry = lockfile.modules.iter().find(|e| e.name == name);
+    let source_type = if lock_entry.is_some() {
+        "remote"
     } else {
-        printer.key_value("Source", "local");
-    }
+        "local"
+    };
 
-    // Module state from DB
     let state = open_state_store(cli.state_dir.as_deref())?;
-    if let Some(state_rec) = state.module_state_by_name(name)? {
-        printer.key_value("Status", &state_rec.status);
-        printer.key_value("Last applied", &state_rec.installed_at);
-        printer.key_value("Packages hash", &state_rec.packages_hash);
-        printer.key_value("Files hash", &state_rec.files_hash);
-    }
+    let state_rec = state.module_state_by_name(name)?;
 
-    // Packages
-    if !module.spec.packages.is_empty() {
-        printer.newline();
-        printer.subheader("Packages");
+    let output = ModuleShowOutput {
+        name: name.to_string(),
+        directory: module.dir.display().to_string(),
+        source: source_type.to_string(),
+        depends: module.spec.depends.clone(),
+        state: state_rec,
+        spec: module.spec.clone(),
+    };
 
-        // Try to resolve packages to show which manager would be used
+    let packages: Vec<PackageDisplay> = if module.spec.packages.is_empty() {
+        Vec::new()
+    } else {
         let registry = build_registry();
         let mgr_map = managers_map(&registry);
         let platform = Platform::detect();
+        module
+            .spec
+            .packages
+            .iter()
+            .map(|entry| {
+                let prefer_str = if entry.prefer.is_empty() {
+                    String::new()
+                } else {
+                    format!(" (prefer: {})", entry.prefer.join(", "))
+                };
+                let version_str = entry
+                    .min_version
+                    .as_ref()
+                    .map(|v| format!(", min: {}", v))
+                    .unwrap_or_default();
+                let alias_str = if entry.aliases.is_empty() {
+                    String::new()
+                } else {
+                    let aliases: Vec<String> = entry
+                        .aliases
+                        .iter()
+                        .map(|(k, v)| format!("{}={}", k, v))
+                        .collect();
+                    format!(", aliases: {}", aliases.join(", "))
+                };
+                let platform_str = if entry.platforms.is_empty() {
+                    String::new()
+                } else {
+                    format!(", platforms: {}", entry.platforms.join("/"))
+                };
 
-        for entry in &module.spec.packages {
-            let prefer_str = if entry.prefer.is_empty() {
-                String::new()
-            } else {
-                format!(" (prefer: {})", entry.prefer.join(", "))
-            };
-            let version_str = entry
-                .min_version
-                .as_ref()
-                .map(|v| format!(", min: {}", v))
-                .unwrap_or_default();
-            let alias_str = if entry.aliases.is_empty() {
-                String::new()
-            } else {
-                let aliases: Vec<String> = entry
-                    .aliases
-                    .iter()
-                    .map(|(k, v)| format!("{}={}", k, v))
-                    .collect();
-                format!(", aliases: {}", aliases.join(", "))
-            };
-            let platform_str = if entry.platforms.is_empty() {
-                String::new()
-            } else {
-                format!(", platforms: {}", entry.platforms.join("/"))
-            };
-
-            // Try resolution
-            match modules::resolve_package(entry, name, &platform, &mgr_map) {
-                Ok(Some(resolved)) => {
-                    let ver = resolved
-                        .version
-                        .as_ref()
-                        .map(|v| format!(" ({})", v))
-                        .unwrap_or_default();
-                    printer.success(&format!(
-                        "{} -> {} install {}{}",
-                        entry.name, resolved.manager, resolved.resolved_name, ver
-                    ));
+                match modules::resolve_package(entry, name, &platform, &mgr_map) {
+                    Ok(Some(resolved)) => PackageDisplay::Resolved {
+                        name: entry.name.clone(),
+                        manager: resolved.manager.clone(),
+                        resolved_name: resolved.resolved_name.clone(),
+                        version: resolved.version.clone(),
+                    },
+                    Ok(None) => PackageDisplay::Skipped {
+                        name: entry.name.clone(),
+                        platforms: platform_str,
+                    },
+                    Err(e) => PackageDisplay::Unresolved {
+                        summary: format!(
+                            "{}{}{}{}{}",
+                            entry.name, prefer_str, version_str, alias_str, platform_str
+                        ),
+                        error: e.to_string(),
+                    },
                 }
-                Ok(None) => {
-                    printer.info(&format!(
-                        "{}{} — skipped (platform filter)",
-                        entry.name, platform_str
-                    ));
-                }
-                Err(e) => {
-                    printer.warning(&format!(
-                        "{}{}{}{}{} — unresolved: {}",
-                        entry.name, prefer_str, version_str, alias_str, platform_str, e
-                    ));
-                }
-            }
-        }
-    }
+            })
+            .collect()
+    };
 
-    // Files
-    if !module.spec.files.is_empty() {
-        printer.newline();
-        printer.subheader("Files");
-        for file in &module.spec.files {
-            let git_indicator = if modules::is_git_source(&file.source) {
-                " (git)"
-            } else {
-                ""
-            };
-            printer.key_value(&format!("{}{}", file.source, git_indicator), &file.target);
-        }
-    }
+    let post_apply: Vec<String> = module
+        .spec
+        .scripts
+        .as_ref()
+        .map(|s| {
+            s.post_apply
+                .iter()
+                .map(|e| e.run_str().to_string())
+                .collect()
+        })
+        .unwrap_or_default();
 
-    // Env
-    if !module.spec.env.is_empty() {
-        printer.newline();
-        printer.subheader("Env");
-        for ev in &module.spec.env {
-            if show_values {
-                printer.key_value(&ev.name, &ev.value);
-            } else {
-                printer.key_value(&ev.name, &mask_value(&ev.value));
-            }
-        }
-    }
-
-    // Aliases
-    if !module.spec.aliases.is_empty() {
-        printer.newline();
-        printer.subheader("Aliases");
-        for alias in &module.spec.aliases {
-            printer.key_value(&alias.name, &alias.command);
-        }
-    }
-
-    // Scripts
-    if let Some(ref scripts) = module.spec.scripts
-        && !scripts.post_apply.is_empty()
-    {
-        printer.newline();
-        printer.subheader("Post-apply Scripts");
-        for script in &scripts.post_apply {
-            printer.info(&format!("  {}", script));
-        }
-    }
-
+    v2_printer.emit(build_module_show_doc(
+        &output,
+        lock_entry,
+        &packages,
+        &post_apply,
+        show_values,
+    ));
     Ok(())
 }
 

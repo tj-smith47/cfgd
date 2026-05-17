@@ -4973,10 +4973,13 @@ fn execute_module_list() {
         }),
         ..test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()))
     };
-    let (printer, buf) = Printer::for_test();
+    let (printer, _buf) = Printer::for_test();
+    let (v2_printer, v2_buf) =
+        cfgd_core::output_v2::Printer::for_test_at(cfgd_core::output_v2::Verbosity::Normal);
 
-    super::execute(&cli, &printer, &test_v2_printer()).unwrap();
-    let output = buf.lock().unwrap();
+    super::execute(&cli, &printer, &v2_printer).unwrap();
+    drop(v2_printer);
+    let output = v2_buf.lock().unwrap();
     assert!(
         output.contains("Modules") || output.contains("No modules"),
         "module list should show modules header, got: {output}"
@@ -6406,11 +6409,14 @@ fn module_list_empty_config_dir() {
     std::fs::create_dir_all(dir.path().join("modules")).unwrap();
     let state_dir = dir.path().join("state");
     let cli = test_cli_with_state(dir.path(), Some(state_dir));
-    let (printer, buf) = Printer::for_test();
+    let (printer, _buf) = Printer::for_test();
+    let (v2_printer, v2_buf) =
+        cfgd_core::output_v2::Printer::for_test_at(cfgd_core::output_v2::Verbosity::Normal);
 
-    module::cmd_module_list(&cli, &printer).unwrap();
+    module::cmd_module_list(&cli, &printer, &v2_printer).unwrap();
+    drop(v2_printer);
 
-    let output = buf.lock().unwrap();
+    let output = v2_buf.lock().unwrap();
     assert!(
         output.contains("Modules") || output.contains("No modules"),
         "module list with empty dir should show header or no-modules, got: {output}"
@@ -6433,11 +6439,14 @@ fn module_list_with_modules() {
 
     let state_dir = dir.path().join("state");
     let cli = test_cli_with_state(dir.path(), Some(state_dir));
-    let (printer, buf) = Printer::for_test();
+    let (printer, _buf) = Printer::for_test();
+    let (v2_printer, v2_buf) =
+        cfgd_core::output_v2::Printer::for_test_at(cfgd_core::output_v2::Verbosity::Normal);
 
-    module::cmd_module_list(&cli, &printer).unwrap();
+    module::cmd_module_list(&cli, &printer, &v2_printer).unwrap();
+    drop(v2_printer);
 
-    let output = buf.lock().unwrap();
+    let output = v2_buf.lock().unwrap();
     assert!(output.contains("vim"), "module list should contain 'vim'");
     assert!(output.contains("git"), "module list should contain 'git'");
 }
@@ -6447,11 +6456,14 @@ fn module_list_no_modules_dir() {
     let dir = tempfile::tempdir().unwrap();
     let state_dir = dir.path().join("state");
     let cli = test_cli_with_state(dir.path(), Some(state_dir));
-    let (printer, buf) = Printer::for_test();
+    let (printer, _buf) = Printer::for_test();
+    let (v2_printer, v2_buf) =
+        cfgd_core::output_v2::Printer::for_test_at(cfgd_core::output_v2::Verbosity::Normal);
 
-    module::cmd_module_list(&cli, &printer).unwrap();
+    module::cmd_module_list(&cli, &printer, &v2_printer).unwrap();
+    drop(v2_printer);
 
-    let output = buf.lock().unwrap();
+    let output = v2_buf.lock().unwrap();
     assert!(
         output.contains("No modules") || output.contains("Modules"),
         "module list without modules dir should show header or no-modules, got: {output}"
@@ -6475,11 +6487,14 @@ fn module_list_with_config_and_profile() {
 
     let state_dir = dir.path().join("state");
     let cli = test_cli_with_state(dir.path(), Some(state_dir));
-    let (printer, buf) = Printer::for_test();
+    let (printer, _buf) = Printer::for_test();
+    let (v2_printer, v2_buf) =
+        cfgd_core::output_v2::Printer::for_test_at(cfgd_core::output_v2::Verbosity::Normal);
 
-    module::cmd_module_list(&cli, &printer).unwrap();
+    module::cmd_module_list(&cli, &printer, &v2_printer).unwrap();
+    drop(v2_printer);
 
-    let output = buf.lock().unwrap();
+    let output = v2_buf.lock().unwrap();
     assert!(output.contains("bat"), "module list should contain 'bat'");
 }
 
@@ -6492,8 +6507,9 @@ fn module_show_not_found() {
     let state_dir = dir.path().join("state");
     let cli = test_cli_with_state(dir.path(), Some(state_dir));
     let printer = test_printer();
+    let v2_printer = test_v2_printer();
 
-    let result = module::cmd_module_show(&cli, &printer, "nonexistent", false);
+    let result = module::cmd_module_show(&cli, &printer, &v2_printer, "nonexistent", false);
     assert!(result.is_err());
     assert!(result.unwrap_err().to_string().contains("not found"));
 }
@@ -6551,11 +6567,14 @@ spec:
 
     let state_dir = dir.path().join("state");
     let cli = test_cli_with_state(dir.path(), Some(state_dir));
-    let (printer, buf) = Printer::for_test();
+    let (printer, _buf) = Printer::for_test();
+    let (v2_printer, v2_buf) =
+        cfgd_core::output_v2::Printer::for_test_at(cfgd_core::output_v2::Verbosity::Normal);
 
-    module::cmd_module_show(&cli, &printer, "dev-tools", false).unwrap();
+    module::cmd_module_show(&cli, &printer, &v2_printer, "dev-tools", false).unwrap();
+    drop(v2_printer);
 
-    let output = buf.lock().unwrap();
+    let output = v2_buf.lock().unwrap();
     assert!(
         output.contains("dev-tools"),
         "show should contain module name"
@@ -6590,18 +6609,21 @@ spec:
 
     let state_dir = dir.path().join("state");
     let cli = test_cli_with_state(dir.path(), Some(state_dir));
-    let (printer, buf) = Printer::for_test();
+    let (printer, _buf) = Printer::for_test();
+    let (v2_printer, v2_buf) =
+        cfgd_core::output_v2::Printer::for_test_at(cfgd_core::output_v2::Verbosity::Normal);
 
-    module::cmd_module_show(&cli, &printer, "secrets-mod", false).unwrap();
+    module::cmd_module_show(&cli, &printer, &v2_printer, "secrets-mod", false).unwrap();
     {
-        let output = buf.lock().unwrap();
+        let output = v2_buf.lock().unwrap();
         assert!(output.contains("API_KEY"), "show should list env var name");
     }
 
     // With show_values=true
-    buf.lock().unwrap().clear();
-    module::cmd_module_show(&cli, &printer, "secrets-mod", true).unwrap();
-    let output = buf.lock().unwrap();
+    v2_buf.lock().unwrap().clear();
+    module::cmd_module_show(&cli, &printer, &v2_printer, "secrets-mod", true).unwrap();
+    drop(v2_printer);
+    let output = v2_buf.lock().unwrap();
     assert!(
         output.contains("API_KEY"),
         "show with values should list env"
@@ -6619,8 +6641,9 @@ fn module_show_suggests_available_modules() {
     let state_dir = dir.path().join("state");
     let cli = test_cli_with_state(dir.path(), Some(state_dir));
     let printer = test_printer();
+    let v2_printer = test_v2_printer();
 
-    let result = module::cmd_module_show(&cli, &printer, "emacs", false);
+    let result = module::cmd_module_show(&cli, &printer, &v2_printer, "emacs", false);
     assert!(result.is_err());
     assert!(result.unwrap_err().to_string().contains("not found"));
 }
@@ -6646,11 +6669,14 @@ spec:
 
     let state_dir = dir.path().join("state");
     let cli = test_cli_with_state(dir.path(), Some(state_dir));
-    let (printer, buf) = Printer::for_test();
+    let (printer, _buf) = Printer::for_test();
+    let (v2_printer, v2_buf) =
+        cfgd_core::output_v2::Printer::for_test_at(cfgd_core::output_v2::Verbosity::Normal);
 
-    module::cmd_module_show(&cli, &printer, "scripted", false).unwrap();
+    module::cmd_module_show(&cli, &printer, &v2_printer, "scripted", false).unwrap();
+    drop(v2_printer);
 
-    let output = buf.lock().unwrap();
+    let output = v2_buf.lock().unwrap();
     assert!(
         output.contains("scripted"),
         "show should contain module name"
@@ -7897,11 +7923,15 @@ fn module_list_structured_output_empty() {
     std::fs::create_dir_all(dir.path().join("modules")).unwrap();
     let state_dir = dir.path().join("state");
     let cli = test_cli_with_state(dir.path(), Some(state_dir));
-    let (printer, buf) = Printer::for_test_with_format(cfgd_core::output::OutputFormat::Json);
+    let (printer, _buf) = Printer::for_test_with_format(cfgd_core::output::OutputFormat::Json);
+    let (v2_printer, v2_buf) = cfgd_core::output_v2::Printer::for_test_with_format(
+        cfgd_core::output_v2::OutputFormat::Json,
+    );
 
-    module::cmd_module_list(&cli, &printer).unwrap();
+    module::cmd_module_list(&cli, &printer, &v2_printer).unwrap();
+    drop(v2_printer);
 
-    let output = buf.lock().unwrap();
+    let output = v2_buf.lock().unwrap();
     let parsed: serde_json::Value = serde_json::from_str(&output)
         .unwrap_or_else(|e| panic!("invalid JSON output: {e}, got: {output}"));
     assert!(parsed.is_array(), "JSON should be an array");
@@ -7917,11 +7947,15 @@ fn module_show_structured_output() {
     );
     let state_dir = dir.path().join("state");
     let cli = test_cli_with_state(dir.path(), Some(state_dir));
-    let (printer, buf) = Printer::for_test_with_format(cfgd_core::output::OutputFormat::Json);
+    let (printer, _buf) = Printer::for_test_with_format(cfgd_core::output::OutputFormat::Json);
+    let (v2_printer, v2_buf) = cfgd_core::output_v2::Printer::for_test_with_format(
+        cfgd_core::output_v2::OutputFormat::Json,
+    );
 
-    module::cmd_module_show(&cli, &printer, "json-mod", false).unwrap();
+    module::cmd_module_show(&cli, &printer, &v2_printer, "json-mod", false).unwrap();
+    drop(v2_printer);
 
-    let output = buf.lock().unwrap();
+    let output = v2_buf.lock().unwrap();
     let parsed: serde_json::Value = serde_json::from_str(&output)
         .unwrap_or_else(|e| panic!("invalid JSON: {e}, got: {output}"));
     assert_eq!(parsed["name"], "json-mod", "JSON should have module name");

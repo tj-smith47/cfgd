@@ -1,0 +1,3 @@
+✗ Module 'missing' not found
+
+→ Available modules: base, dev-tools, extras

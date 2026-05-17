@@ -12,7 +12,7 @@ mod helpers;
 mod init;
 mod kubectl;
 mod log;
-mod module;
+pub mod module;
 pub mod output_types;
 mod plan;
 mod plan_ops;
@@ -1447,9 +1447,9 @@ pub fn execute(
             },
         ),
         Command::Module { command } => match command {
-            ModuleCommand::List => module::cmd_module_list(cli, printer),
+            ModuleCommand::List => module::cmd_module_list(cli, printer, v2_printer),
             ModuleCommand::Show { name, show_values } => {
-                module::cmd_module_show(cli, printer, name, *show_values)
+                module::cmd_module_show(cli, printer, v2_printer, name, *show_values)
             }
             ModuleCommand::Create(args) => module::cmd_module_create(cli, printer, args),
             ModuleCommand::Update(args) => module::cmd_module_update_local(cli, printer, args),

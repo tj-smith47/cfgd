@@ -1,0 +1,29 @@
+[
+  {
+    "active": true,
+    "depends": 0,
+    "files": 5,
+    "name": "base",
+    "packages": 3,
+    "source": "local",
+    "status": "applied"
+  },
+  {
+    "active": true,
+    "depends": 1,
+    "files": 2,
+    "name": "dev-tools",
+    "packages": 7,
+    "source": "remote",
+    "status": "pending"
+  },
+  {
+    "active": false,
+    "depends": 0,
+    "files": 0,
+    "name": "extras",
+    "packages": 1,
+    "source": "local",
+    "status": "available"
+  }
+]

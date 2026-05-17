@@ -1,0 +1,7 @@
+Modules
+
+Module     Active  Source  Status     Contents               
+─────────────────────────────────────────────────────────────
+base       yes     local   applied    3 pkgs, 5 files, 0 deps
+dev-tools  yes     remote  pending    7 pkgs, 2 files, 1 deps
+extras     -       local   available  1 pkgs, 0 files, 0 deps

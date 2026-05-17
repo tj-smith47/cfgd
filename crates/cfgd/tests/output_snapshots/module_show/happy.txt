@@ -1,0 +1,34 @@
+Module: dev-tools
+  Dependencies   base
+  Directory      /etc/cfgd/modules/dev-tools
+  Source         remote (locked)
+  URL            git@example.com:cfgd/modules.git
+  Pinned ref     v1.2.3
+  Commit         deadbeef1234567890abcdef1234567890abcdef
+  Integrity      sha256:cafef00d
+  Status         applied
+  Last applied   2026-05-14T10:00:00Z
+  Packages hash  abc123def456
+  Files hash     789ghi012jkl
+
+Packages
+  ✓ ripgrep -> brew install ripgrep (14.1.0)
+  winget-only-tool, platforms: windows — skipped (platform filter)
+  ⚠ obscure-tool (prefer: nix), min: 1.0 — unresolved: no manager available on this platform
+
+Files
+  vimrc                     ~/.vimrc
+  git@example.com:org/dotfiles.git//tmux.conf (git)
+    ~/.tmux.conf
+
+Env
+  EDITOR    ***vim
+  GH_TOKEN  ***lue
+
+Aliases
+  gs  git status
+  ll  ls -la
+
+Post-apply Scripts
+  echo 'post-apply hook ran'
+  systemctl --user daemon-reload

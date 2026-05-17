@@ -8,25 +8,25 @@ const NO_REGISTRIES_MSG: &str = "No module registries configured";
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-struct ModuleListEntry {
-    name: String,
-    active: bool,
-    source: String,
-    status: String,
-    packages: usize,
-    files: usize,
-    depends: usize,
+pub struct ModuleListEntry {
+    pub name: String,
+    pub active: bool,
+    pub source: String,
+    pub status: String,
+    pub packages: usize,
+    pub files: usize,
+    pub depends: usize,
 }
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-struct ModuleShowOutput {
-    name: String,
-    directory: String,
-    source: String,
-    depends: Vec<String>,
-    state: Option<cfgd_core::state::ModuleStateRecord>,
-    spec: cfgd_core::config::ModuleSpec,
+pub struct ModuleShowOutput {
+    pub name: String,
+    pub directory: String,
+    pub source: String,
+    pub depends: Vec<String>,
+    pub state: Option<cfgd_core::state::ModuleStateRecord>,
+    pub spec: cfgd_core::config::ModuleSpec,
 }
 
 pub(super) fn load_module_document(
@@ -146,7 +146,7 @@ mod crud;
 mod export;
 mod io;
 mod keys;
-mod list_show;
+pub mod list_show;
 mod registry;
 mod signature;
 

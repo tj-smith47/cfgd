@@ -1,0 +1,52 @@
+{
+  "depends": [
+    "base"
+  ],
+  "directory": "/etc/cfgd/modules/dev-tools",
+  "name": "dev-tools",
+  "source": "remote",
+  "spec": {
+    "aliases": [
+      {
+        "command": "git status",
+        "name": "gs"
+      },
+      {
+        "command": "ls -la",
+        "name": "ll"
+      }
+    ],
+    "depends": [
+      "base"
+    ],
+    "env": [
+      {
+        "name": "EDITOR",
+        "value": "nvim"
+      },
+      {
+        "name": "GH_TOKEN",
+        "value": "ghp_secret_token_value"
+      }
+    ],
+    "files": [
+      {
+        "source": "vimrc",
+        "target": "~/.vimrc"
+      },
+      {
+        "source": "git@example.com:org/dotfiles.git//tmux.conf",
+        "target": "~/.tmux.conf"
+      }
+    ]
+  },
+  "state": {
+    "filesHash": "789ghi012jkl",
+    "gitSources": null,
+    "installedAt": "2026-05-14T10:00:00Z",
+    "lastApplied": 1715680800,
+    "moduleName": "dev-tools",
+    "packagesHash": "abc123def456",
+    "status": "applied"
+  }
+}
