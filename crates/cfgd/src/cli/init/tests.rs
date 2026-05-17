@@ -2831,6 +2831,127 @@ mod enroll_mockito {
 
     #[test]
     #[serial]
+    fn cmd_enroll_token_path_streaming_to_buffered_bridge_invariant() {
+        // Bridge anchor under real cmd_enroll data — the existing
+        // `tests/enroll_v2_snapshots.rs` snapshots exercise
+        // `build_enroll_final_doc` in isolation and therefore miss the
+        // streaming portion (kvs + heading + status_simple lines) that
+        // `cmd_enroll` emits before the trailing buffered Doc. This test
+        // drives the full token-enrollment orchestration through a mock
+        // server, captures both streaming and buffered output on the same
+        // PrinterV2, asserts the §17.2 one-blank-line invariant
+        // programmatically, and snapshots the combined output for
+        // regression coverage.
+        let tmp = tempfile::tempdir().unwrap();
+        with_test_env_var("CFGD_STATE_DIR", Some(tmp.path().to_str().unwrap()), || {
+            let mut server = mockito::Server::new();
+            let m = server
+                .mock("POST", "/api/v1/enroll")
+                .with_status(200)
+                .with_header("content-type", "application/json")
+                .with_body(enroll_response_json())
+                .create();
+
+            let (printer, _buf) = Printer::for_test();
+            let (v2_printer, cap) = PrinterV2::for_test_doc();
+            let url = server.url();
+            let result = cmd_enroll(
+                &printer,
+                &v2_printer,
+                &url,
+                Some("bootstrap-token-xyz"),
+                None,
+                None,
+                Some("alice"),
+            );
+            assert!(result.is_ok(), "cmd_enroll should succeed: {result:?}");
+            m.assert();
+            drop(v2_printer);
+
+            let captured = strip_ansi(&cap.human());
+
+            // Sanity: streaming portion present before the buffered Doc.
+            assert!(
+                captured.contains("Token Enrollment"),
+                "missing streaming heading in:\n{captured}"
+            );
+            assert!(
+                captured.contains("Enrolled as user 'alice'"),
+                "missing streaming status line in:\n{captured}"
+            );
+            assert!(
+                captured.contains("Next Steps"),
+                "missing buffered section header in:\n{captured}"
+            );
+            assert!(
+                captured.find("Token Enrollment").unwrap() < captured.find("Next Steps").unwrap(),
+                "streaming surface must precede buffered surface in:\n{captured}"
+            );
+
+            // §17.2 invariant: exactly one blank line between the last
+            // streaming line and the first buffered line. Two newlines in
+            // a row = one blank line; three or more = more than one.
+            assert!(
+                captured.contains("\n\n"),
+                "expected at least one blank line in:\n{captured}"
+            );
+            assert!(
+                !captured.contains("\n\n\n"),
+                "expected at most one blank line gap in:\n{captured}"
+            );
+
+            // Normalize the mockito-allocated server URL (a 127.0.0.1
+            // address with a random port) so the golden survives across
+            // runs / hosts.
+            let normalized = captured.replace(&url, "<SERVER_URL>");
+            // Normalize the temp credential-save path (CFGD_STATE_DIR is a
+            // unique tempdir per run).
+            let cred_path = tmp.path().join("device-credential.json");
+            let normalized = normalized.replace(&cred_path.display().to_string(), "<CRED_PATH>");
+            // Normalize the host-dependent device-id (default_device_id
+            // returns the running machine's hostname).
+            let device_id = cfgd_core::hostname_string();
+            let normalized = normalized.replace(&device_id, "<DEVICE_ID>");
+
+            let snap_path =
+                std::path::Path::new("tests/output_snapshots/enroll/cmd_token_flow.txt");
+            if std::env::var("INSTA_UPDATE").as_deref() == Ok("always") || !snap_path.exists() {
+                std::fs::create_dir_all(snap_path.parent().unwrap()).unwrap();
+                std::fs::write(snap_path, &normalized).unwrap();
+            } else {
+                let expected = std::fs::read_to_string(snap_path).unwrap();
+                pretty_assertions::assert_eq!(
+                    normalized,
+                    expected,
+                    "snapshot mismatch: enroll/cmd_token_flow.txt"
+                );
+            }
+        });
+    }
+
+    /// ANSI-stripping helper local to this module — mirrors the one in
+    /// `tests/init_v2_snapshots.rs`; both are tiny and isolated to keep the
+    /// snapshot pipeline self-contained per test file.
+    fn strip_ansi(s: &str) -> String {
+        let mut out = String::with_capacity(s.len());
+        let mut chars = s.chars().peekable();
+        while let Some(c) = chars.next() {
+            if c == '\u{1b}' && chars.peek() == Some(&'[') {
+                chars.next();
+                for inner in chars.by_ref() {
+                    if inner == 'm' {
+                        break;
+                    }
+                }
+            } else {
+                out.push(c);
+            }
+        }
+        out
+    }
+
+    #[test]
+    #[serial]
     fn cmd_enroll_token_path_persists_desired_config_when_present() {
         let tmp = tempfile::tempdir().unwrap();
         with_test_env_var("CFGD_STATE_DIR", Some(tmp.path().to_str().unwrap()), || {

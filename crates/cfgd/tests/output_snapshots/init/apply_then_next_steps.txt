@@ -1,0 +1,10 @@
+Applying Configuration
+
+✓ Set active profile: default
+
+1 action(s) planned
+
+Next Steps
+  - cfgd apply           — apply configuration
+  - cfgd status         — view configured state
+  - cfgd daemon install — start background sync

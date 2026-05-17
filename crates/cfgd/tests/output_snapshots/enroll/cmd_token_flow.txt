@@ -1,0 +1,19 @@
+Server     <SERVER_URL>
+Device ID  <DEVICE_ID>
+
+Token Enrollment
+
+Exchanging bootstrap token for device credential...
+
+✓ Enrolled as user 'alice'
+
+Team    platform
+Device  dev-abc-123
+
+✓ Credential saved to <CRED_PATH>
+
+Next Steps
+  - cfgd checkin --server-url <url>  — report status to server
+  - cfgd apply --dry-run             — preview configuration
+  - cfgd apply                       — apply configuration
+  - cfgd daemon install              — start background sync
