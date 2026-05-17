@@ -19,7 +19,6 @@ pub(in crate::cli) fn load_config_and_profile(
     Ok((cfg, resolved))
 }
 
-#[allow(dead_code)]
 pub(in crate::cli) fn load_config_and_profile_v2(
     cli: &Cli,
     printer: &PrinterV2,
